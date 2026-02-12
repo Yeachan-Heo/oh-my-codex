@@ -1,0 +1,109 @@
+---
+name: ecomode
+description: Token-efficient model routing modifier
+---
+
+# Ecomode Skill
+
+Token-efficient model routing. This is a **MODIFIER**, not a standalone execution mode.
+
+## What Ecomode Does
+
+Overrides default model selection to prefer cheaper tiers:
+
+| Default Tier | Ecomode Override |
+|--------------|------------------|
+| HIGH (opus) | MEDIUM (sonnet), HIGH only if essential |
+| MEDIUM (sonnet) | LOW (haiku) first, MEDIUM if fails |
+| LOW (haiku) | LOW (haiku) - no change |
+
+## What Ecomode Does NOT Do
+
+- **Persistence**: Use `ralph` for "don't stop until done"
+- **Parallel Execution**: Use `ultrawork` for parallel agents
+- **Delegation Enforcement**: Always active via core orchestration
+
+## Combining Ecomode with Other Modes
+
+Ecomode is a modifier that combines with execution modes:
+
+| Combination | Effect |
+|-------------|--------|
+| `eco ralph` | Ralph loop with cheaper agents |
+| `eco ultrawork` | Parallel execution with cheaper agents |
+| `eco autopilot` | Full autonomous with cost optimization |
+
+## Ecomode Routing Rules
+
+**ALWAYS prefer lower tiers. Only escalate when task genuinely requires it.**
+
+| Decision | Rule |
+|----------|------|
+| DEFAULT | Start with LOW tier (Haiku) for most tasks |
+| UPGRADE | Escalate to MEDIUM (Sonnet) when LOW tier fails or task requires multi-file reasoning |
+| AVOID | HIGH tier (Opus) - only for planning/critique if essential |
+
+## Agent Selection in Ecomode
+
+**FIRST ACTION:** Before delegating any work, read the agent reference file:
+```
+Read file: docs/shared/agent-tiers.md
+```
+This provides the complete agent tier matrix, MCP tool assignments, and selection guidance.
+
+**Ecomode preference order:**
+
+```
+// PREFERRED - Use for most tasks
+spawn_sub_agent(subagent_type="oh-my-codex:executor-low", model="haiku", prompt="...")
+spawn_sub_agent(subagent_type="oh-my-codex:explore", model="haiku", prompt="...")
+spawn_sub_agent(subagent_type="oh-my-codex:architect-low", model="haiku", prompt="...")
+
+// FALLBACK - Only if LOW fails
+spawn_sub_agent(subagent_type="oh-my-codex:executor", model="sonnet", prompt="...")
+spawn_sub_agent(subagent_type="oh-my-codex:architect-medium", model="sonnet", prompt="...")
+
+// AVOID - Only for planning/critique if essential
+spawn_sub_agent(subagent_type="oh-my-codex:planner", model="opus", prompt="...")
+```
+
+## Delegation Enforcement
+
+Ecomode maintains all delegation rules from core protocol with cost-optimized routing:
+
+| Action | Delegate To | Model |
+|--------|-------------|-------|
+| Code changes | executor-low / executor | haiku / sonnet |
+| Analysis | architect-low | haiku |
+| Search | explore | haiku |
+| Documentation | writer | haiku |
+
+### Background Execution
+Long-running commands (install, build, test) run in background. Maximum 20 concurrent.
+
+## Token Savings Tips
+
+1. **Batch similar tasks** to one agent instead of spawning many
+2. **Use explore (haiku)** for file discovery, not architect
+3. **Prefer executor-low** for simple changes - only upgrade if it fails
+4. **Use writer (haiku)** for all documentation tasks
+5. **Avoid opus agents** unless the task genuinely requires deep reasoning
+
+## Disabling Ecomode
+
+Ecomode can be completely disabled via config. When disabled, all ecomode keywords are ignored.
+
+Set in `~/.claude/.omc-config.json`:
+```json
+{
+  "ecomode": {
+    "enabled": false
+  }
+}
+```
+
+## State Management
+
+Ecomode state is tracked in `.omc/state/ecomode-state.json`.
+
+When work is complete, run `/cancel` for clean state cleanup.

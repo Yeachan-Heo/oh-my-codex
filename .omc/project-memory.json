@@ -1,0 +1,220 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1770909895183,
+  "projectRoot": "/home/bellman/Workspace/oh-my-codex",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": ">=20",
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      },
+      {
+        "name": "TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "tsconfig.json"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "npm",
+    "runtime": "Node.js 20"
+  },
+  "build": {
+    "buildCommand": "npm run build",
+    "testCommand": "npm test",
+    "lintCommand": null,
+    "devCommand": "npm run dev",
+    "scripts": {
+      "build": "tsc",
+      "dev": "tsc --watch",
+      "setup": "node bin/omx.js setup",
+      "doctor": "node bin/omx.js doctor",
+      "test": "node --test src/**/*.test.ts"
+    }
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "bin",
+      "scripts",
+      "src"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "bin": {
+      "path": "bin",
+      "purpose": "Executable scripts",
+      "fileCount": 1,
+      "lastAccessed": 1770909895170,
+      "keyFiles": [
+        "omx.js"
+      ]
+    },
+    "dist": {
+      "path": "dist",
+      "purpose": "Distribution/build output",
+      "fileCount": 4,
+      "lastAccessed": 1770909895171,
+      "keyFiles": [
+        "index.d.ts",
+        "index.d.ts.map",
+        "index.js",
+        "index.js.map"
+      ]
+    },
+    "prompts": {
+      "path": "prompts",
+      "purpose": null,
+      "fileCount": 30,
+      "lastAccessed": 1770909895180,
+      "keyFiles": [
+        "analyst.md",
+        "api-reviewer.md",
+        "architect.md",
+        "build-fixer.md",
+        "code-reviewer.md"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 1,
+      "lastAccessed": 1770909895180,
+      "keyFiles": [
+        "notify-hook.js"
+      ]
+    },
+    "skills": {
+      "path": "skills",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1770909895181,
+      "keyFiles": []
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 1,
+      "lastAccessed": 1770909895182,
+      "keyFiles": [
+        "index.ts"
+      ]
+    },
+    "templates": {
+      "path": "templates",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1770909895182,
+      "keyFiles": [
+        "AGENTS.md"
+      ]
+    },
+    "dist/config": {
+      "path": "dist/config",
+      "purpose": "Configuration files",
+      "fileCount": 4,
+      "lastAccessed": 1770909895182,
+      "keyFiles": [
+        "generator.d.ts",
+        "generator.d.ts.map",
+        "generator.js"
+      ]
+    },
+    "dist/utils": {
+      "path": "dist/utils",
+      "purpose": "Utility functions",
+      "fileCount": 8,
+      "lastAccessed": 1770909895182,
+      "keyFiles": [
+        "package.d.ts",
+        "package.d.ts.map",
+        "package.js"
+      ]
+    },
+    "src/config": {
+      "path": "src/config",
+      "purpose": "Configuration files",
+      "fileCount": 1,
+      "lastAccessed": 1770909895182,
+      "keyFiles": [
+        "generator.ts"
+      ]
+    },
+    "src/utils": {
+      "path": "src/utils",
+      "purpose": "Utility functions",
+      "fileCount": 2,
+      "lastAccessed": 1770909895183,
+      "keyFiles": [
+        "package.ts",
+        "paths.ts"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "src/notifications/notifier.ts",
+      "accessCount": 2,
+      "lastAccessed": 1770909928734,
+      "type": "file"
+    },
+    {
+      "path": "prompts/security-reviewer.md",
+      "accessCount": 1,
+      "lastAccessed": 1770909943813,
+      "type": "file"
+    },
+    {
+      "path": "prompts/executor.md",
+      "accessCount": 1,
+      "lastAccessed": 1770909943837,
+      "type": "file"
+    },
+    {
+      "path": "prompts/architect.md",
+      "accessCount": 1,
+      "lastAccessed": 1770909943842,
+      "type": "file"
+    },
+    {
+      "path": "skills/autopilot/SKILL.md",
+      "accessCount": 1,
+      "lastAccessed": 1770909943860,
+      "type": "file"
+    },
+    {
+      "path": "skills/ralph/SKILL.md",
+      "accessCount": 1,
+      "lastAccessed": 1770909944348,
+      "type": "file"
+    },
+    {
+      "path": "skills/team/SKILL.md",
+      "accessCount": 1,
+      "lastAccessed": 1770909945518,
+      "type": "file"
+    },
+    {
+      "path": "README.md",
+      "accessCount": 1,
+      "lastAccessed": 1770910023993,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}
