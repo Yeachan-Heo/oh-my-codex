@@ -2,6 +2,11 @@ import { createHash } from 'crypto';
 
 export const DEFAULT_ALLOWED_MODES = ['ralph', 'ultrawork', 'team'];
 export const DEFAULT_MARKER = '[OMX_TMUX_INJECT]';
+const PLACEHOLDER_TARGET_VALUES = new Set([
+  'replace-with-tmux-pane-id',
+  'replace-with-tmux-session-name',
+  'unset',
+]);
 
 function asPositiveInteger(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
@@ -30,11 +35,15 @@ export function normalizeTmuxHookConfig(raw) {
     ? raw.allowed_modes.filter(mode => typeof mode === 'string' && mode.trim() !== '')
     : [];
 
+  const targetValue = raw.target && typeof raw.target === 'object' && typeof raw.target.value === 'string'
+    ? raw.target.value.trim()
+    : '';
+  const targetValueLower = targetValue.toLowerCase();
   const targetIsValid = raw.target
     && typeof raw.target === 'object'
     && (raw.target.type === 'session' || raw.target.type === 'pane')
-    && typeof raw.target.value === 'string'
-    && raw.target.value.trim() !== '';
+    && targetValue !== ''
+    && !PLACEHOLDER_TARGET_VALUES.has(targetValueLower);
 
   const cooldown = asPositiveInteger(raw.cooldown_ms);
   const maxPerPane = asPositiveInteger(raw.max_injections_per_pane);

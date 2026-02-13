@@ -135,7 +135,7 @@ Invoke skills with `$name` in Codex CLI (e.g., `$autopilot "build a REST API"`).
 |-------|-------------|
 | `$autopilot` | Full autonomous execution from idea to working code |
 | `$ralph` | Persistence loop with architect verification |
-| `$ultrawork` | Maximum parallelism with parallel agent orchestration |
+| `$ultrawork` (`$ulw`) | Maximum parallelism with parallel agent orchestration |
 | `$team` | N coordinated agents on shared task list |
 | `$pipeline` | Sequential agent chaining with data passing |
 | `$ecomode` | Token-efficient execution using lightweight models |
@@ -223,12 +223,13 @@ omx help      # Usage guide
   This bypasses approval prompts and sandboxing.
   Use only in externally sandboxed/trusted environments.
 
-## Tmux Injection Workaround (Opt-In)
+## Tmux Injection Workaround (v0.2.3 Default)
 
 OMX includes a production-safe workaround for Codex hook limitations: it can inject a continuation prompt into a tmux pane from `scripts/notify-hook.js`.
 
+As of `v0.2.3`, generated tmux hook config is enabled by default (`enabled: true`).
+
 Safety defaults:
-- Disabled by default (`enabled: false`)
 - No shell interpolation for tmux commands (argv-based subprocess execution)
 - Guardrails: allowed-mode gating, dedupe keying, cooldown, max injections/session, marker loop guard
 - Failures are non-fatal and logged

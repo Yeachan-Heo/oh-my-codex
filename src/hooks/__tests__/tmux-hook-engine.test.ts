@@ -42,6 +42,26 @@ describe('normalizeTmuxHookConfig', () => {
     assert.equal(config.dry_run, true);
     assert.equal(config.log_level, 'debug');
   });
+
+  it('treats placeholder/unset target values as invalid', () => {
+    const placeholderConfig = normalizeTmuxHookConfig({
+      enabled: true,
+      target: { type: 'pane', value: 'replace-with-tmux-pane-id' },
+    });
+    assert.equal(placeholderConfig.enabled, true);
+    assert.equal(placeholderConfig.valid, false);
+    assert.equal(placeholderConfig.reason, 'invalid_target');
+    assert.equal(placeholderConfig.target, null);
+
+    const unsetConfig = normalizeTmuxHookConfig({
+      enabled: true,
+      target: { type: 'session', value: 'unset' },
+    });
+    assert.equal(unsetConfig.enabled, true);
+    assert.equal(unsetConfig.valid, false);
+    assert.equal(unsetConfig.reason, 'invalid_target');
+    assert.equal(unsetConfig.target, null);
+  });
 });
 
 describe('pickActiveMode', () => {
@@ -100,6 +120,25 @@ describe('evaluateInjectionGuards', () => {
     });
     assert.equal(guard.allow, false);
     assert.equal(guard.reason, 'loop_guard_input_marker');
+  });
+
+  it('blocks with invalid_config when enabled target is placeholder/unset', () => {
+    const guard = evaluateInjectionGuards({
+      config: normalizeTmuxHookConfig({
+        enabled: true,
+        target: { type: 'pane', value: 'replace-with-tmux-pane-id' },
+      }),
+      mode: 'ralph',
+      sourceText: '',
+      assistantMessage: '',
+      threadId: 'th',
+      turnId: 'tu',
+      sessionKey: 'th',
+      now: 1000,
+      state: {},
+    });
+    assert.equal(guard.allow, false);
+    assert.equal(guard.reason, 'invalid_config');
   });
 
   it('blocks duplicates and cooldown and session cap', () => {

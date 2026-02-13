@@ -29,7 +29,7 @@ interface TmuxHookState {
 }
 
 const DEFAULT_CONFIG: TmuxHookConfig = {
-  enabled: false,
+  enabled: true,
   target: { type: 'pane', value: '' },
   allowed_modes: ['ralph', 'ultrawork', 'team'],
   cooldown_ms: 15000,
@@ -42,7 +42,7 @@ const DEFAULT_CONFIG: TmuxHookConfig = {
 
 const HELP = `
 Usage:
-  omx tmux-hook init       Create .omx/tmux-hook.json (disabled by default)
+  omx tmux-hook init       Create .omx/tmux-hook.json
   omx tmux-hook status     Show config + runtime state summary
   omx tmux-hook validate   Validate config and tmux target reachability
   omx tmux-hook test       Run a synthetic notify-hook turn (end-to-end)
@@ -218,7 +218,7 @@ async function initTmuxHookConfig(): Promise<void> {
   };
   await writeFile(configPath, JSON.stringify(initial, null, 2) + '\n');
   console.log(`Created ${configPath}`);
-  console.log('Feature remains disabled until you set `"enabled": true`.');
+  console.log('Feature is enabled by default (`"enabled": true`).');
   if (tmuxSession && tmuxSession.ok && tmuxSession.stdout) {
     console.log(`Detected tmux session: ${tmuxSession.stdout}`);
   }

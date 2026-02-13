@@ -70,7 +70,7 @@
 |-----------|-----------|-----------|
 | autopilot | DONE | ~/.agents/skills/autopilot/SKILL.md |
 | ralph | DONE | ~/.agents/skills/ralph/SKILL.md |
-| ultrawork | DONE | ~/.agents/skills/ultrawork/SKILL.md |
+| ultrawork (`ulw` alias) | DONE | ~/.agents/skills/ultrawork/SKILL.md |
 | ecomode | DONE | ~/.agents/skills/ecomode/SKILL.md |
 | plan | DONE | ~/.agents/skills/plan/SKILL.md |
 | ralplan | DONE | ~/.agents/skills/ralplan/SKILL.md |
@@ -122,7 +122,7 @@
 | Stop | notify config + postLaunch cleanup | FULL |
 | SessionEnd | omx postLaunch lifecycle phase | PARTIAL (post-exit cleanup) |
 
-`*` FULL via terminal automation workaround (opt-in `.omx/tmux-hook.json`), not native hook context injection.
+`*` FULL via terminal automation workaround (default-enabled in `v0.2.3` generated `.omx/tmux-hook.json`), not native hook context injection.
 
 ### Infrastructure
 
@@ -148,7 +148,7 @@
 ## Known Gaps
 
 1. **Pre-tool interception** - Cannot intercept tool calls before execution. Workaround: AGENTS.md instructs model to self-moderate.
-2. **Native context injection from hooks** - Not available in Codex hooks API. Workaround: opt-in tmux prompt injection (`omx tmux-hook`) plus state files + AGENTS.md instructions.
+2. **Native context injection from hooks** - Not available in Codex hooks API. Workaround: tmux prompt injection (`omx tmux-hook`) plus state files + AGENTS.md instructions (default-enabled in `v0.2.3` generated config).
 3. **PreCompact hook** - No event interception. Workaround: AGENTS.md overlay includes compaction survival instructions that tell the model to checkpoint state before compaction.
 4. **Session end** - No real-time event. Workaround: `omx` wrapper detects Codex exit via blocking execSync and runs postLaunch cleanup (overlay strip, session archive, mode cancellation).
 5. **Full LSP protocol** - LSP tools use pragmatic wrappers (tsc, grep, regex) rather than full LSP protocol. Missing: lsp_goto_definition, lsp_prepare_rename, lsp_rename, lsp_code_actions, lsp_code_action_resolve (5 tools need real LSP).
