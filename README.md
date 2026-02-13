@@ -1,31 +1,30 @@
 # oh-my-codex (OMX)
 
-Multi-agent orchestration layer for [OpenAI Codex CLI](https://github.com/openai/codex). Inspired by [oh-my-claudecode](https://github.com/anthropics/oh-my-claudecode).
+[![npm version](https://img.shields.io/npm/v/oh-my-codex)](https://www.npmjs.com/package/oh-my-codex)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 
-## What is this?
+Multi-agent orchestration for [OpenAI Codex CLI](https://github.com/openai/codex). Inspired by [oh-my-claudecode](https://github.com/anthropics/claude-code).
 
-OMX brings 30 specialized agent roles, 39 workflow skills, mode lifecycle management, team orchestration, verification protocols, and notification systems to Codex CLI -- without forking the upstream project.
+## Why oh-my-codex?
 
-## Architecture
+Codex CLI is powerful on its own. OMX makes it **orchestrated**:
 
-```
-User -> Codex CLI -> AGENTS.md (orchestration brain)
-                  -> ~/.codex/prompts/*.md (30 agent slash commands)
-                  -> ~/.agents/skills/*/SKILL.md (39 skills)
-                  -> config.toml (MCP servers, notify hook, features)
-                  -> .omx/ (state, memory, notepad, plans)
-```
+| Vanilla Codex CLI | With oh-my-codex |
+|-------------------|-------------------|
+| Single agent, single prompt | 30 specialized agents with role-specific prompts |
+| Manual workflow management | 39 workflow skills (autopilot, team, plan, ralph...) |
+| No persistent context | Project memory, session notepad, mode state via MCP |
+| No multi-agent coordination | Team pipeline with verify/fix loops, up to 6 concurrent agents |
+| No verification protocol | Evidence-backed verification with architect sign-off |
 
-**Key design decision**: OMX is an add-on, not a fork. It uses Codex CLI's native extension points:
+**Key design decision**: OMX is a pure add-on -- not a fork. It uses Codex CLI's native extension points so you always stay on upstream.
 
-| Extension Point | What OMX Uses It For |
-|----------------|---------------------|
-| `AGENTS.md` | Orchestration brain (equivalent to CLAUDE.md) |
-| `~/.codex/prompts/*.md` | 30 agent definitions as slash commands |
-| `~/.agents/skills/*/SKILL.md` | 39 workflow skills |
-| `config.toml` MCP servers | State management + project memory |
-| `config.toml` notify | Post-turn logging and metrics |
-| `config.toml` features | collab (sub-agents), child_agents_md |
+## Prerequisites
+
+- **Node.js** >= 20
+- **[OpenAI Codex CLI](https://github.com/openai/codex)** installed (`npm install -g @openai/codex`)
+- **OpenAI API key** configured
 
 ## Quick Start
 
@@ -39,181 +38,191 @@ omx setup
 # Verify installation
 omx doctor
 
-# Start using in Codex CLI
+# Start using
 codex
-> /architect "analyze the auth module"
-> /autopilot "build a REST API for user management"
-> /team 3:executor "fix all TypeScript errors"
 ```
 
-## Setup Details
+Inside a Codex CLI session:
 
-`omx setup` performs these steps:
+```
+> /prompts:architect "analyze the authentication module"
+> /prompts:executor "add input validation to the login flow"
+> $autopilot "build a REST API for user management"
+> $team 3:executor "fix all TypeScript errors"
+```
 
-1. Creates directories (`~/.codex/prompts/`, `~/.agents/skills/`, `.omx/state/`)
-2. Installs 30 agent prompt files to `~/.codex/prompts/`
-3. Installs 39 skill SKILL.md files to `~/.agents/skills/`
-4. Updates `~/.codex/config.toml` with MCP servers and features
-5. Generates `AGENTS.md` in the current project root
-6. Configures the notify hook for post-turn logging
+## How It Works
+
+OMX installs into Codex CLI's native extension points:
+
+| Extension Point | What OMX Uses It For |
+|----------------|---------------------|
+| `AGENTS.md` | Orchestration brain loaded at session start |
+| `~/.codex/prompts/*.md` | 30 agent definitions as `/prompts:name` commands |
+| `~/.agents/skills/*/SKILL.md` | 39 workflow skills invoked via `$name` |
+| `config.toml` MCP servers | State management + project memory |
+| `config.toml` notify | Post-turn logging and metrics |
+| `config.toml` features | `collab` (sub-agents) + `child_agents_md` |
+
+```
+User -> Codex CLI -> AGENTS.md (orchestration brain)
+                  -> ~/.codex/prompts/*.md (30 agents)
+                  -> ~/.agents/skills/*/SKILL.md (39 skills)
+                  -> config.toml (MCP, notify, features)
+                  -> .omx/ (state, memory, notepad, plans)
+```
 
 ## Agent Catalog (30 agents)
 
+Invoke agents with `/prompts:name` in Codex CLI.
+
 ### Build & Analysis
-| Agent | Model | Description |
-|-------|-------|-------------|
-| `/explore` | haiku | Codebase discovery, symbol/file mapping |
-| `/analyst` | opus | Requirements clarity, acceptance criteria |
-| `/planner` | opus | Task sequencing, execution plans |
-| `/architect` | opus | System design, boundaries, interfaces |
-| `/debugger` | sonnet | Root-cause analysis, failure diagnosis |
-| `/executor` | sonnet | Code implementation, refactoring |
-| `/deep-executor` | opus | Complex autonomous goal-oriented tasks |
-| `/verifier` | sonnet | Completion evidence, claim validation |
+| Agent | Tier | Description |
+|-------|------|-------------|
+| `/prompts:explore` | Low | Codebase discovery, symbol/file mapping |
+| `/prompts:analyst` | High | Requirements clarity, acceptance criteria |
+| `/prompts:planner` | High | Task sequencing, execution plans, risk flags |
+| `/prompts:architect` | High | System design, boundaries, interfaces |
+| `/prompts:debugger` | Standard | Root-cause analysis, failure diagnosis |
+| `/prompts:executor` | Standard | Code implementation, refactoring |
+| `/prompts:deep-executor` | High | Complex autonomous goal-oriented tasks |
+| `/prompts:verifier` | Standard | Completion evidence, claim validation |
 
 ### Review
-| Agent | Model | Description |
-|-------|-------|-------------|
-| `/style-reviewer` | haiku | Formatting, naming, lint conventions |
-| `/quality-reviewer` | sonnet | Logic defects, anti-patterns |
-| `/api-reviewer` | sonnet | API contracts, versioning |
-| `/security-reviewer` | sonnet | Vulnerabilities, OWASP Top 10 |
-| `/performance-reviewer` | sonnet | Hotspots, complexity optimization |
-| `/code-reviewer` | opus | Comprehensive review across concerns |
+| Agent | Tier | Description |
+|-------|------|-------------|
+| `/prompts:style-reviewer` | Low | Formatting, naming, lint conventions |
+| `/prompts:quality-reviewer` | Standard | Logic defects, anti-patterns |
+| `/prompts:api-reviewer` | Standard | API contracts, versioning |
+| `/prompts:security-reviewer` | Standard | Vulnerabilities, OWASP Top 10 |
+| `/prompts:performance-reviewer` | Standard | Hotspots, complexity optimization |
+| `/prompts:code-reviewer` | High | Comprehensive review across concerns |
 
 ### Domain Specialists
-| Agent | Model | Description |
-|-------|-------|-------------|
-| `/dependency-expert` | sonnet | External SDK/API evaluation |
-| `/test-engineer` | sonnet | Test strategy, coverage |
-| `/quality-strategist` | sonnet | Release readiness, risk assessment |
-| `/build-fixer` | sonnet | Build/toolchain failures |
-| `/designer` | sonnet | UX/UI architecture |
-| `/writer` | haiku | Docs, migration notes |
-| `/qa-tester` | sonnet | Interactive CLI validation |
-| `/scientist` | sonnet | Data/statistical analysis |
-| `/git-master` | sonnet | Commit strategy, history hygiene |
+| Agent | Tier | Description |
+|-------|------|-------------|
+| `/prompts:dependency-expert` | Standard | External SDK/API evaluation |
+| `/prompts:test-engineer` | Standard | Test strategy, coverage |
+| `/prompts:quality-strategist` | Standard | Release readiness, risk assessment |
+| `/prompts:build-fixer` | Standard | Build/toolchain failures |
+| `/prompts:designer` | Standard | UX/UI architecture |
+| `/prompts:writer` | Low | Docs, migration notes |
+| `/prompts:qa-tester` | Standard | Interactive CLI validation |
+| `/prompts:scientist` | Standard | Data/statistical analysis |
+| `/prompts:git-master` | Standard | Commit strategy, history hygiene |
+| `/prompts:researcher` | Standard | External documentation research |
 
 ### Product
-| Agent | Model | Description |
-|-------|-------|-------------|
-| `/product-manager` | sonnet | Problem framing, PRDs |
-| `/ux-researcher` | sonnet | Heuristic audits, usability |
-| `/information-architect` | sonnet | Taxonomy, navigation |
-| `/product-analyst` | sonnet | Product metrics, experiments |
+| Agent | Tier | Description |
+|-------|------|-------------|
+| `/prompts:product-manager` | Standard | Problem framing, PRDs |
+| `/prompts:ux-researcher` | Standard | Heuristic audits, usability |
+| `/prompts:information-architect` | Standard | Taxonomy, navigation |
+| `/prompts:product-analyst` | Standard | Product metrics, experiments |
 
 ### Coordination
-| Agent | Model | Description |
-|-------|-------|-------------|
-| `/critic` | opus | Plan/design critical challenge |
-| `/vision` | sonnet | Image/screenshot analysis |
+| Agent | Tier | Description |
+|-------|------|-------------|
+| `/prompts:critic` | High | Plan/design critical challenge |
+| `/prompts:vision` | Standard | Image/screenshot analysis |
 
 ## Skills (39 skills)
 
+Invoke skills with `$name` in Codex CLI (e.g., `$autopilot "build a REST API"`).
+
 ### Execution Modes
-- **autopilot** - Full autonomous execution from idea to working code
-- **ralph** - Persistence loop with architect verification
-- **ultrawork** - Maximum parallelism with parallel agent orchestration
-- **team** - N coordinated agents on shared task list
-- **pipeline** - Sequential agent chaining with data passing
-- **ecomode** - Token-efficient execution using haiku and sonnet
-- **ultrapilot** - Parallel autopilot with file ownership partitioning
-- **ultraqa** - QA cycling: test, verify, fix, repeat
-- **swarm** - Compatibility facade over team
+| Skill | Description |
+|-------|-------------|
+| `$autopilot` | Full autonomous execution from idea to working code |
+| `$ralph` | Persistence loop with architect verification |
+| `$ultrawork` | Maximum parallelism with parallel agent orchestration |
+| `$team` | N coordinated agents on shared task list |
+| `$pipeline` | Sequential agent chaining with data passing |
+| `$ecomode` | Token-efficient execution using lightweight models |
+| `$ultrapilot` | Parallel autopilot with file ownership partitioning |
+| `$ultraqa` | QA cycling: test, verify, fix, repeat |
 
 ### Planning
-- **plan** - Strategic planning with optional consensus/review modes
-- **ralplan** - Consensus planning (planner + architect + critic)
+| Skill | Description |
+|-------|-------------|
+| `$plan` | Strategic planning with optional consensus/review modes |
+| `$ralplan` | Consensus planning (planner + architect + critic) |
 
 ### Agent Shortcuts
-- **analyze** - Deep analysis and investigation
-- **deepsearch** - Thorough codebase search
-- **tdd** - Test-driven development workflow
-- **build-fix** - Fix build and TypeScript errors
-- **code-review** - Comprehensive code review
-- **security-review** - Security vulnerability review
-- **frontend-ui-ux** - UI/UX design work
-- **git-master** - Git operations
-- **review** - Plan review/critique
+| Skill | Routes To | Trigger |
+|-------|-----------|---------|
+| `$analyze` | debugger | "analyze", "debug", "investigate" |
+| `$deepsearch` | explore | "search", "find in codebase" |
+| `$tdd` | test-engineer | "tdd", "test first" |
+| `$build-fix` | build-fixer | "fix build", "type errors" |
+| `$code-review` | code-reviewer | "review code" |
+| `$security-review` | security-reviewer | "security review" |
+| `$frontend-ui-ux` | designer | UI/component work |
+| `$git-master` | git-master | Git/commit work |
 
 ### Utilities
-- **cancel** - Cancel any active mode
-- **doctor** - Diagnose installation issues
-- **help** - Usage guide
-- **note** - Save notes to notepad
-- **trace** - Agent flow trace timeline
-- **skill** - Manage local skills
-- **learner** - Extract learned skills
-- **research** - Parallel research agents
-- **deepinit** - Deep codebase init with AGENTS.md
-- **release** - Automated release workflow
-- **hud** - Status display configuration
-- **omx-setup** - Setup and configure OMX
-- **configure-telegram** - Telegram notifications
-- **configure-discord** - Discord notifications
-- **writer-memory** - Writer memory system
-- **project-session-manager** / **psm** - Isolated dev environments
-- **ralph-init** - Initialize PRD for ralph-loop
-- **learn-about-omx** - OMX usage patterns
-
-## MCP Servers
-
-OMX provides two MCP servers that Codex CLI connects to via config.toml:
-
-### State Server (`omx_state`)
-Manages mode lifecycle state for all execution modes.
-- `state_read` / `state_write` / `state_clear`
-- `state_list_active` / `state_get_status`
-- Supports: autopilot, ralph, ultrawork, ecomode, ultrapilot, team, pipeline, ultraqa, ralplan
-
-### Memory Server (`omx_memory`)
-Project memory and session notepad.
-- `project_memory_read` / `project_memory_write`
-- `project_memory_add_note` / `project_memory_add_directive`
-- `notepad_read` / `notepad_write_priority` / `notepad_write_working` / `notepad_write_manual`
+`$cancel` `$doctor` `$help` `$note` `$trace` `$skill` `$learner` `$research` `$deepinit` `$release` `$hud` `$omx-setup` `$configure-telegram` `$configure-discord` `$writer-memory` `$psm` `$ralph-init` `$learn-about-omx` `$review`
 
 ## Team Orchestration
 
-The team skill provides a staged pipeline:
+The `$team` skill provides a staged multi-agent pipeline:
 
 ```
 team-plan -> team-prd -> team-exec -> team-verify -> team-fix (loop)
 ```
 
-Each stage uses specialized agents. The verify/fix loop is bounded by max attempts to prevent infinite loops. Terminal states: `complete`, `failed`, `cancelled`.
+Each stage uses specialized agents. The verify/fix loop is bounded by max attempts. Terminal states: `complete`, `failed`, `cancelled`.
 
-## Notification System
+```
+$team 3:executor "fix all TypeScript errors across the project"
+$team 5:designer "implement responsive layouts for all pages"
+$team ralph "build a complete REST API"   # team + ralph persistence
+```
 
-Supports three channels (configured in `.omx/notifications.json`):
-- **Desktop** - Native notifications (macOS, Linux, Windows)
-- **Discord** - Webhook integration with embedded messages
-- **Telegram** - Bot API with Markdown formatting
+## MCP Servers
 
-## Verification Protocol
+OMX provides two MCP servers configured via `config.toml`:
 
-Evidence-backed verification with task sizing:
-- **Small** (<5 files, <100 lines): Type check + related tests
-- **Standard**: Full type check + test suite + linter
-- **Large** (>20 files): Full check + security review + performance assessment + regression testing
+- **`omx_state`** -- Mode lifecycle state (autopilot, ralph, ultrawork, team, etc.)
+- **`omx_memory`** -- Project memory and session notepad
 
-## Hook Emulation
+## Magic Keywords
 
-Codex CLI has limited hook support (AfterAgent, AfterToolUse only). OMX emulates the full hook pipeline:
+The AGENTS.md orchestration brain detects keywords and activates skills automatically:
 
-| OMC Hook | OMX Equivalent | Capability |
-|----------|---------------|------------|
-| SessionStart | AGENTS.md native loading | Full |
-| PreToolUse | AGENTS.md inline guidance | Partial |
-| PostToolUse | notify config hook | Partial |
-| UserPromptSubmit | AGENTS.md self-detection | Partial |
-| SubagentStart/Stop | Codex CLI collab native | Full |
-| Stop | notify config | Full |
+| Say this... | Activates |
+|-------------|-----------|
+| "ralph", "don't stop", "keep going" | `$ralph` persistence loop |
+| "autopilot", "build me" | `$autopilot` autonomous pipeline |
+| "team", "coordinated team" | `$team` multi-agent orchestration |
+| "plan this", "let's plan" | `$plan` strategic planning |
+| "fix build", "type errors" | `$build-fix` build error resolution |
+
+## CLI Commands
+
+```bash
+omx setup     # Install and configure OMX
+omx doctor    # Run 9 installation health checks
+omx status    # Show active mode state
+omx cancel    # Cancel active execution modes
+omx version   # Print version info
+omx help      # Usage guide
+```
+
+## Setup Details
+
+`omx setup` performs 6 steps:
+
+1. Creates directories (`~/.codex/prompts/`, `~/.agents/skills/`, `.omx/state/`)
+2. Installs 30 agent prompt files to `~/.codex/prompts/`
+3. Installs 39 skill directories to `~/.agents/skills/`
+4. Updates `~/.codex/config.toml` with MCP servers, features, and notify hook
+5. Generates `AGENTS.md` orchestration brain in the current project root
+6. Configures the post-turn notification hook
 
 ## Coverage
 
-**~92% feature parity with oh-my-claudecode** (excluding MCP tools).
-
-See [COVERAGE.md](COVERAGE.md) for the detailed feature matrix.
+~92% feature parity with oh-my-claudecode (excluding MCP tools). See [COVERAGE.md](COVERAGE.md) for the detailed matrix and known gaps.
 
 ## Project Structure
 
@@ -235,24 +244,22 @@ oh-my-codex/
   skills/                  # 39 skill directories (*/SKILL.md)
   templates/               # AGENTS.md template
   scripts/                 # notify-hook.js
-  dist/                    # Compiled output
 ```
 
 ## Development
 
 ```bash
-# Install dependencies
+git clone https://github.com/Yeachan-Heo/oh-my-codex.git
+cd oh-my-codex
 npm install
-
-# Build
 npm run build
-
-# Type check
-npx tsc --noEmit
-
-# Link for local development
 npm link
+omx setup && omx doctor
 ```
+
+## Acknowledgments
+
+oh-my-codex is inspired by [oh-my-claudecode (OMC)](https://github.com/anthropics/claude-code), which pioneered multi-agent orchestration for Claude Code. OMX adapts the same concepts -- agent roles, workflow skills, orchestration brain, mode lifecycle -- to work with OpenAI's Codex CLI through its native extension points.
 
 ## License
 

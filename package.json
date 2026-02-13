@@ -33,6 +33,15 @@
     "orchestration",
     "multi-agent"
   ],
+  "author": "Yeachan Heo",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Yeachan-Heo/oh-my-codex.git"
+  },
+  "homepage": "https://yeachan-heo.github.io/oh-my-codex",
+  "bugs": {
+    "url": "https://github.com/Yeachan-Heo/oh-my-codex/issues"
+  },
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"

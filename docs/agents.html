@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agents - oh-my-codex Docs</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header>
+      <nav class="container nav" aria-label="Primary">
+        <a class="brand" href="./index.html">oh-my-codex</a>
+        <a href="./index.html">Home</a>
+        <a href="./getting-started.html">Getting Started</a>
+        <a class="active" href="./agents.html">Agents</a>
+        <a href="./skills.html">Skills</a>
+      </nav>
+    </header>
+
+    <main class="container">
+      <h1>Agent Catalog (30)</h1>
+      <p class="muted">Organized by lane with model tier and usage examples.</p>
+
+      <h2>Build & Analysis</h2>
+      <table>
+        <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
+        <tbody>
+          <tr><td>/prompts:explore</td><td>haiku</td><td>Codebase discovery and symbol mapping.</td><td><code>/prompts:explore "map auth flow"</code></td></tr>
+          <tr><td>/prompts:analyst</td><td>opus</td><td>Clarifies requirements and acceptance criteria.</td><td><code>/prompts:analyst "define scope"</code></td></tr>
+          <tr><td>/prompts:planner</td><td>opus</td><td>Builds execution plans and sequencing.</td><td><code>/prompts:planner "plan migration"</code></td></tr>
+          <tr><td>/prompts:architect</td><td>opus</td><td>System boundaries and architecture design.</td><td><code>/prompts:architect "review service boundaries"</code></td></tr>
+          <tr><td>/prompts:debugger</td><td>sonnet</td><td>Root-cause and regression diagnosis.</td><td><code>/prompts:debugger "investigate flaky test"</code></td></tr>
+          <tr><td>/prompts:executor</td><td>sonnet</td><td>Implementation and refactoring work.</td><td><code>/prompts:executor "add validation"</code></td></tr>
+          <tr><td>/prompts:deep-executor</td><td>opus</td><td>Complex autonomous end-to-end execution.</td><td><code>/prompts:deep-executor "refactor module"</code></td></tr>
+          <tr><td>/prompts:verifier</td><td>sonnet</td><td>Evidence-backed completion checks.</td><td><code>/prompts:verifier "verify release readiness"</code></td></tr>
+        </tbody>
+      </table>
+
+      <h2>Review</h2>
+      <table>
+        <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
+        <tbody>
+          <tr><td>/prompts:style-reviewer</td><td>haiku</td><td>Formatting and naming conventions.</td><td><code>/prompts:style-reviewer "check style"</code></td></tr>
+          <tr><td>/prompts:quality-reviewer</td><td>sonnet</td><td>Logic and maintainability defects.</td><td><code>/prompts:quality-reviewer "review PR"</code></td></tr>
+          <tr><td>/prompts:api-reviewer</td><td>sonnet</td><td>API contracts and compatibility.</td><td><code>/prompts:api-reviewer "audit API changes"</code></td></tr>
+          <tr><td>/prompts:security-reviewer</td><td>sonnet</td><td>Security boundaries and vulnerabilities.</td><td><code>/prompts:security-reviewer "security audit"</code></td></tr>
+          <tr><td>/prompts:performance-reviewer</td><td>sonnet</td><td>Performance and complexity bottlenecks.</td><td><code>/prompts:performance-reviewer "profile hotspots"</code></td></tr>
+          <tr><td>/prompts:code-reviewer</td><td>opus</td><td>Comprehensive multi-axis code review.</td><td><code>/prompts:code-reviewer "comprehensive review"</code></td></tr>
+        </tbody>
+      </table>
+
+      <h2>Domain Specialists</h2>
+      <table>
+        <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
+        <tbody>
+          <tr><td>/prompts:dependency-expert</td><td>sonnet</td><td>External SDK/API/package evaluation.</td><td><code>/prompts:dependency-expert "compare SDK options"</code></td></tr>
+          <tr><td>/prompts:test-engineer</td><td>sonnet</td><td>Test strategy and coverage improvements.</td><td><code>/prompts:test-engineer "write test plan"</code></td></tr>
+          <tr><td>/prompts:quality-strategist</td><td>sonnet</td><td>Release quality and risk strategy.</td><td><code>/prompts:quality-strategist "assess release risk"</code></td></tr>
+          <tr><td>/prompts:build-fixer</td><td>sonnet</td><td>Build/toolchain/type issue resolution.</td><td><code>/prompts:build-fixer "fix CI failures"</code></td></tr>
+          <tr><td>/prompts:designer</td><td>sonnet</td><td>UI/UX architecture and interaction design.</td><td><code>/prompts:designer "improve onboarding UX"</code></td></tr>
+          <tr><td>/prompts:writer</td><td>haiku</td><td>Documentation and user guidance.</td><td><code>/prompts:writer "draft migration guide"</code></td></tr>
+          <tr><td>/prompts:qa-tester</td><td>sonnet</td><td>Interactive runtime QA validation.</td><td><code>/prompts:qa-tester "run manual QA pass"</code></td></tr>
+          <tr><td>/prompts:scientist</td><td>sonnet</td><td>Data/statistical analysis tasks.</td><td><code>/prompts:scientist "analyze experiment results"</code></td></tr>
+          <tr><td>/prompts:git-master</td><td>sonnet</td><td>Commit strategy and history hygiene.</td><td><code>/prompts:git-master "prepare clean commit plan"</code></td></tr>
+          <tr><td>/prompts:researcher</td><td>sonnet</td><td>Reference and external documentation research.</td><td><code>/prompts:researcher "collect official API docs"</code></td></tr>
+        </tbody>
+      </table>
+
+      <h2>Product</h2>
+      <table>
+        <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
+        <tbody>
+          <tr><td>/prompts:product-manager</td><td>sonnet</td><td>Problem framing and PRD definition.</td><td><code>/prompts:product-manager "define user outcomes"</code></td></tr>
+          <tr><td>/prompts:ux-researcher</td><td>sonnet</td><td>Usability and accessibility audits.</td><td><code>/prompts:ux-researcher "run heuristic audit"</code></td></tr>
+          <tr><td>/prompts:information-architect</td><td>sonnet</td><td>Navigation, taxonomy, and structure.</td><td><code>/prompts:information-architect "improve docs IA"</code></td></tr>
+          <tr><td>/prompts:product-analyst</td><td>sonnet</td><td>Metrics, funnels, and experiments.</td><td><code>/prompts:product-analyst "analyze onboarding funnel"</code></td></tr>
+        </tbody>
+      </table>
+
+      <h2>Coordination</h2>
+      <table>
+        <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
+        <tbody>
+          <tr><td>/prompts:critic</td><td>opus</td><td>Critical challenge for plans and designs.</td><td><code>/prompts:critic "challenge this plan"</code></td></tr>
+          <tr><td>/prompts:vision</td><td>sonnet</td><td>Image/screenshot and diagram analysis.</td><td><code>/prompts:vision "review this screenshot"</code></td></tr>
+        </tbody>
+      </table>
+    </main>
+
+    <footer>
+      <div class="container"><span class="muted">All agents are installed by <code>omx setup</code>.</span></div>
+    </footer>
+  </body>
+</html>

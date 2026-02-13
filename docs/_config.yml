@@ -1,0 +1,4 @@
+title: oh-my-codex
+description: Multi-agent orchestration for OpenAI Codex CLI
+url: https://yeachan-heo.github.io
+baseurl: /oh-my-codex

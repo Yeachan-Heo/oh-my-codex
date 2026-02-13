@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and usage help
+    url: https://github.com/anthropics/claude-code/issues
+    about: For Claude Code-specific issues, report in the upstream tracker.

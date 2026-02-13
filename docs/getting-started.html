@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Getting Started - oh-my-codex Docs</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header>
+      <nav class="container nav" aria-label="Primary">
+        <a class="brand" href="./index.html">oh-my-codex</a>
+        <a href="./index.html">Home</a>
+        <a class="active" href="./getting-started.html">Getting Started</a>
+        <a href="./agents.html">Agents</a>
+        <a href="./skills.html">Skills</a>
+      </nav>
+    </header>
+
+    <main class="container">
+      <h1>Getting Started</h1>
+      <p class="muted">End-to-end setup for first-time users.</p>
+
+      <h2>Prerequisites</h2>
+      <ul>
+        <li>Node.js 20+ and npm.</li>
+        <li>OpenAI Codex CLI installed and authenticated.</li>
+        <li>Git (recommended) for project workflows.</li>
+      </ul>
+
+      <h2>Installation</h2>
+      <pre><code>npm install -g oh-my-codex
+omx setup
+omx doctor</code></pre>
+
+      <h2>First Run Walkthrough</h2>
+      <ol>
+        <li>Create or enter a project directory.</li>
+        <li>Run <code>omx setup</code> to install prompts, skills, AGENTS.md, and configuration.</li>
+        <li>Start Codex CLI with <code>codex</code>.</li>
+        <li>Try an agent prompt: <code>/prompts:architect "analyze auth module"</code>.</li>
+        <li>Try a workflow skill: <code>$team "fix all TypeScript errors"</code>.</li>
+      </ol>
+
+      <h2>Troubleshooting</h2>
+      <table>
+        <thead><tr><th>Issue</th><th>What to check</th></tr></thead>
+        <tbody>
+          <tr><td><code>omx</code> command not found</td><td>Re-run global install and ensure npm global bin is in PATH.</td></tr>
+          <tr><td>Prompts not available</td><td>Confirm files exist in <code>~/.codex/prompts/</code> and re-run <code>omx setup</code>.</td></tr>
+          <tr><td>Skills not loading</td><td>Verify <code>~/.agents/skills/*/SKILL.md</code> files were installed.</td></tr>
+          <tr><td>Doctor reports config issues</td><td>Run <code>omx doctor</code> and apply the suggested fixes.</td></tr>
+        </tbody>
+      </table>
+    </main>
+
+    <footer>
+      <div class="container">
+        <span class="muted">Need broader context? Start from the project README.</span>
+      </div>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>oh-my-codex Docs</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header>
+      <nav class="container nav" aria-label="Primary">
+        <a class="brand" href="./index.html">oh-my-codex</a>
+        <a class="active" href="./index.html">Home</a>
+        <a href="./getting-started.html">Getting Started</a>
+        <a href="./agents.html">Agents</a>
+        <a href="./skills.html">Skills</a>
+      </nav>
+    </header>
+
+    <main class="container">
+      <section class="hero">
+        <span class="badge">GitHub Pages</span>
+        <h1>oh-my-codex</h1>
+        <p>Multi-agent orchestration for OpenAI Codex CLI.</p>
+        <pre><code>npm install -g oh-my-codex</code></pre>
+      </section>
+
+      <h2>Core Features</h2>
+      <div class="grid">
+        <article class="card"><h3>30 Agents</h3><p>Specialized prompt roles for implementation, review, design, and planning.</p></article>
+        <article class="card"><h3>39 Skills</h3><p>Composable workflows from autopilot and team pipelines to release and tracing.</p></article>
+        <article class="card"><h3>Team Orchestration</h3><p>Staged execution pipeline with verification and fix loops.</p></article>
+        <article class="card"><h3>MCP State Management</h3><p>Persistent lifecycle state, notepad, and project memory across sessions.</p></article>
+      </div>
+
+      <h2>Quick Start</h2>
+      <ol>
+        <li><code>npm install -g oh-my-codex</code></li>
+        <li><code>omx setup</code></li>
+        <li><code>omx doctor</code></li>
+        <li>Start Codex CLI and run agent prompts or skills.</li>
+      </ol>
+
+      <h2>Architecture</h2>
+      <pre><code>User
+  -> Codex CLI
+     -> AGENTS.md (orchestration brain)
+     -> ~/.codex/prompts/*.md (30 agents)
+     -> ~/.agents/skills/*/SKILL.md (39 skills)
+     -> config.toml (MCP + notify + features)
+     -> .omx/ (state, memory, notepad, plans)</code></pre>
+    </main>
+
+    <footer>
+      <div class="container">
+        <span class="muted">GitHub: <a href="https://github.com/Yeachan-Heo/oh-my-codex">Yeachan-Heo/oh-my-codex</a></span>
+      </div>
+    </footer>
+  </body>
+</html>
