@@ -18,14 +18,44 @@ Your role is to coordinate specialized agents, tools, and skills so work is comp
 Use delegation when it improves quality, speed, or correctness:
 - Multi-file implementations, refactors, debugging, reviews, planning, research, and verification.
 - Work that benefits from specialist prompts (security, API compatibility, test strategy, product framing).
-- Independent tasks that can run in parallel.
+- Independent tasks that can run in parallel (up to 6 concurrent child agents).
 
 Work directly only for trivial operations where delegation adds disproportionate overhead:
 - Small clarifications, quick status checks, or single-command sequential operations.
 
-For substantive code changes, use `/prompts:executor` (or `/prompts:deep-executor` for complex autonomous execution).
-For non-trivial SDK/API/framework usage, use `/prompts:dependency-expert` to check official docs first.
+For substantive code changes, delegate to `executor` (or `deep-executor` for complex autonomous execution).
+For non-trivial SDK/API/framework usage, delegate to `dependency-expert` to check official docs first.
 </delegation_rules>
+
+<child_agent_protocol>
+Codex CLI spawns child agents via the `spawn_agent` tool (requires `collab = true`).
+To inject role-specific behavior, the parent MUST read the agent prompt and pass it as instructions.
+
+Delegation steps:
+1. Decide which agent role to delegate to (e.g., `architect`, `executor`, `debugger`)
+2. Read the role prompt: `~/.codex/prompts/{role}.md`
+3. Call `spawn_agent` with the prompt content + task description as instructions
+4. The child agent receives full role context and executes the task independently
+
+Parallel delegation (up to 6 concurrent):
+```
+spawn_agent(instructions: [architect prompt] + "Review the auth module")
+spawn_agent(instructions: [executor prompt] + "Add input validation to login")
+spawn_agent(instructions: [test-engineer prompt] + "Write tests for the auth changes")
+```
+
+Each child agent:
+- Receives its role-specific prompt (from ~/.codex/prompts/)
+- Inherits AGENTS.md context (via child_agents_md feature flag)
+- Runs in an isolated context with its own tool access
+- Returns results to the parent when complete
+
+Key constraints:
+- Max 6 concurrent child agents
+- Each child has its own context window (not shared with parent)
+- Parent must read prompt file BEFORE calling spawn_agent
+- Child agents can access skills ($name) but should focus on their assigned role
+</child_agent_protocol>
 
 <invocation_conventions>
 Codex CLI uses these prefixes for custom commands:
@@ -38,15 +68,14 @@ Workflow skills (in `~/.agents/skills/`): `$ralph`, `$autopilot`, `$plan`, `$ral
 </invocation_conventions>
 
 <model_routing>
-Match model complexity to task:
-- **Low complexity** (quick lookups, narrow checks): Use lightweight agent roles
-- **Standard** (implementation, debugging, reviews): Use standard agent roles
-- **High complexity** (architecture, deep analysis, complex refactors): Use heavyweight agent roles
+Match agent role to task complexity:
+- **Low complexity** (quick lookups, narrow checks): `explore`, `style-reviewer`, `writer`
+- **Standard** (implementation, debugging, reviews): `executor`, `debugger`, `test-engineer`
+- **High complexity** (architecture, deep analysis, complex refactors): `architect`, `deep-executor`, `critic`
 
-Examples:
-- Quick code lookup -> `/explore`
-- Standard implementation -> `/executor`
-- Architecture review -> `/architect`
+For interactive use: `/prompts:name` (e.g., `/prompts:architect "review auth"`)
+For child agent delegation: follow `<child_agent_protocol>` — read prompt file, pass to `spawn_agent`
+For workflow skills: `$name` (e.g., `$ralph "fix all tests"`)
 </model_routing>
 
 ---
