@@ -138,6 +138,27 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['content'],
       },
     },
+    {
+      name: 'notepad_prune',
+      description: 'Prune Working Memory entries older than N days (default: 7).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          daysOld: { type: 'integer', description: 'Prune entries older than this many days (default: 7)' },
+          workingDirectory: { type: 'string' },
+        },
+      },
+    },
+    {
+      name: 'notepad_stats',
+      description: 'Get statistics about the notepad (size, entry count, oldest entry).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          workingDirectory: { type: 'string' },
+        },
+      },
+    },
   ],
 }));
 
@@ -254,6 +275,70 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       existing = appendToSection(existing, 'MANUAL', entry);
       await writeFile(notePath, existing);
       return text({ success: true });
+    }
+
+    case 'notepad_prune': {
+      const notePath = getNotepadPath(wd);
+      if (!existsSync(notePath)) {
+        return text({ pruned: 0, message: 'No notepad file found' });
+      }
+      const days = (a.daysOld as number) || 7;
+      const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+      const content = await readFile(notePath, 'utf-8');
+      const workingSection = extractSection(content, 'WORKING MEMORY');
+      if (!workingSection) {
+        return text({ pruned: 0, message: 'No working memory entries found' });
+      }
+      const lines = workingSection.split('\n');
+      let pruned = 0;
+      const kept: string[] = [];
+      for (const line of lines) {
+        const match = line.match(/^\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\]/);
+        if (match) {
+          const entryTime = new Date(match[1]).getTime();
+          if (entryTime < cutoff) {
+            pruned++;
+            continue;
+          }
+        }
+        kept.push(line);
+      }
+      if (pruned > 0) {
+        const updated = replaceSection(content, 'WORKING MEMORY', kept.join('\n'));
+        await writeFile(notePath, updated);
+      }
+      return text({ pruned, remaining: kept.filter(l => l.match(/^\[/)).length });
+    }
+
+    case 'notepad_stats': {
+      const notePath = getNotepadPath(wd);
+      if (!existsSync(notePath)) {
+        return text({ exists: false, size: 0, entryCount: 0, oldestEntry: null });
+      }
+      const content = await readFile(notePath, 'utf-8');
+      const stats = await import('fs/promises').then(fs => fs.stat(notePath));
+      const workingSection = extractSection(content, 'WORKING MEMORY');
+      const timestamps: string[] = [];
+      if (workingSection) {
+        for (const line of workingSection.split('\n')) {
+          const match = line.match(/^\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\]/);
+          if (match) timestamps.push(match[1]);
+        }
+      }
+      const prioritySection = extractSection(content, 'PRIORITY');
+      const manualSection = extractSection(content, 'MANUAL');
+      return text({
+        exists: true,
+        size: stats.size,
+        sections: {
+          priority: prioritySection ? prioritySection.length : 0,
+          working: timestamps.length,
+          manual: manualSection ? manualSection.split('\n').filter(l => l.trim()).length : 0,
+        },
+        entryCount: timestamps.length,
+        oldestEntry: timestamps.length > 0 ? timestamps[0] : null,
+        newestEntry: timestamps.length > 0 ? timestamps[timestamps.length - 1] : null,
+      });
     }
 
     default:

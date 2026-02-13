@@ -14,14 +14,18 @@
 | Config Generation | 1 | 1 | 100% |
 | Mode State Management | 9 modes | 9 modes | 100% |
 | Project Memory | 4 tools | 4 tools | 100% |
-| Notepad | 4 tools | 4 tools | 100% |
+| Notepad | 6 tools | 6 tools | 100% |
+| Code Intelligence (LSP) | 12 tools | 7 tools (pragmatic) | ~58% |
+| AST Pattern Matching | 2 tools | 2 tools | 100% |
+| Trace | 2 tools | 2 tools | 100% |
 | Verification Protocol | 1 | 1 | 100% |
 | Notification System | 3 channels | 3 channels | 100% |
 | Keyword Detection | 17 keywords | 17 keywords | 100% |
 | Hook Pipeline | 9 events | 4 full + 3 partial | ~60% |
 | HUD/Status Line | 1 | 1 (built-in + CLI) | 100% |
 | Subagent Tracking | 1 | partial (via collab) | 50% |
-| **TOTAL (excl MCP)** | | | **~92%** |
+| Python REPL | 1 tool | 0 tools | 0% |
+| **TOTAL** | | | **~95%** |
 
 ## Detailed Feature Mapping
 
@@ -143,9 +147,10 @@
 
 1. **Pre-tool interception** - Cannot intercept tool calls before execution. Workaround: AGENTS.md instructs model to self-moderate.
 2. **Context injection from hooks** - Cannot inject context back into conversation from hooks. Workaround: state files + AGENTS.md instructions.
-3. **HUD/Status line** - Resolved: Two-layer approach using Codex CLI built-in `[tui] status_line` + `omx hud` CLI command.
-4. **PreCompact hook** - Codex manages compaction internally. No extension point.
-5. **Session end** - No direct session-end event. notify on last turn is closest.
+3. **PreCompact hook** - Codex manages compaction internally. No extension point.
+4. **Session end** - No direct session-end event. notify on last turn is closest.
+5. **Full LSP protocol** - LSP tools use pragmatic wrappers (tsc, grep, regex) rather than full LSP protocol. Missing: lsp_goto_definition, lsp_prepare_rename, lsp_rename, lsp_code_actions, lsp_code_action_resolve (5 tools need real LSP).
+6. **Python REPL** - Not yet ported. Needed only by scientist agent. Low priority for v0.1.0.
 
 ## Upstream Contribution Path
 

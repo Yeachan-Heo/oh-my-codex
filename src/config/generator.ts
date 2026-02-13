@@ -17,6 +17,8 @@ interface MergeOptions {
 function getOmxConfigBlock(pkgRoot: string): string {
   const stateServerPath = join(pkgRoot, 'dist', 'mcp', 'state-server.js');
   const memoryServerPath = join(pkgRoot, 'dist', 'mcp', 'memory-server.js');
+  const codeIntelServerPath = join(pkgRoot, 'dist', 'mcp', 'code-intel-server.js');
+  const traceServerPath = join(pkgRoot, 'dist', 'mcp', 'trace-server.js');
   const notifyHookPath = join(pkgRoot, 'scripts', 'notify-hook.js');
 
   return [
@@ -48,6 +50,20 @@ function getOmxConfigBlock(pkgRoot: string): string {
     '[mcp_servers.omx_memory]',
     'command = "node"',
     `args = ["${memoryServerPath}"]`,
+    'enabled = true',
+    'startup_timeout_sec = 5',
+    '',
+    '# OMX Code Intelligence MCP Server (LSP diagnostics, AST search)',
+    '[mcp_servers.omx_code_intel]',
+    'command = "node"',
+    `args = ["${codeIntelServerPath}"]`,
+    'enabled = true',
+    'startup_timeout_sec = 10',
+    '',
+    '# OMX Trace MCP Server (agent flow timeline & statistics)',
+    '[mcp_servers.omx_trace]',
+    'command = "node"',
+    `args = ["${traceServerPath}"]`,
     'enabled = true',
     'startup_timeout_sec = 5',
     '',
