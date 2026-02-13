@@ -76,6 +76,22 @@ Most non-trivial software tasks require coordinated phases: understanding requir
 - If ToolSearch finds no MCP tools or Codex is unavailable, proceed without it -- never block on external tools
 </Tool_Usage>
 
+## State Management
+
+Use `omx_state` MCP tools for autopilot lifecycle state.
+
+- **On start**:
+  `state_write({mode: "autopilot", active: true, current_phase: "expansion", started_at: "<now>"})`
+- **On phase transitions**:
+  `state_write({mode: "autopilot", current_phase: "planning"})`
+  `state_write({mode: "autopilot", current_phase: "execution"})`
+  `state_write({mode: "autopilot", current_phase: "qa"})`
+  `state_write({mode: "autopilot", current_phase: "validation"})`
+- **On completion**:
+  `state_write({mode: "autopilot", active: false, current_phase: "complete", completed_at: "<now>"})`
+- **On cancellation/cleanup**:
+  run `$cancel` (which should call `state_clear(mode="autopilot")`)
+
 <Examples>
 <Good>
 User: "autopilot A REST API for a bookstore inventory with CRUD operations using TypeScript"

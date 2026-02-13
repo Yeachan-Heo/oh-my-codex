@@ -16,6 +16,50 @@ import { writeFile, appendFile, mkdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
 
+function asNumber(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function getSessionTokenUsage(payload) {
+  const usage = payload.usage || payload['usage'] || payload.token_usage || payload['token-usage'] || {};
+
+  const input = asNumber(
+    usage.session_input_tokens
+    ?? usage.input_tokens
+    ?? usage.total_input_tokens
+    ?? payload.session_input_tokens
+    ?? payload.input_tokens
+    ?? payload.total_input_tokens
+  );
+  const output = asNumber(
+    usage.session_output_tokens
+    ?? usage.output_tokens
+    ?? usage.total_output_tokens
+    ?? payload.session_output_tokens
+    ?? payload.output_tokens
+    ?? payload.total_output_tokens
+  );
+  const total = asNumber(
+    usage.session_total_tokens
+    ?? usage.total_tokens
+    ?? payload.session_total_tokens
+    ?? payload.total_tokens
+  );
+
+  if (input === null && output === null && total === null) return null;
+
+  return {
+    input,
+    output,
+    total: total ?? ((input ?? 0) + (output ?? 0)),
+  };
+}
+
 async function main() {
   const rawPayload = process.argv[process.argv.length - 1];
   if (!rawPayload || rawPayload.startsWith('-')) {
@@ -74,13 +118,36 @@ async function main() {
   // 3. Track subagent metrics
   const metricsPath = join(omxDir, 'metrics.json');
   try {
-    let metrics = { total_turns: 0, session_turns: 0, last_activity: '' };
+    let metrics = {
+      total_turns: 0,
+      session_turns: 0,
+      last_activity: '',
+      session_input_tokens: 0,
+      session_output_tokens: 0,
+      session_total_tokens: 0,
+    };
     if (existsSync(metricsPath)) {
-      metrics = JSON.parse(await readFile(metricsPath, 'utf-8'));
+      metrics = { ...metrics, ...JSON.parse(await readFile(metricsPath, 'utf-8')) };
     }
+
+    const tokenUsage = getSessionTokenUsage(payload);
+
     metrics.total_turns++;
     metrics.session_turns++;
     metrics.last_activity = new Date().toISOString();
+
+    if (tokenUsage) {
+      if (tokenUsage.input !== null) metrics.session_input_tokens = tokenUsage.input;
+      if (tokenUsage.output !== null) metrics.session_output_tokens = tokenUsage.output;
+      if (tokenUsage.total !== null) {
+        metrics.session_total_tokens = tokenUsage.total;
+      } else {
+        metrics.session_total_tokens = (metrics.session_input_tokens || 0) + (metrics.session_output_tokens || 0);
+      }
+    } else {
+      metrics.session_total_tokens = (metrics.session_input_tokens || 0) + (metrics.session_output_tokens || 0);
+    }
+
     await writeFile(metricsPath, JSON.stringify(metrics, null, 2));
   } catch {
     // Non-critical

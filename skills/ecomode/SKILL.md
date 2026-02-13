@@ -104,6 +104,11 @@ Set in `~/.claude/.omc-config.json`:
 
 ## State Management
 
-Ecomode state is tracked in `.omc/state/ecomode-state.json`.
+Use `omx_state` MCP tools for ecomode lifecycle state.
 
-When work is complete, run `/cancel` for clean state cleanup.
+- **On activation**:
+  `state_write({mode: "ecomode", active: true})`
+- **On deactivation/completion**:
+  `state_write({mode: "ecomode", active: false})`
+- **On cancellation/cleanup**:
+  run `$cancel` (which should call `state_clear(mode="ecomode")`)

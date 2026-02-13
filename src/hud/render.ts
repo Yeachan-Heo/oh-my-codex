@@ -9,6 +9,12 @@ import { green, yellow, cyan, dim, bold, getRalphColor, RESET } from './colors.j
 
 const SEP = dim(' | ');
 
+function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return `${value}`;
+}
+
 // ============================================================================
 // Element Renderers
 // ============================================================================
@@ -65,6 +71,17 @@ function renderTurns(ctx: HudRenderContext): string | null {
   return dim(`turns:${ctx.metrics.session_turns}`);
 }
 
+function renderTokens(ctx: HudRenderContext): string | null {
+  if (!ctx.metrics) return null;
+
+  const total =
+    ctx.metrics.session_total_tokens
+    ?? ((ctx.metrics.session_input_tokens ?? 0) + (ctx.metrics.session_output_tokens ?? 0));
+
+  if (!Number.isFinite(total) || total <= 0) return null;
+  return dim(`tokens:${formatTokenCount(total)}`);
+}
+
 function renderLastActivity(ctx: HudRenderContext): string | null {
   if (!ctx.hudNotify?.last_turn_at) return null;
   const lastAt = new Date(ctx.hudNotify.last_turn_at).getTime();
@@ -104,6 +121,7 @@ const FOCUSED_ELEMENTS: ElementRenderer[] = [
   renderPipeline,
   renderEcomode,
   renderTurns,
+  renderTokens,
   renderLastActivity,
 ];
 
@@ -116,6 +134,7 @@ const FULL_ELEMENTS: ElementRenderer[] = [
   renderPipeline,
   renderEcomode,
   renderTurns,
+  renderTokens,
   renderLastActivity,
   renderTotalTurns,
 ];

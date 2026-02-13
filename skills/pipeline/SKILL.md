@@ -239,40 +239,18 @@ any-stage -> on-error -> pause-for-user-input
 
 ## Pipeline State Management
 
-Pipelines maintain state in `.omc/pipeline-state.json`:
+Use `omx_state` MCP tools for pipeline lifecycle state.
 
-```json
-{
-  "pipeline_id": "uuid",
-  "name": "review",
-  "active": true,
-  "current_stage": 2,
-  "stages": [
-    {
-      "name": "explore",
-      "agent": "explore",
-      "model": "haiku",
-      "status": "completed",
-      "output": "..."
-    },
-    {
-      "name": "architect",
-      "agent": "architect",
-      "model": "opus",
-      "status": "in_progress",
-      "started_at": "2026-01-23T10:30:00Z"
-    },
-    {
-      "name": "executor",
-      "agent": "executor",
-      "model": "sonnet",
-      "status": "pending"
-    }
-  ],
-  "task": "original user task",
-  "created_at": "2026-01-23T10:25:00Z"
-}
-```
+- **On start**:
+  `state_write({mode: "pipeline", active: true, current_phase: "plan", started_at: "<now>"})`
+- **On phase transitions**:
+  `state_write({mode: "pipeline", current_phase: "execute"})`
+  `state_write({mode: "pipeline", current_phase: "verify"})`
+  `state_write({mode: "pipeline", current_phase: "fix"})`
+- **On completion**:
+  `state_write({mode: "pipeline", active: false, current_phase: "complete", completed_at: "<now>"})`
+- **For resume detection**:
+  `state_read({mode: "pipeline"})`
 
 ## Verification Rules
 

@@ -91,19 +91,19 @@ Output progress each cycle:
 
 ## State Tracking
 
-Track state in `.omc/ultraqa-state.json`:
-```json
-{
-  "active": true,
-  "goal_type": "tests",
-  "goal_pattern": null,
-  "cycle": 1,
-  "max_cycles": 5,
-  "failures": ["3 tests failing: auth.test.ts"],
-  "started_at": "2024-01-18T12:00:00Z",
-  "session_id": "uuid"
-}
-```
+Use `omx_state` MCP tools for UltraQA lifecycle state.
+
+- **On start**:
+  `state_write({mode: "ultraqa", active: true, current_phase: "qa", iteration: 1, started_at: "<now>"})`
+- **On each cycle**:
+  `state_write({mode: "ultraqa", current_phase: "qa", iteration: <cycle>})`
+- **On diagnose/fix transitions**:
+  `state_write({mode: "ultraqa", current_phase: "diagnose"})`
+  `state_write({mode: "ultraqa", current_phase: "fix"})`
+- **On completion**:
+  `state_write({mode: "ultraqa", active: false, current_phase: "complete", completed_at: "<now>"})`
+- **For resume detection**:
+  `state_read({mode: "ultraqa"})`
 
 ## Cancellation
 
@@ -119,16 +119,11 @@ User can cancel with `/cancel` which clears the state file.
 
 ## STATE CLEANUP ON COMPLETION
 
-**IMPORTANT: Delete state files on completion - do NOT just set `active: false`**
+When goal is met OR max cycles reached OR exiting early, run `$cancel` or call:
 
-When goal is met OR max cycles reached OR exiting early:
+`state_clear({mode: "ultraqa"})`
 
-```bash
-# Delete ultraqa state file
-rm -f .omc/state/ultraqa-state.json
-```
-
-This ensures clean state for future sessions. Stale state files with `active: false` should not be left behind.
+Use MCP state cleanup rather than deleting files directly.
 
 ---
 

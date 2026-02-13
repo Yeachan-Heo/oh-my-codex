@@ -285,6 +285,21 @@ State tools are available via MCP when configured:
 - `state_read`, `state_write`, `state_clear`, `state_list_active`
 - `project_memory_read`, `project_memory_write`, `project_memory_add_note`
 - `notepad_read`, `notepad_write_priority`, `notepad_write_working`, `notepad_write_manual`
+
+Mode lifecycle requirements:
+- On mode start, call `state_write` with `mode`, `active: true`, `started_at`, and mode-specific fields.
+- On phase/iteration transitions, call `state_write` with updated `current_phase` / `iteration` and mode-specific progress fields.
+- On completion, call `state_write` with `active: false`, terminal `current_phase`, and `completed_at`.
+- On cancel/abort cleanup, call `state_clear(mode="<mode>")`.
+
+Recommended mode fields:
+- `ralph`: `active`, `iteration`, `max_iterations`, `current_phase`, `started_at`, `completed_at`
+- `autopilot`: `active`, `current_phase` (`expansion|planning|execution|qa|validation|complete`), `started_at`, `completed_at`
+- `ultrawork`: `active`, `reinforcement_count`, `started_at`
+- `team`: `active`, `current_phase` (`team-plan|team-prd|team-exec|team-verify|team-fix|complete`), `agent_count`, `team_name`
+- `ecomode`: `active`
+- `pipeline`: `active`, `current_phase`, `started_at`, `completed_at`
+- `ultraqa`: `active`, `current_phase`, `iteration`, `started_at`, `completed_at`
 </state_management>
 
 ---

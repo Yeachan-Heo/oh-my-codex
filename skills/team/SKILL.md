@@ -197,7 +197,7 @@ state_write(mode="team", active=true, current_phase="team-plan", state={
 })
 ```
 
-> **Note:** The MCP `state_write` tool transports all values as strings. Consumers must coerce `agent_count`, `fix_loop_count`, `max_fix_loops` to numbers and `linked_ralph` to boolean when reading state.
+> **Note:** Use `omx_state` MCP tools for all Team mode state persistence (`state_write`, `state_read`, `state_clear`).
 
 **State schema fields:**
 

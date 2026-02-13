@@ -45,6 +45,9 @@ export interface HudMetrics {
   total_turns: number;
   session_turns: number;
   last_activity: string;
+  session_input_tokens?: number;
+  session_output_tokens?: number;
+  session_total_tokens?: number;
 }
 
 /** HUD notify state written by notify hook */

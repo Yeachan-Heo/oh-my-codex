@@ -67,6 +67,21 @@ Complex tasks often fail silently: partial implementations get declared "done", 
 - Use `state_write` / `state_read` for ralph mode state persistence between iterations
 </Tool_Usage>
 
+## State Management
+
+Use the `omx_state` MCP server tools (`state_write`, `state_read`, `state_clear`) for Ralph lifecycle state.
+
+- **On start**:
+  `state_write({mode: "ralph", active: true, iteration: 1, max_iterations: 10, current_phase: "executing", started_at: "<now>"})`
+- **On each iteration**:
+  `state_write({mode: "ralph", iteration: <current>, current_phase: "executing"})`
+- **On verification/fix transition**:
+  `state_write({mode: "ralph", current_phase: "verifying"})` or `state_write({mode: "ralph", current_phase: "fixing"})`
+- **On completion**:
+  `state_write({mode: "ralph", active: false, current_phase: "complete", completed_at: "<now>"})`
+- **On cancellation/cleanup**:
+  run `$cancel` (which should call `state_clear(mode="ralph")`)
+
 <Examples>
 <Good>
 Correct parallel delegation:
