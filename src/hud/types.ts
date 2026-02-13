@@ -85,5 +85,6 @@ export const DEFAULT_HUD_CONFIG: HudConfig = {
 export interface HudFlags {
   watch: boolean;
   json: boolean;
+  tmux: boolean;
   preset?: HudPreset;
 }
