@@ -19,7 +19,7 @@
 | Notification System | 3 channels | 3 channels | 100% |
 | Keyword Detection | 17 keywords | 17 keywords | 100% |
 | Hook Pipeline | 9 events | 4 full + 3 partial | ~60% |
-| HUD/Status Line | 1 | 0 (not portable) | 0% |
+| HUD/Status Line | 1 | 1 (built-in + CLI) | 100% |
 | Subagent Tracking | 1 | partial (via collab) | 50% |
 | **TOTAL (excl MCP)** | | | **~92%** |
 
@@ -143,7 +143,7 @@
 
 1. **Pre-tool interception** - Cannot intercept tool calls before execution. Workaround: AGENTS.md instructs model to self-moderate.
 2. **Context injection from hooks** - Cannot inject context back into conversation from hooks. Workaround: state files + AGENTS.md instructions.
-3. **HUD/Status line** - Codex CLI's TUI doesn't expose status line extension. Blocked.
+3. **HUD/Status line** - Resolved: Two-layer approach using Codex CLI built-in `[tui] status_line` + `omx hud` CLI command.
 4. **PreCompact hook** - Codex manages compaction internally. No extension point.
 5. **Session end** - No direct session-end event. notify on last turn is closest.
 

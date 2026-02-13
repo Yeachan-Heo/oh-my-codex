@@ -85,6 +85,22 @@ async function main() {
   } catch {
     // Non-critical
   }
+
+  // 4. Write HUD state summary for `omx hud`
+  const hudStatePath = join(stateDir, 'hud-state.json');
+  try {
+    let hudState = { last_turn_at: '', turn_count: 0 };
+    if (existsSync(hudStatePath)) {
+      hudState = JSON.parse(await readFile(hudStatePath, 'utf-8'));
+    }
+    hudState.last_turn_at = new Date().toISOString();
+    hudState.turn_count = (hudState.turn_count || 0) + 1;
+    hudState.last_agent_output = (payload['last-assistant-message'] || payload.last_assistant_message || '')
+      .slice(0, 100);
+    await writeFile(hudStatePath, JSON.stringify(hudState, null, 2));
+  } catch {
+    // Non-critical
+  }
 }
 
 async function readdir(dir) {

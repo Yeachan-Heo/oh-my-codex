@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 
-Multi-agent orchestration for [OpenAI Codex CLI](https://github.com/openai/codex). Inspired by [oh-my-claudecode](https://github.com/anthropics/claude-code).
+Multi-agent orchestration for [OpenAI Codex CLI](https://github.com/openai/codex). Inspired by [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode).
 
 ## Why oh-my-codex?
 
@@ -205,20 +205,22 @@ omx setup     # Install and configure OMX
 omx doctor    # Run 9 installation health checks
 omx status    # Show active mode state
 omx cancel    # Cancel active execution modes
+omx hud       # Show HUD statusline (--watch, --json, --preset=NAME)
 omx version   # Print version info
 omx help      # Usage guide
 ```
 
 ## Setup Details
 
-`omx setup` performs 6 steps:
+`omx setup` performs 7 steps:
 
 1. Creates directories (`~/.codex/prompts/`, `~/.agents/skills/`, `.omx/state/`)
 2. Installs 30 agent prompt files to `~/.codex/prompts/`
 3. Installs 39 skill directories to `~/.agents/skills/`
-4. Updates `~/.codex/config.toml` with MCP servers, features, and notify hook
+4. Updates `~/.codex/config.toml` with MCP servers, features, notify hook, and `[tui] status_line`
 5. Generates `AGENTS.md` orchestration brain in the current project root
 6. Configures the post-turn notification hook
+7. Creates `.omx/hud-config.json` with default HUD preset
 
 ## Coverage
 
@@ -230,7 +232,8 @@ omx help      # Usage guide
 oh-my-codex/
   bin/omx.js              # CLI entry point
   src/
-    cli/                   # CLI commands (setup, doctor, version, status, cancel, help)
+    cli/                   # CLI commands (setup, doctor, version, status, cancel, hud, help)
+    hud/                   # HUD statusline (state readers, ANSI renderer, presets)
     config/                # config.toml generator
     agents/                # Agent definitions registry
     mcp/                   # MCP servers (state, memory)
@@ -259,7 +262,7 @@ omx setup && omx doctor
 
 ## Acknowledgments
 
-oh-my-codex is inspired by [oh-my-claudecode (OMC)](https://github.com/anthropics/claude-code), which pioneered multi-agent orchestration for Claude Code. OMX adapts the same concepts -- agent roles, workflow skills, orchestration brain, mode lifecycle -- to work with OpenAI's Codex CLI through its native extension points.
+oh-my-codex is inspired by [oh-my-claudecode (OMC)](https://github.com/Yeachan-Heo/oh-my-claudecode), which pioneered multi-agent orchestration for Claude Code. OMX adapts the same concepts -- agent roles, workflow skills, orchestration brain, mode lifecycle -- to work with OpenAI's Codex CLI through its native extension points.
 
 ## License
 

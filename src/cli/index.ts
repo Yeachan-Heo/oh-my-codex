@@ -6,6 +6,7 @@
 import { setup } from './setup.js';
 import { doctor } from './doctor.js';
 import { version } from './version.js';
+import { hudCommand } from '../hud/index.js';
 
 const HELP = `
 oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
@@ -14,6 +15,7 @@ Usage:
   omx setup     Install skills, prompts, MCP servers, and AGENTS.md
   omx doctor    Check installation health
   omx version   Show version information
+  omx hud       Show HUD statusline (--watch, --json, --preset=NAME)
   omx help      Show this help message
   omx status    Show active modes and state
   omx cancel    Cancel active execution modes
@@ -43,6 +45,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case 'version':
         version();
+        break;
+      case 'hud':
+        await hudCommand(args.slice(1));
         break;
       case 'status':
         await showStatus();

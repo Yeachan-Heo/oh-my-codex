@@ -28,7 +28,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log('=================\n');
 
   // Step 1: Ensure directories exist
-  console.log('[1/6] Creating directories...');
+  console.log('[1/7] Creating directories...');
   const dirs = [
     codexHome(),
     codexPromptsDir(),
@@ -46,28 +46,28 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log('  Done.\n');
 
   // Step 2: Install agent prompts
-  console.log('[2/6] Installing agent prompts...');
+  console.log('[2/7] Installing agent prompts...');
   const promptsSrc = join(pkgRoot, 'prompts');
   const promptsDst = codexPromptsDir();
   const promptCount = await installDirectory(promptsSrc, promptsDst, '.md', { force, dryRun, verbose });
   console.log(`  Installed ${promptCount} agent prompts.\n`);
 
   // Step 3: Install skills
-  console.log('[3/6] Installing skills...');
+  console.log('[3/7] Installing skills...');
   const skillsSrc = join(pkgRoot, 'skills');
   const skillsDst = userSkillsDir();
   const skillCount = await installSkills(skillsSrc, skillsDst, { force, dryRun, verbose });
   console.log(`  Installed ${skillCount} skills.\n`);
 
   // Step 4: Update config.toml
-  console.log('[4/6] Updating config.toml...');
+  console.log('[4/7] Updating config.toml...');
   if (!dryRun) {
     await mergeConfig(codexConfigPath(), pkgRoot, { verbose });
   }
   console.log('  Done.\n');
 
   // Step 5: Generate AGENTS.md
-  console.log('[5/6] Generating AGENTS.md...');
+  console.log('[5/7] Generating AGENTS.md...');
   const agentsMdSrc = join(pkgRoot, 'templates', 'AGENTS.md');
   const agentsMdDst = join(process.cwd(), 'AGENTS.md');
   if (existsSync(agentsMdSrc)) {
@@ -86,9 +86,25 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log();
 
   // Step 6: Set up notify hook
-  console.log('[6/6] Configuring notification hook...');
+  console.log('[6/7] Configuring notification hook...');
   await setupNotifyHook(pkgRoot, { dryRun, verbose });
   console.log('  Done.\n');
+
+  // Step 7: Configure HUD
+  console.log('[7/7] Configuring HUD...');
+  const hudConfigPath = join(process.cwd(), '.omx', 'hud-config.json');
+  if (force || !existsSync(hudConfigPath)) {
+    if (!dryRun) {
+      const defaultHudConfig = { preset: 'focused' };
+      await writeFile(hudConfigPath, JSON.stringify(defaultHudConfig, null, 2));
+    }
+    if (verbose) console.log('  Wrote .omx/hud-config.json');
+    console.log('  HUD config created (preset: focused).');
+  } else {
+    console.log('  HUD config already exists (use --force to overwrite).');
+  }
+  console.log('  StatusLine configured in config.toml via [tui] section.');
+  console.log();
 
   console.log('Setup complete! Run "omx doctor" to verify installation.');
   console.log('\nNext steps:');

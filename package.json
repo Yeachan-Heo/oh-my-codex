@@ -23,7 +23,8 @@
     "agents/",
     "skills/",
     "prompts/",
-    "templates/"
+    "templates/",
+    "scripts/"
   ],
   "keywords": [
     "codex",

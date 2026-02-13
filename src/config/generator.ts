@@ -51,6 +51,10 @@ function getOmxConfigBlock(pkgRoot: string): string {
     'enabled = true',
     'startup_timeout_sec = 5',
     '',
+    '# OMX TUI StatusLine (Codex CLI v0.101.0+)',
+    '[tui]',
+    'status_line = ["model-with-reasoning", "git-branch", "context-remaining"]',
+    '',
   ].join('\n');
 }
 
