@@ -27,7 +27,7 @@ function getOmxConfigBlock(pkgRoot: string): string {
     '# ============================================================',
     '',
     '# OMX Developer Instructions',
-    `developer_instructions = "You have oh-my-codex installed. Use /prompts:architect, /prompts:executor, /prompts:planner for specialized agent roles. Workflow skills: /prompts:ralph, /prompts:autopilot, /prompts:plan. AGENTS.md is your orchestration brain."`,
+    `developer_instructions = "You have oh-my-codex installed. Use /prompts:architect, /prompts:executor, /prompts:planner for specialized agent roles. Workflow skills via $name: $ralph, $autopilot, $plan. AGENTS.md is your orchestration brain."`,
     '',
     '# Notification hook - fires after each agent turn',
     `notify = ["node", "${notifyHookPath}"]`,

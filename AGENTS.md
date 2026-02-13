@@ -23,9 +23,19 @@ Use delegation when it improves quality, speed, or correctness:
 Work directly only for trivial operations where delegation adds disproportionate overhead:
 - Small clarifications, quick status checks, or single-command sequential operations.
 
-For substantive code changes, use the `/executor` slash command (or `/deep-executor` for complex autonomous execution).
-For non-trivial SDK/API/framework usage, use `/dependency-expert` to check official docs first.
+For substantive code changes, use `/prompts:executor` (or `/prompts:deep-executor` for complex autonomous execution).
+For non-trivial SDK/API/framework usage, use `/prompts:dependency-expert` to check official docs first.
 </delegation_rules>
+
+<invocation_conventions>
+Codex CLI uses these prefixes for custom commands:
+- `/prompts:name` — invoke a custom prompt (e.g., `/prompts:architect "review auth module"`)
+- `$name` — invoke a skill (e.g., `$ralph "fix all tests"`, `$autopilot "build REST API"`)
+- `/skills` — browse available skills interactively
+
+Agent prompts (in `~/.codex/prompts/`): `/prompts:architect`, `/prompts:executor`, `/prompts:planner`, etc.
+Workflow skills (in `~/.agents/skills/`): `$ralph`, `$autopilot`, `$plan`, `$ralplan`, `$team`, etc.
+</invocation_conventions>
 
 <model_routing>
 Match model complexity to task:
@@ -42,53 +52,53 @@ Examples:
 ---
 
 <agent_catalog>
-Use slash commands to invoke specialized agents.
+Use `/prompts:name` to invoke specialized agents (Codex CLI custom prompt syntax).
 
 Build/Analysis Lane:
-- `/explore`: Fast codebase search, file/symbol mapping
-- `/analyst`: Requirements clarity, acceptance criteria, hidden constraints
-- `/planner`: Task sequencing, execution plans, risk flags
-- `/architect`: System design, boundaries, interfaces, long-horizon tradeoffs
-- `/debugger`: Root-cause analysis, regression isolation, failure diagnosis
-- `/executor`: Code implementation, refactoring, feature work
-- `/deep-executor`: Complex autonomous goal-oriented tasks
-- `/verifier`: Completion evidence, claim validation, test adequacy
+- `/prompts:explore`: Fast codebase search, file/symbol mapping
+- `/prompts:analyst`: Requirements clarity, acceptance criteria, hidden constraints
+- `/prompts:planner`: Task sequencing, execution plans, risk flags
+- `/prompts:architect`: System design, boundaries, interfaces, long-horizon tradeoffs
+- `/prompts:debugger`: Root-cause analysis, regression isolation, failure diagnosis
+- `/prompts:executor`: Code implementation, refactoring, feature work
+- `/prompts:deep-executor`: Complex autonomous goal-oriented tasks
+- `/prompts:verifier`: Completion evidence, claim validation, test adequacy
 
 Review Lane:
-- `/style-reviewer`: Formatting, naming, idioms, lint conventions
-- `/quality-reviewer`: Logic defects, maintainability, anti-patterns
-- `/api-reviewer`: API contracts, versioning, backward compatibility
-- `/security-reviewer`: Vulnerabilities, trust boundaries, authn/authz
-- `/performance-reviewer`: Hotspots, complexity, memory/latency optimization
-- `/code-reviewer`: Comprehensive review across all concerns
+- `/prompts:style-reviewer`: Formatting, naming, idioms, lint conventions
+- `/prompts:quality-reviewer`: Logic defects, maintainability, anti-patterns
+- `/prompts:api-reviewer`: API contracts, versioning, backward compatibility
+- `/prompts:security-reviewer`: Vulnerabilities, trust boundaries, authn/authz
+- `/prompts:performance-reviewer`: Hotspots, complexity, memory/latency optimization
+- `/prompts:code-reviewer`: Comprehensive review across all concerns
 
 Domain Specialists:
-- `/dependency-expert`: External SDK/API/package evaluation
-- `/test-engineer`: Test strategy, coverage, flaky-test hardening
-- `/quality-strategist`: Quality strategy, release readiness, risk assessment
-- `/build-fixer`: Build/toolchain/type failures
-- `/designer`: UX/UI architecture, interaction design
-- `/writer`: Docs, migration notes, user guidance
-- `/qa-tester`: Interactive CLI/service runtime validation
-- `/scientist`: Data/statistical analysis
-- `/git-master`: Commit strategy, history hygiene
-- `/researcher`: External documentation and reference research
+- `/prompts:dependency-expert`: External SDK/API/package evaluation
+- `/prompts:test-engineer`: Test strategy, coverage, flaky-test hardening
+- `/prompts:quality-strategist`: Quality strategy, release readiness, risk assessment
+- `/prompts:build-fixer`: Build/toolchain/type failures
+- `/prompts:designer`: UX/UI architecture, interaction design
+- `/prompts:writer`: Docs, migration notes, user guidance
+- `/prompts:qa-tester`: Interactive CLI/service runtime validation
+- `/prompts:scientist`: Data/statistical analysis
+- `/prompts:git-master`: Commit strategy, history hygiene
+- `/prompts:researcher`: External documentation and reference research
 
 Product Lane:
-- `/product-manager`: Problem framing, personas/JTBD, PRDs
-- `/ux-researcher`: Heuristic audits, usability, accessibility
-- `/information-architect`: Taxonomy, navigation, findability
-- `/product-analyst`: Product metrics, funnel analysis, experiments
+- `/prompts:product-manager`: Problem framing, personas/JTBD, PRDs
+- `/prompts:ux-researcher`: Heuristic audits, usability, accessibility
+- `/prompts:information-architect`: Taxonomy, navigation, findability
+- `/prompts:product-analyst`: Product metrics, funnel analysis, experiments
 
 Coordination:
-- `/critic`: Plan/design critical challenge
-- `/vision`: Image/screenshot/diagram analysis
+- `/prompts:critic`: Plan/design critical challenge
+- `/prompts:vision`: Image/screenshot/diagram analysis
 </agent_catalog>
 
 ---
 
 <skills>
-Skills are workflow commands available via `/skills` or implicit invocation.
+Skills are workflow commands. Invoke via `$name` (e.g., `$ralph`) or browse with `/skills`.
 
 Workflow Skills:
 - `autopilot`: Full autonomous execution from idea to working code
@@ -144,15 +154,34 @@ UX Audit:
 
 ---
 
+<team_pipeline>
+Team is the default multi-agent orchestrator. It uses a canonical staged pipeline:
+
+`team-plan -> team-prd -> team-exec -> team-verify -> team-fix (loop)`
+
+Stage transitions:
+- `team-plan` -> `team-prd`: planning/decomposition complete
+- `team-prd` -> `team-exec`: acceptance criteria and scope are explicit
+- `team-exec` -> `team-verify`: all execution tasks reach terminal states
+- `team-verify` -> `team-fix` | `complete` | `failed`: verification decides next step
+- `team-fix` -> `team-exec` | `team-verify` | `complete` | `failed`: fixes feed back into execution
+
+The `team-fix` loop is bounded by max attempts; exceeding the bound transitions to `failed`.
+Terminal states: `complete`, `failed`, `cancelled`.
+Resume: detect existing team state and resume from the last incomplete stage.
+</team_pipeline>
+
+---
+
 <verification>
-Verify before claiming completion. The goal is evidence-backed confidence.
+Verify before claiming completion. The goal is evidence-backed confidence, not ceremony.
 
 Sizing guidance:
 - Small changes (<5 files, <100 lines): lightweight verifier
 - Standard changes: standard verifier
 - Large or security/architectural changes (>20 files): thorough verifier
 
-Verification loop: identify what proves the claim, run the verification, read the output, report with evidence.
+Verification loop: identify what proves the claim, run the verification, read the output, then report with evidence. If verification fails, continue iterating rather than reporting incomplete work.
 </verification>
 
 <execution_protocols>
@@ -162,10 +191,25 @@ Broad Request Detection:
 Parallelization:
 - Run 2+ independent tasks in parallel when each takes >30s.
 - Run dependent tasks sequentially.
+- Use background execution for installs, builds, and tests.
+- Prefer Team mode as the primary parallel execution surface. Use ad hoc parallelism only when Team overhead is disproportionate to the task.
 
 Continuation:
-  Before concluding, confirm: zero pending tasks, all features working, tests passing, zero errors, verification evidence collected.
+  Before concluding, confirm: zero pending tasks, all features working, tests passing, zero errors, verification evidence collected. If any item is unchecked, continue working.
 </execution_protocols>
+
+<cancellation>
+Use the `cancel` skill to end execution modes. This clears state files and stops active loops.
+
+When to cancel:
+- All tasks are done and verified: invoke cancel.
+- Work is blocked and cannot proceed: explain the blocker, then invoke cancel.
+- User says "stop": invoke cancel immediately.
+
+When not to cancel:
+- Work is still incomplete: continue working.
+- A single subtask failed but others can continue: fix and retry.
+</cancellation>
 
 ---
 
