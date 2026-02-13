@@ -19,7 +19,8 @@ export interface SessionState {
 
 const SESSION_FILE = 'session.json';
 const HISTORY_FILE = 'session-history.jsonl';
-const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2 hours
+// No age-based threshold: only PID liveness determines staleness.
+// Long-running sessions (>2h) are legitimate and should not be reaped.
 
 function sessionPath(cwd: string): string {
   return join(omxStateDir(cwd), SESSION_FILE);
@@ -48,21 +49,14 @@ export async function readSessionState(cwd: string): Promise<SessionState | null
  * Check if a session is stale (PID dead or started >2h ago).
  */
 export function isSessionStale(state: SessionState): boolean {
-  // Check if PID is still alive
+  // Only consider a session stale if the owning PID is dead.
+  // Long-running sessions are legitimate and must not be reaped by age alone.
   try {
     process.kill(state.pid, 0);
+    return false; // PID is alive, session is active
   } catch {
-    // PID is dead
-    return true;
+    return true; // PID is dead, session is stale
   }
-
-  // Check if session is older than threshold
-  const startedAt = new Date(state.started_at).getTime();
-  if (Date.now() - startedAt > STALE_THRESHOLD_MS) {
-    return true;
-  }
-
-  return false;
 }
 
 /**

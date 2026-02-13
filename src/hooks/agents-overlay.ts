@@ -13,7 +13,7 @@
  * - Session metadata
  */
 
-import { readFile, writeFile, mkdir, rmdir } from 'fs/promises';
+import { readFile, writeFile, mkdir, rm } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { omxStateDir, omxNotepadPath, omxProjectMemoryPath } from '../utils/paths.js';
@@ -30,23 +30,38 @@ function lockPath(cwd: string): string {
 
 async function acquireLock(cwd: string, timeoutMs: number = 5000): Promise<void> {
   const lock = lockPath(cwd);
+  // Ensure parent directory exists
+  const { dirname } = await import('path');
+  await mkdir(dirname(lock), { recursive: true });
+
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
       await mkdir(lock, { recursive: false });
+      // Write owner metadata for stale detection
+      const ownerFile = join(lock, 'owner.json');
+      await writeFile(ownerFile, JSON.stringify({ pid: process.pid, ts: Date.now() }));
       return; // Lock acquired
     } catch {
-      // Lock exists, wait and retry
+      // Lock exists - check if owner is dead
+      try {
+        const ownerFile = join(lock, 'owner.json');
+        const ownerData = JSON.parse(await readFile(ownerFile, 'utf-8'));
+        try { process.kill(ownerData.pid, 0); } catch {
+          // Owner PID is dead, safe to reap
+          await rm(lock, { recursive: true, force: true }).catch(() => {});
+          continue; // Retry acquire immediately
+        }
+      } catch { /* no owner file or parse error, wait */ }
       await new Promise(r => setTimeout(r, 100));
     }
   }
-  // Timeout: force acquire by removing stale lock
-  try { await rmdir(lock); } catch { /* ignore */ }
-  await mkdir(lock, { recursive: false }).catch(() => {});
+  // Timeout: do NOT silently proceed - throw so caller knows lock failed
+  throw new Error('Failed to acquire AGENTS.md lock within timeout');
 }
 
 async function releaseLock(cwd: string): Promise<void> {
-  try { await rmdir(lockPath(cwd)); } catch { /* ignore */ }
+  try { await rm(lockPath(cwd), { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 async function withAgentsMdLock<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
@@ -241,19 +256,29 @@ export async function stripOverlay(agentsMdPath: string, cwd?: string): Promise<
  * Remove overlay markers and content from a string (pure function).
  */
 function stripOverlayContent(content: string): string {
-  const startIdx = content.indexOf(START_MARKER);
-  if (startIdx < 0) return content;
+  // Strip all marker-bounded segments (handles multiple overlays from corruption)
+  let result = content;
+  let iterations = 0;
+  const MAX_STRIP_ITERATIONS = 5; // Safety bound
 
-  const endIdx = content.indexOf(END_MARKER, startIdx);
-  if (endIdx < 0) {
-    // Malformed: remove from start marker to end of file
-    return content.slice(0, startIdx).trimEnd() + '\n';
+  while (iterations < MAX_STRIP_ITERATIONS) {
+    const startIdx = result.indexOf(START_MARKER);
+    if (startIdx < 0) break;
+
+    const endIdx = result.indexOf(END_MARKER, startIdx);
+    if (endIdx < 0) {
+      // Malformed: remove from start marker to end of file
+      result = result.slice(0, startIdx).trimEnd() + '\n';
+      break;
+    }
+
+    const before = result.slice(0, startIdx).trimEnd();
+    const after = result.slice(endIdx + END_MARKER.length).trimStart();
+    result = after ? before + '\n' + after : before + '\n';
+    iterations++;
   }
 
-  const before = content.slice(0, startIdx).trimEnd();
-  const after = content.slice(endIdx + END_MARKER.length).trimStart();
-
-  return after ? before + '\n' + after : before + '\n';
+  return result;
 }
 
 /**
