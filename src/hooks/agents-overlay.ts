@@ -16,7 +16,8 @@
 import { readFile, writeFile, mkdir, rm } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
-import { omxStateDir, omxNotepadPath, omxProjectMemoryPath } from '../utils/paths.js';
+import { omxNotepadPath, omxProjectMemoryPath } from '../utils/paths.js';
+import { getBaseStateDir, getStateDir } from '../mcp/state-paths.js';
 
 const START_MARKER = '<!-- OMX:RUNTIME:START -->';
 const END_MARKER = '<!-- OMX:RUNTIME:END -->';
@@ -89,26 +90,27 @@ interface OverlayData {
   projectMemory: string;
 }
 
-async function readActiveModes(cwd: string): Promise<string> {
-  const stateDir = omxStateDir(cwd);
-  if (!existsSync(stateDir)) return '';
-
+async function readActiveModes(cwd: string, sessionId?: string): Promise<string> {
   const { readdir } = await import('fs/promises');
-  const files = await readdir(stateDir);
+  const scopedDirs = [getBaseStateDir(cwd), ...(sessionId ? [getStateDir(cwd, sessionId)] : [])];
   const modes: string[] = [];
 
-  for (const f of files) {
-    if (!f.endsWith('-state.json') || f === 'session.json') continue;
-    try {
-      const data = JSON.parse(await readFile(join(stateDir, f), 'utf-8'));
-      if (data.active) {
-        const mode = f.replace('-state.json', '');
-        const details: string[] = [];
-        if (data.iteration !== undefined) details.push(`iteration ${data.iteration}/${data.max_iterations || '?'}`);
-        if (data.current_phase) details.push(`phase: ${data.current_phase}`);
-        modes.push(`- ${mode}: ${details.join(', ') || 'active'}`);
-      }
-    } catch { /* skip malformed */ }
+  for (const stateDir of scopedDirs) {
+    if (!existsSync(stateDir)) continue;
+    const files = await readdir(stateDir).catch(() => [] as string[]);
+    for (const f of files) {
+      if (!f.endsWith('-state.json') || f === 'session.json') continue;
+      try {
+        const data = JSON.parse(await readFile(join(stateDir, f), 'utf-8'));
+        if (data.active) {
+          const mode = f.replace('-state.json', '');
+          const details: string[] = [];
+          if (data.iteration !== undefined) details.push(`iteration ${data.iteration}/${data.max_iterations || '?'}`);
+          if (data.current_phase) details.push(`phase: ${data.current_phase}`);
+          modes.push(`- ${mode}: ${details.join(', ') || 'active'}`);
+        }
+      } catch { /* skip malformed */ }
+    }
   }
 
   return modes.length > 0 ? modes.join('\n') : '';
@@ -170,7 +172,7 @@ function getCompactionInstructions(): string {
  */
 export async function generateOverlay(cwd: string, sessionId?: string): Promise<string> {
   const [activeModes, notepadPriority, projectMemory] = await Promise.all([
-    readActiveModes(cwd),
+    readActiveModes(cwd, sessionId),
     readNotepadPriority(cwd),
     readProjectMemorySummary(cwd),
   ]);

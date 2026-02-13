@@ -23,6 +23,8 @@ import {
   buildSendKeysArgv,
 } from './tmux-hook-engine.js';
 
+const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
 function asNumber(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.trim() !== '') {
@@ -149,6 +151,10 @@ function safeString(value, fallback = '') {
   return String(value);
 }
 
+function isTerminalPhase(phase) {
+  return phase === 'complete' || phase === 'failed' || phase === 'cancelled';
+}
+
 function normalizeInputMessages(payload) {
   const items = payload['input-messages'] || payload.input_messages || [];
   if (!Array.isArray(items)) return [];
@@ -182,6 +188,30 @@ function normalizeTmuxState(raw) {
     last_reason: safeString(raw.last_reason),
     last_event_at: safeString(raw.last_event_at),
   };
+}
+
+function normalizeNotifyState(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      recent_turns: {},
+      last_event_at: '',
+    };
+  }
+  return {
+    recent_turns: raw.recent_turns && typeof raw.recent_turns === 'object' ? raw.recent_turns : {},
+    last_event_at: safeString(raw.last_event_at),
+  };
+}
+
+function pruneRecentTurns(recentTurns, now) {
+  const pruned = {};
+  const minTs = now - (24 * 60 * 60 * 1000);
+  const entries = Object.entries(recentTurns || {}).slice(-2000);
+  for (const [key, value] of entries) {
+    const ts = asNumber(value);
+    if (ts !== null && ts >= minTs) pruned[key] = ts;
+  }
+  return pruned;
 }
 
 function pruneRecentKeys(recentKeys, now) {
@@ -263,6 +293,22 @@ async function logTmuxHookEvent(logsDir, event) {
   await appendFile(file, JSON.stringify(event) + '\n').catch(() => {});
 }
 
+async function getScopedStateDirsForCurrentSession(baseStateDir) {
+  const scopedDirs = [baseStateDir];
+  const sessionPath = join(baseStateDir, 'session.json');
+  try {
+    const session = JSON.parse(await readFile(sessionPath, 'utf-8'));
+    const sessionId = safeString(session && session.session_id ? session.session_id : '');
+    if (SESSION_ID_PATTERN.test(sessionId)) {
+      const sessionDir = join(baseStateDir, 'sessions', sessionId);
+      if (existsSync(sessionDir)) scopedDirs.push(sessionDir);
+    }
+  } catch {
+    // No session file or malformed - fall back to global only
+  }
+  return scopedDirs;
+}
+
 async function handleTmuxInjection({
   payload,
   cwd,
@@ -289,13 +335,16 @@ async function handleTmuxInjection({
 
   const activeModes = [];
   try {
-    const files = await readdir(stateDir);
-    for (const file of files) {
-      if (!file.endsWith('-state.json') || file === 'tmux-hook-state.json') continue;
-      const path = join(stateDir, file);
-      const parsed = JSON.parse(await readFile(path, 'utf-8'));
-      if (parsed && parsed.active) {
-        activeModes.push(file.replace('-state.json', ''));
+    const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir);
+    for (const scopedDir of scopedDirs) {
+      const files = await readdir(scopedDir).catch(() => []);
+      for (const file of files) {
+        if (!file.endsWith('-state.json') || file === 'tmux-hook-state.json') continue;
+        const path = join(scopedDir, file);
+        const parsed = JSON.parse(await readFile(path, 'utf-8'));
+        if (parsed && parsed.active) {
+          activeModes.push(file.replace('-state.json', ''));
+        }
       }
     }
   } catch {
@@ -408,6 +457,69 @@ async function handleTmuxInjection({
   }
 }
 
+async function syncLinkedRalphOnTeamTerminalInDir(stateDir, nowIso) {
+  const teamStatePath = join(stateDir, 'team-state.json');
+  const ralphStatePath = join(stateDir, 'ralph-state.json');
+  if (!existsSync(teamStatePath) || !existsSync(ralphStatePath)) return;
+
+  try {
+    const teamState = JSON.parse(await readFile(teamStatePath, 'utf-8'));
+    const ralphState = JSON.parse(await readFile(ralphStatePath, 'utf-8'));
+    const teamPhase = safeString(teamState.current_phase);
+    const linked = teamState.linked_ralph === true && ralphState.linked_team === true;
+    if (!linked || !isTerminalPhase(teamPhase)) return;
+
+    let changed = false;
+    if (ralphState.active !== false) {
+      ralphState.active = false;
+      changed = true;
+    }
+    if (ralphState.current_phase !== teamPhase) {
+      ralphState.current_phase = teamPhase;
+      changed = true;
+    }
+
+    const terminalAt = safeString(teamState.completed_at) || nowIso;
+    if (ralphState.linked_team_terminal_phase !== teamPhase) {
+      ralphState.linked_team_terminal_phase = teamPhase;
+      changed = true;
+    }
+    if (ralphState.linked_team_terminal_at !== terminalAt) {
+      ralphState.linked_team_terminal_at = terminalAt;
+      changed = true;
+    }
+    if (!ralphState.completed_at) {
+      ralphState.completed_at = terminalAt;
+      changed = true;
+    }
+
+    if (changed) {
+      ralphState.last_turn_at = nowIso;
+      await writeFile(ralphStatePath, JSON.stringify(ralphState, null, 2));
+    }
+  } catch {
+    // Non-critical
+  }
+}
+
+async function syncLinkedRalphOnTeamTerminal(stateRootDir, nowIso) {
+  await syncLinkedRalphOnTeamTerminalInDir(stateRootDir, nowIso);
+
+  const sessionsDir = join(stateRootDir, 'sessions');
+  if (!existsSync(sessionsDir)) return;
+
+  try {
+    const entries = await readdir(sessionsDir);
+    for (const sessionId of entries) {
+      // Session IDs are controlled by state-server validation; this check avoids accidental traversal.
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(sessionId)) continue;
+      await syncLinkedRalphOnTeamTerminalInDir(join(sessionsDir, sessionId), nowIso);
+    }
+  } catch {
+    // Non-critical
+  }
+}
+
 async function main() {
   const rawPayload = process.argv[process.argv.length - 1];
   if (!rawPayload || rawPayload.startsWith('-')) {
@@ -430,6 +542,29 @@ async function main() {
   await mkdir(logsDir, { recursive: true }).catch(() => {});
   await mkdir(stateDir, { recursive: true }).catch(() => {});
 
+  // Turn-level dedupe prevents double-processing when native notify and fallback
+  // watcher both emit the same completed turn.
+  try {
+    const turnId = safeString(payload['turn-id'] || payload.turn_id || '');
+    if (turnId) {
+      const now = Date.now();
+      const threadId = safeString(payload['thread-id'] || payload.thread_id || '');
+      const eventType = safeString(payload.type || 'agent-turn-complete');
+      const key = `${threadId || 'no-thread'}|${turnId}|${eventType}`;
+      const dedupeStatePath = join(stateDir, 'notify-hook-state.json');
+      const dedupeState = normalizeNotifyState(await readJsonIfExists(dedupeStatePath, null));
+      dedupeState.recent_turns = pruneRecentTurns(dedupeState.recent_turns, now);
+      if (dedupeState.recent_turns[key]) {
+        process.exit(0);
+      }
+      dedupeState.recent_turns[key] = now;
+      dedupeState.last_event_at = new Date().toISOString();
+      await writeFile(dedupeStatePath, JSON.stringify(dedupeState, null, 2)).catch(() => {});
+    }
+  } catch {
+    // Non-critical
+  }
+
   // 1. Log the turn
   const logEntry = {
     timestamp: new Date().toISOString(),
@@ -448,20 +583,26 @@ async function main() {
 
   // 2. Update active mode state (increment iteration)
   try {
-    const stateFiles = await readdir(stateDir);
-    for (const f of stateFiles) {
-      if (!f.endsWith('-state.json')) continue;
-      const statePath = join(stateDir, f);
-      const state = JSON.parse(await readFile(statePath, 'utf-8'));
-      if (state.active) {
-        state.iteration = (state.iteration || 0) + 1;
-        state.last_turn_at = new Date().toISOString();
-        await writeFile(statePath, JSON.stringify(state, null, 2));
+    const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir);
+    for (const scopedDir of scopedDirs) {
+      const stateFiles = await readdir(scopedDir).catch(() => []);
+      for (const f of stateFiles) {
+        if (!f.endsWith('-state.json')) continue;
+        const statePath = join(scopedDir, f);
+        const state = JSON.parse(await readFile(statePath, 'utf-8'));
+        if (state.active) {
+          state.iteration = (state.iteration || 0) + 1;
+          state.last_turn_at = new Date().toISOString();
+          await writeFile(statePath, JSON.stringify(state, null, 2));
+        }
       }
     }
   } catch {
     // Non-critical
   }
+
+  // If linked team reaches terminal state, mark linked ralph terminal/inactive too.
+  await syncLinkedRalphOnTeamTerminal(stateDir, new Date().toISOString());
 
   // 3. Track subagent metrics
   const metricsPath = join(omxDir, 'metrics.json');

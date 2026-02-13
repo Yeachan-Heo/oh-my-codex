@@ -7,6 +7,8 @@
 
 export type TeamPhase = 'team-plan' | 'team-prd' | 'team-exec' | 'team-verify' | 'team-fix';
 export type TerminalPhase = 'complete' | 'failed' | 'cancelled';
+const TERMINAL_PHASES: readonly TerminalPhase[] = ['complete', 'failed', 'cancelled'];
+const FIX_LOOP_EXCEEDED_REASON = 'team-fix loop limit reached';
 
 export interface TeamState {
   active: boolean;
@@ -49,6 +51,14 @@ export function isValidTransition(from: TeamPhase, to: TeamPhase | TerminalPhase
   return allowed ? allowed.includes(to) : false;
 }
 
+export function isTerminalPhase(phase: TeamPhase | TerminalPhase): phase is TerminalPhase {
+  return TERMINAL_PHASES.includes(phase as TerminalPhase);
+}
+
+export function canResumeTeamState(state: TeamState): boolean {
+  return state.active && !isTerminalPhase(state.phase);
+}
+
 /**
  * Create initial team state
  */
@@ -73,33 +83,44 @@ export function transitionPhase(
   to: TeamPhase | TerminalPhase,
   reason?: string
 ): TeamState {
-  const from = state.phase as TeamPhase;
+  const from = state.phase;
+
+  if (isTerminalPhase(from)) {
+    throw new Error(`Cannot transition from terminal phase: ${from}`);
+  }
 
   if (!isValidTransition(from, to)) {
     throw new Error(`Invalid transition: ${from} -> ${to}`);
   }
 
+  const nextFixAttempt = to === 'team-fix' ? state.current_fix_attempt + 1 : state.current_fix_attempt;
+
   if (to === 'team-fix') {
-    if (state.current_fix_attempt >= state.max_fix_attempts) {
+    if (nextFixAttempt > state.max_fix_attempts) {
       return {
         ...state,
         phase: 'failed',
         active: false,
         phase_transitions: [
           ...state.phase_transitions,
-          { from, to: 'failed', at: new Date().toISOString(), reason: 'Max fix attempts exceeded' },
+          {
+            from,
+            to: 'failed',
+            at: new Date().toISOString(),
+            reason: `${FIX_LOOP_EXCEEDED_REASON} (${state.max_fix_attempts})`,
+          },
         ],
       };
     }
-    state.current_fix_attempt++;
   }
 
-  const isTerminal = ['complete', 'failed', 'cancelled'].includes(to);
+  const isTerminal = isTerminalPhase(to);
 
   return {
     ...state,
     phase: to,
     active: !isTerminal,
+    current_fix_attempt: nextFixAttempt,
     phase_transitions: [
       ...state.phase_transitions,
       { from, to, at: new Date().toISOString(), reason },

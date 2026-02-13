@@ -13,6 +13,7 @@ import {
 import { readFile, readdir } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { getAllScopedStateDirs } from './state-paths.js';
 
 function text(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
@@ -64,35 +65,37 @@ interface ModeEvent {
   details?: Record<string, unknown>;
 }
 
-async function readModeEvents(stateDir: string): Promise<ModeEvent[]> {
-  if (!existsSync(stateDir)) return [];
-
+export async function readModeEvents(workingDirectory: string): Promise<ModeEvent[]> {
   const events: ModeEvent[] = [];
-  const files = await readdir(stateDir);
+  const scopedDirs = await getAllScopedStateDirs(workingDirectory);
 
-  for (const f of files) {
-    if (!f.endsWith('-state.json')) continue;
-    try {
-      const data = JSON.parse(await readFile(join(stateDir, f), 'utf-8'));
-      const mode = f.replace('-state.json', '');
+  for (const stateDir of scopedDirs) {
+    if (!existsSync(stateDir)) continue;
+    const files = await readdir(stateDir).catch(() => [] as string[]);
+    for (const f of files) {
+      if (!f.endsWith('-state.json')) continue;
+      try {
+        const data = JSON.parse(await readFile(join(stateDir, f), 'utf-8'));
+        const mode = f.replace('-state.json', '');
 
-      if (data.started_at) {
-        events.push({
-          timestamp: data.started_at,
-          event: 'mode_start',
-          mode,
-          details: { phase: data.current_phase, active: data.active },
-        });
-      }
-      if (data.completed_at) {
-        events.push({
-          timestamp: data.completed_at,
-          event: 'mode_end',
-          mode,
-          details: { phase: data.current_phase },
-        });
-      }
-    } catch { /* skip */ }
+        if (data.started_at) {
+          events.push({
+            timestamp: data.started_at,
+            event: 'mode_start',
+            mode,
+            details: { phase: data.current_phase, active: data.active },
+          });
+        }
+        if (data.completed_at) {
+          events.push({
+            timestamp: data.completed_at,
+            event: 'mode_end',
+            mode,
+            details: { phase: data.current_phase },
+          });
+        }
+      } catch { /* skip */ }
+    }
   }
 
   return events.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
@@ -163,7 +166,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const wd = (a.workingDirectory as string) || process.cwd();
   const omxDir = join(wd, '.omx');
   const logsDir = join(omxDir, 'logs');
-  const stateDir = join(omxDir, 'state');
 
   switch (name) {
     case 'trace_timeline': {
@@ -172,7 +174,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       const [turns, modeEvents] = await Promise.all([
         filter !== 'modes' ? readLogFiles(logsDir, last) : Promise.resolve([]),
-        filter !== 'turns' ? readModeEvents(stateDir) : Promise.resolve([]),
+        filter !== 'turns' ? readModeEvents(wd) : Promise.resolve([]),
       ]);
 
       // Merge and sort by timestamp
@@ -209,7 +211,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'trace_summary': {
       const [turns, modeEvents, metrics] = await Promise.all([
         readLogFiles(logsDir),
-        readModeEvents(stateDir),
+        readModeEvents(wd),
         readMetrics(omxDir),
       ]);
 
@@ -257,5 +259,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-const transport = new StdioServerTransport();
-server.connect(transport).catch(console.error);
+if (process.env.OMX_TRACE_SERVER_DISABLE_AUTO_START !== '1') {
+  const transport = new StdioServerTransport();
+  server.connect(transport).catch(console.error);
+}

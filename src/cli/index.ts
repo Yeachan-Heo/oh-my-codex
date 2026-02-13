@@ -3,18 +3,21 @@
  * Multi-agent orchestration for OpenAI Codex CLI
  */
 
-import { execSync, execFileSync } from 'child_process';
-import { join } from 'path';
+import { execSync, execFileSync, spawn } from 'child_process';
+import { basename, join } from 'path';
+import { existsSync } from 'fs';
 import { setup } from './setup.js';
 import { doctor } from './doctor.js';
 import { version } from './version.js';
 import { tmuxHookCommand } from './tmux-hook.js';
 import { hudCommand } from '../hud/index.js';
+import { getAllScopedStateDirs, getBaseStateDir, getStateDir } from '../mcp/state-paths.js';
 import { maybeCheckAndPromptUpdate } from './update.js';
 import { generateOverlay, applyOverlay, stripOverlay } from '../hooks/agents-overlay.js';
 import {
   readSessionState, isSessionStale, writeSessionStart, writeSessionEnd, resetSessionMetrics,
 } from '../hooks/session.js';
+import { getPackageRoot } from '../utils/package.js';
 
 const HELP = `
 oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
@@ -24,7 +27,7 @@ Usage:
   omx setup     Install skills, prompts, MCP servers, and AGENTS.md
   omx doctor    Check installation health
   omx version   Show version information
-  omx tmux-hook Manage tmux prompt injection workaround (init|status|validate)
+  omx tmux-hook Manage tmux prompt injection workaround (init|status|validate|test)
   omx hud       Show HUD statusline (--watch, --json, --preset=NAME)
   omx help      Show this help message
   omx status    Show active modes and state
@@ -32,10 +35,15 @@ Usage:
 
 Options:
   --yolo        Launch Codex in yolo mode (shorthand for: omx launch --yolo)
+  --madmax      DANGEROUS: bypass Codex approvals and sandbox
+                (alias for --dangerously-bypass-approvals-and-sandbox)
   --force       Force reinstall (overwrite existing files)
   --dry-run     Show what would be done without doing it
   --verbose     Show detailed output
 `;
+
+const MADMAX_FLAG = '--madmax';
+const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
 
 export async function main(args: string[]): Promise<void> {
   const knownCommands = new Set([
@@ -101,18 +109,25 @@ export async function main(args: string[]): Promise<void> {
 
 async function showStatus(): Promise<void> {
   const { readdir, readFile } = await import('fs/promises');
-  const { join } = await import('path');
-  const stateDir = join(process.cwd(), '.omx', 'state');
+  const cwd = process.cwd();
   try {
-    const files = await readdir(stateDir);
-    const states = files.filter(f => f.endsWith('-state.json'));
+    const scopedDirs = await getAllScopedStateDirs(cwd);
+    const states: string[] = [];
+    for (const stateDir of scopedDirs) {
+      const files = await readdir(stateDir).catch(() => [] as string[]);
+      for (const file of files) {
+        if (!file.endsWith('-state.json') || file === 'session.json') continue;
+        states.push(join(stateDir, file));
+      }
+    }
     if (states.length === 0) {
       console.log('No active modes.');
       return;
     }
-    for (const file of states) {
-      const content = await readFile(join(stateDir, file), 'utf-8');
+    for (const path of states) {
+      const content = await readFile(path, 'utf-8');
       const state = JSON.parse(content);
+      const file = basename(path);
       const mode = file.replace('-state.json', '');
       console.log(`${mode}: ${state.active ? 'ACTIVE' : 'inactive'} (phase: ${state.current_phase || 'n/a'})`);
     }
@@ -123,6 +138,7 @@ async function showStatus(): Promise<void> {
 
 async function launchWithHud(args: string[]): Promise<void> {
   const cwd = process.cwd();
+  const normalizedArgs = normalizeCodexLaunchArgs(args);
   const sessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   try {
@@ -141,11 +157,41 @@ async function launchWithHud(args: string[]): Promise<void> {
 
   // ── Phase 2: run ────────────────────────────────────────────────────────
   try {
-    runCodex(cwd, args);
+    runCodex(cwd, normalizedArgs);
   } finally {
     // ── Phase 3: postLaunch ─────────────────────────────────────────────
     await postLaunch(cwd, sessionId);
   }
+}
+
+export function normalizeCodexLaunchArgs(args: string[]): string[] {
+  const normalized: string[] = [];
+  let wantsBypass = false;
+  let hasBypass = false;
+
+  for (const arg of args) {
+    if (arg === MADMAX_FLAG) {
+      wantsBypass = true;
+      continue;
+    }
+
+    if (arg === CODEX_BYPASS_FLAG) {
+      wantsBypass = true;
+      if (!hasBypass) {
+        normalized.push(arg);
+        hasBypass = true;
+      }
+      continue;
+    }
+
+    normalized.push(arg);
+  }
+
+  if (wantsBypass && !hasBypass) {
+    normalized.push(CODEX_BYPASS_FLAG);
+  }
+
+  return normalized;
 }
 
 /**
@@ -172,6 +218,13 @@ async function preLaunch(cwd: string, sessionId: string): Promise<void> {
   // 3. Write session state
   await resetSessionMetrics(cwd);
   await writeSessionStart(cwd, sessionId);
+
+  // 4. Start notify fallback watcher (best effort)
+  try {
+    await startNotifyFallbackWatcher(cwd);
+  } catch {
+    // Non-fatal
+  }
 }
 
 /**
@@ -226,6 +279,20 @@ function runCodex(cwd: string, args: string[]): void {
  * Each step is independently fault-tolerant (try/catch per step).
  */
 async function postLaunch(cwd: string, sessionId: string): Promise<void> {
+  // 0. Flush fallback watcher once to reduce race with fast codex exit.
+  try {
+    await flushNotifyFallbackOnce(cwd);
+  } catch {
+    // Non-fatal
+  }
+
+  // 0. Stop notify fallback watcher first.
+  try {
+    await stopNotifyFallbackWatcher(cwd);
+  } catch {
+    // Non-fatal
+  }
+
   // 1. Strip AGENTS.md overlay
   try {
     await stripOverlay(join(cwd, 'AGENTS.md'), cwd);
@@ -243,17 +310,19 @@ async function postLaunch(cwd: string, sessionId: string): Promise<void> {
   // 3. Cancel any still-active modes
   try {
     const { readdir, writeFile, readFile } = await import('fs/promises');
-    const stateDir = join(cwd, '.omx', 'state');
-    const files = await readdir(stateDir).catch(() => [] as string[]);
-    for (const file of files) {
-      if (!file.endsWith('-state.json') || file === 'session.json') continue;
-      const path = join(stateDir, file);
-      const content = await readFile(path, 'utf-8');
-      const state = JSON.parse(content);
-      if (state.active) {
-        state.active = false;
-        state.completed_at = new Date().toISOString();
-        await writeFile(path, JSON.stringify(state, null, 2));
+    const scopedDirs = [getBaseStateDir(cwd), getStateDir(cwd, sessionId)];
+    for (const stateDir of scopedDirs) {
+      const files = await readdir(stateDir).catch(() => [] as string[]);
+      for (const file of files) {
+        if (!file.endsWith('-state.json') || file === 'session.json') continue;
+        const path = join(stateDir, file);
+        const content = await readFile(path, 'utf-8');
+        const state = JSON.parse(content);
+        if (state.active) {
+          state.active = false;
+          state.completed_at = new Date().toISOString();
+          await writeFile(path, JSON.stringify(state, null, 2));
+        }
       }
     }
   } catch (err) {
@@ -261,25 +330,101 @@ async function postLaunch(cwd: string, sessionId: string): Promise<void> {
   }
 }
 
+function notifyFallbackPidPath(cwd: string): string {
+  return join(cwd, '.omx', 'state', 'notify-fallback.pid');
+}
+
+async function startNotifyFallbackWatcher(cwd: string): Promise<void> {
+  if (process.env.OMX_NOTIFY_FALLBACK === '0') return;
+
+  const { mkdir, writeFile, readFile } = await import('fs/promises');
+  const pidPath = notifyFallbackPidPath(cwd);
+  const pkgRoot = getPackageRoot();
+  const watcherScript = join(pkgRoot, 'scripts', 'notify-fallback-watcher.js');
+  const notifyScript = join(pkgRoot, 'scripts', 'notify-hook.js');
+  if (!existsSync(watcherScript) || !existsSync(notifyScript)) return;
+
+  // Stop stale watcher from a previous run.
+  if (existsSync(pidPath)) {
+    try {
+      const prev = JSON.parse(await readFile(pidPath, 'utf-8')) as { pid?: number };
+      if (prev && typeof prev.pid === 'number') {
+        process.kill(prev.pid, 'SIGTERM');
+      }
+    } catch {
+      // Ignore stale PID parse/kill errors.
+    }
+  }
+
+  await mkdir(join(cwd, '.omx', 'state'), { recursive: true }).catch(() => {});
+  const child = spawn(
+    process.execPath,
+    [watcherScript, '--cwd', cwd, '--notify-script', notifyScript],
+    {
+      cwd,
+      detached: true,
+      stdio: 'ignore',
+    }
+  );
+  child.unref();
+
+  await writeFile(
+    pidPath,
+    JSON.stringify({ pid: child.pid, started_at: new Date().toISOString() }, null, 2)
+  ).catch(() => {});
+}
+
+async function stopNotifyFallbackWatcher(cwd: string): Promise<void> {
+  const { readFile, unlink } = await import('fs/promises');
+  const pidPath = notifyFallbackPidPath(cwd);
+  if (!existsSync(pidPath)) return;
+
+  try {
+    const parsed = JSON.parse(await readFile(pidPath, 'utf-8')) as { pid?: number };
+    if (parsed && typeof parsed.pid === 'number') {
+      process.kill(parsed.pid, 'SIGTERM');
+    }
+  } catch {
+    // Ignore stop errors.
+  }
+
+  await unlink(pidPath).catch(() => {});
+}
+
+async function flushNotifyFallbackOnce(cwd: string): Promise<void> {
+  const { spawnSync } = await import('child_process');
+  const pkgRoot = getPackageRoot();
+  const watcherScript = join(pkgRoot, 'scripts', 'notify-fallback-watcher.js');
+  const notifyScript = join(pkgRoot, 'scripts', 'notify-hook.js');
+  if (!existsSync(watcherScript) || !existsSync(notifyScript)) return;
+  spawnSync(process.execPath, [watcherScript, '--once', '--cwd', cwd, '--notify-script', notifyScript], {
+    cwd,
+    stdio: 'ignore',
+    timeout: 3000,
+  });
+}
+
 async function cancelModes(): Promise<void> {
   const { readdir, writeFile, readFile } = await import('fs/promises');
-  const { join } = await import('path');
-  const stateDir = join(process.cwd(), '.omx', 'state');
+  const cwd = process.cwd();
   try {
-    const files = await readdir(stateDir);
-    const states = files.filter(f => f.endsWith('-state.json'));
+    const scopedDirs = await getAllScopedStateDirs(cwd);
     let cancelled = 0;
-    for (const file of states) {
-      const path = join(stateDir, file);
-      const content = await readFile(path, 'utf-8');
-      const state = JSON.parse(content);
-      if (state.active) {
-        state.active = false;
-        state.current_phase = 'cancelled';
-        state.completed_at = new Date().toISOString();
-        await writeFile(path, JSON.stringify(state, null, 2));
-        cancelled++;
-        console.log(`Cancelled: ${file.replace('-state.json', '')}`);
+    for (const stateDir of scopedDirs) {
+      const files = await readdir(stateDir).catch(() => [] as string[]);
+      for (const file of files) {
+        if (!file.endsWith('-state.json') || file === 'session.json') continue;
+        const path = join(stateDir, file);
+        const content = await readFile(path, 'utf-8');
+        const state = JSON.parse(content);
+        if (state.active) {
+          state.active = false;
+          state.current_phase = 'cancelled';
+          state.completed_at = new Date().toISOString();
+          await writeFile(path, JSON.stringify(state, null, 2));
+          cancelled++;
+          console.log(`Cancelled: ${file.replace('-state.json', '')}`);
+        }
       }
     }
     if (cancelled === 0) {

@@ -201,9 +201,11 @@ The AGENTS.md orchestration brain detects keywords and activates skills automati
 ## CLI Commands
 
 ```bash
+omx --yolo    # Launch Codex with low-friction execution flags
+omx --madmax  # Launch Codex with full approval+sandbox bypass (dangerous)
 omx setup     # Install and configure OMX
 omx doctor    # Run 9 installation health checks
-omx tmux-hook # Manage tmux prompt-injection workaround (init/status/validate)
+omx tmux-hook # Manage tmux prompt-injection workaround (init/status/validate/test)
 omx status    # Show active mode state
 omx cancel    # Cancel active execution modes
 omx hud       # Show HUD statusline (--watch, --json, --preset=NAME)
@@ -211,12 +213,15 @@ omx version   # Print version info
 omx help      # Usage guide
 ```
 
-## Auto-Update Behavior
+## Launch Options
 
-OMX checks for package updates at launch (throttled) and, by default, attempts to update automatically when a newer version is available.
+- `--yolo`
+  Launch shorthand for `omx launch --yolo`.
 
-- `OMX_AUTO_UPDATE=0` disables auto-update checks entirely.
-- `OMX_AUTO_UPDATE_PROMPT=1` restores interactive confirmation before updating.
+- `--madmax`
+  Launches Codex with `--dangerously-bypass-approvals-and-sandbox` (native Codex flag).
+  This bypasses approval prompts and sandboxing.
+  Use only in externally sandboxed/trusted environments.
 
 ## Tmux Injection Workaround (Opt-In)
 
@@ -246,9 +251,19 @@ Validate tmux target:
 omx tmux-hook validate
 ```
 
+Run an end-to-end synthetic hook turn:
+
+```bash
+omx tmux-hook test
+```
+
 Config file: `.omx/tmux-hook.json`  
 Runtime state: `.omx/state/tmux-hook-state.json`  
 Structured logs: `.omx/logs/tmux-hook-YYYY-MM-DD.jsonl`
+
+Compatibility note:
+- OMX writes `notify` as a TOML array by default.
+- Override with `OMX_NOTIFY_FORMAT=string` before `omx setup` for environments that require string notify syntax.
 
 ## Setup Details
 

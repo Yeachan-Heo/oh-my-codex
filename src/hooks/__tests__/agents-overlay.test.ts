@@ -46,6 +46,17 @@ describe('generateOverlay', () => {
     assert.ok(overlay.includes('iteration 3/10'));
   });
 
+  it('generates overlay with session-scoped active modes for current session', async () => {
+    await mkdir(join(tempDir, '.omx', 'state', 'sessions', 'sess1'), { recursive: true });
+    await writeFile(
+      join(tempDir, '.omx', 'state', 'sessions', 'sess1', 'team-state.json'),
+      JSON.stringify({ active: true, iteration: 1, max_iterations: 5, current_phase: 'running' })
+    );
+    const overlay = await generateOverlay(tempDir, 'sess1');
+    assert.ok(overlay.includes('team'));
+    assert.ok(overlay.includes('iteration 1/5'));
+  });
+
   it('generates overlay with notepad priority content', async () => {
     await writeFile(
       join(tempDir, '.omx', 'notepad.md'),

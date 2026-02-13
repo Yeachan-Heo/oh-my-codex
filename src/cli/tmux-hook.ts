@@ -2,6 +2,7 @@ import { existsSync } from 'fs';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
+import { getPackageRoot } from '../utils/package.js';
 
 type TmuxTargetType = 'session' | 'pane';
 
@@ -43,6 +44,7 @@ Usage:
   omx tmux-hook init       Create .omx/tmux-hook.json (disabled by default)
   omx tmux-hook status     Show config + runtime state summary
   omx tmux-hook validate   Validate config and tmux target reachability
+  omx tmux-hook test       Run a synthetic notify-hook turn (end-to-end)
 `;
 
 export async function tmuxHookCommand(args: string[]): Promise<void> {
@@ -56,6 +58,9 @@ export async function tmuxHookCommand(args: string[]): Promise<void> {
       return;
     case 'validate':
       await validateTmuxHookConfig();
+      return;
+    case 'test':
+      await testTmuxHook(args.slice(1));
       return;
     case 'help':
     case '--help':
@@ -271,3 +276,39 @@ async function validateTmuxHookConfig(): Promise<void> {
   }
 }
 
+async function testTmuxHook(args: string[]): Promise<void> {
+  const cwd = process.cwd();
+  const pkgRoot = getPackageRoot();
+  const notifyHook = join(pkgRoot, 'scripts', 'notify-hook.js');
+  if (!existsSync(notifyHook)) {
+    throw new Error(`notify-hook.js not found at ${notifyHook}`);
+  }
+
+  const threadId = `tmux-test-${Date.now()}`;
+  const turnId = `turn-${Date.now()}`;
+  const message = args.join(' ').trim() || 'tmux-hook test payload';
+  const payload = {
+    type: 'agent-turn-complete',
+    cwd,
+    'thread-id': threadId,
+    'turn-id': turnId,
+    'input-messages': ['omx tmux-hook test'],
+    'last-assistant-message': message,
+  };
+
+  const result = spawnSync(process.execPath, [notifyHook, JSON.stringify(payload)], {
+    cwd,
+    encoding: 'utf-8',
+  });
+  if (result.error) {
+    throw new Error(`failed to run notify-hook: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(`notify-hook exited ${result.status}: ${(result.stderr || result.stdout || '').trim()}`);
+  }
+
+  console.log('tmux-hook test: notify-hook executed.');
+  console.log(`thread_id=${threadId}`);
+  console.log(`turn_id=${turnId}`);
+  console.log('Check: .omx/logs/tmux-hook-YYYY-MM-DD.jsonl for skip/reason codes.');
+}
