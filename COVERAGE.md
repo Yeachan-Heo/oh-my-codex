@@ -1,7 +1,7 @@
 # oh-my-codex Feature Coverage Matrix
 
 **Target: >=90% parity with oh-my-claudecode (excluding MCP tools)**
-**Last Updated:** 2026-02-12
+**Last Updated:** 2026-02-13
 
 ## Coverage Summary
 
@@ -10,7 +10,7 @@
 | Agent Definitions | 30 | 30 | 100% |
 | Skills/Commands | 39 | 39 | 100% |
 | AGENTS.md (CLAUDE.md equiv) | 1 | 1 | 100% |
-| CLI (setup/doctor/help/etc) | 6 | 6 | 100% |
+| CLI (setup/doctor/help/etc) | 7 | 7 | 100% |
 | Config Generation | 1 | 1 | 100% |
 | Mode State Management | 9 modes | 9 modes | 100% |
 | Project Memory | 4 tools | 4 tools | 100% |
@@ -21,7 +21,7 @@
 | Verification Protocol | 1 | 1 | 100% |
 | Notification System | 3 channels | 3 channels | 100% |
 | Keyword Detection | 17 keywords | 17 keywords | 100% |
-| Hook Pipeline | 9 events | 5 full + 4 partial | ~78% |
+| Hook Pipeline | 9 events | 6 full + 3 partial | ~89% |
 | HUD/Status Line | 1 | 1 (built-in + CLI) | 100% |
 | Subagent Tracking | 1 | partial (via collab) | 50% |
 | Python REPL | 1 tool | 0 tools | 0% |
@@ -108,19 +108,21 @@
 | swarm | DONE | ~/.agents/skills/swarm/SKILL.md |
 | learn-about-omx | DONE | ~/.agents/skills/learn-about-omx/SKILL.md |
 
-### Hook Pipeline (5 full + 4 partial out of 9 = ~78%)
+### Hook Pipeline (6 full + 3 partial out of 9 = ~89%)
 
 | OMC Hook Event | OMX Equivalent | Capability |
 |---------------|---------------|------------|
 | SessionStart | AGENTS.md native + runtime overlay (preLaunch) | FULL+ |
 | PreToolUse | AGENTS.md inline guidance | PARTIAL (no interception) |
-| PostToolUse | notify config hook | PARTIAL (no context injection) |
+| PostToolUse | notify config hook + tmux prompt injection workaround | FULL* |
 | UserPromptSubmit | AGENTS.md self-detection | PARTIAL (model-side detection) |
 | SubagentStart | Codex CLI collab native | FULL |
 | SubagentStop | Codex CLI collab native | FULL |
 | PreCompact | AGENTS.md overlay compaction protocol | PARTIAL (instructions only) |
 | Stop | notify config + postLaunch cleanup | FULL |
 | SessionEnd | omx postLaunch lifecycle phase | PARTIAL (post-exit cleanup) |
+
+`*` FULL via terminal automation workaround (opt-in `.omx/tmux-hook.json`), not native hook context injection.
 
 ### Infrastructure
 
@@ -146,7 +148,7 @@
 ## Known Gaps
 
 1. **Pre-tool interception** - Cannot intercept tool calls before execution. Workaround: AGENTS.md instructs model to self-moderate.
-2. **Context injection from hooks** - Cannot inject context back into conversation from hooks. Workaround: state files + AGENTS.md instructions.
+2. **Native context injection from hooks** - Not available in Codex hooks API. Workaround: opt-in tmux prompt injection (`omx tmux-hook`) plus state files + AGENTS.md instructions.
 3. **PreCompact hook** - No event interception. Workaround: AGENTS.md overlay includes compaction survival instructions that tell the model to checkpoint state before compaction.
 4. **Session end** - No real-time event. Workaround: `omx` wrapper detects Codex exit via blocking execSync and runs postLaunch cleanup (overlay strip, session archive, mode cancellation).
 5. **Full LSP protocol** - LSP tools use pragmatic wrappers (tsc, grep, regex) rather than full LSP protocol. Missing: lsp_goto_definition, lsp_prepare_rename, lsp_rename, lsp_code_actions, lsp_code_action_resolve (5 tools need real LSP).

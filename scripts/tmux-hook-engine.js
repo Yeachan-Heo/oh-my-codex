@@ -1,0 +1,127 @@
+import { createHash } from 'crypto';
+
+export const DEFAULT_ALLOWED_MODES = ['ralph', 'ultrawork', 'team'];
+export const DEFAULT_MARKER = '[OMX_TMUX_INJECT]';
+
+function asPositiveInteger(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  if (value < 0) return null;
+  return Math.floor(value);
+}
+
+export function normalizeTmuxHookConfig(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      enabled: false,
+      valid: false,
+      reason: 'missing_config',
+      target: null,
+      allowed_modes: DEFAULT_ALLOWED_MODES,
+      cooldown_ms: 15000,
+      max_injections_per_session: 200,
+      prompt_template: `Continue from current mode state. ${DEFAULT_MARKER}`,
+      marker: DEFAULT_MARKER,
+      dry_run: false,
+      log_level: 'info',
+    };
+  }
+
+  const allowedModes = Array.isArray(raw.allowed_modes)
+    ? raw.allowed_modes.filter(mode => typeof mode === 'string' && mode.trim() !== '')
+    : [];
+
+  const targetIsValid = raw.target
+    && typeof raw.target === 'object'
+    && (raw.target.type === 'session' || raw.target.type === 'pane')
+    && typeof raw.target.value === 'string'
+    && raw.target.value.trim() !== '';
+
+  const cooldown = asPositiveInteger(raw.cooldown_ms);
+  const maxPerSession = asPositiveInteger(raw.max_injections_per_session);
+
+  const marker = typeof raw.marker === 'string' && raw.marker.trim() !== ''
+    ? raw.marker
+    : DEFAULT_MARKER;
+
+  const promptTemplate = typeof raw.prompt_template === 'string' && raw.prompt_template.trim() !== ''
+    ? raw.prompt_template
+    : `Continue from current mode state. ${marker}`;
+
+  const logLevel = raw.log_level === 'error' || raw.log_level === 'debug' ? raw.log_level : 'info';
+
+  return {
+    enabled: raw.enabled === true,
+    valid: targetIsValid,
+    reason: targetIsValid ? 'ok' : 'invalid_target',
+    target: targetIsValid ? { type: raw.target.type, value: raw.target.value } : null,
+    allowed_modes: allowedModes.length > 0 ? allowedModes : DEFAULT_ALLOWED_MODES,
+    cooldown_ms: cooldown === null ? 15000 : cooldown,
+    max_injections_per_session: maxPerSession === null || maxPerSession === 0 ? 200 : maxPerSession,
+    prompt_template: promptTemplate,
+    marker,
+    dry_run: raw.dry_run === true,
+    log_level: logLevel,
+  };
+}
+
+export function pickActiveMode(activeModes, allowedModes) {
+  const activeSet = new Set((activeModes || []).filter(mode => typeof mode === 'string'));
+  for (const mode of allowedModes || []) {
+    if (activeSet.has(mode)) return mode;
+  }
+  return null;
+}
+
+export function buildDedupeKey({ threadId, turnId, mode, prompt }) {
+  const keyBase = `${threadId || 'no-thread'}|${turnId || 'no-turn'}|${mode || 'no-mode'}|${prompt || ''}`;
+  return createHash('sha256').update(keyBase).digest('hex');
+}
+
+export function evaluateInjectionGuards({
+  config,
+  mode,
+  sourceText,
+  assistantMessage,
+  threadId,
+  turnId,
+  sessionKey,
+  now,
+  state,
+}) {
+  if (!config.enabled) return { allow: false, reason: 'disabled' };
+  if (!config.valid || !config.target) return { allow: false, reason: 'invalid_config' };
+  if (!mode) return { allow: false, reason: 'mode_not_allowed' };
+
+  const source = typeof sourceText === 'string' ? sourceText : '';
+  if (config.marker && typeof assistantMessage === 'string' && assistantMessage.includes(config.marker)) {
+    return { allow: false, reason: 'loop_guard_output_marker' };
+  }
+  if (config.marker && source.includes(config.marker)) {
+    return { allow: false, reason: 'loop_guard_input_marker' };
+  }
+
+  const dedupeKey = buildDedupeKey({ threadId, turnId, mode, prompt: source });
+  const recentKeys = state.recent_keys && typeof state.recent_keys === 'object' ? state.recent_keys : {};
+  if (recentKeys[dedupeKey]) {
+    return { allow: false, reason: 'duplicate_event', dedupeKey };
+  }
+
+  const sessions = state.session_counts && typeof state.session_counts === 'object' ? state.session_counts : {};
+  const key = typeof sessionKey === 'string' && sessionKey.trim() !== '' ? sessionKey : 'unknown';
+  const sessionInjections = typeof sessions[key] === 'number' ? sessions[key] : 0;
+  if (sessionInjections >= config.max_injections_per_session) {
+    return { allow: false, reason: 'session_cap_reached', dedupeKey };
+  }
+
+  const lastInjectionTs = typeof state.last_injection_ts === 'number' ? state.last_injection_ts : 0;
+  if (config.cooldown_ms > 0 && lastInjectionTs > 0 && now - lastInjectionTs < config.cooldown_ms) {
+    return { allow: false, reason: 'cooldown_active', dedupeKey };
+  }
+
+  return { allow: true, reason: 'ok', dedupeKey };
+}
+
+export function buildSendKeysArgv({ paneTarget, prompt, dryRun }) {
+  if (dryRun) return null;
+  return ['send-keys', '-t', paneTarget, prompt, 'Enter'];
+}

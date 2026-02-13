@@ -15,6 +15,13 @@
 import { writeFile, appendFile, mkdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { spawn } from 'child_process';
+import {
+  normalizeTmuxHookConfig,
+  pickActiveMode,
+  evaluateInjectionGuards,
+  buildSendKeysArgv,
+} from './tmux-hook-engine.js';
 
 function asNumber(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -28,35 +35,58 @@ function asNumber(value) {
 function getSessionTokenUsage(payload) {
   const usage = payload.usage || payload['usage'] || payload.token_usage || payload['token-usage'] || {};
 
-  const input = asNumber(
-    usage.session_input_tokens
-    ?? usage.input_tokens
-    ?? usage.total_input_tokens
-    ?? payload.session_input_tokens
-    ?? payload.input_tokens
-    ?? payload.total_input_tokens
-  );
-  const output = asNumber(
-    usage.session_output_tokens
-    ?? usage.output_tokens
-    ?? usage.total_output_tokens
-    ?? payload.session_output_tokens
-    ?? payload.output_tokens
-    ?? payload.total_output_tokens
-  );
-  const total = asNumber(
-    usage.session_total_tokens
-    ?? usage.total_tokens
-    ?? payload.session_total_tokens
-    ?? payload.total_tokens
-  );
+  function firstTokenMatch(candidates) {
+    for (const [raw, cumulative] of candidates) {
+      const value = asNumber(raw);
+      if (value !== null) return { value, cumulative };
+    }
+    return { value: null, cumulative: false };
+  }
+
+  const inputMatch = firstTokenMatch([
+    [usage.session_input_tokens, true],
+    [usage.input_tokens, false],
+    [usage.total_input_tokens, true],
+    [usage.prompt_tokens, false],
+    [usage.promptTokens, false],
+    [payload.session_input_tokens, true],
+    [payload.input_tokens, false],
+    [payload.total_input_tokens, true],
+    [payload.prompt_tokens, false],
+    [payload.promptTokens, false],
+  ]);
+  const outputMatch = firstTokenMatch([
+    [usage.session_output_tokens, true],
+    [usage.output_tokens, false],
+    [usage.total_output_tokens, true],
+    [usage.completion_tokens, false],
+    [usage.completionTokens, false],
+    [payload.session_output_tokens, true],
+    [payload.output_tokens, false],
+    [payload.total_output_tokens, true],
+    [payload.completion_tokens, false],
+    [payload.completionTokens, false],
+  ]);
+  const totalMatch = firstTokenMatch([
+    [usage.session_total_tokens, true],
+    [usage.total_tokens, true],
+    [payload.session_total_tokens, true],
+    [payload.total_tokens, true],
+  ]);
+
+  const input = inputMatch.value;
+  const output = outputMatch.value;
+  const total = totalMatch.value;
 
   if (input === null && output === null && total === null) return null;
 
   return {
     input,
+    inputCumulative: inputMatch.cumulative,
     output,
-    total: total ?? ((input ?? 0) + (output ?? 0)),
+    outputCumulative: outputMatch.cumulative,
+    total,
+    totalCumulative: totalMatch.cumulative,
   };
 }
 
@@ -111,6 +141,271 @@ function getQuotaUsage(payload) {
 
   if (fiveHourLimitPct === null && weeklyLimitPct === null) return null;
   return { fiveHourLimitPct, weeklyLimitPct };
+}
+
+function safeString(value, fallback = '') {
+  if (typeof value === 'string') return value;
+  if (value == null) return fallback;
+  return String(value);
+}
+
+function normalizeInputMessages(payload) {
+  const items = payload['input-messages'] || payload.input_messages || [];
+  if (!Array.isArray(items)) return [];
+  return items.map(item => safeString(item));
+}
+
+function renderPrompt(template, context) {
+  return safeString(template)
+    .replaceAll('{{mode}}', context.mode)
+    .replaceAll('{{thread_id}}', context.threadId)
+    .replaceAll('{{turn_id}}', context.turnId)
+    .replaceAll('{{timestamp}}', context.timestamp);
+}
+
+function normalizeTmuxState(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      total_injections: 0,
+      session_counts: {},
+      recent_keys: {},
+      last_injection_ts: 0,
+      last_reason: 'init',
+      last_event_at: '',
+    };
+  }
+  return {
+    total_injections: asNumber(raw.total_injections) ?? 0,
+    session_counts: raw.session_counts && typeof raw.session_counts === 'object' ? raw.session_counts : {},
+    recent_keys: raw.recent_keys && typeof raw.recent_keys === 'object' ? raw.recent_keys : {},
+    last_injection_ts: asNumber(raw.last_injection_ts) ?? 0,
+    last_reason: safeString(raw.last_reason),
+    last_event_at: safeString(raw.last_event_at),
+  };
+}
+
+function pruneRecentKeys(recentKeys, now) {
+  const pruned = {};
+  const minTs = now - (24 * 60 * 60 * 1000);
+  const entries = Object.entries(recentKeys || {}).slice(-1000);
+  for (const [key, value] of entries) {
+    const ts = asNumber(value);
+    if (ts !== null && ts >= minTs) pruned[key] = ts;
+  }
+  return pruned;
+}
+
+function readJsonIfExists(path, fallback) {
+  return readFile(path, 'utf-8')
+    .then(content => JSON.parse(content))
+    .catch(() => fallback);
+}
+
+function runProcess(command, args, timeoutMs = 3000) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let finished = false;
+
+    const timer = setTimeout(() => {
+      if (finished) return;
+      finished = true;
+      child.kill('SIGTERM');
+      reject(new Error(`timeout after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    child.stdout.on('data', chunk => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on('data', chunk => {
+      stderr += chunk.toString();
+    });
+    child.on('error', err => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', code => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve({ stdout, stderr, code });
+      } else {
+        reject(new Error(stderr.trim() || `${command} exited ${code}`));
+      }
+    });
+  });
+}
+
+async function resolvePaneTarget(target) {
+  if (!target) return null;
+  if (target.type === 'pane') return target.value;
+  try {
+    const result = await runProcess('tmux', ['list-panes', '-t', target.value, '-F', '#{pane_id} #{pane_active}']);
+    const lines = result.stdout
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean);
+    if (lines.length === 0) return null;
+    const active = lines.find(line => line.endsWith(' 1')) || lines[0];
+    const paneId = active.split(' ')[0];
+    return paneId || null;
+  } catch {
+    return null;
+  }
+}
+
+async function logTmuxHookEvent(logsDir, event) {
+  const file = join(logsDir, `tmux-hook-${new Date().toISOString().split('T')[0]}.jsonl`);
+  await appendFile(file, JSON.stringify(event) + '\n').catch(() => {});
+}
+
+async function handleTmuxInjection({
+  payload,
+  cwd,
+  stateDir,
+  logsDir,
+}) {
+  const omxDir = join(cwd, '.omx');
+  const configPath = join(omxDir, 'tmux-hook.json');
+  const hookStatePath = join(stateDir, 'tmux-hook-state.json');
+  const nowIso = new Date().toISOString();
+  const now = Date.now();
+
+  const rawConfig = await readJsonIfExists(configPath, null);
+  const config = normalizeTmuxHookConfig(rawConfig);
+
+  const turnId = safeString(payload['turn-id'] || payload.turn_id || '');
+  const threadId = safeString(payload['thread-id'] || payload.thread_id || '');
+  const sessionKey = threadId || 'unknown';
+  const assistantMessage = safeString(payload['last-assistant-message'] || payload.last_assistant_message || '');
+  const inputMessages = normalizeInputMessages(payload);
+  const sourceText = inputMessages.join('\n');
+  const state = normalizeTmuxState(await readJsonIfExists(hookStatePath, null));
+  state.recent_keys = pruneRecentKeys(state.recent_keys, now);
+
+  const activeModes = [];
+  try {
+    const files = await readdir(stateDir);
+    for (const file of files) {
+      if (!file.endsWith('-state.json') || file === 'tmux-hook-state.json') continue;
+      const path = join(stateDir, file);
+      const parsed = JSON.parse(await readFile(path, 'utf-8'));
+      if (parsed && parsed.active) {
+        activeModes.push(file.replace('-state.json', ''));
+      }
+    }
+  } catch {
+    // Non-fatal
+  }
+
+  const mode = pickActiveMode(activeModes, config.allowed_modes);
+  const guard = evaluateInjectionGuards({
+    config,
+    mode,
+    sourceText,
+    assistantMessage,
+    threadId,
+    turnId,
+    sessionKey,
+    now,
+    state,
+  });
+
+  const baseLog = {
+    timestamp: nowIso,
+    type: 'tmux_hook',
+    mode,
+    reason: guard.reason,
+    turn_id: turnId,
+    thread_id: threadId,
+    target: config.target,
+    dry_run: config.dry_run,
+    sent: false,
+  };
+
+  if (!guard.allow) {
+    state.last_reason = guard.reason;
+    state.last_event_at = nowIso;
+    await writeFile(hookStatePath, JSON.stringify(state, null, 2)).catch(() => {});
+    if (config.enabled || config.log_level === 'debug') {
+      await logTmuxHookEvent(logsDir, { ...baseLog, event: 'injection_skipped' });
+    }
+    return;
+  }
+
+  const prompt = renderPrompt(config.prompt_template, {
+    mode: mode || 'unknown',
+    threadId,
+    turnId,
+    timestamp: nowIso,
+  });
+  const paneTarget = await resolvePaneTarget(config.target);
+  if (!paneTarget) {
+    state.last_reason = 'target_not_found';
+    state.last_event_at = nowIso;
+    await writeFile(hookStatePath, JSON.stringify(state, null, 2)).catch(() => {});
+    await logTmuxHookEvent(logsDir, { ...baseLog, event: 'injection_skipped', reason: 'target_not_found' });
+    return;
+  }
+
+  const argv = buildSendKeysArgv({
+    paneTarget,
+    prompt,
+    dryRun: config.dry_run,
+  });
+
+  const updateStateForAttempt = (success, reason) => {
+    if (guard.dedupeKey) state.recent_keys[guard.dedupeKey] = now;
+    state.last_reason = reason;
+    state.last_event_at = nowIso;
+    if (success) {
+      state.last_injection_ts = now;
+      state.total_injections = (asNumber(state.total_injections) ?? 0) + 1;
+      state.session_counts[sessionKey] = (asNumber(state.session_counts[sessionKey]) ?? 0) + 1;
+      state.last_target = paneTarget;
+      state.last_prompt_preview = prompt.slice(0, 120);
+    }
+  };
+
+  if (config.dry_run) {
+    updateStateForAttempt(false, 'dry_run');
+    await writeFile(hookStatePath, JSON.stringify(state, null, 2)).catch(() => {});
+    await logTmuxHookEvent(logsDir, {
+      ...baseLog,
+      event: 'injection_dry_run',
+      reason: 'dry_run',
+      pane_target: paneTarget,
+      argv,
+    });
+    return;
+  }
+
+  try {
+    await runProcess('tmux', argv, 3000);
+    updateStateForAttempt(true, 'injection_sent');
+    await writeFile(hookStatePath, JSON.stringify(state, null, 2)).catch(() => {});
+    await logTmuxHookEvent(logsDir, {
+      ...baseLog,
+      event: 'injection_sent',
+      reason: 'ok',
+      pane_target: paneTarget,
+      sent: true,
+    });
+  } catch (err) {
+    updateStateForAttempt(false, 'send_failed');
+    await writeFile(hookStatePath, JSON.stringify(state, null, 2)).catch(() => {});
+    await logTmuxHookEvent(logsDir, {
+      ...baseLog,
+      event: 'injection_error',
+      reason: 'send_failed',
+      pane_target: paneTarget,
+      error: err instanceof Error ? err.message : safeString(err),
+    });
+  }
 }
 
 async function main() {
@@ -191,10 +486,26 @@ async function main() {
     metrics.last_activity = new Date().toISOString();
 
     if (tokenUsage) {
-      if (tokenUsage.input !== null) metrics.session_input_tokens = tokenUsage.input;
-      if (tokenUsage.output !== null) metrics.session_output_tokens = tokenUsage.output;
+      if (tokenUsage.input !== null) {
+        if (tokenUsage.inputCumulative) {
+          metrics.session_input_tokens = tokenUsage.input;
+        } else {
+          metrics.session_input_tokens = (metrics.session_input_tokens || 0) + tokenUsage.input;
+        }
+      }
+      if (tokenUsage.output !== null) {
+        if (tokenUsage.outputCumulative) {
+          metrics.session_output_tokens = tokenUsage.output;
+        } else {
+          metrics.session_output_tokens = (metrics.session_output_tokens || 0) + tokenUsage.output;
+        }
+      }
       if (tokenUsage.total !== null) {
-        metrics.session_total_tokens = tokenUsage.total;
+        if (tokenUsage.totalCumulative) {
+          metrics.session_total_tokens = tokenUsage.total;
+        } else {
+          metrics.session_total_tokens = (metrics.session_total_tokens || 0) + tokenUsage.total;
+        }
       } else {
         metrics.session_total_tokens = (metrics.session_input_tokens || 0) + (metrics.session_output_tokens || 0);
       }
@@ -224,6 +535,13 @@ async function main() {
     hudState.last_agent_output = (payload['last-assistant-message'] || payload.last_assistant_message || '')
       .slice(0, 100);
     await writeFile(hudStatePath, JSON.stringify(hudState, null, 2));
+  } catch {
+    // Non-critical
+  }
+
+  // 5. Optional tmux prompt injection workaround (non-fatal, opt-in)
+  try {
+    await handleTmuxInjection({ payload, cwd, stateDir, logsDir });
   } catch {
     // Non-critical
   }

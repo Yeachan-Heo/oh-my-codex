@@ -69,7 +69,7 @@ function getOmxConfigBlock(pkgRoot: string): string {
     '',
     '# OMX TUI StatusLine (Codex CLI v0.101.0+)',
     '[tui]',
-    'status_line = ["model-with-reasoning", "git-branch", "context-remaining", "used-tokens", "five-hour-limit"]',
+    'status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit"]',
     '',
   ].join('\n');
 }

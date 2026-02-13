@@ -8,7 +8,9 @@ import { join } from 'path';
 import { setup } from './setup.js';
 import { doctor } from './doctor.js';
 import { version } from './version.js';
+import { tmuxHookCommand } from './tmux-hook.js';
 import { hudCommand } from '../hud/index.js';
+import { maybeCheckAndPromptUpdate } from './update.js';
 import { generateOverlay, applyOverlay, stripOverlay } from '../hooks/agents-overlay.js';
 import {
   readSessionState, isSessionStale, writeSessionStart, writeSessionEnd, resetSessionMetrics,
@@ -22,19 +24,28 @@ Usage:
   omx setup     Install skills, prompts, MCP servers, and AGENTS.md
   omx doctor    Check installation health
   omx version   Show version information
+  omx tmux-hook Manage tmux prompt injection workaround (init|status|validate)
   omx hud       Show HUD statusline (--watch, --json, --preset=NAME)
   omx help      Show this help message
   omx status    Show active modes and state
   omx cancel    Cancel active execution modes
 
 Options:
+  --yolo        Launch Codex in yolo mode (shorthand for: omx launch --yolo)
   --force       Force reinstall (overwrite existing files)
   --dry-run     Show what would be done without doing it
   --verbose     Show detailed output
 `;
 
 export async function main(args: string[]): Promise<void> {
-  const command = args[0] || 'launch';
+  const knownCommands = new Set([
+    'launch', 'setup', 'doctor', 'version', 'tmux-hook', 'hud', 'status', 'cancel', 'help', '--help', '-h',
+  ]);
+  const firstArg = args[0];
+  const command = !firstArg || firstArg.startsWith('--') ? 'launch' : firstArg;
+  const launchArgs = command === 'launch'
+    ? (firstArg && firstArg.startsWith('--') ? args : args.slice(1))
+    : [];
   const flags = new Set(args.filter(a => a.startsWith('--')));
   const options = {
     force: flags.has('--force'),
@@ -45,7 +56,7 @@ export async function main(args: string[]): Promise<void> {
   try {
     switch (command) {
       case 'launch':
-        await launchWithHud(args.slice(1));
+        await launchWithHud(launchArgs);
         break;
       case 'setup':
         await setup(options);
@@ -59,6 +70,9 @@ export async function main(args: string[]): Promise<void> {
       case 'hud':
         await hudCommand(args.slice(1));
         break;
+      case 'tmux-hook':
+        await tmuxHookCommand(args.slice(1));
+        break;
       case 'status':
         await showStatus();
         break;
@@ -71,6 +85,10 @@ export async function main(args: string[]): Promise<void> {
         console.log(HELP);
         break;
       default:
+        if (firstArg && firstArg.startsWith('-') && !knownCommands.has(firstArg)) {
+          await launchWithHud(args);
+          break;
+        }
         console.error(`Unknown command: ${command}`);
         console.log(HELP);
         process.exit(1);
@@ -106,6 +124,12 @@ async function showStatus(): Promise<void> {
 async function launchWithHud(args: string[]): Promise<void> {
   const cwd = process.cwd();
   const sessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  try {
+    await maybeCheckAndPromptUpdate(cwd);
+  } catch {
+    // Non-fatal: update checks must never block launch
+  }
 
   // ── Phase 1: preLaunch ──────────────────────────────────────────────────
   try {

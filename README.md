@@ -203,12 +203,45 @@ The AGENTS.md orchestration brain detects keywords and activates skills automati
 ```bash
 omx setup     # Install and configure OMX
 omx doctor    # Run 9 installation health checks
+omx tmux-hook # Manage tmux prompt-injection workaround (init/status/validate)
 omx status    # Show active mode state
 omx cancel    # Cancel active execution modes
 omx hud       # Show HUD statusline (--watch, --json, --preset=NAME)
 omx version   # Print version info
 omx help      # Usage guide
 ```
+
+## Tmux Injection Workaround (Opt-In)
+
+OMX includes a production-safe workaround for Codex hook limitations: it can inject a continuation prompt into a tmux pane from `scripts/notify-hook.js`.
+
+Safety defaults:
+- Disabled by default (`enabled: false`)
+- No shell interpolation for tmux commands (argv-based subprocess execution)
+- Guardrails: allowed-mode gating, dedupe keying, cooldown, max injections/session, marker loop guard
+- Failures are non-fatal and logged
+
+Initialize config:
+
+```bash
+omx tmux-hook init
+```
+
+Check status/state:
+
+```bash
+omx tmux-hook status
+```
+
+Validate tmux target:
+
+```bash
+omx tmux-hook validate
+```
+
+Config file: `.omx/tmux-hook.json`  
+Runtime state: `.omx/state/tmux-hook-state.json`  
+Structured logs: `.omx/logs/tmux-hook-YYYY-MM-DD.jsonl`
 
 ## Setup Details
 
@@ -232,7 +265,7 @@ omx help      # Usage guide
 oh-my-codex/
   bin/omx.js              # CLI entry point
   src/
-    cli/                   # CLI commands (setup, doctor, version, status, cancel, hud, help)
+    cli/                   # CLI commands (setup, doctor, version, tmux-hook, status, cancel, hud, help)
     hud/                   # HUD statusline (state readers, ANSI renderer, presets)
     config/                # config.toml generator
     agents/                # Agent definitions registry
@@ -246,7 +279,7 @@ oh-my-codex/
   prompts/                 # 30 agent prompt files (*.md)
   skills/                  # 39 skill directories (*/SKILL.md)
   templates/               # AGENTS.md template
-  scripts/                 # notify-hook.js
+  scripts/                 # notify-hook.js, tmux-hook-engine.js
 ```
 
 ## Development
