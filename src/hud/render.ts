@@ -98,6 +98,19 @@ function renderTotalTurns(ctx: HudRenderContext): string | null {
   return dim(`total-turns:${ctx.metrics.total_turns}`);
 }
 
+function renderSessionDuration(ctx: HudRenderContext): string | null {
+  if (!ctx.session?.started_at) return null;
+  const startedAt = new Date(ctx.session.started_at).getTime();
+  const now = Date.now();
+  const diffSec = Math.round((now - startedAt) / 1000);
+
+  if (diffSec < 60) return dim(`session:${diffSec}s`);
+  if (diffSec < 3600) return dim(`session:${Math.round(diffSec / 60)}m`);
+  const hours = Math.floor(diffSec / 3600);
+  const mins = Math.round((diffSec % 3600) / 60);
+  return dim(`session:${hours}h${mins}m`);
+}
+
 // ============================================================================
 // Preset Configurations
 // ============================================================================
@@ -122,6 +135,7 @@ const FOCUSED_ELEMENTS: ElementRenderer[] = [
   renderEcomode,
   renderTurns,
   renderTokens,
+  renderSessionDuration,
   renderLastActivity,
 ];
 
@@ -135,6 +149,7 @@ const FULL_ELEMENTS: ElementRenderer[] = [
   renderEcomode,
   renderTurns,
   renderTokens,
+  renderSessionDuration,
   renderLastActivity,
   renderTotalTurns,
 ];

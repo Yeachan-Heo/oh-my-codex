@@ -57,6 +57,12 @@ export interface HudNotifyState {
   last_agent_output?: string;
 }
 
+/** Session state for HUD display */
+export interface SessionStateForHud {
+  session_id: string;
+  started_at: string;
+}
+
 /** All data needed to render one HUD frame */
 export interface HudRenderContext {
   version: string | null;
@@ -69,6 +75,7 @@ export interface HudRenderContext {
   pipeline: PipelineStateForHud | null;
   metrics: HudMetrics | null;
   hudNotify: HudNotifyState | null;
+  session: SessionStateForHud | null;
 }
 
 /** HUD preset names */

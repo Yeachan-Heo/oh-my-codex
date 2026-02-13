@@ -21,6 +21,7 @@ import type {
   HudNotifyState,
   HudConfig,
   HudRenderContext,
+  SessionStateForHud,
 } from './types.js';
 import { DEFAULT_HUD_CONFIG } from './types.js';
 
@@ -71,6 +72,11 @@ export async function readHudNotifyState(cwd: string): Promise<HudNotifyState | 
   return readJsonFile<HudNotifyState>(join(omxStateDir(cwd), 'hud-state.json'));
 }
 
+export async function readSessionState(cwd: string): Promise<SessionStateForHud | null> {
+  const state = await readJsonFile<SessionStateForHud>(join(omxStateDir(cwd), 'session.json'));
+  return state?.session_id ? state : null;
+}
+
 export async function readHudConfig(cwd: string): Promise<HudConfig> {
   const config = await readJsonFile<HudConfig>(join(cwd, '.omx', 'hud-config.json'));
   return config ?? DEFAULT_HUD_CONFIG;
@@ -105,7 +111,7 @@ export async function readAllState(cwd: string): Promise<HudRenderContext> {
   const version = readVersion();
   const gitBranch = readGitBranch(cwd);
 
-  const [ralph, ultrawork, autopilot, team, ecomode, pipeline, metrics, hudNotify] =
+  const [ralph, ultrawork, autopilot, team, ecomode, pipeline, metrics, hudNotify, session] =
     await Promise.all([
       readRalphState(cwd),
       readUltraworkState(cwd),
@@ -115,7 +121,8 @@ export async function readAllState(cwd: string): Promise<HudRenderContext> {
       readPipelineState(cwd),
       readMetrics(cwd),
       readHudNotifyState(cwd),
+      readSessionState(cwd),
     ]);
 
-  return { version, gitBranch, ralph, ultrawork, autopilot, team, ecomode, pipeline, metrics, hudNotify };
+  return { version, gitBranch, ralph, ultrawork, autopilot, team, ecomode, pipeline, metrics, hudNotify, session };
 }
