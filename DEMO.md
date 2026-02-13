@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Node.js >= 18
+- Node.js >= 20
 - [Codex CLI](https://github.com/openai/codex) installed (`npm install -g @openai/codex`)
 - OpenAI API key configured
 
@@ -58,7 +58,7 @@ oh-my-codex doctor
 ==================
 
   [OK] Codex CLI: installed
-  [OK] Node.js: v18+
+  [OK] Node.js: v20+
   [OK] Codex home: ~/.codex
   [OK] Config: config.toml has OMX entries
   [OK] Prompts: 30 agent prompts installed
@@ -81,19 +81,19 @@ codex
 Then use agent slash commands:
 
 ```
-> /architect "analyze the authentication module"
+> /prompts:architect "analyze the authentication module"
 ```
 
 **Expected:** The architect agent analyzes code with file:line references, root cause diagnosis, and trade-off analysis.
 
 ```
-> /security-reviewer "review the API endpoints"
+> /prompts:security-reviewer "review the API endpoints"
 ```
 
 **Expected:** OWASP Top 10 analysis with severity-prioritized findings and remediation code examples.
 
 ```
-> /explorer "find all database query patterns"
+> /prompts:explore "find all database query patterns"
 ```
 
 **Expected:** Structural codebase search with file listings and pattern summaries.
@@ -127,7 +127,7 @@ omx cancel
 **Expected output for `omx version`:**
 ```
 oh-my-codex v0.1.0
-Node.js v18+
+Node.js v20+
 Platform: linux x64
 ```
 
@@ -144,13 +144,13 @@ No active modes.
 Skills are automatically discovered by Codex CLI. In a Codex session:
 
 ```
-> /autopilot "build a REST API for task management"
+> $autopilot "build a REST API for task management"
 ```
 
 **Expected:** Full autonomous pipeline: requirements analysis -> technical design -> parallel implementation -> QA cycling -> multi-perspective validation.
 
 ```
-> /team 3:executor "fix all TypeScript errors"
+> $team 3:executor "fix all TypeScript errors"
 ```
 
 **Expected:** Spawns 3 coordinated executor agents working on a shared task list with staged pipeline (plan -> prd -> exec -> verify -> fix loop).
