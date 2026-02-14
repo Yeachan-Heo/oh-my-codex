@@ -141,11 +141,9 @@ async function launchWithHud(args: string[]): Promise<void> {
   const normalizedArgs = normalizeCodexLaunchArgs(args);
   const sessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-  try {
-    await maybeCheckAndPromptUpdate(cwd);
-  } catch {
+  void maybeCheckAndPromptUpdate(cwd).catch(() => {
     // Non-fatal: update checks must never block launch
-  }
+  });
 
   // ── Phase 1: preLaunch ──────────────────────────────────────────────────
   try {

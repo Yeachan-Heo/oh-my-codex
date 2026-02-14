@@ -124,6 +124,10 @@ async function askYesNo(question: string): Promise<boolean> {
   }
 }
 
+export function shouldPromptForUpdate(): boolean {
+  return process.env.OMX_AUTO_UPDATE_PROMPT === '1';
+}
+
 export async function maybeCheckAndPromptUpdate(cwd: string): Promise<void> {
   if (process.env.OMX_AUTO_UPDATE === '0') return;
 
@@ -144,6 +148,16 @@ export async function maybeCheckAndPromptUpdate(cwd: string): Promise<void> {
   if (!current || !latest || !isNewerVersion(current, latest)) return;
 
   console.log(`[omx] Update available: v${current} -> v${latest}.`);
+
+  if (!shouldPromptForUpdate()) {
+    await notify({
+      title: 'OMX Update Available',
+      message: `New version available: v${current} -> v${latest}. Set OMX_AUTO_UPDATE_PROMPT=1 to prompt for update.`,
+      type: 'info',
+      projectPath: cwd,
+    });
+    return;
+  }
 
   const approved = await askYesNo('[omx] Update now? [Y/n] ');
   if (!approved) {

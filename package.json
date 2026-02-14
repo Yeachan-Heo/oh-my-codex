@@ -12,6 +12,7 @@
     "dev": "tsc --watch",
     "setup": "node bin/omx.js setup",
     "doctor": "node bin/omx.js doctor",
+    "check:skills-drift": "node scripts/check-skills-drift.mjs",
     "test": "npm run build && node --test dist/**/*.test.js"
   },
   "engines": {
