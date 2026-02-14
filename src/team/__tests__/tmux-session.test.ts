@@ -115,6 +115,20 @@ describe('buildWorkerStartupCommand', () => {
       else delete process.env.SHELL;
     }
   });
+
+  it('preserves reasoning override args in worker command', () => {
+    const prevShell = process.env.SHELL;
+    process.env.SHELL = '/bin/bash';
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, ['-c', 'model_reasoning_effort="xhigh"']);
+      assert.match(cmd, /exec codex/);
+      assert.match(cmd, /'-c'/);
+      assert.match(cmd, /'model_reasoning_effort=\"xhigh\"'/);
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+    }
+  });
 });
 
 describe('tmux-dependent functions when tmux is unavailable', () => {

@@ -55,7 +55,10 @@ const MADMAX_FLAG = '--madmax';
 const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
 const HIGH_REASONING_FLAG = '--high';
 const XHIGH_REASONING_FLAG = '--xhigh';
+const CONFIG_FLAG = '-c';
 const REASONING_KEY = 'model_reasoning_effort';
+const TEAM_WORKER_LAUNCH_ARGS_ENV = 'OMX_TEAM_WORKER_LAUNCH_ARGS';
+const TEAM_INHERIT_LEADER_FLAGS_ENV = 'OMX_TEAM_INHERIT_LEADER_FLAGS';
 const REASONING_MODES = ['low', 'medium', 'high', 'xhigh'] as const;
 type ReasoningMode = typeof REASONING_MODES[number];
 const REASONING_MODE_SET = new Set<string>(REASONING_MODES);
@@ -263,10 +266,85 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
   }
 
   if (reasoningMode) {
-    normalized.push('-c', `${REASONING_KEY}="${reasoningMode}"`);
+    normalized.push(CONFIG_FLAG, `${REASONING_KEY}="${reasoningMode}"`);
   }
 
   return normalized;
+}
+
+function isReasoningOverride(value: string): boolean {
+  return new RegExp(`^${REASONING_KEY}\\s*=`).test(value.trim());
+}
+
+function splitWorkerLaunchArgs(raw: string | undefined): string[] {
+  if (!raw || raw.trim() === '') return [];
+  return raw
+    .split(/\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+export function collectInheritableTeamWorkerArgs(codexArgs: string[]): string[] {
+  let wantsBypass = false;
+  let reasoningOverride: string | null = null;
+
+  for (let i = 0; i < codexArgs.length; i++) {
+    const arg = codexArgs[i];
+    if (arg === CODEX_BYPASS_FLAG || arg === MADMAX_FLAG) {
+      wantsBypass = true;
+      continue;
+    }
+
+    if (arg === CONFIG_FLAG) {
+      const maybeValue = codexArgs[i + 1];
+      if (typeof maybeValue === 'string' && isReasoningOverride(maybeValue)) {
+        reasoningOverride = maybeValue;
+        i += 1;
+      }
+    }
+  }
+
+  const inherited: string[] = [];
+  if (wantsBypass) inherited.push(CODEX_BYPASS_FLAG);
+  if (reasoningOverride) inherited.push(CONFIG_FLAG, reasoningOverride);
+  return inherited;
+}
+
+function normalizeTeamWorkerLaunchArgs(args: string[]): string[] {
+  const passthrough: string[] = [];
+  let wantsBypass = false;
+  let reasoningOverride: string | null = null;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === CODEX_BYPASS_FLAG || arg === MADMAX_FLAG) {
+      wantsBypass = true;
+      continue;
+    }
+
+    if (arg === CONFIG_FLAG) {
+      const maybeValue = args[i + 1];
+      if (typeof maybeValue === 'string' && isReasoningOverride(maybeValue)) {
+        reasoningOverride = maybeValue;
+        i += 1;
+        continue;
+      }
+    }
+
+    passthrough.push(arg);
+  }
+
+  if (wantsBypass) passthrough.push(CODEX_BYPASS_FLAG);
+  if (reasoningOverride) passthrough.push(CONFIG_FLAG, reasoningOverride);
+  return passthrough;
+}
+
+export function resolveTeamWorkerLaunchArgsEnv(existingRaw: string | undefined, codexArgs: string[], inheritLeaderFlags = true): string | null {
+  const args = splitWorkerLaunchArgs(existingRaw);
+  if (inheritLeaderFlags) args.push(...collectInheritableTeamWorkerArgs(codexArgs));
+  const normalized = normalizeTeamWorkerLaunchArgs(args);
+  if (normalized.length === 0) return null;
+  return normalized.join(' ');
 }
 
 export function readTopLevelTomlString(content: string, key: string): string | null {
@@ -409,6 +487,11 @@ function runCodex(cwd: string, args: string[]): void {
   const omxBin = process.argv[1];
   const codexCmd = buildTmuxShellCommand('codex', args);
   const hudCmd = buildTmuxShellCommand('node', [omxBin, 'hud', '--watch']);
+  const inheritLeaderFlags = process.env[TEAM_INHERIT_LEADER_FLAGS_ENV] !== '0';
+  const workerLaunchArgs = resolveTeamWorkerLaunchArgsEnv(process.env[TEAM_WORKER_LAUNCH_ARGS_ENV], args, inheritLeaderFlags);
+  const codexEnv = workerLaunchArgs
+    ? { ...process.env, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }
+    : process.env;
 
   if (process.env.TMUX) {
     // Already in tmux: launch codex in current pane, HUD in bottom split
@@ -423,7 +506,7 @@ function runCodex(cwd: string, args: string[]): void {
     }
     // execFileSync imported at top level
     try {
-      execFileSync('codex', args, { cwd, stdio: 'inherit' });
+      execFileSync('codex', args, { cwd, stdio: 'inherit', env: codexEnv });
     } catch {
       // Codex exited
     }
@@ -435,7 +518,9 @@ function runCodex(cwd: string, args: string[]): void {
       execFileSync(
         'tmux',
         [
-          'new-session', '-d', '-s', sessionName, '-c', cwd, codexCmd,
+          'new-session', '-d', '-s', sessionName, '-c', cwd,
+          ...(workerLaunchArgs ? ['-e', `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`] : []),
+          codexCmd,
           ';',
           'split-window', '-v', '-l', '4', '-d', '-c', cwd, hudCmd,
           ';',
@@ -450,7 +535,7 @@ function runCodex(cwd: string, args: string[]): void {
       console.log('tmux not available, launching codex without HUD...');
       // execFileSync imported at top level
       try {
-        execFileSync('codex', args, { cwd, stdio: 'inherit' });
+        execFileSync('codex', args, { cwd, stdio: 'inherit', env: codexEnv });
       } catch {
         // Codex exited
       }

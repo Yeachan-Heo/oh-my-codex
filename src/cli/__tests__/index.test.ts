@@ -6,6 +6,8 @@ import {
   buildTmuxSessionName,
   readTopLevelTomlString,
   upsertTopLevelTomlString,
+  collectInheritableTeamWorkerArgs,
+  resolveTeamWorkerLaunchArgsEnv,
 } from '../index.js';
 
 describe('normalizeCodexLaunchArgs', () => {
@@ -101,6 +103,37 @@ describe('buildTmuxSessionName', () => {
     assert.match(name, /^omx-(unknown|[a-z0-9-]+)-[a-z0-9-]+-(unknown|[a-z0-9-]+)$/);
     assert.equal(name.includes('_'), false);
     assert.equal(name.includes(' '), false);
+  });
+});
+
+describe('team worker launch arg inheritance helpers', () => {
+  it('collectInheritableTeamWorkerArgs extracts bypass and reasoning overrides', () => {
+    assert.deepEqual(
+      collectInheritableTeamWorkerArgs(['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="xhigh"', '--model', 'gpt-5']),
+      ['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="xhigh"']
+    );
+  });
+
+  it('resolveTeamWorkerLaunchArgsEnv merges and normalizes with de-dupe + last reasoning wins', () => {
+    assert.equal(
+      resolveTeamWorkerLaunchArgsEnv(
+        '--dangerously-bypass-approvals-and-sandbox -c model_reasoning_effort="high" --no-alt-screen',
+        ['-c', 'model_reasoning_effort="xhigh"', '--dangerously-bypass-approvals-and-sandbox'],
+        true
+      ),
+      '--no-alt-screen --dangerously-bypass-approvals-and-sandbox -c model_reasoning_effort="xhigh"'
+    );
+  });
+
+  it('resolveTeamWorkerLaunchArgsEnv can opt out of leader inheritance', () => {
+    assert.equal(
+      resolveTeamWorkerLaunchArgsEnv(
+        '--no-alt-screen',
+        ['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="xhigh"'],
+        false
+      ),
+      '--no-alt-screen'
+    );
   });
 });
 
