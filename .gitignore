@@ -5,4 +5,5 @@ dist/
 .omc/prompts/
 .omc/logs/
 .omc/research/
+.omc/
 .omx/

@@ -137,7 +137,7 @@ Do not ask for confirmation — just read the skill file and follow its instruct
 | "ultrawork", "ulw", "parallel" | `$ultrawork` | Read `~/.agents/skills/ultrawork/SKILL.md`, execute parallel agents |
 | "plan this", "plan the", "let's plan" | `$plan` | Read `~/.agents/skills/plan/SKILL.md`, start planning workflow |
 | "ralplan", "consensus plan" | `$ralplan` | Read `~/.agents/skills/ralplan/SKILL.md`, start consensus planning |
-| "team", "coordinated team" | `$team` | Read `~/.agents/skills/team/SKILL.md`, start team orchestration |
+| "team", "swarm", "coordinated team", "coordinated swarm" | `$team` | Read `~/.agents/skills/team/SKILL.md`, start team orchestration (swarm compatibility alias) |
 | "pipeline", "chain agents" | `$pipeline` | Read `~/.agents/skills/pipeline/SKILL.md`, start agent pipeline |
 | "ecomode", "eco", "budget" | `$ecomode` | Read `~/.agents/skills/ecomode/SKILL.md`, enable token-efficient mode |
 | "research", "analyze data" | `$research` | Read `~/.agents/skills/research/SKILL.md`, start parallel research |
@@ -166,6 +166,7 @@ Workflow Skills:
 - `ultrawork`: Maximum parallelism with parallel agent orchestration
 - `ecomode`: Token-efficient execution using lightweight models
 - `team`: N coordinated agents on shared task list
+- `swarm`: N coordinated agents on shared task list (compatibility facade over team)
 - `pipeline`: Sequential agent chaining with data passing
 - `ultraqa`: QA cycling -- test, verify, fix, repeat
 - `plan`: Strategic planning with optional consensus mode

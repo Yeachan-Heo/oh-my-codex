@@ -21,6 +21,13 @@ interface SetupOptions {
   verbose?: boolean;
 }
 
+const REQUIRED_TEAM_COMM_MCP_TOOLS = [
+  'team_send_message',
+  'team_broadcast',
+  'team_mailbox_list',
+  'team_mailbox_mark_delivered',
+] as const;
+
 export async function setup(options: SetupOptions = {}): Promise<void> {
   const { force = false, dryRun = false, verbose = false } = options;
   const pkgRoot = getPackageRoot();
@@ -66,6 +73,17 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     await mergeConfig(codexConfigPath(), pkgRoot, { verbose });
   }
   console.log('  Done.\n');
+
+  // Step 4.5: Verify team comm MCP tools are available via omx_state server.
+  console.log('[4.5/7] Verifying Team MCP comm tools...');
+  const teamToolsCheck = await verifyTeamCommMcpTools(pkgRoot);
+  if (teamToolsCheck.ok) {
+    console.log(`  omx_state exports: ${REQUIRED_TEAM_COMM_MCP_TOOLS.join(', ')}`);
+  } else {
+    console.log(`  WARNING: ${teamToolsCheck.message}`);
+    console.log('  Run `npm run build` and then re-run `omx setup`.');
+  }
+  console.log();
 
   // Step 5: Generate AGENTS.md
   console.log('[5/7] Generating AGENTS.md...');
@@ -194,4 +212,22 @@ async function setupNotifyHook(
   }
   // The notify hook is configured in config.toml via mergeConfig
   if (options.verbose) console.log(`  Notify hook: ${hookScript}`);
+}
+
+async function verifyTeamCommMcpTools(pkgRoot: string): Promise<{ ok: true } | { ok: false; message: string }> {
+  const stateServerPath = join(pkgRoot, 'dist', 'mcp', 'state-server.js');
+  if (!existsSync(stateServerPath)) {
+    return { ok: false, message: `missing ${stateServerPath}` };
+  }
+
+  try {
+    const content = await readFile(stateServerPath, 'utf-8');
+    const missing = REQUIRED_TEAM_COMM_MCP_TOOLS.filter((toolName) => !content.includes(toolName));
+    if (missing.length > 0) {
+      return { ok: false, message: `state-server missing tool(s): ${missing.join(', ')}` };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, message: `cannot read ${stateServerPath}` };
+  }
 }

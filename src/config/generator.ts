@@ -52,6 +52,7 @@ function getOmxConfigBlock(pkgRoot: string): string {
     '',
     '# OMX Developer Instructions',
     `developer_instructions = "You have oh-my-codex installed. Use /prompts:architect, /prompts:executor, /prompts:planner for specialized agent roles. Workflow skills via $name: $ralph, $autopilot, $plan. AGENTS.md is your orchestration brain."`,
+    'model_reasoning_effort = "high"',
     '',
     '# Notification hook - fires after each agent turn',
     getNotifyConfigLine(notifyHookPath),
@@ -93,6 +94,9 @@ function getOmxConfigBlock(pkgRoot: string): string {
     '[tui]',
     'status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit"]',
     '',
+    '# ============================================================',
+    '# End oh-my-codex',
+    '',
   ].join('\n');
 }
 
@@ -119,7 +123,7 @@ export async function mergeConfig(
     if (startIdx >= 0) {
       // Find the end of the OMX block (next non-OMX section or EOF)
       const endMarker = '\n# ============================================================\n# End oh-my-codex';
-      const endIdx = existing.indexOf(endMarker);
+      const endIdx = existing.indexOf(endMarker, startIdx);
       if (endIdx >= 0) {
         existing = existing.slice(0, startIdx) + existing.slice(endIdx + endMarker.length);
       } else {

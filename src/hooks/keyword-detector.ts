@@ -30,7 +30,8 @@ const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> =
   { pattern: /\bplan\s+(?:this|the)\b/i, skill: 'plan', priority: 8 },
 
   // Coordination
-  { pattern: /\bteam\b.*\bagent/i, skill: 'team', priority: 8 },
+  { pattern: /\bteam\b|\bcoordinated\s+team\b/i, skill: 'team', priority: 8 },
+  { pattern: /\bswarm\b|\bcoordinated\s+swarm\b/i, skill: 'team', priority: 8 },
   { pattern: /\bpipeline\b/i, skill: 'pipeline', priority: 8 },
   { pattern: /\bresearch\b/i, skill: 'research', priority: 7 },
 

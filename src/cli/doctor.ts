@@ -5,7 +5,7 @@
 import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import {
   codexHome, codexConfigPath, codexPromptsDir,
   userSkillsDir, omxStateDir,
@@ -15,6 +15,7 @@ interface DoctorOptions {
   verbose?: boolean;
   force?: boolean;
   dryRun?: boolean;
+  team?: boolean;
 }
 
 interface Check {
@@ -24,6 +25,11 @@ interface Check {
 }
 
 export async function doctor(options: DoctorOptions = {}): Promise<void> {
+  if (options.team) {
+    await doctorTeam();
+    return;
+  }
+
   console.log('oh-my-codex doctor');
   console.log('==================\n');
 
@@ -78,6 +84,189 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
   } else {
     console.log('\nAll checks passed! oh-my-codex is ready.');
   }
+}
+
+interface TeamDoctorIssue {
+  code: 'delayed_status_lag' | 'slow_shutdown' | 'orphan_tmux_session' | 'resume_blocker';
+  message: string;
+}
+
+async function doctorTeam(): Promise<void> {
+  console.log('oh-my-codex doctor --team');
+  console.log('=========================\n');
+
+  const issues = await collectTeamDoctorIssues(process.cwd());
+  if (issues.length === 0) {
+    console.log('  [OK] team diagnostics: no issues');
+    console.log('\nAll team checks passed.');
+    return;
+  }
+
+  for (const issue of issues) {
+    console.log(`  [XX] ${issue.code}: ${issue.message}`);
+  }
+
+  console.log(`\nResults: ${issues.length} failed`);
+  // Ensure non-zero exit for `omx doctor --team` failures.
+  process.exitCode = 1;
+}
+
+async function collectTeamDoctorIssues(cwd: string): Promise<TeamDoctorIssue[]> {
+  const issues: TeamDoctorIssue[] = [];
+  const stateDir = omxStateDir(cwd);
+  const teamsRoot = join(stateDir, 'team');
+  const nowMs = Date.now();
+  const lagThresholdMs = 60_000;
+  const shutdownThresholdMs = 30_000;
+
+  const teamDirs: string[] = [];
+  if (existsSync(teamsRoot)) {
+    const entries = await readdir(teamsRoot, { withFileTypes: true });
+    for (const e of entries) {
+      if (e.isDirectory()) teamDirs.push(e.name);
+    }
+  }
+
+  const tmuxSessions = listTeamTmuxSessions();
+  const tmuxUnavailable = tmuxSessions === null;
+  const knownTeamSessions = new Set<string>();
+
+  for (const teamName of teamDirs) {
+    const teamDir = join(teamsRoot, teamName);
+    const manifestPath = join(teamDir, 'manifest.v2.json');
+    const configPath = join(teamDir, 'config.json');
+
+    let tmuxSession = `omx-team-${teamName}`;
+    if (existsSync(manifestPath)) {
+      try {
+        const raw = await readFile(manifestPath, 'utf-8');
+        const parsed = JSON.parse(raw) as { tmux_session?: string };
+        if (typeof parsed.tmux_session === 'string' && parsed.tmux_session.trim() !== '') {
+          tmuxSession = parsed.tmux_session;
+        }
+      } catch {
+        // ignore malformed manifest
+      }
+    } else if (existsSync(configPath)) {
+      try {
+        const raw = await readFile(configPath, 'utf-8');
+        const parsed = JSON.parse(raw) as { tmux_session?: string };
+        if (typeof parsed.tmux_session === 'string' && parsed.tmux_session.trim() !== '') {
+          tmuxSession = parsed.tmux_session;
+        }
+      } catch {
+        // ignore malformed config
+      }
+    }
+
+    knownTeamSessions.add(tmuxSession);
+
+    // resume_blocker: only meaningful if tmux is available to query
+    if (!tmuxUnavailable && !tmuxSessions.has(tmuxSession)) {
+      issues.push({
+        code: 'resume_blocker',
+        message: `${teamName} references missing tmux session ${tmuxSession}`,
+      });
+    }
+
+    // delayed_status_lag + slow_shutdown checks
+    const workersRoot = join(teamDir, 'workers');
+    if (!existsSync(workersRoot)) continue;
+    const workers = await readdir(workersRoot, { withFileTypes: true });
+    for (const worker of workers) {
+      if (!worker.isDirectory()) continue;
+      const workerDir = join(workersRoot, worker.name);
+      const statusPath = join(workerDir, 'status.json');
+      const heartbeatPath = join(workerDir, 'heartbeat.json');
+      const shutdownReqPath = join(workerDir, 'shutdown-request.json');
+      const shutdownAckPath = join(workerDir, 'shutdown-ack.json');
+
+      if (existsSync(statusPath) && existsSync(heartbeatPath)) {
+        try {
+          const [statusRaw, hbRaw] = await Promise.all([
+            readFile(statusPath, 'utf-8'),
+            readFile(heartbeatPath, 'utf-8'),
+          ]);
+          const status = JSON.parse(statusRaw) as { state?: string };
+          const hb = JSON.parse(hbRaw) as { last_turn_at?: string };
+          const lastTurnMs = hb.last_turn_at ? Date.parse(hb.last_turn_at) : NaN;
+          if (status.state === 'working' && Number.isFinite(lastTurnMs) && nowMs - lastTurnMs > lagThresholdMs) {
+            issues.push({
+              code: 'delayed_status_lag',
+              message: `${teamName}/${worker.name} working with stale heartbeat`,
+            });
+          }
+        } catch {
+          // ignore malformed files
+        }
+      }
+
+      if (existsSync(shutdownReqPath) && !existsSync(shutdownAckPath)) {
+        try {
+          const reqRaw = await readFile(shutdownReqPath, 'utf-8');
+          const req = JSON.parse(reqRaw) as { requested_at?: string };
+          const reqMs = req.requested_at ? Date.parse(req.requested_at) : NaN;
+          if (Number.isFinite(reqMs) && nowMs - reqMs > shutdownThresholdMs) {
+            issues.push({
+              code: 'slow_shutdown',
+              message: `${teamName}/${worker.name} has stale shutdown request without ack`,
+            });
+          }
+        } catch {
+          // ignore malformed files
+        }
+      }
+    }
+  }
+
+  // orphan_tmux_session: session exists but no matching team state
+  if (!tmuxUnavailable) {
+    for (const session of tmuxSessions) {
+      if (!knownTeamSessions.has(session)) {
+        issues.push({
+          code: 'orphan_tmux_session',
+          message: `${session} exists without matching team state`,
+        });
+      }
+    }
+  }
+
+  return dedupeIssues(issues);
+}
+
+function dedupeIssues(issues: TeamDoctorIssue[]): TeamDoctorIssue[] {
+  const seen = new Set<string>();
+  const out: TeamDoctorIssue[] = [];
+  for (const issue of issues) {
+    const key = `${issue.code}:${issue.message}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(issue);
+  }
+  return out;
+}
+
+function listTeamTmuxSessions(): Set<string> | null {
+  const res = spawnSync('tmux', ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf-8' });
+  if (res.error) {
+    // tmux binary unavailable or not executable.
+    return null;
+  }
+
+  if (res.status !== 0) {
+    const stderr = (res.stderr || '').toLowerCase();
+    // tmux installed but no server/session is running.
+    if (stderr.includes('no server running') || stderr.includes('failed to connect to server')) {
+      return new Set();
+    }
+    return null;
+  }
+
+  const sessions = (res.stdout || '')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter((s) => s.startsWith('omx-team-'));
+  return new Set(sessions);
 }
 
 function checkCodexCli(): Check {

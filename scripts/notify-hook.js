@@ -12,7 +12,7 @@
  * 4. Triggers desktop notifications if configured
  */
 
-import { writeFile, appendFile, mkdir, readFile } from 'fs/promises';
+import { writeFile, appendFile, mkdir, readFile, rename } from 'fs/promises';
 import { join, resolve as resolvePath } from 'path';
 import { existsSync } from 'fs';
 import { spawn } from 'child_process';
@@ -429,6 +429,108 @@ async function getScopedStateDirsForCurrentSession(baseStateDir) {
   return scopedDirs;
 }
 
+function resolveLeaderNudgeIntervalMs() {
+  const raw = safeString(process.env.OMX_TEAM_LEADER_NUDGE_MS || '');
+  const parsed = asNumber(raw);
+  // Default: 2 minutes. Guard against spam.
+  if (parsed !== null && parsed >= 10_000 && parsed <= 30 * 60_000) return parsed;
+  return 120_000;
+}
+
+async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir }) {
+  const intervalMs = resolveLeaderNudgeIntervalMs();
+  const nowMs = Date.now();
+  const nowIso = new Date().toISOString();
+  const omxDir = join(cwd, '.omx');
+  const nudgeStatePath = join(stateDir, 'team-leader-nudge.json');
+
+  let nudgeState = await readJsonIfExists(nudgeStatePath, null);
+  if (!nudgeState || typeof nudgeState !== 'object') {
+    nudgeState = { last_nudged_by_team: {} };
+  }
+  if (!nudgeState.last_nudged_by_team || typeof nudgeState.last_nudged_by_team !== 'object') {
+    nudgeState.last_nudged_by_team = {};
+  }
+
+  const activeTeamNames = new Set();
+  try {
+    const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir);
+    for (const scopedDir of scopedDirs) {
+      const teamStatePath = join(scopedDir, 'team-state.json');
+      if (!existsSync(teamStatePath)) continue;
+      const parsed = JSON.parse(await readFile(teamStatePath, 'utf-8'));
+      if (!parsed || parsed.active !== true) continue;
+      const teamName = safeString(parsed.team_name || '').trim();
+      if (teamName) activeTeamNames.add(teamName);
+    }
+  } catch {
+    // Non-critical
+  }
+
+  for (const teamName of activeTeamNames) {
+    // Resolve tmux target (session:window) from manifest/config. Best effort.
+    let tmuxTarget = '';
+    try {
+      const manifestPath = join(omxDir, 'state', 'team', teamName, 'manifest.v2.json');
+      const configPath = join(omxDir, 'state', 'team', teamName, 'config.json');
+      const srcPath = existsSync(manifestPath) ? manifestPath : configPath;
+      if (existsSync(srcPath)) {
+        const raw = JSON.parse(await readFile(srcPath, 'utf-8'));
+        tmuxTarget = safeString(raw && raw.tmux_session ? raw.tmux_session : '').trim();
+      }
+    } catch {
+      // ignore
+    }
+    if (!tmuxTarget) continue;
+
+    let mailbox = null;
+    try {
+      const mailboxPath = join(omxDir, 'state', 'team', teamName, 'mailbox', 'leader-fixed.json');
+      mailbox = await readJsonIfExists(mailboxPath, null);
+    } catch {
+      mailbox = null;
+    }
+    const messages = mailbox && Array.isArray(mailbox.messages) ? mailbox.messages : [];
+    const newest = messages.length > 0 ? messages[messages.length - 1] : null;
+    const newestId = newest && typeof newest.message_id === 'string' ? newest.message_id : '';
+
+    const prev = nudgeState.last_nudged_by_team[teamName] && typeof nudgeState.last_nudged_by_team[teamName] === 'object'
+      ? nudgeState.last_nudged_by_team[teamName]
+      : {};
+    const prevAtIso = safeString(prev.at || '');
+    const prevAtMs = prevAtIso ? Date.parse(prevAtIso) : NaN;
+    const prevMsgId = safeString(prev.last_message_id || '');
+
+    const hasNewMessage = newestId && newestId !== prevMsgId;
+    const dueByTime = !Number.isFinite(prevAtMs) || (nowMs - prevAtMs >= intervalMs);
+    if (!hasNewMessage && !dueByTime) continue;
+
+    const msgCount = messages.length;
+    const text = hasNewMessage
+      ? `Team ${teamName}: ${msgCount} msg(s) for leader. Run: omx team status ${teamName}`
+      : `Team ${teamName} active. Run: omx team status ${teamName}`;
+    const capped = text.length > 180 ? `${text.slice(0, 177)}...` : text;
+
+    try {
+      await runProcess('tmux', ['display-message', '-t', tmuxTarget, '--', capped], 1200);
+      nudgeState.last_nudged_by_team[teamName] = { at: nowIso, last_message_id: newestId || prevMsgId || '' };
+    } catch (err) {
+      // Best effort. Log only in debug mode to avoid noise.
+      try {
+        await logTmuxHookEvent(logsDir, {
+          timestamp: nowIso,
+          type: 'team_leader_nudge',
+          team: teamName,
+          tmux_target: tmuxTarget,
+          error: safeString(err && err.message ? err.message : err),
+        });
+      } catch { /* ignore */ }
+    }
+  }
+
+  await writeFile(nudgeStatePath, JSON.stringify(nudgeState, null, 2)).catch(() => {});
+}
+
 async function handleTmuxInjection({
   payload,
   cwd,
@@ -703,6 +805,13 @@ async function syncLinkedRalphOnTeamTerminal(stateRootDir, nowIso) {
   }
 }
 
+function parseTeamWorkerEnv(rawValue) {
+  if (typeof rawValue !== 'string') return null;
+  const match = /^([a-z0-9][a-z0-9-]{0,29})\/(worker-\d+)$/.exec(rawValue.trim());
+  if (!match) return null;
+  return { teamName: match[1], workerName: match[2] };
+}
+
 async function main() {
   const rawPayload = process.argv[process.argv.length - 1];
   if (!rawPayload || rawPayload.startsWith('-')) {
@@ -748,6 +857,11 @@ async function main() {
     // Non-critical
   }
 
+  // Team worker detection via environment variable
+  const teamWorkerEnv = process.env.OMX_TEAM_WORKER; // e.g., "fix-ts/worker-1"
+  const parsedTeamWorker = parseTeamWorkerEnv(teamWorkerEnv);
+  const isTeamWorker = !!parsedTeamWorker;
+
   // 1. Log the turn
   const logEntry = {
     timestamp: new Date().toISOString(),
@@ -765,109 +879,157 @@ async function main() {
   await appendFile(logFile, JSON.stringify(logEntry) + '\n').catch(() => {});
 
   // 2. Update active mode state (increment iteration)
-  try {
-    const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir);
-    for (const scopedDir of scopedDirs) {
-      const stateFiles = await readdir(scopedDir).catch(() => []);
-      for (const f of stateFiles) {
-        if (!f.endsWith('-state.json')) continue;
-        const statePath = join(scopedDir, f);
-        const state = JSON.parse(await readFile(statePath, 'utf-8'));
-        if (state.active) {
-          state.iteration = (state.iteration || 0) + 1;
-          state.last_turn_at = new Date().toISOString();
-          await writeFile(statePath, JSON.stringify(state, null, 2));
+  // GUARD: Skip when running inside a team worker to prevent state corruption
+  if (!isTeamWorker) {
+    try {
+      const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir);
+      for (const scopedDir of scopedDirs) {
+        const stateFiles = await readdir(scopedDir).catch(() => []);
+        for (const f of stateFiles) {
+          if (!f.endsWith('-state.json')) continue;
+          const statePath = join(scopedDir, f);
+          const state = JSON.parse(await readFile(statePath, 'utf-8'));
+          if (state.active) {
+            state.iteration = (state.iteration || 0) + 1;
+            state.last_turn_at = new Date().toISOString();
+            await writeFile(statePath, JSON.stringify(state, null, 2));
+          }
         }
       }
+    } catch {
+      // Non-critical
     }
-  } catch {
-    // Non-critical
   }
 
   // If linked team reaches terminal state, mark linked ralph terminal/inactive too.
-  await syncLinkedRalphOnTeamTerminal(stateDir, new Date().toISOString());
+  if (!isTeamWorker) {
+    await syncLinkedRalphOnTeamTerminal(stateDir, new Date().toISOString());
+  }
 
-  // 3. Track subagent metrics
-  const metricsPath = join(omxDir, 'metrics.json');
-  try {
-    let metrics = {
-      total_turns: 0,
-      session_turns: 0,
-      last_activity: '',
-      session_input_tokens: 0,
-      session_output_tokens: 0,
-      session_total_tokens: 0,
-    };
-    if (existsSync(metricsPath)) {
-      metrics = { ...metrics, ...JSON.parse(await readFile(metricsPath, 'utf-8')) };
-    }
-
-    const tokenUsage = getSessionTokenUsage(payload);
-    const quotaUsage = getQuotaUsage(payload);
-
-    metrics.total_turns++;
-    metrics.session_turns++;
-    metrics.last_activity = new Date().toISOString();
-
-    if (tokenUsage) {
-      if (tokenUsage.input !== null) {
-        if (tokenUsage.inputCumulative) {
-          metrics.session_input_tokens = tokenUsage.input;
-        } else {
-          metrics.session_input_tokens = (metrics.session_input_tokens || 0) + tokenUsage.input;
-        }
+  // 3. Track subagent metrics (lead session only)
+  if (!isTeamWorker) {
+    const metricsPath = join(omxDir, 'metrics.json');
+    try {
+      let metrics = {
+        total_turns: 0,
+        session_turns: 0,
+        last_activity: '',
+        session_input_tokens: 0,
+        session_output_tokens: 0,
+        session_total_tokens: 0,
+      };
+      if (existsSync(metricsPath)) {
+        metrics = { ...metrics, ...JSON.parse(await readFile(metricsPath, 'utf-8')) };
       }
-      if (tokenUsage.output !== null) {
-        if (tokenUsage.outputCumulative) {
-          metrics.session_output_tokens = tokenUsage.output;
-        } else {
-          metrics.session_output_tokens = (metrics.session_output_tokens || 0) + tokenUsage.output;
+
+      const tokenUsage = getSessionTokenUsage(payload);
+      const quotaUsage = getQuotaUsage(payload);
+
+      metrics.total_turns++;
+      metrics.session_turns++;
+      metrics.last_activity = new Date().toISOString();
+
+      if (tokenUsage) {
+        if (tokenUsage.input !== null) {
+          if (tokenUsage.inputCumulative) {
+            metrics.session_input_tokens = tokenUsage.input;
+          } else {
+            metrics.session_input_tokens = (metrics.session_input_tokens || 0) + tokenUsage.input;
+          }
         }
-      }
-      if (tokenUsage.total !== null) {
-        if (tokenUsage.totalCumulative) {
-          metrics.session_total_tokens = tokenUsage.total;
+        if (tokenUsage.output !== null) {
+          if (tokenUsage.outputCumulative) {
+            metrics.session_output_tokens = tokenUsage.output;
+          } else {
+            metrics.session_output_tokens = (metrics.session_output_tokens || 0) + tokenUsage.output;
+          }
+        }
+        if (tokenUsage.total !== null) {
+          if (tokenUsage.totalCumulative) {
+            metrics.session_total_tokens = tokenUsage.total;
+          } else {
+            metrics.session_total_tokens = (metrics.session_total_tokens || 0) + tokenUsage.total;
+          }
         } else {
-          metrics.session_total_tokens = (metrics.session_total_tokens || 0) + tokenUsage.total;
+          metrics.session_total_tokens = (metrics.session_input_tokens || 0) + (metrics.session_output_tokens || 0);
         }
       } else {
         metrics.session_total_tokens = (metrics.session_input_tokens || 0) + (metrics.session_output_tokens || 0);
       }
-    } else {
-      metrics.session_total_tokens = (metrics.session_input_tokens || 0) + (metrics.session_output_tokens || 0);
-    }
 
-    if (quotaUsage) {
-      if (quotaUsage.fiveHourLimitPct !== null) metrics.five_hour_limit_pct = quotaUsage.fiveHourLimitPct;
-      if (quotaUsage.weeklyLimitPct !== null) metrics.weekly_limit_pct = quotaUsage.weeklyLimitPct;
-    }
+      if (quotaUsage) {
+        if (quotaUsage.fiveHourLimitPct !== null) metrics.five_hour_limit_pct = quotaUsage.fiveHourLimitPct;
+        if (quotaUsage.weeklyLimitPct !== null) metrics.weekly_limit_pct = quotaUsage.weeklyLimitPct;
+      }
 
-    await writeFile(metricsPath, JSON.stringify(metrics, null, 2));
-  } catch {
-    // Non-critical
+      await writeFile(metricsPath, JSON.stringify(metrics, null, 2));
+    } catch {
+      // Non-critical
+    }
   }
 
-  // 4. Write HUD state summary for `omx hud`
-  const hudStatePath = join(stateDir, 'hud-state.json');
-  try {
-    let hudState = { last_turn_at: '', turn_count: 0 };
-    if (existsSync(hudStatePath)) {
-      hudState = JSON.parse(await readFile(hudStatePath, 'utf-8'));
+  // 4. Write HUD state summary for `omx hud` (lead session only)
+  if (!isTeamWorker) {
+    const hudStatePath = join(stateDir, 'hud-state.json');
+    try {
+      let hudState = { last_turn_at: '', turn_count: 0 };
+      if (existsSync(hudStatePath)) {
+        hudState = JSON.parse(await readFile(hudStatePath, 'utf-8'));
+      }
+      hudState.last_turn_at = new Date().toISOString();
+      hudState.turn_count = (hudState.turn_count || 0) + 1;
+      hudState.last_agent_output = (payload['last-assistant-message'] || payload.last_assistant_message || '')
+        .slice(0, 100);
+      await writeFile(hudStatePath, JSON.stringify(hudState, null, 2));
+    } catch {
+      // Non-critical
     }
-    hudState.last_turn_at = new Date().toISOString();
-    hudState.turn_count = (hudState.turn_count || 0) + 1;
-    hudState.last_agent_output = (payload['last-assistant-message'] || payload.last_assistant_message || '')
-      .slice(0, 100);
-    await writeFile(hudStatePath, JSON.stringify(hudState, null, 2));
-  } catch {
-    // Non-critical
+  }
+
+  // 4.5. Update team worker heartbeat (if applicable)
+  if (isTeamWorker) {
+    try {
+      if (parsedTeamWorker) {
+        const { teamName: twTeamName, workerName: twWorkerName } = parsedTeamWorker;
+        const heartbeatPath = join(stateDir, 'team', twTeamName, 'workers', twWorkerName, 'heartbeat.json');
+        let turnCount = 0;
+        try {
+          const existing = JSON.parse(await readFile(heartbeatPath, 'utf-8'));
+          turnCount = existing.turn_count || 0;
+        } catch { /* first heartbeat or malformed */ }
+        const heartbeat = {
+          pid: process.ppid || process.pid,
+          last_turn_at: new Date().toISOString(),
+          turn_count: turnCount + 1,
+          alive: true,
+        };
+        // Atomic write: tmp + rename
+        const tmpPath = heartbeatPath + '.tmp.' + process.pid;
+        await writeFile(tmpPath, JSON.stringify(heartbeat, null, 2));
+        await rename(tmpPath, heartbeatPath);
+      }
+    } catch {
+      // Non-critical: heartbeat write failure should never block the hook
+    }
   }
 
   // 5. Optional tmux prompt injection workaround (non-fatal, opt-in)
-  try {
-    await handleTmuxInjection({ payload, cwd, stateDir, logsDir });
-  } catch {
-    // Non-critical
+  // Skip for team workers - only the lead should inject prompts
+  if (!isTeamWorker) {
+    try {
+      await handleTmuxInjection({ payload, cwd, stateDir, logsDir });
+    } catch {
+      // Non-critical
+    }
+  }
+
+  // 6. Team leader nudge (lead session only): remind the leader to check teammate/mailbox state.
+  if (!isTeamWorker) {
+    try {
+      await maybeNudgeTeamLeader({ cwd, stateDir, logsDir });
+    } catch {
+      // Non-critical
+    }
   }
 }
 

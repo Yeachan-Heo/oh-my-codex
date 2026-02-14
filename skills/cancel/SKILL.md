@@ -24,8 +24,8 @@ Automatically detects which mode is active and cancels it:
 - **Swarm**: Stops coordinated agent swarm, releases claimed tasks
 - **Ultrapilot**: Stops parallel autopilot workers
 - **Pipeline**: Stops sequential agent pipeline
-- **Team**: Sends shutdown_request to all teammates, waits for responses, calls TeamDelete, clears linked ralph if present
-- **Team+Ralph (linked)**: Cancels team first (graceful shutdown), then clears ralph state. Cancelling ralph when linked also cancels team first.
+- **Team**: Sends shutdown inbox to all workers, waits for exit, kills tmux session, clears linked ralph if present
+- **Team+Ralph (linked)**: Cancels team first (tmux shutdown + state cleanup), then clears ralph state
 
 ## Usage
 
@@ -52,7 +52,7 @@ Active modes are still cancelled in dependency order:
 6. Swarm (standalone)
 7. Ultrapilot (standalone)
 8. Pipeline (standalone)
-9. Team (Codex CLI native)
+9. Team (tmux-based)
 10. Plan Consensus (standalone)
 
 ## Force Clear All
@@ -71,7 +71,7 @@ Steps under the hood:
 1. `state_list_active` enumerates `.omx/state/sessions/{sessionId}/…` to find every known session.
 2. `state_clear` runs once per session to drop that session’s files.
 3. A global `state_clear` without `session_id` removes legacy files under `.omx/state/*.json`, `.omx/state/swarm*.db`, and compatibility artifacts (see list).
-4. Team artifacts (`~/.claude/teams/*/`, `~/.claude/tasks/*/`, `.omx/state/team-state.json`) are best-effort cleared as part of the legacy fallback.
+4. Team artifacts (`.omx/state/team/*/`, tmux sessions matching `omx-team-*`) are best-effort cleared as part of the legacy fallback.
 
 Every `state_clear` command honors the `session_id` argument, so even force mode still uses the session-aware paths first before deleting legacy files.
 
@@ -130,71 +130,69 @@ Use force mode to clear every session plus legacy artifacts via `state_clear`. D
 
 ### 3B. Smart Cancellation (default)
 
-#### If Team Active (Codex CLI native)
+#### If Team Active (tmux-based)
 
-Teams are detected by checking for config files in `~/.claude/teams/`:
+Teams are detected by checking for config files in `.omx/state/team/`:
 
 ```bash
 # Check for active teams
-TEAM_CONFIGS=$(find ~/.claude/teams -name config.json -maxdepth 2 2>/dev/null)
+ls .omx/state/team/*/config.json 2>/dev/null
 ```
 
 **Two-pass cancellation protocol:**
 
 **Pass 1: Graceful Shutdown**
 ```
-For each team found in ~/.claude/teams/:
-  1. Read config.json to get team_name and members list
-  2. For each non-lead member:
-     a. Send shutdown_request via SendMessage
-     b. Wait up to 15 seconds for shutdown_response
-     c. If response received: member terminates and is auto-removed
-     d. If timeout: mark member as unresponsive, continue to next
-  3. Log: "Graceful pass: X/Y members responded"
+For each team found in .omx/state/team/:
+  1. Read config.json to get team_name and workers list
+  2. For each worker:
+     a. Write shutdown inbox to .omx/state/team/{name}/workers/{worker}/inbox.md
+     b. Send short trigger via tmux send-keys
+     c. Wait up to 15 seconds for worker tmux pane to exit
+     d. If still alive: mark as unresponsive
 ```
 
-**Pass 2: Reconciliation**
+**Pass 2: Force Kill**
 ```
 After graceful pass:
-  1. Re-read config.json to check remaining members
-  2. If only lead remains (or config is empty): proceed to TeamDelete
-  3. If unresponsive members remain:
-     a. Wait 5 more seconds (they may still be processing)
-     b. Re-read config.json again
-     c. If still stuck: attempt TeamDelete anyway
-     d. If TeamDelete fails: report manual cleanup path
+  1. For each remaining alive worker:
+     a. Send C-c via tmux send-keys
+     b. Wait 2 seconds
+     c. Kill the tmux window if still alive
+  2. Destroy the tmux session: tmux kill-session -t omx-team-{name}
 ```
 
-**TeamDelete + Cleanup:**
+**Cleanup:**
 ```
-  1. Call TeamDelete() — removes ~/.claude/teams/{name}/ and ~/.claude/tasks/{name}/
-  2. Clear team state: state_clear(mode="team")
-  3. Check for linked ralph: state_read(mode="ralph") — if linked_team is true:
+  1. Strip AGENTS.md team worker overlay (<!-- OMX:TEAM:WORKER:START/END -->)
+  2. Remove team state directory: rm -rf .omx/state/team/{name}/
+  3. Clear team mode state: state_clear(mode="team")
+  4. Check for linked ralph: state_read(mode="ralph") — if linked_team is true:
      a. Clear ralph state: state_clear(mode="ralph")
      b. Clear linked ultrawork if present: state_clear(mode="ultrawork")
-  4. Emit structured cancel report
+  5. Emit structured cancel report
 ```
 
 **Structured Cancel Report:**
 ```
 Team "{team_name}" cancelled:
-  - Members signaled: N
-  - Responses received: M
-  - Unresponsive: K (list names if any)
-  - TeamDelete: success/failed
-  - Manual cleanup needed: yes/no
-    Path: ~/.claude/teams/{name}/ and ~/.claude/tasks/{name}/
+  - Workers signaled: N
+  - Graceful exits: M
+  - Force killed: K
+  - tmux session destroyed: yes/no
+  - State cleaned up: yes/no
 ```
 
 **Implementation note:** The cancel skill is executed by the LLM, not as a bash script. When you detect an active team:
-1. Read `~/.claude/teams/*/config.json` to find active teams
-2. If multiple teams exist, cancel oldest first (by `createdAt`)
-3. For each non-lead member, call `SendMessage(type: "shutdown_request", recipient: member-name, content: "Cancelling")`
-4. Wait briefly for shutdown responses (15s per member timeout)
-5. Re-read config.json to check for remaining members (reconciliation pass)
-6. Call `TeamDelete()` to clean up
-7. Remove any local state: `rm -f .omx/state/team-state.json`
-8. Report structured summary to user
+1. Check `.omx/state/team/*/config.json` for active teams
+2. For each worker in config.workers, write shutdown inbox and send trigger
+3. Wait briefly for workers to exit (15s timeout)
+4. Force kill remaining workers via tmux
+5. Destroy tmux session: `tmux kill-session -t omx-team-{name}`
+6. Strip AGENTS.md overlay
+7. Remove state: `rm -rf .omx/state/team/{name}/`
+8. `state_clear(mode="team")`
+9. Report structured summary to user
 
 #### If Autopilot Active
 
@@ -322,7 +320,7 @@ The cancel skill runs as follows:
 2. Use `state_list_active` to enumerate known session ids and `state_get_status` to learn the active mode (`autopilot`, `ralph`, `ultrawork`, etc.) for each session.
 3. When operating in default mode, call `state_clear` with that session_id to remove only the session’s files, then run mode-specific cleanup (autopilot → ralph → …) based on the state tool signals.
 4. In force mode, iterate every active session, call `state_clear` per session, then run a global `state_clear` without `session_id` to drop legacy files (`.omx/state/*.json`, compatibility artifacts) and report success. Swarm remains a shared SQLite/marker mode outside session scoping.
-5. Team artifacts (`~/.claude/teams/*/`, `~/.claude/tasks/*/`, `.omx/state/team-state.json`) remain best-effort cleanup items invoked during the legacy/global pass.
+5. Team artifacts (`.omx/state/team/*/`, tmux sessions matching `omx-team-*`) remain best-effort cleanup items invoked during the legacy/global pass.
 
 State tools always honor the `session_id` argument, so even force mode still clears the session-scoped paths before deleting compatibility-only legacy state.
 
@@ -364,24 +362,21 @@ Mode-specific subsections below describe what extra cleanup each handler perform
 - **Safe**: Only clears linked Ultrawork, preserves standalone Ultrawork
 - **Local-only**: Clears state files in `.omx/state/` directory
 - **Resume-friendly**: Autopilot state is preserved for seamless resume
-- **Team-aware**: Detects native Codex CLI teams and performs graceful shutdown
+- **Team-aware**: Detects tmux-based teams and performs graceful shutdown with force-kill fallback
 
-## MCP Worker Cleanup
+## Tmux Team Cleanup
 
-When cancelling modes that may have spawned MCP workers (team bridge daemons), the cancel skill should also:
+When cancelling team mode, the cancel skill should:
 
-1. **Check for active MCP workers**: Look for heartbeat files at `.omx/state/team-bridge/{team}/*.heartbeat.json`
-2. **Send shutdown signals**: Write shutdown signal files for each active worker
-3. **Kill tmux sessions**: Run `tmux kill-session -t omc-team-{team}-{worker}` for each worker
-4. **Clean up heartbeat files**: Remove all heartbeat files for the team
-5. **Clean up shadow registry**: Remove `.omx/state/team-mcp-workers.json`
+1. **Kill all team tmux sessions**: `tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^omx-team-'` and kill each
+2. **Remove team state directories**: `rm -rf .omx/state/team/*/`
+3. **Strip AGENTS.md overlay**: Remove content between `<!-- OMX:TEAM:WORKER:START -->` and `<!-- OMX:TEAM:WORKER:END -->`
 
 ### Force Clear Addition
 
 When `--force` is used, also clean up:
 ```bash
-rm -rf .omx/state/team-bridge/       # Heartbeat files
-rm -f .omx/state/team-mcp-workers.json  # Shadow registry
-# Kill all omc-team-* tmux sessions
-tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^omc-team-' | while read s; do tmux kill-session -t "$s" 2>/dev/null; done
+rm -rf .omx/state/team/                  # All team state
+# Kill all omx-team-* tmux sessions
+tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^omx-team-' | while read s; do tmux kill-session -t "$s" 2>/dev/null; done
 ```
