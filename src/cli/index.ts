@@ -18,6 +18,7 @@ import {
   readSessionState, isSessionStale, writeSessionStart, writeSessionEnd, resetSessionMetrics,
 } from '../hooks/session.js';
 import { getPackageRoot } from '../utils/package.js';
+import { suggestClosest } from './suggestions.js';
 
 const HELP = `
 oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
@@ -46,9 +47,10 @@ const MADMAX_FLAG = '--madmax';
 const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
 
 export async function main(args: string[]): Promise<void> {
-  const knownCommands = new Set([
+  const knownCommands = [
     'launch', 'setup', 'doctor', 'version', 'tmux-hook', 'hud', 'status', 'cancel', 'help', '--help', '-h',
-  ]);
+  ];
+  const knownCommandSet = new Set(knownCommands);
   const firstArg = args[0];
   const command = !firstArg || firstArg.startsWith('--') ? 'launch' : firstArg;
   const launchArgs = command === 'launch'
@@ -93,11 +95,15 @@ export async function main(args: string[]): Promise<void> {
         console.log(HELP);
         break;
       default:
-        if (firstArg && firstArg.startsWith('-') && !knownCommands.has(firstArg)) {
+        if (firstArg && firstArg.startsWith('-') && !knownCommandSet.has(firstArg)) {
           await launchWithHud(args);
           break;
         }
         console.error(`Unknown command: ${command}`);
+        const suggestion = suggestClosest(command, knownCommands.filter(c => !c.startsWith('-')));
+        if (suggestion) {
+          console.error(`Did you mean: omx ${suggestion}`);
+        }
         console.log(HELP);
         process.exit(1);
     }
@@ -112,25 +118,35 @@ async function showStatus(): Promise<void> {
   const cwd = process.cwd();
   try {
     const scopedDirs = await getAllScopedStateDirs(cwd);
-    const states: string[] = [];
+    const states: Array<{ mode: string; active: boolean; phase: string }> = [];
     for (const stateDir of scopedDirs) {
       const files = await readdir(stateDir).catch(() => [] as string[]);
       for (const file of files) {
         if (!file.endsWith('-state.json') || file === 'session.json') continue;
-        states.push(join(stateDir, file));
+        const path = join(stateDir, file);
+        const content = await readFile(path, 'utf-8');
+        const state = JSON.parse(content) as { active?: boolean; current_phase?: string };
+        states.push({
+          mode: basename(path).replace('-state.json', ''),
+          active: Boolean(state.active),
+          phase: state.current_phase || 'n/a',
+        });
       }
     }
     if (states.length === 0) {
       console.log('No active modes.');
       return;
     }
-    for (const path of states) {
-      const content = await readFile(path, 'utf-8');
-      const state = JSON.parse(content);
-      const file = basename(path);
-      const mode = file.replace('-state.json', '');
-      console.log(`${mode}: ${state.active ? 'ACTIVE' : 'inactive'} (phase: ${state.current_phase || 'n/a'})`);
+
+    states.sort((a, b) => a.mode.localeCompare(b.mode) || a.phase.localeCompare(b.phase));
+
+    let activeCount = 0;
+    for (const state of states) {
+      if (state.active) activeCount++;
+      console.log(`${state.mode}: ${state.active ? 'ACTIVE' : 'inactive'} (phase: ${state.phase})`);
     }
+    const inactiveCount = states.length - activeCount;
+    console.log(`Summary: ${states.length} mode(s), ${activeCount} active, ${inactiveCount} inactive`);
   } catch {
     console.log('No active modes.');
   }

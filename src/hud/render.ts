@@ -54,15 +54,18 @@ function renderAutopilot(ctx: HudRenderContext): string | null {
 
 function renderTeam(ctx: HudRenderContext): string | null {
   if (!ctx.team) return null;
+  const phase = ctx.team.current_phase || 'active';
   const count = ctx.team.agent_count;
   const name = ctx.team.team_name;
-  if (count !== undefined && count > 0) {
-    return green(`team:${count} workers`);
+  const suffix = [name, count !== undefined && count > 0 ? `${count} workers` : null]
+    .filter((part): part is string => Boolean(part))
+    .join(',');
+
+  if (suffix) {
+    return green(`team:${phase} (${suffix})`);
   }
-  if (name) {
-    return green(`team:${name}`);
-  }
-  return green('team');
+
+  return green(`team:${phase}`);
 }
 
 function renderEcomode(ctx: HudRenderContext): string | null {

@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'fs/promises';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { getPackageRoot } from '../utils/package.js';
+import { suggestClosest } from './suggestions.js';
 
 type TmuxTargetType = 'session' | 'pane';
 
@@ -61,6 +62,7 @@ Usage:
 `;
 
 export async function tmuxHookCommand(args: string[]): Promise<void> {
+  const subcommands = ['init', 'status', 'validate', 'test', 'help'];
   const subcommand = args[0] || 'status';
   switch (subcommand) {
     case 'init':
@@ -81,7 +83,11 @@ export async function tmuxHookCommand(args: string[]): Promise<void> {
       console.log(HELP);
       return;
     default:
-      throw new Error(`Unknown tmux-hook subcommand: ${subcommand}`);
+      {
+        const suggestion = suggestClosest(subcommand, subcommands);
+        const hint = suggestion ? ` Did you mean: omx tmux-hook ${suggestion}` : '';
+        throw new Error(`Unknown tmux-hook subcommand: ${subcommand}.${hint}`);
+      }
   }
 }
 
