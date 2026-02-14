@@ -108,8 +108,20 @@ function resolveReasoningEffort(agentType: string): ReasoningEffort {
 function hasReasoningOverride(args: string[]): boolean {
   for (let i = 0; i < args.length; i++) {
     if (args[i] !== '-c') continue;
-    const next = args[i + 1] || '';
+    const next = (args[i + 1] || '').trim();
+
+    // Common form: `-c model_reasoning_effort="high"`
     if (next.startsWith(`${REASONING_KEY}=`)) return true;
+
+    // Allow whitespace around '=' when args are tokenized oddly (e.g. from env splitting):
+    // `-c model_reasoning_effort = "high"` -> ['-c','model_reasoning_effort','=','"high"']
+    if (next === REASONING_KEY) {
+      const after = (args[i + 2] || '').trim();
+      if (after === '=' || after.startsWith('=')) return true;
+    }
+
+    // More tolerant: `-c "model_reasoning_effort = \"high\""` (if it survives as one arg)
+    if (/^\s*model_reasoning_effort\s*=/.test(next)) return true;
   }
   return false;
 }

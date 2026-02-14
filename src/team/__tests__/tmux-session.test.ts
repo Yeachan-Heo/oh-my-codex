@@ -143,6 +143,17 @@ describe('buildWorkerStartupCommand', () => {
     assert.match(cmd, /model_reasoning_effort="medium"/);
     assert.doesNotMatch(cmd, /model_reasoning_effort="xhigh"/);
   });
+
+  it('does not append default reasoning when override is provided as spaced tokens', () => {
+    const cmd = buildWorkerStartupCommand(
+      'alpha',
+      1,
+      ['-c', 'model_reasoning_effort', '=', 'medium'],
+      'architect',
+    );
+    // Default for architect would be xhigh; ensure it was NOT appended.
+    assert.doesNotMatch(cmd, /model_reasoning_effort="xhigh"/);
+  });
 });
 
 describe('tmux-dependent functions when tmux is unavailable', () => {
