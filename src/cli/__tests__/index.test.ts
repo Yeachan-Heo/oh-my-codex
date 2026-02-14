@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeCodexLaunchArgs,
+  buildTmuxShellCommand,
   buildTmuxSessionName,
   readTopLevelTomlString,
   upsertTopLevelTomlString,
@@ -69,6 +70,22 @@ describe('normalizeCodexLaunchArgs', () => {
     assert.deepEqual(
       normalizeCodexLaunchArgs(['--high', '--xhigh']),
       ['-c', 'model_reasoning_effort="xhigh"']
+    );
+  });
+
+  it('maps --xhigh --madmax to codex-native flags only', () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs(['--xhigh', '--madmax']),
+      ['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="xhigh"']
+    );
+  });
+});
+
+describe('buildTmuxShellCommand', () => {
+  it('preserves quoted config values for tmux shell-command execution', () => {
+    assert.equal(
+      buildTmuxShellCommand('codex', ['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="xhigh"']),
+      `'codex' '--dangerously-bypass-approvals-and-sandbox' '-c' 'model_reasoning_effort="xhigh"'`
     );
   });
 });

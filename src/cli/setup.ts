@@ -7,6 +7,7 @@ import { mkdir, copyFile, readdir, readFile, writeFile, stat } from 'fs/promises
 import { join, dirname } from 'path';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
+import { spawnSync } from 'child_process';
 import {
   codexHome, codexConfigPath, codexPromptsDir,
   userSkillsDir, omxStateDir, omxPlansDir, omxLogsDir,
@@ -140,6 +141,14 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log('  2. Use /prompts:architect, /prompts:executor, /prompts:planner as slash commands');
   console.log('  3. Skills are available via /skills or implicit matching');
   console.log('  4. The AGENTS.md orchestration brain is loaded automatically');
+  if (isGitHubCliConfigured()) {
+    console.log('\nSupport the project: gh repo star Yeachan-Heo/oh-my-codex');
+  }
+}
+
+function isGitHubCliConfigured(): boolean {
+  const result = spawnSync('gh', ['auth', 'status'], { stdio: 'ignore' });
+  return result.status === 0;
 }
 
 async function installDirectory(

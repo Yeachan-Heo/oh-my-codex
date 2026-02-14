@@ -407,13 +407,17 @@ async function preLaunch(cwd: string, sessionId: string): Promise<void> {
  */
 function runCodex(cwd: string, args: string[]): void {
   const omxBin = process.argv[1];
-  const codexArgs = args.length > 0 ? ' ' + args.join(' ') : '';
+  const codexCmd = buildTmuxShellCommand('codex', args);
+  const hudCmd = buildTmuxShellCommand('node', [omxBin, 'hud', '--watch']);
 
   if (process.env.TMUX) {
     // Already in tmux: launch codex in current pane, HUD in bottom split
-    const hudCmd = `node ${omxBin} hud --watch`;
     try {
-      execSync(`tmux split-window -v -l 4 -d -c "${cwd}" '${hudCmd}'`, { stdio: 'inherit' });
+      execFileSync(
+        'tmux',
+        ['split-window', '-v', '-l', '4', '-d', '-c', cwd, hudCmd],
+        { stdio: 'inherit' }
+      );
     } catch {
       // HUD split failed, continue without it
     }
@@ -427,13 +431,18 @@ function runCodex(cwd: string, args: string[]): void {
     // Not in tmux: create a new tmux session with codex + HUD pane
     const tmuxSessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const sessionName = buildTmuxSessionName(cwd, tmuxSessionId);
-    const hudCmd = `node ${omxBin} hud --watch`;
     try {
-      execSync(
-        `tmux new-session -d -s "${sessionName}" -c "${cwd}" "codex${codexArgs}" \\; ` +
-        `split-window -v -l 4 -d -c "${cwd}" '${hudCmd}' \\; ` +
-        `select-pane -t 0 \\; ` +
-        `attach-session -t "${sessionName}"`,
+      execFileSync(
+        'tmux',
+        [
+          'new-session', '-d', '-s', sessionName, '-c', cwd, codexCmd,
+          ';',
+          'split-window', '-v', '-l', '4', '-d', '-c', cwd, hudCmd,
+          ';',
+          'select-pane', '-t', '0',
+          ';',
+          'attach-session', '-t', sessionName,
+        ],
         { stdio: 'inherit' }
       );
     } catch {
@@ -447,6 +456,14 @@ function runCodex(cwd: string, args: string[]): void {
       }
     }
   }
+}
+
+export function buildTmuxShellCommand(command: string, args: string[]): string {
+  return [quoteShellArg(command), ...args.map(quoteShellArg)].join(' ');
+}
+
+function quoteShellArg(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
 /**
