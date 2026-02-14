@@ -6,7 +6,7 @@
 import { mkdir, copyFile, readdir, readFile, writeFile, stat } from 'fs/promises';
 import { join, dirname } from 'path';
 import { existsSync } from 'fs';
-import { homedir } from 'os';
+import { spawnSync } from 'child_process';
 import {
   codexHome, codexConfigPath, codexPromptsDir,
   userSkillsDir, omxStateDir, omxPlansDir, omxLogsDir,
@@ -27,6 +27,7 @@ const REQUIRED_TEAM_COMM_MCP_TOOLS = [
   'team_mailbox_list',
   'team_mailbox_mark_delivered',
 ] as const;
+const GITHUB_REPO_SLUG = 'Yeachan-Heo/oh-my-codex';
 
 export async function setup(options: SetupOptions = {}): Promise<void> {
   const { force = false, dryRun = false, verbose = false } = options;
@@ -135,6 +136,10 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log();
 
   console.log('Setup complete! Run "omx doctor" to verify installation.');
+  if (isGitHubCliConfigured()) {
+    console.log('\nOptional: If oh-my-codex helps you, consider starring the repo:');
+    console.log(`  gh repo star ${GITHUB_REPO_SLUG}`);
+  }
   console.log('\nNext steps:');
   console.log('  1. Start Codex CLI in your project directory');
   console.log('  2. Use /prompts:architect, /prompts:executor, /prompts:planner as slash commands');
@@ -229,5 +234,14 @@ async function verifyTeamCommMcpTools(pkgRoot: string): Promise<{ ok: true } | {
     return { ok: true };
   } catch {
     return { ok: false, message: `cannot read ${stateServerPath}` };
+  }
+}
+
+function isGitHubCliConfigured(): boolean {
+  try {
+    const result = spawnSync('gh', ['auth', 'status'], { stdio: 'ignore' });
+    return result.status === 0;
+  } catch {
+    return false;
   }
 }

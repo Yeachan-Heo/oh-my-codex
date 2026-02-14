@@ -115,6 +115,34 @@ describe('buildWorkerStartupCommand', () => {
       else delete process.env.SHELL;
     }
   });
+
+  it('applies low reasoning effort for exploration roles', () => {
+    const cmd = buildWorkerStartupCommand('alpha', 1, [], 'explore');
+    assert.match(cmd, /model_reasoning_effort="low"/);
+  });
+
+  it('applies xhigh reasoning effort for review roles', () => {
+    const cmd = buildWorkerStartupCommand('alpha', 1, [], 'security-reviewer');
+    assert.match(cmd, /model_reasoning_effort="xhigh"/);
+  });
+
+  it('applies xhigh reasoning effort for architecture roles', () => {
+    const cmd = buildWorkerStartupCommand('alpha', 1, [], 'information-architect');
+    assert.match(cmd, /model_reasoning_effort="xhigh"/);
+  });
+
+  it('does not append default reasoning when launch args already override it', () => {
+    const cmd = buildWorkerStartupCommand(
+      'alpha',
+      1,
+      ['-c', 'model_reasoning_effort="medium"'],
+      'architect',
+    );
+    const matches = cmd.match(/model_reasoning_effort=/g) || [];
+    assert.equal(matches.length, 1);
+    assert.match(cmd, /model_reasoning_effort="medium"/);
+    assert.doesNotMatch(cmd, /model_reasoning_effort="xhigh"/);
+  });
 });
 
 describe('tmux-dependent functions when tmux is unavailable', () => {

@@ -198,7 +198,7 @@ export async function startTeam(
     overlayApplied = true;
 
     // 6. Create tmux session with workers
-    const createdSession = createTeamSession(sanitized, workerCount, cwd, workerLaunchArgs);
+    const createdSession = createTeamSession(sanitized, workerCount, cwd, workerLaunchArgs, agentType);
     sessionName = createdSession.name;
     createdWorkerPaneIds.push(...createdSession.workerPaneIds);
     config.tmux_session = sessionName;

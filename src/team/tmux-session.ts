@@ -10,6 +10,9 @@ export interface TeamSession {
 const INJECTION_MARKER = '[OMX_TMUX_INJECT]';
 const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
 const MADMAX_FLAG = '--madmax';
+const REASONING_KEY = 'model_reasoning_effort';
+
+type ReasoningEffort = 'low' | 'high' | 'xhigh';
 
 interface WorkerLaunchSpec {
   shell: string;
@@ -91,8 +94,31 @@ function buildWorkerLaunchSpec(shellPath: string | undefined): WorkerLaunchSpec 
   return { shell: '/bin/sh', rcFile: null };
 }
 
-function resolveWorkerLaunchArgs(extraArgs: string[] = []): string[] {
+function resolveReasoningEffort(agentType: string): ReasoningEffort {
+  const role = agentType.trim().toLowerCase();
+  if (role === 'explore' || role.startsWith('explore-') || role === 'style-reviewer' || role === 'writer') {
+    return 'low';
+  }
+  if (role === 'architect' || role.endsWith('-architect') || role === 'critic' || role.endsWith('-reviewer')) {
+    return 'xhigh';
+  }
+  return 'high';
+}
+
+function hasReasoningOverride(args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] !== '-c') continue;
+    const next = args[i + 1] || '';
+    if (next.startsWith(`${REASONING_KEY}=`)) return true;
+  }
+  return false;
+}
+
+function resolveWorkerLaunchArgs(extraArgs: string[] = [], agentType: string = 'executor'): string[] {
   const merged = [...extraArgs];
+  if (!hasReasoningOverride(merged)) {
+    merged.push('-c', `${REASONING_KEY}="${resolveReasoningEffort(agentType)}"`);
+  }
   const wantsBypass = process.argv.includes(CODEX_BYPASS_FLAG) || process.argv.includes(MADMAX_FLAG);
   if (wantsBypass && !merged.includes(CODEX_BYPASS_FLAG)) {
     merged.push(CODEX_BYPASS_FLAG);
@@ -100,9 +126,14 @@ function resolveWorkerLaunchArgs(extraArgs: string[] = []): string[] {
   return merged;
 }
 
-export function buildWorkerStartupCommand(teamName: string, workerIndex: number, launchArgs: string[] = []): string {
+export function buildWorkerStartupCommand(
+  teamName: string,
+  workerIndex: number,
+  launchArgs: string[] = [],
+  agentType: string = 'executor',
+): string {
   const spec = buildWorkerLaunchSpec(process.env.SHELL);
-  const fullLaunchArgs = resolveWorkerLaunchArgs(launchArgs);
+  const fullLaunchArgs = resolveWorkerLaunchArgs(launchArgs, agentType);
   const codexArgs = fullLaunchArgs.map(shellQuoteSingle).join(' ');
   const codexInvocation = codexArgs.length > 0 ? `exec codex ${codexArgs}` : 'exec codex';
   const rcPrefix = spec.rcFile ? `if [ -f ${spec.rcFile} ]; then source ${spec.rcFile}; fi; ` : '';
@@ -142,6 +173,7 @@ export function createTeamSession(
   workerCount: number,
   cwd: string,
   workerLaunchArgs: string[] = [],
+  agentType: string = 'executor',
 ): TeamSession {
   if (!isTmuxAvailable()) {
     throw new Error('tmux is not available');
@@ -174,7 +206,7 @@ export function createTeamSession(
   const workerPaneIds: string[] = [];
   let rightStackRootPaneId: string | null = null;
   for (let i = 1; i <= workerCount; i++) {
-    const cmd = buildWorkerStartupCommand(safeTeamName, i, workerLaunchArgs);
+    const cmd = buildWorkerStartupCommand(safeTeamName, i, workerLaunchArgs, agentType);
     // First split creates the right side from leader. Remaining splits stack on the right.
     const splitDirection = i === 1 ? '-h' : '-v';
     const splitTarget = i === 1 ? leaderPaneId : (rightStackRootPaneId ?? leaderPaneId);
