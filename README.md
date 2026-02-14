@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 
-Multi-agent orchestration for [OpenAI Codex CLI](https://github.com/openai/codex). Inspired by [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode).
+Multi-agent orchestration for [OpenAI Codex CLI](https://github.com/openai/codex). Inspired by the legacy precursor [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode).
 
 ## Why oh-my-codex?
 
@@ -263,8 +263,8 @@ Runtime state: `.omx/state/tmux-hook-state.json`
 Structured logs: `.omx/logs/tmux-hook-YYYY-MM-DD.jsonl`
 
 Compatibility note:
-- OMX writes `notify` as a TOML array by default.
-- Override with `OMX_NOTIFY_FORMAT=string` before `omx setup` for environments that require string notify syntax.
+- OMX writes `notify` as a TOML string by default.
+- Override with `OMX_NOTIFY_FORMAT=array` before `omx setup` for environments that prefer array notify syntax.
 
 ## Setup Details
 
@@ -280,7 +280,7 @@ Compatibility note:
 
 ## Coverage
 
-~92% feature parity with oh-my-claudecode (excluding MCP tools). See [COVERAGE.md](COVERAGE.md) for the detailed matrix and known gaps.
+~92% feature parity with the legacy oh-my-claudecode baseline (excluding MCP tools). See [COVERAGE.md](COVERAGE.md) for the detailed matrix and known gaps.
 
 ## Project Structure
 
@@ -318,7 +318,7 @@ omx setup && omx doctor
 
 ## Acknowledgments
 
-oh-my-codex is inspired by [oh-my-claudecode (OMC)](https://github.com/Yeachan-Heo/oh-my-claudecode), which pioneered multi-agent orchestration for Claude Code. OMX adapts the same concepts -- agent roles, workflow skills, orchestration brain, mode lifecycle -- to work with OpenAI's Codex CLI through its native extension points.
+oh-my-codex is inspired by [oh-my-claudecode (OMC)](https://github.com/Yeachan-Heo/oh-my-claudecode), which pioneered multi-agent orchestration for Claude Code. (Legacy terminology note: OMC/Claude references are historical; this project targets OpenAI Codex CLI.) OMX adapts the same concepts -- agent roles, workflow skills, orchestration brain, mode lifecycle -- to work with OpenAI's Codex CLI through its native extension points.
 
 ## License
 

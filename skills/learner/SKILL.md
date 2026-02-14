@@ -26,7 +26,7 @@ If a potential skill fails any of these questions, it's not worth saving.
 
 ## Recognition Pattern
 
-Use /learner ONLY after:
+Use `$learner` ONLY after:
 - Solving a tricky bug that required deep investigation
 - Discovering a non-obvious workaround specific to this codebase
 - Finding a hidden gotcha that wastes time when forgotten
@@ -62,8 +62,8 @@ The system REJECTS skills that are:
 
 **Step 3: Save Location**
 
-- **User-level**: ~/.claude/skills/omc-learned/ - Rare. Only for truly portable insights.
-- **Project-level**: .omx/skills/ - Default. Version-controlled with repo.
+- **User-level**: ~/.agents/skills/ - Rare. Only for truly portable insights.
+- **Project-level**: .agents/skills/ - Default. Version-controlled with repo.
 
 ### What Makes a USEFUL Skill
 
@@ -131,5 +131,5 @@ If code helps, show it - but as illustration of the principle, not copy-paste ma
 
 ## Related Commands
 
-- /note - Save quick notes that survive compaction (less formal than skills)
-- /ralph - Start a development loop with learning capture
+- `$note` - Save quick notes that survive compaction (less formal than skills)
+- `$ralph` - Start a development loop with learning capture

@@ -17,7 +17,7 @@ const srcEntry = join(root, 'src', 'cli', 'index.ts');
 
 if (existsSync(distEntry)) {
   const { main } = await import(distEntry);
-  main(process.argv.slice(2));
+  await main(process.argv.slice(2));
 } else {
   // Direct TS execution requires tsx or similar
   console.error('oh-my-codex: run "npm run build" first, or use tsx/ts-node');

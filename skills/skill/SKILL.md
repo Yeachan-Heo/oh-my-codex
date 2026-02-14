@@ -10,24 +10,24 @@ Meta-skill for managing oh-my-codex skills via CLI-like commands.
 
 ## Subcommands
 
-### /skill list
+### $skill list
 
 Show all local skills organized by scope.
 
 **Behavior:**
-1. Scan user skills at `~/.claude/skills/omc-learned/`
-2. Scan project skills at `.omx/skills/`
+1. Scan user skills at `~/.agents/skills/`
+2. Scan project skills at `.agents/skills/`
 3. Parse YAML frontmatter for metadata
 4. Display in organized table format:
 
 ```
-USER SKILLS (~/.claude/skills/omc-learned/):
+USER SKILLS (~/.agents/skills/):
 | Name              | Triggers           | Quality | Usage | Scope |
 |-------------------|--------------------|---------|-------|-------|
 | error-handler     | fix, error         | 95%     | 42    | user  |
 | api-builder       | api, endpoint      | 88%     | 23    | user  |
 
-PROJECT SKILLS (.omx/skills/):
+PROJECT SKILLS (.agents/skills/):
 | Name              | Triggers           | Quality | Usage | Scope   |
 |-------------------|--------------------|---------|-------|---------|
 | test-runner       | test, run          | 92%     | 15    | project |
@@ -37,7 +37,7 @@ PROJECT SKILLS (.omx/skills/):
 
 ---
 
-### /skill add [name]
+### $skill add [name]
 
 Interactive wizard for creating a new skill.
 
@@ -51,8 +51,8 @@ Interactive wizard for creating a new skill.
 4. **Ask for argument hint** (optional)
    - Example: "<file> [options]"
 5. **Ask for scope:**
-   - `user` → `~/.claude/skills/omc-learned/<name>/SKILL.md`
-   - `project` → `.omx/skills/<name>/SKILL.md`
+   - `user` → `~/.agents/skills/<name>/SKILL.md`
+   - `project` → `.agents/skills/<name>/SKILL.md`
 6. **Create skill file** with template:
 
 ```yaml
@@ -84,7 +84,7 @@ argument-hint: "<args>"
 ## Examples
 
 ```
-/oh-my-codex:<name> example-arg
+$<name> example-arg
 ```
 
 ## Notes
@@ -93,11 +93,11 @@ argument-hint: "<args>"
 ```
 
 7. **Report success** with file path
-8. **Suggest:** "Edit `/skill edit <name>` to customize content"
+8. **Suggest:** "Edit `$skill edit <name>` to customize content"
 
 **Example:**
 ```
-User: /skill add custom-logger
+User: $skill add custom-logger
 Assistant: Creating new skill 'custom-logger'...
 
 Description: Enhanced logging with structured output
@@ -105,25 +105,25 @@ Triggers (comma-separated): log, logger, logging
 Argument hint (optional): <level> [message]
 Scope (user/project): user
 
-✓ Created skill at ~/.claude/skills/omc-learned/custom-logger/SKILL.md
-→ Edit with: /skill edit custom-logger
+✓ Created skill at ~/.agents/skills/custom-logger/SKILL.md
+→ Edit with: $skill edit custom-logger
 ```
 
 ---
 
-### /skill remove <name>
+### $skill remove <name>
 
 Remove a skill by name.
 
 **Behavior:**
 1. **Search for skill** in both scopes:
-   - `~/.claude/skills/omc-learned/<name>/SKILL.md`
-   - `.omx/skills/<name>/SKILL.md`
+   - `~/.agents/skills/<name>/SKILL.md`
+   - `.agents/skills/<name>/SKILL.md`
 2. **If found:**
    - Display skill info (name, description, scope)
    - **Ask for confirmation:** "Delete '<name>' skill from <scope>? (yes/no)"
 3. **If confirmed:**
-   - Delete entire skill directory (e.g., `~/.claude/skills/omc-learned/<name>/`)
+   - Delete entire skill directory (e.g., `~/.agents/skills/<name>/`)
    - Report: "✓ Removed skill '<name>' from <scope>"
 4. **If not found:**
    - Report: "✗ Skill '<name>' not found in user or project scope"
@@ -132,10 +132,10 @@ Remove a skill by name.
 
 **Example:**
 ```
-User: /skill remove old-logger
+User: $skill remove old-logger
 Assistant: Found skill 'old-logger' in user scope:
   Description: Legacy logging utility
-  Scope: user (~/.claude/skills/omc-learned/)
+  Scope: user (~/.agents/skills/)
 
 Delete 'old-logger' skill? (yes/no)
 
@@ -145,7 +145,7 @@ Assistant: ✓ Removed skill 'old-logger' from user scope
 
 ---
 
-### /skill edit <name>
+### $skill edit <name>
 
 Edit an existing skill interactively.
 
@@ -176,7 +176,7 @@ Edit an existing skill interactively.
 
 **Example:**
 ```
-User: /skill edit custom-logger
+User: $skill edit custom-logger
 Assistant: Current skill 'custom-logger':
   - Description: Enhanced logging with structured output
   - Triggers: log, logger, logging
@@ -193,7 +193,7 @@ New triggers (comma-separated): log, logger, logging, trace
 
 ---
 
-### /skill search <query>
+### $skill search <query>
 
 Search skills by content, triggers, name, or description.
 
@@ -226,7 +226,7 @@ Found 3 skills matching "typescript error":
 
 **Example:**
 ```
-User: /skill search api endpoint
+User: $skill search api endpoint
 Assistant: Found 2 skills matching "api endpoint":
 
 1. api-builder (user)
@@ -240,7 +240,7 @@ Assistant: Found 2 skills matching "api endpoint":
 
 ---
 
-### /skill info <name>
+### $skill info <name>
 
 Show detailed information about a skill.
 
@@ -251,28 +251,28 @@ Show detailed information about a skill.
 
 ```
 Skill: custom-logger
-Scope: user (~/.claude/skills/omc-learned/custom-logger/)
+Scope: user (~/.agents/skills/custom-logger/)
 Description: Enhanced logging with structured output
 Triggers: log, logger, logging
 Argument Hint: <level> [message]
 Quality: 95% (if available)
 Usage Count: 42 times (if available)
-File Path: /home/user/.claude/skills/omc-learned/custom-logger/SKILL.md
+File Path: /home/user/.agents/skills/custom-logger/SKILL.md
 
 --- FULL CONTENT ---
 [entire markdown content]
 ```
 
-**If not found:** Report error with suggestion to use `/skill search`
+**If not found:** Report error with suggestion to use `$skill search`
 
 **Example:**
 ```
-User: /skill info custom-logger
+User: $skill info custom-logger
 Assistant: Skill: custom-logger
 Scope: user
 Description: Enhanced logging with structured output
 Triggers: log, logger, logging
-File: ~/.claude/skills/omc-learned/custom-logger/SKILL.md
+File: ~/.agents/skills/custom-logger/SKILL.md
 
 --- CONTENT ---
 # Custom Logger Skill
@@ -284,14 +284,14 @@ Enhanced logging with structured JSON output...
 
 ---
 
-### /skill sync
+### $skill sync
 
 Sync skills between user and project scopes.
 
 **Behavior:**
 1. **Scan both scopes:**
-   - User skills: `~/.claude/skills/omc-learned/`
-   - Project skills: `.omx/skills/`
+   - User skills: `~/.agents/skills/`
+   - Project skills: `.agents/skills/`
 2. **Compare and categorize:**
    - User-only skills (not in project)
    - Project-only skills (not in user)
@@ -334,12 +334,12 @@ Options:
 
 **Example:**
 ```
-User: /skill sync
+User: $skill sync
 Assistant: Found 5 user-only skills and 2 project-only skills.
 
 Copy 'error-handler' from user to project? (yes/no/skip)
 User: yes
-Assistant: ✓ Copied 'error-handler' to .omx/skills/
+Assistant: ✓ Copied 'error-handler' to .agents/skills/
 
 Copy 'api-builder' from user to project? (yes/no/skip)
 User: skip
@@ -348,7 +348,7 @@ User: skip
 
 ---
 
-### /skill setup
+### $skill setup
 
 Interactive wizard for setting up and managing local skills (formerly local-skills-setup).
 
@@ -360,7 +360,7 @@ First, check if skill directories exist and create them if needed:
 
 ```bash
 # Check and create user-level skills directory
-USER_SKILLS_DIR="$HOME/.claude/skills/omc-learned"
+USER_SKILLS_DIR="$HOME/.agents/skills"
 if [ -d "$USER_SKILLS_DIR" ]; then
   echo "User skills directory exists: $USER_SKILLS_DIR"
 else
@@ -369,7 +369,7 @@ else
 fi
 
 # Check and create project-level skills directory
-PROJECT_SKILLS_DIR=".omx/skills"
+PROJECT_SKILLS_DIR=".agents/skills"
 if [ -d "$PROJECT_SKILLS_DIR" ]; then
   echo "Project skills directory exists: $PROJECT_SKILLS_DIR"
 else
@@ -384,15 +384,15 @@ Scan both directories and show a comprehensive inventory:
 
 ```bash
 # Scan user-level skills
-echo "=== USER-LEVEL SKILLS (~/.claude/skills/omc-learned/) ==="
-if [ -d "$HOME/.claude/skills/omc-learned" ]; then
-  USER_COUNT=$(find "$HOME/.claude/skills/omc-learned" -name "*.md" 2>/dev/null | wc -l)
+echo "=== USER-LEVEL SKILLS (~/.agents/skills/) ==="
+if [ -d "$HOME/.agents/skills" ]; then
+  USER_COUNT=$(find "$HOME/.agents/skills" -name "*.md" 2>/dev/null | wc -l)
   echo "Total skills: $USER_COUNT"
 
   if [ $USER_COUNT -gt 0 ]; then
     echo ""
     echo "Skills found:"
-    find "$HOME/.claude/skills/omc-learned" -name "*.md" -type f -exec sh -c '
+    find "$HOME/.agents/skills" -name "*.md" -type f -exec sh -c '
       FILE="$1"
       NAME=$(grep -m1 "^name:" "$FILE" 2>/dev/null | sed "s/name: //")
       DESC=$(grep -m1 "^description:" "$FILE" 2>/dev/null | sed "s/description: //")
@@ -408,15 +408,15 @@ else
 fi
 
 echo ""
-echo "=== PROJECT-LEVEL SKILLS (.omx/skills/) ==="
-if [ -d ".omx/skills" ]; then
-  PROJECT_COUNT=$(find ".omx/skills" -name "*.md" 2>/dev/null | wc -l)
+echo "=== PROJECT-LEVEL SKILLS (.agents/skills/) ==="
+if [ -d ".agents/skills" ]; then
+  PROJECT_COUNT=$(find ".agents/skills" -name "*.md" 2>/dev/null | wc -l)
   echo "Total skills: $PROJECT_COUNT"
 
   if [ $PROJECT_COUNT -gt 0 ]; then
     echo ""
     echo "Skills found:"
-    find ".omx/skills" -name "*.md" -type f -exec sh -c '
+    find ".agents/skills" -name "*.md" -type f -exec sh -c '
       FILE="$1"
       NAME=$(grep -m1 "^name:" "$FILE" 2>/dev/null | sed "s/name: //")
       DESC=$(grep -m1 "^description:" "$FILE" 2>/dev/null | sed "s/description: //")
@@ -444,8 +444,8 @@ After scanning, use the AskUserQuestion tool to offer these options:
 **Question:** "What would you like to do with your local skills?"
 
 **Options:**
-1. **Add new skill** - Start the skill creation wizard (invoke `/skill add`)
-2. **List all skills with details** - Show comprehensive skill inventory (invoke `/skill list`)
+1. **Add new skill** - Start the skill creation wizard (invoke `$skill add`)
+2. **List all skills with details** - Show comprehensive skill inventory (invoke `$skill list`)
 3. **Scan conversation for patterns** - Analyze current conversation for skill-worthy patterns
 4. **Import skill** - Import a skill from URL or paste content
 5. **Done** - Exit the wizard
@@ -458,7 +458,7 @@ Analyze the current conversation context to identify potential skill-worthy patt
 - Codebase-specific workarounds discovered
 - Error patterns that took time to resolve
 
-Report findings and ask if user wants to extract any as skills (invoke `/learner` if yes).
+Report findings and ask if user wants to extract any as skills (invoke `$learner` if yes).
 
 **Option 4: Import Skill**
 
@@ -467,25 +467,25 @@ Ask user to provide either:
 - **Paste content**: Paste skill markdown content directly
 
 Then ask for scope:
-- **User-level** (~/.claude/skills/omc-learned/) - Available across all projects
-- **Project-level** (.omx/skills/) - Only for this project
+- **User-level** (~/.agents/skills/) - Available across all projects
+- **Project-level** (.agents/skills/) - Only for this project
 
 Validate the skill format and save to the chosen location.
 
 ---
 
-### /skill scan
+### $skill scan
 
-Quick command to scan both skill directories (subset of `/skill setup`).
+Quick command to scan both skill directories (subset of `$skill setup`).
 
 **Behavior:**
-Run the scan from Step 2 of `/skill setup` without the interactive wizard.
+Run the scan from Step 2 of `$skill setup` without the interactive wizard.
 
 ---
 
 ## Skill Templates
 
-When creating skills via `/skill add` or `/skill setup`, offer quick templates for common skill types:
+When creating skills via `$skill add` or `$skill setup`, offer quick templates for common skill types:
 
 ### Error Solution Template
 
@@ -668,31 +668,31 @@ How to work with this integration correctly:
 
 ```bash
 # List all skills
-/skill list
+$skill list
 
 # Create a new skill
-/skill add my-custom-skill
+$skill add my-custom-skill
 
 # Remove a skill
-/skill remove old-skill
+$skill remove old-skill
 
 # Edit existing skill
-/skill edit error-handler
+$skill edit error-handler
 
 # Search for skills
-/skill search typescript error
+$skill search typescript error
 
 # Get detailed info
-/skill info my-custom-skill
+$skill info my-custom-skill
 
 # Sync between scopes
-/skill sync
+$skill sync
 
 # Run setup wizard
-/skill setup
+$skill setup
 
 # Quick scan
-/skill scan
+$skill scan
 ```
 
 ## Usage Modes
@@ -701,9 +701,9 @@ How to work with this integration correctly:
 
 When invoked with an argument, skip the interactive wizard:
 
-- `/skill list` - Show detailed skill inventory
-- `/skill add` - Start skill creation (invoke learner)
-- `/skill scan` - Scan both skill directories
+- `$skill list` - Show detailed skill inventory
+- `$skill add` - Start skill creation (invoke learner)
+- `$skill scan` - Scan both skill directories
 
 ### Interactive Mode
 
@@ -715,7 +715,7 @@ When invoked without arguments, run the full guided wizard.
 
 **Automatic Application**: Claude detects triggers and applies skills automatically - no need to remember or search for solutions.
 
-**Version Control**: Project-level skills (.omx/skills/) are committed with your code, so the whole team benefits.
+**Version Control**: Project-level skills (.agents/skills/) are committed with your code, so the whole team benefits.
 
 **Evolving Knowledge**: Skills improve over time as you discover better approaches and refine triggers.
 
@@ -749,20 +749,20 @@ Good skills are:
 
 ## Related Skills
 
-- `/learner` - Extract a skill from current conversation
-- `/note` - Save quick notes (less formal than skills)
-- `/deepinit` - Generate AGENTS.md codebase hierarchy
+- `$learner` - Extract a skill from current conversation
+- `$note` - Save quick notes (less formal than skills)
+- `$deepinit` - Generate AGENTS.md codebase hierarchy
 
 ---
 
 ## Example Session
 
 ```
-> /skill list
+> $skill list
 
 Checking skill directories...
-✓ User skills directory exists: ~/.claude/skills/omc-learned/
-✓ Project skills directory exists: .omx/skills/
+✓ User skills directory exists: ~/.agents/skills/
+✓ Project skills directory exists: .agents/skills/
 
 Scanning for skills...
 
@@ -801,7 +801,7 @@ What would you like to do?
 
 ## Tips for Users
 
-- Run `/skill list` periodically to review your skill library
+- Run `$skill list` periodically to review your skill library
 - After solving a tricky bug, immediately run learner to capture it
 - Use project-level skills for codebase-specific knowledge
 - Use user-level skills for general patterns that apply everywhere
@@ -822,16 +822,16 @@ What would you like to do?
 
 ## Related Skills
 
-- `/learner` - Extract a skill from current conversation
-- `/note` - Save quick notes (less formal than skills)
-- `/deepinit` - Generate AGENTS.md codebase hierarchy
+- `$learner` - Extract a skill from current conversation
+- `$note` - Save quick notes (less formal than skills)
+- `$deepinit` - Generate AGENTS.md codebase hierarchy
 
 ---
 
 ## Future Enhancements
 
-- `/skill export <name>` - Export skill as shareable file
-- `/skill import <file>` - Import skill from file
-- `/skill stats` - Show usage statistics across all skills
-- `/skill validate` - Check all skills for format errors
-- `/skill template <type>` - Create from predefined templates
+- `$skill export <name>` - Export skill as shareable file
+- `$skill import <file>` - Import skill from file
+- `$skill stats` - Show usage statistics across all skills
+- `$skill validate` - Check all skills for format errors
+- `$skill template <type>` - Create from predefined templates

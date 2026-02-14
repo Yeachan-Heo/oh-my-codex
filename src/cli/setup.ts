@@ -118,9 +118,9 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 
   console.log('Setup complete! Run "omx doctor" to verify installation.');
   console.log('\nNext steps:');
-  console.log('  1. Start Codex CLI in your project directory');
+  console.log('  1. Start with "omx" in your project directory');
   console.log('  2. Use /prompts:architect, /prompts:executor, /prompts:planner as slash commands');
-  console.log('  3. Skills are available via /skills or implicit matching');
+  console.log('  3. Invoke skills with $name (or use /skills to browse)');
   console.log('  4. The AGENTS.md orchestration brain is loaded automatically');
 }
 
