@@ -9,7 +9,7 @@ export interface TeamConfig {
   task: string;
   agent_type: string;
   worker_count: number;
-  max_workers: number; // default 6, configurable up to 20
+  max_workers: number; // default 20, configurable up to 20
   workers: WorkerInfo[];
   created_at: string;
   tmux_session: string; // "omx-team-{name}"
@@ -179,7 +179,7 @@ export interface TeamSummary {
   nonReportingWorkers: string[];
 }
 
-export const DEFAULT_MAX_WORKERS = 6;
+export const DEFAULT_MAX_WORKERS = 20;
 export const ABSOLUTE_MAX_WORKERS = 20;
 const DEFAULT_CLAIM_LEASE_MS = 15 * 60 * 1000;
 const LOCK_STALE_MS = 5 * 60 * 1000;
@@ -402,7 +402,7 @@ export async function writeAtomic(filePath: string, data: string): Promise<void>
 
 // Initialize team state directory + config.json
 // Creates: .omx/state/team/{name}/, workers/{worker-1}..{worker-N}/, tasks/
-// Throws if workerCount > maxWorkers (default 6)
+// Throws if workerCount > maxWorkers (default 20)
 export async function initTeamState(
   teamName: string,
   task: string,
