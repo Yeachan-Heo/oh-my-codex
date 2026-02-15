@@ -9,10 +9,17 @@
  *   omx hud --tmux       Open HUD in a tmux split pane (auto-detects orientation)
  */
 
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { readAllState, readHudConfig } from './state.js';
 import { renderHud } from './render.js';
 import type { HudFlags, HudPreset } from './types.js';
+
+function parseHudPreset(value: string | undefined): HudPreset | undefined {
+  if (value === 'minimal' || value === 'focused' || value === 'full') {
+    return value;
+  }
+  return undefined;
+}
 
 function parseFlags(args: string[]): HudFlags {
   const flags: HudFlags = { watch: false, json: false, tmux: false };
@@ -25,9 +32,9 @@ function parseFlags(args: string[]): HudFlags {
     } else if (arg === '--tmux') {
       flags.tmux = true;
     } else if (arg.startsWith('--preset=')) {
-      const value = arg.slice('--preset='.length) as HudPreset;
-      if (['minimal', 'focused', 'full'].includes(value)) {
-        flags.preset = value;
+      const preset = parseHudPreset(arg.slice('--preset='.length));
+      if (preset) {
+        flags.preset = preset;
       }
     }
   }
@@ -98,6 +105,30 @@ export async function hudCommand(args: string[]): Promise<void> {
   await new Promise(() => {}); // Never resolves - exits via SIGINT
 }
 
+/** Shell-escape a string using single-quote wrapping (POSIX-safe). */
+export function shellEscape(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * Build the argument array for `execFileSync('tmux', args)`.
+ *
+ * By returning an argv array instead of a shell command string, `cwd` is
+ * passed as a literal argument to tmux (no shell expansion).  `omxBin` is
+ * shell-escaped inside the command string that tmux will execute in a shell.
+ */
+export function buildTmuxSplitArgs(
+  cwd: string,
+  omxBin: string,
+  preset?: string,
+): string[] {
+  // Defense-in-depth: keep preset constrained even if this helper is reused.
+  const safePreset = parseHudPreset(preset);
+  const presetArg = safePreset ? ` --preset=${safePreset}` : '';
+  const cmd = `node ${shellEscape(omxBin)} hud --watch${presetArg}`;
+  return ['split-window', '-v', '-l', '4', '-c', cwd, cmd];
+}
+
 async function launchTmuxPane(cwd: string, flags: HudFlags): Promise<void> {
   // Check if we're inside tmux
   if (!process.env.TMUX) {
@@ -105,13 +136,13 @@ async function launchTmuxPane(cwd: string, flags: HudFlags): Promise<void> {
     process.exit(1);
   }
 
-  const presetArg = flags.preset ? ` --preset=${flags.preset}` : '';
   const omxBin = process.argv[1]; // path to bin/omx.js
-  const cmd = `node ${omxBin} hud --watch${presetArg}`;
+  const args = buildTmuxSplitArgs(cwd, omxBin, flags.preset);
 
   try {
-    // Split bottom pane, 4 lines tall, running omx hud --watch
-    execSync(`tmux split-window -v -l 4 -c "${cwd}" '${cmd}'`, { stdio: 'inherit' });
+    // Split bottom pane, 4 lines tall, running omx hud --watch.
+    // execFileSync bypasses the shell – cwd and omxBin cannot inject commands.
+    execFileSync('tmux', args, { stdio: 'inherit' });
     console.log('HUD launched in tmux pane below. Close with: Ctrl+C in that pane, or `tmux kill-pane -t bottom`');
   } catch {
     console.error('Failed to create tmux split. Ensure tmux is available.');
