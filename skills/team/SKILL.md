@@ -77,6 +77,21 @@ Important:
 - Worker ACKs go to `mailbox/leader-fixed.json`
 - Notify hook updates worker heartbeat and nudges leader during active team mode
 
+### Team worker model resolution (current contract)
+
+Team mode resolves worker model flags from one shared launch-arg set (not per-worker model selection).
+
+Precedence (highest to lowest):
+1. Explicit worker model in `OMX_TEAM_WORKER_LAUNCH_ARGS`
+2. Inherited leader `--model` flag
+3. Injected low-complexity default: `gpt-5.3-codex-spark` (only when 1+2 are absent and team `agentType` is low-complexity)
+
+Normalization requirements:
+- Parse both `--model <value>` and `--model=<value>`
+- Remove duplicate/conflicting model flags
+- Emit exactly one final canonical flag: `--model <value>`
+- Preserve unrelated args in worker launch config
+
 ## Required Lifecycle (Operator Contract)
 
 Follow this exact lifecycle when running `$team`:
@@ -147,6 +162,7 @@ Task ID rule (critical):
 
 - File path uses `task-<id>.json` (example `task-1.json`)
 - MCP API `task_id` uses bare id (example `"1"`, not `"task-1"`)
+- Never instruct workers to read `tasks/{id}.json`
 
 ## Environment Knobs
 

@@ -4,6 +4,11 @@ import {
   normalizeCodexLaunchArgs,
   buildTmuxShellCommand,
   buildTmuxSessionName,
+  resolveCliInvocation,
+  resolveCodexLaunchPolicy,
+  parseTmuxPaneSnapshot,
+  findHudWatchPaneIds,
+  buildHudPaneCleanupTargets,
   readTopLevelTomlString,
   upsertTopLevelTomlString,
   collectInheritableTeamWorkerArgs,
@@ -84,6 +89,50 @@ describe('normalizeCodexLaunchArgs', () => {
   });
 });
 
+describe('resolveCliInvocation', () => {
+  it('resolves --help to the help command instead of launch', () => {
+    assert.deepEqual(resolveCliInvocation(['--help']), {
+      command: 'help',
+      launchArgs: [],
+    });
+  });
+
+  it('keeps unknown long flags as launch passthrough args', () => {
+    assert.deepEqual(resolveCliInvocation(['--model', 'gpt-5']), {
+      command: 'launch',
+      launchArgs: ['--model', 'gpt-5'],
+    });
+  });
+});
+
+describe('resolveCodexLaunchPolicy', () => {
+  it('launches directly when outside tmux', () => {
+    assert.equal(resolveCodexLaunchPolicy({}), 'direct');
+  });
+
+  it('uses tmux-aware launch path when already inside tmux', () => {
+    assert.equal(resolveCodexLaunchPolicy({ TMUX: '/tmp/tmux-1000/default,123,0' }), 'inside-tmux');
+  });
+});
+
+describe('tmux HUD pane helpers', () => {
+  it('findHudWatchPaneIds detects stale HUD watch panes and excludes current pane', () => {
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tzsh\tzsh',
+        '%2\tnode\tnode /tmp/bin/omx.js hud --watch',
+        '%3\tnode\tnode /tmp/bin/omx.js hud --watch',
+        '%4\tcodex\tcodex --model gpt-5',
+      ].join('\n')
+    );
+    assert.deepEqual(findHudWatchPaneIds(panes, '%2'), ['%3']);
+  });
+
+  it('buildHudPaneCleanupTargets de-dupes pane ids and includes created pane', () => {
+    assert.deepEqual(buildHudPaneCleanupTargets(['%3', '%3', 'invalid'], '%4'), ['%3', '%4']);
+  });
+});
+
 describe('buildTmuxShellCommand', () => {
   it('preserves quoted config values for tmux shell-command execution', () => {
     assert.equal(
@@ -108,21 +157,28 @@ describe('buildTmuxSessionName', () => {
 });
 
 describe('team worker launch arg inheritance helpers', () => {
-  it('collectInheritableTeamWorkerArgs extracts bypass and reasoning overrides', () => {
+  it('collectInheritableTeamWorkerArgs extracts bypass, reasoning, and model overrides', () => {
     assert.deepEqual(
       collectInheritableTeamWorkerArgs(['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="xhigh"', '--model', 'gpt-5']),
-      ['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="xhigh"']
+      ['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="xhigh"', '--model', 'gpt-5']
     );
   });
 
-  it('resolveTeamWorkerLaunchArgsEnv merges and normalizes with de-dupe + last reasoning wins', () => {
+  it('collectInheritableTeamWorkerArgs supports --model=<value> syntax', () => {
+    assert.deepEqual(
+      collectInheritableTeamWorkerArgs(['--model=gpt-5.3-codex-spark']),
+      ['--model', 'gpt-5.3-codex-spark']
+    );
+  });
+
+  it('resolveTeamWorkerLaunchArgsEnv merges and normalizes with de-dupe + last reasoning/model wins', () => {
     assert.equal(
       resolveTeamWorkerLaunchArgsEnv(
-        '--dangerously-bypass-approvals-and-sandbox -c model_reasoning_effort="high" --no-alt-screen',
-        ['-c', 'model_reasoning_effort="xhigh"', '--dangerously-bypass-approvals-and-sandbox'],
+        '--dangerously-bypass-approvals-and-sandbox -c model_reasoning_effort="high" --model old-a --no-alt-screen --model=old-b',
+        ['-c', 'model_reasoning_effort="xhigh"', '--dangerously-bypass-approvals-and-sandbox', '--model', 'gpt-5'],
         true
       ),
-      '--no-alt-screen --dangerously-bypass-approvals-and-sandbox -c model_reasoning_effort="xhigh"'
+      '--no-alt-screen --dangerously-bypass-approvals-and-sandbox -c model_reasoning_effort="xhigh" --model old-b'
     );
   });
 
@@ -134,6 +190,53 @@ describe('team worker launch arg inheritance helpers', () => {
         false
       ),
       '--no-alt-screen'
+    );
+  });
+
+  it('resolveTeamWorkerLaunchArgsEnv uses inherited model when env model is absent', () => {
+    assert.equal(
+      resolveTeamWorkerLaunchArgsEnv(
+        '--no-alt-screen',
+        ['--model=gpt-5.3-codex-spark'],
+        true
+      ),
+      '--no-alt-screen --model gpt-5.3-codex-spark'
+    );
+  });
+
+  it('resolveTeamWorkerLaunchArgsEnv uses default model when env and inherited models are absent', () => {
+    assert.equal(
+      resolveTeamWorkerLaunchArgsEnv(
+        '--no-alt-screen',
+        ['--dangerously-bypass-approvals-and-sandbox'],
+        true,
+        'gpt-5.3-codex-spark'
+      ),
+      '--no-alt-screen --dangerously-bypass-approvals-and-sandbox --model gpt-5.3-codex-spark'
+    );
+  });
+
+  it('resolveTeamWorkerLaunchArgsEnv keeps exactly one final model with precedence env > inherited > default', () => {
+    assert.equal(
+      resolveTeamWorkerLaunchArgsEnv(
+        '--model env-model --model=env-model-final',
+        ['--model', 'inherited-model'],
+        true,
+        'fallback-model'
+      ),
+      '--model env-model-final'
+    );
+  });
+
+  it('resolveTeamWorkerLaunchArgsEnv prefers inherited model over default when env model is absent', () => {
+    assert.equal(
+      resolveTeamWorkerLaunchArgsEnv(
+        '--no-alt-screen',
+        ['--model', 'inherited-model'],
+        true,
+        'fallback-model'
+      ),
+      '--no-alt-screen --model inherited-model'
     );
   });
 });
@@ -192,6 +295,19 @@ describe('injectModelInstructionsBypassArgs', () => {
     assert.deepEqual(
       args,
       ['-c', 'model_instructions_file="/tmp/alt instructions.md"']
+    );
+  });
+
+  it('uses session-scoped default model_instructions_file when provided', () => {
+    const args = injectModelInstructionsBypassArgs(
+      '/tmp/my-project',
+      ['--model', 'gpt-5'],
+      {},
+      '/tmp/my-project/.omx/state/sessions/session-1/AGENTS.md'
+    );
+    assert.deepEqual(
+      args,
+      ['--model', 'gpt-5', '-c', 'model_instructions_file="/tmp/my-project/.omx/state/sessions/session-1/AGENTS.md"']
     );
   });
 });

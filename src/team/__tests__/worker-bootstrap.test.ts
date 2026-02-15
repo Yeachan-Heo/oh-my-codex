@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm } from 'fs/promises';
+import { mkdtemp, readFile, writeFile, rm, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -27,6 +27,9 @@ describe('worker bootstrap', () => {
     const overlay = generateWorkerOverlay('my-team');
     assert.match(overlay, /team "my-team"/);
     assert.match(overlay, /\.omx\/state\/team\/my-team\/tasks/);
+    assert.match(overlay, /tasks\/task-<id>\.json/);
+    assert.match(overlay, /task_id: "<id>"/);
+    assert.doesNotMatch(overlay, /tasks\/\{id\}\.json/);
   });
 
   it('applyWorkerOverlay appends to existing AGENTS.md content', async () => {
@@ -119,6 +122,30 @@ describe('worker bootstrap', () => {
       const content = await readFile(agentsMdPath, 'utf8');
       assert.match(content, /<!-- OMX:TEAM:WORKER:START -->/);
       assert.match(content, /team "new-team"/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('applyWorkerOverlay reaps stale AGENTS lock directory', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-worker-bootstrap-'));
+    try {
+      const agentsMdPath = join(cwd, 'AGENTS.md');
+      const lockPath = join(cwd, '.omx', 'state', 'agents-md.lock');
+      await mkdir(lockPath, { recursive: true });
+      await writeFile(
+        join(lockPath, 'owner.json'),
+        JSON.stringify({ pid: 999_999_999, ts: Date.now() - 60_000 }),
+        'utf8',
+      );
+
+      await writeFile(agentsMdPath, '# Base\n', 'utf8');
+      const overlay = generateWorkerOverlay('team-stale-lock');
+      await applyWorkerOverlay(agentsMdPath, overlay);
+
+      const content = await readFile(agentsMdPath, 'utf8');
+      assert.match(content, /team "team-stale-lock"/);
+      await assert.rejects(readFile(join(lockPath, 'owner.json'), 'utf8'));
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

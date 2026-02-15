@@ -40,7 +40,7 @@
 | code-reviewer | DONE | ~/.codex/prompts/code-reviewer.md |
 | critic | DONE | ~/.codex/prompts/critic.md |
 | debugger | DONE | ~/.codex/prompts/debugger.md |
-| deep-executor | DONE | ~/.codex/prompts/deep-executor.md |
+| deep-executor | DEPRECATED | Route to ~/.codex/prompts/executor.md |
 | dependency-expert | DONE | ~/.codex/prompts/dependency-expert.md |
 | designer | DONE | ~/.codex/prompts/designer.md |
 | executor | DONE | ~/.codex/prompts/executor.md |

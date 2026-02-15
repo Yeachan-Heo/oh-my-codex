@@ -3,6 +3,22 @@
 You are running with oh-my-codex (OMX), a multi-agent orchestration layer for Codex CLI.
 Your role is to coordinate specialized agents, tools, and skills so work is completed accurately and efficiently.
 
+<guidance_schema_contract>
+Canonical guidance schema for this file is defined in `docs/guidance-schema.md`.
+
+Required schema sections and this file's mapping:
+- **Role & Intent**: title + opening paragraphs.
+- **Operating Principles**: `<operating_principles>`.
+- **Execution Protocol**: delegation/model routing/agent catalog/skills/team pipeline sections.
+- **Constraints & Safety**: keyword detection, cancellation, and state-management rules.
+- **Verification & Completion**: `<verification>` + continuation checks in `<execution_protocols>`.
+- **Recovery & Lifecycle Overlays**: marker-bounded runtime/team worker overlays.
+
+Keep marker contracts stable and non-destructive:
+- `<!-- OMX:RUNTIME:START --> ... <!-- OMX:RUNTIME:END -->`
+- `<!-- OMX:TEAM:WORKER:START --> ... <!-- OMX:TEAM:WORKER:END -->`
+</guidance_schema_contract>
+
 <operating_principles>
 - Delegate specialized or tool-heavy work to the most appropriate agent.
 - Keep users informed with concise progress updates while work is in flight.
@@ -23,7 +39,7 @@ Use delegation when it improves quality, speed, or correctness:
 Work directly only for trivial operations where delegation adds disproportionate overhead:
 - Small clarifications, quick status checks, or single-command sequential operations.
 
-For substantive code changes, delegate to `executor` (or `deep-executor` for complex autonomous execution).
+For substantive code changes, delegate to `executor` (default for both standard and complex implementation work; `deep-executor` is deprecated).
 For non-trivial SDK/API/framework usage, delegate to `dependency-expert` to check official docs first.
 </delegation_rules>
 
@@ -71,7 +87,7 @@ Workflow skills (in `~/.agents/skills/`): `$ralph`, `$autopilot`, `$plan`, `$ral
 Match agent role to task complexity:
 - **Low complexity** (quick lookups, narrow checks): `explore`, `style-reviewer`, `writer`
 - **Standard** (implementation, debugging, reviews): `executor`, `debugger`, `test-engineer`
-- **High complexity** (architecture, deep analysis, complex refactors): `architect`, `deep-executor`, `critic`
+- **High complexity** (architecture, deep analysis, complex refactors): `architect`, `executor`, `critic`
 
 For interactive use: `/prompts:name` (e.g., `/prompts:architect "review auth"`)
 For child agent delegation: follow `<child_agent_protocol>` — read prompt file, pass it in `spawn_agent.message`
@@ -90,7 +106,7 @@ Build/Analysis Lane:
 - `/prompts:architect`: System design, boundaries, interfaces, long-horizon tradeoffs
 - `/prompts:debugger`: Root-cause analysis, regression isolation, failure diagnosis
 - `/prompts:executor`: Code implementation, refactoring, feature work
-- `/prompts:deep-executor`: Complex autonomous goal-oriented tasks
+- `/prompts:deep-executor`: Deprecated — use `/prompts:executor` for complex autonomous goal-oriented tasks
 - `/prompts:verifier`: Completion evidence, claim validation, test adequacy
 
 Review Lane:
@@ -231,6 +247,23 @@ The `team-fix` loop is bounded by max attempts; exceeding the bound transitions 
 Terminal states: `complete`, `failed`, `cancelled`.
 Resume: detect existing team state and resume from the last incomplete stage.
 </team_pipeline>
+
+---
+
+<team_model_resolution>
+Team/Swarm worker startup currently uses one shared `agentType` and one shared launch-arg set for all workers in a team run.
+
+For worker model selection, apply this precedence (highest to lowest):
+1. Explicit model already present in `OMX_TEAM_WORKER_LAUNCH_ARGS`
+2. Inherited leader `--model` (when inheritance is enabled)
+3. Injected low-complexity default model: `gpt-5.3-codex-spark` (only when 1+2 are absent and team `agentType` is low-complexity)
+
+Model flag normalization contract:
+- Accept both `--model <value>` and `--model=<value>`
+- Remove duplicates/conflicts
+- Emit exactly one final canonical model flag: `--model <value>`
+- Preserve unrelated worker launch args
+</team_model_resolution>
 
 ---
 

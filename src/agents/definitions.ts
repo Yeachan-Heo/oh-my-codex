@@ -14,6 +14,20 @@ export interface AgentDefinition {
   category: 'build' | 'review' | 'domain' | 'product' | 'coordination';
 }
 
+const EXECUTOR_AGENT: AgentDefinition = {
+  name: 'executor',
+  description: 'Code implementation, refactoring, feature work',
+  model: 'sonnet',
+  tools: 'execution',
+  category: 'build',
+};
+
+const DEEP_EXECUTOR_ALIAS_AGENT: AgentDefinition = {
+  ...EXECUTOR_AGENT,
+  name: 'deep-executor',
+  description: '[Deprecated] Backward-compatible alias of executor',
+};
+
 export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   // Build/Analysis Lane
   'explore': {
@@ -51,20 +65,8 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
     tools: 'analysis',
     category: 'build',
   },
-  'executor': {
-    name: 'executor',
-    description: 'Code implementation, refactoring, feature work',
-    model: 'sonnet',
-    tools: 'execution',
-    category: 'build',
-  },
-  'deep-executor': {
-    name: 'deep-executor',
-    description: 'Complex autonomous goal-oriented tasks',
-    model: 'opus',
-    tools: 'execution',
-    category: 'build',
-  },
+  'executor': EXECUTOR_AGENT,
+  'deep-executor': DEEP_EXECUTOR_ALIAS_AGENT,
   'verifier': {
     name: 'verifier',
     description: 'Completion evidence, claim validation, test adequacy',

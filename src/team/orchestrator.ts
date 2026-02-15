@@ -138,7 +138,8 @@ export function getPhaseAgents(phase: TeamPhase): string[] {
     case 'team-prd':
       return ['product-manager', 'analyst'];
     case 'team-exec':
-      return ['executor', 'deep-executor', 'designer', 'test-engineer'];
+      // deep-executor is maintained as a backward-compatible alias of executor.
+      return ['executor', 'designer', 'test-engineer'];
     case 'team-verify':
       return ['verifier', 'quality-reviewer', 'security-reviewer'];
     case 'team-fix':

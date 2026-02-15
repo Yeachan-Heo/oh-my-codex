@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.8] - 2026-02-15
+
+### Changed
+- Bumped package version to `0.3.8`.
+
+## [0.3.7] - 2026-02-15
+
+### Added
+- Added guidance schema documentation for AGENTS surfaces in `docs/guidance-schema.md`.
+- Added stronger overlay safety coverage for worker/runtime AGENTS marker interactions.
+- Added broader hook and worker bootstrap test coverage for session-scoped behavior.
+
+### Changed
+- Defaulted low-complexity team workers to `gpt-5.3-codex-spark`.
+- Improved `omx` CLI behavior for session-scoped `model_instructions_file` handling.
+- Hardened worker bootstrap/orchestrator guidance flow and executor prompt migration.
+- Improved HUD pane dedupe and `--help` launch behavior in tmux workflows.
+
+### Fixed
+- Fixed noisy git-branch detection behavior in non-git directories for HUD state tests.
+- Fixed merge-order risk by integrating overlapping PR branches conservatively into `dev`.
+
 ## [0.3.5] - 2026-02-15
 
 ### Added
@@ -32,4 +54,3 @@ All notable changes to this project are documented in this file.
 - Improved tmux key injection reliability by sending both `C-m` and `Enter` submit keys.
 - Updated `tmux-hook` CLI status output to focus on pane tracking with legacy session visibility.
 - Bumped package version to `0.2.2`.
-

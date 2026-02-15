@@ -14,13 +14,15 @@
  */
 
 import { readFile, writeFile, mkdir, rm } from 'fs/promises';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { existsSync } from 'fs';
 import { omxNotepadPath, omxProjectMemoryPath } from '../utils/paths.js';
 import { getBaseStateDir, getStateDir } from '../mcp/state-paths.js';
 
 const START_MARKER = '<!-- OMX:RUNTIME:START -->';
 const END_MARKER = '<!-- OMX:RUNTIME:END -->';
+const WORKER_START_MARKER = '<!-- OMX:TEAM:WORKER:START -->';
+const WORKER_END_MARKER = '<!-- OMX:TEAM:WORKER:END -->';
 const MAX_OVERLAY_SIZE = 2000;
 
 // ── Lock helpers ─────────────────────────────────────────────────────────────
@@ -79,6 +81,39 @@ async function withAgentsMdLock<T>(cwd: string, fn: () => Promise<T>): Promise<T
 function truncate(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
   return text.slice(0, maxLen - 3) + '...';
+}
+
+type OverlaySection = {
+  key: string;
+  text: string;
+  optional: boolean;
+};
+
+function joinSections(sections: OverlaySection[]): string {
+  return sections.map(s => s.text).join('\n\n');
+}
+
+function capBodyToMax(sections: OverlaySection[], maxBody: number): string {
+  // Deterministic overflow policy (lowest priority removed first):
+  // 1) Drop optional sections from the end until it fits.
+  // 2) If still too large, hard-truncate the final section with ellipsis.
+  let current = sections.slice();
+  let body = joinSections(current);
+
+  while (body.length > maxBody) {
+    const lastOptionalIdx = [...current].reverse().findIndex(s => s.optional);
+    if (lastOptionalIdx < 0) break;
+    const idx = current.length - 1 - lastOptionalIdx;
+    current.splice(idx, 1);
+    body = joinSections(current);
+  }
+
+  if (body.length > maxBody) {
+    if (maxBody <= 3) return '.'.repeat(Math.max(0, maxBody));
+    body = body.slice(0, maxBody - 3) + '...';
+  }
+
+  return body;
 }
 
 // ── Overlay generation ───────────────────────────────────────────────────────
@@ -177,41 +212,64 @@ export async function generateOverlay(cwd: string, sessionId?: string): Promise<
     readProjectMemorySummary(cwd),
   ]);
 
-  // Build sections with priority-ordered truncation
-  const sections: string[] = [];
+  // Build sections with deterministic overflow behavior.
+  const sections: OverlaySection[] = [];
 
-  // Session metadata (max 200 chars)
+  // Session metadata (max 200 chars) - required
   const sessionMeta = `**Session:** ${sessionId || 'unknown'} | ${new Date().toISOString()}`;
-  sections.push(truncate(sessionMeta, 200));
+  sections.push({ key: 'session', text: truncate(sessionMeta, 200), optional: false });
 
-  // Active modes (max 300 chars)
+  // Active modes (max 300 chars) - optional
   if (activeModes) {
-    sections.push(`**Active Modes:**\n${truncate(activeModes, 280)}`);
+    sections.push({
+      key: 'active_modes',
+      text: `**Active Modes:**\n${truncate(activeModes, 600)}`,
+      optional: true,
+    });
   }
 
-  // Priority notepad (max 300 chars)
+  // Priority notepad (max 300 chars) - optional
   if (notepadPriority) {
-    sections.push(`**Priority Notes:**\n${truncate(notepadPriority, 280)}`);
+    sections.push({
+      key: 'priority_notes',
+      text: `**Priority Notes:**\n${truncate(notepadPriority, 600)}`,
+      optional: true,
+    });
   }
 
-  // Project memory (max 500 chars)
+  // Project memory (max 500 chars) - optional
   if (projectMemory) {
-    sections.push(`**Project Context:**\n${truncate(projectMemory, 480)}`);
+    sections.push({
+      key: 'project_context',
+      text: `**Project Context:**\n${truncate(projectMemory, 1000)}`,
+      optional: true,
+    });
   }
 
-  // Compaction protocol (max 400 chars)
-  sections.push(`**Compaction Protocol:**\n${truncate(getCompactionInstructions(), 380)}`);
+  // Compaction protocol (max 400 chars) - required
+  sections.push({
+    key: 'compaction',
+    text: `**Compaction Protocol:**\n${truncate(getCompactionInstructions(), 380)}`,
+    optional: false,
+  });
 
-  // Compose final overlay
-  let body = sections.join('\n\n');
-  // Ensure total fits within cap (markers + body)
-  const markerOverhead = START_MARKER.length + END_MARKER.length + 30; // newlines
-  const maxBody = MAX_OVERLAY_SIZE - markerOverhead;
-  if (body.length > maxBody) {
-    body = body.slice(0, maxBody - 3) + '...';
-  }
+  const prefix = `${START_MARKER}\n<session_context>\n`;
+  const suffix = `\n</session_context>\n${END_MARKER}`;
+  const maxBody = Math.max(0, MAX_OVERLAY_SIZE - prefix.length - suffix.length);
+  const body = capBodyToMax(sections, maxBody);
 
-  return `${START_MARKER}\n<session_context>\n${body}\n</session_context>\n${END_MARKER}`;
+  const overlay = `${prefix}${body}${suffix}`;
+  // Belt-and-suspenders: never exceed cap even if assumptions drift.
+  if (overlay.length <= MAX_OVERLAY_SIZE) return overlay;
+
+  const safeBody = capBodyToMax(
+    [
+      { key: 'session', text: truncate(sessionMeta, 200), optional: false },
+      { key: 'compaction', text: `**Compaction Protocol:**\n${truncate(getCompactionInstructions(), 380)}`, optional: false },
+    ],
+    maxBody
+  );
+  return `${prefix}${safeBody}${suffix}`.slice(0, MAX_OVERLAY_SIZE);
 }
 
 /**
@@ -261,7 +319,7 @@ function stripOverlayContent(content: string): string {
   // Strip all marker-bounded segments (handles multiple overlays from corruption)
   let result = content;
   let iterations = 0;
-  const MAX_STRIP_ITERATIONS = 5; // Safety bound
+  const MAX_STRIP_ITERATIONS = 50; // Safety bound (enough to clean up corrupt duplicates)
 
   while (iterations < MAX_STRIP_ITERATIONS) {
     const startIdx = result.indexOf(START_MARKER);
@@ -269,9 +327,28 @@ function stripOverlayContent(content: string): string {
 
     const endIdx = result.indexOf(END_MARKER, startIdx);
     if (endIdx < 0) {
-      // Malformed: remove from start marker to end of file
-      result = result.slice(0, startIdx).trimEnd() + '\n';
-      break;
+      // Malformed runtime marker block. Remove only until the next known marker
+      // so unrelated overlays (e.g. worker overlay) are preserved.
+      const markerCandidates = [
+        result.indexOf(START_MARKER, startIdx + START_MARKER.length),
+        result.indexOf(WORKER_START_MARKER, startIdx + START_MARKER.length),
+        result.indexOf(WORKER_END_MARKER, startIdx + START_MARKER.length),
+      ].filter(i => i >= 0);
+
+      const nextMarkerIdx = markerCandidates.length > 0
+        ? Math.min(...markerCandidates)
+        : -1;
+
+      if (nextMarkerIdx < 0) {
+        result = result.slice(0, startIdx).trimEnd() + '\n';
+        break;
+      }
+
+      const before = result.slice(0, startIdx).trimEnd();
+      const after = result.slice(nextMarkerIdx).trimStart();
+      result = after ? before + '\n' + after : before + '\n';
+      iterations++;
+      continue;
     }
 
     const before = result.slice(0, startIdx).trimEnd();
@@ -288,4 +365,43 @@ function stripOverlayContent(content: string): string {
  */
 export function hasOverlay(content: string): boolean {
   return content.includes(START_MARKER) && content.includes(END_MARKER);
+}
+
+export function sessionModelInstructionsPath(cwd: string, sessionId: string): string {
+  return join(getStateDir(cwd, sessionId), 'AGENTS.md');
+}
+
+/**
+ * Build a session-scoped AGENTS.md that combines project instructions (if any)
+ * and the runtime overlay, without mutating <cwd>/AGENTS.md.
+ */
+export async function writeSessionModelInstructionsFile(
+  cwd: string,
+  sessionId: string,
+  overlay: string,
+): Promise<string> {
+  const sessionPath = sessionModelInstructionsPath(cwd, sessionId);
+  await mkdir(dirname(sessionPath), { recursive: true });
+
+  const projectAgentsPath = join(cwd, 'AGENTS.md');
+  let base = '';
+  if (existsSync(projectAgentsPath)) {
+    base = await readFile(projectAgentsPath, 'utf-8');
+    base = stripOverlayContent(base);
+  }
+
+  const composed = base.trim().length > 0
+    ? `${base.trimEnd()}\n\n${overlay}\n`
+    : `${overlay}\n`;
+
+  await writeFile(sessionPath, composed);
+  return sessionPath;
+}
+
+/**
+ * Best-effort cleanup for session-scoped model instructions file.
+ */
+export async function removeSessionModelInstructionsFile(cwd: string, sessionId: string): Promise<void> {
+  const sessionPath = sessionModelInstructionsPath(cwd, sessionId);
+  await rm(sessionPath, { force: true });
 }

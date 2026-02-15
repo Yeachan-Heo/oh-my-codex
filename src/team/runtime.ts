@@ -1,6 +1,7 @@
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
+import { getAgent } from '../agents/definitions.js';
 import {
   sanitizeTeamName,
   isTmuxAvailable,
@@ -105,6 +106,9 @@ interface ShutdownOptions {
   force?: boolean;
 }
 
+const MODEL_FLAG = '--model';
+export const TEAM_LOW_COMPLEXITY_DEFAULT_MODEL = 'gpt-5.3-codex-spark';
+
 function resolveWorkerReadyTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = env.OMX_TEAM_READY_TIMEOUT_MS;
   const parsed = Number.parseInt(String(raw ?? ''), 10);
@@ -116,15 +120,45 @@ function shouldSkipWorkerReadyWait(env: NodeJS.ProcessEnv): boolean {
   return env.OMX_TEAM_SKIP_READY_WAIT === '1';
 }
 
-function resolveWorkerLaunchArgsFromEnv(env: NodeJS.ProcessEnv): string[] {
+function hasExplicitModelArg(args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === MODEL_FLAG) {
+      const maybeValue = args[i + 1];
+      if (typeof maybeValue === 'string' && maybeValue.trim() !== '' && !maybeValue.startsWith('-')) {
+        return true;
+      }
+      continue;
+    }
+
+    if (arg.startsWith(`${MODEL_FLAG}=`)) {
+      const inline = arg.slice(`${MODEL_FLAG}=`.length).trim();
+      if (inline !== '') return true;
+    }
+  }
+  return false;
+}
+
+function isLowComplexityAgentType(agentType: string): boolean {
+  const agent = getAgent(agentType);
+  if (agent?.model === 'haiku') return true;
+  return /-low$/i.test(agentType);
+}
+
+export function resolveWorkerLaunchArgsFromEnv(env: NodeJS.ProcessEnv, agentType: string): string[] {
   // Keep it intentionally simple: whitespace split, no quoting/escaping support.
   // Primary use is passing stable Codex flags like `--no-alt-screen`.
   const raw = env.OMX_TEAM_WORKER_LAUNCH_ARGS;
-  if (!raw || raw.trim() === '') return [];
-  return raw
+  const args = (!raw || raw.trim() === '')
+    ? []
+    : raw
     .split(/\s+/)
     .map((s) => s.trim())
     .filter(Boolean);
+
+  if (hasExplicitModelArg(args)) return args;
+  if (!isLowComplexityAgentType(agentType)) return args;
+  return [...args, MODEL_FLAG, TEAM_LOW_COMPLEXITY_DEFAULT_MODEL];
 }
 
 /**
@@ -167,7 +201,7 @@ export async function startTeam(
   let overlayApplied = false;
   let sessionCreated = false;
   const createdWorkerPaneIds: string[] = [];
-  const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(process.env);
+  const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(process.env, agentType);
   const workerReadyTimeoutMs = resolveWorkerReadyTimeoutMs(process.env);
   const skipWorkerReadyWait = shouldSkipWorkerReadyWait(process.env);
 

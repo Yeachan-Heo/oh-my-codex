@@ -14,7 +14,12 @@ import { hudCommand } from '../hud/index.js';
 import { teamCommand } from './team.js';
 import { getAllScopedStateDirs, getBaseStateDir, getStateDir } from '../mcp/state-paths.js';
 import { maybeCheckAndPromptUpdate } from './update.js';
-import { generateOverlay, applyOverlay, stripOverlay } from '../hooks/agents-overlay.js';
+import {
+  generateOverlay,
+  writeSessionModelInstructionsFile,
+  removeSessionModelInstructionsFile,
+  sessionModelInstructionsPath,
+} from '../hooks/agents-overlay.js';
 import {
   readSessionState, isSessionStale, writeSessionStart, writeSessionEnd, resetSessionMetrics,
 } from '../hooks/session.js';
@@ -26,7 +31,7 @@ const HELP = `
 oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
 
 Usage:
-  omx           Launch Codex CLI + HUD in tmux (or just Codex if no tmux)
+  omx           Launch Codex CLI (HUD auto-attaches only when already inside tmux)
   omx setup     Install skills, prompts, MCP servers, and AGENTS.md
   omx doctor    Check installation health
   omx doctor --team  Check team/swarm runtime health diagnostics
@@ -54,6 +59,7 @@ Options:
 
 const MADMAX_FLAG = '--madmax';
 const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
+const MODEL_FLAG = '--model';
 const HIGH_REASONING_FLAG = '--high';
 const XHIGH_REASONING_FLAG = '--xhigh';
 const CONFIG_FLAG = '-c';
@@ -69,15 +75,83 @@ type ReasoningMode = typeof REASONING_MODES[number];
 const REASONING_MODE_SET = new Set<string>(REASONING_MODES);
 const REASONING_USAGE = 'Usage: omx reasoning <low|medium|high|xhigh>';
 
+type CliCommand = 'launch' | 'setup' | 'doctor' | 'team' | 'version' | 'tmux-hook' | 'hud' | 'status' | 'cancel' | 'help' | 'reasoning' | string;
+
+export interface ResolvedCliInvocation {
+  command: CliCommand;
+  launchArgs: string[];
+}
+
+export function resolveCliInvocation(args: string[]): ResolvedCliInvocation {
+  const firstArg = args[0];
+  if (firstArg === '--help' || firstArg === '-h') {
+    return { command: 'help', launchArgs: [] };
+  }
+  if (!firstArg || firstArg.startsWith('--')) {
+    return { command: 'launch', launchArgs: firstArg ? args : [] };
+  }
+  if (firstArg === 'launch') {
+    return { command: 'launch', launchArgs: args.slice(1) };
+  }
+  return { command: firstArg, launchArgs: [] };
+}
+
+export type CodexLaunchPolicy = 'inside-tmux' | 'direct';
+
+export function resolveCodexLaunchPolicy(env: NodeJS.ProcessEnv = process.env): CodexLaunchPolicy {
+  return env.TMUX ? 'inside-tmux' : 'direct';
+}
+
+interface TmuxPaneSnapshot {
+  paneId: string;
+  currentCommand: string;
+  startCommand: string;
+}
+
+export function parseTmuxPaneSnapshot(output: string): TmuxPaneSnapshot[] {
+  return output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [paneId = '', currentCommand = '', ...startCommandParts] = line.split('\t');
+      return {
+        paneId: paneId.trim(),
+        currentCommand: currentCommand.trim(),
+        startCommand: startCommandParts.join('\t').trim(),
+      };
+    })
+    .filter((pane) => pane.paneId.startsWith('%'));
+}
+
+export function isHudWatchPane(pane: TmuxPaneSnapshot): boolean {
+  const command = `${pane.startCommand} ${pane.currentCommand}`.toLowerCase();
+  return /\bhud\b/.test(command)
+    && /--watch\b/.test(command)
+    && (/\bomx(?:\.js)?\b/.test(command) || /\bnode\b/.test(command));
+}
+
+export function findHudWatchPaneIds(panes: TmuxPaneSnapshot[], currentPaneId?: string): string[] {
+  return panes
+    .filter((pane) => pane.paneId !== currentPaneId)
+    .filter((pane) => isHudWatchPane(pane))
+    .map((pane) => pane.paneId);
+}
+
+export function buildHudPaneCleanupTargets(existingPaneIds: string[], createdPaneId: string | null): string[] {
+  const targets = new Set<string>(existingPaneIds.filter((id) => id.startsWith('%')));
+  if (createdPaneId && createdPaneId.startsWith('%')) {
+    targets.add(createdPaneId);
+  }
+  return [...targets];
+}
+
 export async function main(args: string[]): Promise<void> {
   const knownCommands = new Set([
     'launch', 'setup', 'doctor', 'team', 'version', 'tmux-hook', 'hud', 'status', 'cancel', 'help', '--help', '-h',
   ]);
   const firstArg = args[0];
-  const command = !firstArg || firstArg.startsWith('--') ? 'launch' : firstArg;
-  const launchArgs = command === 'launch'
-    ? (firstArg && firstArg.startsWith('--') ? args : args.slice(1))
-    : [];
+  const { command, launchArgs } = resolveCliInvocation(args);
   const flags = new Set(args.filter(a => a.startsWith('--')));
   const options = {
     force: flags.has('--force'),
@@ -225,7 +299,7 @@ async function launchWithHud(args: string[]): Promise<void> {
 
   // ── Phase 2: run ────────────────────────────────────────────────────────
   try {
-    runCodex(cwd, normalizedArgs);
+    runCodex(cwd, normalizedArgs, sessionId);
   } finally {
     // ── Phase 3: postLaunch ─────────────────────────────────────────────
     await postLaunch(cwd, sessionId);
@@ -308,15 +382,20 @@ function shouldBypassDefaultSystemPrompt(env: NodeJS.ProcessEnv): boolean {
   return env[OMX_BYPASS_DEFAULT_SYSTEM_PROMPT_ENV] !== '0';
 }
 
-function buildModelInstructionsOverride(cwd: string, env: NodeJS.ProcessEnv): string {
-  const filePath = env[OMX_MODEL_INSTRUCTIONS_FILE_ENV] || join(cwd, 'AGENTS.md');
+function buildModelInstructionsOverride(cwd: string, env: NodeJS.ProcessEnv, defaultFilePath?: string): string {
+  const filePath = env[OMX_MODEL_INSTRUCTIONS_FILE_ENV] || defaultFilePath || join(cwd, 'AGENTS.md');
   return `${MODEL_INSTRUCTIONS_FILE_KEY}="${escapeTomlString(filePath)}"`;
 }
 
-export function injectModelInstructionsBypassArgs(cwd: string, args: string[], env: NodeJS.ProcessEnv = process.env): string[] {
+export function injectModelInstructionsBypassArgs(
+  cwd: string,
+  args: string[],
+  env: NodeJS.ProcessEnv = process.env,
+  defaultFilePath?: string,
+): string[] {
   if (!shouldBypassDefaultSystemPrompt(env)) return [...args];
   if (hasModelInstructionsOverride(args)) return [...args];
-  return [...args, CONFIG_FLAG, buildModelInstructionsOverride(cwd, env)];
+  return [...args, CONFIG_FLAG, buildModelInstructionsOverride(cwd, env, defaultFilePath)];
 }
 
 function splitWorkerLaunchArgs(raw: string | undefined): string[] {
@@ -327,41 +406,48 @@ function splitWorkerLaunchArgs(raw: string | undefined): string[] {
     .filter(Boolean);
 }
 
-export function collectInheritableTeamWorkerArgs(codexArgs: string[]): string[] {
-  let wantsBypass = false;
-  let reasoningOverride: string | null = null;
-
-  for (let i = 0; i < codexArgs.length; i++) {
-    const arg = codexArgs[i];
-    if (arg === CODEX_BYPASS_FLAG || arg === MADMAX_FLAG) {
-      wantsBypass = true;
-      continue;
-    }
-
-    if (arg === CONFIG_FLAG) {
-      const maybeValue = codexArgs[i + 1];
-      if (typeof maybeValue === 'string' && isReasoningOverride(maybeValue)) {
-        reasoningOverride = maybeValue;
-        i += 1;
-      }
-    }
-  }
-
-  const inherited: string[] = [];
-  if (wantsBypass) inherited.push(CODEX_BYPASS_FLAG);
-  if (reasoningOverride) inherited.push(CONFIG_FLAG, reasoningOverride);
-  return inherited;
+interface ParsedTeamWorkerLaunchArgs {
+  passthrough: string[];
+  wantsBypass: boolean;
+  reasoningOverride: string | null;
+  modelOverride: string | null;
 }
 
-function normalizeTeamWorkerLaunchArgs(args: string[]): string[] {
+function isValidModelValue(value: string): boolean {
+  return value.trim().length > 0 && !value.startsWith('-');
+}
+
+function parseTeamWorkerLaunchArgs(args: string[]): ParsedTeamWorkerLaunchArgs {
   const passthrough: string[] = [];
   let wantsBypass = false;
   let reasoningOverride: string | null = null;
+  let modelOverride: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === CODEX_BYPASS_FLAG || arg === MADMAX_FLAG) {
       wantsBypass = true;
+      continue;
+    }
+
+    if (arg === MODEL_FLAG) {
+      const maybeValue = args[i + 1];
+      if (typeof maybeValue === 'string' && isValidModelValue(maybeValue)) {
+        modelOverride = maybeValue.trim();
+        i += 1;
+        continue;
+      }
+      passthrough.push(arg);
+      continue;
+    }
+
+    if (arg.startsWith(`${MODEL_FLAG}=`)) {
+      const inlineValue = arg.slice(`${MODEL_FLAG}=`.length).trim();
+      if (isValidModelValue(inlineValue)) {
+        modelOverride = inlineValue;
+        continue;
+      }
+      passthrough.push(arg);
       continue;
     }
 
@@ -377,15 +463,55 @@ function normalizeTeamWorkerLaunchArgs(args: string[]): string[] {
     passthrough.push(arg);
   }
 
-  if (wantsBypass) passthrough.push(CODEX_BYPASS_FLAG);
-  if (reasoningOverride) passthrough.push(CONFIG_FLAG, reasoningOverride);
-  return passthrough;
+  return {
+    passthrough,
+    wantsBypass,
+    reasoningOverride,
+    modelOverride,
+  };
 }
 
-export function resolveTeamWorkerLaunchArgsEnv(existingRaw: string | undefined, codexArgs: string[], inheritLeaderFlags = true): string | null {
-  const args = splitWorkerLaunchArgs(existingRaw);
-  if (inheritLeaderFlags) args.push(...collectInheritableTeamWorkerArgs(codexArgs));
-  const normalized = normalizeTeamWorkerLaunchArgs(args);
+export function collectInheritableTeamWorkerArgs(codexArgs: string[]): string[] {
+  const parsed = parseTeamWorkerLaunchArgs(codexArgs);
+
+  const inherited: string[] = [];
+  if (parsed.wantsBypass) inherited.push(CODEX_BYPASS_FLAG);
+  if (parsed.reasoningOverride) inherited.push(CONFIG_FLAG, parsed.reasoningOverride);
+  if (parsed.modelOverride) inherited.push(MODEL_FLAG, parsed.modelOverride);
+  return inherited;
+}
+
+function normalizeTeamWorkerLaunchArgs(args: string[], preferredModel?: string): string[] {
+  const parsed = parseTeamWorkerLaunchArgs(args);
+  const normalized = [...parsed.passthrough];
+
+  if (parsed.wantsBypass) normalized.push(CODEX_BYPASS_FLAG);
+  if (parsed.reasoningOverride) normalized.push(CONFIG_FLAG, parsed.reasoningOverride);
+
+  const selectedModel = preferredModel ?? parsed.modelOverride ?? undefined;
+  if (selectedModel) normalized.push(MODEL_FLAG, selectedModel);
+
+  return normalized;
+}
+
+export function resolveTeamWorkerLaunchArgsEnv(
+  existingRaw: string | undefined,
+  codexArgs: string[],
+  inheritLeaderFlags = true,
+  defaultModel?: string,
+): string | null {
+  const envArgs = splitWorkerLaunchArgs(existingRaw);
+  const inheritedArgs = inheritLeaderFlags ? collectInheritableTeamWorkerArgs(codexArgs) : [];
+  const allArgs = [...envArgs, ...inheritedArgs];
+
+  const envModel = parseTeamWorkerLaunchArgs(envArgs).modelOverride;
+  const inheritedModel = parseTeamWorkerLaunchArgs(inheritedArgs).modelOverride;
+  const fallbackModel = typeof defaultModel === 'string' && defaultModel.trim().length > 0
+    ? defaultModel.trim()
+    : undefined;
+  const selectedModel = envModel ?? inheritedModel ?? fallbackModel;
+
+  const normalized = normalizeTeamWorkerLaunchArgs(allArgs, selectedModel ?? undefined);
   if (normalized.length === 0) return null;
   return normalized.join(' ');
 }
@@ -492,23 +618,21 @@ export function buildTmuxSessionName(cwd: string, sessionId: string): string {
 /**
  * preLaunch: Prepare environment before Codex starts.
  * 1. Orphan cleanup (stale session from a crashed launch)
- * 2. Generate + apply AGENTS.md overlay
+ * 2. Generate runtime overlay + write session-scoped model instructions file
  * 3. Write session.json
  */
 async function preLaunch(cwd: string, sessionId: string): Promise<void> {
   // 1. Orphan cleanup
   const existingSession = await readSessionState(cwd);
   if (existingSession && isSessionStale(existingSession)) {
-    const agentsMdPath = join(cwd, 'AGENTS.md');
-    try { await stripOverlay(agentsMdPath, cwd); } catch { /* best effort */ }
+    try { await removeSessionModelInstructionsFile(cwd, existingSession.session_id); } catch { /* best effort */ }
     const { unlink } = await import('fs/promises');
     try { await unlink(join(cwd, '.omx', 'state', 'session.json')); } catch { /* best effort */ }
   }
 
-  // 2. Generate + apply AGENTS.md overlay
-  const agentsMdPath = join(cwd, 'AGENTS.md');
+  // 2. Generate runtime overlay + write session-scoped model instructions file
   const overlay = await generateOverlay(cwd, sessionId);
-  await applyOverlay(agentsMdPath, overlay, cwd);
+  await writeSessionModelInstructionsFile(cwd, sessionId, overlay);
 
   // 3. Write session state
   await resetSessionMetrics(cwd);
@@ -526,11 +650,15 @@ async function preLaunch(cwd: string, sessionId: string): Promise<void> {
  * runCodex: Launch Codex CLI (blocks until exit).
  * All 3 paths (new tmux, existing tmux, no tmux) block via execSync/execFileSync.
  */
-function runCodex(cwd: string, args: string[]): void {
+function runCodex(cwd: string, args: string[], sessionId: string): void {
   const codexBin = codexExecutable();
-  const launchArgs = injectModelInstructionsBypassArgs(cwd, args);
+  const launchArgs = injectModelInstructionsBypassArgs(
+    cwd,
+    args,
+    process.env,
+    sessionModelInstructionsPath(cwd, sessionId),
+  );
   const omxBin = process.argv[1];
-  const codexCmd = buildTmuxShellCommand(codexBin, launchArgs);
   const hudCmd = buildTmuxShellCommand('node', [omxBin, 'hud', '--watch']);
   const inheritLeaderFlags = process.env[TEAM_INHERIT_LEADER_FLAGS_ENV] !== '0';
   const workerLaunchArgs = resolveTeamWorkerLaunchArgsEnv(
@@ -542,53 +670,73 @@ function runCodex(cwd: string, args: string[]): void {
     ? { ...process.env, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }
     : process.env;
 
-  if (process.env.TMUX) {
+  if (resolveCodexLaunchPolicy(process.env) === 'inside-tmux') {
     // Already in tmux: launch codex in current pane, HUD in bottom split
+    const currentPaneId = process.env.TMUX_PANE;
+    const staleHudPaneIds = listHudWatchPaneIdsInCurrentWindow(currentPaneId);
+    for (const paneId of staleHudPaneIds) {
+      killTmuxPane(paneId);
+    }
+
+    let hudPaneId: string | null = null;
     try {
-      execFileSync(
-        'tmux',
-        ['split-window', '-v', '-l', '4', '-d', '-c', cwd, hudCmd],
-        { stdio: 'inherit' }
-      );
+      hudPaneId = createHudWatchPane(cwd, hudCmd);
     } catch {
       // HUD split failed, continue without it
     }
-    // execFileSync imported at top level
+
+    try {
+      execFileSync('codex', launchArgs, { cwd, stdio: 'inherit', env: codexEnv });
+    } catch {
+      // Codex exited
+    } finally {
+      const cleanupPaneIds = buildHudPaneCleanupTargets(
+        listHudWatchPaneIdsInCurrentWindow(currentPaneId),
+        hudPaneId
+      );
+      for (const paneId of cleanupPaneIds) {
+        killTmuxPane(paneId);
+      }
+    }
+  } else {
+    // Not in tmux: run codex directly in current terminal (no HUD pane by default)
     try {
       execFileSync(codexBin, launchArgs, { cwd, stdio: 'inherit', env: codexEnv });
     } catch {
       // Codex exited
     }
-  } else {
-    // Not in tmux: create a new tmux session with codex + HUD pane
-    const tmuxSessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const sessionName = buildTmuxSessionName(cwd, tmuxSessionId);
-    try {
-      execFileSync(
-        'tmux',
-        [
-          'new-session', '-d', '-s', sessionName, '-c', cwd,
-          ...(workerLaunchArgs ? ['-e', `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`] : []),
-          codexCmd,
-          ';',
-          'split-window', '-v', '-l', '4', '-d', '-c', cwd, hudCmd,
-          ';',
-          'select-pane', '-t', '0',
-          ';',
-          'attach-session', '-t', sessionName,
-        ],
-        { stdio: 'inherit' }
-      );
-    } catch {
-      // tmux not available, just run codex directly
-      console.log('tmux not available, launching codex without HUD...');
-      // execFileSync imported at top level
-      try {
-        execFileSync(codexBin, launchArgs, { cwd, stdio: 'inherit', env: codexEnv });
-      } catch {
-        // Codex exited
-      }
-    }
+  }
+}
+
+function listHudWatchPaneIdsInCurrentWindow(currentPaneId?: string): string[] {
+  try {
+    const output = execFileSync(
+      'tmux',
+      ['list-panes', '-F', '#{pane_id}\t#{pane_current_command}\t#{pane_start_command}'],
+      { encoding: 'utf-8' }
+    );
+    return findHudWatchPaneIds(parseTmuxPaneSnapshot(output), currentPaneId);
+  } catch {
+    return [];
+  }
+}
+
+function createHudWatchPane(cwd: string, hudCmd: string): string | null {
+  const output = execFileSync(
+    'tmux',
+    ['split-window', '-v', '-l', '4', '-d', '-c', cwd, '-P', '-F', '#{pane_id}', hudCmd],
+    { encoding: 'utf-8' }
+  );
+  const paneId = output.split('\n')[0]?.trim() || '';
+  return paneId.startsWith('%') ? paneId : null;
+}
+
+function killTmuxPane(paneId: string): void {
+  if (!paneId.startsWith('%')) return;
+  try {
+    execFileSync('tmux', ['kill-pane', '-t', paneId], { stdio: 'ignore' });
+  } catch {
+    // Pane may already be gone; ignore.
   }
 }
 
@@ -619,11 +767,11 @@ async function postLaunch(cwd: string, sessionId: string): Promise<void> {
     // Non-fatal
   }
 
-  // 1. Strip AGENTS.md overlay
+  // 1. Remove session-scoped model instructions file
   try {
-    await stripOverlay(join(cwd, 'AGENTS.md'), cwd);
+    await removeSessionModelInstructionsFile(cwd, sessionId);
   } catch (err) {
-    console.error(`[omx] postLaunch: overlay strip failed: ${err instanceof Error ? err.message : err}`);
+    console.error(`[omx] postLaunch: model instructions cleanup failed: ${err instanceof Error ? err.message : err}`);
   }
 
   // 2. Archive session (write history, delete session.json)

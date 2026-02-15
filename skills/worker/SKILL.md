@@ -41,6 +41,7 @@ Use the MCP tool:
    `.omx/state/team/<teamName>/tasks/task-<id>.json` (example: `task-1.json`)
 4. Task id format:
    - The MCP/state API uses the numeric id (`"1"`), not `"task-1"`.
+   - Never use legacy `tasks/{id}.json` wording.
 5. Claim the task (do NOT start work without a claim). Use the team state APIs described in your inbox/overlay.
 6. Do the work.
 7. Write completion to the task file:

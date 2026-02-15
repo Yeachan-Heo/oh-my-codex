@@ -15,7 +15,8 @@ This file defines practical tier guidance for OMX agent routing.
 
 - `THOROUGH`:
   Use for architectural, security-sensitive, or high-impact multi-file work.
-  Typical roles: `architect`, `critic`, `security-reviewer`, `deep-executor`.
+  Typical roles: `architect`, `critic`, `security-reviewer`, `executor`.
+  Note: `deep-executor` is deprecated; route implementation to `executor`.
 
 ## Selection Rules
 

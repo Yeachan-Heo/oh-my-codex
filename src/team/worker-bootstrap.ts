@@ -1,7 +1,14 @@
 import type { TeamTask } from './state.js';
+import { mkdir, readFile, rm, stat, writeFile } from 'fs/promises';
+import { dirname, join } from 'path';
 
 const TEAM_OVERLAY_START = '<!-- OMX:TEAM:WORKER:START -->';
 const TEAM_OVERLAY_END = '<!-- OMX:TEAM:WORKER:END -->';
+const AGENTS_LOCK_PATH = ['.omx', 'state', 'agents-md.lock'];
+const LOCK_OWNER_FILE = 'owner.json';
+const LOCK_TIMEOUT_MS = 5000;
+const LOCK_POLL_INTERVAL_MS = 100;
+const LOCK_STALE_MS = 30_000;
 
 /**
  * Generate generic AGENTS.md overlay for team workers.
@@ -17,13 +24,15 @@ You are a team worker in team "${teamName}". Your identity and assigned tasks ar
 1. Read your inbox file at the path provided in your first instruction
 2. Load the worker skill instructions from skills/worker/SKILL.md in this repository and follow them
 3. Send an ACK to the lead using MCP tool team_send_message (to_worker="leader-fixed") once initialized
-4. Read your task from .omx/state/team/${teamName}/tasks/{id}.json
-5. Request a claim via the state API (claimTask); do not directly set status to "in_progress" in the task file
-6. Do the work using your tools
-7. On completion: write {"status": "completed", "result": "summary of what was done"} to the task file
-8. Update your status: write {"state": "idle"} to .omx/state/team/${teamName}/workers/{your-name}/status.json
-9. Wait for new instructions (the lead will send them via your terminal)
-10. Check your mailbox for messages at .omx/state/team/${teamName}/mailbox/{your-name}.json
+4. Read your task from .omx/state/team/${teamName}/tasks/task-<id>.json (example: task-1.json)
+5. Task id format:
+   - State/MCP APIs use task_id: "<id>" (example: "1"), never "task-1"
+6. Request a claim via the state API (claimTask); do not directly set status to "in_progress" in the task file
+7. Do the work using your tools
+8. On completion: write {"status": "completed", "result": "summary of what was done"} to the task file
+9. Update your status: write {"state": "idle"} to .omx/state/team/${teamName}/workers/{your-name}/status.json
+10. Wait for new instructions (the lead will send them via your terminal)
+11. Check your mailbox for messages at .omx/state/team/${teamName}/mailbox/{your-name}.json
 
 ## Rules
 - Do NOT edit files outside the paths listed in your task description
@@ -38,40 +47,41 @@ ${TEAM_OVERLAY_END}`;
  * Apply worker overlay to AGENTS.md. Idempotent -- strips existing overlay first.
  */
 export async function applyWorkerOverlay(agentsMdPath: string, overlay: string): Promise<void> {
-  // Read existing content, strip any existing overlay, append new overlay
-  // Uses the START/END markers to find and replace
-  let content = '';
-  try {
-    const { readFile } = await import('fs/promises');
-    content = await readFile(agentsMdPath, 'utf-8');
-  } catch {
-    // File doesn't exist yet, start empty
-  }
+  await withAgentsMdLock(agentsMdPath, async () => {
+    // Read existing content, strip any existing overlay, append new overlay
+    // Uses the START/END markers to find and replace
+    let content = '';
+    try {
+      content = await readFile(agentsMdPath, 'utf-8');
+    } catch {
+      // File doesn't exist yet, start empty
+    }
 
-  // Strip existing overlay if present
-  content = stripOverlayFromContent(content);
+    // Strip existing overlay if present
+    content = stripOverlayFromContent(content);
 
-  // Append new overlay
-  content = content.trimEnd() + '\n\n' + overlay + '\n';
+    // Append new overlay
+    content = content.trimEnd() + '\n\n' + overlay + '\n';
 
-  const { writeFile } = await import('fs/promises');
-  await writeFile(agentsMdPath, content);
+    await writeFile(agentsMdPath, content);
+  });
 }
 
 /**
  * Strip worker overlay from AGENTS.md content. Idempotent.
  */
 export async function stripWorkerOverlay(agentsMdPath: string): Promise<void> {
-  const { readFile, writeFile } = await import('fs/promises');
-  try {
-    const content = await readFile(agentsMdPath, 'utf-8');
-    const stripped = stripOverlayFromContent(content);
-    if (stripped !== content) {
-      await writeFile(agentsMdPath, stripped);
+  await withAgentsMdLock(agentsMdPath, async () => {
+    try {
+      const content = await readFile(agentsMdPath, 'utf-8');
+      const stripped = stripOverlayFromContent(content);
+      if (stripped !== content) {
+        await writeFile(agentsMdPath, stripped);
+      }
+    } catch {
+      // File doesn't exist, nothing to strip
     }
-  } catch {
-    // File doesn't exist, nothing to strip
-  }
+  });
 }
 
 function stripOverlayFromContent(content: string): string {
@@ -81,6 +91,75 @@ function stripOverlayFromContent(content: string): string {
   const before = content.slice(0, startIdx).trimEnd();
   const after = content.slice(endIdx + TEAM_OVERLAY_END.length).trimStart();
   return before + (after ? '\n\n' + after : '') + '\n';
+}
+
+function lockPathFor(agentsMdPath: string): string {
+  return join(dirname(agentsMdPath), ...AGENTS_LOCK_PATH);
+}
+
+async function acquireAgentsMdLock(agentsMdPath: string, timeoutMs: number = LOCK_TIMEOUT_MS): Promise<void> {
+  const lockPath = lockPathFor(agentsMdPath);
+  await mkdir(dirname(lockPath), { recursive: true });
+
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      await mkdir(lockPath, { recursive: false });
+      const ownerFile = join(lockPath, LOCK_OWNER_FILE);
+      await writeFile(ownerFile, JSON.stringify({ pid: process.pid, ts: Date.now() }), 'utf-8');
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code && code !== 'EEXIST') throw error;
+
+      const stale = await isStaleLock(lockPath);
+      if (stale) {
+        await rm(lockPath, { recursive: true, force: true }).catch(() => {});
+        continue;
+      }
+      await sleep(LOCK_POLL_INTERVAL_MS);
+    }
+  }
+
+  throw new Error('Failed to acquire AGENTS.md lock within timeout');
+}
+
+async function isStaleLock(lockPath: string): Promise<boolean> {
+  const ownerFile = join(lockPath, LOCK_OWNER_FILE);
+  try {
+    const owner = JSON.parse(await readFile(ownerFile, 'utf-8')) as { pid?: number; ts?: number };
+    if (typeof owner.pid !== 'number') return true;
+    try {
+      process.kill(owner.pid, 0);
+    } catch {
+      return true;
+    }
+    return false;
+  } catch {
+    try {
+      const lockStat = await stat(lockPath);
+      return Date.now() - lockStat.mtimeMs > LOCK_STALE_MS;
+    } catch {
+      return true;
+    }
+  }
+}
+
+async function releaseAgentsMdLock(agentsMdPath: string): Promise<void> {
+  await rm(lockPathFor(agentsMdPath), { recursive: true, force: true }).catch(() => {});
+}
+
+async function withAgentsMdLock<T>(agentsMdPath: string, fn: () => Promise<T>): Promise<T> {
+  await acquireAgentsMdLock(agentsMdPath);
+  try {
+    return await fn();
+  } finally {
+    await releaseAgentsMdLock(agentsMdPath);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
