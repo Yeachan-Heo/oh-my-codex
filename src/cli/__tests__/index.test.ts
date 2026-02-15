@@ -6,6 +6,7 @@ import {
   buildTmuxSessionName,
   resolveCliInvocation,
   resolveCodexLaunchPolicy,
+  resolveCodexExecInvocation,
   parseTmuxPaneSnapshot,
   findHudWatchPaneIds,
   buildHudPaneCleanupTargets,
@@ -112,6 +113,28 @@ describe('resolveCodexLaunchPolicy', () => {
 
   it('uses tmux-aware launch path when already inside tmux', () => {
     assert.equal(resolveCodexLaunchPolicy({ TMUX: '/tmp/tmux-1000/default,123,0' }), 'inside-tmux');
+  });
+});
+
+describe('resolveCodexExecInvocation', () => {
+  it('wraps codex with cmd.exe on win32', () => {
+    assert.deepEqual(
+      resolveCodexExecInvocation(['--version'], 'win32'),
+      {
+        command: 'cmd.exe',
+        args: ['/d', '/s', '/c', 'codex', '--version'],
+      }
+    );
+  });
+
+  it('uses codex directly on non-win32 platforms', () => {
+    assert.deepEqual(
+      resolveCodexExecInvocation(['--version'], 'linux'),
+      {
+        command: 'codex',
+        args: ['--version'],
+      }
+    );
   });
 });
 

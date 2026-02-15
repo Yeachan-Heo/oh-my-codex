@@ -145,6 +145,27 @@ export function buildHudPaneCleanupTargets(existingPaneIds: string[], createdPan
   return [...targets];
 }
 
+export interface CodexExecInvocation {
+  command: string;
+  args: string[];
+}
+
+export function resolveCodexExecInvocation(
+  launchArgs: string[],
+  platform: NodeJS.Platform = process.platform,
+): CodexExecInvocation {
+  if (platform === 'win32') {
+    return {
+      command: 'cmd.exe',
+      args: ['/d', '/s', '/c', 'codex', ...launchArgs],
+    };
+  }
+  return {
+    command: 'codex',
+    args: [...launchArgs],
+  };
+}
+
 export async function main(args: string[]): Promise<void> {
   const knownCommands = new Set([
     'launch', 'setup', 'doctor', 'team', 'version', 'tmux-hook', 'hud', 'status', 'cancel', 'help', '--help', '-h',
@@ -684,9 +705,11 @@ function runCodex(cwd: string, args: string[], sessionId: string): void {
     }
 
     try {
-      execFileSync('codex', launchArgs, { cwd, stdio: 'inherit', env: codexEnv });
-    } catch {
-      // Codex exited
+      runCodexCommand(launchArgs, cwd, codexEnv);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[omx] Codex launch failed: ${message}`);
+      process.exitCode = 1;
     } finally {
       const cleanupPaneIds = buildHudPaneCleanupTargets(
         listHudWatchPaneIdsInCurrentWindow(currentPaneId),
@@ -720,12 +743,19 @@ function runCodex(cwd: string, args: string[], sessionId: string): void {
     } catch {
       // tmux not available or failed, just run codex directly
       try {
-        execFileSync('codex', launchArgs, { cwd, stdio: 'inherit', env: codexEnv });
-      } catch {
-        // Codex exited
+        runCodexCommand(launchArgs, cwd, codexEnv);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[omx] Codex launch failed: ${message}`);
+        process.exitCode = 1;
       }
     }
   }
+}
+
+function runCodexCommand(launchArgs: string[], cwd: string, env: NodeJS.ProcessEnv): void {
+  const invocation = resolveCodexExecInvocation(launchArgs);
+  execFileSync(invocation.command, invocation.args, { cwd, stdio: 'inherit', env });
 }
 
 function listHudWatchPaneIdsInCurrentWindow(currentPaneId?: string): string[] {
