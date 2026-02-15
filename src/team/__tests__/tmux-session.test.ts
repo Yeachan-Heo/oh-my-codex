@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   buildWorkerStartupCommand,
   createTeamSession,
+  destroyTeamSession,
+  getWorkerPanePid,
   isTmuxAvailable,
   isWorkerAlive,
   listTeamSessions,
@@ -138,7 +140,8 @@ describe('tmux-dependent functions when tmux is unavailable', () => {
     });
   });
 
-  it('createTeamSession throws', () => {
+  it('createTeamSession throws on non-Windows', () => {
+    if (process.platform === 'win32') return;
     withEmptyPath(() => {
       assert.throws(
         () => createTeamSession('My Team', 1, process.cwd()),
@@ -157,6 +160,33 @@ describe('tmux-dependent functions when tmux is unavailable', () => {
     withEmptyPath(() => {
       assert.equal(waitForWorkerReady('omx-team-x', 1, 1), false);
     });
+  });
+});
+
+describe('process transport on Windows', () => {
+  it('creates process workers and supports signal delivery', () => {
+    if (process.platform !== 'win32') return;
+
+    const prevForce = process.env.OMX_FORCE_TMUX_TRANSPORT;
+    process.env.OMX_FORCE_TMUX_TRANSPORT = '0';
+    try {
+      const session = createTeamSession('Win Team', 1, process.cwd());
+      assert.match(session.name, /^omx-team-/);
+      assert.equal(session.workerPaneIds.length, 1);
+      const pane = session.workerPaneIds[0];
+      assert.match(pane, /^pid:\d+$/);
+
+      sendToWorker(session.name, 1, 'ping', pane);
+      assert.equal(typeof isWorkerAlive(session.name, 1, pane), 'boolean');
+      assert.ok((getWorkerPanePid(session.name, 1, pane) || 0) > 0);
+
+      const sessions = listTeamSessions();
+      assert.ok(sessions.includes(session.name));
+      destroyTeamSession(session.name);
+    } finally {
+      if (typeof prevForce === 'string') process.env.OMX_FORCE_TMUX_TRANSPORT = prevForce;
+      else delete process.env.OMX_FORCE_TMUX_TRANSPORT;
+    }
   });
 });
 

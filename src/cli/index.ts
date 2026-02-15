@@ -20,6 +20,7 @@ import {
 } from '../hooks/session.js';
 import { getPackageRoot } from '../utils/package.js';
 import { codexConfigPath } from '../utils/paths.js';
+import { codexExecutable } from '../utils/codex.js';
 
 const HELP = `
 oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
@@ -29,7 +30,7 @@ Usage:
   omx setup     Install skills, prompts, MCP servers, and AGENTS.md
   omx doctor    Check installation health
   omx doctor --team  Check team/swarm runtime health diagnostics
-  omx team      Spawn parallel worker panes in tmux and bootstrap inbox/task state
+  omx team      Spawn parallel workers and bootstrap inbox/task state (tmux panes or process workers)
   omx version   Show version information
   omx tmux-hook Manage tmux prompt injection workaround (init|status|validate|test)
   omx hud       Show HUD statusline (--watch, --json, --preset=NAME)
@@ -484,8 +485,9 @@ async function preLaunch(cwd: string, sessionId: string): Promise<void> {
  * All 3 paths (new tmux, existing tmux, no tmux) block via execSync/execFileSync.
  */
 function runCodex(cwd: string, args: string[]): void {
+  const codexBin = codexExecutable();
   const omxBin = process.argv[1];
-  const codexCmd = buildTmuxShellCommand('codex', args);
+  const codexCmd = buildTmuxShellCommand(codexBin, args);
   const hudCmd = buildTmuxShellCommand('node', [omxBin, 'hud', '--watch']);
   const inheritLeaderFlags = process.env[TEAM_INHERIT_LEADER_FLAGS_ENV] !== '0';
   const workerLaunchArgs = resolveTeamWorkerLaunchArgsEnv(process.env[TEAM_WORKER_LAUNCH_ARGS_ENV], args, inheritLeaderFlags);
@@ -506,7 +508,7 @@ function runCodex(cwd: string, args: string[]): void {
     }
     // execFileSync imported at top level
     try {
-      execFileSync('codex', args, { cwd, stdio: 'inherit', env: codexEnv });
+      execFileSync(codexBin, args, { cwd, stdio: 'inherit', env: codexEnv });
     } catch {
       // Codex exited
     }
@@ -535,7 +537,7 @@ function runCodex(cwd: string, args: string[]): void {
       console.log('tmux not available, launching codex without HUD...');
       // execFileSync imported at top level
       try {
-        execFileSync('codex', args, { cwd, stdio: 'inherit', env: codexEnv });
+        execFileSync(codexBin, args, { cwd, stdio: 'inherit', env: codexEnv });
       } catch {
         // Codex exited
       }

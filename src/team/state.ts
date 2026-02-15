@@ -13,6 +13,7 @@ export interface TeamConfig {
   workers: WorkerInfo[];
   created_at: string;
   tmux_session: string; // "omx-team-{name}"
+  transport_kind?: 'tmux' | 'process';
   next_task_id: number;
 }
 
@@ -96,6 +97,7 @@ export interface TeamManifestV2 {
   policy: TeamPolicy;
   permissions_snapshot: PermissionsSnapshot;
   tmux_session: string;
+  transport_kind?: 'tmux' | 'process';
   worker_count: number;
   workers: WorkerInfo[];
   next_task_id: number;
@@ -459,6 +461,7 @@ export async function initTeamState(
     workers,
     created_at: new Date().toISOString(),
     tmux_session: `omx-team-${teamName}`,
+    transport_kind: process.platform === 'win32' ? 'process' : 'tmux',
     next_task_id: 1,
   };
 
@@ -476,6 +479,7 @@ export async function initTeamState(
       policy: defaultPolicy(displayMode),
       permissions_snapshot: permissionsSnapshot,
       tmux_session: config.tmux_session,
+      transport_kind: config.transport_kind,
       worker_count: workerCount,
       workers,
       next_task_id: 1,
@@ -515,6 +519,7 @@ function teamConfigFromManifest(manifest: TeamManifestV2): TeamConfig {
     workers: manifest.workers,
     created_at: manifest.created_at,
     tmux_session: manifest.tmux_session,
+    transport_kind: manifest.transport_kind,
     next_task_id: manifest.next_task_id,
   };
 }
@@ -528,6 +533,7 @@ function teamManifestFromConfig(config: TeamConfig): TeamManifestV2 {
     policy: defaultPolicy(),
     permissions_snapshot: defaultPermissionsSnapshot(),
     tmux_session: config.tmux_session,
+    transport_kind: config.transport_kind ?? 'tmux',
     worker_count: config.worker_count,
     workers: config.workers,
     next_task_id: normalizeNextTaskId(config.next_task_id),

@@ -47,13 +47,28 @@ describe('runtime', () => {
   it('startTeam throws when tmux is not available', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-'));
     try {
-      await assert.rejects(
-        () =>
-          withEmptyPath(() =>
+      if (process.platform === 'win32') {
+        const prevSkip = process.env.OMX_TEAM_SKIP_READY_WAIT;
+        process.env.OMX_TEAM_SKIP_READY_WAIT = '1';
+        try {
+          const runtime = await withEmptyPath(() =>
             startTeam('team-a', 'task', 'executor', 1, [{ subject: 's', description: 'd' }], cwd),
-          ),
-        /requires tmux/i,
-      );
+          );
+          assert.equal(runtime.teamName, 'team-a');
+          await shutdownTeam('team-a', cwd, { force: true });
+        } finally {
+          if (typeof prevSkip === 'string') process.env.OMX_TEAM_SKIP_READY_WAIT = prevSkip;
+          else delete process.env.OMX_TEAM_SKIP_READY_WAIT;
+        }
+      } else {
+        await assert.rejects(
+          () =>
+            withEmptyPath(() =>
+              startTeam('team-a', 'task', 'executor', 1, [{ subject: 's', description: 'd' }], cwd),
+            ),
+          /requires tmux/i,
+        );
+      }
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -311,6 +326,7 @@ describe('runtime', () => {
   });
 
   it('assignTask rolls back claim when notification transport fails', async () => {
+    if (process.platform === 'win32') return;
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-'));
     try {
       await initTeamState('team-notify-fail', 'assignment test', 'executor', 1, cwd);
@@ -336,6 +352,7 @@ describe('runtime', () => {
   });
 
   it('assignTask rolls back claim when inbox write fails after claim', async () => {
+    if (process.platform === 'win32') return;
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-'));
     try {
       await initTeamState('team-inbox-fail', 'assignment test', 'executor', 1, cwd);

@@ -22,8 +22,9 @@ Codex CLI is powerful on its own. OMX makes it **orchestrated**:
 
 ## Prerequisites
 
-- **OS support**: macOS and Linux only
-  Windows is not currently supported directly. Use **WSL2** on Windows or run on macOS.
+- **OS support**: macOS, Linux, and Windows (native)
+  - tmux-first workflows remain best on macOS/Linux.
+  - Windows uses process-based team workers when tmux is unavailable.
 - **Node.js** >= 20
 - **[OpenAI Codex CLI](https://github.com/openai/codex)** installed (`npm install -g @openai/codex`)
 - **OpenAI API key** configured
@@ -58,7 +59,7 @@ Inside a Codex CLI session:
 The core release feature in OMX is coordinated team execution.
 
 - Use `$team` inside Codex when you want staged multi-agent delivery with verify/fix loops.
-- Use `omx team` from terminal when you want tmux worker panes plus shared task/mailbox state.
+- Use `omx team` from terminal when you want shared task/mailbox state with either tmux panes or process workers.
 - OMX includes a HUD + tmux hook workaround path for Codex CLI behavior that is not natively supported yet.
 
 Canonical pipeline:
@@ -223,7 +224,7 @@ omx --xhigh   # Launch Codex with reasoning effort set to xhigh (recommended)
 omx setup     # Install and configure OMX
 omx doctor    # Run 9 installation health checks
 omx doctor --team # Diagnose team/swarm runtime state and blockers
-omx team ...  # Spawn tmux team workers and bootstrap team state
+omx team ...  # Spawn team workers (tmux or process transport) and bootstrap team state
 omx tmux-hook # Manage tmux prompt-injection workaround (init/status/validate/test)
 omx reasoning <mode> # Set default reasoning mode (low|medium|high|xhigh)
 omx status    # Show active mode state
@@ -296,6 +297,11 @@ Compatibility note:
 - OMX writes `notify` as a TOML array by default.
 - Override with `OMX_NOTIFY_FORMAT=string` before `omx setup` for environments that require string notify syntax.
 
+Windows note:
+- Team mode can run without tmux via process workers.
+- `OMX_FORCE_TMUX_TRANSPORT=1` forces tmux probing (for environments with tmux installed).
+- `omx doctor --team` can report `worker_process_missing` when a worker PID is stale.
+
 ## Setup Details
 
 `omx setup` performs 7 steps:
@@ -334,7 +340,7 @@ oh-my-codex/
   prompts/                 # 30 agent prompt files (*.md)
   skills/                  # 39 skill directories (*/SKILL.md)
   templates/               # AGENTS.md template
-  scripts/                 # notify-hook.js, tmux-hook-engine.js
+  scripts/                 # notify-hook.js, tmux-hook-engine.js, team-worker-bootstrap.js
 ```
 
 ## Development

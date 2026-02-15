@@ -89,7 +89,7 @@ async function ensureTeamModeState(parsed: ParsedTeamArgs): Promise<void> {
 
 async function renderStartSummary(runtime: TeamRuntime): Promise<void> {
   console.log(`Team started: ${runtime.teamName}`);
-  console.log(`tmux target: ${runtime.sessionName}`);
+  console.log(`session target: ${runtime.sessionName}`);
   console.log(`workers: ${runtime.config.worker_count}`);
   console.log(`agent_type: ${runtime.config.agent_type}`);
 

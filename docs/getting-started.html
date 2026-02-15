@@ -33,6 +33,13 @@
 omx setup
 omx doctor</code></pre>
 
+      <h2>Windows Quick Start</h2>
+      <p>If global npm install/link is restricted by policy, run OMX directly from the repo:</p>
+      <pre><code>node .\bin\omx.js setup
+node .\bin\omx.js doctor
+node .\bin\omx.js team 2:executor "test task"</code></pre>
+      <p>On Windows, team mode automatically uses process workers when tmux is unavailable.</p>
+
       <h2>First Run Walkthrough</h2>
       <ol>
         <li>Create or enter a project directory.</li>
@@ -47,9 +54,11 @@ omx doctor</code></pre>
         <thead><tr><th>Issue</th><th>What to check</th></tr></thead>
         <tbody>
           <tr><td><code>omx</code> command not found</td><td>Re-run global install and ensure npm global bin is in PATH.</td></tr>
+          <tr><td>npm <code>EPERM</code>/<code>EACCES</code> during global install</td><td>Use a local npm cache, run elevated shell, or run via <code>node .\bin\omx.js ...</code> from the repository.</td></tr>
           <tr><td>Prompts not available</td><td>Confirm files exist in <code>~/.codex/prompts/</code> and re-run <code>omx setup</code>.</td></tr>
           <tr><td>Skills not loading</td><td>Verify <code>~/.agents/skills/*/SKILL.md</code> files were installed.</td></tr>
           <tr><td>Doctor reports config issues</td><td>Run <code>omx doctor</code> and apply the suggested fixes.</td></tr>
+          <tr><td><code>worker_process_missing</code> in <code>omx doctor --team</code></td><td>A worker PID is stale. Run <code>omx team shutdown &lt;team-name&gt;</code> and start the team again.</td></tr>
         </tbody>
       </table>
     </main>

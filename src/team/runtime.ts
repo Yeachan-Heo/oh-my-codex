@@ -15,6 +15,7 @@ import {
   destroyTeamSession,
   listTeamSessions,
 } from './tmux-session.js';
+import { getPlatformCapabilities } from '../platform/capabilities.js';
 import {
   teamInit as initTeamState,
   DEFAULT_MAX_WORKERS,
@@ -141,12 +142,12 @@ export async function startTeam(
     throw new Error('nested_team_disallowed');
   }
 
-  // tmux-only runtime
-  if (!isTmuxAvailable()) {
+  const caps = getPlatformCapabilities();
+  if (!isTmuxAvailable() && !caps.isWindows) {
     throw new Error('Team mode requires tmux. Install with: apt install tmux / brew install tmux');
   }
   const displayMode = 'split_pane';
-  if (!process.env.TMUX) {
+  if (isTmuxAvailable() && !process.env.TMUX) {
     throw new Error('Team mode requires running inside tmux current leader pane');
   }
 
@@ -202,6 +203,7 @@ export async function startTeam(
     sessionName = createdSession.name;
     createdWorkerPaneIds.push(...createdSession.workerPaneIds);
     config.tmux_session = sessionName;
+    config.transport_kind = isTmuxAvailable() ? 'tmux' : 'process';
     await saveTeamConfig(config, cwd);
     sessionCreated = true;
 
@@ -226,7 +228,10 @@ export async function startTeam(
       const panePid = getWorkerPanePid(sessionName, i);
       if (panePid) identity.pid = panePid;
       if (paneId) identity.pane_id = paneId;
-      if (paneId && config.workers[i - 1]) config.workers[i - 1].pane_id = paneId;
+      if (config.workers[i - 1]) {
+        if (paneId) config.workers[i - 1].pane_id = paneId;
+        if (panePid) config.workers[i - 1].pid = panePid;
+      }
 
       await writeWorkerIdentity(sanitized, workerName, identity, cwd);
 
@@ -620,10 +625,14 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
   const config = await readTeamConfig(sanitized, cwd);
   if (!config) return null;
 
-  // Check if tmux session still exists
-  const sessions = listTeamSessions();
-  const baseSession = config.tmux_session.split(':')[0];
-  if (!sessions.includes(baseSession)) return null;
+  if (isTmuxAvailable()) {
+    const sessions = listTeamSessions();
+    const baseSession = config.tmux_session.split(':')[0];
+    if (!sessions.includes(baseSession)) return null;
+  } else {
+    const alive = config.workers.some((w) => typeof w.pid === 'number' && w.pid > 0 && isWorkerAlive(config.tmux_session, w.index, w.pane_id));
+    if (!alive) return null;
+  }
 
   return {
     teamName: sanitized,
@@ -651,7 +660,13 @@ async function findActiveTeams(cwd: string, leaderSessionId: string): Promise<st
       const ownerSessionId = manifest?.leader?.session_id?.trim() ?? '';
       if (ownerSessionId && ownerSessionId !== leaderSessionId) continue;
     }
-    if (sessions.has(tmuxSession)) active.push(teamName);
+    if (isTmuxAvailable()) {
+      if (sessions.has(tmuxSession)) active.push(teamName);
+      continue;
+    }
+    if (cfg?.workers?.some((w) => typeof w.pid === 'number' && w.pid > 0 && isWorkerAlive(tmuxSession, w.index, w.pane_id))) {
+      active.push(teamName);
+    }
   }
   return active;
 }
@@ -737,7 +752,7 @@ async function emitMonitorDerivedEvents(
 }
 
 function notifyWorker(config: TeamConfig, workerIndex: number, message: string, workerPaneId?: string): boolean {
-  if (!config.tmux_session || !isTmuxAvailable()) return false;
+  if (!config.tmux_session) return false;
   try {
     sendToWorker(config.tmux_session, workerIndex, message, workerPaneId);
     return true;

@@ -26,8 +26,11 @@ function shouldSkipForSpawnPermissions(err?: string): boolean {
   return typeof err === 'string' && /(EPERM|EACCES)/i.test(err);
 }
 
+const isWindows = process.platform === 'win32';
+
 describe('omx doctor --team', () => {
   it('exits non-zero and prints resume_blocker when team state references missing tmux session', async () => {
+    if (isWindows) return;
     const wd = await mkdtemp(join(tmpdir(), 'omx-doctor-team-'));
     try {
       const teamRoot = join(wd, '.omx', 'state', 'team', 'alpha');
@@ -122,6 +125,7 @@ describe('omx doctor --team', () => {
   });
 
   it('prints orphan_tmux_session when tmux session exists without matching team state', async () => {
+    if (isWindows) return;
     const wd = await mkdtemp(join(tmpdir(), 'omx-doctor-team-'));
     try {
       const fakeBin = join(wd, 'bin');
@@ -140,6 +144,7 @@ describe('omx doctor --team', () => {
   });
 
   it('does not emit orphan_tmux_session when tmux reports no server running', async () => {
+    if (isWindows) return;
     const wd = await mkdtemp(join(tmpdir(), 'omx-doctor-team-'));
     try {
       const fakeBin = join(wd, 'bin');
@@ -155,6 +160,35 @@ describe('omx doctor --team', () => {
       if (shouldSkipForSpawnPermissions(res.error)) return;
       assert.equal(res.status, 0, res.stderr || res.stdout);
       assert.doesNotMatch(res.stdout, /orphan_tmux_session/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('prints worker_process_missing for process transport teams with stale pid', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-doctor-team-'));
+    try {
+      const workerDir = join(wd, '.omx', 'state', 'team', 'delta', 'workers', 'worker-1');
+      await mkdir(workerDir, { recursive: true });
+      await writeFile(join(wd, '.omx', 'state', 'team', 'delta', 'config.json'), JSON.stringify({
+        name: 'delta',
+        tmux_session: 'omx-team-delta',
+        transport_kind: 'process',
+      }));
+      await writeFile(
+        join(workerDir, 'status.json'),
+        JSON.stringify({ state: 'working', pid: 999999, updated_at: new Date().toISOString() }),
+      );
+      await writeFile(
+        join(workerDir, 'heartbeat.json'),
+        JSON.stringify({ pid: 999999, last_turn_at: new Date(Date.now() - 120_000).toISOString(), turn_count: 10, alive: true }),
+      );
+
+      const res = runOmx(wd, ['doctor', '--team']);
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 1, res.stderr || res.stdout);
+      assert.match(res.stdout, /worker_process_missing/);
+      assert.doesNotMatch(res.stdout, /resume_blocker/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

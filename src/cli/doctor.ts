@@ -4,12 +4,13 @@
 
 import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
-import { join } from 'path';
-import { execSync, spawnSync } from 'child_process';
+import { delimiter, join } from 'path';
+import { spawnSync } from 'child_process';
 import {
   codexHome, codexConfigPath, codexPromptsDir,
   userSkillsDir, omxStateDir,
 } from '../utils/paths.js';
+import { codexExecutable } from '../utils/codex.js';
 
 interface DoctorOptions {
   verbose?: boolean;
@@ -87,7 +88,7 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 }
 
 interface TeamDoctorIssue {
-  code: 'delayed_status_lag' | 'slow_shutdown' | 'orphan_tmux_session' | 'resume_blocker';
+  code: 'delayed_status_lag' | 'slow_shutdown' | 'orphan_tmux_session' | 'resume_blocker' | 'worker_process_missing';
   message: string;
 }
 
@@ -137,23 +138,26 @@ async function collectTeamDoctorIssues(cwd: string): Promise<TeamDoctorIssue[]> 
     const configPath = join(teamDir, 'config.json');
 
     let tmuxSession = `omx-team-${teamName}`;
+    let transportKind: 'tmux' | 'process' = 'tmux';
     if (existsSync(manifestPath)) {
       try {
         const raw = await readFile(manifestPath, 'utf-8');
-        const parsed = JSON.parse(raw) as { tmux_session?: string };
+        const parsed = JSON.parse(raw) as { tmux_session?: string; transport_kind?: 'tmux' | 'process' };
         if (typeof parsed.tmux_session === 'string' && parsed.tmux_session.trim() !== '') {
           tmuxSession = parsed.tmux_session;
         }
+        if (parsed.transport_kind === 'process') transportKind = 'process';
       } catch {
         // ignore malformed manifest
       }
     } else if (existsSync(configPath)) {
       try {
         const raw = await readFile(configPath, 'utf-8');
-        const parsed = JSON.parse(raw) as { tmux_session?: string };
+        const parsed = JSON.parse(raw) as { tmux_session?: string; transport_kind?: 'tmux' | 'process' };
         if (typeof parsed.tmux_session === 'string' && parsed.tmux_session.trim() !== '') {
           tmuxSession = parsed.tmux_session;
         }
+        if (parsed.transport_kind === 'process') transportKind = 'process';
       } catch {
         // ignore malformed config
       }
@@ -161,8 +165,7 @@ async function collectTeamDoctorIssues(cwd: string): Promise<TeamDoctorIssue[]> 
 
     knownTeamSessions.add(tmuxSession);
 
-    // resume_blocker: only meaningful if tmux is available to query
-    if (!tmuxUnavailable && !tmuxSessions.has(tmuxSession)) {
+    if (transportKind === 'tmux' && !tmuxUnavailable && !tmuxSessions.has(tmuxSession)) {
       issues.push({
         code: 'resume_blocker',
         message: `${teamName} references missing tmux session ${tmuxSession}`,
@@ -180,6 +183,25 @@ async function collectTeamDoctorIssues(cwd: string): Promise<TeamDoctorIssue[]> 
       const heartbeatPath = join(workerDir, 'heartbeat.json');
       const shutdownReqPath = join(workerDir, 'shutdown-request.json');
       const shutdownAckPath = join(workerDir, 'shutdown-ack.json');
+
+      if (transportKind === 'process' && existsSync(statusPath)) {
+        try {
+          const statusRaw = await readFile(statusPath, 'utf-8');
+          const status = JSON.parse(statusRaw) as { pid?: number };
+          if (typeof status.pid === 'number') {
+            try {
+              process.kill(status.pid, 0);
+            } catch {
+              issues.push({
+                code: 'worker_process_missing',
+                message: `${teamName}/${worker.name} references missing process ${status.pid}`,
+              });
+            }
+          }
+        } catch {
+          // ignore malformed status
+        }
+      }
 
       if (existsSync(statusPath) && existsSync(heartbeatPath)) {
         try {
@@ -270,12 +292,46 @@ function listTeamTmuxSessions(): Set<string> | null {
 }
 
 function checkCodexCli(): Check {
-  try {
-    const version = execSync('codex --version 2>/dev/null', { encoding: 'utf-8' }).trim();
-    return { name: 'Codex CLI', status: 'pass', message: `installed (${version})` };
-  } catch {
-    return { name: 'Codex CLI', status: 'fail', message: 'not found - install from https://github.com/openai/codex' };
+  if (process.platform === 'win32') {
+    const result = spawnSync('codex.cmd', ['--version'], { encoding: 'utf-8' });
+    if (!result.error && result.status === 0) {
+      const version = (result.stdout || result.stderr || '').trim();
+      return { name: 'Codex CLI', status: 'pass', message: `installed (${version || 'version unknown'})` };
+    }
+
+    const found = findWindowsCodexShimInPath();
+    if (found) {
+      return { name: 'Codex CLI', status: 'pass', message: `installed (${found}; version check skipped)` };
+    }
   }
+
+  const exec = codexExecutable();
+  const result = spawnSync(exec, ['--version'], { encoding: 'utf-8' });
+  if (result.error || result.status !== 0) {
+    const fallback = exec === 'codex.cmd' ? spawnSync('codex', ['--version'], { encoding: 'utf-8' }) : null;
+    if (!fallback || fallback.error || fallback.status !== 0) {
+      return { name: 'Codex CLI', status: 'fail', message: 'not found - install from https://github.com/openai/codex' };
+    }
+    const versionFromFallback = (fallback.stdout || fallback.stderr || '').trim();
+    return { name: 'Codex CLI', status: 'pass', message: `installed (${versionFromFallback || 'version unknown'})` };
+  }
+  const version = (result.stdout || result.stderr || '').trim();
+  return { name: 'Codex CLI', status: 'pass', message: `installed (${version || 'version unknown'})` };
+}
+
+function findWindowsCodexShimInPath(): string | null {
+  const pathEnv = process.env.PATH || '';
+  if (!pathEnv) return null;
+  const dirs = pathEnv.split(delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    const cmd = join(dir, 'codex.cmd');
+    if (existsSync(cmd)) return cmd;
+    const ps1 = join(dir, 'codex.ps1');
+    if (existsSync(ps1)) return ps1;
+    const bare = join(dir, 'codex');
+    if (existsSync(bare)) return bare;
+  }
+  return null;
 }
 
 function checkNodeVersion(): Check {

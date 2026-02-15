@@ -1,4 +1,8 @@
-import { spawnSync } from 'child_process';
+import { spawnSync, spawn, type ChildProcess } from 'child_process';
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { getPackageRoot } from '../utils/package.js';
+import { getPlatformCapabilities } from '../platform/capabilities.js';
 
 export interface TeamSession {
   name: string; // tmux target in "session:window" form
@@ -22,6 +26,22 @@ interface TmuxPaneInfo {
   startCommand: string;
 }
 
+interface ProcessWorkerRef {
+  pid: number;
+  signalPath: string;
+  workerName: string;
+}
+
+interface ProcessSessionState {
+  teamName: string;
+  sessionName: string;
+  cwd: string;
+  workers: ProcessWorkerRef[];
+  children: ChildProcess[];
+}
+
+const PROCESS_SESSIONS = new Map<string, ProcessSessionState>();
+
 function runTmux(args: string[]): { ok: true; stdout: string } | { ok: false; stderr: string } {
   const result = spawnSync('tmux', args, { encoding: 'utf-8' });
   if (result.error) {
@@ -31,6 +51,97 @@ function runTmux(args: string[]): { ok: true; stdout: string } | { ok: false; st
     return { ok: false, stderr: (result.stderr || '').trim() || `tmux exited ${result.status}` };
   }
   return { ok: true, stdout: (result.stdout || '').trim() };
+}
+
+function parsePidFromWorkerPaneId(workerPaneId?: string): number | null {
+  if (!workerPaneId) return null;
+  const match = /^pid:(\d+)$/.exec(workerPaneId.trim());
+  if (!match) return null;
+  const pid = Number.parseInt(match[1], 10);
+  return Number.isFinite(pid) ? pid : null;
+}
+
+function workerSignalPath(cwd: string, teamName: string, workerName: string): string {
+  return join(cwd, '.omx', 'state', 'team', teamName, 'workers', workerName, 'signal.ndjson');
+}
+
+function ensureWorkerSignalPath(path: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  if (!existsSync(path)) writeFileSync(path, '', 'utf-8');
+}
+
+function runProcessWorker(teamName: string, workerName: string, cwd: string, launchArgs: string[]): ChildProcess {
+  const script = join(getPackageRoot(), 'scripts', 'team-worker-bootstrap.js');
+  if (!existsSync(script)) {
+    throw new Error(`missing worker bootstrap script: ${script}`);
+  }
+  const args = [script, '--team', teamName, '--worker', workerName, '--cwd', cwd];
+  if (launchArgs.length > 0) {
+    args.push('--');
+    args.push(...launchArgs);
+  }
+  const child = spawn(process.execPath, args, {
+    cwd,
+    detached: true,
+    stdio: 'ignore',
+    env: {
+      ...process.env,
+      OMX_TEAM_WORKER: `${teamName}/${workerName}`,
+    },
+  });
+  child.unref();
+  return child;
+}
+
+function createProcessSession(teamName: string, workerCount: number, cwd: string, workerLaunchArgs: string[]): TeamSession {
+  const safeTeamName = sanitizeTeamName(teamName);
+  const sessionName = `omx-team-${safeTeamName}`;
+  const workers: ProcessWorkerRef[] = [];
+  const children: ChildProcess[] = [];
+  const workerPaneIds: string[] = [];
+  for (let i = 1; i <= workerCount; i++) {
+    const workerName = `worker-${i}`;
+    const child = runProcessWorker(safeTeamName, workerName, cwd, workerLaunchArgs);
+    const pid = child.pid ?? 0;
+    if (!pid || pid < 1) {
+      throw new Error(`failed to start process worker ${workerName}`);
+    }
+    const signalPath = workerSignalPath(cwd, safeTeamName, workerName);
+    ensureWorkerSignalPath(signalPath);
+    workers.push({ pid, signalPath, workerName });
+    children.push(child);
+    workerPaneIds.push(`pid:${pid}`);
+  }
+  PROCESS_SESSIONS.set(sessionName, {
+    teamName: safeTeamName,
+    sessionName,
+    cwd,
+    workers,
+    children,
+  });
+  return { name: sessionName, workerCount, cwd, workerPaneIds };
+}
+
+function resolveProcessWorker(sessionName: string, workerIndex: number, workerPaneId?: string): ProcessWorkerRef | null {
+  const parsedPid = parsePidFromWorkerPaneId(workerPaneId);
+  if (parsedPid) {
+    const idx = workerIndex - 1;
+    const state = PROCESS_SESSIONS.get(sessionName);
+    if (state?.workers[idx]) return state.workers[idx];
+    return { pid: parsedPid, signalPath: '', workerName: `worker-${workerIndex}` };
+  }
+  const state = PROCESS_SESSIONS.get(sessionName);
+  if (!state) return null;
+  return state.workers[workerIndex - 1] ?? null;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function baseSessionName(target: string): string {
@@ -65,12 +176,26 @@ function findHudPaneIds(target: string, leaderPaneId: string): string[] {
 }
 
 function sleepSeconds(seconds: number): void {
+  if (!getPlatformCapabilities().supportsShellSleep) {
+    const end = Date.now() + Math.max(0, seconds * 1000);
+    while (Date.now() < end) {
+      // fallback for platforms without `sleep`
+    }
+    return;
+  }
   // shelling out keeps implementation consistent with the project's pattern
   spawnSync('sleep', [String(seconds)], { encoding: 'utf-8' });
 }
 
 function sleepFractionalSeconds(seconds: number): void {
   if (!Number.isFinite(seconds) || seconds <= 0) return;
+  if (!getPlatformCapabilities().supportsShellSleep) {
+    const end = Date.now() + Math.max(0, seconds * 1000);
+    while (Date.now() < end) {
+      // fallback for platforms without `sleep`
+    }
+    return;
+  }
   spawnSync('sleep', [String(seconds)], { encoding: 'utf-8' });
 }
 
@@ -129,9 +254,7 @@ export function sanitizeTeamName(name: string): string {
 
 // Check if tmux is available
 export function isTmuxAvailable(): boolean {
-  const result = spawnSync('tmux', ['-V'], { encoding: 'utf-8' });
-  if (result.error) return false;
-  return result.status === 0;
+  return getPlatformCapabilities().supportsTmux;
 }
 
 // Create tmux session with N worker windows
@@ -143,7 +266,11 @@ export function createTeamSession(
   cwd: string,
   workerLaunchArgs: string[] = [],
 ): TeamSession {
+  const caps = getPlatformCapabilities();
   if (!isTmuxAvailable()) {
+    if (caps.isWindows) {
+      return createProcessSession(teamName, workerCount, cwd, workerLaunchArgs);
+    }
     throw new Error('tmux is not available');
   }
   if (!Number.isInteger(workerCount) || workerCount < 1) {
@@ -280,6 +407,16 @@ export function waitForWorkerReady(
   timeoutMs: number = 15000,
   workerPaneId?: string,
 ): boolean {
+  if (!isTmuxAvailable()) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const worker = resolveProcessWorker(sessionName, workerIndex, workerPaneId);
+      if (worker && isProcessAlive(worker.pid)) return true;
+      sleepFractionalSeconds(0.2);
+    }
+    return false;
+  }
+
   const initialBackoffMs = 300;
   const maxBackoffMs = 8000;
   const startedAt = Date.now();
@@ -346,6 +483,17 @@ export function sendToWorker(sessionName: string, workerIndex: number, text: str
     throw new Error('sendToWorker: injection marker is not allowed');
   }
 
+  if (!isTmuxAvailable()) {
+    const worker = resolveProcessWorker(sessionName, workerIndex, workerPaneId);
+    if (!worker) {
+      throw new Error(`sendToWorker: unknown process worker ${sessionName}/${workerIndex}`);
+    }
+    if (worker.signalPath) {
+      appendFileSync(worker.signalPath, `${JSON.stringify({ message: text, at: new Date().toISOString() })}\n`, 'utf-8');
+    }
+    return;
+  }
+
   const target = paneTarget(sessionName, workerIndex, workerPaneId);
 
   // Guard: if the trust prompt is still present, advance it first so our trigger text
@@ -391,7 +539,7 @@ export function sendToWorker(sessionName: string, workerIndex: number, text: str
 }
 
 export function notifyLeaderStatus(sessionName: string, message: string): boolean {
-  if (!isTmuxAvailable()) return false;
+  if (!isTmuxAvailable()) return true;
   const trimmed = message.trim();
   if (!trimmed) return false;
   const capped = trimmed.length > 180 ? `${trimmed.slice(0, 177)}...` : trimmed;
@@ -401,6 +549,10 @@ export function notifyLeaderStatus(sessionName: string, message: string): boolea
 
 // Get PID of the shell process in a worker's tmux pane
 export function getWorkerPanePid(sessionName: string, workerIndex: number, workerPaneId?: string): number | null {
+  if (!isTmuxAvailable()) {
+    const worker = resolveProcessWorker(sessionName, workerIndex, workerPaneId);
+    return worker?.pid ?? null;
+  }
   const result = runTmux(['list-panes', '-t', paneTarget(sessionName, workerIndex, workerPaneId), '-F', '#{pane_pid}']);
   if (!result.ok) return null;
 
@@ -414,6 +566,11 @@ export function getWorkerPanePid(sessionName: string, workerIndex: number, worke
 
 // Check if worker's tmux pane has a running process
 export function isWorkerAlive(sessionName: string, workerIndex: number, workerPaneId?: string): boolean {
+  if (!isTmuxAvailable()) {
+    const worker = resolveProcessWorker(sessionName, workerIndex, workerPaneId);
+    if (!worker) return false;
+    return isProcessAlive(worker.pid);
+  }
   const result = runTmux([
     'list-panes',
     '-t', paneTarget(sessionName, workerIndex, workerPaneId),
@@ -444,6 +601,16 @@ export function isWorkerAlive(sessionName: string, workerIndex: number, workerPa
 
 // Kill a specific worker: send C-c, then C-d, then kill-pane if still alive
 export function killWorker(sessionName: string, workerIndex: number, workerPaneId?: string): void {
+  if (!isTmuxAvailable()) {
+    const worker = resolveProcessWorker(sessionName, workerIndex, workerPaneId);
+    if (!worker) return;
+    try {
+      process.kill(worker.pid, 'SIGTERM');
+    } catch {
+      // best effort
+    }
+    return;
+  }
   runTmux(['send-keys', '-t', paneTarget(sessionName, workerIndex, workerPaneId), 'C-c']);
   sleepSeconds(1);
 
@@ -458,12 +625,35 @@ export function killWorker(sessionName: string, workerIndex: number, workerPaneI
 }
 
 export function killWorkerByPaneId(workerPaneId: string): void {
+  if (!isTmuxAvailable()) {
+    const pid = parsePidFromWorkerPaneId(workerPaneId);
+    if (!pid) return;
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {
+      // best effort
+    }
+    return;
+  }
   if (!workerPaneId.startsWith('%')) return;
   runTmux(['kill-pane', '-t', workerPaneId]);
 }
 
 // Kill entire tmux session. Tolerates already-dead sessions.
 export function destroyTeamSession(sessionName: string): void {
+  if (!isTmuxAvailable()) {
+    const state = PROCESS_SESSIONS.get(sessionName);
+    if (!state) return;
+    for (const worker of state.workers) {
+      try {
+        process.kill(worker.pid, 'SIGTERM');
+      } catch {
+        // tolerate
+      }
+    }
+    PROCESS_SESSIONS.delete(sessionName);
+    return;
+  }
   try {
     runTmux(['kill-session', '-t', sessionName]);
   } catch {
@@ -473,6 +663,9 @@ export function destroyTeamSession(sessionName: string): void {
 
 // List all tmux sessions matching omx-team-* pattern
 export function listTeamSessions(): string[] {
+  if (!isTmuxAvailable()) {
+    return Array.from(PROCESS_SESSIONS.keys());
+  }
   const result = runTmux(['list-sessions', '-F', '#{session_name}']);
   if (!result.ok) return [];
 
