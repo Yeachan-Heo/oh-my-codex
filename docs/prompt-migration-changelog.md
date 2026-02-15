@@ -83,6 +83,21 @@ Changes here are primarily about aligning instructions with Codex CLI tool contr
 | `AGENTS.md` | 42 | 10 | Tooling + delegation guidance expanded; semantics preserved. |
 | `templates/AGENTS.md` | 7 | 7 | Header/tone normalized; still intended as a template copy. |
 
+### Unified Guidance Schema Follow-Up (AGENTS + Runtime/Worker Alignment)
+
+- Added canonical schema document: `docs/guidance-schema.md`.
+- Added explicit schema-contract sections to:
+  - `AGENTS.md`
+  - `templates/AGENTS.md`
+- Normalized worker task guidance in `AGENTS.md` runtime worker overlay:
+  - file path now uses `tasks/task-<id>.json`
+  - API id rule now explicitly requires bare id `task_id: "<id>"` (never `"task-<id>"`).
+- Marker contracts remain unchanged:
+  - `<!-- OMX:RUNTIME:START --> ... <!-- OMX:RUNTIME:END -->`
+  - `<!-- OMX:TEAM:WORKER:START --> ... <!-- OMX:TEAM:WORKER:END -->`
+
+Behavior note: this follow-up is additive and wording-focused; no task-state model or MCP API contract changes were introduced.
+
 ---
 
 ## Skill Prompt Migration (`skills/*/SKILL.md`)
@@ -129,4 +144,3 @@ Skill docs are operational runbooks. The migration focused on:
 - `skills/omx-setup/SKILL.md`: largest edit surface; includes team enablement guidance (`~/.codex/config.toml` `[features]` flags) and teammate display preference storage (`~/.codex/.omx-config.json`).
 - `skills/doctor/SKILL.md`: updated hook/config inspection language; still contains optional legacy remediation guidance.
 - `skills/autopilot/SKILL.md`, `skills/research/SKILL.md`, `skills/ultrapilot/SKILL.md`: config examples updated to TOML.
-
