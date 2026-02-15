@@ -95,7 +95,12 @@ export function readVersion(): string | null {
 
 export function readGitBranch(cwd: string): string | null {
   try {
-    const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8', timeout: 2000 }).trim();
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 2000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
     const remote = execSync('git remote get-url origin', { cwd, encoding: 'utf-8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
     // Extract repo name from URL: https://github.com/user/repo.git -> repo
     const repoMatch = remote.match(/\/([^/]+?)(?:\.git)?$/);

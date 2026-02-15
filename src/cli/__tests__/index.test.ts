@@ -4,6 +4,11 @@ import {
   normalizeCodexLaunchArgs,
   buildTmuxShellCommand,
   buildTmuxSessionName,
+  resolveCliInvocation,
+  resolveCodexLaunchPolicy,
+  parseTmuxPaneSnapshot,
+  findHudWatchPaneIds,
+  buildHudPaneCleanupTargets,
   readTopLevelTomlString,
   upsertTopLevelTomlString,
   collectInheritableTeamWorkerArgs,
@@ -81,6 +86,50 @@ describe('normalizeCodexLaunchArgs', () => {
       normalizeCodexLaunchArgs(['--xhigh', '--madmax']),
       ['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="xhigh"']
     );
+  });
+});
+
+describe('resolveCliInvocation', () => {
+  it('resolves --help to the help command instead of launch', () => {
+    assert.deepEqual(resolveCliInvocation(['--help']), {
+      command: 'help',
+      launchArgs: [],
+    });
+  });
+
+  it('keeps unknown long flags as launch passthrough args', () => {
+    assert.deepEqual(resolveCliInvocation(['--model', 'gpt-5']), {
+      command: 'launch',
+      launchArgs: ['--model', 'gpt-5'],
+    });
+  });
+});
+
+describe('resolveCodexLaunchPolicy', () => {
+  it('launches directly when outside tmux', () => {
+    assert.equal(resolveCodexLaunchPolicy({}), 'direct');
+  });
+
+  it('uses tmux-aware launch path when already inside tmux', () => {
+    assert.equal(resolveCodexLaunchPolicy({ TMUX: '/tmp/tmux-1000/default,123,0' }), 'inside-tmux');
+  });
+});
+
+describe('tmux HUD pane helpers', () => {
+  it('findHudWatchPaneIds detects stale HUD watch panes and excludes current pane', () => {
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tzsh\tzsh',
+        '%2\tnode\tnode /tmp/bin/omx.js hud --watch',
+        '%3\tnode\tnode /tmp/bin/omx.js hud --watch',
+        '%4\tcodex\tcodex --model gpt-5',
+      ].join('\n')
+    );
+    assert.deepEqual(findHudWatchPaneIds(panes, '%2'), ['%3']);
+  });
+
+  it('buildHudPaneCleanupTargets de-dupes pane ids and includes created pane', () => {
+    assert.deepEqual(buildHudPaneCleanupTargets(['%3', '%3', 'invalid'], '%4'), ['%3', '%4']);
   });
 });
 

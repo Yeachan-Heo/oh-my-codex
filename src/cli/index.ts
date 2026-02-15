@@ -25,7 +25,7 @@ const HELP = `
 oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
 
 Usage:
-  omx           Launch Codex CLI + HUD in tmux (or just Codex if no tmux)
+  omx           Launch Codex CLI (HUD auto-attaches only when already inside tmux)
   omx setup     Install skills, prompts, MCP servers, and AGENTS.md
   omx doctor    Check installation health
   omx doctor --team  Check team/swarm runtime health diagnostics
@@ -68,15 +68,83 @@ type ReasoningMode = typeof REASONING_MODES[number];
 const REASONING_MODE_SET = new Set<string>(REASONING_MODES);
 const REASONING_USAGE = 'Usage: omx reasoning <low|medium|high|xhigh>';
 
+type CliCommand = 'launch' | 'setup' | 'doctor' | 'team' | 'version' | 'tmux-hook' | 'hud' | 'status' | 'cancel' | 'help' | 'reasoning' | string;
+
+export interface ResolvedCliInvocation {
+  command: CliCommand;
+  launchArgs: string[];
+}
+
+export function resolveCliInvocation(args: string[]): ResolvedCliInvocation {
+  const firstArg = args[0];
+  if (firstArg === '--help' || firstArg === '-h') {
+    return { command: 'help', launchArgs: [] };
+  }
+  if (!firstArg || firstArg.startsWith('--')) {
+    return { command: 'launch', launchArgs: firstArg ? args : [] };
+  }
+  if (firstArg === 'launch') {
+    return { command: 'launch', launchArgs: args.slice(1) };
+  }
+  return { command: firstArg, launchArgs: [] };
+}
+
+export type CodexLaunchPolicy = 'inside-tmux' | 'direct';
+
+export function resolveCodexLaunchPolicy(env: NodeJS.ProcessEnv = process.env): CodexLaunchPolicy {
+  return env.TMUX ? 'inside-tmux' : 'direct';
+}
+
+interface TmuxPaneSnapshot {
+  paneId: string;
+  currentCommand: string;
+  startCommand: string;
+}
+
+export function parseTmuxPaneSnapshot(output: string): TmuxPaneSnapshot[] {
+  return output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [paneId = '', currentCommand = '', ...startCommandParts] = line.split('\t');
+      return {
+        paneId: paneId.trim(),
+        currentCommand: currentCommand.trim(),
+        startCommand: startCommandParts.join('\t').trim(),
+      };
+    })
+    .filter((pane) => pane.paneId.startsWith('%'));
+}
+
+export function isHudWatchPane(pane: TmuxPaneSnapshot): boolean {
+  const command = `${pane.startCommand} ${pane.currentCommand}`.toLowerCase();
+  return /\bhud\b/.test(command)
+    && /--watch\b/.test(command)
+    && (/\bomx(?:\.js)?\b/.test(command) || /\bnode\b/.test(command));
+}
+
+export function findHudWatchPaneIds(panes: TmuxPaneSnapshot[], currentPaneId?: string): string[] {
+  return panes
+    .filter((pane) => pane.paneId !== currentPaneId)
+    .filter((pane) => isHudWatchPane(pane))
+    .map((pane) => pane.paneId);
+}
+
+export function buildHudPaneCleanupTargets(existingPaneIds: string[], createdPaneId: string | null): string[] {
+  const targets = new Set<string>(existingPaneIds.filter((id) => id.startsWith('%')));
+  if (createdPaneId && createdPaneId.startsWith('%')) {
+    targets.add(createdPaneId);
+  }
+  return [...targets];
+}
+
 export async function main(args: string[]): Promise<void> {
   const knownCommands = new Set([
     'launch', 'setup', 'doctor', 'team', 'version', 'tmux-hook', 'hud', 'status', 'cancel', 'help', '--help', '-h',
   ]);
   const firstArg = args[0];
-  const command = !firstArg || firstArg.startsWith('--') ? 'launch' : firstArg;
-  const launchArgs = command === 'launch'
-    ? (firstArg && firstArg.startsWith('--') ? args : args.slice(1))
-    : [];
+  const { command, launchArgs } = resolveCliInvocation(args);
   const flags = new Set(args.filter(a => a.startsWith('--')));
   const options = {
     force: flags.has('--force'),
@@ -528,7 +596,6 @@ async function preLaunch(cwd: string, sessionId: string): Promise<void> {
 function runCodex(cwd: string, args: string[]): void {
   const launchArgs = injectModelInstructionsBypassArgs(cwd, args);
   const omxBin = process.argv[1];
-  const codexCmd = buildTmuxShellCommand('codex', launchArgs);
   const hudCmd = buildTmuxShellCommand('node', [omxBin, 'hud', '--watch']);
   const inheritLeaderFlags = process.env[TEAM_INHERIT_LEADER_FLAGS_ENV] !== '0';
   const workerLaunchArgs = resolveTeamWorkerLaunchArgsEnv(
@@ -540,53 +607,73 @@ function runCodex(cwd: string, args: string[]): void {
     ? { ...process.env, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }
     : process.env;
 
-  if (process.env.TMUX) {
+  if (resolveCodexLaunchPolicy(process.env) === 'inside-tmux') {
     // Already in tmux: launch codex in current pane, HUD in bottom split
+    const currentPaneId = process.env.TMUX_PANE;
+    const staleHudPaneIds = listHudWatchPaneIdsInCurrentWindow(currentPaneId);
+    for (const paneId of staleHudPaneIds) {
+      killTmuxPane(paneId);
+    }
+
+    let hudPaneId: string | null = null;
     try {
-      execFileSync(
-        'tmux',
-        ['split-window', '-v', '-l', '4', '-d', '-c', cwd, hudCmd],
-        { stdio: 'inherit' }
-      );
+      hudPaneId = createHudWatchPane(cwd, hudCmd);
     } catch {
       // HUD split failed, continue without it
     }
-    // execFileSync imported at top level
+
+    try {
+      execFileSync('codex', launchArgs, { cwd, stdio: 'inherit', env: codexEnv });
+    } catch {
+      // Codex exited
+    } finally {
+      const cleanupPaneIds = buildHudPaneCleanupTargets(
+        listHudWatchPaneIdsInCurrentWindow(currentPaneId),
+        hudPaneId
+      );
+      for (const paneId of cleanupPaneIds) {
+        killTmuxPane(paneId);
+      }
+    }
+  } else {
+    // Not in tmux: run codex directly in current terminal (no HUD pane by default)
     try {
       execFileSync('codex', launchArgs, { cwd, stdio: 'inherit', env: codexEnv });
     } catch {
       // Codex exited
     }
-  } else {
-    // Not in tmux: create a new tmux session with codex + HUD pane
-    const tmuxSessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const sessionName = buildTmuxSessionName(cwd, tmuxSessionId);
-    try {
-      execFileSync(
-        'tmux',
-        [
-          'new-session', '-d', '-s', sessionName, '-c', cwd,
-          ...(workerLaunchArgs ? ['-e', `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`] : []),
-          codexCmd,
-          ';',
-          'split-window', '-v', '-l', '4', '-d', '-c', cwd, hudCmd,
-          ';',
-          'select-pane', '-t', '0',
-          ';',
-          'attach-session', '-t', sessionName,
-        ],
-        { stdio: 'inherit' }
-      );
-    } catch {
-      // tmux not available, just run codex directly
-      console.log('tmux not available, launching codex without HUD...');
-      // execFileSync imported at top level
-      try {
-        execFileSync('codex', launchArgs, { cwd, stdio: 'inherit', env: codexEnv });
-      } catch {
-        // Codex exited
-      }
-    }
+  }
+}
+
+function listHudWatchPaneIdsInCurrentWindow(currentPaneId?: string): string[] {
+  try {
+    const output = execFileSync(
+      'tmux',
+      ['list-panes', '-F', '#{pane_id}\t#{pane_current_command}\t#{pane_start_command}'],
+      { encoding: 'utf-8' }
+    );
+    return findHudWatchPaneIds(parseTmuxPaneSnapshot(output), currentPaneId);
+  } catch {
+    return [];
+  }
+}
+
+function createHudWatchPane(cwd: string, hudCmd: string): string | null {
+  const output = execFileSync(
+    'tmux',
+    ['split-window', '-v', '-l', '4', '-d', '-c', cwd, '-P', '-F', '#{pane_id}', hudCmd],
+    { encoding: 'utf-8' }
+  );
+  const paneId = output.split('\n')[0]?.trim() || '';
+  return paneId.startsWith('%') ? paneId : null;
+}
+
+function killTmuxPane(paneId: string): void {
+  if (!paneId.startsWith('%')) return;
+  try {
+    execFileSync('tmux', ['kill-pane', '-t', paneId], { stdio: 'ignore' });
+  } catch {
+    // Pane may already be gone; ignore.
   }
 }
 
