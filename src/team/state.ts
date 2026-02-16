@@ -809,10 +809,15 @@ async function withMailboxLock<T>(
   cwd: string,
   fn: () => Promise<T>,
 ): Promise<T> {
+  const root = teamDir(teamName, cwd);
+  if (!existsSync(root)) {
+    throw new Error(`Team ${teamName} not found`);
+  }
   const lockDir = mailboxLockDir(teamName, workerName, cwd);
   const ownerPath = join(lockDir, 'owner');
   const ownerToken = `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
   const deadline = Date.now() + 5000;
+  await mkdir(dirname(lockDir), { recursive: true });
   while (true) {
     try {
       await mkdir(lockDir, { recursive: false });

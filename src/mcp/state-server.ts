@@ -12,11 +12,12 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { readFile, writeFile, readdir, mkdir, unlink } from 'fs/promises';
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import {
   getAllScopedStatePaths,
   getStateDir,
   getStatePath,
+  resolveWorkingDirectoryForState,
   validateSessionId,
 } from './state-paths.js';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
@@ -95,6 +96,37 @@ const TEAM_COMM_TOOL_NAMES = new Set([
   'team_read_task_approval',
   'team_write_task_approval',
 ]);
+
+function teamStateExists(teamName: string, candidateCwd: string): boolean {
+  const teamRoot = join(candidateCwd, '.omx', 'state', 'team', teamName);
+  return (
+    existsSync(join(teamRoot, 'config.json')) ||
+    existsSync(join(teamRoot, 'tasks')) ||
+    existsSync(teamRoot)
+  );
+}
+
+function resolveTeamWorkingDirectory(teamName: string, preferredCwd: string): string {
+  const normalizedTeamName = String(teamName || '').trim();
+  if (!normalizedTeamName) return preferredCwd;
+
+  const seeds: string[] = [];
+  for (const seed of [preferredCwd, process.cwd()]) {
+    if (typeof seed !== 'string' || seed.trim() === '') continue;
+    if (!seeds.includes(seed)) seeds.push(seed);
+  }
+
+  for (const seed of seeds) {
+    let cursor = seed;
+    while (cursor) {
+      if (teamStateExists(normalizedTeamName, cursor)) return cursor;
+      const parent = dirname(cursor);
+      if (!parent || parent === cursor) break;
+      cursor = parent;
+    }
+  }
+  return preferredCwd;
+}
 
 const server = new Server(
   { name: 'omx-state', version: '0.1.0' },
@@ -565,7 +597,8 @@ export async function handleStateToolCall(request: {
 }) {
   const { name, arguments: args } = request.params;
   const wd = (args as Record<string, unknown>)?.workingDirectory as string | undefined;
-  const cwd = wd || process.cwd();
+  const normalizedWd = resolveWorkingDirectoryForState(wd);
+  let cwd = normalizedWd;
   let sessionId: string | undefined;
   try {
     sessionId = validateSessionId((args as Record<string, unknown>)?.session_id);
@@ -577,18 +610,22 @@ export async function handleStateToolCall(request: {
   }
 
   if (STATE_TOOL_NAMES.has(name)) {
-    await mkdir(getStateDir(wd, sessionId), { recursive: true });
+    await mkdir(getStateDir(cwd, sessionId), { recursive: true });
     await ensureTmuxHookInitialized(cwd);
   }
 
   if (TEAM_COMM_TOOL_NAMES.has(name)) {
-    await mkdir(getStateDir(wd, sessionId), { recursive: true });
+    const teamName = String((args as Record<string, unknown>)?.team_name || '').trim();
+    if (teamName) {
+      cwd = resolveTeamWorkingDirectory(teamName, cwd);
+    }
+    await mkdir(getStateDir(cwd, sessionId), { recursive: true });
   }
 
   switch (name) {
     case 'state_read': {
       const mode = (args as Record<string, unknown>).mode as string;
-      const path = getStatePath(mode, wd, sessionId);
+      const path = getStatePath(mode, cwd, sessionId);
       if (!existsSync(path)) {
         return { content: [{ type: 'text', text: JSON.stringify({ exists: false, mode }) }] };
       }
@@ -598,7 +635,7 @@ export async function handleStateToolCall(request: {
 
     case 'state_write': {
       const mode = (args as Record<string, unknown>).mode as string;
-      const path = getStatePath(mode, wd, sessionId);
+      const path = getStatePath(mode, cwd, sessionId);
 
       let existing: Record<string, unknown> = {};
       if (existsSync(path)) {
@@ -626,7 +663,7 @@ export async function handleStateToolCall(request: {
       const allSessions = (args as Record<string, unknown>).all_sessions === true;
 
       if (!allSessions) {
-        const path = getStatePath(mode, wd, sessionId);
+        const path = getStatePath(mode, cwd, sessionId);
         if (existsSync(path)) {
           await unlink(path);
         }
@@ -634,7 +671,7 @@ export async function handleStateToolCall(request: {
       }
 
       const removedPaths: string[] = [];
-      const paths = await getAllScopedStatePaths(mode, wd);
+      const paths = await getAllScopedStatePaths(mode, cwd);
       for (const path of paths) {
         if (!existsSync(path)) continue;
         await unlink(path);
@@ -657,7 +694,7 @@ export async function handleStateToolCall(request: {
     }
 
     case 'state_list_active': {
-      const stateDir = getStateDir(wd, sessionId);
+      const stateDir = getStateDir(cwd, sessionId);
       const active: string[] = [];
       if (existsSync(stateDir)) {
         const files = await readdir(stateDir);
@@ -676,7 +713,7 @@ export async function handleStateToolCall(request: {
 
     case 'state_get_status': {
       const mode = (args as Record<string, unknown>)?.mode as string | undefined;
-      const stateDir = getStateDir(wd, sessionId);
+      const stateDir = getStateDir(cwd, sessionId);
       const statuses: Record<string, unknown> = {};
 
       if (!existsSync(stateDir)) {

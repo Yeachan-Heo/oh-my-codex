@@ -33,12 +33,14 @@ You are a team worker in team "${teamName}". Your identity and assigned tasks ar
 9. Update your status: write {"state": "idle"} to .omx/state/team/${teamName}/workers/{your-name}/status.json
 10. Wait for new instructions (the lead will send them via your terminal)
 11. Check your mailbox for messages at .omx/state/team/${teamName}/mailbox/{your-name}.json
+12. For team_* MCP tools, do not pass workingDirectory unless the lead explicitly tells you to
 
 ## Rules
 - Do NOT edit files outside the paths listed in your task description
 - If you need to modify a shared file, report to the lead by writing to your status file with state "blocked"
 - ALWAYS write results to the task file before reporting done
 - If blocked, write {"state": "blocked", "reason": "..."} to your status file
+- Do NOT spawn sub-agents (no spawn_agent). Complete work in this worker session only.
 </team_worker_protocol>
 ${TEAM_OVERLAY_END}`;
 }
@@ -248,11 +250,13 @@ ${taskList}
 8. Write \`{"status": "completed", "result": "brief summary"}\` to the task file
 9. Write \`{"state": "idle"}\` to \`.omx/state/team/${teamName}/workers/${workerName}/status.json\`
 10. Wait for the next instruction from the lead
+11. For team_* MCP tools, do not pass \`workingDirectory\` unless the lead explicitly asks
 
 ## Scope Rules
 - Only edit files described in your task descriptions
 - Do NOT edit files that belong to other workers
 - If you need to modify a shared/common file, write \`{"state": "blocked", "reason": "need to edit shared file X"}\` to your status file and wait
+- Do NOT spawn sub-agents (no \`spawn_agent\`). Complete work in this worker session.
 `;
 }
 

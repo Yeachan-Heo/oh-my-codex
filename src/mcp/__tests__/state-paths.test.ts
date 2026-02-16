@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm } from 'fs/promises';
+import { existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -9,6 +10,7 @@ import {
   getBaseStateDir,
   getAllSessionScopedStateDirs,
   getAllSessionScopedStatePaths,
+  resolveWorkingDirectoryForState,
   getStateDir,
   getStatePath,
   validateSessionId,
@@ -28,6 +30,26 @@ describe('validateSessionId', () => {
 });
 
 describe('state paths', () => {
+  it('resolveWorkingDirectoryForState defaults to process.cwd()', () => {
+    assert.equal(resolveWorkingDirectoryForState(undefined), process.cwd());
+    assert.equal(resolveWorkingDirectoryForState(''), process.cwd());
+    assert.equal(resolveWorkingDirectoryForState('   '), process.cwd());
+  });
+
+  it('resolveWorkingDirectoryForState normalizes Windows path on WSL/Linux when mount exists', () => {
+    const raw = 'D:\\SIYUAN\\external\\repo';
+    const normalized = resolveWorkingDirectoryForState(raw);
+    if (process.platform === 'win32') {
+      assert.equal(normalized, raw);
+      return;
+    }
+    if (existsSync('/mnt/d')) {
+      assert.equal(normalized, '/mnt/d/SIYUAN/external/repo');
+    } else {
+      assert.equal(normalized, raw);
+    }
+  });
+
   it('builds global state paths', () => {
     const base = getBaseStateDir('/repo');
     assert.equal(base, '/repo/.omx/state');

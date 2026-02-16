@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'fs/promises';
+import { mkdir, mkdtemp, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { initTeamState } from '../../team/state.js';
@@ -132,5 +132,60 @@ describe('state-server team comm tools', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
-});
 
+  it('team_read_task/team_list_tasks resolve team root from nested workingDirectory', async () => {
+    process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
+    const { handleStateToolCall } = await import('../state-server.js');
+
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-team-tools-'));
+    const nestedWd = join(wd, 'nested', 'deep');
+    try {
+      await mkdir(nestedWd, { recursive: true });
+      await initTeamState('gamma-team', 'nested cwd test', 'executor', 1, wd);
+
+      const createResp = await handleStateToolCall({
+        params: {
+          name: 'team_create_task',
+          arguments: {
+            team_name: 'gamma-team',
+            subject: 'Task from root',
+            description: 'Created from root wd',
+            workingDirectory: wd,
+          },
+        },
+      });
+      const createJson = JSON.parse(createResp.content[0]?.text || '{}') as { ok?: boolean; task?: { id?: string } };
+      assert.equal(createJson.ok, true);
+      assert.equal(createJson.task?.id, '1');
+
+      const listResp = await handleStateToolCall({
+        params: {
+          name: 'team_list_tasks',
+          arguments: {
+            team_name: 'gamma-team',
+            workingDirectory: nestedWd,
+          },
+        },
+      });
+      const listJson = JSON.parse(listResp.content[0]?.text || '{}') as { ok?: boolean; count?: number };
+      assert.equal(listJson.ok, true);
+      assert.equal(listJson.count, 1);
+
+      const readResp = await handleStateToolCall({
+        params: {
+          name: 'team_read_task',
+          arguments: {
+            team_name: 'gamma-team',
+            task_id: '1',
+            workingDirectory: nestedWd,
+          },
+        },
+      });
+      const readJson = JSON.parse(readResp.content[0]?.text || '{}') as { ok?: boolean; task?: { id?: string } };
+      assert.equal(readJson.ok, true);
+      assert.equal(readJson.task?.id, '1');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+});
