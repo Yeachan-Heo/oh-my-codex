@@ -320,6 +320,37 @@ function paneHasTrustPrompt(captured: string): boolean {
   return hasQuestion && hasActiveChoices;
 }
 
+function paneHasActiveTask(captured: string): boolean {
+  const lines = captured
+    .split('\n')
+    .map((line) => line.replace(/\r/g, '').trim())
+    .filter((line) => line.length > 0);
+
+  const tail = lines.slice(-40);
+  if (tail.some((line) => /esc to interrupt/i.test(line))) return true;
+  if (tail.some((line) => /\bbackground terminal running\b/i.test(line))) return true;
+  // Typical Codex activity line: "• Doing X (3m 12s • esc to interrupt)"
+  if (tail.some((line) => /^•\s.+\(.+•\s*esc to interrupt\)$/i.test(line))) return true;
+  return false;
+}
+
+function resolveSendStrategyFromEnv(): 'auto' | 'queue' | 'interrupt' {
+  const raw = String(process.env.OMX_TEAM_SEND_STRATEGY || '')
+    .trim()
+    .toLowerCase();
+  if (raw === 'interrupt' || raw === 'queue' || raw === 'auto') {
+    return raw;
+  }
+  return 'auto';
+}
+
+function sendKeyOrThrow(target: string, key: string, label: string): void {
+  const result = runTmux(['send-keys', '-t', target, key]);
+  if (!result.ok) {
+    throw new Error(`sendToWorker: failed to send ${label}: ${result.stderr}`);
+  }
+}
+
 // Poll tmux capture-pane for Codex prompt indicator (> or similar)
 // Uses exponential backoff: 1s, 2s, 4s, 8s (total ~15s)
 // Returns true if ready, false on timeout
@@ -396,14 +427,16 @@ export function sendToWorker(sessionName: string, workerIndex: number, text: str
   }
 
   const target = paneTarget(sessionName, workerIndex, workerPaneId);
+  const strategy = resolveSendStrategyFromEnv();
 
   // Guard: if the trust prompt is still present, advance it first so our trigger text
   // doesn't get typed into the trust screen and ignored.
   const captured = runTmux(['capture-pane', '-t', target, '-p', '-S', '-80']);
+  const paneBusy = captured.ok ? paneHasActiveTask(captured.stdout) : false;
   if (captured.ok && paneHasTrustPrompt(captured.stdout)) {
-    runTmux(['send-keys', '-t', target, 'Enter']);
+    sendKeyOrThrow(target, 'Enter', 'Enter');
     sleepFractionalSeconds(0.12);
-    runTmux(['send-keys', '-t', target, 'Enter']);
+    sendKeyOrThrow(target, 'Enter', 'Enter');
     sleepFractionalSeconds(0.2);
   }
 
@@ -412,15 +445,28 @@ export function sendToWorker(sessionName: string, workerIndex: number, text: str
     throw new Error(`sendToWorker: failed to send text: ${send.stderr}`);
   }
 
+  const shouldInterrupt = strategy === 'interrupt';
+  const shouldQueueFirst = strategy === 'queue' || (strategy === 'auto' && paneBusy);
+  if (shouldInterrupt) {
+    // Explicit interrupt mode: abort current turn first, then submit the new command.
+    sendKeyOrThrow(target, 'C-c', 'C-c');
+    sleepFractionalSeconds(0.1);
+  }
+
   // Submit deterministically: Enter twice with short sleep between presses.
-  // Repeat a few rounds only if the literal input line is still visible.
+  // When worker is busy, first attempt uses Tab+Enter to leverage Codex queue semantics.
+  // If that fails, fall back to legacy Enter-based submit rounds.
   const submitRounds = 6;
   for (let round = 0; round < submitRounds; round++) {
-    const first = runTmux(['send-keys', '-t', target, 'Enter']);
-    if (!first.ok) throw new Error(`sendToWorker: failed to send Enter: ${first.stderr}`);
-    sleepFractionalSeconds(0.12);
-    const second = runTmux(['send-keys', '-t', target, 'Enter']);
-    if (!second.ok) throw new Error(`sendToWorker: failed to send Enter: ${second.stderr}`);
+    if (round === 0 && shouldQueueFirst) {
+      sendKeyOrThrow(target, 'Tab', 'Tab');
+      sleepFractionalSeconds(0.08);
+      sendKeyOrThrow(target, 'Enter', 'Enter');
+    } else {
+      sendKeyOrThrow(target, 'Enter', 'Enter');
+      sleepFractionalSeconds(0.12);
+      sendKeyOrThrow(target, 'Enter', 'Enter');
+    }
     sleepFractionalSeconds(0.14);
     if (!paneTailContainsLiteralLine(target, text)) return;
     sleepFractionalSeconds(0.14);

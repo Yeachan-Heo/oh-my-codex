@@ -31,6 +31,8 @@ describe('worker bootstrap', () => {
     assert.match(overlay, /\.omx\/state\/team\/my-team\/tasks/);
     assert.match(overlay, /tasks\/task-<id>\.json/);
     assert.match(overlay, /task_id: "<id>"/);
+    assert.match(overlay, /Do NOT spawn sub-agents/);
+    assert.match(overlay, /do not pass workingDirectory unless the lead explicitly tells you to/);
     assert.doesNotMatch(overlay, /tasks\/\{id\}\.json/);
   });
 

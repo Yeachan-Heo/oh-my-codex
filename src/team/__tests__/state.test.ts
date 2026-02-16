@@ -283,6 +283,51 @@ describe('team state', () => {
     }
   });
 
+  it('sendDirectMessage recreates mailbox directory when missing', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-mailbox-'));
+    try {
+      await initTeamState('team-msg-recreate-mailbox', 't', 'executor', 2, cwd);
+      await rm(join(cwd, '.omx', 'state', 'team', 'team-msg-recreate-mailbox', 'mailbox'), {
+        recursive: true,
+        force: true,
+      });
+
+      const dm = await sendDirectMessage(
+        'team-msg-recreate-mailbox',
+        'worker-1',
+        'worker-2',
+        'hello',
+        cwd,
+      );
+      assert.equal(dm.to_worker, 'worker-2');
+      assert.equal(
+        existsSync(
+          join(cwd, '.omx', 'state', 'team', 'team-msg-recreate-mailbox', 'mailbox', 'worker-2.json'),
+        ),
+        true,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('sendDirectMessage throws team not found after team cleanup', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-mailbox-'));
+    try {
+      await initTeamState('team-msg-missing-team', 't', 'executor', 2, cwd);
+      await rm(join(cwd, '.omx', 'state', 'team', 'team-msg-missing-team'), {
+        recursive: true,
+        force: true,
+      });
+      await assert.rejects(
+        () => sendDirectMessage('team-msg-missing-team', 'worker-1', 'worker-2', 'hello', cwd),
+        /Team team-msg-missing-team not found/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('markMessageNotified stores notified_at without forcing delivered_at', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-mailbox-'));
     try {

@@ -15,8 +15,42 @@ export function validateSessionId(sessionId: unknown): string | undefined {
   return sessionId;
 }
 
+function convertWindowsToWslPath(raw: string): string {
+  const m = /^([a-zA-Z]):[\\/](.*)$/.exec(raw);
+  if (!m) return raw;
+  const drive = m[1].toLowerCase();
+  const rest = String(m[2] || '').replace(/\\/g, '/');
+  const mountRoot = `/mnt/${drive}`;
+  if (!existsSync(mountRoot)) return raw;
+  return rest ? `${mountRoot}/${rest}` : mountRoot;
+}
+
+function convertWslToWindowsPath(raw: string): string {
+  const m = /^\/mnt\/([a-zA-Z])(?:\/(.*))?$/.exec(raw);
+  if (!m) return raw;
+  const drive = m[1].toUpperCase();
+  const rest = String(m[2] || '').replace(/\//g, '\\');
+  return rest ? `${drive}:\\${rest}` : `${drive}:\\`;
+}
+
+export function resolveWorkingDirectoryForState(workingDirectory?: string): string {
+  const raw = typeof workingDirectory === 'string' ? workingDirectory.trim() : '';
+  if (!raw) return process.cwd();
+
+  if (process.platform === 'win32') {
+    if (raw.startsWith('/mnt/')) return convertWslToWindowsPath(raw);
+    return raw;
+  }
+
+  if (/^[a-zA-Z]:[\\/]/.test(raw)) {
+    return convertWindowsToWslPath(raw);
+  }
+
+  return raw;
+}
+
 export function getBaseStateDir(workingDirectory?: string): string {
-  return join(workingDirectory || process.cwd(), '.omx', 'state');
+  return join(resolveWorkingDirectoryForState(workingDirectory), '.omx', 'state');
 }
 
 export function getStateDir(workingDirectory?: string, sessionId?: string): string {
