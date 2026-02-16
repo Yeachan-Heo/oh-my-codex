@@ -643,6 +643,18 @@ async function preLaunch(cwd: string, sessionId: string): Promise<void> {
   } catch {
     // Non-fatal
   }
+
+  // 5. Send session-start lifecycle notification (best effort)
+  try {
+    const { notifyLifecycle } = await import('../notifications/index.js');
+    await notifyLifecycle('session-start', {
+      sessionId,
+      projectPath: cwd,
+      projectName: basename(cwd),
+    });
+  } catch {
+    // Non-fatal: notification failures must never block launch
+  }
 }
 
 /**
@@ -773,6 +785,15 @@ function quoteShellArg(value: string): string {
  * Each step is independently fault-tolerant (try/catch per step).
  */
 async function postLaunch(cwd: string, sessionId: string): Promise<void> {
+  // Capture session start time before cleanup (writeSessionEnd deletes session.json)
+  let sessionStartedAt: string | undefined;
+  try {
+    const sessionState = await readSessionState(cwd);
+    sessionStartedAt = sessionState?.started_at;
+  } catch {
+    // Non-fatal
+  }
+
   // 0. Flush fallback watcher once to reduce race with fast codex exit.
   try {
     await flushNotifyFallbackOnce(cwd);
@@ -821,6 +842,23 @@ async function postLaunch(cwd: string, sessionId: string): Promise<void> {
     }
   } catch (err) {
     console.error(`[omx] postLaunch: mode cleanup failed: ${err instanceof Error ? err.message : err}`);
+  }
+
+  // 4. Send session-end lifecycle notification (best effort)
+  try {
+    const { notifyLifecycle } = await import('../notifications/index.js');
+    const durationMs = sessionStartedAt
+      ? Date.now() - new Date(sessionStartedAt).getTime()
+      : undefined;
+    await notifyLifecycle('session-end', {
+      sessionId,
+      projectPath: cwd,
+      projectName: basename(cwd),
+      durationMs,
+      reason: 'session_exit',
+    });
+  } catch {
+    // Non-fatal: notification failures must never block session cleanup
   }
 }
 

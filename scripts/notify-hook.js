@@ -1031,6 +1031,28 @@ async function main() {
       // Non-critical
     }
   }
+
+  // 7. Dispatch session-idle lifecycle notification (lead session only, best effort)
+  if (!isTeamWorker) {
+    try {
+      const { notifyLifecycle } = await import('../dist/notifications/index.js');
+      const sessionJsonPath = join(stateDir, 'session.json');
+      let notifySessionId = '';
+      try {
+        const sessionData = JSON.parse(await readFile(sessionJsonPath, 'utf-8'));
+        notifySessionId = safeString(sessionData && sessionData.session_id ? sessionData.session_id : '');
+      } catch { /* no session file */ }
+
+      if (notifySessionId) {
+        await notifyLifecycle('session-idle', {
+          sessionId: notifySessionId,
+          projectPath: cwd,
+        });
+      }
+    } catch {
+      // Non-fatal: notification module may not be built or config may not exist
+    }
+  }
 }
 
 async function readdir(dir) {
