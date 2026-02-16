@@ -24,6 +24,8 @@ export type {
   WebhookNotificationConfig,
   EventNotificationConfig,
   ReplyConfig,
+  NotificationProfilesConfig,
+  NotificationsBlock,
 } from "./types.js";
 
 export {
@@ -54,6 +56,9 @@ export {
   getEnabledPlatforms,
   getReplyConfig,
   getReplyListenerPlatformConfig,
+  resolveProfileConfig,
+  listProfiles,
+  getActiveProfileName,
 } from "./config.js";
 export {
   registerMessage,
@@ -81,7 +86,7 @@ import type {
   FullNotificationPayload,
   DispatchResult,
 } from "./types.js";
-import { getNotificationConfig, isEventEnabled } from "./config.js";
+import { getNotificationConfig, isEventEnabled, getActiveProfileName } from "./config.js";
 import { formatNotification } from "./formatter.js";
 import { dispatchNotifications } from "./dispatcher.js";
 import { getCurrentTmuxSession } from "./tmux.js";
@@ -96,9 +101,10 @@ import { basename } from "path";
 export async function notifyLifecycle(
   event: NotificationEvent,
   data: Partial<FullNotificationPayload> & { sessionId: string },
+  profileName?: string,
 ): Promise<DispatchResult | null> {
   try {
-    const config = getNotificationConfig();
+    const config = getNotificationConfig(profileName);
     if (!config || !isEventEnabled(config, event)) {
       return null;
     }

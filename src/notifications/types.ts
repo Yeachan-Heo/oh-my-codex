@@ -179,6 +179,27 @@ export interface DispatchResult {
   anySuccess: boolean;
 }
 
+/** Named notification profiles configuration */
+export interface NotificationProfilesConfig {
+  /** Global enable/disable for all notifications */
+  enabled: boolean;
+
+  /** Default profile name when none specified */
+  defaultProfile?: string;
+
+  /** Named profiles, each a full notification config */
+  profiles: Record<string, FullNotificationConfig>;
+}
+
+/** Top-level notifications block (supports both flat and profiled config) */
+export interface NotificationsBlock extends FullNotificationConfig {
+  /** Default profile name (used when profiles are defined) */
+  defaultProfile?: string;
+
+  /** Named notification profiles */
+  profiles?: Record<string, FullNotificationConfig>;
+}
+
 /** Reply injection configuration */
 export interface ReplyConfig {
   enabled: boolean;

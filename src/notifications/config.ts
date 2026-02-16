@@ -10,6 +10,7 @@ import { join } from "path";
 import { codexHome } from "../utils/paths.js";
 import type {
   FullNotificationConfig,
+  NotificationsBlock,
   NotificationEvent,
   NotificationPlatform,
   EventNotificationConfig,
@@ -199,12 +200,94 @@ function mergeEnvIntoFileConfig(
   return merged;
 }
 
-export function getNotificationConfig(): FullNotificationConfig | null {
+/**
+ * Resolve a named profile from the notifications block.
+ *
+ * Priority:
+ *   1. Explicit `profileName` argument
+ *   2. OMX_NOTIFY_PROFILE environment variable
+ *   3. `defaultProfile` field in config
+ *   4. null (no profile selected → fall back to flat config)
+ */
+export function resolveProfileConfig(
+  notifications: NotificationsBlock,
+  profileName?: string,
+): FullNotificationConfig | null {
+  const profiles = notifications.profiles;
+  if (!profiles || Object.keys(profiles).length === 0) {
+    return null; // no profiles defined, use flat config
+  }
+
+  const name =
+    profileName ||
+    process.env.OMX_NOTIFY_PROFILE ||
+    notifications.defaultProfile;
+
+  if (!name) {
+    return null; // no profile selected, use flat config
+  }
+
+  const profile = profiles[name];
+  if (!profile) {
+    console.warn(
+      `[notifications] Profile "${name}" not found. Available: ${Object.keys(profiles).join(", ")}`,
+    );
+    return null;
+  }
+
+  return profile;
+}
+
+/**
+ * List available profile names from the config file.
+ */
+export function listProfiles(): string[] {
+  const raw = readRawConfig();
+  if (!raw) return [];
+  const notifications = raw.notifications as NotificationsBlock | undefined;
+  if (!notifications?.profiles) return [];
+  return Object.keys(notifications.profiles);
+}
+
+/**
+ * Get the active profile name based on resolution priority.
+ * Returns null if no profile is active (flat config mode).
+ */
+export function getActiveProfileName(): string | null {
+  if (process.env.OMX_NOTIFY_PROFILE) {
+    return process.env.OMX_NOTIFY_PROFILE;
+  }
+  const raw = readRawConfig();
+  if (!raw) return null;
+  const notifications = raw.notifications as NotificationsBlock | undefined;
+  if (!notifications?.profiles || Object.keys(notifications.profiles).length === 0) {
+    return null;
+  }
+  return notifications.defaultProfile || null;
+}
+
+export function getNotificationConfig(
+  profileName?: string,
+): FullNotificationConfig | null {
   const raw = readRawConfig();
 
   if (raw) {
-    const notifications = raw.notifications as FullNotificationConfig | undefined;
+    const notifications = raw.notifications as NotificationsBlock | undefined;
     if (notifications) {
+      // Try profile resolution first
+      const profileConfig = resolveProfileConfig(notifications, profileName);
+      if (profileConfig) {
+        if (typeof profileConfig.enabled !== "boolean") {
+          return null;
+        }
+        const envConfig = buildConfigFromEnv();
+        if (envConfig) {
+          return mergeEnvIntoFileConfig(profileConfig, envConfig);
+        }
+        return profileConfig;
+      }
+
+      // Fall back to flat config (backward compatible)
       if (typeof notifications.enabled !== "boolean") {
         return null;
       }
