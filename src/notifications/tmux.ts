@@ -8,21 +8,86 @@ import { execSync } from "child_process";
 
 /**
  * Get the current tmux session name.
- * Returns null if not running inside tmux.
+ * First checks $TMUX env, then falls back to finding the tmux session
+ * that owns the current process tree (for hooks/subprocesses that don't
+ * inherit $TMUX).
  */
 export function getCurrentTmuxSession(): string | null {
-  if (!process.env.TMUX) {
-    return null;
+  // Fast path: $TMUX is set (we're directly inside tmux)
+  if (process.env.TMUX) {
+    try {
+      const sessionName = execSync("tmux display-message -p '#S'", {
+        encoding: "utf-8",
+        timeout: 3000,
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      if (sessionName) return sessionName;
+    } catch {
+      // fall through to PID-based detection
+    }
   }
 
-  try {
-    const sessionName = execSync("tmux display-message -p '#S'", {
-      encoding: "utf-8",
-      timeout: 3000,
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
+  // Fallback: walk the process tree to find a tmux pane that owns us.
+  // This handles hooks/subprocesses that don't inherit $TMUX.
+  return detectTmuxSessionByPid();
+}
 
-    return sessionName || null;
+/**
+ * Detect tmux session by walking the process tree.
+ * Lists all tmux panes and their PIDs, then checks if our PID (or any ancestor)
+ * is a child of a tmux pane process.
+ */
+function detectTmuxSessionByPid(): string | null {
+  try {
+    // Get all tmux pane PIDs with their session names
+    const output = execSync(
+      "tmux list-panes -a -F '#{pane_pid} #{session_name}'",
+      {
+        encoding: "utf-8",
+        timeout: 3000,
+        stdio: ["pipe", "pipe", "pipe"],
+      }
+    ).trim();
+    if (!output) return null;
+
+    const panePids = new Map<number, string>();
+    for (const line of output.split("\n")) {
+      const parts = line.trim().split(" ", 2);
+      if (parts.length === 2) {
+        const pid = parseInt(parts[0], 10);
+        if (!isNaN(pid)) panePids.set(pid, parts[1]);
+      }
+    }
+
+    if (panePids.size === 0) return null;
+
+    // Walk up the process tree from our PID
+    let currentPid = process.pid;
+    const visited = new Set<number>();
+    while (currentPid > 1 && !visited.has(currentPid)) {
+      visited.add(currentPid);
+
+      // Check if this PID is a tmux pane process
+      if (panePids.has(currentPid)) {
+        return panePids.get(currentPid) || null;
+      }
+
+      // Get parent PID
+      try {
+        const ppidStr = execSync(`ps -o ppid= -p ${currentPid}`, {
+          encoding: "utf-8",
+          timeout: 1000,
+          stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        const ppid = parseInt(ppidStr, 10);
+        if (isNaN(ppid) || ppid <= 1) break;
+        currentPid = ppid;
+      } catch {
+        break;
+      }
+    }
+
+    return null;
   } catch {
     return null;
   }
@@ -64,23 +129,80 @@ export function formatTmuxInfo(): string | null {
 
 /**
  * Get the current tmux pane ID (e.g., "%0").
- * Returns null if not running inside tmux.
- *
- * Tries $TMUX_PANE env var first, falls back to tmux display-message.
+ * Tries $TMUX_PANE env var first, then tmux display-message,
+ * then falls back to PID-based detection.
  */
 export function getCurrentTmuxPaneId(): string | null {
-  if (!process.env.TMUX) return null;
-
+  // Fast path: $TMUX_PANE is set
   const envPane = process.env.TMUX_PANE;
   if (envPane && /^%\d+$/.test(envPane)) return envPane;
 
+  // Try tmux display-message if $TMUX is set
+  if (process.env.TMUX) {
+    try {
+      const paneId = execSync("tmux display-message -p '#{pane_id}'", {
+        encoding: "utf-8",
+        timeout: 3000,
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      if (paneId && /^%\d+$/.test(paneId)) return paneId;
+    } catch {
+      // fall through
+    }
+  }
+
+  // Fallback: find pane by walking the process tree
+  return detectTmuxPaneByPid();
+}
+
+/**
+ * Detect tmux pane ID by walking the process tree.
+ */
+function detectTmuxPaneByPid(): string | null {
   try {
-    const paneId = execSync("tmux display-message -p '#{pane_id}'", {
-      encoding: "utf-8",
-      timeout: 3000,
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
-    return paneId && /^%\d+$/.test(paneId) ? paneId : null;
+    const output = execSync(
+      "tmux list-panes -a -F '#{pane_pid} #{pane_id}'",
+      {
+        encoding: "utf-8",
+        timeout: 3000,
+        stdio: ["pipe", "pipe", "pipe"],
+      }
+    ).trim();
+    if (!output) return null;
+
+    const panePids = new Map<number, string>();
+    for (const line of output.split("\n")) {
+      const parts = line.trim().split(" ", 2);
+      if (parts.length === 2) {
+        const pid = parseInt(parts[0], 10);
+        if (!isNaN(pid)) panePids.set(pid, parts[1]);
+      }
+    }
+
+    if (panePids.size === 0) return null;
+
+    let currentPid = process.pid;
+    const visited = new Set<number>();
+    while (currentPid > 1 && !visited.has(currentPid)) {
+      visited.add(currentPid);
+      if (panePids.has(currentPid)) {
+        return panePids.get(currentPid) || null;
+      }
+      try {
+        const ppidStr = execSync(`ps -o ppid= -p ${currentPid}`, {
+          encoding: "utf-8",
+          timeout: 1000,
+          stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        const ppid = parseInt(ppidStr, 10);
+        if (isNaN(ppid) || ppid <= 1) break;
+        currentPid = ppid;
+      } catch {
+        break;
+      }
+    }
+
+    return null;
   } catch {
     return null;
   }

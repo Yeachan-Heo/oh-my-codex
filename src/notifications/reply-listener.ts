@@ -30,6 +30,7 @@ import {
   removeMessagesByPane,
   pruneStale,
 } from './session-registry.js';
+import { parseMentionAllowedMentions } from './config.js';
 import type { ReplyConfig } from './types.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -72,6 +73,7 @@ export interface ReplyListenerDaemonConfig extends ReplyConfig {
   telegramChatId?: string;
   discordBotToken?: string;
   discordChannelId?: string;
+  discordMention?: string;
 }
 
 export interface DaemonResponse {
@@ -360,6 +362,7 @@ async function pollDiscord(
       const success = injectReply(mapping.tmuxPaneId, msg.content, 'discord', config);
       if (success) {
         state.messagesInjected++;
+        // Add ✅ reaction to the user's reply
         try {
           await fetch(
             `https://discord.com/api/v10/channels/${config.discordChannelId}/messages/${msg.id}/reactions/%E2%9C%85/@me`,
@@ -371,6 +374,31 @@ async function pollDiscord(
           );
         } catch (e) {
           log(`WARN: Failed to add confirmation reaction: ${e}`);
+        }
+
+        // Send injection notification as a reply to the user's message (non-critical)
+        try {
+          const feedbackAllowedMentions = config.discordMention
+            ? parseMentionAllowedMentions(config.discordMention)
+            : { parse: [] as string[] };
+          await fetch(
+            `https://discord.com/api/v10/channels/${config.discordChannelId}/messages`,
+            {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bot ${config.discordBotToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                content: 'Injected into Codex CLI session.',
+                message_reference: { message_id: msg.id },
+                allowed_mentions: feedbackAllowedMentions,
+              }),
+              signal: AbortSignal.timeout(5000),
+            }
+          );
+        } catch (e) {
+          log(`WARN: Failed to send injection channel notification: ${e}`);
         }
       } else {
         state.errors++;
