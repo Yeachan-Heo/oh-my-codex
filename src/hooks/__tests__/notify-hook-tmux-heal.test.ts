@@ -122,6 +122,7 @@ exit 1
         env: {
           ...process.env,
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          OMX_TEAM_WORKER: '',
           TMUX_PANE: '%42',
         },
       });
@@ -234,6 +235,7 @@ exit 1
         env: {
           ...process.env,
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          OMX_TEAM_WORKER: '',
           TMUX_PANE: '%42',
         },
       });
@@ -349,6 +351,7 @@ exit 1
         env: {
           ...process.env,
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          OMX_TEAM_WORKER: '',
         },
       });
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
@@ -453,6 +456,7 @@ exit 1
         env: {
           ...process.env,
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          OMX_TEAM_WORKER: '',
         },
       });
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);

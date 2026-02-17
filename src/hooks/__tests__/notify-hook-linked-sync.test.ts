@@ -30,6 +30,12 @@ function runNotifyHook(cwd: string, extraPayload: Record<string, unknown> = {}):
 
   const result = spawnSync(process.execPath, [NOTIFY_HOOK_SCRIPT.pathname, JSON.stringify(payload)], {
     encoding: 'utf8',
+    env: {
+      ...process.env,
+      OMX_TEAM_WORKER: '',
+      TMUX: '',
+      TMUX_PANE: '',
+    },
   });
 
   assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);

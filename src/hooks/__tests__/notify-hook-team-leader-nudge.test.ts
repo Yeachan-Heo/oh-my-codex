@@ -63,6 +63,9 @@ function runNotifyHook(
       PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
       OMX_TEAM_LEADER_NUDGE_MS: '10000',
       OMX_TEAM_LEADER_STALE_MS: '10000',
+      OMX_TEAM_WORKER: '',
+      TMUX: '',
+      TMUX_PANE: '',
       ...extraEnv,
     },
   });

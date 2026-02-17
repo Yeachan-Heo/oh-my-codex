@@ -909,6 +909,22 @@ function parseTeamWorkerEnv(rawValue) {
   return { teamName: match[1], workerName: match[2] };
 }
 
+async function dispatchNativeHookEvent(cwd, eventName, payload, context = {}) {
+  try {
+    const { buildNativeHookEvent } = await import('../dist/hooks/extensibility/events.js');
+    const { dispatchHookEvent } = await import('../dist/hooks/extensibility/dispatcher.js');
+    const event = buildNativeHookEvent(eventName, context, {
+      session_id: safeString(payload.session_id || payload['session-id'] || ''),
+      thread_id: safeString(payload['thread-id'] || payload.thread_id || ''),
+      turn_id: safeString(payload['turn-id'] || payload.turn_id || ''),
+      mode: safeString(payload.mode || ''),
+    });
+    await dispatchHookEvent(event, { cwd });
+  } catch {
+    // Non-fatal: extensibility modules may not be built yet
+  }
+}
+
 async function main() {
   const rawPayload = process.argv[process.argv.length - 1];
   if (!rawPayload || rawPayload.startsWith('-')) {
@@ -1140,7 +1156,15 @@ async function main() {
     }
   }
 
-  // 7. Dispatch session-idle lifecycle notification (lead session only, best effort)
+  // 7. Dispatch native turn-complete hook event (best effort, post-dedupe)
+  await dispatchNativeHookEvent(cwd, 'turn-complete', payload, {
+    source: safeString(payload.source || 'native'),
+    type: safeString(payload.type || 'agent-turn-complete'),
+    input_messages: normalizeInputMessages(payload),
+    output_preview: safeString(payload['last-assistant-message'] || payload.last_assistant_message || '').slice(0, 400),
+  });
+
+  // 8. Dispatch session-idle lifecycle notification (lead session only, best effort)
   if (!isTeamWorker) {
     try {
       const { notifyLifecycle } = await import('../dist/notifications/index.js');
@@ -1155,6 +1179,13 @@ async function main() {
         await notifyLifecycle('session-idle', {
           sessionId: notifySessionId,
           projectPath: cwd,
+        });
+        await dispatchNativeHookEvent(cwd, 'session-idle', {
+          ...payload,
+          session_id: notifySessionId,
+        }, {
+          project_path: cwd,
+          reason: 'post_turn_idle_notification',
         });
       }
     } catch {

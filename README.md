@@ -96,9 +96,21 @@ omx status         # Show active modes
 omx cancel         # Cancel active execution modes
 omx reasoning <mode> # low|medium|high|xhigh
 omx tmux-hook ...  # init|status|validate|test
+omx hooks ...      # init|status|validate|test (plugin extension workflow)
 omx hud ...        # --watch|--json|--preset
 omx help
 ```
+
+## Hooks Extension (Additive Surface)
+
+OMX now includes `omx hooks` for plugin scaffolding and validation.
+
+- `omx tmux-hook` remains supported and unchanged.
+- `omx hooks` is additive and does not replace tmux-hook workflows.
+- Plugin files live at `.omx/hooks/*.mjs`.
+- Plugins are off by default; enable with `OMX_HOOK_PLUGINS=1`.
+
+See `docs/hooks-extension.md` for the full extension workflow and event model.
 
 ## Launch Flags
 
@@ -212,6 +224,7 @@ npm test
 ## Notes
 
 - Coverage and parity notes: `COVERAGE.md`
+- Hook extension workflow: `docs/hooks-extension.md`
 - Setup and contribution details: `CONTRIBUTING.md`
 
 ## Acknowledgments

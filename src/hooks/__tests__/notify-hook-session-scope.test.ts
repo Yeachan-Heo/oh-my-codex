@@ -32,6 +32,12 @@ describe('notify-hook session-scoped iteration updates', () => {
       const result = spawnSync(process.execPath, ['scripts/notify-hook.js', JSON.stringify(payload)], {
         cwd: repoRoot,
         encoding: 'utf-8',
+        env: {
+          ...process.env,
+          OMX_TEAM_WORKER: '',
+          TMUX: '',
+          TMUX_PANE: '',
+        },
       });
       assert.equal(result.status, 0, result.stderr || result.stdout);
 

@@ -6,6 +6,10 @@
 
 import { execSync } from "child_process";
 
+function shouldUsePidFallback(): boolean {
+  return process.env.OMX_TMUX_PID_FALLBACK === "1";
+}
+
 /**
  * Get the current tmux session name.
  * First checks $TMUX env, then falls back to finding the tmux session
@@ -26,6 +30,8 @@ export function getCurrentTmuxSession(): string | null {
       // fall through to PID-based detection
     }
   }
+
+  if (!shouldUsePidFallback()) return null;
 
   // Fallback: walk the process tree to find a tmux pane that owns us.
   // This handles hooks/subprocesses that don't inherit $TMUX.
@@ -135,7 +141,7 @@ export function formatTmuxInfo(): string | null {
 export function getCurrentTmuxPaneId(): string | null {
   // Fast path: $TMUX_PANE is set
   const envPane = process.env.TMUX_PANE;
-  if (envPane && /^%\d+$/.test(envPane)) return envPane;
+  if (process.env.TMUX && envPane && /^%\d+$/.test(envPane)) return envPane;
 
   // Try tmux display-message if $TMUX is set
   if (process.env.TMUX) {
@@ -150,6 +156,8 @@ export function getCurrentTmuxPaneId(): string | null {
       // fall through
     }
   }
+
+  if (!shouldUsePidFallback()) return null;
 
   // Fallback: find pane by walking the process tree
   return detectTmuxPaneByPid();

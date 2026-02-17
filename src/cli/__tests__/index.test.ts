@@ -90,6 +90,13 @@ describe('normalizeCodexLaunchArgs', () => {
 });
 
 describe('resolveCliInvocation', () => {
+  it('resolves hooks to hooks command', () => {
+    assert.deepEqual(resolveCliInvocation(['hooks']), {
+      command: 'hooks',
+      launchArgs: [],
+    });
+  });
+
   it('resolves --help to the help command instead of launch', () => {
     assert.deepEqual(resolveCliInvocation(['--help']), {
       command: 'help',

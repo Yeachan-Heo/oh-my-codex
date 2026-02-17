@@ -10,6 +10,7 @@ import { setup } from './setup.js';
 import { doctor } from './doctor.js';
 import { version } from './version.js';
 import { tmuxHookCommand } from './tmux-hook.js';
+import { hooksCommand } from './hooks.js';
 import { hudCommand } from '../hud/index.js';
 import { teamCommand } from './team.js';
 import { getAllScopedStateDirs, getBaseStateDir, getStateDir } from '../mcp/state-paths.js';
@@ -26,6 +27,8 @@ import {
 import { getPackageRoot } from '../utils/package.js';
 import { codexConfigPath } from '../utils/paths.js';
 import { getModelForMode } from '../config/models.js';
+import { buildHookEvent } from '../hooks/extensibility/events.js';
+import { dispatchHookEvent } from '../hooks/extensibility/dispatcher.js';
 
 const HELP = `
 oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
@@ -38,6 +41,7 @@ Usage:
   omx team      Spawn parallel worker panes in tmux and bootstrap inbox/task state
   omx version   Show version information
   omx tmux-hook Manage tmux prompt injection workaround (init|status|validate|test)
+  omx hooks     Manage hook plugins (init|status|validate|test)
   omx hud       Show HUD statusline (--watch, --json, --preset=NAME)
   omx help      Show this help message
   omx status    Show active modes and state
@@ -75,7 +79,7 @@ type ReasoningMode = typeof REASONING_MODES[number];
 const REASONING_MODE_SET = new Set<string>(REASONING_MODES);
 const REASONING_USAGE = 'Usage: omx reasoning <low|medium|high|xhigh>';
 
-type CliCommand = 'launch' | 'setup' | 'doctor' | 'team' | 'version' | 'tmux-hook' | 'hud' | 'status' | 'cancel' | 'help' | 'reasoning' | string;
+type CliCommand = 'launch' | 'setup' | 'doctor' | 'team' | 'version' | 'tmux-hook' | 'hooks' | 'hud' | 'status' | 'cancel' | 'help' | 'reasoning' | string;
 
 export interface ResolvedCliInvocation {
   command: CliCommand;
@@ -148,7 +152,7 @@ export function buildHudPaneCleanupTargets(existingPaneIds: string[], createdPan
 
 export async function main(args: string[]): Promise<void> {
   const knownCommands = new Set([
-    'launch', 'setup', 'doctor', 'team', 'version', 'tmux-hook', 'hud', 'status', 'cancel', 'help', '--help', '-h',
+    'launch', 'setup', 'doctor', 'team', 'version', 'tmux-hook', 'hooks', 'hud', 'status', 'cancel', 'help', '--help', '-h',
   ]);
   const firstArg = args[0];
   const { command, launchArgs } = resolveCliInvocation(args);
@@ -182,6 +186,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case 'tmux-hook':
         await tmuxHookCommand(args.slice(1));
+        break;
+      case 'hooks':
+        await hooksCommand(args.slice(1));
         break;
       case 'status':
         await showStatus();
@@ -645,7 +652,14 @@ async function preLaunch(cwd: string, sessionId: string): Promise<void> {
     // Non-fatal
   }
 
-  // 5. Send session-start lifecycle notification (best effort)
+  // 5. Start derived watcher (best effort, opt-in)
+  try {
+    await startHookDerivedWatcher(cwd);
+  } catch {
+    // Non-fatal
+  }
+
+  // 6. Send session-start lifecycle notification (best effort)
   try {
     const { notifyLifecycle } = await import('../notifications/index.js');
     await notifyLifecycle('session-start', {
@@ -655,6 +669,19 @@ async function preLaunch(cwd: string, sessionId: string): Promise<void> {
     });
   } catch {
     // Non-fatal: notification failures must never block launch
+  }
+
+  // 7. Dispatch native hook event (best effort)
+  try {
+    await emitNativeHookEvent(cwd, 'session-start', {
+      session_id: sessionId,
+      context: {
+        project_path: cwd,
+        project_name: basename(cwd),
+      },
+    });
+  } catch {
+    // Non-fatal
   }
 }
 
@@ -811,6 +838,20 @@ async function postLaunch(cwd: string, sessionId: string): Promise<void> {
     // Non-fatal
   }
 
+  // 0. Flush derived watcher once on shutdown (opt-in, best effort).
+  try {
+    await flushHookDerivedWatcherOnce(cwd);
+  } catch {
+    // Non-fatal
+  }
+
+  // 0.1 Stop derived watcher first (opt-in, best effort).
+  try {
+    await stopHookDerivedWatcher(cwd);
+  } catch {
+    // Non-fatal
+  }
+
   // 1. Remove session-scoped model instructions file
   try {
     await removeSessionModelInstructionsFile(cwd, sessionId);
@@ -863,10 +904,56 @@ async function postLaunch(cwd: string, sessionId: string): Promise<void> {
   } catch {
     // Non-fatal: notification failures must never block session cleanup
   }
+
+  // 5. Dispatch native hook event (best effort)
+  try {
+    const durationMs = sessionStartedAt
+      ? Date.now() - new Date(sessionStartedAt).getTime()
+      : undefined;
+    await emitNativeHookEvent(cwd, 'session-end', {
+      session_id: sessionId,
+      context: {
+        project_path: cwd,
+        project_name: basename(cwd),
+        duration_ms: durationMs,
+        reason: 'session_exit',
+      },
+    });
+  } catch {
+    // Non-fatal
+  }
+}
+
+async function emitNativeHookEvent(
+  cwd: string,
+  event: 'session-start' | 'session-end' | 'session-idle' | 'turn-complete',
+  opts: {
+    session_id?: string;
+    thread_id?: string;
+    turn_id?: string;
+    mode?: string;
+    context?: Record<string, unknown>;
+  } = {},
+): Promise<void> {
+  const payload = buildHookEvent(event, {
+    source: 'native',
+    context: opts.context || {},
+    session_id: opts.session_id,
+    thread_id: opts.thread_id,
+    turn_id: opts.turn_id,
+    mode: opts.mode,
+  });
+  await dispatchHookEvent(payload, {
+    cwd,
+  });
 }
 
 function notifyFallbackPidPath(cwd: string): string {
   return join(cwd, '.omx', 'state', 'notify-fallback.pid');
+}
+
+function hookDerivedWatcherPidPath(cwd: string): string {
+  return join(cwd, '.omx', 'state', 'hook-derived-watcher.pid');
 }
 
 async function startNotifyFallbackWatcher(cwd: string): Promise<void> {
@@ -909,9 +996,65 @@ async function startNotifyFallbackWatcher(cwd: string): Promise<void> {
   ).catch(() => {});
 }
 
+async function startHookDerivedWatcher(cwd: string): Promise<void> {
+  if (process.env.OMX_HOOK_DERIVED_SIGNALS !== '1') return;
+
+  const { mkdir, writeFile, readFile } = await import('fs/promises');
+  const pidPath = hookDerivedWatcherPidPath(cwd);
+  const pkgRoot = getPackageRoot();
+  const watcherScript = join(pkgRoot, 'scripts', 'hook-derived-watcher.js');
+  if (!existsSync(watcherScript)) return;
+
+  if (existsSync(pidPath)) {
+    try {
+      const prev = JSON.parse(await readFile(pidPath, 'utf-8')) as { pid?: number };
+      if (prev && typeof prev.pid === 'number') {
+        process.kill(prev.pid, 'SIGTERM');
+      }
+    } catch {
+      // Ignore stale PID parse/kill errors.
+    }
+  }
+
+  await mkdir(join(cwd, '.omx', 'state'), { recursive: true }).catch(() => {});
+  const child = spawn(
+    process.execPath,
+    [watcherScript, '--cwd', cwd],
+    {
+      cwd,
+      detached: true,
+      stdio: 'ignore',
+      env: process.env,
+    }
+  );
+  child.unref();
+
+  await writeFile(
+    pidPath,
+    JSON.stringify({ pid: child.pid, started_at: new Date().toISOString() }, null, 2)
+  ).catch(() => {});
+}
+
 async function stopNotifyFallbackWatcher(cwd: string): Promise<void> {
   const { readFile, unlink } = await import('fs/promises');
   const pidPath = notifyFallbackPidPath(cwd);
+  if (!existsSync(pidPath)) return;
+
+  try {
+    const parsed = JSON.parse(await readFile(pidPath, 'utf-8')) as { pid?: number };
+    if (parsed && typeof parsed.pid === 'number') {
+      process.kill(parsed.pid, 'SIGTERM');
+    }
+  } catch {
+    // Ignore stop errors.
+  }
+
+  await unlink(pidPath).catch(() => {});
+}
+
+async function stopHookDerivedWatcher(cwd: string): Promise<void> {
+  const { readFile, unlink } = await import('fs/promises');
+  const pidPath = hookDerivedWatcherPidPath(cwd);
   if (!existsSync(pidPath)) return;
 
   try {
@@ -936,6 +1079,23 @@ async function flushNotifyFallbackOnce(cwd: string): Promise<void> {
     cwd,
     stdio: 'ignore',
     timeout: 3000,
+  });
+}
+
+async function flushHookDerivedWatcherOnce(cwd: string): Promise<void> {
+  if (process.env.OMX_HOOK_DERIVED_SIGNALS !== '1') return;
+  const { spawnSync } = await import('child_process');
+  const pkgRoot = getPackageRoot();
+  const watcherScript = join(pkgRoot, 'scripts', 'hook-derived-watcher.js');
+  if (!existsSync(watcherScript)) return;
+  spawnSync(process.execPath, [watcherScript, '--once', '--cwd', cwd], {
+    cwd,
+    stdio: 'ignore',
+    timeout: 3000,
+    env: {
+      ...process.env,
+      OMX_HOOK_DERIVED_SIGNALS: '1',
+    },
   });
 }
 
