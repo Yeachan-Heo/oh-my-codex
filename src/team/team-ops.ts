@@ -3,7 +3,8 @@
  *
  * Both the MCP server (state-server.ts) and the runtime (runtime.ts)
  * import from this module instead of state.ts directly.
- * state.ts remains the private persistence layer.
+ * protocol-adapter.ts wraps cli-agent-mail with OMX function signatures.
+ * state.ts remains as the legacy persistence layer.
  *
  * Every exported function here corresponds to (or backs) an MCP tool
  * with the same semantic name, ensuring the runtime contract matches
@@ -34,61 +35,61 @@ export type {
   TeamSummary,
   ShutdownAck,
   TeamMonitorSnapshotState,
-} from './state.js';
+} from './protocol-adapter.js';
 
 // === Constants ===
-export { DEFAULT_MAX_WORKERS, ABSOLUTE_MAX_WORKERS } from './state.js';
+export { DEFAULT_MAX_WORKERS, ABSOLUTE_MAX_WORKERS } from './protocol-adapter.js';
 
 // === Team lifecycle ===
-export { initTeamState as teamInit } from './state.js';
-export { readTeamConfig as teamReadConfig } from './state.js';
-export { readTeamManifestV2 as teamReadManifest } from './state.js';
-export { writeTeamManifestV2 as teamWriteManifest } from './state.js';
-export { saveTeamConfig as teamSaveConfig } from './state.js';
-export { cleanupTeamState as teamCleanup } from './state.js';
-export { migrateV1ToV2 as teamMigrateV1ToV2 } from './state.js';
+export { initTeamState as teamInit } from './protocol-adapter.js';
+export { readTeamConfig as teamReadConfig } from './protocol-adapter.js';
+export { readTeamManifestV2 as teamReadManifest } from './protocol-adapter.js';
+export { writeTeamManifestV2 as teamWriteManifest } from './protocol-adapter.js';
+export { saveTeamConfig as teamSaveConfig } from './protocol-adapter.js';
+export { cleanupTeamState as teamCleanup } from './protocol-adapter.js';
+export { migrateV1ToV2 as teamMigrateV1ToV2 } from './protocol-adapter.js';
 
 // === Worker operations ===
-export { writeWorkerIdentity as teamWriteWorkerIdentity } from './state.js';
-export { readWorkerHeartbeat as teamReadWorkerHeartbeat } from './state.js';
-export { updateWorkerHeartbeat as teamUpdateWorkerHeartbeat } from './state.js';
-export { readWorkerStatus as teamReadWorkerStatus } from './state.js';
-export { writeWorkerInbox as teamWriteWorkerInbox } from './state.js';
+export { writeWorkerIdentity as teamWriteWorkerIdentity } from './protocol-adapter.js';
+export { readWorkerHeartbeat as teamReadWorkerHeartbeat } from './protocol-adapter.js';
+export { updateWorkerHeartbeat as teamUpdateWorkerHeartbeat } from './protocol-adapter.js';
+export { readWorkerStatus as teamReadWorkerStatus } from './protocol-adapter.js';
+export { writeWorkerInbox as teamWriteWorkerInbox } from './protocol-adapter.js';
 
 // === Task operations ===
-export { createTask as teamCreateTask } from './state.js';
-export { readTask as teamReadTask } from './state.js';
-export { listTasks as teamListTasks } from './state.js';
-export { updateTask as teamUpdateTask } from './state.js';
-export { claimTask as teamClaimTask } from './state.js';
-export { releaseTaskClaim as teamReleaseTaskClaim } from './state.js';
-export { transitionTaskStatus as teamTransitionTaskStatus } from './state.js';
-export { computeTaskReadiness as teamComputeTaskReadiness } from './state.js';
+export { createTask as teamCreateTask } from './protocol-adapter.js';
+export { readTask as teamReadTask } from './protocol-adapter.js';
+export { listTasks as teamListTasks } from './protocol-adapter.js';
+export { updateTask as teamUpdateTask } from './protocol-adapter.js';
+export { claimTask as teamClaimTask } from './protocol-adapter.js';
+export { releaseTaskClaim as teamReleaseTaskClaim } from './protocol-adapter.js';
+export { transitionTaskStatus as teamTransitionTaskStatus } from './protocol-adapter.js';
+export { computeTaskReadiness as teamComputeTaskReadiness } from './protocol-adapter.js';
 
 // === Messaging ===
-export { sendDirectMessage as teamSendMessage } from './state.js';
-export { broadcastMessage as teamBroadcast } from './state.js';
-export { listMailboxMessages as teamListMailbox } from './state.js';
-export { markMessageDelivered as teamMarkMessageDelivered } from './state.js';
-export { markMessageNotified as teamMarkMessageNotified } from './state.js';
+export { sendDirectMessage as teamSendMessage } from './protocol-adapter.js';
+export { broadcastMessage as teamBroadcast } from './protocol-adapter.js';
+export { listMailboxMessages as teamListMailbox } from './protocol-adapter.js';
+export { markMessageDelivered as teamMarkMessageDelivered } from './protocol-adapter.js';
+export { markMessageNotified as teamMarkMessageNotified } from './protocol-adapter.js';
 
 // === Events ===
-export { appendTeamEvent as teamAppendEvent } from './state.js';
+export { appendTeamEvent as teamAppendEvent } from './protocol-adapter.js';
 
 // === Approvals ===
-export { readTaskApproval as teamReadTaskApproval } from './state.js';
-export { writeTaskApproval as teamWriteTaskApproval } from './state.js';
+export { readTaskApproval as teamReadTaskApproval } from './protocol-adapter.js';
+export { writeTaskApproval as teamWriteTaskApproval } from './protocol-adapter.js';
 
 // === Summary ===
-export { getTeamSummary as teamGetSummary } from './state.js';
+export { getTeamSummary as teamGetSummary } from './protocol-adapter.js';
 
 // === Shutdown control ===
-export { writeShutdownRequest as teamWriteShutdownRequest } from './state.js';
-export { readShutdownAck as teamReadShutdownAck } from './state.js';
+export { writeShutdownRequest as teamWriteShutdownRequest } from './protocol-adapter.js';
+export { readShutdownAck as teamReadShutdownAck } from './protocol-adapter.js';
 
 // === Monitor snapshot ===
-export { readMonitorSnapshot as teamReadMonitorSnapshot } from './state.js';
-export { writeMonitorSnapshot as teamWriteMonitorSnapshot } from './state.js';
+export { readMonitorSnapshot as teamReadMonitorSnapshot } from './protocol-adapter.js';
+export { writeMonitorSnapshot as teamWriteMonitorSnapshot } from './protocol-adapter.js';
 
 // === Atomic write (shared utility) ===
-export { writeAtomic } from './state.js';
+export { writeAtomic } from './protocol-adapter.js';

@@ -192,6 +192,7 @@ export async function startTeam(
   workerCount: number,
   tasks: Array<{ subject: string; description: string; owner?: string; blocked_by?: string[] }>,
   cwd: string,
+  provider?: string,
 ): Promise<TeamRuntime> {
   if (process.env.OMX_TEAM_WORKER) {
     throw new Error('nested_team_disallowed');
@@ -254,7 +255,7 @@ export async function startTeam(
     setTeamModelInstructionsFile(sanitized, workerInstructionsPath);
 
     // 6. Create tmux session with workers
-    const createdSession = createTeamSession(sanitized, workerCount, cwd, workerLaunchArgs);
+    const createdSession = createTeamSession(sanitized, workerCount, cwd, workerLaunchArgs, provider);
     sessionName = createdSession.name;
     createdWorkerPaneIds.push(...createdSession.workerPaneIds);
     config.tmux_session = sessionName;
@@ -288,7 +289,7 @@ export async function startTeam(
 
       // Wait for worker readiness
       if (!skipWorkerReadyWait) {
-        const ready = waitForWorkerReady(sessionName, i, workerReadyTimeoutMs, paneId);
+        const ready = waitForWorkerReady(sessionName, i, workerReadyTimeoutMs, paneId, provider);
         if (!ready) {
           throw new Error(`Worker ${workerName} did not become ready in tmux session ${sessionName}`);
         }

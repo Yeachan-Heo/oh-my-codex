@@ -1,5 +1,6 @@
 import { spawnSync } from 'child_process';
 import { join } from 'path';
+import { getSpawner, type SpawnConfig } from './spawner.js';
 
 export interface TeamSession {
   name: string; // tmux target in "session:window" form
@@ -149,15 +150,21 @@ export function buildWorkerStartupCommand(
   workerIndex: number,
   launchArgs: string[] = [],
   cwd: string = process.cwd(),
+  provider?: string,
 ): string {
   const spec = buildWorkerLaunchSpec(process.env.SHELL);
   const fullLaunchArgs = resolveWorkerLaunchArgs(launchArgs, cwd);
-  const codexArgs = fullLaunchArgs.map(shellQuoteSingle).join(' ');
-  const codexInvocation = codexArgs.length > 0 ? `exec codex ${codexArgs}` : 'exec codex';
-  const rcPrefix = spec.rcFile ? `if [ -f ${spec.rcFile} ]; then source ${spec.rcFile}; fi; ` : '';
-  const inner = `${rcPrefix}${codexInvocation}`;
-
-  return `env OMX_TEAM_WORKER=${teamName}/worker-${workerIndex} ${shellQuoteSingle(spec.shell)} -lc ${shellQuoteSingle(inner)}`;
+  const spawner = getSpawner(provider);
+  const spawnConfig: SpawnConfig = {
+    teamName,
+    workerName: `worker-${workerIndex}`,
+    workerIndex,
+    shell: spec.shell,
+    rcFile: spec.rcFile,
+    launchArgs: fullLaunchArgs,
+    workingDirectory: cwd,
+  };
+  return spawner.buildCommand(spawnConfig);
 }
 
 // Sanitize team name: lowercase, alphanumeric + hyphens, max 30 chars
@@ -191,6 +198,7 @@ export function createTeamSession(
   workerCount: number,
   cwd: string,
   workerLaunchArgs: string[] = [],
+  provider?: string,
 ): TeamSession {
   if (!isTmuxAvailable()) {
     throw new Error('tmux is not available');
@@ -223,7 +231,7 @@ export function createTeamSession(
   const workerPaneIds: string[] = [];
   let rightStackRootPaneId: string | null = null;
   for (let i = 1; i <= workerCount; i++) {
-    const cmd = buildWorkerStartupCommand(safeTeamName, i, workerLaunchArgs, cwd);
+    const cmd = buildWorkerStartupCommand(safeTeamName, i, workerLaunchArgs, cwd, provider);
     // First split creates the right side from leader. Remaining splits stack on the right.
     const splitDirection = i === 1 ? '-h' : '-v';
     const splitTarget = i === 1 ? leaderPaneId : (rightStackRootPaneId ?? leaderPaneId);
@@ -287,26 +295,8 @@ function paneTarget(sessionName: string, workerIndex: number, workerPaneId?: str
   return `${sessionName}:${workerIndex}`;
 }
 
-function paneLooksReady(captured: string): boolean {
-  const content = captured.trimEnd();
-  if (content === '') return false;
-
-  const lines = content
-    .split('\n')
-    .map(l => l.replace(/\r/g, ''))
-    .map(l => l.trimEnd())
-    .filter(l => l.trim() !== '');
-
-  const lastLine = lines.length > 0 ? lines[lines.length - 1] : '';
-  if (/^\s*[›>]\s*/.test(lastLine)) return true;
-
-  // Codex TUI often renders a status bar/footer instead of a raw shell prompt.
-  // Treat common Codex UI markers as "ready enough" for inbox-trigger dispatch.
-  const hasCodexPromptLine = lines.some((line) => /^\s*›\s*/u.test(line));
-  const hasCodexStatus = lines.some((line) => /\bgpt-[\w.-]+\b/i.test(line) || /\b\d+% left\b/i.test(line));
-  if (hasCodexPromptLine || hasCodexStatus) return true;
-
-  return false;
+function paneLooksReady(captured: string, provider?: string): boolean {
+  return getSpawner(provider).isReady(captured);
 }
 
 function paneHasTrustPrompt(captured: string): boolean {
@@ -351,7 +341,7 @@ function sendKeyOrThrow(target: string, key: string, label: string): void {
   }
 }
 
-// Poll tmux capture-pane for Codex prompt indicator (> or similar)
+// Poll tmux capture-pane for CLI prompt indicator (> or similar)
 // Uses exponential backoff: 1s, 2s, 4s, 8s (total ~15s)
 // Returns true if ready, false on timeout
 export function waitForWorkerReady(
@@ -359,6 +349,7 @@ export function waitForWorkerReady(
   workerIndex: number,
   timeoutMs: number = 15000,
   workerPaneId?: string,
+  provider?: string,
 ): boolean {
   const initialBackoffMs = 300;
   const maxBackoffMs = 8000;
@@ -387,7 +378,7 @@ export function waitForWorkerReady(
       blockedByTrustPrompt = true;
       return false;
     }
-    return paneLooksReady(result.stdout);
+    return paneLooksReady(result.stdout, provider);
   };
 
   let delayMs = initialBackoffMs;
