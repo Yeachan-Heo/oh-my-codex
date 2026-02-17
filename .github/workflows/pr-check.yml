@@ -1,0 +1,61 @@
+name: PR Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  size-label:
+    name: PR Size Label
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { additions, deletions } = context.payload.pull_request;
+            const total = additions + deletions;
+
+            let label;
+            if (total < 50) label = 'size/S';
+            else if (total < 200) label = 'size/M';
+            else if (total < 500) label = 'size/L';
+            else label = 'size/XL';
+
+            const existing = context.payload.pull_request.labels
+              .map(l => l.name)
+              .filter(n => n.startsWith('size/'));
+
+            for (const old of existing) {
+              if (old !== label) {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  name: old,
+                });
+              }
+            }
+
+            if (!existing.includes(label)) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: [label],
+              });
+            }
+
+            core.notice(`PR size: ${total} changes (${additions}+, ${deletions}-) → ${label}`);
+
+  draft-check:
+    name: Draft Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.payload.pull_request.draft) {
+              core.notice('This PR is still in draft state.');
+            }
