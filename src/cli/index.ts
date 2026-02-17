@@ -25,6 +25,7 @@ import {
 } from '../hooks/session.js';
 import { getPackageRoot } from '../utils/package.js';
 import { codexConfigPath } from '../utils/paths.js';
+import { getModelForMode } from '../config/models.js';
 
 const HELP = `
 oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
@@ -659,10 +660,12 @@ function runCodex(cwd: string, args: string[], sessionId: string): void {
   const omxBin = process.argv[1];
   const hudCmd = buildTmuxShellCommand('node', [omxBin, 'hud', '--watch']);
   const inheritLeaderFlags = process.env[TEAM_INHERIT_LEADER_FLAGS_ENV] !== '0';
+  const configuredModel = getModelForMode('team');
   const workerLaunchArgs = resolveTeamWorkerLaunchArgsEnv(
     process.env[TEAM_WORKER_LAUNCH_ARGS_ENV],
     launchArgs,
-    inheritLeaderFlags
+    inheritLeaderFlags,
+    configuredModel,
   );
   const codexEnv = workerLaunchArgs
     ? { ...process.env, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }

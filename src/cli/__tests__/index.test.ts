@@ -166,8 +166,8 @@ describe('team worker launch arg inheritance helpers', () => {
 
   it('collectInheritableTeamWorkerArgs supports --model=<value> syntax', () => {
     assert.deepEqual(
-      collectInheritableTeamWorkerArgs(['--model=gpt-5.3-codex-spark']),
-      ['--model', 'gpt-5.3-codex-spark']
+      collectInheritableTeamWorkerArgs(['--model=gpt-5.3-codex']),
+      ['--model', 'gpt-5.3-codex']
     );
   });
 
@@ -197,10 +197,10 @@ describe('team worker launch arg inheritance helpers', () => {
     assert.equal(
       resolveTeamWorkerLaunchArgsEnv(
         '--no-alt-screen',
-        ['--model=gpt-5.3-codex-spark'],
+        ['--model=gpt-5.3-codex'],
         true
       ),
-      '--no-alt-screen --model gpt-5.3-codex-spark'
+      '--no-alt-screen --model gpt-5.3-codex'
     );
   });
 
@@ -210,9 +210,9 @@ describe('team worker launch arg inheritance helpers', () => {
         '--no-alt-screen',
         ['--dangerously-bypass-approvals-and-sandbox'],
         true,
-        'gpt-5.3-codex-spark'
+        'gpt-5.3-codex'
       ),
-      '--no-alt-screen --dangerously-bypass-approvals-and-sandbox --model gpt-5.3-codex-spark'
+      '--no-alt-screen --dangerously-bypass-approvals-and-sandbox --model gpt-5.3-codex'
     );
   });
 

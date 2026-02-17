@@ -1,7 +1,7 @@
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
-import { getAgent } from '../agents/definitions.js';
+import { getModelForMode } from '../config/models.js';
 import {
   sanitizeTeamName,
   isTmuxAvailable,
@@ -107,7 +107,7 @@ interface ShutdownOptions {
 
 const MODEL_FLAG = '--model';
 const MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
-export const TEAM_LOW_COMPLEXITY_DEFAULT_MODEL = 'gpt-5.3-codex-spark';
+export const TEAM_LOW_COMPLEXITY_DEFAULT_MODEL = 'gpt-5.3-codex';
 const previousModelInstructionsFileByTeam = new Map<string, string | undefined>();
 
 function resolveWorkerReadyTimeoutMs(env: NodeJS.ProcessEnv): number {
@@ -140,12 +140,6 @@ function hasExplicitModelArg(args: string[]): boolean {
   return false;
 }
 
-function isLowComplexityAgentType(agentType: string): boolean {
-  const agent = getAgent(agentType);
-  if (agent?.model === 'haiku') return true;
-  return /-low$/i.test(agentType);
-}
-
 function setTeamModelInstructionsFile(teamName: string, filePath: string): void {
   if (!previousModelInstructionsFileByTeam.has(teamName)) {
     previousModelInstructionsFileByTeam.set(teamName, process.env[MODEL_INSTRUCTIONS_FILE_ENV]);
@@ -166,7 +160,7 @@ function restoreTeamModelInstructionsFile(teamName: string): void {
   delete process.env[MODEL_INSTRUCTIONS_FILE_ENV];
 }
 
-export function resolveWorkerLaunchArgsFromEnv(env: NodeJS.ProcessEnv, agentType: string): string[] {
+export function resolveWorkerLaunchArgsFromEnv(env: NodeJS.ProcessEnv, agentType: string, configuredModel?: string): string[] {
   // Keep it intentionally simple: whitespace split, no quoting/escaping support.
   // Primary use is passing stable Codex flags like `--no-alt-screen`.
   const raw = env.OMX_TEAM_WORKER_LAUNCH_ARGS;
@@ -178,7 +172,13 @@ export function resolveWorkerLaunchArgsFromEnv(env: NodeJS.ProcessEnv, agentType
     .filter(Boolean);
 
   if (hasExplicitModelArg(args)) return args;
-  if (!isLowComplexityAgentType(agentType)) return args;
+
+  // Use configured model (from .omx-config.json "models" section) for all agent types
+  if (typeof configuredModel === 'string' && configuredModel.trim() !== '') {
+    return [...args, MODEL_FLAG, configuredModel.trim()];
+  }
+
+  // Hardcoded fallback: all agent types get the default model
   return [...args, MODEL_FLAG, TEAM_LOW_COMPLEXITY_DEFAULT_MODEL];
 }
 
@@ -221,7 +221,8 @@ export async function startTeam(
   let workerInstructionsPath: string | null = null;
   let sessionCreated = false;
   const createdWorkerPaneIds: string[] = [];
-  const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(process.env, agentType);
+  const configuredModel = getModelForMode('team');
+  const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(process.env, agentType, configuredModel);
   const workerReadyTimeoutMs = resolveWorkerReadyTimeoutMs(process.env);
   const skipWorkerReadyWait = shouldSkipWorkerReadyWait(process.env);
 
