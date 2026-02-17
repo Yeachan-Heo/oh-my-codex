@@ -149,10 +149,11 @@ export function buildSendKeysArgv({ paneTarget, prompt, dryRun }) {
   // 1) literal prompt bytes, 2) explicit carriage return.
   return {
     typeArgv: ['send-keys', '-t', paneTarget, '-l', prompt],
-    // Some panes/shells swallow one of these key names; send both.
+    // Codex CLI uses raw input mode where 'Enter' key name is unreliable;
+    // send 'C-m' (carriage return) twice for reliable prompt submission.
     submitArgv: [
       ['send-keys', '-t', paneTarget, 'C-m'],
-      ['send-keys', '-t', paneTarget, 'Enter'],
+      ['send-keys', '-t', paneTarget, 'C-m'],
     ],
   };
 }

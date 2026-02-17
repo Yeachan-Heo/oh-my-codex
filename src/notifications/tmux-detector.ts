@@ -78,11 +78,16 @@ function sanitizeForTmux(text: string): string {
 export function sendToPane(paneId: string, text: string, pressEnter: boolean = true): boolean {
   try {
     const sanitized = sanitizeForTmux(text);
-    const enterSuffix = pressEnter ? ' Enter' : '';
-    execSync(`tmux send-keys -t ${paneId} "${sanitized}"${enterSuffix}`, {
+    execSync(`tmux send-keys -t ${paneId} "${sanitized}"`, {
       timeout: 3000,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    if (pressEnter) {
+      // Codex CLI uses raw input mode where 'Enter' key name is unreliable;
+      // send 'C-m' (carriage return) twice for reliable prompt submission.
+      execSync(`tmux send-keys -t ${paneId} C-m`, { timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] });
+      execSync(`tmux send-keys -t ${paneId} C-m`, { timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] });
+    }
     return true;
   } catch {
     return false;

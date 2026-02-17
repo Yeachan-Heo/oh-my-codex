@@ -228,7 +228,7 @@ describe('buildSendKeysArgv', () => {
       typeArgv: ['send-keys', '-t', '%3', '-l', 'continue'],
       submitArgv: [
         ['send-keys', '-t', '%3', 'C-m'],
-        ['send-keys', '-t', '%3', 'Enter'],
+        ['send-keys', '-t', '%3', 'C-m'],
       ],
     });
 

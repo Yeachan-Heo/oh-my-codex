@@ -368,9 +368,10 @@ export function waitForWorkerReady(
   const sendRobustEnter = (): void => {
     const target = paneTarget(sessionName, workerIndex, workerPaneId);
     // Trust + follow-up splash can require two submits in Codex TUI.
-    runTmux(['send-keys', '-t', target, 'Enter']);
+    // Use C-m (carriage return) instead of Enter for raw-mode compatibility.
+    runTmux(['send-keys', '-t', target, 'C-m']);
     sleepFractionalSeconds(0.12);
-    runTmux(['send-keys', '-t', target, 'Enter']);
+    runTmux(['send-keys', '-t', target, 'C-m']);
   };
 
   const check = (): boolean => {
@@ -434,9 +435,9 @@ export function sendToWorker(sessionName: string, workerIndex: number, text: str
   const captured = runTmux(['capture-pane', '-t', target, '-p', '-S', '-80']);
   const paneBusy = captured.ok ? paneHasActiveTask(captured.stdout) : false;
   if (captured.ok && paneHasTrustPrompt(captured.stdout)) {
-    sendKeyOrThrow(target, 'Enter', 'Enter');
+    sendKeyOrThrow(target, 'C-m', 'C-m');
     sleepFractionalSeconds(0.12);
-    sendKeyOrThrow(target, 'Enter', 'Enter');
+    sendKeyOrThrow(target, 'C-m', 'C-m');
     sleepFractionalSeconds(0.2);
   }
 
@@ -479,10 +480,10 @@ export function sendToWorker(sessionName: string, workerIndex: number, text: str
     throw new Error('sendToWorker: submit_failed (trigger text still visible after retries)');
   }
 
-  // One last best-effort double-enter nudge, then continue.
-  runTmux(['send-keys', '-t', target, 'Enter']);
+  // One last best-effort double C-m nudge, then continue.
+  runTmux(['send-keys', '-t', target, 'C-m']);
   sleepFractionalSeconds(0.12);
-  runTmux(['send-keys', '-t', target, 'Enter']);
+  runTmux(['send-keys', '-t', target, 'C-m']);
 }
 
 export function notifyLeaderStatus(sessionName: string, message: string): boolean {
