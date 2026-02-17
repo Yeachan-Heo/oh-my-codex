@@ -245,6 +245,7 @@ const DEFAULT_STALL_PATTERNS = [
   'if you want',
   'would you like',
   'shall i',
+  'next i can',
   'do you want me to',
   'let me know if',
   'i can also',

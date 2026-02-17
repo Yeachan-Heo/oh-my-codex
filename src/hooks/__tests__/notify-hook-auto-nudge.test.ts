@@ -336,6 +336,7 @@ describe('notify-hook auto-nudge', () => {
       'If You Want me to make changes',
       'Would You Like me to continue?',
       'Shall I proceed with the implementation?',
+      'Next I Can refactor the module for clarity.',
       'Do You Want Me To apply this fix?',
       'Let Me Know If you need anything else.',
       'I Can Also refactor the tests.',
