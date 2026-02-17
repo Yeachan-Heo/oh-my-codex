@@ -622,9 +622,18 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   // 2. Wait up to 15s for workers to exit and collect acks
   const deadline = Date.now() + 15_000;
   const rejected: Array<{ worker: string; reason: string }> = [];
+  const ackedWorkers = new Set<string>();
   while (Date.now() < deadline) {
     for (const w of config.workers) {
       const ack = await readShutdownAck(sanitized, w.name, cwd, shutdownRequestTimes.get(w.name));
+      if (ack && !ackedWorkers.has(w.name)) {
+        ackedWorkers.add(w.name);
+        await appendTeamEvent(sanitized, {
+          type: 'shutdown_ack',
+          worker: w.name,
+          reason: ack.status === 'reject' ? `reject:${ack.reason || 'no_reason'}` : 'accept',
+        }, cwd);
+      }
       if (ack?.status === 'reject') {
         if (!rejected.some((r) => r.worker === w.name)) {
           rejected.push({ worker: w.name, reason: ack.reason || 'no_reason' });

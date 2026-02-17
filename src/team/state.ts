@@ -111,7 +111,8 @@ export interface TeamEvent {
     | 'worker_stopped'
     | 'message_received'
     | 'shutdown_ack'
-    | 'approval_decision';
+    | 'approval_decision'
+    | 'team_leader_nudge';
   worker: string;
   task_id?: string;
   message_id?: string | null;
