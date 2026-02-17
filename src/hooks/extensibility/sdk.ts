@@ -17,6 +17,8 @@ interface HookPluginSdkOptions {
   sideEffectsEnabled?: boolean;
 }
 
+const INJECTION_MARKER = '[OMX_TMUX_INJECT]';
+
 interface PluginTmuxState {
   last_sent_at: number;
   recent_keys: Record<string, number>;
@@ -176,7 +178,8 @@ async function sendTmuxKeys(
     return { ok: false, reason: 'duplicate_event', target: targetResolution.target, paneId: targetResolution.target };
   }
 
-  const typed = runTmux(['send-keys', '-t', targetResolution.target, '-l', text]);
+  const markedText = `${text} ${INJECTION_MARKER}`;
+  const typed = runTmux(['send-keys', '-t', targetResolution.target, '-l', markedText]);
   if (!typed.ok) {
     return {
       ok: false,
