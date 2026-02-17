@@ -446,6 +446,9 @@ export function sendToWorker(sessionName: string, workerIndex: number, text: str
     throw new Error(`sendToWorker: failed to send text: ${send.stderr}`);
   }
 
+  // Allow the input buffer to settle before sending Enter
+  sleepFractionalSeconds(0.15);
+
   const shouldInterrupt = strategy === 'interrupt';
   const shouldQueueFirst = strategy === 'queue' || (strategy === 'auto' && paneBusy);
   if (shouldInterrupt) {
@@ -459,13 +462,14 @@ export function sendToWorker(sessionName: string, workerIndex: number, text: str
   // If that fails, fall back to legacy C-m-based submit rounds.
   const submitRounds = 6;
   for (let round = 0; round < submitRounds; round++) {
+    sleepFractionalSeconds(0.1);
     if (round === 0 && shouldQueueFirst) {
       sendKeyOrThrow(target, 'Tab', 'Tab');
       sleepFractionalSeconds(0.08);
       sendKeyOrThrow(target, 'C-m', 'C-m');
     } else {
       sendKeyOrThrow(target, 'C-m', 'C-m');
-      sleepFractionalSeconds(0.12);
+      sleepFractionalSeconds(0.2);
       sendKeyOrThrow(target, 'C-m', 'C-m');
     }
     sleepFractionalSeconds(0.14);
