@@ -339,9 +339,14 @@ describe('notify-hook auto-nudge', () => {
       'Next I Can refactor the module for clarity.',
       'Do You Want Me To apply this fix?',
       'Let Me Know If you need anything else.',
+      'Want Me To make those changes?',
+      'Let Me Know what you think.',
+      'Just Let Me Know when ready.',
       'I Can Also refactor the tests.',
+      'I Could Also add more tests if needed.',
       'READY TO PROCEED with the next step.',
       'Should I go ahead and deploy?',
+      'Whenever You are ready, I can start.',
     ];
 
     for (const message of patterns) {

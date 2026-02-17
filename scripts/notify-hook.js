@@ -248,9 +248,15 @@ const DEFAULT_STALL_PATTERNS = [
   'next i can',
   'do you want me to',
   'let me know if',
+  'do you want',
+  'want me to',
+  'let me know',
+  'just let me know',
   'i can also',
+  'i could also',
   'ready to proceed',
   'should i',
+  'whenever you',
 ];
 
 function normalizeAutoNudgeConfig(raw) {
@@ -290,9 +296,16 @@ async function loadAutoNudgeConfig() {
 
 function detectStallPattern(text, patterns) {
   if (!text || typeof text !== 'string') return false;
-  // Check the last ~500 characters (roughly last 10 lines) for stall phrases
-  const tail = text.slice(-500).toLowerCase();
-  return patterns.some(p => tail.includes(p.toLowerCase()));
+  // Broader tail window (~800 chars / ~15-20 lines) for context
+  const tail = text.slice(-800).toLowerCase();
+  const lowerPatterns = patterns.map(p => p.toLowerCase());
+  // Focus on last few lines where stall prompts typically appear
+  const lines = tail.split('\n').filter(l => l.trim());
+  const hotZone = lines.slice(-3).join('\n');
+  // Primary: check last few lines (highest signal)
+  if (lowerPatterns.some(p => hotZone.includes(p))) return true;
+  // Secondary: check broader tail window
+  return lowerPatterns.some(p => tail.includes(p));
 }
 
 async function capturePane(paneId, lines = 10) {
