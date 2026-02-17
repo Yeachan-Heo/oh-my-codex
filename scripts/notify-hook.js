@@ -262,6 +262,12 @@ const DEFAULT_STALL_PATTERNS = [
   'type continue',
   'and i\'ll continue',
   'and i\'ll proceed',
+  'keep driving',
+  'keep pushing',
+  'move forward',
+  'drive forward',
+  'proceed from here',
+  'i\'ll continue from',
 ];
 
 function normalizeAutoNudgeConfig(raw) {

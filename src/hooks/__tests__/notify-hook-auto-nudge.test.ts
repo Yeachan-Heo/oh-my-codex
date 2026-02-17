@@ -352,6 +352,12 @@ describe('notify-hook auto-nudge', () => {
       'Type Continue to proceed with the next step.',
       "And I'll Continue once you confirm.",
       "And I'll Proceed with the deployment.",
+      "I'll Keep Driving the implementation forward.",
+      "I'll Keep Pushing on the test coverage.",
+      "I'll Move Forward with the remaining items.",
+      "I'll Drive Forward from here.",
+      "I'll Proceed From Here with the next task.",
+      "I'll Continue From this point onward.",
     ];
 
     for (const message of patterns) {
