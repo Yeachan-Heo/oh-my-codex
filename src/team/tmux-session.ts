@@ -454,19 +454,19 @@ export function sendToWorker(sessionName: string, workerIndex: number, text: str
     sleepFractionalSeconds(0.1);
   }
 
-  // Submit deterministically: Enter twice with short sleep between presses.
-  // When worker is busy, first attempt uses Tab+Enter to leverage Codex queue semantics.
-  // If that fails, fall back to legacy Enter-based submit rounds.
+  // Submit deterministically: C-m twice with short sleep between presses.
+  // When worker is busy, first attempt uses Tab+C-m to leverage Codex queue semantics.
+  // If that fails, fall back to legacy C-m-based submit rounds.
   const submitRounds = 6;
   for (let round = 0; round < submitRounds; round++) {
     if (round === 0 && shouldQueueFirst) {
       sendKeyOrThrow(target, 'Tab', 'Tab');
       sleepFractionalSeconds(0.08);
-      sendKeyOrThrow(target, 'Enter', 'Enter');
+      sendKeyOrThrow(target, 'C-m', 'C-m');
     } else {
-      sendKeyOrThrow(target, 'Enter', 'Enter');
+      sendKeyOrThrow(target, 'C-m', 'C-m');
       sleepFractionalSeconds(0.12);
-      sendKeyOrThrow(target, 'Enter', 'Enter');
+      sendKeyOrThrow(target, 'C-m', 'C-m');
     }
     sleepFractionalSeconds(0.14);
     if (!paneTailContainsLiteralLine(target, text)) return;
