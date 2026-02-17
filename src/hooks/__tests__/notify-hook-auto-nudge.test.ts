@@ -347,6 +347,11 @@ describe('notify-hook auto-nudge', () => {
       'READY TO PROCEED with the next step.',
       'Should I go ahead and deploy?',
       'Whenever You are ready, I can start.',
+      'Say Go when you are ready.',
+      'Say Yes to confirm the changes.',
+      'Type Continue to proceed with the next step.',
+      "And I'll Continue once you confirm.",
+      "And I'll Proceed with the deployment.",
     ];
 
     for (const message of patterns) {

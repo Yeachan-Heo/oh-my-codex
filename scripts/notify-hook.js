@@ -257,6 +257,11 @@ const DEFAULT_STALL_PATTERNS = [
   'ready to proceed',
   'should i',
   'whenever you',
+  'say go',
+  'say yes',
+  'type continue',
+  'and i\'ll continue',
+  'and i\'ll proceed',
 ];
 
 function normalizeAutoNudgeConfig(raw) {
