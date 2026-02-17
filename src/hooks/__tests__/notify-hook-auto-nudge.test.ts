@@ -116,7 +116,9 @@ describe('notify-hook auto-nudge', () => {
       assert.ok(existsSync(tmuxLogPath), 'tmux should have been called');
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /send-keys -t %99 -l yes, proceed/, 'should send nudge response');
-      assert.match(tmuxLog, /send-keys -t %99 C-m/, 'should submit with C-m');
+      // Codex CLI needs C-m sent twice with a delay for reliable submission
+      const cmMatches = tmuxLog.match(/send-keys -t %99 C-m/g);
+      assert.ok(cmMatches && cmMatches.length >= 2, `should send C-m twice, got ${cmMatches?.length ?? 0}`);
     });
   });
 

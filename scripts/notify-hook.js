@@ -371,8 +371,12 @@ async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
 
   const nowIso = new Date().toISOString();
   try {
-    // Send the response text as literal bytes, then submit with C-m
+    // Send the response text as literal bytes, then submit with double C-m
+    // Codex CLI needs C-m sent twice with a short delay for reliable prompt submission
     await runProcess('tmux', ['send-keys', '-t', paneId, '-l', config.response], 3000);
+    await new Promise(r => setTimeout(r, 100));
+    await runProcess('tmux', ['send-keys', '-t', paneId, 'C-m'], 3000);
+    await new Promise(r => setTimeout(r, 100));
     await runProcess('tmux', ['send-keys', '-t', paneId, 'C-m'], 3000);
 
     nudgeState.nudgeCount = nudgeCount + 1;
