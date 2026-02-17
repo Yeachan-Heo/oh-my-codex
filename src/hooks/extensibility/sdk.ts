@@ -85,6 +85,11 @@ function hashDedupeKey(target: string, text: string): string {
   return createHash('sha256').update(`${target}|${text}`).digest('hex');
 }
 
+function sleepFractionalSeconds(seconds: number): void {
+  if (!Number.isFinite(seconds) || seconds <= 0) return;
+  spawnSync('sleep', [String(seconds)], { encoding: 'utf-8' });
+}
+
 function runTmux(args: string[]): { ok: true; stdout: string } | { ok: false; stderr: string } {
   const result = spawnSync('tmux', args, { encoding: 'utf-8' });
   if (result.error) return { ok: false, stderr: result.error.message };
@@ -184,7 +189,8 @@ async function sendTmuxKeys(
 
   if (options.submit !== false) {
     const submitA = runTmux(['send-keys', '-t', targetResolution.target, 'C-m']);
-    const submitB = runTmux(['send-keys', '-t', targetResolution.target, 'Enter']);
+    sleepFractionalSeconds(0.1);
+    const submitB = runTmux(['send-keys', '-t', targetResolution.target, 'C-m']);
     if (!submitA.ok && !submitB.ok) {
       return {
         ok: false,

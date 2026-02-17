@@ -759,7 +759,11 @@ async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputedLeaderS
     const capped = text.length > 180 ? `${text.slice(0, 177)}...` : text;
 
     try {
-      await runProcess('tmux', ['send-keys', '-t', tmuxTarget, capped, 'C-m', 'C-m'], 1200);
+      await runProcess('tmux', ['send-keys', '-t', tmuxTarget, '-l', capped], 3000);
+      await new Promise(r => setTimeout(r, 100));
+      await runProcess('tmux', ['send-keys', '-t', tmuxTarget, 'C-m'], 3000);
+      await new Promise(r => setTimeout(r, 100));
+      await runProcess('tmux', ['send-keys', '-t', tmuxTarget, 'C-m'], 3000);
       nudgeState.last_nudged_by_team[teamName] = { at: nowIso, last_message_id: newestId || prevMsgId || '' };
 
       // Emit team event for the nudge
