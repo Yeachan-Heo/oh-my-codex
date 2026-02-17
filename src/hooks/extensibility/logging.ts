@@ -2,17 +2,44 @@ import { appendFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import type { HookPluginLogContext } from './types.js';
 
-export function hookLogPath(cwd: string, timestamp = new Date()): string {
-  const date = timestamp.toISOString().slice(0, 10);
-  return join(cwd, '.omx', 'logs', `hooks-${date}.jsonl`);
+function resolveLogDir(cwd: string): string {
+  return join(cwd, '.omx', 'logs');
 }
 
-export async function appendHookPluginLog(cwd: string, entry: HookPluginLogContext): Promise<void> {
-  const path = hookLogPath(cwd, entry.timestamp ? new Date(entry.timestamp) : new Date());
-  await mkdir(join(cwd, '.omx', 'logs'), { recursive: true });
-  const payload = {
-    timestamp: entry.timestamp || new Date().toISOString(),
-    ...entry,
-  };
-  await appendFile(path, JSON.stringify(payload) + '\n').catch(() => {});
+export function hookLogPath(cwd: string, timestamp: Date = new Date()): string {
+  const safeTimestamp = isNaN(timestamp.getTime()) ? new Date() : timestamp;
+  const date = safeTimestamp.toISOString().slice(0, 10);
+  return join(resolveLogDir(cwd), `hooks-${date}.jsonl`);
+}
+
+export async function appendHookPluginLog(
+  cwd: string,
+  entry: HookPluginLogContext
+): Promise<void> {
+  const timestamp = entry.timestamp
+    ? new Date(entry.timestamp)
+    : new Date();
+
+  const logDir = resolveLogDir(cwd);
+  const filePath = hookLogPath(cwd, timestamp);
+
+  try {
+    await mkdir(logDir, { recursive: true });
+
+    const payload = {
+      ...entry,
+      timestamp: entry.timestamp || timestamp.toISOString(),
+    };
+
+    const line = JSON.stringify(payload) + '\n';
+
+    await appendFile(filePath, line, { encoding: 'utf8' });
+  } catch (error) {
+    
+    process.stderr.write(
+      `[omx:hook-log-error] Failed to write hook log: ${
+        error instanceof Error ? error.message : String(error)
+      }\n`
+    );
+  }
 }
