@@ -87,7 +87,7 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 }
 
 interface TeamDoctorIssue {
-  code: 'delayed_status_lag' | 'slow_shutdown' | 'orphan_tmux_session' | 'resume_blocker';
+  code: 'delayed_status_lag' | 'slow_shutdown' | 'orphan_tmux_session' | 'resume_blocker' | 'stale_leader';
   message: string;
 }
 
@@ -118,6 +118,7 @@ async function collectTeamDoctorIssues(cwd: string): Promise<TeamDoctorIssue[]> 
   const nowMs = Date.now();
   const lagThresholdMs = 60_000;
   const shutdownThresholdMs = 30_000;
+  const leaderStaleThresholdMs = 180_000;
 
   const teamDirs: string[] = [];
   if (existsSync(teamsRoot)) {
@@ -216,6 +217,33 @@ async function collectTeamDoctorIssues(cwd: string): Promise<TeamDoctorIssue[]> 
           // ignore malformed files
         }
       }
+    }
+  }
+
+  // stale_leader: team has active workers but leader has no recent activity
+  const hudStatePath = join(stateDir, 'hud-state.json');
+  if (existsSync(hudStatePath) && teamDirs.length > 0) {
+    try {
+      const hudRaw = await readFile(hudStatePath, 'utf-8');
+      const hudState = JSON.parse(hudRaw) as { last_turn_at?: string };
+      const lastTurnMs = hudState.last_turn_at ? Date.parse(hudState.last_turn_at) : NaN;
+      const leaderIsStale = !Number.isFinite(lastTurnMs) || (nowMs - lastTurnMs > leaderStaleThresholdMs);
+
+      if (leaderIsStale && !tmuxUnavailable) {
+        // Check if any team tmux session has live worker panes
+        for (const teamName of teamDirs) {
+          const session = knownTeamSessions.has(`omx-team-${teamName}`)
+            ? `omx-team-${teamName}`
+            : [...knownTeamSessions].find(s => s.includes(teamName));
+          if (!session || !tmuxSessions.has(session)) continue;
+          issues.push({
+            code: 'stale_leader',
+            message: `${teamName} has active tmux session but leader has no recent activity`,
+          });
+        }
+      }
+    } catch {
+      // ignore malformed HUD state
     }
   }
 

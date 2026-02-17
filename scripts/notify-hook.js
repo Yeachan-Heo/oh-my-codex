@@ -437,7 +437,63 @@ function resolveLeaderNudgeIntervalMs() {
   return 120_000;
 }
 
-async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir }) {
+function resolveLeaderStalenessThresholdMs() {
+  const raw = safeString(process.env.OMX_TEAM_LEADER_STALE_MS || '');
+  const parsed = asNumber(raw);
+  // Default: 3 minutes. Guard against unreasonable values.
+  if (parsed !== null && parsed >= 10_000 && parsed <= 30 * 60_000) return parsed;
+  return 180_000;
+}
+
+async function checkWorkerPanesAlive(tmuxTarget) {
+  // Check if the team tmux session has worker panes running.
+  // tmuxTarget is either "omx-team-foo" or "session:window".
+  const sessionName = tmuxTarget.split(':')[0];
+  try {
+    const result = await runProcess('tmux', ['list-panes', '-t', sessionName, '-F', '#{pane_id} #{pane_pid}'], 2000);
+    const lines = (result.stdout || '')
+      .split('\n')
+      .map(l => l.trim())
+      .filter(Boolean);
+    return { alive: lines.length > 0, paneCount: lines.length };
+  } catch {
+    return { alive: false, paneCount: 0 };
+  }
+}
+
+async function isLeaderStale(stateDir, thresholdMs, nowMs) {
+  // Check HUD state (updated by the notify hook on each leader turn) for staleness.
+  const hudStatePath = join(stateDir, 'hud-state.json');
+  const hudState = await readJsonIfExists(hudStatePath, null);
+  if (!hudState || typeof hudState !== 'object') return true;
+  const lastTurnAt = safeString(hudState.last_turn_at || '');
+  if (!lastTurnAt) return true;
+  const lastMs = Date.parse(lastTurnAt);
+  if (!Number.isFinite(lastMs)) return true;
+  return (nowMs - lastMs) >= thresholdMs;
+}
+
+async function emitTeamNudgeEvent(cwd, teamName, reason, nowIso) {
+  // Write a team_leader_nudge event to the team's events.ndjson log.
+  const eventsDir = join(cwd, '.omx', 'state', 'team', teamName, 'events');
+  const eventsPath = join(eventsDir, 'events.ndjson');
+  try {
+    await mkdir(eventsDir, { recursive: true });
+    const event = {
+      event_id: `nudge-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      team: teamName,
+      type: 'team_leader_nudge',
+      worker: 'leader-fixed',
+      reason,
+      created_at: nowIso,
+    };
+    await appendFile(eventsPath, JSON.stringify(event) + '\n');
+  } catch {
+    // Best effort
+  }
+}
+
+async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputedLeaderStale }) {
   const intervalMs = resolveLeaderNudgeIntervalMs();
   const nowMs = Date.now();
   const nowIso = new Date().toISOString();
@@ -467,6 +523,9 @@ async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir }) {
     // Non-critical
   }
 
+  // Use pre-computed staleness (captured before HUD state was updated this turn)
+  const leaderStale = typeof preComputedLeaderStale === 'boolean' ? preComputedLeaderStale : false;
+
   for (const teamName of activeTeamNames) {
     // Resolve tmux target (session:window) from manifest/config. Best effort.
     let tmuxTarget = '';
@@ -482,6 +541,9 @@ async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir }) {
       // ignore
     }
     if (!tmuxTarget) continue;
+
+    // Check if worker panes are still alive in tmux
+    const paneStatus = await checkWorkerPanesAlive(tmuxTarget);
 
     let mailbox = null;
     try {
@@ -503,17 +565,51 @@ async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir }) {
 
     const hasNewMessage = newestId && newestId !== prevMsgId;
     const dueByTime = !Number.isFinite(prevAtMs) || (nowMs - prevAtMs >= intervalMs);
-    if (!hasNewMessage && !dueByTime) continue;
 
+    // New condition: worker panes alive + leader stale = always nudge
+    const stalePanesNudge = paneStatus.alive && leaderStale;
+
+    if (!hasNewMessage && !dueByTime && !stalePanesNudge) continue;
+
+    // Build contextual nudge message
     const msgCount = messages.length;
-    const text = hasNewMessage
-      ? `Team ${teamName}: ${msgCount} msg(s) for leader. Run: omx team status ${teamName}`
-      : `Team ${teamName} active. Run: omx team status ${teamName}`;
+    let nudgeReason = '';
+    let text = '';
+    if (stalePanesNudge && hasNewMessage) {
+      nudgeReason = 'stale_leader_with_messages';
+      text = `Team ${teamName}: leader stale, ${paneStatus.paneCount} pane(s) active, ${msgCount} msg(s) pending. Run: omx team status ${teamName}`;
+    } else if (stalePanesNudge) {
+      nudgeReason = 'stale_leader_panes_alive';
+      text = `Team ${teamName}: leader stale, ${paneStatus.paneCount} worker pane(s) still active. Run: omx team status ${teamName}`;
+    } else if (hasNewMessage) {
+      nudgeReason = 'new_mailbox_message';
+      text = `Team ${teamName}: ${msgCount} msg(s) for leader. Run: omx team status ${teamName}`;
+    } else {
+      nudgeReason = 'periodic_check';
+      text = `Team ${teamName} active. Run: omx team status ${teamName}`;
+    }
     const capped = text.length > 180 ? `${text.slice(0, 177)}...` : text;
 
     try {
       await runProcess('tmux', ['display-message', '-t', tmuxTarget, '--', capped], 1200);
       nudgeState.last_nudged_by_team[teamName] = { at: nowIso, last_message_id: newestId || prevMsgId || '' };
+
+      // Emit team event for the nudge
+      await emitTeamNudgeEvent(cwd, teamName, nudgeReason, nowIso);
+
+      // Log the nudge
+      try {
+        await logTmuxHookEvent(logsDir, {
+          timestamp: nowIso,
+          type: 'team_leader_nudge',
+          team: teamName,
+          tmux_target: tmuxTarget,
+          reason: nudgeReason,
+          pane_count: paneStatus.paneCount,
+          leader_stale: leaderStale,
+          message_count: msgCount,
+        });
+      } catch { /* ignore */ }
     } catch (err) {
       // Best effort. Log only in debug mode to avoid noise.
       try {
@@ -522,6 +618,7 @@ async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir }) {
           type: 'team_leader_nudge',
           team: teamName,
           tmux_target: tmuxTarget,
+          reason: nudgeReason,
           error: safeString(err && err.message ? err.message : err),
         });
       } catch { /* ignore */ }
@@ -968,6 +1065,17 @@ async function main() {
     }
   }
 
+  // 3.5. Pre-compute leader staleness BEFORE updating HUD state (used by nudge in step 6)
+  let preComputedLeaderStale = false;
+  if (!isTeamWorker) {
+    try {
+      const stalenessMs = resolveLeaderStalenessThresholdMs();
+      preComputedLeaderStale = await isLeaderStale(stateDir, stalenessMs, Date.now());
+    } catch {
+      // Non-critical
+    }
+  }
+
   // 4. Write HUD state summary for `omx hud` (lead session only)
   if (!isTeamWorker) {
     const hudStatePath = join(stateDir, 'hud-state.json');
@@ -1026,7 +1134,7 @@ async function main() {
   // 6. Team leader nudge (lead session only): remind the leader to check teammate/mailbox state.
   if (!isTeamWorker) {
     try {
-      await maybeNudgeTeamLeader({ cwd, stateDir, logsDir });
+      await maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputedLeaderStale });
     } catch {
       // Non-critical
     }
