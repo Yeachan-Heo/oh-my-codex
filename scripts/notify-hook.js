@@ -23,6 +23,7 @@ import {
   pickActiveMode,
   evaluateInjectionGuards,
   buildSendKeysArgv,
+  DEFAULT_MARKER,
 } from './tmux-hook-engine.js';
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -373,7 +374,8 @@ async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
   try {
     // Send the response text as literal bytes, then submit with double C-m
     // Codex CLI needs C-m sent twice with a short delay for reliable prompt submission
-    await runProcess('tmux', ['send-keys', '-t', paneId, '-l', config.response], 3000);
+    const markedResponse = `${config.response} ${DEFAULT_MARKER}`;
+    await runProcess('tmux', ['send-keys', '-t', paneId, '-l', markedResponse], 3000);
     await new Promise(r => setTimeout(r, 100));
     await runProcess('tmux', ['send-keys', '-t', paneId, 'C-m'], 3000);
     await new Promise(r => setTimeout(r, 100));
@@ -757,9 +759,10 @@ async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputedLeaderS
       text = `Team ${teamName} active. Run: omx team status ${teamName}`;
     }
     const capped = text.length > 180 ? `${text.slice(0, 177)}...` : text;
+    const markedText = `${capped} ${DEFAULT_MARKER}`;
 
     try {
-      await runProcess('tmux', ['send-keys', '-t', tmuxTarget, '-l', capped], 3000);
+      await runProcess('tmux', ['send-keys', '-t', tmuxTarget, '-l', markedText], 3000);
       await new Promise(r => setTimeout(r, 100));
       await runProcess('tmux', ['send-keys', '-t', tmuxTarget, 'C-m'], 3000);
       await new Promise(r => setTimeout(r, 100));

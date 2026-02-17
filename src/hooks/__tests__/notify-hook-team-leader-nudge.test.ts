@@ -120,6 +120,7 @@ describe('notify-hook team leader nudge', () => {
       assert.match(tmuxLog, /send-keys/);
       assert.match(tmuxLog, /-t devsess:0/);
       assert.match(tmuxLog, /Team alpha:/);
+      assert.match(tmuxLog, /\[OMX_TMUX_INJECT\]/, 'should include injection marker');
     });
   });
 
@@ -166,6 +167,7 @@ describe('notify-hook team leader nudge', () => {
       assert.match(tmuxLog, /Team beta:/);
       assert.match(tmuxLog, /leader stale/);
       assert.match(tmuxLog, /pane\(s\) still active/);
+      assert.match(tmuxLog, /\[OMX_TMUX_INJECT\]/, 'should include injection marker');
     });
   });
 
@@ -314,6 +316,7 @@ describe('notify-hook team leader nudge', () => {
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /leader stale/);
       assert.match(tmuxLog, /msg\(s\) pending/);
+      assert.match(tmuxLog, /\[OMX_TMUX_INJECT\]/, 'should include injection marker');
 
       // Verify event reason
       const eventsPath = join(eventsDir, 'events.ndjson');
