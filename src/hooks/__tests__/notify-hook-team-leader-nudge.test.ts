@@ -69,7 +69,7 @@ function runNotifyHook(
 }
 
 describe('notify-hook team leader nudge', () => {
-  it('nudges leader via tmux display-message when team is active and mailbox has messages', async () => {
+  it('nudges leader via tmux send-keys when team is active and mailbox has messages', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
       const stateDir = join(omxDir, 'state');
@@ -114,7 +114,7 @@ describe('notify-hook team leader nudge', () => {
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /display-message/);
+      assert.match(tmuxLog, /send-keys/);
       assert.match(tmuxLog, /-t devsess:0/);
       assert.match(tmuxLog, /Team alpha:/);
     });
@@ -159,7 +159,7 @@ describe('notify-hook team leader nudge', () => {
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /display-message/);
+      assert.match(tmuxLog, /send-keys/);
       assert.match(tmuxLog, /Team beta:/);
       assert.match(tmuxLog, /leader stale/);
       assert.match(tmuxLog, /pane\(s\) still active/);
