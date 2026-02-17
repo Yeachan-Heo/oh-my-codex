@@ -10,12 +10,14 @@
  * 2. Updates state for active workflow modes
  * 3. Tracks subagent activity
  * 4. Triggers desktop notifications if configured
+ * 5. Auto-nudges Codex when it stalls with permission-asking patterns
  */
 
 import { writeFile, appendFile, mkdir, readFile, rename } from 'fs/promises';
 import { join, resolve as resolvePath } from 'path';
 import { existsSync } from 'fs';
 import { spawn } from 'child_process';
+import { homedir } from 'os';
 import {
   normalizeTmuxHookConfig,
   pickActiveMode,
@@ -231,6 +233,168 @@ function readJsonIfExists(path, fallback) {
   return readFile(path, 'utf-8')
     .then(content => JSON.parse(content))
     .catch(() => fallback);
+}
+
+// ---------------------------------------------------------------------------
+// Auto-nudge: detect Codex "asking for permission" stall patterns and
+// automatically send a continuation prompt so the agent keeps working.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_STALL_PATTERNS = [
+  'if you want',
+  'would you like',
+  'shall i',
+  'do you want me to',
+  'let me know if',
+  'i can also',
+  'ready to proceed',
+  'should i',
+];
+
+function normalizeAutoNudgeConfig(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      enabled: true,
+      patterns: DEFAULT_STALL_PATTERNS,
+      response: 'yes, proceed',
+      delaySec: 3,
+      maxNudgesPerSession: Infinity,
+    };
+  }
+  return {
+    enabled: raw.enabled !== false,
+    patterns: Array.isArray(raw.patterns) && raw.patterns.length > 0
+      ? raw.patterns.filter(p => typeof p === 'string' && p.trim() !== '')
+      : DEFAULT_STALL_PATTERNS,
+    response: typeof raw.response === 'string' && raw.response.trim() !== ''
+      ? raw.response
+      : 'yes, proceed',
+    delaySec: typeof raw.delaySec === 'number' && raw.delaySec >= 0 && raw.delaySec <= 60
+      ? raw.delaySec
+      : 3,
+    maxNudgesPerSession: typeof raw.maxNudgesPerSession === 'number' && raw.maxNudgesPerSession > 0
+      ? raw.maxNudgesPerSession
+      : Infinity,
+  };
+}
+
+async function loadAutoNudgeConfig() {
+  const codexHomePath = process.env.CODEX_HOME || join(homedir(), '.codex');
+  const configPath = join(codexHomePath, '.omx-config.json');
+  const raw = await readJsonIfExists(configPath, null);
+  if (!raw || typeof raw !== 'object') return normalizeAutoNudgeConfig(null);
+  return normalizeAutoNudgeConfig(raw.autoNudge);
+}
+
+function detectStallPattern(text, patterns) {
+  if (!text || typeof text !== 'string') return false;
+  // Check the last ~500 characters (roughly last 10 lines) for stall phrases
+  const tail = text.slice(-500).toLowerCase();
+  return patterns.some(p => tail.includes(p.toLowerCase()));
+}
+
+async function capturePane(paneId, lines = 10) {
+  try {
+    const result = await runProcess('tmux', [
+      'capture-pane', '-t', paneId, '-p', '-l', String(lines),
+    ], 3000);
+    return result.stdout || '';
+  } catch {
+    return '';
+  }
+}
+
+async function resolveNudgePaneTarget(stateDir) {
+  // 1. Try TMUX_PANE env var (inherited from the Codex process)
+  const envPane = safeString(process.env.TMUX_PANE || '');
+  if (envPane) return envPane;
+
+  // 2. Fallback: check active mode states for tmux_pane_id
+  try {
+    const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir);
+    for (const dir of scopedDirs) {
+      const files = await readdir(dir).catch(() => []);
+      for (const f of files) {
+        if (!f.endsWith('-state.json')) continue;
+        const path = join(dir, f);
+        try {
+          const state = JSON.parse(await readFile(path, 'utf-8'));
+          if (state && state.active && state.tmux_pane_id) {
+            return safeString(state.tmux_pane_id);
+          }
+        } catch {
+          // skip malformed state
+        }
+      }
+    }
+  } catch {
+    // Non-critical
+  }
+
+  return '';
+}
+
+async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
+  const config = await loadAutoNudgeConfig();
+  if (!config.enabled) return;
+
+  // Check nudge count against session limit
+  const nudgeStatePath = join(stateDir, 'auto-nudge-state.json');
+  let nudgeState = await readJsonIfExists(nudgeStatePath, null);
+  if (!nudgeState || typeof nudgeState !== 'object') {
+    nudgeState = { nudgeCount: 0, lastNudgeAt: '' };
+  }
+  const nudgeCount = asNumber(nudgeState.nudgeCount) ?? 0;
+  if (Number.isFinite(config.maxNudgesPerSession) && nudgeCount >= config.maxNudgesPerSession) return;
+
+  // Resolve pane target early (needed for both capture-pane check and sending)
+  const paneId = await resolveNudgePaneTarget(stateDir);
+
+  // Check last assistant message for stall patterns (fast path)
+  const lastMessage = safeString(payload['last-assistant-message'] || payload.last_assistant_message || '');
+  let detected = detectStallPattern(lastMessage, config.patterns);
+  let source = 'payload';
+
+  // Fallback: capture the last 10 lines of tmux pane output
+  if (!detected && paneId) {
+    const captured = await capturePane(paneId);
+    detected = detectStallPattern(captured, config.patterns);
+    source = 'capture-pane';
+  }
+
+  if (!detected || !paneId) return;
+
+  // Short delay to let the agent settle before nudging
+  if (config.delaySec > 0) {
+    await new Promise(r => setTimeout(r, config.delaySec * 1000));
+  }
+
+  const nowIso = new Date().toISOString();
+  try {
+    // Send the response text as literal bytes, then submit with C-m
+    await runProcess('tmux', ['send-keys', '-t', paneId, '-l', config.response], 3000);
+    await runProcess('tmux', ['send-keys', '-t', paneId, 'C-m'], 3000);
+
+    nudgeState.nudgeCount = nudgeCount + 1;
+    nudgeState.lastNudgeAt = nowIso;
+    await writeFile(nudgeStatePath, JSON.stringify(nudgeState, null, 2)).catch(() => {});
+
+    await logTmuxHookEvent(logsDir, {
+      timestamp: nowIso,
+      type: 'auto_nudge',
+      pane_id: paneId,
+      response: config.response,
+      source,
+      nudge_count: nudgeState.nudgeCount,
+    });
+  } catch (err) {
+    await logTmuxHookEvent(logsDir, {
+      timestamp: nowIso,
+      type: 'auto_nudge',
+      pane_id: paneId,
+      error: err instanceof Error ? err.message : safeString(err),
+    }).catch(() => {});
+  }
 }
 
 function runProcess(command, args, timeoutMs = 3000) {
@@ -1191,6 +1355,15 @@ async function main() {
     } catch {
       // Non-fatal: notification module may not be built or config may not exist
     }
+  }
+
+  // 9. Auto-nudge: detect Codex stall patterns ("If you want...", "Shall I...", etc.)
+  //    and automatically send a continuation prompt so the agent keeps working.
+  //    Works for both leader and worker contexts.
+  try {
+    await maybeAutoNudge({ cwd, stateDir, logsDir, payload });
+  } catch {
+    // Non-critical
   }
 }
 
