@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.0] - 2026-02-17
+
+### Added
+- Added hook extensibility runtime with CLI integration.
+- Added example-event test coverage for hook extensions.
+
+### Fixed
+- Standardized tmux `send-keys` submission to `C-m` across the codebase.
+
 ## [0.3.9] - 2026-02-15
 
 ### Changed

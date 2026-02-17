@@ -51,6 +51,18 @@ Recommended trusted-environment launch profile:
 omx --xhigh --madmax
 ```
 
+## New in v0.4.0
+
+- **Hook extension workflow** with `omx hooks` (`init|status|validate|test`) for additive plugin-based automation.
+- **Native hook runtime integration** for `session-start`, `session-end`, `session-idle`, and `turn-complete` event dispatch.
+- **tmux reliability hardening** by standardizing submit key behavior to `C-m` across the codebase.
+
+Try it:
+
+```bash
+OMX_HOOK_PLUGINS=1 omx hooks test
+```
+
 ## First Session
 
 Inside Codex:
