@@ -16,14 +16,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout cli-agent-mail
+        uses: actions/checkout@v4
+        with:
+          repository: Yeachan-Heo/cli-agent-mail
+          path: cli-agent-mail-dep
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      - name: Build cli-agent-mail dependency
-        run: |
-          git clone https://github.com/Yeachan-Heo/cli-agent-mail.git ../cli-agent-mail
-          cd ../cli-agent-mail && npm install && npm run build
+      - name: Build cli-agent-mail
+        run: cd cli-agent-mail-dep && npm install && npm run build
       - run: npm ci
       - run: npx tsc --noEmit
 
@@ -32,14 +35,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout cli-agent-mail
+        uses: actions/checkout@v4
+        with:
+          repository: Yeachan-Heo/cli-agent-mail
+          path: cli-agent-mail-dep
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      - name: Build cli-agent-mail dependency
-        run: |
-          git clone https://github.com/Yeachan-Heo/cli-agent-mail.git ../cli-agent-mail
-          cd ../cli-agent-mail && npm install && npm run build
+      - name: Build cli-agent-mail
+        run: cd cli-agent-mail-dep && npm install && npm run build
       - run: npm ci
       - run: npm test || true
 
@@ -49,13 +55,16 @@ jobs:
     needs: [typecheck, test]
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout cli-agent-mail
+        uses: actions/checkout@v4
+        with:
+          repository: Yeachan-Heo/cli-agent-mail
+          path: cli-agent-mail-dep
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      - name: Build cli-agent-mail dependency
-        run: |
-          git clone https://github.com/Yeachan-Heo/cli-agent-mail.git ../cli-agent-mail
-          cd ../cli-agent-mail && npm install && npm run build
+      - name: Build cli-agent-mail
+        run: cd cli-agent-mail-dep && npm install && npm run build
       - run: npm ci
       - run: npm run build

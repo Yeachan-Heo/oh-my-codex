@@ -46,7 +46,7 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "cli-agent-mail": "file:../cli-agent-mail"
+    "cli-agent-mail": "file:./cli-agent-mail-dep"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
