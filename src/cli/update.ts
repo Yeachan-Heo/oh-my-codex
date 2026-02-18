@@ -126,7 +126,7 @@ async function askYesNo(question: string): Promise<boolean> {
 
 export async function maybeCheckAndPromptUpdate(cwd: string): Promise<void> {
   if (process.env.OMX_AUTO_UPDATE === '0') return;
-  const promptForApproval = process.env.OMX_AUTO_UPDATE_PROMPT === '1';
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return;
 
   const now = Date.now();
   const state = await readUpdateState(cwd);
@@ -144,39 +144,15 @@ export async function maybeCheckAndPromptUpdate(cwd: string): Promise<void> {
 
   if (!current || !latest || !isNewerVersion(current, latest)) return;
 
-  console.log(`[omx] Update available: v${current} -> v${latest}.`);
-
-  if (promptForApproval) {
-    const approved = await askYesNo('[omx] Update now? [Y/n] ');
-    if (!approved) {
-      await notify({
-        title: 'OMX Update Available',
-        message: `New version available: v${current} -> v${latest}.`,
-        type: 'info',
-        projectPath: cwd,
-      });
-      return;
-    }
-  }
+  const approved = await askYesNo(`[omx] Update available: v${current} → v${latest}. Update now? [Y/n] `);
+  if (!approved) return;
 
   console.log(`[omx] Running: npm install -g ${PACKAGE_NAME}@latest`);
   const result = runGlobalUpdate();
 
   if (result.ok) {
-    console.log(`[omx] Auto-update complete: v${latest}`);
-    await notify({
-      title: 'OMX Updated',
-      message: `Updated ${PACKAGE_NAME} from v${current} to v${latest}. Restart sessions to use new code.`,
-      type: 'success',
-      projectPath: cwd,
-    });
+    console.log(`[omx] Updated to v${latest}. Restart to use new code.`);
   } else {
-    console.log('[omx] Auto-update failed. Run manually: npm install -g oh-my-codex@latest');
-    await notify({
-      title: 'OMX Update Available',
-      message: `v${current} -> v${latest}. Auto-update failed: ${result.stderr || 'unknown error'}`,
-      type: 'warning',
-      projectPath: cwd,
-    });
+    console.log('[omx] Update failed. Run manually: npm install -g oh-my-codex@latest');
   }
 }

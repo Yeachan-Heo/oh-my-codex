@@ -15,6 +15,7 @@ import { hudCommand } from '../hud/index.js';
 import { teamCommand } from './team.js';
 import { getAllScopedStateDirs, getBaseStateDir, getStateDir } from '../mcp/state-paths.js';
 import { maybeCheckAndPromptUpdate } from './update.js';
+import { maybePromptGithubStar } from './star-prompt.js';
 import {
   generateOverlay,
   writeSessionModelInstructionsFile,
@@ -294,6 +295,12 @@ async function launchWithHud(args: string[]): Promise<void> {
     await maybeCheckAndPromptUpdate(cwd);
   } catch {
     // Non-fatal: update checks must never block launch
+  }
+
+  try {
+    await maybePromptGithubStar();
+  } catch {
+    // Non-fatal: star prompt must never block launch
   }
 
   // ── Phase 1: preLaunch ──────────────────────────────────────────────────
