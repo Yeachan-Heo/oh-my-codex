@@ -20,6 +20,10 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      - name: Build cli-agent-mail dependency
+        run: |
+          git clone https://github.com/Yeachan-Heo/cli-agent-mail.git ../cli-agent-mail
+          cd ../cli-agent-mail && npm install && npm run build
       - run: npm ci
       - run: npx tsc --noEmit
 
@@ -32,6 +36,10 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      - name: Build cli-agent-mail dependency
+        run: |
+          git clone https://github.com/Yeachan-Heo/cli-agent-mail.git ../cli-agent-mail
+          cd ../cli-agent-mail && npm install && npm run build
       - run: npm ci
       - run: npm test || true
 
@@ -45,5 +53,9 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      - name: Build cli-agent-mail dependency
+        run: |
+          git clone https://github.com/Yeachan-Heo/cli-agent-mail.git ../cli-agent-mail
+          cd ../cli-agent-mail && npm install && npm run build
       - run: npm ci
       - run: npm run build
