@@ -84,7 +84,7 @@ function upsertFeatureFlags(config: string): string {
     const base = config.trimEnd();
     const featureBlock = [
       '[features]',
-      'collab = true',
+      'multi_agent = true',
       'child_agents_md = true',
       '',
     ].join('\n');
@@ -102,20 +102,20 @@ function upsertFeatureFlags(config: string): string {
     }
   }
 
-  let collabIdx = -1;
+  let multiAgentIdx = -1;
   let childAgentsIdx = -1;
   for (let i = featuresStart + 1; i < sectionEnd; i++) {
-    if (/^\s*collab\s*=/.test(lines[i])) {
-      collabIdx = i;
+    if (/^\s*multi_agent\s*=/.test(lines[i])) {
+      multiAgentIdx = i;
     } else if (/^\s*child_agents_md\s*=/.test(lines[i])) {
       childAgentsIdx = i;
     }
   }
 
-  if (collabIdx >= 0) {
-    lines[collabIdx] = 'collab = true';
+  if (multiAgentIdx >= 0) {
+    lines[multiAgentIdx] = 'multi_agent = true';
   } else {
-    lines.splice(sectionEnd, 0, 'collab = true');
+    lines.splice(sectionEnd, 0, 'multi_agent = true');
     sectionEnd += 1;
   }
 
@@ -235,7 +235,7 @@ function getOmxTablesBlock(pkgRoot: string): string {
  *
  * Layout:
  *   1. OMX top-level keys (notify, model_reasoning_effort, developer_instructions)
- *   2. [features] with collab + child_agents_md
+ *   2. [features] with multi_agent + child_agents_md
  *   3. … user sections …
  *   4. OMX [table] sections (mcp_servers, tui)
  */
