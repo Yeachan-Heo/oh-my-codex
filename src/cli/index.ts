@@ -25,6 +25,7 @@ import {
 import {
   readSessionState, isSessionStale, writeSessionStart, writeSessionEnd, resetSessionMetrics,
 } from '../hooks/session.js';
+import { enableMouseScrolling, isWsl2 } from '../team/tmux-session.js';
 import { getPackageRoot } from '../utils/package.js';
 import { codexConfigPath } from '../utils/paths.js';
 import { getModelForMode } from '../config/models.js';
@@ -736,6 +737,18 @@ function runCodex(cwd: string, args: string[], sessionId: string): void {
       // HUD split failed, continue without it
     }
 
+    // Enable mouse scrolling at session start so scroll works before team
+    // expansion. Previously this was only called from createTeamSession().
+    // Opt-out: set OMX_MOUSE=0. (closes #128)
+    if (process.env.OMX_MOUSE !== '0') {
+      try {
+        const tmuxSession = execFileSync('tmux', ['display-message', '-p', '#S'], { encoding: 'utf-8' }).trim();
+        if (tmuxSession) enableMouseScrolling(tmuxSession);
+      } catch {
+        // Non-fatal: mouse scrolling is a convenience feature
+      }
+    }
+
     try {
       execFileSync('codex', launchArgs, { cwd, stdio: 'inherit', env: codexEnv });
     } catch {
@@ -764,6 +777,11 @@ function runCodex(cwd: string, args: string[], sessionId: string): void {
           codexCmd,
           ';',
           'split-window', '-v', '-l', '4', '-d', '-c', cwd, hudCmd,
+          // Enable mouse scrolling at session start (closes #128)
+          ...(process.env.OMX_MOUSE !== '0' ? [
+            ';', 'set-option', '-t', sessionName, 'mouse', 'on',
+            ...(isWsl2() ? [';', 'set-option', '-ga', 'terminal-overrides', ',xterm*:XT'] : []),
+          ] : []),
           ';',
           'select-pane', '-t', '0',
           ';',
