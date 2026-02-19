@@ -154,6 +154,38 @@ describe('config generator', () => {
     }
   });
 
+  it('removes deprecated collab flag from [features]', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
+    try {
+      const configPath = join(wd, 'config.toml');
+      const existing = [
+        '[features]',
+        'collab = true',
+        'web_search = true',
+        '',
+        '[user.settings]',
+        'name = "kept"',
+        '',
+      ].join('\n');
+      await writeFile(configPath, existing);
+
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, 'utf-8');
+
+      // collab must be gone
+      assert.ok(!/^\s*collab\s*=/m.test(toml), 'deprecated collab key should be removed');
+
+      // multi_agent replaces it
+      assert.match(toml, /^multi_agent = true$/m);
+
+      // other user flags preserved
+      assert.match(toml, /^web_search = true$/m);
+      assert.match(toml, /^name = "kept"$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('migrates a legacy OMX block and preserves user settings', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
     try {

@@ -104,6 +104,14 @@ function upsertFeatureFlags(config: string): string {
     }
   }
 
+  // Remove deprecated 'collab' key (superseded by multi_agent)
+  for (let i = sectionEnd - 1; i > featuresStart; i--) {
+    if (/^\s*collab\s*=/.test(lines[i])) {
+      lines.splice(i, 1);
+      sectionEnd -= 1;
+    }
+  }
+
   let multiAgentIdx = -1;
   let childAgentsIdx = -1;
   for (let i = featuresStart + 1; i < sectionEnd; i++) {
