@@ -183,6 +183,13 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
     tools: 'execution',
     category: 'domain',
   },
+  'code-simplifier': {
+    name: 'code-simplifier',
+    description: 'Simplifies recently modified code for clarity and consistency without changing behavior',
+    model: 'opus',
+    tools: 'execution',
+    category: 'domain',
+  },
   'researcher': {
     name: 'researcher',
     description: 'External documentation and reference research',
