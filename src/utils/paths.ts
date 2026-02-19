@@ -56,6 +56,11 @@ export function omxLogsDir(projectRoot?: string): string {
   return join(projectRoot || process.cwd(), '.omx', 'logs');
 }
 
+/** oh-my-codex native agent config directory (~/.omx/agents/) */
+export function omxAgentsConfigDir(): string {
+  return join(homedir(), '.omx', 'agents');
+}
+
 /** Get the package root directory (where agents/, skills/, prompts/ live) */
 export function packageRoot(): string {
   // From dist/utils/ or src/utils/, go up two levels

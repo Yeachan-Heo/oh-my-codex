@@ -11,8 +11,10 @@ import { spawnSync } from 'child_process';
 import {
   codexHome, codexConfigPath, codexPromptsDir,
   userSkillsDir, omxStateDir, omxPlansDir, omxLogsDir,
+  omxAgentsConfigDir,
 } from '../utils/paths.js';
 import { mergeConfig } from '../config/generator.js';
+import { installNativeAgentConfigs } from '../agents/native-config.js';
 import { getPackageRoot } from '../utils/package.js';
 import { readSessionState, isSessionStale } from '../hooks/session.js';
 
@@ -37,7 +39,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log('=================\n');
 
   // Step 1: Ensure directories exist
-  console.log('[1/7] Creating directories...');
+  console.log('[1/8] Creating directories...');
   const dirs = [
     codexHome(),
     codexPromptsDir(),
@@ -45,6 +47,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     omxStateDir(),
     omxPlansDir(),
     omxLogsDir(),
+    omxAgentsConfigDir(),
   ];
   for (const dir of dirs) {
     if (!dryRun) {
@@ -55,7 +58,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log('  Done.\n');
 
   // Step 2: Install agent prompts
-  console.log('[2/7] Installing agent prompts...');
+  console.log('[2/8] Installing agent prompts...');
   const promptsSrc = join(pkgRoot, 'prompts');
   const promptsDst = codexPromptsDir();
   const promptCount = await installDirectory(promptsSrc, promptsDst, '.md', { force, dryRun, verbose });
@@ -72,22 +75,27 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   }
   console.log(`  Installed ${promptCount} agent prompts.\n`);
 
-  // Step 3: Install skills
-  console.log('[3/7] Installing skills...');
+  // Step 3: Install native agent configs
+  console.log('[3/8] Installing native agent configs...');
+  const agentConfigCount = await installNativeAgentConfigs(pkgRoot, { force, dryRun, verbose });
+  console.log(`  Installed ${agentConfigCount} native agent configs to ~/.omx/agents/.\n`);
+
+  // Step 4: Install skills
+  console.log('[4/8] Installing skills...');
   const skillsSrc = join(pkgRoot, 'skills');
   const skillsDst = userSkillsDir();
   const skillCount = await installSkills(skillsSrc, skillsDst, { force, dryRun, verbose });
   console.log(`  Installed ${skillCount} skills.\n`);
 
-  // Step 4: Update config.toml
-  console.log('[4/7] Updating config.toml...');
+  // Step 5: Update config.toml
+  console.log('[5/8] Updating config.toml...');
   if (!dryRun) {
     await mergeConfig(codexConfigPath(), pkgRoot, { verbose });
   }
   console.log('  Done.\n');
 
-  // Step 4.5: Verify team comm MCP tools are available via omx_state server.
-  console.log('[4.5/7] Verifying Team MCP comm tools...');
+  // Step 5.5: Verify team comm MCP tools are available via omx_state server.
+  console.log('[5.5/8] Verifying Team MCP comm tools...');
   const teamToolsCheck = await verifyTeamCommMcpTools(pkgRoot);
   if (teamToolsCheck.ok) {
     console.log(`  omx_state exports: ${REQUIRED_TEAM_COMM_MCP_TOOLS.join(', ')}`);
@@ -97,8 +105,8 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   }
   console.log();
 
-  // Step 5: Generate AGENTS.md
-  console.log('[5/7] Generating AGENTS.md...');
+  // Step 6: Generate AGENTS.md
+  console.log('[6/8] Generating AGENTS.md...');
   const agentsMdSrc = join(pkgRoot, 'templates', 'AGENTS.md');
   const agentsMdDst = join(process.cwd(), 'AGENTS.md');
 
@@ -125,13 +133,13 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   }
   console.log();
 
-  // Step 6: Set up notify hook
-  console.log('[6/7] Configuring notification hook...');
+  // Step 7: Set up notify hook
+  console.log('[7/8] Configuring notification hook...');
   await setupNotifyHook(pkgRoot, { dryRun, verbose });
   console.log('  Done.\n');
 
-  // Step 7: Configure HUD
-  console.log('[7/7] Configuring HUD...');
+  // Step 8: Configure HUD
+  console.log('[8/8] Configuring HUD...');
   const hudConfigPath = join(process.cwd(), '.omx', 'hud-config.json');
   if (force || !existsSync(hudConfigPath)) {
     if (!dryRun) {
@@ -152,6 +160,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log('  2. Use /prompts:architect, /prompts:executor, /prompts:planner as slash commands');
   console.log('  3. Skills are available via /skills or implicit matching');
   console.log('  4. The AGENTS.md orchestration brain is loaded automatically');
+  console.log('  5. Native agent roles registered in config.toml [agents.*]');
   if (isGitHubCliConfigured()) {
     console.log('\nSupport the project: gh repo star Yeachan-Heo/oh-my-codex');
   }
