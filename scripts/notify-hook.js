@@ -764,7 +764,12 @@ async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputedLeaderS
     // New condition: worker panes alive + leader stale = always nudge
     const stalePanesNudge = paneStatus.alive && leaderStale;
 
-    if (!hasNewMessage && !dueByTime && !stalePanesNudge) continue;
+    // stalePanesNudge is intentionally NOT an independent trigger: it must respect the
+    // same dueByTime rate limit as the periodic check. If stalePanesNudge bypassed
+    // dueByTime, a nudge would fire on every agent turn while the leader is stale,
+    // causing message spam (issue #116). stalePanesNudge still controls the nudge
+    // message/reason below, but never bypasses the 2-minute interval guard.
+    if (!hasNewMessage && !dueByTime) continue;
 
     // Build contextual nudge message
     const msgCount = messages.length;

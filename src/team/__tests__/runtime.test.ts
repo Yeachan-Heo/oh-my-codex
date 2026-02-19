@@ -13,6 +13,7 @@ import {
   updateWorkerHeartbeat,
   writeAtomic,
   readTask,
+  readMonitorSnapshot,
 } from '../state.js';
 import {
   monitorTeam,
@@ -530,6 +531,131 @@ describe('runtime', () => {
       await assert.rejects(
         () => assignTask('team-approval', 'worker-1', task.id, cwd),
         /plan_approval_required/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('monitorTeam does not re-notify already-notified mailbox messages (issue #116)', async () => {
+    // Regression: deliverPendingMailboxMessages used to re-notify every 15 s via shouldRetry.
+    // After the fix it must NOT re-notify messages that already have notified_at set.
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-no-spam-'));
+    try {
+      await initTeamState('team-no-spam', 'no spam test', 'executor', 1, cwd);
+
+      // Write a mailbox message that is already notified but not yet delivered.
+      const mailboxDir = join(cwd, '.omx', 'state', 'team', 'team-no-spam', 'mailbox');
+      await mkdir(mailboxDir, { recursive: true });
+      const notifiedAt = new Date(Date.now() - 60_000).toISOString(); // 1 minute ago
+      await writeFile(join(mailboxDir, 'worker-1.json'), JSON.stringify({
+        worker: 'worker-1',
+        messages: [
+          {
+            message_id: 'msg-already-notified',
+            from_worker: 'leader-fixed',
+            to_worker: 'worker-1',
+            body: 'hello',
+            created_at: notifiedAt,
+            notified_at: notifiedAt, // already notified
+            // delivered_at intentionally absent — message is still pending
+          },
+        ],
+      }));
+
+      // First monitorTeam call — should see the message as already-notified (unnotified=[]).
+      const result1 = await monitorTeam('team-no-spam', cwd);
+      assert.ok(result1, 'snapshot should exist');
+
+      // Read the monitor snapshot from disk to verify the notified map.
+      const diskSnap1 = await readMonitorSnapshot('team-no-spam', cwd);
+      assert.ok(diskSnap1, 'disk snapshot should exist after first poll');
+      assert.ok(
+        diskSnap1.mailboxNotifiedByMessageId['msg-already-notified'],
+        'already-notified message must be preserved in snapshot after first poll',
+      );
+
+      // Second monitorTeam call — previousNotifications now carries the timestamp.
+      // The message must again be treated as notified (no duplicate notification).
+      const result2 = await monitorTeam('team-no-spam', cwd);
+      assert.ok(result2, 'second snapshot should exist');
+      const diskSnap2 = await readMonitorSnapshot('team-no-spam', cwd);
+      assert.ok(diskSnap2, 'disk snapshot should exist after second poll');
+      assert.ok(
+        diskSnap2.mailboxNotifiedByMessageId['msg-already-notified'],
+        'already-notified message must remain in snapshot after second poll (no reset)',
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('monitorTeam only notifies once per new message even without notified_at (issue #116)', async () => {
+    // Regression: messages delivered via team_send_message MCP have no notified_at.
+    // After the first successful poll that sets notified_at, subsequent polls must not re-notify.
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-new-msg-'));
+    try {
+      await initTeamState('team-new-msg', 'new msg test', 'executor', 1, cwd);
+
+      const mailboxDir = join(cwd, '.omx', 'state', 'team', 'team-new-msg', 'mailbox');
+      await mkdir(mailboxDir, { recursive: true });
+      const createdAt = new Date().toISOString();
+      await writeFile(join(mailboxDir, 'worker-1.json'), JSON.stringify({
+        worker: 'worker-1',
+        messages: [
+          {
+            message_id: 'msg-unnotified',
+            from_worker: 'leader-fixed',
+            to_worker: 'worker-1',
+            body: 'task assignment',
+            created_at: createdAt,
+            // notified_at and delivered_at intentionally absent
+          },
+        ],
+      }));
+
+      // First poll — unnotified=[msg-unnotified]. notifyWorker will fail (no tmux in tests)
+      // so markMessageNotified is not called and the snapshot has no entry for this message.
+      const result1 = await monitorTeam('team-new-msg', cwd);
+      assert.ok(result1);
+      const diskSnap1 = await readMonitorSnapshot('team-new-msg', cwd);
+      // Without tmux the notify fails, so no entry is expected in the first snapshot.
+      assert.ok(diskSnap1);
+
+      // Simulate a successful notification by manually setting notified_at on the message.
+      await writeFile(join(mailboxDir, 'worker-1.json'), JSON.stringify({
+        worker: 'worker-1',
+        messages: [
+          {
+            message_id: 'msg-unnotified',
+            from_worker: 'leader-fixed',
+            to_worker: 'worker-1',
+            body: 'task assignment',
+            created_at: createdAt,
+            notified_at: new Date().toISOString(),
+          },
+        ],
+      }));
+
+      // Second poll — message now has notified_at, so unnotified=[], no re-notification.
+      const result2 = await monitorTeam('team-new-msg', cwd);
+      assert.ok(result2);
+      const diskSnap2 = await readMonitorSnapshot('team-new-msg', cwd);
+      assert.ok(diskSnap2);
+      assert.ok(
+        diskSnap2.mailboxNotifiedByMessageId['msg-unnotified'],
+        'notified message must be captured in snapshot after second poll',
+      );
+
+      // Third poll — previousNotifications carries the timestamp.
+      // unnotified=[] so no re-notification attempt, and snapshot still tracks it.
+      const result3 = await monitorTeam('team-new-msg', cwd);
+      assert.ok(result3);
+      const diskSnap3 = await readMonitorSnapshot('team-new-msg', cwd);
+      assert.ok(diskSnap3);
+      assert.ok(
+        diskSnap3.mailboxNotifiedByMessageId['msg-unnotified'],
+        'notified message must remain in snapshot on third poll (no duplicate notification)',
       );
     } finally {
       await rm(cwd, { recursive: true, force: true });
