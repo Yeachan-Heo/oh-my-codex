@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.4] - 2026-02-19
+
+### Added
+- Added code-simplifier stop hook for automatic refactoring.
+- Registered OMX agents as Codex native multi-agent agent roles.
+
+### Fixed
+- Fixed team mode notification spam with runtime tests.
+- Removed deprecated `collab` flag from generated config.
+- Fixed tmux session name handling.
+
 ## [0.4.2] - 2026-02-18
 
 ### Added
