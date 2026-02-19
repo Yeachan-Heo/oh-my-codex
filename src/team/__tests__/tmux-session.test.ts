@@ -5,6 +5,7 @@ import {
   createTeamSession,
   enableMouseScrolling,
   isTmuxAvailable,
+  isWsl2,
   isWorkerAlive,
   killWorker,
   killWorkerByPaneId,
@@ -254,6 +255,49 @@ describe('isWorkerAlive', () => {
   });
 });
 
+describe('isWsl2', () => {
+  it('returns true when WSL_DISTRO_NAME is set', () => {
+    const prev = process.env.WSL_DISTRO_NAME;
+    process.env.WSL_DISTRO_NAME = 'Ubuntu-22.04';
+    try {
+      assert.equal(isWsl2(), true);
+    } finally {
+      if (typeof prev === 'string') process.env.WSL_DISTRO_NAME = prev;
+      else delete process.env.WSL_DISTRO_NAME;
+    }
+  });
+
+  it('returns true when WSL_INTEROP is set and WSL_DISTRO_NAME is absent', () => {
+    const prevDistro = process.env.WSL_DISTRO_NAME;
+    const prevInterop = process.env.WSL_INTEROP;
+    delete process.env.WSL_DISTRO_NAME;
+    process.env.WSL_INTEROP = '/run/WSL/8_interop';
+    try {
+      assert.equal(isWsl2(), true);
+    } finally {
+      if (typeof prevDistro === 'string') process.env.WSL_DISTRO_NAME = prevDistro;
+      else delete process.env.WSL_DISTRO_NAME;
+      if (typeof prevInterop === 'string') process.env.WSL_INTEROP = prevInterop;
+      else delete process.env.WSL_INTEROP;
+    }
+  });
+
+  it('returns a boolean without throwing when no WSL env vars are present', () => {
+    const prevDistro = process.env.WSL_DISTRO_NAME;
+    const prevInterop = process.env.WSL_INTEROP;
+    delete process.env.WSL_DISTRO_NAME;
+    delete process.env.WSL_INTEROP;
+    try {
+      assert.equal(typeof isWsl2(), 'boolean');
+    } finally {
+      if (typeof prevDistro === 'string') process.env.WSL_DISTRO_NAME = prevDistro;
+      else delete process.env.WSL_DISTRO_NAME;
+      if (typeof prevInterop === 'string') process.env.WSL_INTEROP = prevInterop;
+      else delete process.env.WSL_INTEROP;
+    }
+  });
+});
+
 describe('enableMouseScrolling', () => {
   it('returns false when tmux is unavailable', () => {
     // When tmux is not on PATH, enableMouseScrolling should gracefully return false
@@ -267,6 +311,21 @@ describe('enableMouseScrolling', () => {
     withEmptyPath(() => {
       assert.equal(enableMouseScrolling(''), false);
     });
+  });
+
+  it('returns false in WSL2 environment when tmux is unavailable', () => {
+    // WSL2 path: even with the XT override branch active, the function must
+    // return false (not throw) when tmux is not on PATH.
+    const prev = process.env.WSL_DISTRO_NAME;
+    process.env.WSL_DISTRO_NAME = 'Ubuntu-22.04';
+    try {
+      withEmptyPath(() => {
+        assert.equal(enableMouseScrolling('omx-team-x'), false);
+      });
+    } finally {
+      if (typeof prev === 'string') process.env.WSL_DISTRO_NAME = prev;
+      else delete process.env.WSL_DISTRO_NAME;
+    }
   });
 });
 
