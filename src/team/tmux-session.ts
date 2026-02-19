@@ -1,4 +1,5 @@
 import { spawnSync } from 'child_process';
+import { readFileSync } from 'fs';
 import { join } from 'path';
 
 export interface TeamSession {
@@ -180,6 +181,23 @@ export function sanitizeTeamName(name: string): string {
   return truncated;
 }
 
+/**
+ * Detect whether the process is running inside a WSL2 environment.
+ * WSL2 always sets WSL_DISTRO_NAME; WSL_INTEROP is also present.
+ * Fallback: check /proc/version for the Microsoft kernel string.
+ */
+export function isWsl2(): boolean {
+  if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) {
+    return true;
+  }
+  try {
+    const version = readFileSync('/proc/version', 'utf-8');
+    return /microsoft/i.test(version);
+  } catch {
+    return false;
+  }
+}
+
 // Check if tmux is available
 export function isTmuxAvailable(): boolean {
   const result = spawnSync('tmux', ['-V'], { encoding: 'utf-8' });
@@ -302,11 +320,26 @@ export function createTeamSession(
  * (e.g. long agent output) with the mouse wheel instead of arrow keys.
  * Arrow keys remain reserved for Codex CLI input-history navigation.
  *
+ * In WSL2, Windows Terminal uses the SGR mouse protocol but tmux will not
+ * activate it unless the terminal advertises the XT capability. Without XT,
+ * scroll wheel events are silently dropped. When a WSL2 environment is
+ * detected the global terminal-overrides are extended with xterm*:XT so
+ * that tmux negotiates the correct protocol with the host terminal. (closes #113)
+ *
  * Returns true if the option was set successfully, false otherwise.
  */
 export function enableMouseScrolling(sessionTarget: string): boolean {
   const result = runTmux(['set-option', '-t', sessionTarget, 'mouse', 'on']);
-  return result.ok;
+  if (!result.ok) return false;
+
+  if (isWsl2()) {
+    // Append the XT capability override globally (terminal-overrides is a
+    // global-only option). -ga appends rather than replacing, preserving any
+    // overrides the user may already have configured.
+    runTmux(['set-option', '-ga', 'terminal-overrides', ',xterm*:XT']);
+  }
+
+  return true;
 }
 
 function paneTarget(sessionName: string, workerIndex: number, workerPaneId?: string): string {
