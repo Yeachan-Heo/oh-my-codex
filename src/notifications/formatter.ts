@@ -29,6 +29,11 @@ function projectDisplay(payload: FullNotificationPayload): string {
   return "unknown";
 }
 
+function buildTmuxTailBlock(payload: FullNotificationPayload): string {
+  if (!payload.tmuxTail) return "";
+  return `\n**Recent output:**\n\`\`\`\n${payload.tmuxTail}\n\`\`\``;
+}
+
 function buildFooter(payload: FullNotificationPayload, markdown: boolean): string {
   const parts: string[] = [];
 
@@ -83,6 +88,9 @@ export function formatSessionStop(payload: FullNotificationPayload): string {
     lines.push(`**Incomplete tasks:** ${payload.incompleteTasks}`);
   }
 
+  const tail = buildTmuxTailBlock(payload);
+  if (tail) lines.push(tail);
+
   lines.push("");
   lines.push(buildFooter(payload, true));
 
@@ -114,6 +122,9 @@ export function formatSessionEnd(payload: FullNotificationPayload): string {
     lines.push("", `**Summary:** ${payload.contextSummary}`);
   }
 
+  const tail = buildTmuxTailBlock(payload);
+  if (tail) lines.push(tail);
+
   lines.push("");
   lines.push(buildFooter(payload, true));
 
@@ -133,6 +144,9 @@ export function formatSessionIdle(payload: FullNotificationPayload): string {
   if (payload.modesUsed && payload.modesUsed.length > 0) {
     lines.push(`**Modes:** ${payload.modesUsed.join(", ")}`);
   }
+
+  const tail = buildTmuxTailBlock(payload);
+  if (tail) lines.push(tail);
 
   lines.push("");
   lines.push(buildFooter(payload, true));

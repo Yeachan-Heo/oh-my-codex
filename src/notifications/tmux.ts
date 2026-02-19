@@ -124,6 +124,31 @@ export function getTeamTmuxSessions(teamName: string): string[] {
 }
 
 /**
+ * Capture the last N lines of output from a tmux pane.
+ * Used to include a tail snippet in session-level notifications.
+ * Returns null if capture fails or tmux is not available.
+ */
+export function captureTmuxPane(paneId?: string | null, lines: number = 12): string | null {
+  const target = paneId || process.env.TMUX_PANE;
+  if (!target) return null;
+  if (!process.env.TMUX && !paneId) return null;
+
+  try {
+    const output = execSync(
+      `tmux capture-pane -t ${target} -p -l ${lines}`,
+      {
+        encoding: "utf-8",
+        timeout: 3000,
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    ).trim();
+    return output || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Format tmux session info for human-readable display.
  * Returns null if not in tmux.
  */

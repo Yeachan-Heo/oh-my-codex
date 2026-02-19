@@ -26,6 +26,7 @@ export type {
   ReplyConfig,
   NotificationProfilesConfig,
   NotificationsBlock,
+  VerbosityLevel,
 } from "./types.js";
 
 export {
@@ -49,6 +50,7 @@ export {
   getCurrentTmuxPaneId,
   getTeamTmuxSessions,
   formatTmuxInfo,
+  captureTmuxPane,
 } from "./tmux.js";
 export {
   getNotificationConfig,
@@ -59,6 +61,9 @@ export {
   resolveProfileConfig,
   listProfiles,
   getActiveProfileName,
+  getVerbosity,
+  isEventAllowedByVerbosity,
+  shouldIncludeTmuxTail,
 } from "./config.js";
 export {
   registerMessage,
@@ -86,10 +91,10 @@ import type {
   FullNotificationPayload,
   DispatchResult,
 } from "./types.js";
-import { getNotificationConfig, isEventEnabled, getActiveProfileName } from "./config.js";
+import { getNotificationConfig, isEventEnabled, getActiveProfileName, getVerbosity, shouldIncludeTmuxTail } from "./config.js";
 import { formatNotification } from "./formatter.js";
 import { dispatchNotifications } from "./dispatcher.js";
-import { getCurrentTmuxSession } from "./tmux.js";
+import { getCurrentTmuxSession, captureTmuxPane } from "./tmux.js";
 import { basename } from "path";
 
 /**
@@ -134,6 +139,18 @@ export async function notifyLifecycle(
       question: data.question,
       incompleteTasks: data.incompleteTasks,
     };
+
+    // Capture tmux tail for session+ verbosity on idle/stop/end events
+    const verbosity = getVerbosity(config);
+    if (
+      shouldIncludeTmuxTail(verbosity) &&
+      !data.tmuxTail &&
+      (event === "session-idle" || event === "session-stop" || event === "session-end")
+    ) {
+      payload.tmuxTail = captureTmuxPane(payload.tmuxPaneId) ?? undefined;
+    } else {
+      payload.tmuxTail = data.tmuxTail;
+    }
 
     payload.message = data.message || formatNotification(payload);
 
