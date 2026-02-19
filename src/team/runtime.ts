@@ -836,7 +836,6 @@ async function deliverPendingMailboxMessages(
 ): Promise<Record<string, string>> {
   const nextNotifications: Record<string, string> = {};
   const pendingIdsAcrossTeam = new Set<string>();
-  const retryAfterMs = 15_000;
 
   for (const worker of workers) {
     if (!worker.alive) continue;
@@ -848,36 +847,36 @@ async function deliverPendingMailboxMessages(
 
     const pendingIds = pending.map((m) => m.message_id);
     for (const id of pendingIds) pendingIdsAcrossTeam.add(id);
+
+    // Preserve already-tracked notification timestamps in the next snapshot.
     for (const msg of pending) {
       nextNotifications[msg.message_id] = msg.notified_at || previousNotifications[msg.message_id] || '';
     }
-    const nowMs = Date.now();
-    const alreadyNotified = pending.every((m) => Boolean(m.notified_at) || typeof previousNotifications[m.message_id] === 'string');
-    const shouldRetry = pending.some((m) => {
-      const lastNotifiedIso = m.notified_at || previousNotifications[m.message_id];
-      if (!lastNotifiedIso) return true;
-      const lastNotifiedMs = Date.parse(lastNotifiedIso);
-      if (!Number.isFinite(lastNotifiedMs)) return true;
-      return nowMs - lastNotifiedMs >= retryAfterMs;
-    });
 
-    let notifiedNow = false;
-    if (!alreadyNotified || shouldRetry) {
-      notifiedNow = notifyWorker(
-        config,
-        workerInfo.index,
-        generateMailboxTriggerMessage(worker.name, teamName, pending.length),
-        workerInfo.pane_id,
-      );
-    }
+    // Only notify for messages that have never been successfully notified.
+    // Using a message-ID set prevents re-notification on every monitor poll
+    // (issue #116). A message is considered notified when either:
+    //   - notified_at is set in the mailbox file (persisted by markMessageNotified), or
+    //   - the message_id exists in previousNotifications from the last snapshot.
+    // Both checks use Boolean() so an empty-string value is treated as unnotified.
+    const unnotified = pending.filter(
+      (m) => !m.notified_at && !previousNotifications[m.message_id],
+    );
+    if (unnotified.length === 0) continue;
 
-    if ((!alreadyNotified || shouldRetry) && !notifiedNow) continue;
-    if (!alreadyNotified || shouldRetry) {
-      for (const msg of pending) {
-        const notified = await markMessageNotified(teamName, worker.name, msg.message_id, cwd);
-        if (notified) {
-          nextNotifications[msg.message_id] = new Date().toISOString();
-        }
+    const notifiedNow = notifyWorker(
+      config,
+      workerInfo.index,
+      generateMailboxTriggerMessage(worker.name, teamName, unnotified.length),
+      workerInfo.pane_id,
+    );
+
+    if (!notifiedNow) continue;
+
+    for (const msg of unnotified) {
+      const notified = await markMessageNotified(teamName, worker.name, msg.message_id, cwd);
+      if (notified) {
+        nextNotifications[msg.message_id] = new Date().toISOString();
       }
     }
   }
