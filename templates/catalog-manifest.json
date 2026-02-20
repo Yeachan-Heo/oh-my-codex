@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.02.20",
+  "catalogVersion": "2026.02.20.1",
   "skills": [
     {
       "name": "autopilot",
@@ -31,25 +31,10 @@
       "internalRequired": false
     },
     {
-      "name": "pipeline",
-      "category": "execution",
-      "status": "deprecated",
-      "core": false,
-      "internalRequired": false
-    },
-    {
       "name": "ecomode",
       "category": "execution",
       "status": "merged",
       "canonical": "ultrawork",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "ultrapilot",
-      "category": "execution",
-      "status": "deprecated",
-      "canonical": "autopilot",
       "core": false,
       "internalRequired": false
     },
@@ -199,31 +184,10 @@
       "internalRequired": false
     },
     {
-      "name": "learner",
-      "category": "utility",
-      "status": "deprecated",
-      "core": false,
-      "internalRequired": false
-    },
-    {
       "name": "research",
       "category": "utility",
       "status": "merged",
       "canonical": "researcher",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "deepinit",
-      "category": "utility",
-      "status": "deprecated",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "release",
-      "category": "utility",
-      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -258,39 +222,10 @@
       "internalRequired": false
     },
     {
-      "name": "writer-memory",
-      "category": "utility",
-      "status": "deprecated",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "project-session-manager",
-      "category": "utility",
-      "status": "deprecated",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "psm",
-      "category": "utility",
-      "status": "alias",
-      "canonical": "project-session-manager",
-      "core": false,
-      "internalRequired": false
-    },
-    {
       "name": "ralph-init",
       "category": "utility",
       "status": "merged",
       "canonical": "plan",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "learn-about-omx",
-      "category": "utility",
-      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -332,12 +267,6 @@
       "name": "executor",
       "category": "build",
       "status": "active"
-    },
-    {
-      "name": "deep-executor",
-      "category": "build",
-      "status": "deprecated",
-      "canonical": "executor"
     },
     {
       "name": "verifier",
@@ -414,12 +343,6 @@
       "category": "domain",
       "status": "merged",
       "canonical": "test-engineer"
-    },
-    {
-      "name": "scientist",
-      "category": "domain",
-      "status": "deprecated",
-      "canonical": "researcher"
     },
     {
       "name": "git-master",

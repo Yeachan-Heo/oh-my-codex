@@ -1,14 +1,12 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.02.20",
+  "catalogVersion": "2026.02.20.1",
   "skills": [
     { "name": "autopilot", "category": "execution", "status": "active", "core": true },
     { "name": "ralph", "category": "execution", "status": "active", "core": true },
     { "name": "ultrawork", "category": "execution", "status": "active", "core": true },
     { "name": "team", "category": "execution", "status": "active", "core": true },
-    { "name": "pipeline", "category": "execution", "status": "deprecated" },
     { "name": "ecomode", "category": "execution", "status": "merged", "canonical": "ultrawork" },
-    { "name": "ultrapilot", "category": "execution", "status": "deprecated", "canonical": "autopilot" },
     { "name": "ultraqa", "category": "execution", "status": "merged", "canonical": "ralph" },
     { "name": "swarm", "category": "execution", "status": "alias", "canonical": "team" },
 
@@ -31,19 +29,12 @@
     { "name": "note", "category": "utility", "status": "active" },
     { "name": "trace", "category": "utility", "status": "active" },
     { "name": "skill", "category": "utility", "status": "active" },
-    { "name": "learner", "category": "utility", "status": "deprecated" },
     { "name": "research", "category": "utility", "status": "merged", "canonical": "researcher" },
-    { "name": "deepinit", "category": "utility", "status": "deprecated" },
-    { "name": "release", "category": "utility", "status": "deprecated" },
     { "name": "hud", "category": "utility", "status": "active" },
     { "name": "omx-setup", "category": "utility", "status": "active" },
     { "name": "configure-telegram", "category": "utility", "status": "merged", "canonical": "omx-setup" },
     { "name": "configure-discord", "category": "utility", "status": "merged", "canonical": "omx-setup" },
-    { "name": "writer-memory", "category": "utility", "status": "deprecated" },
-    { "name": "project-session-manager", "category": "utility", "status": "deprecated" },
-    { "name": "psm", "category": "utility", "status": "alias", "canonical": "project-session-manager" },
     { "name": "ralph-init", "category": "utility", "status": "merged", "canonical": "plan" },
-    { "name": "learn-about-omx", "category": "utility", "status": "deprecated" },
     { "name": "worker", "category": "utility", "status": "internal", "internalRequired": true }
   ],
   "agents": [
@@ -53,7 +44,6 @@
     { "name": "architect", "category": "build", "status": "active" },
     { "name": "debugger", "category": "build", "status": "active" },
     { "name": "executor", "category": "build", "status": "active" },
-    { "name": "deep-executor", "category": "build", "status": "deprecated", "canonical": "executor" },
     { "name": "verifier", "category": "build", "status": "active" },
 
     { "name": "style-reviewer", "category": "review", "status": "merged", "canonical": "code-reviewer" },
@@ -70,7 +60,6 @@
     { "name": "designer", "category": "domain", "status": "active" },
     { "name": "writer", "category": "domain", "status": "active" },
     { "name": "qa-tester", "category": "domain", "status": "merged", "canonical": "test-engineer" },
-    { "name": "scientist", "category": "domain", "status": "deprecated", "canonical": "researcher" },
     { "name": "git-master", "category": "domain", "status": "active" },
     { "name": "code-simplifier", "category": "domain", "status": "internal" },
     { "name": "researcher", "category": "domain", "status": "active" },

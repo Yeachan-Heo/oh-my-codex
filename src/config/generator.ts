@@ -185,15 +185,12 @@ function stripExistingOmxBlocks(config: string): { cleaned: string; removed: num
  * Each agent gets a description and config_file pointing to ~/.omx/agents/<name>.toml
  */
 function getAgentEntries(): string[] {
-  const SKIP_AGENTS = new Set(['deep-executor']);
   const entries: string[] = [
     '',
     '# OMX Native Agent Roles (Codex multi-agent)',
   ];
 
   for (const [name, agent] of Object.entries(AGENT_DEFINITIONS)) {
-    if (SKIP_AGENTS.has(name)) continue;
-
     // TOML table headers with special chars need quoting
     const tableKey = name.includes('-') ? `agents."${name}"` : `agents.${name}`;
     const configFile = join(omxAgentsConfigDir(), `${name}.toml`)

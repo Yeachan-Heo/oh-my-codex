@@ -107,7 +107,6 @@ export const KEYWORD_TRIGGERS: Record<string, string> = {
   'coordinated team': 'Activate coordinated team mode',
   'swarm': 'Activate coordinated team mode (swarm is a compatibility alias for team)',
   'coordinated swarm': 'Activate coordinated team mode (swarm is a compatibility alias for team)',
-  'pipeline': 'Activate sequential pipeline mode',
   'research': 'Activate parallel research mode',
   'cancel': 'Cancel active execution modes',
 };

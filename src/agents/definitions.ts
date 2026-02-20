@@ -22,12 +22,6 @@ const EXECUTOR_AGENT: AgentDefinition = {
   category: 'build',
 };
 
-const DEEP_EXECUTOR_ALIAS_AGENT: AgentDefinition = {
-  ...EXECUTOR_AGENT,
-  name: 'deep-executor',
-  description: '[Deprecated] Backward-compatible alias of executor',
-};
-
 export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   // Build/Analysis Lane
   'explore': {
@@ -66,7 +60,6 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
     category: 'build',
   },
   'executor': EXECUTOR_AGENT,
-  'deep-executor': DEEP_EXECUTOR_ALIAS_AGENT,
   'verifier': {
     name: 'verifier',
     description: 'Completion evidence, claim validation, test adequacy',
@@ -167,13 +160,6 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
     description: 'Interactive CLI/service runtime validation',
     model: 'sonnet',
     tools: 'execution',
-    category: 'domain',
-  },
-  'scientist': {
-    name: 'scientist',
-    description: 'Data/statistical analysis and hypothesis testing',
-    model: 'sonnet',
-    tools: 'data',
     category: 'domain',
   },
   'git-master': {

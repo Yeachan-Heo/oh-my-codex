@@ -16,9 +16,6 @@ const REASONING_EFFORT_MAP: Record<AgentDefinition['model'], string> = {
   opus: 'high',
 };
 
-// Agents to skip (deprecated aliases)
-const SKIP_AGENTS = new Set(['deep-executor']);
-
 /**
  * Strip YAML frontmatter (between --- markers) from markdown content
  */
@@ -75,8 +72,6 @@ export async function installNativeAgentConfigs(
   let count = 0;
 
   for (const [name, agent] of Object.entries(AGENT_DEFINITIONS)) {
-    if (SKIP_AGENTS.has(name)) continue;
-
     const promptPath = join(pkgRoot, 'prompts', `${name}.md`);
     if (!existsSync(promptPath)) {
       if (verbose) console.log(`  skip ${name} (no prompt file)`);

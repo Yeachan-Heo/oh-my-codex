@@ -211,8 +211,7 @@ Important rule: do not shutdown while tasks are still `in_progress` unless abort
 
 Examples:
 - Agents: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
-- `deep-executor` is deprecated; use `executor` for complex implementation tasks.
-- Skills: `autopilot`, `plan`, `team`, `ralph`, `ultrawork`, `ultrapilot`, `research`, `cancel`
+- Skills: `autopilot`, `plan`, `team`, `ralph`, `ultrawork`, `research`, `cancel`
 
 ## Project Layout
 

@@ -23,7 +23,6 @@ const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> =
   { pattern: /\bralph\b/i, skill: 'ralph', priority: 10 },
   { pattern: /\bultrawork\b|\bulw\b/i, skill: 'ultrawork', priority: 10 },
   { pattern: /\becomode\b|\beco\b/i, skill: 'ecomode', priority: 10 },
-  { pattern: /\bultrapilot\b/i, skill: 'ultrapilot', priority: 10 },
 
   // Planning
   { pattern: /\bralplan\b/i, skill: 'ralplan', priority: 9 },
@@ -32,7 +31,6 @@ const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> =
   // Coordination
   { pattern: /\bteam\b|\bcoordinated\s+team\b/i, skill: 'team', priority: 8 },
   { pattern: /\bswarm\b|\bcoordinated\s+swarm\b/i, skill: 'team', priority: 8 },
-  { pattern: /\bpipeline\b/i, skill: 'pipeline', priority: 8 },
   { pattern: /\bresearch\b/i, skill: 'research', priority: 7 },
 
   // Shortcuts
@@ -42,7 +40,6 @@ const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> =
   { pattern: /\bfix.build\b|\btype.errors?\b/i, skill: 'build-fix', priority: 6 },
   { pattern: /\breview.code\b|\bcode.review\b/i, skill: 'code-review', priority: 6 },
   { pattern: /\bsecurity.review\b/i, skill: 'security-review', priority: 6 },
-  { pattern: /\bdeepinit\b/i, skill: 'deepinit', priority: 6 },
 
   // Utilities
   { pattern: /\bcancel\b.*\b(?:mode|all)\b/i, skill: 'cancel', priority: 5 },
