@@ -12,7 +12,7 @@
     "dev": "tsc --watch",
     "setup": "node bin/omx.js setup",
     "doctor": "node bin/omx.js doctor",
-    "test": "npm run build && node --test dist/**/*.test.js"
+    "test": "npm run build && node --test dist/**/*.test.js && node scripts/generate-catalog-docs.js --check"
   },
   "engines": {
     "node": ">=20"

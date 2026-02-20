@@ -22,12 +22,46 @@ const docsToScan = [
 ];
 
 const forbiddenCountLiterals = [
-  /\b30\b/g,
-  /\b40\b/g,
-  /30\+/g,
-  /\(40\)/g,
-  /expected\s+30\+/g,
+  /\b30\b/,
+  /\b40\b/,
+  /30\+/,
+  /\(40\)/,
+  /expected\s+30\+/,
 ];
+
+function canonicalize(value) {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === 'object') {
+    return Object.keys(value)
+      .sort()
+      .reduce((acc, key) => {
+        acc[key] = canonicalize(value[key]);
+        return acc;
+      }, {});
+  }
+  return value;
+}
+
+function assertDeepEqual(label, actual, expected) {
+  const left = JSON.stringify(canonicalize(actual));
+  const right = JSON.stringify(canonicalize(expected));
+  if (left !== right) {
+    throw new Error(label);
+  }
+}
+
+function normalizePublicContract(contract) {
+  if (!contract || typeof contract !== 'object') return contract;
+  return {
+    version: contract.version,
+    counts: contract.counts,
+    coreSkills: contract.coreSkills,
+    skills: contract.skills,
+    agents: contract.agents,
+    aliases: contract.aliases,
+    internalHidden: contract.internalHidden,
+  };
+}
 
 function assertNoHardcodedCountLiterals() {
   const violations = [];
@@ -50,14 +84,17 @@ function main() {
   if (CHECK_ONLY) {
     const templateRaw = JSON.parse(readFileSync(templateManifestPath, 'utf8'));
     const template = validateCatalogManifest(templateRaw);
-    if (template.catalogVersion !== manifest.catalogVersion) {
-      throw new Error('catalog_manifest_drift:template_version_mismatch');
-    }
+    assertDeepEqual('catalog_manifest_drift:template_content_mismatch', template, manifest);
 
     const generatedRaw = JSON.parse(readFileSync(generatedPublicCatalogPath, 'utf8'));
-    if (generatedRaw.counts.skillCount !== expectedCounts.skillCount || generatedRaw.counts.promptCount !== expectedCounts.promptCount) {
+    if (generatedRaw.counts?.skillCount !== expectedCounts.skillCount || generatedRaw.counts?.promptCount !== expectedCounts.promptCount) {
       throw new Error('catalog_generated_drift:counts_mismatch');
     }
+    assertDeepEqual(
+      'catalog_generated_drift:content_mismatch',
+      normalizePublicContract(generatedRaw),
+      normalizePublicContract(publicContract),
+    );
 
     assertNoHardcodedCountLiterals();
     console.log('catalog check ok');

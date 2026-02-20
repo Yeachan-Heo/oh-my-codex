@@ -91,15 +91,33 @@ export function reconcilePhaseStateForMonitor(
   persisted: TeamPhaseState | null,
   target: TeamPhase | TerminalPhase,
 ): TeamPhaseState {
+  const now = new Date().toISOString();
   const base = persisted ?? defaultPersistedPhaseState();
   if (base.current_phase === target) {
     return {
       ...base,
-      updated_at: new Date().toISOString(),
+      updated_at: now,
     };
   }
 
-  if (isTerminalPhase(base.current_phase)) return base;
+  if (isTerminalPhase(base.current_phase)) {
+    if (isTerminalPhase(target)) return base;
+    return {
+      current_phase: target,
+      max_fix_attempts: base.max_fix_attempts,
+      current_fix_attempt: 0,
+      transitions: [
+        ...base.transitions,
+        {
+          from: base.current_phase,
+          to: target,
+          at: now,
+          reason: 'tasks_reopened',
+        },
+      ],
+      updated_at: now,
+    };
+  }
 
   let state = toTeamState(base);
   const transitionPath = buildTransitionPath(state.phase, target);

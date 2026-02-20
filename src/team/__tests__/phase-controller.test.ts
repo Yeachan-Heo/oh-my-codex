@@ -33,4 +33,21 @@ describe('phase-controller', () => {
     assert.ok(next.transitions.some((t) => t.to === 'team-verify'));
     assert.ok(next.transitions.some((t) => t.to === 'complete'));
   });
+
+  it('re-opens from terminal phase when tasks become non-terminal again', () => {
+    const next = reconcilePhaseStateForMonitor(
+      {
+        current_phase: 'complete',
+        max_fix_attempts: 3,
+        current_fix_attempt: 1,
+        transitions: [],
+        updated_at: new Date().toISOString(),
+      },
+      'team-exec',
+    );
+
+    assert.equal(next.current_phase, 'team-exec');
+    assert.equal(next.current_fix_attempt, 0);
+    assert.ok(next.transitions.some((t) => t.from === 'complete' && t.to === 'team-exec'));
+  });
 });
