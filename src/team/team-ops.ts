@@ -34,6 +34,7 @@ export type {
   TeamSummary,
   ShutdownAck,
   TeamMonitorSnapshotState,
+  TeamPhaseState,
 } from './state.js';
 
 // === Constants ===
@@ -89,6 +90,8 @@ export { readShutdownAck as teamReadShutdownAck } from './state.js';
 // === Monitor snapshot ===
 export { readMonitorSnapshot as teamReadMonitorSnapshot } from './state.js';
 export { writeMonitorSnapshot as teamWriteMonitorSnapshot } from './state.js';
+export { readTeamPhase as teamReadPhase } from './state.js';
+export { writeTeamPhase as teamWritePhase } from './state.js';
 
 // === Atomic write (shared utility) ===
 export { writeAtomic } from './state.js';

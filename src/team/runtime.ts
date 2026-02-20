@@ -39,6 +39,8 @@ import {
   teamReadShutdownAck as readShutdownAck,
   teamReadMonitorSnapshot as readMonitorSnapshot,
   teamWriteMonitorSnapshot as writeMonitorSnapshot,
+  teamReadPhase as readTeamPhaseState,
+  teamWritePhase as writeTeamPhaseState,
   type TeamConfig,
   type WorkerInfo,
   type WorkerHeartbeat,
@@ -46,6 +48,7 @@ import {
   type TeamTask,
   type ShutdownAck,
   type TeamMonitorSnapshotState,
+  type TeamPhaseState,
 } from './team-ops.js';
 import {
   queueInboxInstruction,
@@ -430,11 +433,11 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
 
   const allTasksTerminal = taskCounts.pending === 0 && taskCounts.blocked === 0 && taskCounts.in_progress === 0;
 
-  // Determine phase from state file (simplified -- read from mode state if available)
-  // For now use a heuristic based on task statuses
-  let phase: TeamPhase | TerminalPhase = 'team-exec';
-  if (allTasksTerminal && taskCounts.failed === 0) phase = 'complete';
-  else if (allTasksTerminal && taskCounts.failed > 0) phase = 'team-fix';
+  const persistedPhase = await readTeamPhaseState(sanitized, cwd);
+  const targetPhase = inferPhaseTargetFromTaskCounts(taskCounts);
+  const phaseState: TeamPhaseState = reconcilePhaseStateForMonitor(persistedPhase, targetPhase);
+  await writeTeamPhaseState(sanitized, phaseState, cwd);
+  const phase: TeamPhase | TerminalPhase = phaseState.current_phase;
 
   await emitMonitorDerivedEvents(sanitized, allTasks, workers, previousSnapshot, cwd);
   const mailboxNotifiedByMessageId = await deliverPendingMailboxMessages(
