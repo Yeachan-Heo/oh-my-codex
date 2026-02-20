@@ -17,6 +17,7 @@ import { mergeConfig } from '../config/generator.js';
 import { installNativeAgentConfigs } from '../agents/native-config.js';
 import { getPackageRoot } from '../utils/package.js';
 import { readSessionState, isSessionStale } from '../hooks/session.js';
+import { getCatalogHeadlineCounts } from './catalog-contract.js';
 
 interface SetupOptions {
   force?: boolean;
@@ -73,7 +74,12 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
       console.log(`  Removed ${cleanedLegacyPromptShims} legacy skill prompt shim file(s).`);
     }
   }
-  console.log(`  Installed ${promptCount} agent prompts.\n`);
+  const catalogCounts = getCatalogHeadlineCounts();
+  if (catalogCounts) {
+    console.log(`  Installed ${promptCount} agent prompts (catalog baseline: ${catalogCounts.prompts}).\n`);
+  } else {
+    console.log(`  Installed ${promptCount} agent prompts.\n`);
+  }
 
   // Step 3: Install native agent configs
   console.log('[3/8] Installing native agent configs...');
@@ -85,7 +91,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   const skillsSrc = join(pkgRoot, 'skills');
   const skillsDst = userSkillsDir();
   const skillCount = await installSkills(skillsSrc, skillsDst, { force, dryRun, verbose });
-  console.log(`  Installed ${skillCount} skills.\n`);
+  if (catalogCounts) {
+    console.log(`  Installed ${skillCount} skills (catalog baseline: ${catalogCounts.skills}).\n`);
+  } else {
+    console.log(`  Installed ${skillCount} skills.\n`);
+  }
 
   // Step 5: Update config.toml
   console.log('[5/8] Updating config.toml...');

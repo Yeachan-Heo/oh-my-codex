@@ -10,6 +10,7 @@ import {
   codexHome, codexConfigPath, codexPromptsDir,
   userSkillsDir, omxStateDir,
 } from '../utils/paths.js';
+import { getCatalogExpectations } from './catalog-contract.js';
 
 interface DoctorOptions {
   verbose?: boolean;
@@ -340,16 +341,17 @@ async function checkConfig(): Promise<Check> {
 
 async function checkPrompts(): Promise<Check> {
   const dir = codexPromptsDir();
+  const expectations = getCatalogExpectations();
   if (!existsSync(dir)) {
     return { name: 'Prompts', status: 'warn', message: 'prompts directory not found' };
   }
   try {
     const files = await readdir(dir);
     const mdFiles = files.filter(f => f.endsWith('.md'));
-    if (mdFiles.length >= 25) {
+    if (mdFiles.length >= expectations.promptMin) {
       return { name: 'Prompts', status: 'pass', message: `${mdFiles.length} agent prompts installed` };
     }
-    return { name: 'Prompts', status: 'warn', message: `${mdFiles.length} prompts (expected 30+)` };
+    return { name: 'Prompts', status: 'warn', message: `${mdFiles.length} prompts (expected >= ${expectations.promptMin})` };
   } catch {
     return { name: 'Prompts', status: 'fail', message: 'cannot read prompts directory' };
   }
@@ -357,16 +359,17 @@ async function checkPrompts(): Promise<Check> {
 
 async function checkSkills(): Promise<Check> {
   const dir = userSkillsDir();
+  const expectations = getCatalogExpectations();
   if (!existsSync(dir)) {
     return { name: 'Skills', status: 'warn', message: 'skills directory not found' };
   }
   try {
     const entries = await readdir(dir, { withFileTypes: true });
     const skillDirs = entries.filter(e => e.isDirectory());
-    if (skillDirs.length >= 20) {
+    if (skillDirs.length >= expectations.skillMin) {
       return { name: 'Skills', status: 'pass', message: `${skillDirs.length} skills installed` };
     }
-    return { name: 'Skills', status: 'warn', message: `${skillDirs.length} skills (expected 30+)` };
+    return { name: 'Skills', status: 'warn', message: `${skillDirs.length} skills (expected >= ${expectations.skillMin})` };
   } catch {
     return { name: 'Skills', status: 'fail', message: 'cannot read skills directory' };
   }

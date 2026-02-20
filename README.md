@@ -102,8 +102,8 @@ OMX installs and wires these layers:
 User
   -> Codex CLI
     -> AGENTS.md (orchestration brain)
-    -> ~/.codex/prompts/*.md (30 agent prompts)
-    -> ~/.agents/skills/*/SKILL.md (40 skills)
+    -> ~/.codex/prompts/*.md (agent prompt catalog)
+    -> ~/.agents/skills/*/SKILL.md (skill catalog)
     -> ~/.codex/config.toml (features, notify, MCP)
     -> .omx/ (runtime state, memory, plans, logs)
 ```
@@ -192,8 +192,8 @@ Important rule: do not shutdown while tasks are still `in_progress` unless abort
 
 ## What `omx setup` writes
 
-- `~/.codex/prompts/` (30 prompt files)
-- `~/.agents/skills/` (40 skills)
+- `~/.codex/prompts/` (prompt files)
+- `~/.agents/skills/` (skills)
 - `~/.codex/config.toml` updates:
   - `notify = ["node", "..."]`
   - `model_reasoning_effort = "high"`

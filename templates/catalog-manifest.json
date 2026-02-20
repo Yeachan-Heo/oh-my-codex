@@ -1,0 +1,474 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "2026.02.20",
+  "skills": [
+    {
+      "name": "autopilot",
+      "category": "execution",
+      "status": "active",
+      "core": true,
+      "internalRequired": false
+    },
+    {
+      "name": "ralph",
+      "category": "execution",
+      "status": "active",
+      "core": true,
+      "internalRequired": false
+    },
+    {
+      "name": "ultrawork",
+      "category": "execution",
+      "status": "active",
+      "core": true,
+      "internalRequired": false
+    },
+    {
+      "name": "team",
+      "category": "execution",
+      "status": "active",
+      "core": true,
+      "internalRequired": false
+    },
+    {
+      "name": "pipeline",
+      "category": "execution",
+      "status": "deprecated",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "ecomode",
+      "category": "execution",
+      "status": "merged",
+      "canonical": "ultrawork",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "ultrapilot",
+      "category": "execution",
+      "status": "deprecated",
+      "canonical": "autopilot",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "ultraqa",
+      "category": "execution",
+      "status": "merged",
+      "canonical": "ralph",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "swarm",
+      "category": "execution",
+      "status": "alias",
+      "canonical": "team",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "plan",
+      "category": "planning",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "ralplan",
+      "category": "planning",
+      "status": "active",
+      "canonical": "plan",
+      "core": true,
+      "internalRequired": false
+    },
+    {
+      "name": "analyze",
+      "category": "shortcut",
+      "status": "alias",
+      "canonical": "debugger",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "deepsearch",
+      "category": "shortcut",
+      "status": "alias",
+      "canonical": "explore",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "tdd",
+      "category": "shortcut",
+      "status": "alias",
+      "canonical": "test-engineer",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "build-fix",
+      "category": "shortcut",
+      "status": "alias",
+      "canonical": "build-fixer",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "code-review",
+      "category": "shortcut",
+      "status": "active",
+      "canonical": "code-reviewer",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "security-review",
+      "category": "shortcut",
+      "status": "active",
+      "canonical": "security-reviewer",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "frontend-ui-ux",
+      "category": "shortcut",
+      "status": "alias",
+      "canonical": "designer",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "git-master",
+      "category": "shortcut",
+      "status": "alias",
+      "canonical": "git-master",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "review",
+      "category": "shortcut",
+      "status": "alias",
+      "canonical": "plan --review",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "cancel",
+      "category": "utility",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "doctor",
+      "category": "utility",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "help",
+      "category": "utility",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "note",
+      "category": "utility",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "trace",
+      "category": "utility",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "skill",
+      "category": "utility",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "learner",
+      "category": "utility",
+      "status": "deprecated",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "research",
+      "category": "utility",
+      "status": "merged",
+      "canonical": "researcher",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "deepinit",
+      "category": "utility",
+      "status": "deprecated",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "release",
+      "category": "utility",
+      "status": "deprecated",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "hud",
+      "category": "utility",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "omx-setup",
+      "category": "utility",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "configure-telegram",
+      "category": "utility",
+      "status": "merged",
+      "canonical": "omx-setup",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "configure-discord",
+      "category": "utility",
+      "status": "merged",
+      "canonical": "omx-setup",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "writer-memory",
+      "category": "utility",
+      "status": "deprecated",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "project-session-manager",
+      "category": "utility",
+      "status": "deprecated",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "psm",
+      "category": "utility",
+      "status": "alias",
+      "canonical": "project-session-manager",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "ralph-init",
+      "category": "utility",
+      "status": "merged",
+      "canonical": "plan",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "learn-about-omx",
+      "category": "utility",
+      "status": "deprecated",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "worker",
+      "category": "utility",
+      "status": "internal",
+      "core": false,
+      "internalRequired": true
+    }
+  ],
+  "agents": [
+    {
+      "name": "explore",
+      "category": "build",
+      "status": "active"
+    },
+    {
+      "name": "analyst",
+      "category": "build",
+      "status": "active"
+    },
+    {
+      "name": "planner",
+      "category": "build",
+      "status": "active"
+    },
+    {
+      "name": "architect",
+      "category": "build",
+      "status": "active"
+    },
+    {
+      "name": "debugger",
+      "category": "build",
+      "status": "active"
+    },
+    {
+      "name": "executor",
+      "category": "build",
+      "status": "active"
+    },
+    {
+      "name": "deep-executor",
+      "category": "build",
+      "status": "deprecated",
+      "canonical": "executor"
+    },
+    {
+      "name": "verifier",
+      "category": "build",
+      "status": "active"
+    },
+    {
+      "name": "style-reviewer",
+      "category": "review",
+      "status": "merged",
+      "canonical": "code-reviewer"
+    },
+    {
+      "name": "quality-reviewer",
+      "category": "review",
+      "status": "merged",
+      "canonical": "code-reviewer"
+    },
+    {
+      "name": "api-reviewer",
+      "category": "review",
+      "status": "merged",
+      "canonical": "code-reviewer"
+    },
+    {
+      "name": "security-reviewer",
+      "category": "review",
+      "status": "active"
+    },
+    {
+      "name": "performance-reviewer",
+      "category": "review",
+      "status": "merged",
+      "canonical": "code-reviewer"
+    },
+    {
+      "name": "code-reviewer",
+      "category": "review",
+      "status": "active"
+    },
+    {
+      "name": "dependency-expert",
+      "category": "domain",
+      "status": "active"
+    },
+    {
+      "name": "test-engineer",
+      "category": "domain",
+      "status": "active"
+    },
+    {
+      "name": "quality-strategist",
+      "category": "domain",
+      "status": "merged",
+      "canonical": "verifier"
+    },
+    {
+      "name": "build-fixer",
+      "category": "domain",
+      "status": "active"
+    },
+    {
+      "name": "designer",
+      "category": "domain",
+      "status": "active"
+    },
+    {
+      "name": "writer",
+      "category": "domain",
+      "status": "active"
+    },
+    {
+      "name": "qa-tester",
+      "category": "domain",
+      "status": "merged",
+      "canonical": "test-engineer"
+    },
+    {
+      "name": "scientist",
+      "category": "domain",
+      "status": "deprecated",
+      "canonical": "researcher"
+    },
+    {
+      "name": "git-master",
+      "category": "domain",
+      "status": "active"
+    },
+    {
+      "name": "code-simplifier",
+      "category": "domain",
+      "status": "internal"
+    },
+    {
+      "name": "researcher",
+      "category": "domain",
+      "status": "active"
+    },
+    {
+      "name": "product-manager",
+      "category": "product",
+      "status": "merged",
+      "canonical": "analyst"
+    },
+    {
+      "name": "ux-researcher",
+      "category": "product",
+      "status": "merged",
+      "canonical": "designer"
+    },
+    {
+      "name": "information-architect",
+      "category": "product",
+      "status": "merged",
+      "canonical": "designer"
+    },
+    {
+      "name": "product-analyst",
+      "category": "product",
+      "status": "merged",
+      "canonical": "analyst"
+    },
+    {
+      "name": "critic",
+      "category": "coordination",
+      "status": "active"
+    },
+    {
+      "name": "vision",
+      "category": "coordination",
+      "status": "active"
+    }
+  ]
+}
