@@ -27,9 +27,12 @@ import {
 } from '../hooks/session.js';
 import { getPackageRoot } from '../utils/package.js';
 import { codexConfigPath } from '../utils/paths.js';
-import { getModelForMode } from '../config/models.js';
 import { buildHookEvent } from '../hooks/extensibility/events.js';
 import { dispatchHookEvent } from '../hooks/extensibility/dispatcher.js';
+import {
+  collectInheritableTeamWorkerArgs as collectInheritableTeamWorkerArgsShared,
+  resolveTeamWorkerLaunchArgs,
+} from '../team/model-contract.js';
 
 const HELP = `
 oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
@@ -64,7 +67,6 @@ Options:
 
 const MADMAX_FLAG = '--madmax';
 const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
-const MODEL_FLAG = '--model';
 const HIGH_REASONING_FLAG = '--high';
 const XHIGH_REASONING_FLAG = '--xhigh';
 const CONFIG_FLAG = '-c';
@@ -416,100 +418,8 @@ export function injectModelInstructionsBypassArgs(
   return [...args, CONFIG_FLAG, buildModelInstructionsOverride(cwd, env, defaultFilePath)];
 }
 
-function splitWorkerLaunchArgs(raw: string | undefined): string[] {
-  if (!raw || raw.trim() === '') return [];
-  return raw
-    .split(/\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-interface ParsedTeamWorkerLaunchArgs {
-  passthrough: string[];
-  wantsBypass: boolean;
-  reasoningOverride: string | null;
-  modelOverride: string | null;
-}
-
-function isValidModelValue(value: string): boolean {
-  return value.trim().length > 0 && !value.startsWith('-');
-}
-
-function parseTeamWorkerLaunchArgs(args: string[]): ParsedTeamWorkerLaunchArgs {
-  const passthrough: string[] = [];
-  let wantsBypass = false;
-  let reasoningOverride: string | null = null;
-  let modelOverride: string | null = null;
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === CODEX_BYPASS_FLAG || arg === MADMAX_FLAG) {
-      wantsBypass = true;
-      continue;
-    }
-
-    if (arg === MODEL_FLAG) {
-      const maybeValue = args[i + 1];
-      if (typeof maybeValue === 'string' && isValidModelValue(maybeValue)) {
-        modelOverride = maybeValue.trim();
-        i += 1;
-        continue;
-      }
-      passthrough.push(arg);
-      continue;
-    }
-
-    if (arg.startsWith(`${MODEL_FLAG}=`)) {
-      const inlineValue = arg.slice(`${MODEL_FLAG}=`.length).trim();
-      if (isValidModelValue(inlineValue)) {
-        modelOverride = inlineValue;
-        continue;
-      }
-      passthrough.push(arg);
-      continue;
-    }
-
-    if (arg === CONFIG_FLAG) {
-      const maybeValue = args[i + 1];
-      if (typeof maybeValue === 'string' && isReasoningOverride(maybeValue)) {
-        reasoningOverride = maybeValue;
-        i += 1;
-        continue;
-      }
-    }
-
-    passthrough.push(arg);
-  }
-
-  return {
-    passthrough,
-    wantsBypass,
-    reasoningOverride,
-    modelOverride,
-  };
-}
-
 export function collectInheritableTeamWorkerArgs(codexArgs: string[]): string[] {
-  const parsed = parseTeamWorkerLaunchArgs(codexArgs);
-
-  const inherited: string[] = [];
-  if (parsed.wantsBypass) inherited.push(CODEX_BYPASS_FLAG);
-  if (parsed.reasoningOverride) inherited.push(CONFIG_FLAG, parsed.reasoningOverride);
-  if (parsed.modelOverride) inherited.push(MODEL_FLAG, parsed.modelOverride);
-  return inherited;
-}
-
-function normalizeTeamWorkerLaunchArgs(args: string[], preferredModel?: string): string[] {
-  const parsed = parseTeamWorkerLaunchArgs(args);
-  const normalized = [...parsed.passthrough];
-
-  if (parsed.wantsBypass) normalized.push(CODEX_BYPASS_FLAG);
-  if (parsed.reasoningOverride) normalized.push(CONFIG_FLAG, parsed.reasoningOverride);
-
-  const selectedModel = preferredModel ?? parsed.modelOverride ?? undefined;
-  if (selectedModel) normalized.push(MODEL_FLAG, selectedModel);
-
-  return normalized;
+  return collectInheritableTeamWorkerArgsShared(codexArgs);
 }
 
 export function resolveTeamWorkerLaunchArgsEnv(
@@ -518,18 +428,12 @@ export function resolveTeamWorkerLaunchArgsEnv(
   inheritLeaderFlags = true,
   defaultModel?: string,
 ): string | null {
-  const envArgs = splitWorkerLaunchArgs(existingRaw);
   const inheritedArgs = inheritLeaderFlags ? collectInheritableTeamWorkerArgs(codexArgs) : [];
-  const allArgs = [...envArgs, ...inheritedArgs];
-
-  const envModel = parseTeamWorkerLaunchArgs(envArgs).modelOverride;
-  const inheritedModel = parseTeamWorkerLaunchArgs(inheritedArgs).modelOverride;
-  const fallbackModel = typeof defaultModel === 'string' && defaultModel.trim().length > 0
-    ? defaultModel.trim()
-    : undefined;
-  const selectedModel = envModel ?? inheritedModel ?? fallbackModel;
-
-  const normalized = normalizeTeamWorkerLaunchArgs(allArgs, selectedModel ?? undefined);
+  const normalized = resolveTeamWorkerLaunchArgs({
+    existingRaw,
+    inheritedArgs,
+    fallbackModel: defaultModel,
+  });
   if (normalized.length === 0) return null;
   return normalized.join(' ');
 }
@@ -710,12 +614,10 @@ function runCodex(cwd: string, args: string[], sessionId: string): void {
   const omxBin = process.argv[1];
   const hudCmd = buildTmuxShellCommand('node', [omxBin, 'hud', '--watch']);
   const inheritLeaderFlags = process.env[TEAM_INHERIT_LEADER_FLAGS_ENV] !== '0';
-  const configuredModel = getModelForMode('team');
   const workerLaunchArgs = resolveTeamWorkerLaunchArgsEnv(
     process.env[TEAM_WORKER_LAUNCH_ARGS_ENV],
     launchArgs,
     inheritLeaderFlags,
-    configuredModel,
   );
   const codexEnv = workerLaunchArgs
     ? { ...process.env, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }
