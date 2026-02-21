@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-02-21
+
 ### Added
 - Consolidated the prompt/skill catalog and hardened team runtime contracts after the mainline merge (PR #137).
 - Added setup scope-aware install modes (`user`, `project-local`, `project`) with persisted scope behavior.
