@@ -112,7 +112,7 @@ User
 
 ```bash
 omx                # Launch Codex (+ HUD in tmux when available)
-omx setup          # Install prompts, skills, config wiring, AGENTS.md
+omx setup          # Install prompts/skills/config by scope + project AGENTS.md/.omx
 omx doctor         # Installation/runtime diagnostics
 omx doctor --team  # Team/swarm diagnostics
 omx team ...       # Start/status/resume/shutdown tmux team workers
@@ -146,6 +146,7 @@ See `docs/hooks-extension.md` for the full extension workflow and event model.
 --force
 --dry-run
 --verbose
+--scope <user|project-local|project>  # setup only
 ```
 
 `--madmax` maps to Codex `--dangerously-bypass-approvals-and-sandbox`.
@@ -192,9 +193,13 @@ Important rule: do not shutdown while tasks are still `in_progress` unless abort
 
 ## What `omx setup` writes
 
-- `~/.codex/prompts/` (prompt files)
-- `~/.agents/skills/` (skills)
-- `~/.codex/config.toml` updates:
+- `.omx/setup-scope.json` (persisted setup scope)
+- Scope-dependent installs:
+  - `user`: `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`
+  - `project-local`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`
+  - `project`: skips prompt/skill/config/native-agent installs
+- Launch behavior: if persisted scope is `project-local`, `omx` launch auto-uses `CODEX_HOME=./.codex` (unless `CODEX_HOME` is already set).
+- `config.toml` updates (for `user`/`project-local` scopes):
   - `notify = ["node", "..."]`
   - `model_reasoning_effort = "high"`
   - `developer_instructions = "..."`

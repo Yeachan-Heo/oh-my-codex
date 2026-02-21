@@ -60,10 +60,14 @@ export function generateAgentToml(agent: AgentDefinition, promptContent: string)
  */
 export async function installNativeAgentConfigs(
   pkgRoot: string,
-  options: { force?: boolean; dryRun?: boolean; verbose?: boolean } = {}
+  options: { force?: boolean; dryRun?: boolean; verbose?: boolean; agentsDir?: string } = {}
 ): Promise<number> {
-  const { force = false, dryRun = false, verbose = false } = options;
-  const agentsDir = omxAgentsConfigDir();
+  const {
+    force = false,
+    dryRun = false,
+    verbose = false,
+    agentsDir = omxAgentsConfigDir(),
+  } = options;
 
   if (!dryRun) {
     await mkdir(agentsDir, { recursive: true });

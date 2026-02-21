@@ -6,8 +6,8 @@
 import { mkdir, copyFile, readdir, readFile, writeFile, stat, rm } from 'fs/promises';
 import { join, dirname } from 'path';
 import { existsSync } from 'fs';
-import { homedir } from 'os';
 import { spawnSync } from 'child_process';
+import { createInterface } from 'readline/promises';
 import {
   codexHome, codexConfigPath, codexPromptsDir,
   userSkillsDir, omxStateDir, omxPlansDir, omxLogsDir,
@@ -22,7 +22,35 @@ import { getCatalogHeadlineCounts } from './catalog-contract.js';
 interface SetupOptions {
   force?: boolean;
   dryRun?: boolean;
+  scope?: SetupScope;
   verbose?: boolean;
+}
+
+export const SETUP_SCOPES = ['user', 'project-local', 'project'] as const;
+export type SetupScope = typeof SETUP_SCOPES[number];
+
+interface ScopeDirectories {
+  codexConfigFile: string;
+  codexHomeDir: string;
+  nativeAgentsDir: string;
+  promptsDir: string;
+  skillsDir: string;
+}
+
+function applyScopePathRewritesToAgentsTemplate(content: string, scope: SetupScope): string {
+  if (scope !== 'project-local') return content;
+  return content
+    .replaceAll('~/.codex', './.codex')
+    .replaceAll('~/.agents', './.agents');
+}
+
+interface PersistedSetupScope {
+  scope: SetupScope;
+}
+
+interface ResolvedSetupScope {
+  scope: SetupScope;
+  source: 'cli' | 'persisted' | 'prompt' | 'default';
 }
 
 const REQUIRED_TEAM_COMM_MCP_TOOLS = [
@@ -32,77 +60,210 @@ const REQUIRED_TEAM_COMM_MCP_TOOLS = [
   'team_mailbox_mark_delivered',
 ] as const;
 
+const DEFAULT_SETUP_SCOPE: SetupScope = 'user';
+
+function isSetupScope(value: string): value is SetupScope {
+  return SETUP_SCOPES.includes(value as SetupScope);
+}
+
+function getScopeFilePath(projectRoot: string): string {
+  return join(projectRoot, '.omx', 'setup-scope.json');
+}
+
+function resolveScopeDirectories(scope: SetupScope, projectRoot: string): ScopeDirectories {
+  if (scope === 'project-local') {
+    const codexHomeDir = join(projectRoot, '.codex');
+    return {
+      codexConfigFile: join(codexHomeDir, 'config.toml'),
+      codexHomeDir,
+      nativeAgentsDir: join(projectRoot, '.omx', 'agents'),
+      promptsDir: join(codexHomeDir, 'prompts'),
+      skillsDir: join(projectRoot, '.agents', 'skills'),
+    };
+  }
+  return {
+    codexConfigFile: codexConfigPath(),
+    codexHomeDir: codexHome(),
+    nativeAgentsDir: omxAgentsConfigDir(),
+    promptsDir: codexPromptsDir(),
+    skillsDir: userSkillsDir(),
+  };
+}
+
+async function readPersistedSetupScope(projectRoot: string): Promise<SetupScope | undefined> {
+  const scopePath = getScopeFilePath(projectRoot);
+  if (!existsSync(scopePath)) return undefined;
+  try {
+    const raw = await readFile(scopePath, 'utf-8');
+    const parsed = JSON.parse(raw) as Partial<PersistedSetupScope>;
+    if (parsed && typeof parsed.scope === 'string' && isSetupScope(parsed.scope)) {
+      return parsed.scope;
+    }
+  } catch {
+    // ignore invalid persisted scope and fall back to prompt/default
+  }
+  return undefined;
+}
+
+async function promptForSetupScope(defaultScope: SetupScope): Promise<SetupScope> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    return defaultScope;
+  }
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    console.log('Select setup scope:');
+    console.log(`  1) user (default)`);
+    console.log('  2) project-local');
+    console.log('  3) project');
+    const answer = (await rl.question('Scope [1-3] (default: 1): ')).trim().toLowerCase();
+    if (answer === '2' || answer === 'project-local') return 'project-local';
+    if (answer === '3' || answer === 'project') return 'project';
+    return defaultScope;
+  } finally {
+    rl.close();
+  }
+}
+
+async function resolveSetupScope(projectRoot: string, requestedScope?: SetupScope): Promise<ResolvedSetupScope> {
+  if (requestedScope) {
+    return { scope: requestedScope, source: 'cli' };
+  }
+  const persisted = await readPersistedSetupScope(projectRoot);
+  if (persisted) {
+    return { scope: persisted, source: 'persisted' };
+  }
+  if (process.stdin.isTTY && process.stdout.isTTY) {
+    const scope = await promptForSetupScope(DEFAULT_SETUP_SCOPE);
+    return { scope, source: 'prompt' };
+  }
+  return { scope: DEFAULT_SETUP_SCOPE, source: 'default' };
+}
+
+async function persistSetupScope(
+  projectRoot: string,
+  scope: SetupScope,
+  options: Pick<SetupOptions, 'dryRun' | 'verbose'>
+): Promise<void> {
+  const scopePath = getScopeFilePath(projectRoot);
+  if (options.dryRun) {
+    if (options.verbose) console.log(`  dry-run: skip persisting ${scopePath}`);
+    return;
+  }
+  await mkdir(dirname(scopePath), { recursive: true });
+  const payload: PersistedSetupScope = { scope };
+  await writeFile(scopePath, JSON.stringify(payload, null, 2) + '\n');
+  if (options.verbose) console.log(`  Wrote ${scopePath}`);
+}
+
 export async function setup(options: SetupOptions = {}): Promise<void> {
-  const { force = false, dryRun = false, verbose = false } = options;
+  const { force = false, dryRun = false, scope: requestedScope, verbose = false } = options;
   const pkgRoot = getPackageRoot();
+  const projectRoot = process.cwd();
+  const resolvedScope = await resolveSetupScope(projectRoot, requestedScope);
+  const scopeDirs = resolveScopeDirectories(resolvedScope.scope, projectRoot);
+  const installUserOrProjectLocalAssets = resolvedScope.scope !== 'project';
+  const scopeSourceMessage = resolvedScope.source === 'persisted' ? ' (from .omx/setup-scope.json)' : '';
 
   console.log('oh-my-codex setup');
   console.log('=================\n');
+  console.log(`Using setup scope: ${resolvedScope.scope}${scopeSourceMessage}\n`);
 
   // Step 1: Ensure directories exist
   console.log('[1/8] Creating directories...');
   const dirs = [
-    codexHome(),
-    codexPromptsDir(),
-    userSkillsDir(),
-    omxStateDir(),
-    omxPlansDir(),
-    omxLogsDir(),
-    omxAgentsConfigDir(),
+    omxStateDir(projectRoot),
+    omxPlansDir(projectRoot),
+    omxLogsDir(projectRoot),
   ];
+  if (installUserOrProjectLocalAssets) {
+    dirs.unshift(
+      scopeDirs.codexHomeDir,
+      scopeDirs.promptsDir,
+      scopeDirs.skillsDir,
+      scopeDirs.nativeAgentsDir
+    );
+  }
   for (const dir of dirs) {
     if (!dryRun) {
       await mkdir(dir, { recursive: true });
     }
     if (verbose) console.log(`  mkdir ${dir}`);
   }
+  await persistSetupScope(projectRoot, resolvedScope.scope, { dryRun, verbose });
   console.log('  Done.\n');
 
   // Step 2: Install agent prompts
   console.log('[2/8] Installing agent prompts...');
-  const promptsSrc = join(pkgRoot, 'prompts');
-  const promptsDst = codexPromptsDir();
-  const promptCount = await installDirectory(promptsSrc, promptsDst, '.md', { force, dryRun, verbose });
-  const cleanedLegacyPromptShims = await cleanupLegacySkillPromptShims(promptsSrc, promptsDst, {
-    dryRun,
-    verbose,
-  });
-  if (cleanedLegacyPromptShims > 0) {
-    if (dryRun) {
-      console.log(`  Would remove ${cleanedLegacyPromptShims} legacy skill prompt shim file(s).`);
-    } else {
-      console.log(`  Removed ${cleanedLegacyPromptShims} legacy skill prompt shim file(s).`);
-    }
-  }
   const catalogCounts = getCatalogHeadlineCounts();
-  if (catalogCounts) {
-    console.log(`  Installed ${promptCount} agent prompts (catalog baseline: ${catalogCounts.prompts}).\n`);
+  if (installUserOrProjectLocalAssets) {
+    const promptsSrc = join(pkgRoot, 'prompts');
+    const promptsDst = scopeDirs.promptsDir;
+    const promptCount = await installDirectory(promptsSrc, promptsDst, '.md', { force, dryRun, verbose });
+    const cleanedLegacyPromptShims = await cleanupLegacySkillPromptShims(promptsSrc, promptsDst, {
+      dryRun,
+      verbose,
+    });
+    if (cleanedLegacyPromptShims > 0) {
+      if (dryRun) {
+        console.log(`  Would remove ${cleanedLegacyPromptShims} legacy skill prompt shim file(s).`);
+      } else {
+        console.log(`  Removed ${cleanedLegacyPromptShims} legacy skill prompt shim file(s).`);
+      }
+    }
+    if (catalogCounts) {
+      console.log(`  Installed ${promptCount} agent prompts (catalog baseline: ${catalogCounts.prompts}).\n`);
+    } else {
+      console.log(`  Installed ${promptCount} agent prompts.\n`);
+    }
   } else {
-    console.log(`  Installed ${promptCount} agent prompts.\n`);
+    console.log('  Skipped for scope "project" (no prompts install).\n');
   }
 
   // Step 3: Install native agent configs
   console.log('[3/8] Installing native agent configs...');
-  const agentConfigCount = await installNativeAgentConfigs(pkgRoot, { force, dryRun, verbose });
-  console.log(`  Installed ${agentConfigCount} native agent configs to ~/.omx/agents/.\n`);
+  if (installUserOrProjectLocalAssets) {
+    const agentConfigCount = await installNativeAgentConfigs(pkgRoot, {
+      force,
+      dryRun,
+      verbose,
+      agentsDir: scopeDirs.nativeAgentsDir,
+    });
+    console.log(`  Installed ${agentConfigCount} native agent configs to ${scopeDirs.nativeAgentsDir}.\n`);
+  } else {
+    console.log('  Skipped for scope "project" (no native agent config install).\n');
+  }
 
   // Step 4: Install skills
   console.log('[4/8] Installing skills...');
-  const skillsSrc = join(pkgRoot, 'skills');
-  const skillsDst = userSkillsDir();
-  const skillCount = await installSkills(skillsSrc, skillsDst, { force, dryRun, verbose });
-  if (catalogCounts) {
-    console.log(`  Installed ${skillCount} skills (catalog baseline: ${catalogCounts.skills}).\n`);
+  if (installUserOrProjectLocalAssets) {
+    const skillsSrc = join(pkgRoot, 'skills');
+    const skillsDst = scopeDirs.skillsDir;
+    const skillCount = await installSkills(skillsSrc, skillsDst, { force, dryRun, verbose });
+    if (catalogCounts) {
+      console.log(`  Installed ${skillCount} skills (catalog baseline: ${catalogCounts.skills}).\n`);
+    } else {
+      console.log(`  Installed ${skillCount} skills.\n`);
+    }
   } else {
-    console.log(`  Installed ${skillCount} skills.\n`);
+    console.log('  Skipped for scope "project" (no skills install).\n');
   }
 
   // Step 5: Update config.toml
   console.log('[5/8] Updating config.toml...');
-  if (!dryRun) {
-    await mergeConfig(codexConfigPath(), pkgRoot, { verbose });
+  if (installUserOrProjectLocalAssets) {
+    if (!dryRun) {
+      await mergeConfig(scopeDirs.codexConfigFile, pkgRoot, {
+        verbose,
+        agentsConfigDir: scopeDirs.nativeAgentsDir,
+      });
+    }
+    console.log(`  Done (${scopeDirs.codexConfigFile}).\n`);
+  } else {
+    console.log('  Skipped for scope "project" (no config.toml updates).\n');
   }
-  console.log('  Done.\n');
 
   // Step 5.5: Verify team comm MCP tools are available via omx_state server.
   console.log('[5.5/8] Verifying Team MCP comm tools...');
@@ -118,10 +279,10 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   // Step 6: Generate AGENTS.md
   console.log('[6/8] Generating AGENTS.md...');
   const agentsMdSrc = join(pkgRoot, 'templates', 'AGENTS.md');
-  const agentsMdDst = join(process.cwd(), 'AGENTS.md');
+  const agentsMdDst = join(projectRoot, 'AGENTS.md');
 
   // Guard: refuse to overwrite AGENTS.md during active session
-  const activeSession = await readSessionState(process.cwd());
+  const activeSession = await readSessionState(projectRoot);
   const sessionIsActive = activeSession && !isSessionStale(activeSession);
 
   if (existsSync(agentsMdSrc)) {
@@ -132,7 +293,8 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     } else if (force || !existsSync(agentsMdDst)) {
       if (!dryRun) {
         const content = await readFile(agentsMdSrc, 'utf-8');
-        await writeFile(agentsMdDst, content);
+        const rewritten = applyScopePathRewritesToAgentsTemplate(content, resolvedScope.scope);
+        await writeFile(agentsMdDst, rewritten);
       }
       console.log('  Generated AGENTS.md in project root.');
     } else {
@@ -150,7 +312,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 
   // Step 8: Configure HUD
   console.log('[8/8] Configuring HUD...');
-  const hudConfigPath = join(process.cwd(), '.omx', 'hud-config.json');
+  const hudConfigPath = join(projectRoot, '.omx', 'hud-config.json');
   if (force || !existsSync(hudConfigPath)) {
     if (!dryRun) {
       const defaultHudConfig = { preset: 'focused' };
@@ -161,7 +323,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   } else {
     console.log('  HUD config already exists (use --force to overwrite).');
   }
-  console.log('  StatusLine configured in config.toml via [tui] section.');
+  if (installUserOrProjectLocalAssets) {
+    console.log('  StatusLine configured in config.toml via [tui] section.');
+  } else {
+    console.log('  StatusLine setup skipped because config.toml was not modified for scope "project".');
+  }
   console.log();
 
   console.log('Setup complete! Run "omx doctor" to verify installation.');

@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   normalizeCodexLaunchArgs,
   buildTmuxShellCommand,
@@ -15,6 +18,9 @@ import {
   resolveTeamWorkerLaunchArgsEnv,
   injectModelInstructionsBypassArgs,
   resolveWorkerSparkModel,
+  resolveSetupScopeArg,
+  readPersistedSetupScope,
+  resolveCodexHomeForLaunch,
 } from '../index.js';
 
 describe('normalizeCodexLaunchArgs', () => {
@@ -182,6 +188,80 @@ describe('resolveCliInvocation', () => {
       command: 'launch',
       launchArgs: ['--model', 'gpt-5'],
     });
+  });
+});
+
+describe('resolveSetupScopeArg', () => {
+  it('returns undefined when scope is omitted', () => {
+    assert.equal(resolveSetupScopeArg(['--dry-run']), undefined);
+  });
+
+  it('parses --scope <value> form', () => {
+    assert.equal(resolveSetupScopeArg(['--dry-run', '--scope', 'project-local']), 'project-local');
+  });
+
+  it('parses --scope=<value> form', () => {
+    assert.equal(resolveSetupScopeArg(['--scope=project']), 'project');
+  });
+
+  it('throws on invalid scope value', () => {
+    assert.throws(
+      () => resolveSetupScopeArg(['--scope', 'workspace']),
+      /Invalid setup scope: workspace/
+    );
+  });
+
+  it('throws when --scope value is missing', () => {
+    assert.throws(
+      () => resolveSetupScopeArg(['--scope']),
+      /Missing setup scope value after --scope/
+    );
+  });
+});
+
+describe('project-local launch scope helpers', () => {
+  it('reads persisted setup scope when valid', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-scope-'));
+    try {
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project-local' }));
+      assert.equal(readPersistedSetupScope(wd), 'project-local');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores malformed persisted setup scope', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-scope-'));
+    try {
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), '{not-json');
+      assert.equal(readPersistedSetupScope(wd), undefined);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('uses project-local CODEX_HOME when persisted scope is project-local', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-scope-'));
+    try {
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project-local' }));
+      assert.equal(resolveCodexHomeForLaunch(wd, {}), join(wd, '.codex'));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps explicit CODEX_HOME override from env', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-scope-'));
+    try {
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project-local' }));
+      assert.equal(resolveCodexHomeForLaunch(wd, { CODEX_HOME: '/tmp/explicit-codex-home' }), '/tmp/explicit-codex-home');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
   });
 });
 

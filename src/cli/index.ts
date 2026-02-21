@@ -5,8 +5,8 @@
 
 import { execSync, execFileSync, spawn } from 'child_process';
 import { basename, dirname, join } from 'path';
-import { existsSync } from 'fs';
-import { setup } from './setup.js';
+import { existsSync, readFileSync } from 'fs';
+import { setup, SETUP_SCOPES, type SetupScope } from './setup.js';
 import { doctor } from './doctor.js';
 import { version } from './version.js';
 import { tmuxHookCommand } from './tmux-hook.js';
@@ -68,6 +68,8 @@ Options:
   --force       Force reinstall (overwrite existing files)
   --dry-run     Show what would be done without doing it
   --verbose     Show detailed output
+  --scope       Setup scope for "omx setup" only:
+                user | project-local | project
 `;
 
 const MADMAX_FLAG = '--madmax';
@@ -95,6 +97,53 @@ type CliCommand = 'launch' | 'setup' | 'doctor' | 'team' | 'version' | 'tmux-hoo
 export interface ResolvedCliInvocation {
   command: CliCommand;
   launchArgs: string[];
+}
+
+export function readPersistedSetupScope(cwd: string): SetupScope | undefined {
+  const scopePath = join(cwd, '.omx', 'setup-scope.json');
+  if (!existsSync(scopePath)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(scopePath, 'utf-8')) as Partial<{ scope: string }>;
+    if (typeof parsed.scope === 'string' && SETUP_SCOPES.includes(parsed.scope as SetupScope)) {
+      return parsed.scope as SetupScope;
+    }
+  } catch {
+    // Ignore malformed persisted scope and use defaults.
+  }
+  return undefined;
+}
+
+export function resolveCodexHomeForLaunch(cwd: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (env.CODEX_HOME && env.CODEX_HOME.trim() !== '') return env.CODEX_HOME;
+  const persistedScope = readPersistedSetupScope(cwd);
+  if (persistedScope === 'project-local') {
+    return join(cwd, '.codex');
+  }
+  return undefined;
+}
+
+export function resolveSetupScopeArg(args: string[]): SetupScope | undefined {
+  let value: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--scope') {
+      const next = args[index + 1];
+      if (!next || next.startsWith('-')) {
+        throw new Error(`Missing setup scope value after --scope. Expected one of: ${SETUP_SCOPES.join(', ')}`);
+      }
+      value = next;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--scope=')) {
+      value = arg.slice('--scope='.length);
+    }
+  }
+  if (!value) return undefined;
+  if (SETUP_SCOPES.includes(value as SetupScope)) {
+    return value as SetupScope;
+  }
+  throw new Error(`Invalid setup scope: ${value}. Expected one of: ${SETUP_SCOPES.join(', ')}`);
 }
 
 export function resolveCliInvocation(args: string[]): ResolvedCliInvocation {
@@ -185,7 +234,12 @@ export async function main(args: string[]): Promise<void> {
         await launchWithHud(launchArgs);
         break;
       case 'setup':
-        await setup(options);
+        await setup({
+          force: options.force,
+          dryRun: options.dryRun,
+          verbose: options.verbose,
+          scope: resolveSetupScopeArg(args.slice(1)),
+        });
         break;
       case 'doctor':
         await doctor(options);
@@ -654,9 +708,13 @@ function runCodex(cwd: string, args: string[], sessionId: string, workerDefaultM
     inheritLeaderFlags,
     workerDefaultModel,
   );
-  const codexEnv = workerLaunchArgs
-    ? { ...process.env, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }
+  const codexHomeOverride = resolveCodexHomeForLaunch(cwd, process.env);
+  const codexBaseEnv = codexHomeOverride
+    ? { ...process.env, CODEX_HOME: codexHomeOverride }
     : process.env;
+  const codexEnv = workerLaunchArgs
+    ? { ...codexBaseEnv, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }
+    : codexBaseEnv;
 
   if (resolveCodexLaunchPolicy(process.env) === 'inside-tmux') {
     // Already in tmux: launch codex in current pane, HUD in bottom split
@@ -710,6 +768,7 @@ function runCodex(cwd: string, args: string[], sessionId: string, workerDefaultM
         [
           'new-session', '-d', '-s', sessionName, '-c', cwd,
           ...(workerLaunchArgs ? ['-e', `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`] : []),
+          ...(codexHomeOverride ? ['-e', `CODEX_HOME=${codexHomeOverride}`] : []),
           codexCmd,
           ';',
           'split-window', '-v', '-l', '4', '-d', '-c', cwd, hudCmd,

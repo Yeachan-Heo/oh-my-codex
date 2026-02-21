@@ -17,6 +17,7 @@ import { AGENT_DEFINITIONS } from '../agents/definitions.js';
 import { omxAgentsConfigDir } from '../utils/paths.js';
 
 interface MergeOptions {
+  agentsConfigDir?: string;
   verbose?: boolean;
 }
 
@@ -184,7 +185,7 @@ function stripExistingOmxBlocks(config: string): { cleaned: string; removed: num
  * Generate [agents.<name>] entries for Codex native multi-agent support.
  * Each agent gets a description and config_file pointing to ~/.omx/agents/<name>.toml
  */
-function getAgentEntries(): string[] {
+function getAgentEntries(agentsConfigDir: string): string[] {
   const entries: string[] = [
     '',
     '# OMX Native Agent Roles (Codex multi-agent)',
@@ -193,7 +194,7 @@ function getAgentEntries(): string[] {
   for (const [name, agent] of Object.entries(AGENT_DEFINITIONS)) {
     // TOML table headers with special chars need quoting
     const tableKey = name.includes('-') ? `agents."${name}"` : `agents.${name}`;
-    const configFile = join(omxAgentsConfigDir(), `${name}.toml`)
+    const configFile = join(agentsConfigDir, `${name}.toml`)
       .replace(/\\/g, '\\\\')
       .replace(/"/g, '\\"');
 
@@ -210,7 +211,7 @@ function getAgentEntries(): string[] {
  * OMX table-section block (MCP servers, TUI).
  * Contains ONLY [table] sections — no bare keys.
  */
-function getOmxTablesBlock(pkgRoot: string): string {
+function getOmxTablesBlock(pkgRoot: string, agentsConfigDir: string): string {
   const stateServerPath = join(pkgRoot, 'dist', 'mcp', 'state-server.js');
   const memoryServerPath = join(pkgRoot, 'dist', 'mcp', 'memory-server.js');
   const codeIntelServerPath = join(pkgRoot, 'dist', 'mcp', 'code-intel-server.js');
@@ -250,7 +251,7 @@ function getOmxTablesBlock(pkgRoot: string): string {
     `args = ["${traceServerPath}"]`,
     'enabled = true',
     'startup_timeout_sec = 5',
-    ...getAgentEntries(),
+    ...getAgentEntries(agentsConfigDir),
     '',
     '# OMX TUI StatusLine (Codex CLI v0.101.0+)',
     '[tui]',
@@ -305,7 +306,7 @@ export async function mergeConfig(
   // Build final config:
   //   top-level keys → existing content (with [features]) → OMX tables block
   const topLines = getOmxTopLevelLines(pkgRoot);
-  const tablesBlock = getOmxTablesBlock(pkgRoot);
+  const tablesBlock = getOmxTablesBlock(pkgRoot, options.agentsConfigDir || omxAgentsConfigDir());
 
   const finalConfig = topLines.join('\n') + '\n\n' + existing.trimEnd() + '\n' + tablesBlock;
 
