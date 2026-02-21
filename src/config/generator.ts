@@ -214,10 +214,14 @@ function getAgentEntries(): string[] {
  * Contains ONLY [table] sections — no bare keys.
  */
 function getOmxTablesBlock(pkgRoot: string): string {
-  const stateServerPath = join(pkgRoot, 'dist', 'mcp', 'state-server.js');
-  const memoryServerPath = join(pkgRoot, 'dist', 'mcp', 'memory-server.js');
-  const codeIntelServerPath = join(pkgRoot, 'dist', 'mcp', 'code-intel-server.js');
-  const traceServerPath = join(pkgRoot, 'dist', 'mcp', 'trace-server.js');
+  const stateServerPath = join(pkgRoot, 'dist', 'mcp', 'state-server.js')
+    .replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const memoryServerPath = join(pkgRoot, 'dist', 'mcp', 'memory-server.js')
+    .replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const codeIntelServerPath = join(pkgRoot, 'dist', 'mcp', 'code-intel-server.js')
+    .replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const traceServerPath = join(pkgRoot, 'dist', 'mcp', 'trace-server.js')
+    .replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
   return [
     '',
