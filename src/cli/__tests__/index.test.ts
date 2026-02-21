@@ -14,6 +14,7 @@ import {
   collectInheritableTeamWorkerArgs,
   resolveTeamWorkerLaunchArgsEnv,
   injectModelInstructionsBypassArgs,
+  resolveWorkerSparkModel,
 } from '../index.js';
 
 describe('normalizeCodexLaunchArgs', () => {
@@ -88,59 +89,75 @@ describe('normalizeCodexLaunchArgs', () => {
     );
   });
 
-  it('--spark injects the spark model', () => {
+  it('--spark is stripped from leader args (model goes to workers only)', () => {
     assert.deepEqual(
-      normalizeCodexLaunchArgs(['--spark']),
-      ['--model', 'gpt-5.3-codex-spark']
+      normalizeCodexLaunchArgs(['--spark', '--yolo']),
+      ['--yolo']
     );
   });
 
-  it('--spark does not override an explicit --model flag', () => {
-    assert.deepEqual(
-      normalizeCodexLaunchArgs(['--model', 'gpt-5', '--spark']),
-      ['--model', 'gpt-5']
-    );
+  it('--spark alone produces no leader args', () => {
+    assert.deepEqual(normalizeCodexLaunchArgs(['--spark']), []);
   });
 
-  it('--spark does not override an explicit --model=value flag', () => {
-    assert.deepEqual(
-      normalizeCodexLaunchArgs(['--model=custom-model', '--spark']),
-      ['--model=custom-model']
-    );
-  });
-
-  it('--spark combines with --xhigh reasoning', () => {
-    assert.deepEqual(
-      normalizeCodexLaunchArgs(['--spark', '--xhigh']),
-      ['-c', 'model_reasoning_effort="xhigh"', '--model', 'gpt-5.3-codex-spark']
-    );
-  });
-
-  it('--madmax-spark injects spark model and bypass flag', () => {
+  it('--madmax-spark adds bypass flag to leader args and is otherwise consumed', () => {
     assert.deepEqual(
       normalizeCodexLaunchArgs(['--madmax-spark']),
-      ['--dangerously-bypass-approvals-and-sandbox', '--model', 'gpt-5.3-codex-spark']
+      ['--dangerously-bypass-approvals-and-sandbox']
     );
   });
 
-  it('--madmax-spark does not override an explicit --model flag', () => {
-    assert.deepEqual(
-      normalizeCodexLaunchArgs(['--madmax-spark', '--model', 'custom']),
-      ['--model', 'custom', '--dangerously-bypass-approvals-and-sandbox']
-    );
-  });
-
-  it('--madmax-spark deduplicates bypass flag when --madmax is also present', () => {
+  it('--madmax-spark deduplicates bypass when --madmax also present', () => {
     assert.deepEqual(
       normalizeCodexLaunchArgs(['--madmax', '--madmax-spark']),
-      ['--dangerously-bypass-approvals-and-sandbox', '--model', 'gpt-5.3-codex-spark']
+      ['--dangerously-bypass-approvals-and-sandbox']
     );
   });
 
-  it('--madmax-spark combines with --xhigh reasoning', () => {
-    assert.deepEqual(
-      normalizeCodexLaunchArgs(['--madmax-spark', '--xhigh']),
-      ['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="xhigh"', '--model', 'gpt-5.3-codex-spark']
+  it('--madmax-spark does not inject spark model into leader args', () => {
+    const args = normalizeCodexLaunchArgs(['--madmax-spark']);
+    assert.ok(!args.includes('--model'), 'leader args must not contain --model from --madmax-spark');
+    assert.ok(!args.some(a => a.includes('spark')), 'leader args must not reference spark model');
+  });
+});
+
+describe('resolveWorkerSparkModel', () => {
+  it('returns spark model string when --spark is present', () => {
+    assert.equal(resolveWorkerSparkModel(['--spark', '--yolo']), 'gpt-5.3-codex-spark');
+  });
+
+  it('returns spark model string when --madmax-spark is present', () => {
+    assert.equal(resolveWorkerSparkModel(['--madmax-spark']), 'gpt-5.3-codex-spark');
+  });
+
+  it('returns undefined when neither spark flag is present', () => {
+    assert.equal(resolveWorkerSparkModel(['--madmax', '--yolo', '--model', 'gpt-5']), undefined);
+  });
+
+  it('returns undefined for empty args', () => {
+    assert.equal(resolveWorkerSparkModel([]), undefined);
+  });
+});
+
+describe('resolveTeamWorkerLaunchArgsEnv (spark)', () => {
+  it('injects spark model as worker default when no explicit env model', () => {
+    assert.equal(
+      resolveTeamWorkerLaunchArgsEnv(undefined, [], true, 'gpt-5.3-codex-spark'),
+      '--model gpt-5.3-codex-spark'
+    );
+  });
+
+  it('explicit env model overrides spark default', () => {
+    assert.equal(
+      resolveTeamWorkerLaunchArgsEnv('--model gpt-5', [], true, 'gpt-5.3-codex-spark'),
+      '--model gpt-5'
+    );
+  });
+
+  it('inherited leader model overrides spark default', () => {
+    assert.equal(
+      resolveTeamWorkerLaunchArgsEnv(undefined, ['--model', 'gpt-4.1'], true, 'gpt-5.3-codex-spark'),
+      '--model gpt-4.1'
     );
   });
 });
