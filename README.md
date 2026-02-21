@@ -199,6 +199,7 @@ Important rule: do not shutdown while tasks are still `in_progress` unless abort
   - `project-local`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`
   - `project`: skips prompt/skill/config/native-agent installs
 - Launch behavior: if persisted scope is `project-local`, `omx` launch auto-uses `CODEX_HOME=./.codex` (unless `CODEX_HOME` is already set).
+- Existing `AGENTS.md` is preserved unless `--force` is used (and active-session safety checks still apply).
 - `config.toml` updates (for `user`/`project-local` scopes):
   - `notify = ["node", "..."]`
   - `model_reasoning_effort = "high"`
@@ -211,8 +212,8 @@ Important rule: do not shutdown while tasks are still `in_progress` unless abort
 
 ## Agents and Skills
 
-- Prompts: `prompts/*.md` (installed to `~/.codex/prompts/`)
-- Skills: `skills/*/SKILL.md` (installed to `~/.agents/skills/`)
+- Prompts: `prompts/*.md` (installed to `~/.codex/prompts/` for `user`, `./.codex/prompts/` for `project-local`)
+- Skills: `skills/*/SKILL.md` (installed to `~/.agents/skills/` for `user`, `./.agents/skills/` for `project-local`)
 
 Examples:
 - Agents: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`

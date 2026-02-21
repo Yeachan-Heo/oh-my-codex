@@ -70,11 +70,11 @@ omx doctor
 ## Expected verification indicators
 
 From `omx doctor`, expect:
-- Prompts installed (30)
-- Skills installed (40)
+- Prompts installed (scope-dependent: user or project-local)
+- Skills installed (scope-dependent: user or project-local)
 - AGENTS.md found in project root
 - `.omx/state` exists
-- OMX MCP servers configured in `~/.codex/config.toml`
+- OMX MCP servers configured in scope target `config.toml` (`~/.codex/config.toml` or `./.codex/config.toml`)
 
 ## Troubleshooting
 
