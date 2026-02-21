@@ -61,6 +61,10 @@ Options:
                 (shorthand for: -c model_reasoning_effort="xhigh")
   --madmax      DANGEROUS: bypass Codex approvals and sandbox
                 (alias for --dangerously-bypass-approvals-and-sandbox)
+  --spark       Use the Codex spark model (~1.3x faster) for this session
+                (shorthand for: --model gpt-5.3-codex-spark)
+  --madmax-spark  Use spark model with approval bypass for maximum throughput
+                (pro users only; shorthand for: --spark --madmax)
   --force       Force reinstall (overwrite existing files)
   --dry-run     Show what would be done without doing it
   --verbose     Show detailed output
@@ -68,8 +72,12 @@ Options:
 
 const MADMAX_FLAG = '--madmax';
 const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
+const MODEL_FLAG = '--model';
 const HIGH_REASONING_FLAG = '--high';
 const XHIGH_REASONING_FLAG = '--xhigh';
+const SPARK_FLAG = '--spark';
+const MADMAX_SPARK_FLAG = '--madmax-spark';
+const SPARK_MODEL = 'gpt-5.3-codex-spark';
 const CONFIG_FLAG = '-c';
 const LONG_CONFIG_FLAG = '--config';
 const REASONING_KEY = 'model_reasoning_effort';
@@ -332,6 +340,8 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
   let wantsBypass = false;
   let hasBypass = false;
   let reasoningMode: ReasoningMode | null = null;
+  let wantsSparkModel = false;
+  let hasExplicitModel = false;
 
   for (const arg of args) {
     if (arg === MADMAX_FLAG) {
@@ -358,6 +368,21 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
       continue;
     }
 
+    if (arg === SPARK_FLAG) {
+      wantsSparkModel = true;
+      continue;
+    }
+
+    if (arg === MADMAX_SPARK_FLAG) {
+      wantsSparkModel = true;
+      wantsBypass = true;
+      continue;
+    }
+
+    if (arg === MODEL_FLAG || arg.startsWith(`${MODEL_FLAG}=`)) {
+      hasExplicitModel = true;
+    }
+
     normalized.push(arg);
   }
 
@@ -367,6 +392,10 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
 
   if (reasoningMode) {
     normalized.push(CONFIG_FLAG, `${REASONING_KEY}="${reasoningMode}"`);
+  }
+
+  if (wantsSparkModel && !hasExplicitModel) {
+    normalized.push(MODEL_FLAG, SPARK_MODEL);
   }
 
   return normalized;

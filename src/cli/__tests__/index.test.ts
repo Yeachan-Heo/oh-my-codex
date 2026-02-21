@@ -87,6 +87,62 @@ describe('normalizeCodexLaunchArgs', () => {
       ['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="xhigh"']
     );
   });
+
+  it('--spark injects the spark model', () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs(['--spark']),
+      ['--model', 'gpt-5.3-codex-spark']
+    );
+  });
+
+  it('--spark does not override an explicit --model flag', () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs(['--model', 'gpt-5', '--spark']),
+      ['--model', 'gpt-5']
+    );
+  });
+
+  it('--spark does not override an explicit --model=value flag', () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs(['--model=custom-model', '--spark']),
+      ['--model=custom-model']
+    );
+  });
+
+  it('--spark combines with --xhigh reasoning', () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs(['--spark', '--xhigh']),
+      ['-c', 'model_reasoning_effort="xhigh"', '--model', 'gpt-5.3-codex-spark']
+    );
+  });
+
+  it('--madmax-spark injects spark model and bypass flag', () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs(['--madmax-spark']),
+      ['--dangerously-bypass-approvals-and-sandbox', '--model', 'gpt-5.3-codex-spark']
+    );
+  });
+
+  it('--madmax-spark does not override an explicit --model flag', () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs(['--madmax-spark', '--model', 'custom']),
+      ['--model', 'custom', '--dangerously-bypass-approvals-and-sandbox']
+    );
+  });
+
+  it('--madmax-spark deduplicates bypass flag when --madmax is also present', () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs(['--madmax', '--madmax-spark']),
+      ['--dangerously-bypass-approvals-and-sandbox', '--model', 'gpt-5.3-codex-spark']
+    );
+  });
+
+  it('--madmax-spark combines with --xhigh reasoning', () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs(['--madmax-spark', '--xhigh']),
+      ['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="xhigh"', '--model', 'gpt-5.3-codex-spark']
+    );
+  });
 });
 
 describe('resolveCliInvocation', () => {
