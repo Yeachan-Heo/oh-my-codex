@@ -61,6 +61,10 @@ Options:
                 (shorthand for: -c model_reasoning_effort="xhigh")
   --madmax      DANGEROUS: bypass Codex approvals and sandbox
                 (alias for --dangerously-bypass-approvals-and-sandbox)
+  --spark       Use the Codex spark model (~1.3x faster) for team workers only
+                Workers get --model gpt-5.3-codex-spark; leader model unchanged
+  --madmax-spark  spark model for workers + bypass approvals for leader and workers
+                (shorthand for: --spark --madmax)
   --force       Force reinstall (overwrite existing files)
   --dry-run     Show what would be done without doing it
   --verbose     Show detailed output
@@ -70,6 +74,9 @@ const MADMAX_FLAG = '--madmax';
 const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
 const HIGH_REASONING_FLAG = '--high';
 const XHIGH_REASONING_FLAG = '--xhigh';
+const SPARK_FLAG = '--spark';
+const MADMAX_SPARK_FLAG = '--madmax-spark';
+const SPARK_MODEL = 'gpt-5.3-codex-spark';
 const CONFIG_FLAG = '-c';
 const LONG_CONFIG_FLAG = '--config';
 const REASONING_KEY = 'model_reasoning_effort';
@@ -295,6 +302,7 @@ async function reasoningCommand(args: string[]): Promise<void> {
 
 async function launchWithHud(args: string[]): Promise<void> {
   const cwd = process.cwd();
+  const workerSparkModel = resolveWorkerSparkModel(args);
   const normalizedArgs = normalizeCodexLaunchArgs(args);
   const sessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -320,7 +328,7 @@ async function launchWithHud(args: string[]): Promise<void> {
 
   // ── Phase 2: run ────────────────────────────────────────────────────────
   try {
-    runCodex(cwd, normalizedArgs, sessionId);
+    runCodex(cwd, normalizedArgs, sessionId, workerSparkModel);
   } finally {
     // ── Phase 3: postLaunch ─────────────────────────────────────────────
     await postLaunch(cwd, sessionId);
@@ -358,6 +366,17 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
       continue;
     }
 
+    if (arg === SPARK_FLAG) {
+      // Spark model is injected into worker env only (not the leader). Consume flag.
+      continue;
+    }
+
+    if (arg === MADMAX_SPARK_FLAG) {
+      // Bypass applies to leader; spark model goes to workers only. Consume flag.
+      wantsBypass = true;
+      continue;
+    }
+
     normalized.push(arg);
   }
 
@@ -370,6 +389,20 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
   }
 
   return normalized;
+}
+
+/**
+ * Returns the spark model string if --spark or --madmax-spark appears in the
+ * raw (pre-normalize) args, or undefined if neither flag is present.
+ * Used to route the spark model to team workers without affecting the leader.
+ */
+export function resolveWorkerSparkModel(args: string[]): string | undefined {
+  for (const arg of args) {
+    if (arg === SPARK_FLAG || arg === MADMAX_SPARK_FLAG) {
+      return SPARK_MODEL;
+    }
+  }
+  return undefined;
 }
 
 function isReasoningOverride(value: string): boolean {
@@ -605,7 +638,7 @@ async function preLaunch(cwd: string, sessionId: string): Promise<void> {
  * runCodex: Launch Codex CLI (blocks until exit).
  * All 3 paths (new tmux, existing tmux, no tmux) block via execSync/execFileSync.
  */
-function runCodex(cwd: string, args: string[], sessionId: string): void {
+function runCodex(cwd: string, args: string[], sessionId: string, workerDefaultModel?: string): void {
   const launchArgs = injectModelInstructionsBypassArgs(
     cwd,
     args,
@@ -619,6 +652,7 @@ function runCodex(cwd: string, args: string[], sessionId: string): void {
     process.env[TEAM_WORKER_LAUNCH_ARGS_ENV],
     launchArgs,
     inheritLeaderFlags,
+    workerDefaultModel,
   );
   const codexEnv = workerLaunchArgs
     ? { ...process.env, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }
