@@ -25,6 +25,7 @@ import {
 import {
   readSessionState, isSessionStale, writeSessionStart, writeSessionEnd, resetSessionMetrics,
 } from '../hooks/session.js';
+import { generateCodebaseMap } from '../hooks/codebase-map.js';
 import { enableMouseScrolling, isWsl2 } from '../team/tmux-session.js';
 import { getPackageRoot } from '../utils/package.js';
 import { codexConfigPath } from '../utils/paths.js';
@@ -640,9 +641,12 @@ async function preLaunch(cwd: string, sessionId: string): Promise<void> {
     try { await unlink(join(cwd, '.omx', 'state', 'session.json')); } catch { /* best effort */ }
   }
 
-  // 2. Generate runtime overlay + write session-scoped model instructions file
-  const overlay = await generateOverlay(cwd, sessionId);
-  await writeSessionModelInstructionsFile(cwd, sessionId, overlay);
+  // 2. Generate runtime overlay + codebase map + write session-scoped model instructions file
+  const [overlay, codebaseMap] = await Promise.all([
+    generateOverlay(cwd, sessionId),
+    generateCodebaseMap(cwd),
+  ]);
+  await writeSessionModelInstructionsFile(cwd, sessionId, overlay, codebaseMap || undefined);
 
   // 3. Write session state
   await resetSessionMetrics(cwd);

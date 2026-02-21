@@ -18,6 +18,7 @@ import { dirname, join } from 'path';
 import { existsSync } from 'fs';
 import { omxNotepadPath, omxProjectMemoryPath } from '../utils/paths.js';
 import { getBaseStateDir, getStateDir } from '../mcp/state-paths.js';
+import { CODEBASE_MAP_START, CODEBASE_MAP_END } from './codebase-map.js';
 
 const START_MARKER = '<!-- OMX:RUNTIME:START -->';
 const END_MARKER = '<!-- OMX:RUNTIME:END -->';
@@ -313,6 +314,34 @@ export async function stripOverlay(agentsMdPath: string, cwd?: string): Promise<
 }
 
 /**
+ * Strip a marker-bounded block from content (pure, idempotent).
+ */
+function stripMarkerBlock(content: string, startMarker: string, endMarker: string): string {
+  let result = content;
+  let iterations = 0;
+  const MAX_STRIP_ITERATIONS = 10;
+
+  while (iterations < MAX_STRIP_ITERATIONS) {
+    const startIdx = result.indexOf(startMarker);
+    if (startIdx < 0) break;
+
+    const endIdx = result.indexOf(endMarker, startIdx);
+    if (endIdx < 0) {
+      // Malformed: remove from start marker to EOF
+      result = result.slice(0, startIdx).trimEnd() + '\n';
+      break;
+    }
+
+    const before = result.slice(0, startIdx).trimEnd();
+    const after = result.slice(endIdx + endMarker.length).trimStart();
+    result = after ? before + '\n' + after : before + '\n';
+    iterations++;
+  }
+
+  return result;
+}
+
+/**
  * Remove overlay markers and content from a string (pure function).
  */
 function stripOverlayContent(content: string): string {
@@ -357,6 +386,9 @@ function stripOverlayContent(content: string): string {
     iterations++;
   }
 
+  // Also strip codebase map blocks
+  result = stripMarkerBlock(result, CODEBASE_MAP_START, CODEBASE_MAP_END);
+
   return result;
 }
 
@@ -372,13 +404,16 @@ export function sessionModelInstructionsPath(cwd: string, sessionId: string): st
 }
 
 /**
- * Build a session-scoped AGENTS.md that combines project instructions (if any)
- * and the runtime overlay, without mutating <cwd>/AGENTS.md.
+ * Build a session-scoped AGENTS.md that combines project instructions (if any),
+ * an optional codebase map, and the runtime overlay, without mutating <cwd>/AGENTS.md.
+ *
+ * Composition order: base AGENTS.md → codebase map → runtime overlay
  */
 export async function writeSessionModelInstructionsFile(
   cwd: string,
   sessionId: string,
   overlay: string,
+  codebaseMap?: string,
 ): Promise<string> {
   const sessionPath = sessionModelInstructionsPath(cwd, sessionId);
   await mkdir(dirname(sessionPath), { recursive: true });
@@ -390,9 +425,9 @@ export async function writeSessionModelInstructionsFile(
     base = stripOverlayContent(base);
   }
 
-  const composed = base.trim().length > 0
-    ? `${base.trimEnd()}\n\n${overlay}\n`
-    : `${overlay}\n`;
+  // Compose: base + codebase map (if any) + runtime overlay
+  const blocks = [base.trimEnd(), codebaseMap, overlay].filter(b => b && b.trim().length > 0);
+  const composed = blocks.join('\n\n') + '\n';
 
   await writeFile(sessionPath, composed);
   return sessionPath;
