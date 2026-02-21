@@ -256,11 +256,11 @@ The security-reviewer agent verifies:
 
 ## Use with Other Skills
 
-**With Pipeline:**
+**With Team:**
 ```
-/pipeline security "review authentication module"
+/team "run security review on authentication module"
 ```
-Uses: explore → security-reviewer → executor → security-reviewer-low (re-verify)
+Uses: explore → security-reviewer → executor → security-reviewer (re-verify)
 
 **With Swarm:**
 ```

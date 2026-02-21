@@ -5,8 +5,8 @@
 
 import { execSync, execFileSync, spawn } from 'child_process';
 import { basename, dirname, join } from 'path';
-import { existsSync } from 'fs';
-import { setup } from './setup.js';
+import { existsSync, readFileSync } from 'fs';
+import { setup, SETUP_SCOPES, type SetupScope } from './setup.js';
 import { doctor } from './doctor.js';
 import { version } from './version.js';
 import { tmuxHookCommand } from './tmux-hook.js';
@@ -25,11 +25,15 @@ import {
 import {
   readSessionState, isSessionStale, writeSessionStart, writeSessionEnd, resetSessionMetrics,
 } from '../hooks/session.js';
+import { enableMouseScrolling, isWsl2 } from '../team/tmux-session.js';
 import { getPackageRoot } from '../utils/package.js';
 import { codexConfigPath } from '../utils/paths.js';
-import { getModelForMode } from '../config/models.js';
 import { buildHookEvent } from '../hooks/extensibility/events.js';
 import { dispatchHookEvent } from '../hooks/extensibility/dispatcher.js';
+import {
+  collectInheritableTeamWorkerArgs as collectInheritableTeamWorkerArgsShared,
+  resolveTeamWorkerLaunchArgs,
+} from '../team/model-contract.js';
 
 const HELP = `
 oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
@@ -57,16 +61,24 @@ Options:
                 (shorthand for: -c model_reasoning_effort="xhigh")
   --madmax      DANGEROUS: bypass Codex approvals and sandbox
                 (alias for --dangerously-bypass-approvals-and-sandbox)
+  --spark       Use the Codex spark model (~1.3x faster) for team workers only
+                Workers get --model gpt-5.3-codex-spark; leader model unchanged
+  --madmax-spark  spark model for workers + bypass approvals for leader and workers
+                (shorthand for: --spark --madmax)
   --force       Force reinstall (overwrite existing files)
   --dry-run     Show what would be done without doing it
   --verbose     Show detailed output
+  --scope       Setup scope for "omx setup" only:
+                user | project-local | project
 `;
 
 const MADMAX_FLAG = '--madmax';
 const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
-const MODEL_FLAG = '--model';
 const HIGH_REASONING_FLAG = '--high';
 const XHIGH_REASONING_FLAG = '--xhigh';
+const SPARK_FLAG = '--spark';
+const MADMAX_SPARK_FLAG = '--madmax-spark';
+const SPARK_MODEL = 'gpt-5.3-codex-spark';
 const CONFIG_FLAG = '-c';
 const LONG_CONFIG_FLAG = '--config';
 const REASONING_KEY = 'model_reasoning_effort';
@@ -85,6 +97,53 @@ type CliCommand = 'launch' | 'setup' | 'doctor' | 'team' | 'version' | 'tmux-hoo
 export interface ResolvedCliInvocation {
   command: CliCommand;
   launchArgs: string[];
+}
+
+export function readPersistedSetupScope(cwd: string): SetupScope | undefined {
+  const scopePath = join(cwd, '.omx', 'setup-scope.json');
+  if (!existsSync(scopePath)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(scopePath, 'utf-8')) as Partial<{ scope: string }>;
+    if (typeof parsed.scope === 'string' && SETUP_SCOPES.includes(parsed.scope as SetupScope)) {
+      return parsed.scope as SetupScope;
+    }
+  } catch {
+    // Ignore malformed persisted scope and use defaults.
+  }
+  return undefined;
+}
+
+export function resolveCodexHomeForLaunch(cwd: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (env.CODEX_HOME && env.CODEX_HOME.trim() !== '') return env.CODEX_HOME;
+  const persistedScope = readPersistedSetupScope(cwd);
+  if (persistedScope === 'project-local') {
+    return join(cwd, '.codex');
+  }
+  return undefined;
+}
+
+export function resolveSetupScopeArg(args: string[]): SetupScope | undefined {
+  let value: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--scope') {
+      const next = args[index + 1];
+      if (!next || next.startsWith('-')) {
+        throw new Error(`Missing setup scope value after --scope. Expected one of: ${SETUP_SCOPES.join(', ')}`);
+      }
+      value = next;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--scope=')) {
+      value = arg.slice('--scope='.length);
+    }
+  }
+  if (!value) return undefined;
+  if (SETUP_SCOPES.includes(value as SetupScope)) {
+    return value as SetupScope;
+  }
+  throw new Error(`Invalid setup scope: ${value}. Expected one of: ${SETUP_SCOPES.join(', ')}`);
 }
 
 export function resolveCliInvocation(args: string[]): ResolvedCliInvocation {
@@ -175,7 +234,12 @@ export async function main(args: string[]): Promise<void> {
         await launchWithHud(launchArgs);
         break;
       case 'setup':
-        await setup(options);
+        await setup({
+          force: options.force,
+          dryRun: options.dryRun,
+          verbose: options.verbose,
+          scope: resolveSetupScopeArg(args.slice(1)),
+        });
         break;
       case 'doctor':
         await doctor(options);
@@ -292,6 +356,7 @@ async function reasoningCommand(args: string[]): Promise<void> {
 
 async function launchWithHud(args: string[]): Promise<void> {
   const cwd = process.cwd();
+  const workerSparkModel = resolveWorkerSparkModel(args);
   const normalizedArgs = normalizeCodexLaunchArgs(args);
   const sessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -317,7 +382,7 @@ async function launchWithHud(args: string[]): Promise<void> {
 
   // ── Phase 2: run ────────────────────────────────────────────────────────
   try {
-    runCodex(cwd, normalizedArgs, sessionId);
+    runCodex(cwd, normalizedArgs, sessionId, workerSparkModel);
   } finally {
     // ── Phase 3: postLaunch ─────────────────────────────────────────────
     await postLaunch(cwd, sessionId);
@@ -355,6 +420,17 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
       continue;
     }
 
+    if (arg === SPARK_FLAG) {
+      // Spark model is injected into worker env only (not the leader). Consume flag.
+      continue;
+    }
+
+    if (arg === MADMAX_SPARK_FLAG) {
+      // Bypass applies to leader; spark model goes to workers only. Consume flag.
+      wantsBypass = true;
+      continue;
+    }
+
     normalized.push(arg);
   }
 
@@ -367,6 +443,20 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
   }
 
   return normalized;
+}
+
+/**
+ * Returns the spark model string if --spark or --madmax-spark appears in the
+ * raw (pre-normalize) args, or undefined if neither flag is present.
+ * Used to route the spark model to team workers without affecting the leader.
+ */
+export function resolveWorkerSparkModel(args: string[]): string | undefined {
+  for (const arg of args) {
+    if (arg === SPARK_FLAG || arg === MADMAX_SPARK_FLAG) {
+      return SPARK_MODEL;
+    }
+  }
+  return undefined;
 }
 
 function isReasoningOverride(value: string): boolean {
@@ -416,100 +506,8 @@ export function injectModelInstructionsBypassArgs(
   return [...args, CONFIG_FLAG, buildModelInstructionsOverride(cwd, env, defaultFilePath)];
 }
 
-function splitWorkerLaunchArgs(raw: string | undefined): string[] {
-  if (!raw || raw.trim() === '') return [];
-  return raw
-    .split(/\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-interface ParsedTeamWorkerLaunchArgs {
-  passthrough: string[];
-  wantsBypass: boolean;
-  reasoningOverride: string | null;
-  modelOverride: string | null;
-}
-
-function isValidModelValue(value: string): boolean {
-  return value.trim().length > 0 && !value.startsWith('-');
-}
-
-function parseTeamWorkerLaunchArgs(args: string[]): ParsedTeamWorkerLaunchArgs {
-  const passthrough: string[] = [];
-  let wantsBypass = false;
-  let reasoningOverride: string | null = null;
-  let modelOverride: string | null = null;
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === CODEX_BYPASS_FLAG || arg === MADMAX_FLAG) {
-      wantsBypass = true;
-      continue;
-    }
-
-    if (arg === MODEL_FLAG) {
-      const maybeValue = args[i + 1];
-      if (typeof maybeValue === 'string' && isValidModelValue(maybeValue)) {
-        modelOverride = maybeValue.trim();
-        i += 1;
-        continue;
-      }
-      passthrough.push(arg);
-      continue;
-    }
-
-    if (arg.startsWith(`${MODEL_FLAG}=`)) {
-      const inlineValue = arg.slice(`${MODEL_FLAG}=`.length).trim();
-      if (isValidModelValue(inlineValue)) {
-        modelOverride = inlineValue;
-        continue;
-      }
-      passthrough.push(arg);
-      continue;
-    }
-
-    if (arg === CONFIG_FLAG) {
-      const maybeValue = args[i + 1];
-      if (typeof maybeValue === 'string' && isReasoningOverride(maybeValue)) {
-        reasoningOverride = maybeValue;
-        i += 1;
-        continue;
-      }
-    }
-
-    passthrough.push(arg);
-  }
-
-  return {
-    passthrough,
-    wantsBypass,
-    reasoningOverride,
-    modelOverride,
-  };
-}
-
 export function collectInheritableTeamWorkerArgs(codexArgs: string[]): string[] {
-  const parsed = parseTeamWorkerLaunchArgs(codexArgs);
-
-  const inherited: string[] = [];
-  if (parsed.wantsBypass) inherited.push(CODEX_BYPASS_FLAG);
-  if (parsed.reasoningOverride) inherited.push(CONFIG_FLAG, parsed.reasoningOverride);
-  if (parsed.modelOverride) inherited.push(MODEL_FLAG, parsed.modelOverride);
-  return inherited;
-}
-
-function normalizeTeamWorkerLaunchArgs(args: string[], preferredModel?: string): string[] {
-  const parsed = parseTeamWorkerLaunchArgs(args);
-  const normalized = [...parsed.passthrough];
-
-  if (parsed.wantsBypass) normalized.push(CODEX_BYPASS_FLAG);
-  if (parsed.reasoningOverride) normalized.push(CONFIG_FLAG, parsed.reasoningOverride);
-
-  const selectedModel = preferredModel ?? parsed.modelOverride ?? undefined;
-  if (selectedModel) normalized.push(MODEL_FLAG, selectedModel);
-
-  return normalized;
+  return collectInheritableTeamWorkerArgsShared(codexArgs);
 }
 
 export function resolveTeamWorkerLaunchArgsEnv(
@@ -518,18 +516,12 @@ export function resolveTeamWorkerLaunchArgsEnv(
   inheritLeaderFlags = true,
   defaultModel?: string,
 ): string | null {
-  const envArgs = splitWorkerLaunchArgs(existingRaw);
   const inheritedArgs = inheritLeaderFlags ? collectInheritableTeamWorkerArgs(codexArgs) : [];
-  const allArgs = [...envArgs, ...inheritedArgs];
-
-  const envModel = parseTeamWorkerLaunchArgs(envArgs).modelOverride;
-  const inheritedModel = parseTeamWorkerLaunchArgs(inheritedArgs).modelOverride;
-  const fallbackModel = typeof defaultModel === 'string' && defaultModel.trim().length > 0
-    ? defaultModel.trim()
-    : undefined;
-  const selectedModel = envModel ?? inheritedModel ?? fallbackModel;
-
-  const normalized = normalizeTeamWorkerLaunchArgs(allArgs, selectedModel ?? undefined);
+  const normalized = resolveTeamWorkerLaunchArgs({
+    existingRaw,
+    inheritedArgs,
+    fallbackModel: defaultModel,
+  });
   if (normalized.length === 0) return null;
   return normalized.join(' ');
 }
@@ -700,7 +692,7 @@ async function preLaunch(cwd: string, sessionId: string): Promise<void> {
  * runCodex: Launch Codex CLI (blocks until exit).
  * All 3 paths (new tmux, existing tmux, no tmux) block via execSync/execFileSync.
  */
-function runCodex(cwd: string, args: string[], sessionId: string): void {
+function runCodex(cwd: string, args: string[], sessionId: string, workerDefaultModel?: string): void {
   const launchArgs = injectModelInstructionsBypassArgs(
     cwd,
     args,
@@ -710,16 +702,19 @@ function runCodex(cwd: string, args: string[], sessionId: string): void {
   const omxBin = process.argv[1];
   const hudCmd = buildTmuxShellCommand('node', [omxBin, 'hud', '--watch']);
   const inheritLeaderFlags = process.env[TEAM_INHERIT_LEADER_FLAGS_ENV] !== '0';
-  const configuredModel = getModelForMode('team');
   const workerLaunchArgs = resolveTeamWorkerLaunchArgsEnv(
     process.env[TEAM_WORKER_LAUNCH_ARGS_ENV],
     launchArgs,
     inheritLeaderFlags,
-    configuredModel,
+    workerDefaultModel,
   );
-  const codexEnv = workerLaunchArgs
-    ? { ...process.env, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }
+  const codexHomeOverride = resolveCodexHomeForLaunch(cwd, process.env);
+  const codexBaseEnv = codexHomeOverride
+    ? { ...process.env, CODEX_HOME: codexHomeOverride }
     : process.env;
+  const codexEnv = workerLaunchArgs
+    ? { ...codexBaseEnv, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }
+    : codexBaseEnv;
 
   if (resolveCodexLaunchPolicy(process.env) === 'inside-tmux') {
     // Already in tmux: launch codex in current pane, HUD in bottom split
@@ -734,6 +729,18 @@ function runCodex(cwd: string, args: string[], sessionId: string): void {
       hudPaneId = createHudWatchPane(cwd, hudCmd);
     } catch {
       // HUD split failed, continue without it
+    }
+
+    // Enable mouse scrolling at session start so scroll works before team
+    // expansion. Previously this was only called from createTeamSession().
+    // Opt-out: set OMX_MOUSE=0. (closes #128)
+    if (process.env.OMX_MOUSE !== '0') {
+      try {
+        const tmuxSession = execFileSync('tmux', ['display-message', '-p', '#S'], { encoding: 'utf-8' }).trim();
+        if (tmuxSession) enableMouseScrolling(tmuxSession);
+      } catch {
+        // Non-fatal: mouse scrolling is a convenience feature
+      }
     }
 
     try {
@@ -761,9 +768,15 @@ function runCodex(cwd: string, args: string[], sessionId: string): void {
         [
           'new-session', '-d', '-s', sessionName, '-c', cwd,
           ...(workerLaunchArgs ? ['-e', `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`] : []),
+          ...(codexHomeOverride ? ['-e', `CODEX_HOME=${codexHomeOverride}`] : []),
           codexCmd,
           ';',
           'split-window', '-v', '-l', '4', '-d', '-c', cwd, hudCmd,
+          // Enable mouse scrolling at session start (closes #128)
+          ...(process.env.OMX_MOUSE !== '0' ? [
+            ';', 'set-option', '-t', sessionName, 'mouse', 'on',
+            ...(isWsl2() ? [';', 'set-option', '-ga', 'terminal-overrides', ',xterm*:XT'] : []),
+          ] : []),
           ';',
           'select-pane', '-t', '0',
           ';',

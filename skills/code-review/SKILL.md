@@ -181,11 +181,11 @@ The code-reviewer agent checks:
 
 ## Use with Other Skills
 
-**With Pipeline:**
+**With Team:**
 ```
-/pipeline review "implement user authentication"
+/team "review recent auth changes and report findings"
 ```
-Includes code review as part of implementation workflow.
+Includes coordinated review execution across specialized agents.
 
 **With Ralph:**
 ```

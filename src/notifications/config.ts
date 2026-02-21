@@ -17,6 +17,7 @@ import type {
   DiscordNotificationConfig,
   DiscordBotNotificationConfig,
   TelegramNotificationConfig,
+  VerbosityLevel,
 } from "./types.js";
 
 const CONFIG_FILE = join(codexHome(), ".omx-config.json");
@@ -320,11 +321,72 @@ export function getNotificationConfig(
   return null;
 }
 
+const VALID_VERBOSITY_LEVELS: VerbosityLevel[] = ["verbose", "agent", "session", "minimal"];
+const DEFAULT_VERBOSITY: VerbosityLevel = "session";
+
+/**
+ * Numeric rank for verbosity levels (higher = more verbose).
+ */
+const VERBOSITY_RANK: Record<VerbosityLevel, number> = {
+  minimal: 0,
+  session: 1,
+  agent: 2,
+  verbose: 3,
+};
+
+/**
+ * Minimum verbosity level required for each event type.
+ */
+const EVENT_MIN_VERBOSITY: Record<NotificationEvent, VerbosityLevel> = {
+  "session-start": "minimal",
+  "session-stop": "minimal",
+  "session-end": "minimal",
+  "session-idle": "session",
+  "ask-user-question": "agent",
+};
+
+/**
+ * Resolve the effective verbosity level.
+ * Priority: env var > config field > default ("session").
+ */
+export function getVerbosity(config: FullNotificationConfig | null): VerbosityLevel {
+  const envVal = process.env.OMX_NOTIFY_VERBOSITY as string | undefined;
+  if (envVal && VALID_VERBOSITY_LEVELS.includes(envVal as VerbosityLevel)) {
+    return envVal as VerbosityLevel;
+  }
+  if (config?.verbosity && VALID_VERBOSITY_LEVELS.includes(config.verbosity)) {
+    return config.verbosity;
+  }
+  return DEFAULT_VERBOSITY;
+}
+
+/**
+ * Check whether a given event is allowed at the specified verbosity level.
+ */
+export function isEventAllowedByVerbosity(
+  verbosity: VerbosityLevel,
+  event: NotificationEvent,
+): boolean {
+  const required = EVENT_MIN_VERBOSITY[event] ?? "session";
+  return VERBOSITY_RANK[verbosity] >= VERBOSITY_RANK[required];
+}
+
+/**
+ * Whether the given verbosity level should include tmux tail output.
+ */
+export function shouldIncludeTmuxTail(verbosity: VerbosityLevel): boolean {
+  return VERBOSITY_RANK[verbosity] >= VERBOSITY_RANK["session"];
+}
+
 export function isEventEnabled(
   config: FullNotificationConfig,
   event: NotificationEvent,
 ): boolean {
   if (!config.enabled) return false;
+
+  // Verbosity gate: reject events below the configured verbosity level
+  const verbosity = getVerbosity(config);
+  if (!isEventAllowedByVerbosity(verbosity, event)) return false;
 
   const eventConfig = config.events?.[event];
 

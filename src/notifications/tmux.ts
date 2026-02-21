@@ -4,7 +4,11 @@
  * Detects the current tmux session name and pane ID for inclusion in notification payloads.
  */
 
-import { execSync } from "child_process";
+import { execFileSync, execSync } from "child_process";
+
+const TMUX_PANE_TARGET_RE = /^%\d+$/;
+const DEFAULT_CAPTURE_LINES = 12;
+const MAX_CAPTURE_LINES = 2000;
 
 function shouldUsePidFallback(): boolean {
   return process.env.OMX_TMUX_PID_FALLBACK === "1";
@@ -120,6 +124,32 @@ export function getTeamTmuxSessions(teamName: string): string[] {
       .map((s) => s.slice(prefix.length));
   } catch {
     return [];
+  }
+}
+
+/**
+ * Capture the last N lines of output from a tmux pane.
+ * Used to include a tail snippet in session-level notifications.
+ * Returns null if capture fails or tmux is not available.
+ */
+export function captureTmuxPane(paneId?: string | null, lines: number = 12): string | null {
+  const target = paneId || process.env.TMUX_PANE;
+  if (!target) return null;
+  if (!process.env.TMUX && !paneId) return null;
+  if (!TMUX_PANE_TARGET_RE.test(target)) return null;
+
+  const safeLines = Number.isFinite(lines) ? Math.trunc(lines) : DEFAULT_CAPTURE_LINES;
+  const clampedLines = Math.max(1, Math.min(MAX_CAPTURE_LINES, safeLines));
+
+  try {
+    const output = execFileSync("tmux", ["capture-pane", "-t", target, "-p", "-l", String(clampedLines)], {
+      encoding: "utf-8",
+      timeout: 3000,
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    return output || null;
+  } catch {
+    return null;
   }
 }
 

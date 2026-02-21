@@ -127,8 +127,8 @@ Based on patterns found, output recommendations:
 **If high Opus usage (>40%) and no ecomode:**
 - "Consider using ecomode for routine tasks to save tokens"
 
-**If no pipeline usage:**
-- "Try /pipeline for code review workflows"
+**If no team usage:**
+- "Try /team for coordinated review workflows"
 
 **If no security-reviewer usage:**
 - "Use security-reviewer after auth/API changes"
@@ -160,11 +160,11 @@ TOP AGENTS:
 
 UNDERUTILIZED FEATURES:
 - ecomode: 0 uses (could save ~30% on routine tasks)
-- pipeline: 0 uses (great for review workflows)
+- team: 0 uses (great for coordinated workflows)
 
 RECOMMENDATIONS:
 1. Set defaultExecutionMode: "ecomode" to save tokens
-2. Try /pipeline review for PR reviews
+2. Try /team for PR review workflows
 3. Use explore agent before architect to save context
 ```
 

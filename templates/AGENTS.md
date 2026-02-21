@@ -39,7 +39,7 @@ Use delegation when it improves quality, speed, or correctness:
 Work directly only for trivial operations where delegation adds disproportionate overhead:
 - Small clarifications, quick status checks, or single-command sequential operations.
 
-For substantive code changes, delegate to `executor` (default for both standard and complex implementation work; `deep-executor` is deprecated).
+For substantive code changes, delegate to `executor` (default for both standard and complex implementation work).
 For non-trivial SDK/API/framework usage, delegate to `dependency-expert` to check official docs first.
 </delegation_rules>
 
@@ -106,7 +106,6 @@ Build/Analysis Lane:
 - `/prompts:architect`: System design, boundaries, interfaces, long-horizon tradeoffs
 - `/prompts:debugger`: Root-cause analysis, regression isolation, failure diagnosis
 - `/prompts:executor`: Code implementation, refactoring, feature work
-- `/prompts:deep-executor`: Deprecated — use `/prompts:executor` for complex autonomous goal-oriented tasks
 - `/prompts:verifier`: Completion evidence, claim validation, test adequacy
 
 Review Lane:
@@ -125,7 +124,6 @@ Domain Specialists:
 - `/prompts:designer`: UX/UI architecture, interaction design
 - `/prompts:writer`: Docs, migration notes, user guidance
 - `/prompts:qa-tester`: Interactive CLI/service runtime validation
-- `/prompts:scientist`: Data/statistical analysis
 - `/prompts:git-master`: Commit strategy, history hygiene
 - `/prompts:researcher`: External documentation and reference research
 
@@ -154,10 +152,8 @@ Do not ask for confirmation — just read the skill file and follow its instruct
 | "plan this", "plan the", "let's plan" | `$plan` | Read `~/.agents/skills/plan/SKILL.md`, start planning workflow |
 | "ralplan", "consensus plan" | `$ralplan` | Read `~/.agents/skills/ralplan/SKILL.md`, start consensus planning |
 | "team", "swarm", "coordinated team", "coordinated swarm" | `$team` | Read `~/.agents/skills/team/SKILL.md`, start team orchestration (swarm compatibility alias) |
-| "pipeline", "chain agents" | `$pipeline` | Read `~/.agents/skills/pipeline/SKILL.md`, start agent pipeline |
 | "ecomode", "eco", "budget" | `$ecomode` | Read `~/.agents/skills/ecomode/SKILL.md`, enable token-efficient mode |
 | "research", "analyze data" | `$research` | Read `~/.agents/skills/research/SKILL.md`, start parallel research |
-| "deepinit" | `$deepinit` | Read `~/.agents/skills/deepinit/SKILL.md`, initialize codebase docs |
 | "cancel", "stop", "abort" | `$cancel` | Read `~/.agents/skills/cancel/SKILL.md`, cancel active modes |
 | "tdd", "test first" | `$tdd` | Read `~/.agents/skills/tdd/SKILL.md`, start test-driven workflow |
 | "fix build", "type errors" | `$build-fix` | Read `~/.agents/skills/build-fix/SKILL.md`, fix build errors |
@@ -183,12 +179,10 @@ Workflow Skills:
 - `ecomode`: Token-efficient execution using lightweight models
 - `team`: N coordinated agents on shared task list
 - `swarm`: N coordinated agents on shared task list (compatibility facade over team)
-- `pipeline`: Sequential agent chaining with data passing
 - `ultraqa`: QA cycling -- test, verify, fix, repeat
 - `plan`: Strategic planning with optional consensus mode
 - `ralplan`: Iterative consensus planning (planner + architect + critic)
 - `research`: Parallel research agents for comprehensive analysis
-- `deepinit`: Deep codebase initialization with documentation
 
 Agent Shortcuts:
 - `analyze` -> debugger: Investigation and root-cause analysis
@@ -349,7 +343,6 @@ Recommended mode fields:
 - `ultrawork`: `active`, `reinforcement_count`, `started_at`
 - `team`: `active`, `current_phase` (`team-plan|team-prd|team-exec|team-verify|team-fix|complete`), `agent_count`, `team_name`
 - `ecomode`: `active`
-- `pipeline`: `active`, `current_phase`, `started_at`, `completed_at`
 - `ultraqa`: `active`, `current_phase`, `iteration`, `started_at`, `completed_at`
 </state_management>
 

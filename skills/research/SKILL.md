@@ -1,19 +1,19 @@
 ---
 name: research
-description: Orchestrate parallel scientist agents for comprehensive research with AUTO mode
+description: Orchestrate parallel researcher agents for comprehensive research with AUTO mode
 argument-hint: <research goal>
 ---
 
 # Research Skill
 
-Orchestrate parallel scientist agents for comprehensive research workflows with optional AUTO mode for fully autonomous execution.
+Orchestrate parallel researcher agents for comprehensive research workflows with optional AUTO mode for fully autonomous execution.
 
 ## Overview
 
 Research is a multi-stage workflow that decomposes complex research goals into parallel investigations:
 
 1. **Decomposition** - Break research goal into independent stages/hypotheses
-2. **Execution** - Run parallel scientist agents on each stage
+2. **Execution** - Run parallel researcher agents on each stage
 3. **Verification** - Cross-validate findings, check consistency
 4. **Synthesis** - Aggregate results into comprehensive report
 
@@ -57,19 +57,19 @@ When given a research goal, decompose into 3-7 independent stages:
 ...
 ```
 
-### Parallel Scientist Invocation
+### Parallel Researcher Invocation
 
 Fire independent stages in parallel via sub-agent spawning:
 
 ```
 // Stage 1 - Simple data gathering
-spawn_sub_agent(subagent_type="oh-my-codex:scientist", model="haiku", prompt="[RESEARCH_STAGE:1] Investigate...")
+spawn_sub_agent(subagent_type="oh-my-codex:researcher", model="haiku", prompt="[RESEARCH_STAGE:1] Investigate...")
 
 // Stage 2 - Standard analysis
-spawn_sub_agent(subagent_type="oh-my-codex:scientist", model="sonnet", prompt="[RESEARCH_STAGE:2] Analyze...")
+spawn_sub_agent(subagent_type="oh-my-codex:researcher", model="sonnet", prompt="[RESEARCH_STAGE:2] Analyze...")
 
 // Stage 3 - Complex reasoning
-spawn_sub_agent(subagent_type="oh-my-codex:scientist-high", model="opus", prompt="[RESEARCH_STAGE:3] Deep analysis of...")
+spawn_sub_agent(subagent_type="oh-my-codex:architect", model="opus", prompt="[RESEARCH_STAGE:3] Deep analysis of...")
 ```
 
 ### Smart Model Routing
@@ -78,9 +78,9 @@ spawn_sub_agent(subagent_type="oh-my-codex:scientist-high", model="opus", prompt
 
 | Task Complexity | Agent | Model | Use For |
 |-----------------|-------|-------|---------|
-| Data gathering | `scientist` (model=haiku) | haiku | File enumeration, pattern counting, simple lookups |
-| Standard analysis | `scientist` | sonnet | Code analysis, pattern detection, documentation review |
-| Complex reasoning | `scientist-high` | opus | Architecture analysis, cross-cutting concerns, hypothesis validation |
+| Data gathering | `researcher` (model=haiku) | haiku | File enumeration, pattern counting, simple lookups |
+| Standard analysis | `researcher` | sonnet | Code analysis, pattern detection, documentation review |
+| Complex reasoning | `architect` | opus | Architecture analysis, cross-cutting concerns, hypothesis validation |
 
 ### Routing Decision Guide
 
@@ -99,7 +99,7 @@ After parallel execution completes, verify findings:
 
 ```
 // Cross-validation stage
-spawn_sub_agent(subagent_type="oh-my-codex:scientist", model="sonnet", prompt="
+spawn_sub_agent(subagent_type="oh-my-codex:researcher", model="sonnet", prompt="
 [RESEARCH_VERIFICATION]
 Cross-validate these findings for consistency:
 
@@ -180,9 +180,9 @@ When stages analyze different data sources:
 
 ```
 // All fire simultaneously
-spawn_sub_agent(subagent_type="oh-my-codex:scientist", model="haiku", prompt="[STAGE:1] Analyze src/api/...")
-spawn_sub_agent(subagent_type="oh-my-codex:scientist", model="haiku", prompt="[STAGE:2] Analyze src/utils/...")
-spawn_sub_agent(subagent_type="oh-my-codex:scientist", model="haiku", prompt="[STAGE:3] Analyze src/components/...")
+spawn_sub_agent(subagent_type="oh-my-codex:researcher", model="haiku", prompt="[STAGE:1] Analyze src/api/...")
+spawn_sub_agent(subagent_type="oh-my-codex:researcher", model="haiku", prompt="[STAGE:2] Analyze src/utils/...")
+spawn_sub_agent(subagent_type="oh-my-codex:researcher", model="haiku", prompt="[STAGE:3] Analyze src/components/...")
 ```
 
 ### Hypothesis Battery (Parallel)
@@ -191,9 +191,9 @@ When testing multiple hypotheses:
 
 ```
 // Test hypotheses simultaneously
-spawn_sub_agent(subagent_type="oh-my-codex:scientist", model="sonnet", prompt="[HYPOTHESIS:A] Test if caching improves...")
-spawn_sub_agent(subagent_type="oh-my-codex:scientist", model="sonnet", prompt="[HYPOTHESIS:B] Test if batching reduces...")
-spawn_sub_agent(subagent_type="oh-my-codex:scientist", model="sonnet", prompt="[HYPOTHESIS:C] Test if lazy loading helps...")
+spawn_sub_agent(subagent_type="oh-my-codex:researcher", model="sonnet", prompt="[HYPOTHESIS:A] Test if caching improves...")
+spawn_sub_agent(subagent_type="oh-my-codex:researcher", model="sonnet", prompt="[HYPOTHESIS:B] Test if batching reduces...")
+spawn_sub_agent(subagent_type="oh-my-codex:researcher", model="sonnet", prompt="[HYPOTHESIS:C] Test if lazy loading helps...")
 ```
 
 ### Cross-Validation (Sequential)
@@ -205,7 +205,7 @@ When verification depends on all findings:
 [stages complete]
 
 // Then sequential verification
-spawn_sub_agent(subagent_type="oh-my-codex:scientist-high", model="opus", prompt="
+spawn_sub_agent(subagent_type="oh-my-codex:architect", model="opus", prompt="
 [CROSS_VALIDATION]
 Validate consistency across all findings:
 - Finding 1: ...
@@ -216,7 +216,7 @@ Validate consistency across all findings:
 
 ### Concurrency Limit
 
-**Maximum 20 concurrent scientist agents** to prevent resource exhaustion.
+**Maximum 20 concurrent researcher agents** to prevent resource exhaustion.
 
 If more than 20 stages, batch them:
 ```
@@ -237,7 +237,7 @@ Batch 2: Stages 6-7 (parallel)
     stage-2.md            # Stage 2 findings
     ...
   findings/
-    raw/                  # Raw findings from scientists
+    raw/                  # Raw findings from researchers
     verified/             # Post-verification findings
   figures/
     figure-1.png          # Generated visualizations
@@ -289,7 +289,7 @@ Batch 2: Stages 6-7 (parallel)
 
 ## Tag Extraction
 
-Scientists use structured tags for findings. Extract them with these patterns:
+Research agents use structured tags for findings. Extract them with these patterns:
 
 ### Finding Tags
 
@@ -427,7 +427,7 @@ Findings must meet quality threshold:
 
 ### Figure Embedding Protocol
 
-Scientists generate visualizations using this marker:
+Research agents generate visualizations using this marker:
 
 ```
 [FIGURE:path/to/figure.png]
@@ -452,11 +452,11 @@ Report generator embeds figures:
 
 | Type | Use For | Generated By |
 |------|---------|--------------|
-| Architecture diagram | System structure | scientist-high |
-| Flow chart | Process flows | scientist |
-| Dependency graph | Module relationships | scientist |
-| Timeline | Sequence of events | scientist |
-| Comparison table | A vs B analysis | scientist |
+| Architecture diagram | System structure | architect |
+| Flow chart | Process flows | researcher |
+| Dependency graph | Module relationships | researcher |
+| Timeline | Sequence of events | researcher |
+| Comparison table | A vs B analysis | researcher |
 
 ## Configuration
 
@@ -489,7 +489,7 @@ Progress is preserved in `.omx/research/{session-id}/` for resume.
 - Review state.json for specific conflicts
 - May need to re-run specific stages with different approach
 
-**Scientists returning low-quality findings?**
+**Research agents returning low-quality findings?**
 - Check tier assignment - complex analysis needs HIGH tier
 - Ensure prompts include clear scope and expected output format
 - Review if research goal is too broad

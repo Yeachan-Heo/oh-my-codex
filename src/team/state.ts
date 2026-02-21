@@ -3,6 +3,7 @@ import { join, dirname } from 'path';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { omxStateDir } from '../utils/paths.js';
+import { type TeamPhase, type TerminalPhase } from './orchestrator.js';
 
 export interface TeamConfig {
   name: string;
@@ -468,6 +469,17 @@ export async function initTeamState(
   };
 
   await writeAtomic(join(root, 'config.json'), JSON.stringify(config, null, 2));
+  await writeTeamPhase(
+    teamName,
+    {
+      current_phase: 'team-exec',
+      max_fix_attempts: 3,
+      current_fix_attempt: 0,
+      transitions: [],
+      updated_at: new Date().toISOString(),
+    },
+    cwd
+  );
   await writeTeamManifestV2(
     {
       schema_version: 2,
@@ -1418,6 +1430,18 @@ export interface TeamMonitorSnapshotState {
   mailboxNotifiedByMessageId: Record<string, string>;
 }
 
+export interface TeamPhaseState {
+  current_phase: TeamPhase | TerminalPhase;
+  max_fix_attempts: number;
+  current_fix_attempt: number;
+  transitions: Array<{ from: string; to: string; at: string; reason?: string }>;
+  updated_at: string;
+}
+
+function teamPhasePath(teamName: string, cwd: string): string {
+  return join(teamDir(teamName, cwd), 'phase.json');
+}
+
 function monitorSnapshotPath(teamName: string, cwd: string): string {
   return join(teamDir(teamName, cwd), 'monitor-snapshot.json');
 }
@@ -1451,6 +1475,37 @@ export async function writeMonitorSnapshot(
   cwd: string,
 ): Promise<void> {
   await writeAtomic(monitorSnapshotPath(teamName, cwd), JSON.stringify(snapshot, null, 2));
+}
+
+export async function readTeamPhase(
+  teamName: string,
+  cwd: string,
+): Promise<TeamPhaseState | null> {
+  const p = teamPhasePath(teamName, cwd);
+  if (!existsSync(p)) return null;
+  try {
+    const raw = await readFile(p, 'utf-8');
+    const parsed = JSON.parse(raw) as Partial<TeamPhaseState>;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const currentPhase = typeof parsed.current_phase === 'string' ? parsed.current_phase : 'team-exec';
+    return {
+      current_phase: currentPhase as TeamPhase | TerminalPhase,
+      max_fix_attempts: typeof parsed.max_fix_attempts === 'number' ? parsed.max_fix_attempts : 3,
+      current_fix_attempt: typeof parsed.current_fix_attempt === 'number' ? parsed.current_fix_attempt : 0,
+      transitions: Array.isArray(parsed.transitions) ? parsed.transitions : [],
+      updated_at: typeof parsed.updated_at === 'string' ? parsed.updated_at : new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function writeTeamPhase(
+  teamName: string,
+  phaseState: TeamPhaseState,
+  cwd: string,
+): Promise<void> {
+  await writeAtomic(teamPhasePath(teamName, cwd), JSON.stringify(phaseState, null, 2));
 }
 
 // === Config persistence (public wrapper) ===

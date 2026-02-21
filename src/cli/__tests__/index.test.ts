@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   normalizeCodexLaunchArgs,
   buildTmuxShellCommand,
@@ -14,6 +17,10 @@ import {
   collectInheritableTeamWorkerArgs,
   resolveTeamWorkerLaunchArgsEnv,
   injectModelInstructionsBypassArgs,
+  resolveWorkerSparkModel,
+  resolveSetupScopeArg,
+  readPersistedSetupScope,
+  resolveCodexHomeForLaunch,
 } from '../index.js';
 
 describe('normalizeCodexLaunchArgs', () => {
@@ -87,6 +94,78 @@ describe('normalizeCodexLaunchArgs', () => {
       ['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="xhigh"']
     );
   });
+
+  it('--spark is stripped from leader args (model goes to workers only)', () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs(['--spark', '--yolo']),
+      ['--yolo']
+    );
+  });
+
+  it('--spark alone produces no leader args', () => {
+    assert.deepEqual(normalizeCodexLaunchArgs(['--spark']), []);
+  });
+
+  it('--madmax-spark adds bypass flag to leader args and is otherwise consumed', () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs(['--madmax-spark']),
+      ['--dangerously-bypass-approvals-and-sandbox']
+    );
+  });
+
+  it('--madmax-spark deduplicates bypass when --madmax also present', () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs(['--madmax', '--madmax-spark']),
+      ['--dangerously-bypass-approvals-and-sandbox']
+    );
+  });
+
+  it('--madmax-spark does not inject spark model into leader args', () => {
+    const args = normalizeCodexLaunchArgs(['--madmax-spark']);
+    assert.ok(!args.includes('--model'), 'leader args must not contain --model from --madmax-spark');
+    assert.ok(!args.some(a => a.includes('spark')), 'leader args must not reference spark model');
+  });
+});
+
+describe('resolveWorkerSparkModel', () => {
+  it('returns spark model string when --spark is present', () => {
+    assert.equal(resolveWorkerSparkModel(['--spark', '--yolo']), 'gpt-5.3-codex-spark');
+  });
+
+  it('returns spark model string when --madmax-spark is present', () => {
+    assert.equal(resolveWorkerSparkModel(['--madmax-spark']), 'gpt-5.3-codex-spark');
+  });
+
+  it('returns undefined when neither spark flag is present', () => {
+    assert.equal(resolveWorkerSparkModel(['--madmax', '--yolo', '--model', 'gpt-5']), undefined);
+  });
+
+  it('returns undefined for empty args', () => {
+    assert.equal(resolveWorkerSparkModel([]), undefined);
+  });
+});
+
+describe('resolveTeamWorkerLaunchArgsEnv (spark)', () => {
+  it('injects spark model as worker default when no explicit env model', () => {
+    assert.equal(
+      resolveTeamWorkerLaunchArgsEnv(undefined, [], true, 'gpt-5.3-codex-spark'),
+      '--model gpt-5.3-codex-spark'
+    );
+  });
+
+  it('explicit env model overrides spark default', () => {
+    assert.equal(
+      resolveTeamWorkerLaunchArgsEnv('--model gpt-5', [], true, 'gpt-5.3-codex-spark'),
+      '--model gpt-5'
+    );
+  });
+
+  it('inherited leader model overrides spark default', () => {
+    assert.equal(
+      resolveTeamWorkerLaunchArgsEnv(undefined, ['--model', 'gpt-4.1'], true, 'gpt-5.3-codex-spark'),
+      '--model gpt-4.1'
+    );
+  });
 });
 
 describe('resolveCliInvocation', () => {
@@ -109,6 +188,80 @@ describe('resolveCliInvocation', () => {
       command: 'launch',
       launchArgs: ['--model', 'gpt-5'],
     });
+  });
+});
+
+describe('resolveSetupScopeArg', () => {
+  it('returns undefined when scope is omitted', () => {
+    assert.equal(resolveSetupScopeArg(['--dry-run']), undefined);
+  });
+
+  it('parses --scope <value> form', () => {
+    assert.equal(resolveSetupScopeArg(['--dry-run', '--scope', 'project-local']), 'project-local');
+  });
+
+  it('parses --scope=<value> form', () => {
+    assert.equal(resolveSetupScopeArg(['--scope=project']), 'project');
+  });
+
+  it('throws on invalid scope value', () => {
+    assert.throws(
+      () => resolveSetupScopeArg(['--scope', 'workspace']),
+      /Invalid setup scope: workspace/
+    );
+  });
+
+  it('throws when --scope value is missing', () => {
+    assert.throws(
+      () => resolveSetupScopeArg(['--scope']),
+      /Missing setup scope value after --scope/
+    );
+  });
+});
+
+describe('project-local launch scope helpers', () => {
+  it('reads persisted setup scope when valid', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-scope-'));
+    try {
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project-local' }));
+      assert.equal(readPersistedSetupScope(wd), 'project-local');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores malformed persisted setup scope', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-scope-'));
+    try {
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), '{not-json');
+      assert.equal(readPersistedSetupScope(wd), undefined);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('uses project-local CODEX_HOME when persisted scope is project-local', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-scope-'));
+    try {
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project-local' }));
+      assert.equal(resolveCodexHomeForLaunch(wd, {}), join(wd, '.codex'));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps explicit CODEX_HOME override from env', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-scope-'));
+    try {
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project-local' }));
+      assert.equal(resolveCodexHomeForLaunch(wd, { CODEX_HOME: '/tmp/explicit-codex-home' }), '/tmp/explicit-codex-home');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
   });
 });
 

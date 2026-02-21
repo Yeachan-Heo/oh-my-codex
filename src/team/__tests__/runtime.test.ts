@@ -56,12 +56,12 @@ describe('runtime', () => {
     assert.deepEqual(args, ['--no-alt-screen', '--model', TEAM_LOW_COMPLEXITY_DEFAULT_MODEL]);
   });
 
-  it('resolveWorkerLaunchArgsFromEnv injects default model for all agent types', () => {
+  it('resolveWorkerLaunchArgsFromEnv does not inject low-complexity default for standard agent types', () => {
     const args = resolveWorkerLaunchArgsFromEnv(
       { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
       'executor',
     );
-    assert.deepEqual(args, ['--no-alt-screen', '--model', TEAM_LOW_COMPLEXITY_DEFAULT_MODEL]);
+    assert.deepEqual(args, ['--no-alt-screen']);
   });
 
   it('resolveWorkerLaunchArgsFromEnv treats *-low aliases as low complexity', () => {
@@ -79,11 +79,11 @@ describe('runtime', () => {
     );
     assert.deepEqual(
       resolveWorkerLaunchArgsFromEnv({ OMX_TEAM_WORKER_LAUNCH_ARGS: '--model=gpt-5.3' }, 'explore'),
-      ['--model=gpt-5.3'],
+      ['--model', 'gpt-5.3'],
     );
   });
 
-  it('resolveWorkerLaunchArgsFromEnv uses configured model for all agent types', () => {
+  it('resolveWorkerLaunchArgsFromEnv uses inherited leader model for all agent types', () => {
     const args = resolveWorkerLaunchArgsFromEnv(
       { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
       'executor',
@@ -92,7 +92,7 @@ describe('runtime', () => {
     assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-4.1']);
   });
 
-  it('resolveWorkerLaunchArgsFromEnv uses configured model over hardcoded default for low-complexity', () => {
+  it('resolveWorkerLaunchArgsFromEnv uses inherited leader model over low-complexity default', () => {
     const args = resolveWorkerLaunchArgsFromEnv(
       { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
       'explore',
@@ -101,7 +101,7 @@ describe('runtime', () => {
     assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-4.1']);
   });
 
-  it('resolveWorkerLaunchArgsFromEnv prefers explicit env model over configured model', () => {
+  it('resolveWorkerLaunchArgsFromEnv prefers explicit env model over inherited leader model', () => {
     assert.deepEqual(
       resolveWorkerLaunchArgsFromEnv({ OMX_TEAM_WORKER_LAUNCH_ARGS: '--model gpt-5' }, 'explore', 'gpt-4.1'),
       ['--model', 'gpt-5'],

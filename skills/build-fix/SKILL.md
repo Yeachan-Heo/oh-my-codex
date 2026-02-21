@@ -116,8 +116,8 @@ Spawns multiple build-fixer agents in parallel for different files.
 ```
 Keeps trying until build passes, even if it takes multiple iterations.
 
-**With Pipeline:**
+**With Team:**
 ```
-/pipeline debug "build is failing"
+/team "debug build failures and fix type errors"
 ```
-Uses: explore → architect → build-fixer workflow.
+Uses: explore → build-fixer → verifier workflow.

@@ -102,8 +102,8 @@ OMX installs and wires these layers:
 User
   -> Codex CLI
     -> AGENTS.md (orchestration brain)
-    -> ~/.codex/prompts/*.md (30 agent prompts)
-    -> ~/.agents/skills/*/SKILL.md (40 skills)
+    -> ~/.codex/prompts/*.md (agent prompt catalog)
+    -> ~/.agents/skills/*/SKILL.md (skill catalog)
     -> ~/.codex/config.toml (features, notify, MCP)
     -> .omx/ (runtime state, memory, plans, logs)
 ```
@@ -112,7 +112,7 @@ User
 
 ```bash
 omx                # Launch Codex (+ HUD in tmux when available)
-omx setup          # Install prompts, skills, config wiring, AGENTS.md
+omx setup          # Install prompts/skills/config by scope + project AGENTS.md/.omx
 omx doctor         # Installation/runtime diagnostics
 omx doctor --team  # Team/swarm diagnostics
 omx team ...       # Start/status/resume/shutdown tmux team workers
@@ -146,6 +146,7 @@ See `docs/hooks-extension.md` for the full extension workflow and event model.
 --force
 --dry-run
 --verbose
+--scope <user|project-local|project>  # setup only
 ```
 
 `--madmax` maps to Codex `--dangerously-bypass-approvals-and-sandbox`.
@@ -192,9 +193,14 @@ Important rule: do not shutdown while tasks are still `in_progress` unless abort
 
 ## What `omx setup` writes
 
-- `~/.codex/prompts/` (30 prompt files)
-- `~/.agents/skills/` (40 skills)
-- `~/.codex/config.toml` updates:
+- `.omx/setup-scope.json` (persisted setup scope)
+- Scope-dependent installs:
+  - `user`: `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`
+  - `project-local`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`
+  - `project`: skips prompt/skill/config/native-agent installs
+- Launch behavior: if persisted scope is `project-local`, `omx` launch auto-uses `CODEX_HOME=./.codex` (unless `CODEX_HOME` is already set).
+- Existing `AGENTS.md` is preserved unless `--force` is used (and active-session safety checks still apply).
+- `config.toml` updates (for `user`/`project-local` scopes):
   - `notify = ["node", "..."]`
   - `model_reasoning_effort = "high"`
   - `developer_instructions = "..."`
@@ -206,13 +212,12 @@ Important rule: do not shutdown while tasks are still `in_progress` unless abort
 
 ## Agents and Skills
 
-- Prompts: `prompts/*.md` (installed to `~/.codex/prompts/`)
-- Skills: `skills/*/SKILL.md` (installed to `~/.agents/skills/`)
+- Prompts: `prompts/*.md` (installed to `~/.codex/prompts/` for `user`, `./.codex/prompts/` for `project-local`)
+- Skills: `skills/*/SKILL.md` (installed to `~/.agents/skills/` for `user`, `./.agents/skills/` for `project-local`)
 
 Examples:
 - Agents: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
-- `deep-executor` is deprecated; use `executor` for complex implementation tasks.
-- Skills: `autopilot`, `plan`, `team`, `ralph`, `ultrawork`, `ultrapilot`, `research`, `cancel`
+- Skills: `autopilot`, `plan`, `team`, `ralph`, `ultrawork`, `research`, `cancel`
 
 ## Project Layout
 

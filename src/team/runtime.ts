@@ -1,7 +1,6 @@
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
-import { getModelForMode } from '../config/models.js';
 import {
   sanitizeTeamName,
   isTmuxAvailable,
@@ -40,6 +39,8 @@ import {
   teamReadShutdownAck as readShutdownAck,
   teamReadMonitorSnapshot as readMonitorSnapshot,
   teamWriteMonitorSnapshot as writeMonitorSnapshot,
+  teamReadPhase as readTeamPhaseState,
+  teamWritePhase as writeTeamPhaseState,
   type TeamConfig,
   type WorkerInfo,
   type WorkerHeartbeat,
@@ -47,6 +48,7 @@ import {
   type TeamTask,
   type ShutdownAck,
   type TeamMonitorSnapshotState,
+  type TeamPhaseState,
 } from './team-ops.js';
 import {
   queueInboxInstruction,
@@ -64,6 +66,12 @@ import {
   generateMailboxTriggerMessage,
 } from './worker-bootstrap.js';
 import { type TeamPhase, type TerminalPhase } from './orchestrator.js';
+import {
+  isLowComplexityAgentType,
+  resolveTeamWorkerLaunchArgs,
+  TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
+} from './model-contract.js';
+import { inferPhaseTargetFromTaskCounts, reconcilePhaseStateForMonitor } from './phase-controller.js';
 
 /** Snapshot of the team state at a point in time */
 export interface TeamSnapshot {
@@ -105,9 +113,7 @@ interface ShutdownOptions {
   force?: boolean;
 }
 
-const MODEL_FLAG = '--model';
 const MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
-export const TEAM_LOW_COMPLEXITY_DEFAULT_MODEL = 'gpt-5.3-codex';
 const previousModelInstructionsFileByTeam = new Map<string, string | undefined>();
 
 function resolveWorkerReadyTimeoutMs(env: NodeJS.ProcessEnv): number {
@@ -119,25 +125,6 @@ function resolveWorkerReadyTimeoutMs(env: NodeJS.ProcessEnv): number {
 
 function shouldSkipWorkerReadyWait(env: NodeJS.ProcessEnv): boolean {
   return env.OMX_TEAM_SKIP_READY_WAIT === '1';
-}
-
-function hasExplicitModelArg(args: string[]): boolean {
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === MODEL_FLAG) {
-      const maybeValue = args[i + 1];
-      if (typeof maybeValue === 'string' && maybeValue.trim() !== '' && !maybeValue.startsWith('-')) {
-        return true;
-      }
-      continue;
-    }
-
-    if (arg.startsWith(`${MODEL_FLAG}=`)) {
-      const inline = arg.slice(`${MODEL_FLAG}=`.length).trim();
-      if (inline !== '') return true;
-    }
-  }
-  return false;
 }
 
 function setTeamModelInstructionsFile(teamName: string, filePath: string): void {
@@ -160,26 +147,25 @@ function restoreTeamModelInstructionsFile(teamName: string): void {
   delete process.env[MODEL_INSTRUCTIONS_FILE_ENV];
 }
 
-export function resolveWorkerLaunchArgsFromEnv(env: NodeJS.ProcessEnv, agentType: string, configuredModel?: string): string[] {
-  // Keep it intentionally simple: whitespace split, no quoting/escaping support.
-  // Primary use is passing stable Codex flags like `--no-alt-screen`.
-  const raw = env.OMX_TEAM_WORKER_LAUNCH_ARGS;
-  const args = (!raw || raw.trim() === '')
-    ? []
-    : raw
-    .split(/\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+export { TEAM_LOW_COMPLEXITY_DEFAULT_MODEL };
 
-  if (hasExplicitModelArg(args)) return args;
+export function resolveWorkerLaunchArgsFromEnv(
+  env: NodeJS.ProcessEnv,
+  agentType: string,
+  inheritedLeaderModel?: string,
+): string[] {
+  const inheritedArgs = (typeof inheritedLeaderModel === 'string' && inheritedLeaderModel.trim() !== '')
+    ? ['--model', inheritedLeaderModel.trim()]
+    : [];
+  const fallbackModel = isLowComplexityAgentType(agentType)
+    ? TEAM_LOW_COMPLEXITY_DEFAULT_MODEL
+    : undefined;
 
-  // Use configured model (from .omx-config.json "models" section) for all agent types
-  if (typeof configuredModel === 'string' && configuredModel.trim() !== '') {
-    return [...args, MODEL_FLAG, configuredModel.trim()];
-  }
-
-  // Hardcoded fallback: all agent types get the default model
-  return [...args, MODEL_FLAG, TEAM_LOW_COMPLEXITY_DEFAULT_MODEL];
+  return resolveTeamWorkerLaunchArgs({
+    existingRaw: env.OMX_TEAM_WORKER_LAUNCH_ARGS,
+    inheritedArgs,
+    fallbackModel,
+  });
 }
 
 /**
@@ -222,8 +208,7 @@ export async function startTeam(
   let sessionCreated = false;
   const createdWorkerPaneIds: string[] = [];
   let createdLeaderPaneId: string | undefined;
-  const configuredModel = getModelForMode('team');
-  const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(process.env, agentType, configuredModel);
+  const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(process.env, agentType);
   const workerReadyTimeoutMs = resolveWorkerReadyTimeoutMs(process.env);
   const skipWorkerReadyWait = shouldSkipWorkerReadyWait(process.env);
 
@@ -448,11 +433,11 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
 
   const allTasksTerminal = taskCounts.pending === 0 && taskCounts.blocked === 0 && taskCounts.in_progress === 0;
 
-  // Determine phase from state file (simplified -- read from mode state if available)
-  // For now use a heuristic based on task statuses
-  let phase: TeamPhase | TerminalPhase = 'team-exec';
-  if (allTasksTerminal && taskCounts.failed === 0) phase = 'complete';
-  else if (allTasksTerminal && taskCounts.failed > 0) phase = 'team-fix';
+  const persistedPhase = await readTeamPhaseState(sanitized, cwd);
+  const targetPhase = inferPhaseTargetFromTaskCounts(taskCounts);
+  const phaseState: TeamPhaseState = reconcilePhaseStateForMonitor(persistedPhase, targetPhase);
+  await writeTeamPhaseState(sanitized, phaseState, cwd);
+  const phase: TeamPhase | TerminalPhase = phaseState.current_phase;
 
   await emitMonitorDerivedEvents(sanitized, allTasks, workers, previousSnapshot, cwd);
   const mailboxNotifiedByMessageId = await deliverPendingMailboxMessages(
@@ -838,7 +823,6 @@ async function deliverPendingMailboxMessages(
   const pendingIdsAcrossTeam = new Set<string>();
 
   for (const worker of workers) {
-    if (!worker.alive) continue;
     const workerInfo = config.workers.find((w) => w.name === worker.name);
     if (!workerInfo) continue;
     const mailbox = await listMailboxMessages(teamName, worker.name, cwd);
@@ -863,6 +847,7 @@ async function deliverPendingMailboxMessages(
       (m) => !m.notified_at && !previousNotifications[m.message_id],
     );
     if (unnotified.length === 0) continue;
+    if (!worker.alive) continue;
 
     const notifiedNow = notifyWorker(
       config,

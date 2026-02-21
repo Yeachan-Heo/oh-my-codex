@@ -14,6 +14,16 @@ export type NotificationEvent =
   | "session-idle"
   | "ask-user-question";
 
+/**
+ * Verbosity levels for notification filtering.
+ *
+ * - verbose: all text/tool call output
+ * - agent:   per-agent-call events (includes ask-user-question)
+ * - session: start/idle/stop/end + tmux tail snippet [DEFAULT]
+ * - minimal: start/stop/end only, no idle, no tmux tail
+ */
+export type VerbosityLevel = "verbose" | "agent" | "session" | "minimal";
+
 /** Supported notification platforms */
 export type NotificationPlatform =
   | "discord"
@@ -104,6 +114,9 @@ export interface FullNotificationConfig {
   /** Global enable/disable for all notifications */
   enabled: boolean;
 
+  /** Notification verbosity level (default: "session") */
+  verbosity?: VerbosityLevel;
+
   /** Default platform configs (used when event-specific config is not set) */
   discord?: DiscordNotificationConfig;
   "discord-bot"?: DiscordBotNotificationConfig;
@@ -161,6 +174,8 @@ export interface FullNotificationPayload {
   incompleteTasks?: number;
   /** tmux pane ID for reply injection target */
   tmuxPaneId?: string;
+  /** Captured tmux pane output (tail lines) for session-level notifications */
+  tmuxTail?: string;
 }
 
 /** Result of a notification send attempt */
