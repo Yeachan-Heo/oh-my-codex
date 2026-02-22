@@ -1,5 +1,5 @@
 import { appendFile, readFile, writeFile, mkdir, rm, rename, readdir, stat } from 'fs/promises';
-import { join, dirname } from 'path';
+import { join, dirname, resolve, sep } from 'path';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { omxStateDir } from '../utils/paths.js';
@@ -190,6 +190,33 @@ export const ABSOLUTE_MAX_WORKERS = 20;
 const DEFAULT_CLAIM_LEASE_MS = 15 * 60 * 1000;
 const LOCK_STALE_MS = 5 * 60 * 1000;
 
+const WORKER_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const TASK_ID_PATTERN = /^\d{1,20}$/;
+
+function assertPathWithinDir(filePath: string, rootDir: string): void {
+  const normalizedRoot = resolve(rootDir);
+  const normalizedPath = resolve(filePath);
+  if (normalizedPath !== normalizedRoot && !normalizedPath.startsWith(normalizedRoot + sep)) {
+    throw new Error('Path traversal detected: path is outside the allowed directory');
+  }
+}
+
+function validateWorkerName(name: string): void {
+  if (!WORKER_NAME_PATTERN.test(name)) {
+    throw new Error(
+      `Invalid worker name: "${name}". Must match /^[a-z0-9][a-z0-9-]{0,63}$/ (lowercase alphanumeric + hyphens, max 64 chars).`
+    );
+  }
+}
+
+function validateTaskId(taskId: string): void {
+  if (!TASK_ID_PATTERN.test(taskId)) {
+    throw new Error(
+      `Invalid task ID: "${taskId}". Must be a positive integer (digits only, max 20 digits).`
+    );
+  }
+}
+
 async function writeTaskClaimLockOwnerToken(ownerPath: string, ownerToken: string): Promise<void> {
   await writeFile(ownerPath, ownerToken, 'utf8');
 }
@@ -293,7 +320,17 @@ function normalizeTask(task: TeamTask): TeamTaskV2 {
 
 // Team state directory: .omx/state/team/{teamName}/
 function teamDir(teamName: string, cwd: string): string {
-  return join(omxStateDir(cwd), 'team', teamName);
+  validateTeamName(teamName);
+  const p = join(omxStateDir(cwd), 'team', teamName);
+  assertPathWithinDir(p, omxStateDir(cwd));
+  return p;
+}
+
+function workerDir(teamName: string, workerName: string, cwd: string): string {
+  validateWorkerName(workerName);
+  const p = join(teamDir(teamName, cwd), 'workers', workerName);
+  assertPathWithinDir(p, omxStateDir(cwd));
+  return p;
 }
 
 function teamConfigPath(teamName: string, cwd: string): string {
@@ -305,7 +342,10 @@ function teamManifestV2Path(teamName: string, cwd: string): string {
 }
 
 function taskClaimLockDir(teamName: string, taskId: string, cwd: string): string {
-  return join(teamDir(teamName, cwd), 'claims', `task-${taskId}.lock`);
+  validateTaskId(taskId);
+  const p = join(teamDir(teamName, cwd), 'claims', `task-${taskId}.lock`);
+  assertPathWithinDir(p, omxStateDir(cwd));
+  return p;
 }
 
 function eventLogPath(teamName: string, cwd: string): string {
@@ -313,15 +353,24 @@ function eventLogPath(teamName: string, cwd: string): string {
 }
 
 function mailboxPath(teamName: string, workerName: string, cwd: string): string {
-  return join(teamDir(teamName, cwd), 'mailbox', `${workerName}.json`);
+  validateWorkerName(workerName);
+  const p = join(teamDir(teamName, cwd), 'mailbox', `${workerName}.json`);
+  assertPathWithinDir(p, omxStateDir(cwd));
+  return p;
 }
 
 function mailboxLockDir(teamName: string, workerName: string, cwd: string): string {
-  return join(teamDir(teamName, cwd), 'mailbox', `.lock-${workerName}`);
+  validateWorkerName(workerName);
+  const p = join(teamDir(teamName, cwd), 'mailbox', `.lock-${workerName}`);
+  assertPathWithinDir(p, omxStateDir(cwd));
+  return p;
 }
 
 function approvalPath(teamName: string, taskId: string, cwd: string): string {
-  return join(teamDir(teamName, cwd), 'approvals', `task-${taskId}.json`);
+  validateTaskId(taskId);
+  const p = join(teamDir(teamName, cwd), 'approvals', `task-${taskId}.json`);
+  assertPathWithinDir(p, omxStateDir(cwd));
+  return p;
 }
 
 function summarySnapshotPath(teamName: string, cwd: string): string {
@@ -651,7 +700,7 @@ export async function writeWorkerIdentity(
   identity: WorkerInfo,
   cwd: string
 ): Promise<void> {
-  const p = join(teamDir(teamName, cwd), 'workers', workerName, 'identity.json');
+  const p = join(workerDir(teamName, workerName, cwd), 'identity.json');
   await writeAtomic(p, JSON.stringify(identity, null, 2));
 }
 
@@ -662,7 +711,7 @@ export async function readWorkerHeartbeat(
   cwd: string
 ): Promise<WorkerHeartbeat | null> {
   try {
-    const p = join(teamDir(teamName, cwd), 'workers', workerName, 'heartbeat.json');
+    const p = join(workerDir(teamName, workerName, cwd), 'heartbeat.json');
     if (!existsSync(p)) return null;
     const raw = await readFile(p, 'utf8');
     const parsed = JSON.parse(raw) as unknown;
@@ -679,14 +728,14 @@ export async function updateWorkerHeartbeat(
   heartbeat: WorkerHeartbeat,
   cwd: string
 ): Promise<void> {
-  const p = join(teamDir(teamName, cwd), 'workers', workerName, 'heartbeat.json');
+  const p = join(workerDir(teamName, workerName, cwd), 'heartbeat.json');
   await writeAtomic(p, JSON.stringify(heartbeat, null, 2));
 }
 
 // Read worker status (returns {state:'unknown'} on missing/malformed)
 export async function readWorkerStatus(teamName: string, workerName: string, cwd: string): Promise<WorkerStatus> {
   try {
-    const p = join(teamDir(teamName, cwd), 'workers', workerName, 'status.json');
+    const p = join(workerDir(teamName, workerName, cwd), 'status.json');
     if (!existsSync(p)) {
       return { state: 'unknown', updated_at: new Date().toISOString() };
     }
@@ -708,12 +757,15 @@ export async function writeWorkerInbox(
   prompt: string,
   cwd: string
 ): Promise<void> {
-  const p = join(teamDir(teamName, cwd), 'workers', workerName, 'inbox.md');
+  const p = join(workerDir(teamName, workerName, cwd), 'inbox.md');
   await writeAtomic(p, prompt);
 }
 
 function taskFilePath(teamName: string, taskId: string, cwd: string): string {
-  return join(teamDir(teamName, cwd), 'tasks', `task-${taskId}.json`);
+  validateTaskId(taskId);
+  const p = join(teamDir(teamName, cwd), 'tasks', `task-${taskId}.json`);
+  assertPathWithinDir(p, omxStateDir(cwd));
+  return p;
 }
 
 async function withTeamLock<T>(teamName: string, cwd: string, fn: () => Promise<T>): Promise<T> {
@@ -1392,7 +1444,7 @@ export async function writeShutdownRequest(
   requestedBy: string,
   cwd: string,
 ): Promise<void> {
-  const p = join(teamDir(teamName, cwd), 'workers', workerName, 'shutdown-request.json');
+  const p = join(workerDir(teamName, workerName, cwd), 'shutdown-request.json');
   await writeAtomic(p, JSON.stringify({ requested_at: new Date().toISOString(), requested_by: requestedBy }, null, 2));
 }
 
@@ -1402,7 +1454,7 @@ export async function readShutdownAck(
   cwd: string,
   minUpdatedAt?: string,
 ): Promise<ShutdownAck | null> {
-  const ackPath = join(teamDir(teamName, cwd), 'workers', workerName, 'shutdown-ack.json');
+  const ackPath = join(workerDir(teamName, workerName, cwd), 'shutdown-ack.json');
   if (!existsSync(ackPath)) return null;
   try {
     const raw = await readFile(ackPath, 'utf-8');
