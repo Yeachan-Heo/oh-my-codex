@@ -104,7 +104,12 @@ const TEAM_COMM_TOOL_NAMES = new Set([
   'team_write_task_approval',
 ]);
 
+const TEAM_NAME_SAFE_PATTERN = /^[a-z0-9][a-z0-9-]{0,29}$/;
+const WORKER_NAME_SAFE_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const TASK_ID_SAFE_PATTERN = /^\d{1,20}$/;
+
 function teamStateExists(teamName: string, candidateCwd: string): boolean {
+  if (!TEAM_NAME_SAFE_PATTERN.test(teamName)) return false;
   const teamRoot = join(candidateCwd, '.omx', 'state', 'team', teamName);
   return (
     existsSync(join(teamRoot, 'config.json')) ||
@@ -632,6 +637,7 @@ export async function handleStateToolCall(request: {
     };
   }
 
+  try {
   const stateScope = STATE_TOOL_NAMES.has(name)
     ? await resolveStateScope(cwd, explicitSessionId)
     : undefined;
@@ -647,6 +653,28 @@ export async function handleStateToolCall(request: {
 
   if (TEAM_COMM_TOOL_NAMES.has(name)) {
     const teamName = String((args as Record<string, unknown>)?.team_name || '').trim();
+    if (teamName && !TEAM_NAME_SAFE_PATTERN.test(teamName)) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ error: `Invalid team_name: "${teamName}". Must match /^[a-z0-9][a-z0-9-]{0,29}$/ (lowercase alphanumeric + hyphens, max 30 chars).` }) }],
+        isError: true,
+      };
+    }
+    for (const workerField of ['worker', 'from_worker', 'to_worker']) {
+      const workerVal = String((args as Record<string, unknown>)?.[workerField] || '').trim();
+      if (workerVal && !WORKER_NAME_SAFE_PATTERN.test(workerVal)) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: `Invalid ${workerField}: "${workerVal}". Must match /^[a-z0-9][a-z0-9-]{0,63}$/ (lowercase alphanumeric + hyphens, max 64 chars).` }) }],
+          isError: true,
+        };
+      }
+    }
+    const rawTaskId = String((args as Record<string, unknown>)?.task_id || '').trim();
+    if (rawTaskId && !TASK_ID_SAFE_PATTERN.test(rawTaskId)) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ error: `Invalid task_id: "${rawTaskId}". Must be a positive integer (digits only, max 20 digits).` }) }],
+        isError: true,
+      };
+    }
     if (teamName) {
       cwd = resolveTeamWorkingDirectory(teamName, cwd);
     }
@@ -1165,6 +1193,12 @@ export async function handleStateToolCall(request: {
 
     default:
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
+  }
+  } catch (error) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ error: (error as Error).message }) }],
+      isError: true,
+    };
   }
 }
 server.setRequestHandler(CallToolRequestSchema, handleStateToolCall);
