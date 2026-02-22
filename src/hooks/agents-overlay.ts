@@ -6,6 +6,7 @@
  * for idempotent apply/strip cycles.
  *
  * Injected context:
+ * - Codebase map (directory/module structure for token-efficient exploration)
  * - Active mode state (ralph iteration, autopilot phase, etc.)
  * - Priority notepad content
  * - Project memory summary (tech stack, conventions, directives)
@@ -18,12 +19,13 @@ import { dirname, join } from 'path';
 import { existsSync } from 'fs';
 import { omxNotepadPath, omxProjectMemoryPath } from '../utils/paths.js';
 import { getBaseStateDir, getStateDir } from '../mcp/state-paths.js';
+import { generateCodebaseMap } from './codebase-map.js';
 
 const START_MARKER = '<!-- OMX:RUNTIME:START -->';
 const END_MARKER = '<!-- OMX:RUNTIME:END -->';
 const WORKER_START_MARKER = '<!-- OMX:TEAM:WORKER:START -->';
 const WORKER_END_MARKER = '<!-- OMX:TEAM:WORKER:END -->';
-const MAX_OVERLAY_SIZE = 2000;
+const MAX_OVERLAY_SIZE = 3500;
 
 // ── Lock helpers ─────────────────────────────────────────────────────────────
 
@@ -206,10 +208,11 @@ function getCompactionInstructions(): string {
  * Total output is capped at MAX_OVERLAY_SIZE chars.
  */
 export async function generateOverlay(cwd: string, sessionId?: string): Promise<string> {
-  const [activeModes, notepadPriority, projectMemory] = await Promise.all([
+  const [activeModes, notepadPriority, projectMemory, codebaseMap] = await Promise.all([
     readActiveModes(cwd, sessionId),
     readNotepadPriority(cwd),
     readProjectMemorySummary(cwd),
+    generateCodebaseMap(cwd),
   ]);
 
   // Build sections with deterministic overflow behavior.
@@ -218,6 +221,15 @@ export async function generateOverlay(cwd: string, sessionId?: string): Promise<
   // Session metadata (max 200 chars) - required
   const sessionMeta = `**Session:** ${sessionId || 'unknown'} | ${new Date().toISOString()}`;
   sections.push({ key: 'session', text: truncate(sessionMeta, 200), optional: false });
+
+  // Codebase map (max 1000 chars) - optional, injected at session start for token-efficient exploration
+  if (codebaseMap) {
+    sections.push({
+      key: 'codebase_map',
+      text: `**Codebase Map:**\n${truncate(codebaseMap, 1000)}`,
+      optional: true,
+    });
+  }
 
   // Active modes (max 300 chars) - optional
   if (activeModes) {
