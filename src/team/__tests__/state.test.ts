@@ -282,6 +282,59 @@ describe('team state', () => {
     }
   });
 
+  it('releaseTaskClaim on a completed task returns already_terminal and does not reopen it', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-release-terminal-'));
+    try {
+      await initTeamState('team-release-terminal', 't', 'executor', 1, cwd);
+      const t = await createTask('team-release-terminal', { subject: 'a', description: 'd', status: 'pending' }, cwd);
+      const claim = await claimTask('team-release-terminal', t.id, 'worker-1', t.version ?? 1, cwd);
+      assert.equal(claim.ok, true);
+      if (!claim.ok) return;
+
+      const tr = await transitionTaskStatus('team-release-terminal', t.id, 'in_progress', 'completed', claim.claimToken, cwd);
+      assert.equal(tr.ok, true);
+
+      // Verify claim was stripped on completion
+      const afterComplete = await readTask('team-release-terminal', t.id, cwd);
+      assert.equal(afterComplete?.status, 'completed');
+      assert.equal(afterComplete?.claim, undefined);
+
+      // Attempt to release the claim of a completed task — must be rejected
+      const released = await releaseTaskClaim('team-release-terminal', t.id, claim.claimToken, 'worker-1', cwd);
+      assert.equal(released.ok, false);
+      assert.equal(released.ok ? 'x' : released.error, 'already_terminal');
+
+      // Task must remain completed, not reopened
+      const reread = await readTask('team-release-terminal', t.id, cwd);
+      assert.equal(reread?.status, 'completed');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('releaseTaskClaim on a failed task returns already_terminal and does not reopen it', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-release-failed-'));
+    try {
+      await initTeamState('team-release-failed', 't', 'executor', 1, cwd);
+      const t = await createTask('team-release-failed', { subject: 'a', description: 'd', status: 'pending' }, cwd);
+      const claim = await claimTask('team-release-failed', t.id, 'worker-1', t.version ?? 1, cwd);
+      assert.equal(claim.ok, true);
+      if (!claim.ok) return;
+
+      const tr = await transitionTaskStatus('team-release-failed', t.id, 'in_progress', 'failed', claim.claimToken, cwd);
+      assert.equal(tr.ok, true);
+
+      const released = await releaseTaskClaim('team-release-failed', t.id, claim.claimToken, 'worker-1', cwd);
+      assert.equal(released.ok, false);
+      assert.equal(released.ok ? 'x' : released.error, 'already_terminal');
+
+      const reread = await readTask('team-release-failed', t.id, cwd);
+      assert.equal(reread?.status, 'failed');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('mailbox APIs: DM, broadcast, and mark delivered', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-mailbox-'));
     try {

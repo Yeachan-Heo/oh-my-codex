@@ -169,7 +169,7 @@ export type TransitionTaskResult =
 
 export type ReleaseTaskClaimResult =
   | { ok: true; task: TeamTaskV2 }
-  | { ok: false; error: 'claim_conflict' | 'task_not_found' };
+  | { ok: false; error: 'claim_conflict' | 'task_not_found' | 'already_terminal' };
 
 export interface TeamSummary {
   teamName: string;
@@ -1109,10 +1109,12 @@ export async function transitionTaskStatus(
     if (v.status !== from) return { ok: false as const, error: 'invalid_transition' as const };
     if (!v.claim || v.claim.token !== claimToken) return { ok: false as const, error: 'claim_conflict' as const };
 
+    const isTerminal = to === 'completed' || to === 'failed';
     const updated: TeamTaskV2 = {
       ...v,
       status: to,
-      completed_at: to === 'completed' || to === 'failed' ? new Date().toISOString() : v.completed_at,
+      completed_at: isTerminal ? new Date().toISOString() : v.completed_at,
+      claim: isTerminal ? undefined : v.claim,
       version: v.version + 1,
     };
     await writeAtomic(taskFilePath(teamName, taskId, cwd), JSON.stringify(updated, null, 2));
@@ -1162,6 +1164,10 @@ export async function releaseTaskClaim(
     const v = normalizeTask(current);
     if (v.status === 'pending' && !v.claim && !v.owner) {
       return { ok: true as const, task: v };
+    }
+
+    if (v.status === 'completed' || v.status === 'failed') {
+      return { ok: false as const, error: 'already_terminal' as const };
     }
 
     const tokenMatches = Boolean(v.claim && v.claim.token === claimToken);
