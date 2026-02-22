@@ -75,14 +75,17 @@ function findHudPaneIds(target: string, leaderPaneId: string): string[] {
     .map((pane) => pane.paneId);
 }
 
-function sleepSeconds(seconds: number): void {
-  // shelling out keeps implementation consistent with the project's pattern
-  spawnSync('sleep', [String(seconds)], { encoding: 'utf-8' });
+function sleepMs(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function sleepFractionalSeconds(seconds: number): void {
+function sleepSeconds(seconds: number): void {
+  sleepMs(Math.round(seconds * 1000));
+}
+
+export function sleepFractionalSeconds(seconds: number): void {
   if (!Number.isFinite(seconds) || seconds <= 0) return;
-  spawnSync('sleep', [String(seconds)], { encoding: 'utf-8' });
+  sleepMs(Math.round(seconds * 1000));
 }
 
 function shellQuoteSingle(value: string): string {

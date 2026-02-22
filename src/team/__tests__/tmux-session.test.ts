@@ -12,6 +12,7 @@ import {
   listTeamSessions,
   sanitizeTeamName,
   sendToWorker,
+  sleepFractionalSeconds,
   waitForWorkerReady,
 } from '../tmux-session.js';
 
@@ -356,6 +357,28 @@ describe('killWorkerByPaneId leader pane guard', () => {
     // Without leaderPaneId the guard is not active; tmux call fails gracefully.
     withEmptyPath(() => {
       assert.doesNotThrow(() => killWorkerByPaneId('%5'));
+    });
+  });
+});
+
+describe('sleepFractionalSeconds', () => {
+  it('actually delays even when sleep binary is unavailable', () => {
+    withEmptyPath(() => {
+      const start = Date.now();
+      sleepFractionalSeconds(0.1);
+      const elapsed = Date.now() - start;
+      assert.ok(elapsed >= 80, `expected ~100ms delay but elapsed only ${elapsed}ms`);
+    });
+  });
+
+  it('returns immediately for zero, negative, or NaN values', () => {
+    withEmptyPath(() => {
+      const start = Date.now();
+      sleepFractionalSeconds(0);
+      sleepFractionalSeconds(-1);
+      sleepFractionalSeconds(NaN);
+      const elapsed = Date.now() - start;
+      assert.ok(elapsed < 50, `expected no delay but elapsed ${elapsed}ms`);
     });
   });
 });

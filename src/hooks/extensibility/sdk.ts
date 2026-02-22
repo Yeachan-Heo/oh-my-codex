@@ -89,7 +89,7 @@ function hashDedupeKey(target: string, text: string): string {
 
 function sleepFractionalSeconds(seconds: number): void {
   if (!Number.isFinite(seconds) || seconds <= 0) return;
-  spawnSync('sleep', [String(seconds)], { encoding: 'utf-8' });
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.round(seconds * 1000));
 }
 
 function runTmux(args: string[]): { ok: true; stdout: string } | { ok: false; stderr: string } {
