@@ -1,8 +1,11 @@
 ---
 name: research
-description: Orchestrate parallel researcher agents for comprehensive research with AUTO mode
+description: "⚠️ DEPRECATED: Use /scientist or /external-context instead"
 argument-hint: <research goal>
+deprecated: true
 ---
+
+> **⚠️ Deprecated:** The `/research` skill is deprecated. Use `/scientist` for data and codebase analysis, or `/external-context` for external documentation lookup. This skill will be removed in a future release.
 
 # Research Skill
 

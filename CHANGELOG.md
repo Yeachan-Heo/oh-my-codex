@@ -4,6 +4,9 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Deprecated
+- Deprecated `/research` skill; use `/scientist` for data and codebase analysis, or `/external-context` for external documentation lookup.
+
 ## [0.5.0] - 2026-02-21
 
 ### Added
