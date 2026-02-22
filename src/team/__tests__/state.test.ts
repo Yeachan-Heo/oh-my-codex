@@ -113,6 +113,53 @@ describe('team state', () => {
     }
   });
 
+  it('claimTask rejects in-progress claim takeover when expectedVersion is null (issue-172)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-claim-inprogress-'));
+    try {
+      await initTeamState('team-claim-inprogress', 't', 'executor', 2, cwd);
+      const t = await createTask('team-claim-inprogress', { subject: 'a', description: 'd', status: 'pending' }, cwd);
+
+      // worker-1 claims the task successfully
+      const claim1 = await claimTask('team-claim-inprogress', t.id, 'worker-1', t.version ?? 1, cwd);
+      assert.equal(claim1.ok, true);
+
+      // worker-2 tries to steal the claim with no expectedVersion (null) — must fail
+      const steal = await claimTask('team-claim-inprogress', t.id, 'worker-2', null, cwd);
+      assert.equal(steal.ok, false);
+      assert.equal(steal.ok ? 'x' : steal.error, 'claim_conflict');
+
+      // Verify worker-1 still owns the task
+      const task = await readTask('team-claim-inprogress', t.id, cwd);
+      assert.equal(task?.owner, 'worker-1');
+      assert.equal(task?.status, 'in_progress');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('claimTask rejects in-progress claim takeover even with a matching version', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-claim-inprogress-ver-'));
+    try {
+      await initTeamState('team-claim-inprogress-ver', 't', 'executor', 2, cwd);
+      const t = await createTask('team-claim-inprogress-ver', { subject: 'a', description: 'd', status: 'pending' }, cwd);
+
+      // worker-1 claims the task, advancing version to 2
+      const claim1 = await claimTask('team-claim-inprogress-ver', t.id, 'worker-1', t.version ?? 1, cwd);
+      assert.equal(claim1.ok, true);
+      const claimedVersion = claim1.ok ? claim1.task.version : 0;
+
+      // worker-2 tries to steal using the current (post-claim) version — must still fail
+      const steal = await claimTask('team-claim-inprogress-ver', t.id, 'worker-2', claimedVersion, cwd);
+      assert.equal(steal.ok, false);
+      assert.equal(steal.ok ? 'x' : steal.error, 'claim_conflict');
+
+      const task = await readTask('team-claim-inprogress-ver', t.id, cwd);
+      assert.equal(task?.owner, 'worker-1');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('claimTask claim locking yields deterministic claim_conflict', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-claim-lock-'));
     try {
