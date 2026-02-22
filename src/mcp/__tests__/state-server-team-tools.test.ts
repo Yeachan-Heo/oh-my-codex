@@ -47,6 +47,21 @@ describe('state-server team comm tools', () => {
       const msgId = listJson.messages?.[0]?.message_id;
       assert.ok(msgId);
 
+      const notifyResp = await handleStateToolCall({
+        params: {
+          name: 'team_mailbox_mark_notified',
+          arguments: {
+            team_name: 'alpha-team',
+            worker: 'leader-fixed',
+            message_id: msgId,
+            workingDirectory: wd,
+          },
+        },
+      });
+      const notifyJson = JSON.parse(notifyResp.content[0]?.text || '{}') as { ok?: boolean; notified?: boolean };
+      assert.equal(notifyJson.ok, true);
+      assert.equal(notifyJson.notified, true);
+
       const markResp = await handleStateToolCall({
         params: {
           name: 'team_mailbox_mark_delivered',
@@ -184,6 +199,67 @@ describe('state-server team comm tools', () => {
       const readJson = JSON.parse(readResp.content[0]?.text || '{}') as { ok?: boolean; task?: { id?: string } };
       assert.equal(readJson.ok, true);
       assert.equal(readJson.task?.id, '1');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('team_transition_task_status performs claim-safe terminal transition', async () => {
+    process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
+    const { handleStateToolCall } = await import('../state-server.js');
+
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-team-tools-'));
+    try {
+      await initTeamState('delta-team', 'transition test', 'executor', 1, wd);
+
+      const createResp = await handleStateToolCall({
+        params: {
+          name: 'team_create_task',
+          arguments: {
+            team_name: 'delta-team',
+            subject: 'Transition task',
+            description: 'claim and transition',
+            workingDirectory: wd,
+          },
+        },
+      });
+      const createJson = JSON.parse(createResp.content[0]?.text || '{}') as { ok?: boolean; task?: { id?: string; version?: number } };
+      assert.equal(createJson.ok, true);
+      assert.equal(createJson.task?.id, '1');
+
+      const claimResp = await handleStateToolCall({
+        params: {
+          name: 'team_claim_task',
+          arguments: {
+            team_name: 'delta-team',
+            task_id: '1',
+            worker: 'worker-1',
+            expected_version: createJson.task?.version ?? 1,
+            workingDirectory: wd,
+          },
+        },
+      });
+      const claimJson = JSON.parse(claimResp.content[0]?.text || '{}') as { ok?: boolean; claimToken?: string };
+      assert.equal(claimJson.ok, true);
+      assert.equal(typeof claimJson.claimToken, 'string');
+
+      const transitionResp = await handleStateToolCall({
+        params: {
+          name: 'team_transition_task_status',
+          arguments: {
+            team_name: 'delta-team',
+            task_id: '1',
+            from: 'in_progress',
+            to: 'completed',
+            claim_token: claimJson.claimToken,
+            workingDirectory: wd,
+          },
+        },
+      });
+      const transitionJson = JSON.parse(transitionResp.content[0]?.text || '{}') as { ok?: boolean; task?: { status?: string; completed_at?: string } };
+      assert.equal(transitionJson.ok, true);
+      assert.equal(transitionJson.task?.status, 'completed');
+      assert.equal(typeof transitionJson.task?.completed_at, 'string');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

@@ -33,6 +33,7 @@ import {
   teamListTasks,
   teamUpdateTask,
   teamClaimTask,
+  teamTransitionTaskStatus,
   teamReleaseTaskClaim,
   teamReadConfig,
   teamReadManifest,
@@ -78,6 +79,7 @@ const TEAM_COMM_TOOL_NAMES = new Set([
   'team_list_tasks',
   'team_update_task',
   'team_claim_task',
+  'team_transition_task_status',
   'team_release_task_claim',
   'team_read_config',
   'team_read_manifest',
@@ -350,6 +352,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           workingDirectory: { type: 'string' },
         },
         required: ['team_name', 'task_id', 'worker'],
+      },
+    },
+    {
+      name: 'team_transition_task_status',
+      description: 'Atomically transition task status with claim token validation.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          team_name: { type: 'string', description: 'Sanitized team name' },
+          task_id: { type: 'string', description: 'Task ID to transition' },
+          from: { type: 'string', enum: ['pending', 'blocked', 'in_progress', 'completed', 'failed'] },
+          to: { type: 'string', enum: ['pending', 'blocked', 'in_progress', 'completed', 'failed'] },
+          claim_token: { type: 'string', description: 'Claim token from team_claim_task' },
+          workingDirectory: { type: 'string' },
+        },
+        required: ['team_name', 'task_id', 'from', 'to', 'claim_token'],
       },
     },
     {
@@ -872,6 +890,30 @@ export async function handleStateToolCall(request: {
       }
       const expectedVersion = (args as Record<string, unknown>).expected_version as number | undefined;
       const result = await teamClaimTask(teamName, taskId, worker, expectedVersion ?? null, cwd);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+
+    case 'team_transition_task_status': {
+      const teamName = String((args as Record<string, unknown>).team_name || '').trim();
+      const taskId = String((args as Record<string, unknown>).task_id || '').trim();
+      const from = String((args as Record<string, unknown>).from || '').trim();
+      const to = String((args as Record<string, unknown>).to || '').trim();
+      const claimToken = String((args as Record<string, unknown>).claim_token || '').trim();
+      if (!teamName || !taskId || !from || !to || !claimToken) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: 'team_name, task_id, from, to, claim_token are required' }) }], isError: true };
+      }
+      const allowed = new Set(['pending', 'blocked', 'in_progress', 'completed', 'failed']);
+      if (!allowed.has(from) || !allowed.has(to)) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: 'from and to must be valid task statuses' }) }], isError: true };
+      }
+      const result = await teamTransitionTaskStatus(
+        teamName,
+        taskId,
+        from as 'pending' | 'blocked' | 'in_progress' | 'completed' | 'failed',
+        to as 'pending' | 'blocked' | 'in_progress' | 'completed' | 'failed',
+        claimToken,
+        cwd
+      );
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
 
