@@ -3,13 +3,13 @@
  * Supports desktop notifications, Discord webhooks, and Telegram bots
  */
 
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { promisify } from 'util';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export interface NotificationConfig {
   desktop?: boolean;
@@ -69,20 +69,45 @@ export async function notify(payload: NotificationPayload, config?: Notification
   await Promise.allSettled(promises);
 }
 
-async function sendDesktopNotification(payload: NotificationPayload): Promise<void> {
-  const { title, message } = payload;
-  const platform = process.platform;
+/**
+ * Build the execFile command and args for a desktop notification.
+ * Exported for unit testing.
+ */
+export function _buildDesktopArgs(
+  title: string,
+  message: string,
+  platform: string,
+): [string, string[]] | null {
+  if (platform === 'darwin') {
+    // Escape backslashes then double-quotes for AppleScript string context
+    const safeTitle = title.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const safeMessage = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return ['osascript', ['-e', `display notification "${safeMessage}" with title "${safeTitle}"`]];
+  } else if (platform === 'linux') {
+    // execFile passes args directly — no shell, no escaping needed
+    return ['notify-send', [title, message]];
+  } else if (platform === 'win32') {
+    // Escape single-quotes for PowerShell single-quoted string context (double them)
+    const safeTitle = title.replace(/'/g, "''");
+    const safeMessage = message.replace(/'/g, "''");
+    const ps =
+      `[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; ` +
+      `$xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent(0); ` +
+      `$text = $xml.GetElementsByTagName('text'); ` +
+      `$text[0].AppendChild($xml.CreateTextNode('${safeTitle}')) > $null; ` +
+      `$text[1].AppendChild($xml.CreateTextNode('${safeMessage}')) > $null; ` +
+      `[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('oh-my-codex').Show($xml)`;
+    return ['powershell', ['-Command', ps]];
+  }
+  return null;
+}
 
+async function sendDesktopNotification(payload: NotificationPayload): Promise<void> {
+  const result = _buildDesktopArgs(payload.title, payload.message, process.platform);
+  if (!result) return;
+  const [cmd, args] = result;
   try {
-    if (platform === 'darwin') {
-      await execAsync(`osascript -e 'display notification "${message}" with title "${title}"'`);
-    } else if (platform === 'linux') {
-      await execAsync(`notify-send "${title}" "${message}"`);
-    } else if (platform === 'win32') {
-      // PowerShell toast notification
-      const ps = `[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent(0); $text = $xml.GetElementsByTagName('text'); $text[0].AppendChild($xml.CreateTextNode('${title}')) > $null; $text[1].AppendChild($xml.CreateTextNode('${message}')) > $null; [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('oh-my-codex').Show($xml)`;
-      await execAsync(`powershell -Command "${ps}"`);
-    }
+    await execFileAsync(cmd, args);
   } catch {
     // Desktop notification is best-effort
   }
