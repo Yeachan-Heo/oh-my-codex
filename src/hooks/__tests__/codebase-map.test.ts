@@ -110,6 +110,29 @@ describe('generateCodebaseMap', () => {
     assert.ok(map.includes('src/utils'), 'should include src/utils dir');
   });
 
+  it('does not include untracked files (security: no filename leakage)', async () => {
+    const secDir = await mkdtemp(join(tmpdir(), 'omx-untracked-test-'));
+    try {
+      execSync('git init', { cwd: secDir, stdio: 'ignore' });
+      execSync('git config user.email "test@test.com"', { cwd: secDir, stdio: 'ignore' });
+      execSync('git config user.name "Test"', { cwd: secDir, stdio: 'ignore' });
+      await mkdir(join(secDir, 'src'), { recursive: true });
+
+      // This file is tracked
+      await writeFile(join(secDir, 'src', 'tracked.ts'), 'export function tracked() {}');
+      execSync('git add src/tracked.ts', { cwd: secDir, stdio: 'ignore' });
+
+      // This file is untracked (never git-added)
+      await writeFile(join(secDir, 'src', 'secret-wip.ts'), 'export function secretWork() {}');
+
+      const map = await generateCodebaseMap(secDir);
+      assert.ok(map.includes('tracked'), 'should include tracked file');
+      assert.ok(!map.includes('secret-wip'), 'must not expose untracked filename');
+    } finally {
+      await rm(secDir, { recursive: true, force: true });
+    }
+  });
+
   it('does not throw on unreadable directory (graceful failure)', async () => {
     const map = await generateCodebaseMap('/nonexistent/path/xyz');
     assert.strictEqual(map, '');
