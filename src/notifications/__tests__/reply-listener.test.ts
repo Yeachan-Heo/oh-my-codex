@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { sanitizeReplyInput } from '../reply-listener.js';
+import { spawn } from 'node:child_process';
+import { sanitizeReplyInput, isReplyListenerProcess } from '../reply-listener.js';
 
 describe('sanitizeReplyInput', () => {
   it('passes through normal text', () => {
@@ -66,5 +67,54 @@ describe('sanitizeReplyInput', () => {
   it('handles unicode text', () => {
     const result = sanitizeReplyInput('Hello world');
     assert.ok(result.length > 0);
+  });
+});
+
+describe('isReplyListenerProcess', () => {
+  it('returns false for the current process (test runner has no daemon marker)', () => {
+    assert.equal(isReplyListenerProcess(process.pid), false);
+  });
+
+  it('returns true for a process whose command line contains the daemon marker', (_, done) => {
+    // Spawn a long-lived node process whose -e script contains 'pollLoop',
+    // matching what startReplyListener injects into the daemon script.
+    const child = spawn(
+      process.execPath,
+      ['-e', 'const pollLoop = () => {}; setInterval(pollLoop, 60000);'],
+      { stdio: 'ignore' },
+    );
+    child.once('spawn', () => {
+      const pid = child.pid!;
+      const result = isReplyListenerProcess(pid);
+      child.kill();
+      assert.equal(result, true);
+      done();
+    });
+    child.once('error', (err) => {
+      done(err);
+    });
+  });
+
+  it('returns false for a process whose command line lacks the daemon marker', (_, done) => {
+    const child = spawn(
+      process.execPath,
+      ['-e', 'setInterval(() => {}, 60000);'],
+      { stdio: 'ignore' },
+    );
+    child.once('spawn', () => {
+      const pid = child.pid!;
+      const result = isReplyListenerProcess(pid);
+      child.kill();
+      assert.equal(result, false);
+      done();
+    });
+    child.once('error', (err) => {
+      done(err);
+    });
+  });
+
+  it('returns false for a non-existent PID', () => {
+    // PID 0 is never a valid user process
+    assert.equal(isReplyListenerProcess(0), false);
   });
 });

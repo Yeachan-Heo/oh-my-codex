@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, chmodSy
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { request as httpsRequest } from 'https';
 import {
   capturePaneContent,
@@ -191,6 +191,33 @@ function isProcessRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+// Unique token embedded in the daemon's `-e` script; absent from unrelated processes.
+const DAEMON_IDENTITY_MARKER = 'pollLoop';
+
+/**
+ * Verify that the process with the given PID is our reply listener daemon by
+ * inspecting its command line for the daemon identity marker. Returns false if
+ * the process cannot be positively identified (safe default).
+ */
+export function isReplyListenerProcess(pid: number): boolean {
+  try {
+    if (process.platform === 'linux') {
+      // NUL-separated argv available without spawning a subprocess
+      const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf-8');
+      return cmdline.includes(DAEMON_IDENTITY_MARKER);
+    }
+    // macOS and other POSIX systems
+    const result = spawnSync('ps', ['-p', String(pid), '-o', 'args='], {
+      encoding: 'utf-8',
+      timeout: 3000,
+    });
+    if (result.status !== 0 || result.error) return false;
+    return (result.stdout ?? '').includes(DAEMON_IDENTITY_MARKER);
   } catch {
     return false;
   }
@@ -733,6 +760,14 @@ export function stopReplyListener(): DaemonResponse {
     return {
       success: true,
       message: 'Reply listener daemon was not running (cleaned up stale PID file)',
+    };
+  }
+
+  if (!isReplyListenerProcess(pid)) {
+    removePidFile();
+    return {
+      success: false,
+      message: `Refusing to kill PID ${pid}: process identity does not match the reply listener daemon (stale or reused PID - removed PID file)`,
     };
   }
 
