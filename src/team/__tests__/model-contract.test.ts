@@ -58,6 +58,37 @@ describe('team model contract', () => {
     );
   });
 
+  it('drops orphan --model flag and emits exactly one canonical --model', () => {
+    // Orphan --model with no following value must not leak into passthrough and cause duplicate flags
+    assert.deepEqual(
+      resolveTeamWorkerLaunchArgs({
+        existingRaw: '--model',
+        inheritedArgs: ['--model', 'inherited-model'],
+      }),
+      ['--model', 'inherited-model'],
+    );
+  });
+
+  it('drops orphan --model mixed with other flags and does not emit duplicate flags', () => {
+    assert.deepEqual(
+      resolveTeamWorkerLaunchArgs({
+        existingRaw: '--no-alt-screen --model',
+        inheritedArgs: ['--model', 'sonic-model'],
+      }),
+      ['--no-alt-screen', '--model', 'sonic-model'],
+    );
+  });
+
+  it('drops --model= with empty value and falls back to inherited model', () => {
+    assert.deepEqual(
+      resolveTeamWorkerLaunchArgs({
+        existingRaw: '--model=',
+        inheritedArgs: ['--model', 'inherited-model'],
+      }),
+      ['--model', 'inherited-model'],
+    );
+  });
+
   it('detects low-complexity agent types', () => {
     assert.equal(isLowComplexityAgentType('explore'), true);
     assert.equal(isLowComplexityAgentType('writer'), true);

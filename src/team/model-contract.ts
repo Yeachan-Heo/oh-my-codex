@@ -66,9 +66,8 @@ export function parseTeamWorkerLaunchArgs(args: string[]): ParsedTeamWorkerLaunc
       if (typeof maybeValue === 'string' && isValidModelValue(maybeValue)) {
         modelOverride = maybeValue.trim();
         i += 1;
-        continue;
       }
-      passthrough.push(arg);
+      // Orphan --model with no valid value is silently dropped (never passthrough)
       continue;
     }
 
@@ -76,9 +75,8 @@ export function parseTeamWorkerLaunchArgs(args: string[]): ParsedTeamWorkerLaunc
       const inlineValue = arg.slice(`${MODEL_FLAG}=`.length).trim();
       if (isValidModelValue(inlineValue)) {
         modelOverride = inlineValue;
-        continue;
       }
-      passthrough.push(arg);
+      // --model= with empty/invalid value is silently dropped (never passthrough)
       continue;
     }
 
