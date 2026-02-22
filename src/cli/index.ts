@@ -13,6 +13,7 @@ import { tmuxHookCommand } from './tmux-hook.js';
 import { hooksCommand } from './hooks.js';
 import { hudCommand } from '../hud/index.js';
 import { teamCommand } from './team.js';
+import { ralphCommand } from './ralph.js';
 import {
   getBaseStateDir,
   getStateDir,
@@ -49,6 +50,7 @@ Usage:
   omx doctor    Check installation health
   omx doctor --team  Check team/swarm runtime health diagnostics
   omx team      Spawn parallel worker panes in tmux and bootstrap inbox/task state
+  omx ralph     Launch Codex with ralph persistence mode active
   omx version   Show version information
   omx tmux-hook Manage tmux prompt injection workaround (init|status|validate|test)
   omx hooks     Manage hook plugins (init|status|validate|test)
@@ -221,7 +223,7 @@ export function buildHudPaneCleanupTargets(existingPaneIds: string[], createdPan
 
 export async function main(args: string[]): Promise<void> {
   const knownCommands = new Set([
-    'launch', 'setup', 'doctor', 'team', 'version', 'tmux-hook', 'hooks', 'hud', 'status', 'cancel', 'help', '--help', '-h',
+    'launch', 'setup', 'doctor', 'team', 'ralph', 'version', 'tmux-hook', 'hooks', 'hud', 'status', 'cancel', 'help', '--help', '-h',
   ]);
   const firstArg = args[0];
   const { command, launchArgs } = resolveCliInvocation(args);
@@ -251,6 +253,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case 'team':
         await teamCommand(args.slice(1), options);
+        break;
+      case 'ralph':
+        await ralphCommand(args.slice(1));
         break;
       case 'version':
         version();
@@ -352,7 +357,7 @@ async function reasoningCommand(args: string[]): Promise<void> {
   console.log(`Set ${REASONING_KEY}="${mode}" in ${configPath}`);
 }
 
-async function launchWithHud(args: string[]): Promise<void> {
+export async function launchWithHud(args: string[]): Promise<void> {
   const cwd = process.cwd();
   const workerSparkModel = resolveWorkerSparkModel(args);
   const normalizedArgs = normalizeCodexLaunchArgs(args);
