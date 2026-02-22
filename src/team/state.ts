@@ -1075,6 +1075,9 @@ export async function claimTask(
     if (v.status === 'completed' || v.status === 'failed') {
       return { ok: false as const, error: 'already_terminal' as const };
     }
+    if (v.status === 'in_progress') {
+      return { ok: false as const, error: 'claim_conflict' as const };
+    }
 
     const claimToken = randomUUID();
     const leasedUntil = new Date(Date.now() + DEFAULT_CLAIM_LEASE_MS).toISOString();

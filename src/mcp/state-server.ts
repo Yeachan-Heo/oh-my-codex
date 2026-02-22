@@ -358,7 +358,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           team_name: { type: 'string', description: 'Sanitized team name' },
           task_id: { type: 'string', description: 'Task ID to claim' },
           worker: { type: 'string', description: 'Worker name claiming the task' },
-          expected_version: { type: 'number', description: 'Expected task version for optimistic locking (null to skip)' },
+          expected_version: { type: 'number', description: 'Expected task version for optimistic locking. Omitting does not allow claiming an already in-progress task.' },
           workingDirectory: { type: 'string' },
         },
         required: ['team_name', 'task_id', 'worker'],

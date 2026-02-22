@@ -204,6 +204,81 @@ describe('state-server team comm tools', () => {
     }
   });
 
+  it('team_claim_task rejects in-progress takeover when expected_version is omitted (issue-172)', async () => {
+    process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
+    const { handleStateToolCall } = await import('../state-server.js');
+
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-team-tools-'));
+    try {
+      await initTeamState('claim-takeover-team', 'takeover test', 'executor', 2, wd);
+
+      const createResp = await handleStateToolCall({
+        params: {
+          name: 'team_create_task',
+          arguments: {
+            team_name: 'claim-takeover-team',
+            subject: 'Contested task',
+            description: 'two workers race for this',
+            workingDirectory: wd,
+          },
+        },
+      });
+      const createJson = JSON.parse(createResp.content[0]?.text || '{}') as { ok?: boolean; task?: { id?: string; version?: number } };
+      assert.equal(createJson.ok, true);
+
+      // worker-1 claims the task successfully
+      const claimResp = await handleStateToolCall({
+        params: {
+          name: 'team_claim_task',
+          arguments: {
+            team_name: 'claim-takeover-team',
+            task_id: createJson.task?.id ?? '1',
+            worker: 'worker-1',
+            expected_version: createJson.task?.version ?? 1,
+            workingDirectory: wd,
+          },
+        },
+      });
+      const claimJson = JSON.parse(claimResp.content[0]?.text || '{}') as { ok?: boolean; claimToken?: string };
+      assert.equal(claimJson.ok, true);
+
+      // worker-2 tries to steal with no expected_version — must fail with claim_conflict
+      const stealResp = await handleStateToolCall({
+        params: {
+          name: 'team_claim_task',
+          arguments: {
+            team_name: 'claim-takeover-team',
+            task_id: createJson.task?.id ?? '1',
+            worker: 'worker-2',
+            workingDirectory: wd,
+            // expected_version intentionally omitted
+          },
+        },
+      });
+      const stealJson = JSON.parse(stealResp.content[0]?.text || '{}') as { ok?: boolean; error?: string };
+      assert.equal(stealJson.ok, false);
+      assert.equal(stealJson.error, 'claim_conflict');
+
+      // Confirm worker-1 still owns the task
+      const readResp = await handleStateToolCall({
+        params: {
+          name: 'team_read_task',
+          arguments: {
+            team_name: 'claim-takeover-team',
+            task_id: createJson.task?.id ?? '1',
+            workingDirectory: wd,
+          },
+        },
+      });
+      const readJson = JSON.parse(readResp.content[0]?.text || '{}') as { ok?: boolean; task?: { owner?: string; status?: string } };
+      assert.equal(readJson.ok, true);
+      assert.equal(readJson.task?.owner, 'worker-1');
+      assert.equal(readJson.task?.status, 'in_progress');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('team_transition_task_status performs claim-safe terminal transition', async () => {
     process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
     const { handleStateToolCall } = await import('../state-server.js');
