@@ -500,7 +500,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: 'object',
         properties: {
           team_name: { type: 'string', description: 'Sanitized team name' },
-          type: { type: 'string', enum: ['task_completed', 'task_failed', 'worker_idle', 'worker_stopped', 'message_received', 'shutdown_ack', 'approval_decision'] },
+          type: { type: 'string', enum: ['task_completed', 'task_failed', 'worker_idle', 'worker_stopped', 'message_received', 'shutdown_ack', 'approval_decision', 'team_leader_nudge'] },
           worker: { type: 'string', description: 'Worker name associated with the event' },
           task_id: { type: 'string', description: 'Related task ID (optional)' },
           message_id: { type: 'string', description: 'Related message ID (optional)' },
@@ -1104,7 +1104,7 @@ export async function handleStateToolCall(request: {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'team_name, type, worker are required' }) }], isError: true };
       }
       const event = await teamAppendEvent(teamName, {
-        type: eventType as 'task_completed' | 'task_failed' | 'worker_idle' | 'worker_stopped' | 'message_received' | 'shutdown_ack' | 'approval_decision',
+        type: eventType as 'task_completed' | 'task_failed' | 'worker_idle' | 'worker_stopped' | 'message_received' | 'shutdown_ack' | 'approval_decision' | 'team_leader_nudge',
         worker,
         task_id: (args as Record<string, unknown>).task_id as string | undefined,
         message_id: ((args as Record<string, unknown>).message_id as string | undefined) ?? null,
