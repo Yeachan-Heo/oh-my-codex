@@ -876,4 +876,16 @@ describe('team state', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it('claimTask returns task_not_found for non-existent task id', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-claim-missing-'));
+    try {
+      await initTeamState('team-x', 'task', 'executor', 1, cwd);
+      const result = await claimTask('team-x', 'non-existent-999', 'worker-1', null, cwd);
+      assert.equal(result.ok, false);
+      assert.equal((result as { ok: false; error: string }).error, 'task_not_found');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

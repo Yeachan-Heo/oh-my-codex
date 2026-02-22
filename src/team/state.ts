@@ -1058,6 +1058,8 @@ export async function claimTask(
   expectedVersion: number | null,
   cwd: string
 ): Promise<ClaimTaskResult> {
+  const existing = await readTask(teamName, taskId, cwd);
+  if (!existing) return { ok: false, error: 'task_not_found' };
   const readiness = await computeTaskReadiness(teamName, taskId, cwd);
   if (!readiness.ready) {
     return { ok: false, error: 'blocked_dependency', dependencies: readiness.dependencies };
