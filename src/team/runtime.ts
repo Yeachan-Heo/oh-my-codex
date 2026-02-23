@@ -1,6 +1,7 @@
 import { join, resolve } from 'path';
 import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
+import { performance } from 'perf_hooks';
 import {
   sanitizeTeamName,
   isTmuxAvailable,
@@ -106,6 +107,13 @@ export interface TeamSnapshot {
   deadWorkers: string[];
   nonReportingWorkers: string[];
   recommendations: string[];
+  performance?: {
+    list_tasks_ms: number;
+    worker_scan_ms: number;
+    mailbox_delivery_ms: number;
+    total_ms: number;
+    updated_at: string;
+  };
 }
 
 /** Runtime handle returned by startTeam */
@@ -468,13 +476,17 @@ export async function startTeam(
  * Monitor team state by polling files. Returns a snapshot.
  */
 export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSnapshot | null> {
+  const monitorStartMs = performance.now();
   const sanitized = sanitizeTeamName(teamName);
   const config = await readTeamConfig(sanitized, cwd);
   if (!config) return null;
   const previousSnapshot = await readMonitorSnapshot(sanitized, cwd);
 
   const sessionName = config.tmux_session;
+  const listTasksStartMs = performance.now();
   const allTasks = await listTasks(sanitized, cwd);
+  const listTasksMs = performance.now() - listTasksStartMs;
+  const taskById = new Map(allTasks.map((task) => [task.id, task] as const));
   const inProgressByOwner = new Map<string, TeamTask[]>();
   for (const task of allTasks) {
     if (task.status !== 'in_progress' || !task.owner) continue;
@@ -488,14 +500,21 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
   const nonReportingWorkers: string[] = [];
   const recommendations: string[] = [];
 
-  for (const w of config.workers) {
-    const alive = isWorkerAlive(sessionName, w.index, w.pane_id);
-    const [status, heartbeat] = await Promise.all([
-      readWorkerStatus(sanitized, w.name, cwd),
-      readWorkerHeartbeat(sanitized, w.name, cwd),
-    ]);
+  const workerScanStartMs = performance.now();
+  const workerSignals = await Promise.all(
+    config.workers.map(async (worker) => {
+      const alive = isWorkerAlive(sessionName, worker.index, worker.pane_id);
+      const [status, heartbeat] = await Promise.all([
+        readWorkerStatus(sanitized, worker.name, cwd),
+        readWorkerHeartbeat(sanitized, worker.name, cwd),
+      ]);
+      return { worker, alive, status, heartbeat };
+    })
+  );
+  const workerScanMs = performance.now() - workerScanStartMs;
 
-    const currentTask = status.current_task_id ? allTasks.find((t) => t.id === status.current_task_id) : null;
+  for (const { worker: w, alive, status, heartbeat } of workerSignals) {
+    const currentTask = status.current_task_id ? taskById.get(status.current_task_id) ?? null : null;
     const previousTurns = previousSnapshot ? (previousSnapshot.workerTurnCountByName[w.name] ?? 0) : null;
     const previousTaskId = previousSnapshot?.workerTaskIdByName[w.name] ?? '';
     const currentTaskId = status.current_task_id ?? '';
@@ -553,6 +572,7 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
   const phase: TeamPhase | TerminalPhase = phaseState.current_phase;
 
   await emitMonitorDerivedEvents(sanitized, allTasks, workers, previousSnapshot, cwd);
+  const mailboxDeliveryStartMs = performance.now();
   const mailboxNotifiedByMessageId = await deliverPendingMailboxMessages(
     sanitized,
     config,
@@ -560,6 +580,9 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
     previousSnapshot?.mailboxNotifiedByMessageId ?? {},
     cwd
   );
+  const mailboxDeliveryMs = performance.now() - mailboxDeliveryStartMs;
+  const updatedAt = new Date().toISOString();
+  const totalMs = performance.now() - monitorStartMs;
   await writeMonitorSnapshot(
     sanitized,
       {
@@ -570,6 +593,13 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
         workerTaskIdByName: Object.fromEntries(workers.map((w) => [w.name, w.status.current_task_id ?? ''])),
         mailboxNotifiedByMessageId,
         completedEventTaskIds: previousSnapshot?.completedEventTaskIds ?? {},
+        monitorTimings: {
+          list_tasks_ms: Number(listTasksMs.toFixed(2)),
+          worker_scan_ms: Number(workerScanMs.toFixed(2)),
+          mailbox_delivery_ms: Number(mailboxDeliveryMs.toFixed(2)),
+          total_ms: Number(totalMs.toFixed(2)),
+          updated_at: updatedAt,
+        },
       },
       cwd
   );
@@ -586,6 +616,13 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
     deadWorkers,
     nonReportingWorkers,
     recommendations,
+    performance: {
+      list_tasks_ms: Number(listTasksMs.toFixed(2)),
+      worker_scan_ms: Number(workerScanMs.toFixed(2)),
+      mailbox_delivery_ms: Number(mailboxDeliveryMs.toFixed(2)),
+      total_ms: Number(totalMs.toFixed(2)),
+      updated_at: updatedAt,
+    },
   };
 }
 

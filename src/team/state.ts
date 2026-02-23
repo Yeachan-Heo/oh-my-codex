@@ -2,6 +2,7 @@ import { appendFile, readFile, writeFile, mkdir, rm, rename, readdir, stat } fro
 import { join, dirname, resolve, sep } from 'path';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
+import { performance } from 'perf_hooks';
 import { omxStateDir } from '../utils/paths.js';
 import { type TeamPhase, type TerminalPhase } from './orchestrator.js';
 
@@ -201,6 +202,15 @@ export interface TeamSummary {
   };
   workers: Array<{ name: string; alive: boolean; lastTurnAt: string | null; turnsWithoutProgress: number }>;
   nonReportingWorkers: string[];
+  performance?: TeamSummaryPerformance;
+}
+
+export interface TeamSummaryPerformance {
+  total_ms: number;
+  tasks_loaded_ms: number;
+  workers_polled_ms: number;
+  task_count: number;
+  worker_count: number;
 }
 
 export const DEFAULT_MAX_WORKERS = 20;
@@ -1055,16 +1065,33 @@ export async function listTasks(teamName: string, cwd: string): Promise<TeamTask
   const tasksRoot = join(teamDir(teamName, cwd), 'tasks');
   if (!existsSync(tasksRoot)) return [];
 
-  const files = await readdir(tasksRoot);
-  const tasks: TeamTaskV2[] = [];
-
-  const matched = files.flatMap((f: string) => {
-    const m = /^task-(\d+)\.json$/.exec(f);
-    return m ? [m[1]] : [];
+  const files = await readdir(tasksRoot, { withFileTypes: true });
+  const matched = files.flatMap((entry) => {
+    if (!entry.isFile()) return [];
+    const m = /^task-(\d+)\.json$/.exec(entry.name);
+    if (!m) return [];
+    return [{ id: m[1], fileName: entry.name }];
   });
-  const results = await Promise.all(matched.map((id: string) => readTask(teamName, id, cwd)));
-  for (const t of results) {
-    if (t) tasks.push(normalizeTask(t));
+
+  const results = await Promise.all(
+    matched.map(async ({ id, fileName }) => {
+      try {
+        const raw = await readFile(join(tasksRoot, fileName), 'utf8');
+        const parsed = JSON.parse(raw) as unknown;
+        if (!isTeamTask(parsed)) return null;
+        const normalized = normalizeTask(parsed);
+        // Ignore corrupt task files whose internal id mismatches filename.
+        if (normalized.id !== id) return null;
+        return normalized;
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  const tasks: TeamTaskV2[] = [];
+  for (const task of results) {
+    if (task) tasks.push(task);
   }
 
   tasks.sort((a, b) => Number(a.id) - Number(b.id));
@@ -1424,10 +1451,14 @@ export async function readTaskApproval(
 
 // Get team summary with aggregation and non-reporting worker detection
 export async function getTeamSummary(teamName: string, cwd: string): Promise<TeamSummary | null> {
+  const summaryStartMs = performance.now();
   const cfg = await readTeamConfig(teamName, cwd);
   if (!cfg) return null;
 
+  const tasksStartMs = performance.now();
   const tasks = await listTasks(teamName, cwd);
+  const tasksLoadedMs = performance.now() - tasksStartMs;
+  const taskById = new Map(tasks.map((task) => [task.id, task] as const));
   const previousSnapshot = await readSummarySnapshot(teamName, cwd);
   const counts = {
     total: tasks.length,
@@ -1454,9 +1485,19 @@ export async function getTeamSummary(teamName: string, cwd: string): Promise<Tea
     workerTaskByName: {},
   };
 
-  for (const w of workers) {
-    const hb = await readWorkerHeartbeat(teamName, w.name, cwd);
-    const status = await readWorkerStatus(teamName, w.name, cwd);
+  const workerPollStartMs = performance.now();
+  const workerSignals = await Promise.all(
+    workers.map(async (worker) => {
+      const [hb, status] = await Promise.all([
+        readWorkerHeartbeat(teamName, worker.name, cwd),
+        readWorkerStatus(teamName, worker.name, cwd),
+      ]);
+      return { worker, hb, status };
+    })
+  );
+  const workersPolledMs = performance.now() - workerPollStartMs;
+
+  for (const { worker: w, hb, status } of workerSignals) {
 
     const alive = hb?.alive ?? false;
     const lastTurnAt = hb?.last_turn_at ?? null;
@@ -1464,7 +1505,7 @@ export async function getTeamSummary(teamName: string, cwd: string): Promise<Tea
     const currentTaskId = status.current_task_id ?? '';
     const prevTaskId = previousSnapshot?.workerTaskByName[w.name] ?? '';
     const prevTurnCount = previousSnapshot?.workerTurnCountByName[w.name] ?? 0;
-    const currentTask = currentTaskId ? await readTask(teamName, currentTaskId, cwd) : null;
+    const currentTask = currentTaskId ? taskById.get(currentTaskId) ?? null : null;
 
     const turnsWithoutProgress =
       hb &&
@@ -1492,6 +1533,13 @@ export async function getTeamSummary(teamName: string, cwd: string): Promise<Tea
     tasks: counts,
     workers: workerSummaries,
     nonReportingWorkers,
+    performance: {
+      total_ms: Number((performance.now() - summaryStartMs).toFixed(2)),
+      tasks_loaded_ms: Number(tasksLoadedMs.toFixed(2)),
+      workers_polled_ms: Number(workersPolledMs.toFixed(2)),
+      task_count: tasks.length,
+      worker_count: workers.length,
+    },
   };
 }
 
@@ -1567,6 +1615,14 @@ export interface TeamMonitorSnapshotState {
   mailboxNotifiedByMessageId: Record<string, string>;
   /** Task IDs for which a task_completed event has already been emitted (from any path). */
   completedEventTaskIds: Record<string, boolean>;
+  /** Optional timing telemetry from the most recent monitorTeam poll. */
+  monitorTimings?: {
+    list_tasks_ms: number;
+    worker_scan_ms: number;
+    mailbox_delivery_ms: number;
+    total_ms: number;
+    updated_at: string;
+  };
 }
 
 export interface TeamPhaseState {
@@ -1595,6 +1651,20 @@ export async function readMonitorSnapshot(
     const raw = await readFile(p, 'utf-8');
     const parsed = JSON.parse(raw) as Partial<TeamMonitorSnapshotState>;
     if (!parsed || typeof parsed !== 'object') return null;
+    const monitorTimings = (() => {
+      const candidate = parsed.monitorTimings as TeamMonitorSnapshotState['monitorTimings'];
+      if (!candidate || typeof candidate !== 'object') return undefined;
+      if (
+        typeof candidate.list_tasks_ms !== 'number' ||
+        typeof candidate.worker_scan_ms !== 'number' ||
+        typeof candidate.mailbox_delivery_ms !== 'number' ||
+        typeof candidate.total_ms !== 'number' ||
+        typeof candidate.updated_at !== 'string'
+      ) {
+        return undefined;
+      }
+      return candidate;
+    })();
     return {
       taskStatusById: parsed.taskStatusById ?? {},
       workerAliveByName: parsed.workerAliveByName ?? {},
@@ -1603,6 +1673,7 @@ export async function readMonitorSnapshot(
       workerTaskIdByName: parsed.workerTaskIdByName ?? {},
       mailboxNotifiedByMessageId: parsed.mailboxNotifiedByMessageId ?? {},
       completedEventTaskIds: parsed.completedEventTaskIds ?? {},
+      monitorTimings,
     };
   } catch {
     return null;
