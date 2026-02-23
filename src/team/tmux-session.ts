@@ -79,13 +79,26 @@ function sleepMs(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function sleepSeconds(seconds: number): void {
-  sleepMs(Math.round(seconds * 1000));
+const MAX_FRACTIONAL_SLEEP_MS = 60_000;
+
+function toFractionalSleepMs(seconds: number): number {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 0;
+  const ms = Math.ceil(seconds * 1000);
+  if (!Number.isFinite(ms) || ms <= 0) return 0;
+  return Math.min(MAX_FRACTIONAL_SLEEP_MS, ms);
 }
 
-export function sleepFractionalSeconds(seconds: number): void {
-  if (!Number.isFinite(seconds) || seconds <= 0) return;
-  sleepMs(Math.round(seconds * 1000));
+function sleepSeconds(seconds: number): void {
+  sleepFractionalSeconds(seconds);
+}
+
+export function sleepFractionalSeconds(
+  seconds: number,
+  sleepImpl: (ms: number) => void = sleepMs,
+): void {
+  const ms = toFractionalSleepMs(seconds);
+  if (ms <= 0) return;
+  sleepImpl(ms);
 }
 
 function shellQuoteSingle(value: string): string {

@@ -389,24 +389,31 @@ describe('killWorkerByPaneId leader pane guard', () => {
 });
 
 describe('sleepFractionalSeconds', () => {
-  it('actually delays even when sleep binary is unavailable', () => {
-    withEmptyPath(() => {
-      const start = Date.now();
-      sleepFractionalSeconds(0.1);
-      const elapsed = Date.now() - start;
-      assert.ok(elapsed >= 80, `expected ~100ms delay but elapsed only ${elapsed}ms`);
-    });
+  it('uses ceil(ms) so sub-millisecond positive values still sleep', () => {
+    const calls: number[] = [];
+    const captureSleep = (ms: number): void => {
+      calls.push(ms);
+    };
+
+    sleepFractionalSeconds(0.1, captureSleep);
+    sleepFractionalSeconds(0.0001, captureSleep);
+
+    assert.deepEqual(calls, [100, 1]);
   });
 
-  it('returns immediately for zero, negative, or NaN values', () => {
-    withEmptyPath(() => {
-      const start = Date.now();
-      sleepFractionalSeconds(0);
-      sleepFractionalSeconds(-1);
-      sleepFractionalSeconds(NaN);
-      const elapsed = Date.now() - start;
-      assert.ok(elapsed < 50, `expected no delay but elapsed ${elapsed}ms`);
-    });
+  it('ignores invalid values and clamps extreme sleeps to 60s max', () => {
+    const calls: number[] = [];
+    const captureSleep = (ms: number): void => {
+      calls.push(ms);
+    };
+
+    sleepFractionalSeconds(0, captureSleep);
+    sleepFractionalSeconds(-1, captureSleep);
+    sleepFractionalSeconds(NaN, captureSleep);
+    sleepFractionalSeconds(Number.POSITIVE_INFINITY, captureSleep);
+    sleepFractionalSeconds(999_999, captureSleep);
+
+    assert.deepEqual(calls, [60_000]);
   });
 });
 
