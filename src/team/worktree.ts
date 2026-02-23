@@ -172,11 +172,22 @@ export function parseWorktreeMode(args: string[]): ParsedWorktreeMode {
   let mode: WorktreeMode = { enabled: false };
   const remaining: string[] = [];
 
-  for (const rawArg of args) {
+  for (let i = 0; i < args.length; i++) {
+    const rawArg = args[i];
     const arg = String(rawArg || '');
 
     if (arg === '--worktree' || arg === '-w') {
-      mode = { enabled: true, detached: true, name: null };
+      // Peek at the next argument: if it looks like a git branch name (not a
+      // flag and not a team worker spec like "3:debugger"), consume it as the
+      // branch name. Colons are not valid in git branch names, so we use that
+      // to distinguish branch names from other positional args.
+      const next = args[i + 1];
+      if (typeof next === 'string' && next.length > 0 && !next.startsWith('-') && !next.includes(':')) {
+        mode = { enabled: true, detached: false, name: next };
+        i += 1;
+      } else {
+        mode = { enabled: true, detached: true, name: null };
+      }
       continue;
     }
 

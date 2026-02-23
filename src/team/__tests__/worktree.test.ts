@@ -50,6 +50,38 @@ describe('worktree parser', () => {
     assert.deepEqual(parsed.mode, { enabled: false });
     assert.deepEqual(parsed.remainingArgs, ['team', '2:executor', 'task']);
   });
+
+  // Regression tests for issue #203: branch name passed as separate arg must not
+  // leak into the Codex shell as input.
+  it('parses named branch from --worktree <name> (space-separated)', () => {
+    const parsed = parseWorktreeMode(['--worktree', 'my-branch']);
+    assert.deepEqual(parsed.mode, { enabled: true, detached: false, name: 'my-branch' });
+    assert.deepEqual(parsed.remainingArgs, []);
+  });
+
+  it('parses named branch from -w <name> (space-separated)', () => {
+    const parsed = parseWorktreeMode(['-w', 'my-branch']);
+    assert.deepEqual(parsed.mode, { enabled: true, detached: false, name: 'my-branch' });
+    assert.deepEqual(parsed.remainingArgs, []);
+  });
+
+  it('does not leak branch name into remainingArgs when --worktree <name> is used with trailing args', () => {
+    const parsed = parseWorktreeMode(['--worktree', 'feat/issue-203', '--yolo']);
+    assert.deepEqual(parsed.mode, { enabled: true, detached: false, name: 'feat/issue-203' });
+    assert.deepEqual(parsed.remainingArgs, ['--yolo']);
+  });
+
+  it('treats --worktree at end of args as detached', () => {
+    const parsed = parseWorktreeMode(['--worktree']);
+    assert.deepEqual(parsed.mode, { enabled: true, detached: true, name: null });
+    assert.deepEqual(parsed.remainingArgs, []);
+  });
+
+  it('treats -w at end of args as detached', () => {
+    const parsed = parseWorktreeMode(['-w']);
+    assert.deepEqual(parsed.mode, { enabled: true, detached: true, name: null });
+    assert.deepEqual(parsed.remainingArgs, []);
+  });
 });
 
 describe('worktree ensure + rollback', () => {
