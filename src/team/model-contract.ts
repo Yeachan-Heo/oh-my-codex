@@ -132,6 +132,7 @@ export function resolveTeamWorkerLaunchArgs(options: ResolveTeamWorkerLaunchArgs
   const inheritedModel = normalizeOptionalModel(parseTeamWorkerLaunchArgs(inheritedArgs).modelOverride);
   const fallbackModel = normalizeOptionalModel(options.fallbackModel);
   const selectedModel = envModel ?? inheritedModel ?? fallbackModel;
+
   return normalizeTeamWorkerLaunchArgs(allArgs, selectedModel);
 }
 
