@@ -1176,8 +1176,13 @@ export async function claimTask(
     if (v.status === 'in_progress') {
       return { ok: false as const, error: 'claim_conflict' as const };
     }
-    if ((v.status === 'pending' || v.status === 'blocked') && (v.owner || v.claim)) {
-      return { ok: false as const, error: 'claim_conflict' as const };
+    if (v.status === 'pending' || v.status === 'blocked') {
+      if (v.claim) {
+        return { ok: false as const, error: 'claim_conflict' as const };
+      }
+      if (v.owner && v.owner !== workerName) {
+        return { ok: false as const, error: 'claim_conflict' as const };
+      }
     }
 
     const claimToken = randomUUID();

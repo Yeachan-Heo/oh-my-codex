@@ -104,7 +104,8 @@ export async function readTeamWorkersForIdleCheck(stateDir, teamName) {
     const workers = parsed.workers;
     if (!Array.isArray(workers) || workers.length === 0) return null;
     const tmuxSession = safeString(parsed.tmux_session || '').trim();
-    return { workers, tmuxSession };
+    const leaderPaneId = safeString(parsed.leader_pane_id || '').trim();
+    return { workers, tmuxSession, leaderPaneId };
   } catch {
     return null;
   }
@@ -141,8 +142,9 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
   // Read team config to get worker list and leader tmux target
   const teamInfo = await readTeamWorkersForIdleCheck(stateDir, teamName);
   if (!teamInfo) return;
-  const { workers, tmuxSession } = teamInfo;
-  if (!tmuxSession) return;
+  const { workers, tmuxSession, leaderPaneId } = teamInfo;
+  const tmuxTarget = leaderPaneId || tmuxSession;
+  if (!tmuxTarget) return;
 
   // Check cooldown to prevent notification spam
   const idleStatePath = join(stateDir, 'team', teamName, 'all-workers-idle.json');
@@ -162,11 +164,11 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
   const message = `[OMX] All ${N} worker${N === 1 ? '' : 's'} idle. Ready for next instructions. ${DEFAULT_MARKER}`;
 
   try {
-    await runProcess('tmux', ['send-keys', '-t', tmuxSession, '-l', message], 3000);
+    await runProcess('tmux', ['send-keys', '-t', tmuxTarget, '-l', message], 3000);
     await new Promise(r => setTimeout(r, 100));
-    await runProcess('tmux', ['send-keys', '-t', tmuxSession, 'C-m'], 3000);
+    await runProcess('tmux', ['send-keys', '-t', tmuxTarget, 'C-m'], 3000);
     await new Promise(r => setTimeout(r, 100));
-    await runProcess('tmux', ['send-keys', '-t', tmuxSession, 'C-m'], 3000);
+    await runProcess('tmux', ['send-keys', '-t', tmuxTarget, 'C-m'], 3000);
 
     const nextIdleState = {
       ...idleState,
@@ -195,7 +197,7 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
       timestamp: nowIso,
       type: 'all_workers_idle_notification',
       team: teamName,
-      tmux_target: tmuxSession,
+      tmux_target: tmuxTarget,
       worker: workerName,
       worker_count: N,
     });
@@ -204,7 +206,7 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
       timestamp: nowIso,
       type: 'all_workers_idle_notification',
       team: teamName,
-      tmux_target: tmuxSession,
+      tmux_target: tmuxTarget,
       worker: workerName,
       error: err instanceof Error ? err.message : safeString(err),
     }).catch(() => {});

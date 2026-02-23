@@ -125,6 +125,55 @@ describe('notify-hook all-workers-idle notification', () => {
     });
   });
 
+  it('targets leader pane id when leader_pane_id is present', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'pane-team';
+      const teamDir = join(stateDir, 'team', teamName);
+      const workersDir = join(teamDir, 'workers');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(workersDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'devsess:8',
+        leader_pane_id: '%99',
+        workers: [
+          { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
+          { name: 'worker-2', index: 2, role: 'executor', assigned_tasks: [] },
+        ],
+      });
+
+      await mkdir(join(workersDir, 'worker-1'), { recursive: true });
+      await writeJson(join(workersDir, 'worker-1', 'status.json'), {
+        state: 'idle',
+        updated_at: new Date().toISOString(),
+      });
+      await mkdir(join(workersDir, 'worker-2'), { recursive: true });
+      await writeJson(join(workersDir, 'worker-2', 'status.json'), {
+        state: 'idle',
+        updated_at: new Date().toISOString(),
+      });
+
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHookAsWorker(cwd, fakeBinDir, `${teamName}/worker-1`);
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /-t %99/, 'should target leader pane when available');
+      assert.doesNotMatch(tmuxLog, /-t devsess:8/, 'should not target session when leader pane is available');
+    });
+  });
+
   it('does not notify when some workers are still working', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');

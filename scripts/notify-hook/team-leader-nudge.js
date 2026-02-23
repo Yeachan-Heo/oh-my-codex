@@ -19,6 +19,14 @@ export function resolveLeaderNudgeIntervalMs() {
   return 120_000;
 }
 
+export function resolveLeaderAllIdleNudgeCooldownMs() {
+  const raw = safeString(process.env.OMX_TEAM_LEADER_ALL_IDLE_COOLDOWN_MS || '');
+  const parsed = asNumber(raw);
+  // Default: 30 seconds.
+  if (parsed !== null && parsed >= 5_000 && parsed <= 10 * 60_000) return parsed;
+  return 30_000;
+}
+
 export function resolveLeaderStalenessThresholdMs() {
   const raw = safeString(process.env.OMX_TEAM_LEADER_STALE_MS || '');
   const parsed = asNumber(raw);
@@ -52,6 +60,36 @@ export async function isLeaderStale(stateDir, thresholdMs, nowMs) {
   return (nowMs - lastMs) >= thresholdMs;
 }
 
+async function readWorkerStatusState(stateDir, teamName, workerName) {
+  if (!workerName) return 'unknown';
+  const path = join(stateDir, 'team', teamName, 'workers', workerName, 'status.json');
+  try {
+    if (!existsSync(path)) return 'unknown';
+    const parsed = JSON.parse(await readFile(path, 'utf-8'));
+    return safeString(parsed && parsed.state ? parsed.state : 'unknown') || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function normalizeMailboxMessages(rawMailbox) {
+  if (Array.isArray(rawMailbox)) return rawMailbox;
+  if (rawMailbox && typeof rawMailbox === 'object' && Array.isArray(rawMailbox.messages)) {
+    return rawMailbox.messages;
+  }
+  return [];
+}
+
+function normalizeMessageIdentity(msg) {
+  if (!msg || typeof msg !== 'object') return '';
+  const explicitId = safeString(msg.message_id || '').trim();
+  if (explicitId) return explicitId;
+  const createdAt = safeString(msg.created_at || msg.timestamp || '').trim();
+  const from = safeString(msg.from_worker || msg.from || '').trim();
+  const body = safeString(msg.body || '').trim();
+  return [createdAt, from, body].filter(Boolean).join('|');
+}
+
 export async function emitTeamNudgeEvent(cwd, teamName, reason, nowIso) {
   const eventsDir = join(cwd, '.omx', 'state', 'team', teamName, 'events');
   const eventsPath = join(eventsDir, 'events.ndjson');
@@ -73,6 +111,7 @@ export async function emitTeamNudgeEvent(cwd, teamName, reason, nowIso) {
 
 export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputedLeaderStale }) {
   const intervalMs = resolveLeaderNudgeIntervalMs();
+  const idleCooldownMs = resolveLeaderAllIdleNudgeCooldownMs();
   const nowMs = Date.now();
   const nowIso = new Date().toISOString();
   const omxDir = join(cwd, '.omx');
@@ -84,6 +123,9 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
   }
   if (!nudgeState.last_nudged_by_team || typeof nudgeState.last_nudged_by_team !== 'object') {
     nudgeState.last_nudged_by_team = {};
+  }
+  if (!nudgeState.last_idle_nudged_by_team || typeof nudgeState.last_idle_nudged_by_team !== 'object') {
+    nudgeState.last_idle_nudged_by_team = {};
   }
 
   const activeTeamNames = new Set();
@@ -105,21 +147,28 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
   const leaderStale = typeof preComputedLeaderStale === 'boolean' ? preComputedLeaderStale : false;
 
   for (const teamName of activeTeamNames) {
-    let tmuxTarget = '';
+    let tmuxSession = '';
+    let leaderPaneId = '';
+    let workers = [];
     try {
       const manifestPath = join(omxDir, 'state', 'team', teamName, 'manifest.v2.json');
       const configPath = join(omxDir, 'state', 'team', teamName, 'config.json');
       const srcPath = existsSync(manifestPath) ? manifestPath : configPath;
       if (existsSync(srcPath)) {
         const raw = JSON.parse(await readFile(srcPath, 'utf-8'));
-        tmuxTarget = safeString(raw && raw.tmux_session ? raw.tmux_session : '').trim();
+        tmuxSession = safeString(raw && raw.tmux_session ? raw.tmux_session : '').trim();
+        leaderPaneId = safeString(raw && raw.leader_pane_id ? raw.leader_pane_id : '').trim();
+        if (Array.isArray(raw && raw.workers)) workers = raw.workers;
       }
     } catch {
       // ignore
     }
+    const tmuxTarget = leaderPaneId || tmuxSession;
     if (!tmuxTarget) continue;
 
-    const paneStatus = await checkWorkerPanesAlive(tmuxTarget);
+    const paneStatus = tmuxSession
+      ? await checkWorkerPanesAlive(tmuxSession)
+      : { alive: false, paneCount: 0 };
 
     let mailbox = null;
     try {
@@ -128,9 +177,17 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     } catch {
       mailbox = null;
     }
-    const messages = mailbox && Array.isArray(mailbox.messages) ? mailbox.messages : [];
+    const messages = normalizeMailboxMessages(mailbox);
     const newest = messages.length > 0 ? messages[messages.length - 1] : null;
-    const newestId = newest && typeof newest.message_id === 'string' ? newest.message_id : '';
+    const newestId = normalizeMessageIdentity(newest);
+
+    const workerNames = Array.isArray(workers)
+      ? workers.map((w) => safeString(w && w.name ? w.name : '')).filter(Boolean)
+      : [];
+    const workerStates = workerNames.length > 0
+      ? await Promise.all(workerNames.map((workerName) => readWorkerStatusState(stateDir, teamName, workerName)))
+      : [];
+    const allWorkersIdle = workerStates.length > 0 && workerStates.every((state) => state === 'idle' || state === 'done');
 
     const prev = nudgeState.last_nudged_by_team[teamName] && typeof nudgeState.last_nudged_by_team[teamName] === 'object'
       ? nudgeState.last_nudged_by_team[teamName]
@@ -142,14 +199,26 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     const hasNewMessage = newestId && newestId !== prevMsgId;
     const dueByTime = !Number.isFinite(prevAtMs) || (nowMs - prevAtMs >= intervalMs);
 
+    const prevIdle = nudgeState.last_idle_nudged_by_team[teamName] && typeof nudgeState.last_idle_nudged_by_team[teamName] === 'object'
+      ? nudgeState.last_idle_nudged_by_team[teamName]
+      : {};
+    const prevIdleAtIso = safeString(prevIdle.at || '');
+    const prevIdleAtMs = prevIdleAtIso ? Date.parse(prevIdleAtIso) : NaN;
+    const dueByIdleCooldown = !Number.isFinite(prevIdleAtMs) || (nowMs - prevIdleAtMs >= idleCooldownMs);
+    const shouldSendAllIdleNudge = allWorkersIdle && dueByIdleCooldown;
+
     // stalePanesNudge must respect the same dueByTime rate limit (issue #116)
     const stalePanesNudge = paneStatus.alive && leaderStale;
 
-    if (!hasNewMessage && !dueByTime) continue;
+    if (!shouldSendAllIdleNudge && !hasNewMessage && !dueByTime) continue;
 
     let nudgeReason = '';
     let text = '';
-    if (stalePanesNudge && hasNewMessage) {
+    if (shouldSendAllIdleNudge) {
+      nudgeReason = 'all_workers_idle';
+      const N = workerNames.length;
+      text = `[OMX] All ${N} worker${N === 1 ? '' : 's'} idle. Ready for next instructions.`;
+    } else if (stalePanesNudge && hasNewMessage) {
       nudgeReason = 'stale_leader_with_messages';
       text = `Team ${teamName}: leader stale, ${paneStatus.paneCount} pane(s) active, ${messages.length} msg(s) pending. Run: omx team status ${teamName}`;
     } else if (stalePanesNudge) {
@@ -172,6 +241,9 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       await new Promise(r => setTimeout(r, 100));
       await runProcess('tmux', ['send-keys', '-t', tmuxTarget, 'C-m'], 3000);
       nudgeState.last_nudged_by_team[teamName] = { at: nowIso, last_message_id: newestId || prevMsgId || '' };
+      if (shouldSendAllIdleNudge) {
+        nudgeState.last_idle_nudged_by_team[teamName] = { at: nowIso, worker_count: workerNames.length };
+      }
 
       await emitTeamNudgeEvent(cwd, teamName, nudgeReason, nowIso);
 
