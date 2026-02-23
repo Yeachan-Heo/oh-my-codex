@@ -2,7 +2,6 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   collectInheritableTeamWorkerArgs,
-  inferThinkingLevelFromModel,
   isLowComplexityAgentType,
   resolveTeamWorkerLaunchArgs,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
@@ -33,7 +32,6 @@ describe('team model contract', () => {
         existingRaw: '--model env-a --model=env-b',
         inheritedArgs: ['--model', 'inherited-model'],
         fallbackModel: TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
-        autoThinkingLevel: false,
       }),
       ['--model', 'env-b'],
     );
@@ -44,7 +42,6 @@ describe('team model contract', () => {
       resolveTeamWorkerLaunchArgs({
         existingRaw: '--no-alt-screen',
         inheritedArgs: ['--model=inherited-model'],
-        autoThinkingLevel: false,
       }),
       ['--no-alt-screen', '--model', 'inherited-model'],
     );
@@ -56,7 +53,6 @@ describe('team model contract', () => {
         existingRaw: '--no-alt-screen',
         inheritedArgs: ['--dangerously-bypass-approvals-and-sandbox'],
         fallbackModel: TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
-        autoThinkingLevel: false,
       }),
       ['--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox', '--model', TEAM_LOW_COMPLEXITY_DEFAULT_MODEL],
     );
@@ -68,7 +64,6 @@ describe('team model contract', () => {
       resolveTeamWorkerLaunchArgs({
         existingRaw: '--model',
         inheritedArgs: ['--model', 'inherited-model'],
-        autoThinkingLevel: false,
       }),
       ['--model', 'inherited-model'],
     );
@@ -79,7 +74,6 @@ describe('team model contract', () => {
       resolveTeamWorkerLaunchArgs({
         existingRaw: '--no-alt-screen --model',
         inheritedArgs: ['--model', 'sonic-model'],
-        autoThinkingLevel: false,
       }),
       ['--no-alt-screen', '--model', 'sonic-model'],
     );
@@ -90,7 +84,6 @@ describe('team model contract', () => {
       resolveTeamWorkerLaunchArgs({
         existingRaw: '--model=',
         inheritedArgs: ['--model', 'inherited-model'],
-        autoThinkingLevel: false,
       }),
       ['--model', 'inherited-model'],
     );
@@ -105,41 +98,16 @@ describe('team model contract', () => {
   });
 });
 
-describe('inferThinkingLevelFromModel', () => {
-  it('maps spark/flash/lite/mini/haiku to low', () => {
-    assert.equal(inferThinkingLevelFromModel('gpt-5.3-codex-spark'), 'low');
-    assert.equal(inferThinkingLevelFromModel('gemini-flash-2.0'), 'low');
-    assert.equal(inferThinkingLevelFromModel('gpt-4o-mini'), 'low');
-    assert.equal(inferThinkingLevelFromModel('claude-haiku-3'), 'low');
-    assert.equal(inferThinkingLevelFromModel('gemini-2.0-flash-lite'), 'low');
-  });
-
-  it('maps opus/sonnet/thinking/o1/o3/r1 to high', () => {
-    assert.equal(inferThinkingLevelFromModel('claude-opus-4'), 'high');
-    assert.equal(inferThinkingLevelFromModel('claude-sonnet-4-5'), 'high');
-    assert.equal(inferThinkingLevelFromModel('gpt-thinking-turbo'), 'high');
-    assert.equal(inferThinkingLevelFromModel('o1-preview'), 'high');
-    assert.equal(inferThinkingLevelFromModel('deepseek-r1'), 'high');
-  });
-
-  it('maps unknown / standard models to medium', () => {
-    assert.equal(inferThinkingLevelFromModel('gpt-5.3-codex'), 'medium');
-    assert.equal(inferThinkingLevelFromModel('gpt-4o'), 'medium');
-    assert.equal(inferThinkingLevelFromModel('unknown-model-xyz'), 'medium');
-    assert.equal(inferThinkingLevelFromModel(''), 'medium');
-  });
-});
-
-describe('resolveTeamWorkerLaunchArgs - auto thinking level', () => {
-  it('auto-injects low thinking level for spark model when no explicit override', () => {
+describe('resolveTeamWorkerLaunchArgs - explicit thinking only', () => {
+  it('does not auto-inject thinking level for fallback model', () => {
     const result = resolveTeamWorkerLaunchArgs({
       fallbackModel: TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
     });
     const joined = result.join(' ');
-    assert.ok(joined.includes('model_reasoning_effort="low"'), `Expected low thinking level in: ${joined}`);
+    assert.ok(!joined.includes('model_reasoning_effort'), `Expected no auto-injected thinking level in: ${joined}`);
   });
 
-  it('preserves explicit reasoning override and does not auto-inject', () => {
+  it('preserves explicit reasoning override', () => {
     const result = resolveTeamWorkerLaunchArgs({
       existingRaw: '-c model_reasoning_effort="high"',
       fallbackModel: TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
@@ -152,28 +120,11 @@ describe('resolveTeamWorkerLaunchArgs - auto thinking level', () => {
     assert.equal(matches.length, 1, 'reasoning override should appear exactly once');
   });
 
-  it('does not inject when autoThinkingLevel is false', () => {
-    const result = resolveTeamWorkerLaunchArgs({
-      fallbackModel: TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
-      autoThinkingLevel: false,
-    });
-    const joined = result.join(' ');
-    assert.ok(!joined.includes('model_reasoning_effort'), `Expected no reasoning in: ${joined}`);
-  });
-
-  it('infers high thinking level for opus model', () => {
+  it('does not inject thinking when model is explicit but reasoning is omitted', () => {
     const result = resolveTeamWorkerLaunchArgs({
       existingRaw: '--model claude-opus-4',
     });
     const joined = result.join(' ');
-    assert.ok(joined.includes('model_reasoning_effort="high"'), `Expected high level for opus: ${joined}`);
-  });
-
-  it('infers medium thinking level for standard model', () => {
-    const result = resolveTeamWorkerLaunchArgs({
-      existingRaw: '--model gpt-5.3-codex',
-    });
-    const joined = result.join(' ');
-    assert.ok(joined.includes('model_reasoning_effort="medium"'), `Expected medium level: ${joined}`);
+    assert.ok(!joined.includes('model_reasoning_effort'), `Expected no reasoning in: ${joined}`);
   });
 });

@@ -71,7 +71,6 @@ import {
   isLowComplexityAgentType,
   resolveTeamWorkerLaunchArgs,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
-  inferThinkingLevelFromModel,
   parseTeamWorkerLaunchArgs,
   splitWorkerLaunchArgs,
 } from './model-contract.js';
@@ -205,8 +204,8 @@ export function resolveWorkerLaunchArgsFromEnv(
   const resolvedParsed = parseTeamWorkerLaunchArgs(resolved);
   const resolvedModel = resolvedParsed.modelOverride ?? fallbackModel ?? 'default';
   const reasoningMatch = resolvedParsed.reasoningOverride?.match(/model_reasoning_effort\s*=\s*"?(\w+)"?/);
-  const thinkingLevel = reasoningMatch?.[1] ?? 'medium';
-  const source = hasExplicitReasoning ? 'explicit' : 'auto-mapped';
+  const thinkingLevel = reasoningMatch?.[1] ?? 'none';
+  const source = hasExplicitReasoning ? 'explicit' : 'none/default-none';
 
   console.log(`[omx:team] worker startup resolution: model=${resolvedModel} thinking_level=${thinkingLevel} source=${source}`);
 
