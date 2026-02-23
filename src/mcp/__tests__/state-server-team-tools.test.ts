@@ -288,4 +288,65 @@ describe('state-server team comm tools', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('team_transition_task_status rejects non-terminal transition attempts', async () => {
+    process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
+    const { handleStateToolCall } = await import('../state-server.js');
+
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-team-tools-'));
+    try {
+      await initTeamState('transition-guard-team', 'transition guard test', 'executor', 1, wd);
+
+      const createResp = await handleStateToolCall({
+        params: {
+          name: 'team_create_task',
+          arguments: {
+            team_name: 'transition-guard-team',
+            subject: 'Task for transition guard',
+            description: 'Should only allow terminal transition',
+            workingDirectory: wd,
+          },
+        },
+      });
+      const created = JSON.parse(createResp.content[0]?.text || '{}') as { ok?: boolean; task?: { id?: string } };
+      assert.equal(created.ok, true);
+      const taskId = created.task?.id;
+      assert.ok(taskId);
+
+      const claimResp = await handleStateToolCall({
+        params: {
+          name: 'team_claim_task',
+          arguments: {
+            team_name: 'transition-guard-team',
+            task_id: taskId,
+            worker: 'worker-1',
+            expected_version: 1,
+            workingDirectory: wd,
+          },
+        },
+      });
+      const claim = JSON.parse(claimResp.content[0]?.text || '{}') as { ok?: boolean; claimToken?: string };
+      assert.equal(claim.ok, true);
+      assert.equal(typeof claim.claimToken, 'string');
+
+      const transitionResp = await handleStateToolCall({
+        params: {
+          name: 'team_transition_task_status',
+          arguments: {
+            team_name: 'transition-guard-team',
+            task_id: taskId,
+            from: 'in_progress',
+            to: 'pending',
+            claim_token: claim.claimToken,
+            workingDirectory: wd,
+          },
+        },
+      });
+      const transition = JSON.parse(transitionResp.content[0]?.text || '{}') as { ok?: boolean; error?: string };
+      assert.equal(transition.ok, false);
+      assert.equal(transition.error, 'invalid_transition');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });

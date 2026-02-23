@@ -26,4 +26,5 @@ Direct writes to `.omx/state/team/...` are unsupported and may violate runtime i
 ## Notes
 
 - `team_transition_task_status` is the claim-safe terminal transition path.
+  - Runtime enforces this as `in_progress -> completed|failed`; other transitions return `invalid_transition`.
 - `team_release_task_claim` intentionally resets the task to `pending`; it is not a completion operation.

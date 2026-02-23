@@ -253,6 +253,30 @@ describe('team state', () => {
     }
   });
 
+  it('claimTask rejects a pending task with residual owner/claim metadata', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-claim-residual-claim-'));
+    try {
+      await initTeamState('team-claim-residual', 't', 'executor', 1, cwd);
+      const t = await createTask('team-claim-residual', { subject: 'a', description: 'd', status: 'pending' }, cwd);
+
+      const taskPath = join(cwd, '.omx', 'state', 'team', 'team-claim-residual', 'tasks', `task-${t.id}.json`);
+      const current = JSON.parse(await readFile(taskPath, 'utf-8')) as any;
+      current.owner = 'worker-1';
+      current.claim = {
+        owner: 'worker-1',
+        token: 'stale-token',
+        leased_until: new Date(Date.now() + 5 * 60_000).toISOString(),
+      };
+      await writeFile(taskPath, JSON.stringify(current, null, 2));
+
+      const claim = await claimTask('team-claim-residual', t.id, 'worker-1', null, cwd);
+      assert.equal(claim.ok, false);
+      assert.equal(claim.ok ? 'x' : claim.error, 'claim_conflict');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('transitionTaskStatus returns invalid_transition for illegal transition', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-transition-'));
     try {
@@ -265,6 +289,50 @@ describe('team state', () => {
       const bad = await transitionTaskStatus('team-trans', t.id, 'pending', 'completed', claim.claimToken, cwd);
       assert.equal(bad.ok, false);
       assert.equal(bad.ok ? 'x' : bad.error, 'invalid_transition');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('transitionTaskStatus rejects non-terminal transitions from in_progress', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-transition-nonterminal-'));
+    try {
+      await initTeamState('team-trans-nonterminal', 't', 'executor', 1, cwd);
+      const t = await createTask('team-trans-nonterminal', { subject: 'a', description: 'd', status: 'pending' }, cwd);
+      const claim = await claimTask('team-trans-nonterminal', t.id, 'worker-1', t.version ?? 1, cwd);
+      assert.equal(claim.ok, true);
+      if (!claim.ok) return;
+
+      const bad = await transitionTaskStatus('team-trans-nonterminal', t.id, 'in_progress', 'pending', claim.claimToken, cwd);
+      assert.equal(bad.ok, false);
+      assert.equal(bad.ok ? 'x' : bad.error, 'invalid_transition');
+
+      const reread = await readTask('team-trans-nonterminal', t.id, cwd);
+      assert.equal(reread?.status, 'in_progress');
+      assert.equal(reread?.owner, 'worker-1');
+      assert.ok(reread?.claim);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('transitionTaskStatus returns claim_conflict when claim owner diverges from task owner', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-transition-owner-diverge-'));
+    try {
+      await initTeamState('team-trans-owner-diverge', 't', 'executor', 2, cwd);
+      const t = await createTask('team-trans-owner-diverge', { subject: 'a', description: 'd', status: 'pending' }, cwd);
+      const claim = await claimTask('team-trans-owner-diverge', t.id, 'worker-1', t.version ?? 1, cwd);
+      assert.equal(claim.ok, true);
+      if (!claim.ok) return;
+
+      const taskPath = join(cwd, '.omx', 'state', 'team', 'team-trans-owner-diverge', 'tasks', `task-${t.id}.json`);
+      const current = JSON.parse(await readFile(taskPath, 'utf-8')) as any;
+      current.claim.owner = 'worker-2';
+      await writeFile(taskPath, JSON.stringify(current, null, 2));
+
+      const result = await transitionTaskStatus('team-trans-owner-diverge', t.id, 'in_progress', 'completed', claim.claimToken, cwd);
+      assert.equal(result.ok, false);
+      assert.equal(result.ok ? 'x' : result.error, 'claim_conflict');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -210,6 +210,24 @@ const LOCK_STALE_MS = 5 * 60 * 1000;
 
 const WORKER_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const TASK_ID_PATTERN = /^\d{1,20}$/;
+type TeamTaskStatus = TeamTask['status'];
+
+const TERMINAL_TASK_STATUSES: ReadonlySet<TeamTaskStatus> = new Set(['completed', 'failed']);
+const TASK_STATUS_TRANSITIONS: Readonly<Record<TeamTaskStatus, readonly TeamTaskStatus[]>> = {
+  pending: [],
+  blocked: [],
+  in_progress: ['completed', 'failed'],
+  completed: [],
+  failed: [],
+};
+
+function isTerminalTaskStatus(status: TeamTaskStatus): boolean {
+  return TERMINAL_TASK_STATUSES.has(status);
+}
+
+function canTransitionTaskStatus(from: TeamTaskStatus, to: TeamTaskStatus): boolean {
+  return TASK_STATUS_TRANSITIONS[from]?.includes(to) ?? false;
+}
 
 function assertPathWithinDir(filePath: string, rootDir: string): void {
   const normalizedRoot = resolve(rootDir);
@@ -1117,10 +1135,21 @@ export async function claimTask(
     if (expectedVersion !== null && v.version !== expectedVersion) {
       return { ok: false as const, error: 'claim_conflict' as const };
     }
-    if (v.status === 'completed' || v.status === 'failed') {
+    const readinessAfterLock = await computeTaskReadiness(teamName, taskId, cwd);
+    if (!readinessAfterLock.ready) {
+      return {
+        ok: false as const,
+        error: 'blocked_dependency' as const,
+        dependencies: readinessAfterLock.dependencies,
+      };
+    }
+    if (isTerminalTaskStatus(v.status)) {
       return { ok: false as const, error: 'already_terminal' as const };
     }
     if (v.status === 'in_progress') {
+      return { ok: false as const, error: 'claim_conflict' as const };
+    }
+    if ((v.status === 'pending' || v.status === 'blocked') && (v.owner || v.claim)) {
       return { ok: false as const, error: 'claim_conflict' as const };
     }
 
@@ -1150,30 +1179,38 @@ export async function transitionTaskStatus(
   claimToken: string,
   cwd: string
 ): Promise<TransitionTaskResult> {
-  let emittedEvent: TeamEvent | null = null;
+  if (!canTransitionTaskStatus(from, to)) {
+    return { ok: false, error: 'invalid_transition' };
+  }
+
   const lock = await withTaskClaimLock(teamName, taskId, cwd, async () => {
     const current = await readTask(teamName, taskId, cwd);
     if (!current) return { ok: false as const, error: 'task_not_found' as const };
     const v = normalizeTask(current);
 
-    if (v.status === 'completed' || v.status === 'failed') {
+    if (isTerminalTaskStatus(v.status)) {
       return { ok: false as const, error: 'already_terminal' as const };
     }
+    if (!canTransitionTaskStatus(v.status, to)) {
+      return { ok: false as const, error: 'invalid_transition' as const };
+    }
     if (v.status !== from) return { ok: false as const, error: 'invalid_transition' as const };
-    if (!v.claim || v.claim.token !== claimToken) return { ok: false as const, error: 'claim_conflict' as const };
+    if (!v.owner || !v.claim || v.claim.owner !== v.owner || v.claim.token !== claimToken) {
+      return { ok: false as const, error: 'claim_conflict' as const };
+    }
     if (new Date(v.claim.leased_until) <= new Date()) return { ok: false as const, error: 'lease_expired' as const };
 
-    const isTerminal = to === 'completed' || to === 'failed';
+    const completedAt = new Date().toISOString();
     const updated: TeamTaskV2 = {
       ...v,
       status: to,
-      completed_at: isTerminal ? new Date().toISOString() : v.completed_at,
-      claim: isTerminal ? undefined : v.claim,
+      completed_at: completedAt,
+      claim: undefined,
       version: v.version + 1,
     };
     await writeAtomic(taskFilePath(teamName, taskId, cwd), JSON.stringify(updated, null, 2));
     if (to === 'completed') {
-      emittedEvent = await appendTeamEvent(
+      await appendTeamEvent(
         teamName,
         {
           type: 'task_completed',
@@ -1185,7 +1222,7 @@ export async function transitionTaskStatus(
         cwd
       );
     } else if (to === 'failed') {
-      emittedEvent = await appendTeamEvent(
+      await appendTeamEvent(
         teamName,
         {
           type: 'task_failed',
