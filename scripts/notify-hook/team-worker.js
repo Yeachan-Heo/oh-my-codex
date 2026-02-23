@@ -4,12 +4,62 @@
 
 import { readFile, writeFile, mkdir, appendFile, rename } from 'fs/promises';
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { join, resolve as resolvePath } from 'path';
 import { asNumber, safeString } from './utils.js';
 import { readJsonIfExists } from './state-io.js';
 import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
 import { DEFAULT_MARKER } from '../tmux-hook-engine.js';
+
+async function readTeamStateRootFromJson(path) {
+  try {
+    if (!existsSync(path)) return null;
+    const parsed = JSON.parse(await readFile(path, 'utf-8'));
+    const value = parsed && typeof parsed.team_state_root === 'string'
+      ? parsed.team_state_root.trim()
+      : '';
+    return value ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveTeamStateDirForWorker(cwd, parsedTeamWorker) {
+  const explicitStateRoot = safeString(process.env.OMX_TEAM_STATE_ROOT || '').trim();
+  if (explicitStateRoot) {
+    return resolvePath(cwd, explicitStateRoot);
+  }
+
+  const teamName = parsedTeamWorker.teamName;
+  const workerName = parsedTeamWorker.workerName;
+  const leaderCwd = safeString(process.env.OMX_TEAM_LEADER_CWD || '').trim();
+
+  const candidateStateDirs = [];
+  if (leaderCwd) {
+    candidateStateDirs.push(join(resolvePath(leaderCwd), '.omx', 'state'));
+  }
+  candidateStateDirs.push(join(cwd, '.omx', 'state'));
+
+  for (const candidateStateDir of candidateStateDirs) {
+    const teamRoot = join(candidateStateDir, 'team', teamName);
+    if (!existsSync(teamRoot)) continue;
+
+    const identityRoot = await readTeamStateRootFromJson(
+      join(teamRoot, 'workers', workerName, 'identity.json'),
+    );
+    if (identityRoot) return resolvePath(cwd, identityRoot);
+
+    const manifestRoot = await readTeamStateRootFromJson(join(teamRoot, 'manifest.v2.json'));
+    if (manifestRoot) return resolvePath(cwd, manifestRoot);
+
+    const configRoot = await readTeamStateRootFromJson(join(teamRoot, 'config.json'));
+    if (configRoot) return resolvePath(cwd, configRoot);
+
+    return candidateStateDir;
+  }
+
+  return join(cwd, '.omx', 'state');
+}
 
 export function parseTeamWorkerEnv(rawValue) {
   if (typeof rawValue !== 'string') return null;
