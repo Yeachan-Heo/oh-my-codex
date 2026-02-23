@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildScrollCopyBindings,
   buildWorkerStartupCommand,
   createTeamSession,
   enableMouseScrolling,
@@ -406,6 +407,75 @@ describe('sleepFractionalSeconds', () => {
       const elapsed = Date.now() - start;
       assert.ok(elapsed < 50, `expected no delay but elapsed ${elapsed}ms`);
     });
+  });
+});
+
+describe('buildScrollCopyBindings (issue #206)', () => {
+  it('returns a non-empty array of tmux command arg arrays', () => {
+    const bindings = buildScrollCopyBindings();
+    assert.ok(Array.isArray(bindings));
+    assert.ok(bindings.length > 0);
+    for (const b of bindings) {
+      assert.ok(Array.isArray(b), 'each binding must be an array');
+      assert.ok(b.length > 0, 'each binding must have at least one element');
+      assert.equal(typeof b[0], 'string', 'first element must be a string');
+    }
+  });
+
+  it('includes WheelUpPane binding that enters copy-mode (fixes viewport scroll)', () => {
+    const bindings = buildScrollCopyBindings();
+    const wheelUp = bindings.find((b) => b.includes('WheelUpPane'));
+    assert.ok(wheelUp, 'WheelUpPane binding must be present');
+    assert.ok(wheelUp.some((tok) => tok.includes('copy-mode')), 'WheelUpPane binding must activate copy-mode');
+    assert.ok(wheelUp.some((tok) => tok.includes('pane_in_mode')), 'WheelUpPane must check pane_in_mode to avoid double-entry');
+  });
+
+  it('WheelUpPane binding is in the root key table (-n flag)', () => {
+    const bindings = buildScrollCopyBindings();
+    const wheelUp = bindings.find((b) => b.includes('WheelUpPane'));
+    assert.ok(wheelUp, 'WheelUpPane binding must be present');
+    const nIdx = wheelUp.indexOf('-n');
+    assert.ok(nIdx !== -1, 'WheelUpPane binding must use -n (root table) flag');
+    assert.equal(wheelUp[nIdx + 1], 'WheelUpPane');
+  });
+
+  it('includes MouseDragEnd1Pane binding that copies selection to clipboard (fixes copy)', () => {
+    const bindings = buildScrollCopyBindings();
+    const dragEnd = bindings.find((b) => b.includes('MouseDragEnd1Pane'));
+    assert.ok(dragEnd, 'MouseDragEnd1Pane binding must be present');
+    assert.ok(dragEnd.includes('copy-selection-and-cancel'), 'drag-end binding must copy the selection');
+  });
+
+  it('MouseDragEnd1Pane binding is in copy-mode key table (-T copy-mode)', () => {
+    const bindings = buildScrollCopyBindings();
+    const dragEnd = bindings.find((b) => b.includes('MouseDragEnd1Pane'));
+    assert.ok(dragEnd, 'MouseDragEnd1Pane binding must be present');
+    const tIdx = dragEnd.indexOf('-T');
+    assert.ok(tIdx !== -1, 'drag-end binding must specify a key table with -T');
+    assert.equal(dragEnd[tIdx + 1], 'copy-mode', 'drag-end binding must be in copy-mode table');
+  });
+});
+
+describe('enableMouseScrolling scroll and copy setup (issue #206)', () => {
+  it('returns false gracefully when scroll-copy setup fails because tmux is unavailable', () => {
+    // With empty PATH the initial "mouse on" call fails, so the function returns
+    // false before any binding calls are made. No throw must occur.
+    withEmptyPath(() => {
+      assert.equal(enableMouseScrolling('omx-team-x'), false);
+    });
+  });
+
+  it('does not throw when WSL2 env is set and tmux is unavailable (regression + #206)', () => {
+    const prev = process.env.WSL_DISTRO_NAME;
+    process.env.WSL_DISTRO_NAME = 'Ubuntu-22.04';
+    try {
+      withEmptyPath(() => {
+        assert.doesNotThrow(() => enableMouseScrolling('omx-team-x'));
+      });
+    } finally {
+      if (typeof prev === 'string') process.env.WSL_DISTRO_NAME = prev;
+      else delete process.env.WSL_DISTRO_NAME;
+    }
   });
 });
 

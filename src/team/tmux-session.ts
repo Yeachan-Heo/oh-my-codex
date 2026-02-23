@@ -330,9 +330,50 @@ export function createTeamSession(
 }
 
 /**
+ * Returns the tmux argv arrays for the scroll-and-copy key bindings applied
+ * by enableMouseScrolling. Exported as a pure function so tests can verify
+ * the binding configuration without requiring a live tmux session.
+ *
+ * The bindings fix two issues that appear in --xhigh and --madmax modes
+ * (closes #206):
+ *
+ *  1. Scroll: Codex CLI TUI claims mouse input, causing tmux to forward wheel
+ *     events to the application where they are interpreted as up/down arrow
+ *     keys (history navigation). The WheelUpPane binding in the root table
+ *     intercepts scroll events before they reach the app and enters tmux
+ *     copy-mode so the user sees viewport scrolling instead.
+ *
+ *  2. Copy: with only "mouse on" set, selecting text with the mouse does not
+ *     reach the system clipboard. The MouseDragEnd1Pane binding in copy-mode
+ *     copies the selection via copy-selection-and-cancel; OSC 52
+ *     (set-clipboard on) then propagates it to the terminal's clipboard.
+ */
+export function buildScrollCopyBindings(): Array<string[]> {
+  return [
+    // On scroll-up: if already in copy-mode forward the event; otherwise
+    // enter copy-mode first so the user gets viewport scroll, not history nav.
+    [
+      'bind-key', '-n', 'WheelUpPane',
+      'if-shell', '-Ft=', '#{pane_in_mode}',
+      'send-keys -M',
+      'select-pane -t=; copy-mode -e; send-keys -M',
+    ],
+    // Copy mouse-selected text to clipboard when the drag ends in copy-mode.
+    [
+      'bind-key', '-T', 'copy-mode', 'MouseDragEnd1Pane',
+      'send-keys', '-X', 'copy-selection-and-cancel',
+    ],
+  ];
+}
+
+/**
  * Enable tmux mouse mode for a session so users can scroll pane content
  * (e.g. long agent output) with the mouse wheel instead of arrow keys.
  * Arrow keys remain reserved for Codex CLI input-history navigation.
+ *
+ * Also configures viewport scrolling via copy-mode on wheel-up and clipboard
+ * copy on mouse selection, fixing scroll and copy issues in --xhigh and
+ * --madmax modes. (closes #206)
  *
  * In WSL2, Windows Terminal uses the SGR mouse protocol but tmux will not
  * activate it unless the terminal advertises the XT capability. Without XT,
@@ -345,6 +386,15 @@ export function createTeamSession(
 export function enableMouseScrolling(sessionTarget: string): boolean {
   const result = runTmux(['set-option', '-t', sessionTarget, 'mouse', 'on']);
   if (!result.ok) return false;
+
+  // Enable OSC 52 so copy-selection-and-cancel propagates selected text to
+  // the terminal's clipboard without requiring xclip or pbcopy. (closes #206)
+  runTmux(['set-option', '-t', sessionTarget, 'set-clipboard', 'on']);
+
+  // Apply the scroll-into-copy-mode and mouse-copy bindings. (closes #206)
+  for (const binding of buildScrollCopyBindings()) {
+    runTmux(binding);
+  }
 
   if (isWsl2()) {
     // Append the XT capability override globally (terminal-overrides is a
