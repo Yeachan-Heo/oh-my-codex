@@ -16,6 +16,7 @@ interface TmuxHookConfig {
   marker: string;
   dry_run: boolean;
   log_level: 'error' | 'info' | 'debug';
+  skip_if_scrolling: boolean;
 }
 
 interface TmuxHookState {
@@ -50,6 +51,7 @@ const DEFAULT_CONFIG: TmuxHookConfig = {
   marker: '[OMX_TMUX_INJECT]',
   dry_run: false,
   log_level: 'info',
+  skip_if_scrolling: true,
 };
 
 const HELP = `
@@ -150,6 +152,9 @@ function parseConfig(raw: unknown): TmuxHookConfig {
   if (parsed.log_level !== 'error' && parsed.log_level !== 'info' && parsed.log_level !== 'debug') {
     throw new Error('`log_level` must be one of: error, info, debug');
   }
+  if (parsed.skip_if_scrolling !== undefined && parsed.skip_if_scrolling !== true && parsed.skip_if_scrolling !== false) {
+    throw new Error('`skip_if_scrolling` must be boolean');
+  }
 
   return {
     enabled: parsed.enabled,
@@ -161,6 +166,7 @@ function parseConfig(raw: unknown): TmuxHookConfig {
     marker,
     dry_run: parsed.dry_run,
     log_level: parsed.log_level,
+    skip_if_scrolling: parsed.skip_if_scrolling === false ? false : true,
   };
 }
 
@@ -371,6 +377,7 @@ async function showTmuxHookStatus(): Promise<void> {
   console.log(`Cooldown: ${config.cooldown_ms}ms`);
   console.log(`Max Injections/Pane: ${config.max_injections_per_session}`);
   console.log(`Dry Run: ${config.dry_run ? 'yes' : 'no'}`);
+  console.log(`Skip If Scrolling: ${config.skip_if_scrolling ? 'yes' : 'no'}`);
 
   if (!existsSync(statePath)) {
     console.log(`State: missing (${statePath})`);

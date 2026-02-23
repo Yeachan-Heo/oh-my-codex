@@ -74,6 +74,8 @@ export function normalizeTmuxHookConfig(raw) {
     marker,
     dry_run: raw.dry_run === true,
     log_level: logLevel,
+    // Skip injection when the target pane is in copy-mode / scrollback (default: true).
+    skip_if_scrolling: raw.skip_if_scrolling === false ? false : true,
   };
 }
 
@@ -141,6 +143,15 @@ export function evaluateInjectionGuards({
   }
 
   return { allow: true, reason: 'ok', dedupeKey };
+}
+
+/**
+ * Returns the tmux argv to query whether a pane is currently in copy-mode
+ * (scrollback). The command prints "1" if the pane is in any mode, "0"
+ * otherwise.
+ */
+export function buildPaneInModeArgv(paneTarget) {
+  return ['display-message', '-p', '-t', paneTarget, '#{pane_in_mode}'];
 }
 
 export function buildSendKeysArgv({ paneTarget, prompt, dryRun }) {

@@ -21,6 +21,7 @@ import {
   pickActiveMode,
   evaluateInjectionGuards,
   buildSendKeysArgv,
+  buildPaneInModeArgv,
 } from '../tmux-hook-engine.js';
 
 export async function resolveSessionToPane(sessionName) {
@@ -328,6 +329,32 @@ export async function handleTmuxInjection({
       state.last_prompt_preview = prompt.slice(0, 120);
     }
   };
+
+  // Scroll-safety guard: skip injection when the user is actively scrolling
+  // (pane is in copy-mode / tmux's scrollback view).  Sending keys to a pane
+  // in copy-mode would exit scrollback and disrupt the user's review session.
+  // We do NOT record the dedupe key here so the injection can be retried on
+  // the next agent-turn event once the pane is no longer in scroll mode.
+  if (config.skip_if_scrolling) {
+    try {
+      const modeResult = await runProcess('tmux', buildPaneInModeArgv(paneTarget), 1000);
+      const paneInMode = safeString(modeResult.stdout).trim();
+      if (paneInMode === '1') {
+        state.last_reason = 'scroll_active';
+        state.last_event_at = nowIso;
+        await writeFile(hookStatePath, JSON.stringify(state, null, 2)).catch(() => {});
+        await logTmuxHookEvent(logsDir, {
+          ...baseLog,
+          event: 'injection_skipped',
+          reason: 'scroll_active',
+          pane_target: paneTarget,
+        });
+        return;
+      }
+    } catch {
+      // Non-fatal: if querying copy-mode state fails, proceed with injection.
+    }
+  }
 
   if (config.dry_run) {
     updateStateForAttempt(false, 'dry_run');
