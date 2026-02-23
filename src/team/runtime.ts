@@ -72,6 +72,7 @@ import {
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
 } from './model-contract.js';
 import { inferPhaseTargetFromTaskCounts, reconcilePhaseStateForMonitor } from './phase-controller.js';
+import { getTeamTmuxSessions } from '../notifications/tmux.js';
 import {
   ensureWorktree,
   planWorktreeTarget,

@@ -364,7 +364,7 @@ async function reasoningCommand(args: string[]): Promise<void> {
   console.log(`Set ${REASONING_KEY}="${mode}" in ${configPath}`);
 }
 
-async function launchWithHud(args: string[]): Promise<void> {
+export async function launchWithHud(args: string[]): Promise<void> {
   const launchCwd = process.cwd();
   const parsedWorktree = parseWorktreeMode(args);
   const workerSparkModel = resolveWorkerSparkModel(parsedWorktree.remainingArgs);

@@ -18,10 +18,10 @@
  *   team-worker.js     – worker heartbeat and idle notification
  */
 
-import { writeFile, appendFile, mkdir, readFile, rename } from 'fs/promises';
+import { writeFile, appendFile, mkdir, readFile, rename, readdir } from 'fs/promises';
 import { dirname, join, resolve as resolvePath } from 'path';
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { spawn } from 'child_process';
 
 import { safeString, asNumber } from './notify-hook/utils.js';
 import {
@@ -33,15 +33,6 @@ import {
 } from './tmux-hook-engine.js';
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-
-function asNumber(value) {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string' && value.trim() !== '') {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return null;
-}
 
 function getSessionTokenUsage(payload) {
   const usage = payload.usage || payload['usage'] || payload.token_usage || payload['token-usage'] || {};
@@ -152,12 +143,6 @@ function getQuotaUsage(payload) {
 
   if (fiveHourLimitPct === null && weeklyLimitPct === null) return null;
   return { fiveHourLimitPct, weeklyLimitPct };
-}
-
-function safeString(value, fallback = '') {
-  if (typeof value === 'string') return value;
-  if (value == null) return fallback;
-  return String(value);
 }
 
 function isTerminalPhase(phase) {
@@ -614,20 +599,25 @@ async function logTmuxHookEvent(logsDir, event) {
   await appendFile(file, JSON.stringify(event) + '\n').catch(() => {});
 }
 
-async function getScopedStateDirsForCurrentSession(baseStateDir) {
-  const scopedDirs = [baseStateDir];
+async function getScopedStateDirsForCurrentSession(baseStateDir, payloadSessionId) {
+  const explicitSessionId = safeString(payloadSessionId || '');
+  if (SESSION_ID_PATTERN.test(explicitSessionId)) {
+    const sessionDir = join(baseStateDir, 'sessions', explicitSessionId);
+    return [sessionDir];
+  }
+
   const sessionPath = join(baseStateDir, 'session.json');
   try {
     const session = JSON.parse(await readFile(sessionPath, 'utf-8'));
     const sessionId = safeString(session && session.session_id ? session.session_id : '');
     if (SESSION_ID_PATTERN.test(sessionId)) {
       const sessionDir = join(baseStateDir, 'sessions', sessionId);
-      if (existsSync(sessionDir)) scopedDirs.push(sessionDir);
+      if (existsSync(sessionDir)) return [sessionDir];
     }
   } catch {
     // No session file or malformed - fall back to global only
   }
-  return scopedDirs;
+  return [baseStateDir];
 }
 
 function resolveLeaderNudgeIntervalMs() {
@@ -1095,21 +1085,10 @@ async function syncLinkedRalphOnTeamTerminalInDir(stateDir, nowIso) {
   }
 }
 
-async function syncLinkedRalphOnTeamTerminal(stateRootDir, nowIso) {
-  await syncLinkedRalphOnTeamTerminalInDir(stateRootDir, nowIso);
-
-  const sessionsDir = join(stateRootDir, 'sessions');
-  if (!existsSync(sessionsDir)) return;
-
-  try {
-    const entries = await readdir(sessionsDir);
-    for (const sessionId of entries) {
-      // Session IDs are controlled by state-server validation; this check avoids accidental traversal.
-      if (!/^[A-Za-z0-9_-]{1,64}$/.test(sessionId)) continue;
-      await syncLinkedRalphOnTeamTerminalInDir(join(sessionsDir, sessionId), nowIso);
-    }
-  } catch {
-    // Non-critical
+async function syncLinkedRalphOnTeamTerminal(stateRootDir, nowIso, payloadSessionId) {
+  const scopedDirs = await getScopedStateDirsForCurrentSession(stateRootDir, payloadSessionId);
+  for (const scopedDir of scopedDirs) {
+    await syncLinkedRalphOnTeamTerminalInDir(scopedDir, nowIso);
   }
 }
 
@@ -1210,6 +1189,24 @@ async function readTeamWorkersForIdleCheck(stateDir, teamName) {
   } catch {
     return null;
   }
+}
+
+async function updateWorkerHeartbeat(stateDir, teamName, workerName) {
+  const heartbeatPath = join(stateDir, 'team', teamName, 'workers', workerName, 'heartbeat.json');
+  let turnCount = 0;
+  try {
+    const existing = JSON.parse(await readFile(heartbeatPath, 'utf-8'));
+    turnCount = existing.turn_count || 0;
+  } catch { /* first heartbeat or malformed */ }
+  const heartbeat = {
+    pid: process.ppid || process.pid,
+    last_turn_at: new Date().toISOString(),
+    turn_count: turnCount + 1,
+    alive: true,
+  };
+  const tmpPath = heartbeatPath + '.tmp.' + process.pid;
+  await writeFile(tmpPath, JSON.stringify(heartbeat, null, 2));
+  await rename(tmpPath, heartbeatPath);
 }
 
 async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, parsedTeamWorker }) {
@@ -1327,6 +1324,7 @@ async function main() {
   }
 
   const cwd = payload.cwd || payload['cwd'] || process.cwd();
+  const payloadSessionId = safeString(payload.session_id || payload['session-id'] || '');
   const teamWorkerEnv = process.env.OMX_TEAM_WORKER; // e.g., "fix-ts/worker-1"
   const parsedTeamWorker = parseTeamWorkerEnv(teamWorkerEnv);
   const isTeamWorker = !!parsedTeamWorker;

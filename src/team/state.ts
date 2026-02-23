@@ -1,5 +1,5 @@
 import { appendFile, readFile, writeFile, mkdir, rm, rename, readdir, stat } from 'fs/promises';
-import { join, dirname, resolve } from 'path';
+import { join, dirname, resolve, sep } from 'path';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { omxStateDir } from '../utils/paths.js';
@@ -347,6 +347,10 @@ function resolveTeamStateRoot(cwd: string, env: NodeJS.ProcessEnv = process.env)
 
 function teamDir(teamName: string, cwd: string): string {
   return join(resolveTeamStateRoot(cwd), 'team', teamName);
+}
+
+function workerDir(teamName: string, workerName: string, cwd: string): string {
+  return join(teamDir(teamName, cwd), 'workers', workerName);
 }
 
 function teamConfigPath(teamName: string, cwd: string): string {
