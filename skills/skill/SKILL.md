@@ -751,7 +751,6 @@ Good skills are:
 
 - `/learner` - Extract a skill from current conversation
 - `/note` - Save quick notes (less formal than skills)
-- `/deepinit` - Generate AGENTS.md codebase hierarchy
 
 ---
 
@@ -824,7 +823,6 @@ What would you like to do?
 
 - `/learner` - Extract a skill from current conversation
 - `/note` - Save quick notes (less formal than skills)
-- `/deepinit` - Generate AGENTS.md codebase hierarchy
 
 ---
 
