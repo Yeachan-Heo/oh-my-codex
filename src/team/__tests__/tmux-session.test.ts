@@ -1,8 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  assertTeamWorkerCliBinaryAvailable,
   buildScrollCopyBindings,
   buildWorkerStartupCommand,
+  chooseTeamLeaderPaneId,
   createTeamSession,
   enableMouseScrolling,
   isTmuxAvailable,
@@ -11,9 +13,11 @@ import {
   killWorker,
   killWorkerByPaneId,
   listTeamSessions,
+  resolveTeamWorkerCli,
   sanitizeTeamName,
   sendToWorker,
   sleepFractionalSeconds,
+  translateWorkerLaunchArgsForCli,
   waitForWorkerReady,
 } from '../tmux-session.js';
 
@@ -43,6 +47,32 @@ describe('sanitizeTeamName', () => {
   });
 });
 
+describe('chooseTeamLeaderPaneId', () => {
+  it('keeps preferred pane when it is not HUD', () => {
+    const panes = [
+      { paneId: '%1', currentCommand: 'node', startCommand: "'codex'" },
+      { paneId: '%2', currentCommand: 'node', startCommand: "node omx hud --watch" },
+    ];
+    assert.equal(chooseTeamLeaderPaneId(panes, '%1'), '%1');
+  });
+
+  it('switches away from HUD preferred pane to first non-HUD pane', () => {
+    const panes = [
+      { paneId: '%2', currentCommand: 'node', startCommand: "node omx hud --watch" },
+      { paneId: '%1', currentCommand: 'node', startCommand: "'codex'" },
+    ];
+    assert.equal(chooseTeamLeaderPaneId(panes, '%2'), '%1');
+  });
+
+  it('falls back to preferred pane when all panes are HUD panes', () => {
+    const panes = [
+      { paneId: '%2', currentCommand: 'node', startCommand: "node omx hud --watch" },
+      { paneId: '%3', currentCommand: 'node', startCommand: "node omx hud --watch" },
+    ];
+    assert.equal(chooseTeamLeaderPaneId(panes, '%2'), '%2');
+  });
+});
+
 describe('sendToWorker validation', () => {
   it('rejects text over 200 chars', () => {
     assert.throws(
@@ -60,6 +90,109 @@ describe('sendToWorker validation', () => {
 });
 
 describe('buildWorkerStartupCommand', () => {
+  it('auto-selects claude worker CLI from claude model', () => {
+    const prevShell = process.env.SHELL;
+    const prevCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/bin/bash';
+    delete process.env.OMX_TEAM_WORKER_CLI; // auto
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, ['--model', 'claude-3-7-sonnet']);
+      assert.match(cmd, /exec claude/);
+      assert.match(cmd, /--dangerously-skip-permissions/);
+      assert.doesNotMatch(cmd, /--model/);
+      assert.doesNotMatch(cmd, /model_instructions_file=/);
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('respects explicit OMX_TEAM_WORKER_CLI override', () => {
+    const prevShell = process.env.SHELL;
+    const prevCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/bin/bash';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      process.env.OMX_TEAM_WORKER_CLI = 'codex';
+      const codexCmd = buildWorkerStartupCommand('alpha', 1, ['--model', 'claude-3-7-sonnet']);
+      assert.match(codexCmd, /exec codex/);
+
+      process.env.OMX_TEAM_WORKER_CLI = 'claude';
+      const claudeCmd = buildWorkerStartupCommand('alpha', 1, ['--model', 'gpt-5']);
+      assert.match(claudeCmd, /exec claude/);
+      assert.match(claudeCmd, /--dangerously-skip-permissions/);
+      assert.doesNotMatch(claudeCmd, /--model/);
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('translates codex-only flags for claude workers', () => {
+    const prevShell = process.env.SHELL;
+    const prevCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/bin/bash';
+    process.env.OMX_TEAM_WORKER_CLI = 'claude';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [
+        '--dangerously-bypass-approvals-and-sandbox',
+        '-c', 'model_instructions_file="/tmp/custom.md"',
+        '--model', 'claude-3-7-sonnet',
+      ]);
+      assert.match(cmd, /exec claude/);
+      assert.match(cmd, /--dangerously-skip-permissions/);
+      assert.doesNotMatch(cmd, /dangerously-bypass-approvals-and-sandbox/);
+      assert.doesNotMatch(cmd, /model_instructions_file=/);
+      assert.doesNotMatch(cmd, /--model/);
+      assert.doesNotMatch(cmd, /claude-3-7-sonnet/);
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('maps --madmax to claude skip-permissions in claude mode', () => {
+    const prevArgv = process.argv;
+    const prevShell = process.env.SHELL;
+    const prevCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/bin/bash';
+    process.env.OMX_TEAM_WORKER_CLI = 'claude';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    process.argv = [...prevArgv, '--madmax'];
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1);
+      const matches = cmd.match(/--dangerously-skip-permissions/g) || [];
+      assert.equal(matches.length, 1);
+      assert.doesNotMatch(cmd, /dangerously-bypass-approvals-and-sandbox/);
+    } finally {
+      process.argv = prevArgv;
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
   it('uses zsh with ~/.zshrc and exec codex', () => {
     const prevShell = process.env.SHELL;
     process.env.SHELL = '/bin/zsh';
@@ -241,6 +374,34 @@ describe('buildWorkerStartupCommand', () => {
       if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     }
+  });
+});
+
+describe('team worker CLI helpers', () => {
+  it('resolveTeamWorkerCli auto-detects claude models', () => {
+    assert.equal(resolveTeamWorkerCli(['--model', 'claude-3-7-sonnet'], {}), 'claude');
+    assert.equal(resolveTeamWorkerCli(['--model=claude-sonnet-4-6'], {}), 'claude');
+    assert.equal(resolveTeamWorkerCli(['--model', 'gpt-5'], {}), 'codex');
+    assert.equal(resolveTeamWorkerCli([], {}), 'codex');
+  });
+
+  it('translateWorkerLaunchArgsForCli preserves args for codex', () => {
+    const args = ['--model', 'gpt-5', '-c', 'model_reasoning_effort="xhigh"'];
+    assert.deepEqual(translateWorkerLaunchArgsForCli('codex', args), args);
+  });
+
+  it('translateWorkerLaunchArgsForCli maps reasoning override for claude', () => {
+    assert.deepEqual(
+      translateWorkerLaunchArgsForCli('claude', ['-c', 'model_reasoning_effort="xhigh"', '--model', 'claude-3-7-sonnet']),
+      ['--dangerously-skip-permissions'],
+    );
+  });
+
+  it('assertTeamWorkerCliBinaryAvailable throws clear error when binary missing', () => {
+    assert.throws(
+      () => assertTeamWorkerCliBinaryAvailable('claude', () => false),
+      /not available on PATH/i,
+    );
   });
 });
 

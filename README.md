@@ -186,6 +186,18 @@ omx team shutdown <team-name>
 
 Important rule: do not shutdown while tasks are still `in_progress` unless aborting.
 
+Worker CLI selection for team workers:
+
+```bash
+OMX_TEAM_WORKER_CLI=auto    # default; uses claude when worker --model contains "claude"
+OMX_TEAM_WORKER_CLI=codex   # force Codex CLI workers
+OMX_TEAM_WORKER_CLI=claude  # force Claude CLI workers
+```
+
+Notes:
+- Worker launch args are still shared via `OMX_TEAM_WORKER_LAUNCH_ARGS`.
+- In Claude worker mode, OMX spawns workers as `claude --dangerously-skip-permissions` and intentionally ignores explicit `--model` / `--config` / `--effort` overrides so Claude uses default `settings.json`.
+
 ## What `omx setup` writes
 
 - `.omx/setup-scope.json` (persisted setup scope)

@@ -15,12 +15,18 @@ export interface TeamSession {
 
 const INJECTION_MARKER = '[OMX_TMUX_INJECT]';
 const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
+const CLAUDE_BYPASS_FLAG = '--dangerously-skip-permissions';
 const MADMAX_FLAG = '--madmax';
 const CONFIG_FLAG = '-c';
 const LONG_CONFIG_FLAG = '--config';
+const MODEL_FLAG = '--model';
 const MODEL_INSTRUCTIONS_FILE_KEY = 'model_instructions_file';
 const OMX_BYPASS_DEFAULT_SYSTEM_PROMPT_ENV = 'OMX_BYPASS_DEFAULT_SYSTEM_PROMPT';
 const OMX_MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
+const OMX_TEAM_WORKER_CLI_ENV = 'OMX_TEAM_WORKER_CLI';
+
+export type TeamWorkerCli = 'codex' | 'claude';
+type TeamWorkerCliMode = 'auto' | TeamWorkerCli;
 
 interface WorkerLaunchSpec {
   shell: string;
@@ -65,6 +71,16 @@ function listPanes(target: string): TmuxPaneInfo[] {
 function isHudWatchPane(pane: TmuxPaneInfo): boolean {
   const start = pane.startCommand || '';
   return /\bomx\b.*\bhud\b.*--watch/i.test(start);
+}
+
+export function chooseTeamLeaderPaneId(panes: TmuxPaneInfo[], preferredPaneId: string): string {
+  const preferred = panes.find((pane) => pane.paneId === preferredPaneId);
+  if (preferred && !isHudWatchPane(preferred)) return preferred.paneId;
+
+  const nonHud = panes.find((pane) => !isHudWatchPane(pane));
+  if (nonHud) return nonHud.paneId;
+
+  return preferredPaneId;
 }
 
 function findHudPaneIds(target: string, leaderPaneId: string): string[] {
@@ -144,6 +160,107 @@ function hasModelInstructionsOverride(args: string[]): boolean {
   return false;
 }
 
+function normalizeTeamWorkerCliMode(raw: string | undefined): TeamWorkerCliMode {
+  const normalized = String(raw ?? 'auto').trim().toLowerCase();
+  if (normalized === '' || normalized === 'auto') return 'auto';
+  if (normalized === 'codex' || normalized === 'claude') return normalized;
+  throw new Error(`Invalid ${OMX_TEAM_WORKER_CLI_ENV} value "${raw}". Expected: auto, codex, claude`);
+}
+
+function extractModelOverride(args: string[]): string | null {
+  let model: string | null = null;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === MODEL_FLAG) {
+      const maybeValue = args[i + 1];
+      if (typeof maybeValue === 'string' && maybeValue.trim() !== '' && !maybeValue.startsWith('-')) {
+        model = maybeValue.trim();
+        i += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith(`${MODEL_FLAG}=`)) {
+      const inline = arg.slice(`${MODEL_FLAG}=`.length).trim();
+      if (inline !== '') model = inline;
+    }
+  }
+  return model;
+}
+
+export function resolveTeamWorkerCli(launchArgs: string[] = [], env: NodeJS.ProcessEnv = process.env): TeamWorkerCli {
+  const mode = normalizeTeamWorkerCliMode(env[OMX_TEAM_WORKER_CLI_ENV]);
+  if (mode !== 'auto') return mode;
+  const model = extractModelOverride(launchArgs);
+  return model && /claude/i.test(model) ? 'claude' : 'codex';
+}
+
+export function translateWorkerLaunchArgsForCli(workerCli: TeamWorkerCli, args: string[]): string[] {
+  if (workerCli === 'codex') return [...args];
+
+  // Claude teammates should use default settings.json behavior.
+  // Intentionally drop model/config/effort overrides and force skip-permissions.
+  const translated: string[] = [CLAUDE_BYPASS_FLAG];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    if (arg === CODEX_BYPASS_FLAG || arg === MADMAX_FLAG) {
+      continue;
+    }
+    if (arg === CLAUDE_BYPASS_FLAG) {
+      continue;
+    }
+
+    if (arg === MODEL_FLAG) {
+      const maybeValue = args[i + 1];
+      if (typeof maybeValue === 'string') i += 1;
+      continue;
+    }
+    if (arg.startsWith(`${MODEL_FLAG}=`)) continue;
+
+    if (arg === '--effort') {
+      const maybeValue = args[i + 1];
+      if (typeof maybeValue === 'string') i += 1;
+      continue;
+    }
+    if (arg.startsWith('--effort=')) continue;
+
+    if (arg === CONFIG_FLAG || arg === LONG_CONFIG_FLAG) {
+      const maybeValue = args[i + 1];
+      if (typeof maybeValue === 'string') {
+        i += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith(`${LONG_CONFIG_FLAG}=`)) continue;
+
+    // Drop all remaining explicit launch args in claude mode to preserve
+    // default claude settings.json behavior.
+  }
+
+  return translated;
+}
+
+function commandExists(binary: string): boolean {
+  const result = spawnSync(binary, ['--version'], { encoding: 'utf-8' });
+  if (result.error) {
+    const code = (result.error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return false;
+  }
+  return true;
+}
+
+export function assertTeamWorkerCliBinaryAvailable(
+  workerCli: TeamWorkerCli,
+  existsImpl: (binary: string) => boolean = commandExists,
+): void {
+  if (existsImpl(workerCli)) return;
+  throw new Error(
+    `Selected team worker CLI "${workerCli}" is not available on PATH. `
+      + `Install "${workerCli}" or set ${OMX_TEAM_WORKER_CLI_ENV}=codex|claude.`,
+  );
+}
+
 function shouldBypassDefaultSystemPrompt(env: NodeJS.ProcessEnv): boolean {
   return env[OMX_BYPASS_DEFAULT_SYSTEM_PROMPT_ENV] !== '0';
 }
@@ -171,13 +288,16 @@ export function buildWorkerStartupCommand(
   launchArgs: string[] = [],
   cwd: string = process.cwd(),
   extraEnv: Record<string, string> = {},
+  workerCliOverride?: TeamWorkerCli,
 ): string {
   const spec = buildWorkerLaunchSpec(process.env.SHELL);
   const fullLaunchArgs = resolveWorkerLaunchArgs(launchArgs, cwd);
-  const codexArgs = fullLaunchArgs.map(shellQuoteSingle).join(' ');
-  const codexInvocation = codexArgs.length > 0 ? `exec codex ${codexArgs}` : 'exec codex';
+  const workerCli = workerCliOverride ?? resolveTeamWorkerCli(fullLaunchArgs, process.env);
+  const cliLaunchArgs = translateWorkerLaunchArgsForCli(workerCli, fullLaunchArgs);
+  const quotedArgs = cliLaunchArgs.map(shellQuoteSingle).join(' ');
+  const cliInvocation = quotedArgs.length > 0 ? `exec ${workerCli} ${quotedArgs}` : `exec ${workerCli}`;
   const rcPrefix = spec.rcFile ? `if [ -f ${spec.rcFile} ]; then source ${spec.rcFile}; fi; ` : '';
-  const inner = `${rcPrefix}${codexInvocation}`;
+  const inner = `${rcPrefix}${cliInvocation}`;
 
   const envParts = [`OMX_TEAM_WORKER=${teamName}/worker-${workerIndex}`];
   for (const [key, value] of Object.entries(extraEnv)) {
@@ -247,18 +367,23 @@ export function createTeamSession(
   if (!process.env.TMUX) {
     throw new Error('team mode requires running inside tmux leader pane');
   }
+  const normalizedWorkerLaunchArgs = resolveWorkerLaunchArgs(workerLaunchArgs, cwd);
+  const workerCli = resolveTeamWorkerCli(normalizedWorkerLaunchArgs, process.env);
+  assertTeamWorkerCliBinaryAvailable(workerCli);
 
   const safeTeamName = sanitizeTeamName(teamName);
   const context = runTmux(['display-message', '-p', '#S:#I #{pane_id}']);
   if (!context.ok) {
     throw new Error(`failed to detect current tmux target: ${context.stderr}`);
   }
-  const [sessionAndWindow = '', leaderPaneId = ''] = context.stdout.split(' ');
+  const [sessionAndWindow = '', detectedLeaderPaneId = ''] = context.stdout.split(' ');
   const [sessionName, windowIndex] = (sessionAndWindow || '').split(':');
-  if (!sessionName || !windowIndex || !leaderPaneId || !leaderPaneId.startsWith('%')) {
+  if (!sessionName || !windowIndex || !detectedLeaderPaneId || !detectedLeaderPaneId.startsWith('%')) {
     throw new Error(`failed to parse current tmux target: ${context.stdout}`);
   }
   const teamTarget = `${sessionName}:${windowIndex}`;
+  const panes = listPanes(teamTarget);
+  const leaderPaneId = chooseTeamLeaderPaneId(panes, detectedLeaderPaneId);
   const initialHudPaneIds = findHudPaneIds(teamTarget, leaderPaneId);
   // Team mode prioritizes leader + worker visibility. Remove HUD panes in this window
   // to keep a clean "leader left / workers right" layout.
@@ -272,7 +397,14 @@ export function createTeamSession(
     const startup = workerStartups[i - 1] || {};
     const workerCwd = startup.cwd || cwd;
     const workerEnv = startup.env || {};
-    const cmd = buildWorkerStartupCommand(safeTeamName, i, workerLaunchArgs, workerCwd, workerEnv);
+    const cmd = buildWorkerStartupCommand(
+      safeTeamName,
+      i,
+      workerLaunchArgs,
+      workerCwd,
+      workerEnv,
+      workerCli,
+    );
     // First split creates the right side from leader. Remaining splits stack on the right.
     const splitDirection = i === 1 ? '-h' : '-v';
     const splitTarget = i === 1 ? leaderPaneId : (rightStackRootPaneId ?? leaderPaneId);
@@ -438,13 +570,15 @@ function paneLooksReady(captured: string): boolean {
     .filter(l => l.trim() !== '');
 
   const lastLine = lines.length > 0 ? lines[lines.length - 1] : '';
-  if (/^\s*[›>]\s*/.test(lastLine)) return true;
+  if (/^\s*[›>❯]\s*/u.test(lastLine)) return true;
 
   // Codex TUI often renders a status bar/footer instead of a raw shell prompt.
   // Treat common Codex UI markers as "ready enough" for inbox-trigger dispatch.
   const hasCodexPromptLine = lines.some((line) => /^\s*›\s*/u.test(line));
   const hasCodexStatus = lines.some((line) => /\bgpt-[\w.-]+\b/i.test(line) || /\b\d+% left\b/i.test(line));
-  if (hasCodexPromptLine || hasCodexStatus) return true;
+  const hasClaudePromptLine = lines.some((line) => /^\s*❯\s*/u.test(line));
+  const hasClaudeStatus = lines.some((line) => /\bClaude Code v[\d.]+\b/i.test(line) || /\bclaude-[\w.-]+\b/i.test(line));
+  if (hasCodexPromptLine || hasCodexStatus || hasClaudePromptLine || hasClaudeStatus) return true;
 
   return false;
 }
