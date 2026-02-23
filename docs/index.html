@@ -25,6 +25,37 @@
         <pre><code>npm install -g oh-my-codex</code></pre>
       </section>
 
+      <section aria-labelledby="whats-new-060">
+        <h2 id="whats-new-060">What's New in 0.6.0</h2>
+        <div class="grid">
+          <article class="card">
+            <h3>Mixed Codex + Claude teammates</h3>
+            <p>
+              Route workers per pane with <code>OMX_TEAM_WORKER_CLI_MAP</code> (for example:
+              <code>codex,codex,claude,claude</code>) so one <code>$team</code> run can use both CLIs.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Claude-team leader nudges</h3>
+            <p>
+              Added a leader-side all-workers-idle fallback so notifications still fire even when worker-side Codex hooks are unavailable.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Safer trigger retries</h3>
+            <p>
+              Team trigger fallback now gates adaptive resend behind a ready prompt and no-active-task check, with safer clear-line resend behavior.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Reliability fixes</h3>
+            <p>
+              Improved task-claim bootstrap, stricter CLI map validation, predictable <code>auto</code> resolution, and better leader pane targeting for mixed/Claude teams.
+            </p>
+          </article>
+        </div>
+      </section>
+
       <h2>Core Features</h2>
       <div class="grid">
         <article class="card"><h3>Agent Prompts</h3><p>Specialized roles for implementation, review, design, and planning.</p></article>
