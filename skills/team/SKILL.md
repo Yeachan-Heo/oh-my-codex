@@ -193,6 +193,9 @@ Useful runtime env vars:
   - Length must be `1` (broadcast) or exactly the team worker count
   - Example: `OMX_TEAM_WORKER_CLI_MAP=codex,codex,claude,claude`
   - When present, overrides `OMX_TEAM_WORKER_CLI`
+- `OMX_TEAM_AUTO_INTERRUPT_RETRY`
+  - Trigger submit fallback (default: enabled)
+  - `0` disables adaptive queue->resend escalation
 - `OMX_TEAM_LEADER_NUDGE_MS`
   - Leader nudge interval in ms (default 120000)
 - `OMX_TEAM_STRICT_SUBMIT=1`

@@ -193,11 +193,13 @@ OMX_TEAM_WORKER_CLI=auto    # default; uses claude when worker --model contains 
 OMX_TEAM_WORKER_CLI=codex   # force Codex CLI workers
 OMX_TEAM_WORKER_CLI=claude  # force Claude CLI workers
 OMX_TEAM_WORKER_CLI_MAP=codex,codex,claude,claude  # per-worker CLI mix (len=1 or worker count)
+OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # optional: disable adaptive queue->resend fallback
 ```
 
 Notes:
 - Worker launch args are still shared via `OMX_TEAM_WORKER_LAUNCH_ARGS`.
 - `OMX_TEAM_WORKER_CLI_MAP` overrides `OMX_TEAM_WORKER_CLI` for per-worker selection.
+- Trigger submission uses adaptive retries by default (queue/submit, then safe clear-line+resend fallback when needed).
 - In Claude worker mode, OMX spawns workers as `claude --dangerously-skip-permissions` and intentionally ignores explicit `--model` / `--config` / `--effort` overrides so Claude uses default `settings.json`.
 
 ## What `omx setup` writes

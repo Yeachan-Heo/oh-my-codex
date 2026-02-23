@@ -16,6 +16,7 @@ import {
   resolveTeamWorkerCli,
   resolveTeamWorkerCliPlan,
   sanitizeTeamName,
+  shouldAttemptAdaptiveRetry,
   sendToWorker,
   sleepFractionalSeconds,
   translateWorkerLaunchArgsForCli,
@@ -82,10 +83,63 @@ describe('sendToWorker validation', () => {
     );
   });
 
+  it('rejects empty/whitespace text', () => {
+    assert.throws(
+      () => sendToWorker('omx-team-x', 1, '   '),
+      /non-empty/i
+    );
+  });
+
   it('rejects injection marker', () => {
     assert.throws(
       () => sendToWorker('omx-team-x', 1, `hello [OMX_TMUX_INJECT]`),
       /marker/i
+    );
+  });
+});
+
+describe('shouldAttemptAdaptiveRetry', () => {
+  it('returns false when adaptive retry is disabled', () => {
+    assert.equal(
+      shouldAttemptAdaptiveRetry('auto', true, false, '❯ hello', 'hello'),
+      false,
+    );
+  });
+
+  it('returns false when strategy is not auto', () => {
+    assert.equal(
+      shouldAttemptAdaptiveRetry('queue', true, true, '❯ hello', 'hello'),
+      false,
+    );
+  });
+
+  it('returns false when pane was not initially busy', () => {
+    assert.equal(
+      shouldAttemptAdaptiveRetry('auto', false, true, '❯ hello', 'hello'),
+      false,
+    );
+  });
+
+  it('returns false when trigger text is missing from latest capture', () => {
+    assert.equal(
+      shouldAttemptAdaptiveRetry('auto', true, true, '❯ ready prompt', 'hello'),
+      false,
+    );
+  });
+
+  it('returns false when latest capture still shows active task markers', () => {
+    const activeCapture = '• Doing work (2m 10s • esc to interrupt)\n❯ hello';
+    assert.equal(
+      shouldAttemptAdaptiveRetry('auto', true, true, activeCapture, 'hello'),
+      false,
+    );
+  });
+
+  it('returns true only when auto+busy and latest capture is ready with visible text', () => {
+    const readyCapture = '❯ hello';
+    assert.equal(
+      shouldAttemptAdaptiveRetry('auto', true, true, readyCapture, 'hello'),
+      true,
     );
   });
 });

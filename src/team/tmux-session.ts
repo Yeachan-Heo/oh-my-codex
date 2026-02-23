@@ -25,6 +25,7 @@ const OMX_BYPASS_DEFAULT_SYSTEM_PROMPT_ENV = 'OMX_BYPASS_DEFAULT_SYSTEM_PROMPT';
 const OMX_MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
 const OMX_TEAM_WORKER_CLI_ENV = 'OMX_TEAM_WORKER_CLI';
 const OMX_TEAM_WORKER_CLI_MAP_ENV = 'OMX_TEAM_WORKER_CLI_MAP';
+const OMX_TEAM_AUTO_INTERRUPT_RETRY_ENV = 'OMX_TEAM_AUTO_INTERRUPT_RETRY';
 
 export type TeamWorkerCli = 'codex' | 'claude';
 type TeamWorkerCliMode = 'auto' | TeamWorkerCli;
@@ -673,11 +674,64 @@ function resolveSendStrategyFromEnv(): 'auto' | 'queue' | 'interrupt' {
   return 'auto';
 }
 
+export function shouldAttemptAdaptiveRetry(
+  strategy: 'auto' | 'queue' | 'interrupt',
+  paneBusyAtStart: boolean,
+  allowAdaptiveRetry: boolean,
+  latestCapture: string | null,
+  text: string,
+): boolean {
+  if (!allowAdaptiveRetry) return false;
+  if (strategy !== 'auto') return false;
+  if (!paneBusyAtStart) return false;
+  if (typeof latestCapture !== 'string') return false;
+
+  const normalizedText = normalizeTmuxCapture(text);
+  if (normalizedText === '') return false;
+
+  const normalizedCapture = normalizeTmuxCapture(latestCapture);
+  if (!normalizedCapture.includes(normalizedText)) return false;
+  if (paneHasActiveTask(latestCapture)) return false;
+  if (!paneLooksReady(latestCapture)) return false;
+  return true;
+}
+
 function sendKeyOrThrow(target: string, key: string, label: string): void {
   const result = runTmux(['send-keys', '-t', target, key]);
   if (!result.ok) {
     throw new Error(`sendToWorker: failed to send ${label}: ${result.stderr}`);
   }
+}
+
+function sendLiteralTextOrThrow(target: string, text: string): void {
+  const send = runTmux(['send-keys', '-t', target, '-l', '--', text]);
+  if (!send.ok) {
+    throw new Error(`sendToWorker: failed to send text: ${send.stderr}`);
+  }
+}
+
+function attemptSubmitRounds(
+  target: string,
+  text: string,
+  rounds: number,
+  queueFirstRound: boolean,
+): boolean {
+  for (let round = 0; round < rounds; round++) {
+    sleepFractionalSeconds(0.1);
+    if (round === 0 && queueFirstRound) {
+      sendKeyOrThrow(target, 'Tab', 'Tab');
+      sleepFractionalSeconds(0.08);
+      sendKeyOrThrow(target, 'C-m', 'C-m');
+    } else {
+      sendKeyOrThrow(target, 'C-m', 'C-m');
+      sleepFractionalSeconds(0.2);
+      sendKeyOrThrow(target, 'C-m', 'C-m');
+    }
+    sleepFractionalSeconds(0.14);
+    if (!paneTailContainsLiteralLine(target, text)) return true;
+    sleepFractionalSeconds(0.14);
+  }
+  return false;
 }
 
 // Poll tmux capture-pane for Codex prompt indicator (> or similar)
@@ -752,6 +806,9 @@ export function sendToWorker(sessionName: string, workerIndex: number, text: str
   if (text.length >= 200) {
     throw new Error('sendToWorker: text must be < 200 characters');
   }
+  if (text.trim().length === 0) {
+    throw new Error('sendToWorker: text must be non-empty');
+  }
   if (text.includes(INJECTION_MARKER)) {
     throw new Error('sendToWorker: injection marker is not allowed');
   }
@@ -770,16 +827,14 @@ export function sendToWorker(sessionName: string, workerIndex: number, text: str
     sleepFractionalSeconds(0.2);
   }
 
-  const send = runTmux(['send-keys', '-t', target, '-l', '--', text]);
-  if (!send.ok) {
-    throw new Error(`sendToWorker: failed to send text: ${send.stderr}`);
-  }
+  sendLiteralTextOrThrow(target, text);
 
   // Allow the input buffer to settle before sending Enter
   sleepFractionalSeconds(0.15);
 
   const shouldInterrupt = strategy === 'interrupt';
   const shouldQueueFirst = strategy === 'queue' || (strategy === 'auto' && paneBusy);
+  const allowAutoInterruptRetry = process.env[OMX_TEAM_AUTO_INTERRUPT_RETRY_ENV] !== '0';
   if (shouldInterrupt) {
     // Explicit interrupt mode: abort current turn first, then submit the new command.
     sendKeyOrThrow(target, 'C-c', 'C-c');
@@ -789,21 +844,19 @@ export function sendToWorker(sessionName: string, workerIndex: number, text: str
   // Submit deterministically: C-m twice with short sleep between presses.
   // When worker is busy, first attempt uses Tab+C-m to leverage Codex queue semantics.
   // If that fails, fall back to legacy C-m-based submit rounds.
-  const submitRounds = 6;
-  for (let round = 0; round < submitRounds; round++) {
-    sleepFractionalSeconds(0.1);
-    if (round === 0 && shouldQueueFirst) {
-      sendKeyOrThrow(target, 'Tab', 'Tab');
-      sleepFractionalSeconds(0.08);
-      sendKeyOrThrow(target, 'C-m', 'C-m');
-    } else {
-      sendKeyOrThrow(target, 'C-m', 'C-m');
-      sleepFractionalSeconds(0.2);
-      sendKeyOrThrow(target, 'C-m', 'C-m');
-    }
-    sleepFractionalSeconds(0.14);
-    if (!paneTailContainsLiteralLine(target, text)) return;
-    sleepFractionalSeconds(0.14);
+  if (attemptSubmitRounds(target, text, 6, shouldQueueFirst)) return;
+
+  // Adaptive escalation for "likely unsent trigger text at ready prompt" cases:
+  // clear line, re-send trigger, then re-submit with deterministic C-m rounds.
+  const latestCaptureResult = runTmux(['capture-pane', '-t', target, '-p', '-S', '-80']);
+  const latestCapture = latestCaptureResult.ok ? latestCaptureResult.stdout : null;
+  if (shouldAttemptAdaptiveRetry(strategy, paneBusy, allowAutoInterruptRetry, latestCapture, text)) {
+    // Keep this branch non-interrupting to avoid canceling active turns on false positives.
+    sendKeyOrThrow(target, 'C-u', 'C-u');
+    sleepFractionalSeconds(0.08);
+    sendLiteralTextOrThrow(target, text);
+    sleepFractionalSeconds(0.12);
+    if (attemptSubmitRounds(target, text, 4, false)) return;
   }
 
   // Fail-open by default: Codex may keep the last submitted line visible even after executing it.
