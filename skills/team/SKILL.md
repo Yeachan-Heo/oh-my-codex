@@ -5,7 +5,7 @@ description: N coordinated agents on shared task list using tmux-based orchestra
 
 # Team Skill
 
-`$team` is the tmux-based parallel execution mode for OMX. It starts real worker Codex sessions in split panes and coordinates them through `.omx/state/team/...` files plus MCP team tools.
+`$team` is the tmux-based parallel execution mode for OMX. It starts real worker Codex and/or Claude CLI sessions in split panes and coordinates them through `.omx/state/team/...` files plus MCP team tools.
 
 This skill is operationally sensitive. Treat it as an operator workflow, not a generic prompt pattern.
 
@@ -33,6 +33,23 @@ Examples:
 omx team 3:executor "analyze feature X and report flaws"
 omx team "debug flaky integration tests"
 omx team ralph "ship end-to-end fix with verification"
+```
+
+### Claude teammates (v0.6.0+)
+
+Important: `N:agent-type` (for example `2:executor`) selects the **worker role prompt**, not the worker CLI (`codex` vs `claude`).
+
+To launch Claude teammates, use the team worker CLI env vars:
+
+```bash
+# Force all teammates to Claude CLI
+OMX_TEAM_WORKER_CLI=claude omx team 2:executor "update docs and report"
+
+# Mixed team (worker 1 = Codex, worker 2 = Claude)
+OMX_TEAM_WORKER_CLI_MAP=codex,claude omx team 2:executor "split doc/code tasks"
+
+# Auto mode: Claude is selected when worker launch args/model contains 'claude'
+OMX_TEAM_WORKER_CLI=auto OMX_TEAM_WORKER_LAUNCH_ARGS="--model claude-..." omx team 2:executor "run mixed validation"
 ```
 
 ## Preconditions
@@ -72,6 +89,7 @@ If duplicates exist, remove extras before `omx team` to prevent HUD ending up in
    - `OMX_TEAM_WORKER=<team>/worker-<n>`
    - `OMX_TEAM_STATE_ROOT=<leader-cwd>/.omx/state`
    - `OMX_TEAM_LEADER_CWD=<leader-cwd>`
+   - worker CLI selected by `OMX_TEAM_WORKER_CLI` / `OMX_TEAM_WORKER_CLI_MAP` (`codex` or `claude`)
    - optional worktree metadata envs when `--worktree` is used
 7. Wait for worker readiness (`capture-pane` polling)
 8. Write per-worker `inbox.md` and trigger via `tmux send-keys`
@@ -80,7 +98,7 @@ If duplicates exist, remove extras before `omx team` to prevent HUD ending up in
 Important:
 
 - Leader remains in existing pane
-- Worker panes are independent full Codex sessions
+- Worker panes are independent full Codex/Claude CLI sessions
 - Workers may run in separate git worktrees (`omx team --worktree[=<name>]`) while sharing one team state root
 - Worker ACKs go to `mailbox/leader-fixed.json`
 - Notify hook updates worker heartbeat and nudges leader during active team mode
