@@ -674,6 +674,28 @@ function resolveSendStrategyFromEnv(): 'auto' | 'queue' | 'interrupt' {
   return 'auto';
 }
 
+export function shouldAttemptAdaptiveRetry(
+  strategy: 'auto' | 'queue' | 'interrupt',
+  paneBusyAtStart: boolean,
+  allowAdaptiveRetry: boolean,
+  latestCapture: string | null,
+  text: string,
+): boolean {
+  if (!allowAdaptiveRetry) return false;
+  if (strategy !== 'auto') return false;
+  if (!paneBusyAtStart) return false;
+  if (typeof latestCapture !== 'string') return false;
+
+  const normalizedText = normalizeTmuxCapture(text);
+  if (normalizedText === '') return false;
+
+  const normalizedCapture = normalizeTmuxCapture(latestCapture);
+  if (!normalizedCapture.includes(normalizedText)) return false;
+  if (paneHasActiveTask(latestCapture)) return false;
+  if (!paneLooksReady(latestCapture)) return false;
+  return true;
+}
+
 function sendKeyOrThrow(target: string, key: string, label: string): void {
   const result = runTmux(['send-keys', '-t', target, key]);
   if (!result.ok) {
@@ -784,6 +806,9 @@ export function sendToWorker(sessionName: string, workerIndex: number, text: str
   if (text.length >= 200) {
     throw new Error('sendToWorker: text must be < 200 characters');
   }
+  if (text.trim().length === 0) {
+    throw new Error('sendToWorker: text must be non-empty');
+  }
   if (text.includes(INJECTION_MARKER)) {
     throw new Error('sendToWorker: injection marker is not allowed');
   }
@@ -821,12 +846,12 @@ export function sendToWorker(sessionName: string, workerIndex: number, text: str
   // If that fails, fall back to legacy C-m-based submit rounds.
   if (attemptSubmitRounds(target, text, 6, shouldQueueFirst)) return;
 
-  // Adaptive escalation for "busy worker + queued text still visible" cases:
-  // interrupt, re-send trigger, then re-submit with deterministic C-m rounds.
-  if (strategy === 'auto' && paneBusy && allowAutoInterruptRetry) {
-    sendKeyOrThrow(target, 'C-c', 'C-c');
-    sleepFractionalSeconds(0.12);
-    // Clear any partially typed line before re-sending.
+  // Adaptive escalation for "likely unsent trigger text at ready prompt" cases:
+  // clear line, re-send trigger, then re-submit with deterministic C-m rounds.
+  const latestCaptureResult = runTmux(['capture-pane', '-t', target, '-p', '-S', '-80']);
+  const latestCapture = latestCaptureResult.ok ? latestCaptureResult.stdout : null;
+  if (shouldAttemptAdaptiveRetry(strategy, paneBusy, allowAutoInterruptRetry, latestCapture, text)) {
+    // Keep this branch non-interrupting to avoid canceling active turns on false positives.
     sendKeyOrThrow(target, 'C-u', 'C-u');
     sleepFractionalSeconds(0.08);
     sendLiteralTextOrThrow(target, text);
