@@ -432,10 +432,36 @@ describe('team worker CLI helpers', () => {
     assert.deepEqual(plan, ['claude', 'codex']);
   });
 
+  it('resolveTeamWorkerCliPlan auto entries ignore OMX_TEAM_WORKER_CLI override', () => {
+    const plan = resolveTeamWorkerCliPlan(
+      1,
+      ['--model', 'claude-3-7-sonnet'],
+      {
+        OMX_TEAM_WORKER_CLI: 'codex',
+        OMX_TEAM_WORKER_CLI_MAP: 'auto',
+      },
+    );
+    assert.deepEqual(plan, ['claude']);
+  });
+
   it('resolveTeamWorkerCliPlan rejects map lengths that do not match workerCount', () => {
     assert.throws(
       () => resolveTeamWorkerCliPlan(4, [], { OMX_TEAM_WORKER_CLI_MAP: 'codex,claude' }),
       /expected 1 or 4/i,
+    );
+  });
+
+  it('resolveTeamWorkerCliPlan rejects empty entries in CLI map', () => {
+    assert.throws(
+      () => resolveTeamWorkerCliPlan(2, [], { OMX_TEAM_WORKER_CLI_MAP: 'codex,' }),
+      /empty entries are not allowed/i,
+    );
+  });
+
+  it('resolveTeamWorkerCliPlan reports invalid entry errors with OMX_TEAM_WORKER_CLI_MAP', () => {
+    assert.throws(
+      () => resolveTeamWorkerCliPlan(1, [], { OMX_TEAM_WORKER_CLI_MAP: 'claudee' }),
+      /OMX_TEAM_WORKER_CLI_MAP/i,
     );
   });
 });

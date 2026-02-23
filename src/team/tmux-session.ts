@@ -161,11 +161,11 @@ function hasModelInstructionsOverride(args: string[]): boolean {
   return false;
 }
 
-function normalizeTeamWorkerCliMode(raw: string | undefined): TeamWorkerCliMode {
+function normalizeTeamWorkerCliMode(raw: string | undefined, sourceEnv: string = OMX_TEAM_WORKER_CLI_ENV): TeamWorkerCliMode {
   const normalized = String(raw ?? 'auto').trim().toLowerCase();
   if (normalized === '' || normalized === 'auto') return 'auto';
   if (normalized === 'codex' || normalized === 'claude') return normalized;
-  throw new Error(`Invalid ${OMX_TEAM_WORKER_CLI_ENV} value "${raw}". Expected: auto, codex, claude`);
+  throw new Error(`Invalid ${sourceEnv} value "${raw}". Expected: auto, codex, claude`);
 }
 
 function extractModelOverride(args: string[]): string | null {
@@ -191,6 +191,10 @@ function extractModelOverride(args: string[]): string | null {
 export function resolveTeamWorkerCli(launchArgs: string[] = [], env: NodeJS.ProcessEnv = process.env): TeamWorkerCli {
   const mode = normalizeTeamWorkerCliMode(env[OMX_TEAM_WORKER_CLI_ENV]);
   if (mode !== 'auto') return mode;
+  return resolveTeamWorkerCliFromLaunchArgs(launchArgs);
+}
+
+function resolveTeamWorkerCliFromLaunchArgs(launchArgs: string[] = []): TeamWorkerCli {
   const model = extractModelOverride(launchArgs);
   return model && /claude/i.test(model) ? 'claude' : 'codex';
 }
@@ -206,6 +210,7 @@ export function resolveTeamWorkerCliPlan(
 
   const rawMap = String(env[OMX_TEAM_WORKER_CLI_MAP_ENV] ?? '').trim();
   const fallback = (): TeamWorkerCli => resolveTeamWorkerCli(launchArgs, env);
+  const fallbackAutoFromArgs = (): TeamWorkerCli => resolveTeamWorkerCliFromLaunchArgs(launchArgs);
 
   if (rawMap === '') {
     const cli = fallback();
@@ -214,13 +219,18 @@ export function resolveTeamWorkerCliPlan(
 
   const entries = rawMap
     .split(',')
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0);
+    .map((part) => part.trim());
 
-  if (entries.length === 0) {
+  if (entries.length === 0 || entries.every((part) => part.length === 0)) {
     throw new Error(
       `Invalid ${OMX_TEAM_WORKER_CLI_MAP_ENV} value "${env[OMX_TEAM_WORKER_CLI_MAP_ENV]}". `
         + `Expected comma-separated values: auto|codex|claude.`,
+    );
+  }
+  if (entries.some((part) => part.length === 0)) {
+    throw new Error(
+      `Invalid ${OMX_TEAM_WORKER_CLI_MAP_ENV} value "${env[OMX_TEAM_WORKER_CLI_MAP_ENV]}". `
+        + `Empty entries are not allowed.`,
     );
   }
   if (entries.length !== 1 && entries.length !== workerCount) {
@@ -232,8 +242,8 @@ export function resolveTeamWorkerCliPlan(
 
   const expanded = entries.length === 1 ? Array.from({ length: workerCount }, () => entries[0] as string) : entries;
   return expanded.map((entry) => {
-    const mode = normalizeTeamWorkerCliMode(entry);
-    return mode === 'auto' ? fallback() : mode;
+    const mode = normalizeTeamWorkerCliMode(entry, OMX_TEAM_WORKER_CLI_MAP_ENV);
+    return mode === 'auto' ? fallbackAutoFromArgs() : mode;
   });
 }
 
