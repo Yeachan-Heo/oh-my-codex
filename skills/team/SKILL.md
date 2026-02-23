@@ -103,20 +103,27 @@ Important:
 - Worker ACKs go to `mailbox/leader-fixed.json`
 - Notify hook updates worker heartbeat and nudges leader during active team mode
 
-### Team worker model resolution (current contract)
+### Team worker model + thinking resolution (current contract)
 
-Team mode resolves worker model flags from one shared launch-arg set (not per-worker model selection).
+Team mode resolves worker **model flags** from one shared launch-arg set (not per-worker model selection).
 
-Precedence (highest to lowest):
+Model precedence (highest to lowest):
 1. Explicit worker model in `OMX_TEAM_WORKER_LAUNCH_ARGS`
 2. Inherited leader `--model` flag
 3. Injected low-complexity default: `gpt-5.3-codex-spark` (only when 1+2 are absent and team `agentType` is low-complexity)
+
+Thinking-level rule (critical):
+- **No model-name heuristic mapping.**
+- Team runtime must **not** infer `model_reasoning_effort` from model strings (e.g., `spark`, `opus`, `mini`).
+- Worker thinking level is applied **only when explicitly provided** (leader/user launch args or explicit config).
+- If no explicit thinking value is provided, runtime leaves `model_reasoning_effort` unset.
 
 Normalization requirements:
 - Parse both `--model <value>` and `--model=<value>`
 - Remove duplicate/conflicting model flags
 - Emit exactly one final canonical flag: `--model <value>`
 - Preserve unrelated args in worker launch config
+- If explicit reasoning exists, preserve canonical `-c model_reasoning_effort="<level>"`; otherwise do not inject one
 
 ## Required Lifecycle (Operator Contract)
 
