@@ -4,6 +4,32 @@ const MODEL_FLAG = '--model';
 const CONFIG_FLAG = '-c';
 const REASONING_KEY = 'model_reasoning_effort';
 
+export type ThinkingLevel = 'low' | 'medium' | 'high';
+
+const LOW_TIER_MODEL_PATTERNS: RegExp[] = [
+  /flash/i,
+  /lite/i,
+  /mini/i,
+  /haiku/i,
+  /spark/i,
+];
+
+const HIGH_TIER_MODEL_PATTERNS: RegExp[] = [
+  /opus/i,
+  /sonnet/i,
+  /thinking/i,
+  /\bo1\b/i,
+  /\bo3\b/i,
+  /\br1\b/i,
+];
+
+export function inferThinkingLevelFromModel(modelName: string): ThinkingLevel {
+  const n = modelName.trim();
+  if (LOW_TIER_MODEL_PATTERNS.some((p) => p.test(n))) return 'low';
+  if (HIGH_TIER_MODEL_PATTERNS.some((p) => p.test(n))) return 'high';
+  return 'medium';
+}
+
 const LOW_COMPLEXITY_AGENT_TYPES = new Set([
   'explore',
   'explorer',
@@ -24,6 +50,8 @@ export interface ResolveTeamWorkerLaunchArgsOptions {
   existingRaw?: string;
   inheritedArgs?: string[];
   fallbackModel?: string;
+  /** Auto-inject model_reasoning_effort when no explicit override is present. Default: true */
+  autoThinkingLevel?: boolean;
 }
 
 function isReasoningOverride(value: string): boolean {
@@ -133,7 +161,15 @@ export function resolveTeamWorkerLaunchArgs(options: ResolveTeamWorkerLaunchArgs
   const fallbackModel = normalizeOptionalModel(options.fallbackModel);
   const selectedModel = envModel ?? inheritedModel ?? fallbackModel;
 
-  return normalizeTeamWorkerLaunchArgs(allArgs, selectedModel);
+  // Auto-inject reasoning level when not explicitly set
+  const autoThinkingLevel = options.autoThinkingLevel !== false;
+  const allParsed = parseTeamWorkerLaunchArgs(allArgs);
+  const argsToNormalize =
+    autoThinkingLevel && allParsed.reasoningOverride === null && selectedModel != null
+      ? [...allArgs, CONFIG_FLAG, `${REASONING_KEY}="${inferThinkingLevelFromModel(selectedModel)}"`]
+      : allArgs;
+
+  return normalizeTeamWorkerLaunchArgs(argsToNormalize, selectedModel);
 }
 
 export function isLowComplexityAgentType(agentType?: string): boolean {
