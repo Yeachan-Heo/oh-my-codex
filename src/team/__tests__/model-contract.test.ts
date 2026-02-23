@@ -97,3 +97,34 @@ describe('team model contract', () => {
     assert.equal(isLowComplexityAgentType('executor-low'), true);
   });
 });
+
+describe('resolveTeamWorkerLaunchArgs - explicit thinking only', () => {
+  it('does not auto-inject thinking level for fallback model', () => {
+    const result = resolveTeamWorkerLaunchArgs({
+      fallbackModel: TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
+    });
+    const joined = result.join(' ');
+    assert.ok(!joined.includes('model_reasoning_effort'), `Expected no auto-injected thinking level in: ${joined}`);
+  });
+
+  it('preserves explicit reasoning override', () => {
+    const result = resolveTeamWorkerLaunchArgs({
+      existingRaw: '-c model_reasoning_effort="high"',
+      fallbackModel: TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
+    });
+    const joined = result.join(' ');
+    // Should contain the explicit high level
+    assert.ok(joined.includes('model_reasoning_effort="high"'), `Expected explicit high level in: ${joined}`);
+    // Should appear exactly once
+    const matches = joined.match(/model_reasoning_effort/g) ?? [];
+    assert.equal(matches.length, 1, 'reasoning override should appear exactly once');
+  });
+
+  it('does not inject thinking when model is explicit but reasoning is omitted', () => {
+    const result = resolveTeamWorkerLaunchArgs({
+      existingRaw: '--model claude-opus-4',
+    });
+    const joined = result.join(' ');
+    assert.ok(!joined.includes('model_reasoning_effort'), `Expected no reasoning in: ${joined}`);
+  });
+});

@@ -71,6 +71,8 @@ import {
   isLowComplexityAgentType,
   resolveTeamWorkerLaunchArgs,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
+  parseTeamWorkerLaunchArgs,
+  splitWorkerLaunchArgs,
 } from './model-contract.js';
 import { inferPhaseTargetFromTaskCounts, reconcilePhaseStateForMonitor } from './phase-controller.js';
 import { getTeamTmuxSessions } from '../notifications/tmux.js';
@@ -187,11 +189,27 @@ export function resolveWorkerLaunchArgsFromEnv(
     ? TEAM_LOW_COMPLEXITY_DEFAULT_MODEL
     : undefined;
 
-  return resolveTeamWorkerLaunchArgs({
+  // Detect if an explicit reasoning override exists before resolving (for log source labelling)
+  const preEnvArgs = splitWorkerLaunchArgs(env.OMX_TEAM_WORKER_LAUNCH_ARGS);
+  const preAllArgs = [...preEnvArgs, ...inheritedArgs];
+  const hasExplicitReasoning = parseTeamWorkerLaunchArgs(preAllArgs).reasoningOverride !== null;
+
+  const resolved = resolveTeamWorkerLaunchArgs({
     existingRaw: env.OMX_TEAM_WORKER_LAUNCH_ARGS,
     inheritedArgs,
     fallbackModel,
   });
+
+  // Extract resolved model and thinking level from result args for startup log
+  const resolvedParsed = parseTeamWorkerLaunchArgs(resolved);
+  const resolvedModel = resolvedParsed.modelOverride ?? fallbackModel ?? 'default';
+  const reasoningMatch = resolvedParsed.reasoningOverride?.match(/model_reasoning_effort\s*=\s*"?(\w+)"?/);
+  const thinkingLevel = reasoningMatch?.[1] ?? 'none';
+  const source = hasExplicitReasoning ? 'explicit' : 'none/default-none';
+
+  console.log(`[omx:team] worker startup resolution: model=${resolvedModel} thinking_level=${thinkingLevel} source=${source}`);
+
+  return resolved;
 }
 
 /**
