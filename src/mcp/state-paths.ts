@@ -59,6 +59,9 @@ export function resolveWorkingDirectoryForState(workingDirectory?: string): stri
 }
 
 export function getBaseStateDir(workingDirectory?: string): string {
+  if ((workingDirectory == null || workingDirectory === '') && typeof process.env.OMX_TEAM_STATE_ROOT === 'string' && process.env.OMX_TEAM_STATE_ROOT.trim() !== '') {
+    return resolveWorkingDirectoryForState(process.env.OMX_TEAM_STATE_ROOT.trim());
+  }
   return join(resolveWorkingDirectoryForState(workingDirectory), '.omx', 'state');
 }
 

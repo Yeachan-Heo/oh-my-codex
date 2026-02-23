@@ -66,8 +66,13 @@ If duplicates exist, remove extras before `omx team` to prevent HUD ending up in
 4. Compose team-scoped worker instructions file at:
    - `.omx/state/team/<team>/worker-agents.md`
    - Uses project `AGENTS.md` content (if present) + worker overlay, without mutating project `AGENTS.md`
-5. Split current tmux window into worker panes
-6. Launch workers with `OMX_TEAM_WORKER=<team>/worker-<n>`
+5. Resolve canonical shared state root from leader cwd (`<leader-cwd>/.omx/state`)
+6. Split current tmux window into worker panes
+7. Launch workers with:
+   - `OMX_TEAM_WORKER=<team>/worker-<n>`
+   - `OMX_TEAM_STATE_ROOT=<leader-cwd>/.omx/state`
+   - `OMX_TEAM_LEADER_CWD=<leader-cwd>`
+   - optional worktree metadata envs when `--worktree` is used
 7. Wait for worker readiness (`capture-pane` polling)
 8. Write per-worker `inbox.md` and trigger via `tmux send-keys`
 9. Return control to leader; follow-up uses `status` / `resume` / `shutdown`
@@ -76,6 +81,7 @@ Important:
 
 - Leader remains in existing pane
 - Worker panes are independent full Codex sessions
+- Workers may run in separate git worktrees (`omx team --worktree[=<name>]`) while sharing one team state root
 - Worker ACKs go to `mailbox/leader-fixed.json`
 - Notify hook updates worker heartbeat and nudges leader during active team mode
 
@@ -271,6 +277,6 @@ Do not claim clean completion if shutdown occurred with `in_progress>0`.
 
 ## Limitations
 
-- No git worktree isolation; workers share working tree
+- Worktree provisioning requires a git repository and can fail on branch/path collisions
 - send-keys interactions can be timing-sensitive under load
 - stale panes from prior runs can interfere until manually cleaned

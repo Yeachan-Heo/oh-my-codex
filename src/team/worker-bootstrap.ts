@@ -24,16 +24,21 @@ You are a team worker in team "${teamName}". Your identity and assigned tasks ar
 1. Read your inbox file at the path provided in your first instruction
 2. Load the worker skill instructions from skills/worker/SKILL.md in this repository and follow them
 3. Send an ACK to the lead using MCP tool team_send_message (to_worker="leader-fixed") once initialized
-4. Read your task from .omx/state/team/${teamName}/tasks/task-<id>.json (example: task-1.json)
-5. Task id format:
+4. Resolve canonical team state root in this order:
+   - OMX_TEAM_STATE_ROOT env
+   - worker identity team_state_root
+   - team config/manifest team_state_root
+   - local cwd fallback (.omx/state)
+5. Read your task from <team_state_root>/team/${teamName}/tasks/task-<id>.json (example: task-1.json)
+6. Task id format:
    - State/MCP APIs use task_id: "<id>" (example: "1"), never "task-1"
-6. Request a claim via the state API (claimTask); do not directly set status to "in_progress" in the task file
-7. Do the work using your tools
-8. On completion: write {"status": "completed", "result": "summary of what was done"} to the task file
-9. Update your status: write {"state": "idle"} to .omx/state/team/${teamName}/workers/{your-name}/status.json
-10. Wait for new instructions (the lead will send them via your terminal)
-11. Check your mailbox for messages at .omx/state/team/${teamName}/mailbox/{your-name}.json
-12. For team_* MCP tools, do not pass workingDirectory unless the lead explicitly tells you to
+7. Request a claim via the state API (claimTask); do not directly set status to "in_progress" in the task file
+8. Do the work using your tools
+9. On completion: write {"status": "completed", "result": "summary of what was done"} to the task file
+10. Update your status: write {"state": "idle"} to <team_state_root>/team/${teamName}/workers/{your-name}/status.json
+11. Wait for new instructions (the lead will send them via your terminal)
+12. Check your mailbox for messages at <team_state_root>/team/${teamName}/mailbox/{your-name}.json
+13. For team_* MCP tools, do not pass workingDirectory unless the lead explicitly tells you to
 
 ## Rules
 - Do NOT edit files outside the paths listed in your task description
@@ -216,6 +221,10 @@ export function generateInitialInbox(
   teamName: string,
   agentType: string,
   tasks: TeamTask[],
+  options: {
+    teamStateRoot?: string;
+    leaderCwd?: string;
+  } = {},
 ): string {
   const taskList = tasks
     .map((t) => {
@@ -226,6 +235,9 @@ export function generateInitialInbox(
       return entry;
     })
     .join('\n');
+
+  const teamStateRoot = options.teamStateRoot || '<team_state_root>';
+  const leaderCwd = options.leaderCwd || '<leader_cwd>';
 
   return `# Worker Assignment: ${workerName}
 
@@ -242,15 +254,16 @@ ${taskList}
 1. Load and follow \`skills/worker/SKILL.md\`
 2. Send startup ACK to the lead mailbox using MCP tool \`team_send_message\` with \`to_worker="leader-fixed"\`
 3. Start with the first non-blocked task
-4. Read the task file for your selected task id at \`.omx/state/team/${teamName}/tasks/task-<id>.json\` (example: \`task-1.json\`)
-5. Task id format:
+4. Resolve canonical team state root in this order: \`OMX_TEAM_STATE_ROOT\` env -> worker identity \`team_state_root\` -> config/manifest \`team_state_root\` -> local cwd fallback.
+5. Read the task file for your selected task id at \`${teamStateRoot}/team/${teamName}/tasks/task-<id>.json\` (example: \`task-1.json\`)
+6. Task id format:
    - State/MCP APIs use \`task_id: "<id>"\` (example: \`"1"\`), not \`"task-1"\`.
-6. Request a claim via state API (\`claimTask\`) to claim it
-7. Complete the work described in the task
-8. Write \`{"status": "completed", "result": "brief summary"}\` to the task file
-9. Write \`{"state": "idle"}\` to \`.omx/state/team/${teamName}/workers/${workerName}/status.json\`
-10. Wait for the next instruction from the lead
-11. For team_* MCP tools, do not pass \`workingDirectory\` unless the lead explicitly asks
+7. Request a claim via state API (\`claimTask\`) to claim it
+8. Complete the work described in the task
+9. Write \`{"status": "completed", "result": "brief summary"}\` to the task file
+10. Write \`{"state": "idle"}\` to \`${teamStateRoot}/team/${teamName}/workers/${workerName}/status.json\`
+11. Wait for the next instruction from the lead
+12. For team_* MCP tools, do not pass \`workingDirectory\` unless the lead explicitly asks (if resolution fails, use leader cwd: \`${leaderCwd}\`)
 
 ## Scope Rules
 - Only edit files described in your task descriptions
@@ -280,7 +293,7 @@ ${taskDescription}
 
 ## Instructions
 
-1. Read the task file at \`.omx/state/team/${teamName}/tasks/task-${taskId}.json\`
+1. Resolve canonical team state root and read the task file at \`<team_state_root>/team/${teamName}/tasks/task-${taskId}.json\`
 2. Task id format:
    - State/MCP APIs use \`task_id: "${taskId}"\` (not \`"task-${taskId}"\`).
 3. Request a claim via state API (\`claimTask\`)
@@ -300,7 +313,7 @@ All tasks are complete. Please wrap up any remaining work and respond with a shu
 
 ## Shutdown Ack Protocol
 1. Write your decision to:
-   \`.omx/state/team/${teamName}/workers/${workerName}/shutdown-ack.json\`
+   \`<team_state_root>/team/${teamName}/workers/${workerName}/shutdown-ack.json\`
 2. Format:
    - Accept:
      \`{\"status\":\"accept\",\"reason\":\"ok\",\"updated_at\":\"<iso>\"}\`

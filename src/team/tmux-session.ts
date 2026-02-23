@@ -157,6 +157,7 @@ export function buildWorkerStartupCommand(
   workerIndex: number,
   launchArgs: string[] = [],
   cwd: string = process.cwd(),
+  extraEnv: Record<string, string> = {},
 ): string {
   const spec = buildWorkerLaunchSpec(process.env.SHELL);
   const fullLaunchArgs = resolveWorkerLaunchArgs(launchArgs, cwd);
@@ -165,7 +166,13 @@ export function buildWorkerStartupCommand(
   const rcPrefix = spec.rcFile ? `if [ -f ${spec.rcFile} ]; then source ${spec.rcFile}; fi; ` : '';
   const inner = `${rcPrefix}${codexInvocation}`;
 
-  return `env OMX_TEAM_WORKER=${teamName}/worker-${workerIndex} ${shellQuoteSingle(spec.shell)} -lc ${shellQuoteSingle(inner)}`;
+  const envParts = [`OMX_TEAM_WORKER=${teamName}/worker-${workerIndex}`];
+  for (const [key, value] of Object.entries(extraEnv)) {
+    if (typeof value !== 'string' || value.trim() === '') continue;
+    envParts.push(`${key}=${value}`);
+  }
+
+  return `env ${envParts.map(shellQuoteSingle).join(' ')} ${shellQuoteSingle(spec.shell)} -lc ${shellQuoteSingle(inner)}`;
 }
 
 // Sanitize team name: lowercase, alphanumeric + hyphens, max 30 chars
@@ -216,6 +223,7 @@ export function createTeamSession(
   workerCount: number,
   cwd: string,
   workerLaunchArgs: string[] = [],
+  workerStartups: Array<{ cwd?: string; env?: Record<string, string> }> = [],
 ): TeamSession {
   if (!isTmuxAvailable()) {
     throw new Error('tmux is not available');
@@ -248,7 +256,10 @@ export function createTeamSession(
   const workerPaneIds: string[] = [];
   let rightStackRootPaneId: string | null = null;
   for (let i = 1; i <= workerCount; i++) {
-    const cmd = buildWorkerStartupCommand(safeTeamName, i, workerLaunchArgs, cwd);
+    const startup = workerStartups[i - 1] || {};
+    const workerCwd = startup.cwd || cwd;
+    const workerEnv = startup.env || {};
+    const cmd = buildWorkerStartupCommand(safeTeamName, i, workerLaunchArgs, workerCwd, workerEnv);
     // First split creates the right side from leader. Remaining splits stack on the right.
     const splitDirection = i === 1 ? '-h' : '-v';
     const splitTarget = i === 1 ? leaderPaneId : (rightStackRootPaneId ?? leaderPaneId);
@@ -262,7 +273,7 @@ export function createTeamSession(
       '-F',
       '#{pane_id}',
       '-c',
-      cwd,
+      workerCwd,
       cmd,
     ]);
     if (!split.ok) {

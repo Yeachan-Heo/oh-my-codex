@@ -1,5 +1,4 @@
-import { join } from 'path';
-import { getTeamTmuxSessions } from '../notifications/tmux.js';
+import { join, resolve } from 'path';
 import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
 import {
@@ -73,6 +72,14 @@ import {
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
 } from './model-contract.js';
 import { inferPhaseTargetFromTaskCounts, reconcilePhaseStateForMonitor } from './phase-controller.js';
+import { getTeamTmuxSessions } from '../notifications/tmux.js';
+import {
+  ensureWorktree,
+  planWorktreeTarget,
+  rollbackProvisionedWorktrees,
+  type EnsureWorktreeResult,
+  type WorktreeMode,
+} from './worktree.js';
 
 /** Snapshot of the team state at a point in time */
 export interface TeamSnapshot {
@@ -114,7 +121,13 @@ interface ShutdownOptions {
   force?: boolean;
 }
 
+export interface TeamStartOptions {
+  worktreeMode?: WorktreeMode;
+}
+
 const MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
+const TEAM_STATE_ROOT_ENV = 'OMX_TEAM_STATE_ROOT';
+const TEAM_LEADER_CWD_ENV = 'OMX_TEAM_LEADER_CWD';
 const previousModelInstructionsFileByTeam = new Map<string, string | undefined>();
 
 function resolveWorkerReadyTimeoutMs(env: NodeJS.ProcessEnv): number {
@@ -150,6 +163,10 @@ function restoreTeamModelInstructionsFile(teamName: string): void {
 
 export { TEAM_LOW_COMPLEXITY_DEFAULT_MODEL };
 
+export function resolveCanonicalTeamStateRoot(leaderCwd: string): string {
+  return resolve(join(leaderCwd, '.omx', 'state'));
+}
+
 export function resolveWorkerLaunchArgsFromEnv(
   env: NodeJS.ProcessEnv,
   agentType: string,
@@ -179,6 +196,7 @@ export async function startTeam(
   workerCount: number,
   tasks: Array<{ subject: string; description: string; owner?: string; blocked_by?: string[] }>,
   cwd: string,
+  options: TeamStartOptions = {},
 ): Promise<TeamRuntime> {
   if (process.env.OMX_TEAM_WORKER) {
     throw new Error('nested_team_disallowed');
@@ -193,16 +211,57 @@ export async function startTeam(
     throw new Error('Team mode requires running inside tmux current leader pane');
   }
 
-  const leaderSessionId = await resolveLeaderSessionId(cwd);
+  const leaderCwd = resolve(cwd);
+  const sanitized = sanitizeTeamName(teamName);
+  const teamStateRoot = resolveCanonicalTeamStateRoot(leaderCwd);
+  const activeWorktreeMode: 'detached' | 'named' | null =
+    options.worktreeMode?.enabled
+      ? (options.worktreeMode.detached ? 'detached' : 'named')
+      : null;
+  const workspaceMode: 'single' | 'worktree' = activeWorktreeMode ? 'worktree' : 'single';
+  const workerWorkspaceByName = new Map<string, {
+    cwd: string;
+    worktreePath?: string;
+    worktreeBranch?: string;
+    worktreeDetached?: boolean;
+  }>();
+  const provisionedWorktrees: Array<EnsureWorktreeResult | { enabled: false }> = [];
+  for (let i = 1; i <= workerCount; i++) {
+    workerWorkspaceByName.set(`worker-${i}`, { cwd: leaderCwd });
+  }
+
+  if (activeWorktreeMode) {
+    for (let i = 1; i <= workerCount; i++) {
+      const workerName = `worker-${i}`;
+      const planned = planWorktreeTarget({
+        cwd: leaderCwd,
+        scope: 'team',
+        mode: options.worktreeMode!,
+        teamName: sanitized,
+        workerName,
+      });
+      const ensured = ensureWorktree(planned);
+      provisionedWorktrees.push(ensured);
+      if (ensured.enabled) {
+        workerWorkspaceByName.set(workerName, {
+          cwd: ensured.worktreePath,
+          worktreePath: ensured.worktreePath,
+          worktreeBranch: ensured.branchName ?? undefined,
+          worktreeDetached: ensured.detached,
+        });
+      }
+    }
+  }
+
+  const leaderSessionId = await resolveLeaderSessionId(leaderCwd);
 
   // Topology guard: one active team per leader session/process context.
-  const activeTeams = await findActiveTeams(cwd, leaderSessionId);
+  const activeTeams = await findActiveTeams(leaderCwd, leaderSessionId);
   if (activeTeams.length > 0) {
     throw new Error(`leader_session_conflict: active team exists (${activeTeams.join(', ')})`);
   }
 
-  // 2. Sanitize team name
-  const sanitized = sanitizeTeamName(teamName);
+  // 2. Team name is already sanitized above.
   let sessionName = `omx-team-${sanitized}`;
   const overlay = generateWorkerOverlay(sanitized);
   let workerInstructionsPath: string | null = null;
@@ -220,10 +279,18 @@ export async function startTeam(
       task,
       agentType,
       workerCount,
-      cwd,
+      leaderCwd,
       DEFAULT_MAX_WORKERS,
       { ...process.env, OMX_TEAM_DISPLAY_MODE: displayMode },
+      {
+        leader_cwd: leaderCwd,
+        team_state_root: teamStateRoot,
+        workspace_mode: workspaceMode,
+      },
     );
+    config.leader_cwd = leaderCwd;
+    config.team_state_root = teamStateRoot;
+    config.workspace_mode = workspaceMode;
 
     // 4. Create tasks
     for (const t of tasks) {
@@ -233,29 +300,52 @@ export async function startTeam(
         status: 'pending',
         owner: t.owner,
         blocked_by: t.blocked_by,
-      }, cwd);
+      }, leaderCwd);
     }
 
     // 5. Write team-scoped worker instructions file (no mutation of project AGENTS.md)
-    workerInstructionsPath = await writeTeamWorkerInstructionsFile(sanitized, cwd, overlay);
+    workerInstructionsPath = await writeTeamWorkerInstructionsFile(sanitized, leaderCwd, overlay);
     setTeamModelInstructionsFile(sanitized, workerInstructionsPath);
 
+    const workerStartups = Array.from({ length: workerCount }, (_, index) => {
+      const workerName = `worker-${index + 1}`;
+      const workerWorkspace = workerWorkspaceByName.get(workerName) ?? { cwd: leaderCwd };
+      const env: Record<string, string> = {
+        [TEAM_STATE_ROOT_ENV]: teamStateRoot,
+        [TEAM_LEADER_CWD_ENV]: leaderCwd,
+      };
+      if (workerWorkspace.worktreePath) {
+        env.OMX_TEAM_WORKTREE_PATH = workerWorkspace.worktreePath;
+      }
+      if (workerWorkspace.worktreeBranch) {
+        env.OMX_TEAM_WORKTREE_BRANCH = workerWorkspace.worktreeBranch;
+      }
+      if (typeof workerWorkspace.worktreeDetached === 'boolean') {
+        env.OMX_TEAM_WORKTREE_DETACHED = workerWorkspace.worktreeDetached ? '1' : '0';
+      }
+      return {
+        cwd: workerWorkspace.cwd,
+        env,
+      };
+    });
+
     // 6. Create tmux session with workers
-    const createdSession = createTeamSession(sanitized, workerCount, cwd, workerLaunchArgs);
+    const createdSession = createTeamSession(sanitized, workerCount, leaderCwd, workerLaunchArgs, workerStartups);
     sessionName = createdSession.name;
     createdWorkerPaneIds.push(...createdSession.workerPaneIds);
     createdLeaderPaneId = createdSession.leaderPaneId;
     config.tmux_session = sessionName;
     config.leader_pane_id = createdSession.leaderPaneId;
     if (createdSession.hudPaneId) config.hud_pane_id = createdSession.hudPaneId;
-    await saveTeamConfig(config, cwd);
+    await saveTeamConfig(config, leaderCwd);
     sessionCreated = true;
 
     // 7. Wait for all workers to be ready, then bootstrap them
-    const allTasks = await listTasks(sanitized, cwd);
+    const allTasks = await listTasks(sanitized, leaderCwd);
     for (let i = 1; i <= workerCount; i++) {
       const workerName = `worker-${i}`;
       const paneId = createdSession.workerPaneIds[i - 1];
+      const workerWorkspace = workerWorkspaceByName.get(workerName) ?? { cwd: leaderCwd };
 
       // Get tasks assigned to this worker
       const workerTasks = allTasks.filter(t => t.owner === workerName);
@@ -266,15 +356,27 @@ export async function startTeam(
         index: i,
         role: agentType,
         assigned_tasks: workerTasks.map(t => t.id),
+        working_dir: workerWorkspace.cwd,
+        worktree_path: workerWorkspace.worktreePath,
+        worktree_branch: workerWorkspace.worktreeBranch,
+        worktree_detached: workerWorkspace.worktreeDetached,
+        team_state_root: teamStateRoot,
       };
 
       // Get pane PID and store it
       const panePid = getWorkerPanePid(sessionName, i);
       if (panePid) identity.pid = panePid;
       if (paneId) identity.pane_id = paneId;
-      if (paneId && config.workers[i - 1]) config.workers[i - 1].pane_id = paneId;
+      if (config.workers[i - 1]) {
+        config.workers[i - 1].pane_id = paneId;
+        config.workers[i - 1].working_dir = workerWorkspace.cwd;
+        config.workers[i - 1].worktree_path = workerWorkspace.worktreePath;
+        config.workers[i - 1].worktree_branch = workerWorkspace.worktreeBranch;
+        config.workers[i - 1].worktree_detached = workerWorkspace.worktreeDetached;
+        config.workers[i - 1].team_state_root = teamStateRoot;
+      }
 
-      await writeWorkerIdentity(sanitized, workerName, identity, cwd);
+      await writeWorkerIdentity(sanitized, workerName, identity, leaderCwd);
 
       // Wait for worker readiness
       if (!skipWorkerReadyWait) {
@@ -285,7 +387,10 @@ export async function startTeam(
       }
 
       // Queue inbox via MCP/state then notify worker via tmux transport.
-      const inbox = generateInitialInbox(workerName, sanitized, agentType, workerTasks);
+      const inbox = generateInitialInbox(workerName, sanitized, agentType, workerTasks, {
+        teamStateRoot,
+        leaderCwd,
+      });
       const trigger = generateTriggerMessage(workerName, sanitized);
       const notified = await queueInboxInstruction({
         teamName: sanitized,
@@ -294,21 +399,21 @@ export async function startTeam(
         paneId,
         inbox,
         triggerMessage: trigger,
-        cwd,
+        cwd: leaderCwd,
         notify: (_target, message) => notifyWorker(config, i, message, paneId),
       });
       if (!notified) {
         throw new Error(`worker_notify_failed:${workerName}`);
       }
     }
-    await saveTeamConfig(config, cwd);
+    await saveTeamConfig(config, leaderCwd);
 
     return {
       teamName: sanitized,
       sanitizedName: sanitized,
       sessionName,
       config,
-      cwd,
+      cwd: leaderCwd,
     };
   } catch (error) {
     const rollbackErrors: string[] = [];
@@ -330,7 +435,7 @@ export async function startTeam(
 
     if (workerInstructionsPath) {
       try {
-        await removeTeamWorkerInstructionsFile(sanitized, cwd);
+        await removeTeamWorkerInstructionsFile(sanitized, leaderCwd);
       } catch (cleanupError) {
         rollbackErrors.push(`removeTeamWorkerInstructionsFile: ${String(cleanupError)}`);
       }
@@ -338,9 +443,16 @@ export async function startTeam(
     restoreTeamModelInstructionsFile(sanitized);
 
     try {
-      await cleanupTeamState(sanitized, cwd);
+      await cleanupTeamState(sanitized, leaderCwd);
     } catch (cleanupError) {
       rollbackErrors.push(`cleanupTeamState: ${String(cleanupError)}`);
+    }
+    if (provisionedWorktrees.length > 0) {
+      try {
+        await rollbackProvisionedWorktrees(provisionedWorktrees);
+      } catch (cleanupError) {
+        rollbackErrors.push(`rollbackProvisionedWorktrees: ${String(cleanupError)}`);
+      }
     }
 
     if (rollbackErrors.length > 0) {

@@ -15,6 +15,9 @@ export interface TeamConfig {
   created_at: string;
   tmux_session: string; // "omx-team-{name}"
   next_task_id: number;
+  leader_cwd?: string;
+  team_state_root?: string;
+  workspace_mode?: 'single' | 'worktree';
   /** Leader's own tmux pane ID — must never be killed during worker cleanup. */
   leader_pane_id?: string;
   /** HUD pane spawned below the leader column — excluded from worker pane cleanup. */
@@ -28,6 +31,11 @@ export interface WorkerInfo {
   assigned_tasks: string[]; // task IDs
   pid?: number;
   pane_id?: string;
+  working_dir?: string;
+  worktree_path?: string;
+  worktree_branch?: string;
+  worktree_detached?: boolean;
+  team_state_root?: string;
 }
 
 export interface WorkerHeartbeat {
@@ -105,6 +113,15 @@ export interface TeamManifestV2 {
   workers: WorkerInfo[];
   next_task_id: number;
   created_at: string;
+  leader_cwd?: string;
+  team_state_root?: string;
+  workspace_mode?: 'single' | 'worktree';
+}
+
+export interface TeamWorkspaceMetadata {
+  leader_cwd?: string;
+  team_state_root?: string;
+  workspace_mode?: 'single' | 'worktree';
 }
 
 export interface TeamEvent {
@@ -320,18 +337,20 @@ function normalizeTask(task: TeamTask): TeamTaskV2 {
 }
 
 // Team state directory: .omx/state/team/{teamName}/
+function resolveTeamStateRoot(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = env.OMX_TEAM_STATE_ROOT;
+  if (typeof explicit === 'string' && explicit.trim() !== '') {
+    return resolve(cwd, explicit.trim());
+  }
+  return omxStateDir(cwd);
+}
+
 function teamDir(teamName: string, cwd: string): string {
-  validateTeamName(teamName);
-  const p = join(omxStateDir(cwd), 'team', teamName);
-  assertPathWithinDir(p, omxStateDir(cwd));
-  return p;
+  return join(resolveTeamStateRoot(cwd), 'team', teamName);
 }
 
 function workerDir(teamName: string, workerName: string, cwd: string): string {
-  validateWorkerName(workerName);
-  const p = join(teamDir(teamName, cwd), 'workers', workerName);
-  assertPathWithinDir(p, omxStateDir(cwd));
-  return p;
+  return join(teamDir(teamName, cwd), 'workers', workerName);
 }
 
 function teamConfigPath(teamName: string, cwd: string): string {
@@ -467,6 +486,7 @@ export async function initTeamState(
   cwd: string,
   maxWorkers: number = DEFAULT_MAX_WORKERS,
   env: NodeJS.ProcessEnv = process.env,
+  workspace: TeamWorkspaceMetadata = {},
 ): Promise<TeamConfig> {
   validateTeamName(teamName);
 
@@ -516,6 +536,9 @@ export async function initTeamState(
     created_at: new Date().toISOString(),
     tmux_session: `omx-team-${teamName}`,
     next_task_id: 1,
+    leader_cwd: workspace.leader_cwd,
+    team_state_root: workspace.team_state_root,
+    workspace_mode: workspace.workspace_mode,
   };
 
   await writeAtomic(join(root, 'config.json'), JSON.stringify(config, null, 2));
@@ -547,6 +570,9 @@ export async function initTeamState(
       workers,
       next_task_id: 1,
       created_at: config.created_at,
+      leader_cwd: workspace.leader_cwd,
+      team_state_root: workspace.team_state_root,
+      workspace_mode: workspace.workspace_mode,
     },
     cwd
   );
@@ -567,6 +593,9 @@ async function writeConfig(cfg: TeamConfig, cwd: string): Promise<void> {
       worker_count: cfg.worker_count,
       workers: cfg.workers,
       next_task_id: normalizeNextTaskId(cfg.next_task_id),
+      leader_cwd: cfg.leader_cwd,
+      team_state_root: cfg.team_state_root,
+      workspace_mode: cfg.workspace_mode,
     };
     await writeTeamManifestV2(merged, cwd);
   }
@@ -583,6 +612,9 @@ function teamConfigFromManifest(manifest: TeamManifestV2): TeamConfig {
     created_at: manifest.created_at,
     tmux_session: manifest.tmux_session,
     next_task_id: manifest.next_task_id,
+    leader_cwd: manifest.leader_cwd,
+    team_state_root: manifest.team_state_root,
+    workspace_mode: manifest.workspace_mode,
   };
 }
 
@@ -599,6 +631,9 @@ function teamManifestFromConfig(config: TeamConfig): TeamManifestV2 {
     workers: config.workers,
     next_task_id: normalizeNextTaskId(config.next_task_id),
     created_at: config.created_at,
+    leader_cwd: config.leader_cwd,
+    team_state_root: config.team_state_root,
+    workspace_mode: config.workspace_mode,
   };
 }
 

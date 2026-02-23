@@ -27,33 +27,38 @@ Example: `alpha/worker-2`
 
 The lead will see your message in:
 
-`.omx/state/team/<teamName>/mailbox/leader-fixed.json`
+`<team_state_root>/team/<teamName>/mailbox/leader-fixed.json`
 
 Use the MCP tool:
 - `team_send_message` with `{team_name, from_worker, to_worker:"leader-fixed", body}`
 
 ## Inbox + Tasks
 
-1. Read your inbox:
-   `.omx/state/team/<teamName>/workers/<workerName>/inbox.md`
-2. Pick the first unblocked task assigned to you.
-3. Read the task file:
-   `.omx/state/team/<teamName>/tasks/task-<id>.json` (example: `task-1.json`)
-4. Task id format:
+1. Resolve canonical team state root in this order:
+   1) `OMX_TEAM_STATE_ROOT` env
+   2) worker identity `team_state_root`
+   3) team config/manifest `team_state_root`
+   4) local cwd fallback (`.omx/state`)
+2. Read your inbox:
+   `<team_state_root>/team/<teamName>/workers/<workerName>/inbox.md`
+3. Pick the first unblocked task assigned to you.
+4. Read the task file:
+   `<team_state_root>/team/<teamName>/tasks/task-<id>.json` (example: `task-1.json`)
+5. Task id format:
    - The MCP/state API uses the numeric id (`"1"`), not `"task-1"`.
    - Never use legacy `tasks/{id}.json` wording.
-5. Claim the task (do NOT start work without a claim). Use the team state APIs described in your inbox/overlay.
-6. Do the work.
-7. Write completion to the task file:
+6. Claim the task (do NOT start work without a claim). Use the team state APIs described in your inbox/overlay.
+7. Do the work.
+8. Write completion to the task file:
    - `{"status":"completed","result":"..."}` or `{"status":"failed","error":"..."}`
-8. Update your worker status:
-   `.omx/state/team/<teamName>/workers/<workerName>/status.json` with `{"state":"idle", ...}`
+9. Update your worker status:
+   `<team_state_root>/team/<teamName>/workers/<workerName>/status.json` with `{"state":"idle", ...}`
 
 ## Mailbox
 
 Check your mailbox for messages:
 
-`.omx/state/team/<teamName>/mailbox/<workerName>.json`
+`<team_state_root>/team/<teamName>/mailbox/<workerName>.json`
 
 When notified, read messages and follow any instructions. Use short ACK replies when appropriate.
 

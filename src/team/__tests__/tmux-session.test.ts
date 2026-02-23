@@ -97,6 +97,32 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
+  it('injects canonical team state env vars when provided', () => {
+    const prevShell = process.env.SHELL;
+    process.env.SHELL = '/bin/bash';
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = buildWorkerStartupCommand(
+        'alpha',
+        1,
+        [],
+        '/tmp/worker-cwd',
+        {
+          OMX_TEAM_STATE_ROOT: '/tmp/leader/.omx/state',
+          OMX_TEAM_LEADER_CWD: '/tmp/leader',
+        },
+      );
+      assert.match(cmd, /OMX_TEAM_STATE_ROOT=\/tmp\/leader\/\.omx\/state/);
+      assert.match(cmd, /OMX_TEAM_LEADER_CWD=\/tmp\/leader/);
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
   it('inherits bypass flag from process argv once', () => {
     const prevArgv = process.argv;
     const prevShell = process.env.SHELL;

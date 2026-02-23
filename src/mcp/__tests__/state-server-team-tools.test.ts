@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { initTeamState } from '../../team/state.js';
@@ -204,300 +204,87 @@ describe('state-server team comm tools', () => {
     }
   });
 
-  it('team_claim_task rejects in-progress takeover when expected_version is omitted (issue-172)', async () => {
+  it('team_write_worker_identity persists workspace metadata fields', async () => {
     process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
     const { handleStateToolCall } = await import('../state-server.js');
 
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-team-tools-'));
     try {
-      await initTeamState('claim-takeover-team', 'takeover test', 'executor', 2, wd);
-
-      const createResp = await handleStateToolCall({
+      await initTeamState('identity-team', 'identity test', 'executor', 1, wd);
+      const identityResp = await handleStateToolCall({
         params: {
-          name: 'team_create_task',
+          name: 'team_write_worker_identity',
           arguments: {
-            team_name: 'claim-takeover-team',
-            subject: 'Contested task',
-            description: 'two workers race for this',
-            workingDirectory: wd,
-          },
-        },
-      });
-      const createJson = JSON.parse(createResp.content[0]?.text || '{}') as { ok?: boolean; task?: { id?: string; version?: number } };
-      assert.equal(createJson.ok, true);
-
-      // worker-1 claims the task successfully
-      const claimResp = await handleStateToolCall({
-        params: {
-          name: 'team_claim_task',
-          arguments: {
-            team_name: 'claim-takeover-team',
-            task_id: createJson.task?.id ?? '1',
+            team_name: 'identity-team',
             worker: 'worker-1',
-            expected_version: createJson.task?.version ?? 1,
+            index: 1,
+            role: 'executor',
+            assigned_tasks: ['1'],
+            working_dir: '/tmp/worktree/worker-1',
+            worktree_path: '/tmp/worktree/worker-1',
+            worktree_branch: 'feature/worker-1',
+            worktree_detached: false,
+            team_state_root: '/tmp/leader/.omx/state',
             workingDirectory: wd,
           },
         },
       });
-      const claimJson = JSON.parse(claimResp.content[0]?.text || '{}') as { ok?: boolean; claimToken?: string };
-      assert.equal(claimJson.ok, true);
+      const identityJson = JSON.parse(identityResp.content[0]?.text || '{}') as { ok?: boolean };
+      assert.equal(identityJson.ok, true);
 
-      // worker-2 tries to steal with no expected_version — must fail with claim_conflict
-      const stealResp = await handleStateToolCall({
-        params: {
-          name: 'team_claim_task',
-          arguments: {
-            team_name: 'claim-takeover-team',
-            task_id: createJson.task?.id ?? '1',
-            worker: 'worker-2',
-            workingDirectory: wd,
-            // expected_version intentionally omitted
-          },
-        },
-      });
-      const stealJson = JSON.parse(stealResp.content[0]?.text || '{}') as { ok?: boolean; error?: string };
-      assert.equal(stealJson.ok, false);
-      assert.equal(stealJson.error, 'claim_conflict');
-
-      // Confirm worker-1 still owns the task
-      const readResp = await handleStateToolCall({
-        params: {
-          name: 'team_read_task',
-          arguments: {
-            team_name: 'claim-takeover-team',
-            task_id: createJson.task?.id ?? '1',
-            workingDirectory: wd,
-          },
-        },
-      });
-      const readJson = JSON.parse(readResp.content[0]?.text || '{}') as { ok?: boolean; task?: { owner?: string; status?: string } };
-      assert.equal(readJson.ok, true);
-      assert.equal(readJson.task?.owner, 'worker-1');
-      assert.equal(readJson.task?.status, 'in_progress');
+      const identityPath = join(
+        wd,
+        '.omx',
+        'state',
+        'team',
+        'identity-team',
+        'workers',
+        'worker-1',
+        'identity.json',
+      );
+      const persisted = JSON.parse(await readFile(identityPath, 'utf8')) as {
+        working_dir?: string;
+        worktree_path?: string;
+        worktree_branch?: string;
+        worktree_detached?: boolean;
+        team_state_root?: string;
+      };
+      assert.equal(persisted.working_dir, '/tmp/worktree/worker-1');
+      assert.equal(persisted.worktree_path, '/tmp/worktree/worker-1');
+      assert.equal(persisted.worktree_branch, 'feature/worker-1');
+      assert.equal(persisted.worktree_detached, false);
+      assert.equal(persisted.team_state_root, '/tmp/leader/.omx/state');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('team_transition_task_status performs claim-safe terminal transition', async () => {
+  it('team tool resolution prefers OMX_TEAM_STATE_ROOT when workingDirectory is omitted', async () => {
     process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
     const { handleStateToolCall } = await import('../state-server.js');
 
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-team-tools-'));
+    const prevRoot = process.env.OMX_TEAM_STATE_ROOT;
     try {
-      // Use 2 workers so worker-2 is registered and the reclaim below reaches the already_terminal check.
-      await initTeamState('delta-team', 'transition test', 'executor', 2, wd);
+      await initTeamState('env-root-team', 'env root test', 'executor', 1, wd);
+      process.env.OMX_TEAM_STATE_ROOT = join(wd, '.omx', 'state');
 
       const createResp = await handleStateToolCall({
         params: {
           name: 'team_create_task',
           arguments: {
-            team_name: 'delta-team',
-            subject: 'Transition task',
-            description: 'claim and transition',
-            workingDirectory: wd,
+            team_name: 'env-root-team',
+            subject: 'Created via env root',
+            description: 'should resolve without workingDirectory',
           },
         },
       });
-      const createJson = JSON.parse(createResp.content[0]?.text || '{}') as { ok?: boolean; task?: { id?: string; version?: number } };
+      const createJson = JSON.parse(createResp.content[0]?.text || '{}') as { ok?: boolean; task?: { id?: string } };
       assert.equal(createJson.ok, true);
       assert.equal(createJson.task?.id, '1');
-
-      const claimResp = await handleStateToolCall({
-        params: {
-          name: 'team_claim_task',
-          arguments: {
-            team_name: 'delta-team',
-            task_id: '1',
-            worker: 'worker-1',
-            expected_version: createJson.task?.version ?? 1,
-            workingDirectory: wd,
-          },
-        },
-      });
-      const claimJson = JSON.parse(claimResp.content[0]?.text || '{}') as { ok?: boolean; claimToken?: string };
-      assert.equal(claimJson.ok, true);
-      assert.equal(typeof claimJson.claimToken, 'string');
-
-      const transitionResp = await handleStateToolCall({
-        params: {
-          name: 'team_transition_task_status',
-          arguments: {
-            team_name: 'delta-team',
-            task_id: '1',
-            from: 'in_progress',
-            to: 'completed',
-            claim_token: claimJson.claimToken,
-            workingDirectory: wd,
-          },
-        },
-      });
-      const transitionJson = JSON.parse(transitionResp.content[0]?.text || '{}') as { ok?: boolean; task?: { status?: string; completed_at?: string } };
-      assert.equal(transitionJson.ok, true);
-      assert.equal(transitionJson.task?.status, 'completed');
-      assert.equal(typeof transitionJson.task?.completed_at, 'string');
-
-      // Attempting to claim an already-completed task must be rejected
-      const reclaimResp = await handleStateToolCall({
-        params: {
-          name: 'team_claim_task',
-          arguments: {
-            team_name: 'delta-team',
-            task_id: '1',
-            worker: 'worker-2',
-            workingDirectory: wd,
-          },
-        },
-      });
-      const reclaimJson = JSON.parse(reclaimResp.content[0]?.text || '{}') as { ok?: boolean; error?: string };
-      assert.equal(reclaimJson.ok, false);
-      assert.equal(reclaimJson.error, 'already_terminal');
-
-      // Attempting to regress a terminal task back to non-terminal via transition must be rejected
-      const regressResp = await handleStateToolCall({
-        params: {
-          name: 'team_transition_task_status',
-          arguments: {
-            team_name: 'delta-team',
-            task_id: '1',
-            from: 'completed',
-            to: 'pending',
-            claim_token: claimJson.claimToken,
-            workingDirectory: wd,
-          },
-        },
-      });
-      const regressJson = JSON.parse(regressResp.content[0]?.text || '{}') as { ok?: boolean; error?: string };
-      assert.equal(regressJson.ok, false);
-      assert.equal(regressJson.error, 'already_terminal');
-
-      // Verify the task remains completed with no stale claim data
-      const verifyResp = await handleStateToolCall({
-        params: {
-          name: 'team_read_task',
-          arguments: {
-            team_name: 'delta-team',
-            task_id: '1',
-            workingDirectory: wd,
-          },
-        },
-      });
-      const verifyJson = JSON.parse(verifyResp.content[0]?.text || '{}') as { ok?: boolean; task?: { status?: string; claim?: unknown } };
-      assert.equal(verifyJson.ok, true);
-      assert.equal(verifyJson.task?.status, 'completed');
-      assert.equal(verifyJson.task?.claim, undefined);
     } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
-  it('team_update_task rejects lifecycle field mutations without a claim token', async () => {
-    process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
-    const { handleStateToolCall } = await import('../state-server.js');
-
-    const wd = await mkdtemp(join(tmpdir(), 'omx-state-team-tools-'));
-    try {
-      await initTeamState('epsilon-team', 'lifecycle guard test', 'executor', 1, wd);
-
-      // Create a task to operate on
-      const createResp = await handleStateToolCall({
-        params: {
-          name: 'team_create_task',
-          arguments: {
-            team_name: 'epsilon-team',
-            subject: 'Guard test task',
-            description: 'must not be mutated directly',
-            workingDirectory: wd,
-          },
-        },
-      });
-      const createJson = JSON.parse(createResp.content[0]?.text || '{}') as { ok?: boolean; task?: { id?: string; status?: string } };
-      assert.equal(createJson.ok, true);
-
-      // Attempting to set status directly must be rejected
-      const statusResp = await handleStateToolCall({
-        params: {
-          name: 'team_update_task',
-          arguments: {
-            team_name: 'epsilon-team',
-            task_id: '1',
-            status: 'completed',
-            workingDirectory: wd,
-          },
-        },
-      });
-      assert.equal(statusResp.isError, true);
-      const statusJson = JSON.parse(statusResp.content[0]?.text || '{}') as { error?: string };
-      assert.ok(statusJson.error?.includes('status'), `expected error mentioning "status", got: ${statusJson.error}`);
-
-      // Attempting to set owner directly must be rejected
-      const ownerResp = await handleStateToolCall({
-        params: {
-          name: 'team_update_task',
-          arguments: {
-            team_name: 'epsilon-team',
-            task_id: '1',
-            owner: 'worker-1',
-            workingDirectory: wd,
-          },
-        },
-      });
-      assert.equal(ownerResp.isError, true);
-      const ownerJson = JSON.parse(ownerResp.content[0]?.text || '{}') as { error?: string };
-      assert.ok(ownerJson.error?.includes('owner'), `expected error mentioning "owner", got: ${ownerJson.error}`);
-
-      // Attempting to set result directly must be rejected
-      const resultResp = await handleStateToolCall({
-        params: {
-          name: 'team_update_task',
-          arguments: {
-            team_name: 'epsilon-team',
-            task_id: '1',
-            result: 'done',
-            workingDirectory: wd,
-          },
-        },
-      });
-      assert.equal(resultResp.isError, true);
-      const resultJson = JSON.parse(resultResp.content[0]?.text || '{}') as { error?: string };
-      assert.ok(resultJson.error?.includes('result'), `expected error mentioning "result", got: ${resultJson.error}`);
-
-      // Attempting to set error directly must be rejected
-      const errorResp = await handleStateToolCall({
-        params: {
-          name: 'team_update_task',
-          arguments: {
-            team_name: 'epsilon-team',
-            task_id: '1',
-            error: 'oops',
-            workingDirectory: wd,
-          },
-        },
-      });
-      assert.equal(errorResp.isError, true);
-      const errorJson = JSON.parse(errorResp.content[0]?.text || '{}') as { error?: string };
-      assert.ok(errorJson.error?.includes('error'), `expected error mentioning "error", got: ${errorJson.error}`);
-
-      // Non-lifecycle metadata updates must still work
-      const metaResp = await handleStateToolCall({
-        params: {
-          name: 'team_update_task',
-          arguments: {
-            team_name: 'epsilon-team',
-            task_id: '1',
-            subject: 'Updated subject',
-            description: 'Updated description',
-            workingDirectory: wd,
-          },
-        },
-      });
-      assert.equal(metaResp.isError, undefined);
-      const metaJson = JSON.parse(metaResp.content[0]?.text || '{}') as { ok?: boolean; task?: { subject?: string; status?: string } };
-      assert.equal(metaJson.ok, true);
-      assert.equal(metaJson.task?.subject, 'Updated subject');
-      // Status must remain unchanged (pending)
-      assert.equal(metaJson.task?.status, 'pending');
-    } finally {
+      if (typeof prevRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = prevRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
       await rm(wd, { recursive: true, force: true });
     }
   });

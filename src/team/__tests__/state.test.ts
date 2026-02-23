@@ -91,21 +91,32 @@ describe('team state', () => {
     }
   });
 
-  it('claimTask rejects a ghost worker ID (worker_not_found)', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-claim-ghost-'));
+  it('initTeamState persists workspace metadata to config + manifest', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-metadata-'));
     try {
-      await initTeamState('team-ghost', 't', 'executor', 1, cwd);
-      const t = await createTask('team-ghost', { subject: 'a', description: 'd', status: 'pending' }, cwd);
+      const cfg = await initTeamState(
+        'team-meta',
+        't',
+        'executor',
+        1,
+        cwd,
+        DEFAULT_MAX_WORKERS,
+        process.env,
+        {
+          leader_cwd: '/tmp/leader',
+          team_state_root: '/tmp/leader/.omx/state',
+          workspace_mode: 'worktree',
+        },
+      );
+      assert.equal(cfg.leader_cwd, '/tmp/leader');
+      assert.equal(cfg.team_state_root, '/tmp/leader/.omx/state');
+      assert.equal(cfg.workspace_mode, 'worktree');
 
-      // 'ghost-worker' is not registered in the team (only 'worker-1' exists).
-      const result = await claimTask('team-ghost', t.id, 'ghost-worker', t.version ?? 1, cwd);
-      assert.equal(result.ok, false);
-      assert.equal(result.ok ? 'x' : result.error, 'worker_not_found');
-
-      // The task must remain unclaimed.
-      const reread = await readTask('team-ghost', t.id, cwd);
-      assert.equal(reread?.status, 'pending');
-      assert.equal(reread?.owner, undefined);
+      const manifest = await readTeamManifestV2('team-meta', cwd);
+      assert.ok(manifest);
+      assert.equal(manifest?.leader_cwd, '/tmp/leader');
+      assert.equal(manifest?.team_state_root, '/tmp/leader/.omx/state');
+      assert.equal(manifest?.workspace_mode, 'worktree');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -1,6 +1,7 @@
 import { updateModeState, startMode, readModeState } from '../modes/base.js';
 import { monitorTeam, resumeTeam, shutdownTeam, startTeam, type TeamRuntime } from '../team/runtime.js';
 import { sanitizeTeamName } from '../team/tmux-session.js';
+import { parseWorktreeMode, type WorktreeMode } from '../team/worktree.js';
 
 interface TeamCliOptions {
   verbose?: boolean;
@@ -12,6 +13,11 @@ interface ParsedTeamArgs {
   task: string;
   teamName: string;
   ralph: boolean;
+}
+
+export interface ParsedTeamStartArgs {
+  parsed: ParsedTeamArgs;
+  worktreeMode: WorktreeMode;
 }
 
 function slugifyTask(task: string): string {
@@ -53,6 +59,14 @@ function parseTeamArgs(args: string[]): ParsedTeamArgs {
 
   const teamName = sanitizeTeamName(slugifyTask(task));
   return { workerCount, agentType, task, teamName, ralph };
+}
+
+export function parseTeamStartArgs(args: string[]): ParsedTeamStartArgs {
+  const parsedWorktree = parseWorktreeMode(args);
+  return {
+    parsed: parseTeamArgs(parsedWorktree.remainingArgs),
+    worktreeMode: parsedWorktree.mode,
+  };
 }
 
 function buildBootstrapTasks(workerCount: number, task: string): Array<{ subject: string; description: string; owner: string }> {
@@ -103,11 +117,13 @@ async function renderStartSummary(runtime: TeamRuntime): Promise<void> {
 
 export async function teamCommand(args: string[], options: TeamCliOptions = {}): Promise<void> {
   const cwd = process.cwd();
-  const [subcommandRaw] = args;
+  const parsedWorktree = parseWorktreeMode(args);
+  const teamArgs = parsedWorktree.remainingArgs;
+  const [subcommandRaw] = teamArgs;
   const subcommand = (subcommandRaw || '').toLowerCase();
 
   if (subcommand === 'status') {
-    const name = args[1];
+    const name = teamArgs[1];
     if (!name) throw new Error('Usage: omx team status <team-name>');
     const snapshot = await monitorTeam(name, cwd);
     if (!snapshot) {
@@ -121,7 +137,7 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
   }
 
   if (subcommand === 'resume') {
-    const name = args[1];
+    const name = teamArgs[1];
     if (!name) throw new Error('Usage: omx team resume <team-name>');
     const runtime = await resumeTeam(name, cwd);
     if (!runtime) {
@@ -140,7 +156,7 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
   }
 
   if (subcommand === 'shutdown') {
-    const name = args[1];
+    const name = teamArgs[1];
     if (!name) throw new Error('Usage: omx team shutdown <team-name>');
     await shutdownTeam(name, cwd, { force: false });
     await updateModeState('team', {
@@ -152,7 +168,7 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
     return;
   }
 
-  const parsed = parseTeamArgs(args);
+  const parsed = parseTeamArgs(teamArgs);
   const tasks = buildBootstrapTasks(parsed.workerCount, parsed.task);
   const runtime = await startTeam(
     parsed.teamName,
@@ -161,6 +177,7 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
     parsed.workerCount,
     tasks,
     cwd,
+    { worktreeMode: parsedWorktree.mode },
   );
 
   await ensureTeamModeState(parsed);

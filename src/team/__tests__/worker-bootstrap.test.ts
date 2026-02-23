@@ -28,7 +28,8 @@ describe('worker bootstrap', () => {
   it('generateWorkerOverlay includes the team name', () => {
     const overlay = generateWorkerOverlay('my-team');
     assert.match(overlay, /team "my-team"/);
-    assert.match(overlay, /\.omx\/state\/team\/my-team\/tasks/);
+    assert.match(overlay, /Resolve canonical team state root/i);
+    assert.match(overlay, /<team_state_root>\/team\/my-team\/tasks/);
     assert.match(overlay, /tasks\/task-<id>\.json/);
     assert.match(overlay, /task_id: "<id>"/);
     assert.match(overlay, /Do NOT spawn sub-agents/);
@@ -180,6 +181,8 @@ describe('worker bootstrap', () => {
     assert.match(inbox, /\*\*Role:\*\* executor/);
     assert.match(inbox, /\*\*Task 1\*\*: First task/);
     assert.match(inbox, /\*\*Task 2\*\*: Second task/);
+    assert.match(inbox, /Resolve canonical team state root/);
+    assert.match(inbox, /<team_state_root>\/team\/team-inbox\/tasks\/task-<id>\.json/);
   });
 
   it('generateInitialInbox shows blocked_by info for blocked tasks', () => {
@@ -203,14 +206,16 @@ describe('worker bootstrap', () => {
 
     assert.match(inbox, /\*\*Task ID:\*\* 42/);
     assert.match(inbox, /Implement parser update/);
-    assert.match(inbox, /\.omx\/state\/team\/team-followup\/tasks\/task-42\.json/);
+    assert.match(inbox, /team_state_root/);
+    assert.match(inbox, /team\/team-followup\/tasks\/task-42\.json/);
   });
 
   it('generateShutdownInbox contains exit instruction and concrete ack path', () => {
     const inbox = generateShutdownInbox('team-x', 'worker-1');
 
     assert.match(inbox, /Shutdown Request/);
-    assert.match(inbox, /\.omx\/state\/team\/team-x\/workers\/worker-1\/shutdown-ack\.json/);
+    assert.match(inbox, /team_state_root/);
+    assert.match(inbox, /team\/team-x\/workers\/worker-1\/shutdown-ack\.json/);
     assert.match(inbox, /Type `exit` or press Ctrl\+C/);
   });
 

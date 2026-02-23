@@ -125,6 +125,20 @@ describe('normalizeCodexLaunchArgs', () => {
     assert.ok(!args.includes('--model'), 'leader args must not contain --model from --madmax-spark');
     assert.ok(!args.some(a => a.includes('spark')), 'leader args must not reference spark model');
   });
+
+  it('strips detached worktree flag from leader codex args', () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs(['--worktree', '--yolo']),
+      ['--yolo'],
+    );
+  });
+
+  it('strips named worktree flag from leader codex args', () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs(['--worktree=feature/demo', '--model', 'gpt-5']),
+      ['--model', 'gpt-5'],
+    );
+  });
 });
 
 describe('resolveWorkerSparkModel', () => {

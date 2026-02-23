@@ -11,8 +11,8 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { readFile, writeFile, readdir, mkdir, unlink } from 'fs/promises';
-import { existsSync } from 'fs';
-import { dirname, join } from 'path';
+import { existsSync, readFileSync } from 'fs';
+import { dirname, join, resolve as resolvePath } from 'path';
 import {
   getAllScopedStatePaths,
   getReadScopedStateDirs,
@@ -118,9 +118,59 @@ function teamStateExists(teamName: string, candidateCwd: string): boolean {
   );
 }
 
+function parseTeamWorkerEnv(raw: string | undefined): { teamName: string; workerName: string } | null {
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  const match = /^([a-z0-9][a-z0-9-]{0,29})\/(worker-\d+)$/.exec(raw.trim());
+  if (!match) return null;
+  return { teamName: match[1], workerName: match[2] };
+}
+
+function readTeamStateRootFromFile(path: string): string | null {
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as { team_state_root?: unknown };
+    return typeof parsed.team_state_root === 'string' && parsed.team_state_root.trim() !== ''
+      ? parsed.team_state_root.trim()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function stateRootToWorkingDirectory(stateRoot: string): string {
+  const absolute = resolvePath(stateRoot);
+  return dirname(dirname(absolute));
+}
+
+function resolveTeamWorkingDirectoryFromMetadata(
+  teamName: string,
+  candidateCwd: string,
+  workerContext: { teamName: string; workerName: string } | null,
+): string | null {
+  const teamRoot = join(candidateCwd, '.omx', 'state', 'team', teamName);
+  if (!existsSync(teamRoot)) return null;
+
+  if (workerContext?.teamName === teamName) {
+    const workerRoot = readTeamStateRootFromFile(join(teamRoot, 'workers', workerContext.workerName, 'identity.json'));
+    if (workerRoot) return stateRootToWorkingDirectory(workerRoot);
+  }
+
+  const fromManifest = readTeamStateRootFromFile(join(teamRoot, 'manifest.v2.json'));
+  if (fromManifest) return stateRootToWorkingDirectory(fromManifest);
+
+  const fromConfig = readTeamStateRootFromFile(join(teamRoot, 'config.json'));
+  if (fromConfig) return stateRootToWorkingDirectory(fromConfig);
+
+  return null;
+}
+
 function resolveTeamWorkingDirectory(teamName: string, preferredCwd: string): string {
   const normalizedTeamName = String(teamName || '').trim();
   if (!normalizedTeamName) return preferredCwd;
+  const envTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+  if (typeof envTeamStateRoot === 'string' && envTeamStateRoot.trim() !== '') {
+    return stateRootToWorkingDirectory(envTeamStateRoot.trim());
+  }
 
   const seeds: string[] = [];
   for (const seed of [preferredCwd, process.cwd()]) {
@@ -128,10 +178,13 @@ function resolveTeamWorkingDirectory(teamName: string, preferredCwd: string): st
     if (!seeds.includes(seed)) seeds.push(seed);
   }
 
+  const workerContext = parseTeamWorkerEnv(process.env.OMX_TEAM_WORKER);
   for (const seed of seeds) {
     let cursor = seed;
     while (cursor) {
-      if (teamStateExists(normalizedTeamName, cursor)) return cursor;
+      if (teamStateExists(normalizedTeamName, cursor)) {
+        return resolveTeamWorkingDirectoryFromMetadata(normalizedTeamName, cursor, workerContext) ?? cursor;
+      }
       const parent = dirname(cursor);
       if (!parent || parent === cursor) break;
       cursor = parent;
@@ -488,6 +541,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           assigned_tasks: { type: 'array', items: { type: 'string' }, description: 'Assigned task IDs' },
           pid: { type: 'number', description: 'Worker process ID (optional)' },
           pane_id: { type: 'string', description: 'Tmux pane ID (optional)' },
+          working_dir: { type: 'string', description: 'Worker working directory (optional)' },
+          worktree_path: { type: 'string', description: 'Worker git worktree path (optional)' },
+          worktree_branch: { type: 'string', description: 'Worker git worktree branch (optional)' },
+          worktree_detached: { type: 'boolean', description: 'Whether worker worktree is detached (optional)' },
+          team_state_root: { type: 'string', description: 'Canonical team state root path (optional)' },
           workingDirectory: { type: 'string' },
         },
         required: ['team_name', 'worker', 'index', 'role'],
@@ -1092,7 +1150,24 @@ export async function handleStateToolCall(request: {
       const assignedTasks = ((args as Record<string, unknown>).assigned_tasks as string[] | undefined) ?? [];
       const pid = (args as Record<string, unknown>).pid as number | undefined;
       const paneId = (args as Record<string, unknown>).pane_id as string | undefined;
-      await teamWriteWorkerIdentity(teamName, worker, { name: worker, index, role, assigned_tasks: assignedTasks, pid, pane_id: paneId }, cwd);
+      const workingDir = (args as Record<string, unknown>).working_dir as string | undefined;
+      const worktreePath = (args as Record<string, unknown>).worktree_path as string | undefined;
+      const worktreeBranch = (args as Record<string, unknown>).worktree_branch as string | undefined;
+      const worktreeDetached = (args as Record<string, unknown>).worktree_detached as boolean | undefined;
+      const teamStateRoot = (args as Record<string, unknown>).team_state_root as string | undefined;
+      await teamWriteWorkerIdentity(teamName, worker, {
+        name: worker,
+        index,
+        role,
+        assigned_tasks: assignedTasks,
+        pid,
+        pane_id: paneId,
+        working_dir: workingDir,
+        worktree_path: worktreePath,
+        worktree_branch: worktreeBranch,
+        worktree_detached: worktreeDetached,
+        team_state_root: teamStateRoot,
+      }, cwd);
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true, worker }) }] };
     }
 

@@ -40,6 +40,11 @@ import {
   collectInheritableTeamWorkerArgs as collectInheritableTeamWorkerArgsShared,
   resolveTeamWorkerLaunchArgs,
 } from '../team/model-contract.js';
+import {
+  parseWorktreeMode,
+  planWorktreeTarget,
+  ensureWorktree,
+} from '../team/worktree.js';
 
 const HELP = `
 oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
@@ -72,6 +77,8 @@ Options:
                 Workers get --model gpt-5.3-codex-spark; leader model unchanged
   --madmax-spark  spark model for workers + bypass approvals for leader and workers
                 (shorthand for: --spark --madmax)
+  -w, --worktree[=<name>]
+                Launch Codex in a git worktree (detached when no name is given)
   --force       Force reinstall (overwrite existing files)
   --dry-run     Show what would be done without doing it
   --verbose     Show detailed output
@@ -358,9 +365,22 @@ async function reasoningCommand(args: string[]): Promise<void> {
 }
 
 export async function launchWithHud(args: string[]): Promise<void> {
-  const cwd = process.cwd();
-  const workerSparkModel = resolveWorkerSparkModel(args);
-  const normalizedArgs = normalizeCodexLaunchArgs(args);
+  const launchCwd = process.cwd();
+  const parsedWorktree = parseWorktreeMode(args);
+  const workerSparkModel = resolveWorkerSparkModel(parsedWorktree.remainingArgs);
+  const normalizedArgs = normalizeCodexLaunchArgs(parsedWorktree.remainingArgs);
+  let cwd = launchCwd;
+  if (parsedWorktree.mode.enabled) {
+    const planned = planWorktreeTarget({
+      cwd: launchCwd,
+      scope: 'launch',
+      mode: parsedWorktree.mode,
+    });
+    const ensured = ensureWorktree(planned);
+    if (ensured.enabled) {
+      cwd = ensured.worktreePath;
+    }
+  }
   const sessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   try {
@@ -393,12 +413,13 @@ export async function launchWithHud(args: string[]): Promise<void> {
 }
 
 export function normalizeCodexLaunchArgs(args: string[]): string[] {
+  const parsed = parseWorktreeMode(args);
   const normalized: string[] = [];
   let wantsBypass = false;
   let hasBypass = false;
   let reasoningMode: ReasoningMode | null = null;
 
-  for (const arg of args) {
+  for (const arg of parsed.remainingArgs) {
     if (arg === MADMAX_FLAG) {
       wantsBypass = true;
       continue;

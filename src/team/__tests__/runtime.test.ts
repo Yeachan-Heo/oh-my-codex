@@ -25,6 +25,7 @@ import {
   assignTask,
   sendWorkerMessage,
   resolveWorkerLaunchArgsFromEnv,
+  resolveCanonicalTeamStateRoot,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
 } from '../runtime.js';
 
@@ -50,6 +51,13 @@ function withoutTeamWorkerEnv<T>(fn: () => T): T {
 }
 
 describe('runtime', () => {
+  it('resolveCanonicalTeamStateRoot resolves to leader .omx/state', () => {
+    assert.equal(
+      resolveCanonicalTeamStateRoot('/tmp/demo/project'),
+      '/tmp/demo/project/.omx/state',
+    );
+  });
+
   it('resolveWorkerLaunchArgsFromEnv injects low-complexity default model when missing', () => {
     const args = resolveWorkerLaunchArgsFromEnv(
       { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
