@@ -277,6 +277,45 @@ describe('team state', () => {
     }
   });
 
+  it('claimTask allows a worker to claim its own pre-assigned pending task', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-claim-assigned-owner-'));
+    try {
+      await initTeamState('team-claim-assigned-owner', 't', 'executor', 2, cwd);
+      const t = await createTask(
+        'team-claim-assigned-owner',
+        { subject: 'a', description: 'd', status: 'pending', owner: 'worker-1' },
+        cwd,
+      );
+
+      const claim = await claimTask('team-claim-assigned-owner', t.id, 'worker-1', t.version ?? 1, cwd);
+      assert.equal(claim.ok, true);
+      if (!claim.ok) return;
+      assert.equal(claim.task.status, 'in_progress');
+      assert.equal(claim.task.owner, 'worker-1');
+      assert.ok(claim.task.claim);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('claimTask rejects pending task pre-assigned to a different worker', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-claim-owner-mismatch-'));
+    try {
+      await initTeamState('team-claim-owner-mismatch', 't', 'executor', 2, cwd);
+      const t = await createTask(
+        'team-claim-owner-mismatch',
+        { subject: 'a', description: 'd', status: 'pending', owner: 'worker-1' },
+        cwd,
+      );
+
+      const claim = await claimTask('team-claim-owner-mismatch', t.id, 'worker-2', t.version ?? 1, cwd);
+      assert.equal(claim.ok, false);
+      assert.equal(claim.ok ? 'x' : claim.error, 'claim_conflict');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('transitionTaskStatus returns invalid_transition for illegal transition', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-transition-'));
     try {

@@ -14,6 +14,7 @@ import {
   killWorkerByPaneId,
   listTeamSessions,
   resolveTeamWorkerCli,
+  resolveTeamWorkerCliPlan,
   sanitizeTeamName,
   sendToWorker,
   sleepFractionalSeconds,
@@ -401,6 +402,40 @@ describe('team worker CLI helpers', () => {
     assert.throws(
       () => assertTeamWorkerCliBinaryAvailable('claude', () => false),
       /not available on PATH/i,
+    );
+  });
+
+  it('resolveTeamWorkerCliPlan supports mixed per-worker CLI map', () => {
+    const plan = resolveTeamWorkerCliPlan(
+      4,
+      [],
+      { OMX_TEAM_WORKER_CLI_MAP: 'codex,codex,claude,claude' },
+    );
+    assert.deepEqual(plan, ['codex', 'codex', 'claude', 'claude']);
+  });
+
+  it('resolveTeamWorkerCliPlan accepts single-value map and expands to all workers', () => {
+    const plan = resolveTeamWorkerCliPlan(
+      3,
+      [],
+      { OMX_TEAM_WORKER_CLI_MAP: 'claude' },
+    );
+    assert.deepEqual(plan, ['claude', 'claude', 'claude']);
+  });
+
+  it('resolveTeamWorkerCliPlan supports auto entries in CLI map', () => {
+    const plan = resolveTeamWorkerCliPlan(
+      2,
+      ['--model', 'claude-3-7-sonnet'],
+      { OMX_TEAM_WORKER_CLI_MAP: 'auto,codex' },
+    );
+    assert.deepEqual(plan, ['claude', 'codex']);
+  });
+
+  it('resolveTeamWorkerCliPlan rejects map lengths that do not match workerCount', () => {
+    assert.throws(
+      () => resolveTeamWorkerCliPlan(4, [], { OMX_TEAM_WORKER_CLI_MAP: 'codex,claude' }),
+      /expected 1 or 4/i,
     );
   });
 });

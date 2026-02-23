@@ -24,6 +24,7 @@ const MODEL_INSTRUCTIONS_FILE_KEY = 'model_instructions_file';
 const OMX_BYPASS_DEFAULT_SYSTEM_PROMPT_ENV = 'OMX_BYPASS_DEFAULT_SYSTEM_PROMPT';
 const OMX_MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
 const OMX_TEAM_WORKER_CLI_ENV = 'OMX_TEAM_WORKER_CLI';
+const OMX_TEAM_WORKER_CLI_MAP_ENV = 'OMX_TEAM_WORKER_CLI_MAP';
 
 export type TeamWorkerCli = 'codex' | 'claude';
 type TeamWorkerCliMode = 'auto' | TeamWorkerCli;
@@ -192,6 +193,48 @@ export function resolveTeamWorkerCli(launchArgs: string[] = [], env: NodeJS.Proc
   if (mode !== 'auto') return mode;
   const model = extractModelOverride(launchArgs);
   return model && /claude/i.test(model) ? 'claude' : 'codex';
+}
+
+export function resolveTeamWorkerCliPlan(
+  workerCount: number,
+  launchArgs: string[] = [],
+  env: NodeJS.ProcessEnv = process.env,
+): TeamWorkerCli[] {
+  if (!Number.isInteger(workerCount) || workerCount < 1) {
+    throw new Error(`workerCount must be >= 1 (got ${workerCount})`);
+  }
+
+  const rawMap = String(env[OMX_TEAM_WORKER_CLI_MAP_ENV] ?? '').trim();
+  const fallback = (): TeamWorkerCli => resolveTeamWorkerCli(launchArgs, env);
+
+  if (rawMap === '') {
+    const cli = fallback();
+    return Array.from({ length: workerCount }, () => cli);
+  }
+
+  const entries = rawMap
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+  if (entries.length === 0) {
+    throw new Error(
+      `Invalid ${OMX_TEAM_WORKER_CLI_MAP_ENV} value "${env[OMX_TEAM_WORKER_CLI_MAP_ENV]}". `
+        + `Expected comma-separated values: auto|codex|claude.`,
+    );
+  }
+  if (entries.length !== 1 && entries.length !== workerCount) {
+    throw new Error(
+      `Invalid ${OMX_TEAM_WORKER_CLI_MAP_ENV} length ${entries.length}; `
+        + `expected 1 or ${workerCount} comma-separated values.`,
+    );
+  }
+
+  const expanded = entries.length === 1 ? Array.from({ length: workerCount }, () => entries[0] as string) : entries;
+  return expanded.map((entry) => {
+    const mode = normalizeTeamWorkerCliMode(entry);
+    return mode === 'auto' ? fallback() : mode;
+  });
 }
 
 export function translateWorkerLaunchArgsForCli(workerCli: TeamWorkerCli, args: string[]): string[] {
@@ -368,8 +411,10 @@ export function createTeamSession(
     throw new Error('team mode requires running inside tmux leader pane');
   }
   const normalizedWorkerLaunchArgs = resolveWorkerLaunchArgs(workerLaunchArgs, cwd);
-  const workerCli = resolveTeamWorkerCli(normalizedWorkerLaunchArgs, process.env);
-  assertTeamWorkerCliBinaryAvailable(workerCli);
+  const workerCliPlan = resolveTeamWorkerCliPlan(workerCount, normalizedWorkerLaunchArgs, process.env);
+  for (const workerCli of new Set(workerCliPlan)) {
+    assertTeamWorkerCliBinaryAvailable(workerCli);
+  }
 
   const safeTeamName = sanitizeTeamName(teamName);
   const context = runTmux(['display-message', '-p', '#S:#I #{pane_id}']);
@@ -403,7 +448,7 @@ export function createTeamSession(
       workerLaunchArgs,
       workerCwd,
       workerEnv,
-      workerCli,
+      workerCliPlan[i - 1],
     );
     // First split creates the right side from leader. Remaining splits stack on the right.
     const splitDirection = i === 1 ? '-h' : '-v';
