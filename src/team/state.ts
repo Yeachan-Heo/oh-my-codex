@@ -20,9 +20,13 @@ export interface TeamConfig {
   team_state_root?: string;
   workspace_mode?: 'single' | 'worktree';
   /** Leader's own tmux pane ID — must never be killed during worker cleanup. */
-  leader_pane_id?: string;
+  leader_pane_id: string | null;
   /** HUD pane spawned below the leader column — excluded from worker pane cleanup. */
-  hud_pane_id?: string;
+  hud_pane_id: string | null;
+  /** Registered HUD resize hook name used for window-size reconciliation. */
+  resize_hook_name: string | null;
+  /** Registered HUD resize hook target in "<session>:<window>" form. */
+  resize_hook_target: string | null;
 }
 
 export interface WorkerInfo {
@@ -117,6 +121,10 @@ export interface TeamManifestV2 {
   leader_cwd?: string;
   team_state_root?: string;
   workspace_mode?: 'single' | 'worktree';
+  leader_pane_id: string | null;
+  hud_pane_id: string | null;
+  resize_hook_name: string | null;
+  resize_hook_target: string | null;
 }
 
 export interface TeamWorkspaceMetadata {
@@ -478,6 +486,10 @@ function isTeamManifestV2(value: unknown): value is TeamManifestV2 {
   if (typeof v.next_task_id !== 'number') return false;
   if (typeof v.created_at !== 'string') return false;
   if (!Array.isArray(v.workers)) return false;
+  if (!(typeof v.leader_pane_id === 'string' || v.leader_pane_id === null)) return false;
+  if (!(typeof v.hud_pane_id === 'string' || v.hud_pane_id === null)) return false;
+  if (!(typeof v.resize_hook_name === 'string' || v.resize_hook_name === null)) return false;
+  if (!(typeof v.resize_hook_target === 'string' || v.resize_hook_target === null)) return false;
   if (!v.leader || typeof v.leader !== 'object') return false;
   if (!v.policy || typeof v.policy !== 'object') return false;
   if (!v.permissions_snapshot || typeof v.permissions_snapshot !== 'object') return false;
@@ -567,6 +579,10 @@ export async function initTeamState(
     leader_cwd: workspace.leader_cwd,
     team_state_root: workspace.team_state_root,
     workspace_mode: workspace.workspace_mode,
+    leader_pane_id: null,
+    hud_pane_id: null,
+    resize_hook_name: null,
+    resize_hook_target: null,
   };
 
   await writeAtomic(join(root, 'config.json'), JSON.stringify(config, null, 2));
@@ -601,6 +617,10 @@ export async function initTeamState(
       leader_cwd: workspace.leader_cwd,
       team_state_root: workspace.team_state_root,
       workspace_mode: workspace.workspace_mode,
+      leader_pane_id: null,
+      hud_pane_id: null,
+      resize_hook_name: null,
+      resize_hook_target: null,
     },
     cwd
   );
@@ -608,22 +628,27 @@ export async function initTeamState(
 }
 
 async function writeConfig(cfg: TeamConfig, cwd: string): Promise<void> {
-  const p = teamConfigPath(cfg.name, cwd);
-  await writeAtomic(p, JSON.stringify(cfg, null, 2));
+  const normalized = normalizeTeamConfig(cfg);
+  const p = teamConfigPath(normalized.name, cwd);
+  await writeAtomic(p, JSON.stringify(normalized, null, 2));
 
   // Keep v2 manifest in sync when present. Don't create it implicitly here to preserve migration behavior.
-  const existing = await readTeamManifestV2(cfg.name, cwd);
+  const existing = await readTeamManifestV2(normalized.name, cwd);
   if (existing) {
     const merged: TeamManifestV2 = {
       ...existing,
-      task: cfg.task,
-      tmux_session: cfg.tmux_session,
-      worker_count: cfg.worker_count,
-      workers: cfg.workers,
-      next_task_id: normalizeNextTaskId(cfg.next_task_id),
-      leader_cwd: cfg.leader_cwd,
-      team_state_root: cfg.team_state_root,
-      workspace_mode: cfg.workspace_mode,
+      task: normalized.task,
+      tmux_session: normalized.tmux_session,
+      worker_count: normalized.worker_count,
+      workers: normalized.workers,
+      next_task_id: normalizeNextTaskId(normalized.next_task_id),
+      leader_cwd: normalized.leader_cwd,
+      team_state_root: normalized.team_state_root,
+      workspace_mode: normalized.workspace_mode,
+      leader_pane_id: normalized.leader_pane_id,
+      hud_pane_id: normalized.hud_pane_id,
+      resize_hook_name: normalized.resize_hook_name,
+      resize_hook_target: normalized.resize_hook_target,
     };
     await writeTeamManifestV2(merged, cwd);
   }
@@ -643,25 +668,44 @@ function teamConfigFromManifest(manifest: TeamManifestV2): TeamConfig {
     leader_cwd: manifest.leader_cwd,
     team_state_root: manifest.team_state_root,
     workspace_mode: manifest.workspace_mode,
+    leader_pane_id: manifest.leader_pane_id,
+    hud_pane_id: manifest.hud_pane_id,
+    resize_hook_name: manifest.resize_hook_name,
+    resize_hook_target: manifest.resize_hook_target,
+  };
+}
+
+function normalizeTeamConfig(config: TeamConfig): TeamConfig {
+  return {
+    ...config,
+    leader_pane_id: config.leader_pane_id ?? null,
+    hud_pane_id: config.hud_pane_id ?? null,
+    resize_hook_name: config.resize_hook_name ?? null,
+    resize_hook_target: config.resize_hook_target ?? null,
   };
 }
 
 function teamManifestFromConfig(config: TeamConfig): TeamManifestV2 {
+  const normalized = normalizeTeamConfig(config);
   return {
     schema_version: 2,
-    name: config.name,
-    task: config.task,
+    name: normalized.name,
+    task: normalized.task,
     leader: defaultLeader(),
     policy: defaultPolicy(),
     permissions_snapshot: defaultPermissionsSnapshot(),
-    tmux_session: config.tmux_session,
-    worker_count: config.worker_count,
-    workers: config.workers,
-    next_task_id: normalizeNextTaskId(config.next_task_id),
-    created_at: config.created_at,
-    leader_cwd: config.leader_cwd,
-    team_state_root: config.team_state_root,
-    workspace_mode: config.workspace_mode,
+    tmux_session: normalized.tmux_session,
+    worker_count: normalized.worker_count,
+    workers: normalized.workers,
+    next_task_id: normalizeNextTaskId(normalized.next_task_id),
+    created_at: normalized.created_at,
+    leader_cwd: normalized.leader_cwd,
+    team_state_root: normalized.team_state_root,
+    workspace_mode: normalized.workspace_mode,
+    leader_pane_id: normalized.leader_pane_id,
+    hud_pane_id: normalized.hud_pane_id,
+    resize_hook_name: normalized.resize_hook_name,
+    resize_hook_target: normalized.resize_hook_target,
   };
 }
 
@@ -751,7 +795,7 @@ export async function readTeamConfig(teamName: string, cwd: string): Promise<Tea
     const raw = await readFile(p, 'utf8');
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== 'object') return null;
-    return parsed as TeamConfig;
+    return normalizeTeamConfig(parsed as TeamConfig);
   } catch {
     return null;
   }

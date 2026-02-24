@@ -1,0 +1,2 @@
+export const HUD_TMUX_HEIGHT_LINES = 2;
+export const HUD_RESIZE_RECONCILE_DELAY_SECONDS = 10;

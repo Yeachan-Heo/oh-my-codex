@@ -21,7 +21,11 @@ import {
   resolveSetupScopeArg,
   readPersistedSetupScope,
   resolveCodexHomeForLaunch,
+  buildDetachedSessionBootstrapSteps,
+  buildDetachedSessionFinalizeSteps,
+  buildDetachedSessionRollbackSteps,
 } from '../index.js';
+import { HUD_TMUX_HEIGHT_LINES } from '../../hud/constants.js';
 
 describe('normalizeCodexLaunchArgs', () => {
   it('maps --madmax to codex bypass flag', () => {
@@ -318,6 +322,52 @@ describe('tmux HUD pane helpers', () => {
 
   it('buildHudPaneCleanupTargets is a no-op guard when leaderPaneId is absent', () => {
     assert.deepEqual(buildHudPaneCleanupTargets(['%3'], '%4'), ['%3', '%4']);
+  });
+});
+
+describe('detached tmux new-session sequencing', () => {
+  it('buildDetachedSessionBootstrapSteps uses shared HUD height and split-capture ordering', () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      'omx-demo',
+      '/tmp/project',
+      "'codex' '--model' 'gpt-5'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      '--model gpt-5',
+      '/tmp/codex-home',
+    );
+    assert.deepEqual(steps.map((step) => step.name), ['new-session', 'split-and-capture-hud-pane']);
+    assert.equal(steps[1]?.args[3], String(HUD_TMUX_HEIGHT_LINES));
+    assert.equal(steps[1]?.args.includes('-P'), true);
+    assert.equal(steps[1]?.args.includes('#{pane_id}'), true);
+  });
+
+  it('buildDetachedSessionFinalizeSteps keeps schedule after split-capture and before attach', () => {
+    const steps = buildDetachedSessionFinalizeSteps('omx-demo', '%12', true, false);
+    const names = steps.map((step) => step.name);
+    const scheduleIndex = names.indexOf('schedule-delayed-resize');
+    const attachIndex = names.indexOf('attach-session');
+    assert.equal(scheduleIndex >= 0, true);
+    assert.equal(attachIndex > scheduleIndex, true);
+    assert.equal(names.includes('register-resize-hook'), true);
+    assert.equal(names.includes('reconcile-hud-resize'), true);
+  });
+
+  it('buildDetachedSessionRollbackSteps unregisters hook before killing session', () => {
+    const steps = buildDetachedSessionRollbackSteps('omx-demo', 'omx-demo:0', 'omx_resize_launch_demo_0_12');
+    assert.deepEqual(steps.map((step) => step.name), ['unregister-resize-hook', 'kill-session']);
+    assert.deepEqual(steps[0]?.args, [
+      'set-hook',
+      '-u',
+      '-t',
+      'omx-demo:0',
+      'client-resized[omx_resize_launch_demo_0_12]',
+    ]);
+    assert.deepEqual(steps[1]?.args, ['kill-session', '-t', 'omx-demo']);
+  });
+
+  it('buildDetachedSessionRollbackSteps only kills session when no hook metadata exists', () => {
+    const steps = buildDetachedSessionRollbackSteps('omx-demo', null, null);
+    assert.deepEqual(steps.map((step) => step.name), ['kill-session']);
   });
 });
 

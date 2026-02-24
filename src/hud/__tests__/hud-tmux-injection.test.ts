@@ -10,6 +10,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { shellEscape, buildTmuxSplitArgs } from '../index.js';
+import { HUD_TMUX_HEIGHT_LINES } from '../constants.js';
 
 // ── Vulnerability demonstration (old code) ──────────────────────────────────
 
@@ -22,7 +23,7 @@ describe('VULNERABILITY – old string-interpolation approach', () => {
   function buildOldCommand(cwd: string, omxBin: string, preset?: string): string {
     const presetArg = preset ? ` --preset=${preset}` : '';
     const cmd = `node ${omxBin} hud --watch${presetArg}`;
-    return `tmux split-window -v -l 4 -c "${cwd}" '${cmd}'`;
+    return `tmux split-window -v -l ${HUD_TMUX_HEIGHT_LINES} -c "${cwd}" '${cmd}'`;
   }
 
   it('cwd containing $() is injectable via double-quote context', () => {
@@ -93,7 +94,8 @@ describe('buildTmuxSplitArgs – shell injection hardening', () => {
   it('produces correct argv for normal inputs', () => {
     const args = buildTmuxSplitArgs('/home/user/project', '/usr/local/bin/omx.js');
     assert.deepEqual(args, [
-      'split-window', '-v', '-l', '4',
+      'split-window', '-v', '-l', String(HUD_TMUX_HEIGHT_LINES),
+      // split height should come from shared HUD constants
       '-c', '/home/user/project',
       "node '/usr/local/bin/omx.js' hud --watch",
     ]);

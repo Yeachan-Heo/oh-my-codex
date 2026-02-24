@@ -13,6 +13,7 @@ import {
   getWorkerPanePid,
   killWorker,
   killWorkerByPaneId,
+  unregisterResizeHook,
   destroyTeamSession,
   listTeamSessions,
 } from './tmux-session.js';
@@ -294,13 +295,14 @@ export async function startTeam(
   let sessionCreated = false;
   const createdWorkerPaneIds: string[] = [];
   let createdLeaderPaneId: string | undefined;
+  let config: TeamConfig | null = null;
   const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(process.env, agentType);
   const workerReadyTimeoutMs = resolveWorkerReadyTimeoutMs(process.env);
   const skipWorkerReadyWait = shouldSkipWorkerReadyWait(process.env);
 
   try {
     // 3. Init state directory + config
-    const config = await initTeamState(
+    config = await initTeamState(
       sanitized,
       task,
       agentType,
@@ -314,6 +316,9 @@ export async function startTeam(
         workspace_mode: workspaceMode,
       },
     );
+    if (!config) {
+      throw new Error('failed to initialize team config');
+    }
     config.leader_cwd = leaderCwd;
     config.team_state_root = teamStateRoot;
     config.workspace_mode = workspaceMode;
@@ -358,13 +363,15 @@ export async function startTeam(
     // 6. Create tmux session with workers
     const createdSession = createTeamSession(sanitized, workerCount, leaderCwd, workerLaunchArgs, workerStartups);
     sessionName = createdSession.name;
+    sessionCreated = true;
     createdWorkerPaneIds.push(...createdSession.workerPaneIds);
     createdLeaderPaneId = createdSession.leaderPaneId;
     config.tmux_session = sessionName;
     config.leader_pane_id = createdSession.leaderPaneId;
-    if (createdSession.hudPaneId) config.hud_pane_id = createdSession.hudPaneId;
+    config.hud_pane_id = createdSession.hudPaneId;
+    config.resize_hook_name = createdSession.resizeHookName;
+    config.resize_hook_target = createdSession.resizeHookTarget;
     await saveTeamConfig(config, leaderCwd);
-    sessionCreated = true;
 
     // 7. Wait for all workers to be ready, then bootstrap them
     const allTasks = await listTasks(sanitized, leaderCwd);
@@ -426,7 +433,7 @@ export async function startTeam(
         inbox,
         triggerMessage: trigger,
         cwd: leaderCwd,
-        notify: (_target, message) => notifyWorker(config, i, message, paneId),
+        notify: (_target, message) => notifyWorker(config!, i, message, paneId),
       });
       if (!notified) {
         throw new Error(`worker_notify_failed:${workerName}`);
@@ -445,17 +452,41 @@ export async function startTeam(
     const rollbackErrors: string[] = [];
 
     if (sessionCreated) {
-      try {
-        // In split-pane topology, we must not kill the entire tmux session; kill only created panes.
-        if (sessionName.includes(':')) {
-          for (const paneId of createdWorkerPaneIds) {
-            try { killWorkerByPaneId(paneId, createdLeaderPaneId); } catch { /* ignore */ }
+      if (config?.resize_hook_name && config.resize_hook_target) {
+        try {
+          const unregistered = unregisterResizeHook(config.resize_hook_target, config.resize_hook_name);
+          if (!unregistered) {
+            rollbackErrors.push('unregisterResizeHook: returned false');
           }
-        } else {
-          destroyTeamSession(sessionName);
+        } catch (cleanupError) {
+          rollbackErrors.push(`unregisterResizeHook: ${String(cleanupError)}`);
         }
-      } catch (cleanupError) {
-        rollbackErrors.push(`destroyTeamSession: ${String(cleanupError)}`);
+      }
+
+      if (config) {
+        config.resize_hook_name = null;
+        config.resize_hook_target = null;
+        try {
+          await saveTeamConfig(config, leaderCwd);
+        } catch (cleanupError) {
+          rollbackErrors.push(`saveTeamConfig(clear resize hook): ${String(cleanupError)}`);
+        }
+      }
+
+      // In split-pane topology, we must not kill the entire tmux session; kill only created panes.
+      if (sessionName.includes(':')) {
+        for (const paneId of createdWorkerPaneIds) {
+          try { killWorkerByPaneId(paneId, createdLeaderPaneId); } catch { /* ignore */ }
+        }
+        if (config?.hud_pane_id) {
+          try { killWorkerByPaneId(config.hud_pane_id, createdLeaderPaneId); } catch { /* ignore */ }
+        }
+      } else {
+        try {
+          destroyTeamSession(sessionName);
+        } catch (cleanupError) {
+          rollbackErrors.push(`destroyTeamSession: ${String(cleanupError)}`);
+        }
       }
     }
 
@@ -818,13 +849,26 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   // 3. Force kill remaining workers
   const leaderPaneId = config.leader_pane_id;
   const hudPaneId = config.hud_pane_id;
+  if (config.resize_hook_name && config.resize_hook_target) {
+    const unregistered = unregisterResizeHook(config.resize_hook_target, config.resize_hook_name);
+    if (!unregistered && isTmuxAvailable()) {
+      const baseSession = sessionName.split(':')[0];
+      const sessionStillActive = listTeamSessions().includes(baseSession);
+      if (sessionStillActive) {
+        throw new Error(`failed to unregister resize hook ${config.resize_hook_name}`);
+      }
+    }
+  }
+  config.resize_hook_name = null;
+  config.resize_hook_target = null;
+  await saveTeamConfig(config, cwd);
   for (const w of config.workers) {
     try {
       // Guard: never kill the leader's own pane or the HUD pane.
       if (leaderPaneId && w.pane_id === leaderPaneId) continue;
       if (hudPaneId && w.pane_id === hudPaneId) continue;
       if (isWorkerAlive(sessionName, w.index, w.pane_id)) {
-        killWorker(sessionName, w.index, w.pane_id, leaderPaneId);
+        killWorker(sessionName, w.index, w.pane_id, leaderPaneId ?? undefined);
       }
     } catch { /* ignore */ }
   }

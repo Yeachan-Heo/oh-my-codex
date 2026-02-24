@@ -2,8 +2,15 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   assertTeamWorkerCliBinaryAvailable,
+  buildReconcileHudResizeArgs,
+  buildRegisterResizeHookArgs,
+  buildResizeHookName,
+  buildResizeHookTarget,
+  buildScheduleDelayedHudResizeArgs,
+  buildUnregisterResizeHookArgs,
   buildScrollCopyBindings,
   buildWorkerStartupCommand,
+  buildHudPaneTarget,
   chooseTeamLeaderPaneId,
   createTeamSession,
   enableMouseScrolling,
@@ -22,6 +29,7 @@ import {
   translateWorkerLaunchArgsForCli,
   waitForWorkerReady,
 } from '../tmux-session.js';
+import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_HEIGHT_LINES } from '../../hud/constants.js';
 
 function withEmptyPath<T>(fn: () => T): T {
   const prev = process.env.PATH;
@@ -72,6 +80,55 @@ describe('chooseTeamLeaderPaneId', () => {
       { paneId: '%3', currentCommand: 'node', startCommand: "node omx hud --watch" },
     ];
     assert.equal(chooseTeamLeaderPaneId(panes, '%2'), '%2');
+  });
+});
+
+describe('HUD resize hook command builders', () => {
+  it('buildResizeHookName normalizes all segments into collision-safe tokens', () => {
+    const name = buildResizeHookName('Team A', 'Session:Main', '0', '%12');
+    assert.equal(name, 'omx_resize_Team_A_Session_Main_0_12');
+  });
+
+  it('buildResizeHookTarget uses session:window format', () => {
+    assert.equal(buildResizeHookTarget('my-session', '3'), 'my-session:3');
+  });
+
+  it('buildHudPaneTarget always returns %<pane_id>', () => {
+    assert.equal(buildHudPaneTarget('%41'), '%41');
+    assert.equal(buildHudPaneTarget('41'), '%41');
+  });
+
+  it('buildRegisterResizeHookArgs uses window target and client-resized hook slot', () => {
+    assert.deepEqual(
+      buildRegisterResizeHookArgs('my-session:0', 'omx_resize_team_session_0_1', '%1'),
+      [
+        'set-hook',
+        '-t',
+        'my-session:0',
+        'client-resized[omx_resize_team_session_0_1]',
+        `run-shell -b 'tmux resize-pane -t %1 -y ${HUD_TMUX_HEIGHT_LINES}'`,
+      ],
+    );
+  });
+
+  it('buildUnregisterResizeHookArgs removes the exact hook slot', () => {
+    assert.deepEqual(
+      buildUnregisterResizeHookArgs('my-session:0', 'omx_resize_team_session_0_1'),
+      ['set-hook', '-u', '-t', 'my-session:0', 'client-resized[omx_resize_team_session_0_1]'],
+    );
+  });
+
+  it('buildScheduleDelayedHudResizeArgs schedules tmux-side delayed reconcile', () => {
+    assert.deepEqual(
+      buildScheduleDelayedHudResizeArgs('%1'),
+      ['run-shell', '-b', `sleep ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}; tmux resize-pane -t %1 -y ${HUD_TMUX_HEIGHT_LINES}`],
+    );
+  });
+
+  it('buildReconcileHudResizeArgs is resize-only (no split-window)', () => {
+    const args = buildReconcileHudResizeArgs('%7');
+    assert.equal(args.includes('split-window'), false);
+    assert.deepEqual(args, ['resize-pane', '-t', '%7', '-y', String(HUD_TMUX_HEIGHT_LINES)]);
   });
 });
 

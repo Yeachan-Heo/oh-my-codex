@@ -62,6 +62,10 @@ describe('team state', () => {
       assert.equal(diskCfg.worker_count, 2);
       assert.equal(diskCfg.max_workers, DEFAULT_MAX_WORKERS);
       assert.equal(diskCfg.tmux_session, 'omx-team-team-1');
+      assert.equal(diskCfg.leader_pane_id, null);
+      assert.equal(diskCfg.hud_pane_id, null);
+      assert.equal(diskCfg.resize_hook_name, null);
+      assert.equal(diskCfg.resize_hook_target, null);
       assert.equal(typeof diskCfg.next_task_id, 'number');
       assert.ok(Array.isArray(diskCfg.workers));
       assert.equal(diskCfg.workers.length, 2);
@@ -117,6 +121,10 @@ describe('team state', () => {
       assert.equal(manifest?.leader_cwd, '/tmp/leader');
       assert.equal(manifest?.team_state_root, '/tmp/leader/.omx/state');
       assert.equal(manifest?.workspace_mode, 'worktree');
+      assert.equal(manifest?.leader_pane_id, null);
+      assert.equal(manifest?.hud_pane_id, null);
+      assert.equal(manifest?.resize_hook_name, null);
+      assert.equal(manifest?.resize_hook_target, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

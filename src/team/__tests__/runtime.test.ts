@@ -299,6 +299,29 @@ describe('runtime', () => {
     }
   });
 
+  it('shutdownTeam handles persisted resize hook metadata during cleanup', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-resize-meta-'));
+    try {
+      const configPath = join(cwd, '.omx', 'state', 'team', 'team-resize-meta', 'config.json');
+      const manifestPath = join(cwd, '.omx', 'state', 'team', 'team-resize-meta', 'manifest.v2.json');
+      await initTeamState('team-resize-meta', 'shutdown resize metadata', 'executor', 1, cwd);
+      const config = JSON.parse(await readFile(configPath, 'utf-8')) as Record<string, unknown>;
+      config.resize_hook_name = 'omx_resize_team_resize_meta_test';
+      config.resize_hook_target = 'omx-team-team-resize-meta:0';
+      await writeFile(configPath, JSON.stringify(config, null, 2));
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as Record<string, unknown>;
+      manifest.resize_hook_name = 'omx_resize_team_resize_meta_test';
+      manifest.resize_hook_target = 'omx-team-team-resize-meta:0';
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      await shutdownTeam('team-resize-meta', cwd);
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-resize-meta');
+      assert.equal(existsSync(teamRoot), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('shutdownTeam returns rejection error when worker rejects shutdown and force is false', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-'));
     try {

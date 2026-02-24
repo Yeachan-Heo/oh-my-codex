@@ -13,6 +13,7 @@ import { execFileSync } from 'child_process';
 import { readAllState, readHudConfig } from './state.js';
 import { renderHud } from './render.js';
 import type { HudFlags, HudPreset } from './types.js';
+import { HUD_TMUX_HEIGHT_LINES } from './constants.js';
 
 function parseHudPreset(value: string | undefined): HudPreset | undefined {
   if (value === 'minimal' || value === 'focused' || value === 'full') {
@@ -126,7 +127,7 @@ export function buildTmuxSplitArgs(
   const safePreset = parseHudPreset(preset);
   const presetArg = safePreset ? ` --preset=${safePreset}` : '';
   const cmd = `node ${shellEscape(omxBin)} hud --watch${presetArg}`;
-  return ['split-window', '-v', '-l', '4', '-c', cwd, cmd];
+  return ['split-window', '-v', '-l', String(HUD_TMUX_HEIGHT_LINES), '-c', cwd, cmd];
 }
 
 async function launchTmuxPane(cwd: string, flags: HudFlags): Promise<void> {

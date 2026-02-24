@@ -1,6 +1,7 @@
 import { spawnSync } from 'child_process';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_HEIGHT_LINES } from '../hud/constants.js';
 
 export interface TeamSession {
   name: string; // tmux target in "session:window" form
@@ -11,6 +12,10 @@ export interface TeamSession {
   leaderPaneId: string;
   /** HUD pane spawned below the leader column, or null if creation failed. */
   hudPaneId: string | null;
+  /** Registered tmux resize hook name for the HUD pane, or null if unavailable. */
+  resizeHookName: string | null;
+  /** Registered tmux resize hook target in "<session>:<window>" form, or null. */
+  resizeHookTarget: string | null;
 }
 
 const INJECTION_MARKER = '[OMX_TMUX_INJECT]';
@@ -121,6 +126,71 @@ export function sleepFractionalSeconds(
 
 function shellQuoteSingle(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function normalizeTmuxHookToken(value: string): string {
+  const normalized = value.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+  return normalized === '' ? 'unknown' : normalized;
+}
+
+function normalizeHudPaneToken(hudPaneId: string): string {
+  const trimmed = hudPaneId.trim();
+  const withoutPrefix = trimmed.startsWith('%') ? trimmed.slice(1) : trimmed;
+  return normalizeTmuxHookToken(withoutPrefix);
+}
+
+export function buildResizeHookTarget(sessionName: string, windowIndex: string): string {
+  return `${sessionName}:${windowIndex}`;
+}
+
+export function buildResizeHookName(
+  teamName: string,
+  sessionName: string,
+  windowIndex: string,
+  hudPaneId: string,
+): string {
+  return [
+    'omx_resize',
+    normalizeTmuxHookToken(teamName),
+    normalizeTmuxHookToken(sessionName),
+    normalizeTmuxHookToken(windowIndex),
+    normalizeHudPaneToken(hudPaneId),
+  ].join('_');
+}
+
+export function buildHudPaneTarget(hudPaneId: string): string {
+  const trimmed = hudPaneId.trim();
+  return trimmed.startsWith('%') ? trimmed : `%${trimmed}`;
+}
+
+function buildHudResizeCommand(hudPaneId: string): string {
+  return `resize-pane -t ${buildHudPaneTarget(hudPaneId)} -y ${HUD_TMUX_HEIGHT_LINES}`;
+}
+
+export function buildRegisterResizeHookArgs(hookTarget: string, hookName: string, hudPaneId: string): string[] {
+  const resizeCommand = shellQuoteSingle(`tmux ${buildHudResizeCommand(hudPaneId)}`);
+  return ['set-hook', '-t', hookTarget, `client-resized[${hookName}]`, `run-shell -b ${resizeCommand}`];
+}
+
+export function buildUnregisterResizeHookArgs(hookTarget: string, hookName: string): string[] {
+  return ['set-hook', '-u', '-t', hookTarget, `client-resized[${hookName}]`];
+}
+
+export function unregisterResizeHook(hookTarget: string, hookName: string): boolean {
+  const result = runTmux(buildUnregisterResizeHookArgs(hookTarget, hookName));
+  return result.ok;
+}
+
+export function buildScheduleDelayedHudResizeArgs(
+  hudPaneId: string,
+  delaySeconds: number = HUD_RESIZE_RECONCILE_DELAY_SECONDS,
+): string[] {
+  const delay = Number.isFinite(delaySeconds) && delaySeconds > 0 ? delaySeconds : HUD_RESIZE_RECONCILE_DELAY_SECONDS;
+  return ['run-shell', '-b', `sleep ${delay}; tmux ${buildHudResizeCommand(hudPaneId)}`];
+}
+
+export function buildReconcileHudResizeArgs(hudPaneId: string): string[] {
+  return buildHudResizeCommand(hudPaneId).split(' ');
 }
 
 function buildWorkerLaunchSpec(shellPath: string | undefined): WorkerLaunchSpec {
@@ -428,106 +498,152 @@ export function createTeamSession(
   }
 
   const safeTeamName = sanitizeTeamName(teamName);
-  const context = runTmux(['display-message', '-p', '#S:#I #{pane_id}']);
-  if (!context.ok) {
-    throw new Error(`failed to detect current tmux target: ${context.stderr}`);
-  }
-  const [sessionAndWindow = '', detectedLeaderPaneId = ''] = context.stdout.split(' ');
-  const [sessionName, windowIndex] = (sessionAndWindow || '').split(':');
-  if (!sessionName || !windowIndex || !detectedLeaderPaneId || !detectedLeaderPaneId.startsWith('%')) {
-    throw new Error(`failed to parse current tmux target: ${context.stdout}`);
-  }
-  const teamTarget = `${sessionName}:${windowIndex}`;
-  const panes = listPanes(teamTarget);
-  const leaderPaneId = chooseTeamLeaderPaneId(panes, detectedLeaderPaneId);
-  const initialHudPaneIds = findHudPaneIds(teamTarget, leaderPaneId);
-  // Team mode prioritizes leader + worker visibility. Remove HUD panes in this window
-  // to keep a clean "leader left / workers right" layout.
-  for (const hudPaneId of initialHudPaneIds) {
-    runTmux(['kill-pane', '-t', hudPaneId]);
-  }
-
-  const workerPaneIds: string[] = [];
-  let rightStackRootPaneId: string | null = null;
-  for (let i = 1; i <= workerCount; i++) {
-    const startup = workerStartups[i - 1] || {};
-    const workerCwd = startup.cwd || cwd;
-    const workerEnv = startup.env || {};
-    const cmd = buildWorkerStartupCommand(
-      safeTeamName,
-      i,
-      workerLaunchArgs,
-      workerCwd,
-      workerEnv,
-      workerCliPlan[i - 1],
-    );
-    // First split creates the right side from leader. Remaining splits stack on the right.
-    const splitDirection = i === 1 ? '-h' : '-v';
-    const splitTarget = i === 1 ? leaderPaneId : (rightStackRootPaneId ?? leaderPaneId);
-    const split = runTmux([
-      'split-window',
-      splitDirection,
-      '-t',
-      splitTarget,
-      '-d',
-      '-P',
-      '-F',
-      '#{pane_id}',
-      '-c',
-      workerCwd,
-      cmd,
-    ]);
-    if (!split.ok) {
-      throw new Error(`failed to create worker pane ${i}: ${split.stderr}`);
+  let registeredResizeHook: { name: string; target: string } | null = null;
+  const rollbackPaneIds: string[] = [];
+  try {
+    const context = runTmux(['display-message', '-p', '#S:#I #{pane_id}']);
+    if (!context.ok) {
+      throw new Error(`failed to detect current tmux target: ${context.stderr}`);
     }
-    const paneId = split.stdout.split('\n')[0]?.trim();
-    if (!paneId || !paneId.startsWith('%')) {
-      throw new Error(`failed to capture worker pane id for worker ${i}`);
+    const [sessionAndWindow = '', detectedLeaderPaneId = ''] = context.stdout.split(' ');
+    const [sessionName, windowIndex] = (sessionAndWindow || '').split(':');
+    if (!sessionName || !windowIndex || !detectedLeaderPaneId || !detectedLeaderPaneId.startsWith('%')) {
+      throw new Error(`failed to parse current tmux target: ${context.stdout}`);
     }
-    workerPaneIds.push(paneId);
-    if (i === 1) rightStackRootPaneId = paneId;
-  }
-
-  // Keep leader as full left/main pane; workers stay stacked on the right.
-  runTmux(['select-layout', '-t', teamTarget, 'main-vertical']);
-
-  // Force leader pane to use half the window width.
-  const windowWidthResult = runTmux(['display-message', '-p', '-t', teamTarget, '#{window_width}']);
-  if (windowWidthResult.ok) {
-    const width = Number.parseInt(windowWidthResult.stdout.split('\n')[0]?.trim() || '', 10);
-    if (Number.isFinite(width) && width >= 40) {
-      const half = String(Math.floor(width / 2));
-      runTmux(['set-window-option', '-t', teamTarget, 'main-pane-width', half]);
-      runTmux(['select-layout', '-t', teamTarget, 'main-vertical']);
+    const teamTarget = `${sessionName}:${windowIndex}`;
+    const panes = listPanes(teamTarget);
+    const leaderPaneId = chooseTeamLeaderPaneId(panes, detectedLeaderPaneId);
+    const initialHudPaneIds = findHudPaneIds(teamTarget, leaderPaneId);
+    // Team mode prioritizes leader + worker visibility. Remove HUD panes in this window
+    // to keep a clean "leader left / workers right" layout.
+    for (const hudPaneId of initialHudPaneIds) {
+      runTmux(['kill-pane', '-t', hudPaneId]);
     }
-  }
 
-  // Re-create a single HUD pane under the leader column for team visibility.
-  // Keep this after layout sizing so HUD does not get mixed into worker stack.
-  // Capture the HUD pane ID so it can be tracked and excluded from worker cleanup.
-  let hudPaneId: string | null = null;
-  const omxEntry = process.argv[1];
-  if (omxEntry && omxEntry.trim() !== '') {
-    const hudCmd = `node ${shellQuoteSingle(omxEntry)} hud --watch`;
-    const hudResult = runTmux(['split-window', '-v', '-l', '4', '-t', leaderPaneId, '-d', '-P', '-F', '#{pane_id}', '-c', cwd, hudCmd]);
-    if (hudResult.ok) {
-      const id = hudResult.stdout.split('\n')[0]?.trim() ?? '';
-      if (id.startsWith('%')) hudPaneId = id;
+    const workerPaneIds: string[] = [];
+    let rightStackRootPaneId: string | null = null;
+    for (let i = 1; i <= workerCount; i++) {
+      const startup = workerStartups[i - 1] || {};
+      const workerCwd = startup.cwd || cwd;
+      const workerEnv = startup.env || {};
+      const cmd = buildWorkerStartupCommand(
+        safeTeamName,
+        i,
+        workerLaunchArgs,
+        workerCwd,
+        workerEnv,
+        workerCliPlan[i - 1],
+      );
+      // First split creates the right side from leader. Remaining splits stack on the right.
+      const splitDirection = i === 1 ? '-h' : '-v';
+      const splitTarget = i === 1 ? leaderPaneId : (rightStackRootPaneId ?? leaderPaneId);
+      const split = runTmux([
+        'split-window',
+        splitDirection,
+        '-t',
+        splitTarget,
+        '-d',
+        '-P',
+        '-F',
+        '#{pane_id}',
+        '-c',
+        workerCwd,
+        cmd,
+      ]);
+      if (!split.ok) {
+        throw new Error(`failed to create worker pane ${i}: ${split.stderr}`);
+      }
+      const paneId = split.stdout.split('\n')[0]?.trim();
+      if (!paneId || !paneId.startsWith('%')) {
+        throw new Error(`failed to capture worker pane id for worker ${i}`);
+      }
+      workerPaneIds.push(paneId);
+      rollbackPaneIds.push(paneId);
+      if (i === 1) rightStackRootPaneId = paneId;
     }
+
+    // Keep leader as full left/main pane; workers stay stacked on the right.
+    runTmux(['select-layout', '-t', teamTarget, 'main-vertical']);
+
+    // Force leader pane to use half the window width.
+    const windowWidthResult = runTmux(['display-message', '-p', '-t', teamTarget, '#{window_width}']);
+    if (windowWidthResult.ok) {
+      const width = Number.parseInt(windowWidthResult.stdout.split('\n')[0]?.trim() || '', 10);
+      if (Number.isFinite(width) && width >= 40) {
+        const half = String(Math.floor(width / 2));
+        runTmux(['set-window-option', '-t', teamTarget, 'main-pane-width', half]);
+        runTmux(['select-layout', '-t', teamTarget, 'main-vertical']);
+      }
+    }
+
+    // Re-create a single HUD pane under the leader column for team visibility.
+    // Keep this after layout sizing so HUD does not get mixed into worker stack.
+    // Capture the HUD pane ID so it can be tracked and excluded from worker cleanup.
+    let hudPaneId: string | null = null;
+    let resizeHookName: string | null = null;
+    let resizeHookTarget: string | null = null;
+    const omxEntry = process.argv[1];
+    if (omxEntry && omxEntry.trim() !== '') {
+      const hudCmd = `node ${shellQuoteSingle(omxEntry)} hud --watch`;
+      const hudResult = runTmux([
+        'split-window', '-v', '-l', String(HUD_TMUX_HEIGHT_LINES), '-t', leaderPaneId, '-d', '-P', '-F', '#{pane_id}', '-c', cwd, hudCmd,
+      ]);
+      if (hudResult.ok) {
+        const id = hudResult.stdout.split('\n')[0]?.trim() ?? '';
+        if (id.startsWith('%')) {
+          hudPaneId = id;
+          rollbackPaneIds.push(hudPaneId);
+
+          resizeHookTarget = buildResizeHookTarget(sessionName, windowIndex);
+          resizeHookName = buildResizeHookName(safeTeamName, sessionName, windowIndex, hudPaneId);
+          const registerHook = runTmux(buildRegisterResizeHookArgs(resizeHookTarget, resizeHookName, hudPaneId));
+          if (!registerHook.ok) {
+            throw new Error(`failed to register resize hook ${resizeHookName}: ${registerHook.stderr}`);
+          }
+          registeredResizeHook = { name: resizeHookName, target: resizeHookTarget };
+
+          const delayed = runTmux(buildScheduleDelayedHudResizeArgs(hudPaneId));
+          if (!delayed.ok) {
+            throw new Error(`failed to schedule delayed HUD resize: ${delayed.stderr}`);
+          }
+          const reconcile = runTmux(buildReconcileHudResizeArgs(hudPaneId));
+          if (!reconcile.ok) {
+            throw new Error(`failed to reconcile HUD resize: ${reconcile.stderr}`);
+          }
+        }
+      }
+    }
+
+    runTmux(['select-pane', '-t', leaderPaneId]);
+    sleepSeconds(0.5);
+
+    // Enable mouse scrolling so agent output panes can be scrolled with the
+    // mouse wheel without conflicting with keyboard up/down arrow-key input
+    // history navigation in the Codex CLI input field. (issue #103)
+    // Opt-out: set OMX_TEAM_MOUSE=0 in the environment.
+    if (process.env.OMX_TEAM_MOUSE !== '0') {
+      enableMouseScrolling(sessionName);
+    }
+
+    return {
+      name: teamTarget,
+      workerCount,
+      cwd,
+      workerPaneIds,
+      leaderPaneId,
+      hudPaneId,
+      resizeHookName,
+      resizeHookTarget,
+    };
+  } catch (error) {
+    if (registeredResizeHook) {
+      runTmux(buildUnregisterResizeHookArgs(registeredResizeHook.target, registeredResizeHook.name));
+    }
+    for (const paneId of rollbackPaneIds) {
+      runTmux(['kill-pane', '-t', paneId]);
+    }
+    throw error;
   }
-
-  runTmux(['select-pane', '-t', leaderPaneId]);
-  sleepSeconds(0.5);
-
-  // Enable mouse scrolling so agent output panes can be scrolled with the
-  // mouse wheel without conflicting with keyboard up/down arrow-key input
-  // history navigation in the Codex CLI input field. (issue #103)
-  // Opt-out: set OMX_TEAM_MOUSE=0 in the environment.
-  if (process.env.OMX_TEAM_MOUSE !== '0') {
-    enableMouseScrolling(sessionName);
-  }
-
-  return { name: teamTarget, workerCount, cwd, workerPaneIds, leaderPaneId, hudPaneId };
 }
 
 /**
