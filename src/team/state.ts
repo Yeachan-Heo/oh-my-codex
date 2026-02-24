@@ -373,11 +373,11 @@ function normalizeTask(task: TeamTask): TeamTaskV2 {
 }
 
 // Team state directory: .omx/state/team/{teamName}/
-function resolveTeamStateRoot(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
-  const explicit = env.OMX_TEAM_STATE_ROOT;
-  if (typeof explicit === 'string' && explicit.trim() !== '') {
-    return resolve(cwd, explicit.trim());
-  }
+// NOTE: These low-level filesystem helpers intentionally honor the provided
+// `cwd` only. Environment-based state-root selection is handled by higher-level
+// callers (for example MCP state-path resolution and notify-hook worker helpers)
+// so tests and explicit callers remain hermetic against inherited team env vars.
+function resolveTeamStateRoot(cwd: string): string {
   return omxStateDir(cwd);
 }
 
@@ -400,7 +400,7 @@ function teamManifestV2Path(teamName: string, cwd: string): string {
 function taskClaimLockDir(teamName: string, taskId: string, cwd: string): string {
   validateTaskId(taskId);
   const p = join(teamDir(teamName, cwd), 'claims', `task-${taskId}.lock`);
-  assertPathWithinDir(p, omxStateDir(cwd));
+  assertPathWithinDir(p, resolveTeamStateRoot(cwd));
   return p;
 }
 
@@ -411,21 +411,21 @@ function eventLogPath(teamName: string, cwd: string): string {
 function mailboxPath(teamName: string, workerName: string, cwd: string): string {
   validateWorkerName(workerName);
   const p = join(teamDir(teamName, cwd), 'mailbox', `${workerName}.json`);
-  assertPathWithinDir(p, omxStateDir(cwd));
+  assertPathWithinDir(p, resolveTeamStateRoot(cwd));
   return p;
 }
 
 function mailboxLockDir(teamName: string, workerName: string, cwd: string): string {
   validateWorkerName(workerName);
   const p = join(teamDir(teamName, cwd), 'mailbox', `.lock-${workerName}`);
-  assertPathWithinDir(p, omxStateDir(cwd));
+  assertPathWithinDir(p, resolveTeamStateRoot(cwd));
   return p;
 }
 
 function approvalPath(teamName: string, taskId: string, cwd: string): string {
   validateTaskId(taskId);
   const p = join(teamDir(teamName, cwd), 'approvals', `task-${taskId}.json`);
-  assertPathWithinDir(p, omxStateDir(cwd));
+  assertPathWithinDir(p, resolveTeamStateRoot(cwd));
   return p;
 }
 
@@ -872,7 +872,7 @@ export async function writeWorkerInbox(
 function taskFilePath(teamName: string, taskId: string, cwd: string): string {
   validateTaskId(taskId);
   const p = join(teamDir(teamName, cwd), 'tasks', `task-${taskId}.json`);
-  assertPathWithinDir(p, omxStateDir(cwd));
+  assertPathWithinDir(p, resolveTeamStateRoot(cwd));
   return p;
 }
 

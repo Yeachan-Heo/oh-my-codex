@@ -24,14 +24,30 @@ async function readTeamStateRootFromJson(path) {
   }
 }
 
-export async function resolveTeamStateDirForWorker(cwd, parsedTeamWorker) {
-  const explicitStateRoot = safeString(process.env.OMX_TEAM_STATE_ROOT || '').trim();
-  if (explicitStateRoot) {
-    return resolvePath(cwd, explicitStateRoot);
-  }
+function hasTeamStateRoot(candidateStateDir, teamName, workerName) {
+  const teamRoot = join(candidateStateDir, 'team', teamName);
+  if (!existsSync(teamRoot)) return false;
+  if (existsSync(join(teamRoot, 'workers', workerName))) return true;
+  if (existsSync(join(teamRoot, 'config.json'))) return true;
+  if (existsSync(join(teamRoot, 'manifest.v2.json'))) return true;
+  if (existsSync(join(teamRoot, 'tasks'))) return true;
+  return false;
+}
 
+export async function resolveTeamStateDirForWorker(cwd, parsedTeamWorker) {
   const teamName = parsedTeamWorker.teamName;
   const workerName = parsedTeamWorker.workerName;
+
+  const explicitStateRoot = safeString(process.env.OMX_TEAM_STATE_ROOT || '').trim();
+  if (explicitStateRoot) {
+    const explicitRoot = resolvePath(cwd, explicitStateRoot);
+    // Harden against inherited, unrelated OMX_TEAM_STATE_ROOT values (for example
+    // from a parent team-worker shell). Only trust explicit env roots that
+    // actually contain this team's state directory.
+    if (hasTeamStateRoot(explicitRoot, teamName, workerName)) {
+      return explicitRoot;
+    }
+  }
   const leaderCwd = safeString(process.env.OMX_TEAM_LEADER_CWD || '').trim();
 
   const candidateStateDirs = [];
@@ -47,13 +63,22 @@ export async function resolveTeamStateDirForWorker(cwd, parsedTeamWorker) {
     const identityRoot = await readTeamStateRootFromJson(
       join(teamRoot, 'workers', workerName, 'identity.json'),
     );
-    if (identityRoot) return resolvePath(cwd, identityRoot);
+    if (identityRoot) {
+      const resolvedIdentityRoot = resolvePath(cwd, identityRoot);
+      if (hasTeamStateRoot(resolvedIdentityRoot, teamName, workerName)) return resolvedIdentityRoot;
+    }
 
     const manifestRoot = await readTeamStateRootFromJson(join(teamRoot, 'manifest.v2.json'));
-    if (manifestRoot) return resolvePath(cwd, manifestRoot);
+    if (manifestRoot) {
+      const resolvedManifestRoot = resolvePath(cwd, manifestRoot);
+      if (hasTeamStateRoot(resolvedManifestRoot, teamName, workerName)) return resolvedManifestRoot;
+    }
 
     const configRoot = await readTeamStateRootFromJson(join(teamRoot, 'config.json'));
-    if (configRoot) return resolvePath(cwd, configRoot);
+    if (configRoot) {
+      const resolvedConfigRoot = resolvePath(cwd, configRoot);
+      if (hasTeamStateRoot(resolvedConfigRoot, teamName, workerName)) return resolvedConfigRoot;
+    }
 
     return candidateStateDir;
   }

@@ -83,19 +83,42 @@ describe('regression-205: resolveTeamStateDirForWorker is exported from team-wor
   it('uses OMX_TEAM_STATE_ROOT env var when set', async () => {
     const { resolveTeamStateDirForWorker } = await loadModule('notify-hook/team-worker.js');
     const saved = process.env.OMX_TEAM_STATE_ROOT;
-    process.env.OMX_TEAM_STATE_ROOT = '/custom/state/root';
+    const root = await mkdtemp(join(tmpdir(), 'omx-regression-205-root-'));
+    const stateRoot = join(root, '.omx', 'state');
+    await mkdir(join(stateRoot, 'team', 'fix-ts', 'workers', 'worker-1'), { recursive: true });
+    process.env.OMX_TEAM_STATE_ROOT = stateRoot;
     try {
       const result = await resolveTeamStateDirForWorker(
         '/some/cwd',
         { teamName: 'fix-ts', workerName: 'worker-1' },
       );
-      assert.equal(result, '/custom/state/root');
+      assert.equal(result, stateRoot);
     } finally {
       if (saved === undefined) {
         delete process.env.OMX_TEAM_STATE_ROOT;
       } else {
         process.env.OMX_TEAM_STATE_ROOT = saved;
       }
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores inherited OMX_TEAM_STATE_ROOT when it does not contain this team', async () => {
+    const { resolveTeamStateDirForWorker } = await loadModule('notify-hook/team-worker.js');
+    const saved = process.env.OMX_TEAM_STATE_ROOT;
+    const inheritedRoot = await mkdtemp(join(tmpdir(), 'omx-regression-205-inherited-'));
+    process.env.OMX_TEAM_STATE_ROOT = join(inheritedRoot, '.omx', 'state');
+    try {
+      const cwd = '/nonexistent/cwd-that-has-no-team-dir';
+      const result = await resolveTeamStateDirForWorker(
+        cwd,
+        { teamName: 'fix-ts', workerName: 'worker-1' },
+      );
+      assert.equal(result, join(cwd, '.omx', 'state'));
+    } finally {
+      if (saved === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = saved;
+      await rm(inheritedRoot, { recursive: true, force: true });
     }
   });
 

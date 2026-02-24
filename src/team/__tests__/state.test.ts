@@ -95,6 +95,27 @@ describe('team state', () => {
     }
   });
 
+  it('uses the provided cwd even when OMX_TEAM_STATE_ROOT is inherited in env', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-state-hermetic-'));
+    const inherited = await mkdtemp(join(tmpdir(), 'omx-team-state-inherited-'));
+    const previousStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const inheritedStateRoot = join(inherited, '.omx', 'state');
+    try {
+      process.env.OMX_TEAM_STATE_ROOT = inheritedStateRoot;
+      await initTeamState('team-hermetic', 't', 'executor', 1, cwd);
+
+      const cwdConfigPath = join(cwd, '.omx', 'state', 'team', 'team-hermetic', 'config.json');
+      const inheritedConfigPath = join(inheritedStateRoot, 'team', 'team-hermetic', 'config.json');
+      assert.equal(existsSync(cwdConfigPath), true, 'team config should be created under provided cwd');
+      assert.equal(existsSync(inheritedConfigPath), false, 'inherited env root must not hijack explicit cwd writes');
+    } finally {
+      if (typeof previousStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(inherited, { recursive: true, force: true });
+    }
+  });
+
   it('initTeamState persists workspace metadata to config + manifest', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-metadata-'));
     try {
@@ -127,6 +148,24 @@ describe('team state', () => {
       assert.equal(manifest?.resize_hook_target, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('initTeamState ignores inherited OMX_TEAM_STATE_ROOT and remains cwd-scoped', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-env-root-'));
+    const inheritedRoot = await mkdtemp(join(tmpdir(), 'omx-team-inherited-root-'));
+    const previous = process.env.OMX_TEAM_STATE_ROOT;
+    process.env.OMX_TEAM_STATE_ROOT = join(inheritedRoot, '.omx', 'state');
+    try {
+      await initTeamState('team-env', 't', 'executor', 1, cwd);
+
+      assert.equal(existsSync(join(cwd, '.omx', 'state', 'team', 'team-env', 'config.json')), true);
+      assert.equal(existsSync(join(inheritedRoot, '.omx', 'state', 'team', 'team-env', 'config.json')), false);
+    } finally {
+      if (typeof previous === 'string') process.env.OMX_TEAM_STATE_ROOT = previous;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(inheritedRoot, { recursive: true, force: true });
     }
   });
 

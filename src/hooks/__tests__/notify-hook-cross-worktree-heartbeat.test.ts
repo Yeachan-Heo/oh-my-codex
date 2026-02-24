@@ -22,6 +22,13 @@ function runWorkerNotify(
   teamWorker: string,
   extraEnv: Record<string, string> = {},
 ): ReturnType<typeof spawnSync> {
+  const {
+    OMX_TEAM_STATE_ROOT: _ignoredTeamStateRoot,
+    OMX_TEAM_LEADER_CWD: _ignoredTeamLeaderCwd,
+    OMX_TEAM_WORKER: _ignoredTeamWorker,
+    ...baseEnv
+  } = process.env;
+
   const payload = {
     cwd: payloadCwd,
     type: 'agent-turn-complete',
@@ -34,7 +41,7 @@ function runWorkerNotify(
   return spawnSync(process.execPath, [NOTIFY_HOOK_SCRIPT.pathname, JSON.stringify(payload)], {
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...baseEnv,
       OMX_TEAM_WORKER: teamWorker,
       TMUX: '',
       TMUX_PANE: '',
@@ -111,6 +118,53 @@ describe('notify-hook cross-worktree heartbeat resolution', () => {
 
       const heartbeatPath = join(leaderWorkerDir, 'heartbeat.json');
       assert.equal(existsSync(heartbeatPath), true, 'heartbeat should resolve via metadata to leader-owned team state root');
+    });
+  });
+
+  it('ignores unrelated inherited OMX_TEAM_STATE_ROOT and falls back to metadata', async () => {
+    await withTempDir(async (root) => {
+      const leaderCwd = join(root, 'leader');
+      const workerCwd = join(root, 'worker-worktree');
+      const inheritedRoot = join(root, 'unrelated-parent-state');
+      const teamName = 'cross-meta-validated';
+      const workerName = 'worker-1';
+      const teamStateRoot = join(leaderCwd, '.omx', 'state');
+
+      const teamRoot = join(teamStateRoot, 'team', teamName);
+      const leaderWorkerDir = join(teamRoot, 'workers', workerName);
+      await mkdir(leaderWorkerDir, { recursive: true });
+      await mkdir(workerCwd, { recursive: true });
+      await mkdir(join(inheritedRoot, 'team', 'different-team'), { recursive: true });
+
+      await writeFile(
+        join(leaderWorkerDir, 'identity.json'),
+        JSON.stringify({
+          name: workerName,
+          index: 1,
+          role: 'executor',
+          assigned_tasks: [],
+          team_state_root: teamStateRoot,
+        }, null, 2),
+      );
+
+      await writeFile(
+        join(teamRoot, 'config.json'),
+        JSON.stringify({
+          name: teamName,
+          tmux_session: 'leader:0',
+          workers: [{ name: workerName, index: 1, role: 'executor', assigned_tasks: [] }],
+          team_state_root: teamStateRoot,
+        }, null, 2),
+      );
+
+      const result = runWorkerNotify(workerCwd, `${teamName}/${workerName}`, {
+        OMX_TEAM_STATE_ROOT: inheritedRoot,
+        OMX_TEAM_LEADER_CWD: leaderCwd,
+      });
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      const heartbeatPath = join(leaderWorkerDir, 'heartbeat.json');
+      assert.equal(existsSync(heartbeatPath), true, 'heartbeat should ignore unrelated inherited state root and resolve via metadata');
     });
   });
 });

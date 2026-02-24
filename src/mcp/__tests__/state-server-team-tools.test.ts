@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm } from 'fs/promises';
+import { existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { initTeamState } from '../../team/state.js';
@@ -286,6 +287,44 @@ describe('state-server team comm tools', () => {
       if (typeof prevRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = prevRoot;
       else delete process.env.OMX_TEAM_STATE_ROOT;
       await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('team tools ignore unrelated OMX_TEAM_STATE_ROOT when workingDirectory is explicit', async () => {
+    process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
+    const { handleStateToolCall } = await import('../state-server.js');
+
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-team-tools-'));
+    const unrelated = await mkdtemp(join(tmpdir(), 'omx-state-team-tools-unrelated-'));
+    const prevRoot = process.env.OMX_TEAM_STATE_ROOT;
+    try {
+      await initTeamState('explicit-wd-team', 'explicit cwd test', 'executor', 1, wd);
+      process.env.OMX_TEAM_STATE_ROOT = join(unrelated, '.omx', 'state');
+
+      const createResp = await handleStateToolCall({
+        params: {
+          name: 'team_create_task',
+          arguments: {
+            team_name: 'explicit-wd-team',
+            subject: 'Created via explicit wd',
+            description: 'must not route to unrelated inherited env root',
+            workingDirectory: wd,
+          },
+        },
+      });
+      const createJson = JSON.parse(createResp.content[0]?.text || '{}') as { ok?: boolean; task?: { id?: string } };
+      assert.equal(createJson.ok, true);
+      assert.equal(createJson.task?.id, '1');
+
+      const localTaskPath = join(wd, '.omx', 'state', 'team', 'explicit-wd-team', 'tasks', 'task-1.json');
+      const unrelatedTaskPath = join(unrelated, '.omx', 'state', 'team', 'explicit-wd-team', 'tasks', 'task-1.json');
+      assert.equal(existsSync(localTaskPath), true);
+      assert.equal(existsSync(unrelatedTaskPath), false);
+    } finally {
+      if (typeof prevRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = prevRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(wd, { recursive: true, force: true });
+      await rm(unrelated, { recursive: true, force: true });
     }
   });
 

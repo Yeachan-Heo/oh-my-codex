@@ -48,6 +48,13 @@ function runNotifyHookAsWorker(
   workerEnv: string,
   extraEnv: Record<string, string> = {},
 ): ReturnType<typeof spawnSync> {
+  const {
+    OMX_TEAM_STATE_ROOT: _ignoredTeamStateRoot,
+    OMX_TEAM_LEADER_CWD: _ignoredTeamLeaderCwd,
+    OMX_TEAM_WORKER: _ignoredTeamWorker,
+    ...baseEnv
+  } = process.env;
+
   const payload = {
     cwd,
     type: 'agent-turn-complete',
@@ -60,7 +67,7 @@ function runNotifyHookAsWorker(
   return spawnSync(process.execPath, [NOTIFY_HOOK_SCRIPT.pathname, JSON.stringify(payload)], {
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...baseEnv,
       PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
       OMX_TEAM_WORKER: workerEnv,
       OMX_TEAM_ALL_IDLE_COOLDOWN_MS: '500', // short cooldown for tests

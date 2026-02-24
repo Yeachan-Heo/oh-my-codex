@@ -158,6 +158,16 @@ function teamStateExists(teamName: string, candidateCwd: string): boolean {
   );
 }
 
+function teamStateExistsAtStateRoot(teamName: string, stateRoot: string): boolean {
+  if (!TEAM_NAME_SAFE_PATTERN.test(teamName)) return false;
+  const teamRoot = join(resolvePath(stateRoot), 'team', teamName);
+  return (
+    existsSync(join(teamRoot, 'config.json')) ||
+    existsSync(join(teamRoot, 'tasks')) ||
+    existsSync(teamRoot)
+  );
+}
+
 function parseTeamWorkerEnv(raw: string | undefined): { teamName: string; workerName: string } | null {
   if (typeof raw !== 'string' || raw.trim() === '') return null;
   const match = /^([a-z0-9][a-z0-9-]{0,29})\/(worker-\d+)$/.exec(raw.trim());
@@ -192,24 +202,38 @@ function resolveTeamWorkingDirectoryFromMetadata(
 
   if (workerContext?.teamName === teamName) {
     const workerRoot = readTeamStateRootFromFile(join(teamRoot, 'workers', workerContext.workerName, 'identity.json'));
-    if (workerRoot) return stateRootToWorkingDirectory(workerRoot);
+    if (workerRoot && teamStateExistsAtStateRoot(teamName, workerRoot)) {
+      return stateRootToWorkingDirectory(workerRoot);
+    }
   }
 
   const fromManifest = readTeamStateRootFromFile(join(teamRoot, 'manifest.v2.json'));
-  if (fromManifest) return stateRootToWorkingDirectory(fromManifest);
+  if (fromManifest && teamStateExistsAtStateRoot(teamName, fromManifest)) {
+    return stateRootToWorkingDirectory(fromManifest);
+  }
 
   const fromConfig = readTeamStateRootFromFile(join(teamRoot, 'config.json'));
-  if (fromConfig) return stateRootToWorkingDirectory(fromConfig);
+  if (fromConfig && teamStateExistsAtStateRoot(teamName, fromConfig)) {
+    return stateRootToWorkingDirectory(fromConfig);
+  }
 
   return null;
 }
 
-function resolveTeamWorkingDirectory(teamName: string, preferredCwd: string): string {
+function resolveTeamWorkingDirectory(
+  teamName: string,
+  preferredCwd: string,
+  options: { preferEnvRoot?: boolean } = {},
+): string {
   const normalizedTeamName = String(teamName || '').trim();
   if (!normalizedTeamName) return preferredCwd;
+
   const envTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
-  if (typeof envTeamStateRoot === 'string' && envTeamStateRoot.trim() !== '') {
-    return stateRootToWorkingDirectory(envTeamStateRoot.trim());
+  if (options.preferEnvRoot && typeof envTeamStateRoot === 'string' && envTeamStateRoot.trim() !== '') {
+    const explicitStateRoot = resolvePath(envTeamStateRoot.trim());
+    if (teamStateExistsAtStateRoot(normalizedTeamName, explicitStateRoot)) {
+      return stateRootToWorkingDirectory(explicitStateRoot);
+    }
   }
 
   const seeds: string[] = [];
@@ -230,6 +254,14 @@ function resolveTeamWorkingDirectory(teamName: string, preferredCwd: string): st
       cursor = parent;
     }
   }
+
+  if (typeof envTeamStateRoot === 'string' && envTeamStateRoot.trim() !== '') {
+    const explicitStateRoot = resolvePath(envTeamStateRoot.trim());
+    if (teamStateExistsAtStateRoot(normalizedTeamName, explicitStateRoot)) {
+      return stateRootToWorkingDirectory(explicitStateRoot);
+    }
+  }
+
   return preferredCwd;
 }
 
@@ -723,6 +755,7 @@ export async function handleStateToolCall(request: {
 }) {
   const { name, arguments: args } = request.params;
   const wd = (args as Record<string, unknown>)?.workingDirectory as string | undefined;
+  const hasExplicitWorkingDirectory = typeof wd === 'string' && wd.trim() !== '';
   const normalizedWd = resolveWorkingDirectoryForState(wd);
   let cwd = normalizedWd;
   let explicitSessionId: string | undefined;
@@ -774,7 +807,7 @@ export async function handleStateToolCall(request: {
       };
     }
     if (teamName) {
-      cwd = resolveTeamWorkingDirectory(teamName, cwd);
+      cwd = resolveTeamWorkingDirectory(teamName, cwd, { preferEnvRoot: !hasExplicitWorkingDirectory });
     }
     await mkdir(getStateDir(cwd, explicitSessionId), { recursive: true });
   }
