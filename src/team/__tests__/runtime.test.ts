@@ -137,6 +137,51 @@ describe('runtime', () => {
     assert.ok(logs.some((line) => line.includes('thinking_level=high') && line.includes('source=explicit')));
   });
 
+  it('resolveWorkerLaunchArgsFromEnv logs model=claude without thinking_level for claude CLI', () => {
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+    try {
+      const args = resolveWorkerLaunchArgsFromEnv(
+        {
+          OMX_TEAM_WORKER_CLI: 'claude',
+          OMX_TEAM_WORKER_LAUNCH_ARGS: '-c model_reasoning_effort="high" --no-alt-screen',
+        },
+        'explore',
+      );
+      assert.deepEqual(
+        args,
+        ['--no-alt-screen', '-c', 'model_reasoning_effort="high"', '--model', TEAM_LOW_COMPLEXITY_DEFAULT_MODEL],
+      );
+    } finally {
+      console.log = originalLog;
+    }
+    const startupLog = logs.find((line) => line.includes('worker startup resolution:'));
+    assert.ok(startupLog);
+    assert.match(startupLog, /model=claude/);
+    assert.match(startupLog, /source=local-settings/);
+    assert.doesNotMatch(startupLog, /thinking_level=/);
+  });
+
+  it('resolveWorkerLaunchArgsFromEnv keeps codex thinking_level logging for mixed CLI maps', () => {
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+    try {
+      const args = resolveWorkerLaunchArgsFromEnv(
+        {
+          OMX_TEAM_WORKER_CLI_MAP: 'codex,claude',
+          OMX_TEAM_WORKER_LAUNCH_ARGS: '-c model_reasoning_effort="high" --model claude-3-7-sonnet',
+        },
+        'executor',
+      );
+      assert.deepEqual(args, ['-c', 'model_reasoning_effort="high"', '--model', 'claude-3-7-sonnet']);
+    } finally {
+      console.log = originalLog;
+    }
+    assert.ok(logs.some((line) => line.includes('thinking_level=high') && line.includes('source=explicit')));
+  });
+
   it('resolveWorkerLaunchArgsFromEnv logs source=none/default-none when thinking is not explicit', () => {
     const logs: string[] = [];
     const originalLog = console.log;

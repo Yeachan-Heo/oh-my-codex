@@ -200,7 +200,7 @@ Notes:
 - Worker launch args are still shared via `OMX_TEAM_WORKER_LAUNCH_ARGS`.
 - `OMX_TEAM_WORKER_CLI_MAP` overrides `OMX_TEAM_WORKER_CLI` for per-worker selection.
 - Trigger submission uses adaptive retries by default (queue/submit, then safe clear-line+resend fallback when needed).
-- In Claude worker mode, OMX spawns workers as `claude --dangerously-skip-permissions` and intentionally ignores explicit `--model` / `--config` / `--effort` overrides so Claude uses default `settings.json`.
+- In Claude worker mode, OMX spawns workers as plain `claude` (no extra launch args) and ignores explicit `--model` / `--config` / `--effort` overrides so Claude uses default `settings.json`.
 
 ## What `omx setup` writes
 

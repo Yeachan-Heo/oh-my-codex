@@ -212,7 +212,7 @@ Useful runtime env vars:
 - `OMX_TEAM_WORKER_CLI`
   - Worker CLI selector: `auto|codex|claude` (default: `auto`)
   - `auto` chooses `claude` when worker `--model` contains `claude`, otherwise `codex`
-  - In `claude` mode, workers launch as `claude --dangerously-skip-permissions` and ignore explicit model/config/effort launch overrides (uses default `settings.json`)
+  - In `claude` mode, workers launch as plain `claude` and ignore explicit model/config/effort launch overrides (uses default `settings.json`)
 - `OMX_TEAM_WORKER_CLI_MAP`
   - Per-worker CLI selector (comma-separated `auto|codex|claude`)
   - Length must be `1` (broadcast) or exactly the team worker count

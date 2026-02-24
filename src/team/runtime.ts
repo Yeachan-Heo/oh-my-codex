@@ -6,6 +6,7 @@ import {
   sanitizeTeamName,
   isTmuxAvailable,
   createTeamSession,
+  resolveTeamWorkerCli,
   waitForWorkerReady,
   sendToWorker,
   notifyLeaderStatus,
@@ -207,10 +208,42 @@ export function resolveWorkerLaunchArgsFromEnv(
   const reasoningMatch = resolvedParsed.reasoningOverride?.match(/model_reasoning_effort\s*=\s*"?(\w+)"?/);
   const thinkingLevel = reasoningMatch?.[1] ?? 'none';
   const source = hasExplicitReasoning ? 'explicit' : 'none/default-none';
-
-  console.log(`[omx:team] worker startup resolution: model=${resolvedModel} thinking_level=${thinkingLevel} source=${source}`);
+  const effectiveWorkerCli = resolveEffectiveWorkerCliForStartupLog(resolved, env);
+  if (effectiveWorkerCli === 'claude') {
+    console.log('[omx:team] worker startup resolution: model=claude source=local-settings');
+  } else {
+    console.log(`[omx:team] worker startup resolution: model=${resolvedModel} thinking_level=${thinkingLevel} source=${source}`);
+  }
 
   return resolved;
+}
+
+function resolveEffectiveWorkerCliForStartupLog(
+  resolvedLaunchArgs: string[],
+  env: NodeJS.ProcessEnv,
+): 'codex' | 'claude' {
+  const rawCliMap = String(env.OMX_TEAM_WORKER_CLI_MAP ?? '').trim();
+  if (rawCliMap !== '') {
+    const entries = rawCliMap
+      .split(',')
+      .map((entry) => entry.trim().toLowerCase())
+      .filter((entry) => entry.length > 0);
+    if (entries.length > 0) {
+      const autoCli = resolveTeamWorkerCli(resolvedLaunchArgs, {
+        ...env,
+        OMX_TEAM_WORKER_CLI: 'auto',
+      });
+      const resolvedMap = entries.map((entry): 'codex' | 'claude' | null => {
+        if (entry === 'auto') return autoCli;
+        if (entry === 'codex' || entry === 'claude') return entry;
+        return null;
+      });
+      if (resolvedMap.every((entry) => entry === 'claude')) return 'claude';
+      if (resolvedMap.some((entry) => entry === 'codex')) return 'codex';
+    }
+  }
+
+  return resolveTeamWorkerCli(resolvedLaunchArgs, env);
 }
 
 /**

@@ -39,6 +39,7 @@ import {
   buildScheduleDelayedHudResizeArgs,
   buildUnregisterResizeHookArgs,
   enableMouseScrolling,
+  isNativeWindows,
   isWsl2,
 } from '../team/tmux-session.js';
 import { getPackageRoot } from '../utils/package.js';
@@ -380,6 +381,20 @@ async function reasoningCommand(args: string[]): Promise<void> {
 }
 
 export async function launchWithHud(args: string[]): Promise<void> {
+  // ── Win32 guard ──────────────────────────────────────────────────────
+  if (isNativeWindows()) {
+    console.error(
+      '[omx] OMX requires tmux, which is not available on native Windows.\n' +
+      '[omx] Please use one of the following supported environments:\n' +
+      '[omx]   - WSL2 (Windows Subsystem for Linux 2)\n' +
+      '[omx]   - macOS\n' +
+      '[omx]   - Linux\n' +
+      '[omx] See: https://docs.microsoft.com/en-us/windows/wsl/install',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const launchCwd = process.cwd();
   const parsedWorktree = parseWorktreeMode(args);
   const workerSparkModel = resolveWorkerSparkModel(parsedWorktree.remainingArgs);

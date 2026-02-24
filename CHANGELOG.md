@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-02-24
+
+### Fixed
+- Team Claude worker launch now uses plain `claude` with no injected launch args, so local `settings.json` remains authoritative.
+- Team startup resolution logging is now Claude-aware: Claude paths report `model=claude source=local-settings` and omit `thinking_level`.
+
+### Changed
+- Clarified docs for Team worker CLI behavior in README and `skills/team/SKILL.md` to reflect plain-Claude launch semantics.
+- Added regression coverage to preserve Codex reasoning behavior while enforcing Claude no-args launch behavior.
+
 ## [0.6.1] - 2026-02-23
 
 ### Added
