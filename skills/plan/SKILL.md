@@ -94,7 +94,9 @@ Default behavior is **non-interactive**: the workflow auto-proceeds through all 
 
 Every plan includes:
 - Requirements Summary
+- **PRD Scope** (explicit in-scope / out-of-scope boundaries)
 - Acceptance Criteria (testable)
+- **Test Spec** (unit/integration/e2e strategy with concrete commands)
 - Implementation Steps (with file references)
 - Risks and Mitigations
 - Verification Steps
@@ -182,6 +184,7 @@ Why bad: Decision fatigue. Present one option with trade-offs, get reaction, the
 - [ ] Plan saved to `.omx/plans/`
 - [ ] In consensus mode with `--interactive`: user explicitly approved before any execution
 - [ ] In consensus mode without `--interactive`: auto-proceeded to execution after Critic approval
+- [ ] Plan contains explicit `## PRD Scope` and `## Test Spec` sections before any execution handoff
 </Final_Checklist>
 
 <Advanced>

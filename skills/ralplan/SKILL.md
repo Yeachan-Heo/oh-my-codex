@@ -43,4 +43,13 @@ With `--interactive` flag, steps 2 and 6 pause to ask the user via `AskUserQuest
 - Step 2 options: Proceed to review / Request changes / Skip review
 - Step 6 options: Approve and execute / Request changes / Reject
 
+## Required Artifacts (Pre-Execution Gate)
+
+The plan produced by ralplan **MUST** contain these sections before any execution handoff ($ralph/$team/$autopilot) is permitted:
+
+- `## PRD Scope` — explicit in-scope / out-of-scope boundaries
+- `## Test Spec` — unit/integration/e2e strategy with concrete commands
+
+Without both sections, the pre-execution gate will block execution mode activation. See `docs/RALPLAN_EXECUTION_GATE.md` for details.
+
 Follow the Plan skill's full documentation for consensus mode details.

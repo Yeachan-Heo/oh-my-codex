@@ -20,6 +20,7 @@ import { existsSync } from 'fs';
 import { omxNotepadPath, omxProjectMemoryPath } from '../utils/paths.js';
 import { getBaseStateDir, getStateDir, listModeStateFilesWithScopePreference } from '../mcp/state-paths.js';
 import { generateCodebaseMap } from './codebase-map.js';
+import { generatePreExecutionGateSection } from '../features/pre-execution-gate.js';
 
 const START_MARKER = '<!-- OMX:RUNTIME:START -->';
 const END_MARKER = '<!-- OMX:RUNTIME:END -->';
@@ -263,6 +264,13 @@ export async function generateOverlay(cwd: string, sessionId?: string): Promise<
       optional: true,
     });
   }
+
+  // Pre-execution gate instructions (required) - model self-enforces planning-first flow
+  sections.push({
+    key: 'pre_execution_gate',
+    text: truncate(generatePreExecutionGateSection(), 800),
+    optional: false,
+  });
 
   // Compaction protocol (max 400 chars) - required
   sections.push({

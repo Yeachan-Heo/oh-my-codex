@@ -5,6 +5,8 @@
  * Provides the staged pipeline: plan -> prd -> exec -> verify -> fix (loop)
  */
 
+import { validateExecutionArtifacts } from '../features/pre-execution-gate.js';
+
 export type TeamPhase = 'team-plan' | 'team-prd' | 'team-exec' | 'team-verify' | 'team-fix';
 export type TerminalPhase = 'complete' | 'failed' | 'cancelled';
 const TERMINAL_PHASES: readonly TerminalPhase[] = ['complete', 'failed', 'cancelled'];
@@ -81,7 +83,8 @@ export function createTeamState(taskDescription: string, maxFixAttempts: number 
 export function transitionPhase(
   state: TeamState,
   to: TeamPhase | TerminalPhase,
-  reason?: string
+  reason?: string,
+  cwd?: string,
 ): TeamState {
   const from = state.phase;
 
@@ -91,6 +94,14 @@ export function transitionPhase(
 
   if (!isValidTransition(from, to)) {
     throw new Error(`Invalid transition: ${from} -> ${to}`);
+  }
+
+  // Pre-execution gate: block team-exec unless PRD Scope + Test Spec exist
+  if (to === 'team-exec' && cwd) {
+    const validation = validateExecutionArtifacts(cwd);
+    if (!validation.ok) {
+      throw new Error(validation.message);
+    }
   }
 
   const nextFixAttempt = to === 'team-fix' ? state.current_fix_attempt + 1 : state.current_fix_attempt;
