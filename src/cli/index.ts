@@ -32,11 +32,14 @@ import {
   readSessionState, isSessionStale, writeSessionStart, writeSessionEnd, resetSessionMetrics,
 } from '../hooks/session.js';
 import {
+  buildClientAttachedReconcileHookName,
   buildReconcileHudResizeArgs,
+  buildRegisterClientAttachedReconcileArgs,
   buildRegisterResizeHookArgs,
   buildResizeHookName,
   buildResizeHookTarget,
   buildScheduleDelayedHudResizeArgs,
+  buildUnregisterClientAttachedReconcileArgs,
   buildUnregisterResizeHookArgs,
   enableMouseScrolling,
   isNativeWindows,
@@ -737,9 +740,14 @@ export function buildDetachedSessionFinalizeSteps(
   if (hudPaneId && hookWindowIndex) {
     const hookTarget = buildResizeHookTarget(sessionName, hookWindowIndex);
     const hookName = buildResizeHookName('launch', sessionName, hookWindowIndex, hudPaneId);
+    const clientAttachedHookName = buildClientAttachedReconcileHookName('launch', sessionName, hookWindowIndex, hudPaneId);
     steps.push({
       name: 'register-resize-hook',
       args: buildRegisterResizeHookArgs(hookTarget, hookName, hudPaneId),
+    });
+    steps.push({
+      name: 'register-client-attached-reconcile',
+      args: buildRegisterClientAttachedReconcileArgs(hookTarget, clientAttachedHookName, hudPaneId),
     });
     steps.push({
       name: 'schedule-delayed-resize',
@@ -765,8 +773,15 @@ export function buildDetachedSessionRollbackSteps(
   sessionName: string,
   hookTarget: string | null,
   hookName: string | null,
+  clientAttachedHookName: string | null,
 ): DetachedSessionTmuxStep[] {
   const steps: DetachedSessionTmuxStep[] = [];
+  if (hookTarget && clientAttachedHookName) {
+    steps.push({
+      name: 'unregister-client-attached-reconcile',
+      args: buildUnregisterClientAttachedReconcileArgs(hookTarget, clientAttachedHookName),
+    });
+  }
   if (hookTarget && hookName) {
     steps.push({
       name: 'unregister-resize-hook',
@@ -917,6 +932,7 @@ function runCodex(cwd: string, args: string[], sessionId: string, workerDefaultM
     let createdDetachedSession = false;
     let registeredHookTarget: string | null = null;
     let registeredHookName: string | null = null;
+    let registeredClientAttachedHookName: string | null = null;
     try {
       const bootstrapSteps = buildDetachedSessionBootstrapSteps(
         sessionName,
@@ -940,6 +956,9 @@ function runCodex(cwd: string, args: string[], sessionId: string, workerDefaultM
           const hookName = hudPaneId && hookWindowIndex
             ? buildResizeHookName('launch', sessionName, hookWindowIndex, hudPaneId)
             : null;
+          const clientAttachedHookName = hudPaneId && hookWindowIndex
+            ? buildClientAttachedReconcileHookName('launch', sessionName, hookWindowIndex, hudPaneId)
+            : null;
           const finalizeSteps = buildDetachedSessionFinalizeSteps(
             sessionName,
             hudPaneId,
@@ -959,6 +978,9 @@ function runCodex(cwd: string, args: string[], sessionId: string, workerDefaultM
               registeredHookTarget = hookTarget;
               registeredHookName = hookName;
             }
+            if (finalizeStep.name === 'register-client-attached-reconcile' && clientAttachedHookName) {
+              registeredClientAttachedHookName = clientAttachedHookName;
+            }
           }
         }
       }
@@ -968,6 +990,7 @@ function runCodex(cwd: string, args: string[], sessionId: string, workerDefaultM
           sessionName,
           registeredHookTarget,
           registeredHookName,
+          registeredClientAttachedHookName,
         );
         for (const rollbackStep of rollbackSteps) {
           try {

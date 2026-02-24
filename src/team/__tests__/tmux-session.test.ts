@@ -1,12 +1,15 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildClientAttachedReconcileHookName,
   assertTeamWorkerCliBinaryAvailable,
   buildReconcileHudResizeArgs,
+  buildRegisterClientAttachedReconcileArgs,
   buildRegisterResizeHookArgs,
   buildResizeHookName,
   buildResizeHookTarget,
   buildScheduleDelayedHudResizeArgs,
+  buildUnregisterClientAttachedReconcileArgs,
   buildUnregisterResizeHookArgs,
   buildScrollCopyBindings,
   buildWorkerStartupCommand,
@@ -111,6 +114,26 @@ describe('HUD resize hook command builders', () => {
   it('buildUnregisterResizeHookArgs removes the exact numeric hook slot', () => {
     const registered = buildRegisterResizeHookArgs('my-session:0', 'omx_resize_team_session_0_1', '%1');
     const unregistered = buildUnregisterResizeHookArgs('my-session:0', 'omx_resize_team_session_0_1');
+    assert.deepEqual(unregistered, ['set-hook', '-u', '-t', 'my-session:0', registered[3] as string]);
+  });
+
+  it('buildClientAttachedReconcileHookName normalizes all segments into collision-safe tokens', () => {
+    const name = buildClientAttachedReconcileHookName('Team A', 'Session:Main', '0', '%12');
+    assert.equal(name, 'omx_attached_Team_A_Session_Main_0_12');
+  });
+
+  it('buildRegisterClientAttachedReconcileArgs installs one-shot client-attached reconcile hook', () => {
+    const args = buildRegisterClientAttachedReconcileArgs('my-session:0', 'omx_attached_team_session_0_1', '%1');
+    assert.equal(args[0], 'set-hook');
+    assert.equal(args[1], '-t');
+    assert.equal(args[2], 'my-session:0');
+    assert.match(args[3] ?? '', /^client-attached\[\d+\]$/);
+    assert.match(args[4] ?? '', /^run-shell -b 'tmux resize-pane -t %1 -y \d+; tmux set-hook -u -t my-session:0 client-attached\[\d+\]'$/);
+  });
+
+  it('buildUnregisterClientAttachedReconcileArgs removes the exact numeric client-attached slot', () => {
+    const registered = buildRegisterClientAttachedReconcileArgs('my-session:0', 'omx_attached_team_session_0_1', '%1');
+    const unregistered = buildUnregisterClientAttachedReconcileArgs('my-session:0', 'omx_attached_team_session_0_1');
     assert.deepEqual(unregistered, ['set-hook', '-u', '-t', 'my-session:0', registered[3] as string]);
   });
 

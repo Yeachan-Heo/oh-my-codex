@@ -174,6 +174,14 @@ function buildResizeHookSlot(hookName: string): string {
   return `client-resized[${hash}]`;
 }
 
+function buildClientAttachedHookSlot(hookName: string): string {
+  let hash = 0;
+  for (let i = 0; i < hookName.length; i++) {
+    hash = (hash * 31 + hookName.charCodeAt(i)) >>> 0;
+  }
+  return `client-attached[${hash}]`;
+}
+
 export function buildRegisterResizeHookArgs(hookTarget: string, hookName: string, hudPaneId: string): string[] {
   const resizeCommand = shellQuoteSingle(`tmux ${buildHudResizeCommand(hudPaneId)}`);
   return ['set-hook', '-t', hookTarget, buildResizeHookSlot(hookName), `run-shell -b ${resizeCommand}`];
@@ -181,6 +189,37 @@ export function buildRegisterResizeHookArgs(hookTarget: string, hookName: string
 
 export function buildUnregisterResizeHookArgs(hookTarget: string, hookName: string): string[] {
   return ['set-hook', '-u', '-t', hookTarget, buildResizeHookSlot(hookName)];
+}
+
+export function buildClientAttachedReconcileHookName(
+  teamName: string,
+  sessionName: string,
+  windowIndex: string,
+  hudPaneId: string,
+): string {
+  return [
+    'omx_attached',
+    normalizeTmuxHookToken(teamName),
+    normalizeTmuxHookToken(sessionName),
+    normalizeTmuxHookToken(windowIndex),
+    normalizeHudPaneToken(hudPaneId),
+  ].join('_');
+}
+
+export function buildRegisterClientAttachedReconcileArgs(
+  hookTarget: string,
+  hookName: string,
+  hudPaneId: string,
+): string[] {
+  const hookSlot = buildClientAttachedHookSlot(hookName);
+  const oneShotCommand = shellQuoteSingle(
+    `tmux ${buildHudResizeCommand(hudPaneId)}; tmux set-hook -u -t ${hookTarget} ${hookSlot}`,
+  );
+  return ['set-hook', '-t', hookTarget, hookSlot, `run-shell -b ${oneShotCommand}`];
+}
+
+export function buildUnregisterClientAttachedReconcileArgs(hookTarget: string, hookName: string): string[] {
+  return ['set-hook', '-u', '-t', hookTarget, buildClientAttachedHookSlot(hookName)];
 }
 
 export function unregisterResizeHook(hookTarget: string, hookName: string): boolean {
