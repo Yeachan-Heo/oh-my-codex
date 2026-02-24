@@ -7,6 +7,7 @@ import {
   isTmuxAvailable,
   createTeamSession,
   resolveTeamWorkerCli,
+  resolveTeamWorkerCliPlan,
   waitForWorkerReady,
   sendToWorker,
   notifyLeaderStatus,
@@ -330,6 +331,7 @@ export async function startTeam(
   let createdLeaderPaneId: string | undefined;
   let config: TeamConfig | null = null;
   const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(process.env, agentType);
+  const workerCliPlan = resolveTeamWorkerCliPlan(workerCount, workerLaunchArgs, process.env);
   const workerReadyTimeoutMs = resolveWorkerReadyTimeoutMs(process.env);
   const skipWorkerReadyWait = shouldSkipWorkerReadyWait(process.env);
 
@@ -421,6 +423,7 @@ export async function startTeam(
         name: workerName,
         index: i,
         role: agentType,
+        worker_cli: workerCliPlan[i - 1],
         assigned_tasks: workerTasks.map(t => t.id),
         working_dir: workerWorkspace.cwd,
         worktree_path: workerWorkspace.worktreePath,
@@ -435,6 +438,7 @@ export async function startTeam(
       if (paneId) identity.pane_id = paneId;
       if (config.workers[i - 1]) {
         config.workers[i - 1].pane_id = paneId;
+        config.workers[i - 1].worker_cli = workerCliPlan[i - 1];
         config.workers[i - 1].working_dir = workerWorkspace.cwd;
         config.workers[i - 1].worktree_path = workerWorkspace.worktreePath;
         config.workers[i - 1].worktree_branch = workerWorkspace.worktreeBranch;
@@ -1048,7 +1052,8 @@ async function emitMonitorDerivedEvents(
 function notifyWorker(config: TeamConfig, workerIndex: number, message: string, workerPaneId?: string): boolean {
   if (!config.tmux_session || !isTmuxAvailable()) return false;
   try {
-    sendToWorker(config.tmux_session, workerIndex, message, workerPaneId);
+    const workerCli = config.workers.find((worker) => worker.index === workerIndex)?.worker_cli;
+    sendToWorker(config.tmux_session, workerIndex, message, workerPaneId, workerCli);
     return true;
   } catch {
     return false;

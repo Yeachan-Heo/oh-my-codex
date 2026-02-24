@@ -25,7 +25,9 @@ import {
   killWorkerByPaneId,
   listTeamSessions,
   resolveTeamWorkerCli,
+  resolveWorkerCliForSend,
   resolveTeamWorkerCliPlan,
+  buildWorkerSubmitPlan,
   sanitizeTeamName,
   shouldAttemptAdaptiveRetry,
   sendToWorker,
@@ -211,6 +213,38 @@ describe('shouldAttemptAdaptiveRetry', () => {
     );
   });
 
+  it('returns false when latest capture shows Claude active generation line', () => {
+    const activeCapture = '· Caramelizing…\n❯ hello';
+    assert.equal(
+      shouldAttemptAdaptiveRetry('auto', true, true, activeCapture, 'hello'),
+      false,
+    );
+  });
+
+  it('returns false when latest capture shows Claude apostrophe generation line', () => {
+    const activeCapture = "· Beboppin'...\n❯ hello";
+    assert.equal(
+      shouldAttemptAdaptiveRetry('auto', true, true, activeCapture, 'hello'),
+      false,
+    );
+  });
+
+  it('returns false when latest capture shows Claude sparkle generation line', () => {
+    const activeCapture = '✻ Pollinating…\n❯ hello';
+    assert.equal(
+      shouldAttemptAdaptiveRetry('auto', true, true, activeCapture, 'hello'),
+      false,
+    );
+  });
+
+  it('does not treat non-ellipsis Claude bullet text as active generation', () => {
+    const readyCapture = '· Caramelizing\n❯ hello';
+    assert.equal(
+      shouldAttemptAdaptiveRetry('auto', true, true, readyCapture, 'hello'),
+      true,
+    );
+  });
+
   it('returns true only when auto+busy and latest capture is ready with visible text', () => {
     const readyCapture = '❯ hello';
     assert.equal(
@@ -231,7 +265,7 @@ describe('buildWorkerStartupCommand', () => {
     try {
       const cmd = buildWorkerStartupCommand('alpha', 1, ['--model', 'claude-3-7-sonnet']);
       assert.match(cmd, /exec claude/);
-      assert.doesNotMatch(cmd, /--dangerously-skip-permissions/);
+      assert.equal((cmd.match(/--dangerously-skip-permissions/g) || []).length, 1);
       assert.doesNotMatch(cmd, /--model/);
       assert.doesNotMatch(cmd, /model_instructions_file=/);
     } finally {
@@ -258,7 +292,7 @@ describe('buildWorkerStartupCommand', () => {
       process.env.OMX_TEAM_WORKER_CLI = 'claude';
       const claudeCmd = buildWorkerStartupCommand('alpha', 1, ['--model', 'gpt-5']);
       assert.match(claudeCmd, /exec claude/);
-      assert.doesNotMatch(claudeCmd, /--dangerously-skip-permissions/);
+      assert.equal((claudeCmd.match(/--dangerously-skip-permissions/g) || []).length, 1);
       assert.doesNotMatch(claudeCmd, /--model/);
     } finally {
       if (typeof prevShell === 'string') process.env.SHELL = prevShell;
@@ -284,7 +318,7 @@ describe('buildWorkerStartupCommand', () => {
         '--model', 'claude-3-7-sonnet',
       ]);
       assert.match(cmd, /exec claude/);
-      assert.doesNotMatch(cmd, /--dangerously-skip-permissions/);
+      assert.equal((cmd.match(/--dangerously-skip-permissions/g) || []).length, 1);
       assert.doesNotMatch(cmd, /dangerously-bypass-approvals-and-sandbox/);
       assert.doesNotMatch(cmd, /model_instructions_file=/);
       assert.doesNotMatch(cmd, /--model/);
@@ -311,7 +345,7 @@ describe('buildWorkerStartupCommand', () => {
     try {
       const cmd = buildWorkerStartupCommand('alpha', 1);
       assert.match(cmd, /exec claude/);
-      assert.doesNotMatch(cmd, /--dangerously-skip-permissions/);
+      assert.equal((cmd.match(/--dangerously-skip-permissions/g) || []).length, 1);
       assert.doesNotMatch(cmd, /dangerously-bypass-approvals-and-sandbox/);
     } finally {
       process.argv = prevArgv;
@@ -521,10 +555,10 @@ describe('team worker CLI helpers', () => {
     assert.deepEqual(translateWorkerLaunchArgsForCli('codex', args), args);
   });
 
-  it('translateWorkerLaunchArgsForCli returns empty args for claude', () => {
+  it('translateWorkerLaunchArgsForCli returns only skip-permissions for claude', () => {
     assert.deepEqual(
       translateWorkerLaunchArgsForCli('claude', ['-c', 'model_reasoning_effort="xhigh"', '--model', 'claude-3-7-sonnet']),
-      [],
+      ['--dangerously-skip-permissions'],
     );
   });
 
@@ -593,6 +627,34 @@ describe('team worker CLI helpers', () => {
       () => resolveTeamWorkerCliPlan(1, [], { OMX_TEAM_WORKER_CLI_MAP: 'claudee' }),
       /OMX_TEAM_WORKER_CLI_MAP/i,
     );
+  });
+
+  it('resolveWorkerCliForSend prioritizes explicit worker CLI over map/global', () => {
+    assert.equal(
+      resolveWorkerCliForSend(2, 'claude', [], { OMX_TEAM_WORKER_CLI_MAP: 'codex,codex' }),
+      'claude',
+    );
+  });
+
+  it('resolveWorkerCliForSend resolves per-worker map entry by index', () => {
+    assert.equal(
+      resolveWorkerCliForSend(2, undefined, [], { OMX_TEAM_WORKER_CLI_MAP: 'codex,claude' }),
+      'claude',
+    );
+  });
+
+  it('buildWorkerSubmitPlan disables queue-first for claude workers', () => {
+    const plan = buildWorkerSubmitPlan('auto', 'claude', true, true);
+    assert.equal(plan.queueFirstRound, false);
+    assert.equal(plan.submitKeyPressesPerRound, 1);
+    assert.equal(plan.allowAdaptiveRetry, false);
+  });
+
+  it('buildWorkerSubmitPlan preserves queue-first behavior for busy codex workers', () => {
+    const plan = buildWorkerSubmitPlan('auto', 'codex', true, true);
+    assert.equal(plan.queueFirstRound, true);
+    assert.equal(plan.submitKeyPressesPerRound, 2);
+    assert.equal(plan.allowAdaptiveRetry, true);
   });
 });
 

@@ -30,9 +30,18 @@ const OMX_MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
 const OMX_TEAM_WORKER_CLI_ENV = 'OMX_TEAM_WORKER_CLI';
 const OMX_TEAM_WORKER_CLI_MAP_ENV = 'OMX_TEAM_WORKER_CLI_MAP';
 const OMX_TEAM_AUTO_INTERRUPT_RETRY_ENV = 'OMX_TEAM_AUTO_INTERRUPT_RETRY';
+const CLAUDE_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
 
 export type TeamWorkerCli = 'codex' | 'claude';
 type TeamWorkerCliMode = 'auto' | TeamWorkerCli;
+
+export interface WorkerSubmitPlan {
+  shouldInterrupt: boolean;
+  queueFirstRound: boolean;
+  rounds: number;
+  submitKeyPressesPerRound: number;
+  allowAdaptiveRetry: boolean;
+}
 
 interface WorkerLaunchSpec {
   shell: string;
@@ -367,11 +376,10 @@ export function resolveTeamWorkerCliPlan(
 export function translateWorkerLaunchArgsForCli(workerCli: TeamWorkerCli, args: string[]): string[] {
   if (workerCli === 'codex') return [...args];
 
-  // Claude workers must launch as plain `claude` with no extra args.
-  // This preserves Claude defaults from settings.json and avoids passing
-  // Codex-only flags, model overrides, or config/reasoning overrides.
+  // Claude workers must launch with exactly one permissions bypass flag.
+  // All other launch args are dropped to avoid Codex-only flags and model/config overrides.
   void args;
-  return [];
+  return [CLAUDE_SKIP_PERMISSIONS_FLAG];
 }
 
 function commandExists(binary: string): boolean {
@@ -794,6 +802,9 @@ function paneHasActiveTask(captured: string): boolean {
   if (tail.some((line) => /\bbackground terminal running\b/i.test(line))) return true;
   // Typical Codex activity line: "• Doing X (3m 12s • esc to interrupt)"
   if (tail.some((line) => /^•\s.+\(.+•\s*esc to interrupt\)$/i.test(line))) return true;
+  // Claude active generation lines (observed): "· Caramelizing…", "· Beboppin'…", "✻ Pollinating…"
+  // Keep this fairly narrow to minimize false positives in regular bullet content.
+  if (tail.some((line) => /^[·✻]\s+[A-Za-z][A-Za-z0-9'’-]*(?:\s+[A-Za-z][A-Za-z0-9'’-]*){0,3}(?:…|\.{3})$/u.test(line))) return true;
   return false;
 }
 
@@ -805,6 +816,59 @@ function resolveSendStrategyFromEnv(): 'auto' | 'queue' | 'interrupt' {
     return raw;
   }
   return 'auto';
+}
+
+function resolveWorkerCliFromMapForSend(
+  workerIndex: number,
+  launchArgs: string[] = [],
+  env: NodeJS.ProcessEnv = process.env,
+): TeamWorkerCli | null {
+  const rawMap = String(env[OMX_TEAM_WORKER_CLI_MAP_ENV] ?? '').trim();
+  if (rawMap === '') return null;
+  const entries = rawMap.split(',').map((entry) => entry.trim());
+  if (entries.length === 0 || entries.some((entry) => entry.length === 0)) return null;
+  const selectedRaw = entries.length === 1 ? entries[0] : entries[workerIndex - 1];
+  if (!selectedRaw) return null;
+  try {
+    const mode = normalizeTeamWorkerCliMode(selectedRaw, OMX_TEAM_WORKER_CLI_MAP_ENV);
+    return mode === 'auto' ? resolveTeamWorkerCliFromLaunchArgs(launchArgs) : mode;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Worker CLI resolution contract for submit routing:
+ * 1) explicit workerCli param from caller
+ * 2) per-worker OMX_TEAM_WORKER_CLI_MAP entry (worker index aware)
+ * 3) global/default OMX_TEAM_WORKER_CLI behavior
+ */
+export function resolveWorkerCliForSend(
+  workerIndex: number,
+  workerCli?: TeamWorkerCli,
+  launchArgs: string[] = [],
+  env: NodeJS.ProcessEnv = process.env,
+): TeamWorkerCli {
+  if (workerCli) return workerCli;
+  const mapped = resolveWorkerCliFromMapForSend(workerIndex, launchArgs, env);
+  if (mapped) return mapped;
+  return resolveTeamWorkerCli(launchArgs, env);
+}
+
+export function buildWorkerSubmitPlan(
+  strategy: 'auto' | 'queue' | 'interrupt',
+  workerCli: TeamWorkerCli,
+  paneBusyAtStart: boolean,
+  allowAdaptiveRetry: boolean,
+): WorkerSubmitPlan {
+  const queueRequested = strategy === 'queue' || (strategy === 'auto' && paneBusyAtStart);
+  return {
+    shouldInterrupt: strategy === 'interrupt',
+    queueFirstRound: workerCli === 'codex' && queueRequested,
+    rounds: 6,
+    submitKeyPressesPerRound: workerCli === 'claude' ? 1 : 2,
+    allowAdaptiveRetry: workerCli === 'codex' && allowAdaptiveRetry,
+  };
 }
 
 export function shouldAttemptAdaptiveRetry(
@@ -848,7 +912,9 @@ function attemptSubmitRounds(
   text: string,
   rounds: number,
   queueFirstRound: boolean,
+  submitKeyPressesPerRound: number,
 ): boolean {
+  const presses = Math.max(1, Math.floor(submitKeyPressesPerRound));
   for (let round = 0; round < rounds; round++) {
     sleepFractionalSeconds(0.1);
     if (round === 0 && queueFirstRound) {
@@ -856,9 +922,12 @@ function attemptSubmitRounds(
       sleepFractionalSeconds(0.08);
       sendKeyOrThrow(target, 'C-m', 'C-m');
     } else {
-      sendKeyOrThrow(target, 'C-m', 'C-m');
-      sleepFractionalSeconds(0.2);
-      sendKeyOrThrow(target, 'C-m', 'C-m');
+      for (let press = 0; press < presses; press++) {
+        sendKeyOrThrow(target, 'C-m', 'C-m');
+        if (press < presses - 1) {
+          sleepFractionalSeconds(0.2);
+        }
+      }
     }
     sleepFractionalSeconds(0.14);
     if (!paneTailContainsLiteralLine(target, text)) return true;
@@ -935,7 +1004,13 @@ export function normalizeTmuxCapture(value: string): string {
 // Send SHORT text (<200 chars) to worker via tmux send-keys
 // Validates: text < 200 chars, no injection marker
 // Throws on violation
-export function sendToWorker(sessionName: string, workerIndex: number, text: string, workerPaneId?: string): void {
+export function sendToWorker(
+  sessionName: string,
+  workerIndex: number,
+  text: string,
+  workerPaneId?: string,
+  workerCli?: TeamWorkerCli,
+): void {
   if (text.length >= 200) {
     throw new Error('sendToWorker: text must be < 200 characters');
   }
@@ -948,6 +1023,7 @@ export function sendToWorker(sessionName: string, workerIndex: number, text: str
 
   const target = paneTarget(sessionName, workerIndex, workerPaneId);
   const strategy = resolveSendStrategyFromEnv();
+  const resolvedWorkerCli = resolveWorkerCliForSend(workerIndex, workerCli);
 
   // Guard: if the trust prompt is still present, advance it first so our trigger text
   // doesn't get typed into the trust screen and ignored.
@@ -965,31 +1041,36 @@ export function sendToWorker(sessionName: string, workerIndex: number, text: str
   // Allow the input buffer to settle before sending Enter
   sleepFractionalSeconds(0.15);
 
-  const shouldInterrupt = strategy === 'interrupt';
-  const shouldQueueFirst = strategy === 'queue' || (strategy === 'auto' && paneBusy);
   const allowAutoInterruptRetry = process.env[OMX_TEAM_AUTO_INTERRUPT_RETRY_ENV] !== '0';
-  if (shouldInterrupt) {
+  const submitPlan = buildWorkerSubmitPlan(strategy, resolvedWorkerCli, paneBusy, allowAutoInterruptRetry);
+  if (submitPlan.shouldInterrupt) {
     // Explicit interrupt mode: abort current turn first, then submit the new command.
     sendKeyOrThrow(target, 'C-c', 'C-c');
     sleepFractionalSeconds(0.1);
   }
 
-  // Submit deterministically: C-m twice with short sleep between presses.
-  // When worker is busy, first attempt uses Tab+C-m to leverage Codex queue semantics.
-  // If that fails, fall back to legacy C-m-based submit rounds.
-  if (attemptSubmitRounds(target, text, 6, shouldQueueFirst)) return;
+  // Submit deterministically using CLI-specific plan:
+  // - Codex: queue-first Tab+C-m when configured/busy, then double C-m rounds.
+  // - Claude: direct C-m rounds only (never queue-first Tab).
+  if (attemptSubmitRounds(
+    target,
+    text,
+    submitPlan.rounds,
+    submitPlan.queueFirstRound,
+    submitPlan.submitKeyPressesPerRound,
+  )) return;
 
   // Adaptive escalation for "likely unsent trigger text at ready prompt" cases:
   // clear line, re-send trigger, then re-submit with deterministic C-m rounds.
   const latestCaptureResult = runTmux(['capture-pane', '-t', target, '-p', '-S', '-80']);
   const latestCapture = latestCaptureResult.ok ? latestCaptureResult.stdout : null;
-  if (shouldAttemptAdaptiveRetry(strategy, paneBusy, allowAutoInterruptRetry, latestCapture, text)) {
+  if (shouldAttemptAdaptiveRetry(strategy, paneBusy, submitPlan.allowAdaptiveRetry, latestCapture, text)) {
     // Keep this branch non-interrupting to avoid canceling active turns on false positives.
     sendKeyOrThrow(target, 'C-u', 'C-u');
     sleepFractionalSeconds(0.08);
     sendLiteralTextOrThrow(target, text);
     sleepFractionalSeconds(0.12);
-    if (attemptSubmitRounds(target, text, 4, false)) return;
+    if (attemptSubmitRounds(target, text, 4, false, submitPlan.submitKeyPressesPerRound)) return;
   }
 
   // Fail-open by default: Codex may keep the last submitted line visible even after executing it.

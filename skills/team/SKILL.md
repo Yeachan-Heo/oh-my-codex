@@ -102,6 +102,14 @@ Important:
 - Workers may run in separate git worktrees (`omx team --worktree[=<name>]`) while sharing one team state root
 - Worker ACKs go to `mailbox/leader-fixed.json`
 - Notify hook updates worker heartbeat and nudges leader during active team mode
+- Submit routing uses this CLI resolution order per worker trigger:
+  1) explicit worker CLI provided by runtime state (persisted on worker identity/config),
+  2) `OMX_TEAM_WORKER_CLI_MAP` entry for that worker index,
+  3) fallback `OMX_TEAM_WORKER_CLI` / auto detection.
+- Mixed CLI-map teams are supported for both startup and trigger submit behavior.
+- Trigger submit differs by CLI:
+  - Codex may use queue-first `Tab` on busy panes (strategy-dependent).
+  - Claude always uses direct Enter-only (`C-m`) rounds (never queue-first `Tab`).
 
 ### Team worker model + thinking resolution (current contract)
 
@@ -212,7 +220,8 @@ Useful runtime env vars:
 - `OMX_TEAM_WORKER_CLI`
   - Worker CLI selector: `auto|codex|claude` (default: `auto`)
   - `auto` chooses `claude` when worker `--model` contains `claude`, otherwise `codex`
-  - In `claude` mode, workers launch as plain `claude` and ignore explicit model/config/effort launch overrides (uses default `settings.json`)
+  - In `claude` mode, workers launch with exactly one `--dangerously-skip-permissions`
+    and ignore explicit model/config/effort launch overrides (uses default `settings.json`)
 - `OMX_TEAM_WORKER_CLI_MAP`
   - Per-worker CLI selector (comma-separated `auto|codex|claude`)
   - Length must be `1` (broadcast) or exactly the team worker count
