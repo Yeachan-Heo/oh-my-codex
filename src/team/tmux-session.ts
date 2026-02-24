@@ -1,7 +1,7 @@
 import { spawnSync } from 'child_process';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_HEIGHT_LINES } from '../hud/constants.js';
+import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../hud/constants.js';
 
 export interface TeamSession {
   name: string; // tmux target in "session:window" form
@@ -171,8 +171,18 @@ export function buildHudPaneTarget(hudPaneId: string): string {
   return trimmed.startsWith('%') ? trimmed : `%${trimmed}`;
 }
 
-function buildHudResizeCommand(hudPaneId: string): string {
-  return `resize-pane -t ${buildHudPaneTarget(hudPaneId)} -y ${HUD_TMUX_HEIGHT_LINES}`;
+function resolveHudHeightLines(heightLines: number): number {
+  if (!Number.isFinite(heightLines)) return HUD_TMUX_TEAM_HEIGHT_LINES;
+  const normalized = Math.floor(heightLines);
+  return normalized > 0 ? normalized : HUD_TMUX_TEAM_HEIGHT_LINES;
+}
+
+function buildHudResizeCommand(hudPaneId: string, heightLines: number = HUD_TMUX_TEAM_HEIGHT_LINES): string {
+  return `resize-pane -t ${buildHudPaneTarget(hudPaneId)} -y ${resolveHudHeightLines(heightLines)}`;
+}
+
+function buildBestEffortShellCommand(command: string): string {
+  return `${command} >/dev/null 2>&1 || true`;
 }
 
 function buildResizeHookSlot(hookName: string): string {
@@ -191,8 +201,13 @@ function buildClientAttachedHookSlot(hookName: string): string {
   return `client-attached[${hash}]`;
 }
 
-export function buildRegisterResizeHookArgs(hookTarget: string, hookName: string, hudPaneId: string): string[] {
-  const resizeCommand = shellQuoteSingle(`tmux ${buildHudResizeCommand(hudPaneId)}`);
+export function buildRegisterResizeHookArgs(
+  hookTarget: string,
+  hookName: string,
+  hudPaneId: string,
+  heightLines: number = HUD_TMUX_TEAM_HEIGHT_LINES,
+): string[] {
+  const resizeCommand = shellQuoteSingle(buildBestEffortShellCommand(`tmux ${buildHudResizeCommand(hudPaneId, heightLines)}`));
   return ['set-hook', '-t', hookTarget, buildResizeHookSlot(hookName), `run-shell -b ${resizeCommand}`];
 }
 
@@ -219,10 +234,11 @@ export function buildRegisterClientAttachedReconcileArgs(
   hookTarget: string,
   hookName: string,
   hudPaneId: string,
+  heightLines: number = HUD_TMUX_TEAM_HEIGHT_LINES,
 ): string[] {
   const hookSlot = buildClientAttachedHookSlot(hookName);
   const oneShotCommand = shellQuoteSingle(
-    `tmux ${buildHudResizeCommand(hudPaneId)}; tmux set-hook -u -t ${hookTarget} ${hookSlot}`,
+    `${buildBestEffortShellCommand(`tmux ${buildHudResizeCommand(hudPaneId, heightLines)}`)}; tmux set-hook -u -t ${hookTarget} ${hookSlot}`,
   );
   return ['set-hook', '-t', hookTarget, hookSlot, `run-shell -b ${oneShotCommand}`];
 }
@@ -239,13 +255,17 @@ export function unregisterResizeHook(hookTarget: string, hookName: string): bool
 export function buildScheduleDelayedHudResizeArgs(
   hudPaneId: string,
   delaySeconds: number = HUD_RESIZE_RECONCILE_DELAY_SECONDS,
+  heightLines: number = HUD_TMUX_TEAM_HEIGHT_LINES,
 ): string[] {
   const delay = Number.isFinite(delaySeconds) && delaySeconds > 0 ? delaySeconds : HUD_RESIZE_RECONCILE_DELAY_SECONDS;
-  return ['run-shell', '-b', `sleep ${delay}; tmux ${buildHudResizeCommand(hudPaneId)}`];
+  return ['run-shell', '-b', `sleep ${delay}; ${buildBestEffortShellCommand(`tmux ${buildHudResizeCommand(hudPaneId, heightLines)}`)}`];
 }
 
-export function buildReconcileHudResizeArgs(hudPaneId: string): string[] {
-  return buildHudResizeCommand(hudPaneId).split(' ');
+export function buildReconcileHudResizeArgs(
+  hudPaneId: string,
+  heightLines: number = HUD_TMUX_TEAM_HEIGHT_LINES,
+): string[] {
+  return ['run-shell', buildBestEffortShellCommand(`tmux ${buildHudResizeCommand(hudPaneId, heightLines)}`)];
 }
 
 function buildWorkerLaunchSpec(shellPath: string | undefined): WorkerLaunchSpec {
@@ -611,7 +631,7 @@ export function createTeamSession(
     if (omxEntry && omxEntry.trim() !== '') {
       const hudCmd = `node ${shellQuoteSingle(omxEntry)} hud --watch`;
       const hudResult = runTmux([
-        'split-window', '-v', '-l', String(HUD_TMUX_HEIGHT_LINES), '-t', leaderPaneId, '-d', '-P', '-F', '#{pane_id}', '-c', cwd, hudCmd,
+        'split-window', '-v', '-l', String(HUD_TMUX_TEAM_HEIGHT_LINES), '-t', leaderPaneId, '-d', '-P', '-F', '#{pane_id}', '-c', cwd, hudCmd,
       ]);
       if (hudResult.ok) {
         const id = hudResult.stdout.split('\n')[0]?.trim() ?? '';

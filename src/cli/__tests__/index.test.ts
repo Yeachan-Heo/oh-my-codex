@@ -356,6 +356,20 @@ describe('detached tmux new-session sequencing', () => {
     assert.equal(names.includes('reconcile-hud-resize'), true);
   });
 
+  it('buildDetachedSessionFinalizeSteps uses quiet best-effort tmux resize commands', () => {
+    const steps = buildDetachedSessionFinalizeSteps('omx-demo', '%12', '3', false, false);
+    const registerHook = steps.find((step) => step.name === 'register-resize-hook');
+    const schedule = steps.find((step) => step.name === 'schedule-delayed-resize');
+    const reconcile = steps.find((step) => step.name === 'reconcile-hud-resize');
+
+    assert.match(registerHook?.args[4] ?? '', />\/dev\/null 2>&1 \|\| true/);
+    assert.match(registerHook?.args[4] ?? '', new RegExp(`-y ${HUD_TMUX_HEIGHT_LINES}\\b`));
+    assert.match(schedule?.args[2] ?? '', />\/dev\/null 2>&1 \|\| true/);
+    assert.match(schedule?.args[2] ?? '', new RegExp(`-y ${HUD_TMUX_HEIGHT_LINES}\\b`));
+    assert.match((reconcile?.args ?? []).join(' '), />\/dev\/null 2>&1 \|\| true/);
+    assert.match((reconcile?.args ?? []).join(' '), new RegExp(`-y ${HUD_TMUX_HEIGHT_LINES}\\b`));
+  });
+
   it('buildDetachedSessionRollbackSteps unregisters hooks before killing session', () => {
     const steps = buildDetachedSessionRollbackSteps(
       'omx-demo',

@@ -35,7 +35,7 @@ import {
   translateWorkerLaunchArgsForCli,
   waitForWorkerReady,
 } from '../tmux-session.js';
-import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_HEIGHT_LINES } from '../../hud/constants.js';
+import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../../hud/constants.js';
 
 function withEmptyPath<T>(fn: () => T): T {
   const prev = process.env.PATH;
@@ -110,7 +110,7 @@ describe('HUD resize hook command builders', () => {
     assert.equal(args[1], '-t');
     assert.equal(args[2], 'my-session:0');
     assert.match(args[3] ?? '', /^client-resized\[\d+\]$/);
-    assert.equal(args[4], `run-shell -b 'tmux resize-pane -t %1 -y ${HUD_TMUX_HEIGHT_LINES}'`);
+    assert.equal(args[4], `run-shell -b 'tmux resize-pane -t %1 -y ${HUD_TMUX_TEAM_HEIGHT_LINES} >/dev/null 2>&1 || true'`);
   });
 
   it('buildUnregisterResizeHookArgs removes the exact numeric hook slot', () => {
@@ -130,7 +130,10 @@ describe('HUD resize hook command builders', () => {
     assert.equal(args[1], '-t');
     assert.equal(args[2], 'my-session:0');
     assert.match(args[3] ?? '', /^client-attached\[\d+\]$/);
-    assert.match(args[4] ?? '', /^run-shell -b 'tmux resize-pane -t %1 -y \d+; tmux set-hook -u -t my-session:0 client-attached\[\d+\]'$/);
+    assert.match(
+      args[4] ?? '',
+      /^run-shell -b 'tmux resize-pane -t %1 -y \d+ >\/dev\/null 2>&1 \|\| true; tmux set-hook -u -t my-session:0 client-attached\[\d+\]'$/,
+    );
   });
 
   it('buildUnregisterClientAttachedReconcileArgs removes the exact numeric client-attached slot', () => {
@@ -142,14 +145,17 @@ describe('HUD resize hook command builders', () => {
   it('buildScheduleDelayedHudResizeArgs schedules tmux-side delayed reconcile', () => {
     assert.deepEqual(
       buildScheduleDelayedHudResizeArgs('%1'),
-      ['run-shell', '-b', `sleep ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}; tmux resize-pane -t %1 -y ${HUD_TMUX_HEIGHT_LINES}`],
+      ['run-shell', '-b', `sleep ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}; tmux resize-pane -t %1 -y ${HUD_TMUX_TEAM_HEIGHT_LINES} >/dev/null 2>&1 || true`],
     );
   });
 
-  it('buildReconcileHudResizeArgs is resize-only (no split-window)', () => {
+  it('buildReconcileHudResizeArgs executes a best-effort quiet resize command', () => {
     const args = buildReconcileHudResizeArgs('%7');
-    assert.equal(args.includes('split-window'), false);
-    assert.deepEqual(args, ['resize-pane', '-t', '%7', '-y', String(HUD_TMUX_HEIGHT_LINES)]);
+    assert.equal(args.join(' ').includes('split-window'), false);
+    assert.deepEqual(
+      args,
+      ['run-shell', `tmux resize-pane -t %7 -y ${HUD_TMUX_TEAM_HEIGHT_LINES} >/dev/null 2>&1 || true`],
+    );
   });
 });
 
