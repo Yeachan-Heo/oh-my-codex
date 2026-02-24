@@ -684,6 +684,24 @@ function parsePaneIdFromTmuxOutput(rawOutput: string): string | null {
   return paneId.startsWith('%') ? paneId : null;
 }
 
+function parseWindowIndexFromTmuxOutput(rawOutput: string): string | null {
+  const windowIndex = rawOutput.split('\n')[0]?.trim() || '';
+  return /^[0-9]+$/.test(windowIndex) ? windowIndex : null;
+}
+
+function detectDetachedSessionWindowIndex(sessionName: string): string | null {
+  try {
+    const output = execFileSync(
+      'tmux',
+      ['display-message', '-p', '-t', sessionName, '#{window_index}'],
+      { encoding: 'utf-8' },
+    );
+    return parseWindowIndexFromTmuxOutput(output);
+  } catch {
+    return null;
+  }
+}
+
 export function buildDetachedSessionBootstrapSteps(
   sessionName: string,
   cwd: string,
@@ -699,7 +717,7 @@ export function buildDetachedSessionBootstrapSteps(
     codexCmd,
   ];
   const splitCaptureArgs: string[] = [
-    'split-window', '-v', '-l', String(HUD_TMUX_HEIGHT_LINES), '-d', '-t', `${sessionName}:0`,
+    'split-window', '-v', '-l', String(HUD_TMUX_HEIGHT_LINES), '-d', '-t', sessionName,
     '-c', cwd, '-P', '-F', '#{pane_id}', hudCmd,
   ];
   return [
@@ -711,13 +729,14 @@ export function buildDetachedSessionBootstrapSteps(
 export function buildDetachedSessionFinalizeSteps(
   sessionName: string,
   hudPaneId: string | null,
+  hookWindowIndex: string | null,
   enableMouse: boolean,
   wsl2: boolean,
 ): DetachedSessionTmuxStep[] {
   const steps: DetachedSessionTmuxStep[] = [];
-  if (hudPaneId) {
-    const hookTarget = buildResizeHookTarget(sessionName, '0');
-    const hookName = buildResizeHookName('launch', sessionName, '0', hudPaneId);
+  if (hudPaneId && hookWindowIndex) {
+    const hookTarget = buildResizeHookTarget(sessionName, hookWindowIndex);
+    const hookName = buildResizeHookName('launch', sessionName, hookWindowIndex, hudPaneId);
     steps.push({
       name: 'register-resize-hook',
       args: buildRegisterResizeHookArgs(hookTarget, hookName, hudPaneId),
@@ -738,7 +757,6 @@ export function buildDetachedSessionFinalizeSteps(
       steps.push({ name: 'set-wsl-xt', args: ['set-option', '-ga', 'terminal-overrides', ',xterm*:XT'] });
     }
   }
-  steps.push({ name: 'select-pane', args: ['select-pane', '-t', `${sessionName}:0.0`] });
   steps.push({ name: 'attach-session', args: ['attach-session', '-t', sessionName] });
   return steps;
 }
@@ -915,17 +933,28 @@ function runCodex(cwd: string, args: string[], sessionId: string, workerDefaultM
         }
         if (step.name === 'split-and-capture-hud-pane') {
           const hudPaneId = parsePaneIdFromTmuxOutput(output || '');
-          const hookTarget = hudPaneId ? buildResizeHookTarget(sessionName, '0') : null;
-          const hookName = hudPaneId ? buildResizeHookName('launch', sessionName, '0', hudPaneId) : null;
+          const hookWindowIndex = hudPaneId ? detectDetachedSessionWindowIndex(sessionName) : null;
+          const hookTarget = hudPaneId && hookWindowIndex
+            ? buildResizeHookTarget(sessionName, hookWindowIndex)
+            : null;
+          const hookName = hudPaneId && hookWindowIndex
+            ? buildResizeHookName('launch', sessionName, hookWindowIndex, hudPaneId)
+            : null;
           const finalizeSteps = buildDetachedSessionFinalizeSteps(
             sessionName,
             hudPaneId,
+            hookWindowIndex,
             process.env.OMX_MOUSE !== '0',
             isWsl2(),
           );
           for (const finalizeStep of finalizeSteps) {
             const stdio = finalizeStep.name === 'attach-session' ? 'inherit' : 'ignore';
-            execFileSync('tmux', finalizeStep.args, { stdio });
+            try {
+              execFileSync('tmux', finalizeStep.args, { stdio });
+            } catch {
+              if (finalizeStep.name === 'attach-session') throw new Error('failed to attach detached tmux session');
+              continue;
+            }
             if (finalizeStep.name === 'register-resize-hook' && hookTarget && hookName) {
               registeredHookTarget = hookTarget;
               registeredHookName = hookName;

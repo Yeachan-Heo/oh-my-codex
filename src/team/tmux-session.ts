@@ -166,13 +166,21 @@ function buildHudResizeCommand(hudPaneId: string): string {
   return `resize-pane -t ${buildHudPaneTarget(hudPaneId)} -y ${HUD_TMUX_HEIGHT_LINES}`;
 }
 
+function buildResizeHookSlot(hookName: string): string {
+  let hash = 0;
+  for (let i = 0; i < hookName.length; i++) {
+    hash = (hash * 31 + hookName.charCodeAt(i)) >>> 0;
+  }
+  return `client-resized[${hash}]`;
+}
+
 export function buildRegisterResizeHookArgs(hookTarget: string, hookName: string, hudPaneId: string): string[] {
   const resizeCommand = shellQuoteSingle(`tmux ${buildHudResizeCommand(hudPaneId)}`);
-  return ['set-hook', '-t', hookTarget, `client-resized[${hookName}]`, `run-shell -b ${resizeCommand}`];
+  return ['set-hook', '-t', hookTarget, buildResizeHookSlot(hookName), `run-shell -b ${resizeCommand}`];
 }
 
 export function buildUnregisterResizeHookArgs(hookTarget: string, hookName: string): string[] {
-  return ['set-hook', '-u', '-t', hookTarget, `client-resized[${hookName}]`];
+  return ['set-hook', '-u', '-t', hookTarget, buildResizeHookSlot(hookName)];
 }
 
 export function unregisterResizeHook(hookTarget: string, hookName: string): boolean {

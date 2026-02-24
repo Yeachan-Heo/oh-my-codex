@@ -337,12 +337,13 @@ describe('detached tmux new-session sequencing', () => {
     );
     assert.deepEqual(steps.map((step) => step.name), ['new-session', 'split-and-capture-hud-pane']);
     assert.equal(steps[1]?.args[3], String(HUD_TMUX_HEIGHT_LINES));
+    assert.equal(steps[1]?.args[6], 'omx-demo');
     assert.equal(steps[1]?.args.includes('-P'), true);
     assert.equal(steps[1]?.args.includes('#{pane_id}'), true);
   });
 
   it('buildDetachedSessionFinalizeSteps keeps schedule after split-capture and before attach', () => {
-    const steps = buildDetachedSessionFinalizeSteps('omx-demo', '%12', true, false);
+    const steps = buildDetachedSessionFinalizeSteps('omx-demo', '%12', '3', true, false);
     const names = steps.map((step) => step.name);
     const scheduleIndex = names.indexOf('schedule-delayed-resize');
     const attachIndex = names.indexOf('attach-session');
@@ -355,13 +356,11 @@ describe('detached tmux new-session sequencing', () => {
   it('buildDetachedSessionRollbackSteps unregisters hook before killing session', () => {
     const steps = buildDetachedSessionRollbackSteps('omx-demo', 'omx-demo:0', 'omx_resize_launch_demo_0_12');
     assert.deepEqual(steps.map((step) => step.name), ['unregister-resize-hook', 'kill-session']);
-    assert.deepEqual(steps[0]?.args, [
-      'set-hook',
-      '-u',
-      '-t',
-      'omx-demo:0',
-      'client-resized[omx_resize_launch_demo_0_12]',
-    ]);
+    assert.equal(steps[0]?.args[0], 'set-hook');
+    assert.equal(steps[0]?.args[1], '-u');
+    assert.equal(steps[0]?.args[2], '-t');
+    assert.equal(steps[0]?.args[3], 'omx-demo:0');
+    assert.match(steps[0]?.args[4] ?? '', /^client-resized\[\d+\]$/);
     assert.deepEqual(steps[1]?.args, ['kill-session', '-t', 'omx-demo']);
   });
 

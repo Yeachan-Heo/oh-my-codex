@@ -99,24 +99,19 @@ describe('HUD resize hook command builders', () => {
     assert.equal(buildHudPaneTarget('41'), '%41');
   });
 
-  it('buildRegisterResizeHookArgs uses window target and client-resized hook slot', () => {
-    assert.deepEqual(
-      buildRegisterResizeHookArgs('my-session:0', 'omx_resize_team_session_0_1', '%1'),
-      [
-        'set-hook',
-        '-t',
-        'my-session:0',
-        'client-resized[omx_resize_team_session_0_1]',
-        `run-shell -b 'tmux resize-pane -t %1 -y ${HUD_TMUX_HEIGHT_LINES}'`,
-      ],
-    );
+  it('buildRegisterResizeHookArgs uses window target and numeric client-resized hook slot', () => {
+    const args = buildRegisterResizeHookArgs('my-session:0', 'omx_resize_team_session_0_1', '%1');
+    assert.equal(args[0], 'set-hook');
+    assert.equal(args[1], '-t');
+    assert.equal(args[2], 'my-session:0');
+    assert.match(args[3] ?? '', /^client-resized\[\d+\]$/);
+    assert.equal(args[4], `run-shell -b 'tmux resize-pane -t %1 -y ${HUD_TMUX_HEIGHT_LINES}'`);
   });
 
-  it('buildUnregisterResizeHookArgs removes the exact hook slot', () => {
-    assert.deepEqual(
-      buildUnregisterResizeHookArgs('my-session:0', 'omx_resize_team_session_0_1'),
-      ['set-hook', '-u', '-t', 'my-session:0', 'client-resized[omx_resize_team_session_0_1]'],
-    );
+  it('buildUnregisterResizeHookArgs removes the exact numeric hook slot', () => {
+    const registered = buildRegisterResizeHookArgs('my-session:0', 'omx_resize_team_session_0_1', '%1');
+    const unregistered = buildUnregisterResizeHookArgs('my-session:0', 'omx_resize_team_session_0_1');
+    assert.deepEqual(unregistered, ['set-hook', '-u', '-t', 'my-session:0', registered[3] as string]);
   });
 
   it('buildScheduleDelayedHudResizeArgs schedules tmux-side delayed reconcile', () => {
