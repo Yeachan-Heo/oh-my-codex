@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-02-24
+
+### Fixed
+- Team Claude worker startup now explicitly launches with `--dangerously-skip-permissions`, preventing interactive permission prompts during tmux team runs.
+
+### Tests
+- Added regression coverage for the worker CLI override path to ensure Claude launch args are translated correctly and Codex-only flags are not forwarded.
+
 ## [0.6.3] - 2026-02-24
 
 ### Added
