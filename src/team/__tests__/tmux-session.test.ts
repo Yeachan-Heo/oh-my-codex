@@ -7,6 +7,7 @@ import {
   chooseTeamLeaderPaneId,
   createTeamSession,
   enableMouseScrolling,
+  isNativeWindows,
   isTmuxAvailable,
   isWsl2,
   isWorkerAlive,
@@ -598,6 +599,60 @@ describe('isWsl2', () => {
       else delete process.env.WSL_DISTRO_NAME;
       if (typeof prevInterop === 'string') process.env.WSL_INTEROP = prevInterop;
       else delete process.env.WSL_INTEROP;
+    }
+  });
+});
+
+describe('isNativeWindows', () => {
+  it('returns true when process.platform is win32 and not WSL2', () => {
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const prevDistro = process.env.WSL_DISTRO_NAME;
+    const prevInterop = process.env.WSL_INTEROP;
+    delete process.env.WSL_DISTRO_NAME;
+    delete process.env.WSL_INTEROP;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      assert.equal(isNativeWindows(), true);
+    } finally {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      if (typeof prevDistro === 'string') process.env.WSL_DISTRO_NAME = prevDistro;
+      else delete process.env.WSL_DISTRO_NAME;
+      if (typeof prevInterop === 'string') process.env.WSL_INTEROP = prevInterop;
+      else delete process.env.WSL_INTEROP;
+    }
+  });
+
+  it('returns false when process.platform is win32 but WSL2 is detected', () => {
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const prevDistro = process.env.WSL_DISTRO_NAME;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    process.env.WSL_DISTRO_NAME = 'Ubuntu-22.04';
+    try {
+      assert.equal(isNativeWindows(), false);
+    } finally {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      if (typeof prevDistro === 'string') process.env.WSL_DISTRO_NAME = prevDistro;
+      else delete process.env.WSL_DISTRO_NAME;
+    }
+  });
+
+  it('returns false on Linux', () => {
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    try {
+      assert.equal(isNativeWindows(), false);
+    } finally {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+    }
+  });
+
+  it('returns false on macOS', () => {
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    try {
+      assert.equal(isNativeWindows(), false);
+    } finally {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
     }
   });
 });

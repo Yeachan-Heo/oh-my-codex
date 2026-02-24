@@ -395,6 +395,14 @@ export function isWsl2(): boolean {
   }
 }
 
+/**
+ * Detect whether the process is running on native Windows (not WSL2).
+ * OMX requires tmux, which is unavailable on native Windows.
+ */
+export function isNativeWindows(): boolean {
+  return process.platform === 'win32' && !isWsl2();
+}
+
 // Check if tmux is available
 export function isTmuxAvailable(): boolean {
   const result = spawnSync('tmux', ['-V'], { encoding: 'utf-8' });
