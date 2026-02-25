@@ -17,8 +17,10 @@ import {
   chooseTeamLeaderPaneId,
   createTeamSession,
   enableMouseScrolling,
+  isMsysOrGitBash,
   isNativeWindows,
   isTmuxAvailable,
+  translatePathForMsys,
   isWsl2,
   isWorkerAlive,
   killWorker,
@@ -602,6 +604,33 @@ describe('buildWorkerStartupCommand', () => {
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     }
   });
+
+  it('translates model_instructions_file path for MSYS2/Git Bash environments', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const prevInstructions = process.env.OMX_MODEL_INSTRUCTIONS_FILE;
+    const prevMsystem = process.env.MSYSTEM;
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    process.env.SHELL = '/bin/bash';
+    delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT; // default enabled
+    process.env.OMX_MODEL_INSTRUCTIONS_FILE = 'C:\\repo\\AGENTS.md';
+    process.env.MSYSTEM = 'MINGW64';
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [], 'C:\\repo');
+      assert.match(cmd, /model_instructions_file=\"\/c\/repo\/AGENTS\.md\"/);
+    } finally {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof prevInstructions === 'string') process.env.OMX_MODEL_INSTRUCTIONS_FILE = prevInstructions;
+      else delete process.env.OMX_MODEL_INSTRUCTIONS_FILE;
+      if (typeof prevMsystem === 'string') process.env.MSYSTEM = prevMsystem;
+      else delete process.env.MSYSTEM;
+    }
+  });
 });
 
 describe('team worker CLI helpers', () => {
@@ -802,6 +831,47 @@ describe('isWsl2', () => {
   });
 });
 
+describe('isMsysOrGitBash', () => {
+  it('returns true on win32 when MSYSTEM is set', () => {
+    assert.equal(isMsysOrGitBash({ MSYSTEM: 'MINGW64' }, 'win32'), true);
+  });
+
+  it('returns true on win32 when OSTYPE indicates msys/mingw', () => {
+    assert.equal(isMsysOrGitBash({ OSTYPE: 'msys' }, 'win32'), true);
+    assert.equal(isMsysOrGitBash({ OSTYPE: 'mingw64' }, 'win32'), true);
+  });
+
+  it('returns false outside win32', () => {
+    assert.equal(isMsysOrGitBash({ MSYSTEM: 'MINGW64' }, 'linux'), false);
+  });
+});
+
+describe('translatePathForMsys', () => {
+  it('returns original path outside MSYS2/Git Bash', () => {
+    assert.equal(translatePathForMsys('C:\\repo\\AGENTS.md', {}, 'linux'), 'C:\\repo\\AGENTS.md');
+  });
+
+  it('uses cygpath translation when available', () => {
+    const translated = translatePathForMsys(
+      'C:\\repo\\AGENTS.md',
+      { MSYSTEM: 'MINGW64' },
+      'win32',
+      () => ({ status: 0, stdout: '/c/repo/AGENTS.md\n', stderr: '', error: undefined, output: [] as string[] }) as any,
+    );
+    assert.equal(translated, '/c/repo/AGENTS.md');
+  });
+
+  it('falls back gracefully when cygpath is unavailable', () => {
+    const translated = translatePathForMsys(
+      'C:\\repo\\AGENTS.md',
+      { MSYSTEM: 'MINGW64' },
+      'win32',
+      () => ({ status: 1, stdout: '', stderr: 'not found', error: Object.assign(new Error('ENOENT'), { code: 'ENOENT' }), output: [] as string[] }) as any,
+    );
+    assert.equal(translated, '/c/repo/AGENTS.md');
+  });
+});
+
 describe('isNativeWindows', () => {
   it('returns true when process.platform is win32 and not WSL2', () => {
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
@@ -832,6 +902,20 @@ describe('isNativeWindows', () => {
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevDistro === 'string') process.env.WSL_DISTRO_NAME = prevDistro;
       else delete process.env.WSL_DISTRO_NAME;
+    }
+  });
+
+  it('returns false on win32 when MSYS2/Git Bash is detected', () => {
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const prevMsystem = process.env.MSYSTEM;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    process.env.MSYSTEM = 'MINGW64';
+    try {
+      assert.equal(isNativeWindows(), false);
+    } finally {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      if (typeof prevMsystem === 'string') process.env.MSYSTEM = prevMsystem;
+      else delete process.env.MSYSTEM;
     }
   });
 
