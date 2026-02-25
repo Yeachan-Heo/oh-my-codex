@@ -2,14 +2,19 @@ import { join, resolve } from 'path';
 import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
 import { performance } from 'perf_hooks';
+import { spawn, type ChildProcessByStdio } from 'child_process';
+import type { Writable } from 'stream';
 import {
   sanitizeTeamName,
   isTmuxAvailable,
   createTeamSession,
+  buildWorkerProcessLaunchSpec,
   resolveTeamWorkerCli,
   resolveTeamWorkerCliPlan,
+  resolveTeamWorkerLaunchMode,
   waitForWorkerReady,
   sendToWorker,
+  sendToWorkerStdin,
   notifyLeaderStatus,
   isWorkerAlive,
   getWorkerPanePid,
@@ -141,6 +146,13 @@ export interface TeamStartOptions {
 const MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
 const TEAM_STATE_ROOT_ENV = 'OMX_TEAM_STATE_ROOT';
 const TEAM_LEADER_CWD_ENV = 'OMX_TEAM_LEADER_CWD';
+
+interface PromptWorkerHandle {
+  child: ChildProcessByStdio<Writable, null, null>;
+  pid: number;
+}
+
+const promptWorkerRegistry = new Map<string, Map<string, PromptWorkerHandle>>();
 const previousModelInstructionsFileByTeam = new Map<string, string | undefined>();
 
 function resolveWorkerReadyTimeoutMs(env: NodeJS.ProcessEnv): number {
@@ -174,10 +186,85 @@ function restoreTeamModelInstructionsFile(teamName: string): void {
   delete process.env[MODEL_INSTRUCTIONS_FILE_ENV];
 }
 
+function registerPromptWorkerHandle(
+  teamName: string,
+  workerName: string,
+  child: ChildProcessByStdio<Writable, null, null>,
+): void {
+  const { pid } = child;
+  if (!Number.isFinite(pid) || (pid ?? 0) < 1) {
+    throw new Error(`failed to spawn prompt worker process for ${workerName}`);
+  }
+  const processPid = pid as number;
+  const existingTeamHandles = promptWorkerRegistry.get(teamName) ?? new Map<string, PromptWorkerHandle>();
+  existingTeamHandles.set(workerName, { child, pid: processPid });
+  promptWorkerRegistry.set(teamName, existingTeamHandles);
+
+  child.on('exit', () => {
+    const teamHandles = promptWorkerRegistry.get(teamName);
+    if (!teamHandles) return;
+    teamHandles.delete(workerName);
+    if (teamHandles.size === 0) promptWorkerRegistry.delete(teamName);
+  });
+}
+
+function getPromptWorkerHandle(teamName: string, workerName: string): PromptWorkerHandle | null {
+  return promptWorkerRegistry.get(teamName)?.get(workerName) ?? null;
+}
+
+function removePromptWorkerHandle(teamName: string, workerName: string): void {
+  const teamHandles = promptWorkerRegistry.get(teamName);
+  if (!teamHandles) return;
+  teamHandles.delete(workerName);
+  if (teamHandles.size === 0) promptWorkerRegistry.delete(teamName);
+}
+
+function isPromptWorkerAlive(config: TeamConfig, worker: WorkerInfo): boolean {
+  const handle = getPromptWorkerHandle(config.name, worker.name);
+  if (handle?.child.exitCode === null && !handle.child.killed) return true;
+  if (!Number.isFinite(worker.pid) || (worker.pid ?? 0) <= 0) return false;
+  try {
+    process.kill(worker.pid as number, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export { TEAM_LOW_COMPLEXITY_DEFAULT_MODEL };
 
 export function resolveCanonicalTeamStateRoot(leaderCwd: string): string {
   return resolve(join(leaderCwd, '.omx', 'state'));
+}
+
+function spawnPromptWorker(
+  teamName: string,
+  workerName: string,
+  workerIndex: number,
+  workerCwd: string,
+  launchArgs: string[],
+  workerEnv: Record<string, string>,
+  workerCli: 'codex' | 'claude',
+): ChildProcessByStdio<Writable, null, null> {
+  const processSpec = buildWorkerProcessLaunchSpec(
+    teamName,
+    workerIndex,
+    launchArgs,
+    workerCwd,
+    workerEnv,
+    workerCli,
+  );
+  const child = spawn(
+    processSpec.command,
+    processSpec.args,
+    {
+      cwd: workerCwd,
+      env: { ...process.env, ...processSpec.env },
+      stdio: ['pipe', 'ignore', 'ignore'],
+    },
+  );
+  registerPromptWorkerHandle(teamName, workerName, child);
+  return child;
 }
 
 export function resolveWorkerLaunchArgsFromEnv(
@@ -263,13 +350,15 @@ export async function startTeam(
     throw new Error('nested_team_disallowed');
   }
 
-  // tmux-only runtime
-  if (!isTmuxAvailable()) {
-    throw new Error('Team mode requires tmux. Install with: apt install tmux / brew install tmux');
-  }
-  const displayMode = 'split_pane';
-  if (!process.env.TMUX) {
-    throw new Error('Team mode requires running inside tmux current leader pane');
+  const workerLaunchMode = resolveTeamWorkerLaunchMode(process.env);
+  const displayMode = workerLaunchMode === 'interactive' ? 'split_pane' : 'auto';
+  if (workerLaunchMode === 'interactive') {
+    if (!isTmuxAvailable()) {
+      throw new Error('Team mode requires tmux. Install with: apt install tmux / brew install tmux');
+    }
+    if (!process.env.TMUX) {
+      throw new Error('Team mode requires running inside tmux current leader pane');
+    }
   }
 
   const leaderCwd = resolve(cwd);
@@ -344,7 +433,7 @@ export async function startTeam(
       workerCount,
       leaderCwd,
       DEFAULT_MAX_WORKERS,
-      { ...process.env, OMX_TEAM_DISPLAY_MODE: displayMode },
+      { ...process.env, OMX_TEAM_DISPLAY_MODE: displayMode, OMX_TEAM_WORKER_LAUNCH_MODE: workerLaunchMode },
       {
         leader_cwd: leaderCwd,
         team_state_root: teamStateRoot,
@@ -395,24 +484,53 @@ export async function startTeam(
       };
     });
 
-    // 6. Create tmux session with workers
-    const createdSession = createTeamSession(sanitized, workerCount, leaderCwd, workerLaunchArgs, workerStartups);
-    sessionName = createdSession.name;
-    sessionCreated = true;
-    createdWorkerPaneIds.push(...createdSession.workerPaneIds);
-    createdLeaderPaneId = createdSession.leaderPaneId;
-    config.tmux_session = sessionName;
-    config.leader_pane_id = createdSession.leaderPaneId;
-    config.hud_pane_id = createdSession.hudPaneId;
-    config.resize_hook_name = createdSession.resizeHookName;
-    config.resize_hook_target = createdSession.resizeHookTarget;
+    const workerPaneIds = Array.from({ length: workerCount }, () => undefined as string | undefined);
+
+    // 6. Create worker runtime (interactive tmux panes or prompt-mode child processes)
+    if (workerLaunchMode === 'interactive') {
+      const createdSession = createTeamSession(sanitized, workerCount, leaderCwd, workerLaunchArgs, workerStartups);
+      sessionName = createdSession.name;
+      sessionCreated = true;
+      createdWorkerPaneIds.push(...createdSession.workerPaneIds);
+      createdLeaderPaneId = createdSession.leaderPaneId;
+      config.tmux_session = sessionName;
+      config.leader_pane_id = createdSession.leaderPaneId;
+      config.hud_pane_id = createdSession.hudPaneId;
+      config.resize_hook_name = createdSession.resizeHookName;
+      config.resize_hook_target = createdSession.resizeHookTarget;
+      for (let i = 0; i < createdSession.workerPaneIds.length; i++) {
+        workerPaneIds[i] = createdSession.workerPaneIds[i];
+      }
+    } else {
+      config.tmux_session = `prompt-${sanitized}`;
+      config.leader_pane_id = null;
+      config.hud_pane_id = null;
+      config.resize_hook_name = null;
+      config.resize_hook_target = null;
+      for (let i = 1; i <= workerCount; i++) {
+        const startup = workerStartups[i - 1] || {};
+        const workerName = `worker-${i}`;
+        const child = spawnPromptWorker(
+          sanitized,
+          workerName,
+          i,
+          startup.cwd || leaderCwd,
+          workerLaunchArgs,
+          startup.env || {},
+          workerCliPlan[i - 1],
+        );
+        if (config.workers[i - 1]) {
+          config.workers[i - 1].pid = child.pid;
+        }
+      }
+    }
     await saveTeamConfig(config, leaderCwd);
 
-    // 7. Wait for all workers to be ready, then bootstrap them
+    // 7. Wait for all workers to be ready (interactive mode), then bootstrap them
     const allTasks = await listTasks(sanitized, leaderCwd);
     for (let i = 1; i <= workerCount; i++) {
       const workerName = `worker-${i}`;
-      const paneId = createdSession.workerPaneIds[i - 1];
+      const paneId = workerPaneIds[i - 1];
       const workerWorkspace = workerWorkspaceByName.get(workerName) ?? { cwd: leaderCwd };
 
       // Get tasks assigned to this worker
@@ -432,9 +550,13 @@ export async function startTeam(
         team_state_root: teamStateRoot,
       };
 
-      // Get pane PID and store it
-      const panePid = getWorkerPanePid(sessionName, i);
-      if (panePid) identity.pid = panePid;
+      // Get pane PID and store it (interactive mode) or process PID (prompt mode)
+      if (workerLaunchMode === 'interactive') {
+        const panePid = getWorkerPanePid(sessionName, i);
+        if (panePid) identity.pid = panePid;
+      } else if (config.workers[i - 1]?.pid) {
+        identity.pid = config.workers[i - 1].pid;
+      }
       if (paneId) identity.pane_id = paneId;
       if (config.workers[i - 1]) {
         config.workers[i - 1].pane_id = paneId;
@@ -449,7 +571,7 @@ export async function startTeam(
       await writeWorkerIdentity(sanitized, workerName, identity, leaderCwd);
 
       // Wait for worker readiness
-      if (!skipWorkerReadyWait) {
+      if (workerLaunchMode === 'interactive' && !skipWorkerReadyWait) {
         const ready = waitForWorkerReady(sessionName, i, workerReadyTimeoutMs, paneId);
         if (!ready) {
           throw new Error(`Worker ${workerName} did not become ready in tmux session ${sessionName}`);
@@ -526,6 +648,21 @@ export async function startTeam(
         }
       }
     }
+    if (workerLaunchMode === 'prompt' && config) {
+      for (const worker of config.workers) {
+        try {
+          const handle = getPromptWorkerHandle(sanitized, worker.name);
+          if (handle) {
+            handle.child.kill('SIGTERM');
+          } else if (Number.isFinite(worker.pid) && (worker.pid ?? 0) > 0) {
+            process.kill(worker.pid as number, 'SIGTERM');
+          }
+        } catch {
+          // best effort
+        }
+        removePromptWorkerHandle(sanitized, worker.name);
+      }
+    }
 
     if (workerInstructionsPath) {
       try {
@@ -589,7 +726,9 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
   const workerScanStartMs = performance.now();
   const workerSignals = await Promise.all(
     config.workers.map(async (worker) => {
-      const alive = isWorkerAlive(sessionName, worker.index, worker.pane_id);
+      const alive = config.worker_launch_mode === 'prompt'
+        ? isPromptWorkerAlive(config, worker)
+        : isWorkerAlive(sessionName, worker.index, worker.pane_id);
       const [status, heartbeat] = await Promise.all([
         readWorkerStatus(sanitized, worker.name, cwd),
         readWorkerHeartbeat(sanitized, worker.name, cwd),
@@ -871,13 +1010,21 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       throw new Error(`shutdown_rejected:${detail}`);
     }
 
-    const anyAlive = config.workers.some(w => isWorkerAlive(sessionName, w.index, w.pane_id));
+    const anyAlive = config.workers.some((w) => (
+      config.worker_launch_mode === 'prompt'
+        ? isPromptWorkerAlive(config, w)
+        : isWorkerAlive(sessionName, w.index, w.pane_id)
+    ));
     if (!anyAlive) break;
     // Sleep 2s
     await new Promise(resolve => setTimeout(resolve, 2000));
   }
 
-  const anyAliveAfterWait = config.workers.some(w => isWorkerAlive(sessionName, w.index, w.pane_id));
+  const anyAliveAfterWait = config.workers.some((w) => (
+    config.worker_launch_mode === 'prompt'
+      ? isPromptWorkerAlive(config, w)
+      : isWorkerAlive(sessionName, w.index, w.pane_id)
+  ));
   if (anyAliveAfterWait && !force) {
     // Workers may have accepted shutdown but not exited (Codex TUI requires explicit exit).
     // In this case, proceed to force kill panes (next step) rather than failing and leaving state around.
@@ -886,33 +1033,49 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   // 3. Force kill remaining workers
   const leaderPaneId = config.leader_pane_id;
   const hudPaneId = config.hud_pane_id;
-  if (config.resize_hook_name && config.resize_hook_target) {
-    const unregistered = unregisterResizeHook(config.resize_hook_target, config.resize_hook_name);
-    if (!unregistered && isTmuxAvailable()) {
-      const baseSession = sessionName.split(':')[0];
-      const sessionStillActive = listTeamSessions().includes(baseSession);
-      if (sessionStillActive) {
-        throw new Error(`failed to unregister resize hook ${config.resize_hook_name}`);
+  if (config.worker_launch_mode === 'interactive') {
+    if (config.resize_hook_name && config.resize_hook_target) {
+      const unregistered = unregisterResizeHook(config.resize_hook_target, config.resize_hook_name);
+      if (!unregistered && isTmuxAvailable()) {
+        const baseSession = sessionName.split(':')[0];
+        const sessionStillActive = listTeamSessions().includes(baseSession);
+        if (sessionStillActive) {
+          throw new Error(`failed to unregister resize hook ${config.resize_hook_name}`);
+        }
       }
     }
-  }
-  config.resize_hook_name = null;
-  config.resize_hook_target = null;
-  await saveTeamConfig(config, cwd);
-  for (const w of config.workers) {
-    try {
-      // Guard: never kill the leader's own pane or the HUD pane.
-      if (leaderPaneId && w.pane_id === leaderPaneId) continue;
-      if (hudPaneId && w.pane_id === hudPaneId) continue;
-      if (isWorkerAlive(sessionName, w.index, w.pane_id)) {
-        killWorker(sessionName, w.index, w.pane_id, leaderPaneId ?? undefined);
-      }
-    } catch { /* ignore */ }
-  }
+    config.resize_hook_name = null;
+    config.resize_hook_target = null;
+    await saveTeamConfig(config, cwd);
+    for (const w of config.workers) {
+      try {
+        // Guard: never kill the leader's own pane or the HUD pane.
+        if (leaderPaneId && w.pane_id === leaderPaneId) continue;
+        if (hudPaneId && w.pane_id === hudPaneId) continue;
+        if (isWorkerAlive(sessionName, w.index, w.pane_id)) {
+          killWorker(sessionName, w.index, w.pane_id, leaderPaneId ?? undefined);
+        }
+      } catch { /* ignore */ }
+    }
 
-  // 4. Destroy tmux session
-  if (!sessionName.includes(':')) {
-    try { destroyTeamSession(sessionName); } catch { /* ignore */ }
+    // 4. Destroy tmux session
+    if (!sessionName.includes(':')) {
+      try { destroyTeamSession(sessionName); } catch { /* ignore */ }
+    }
+  } else {
+    for (const w of config.workers) {
+      const handle = getPromptWorkerHandle(sanitized, w.name);
+      try {
+        if (handle) {
+          handle.child.kill('SIGTERM');
+        } else if (Number.isFinite(w.pid) && (w.pid ?? 0) > 0) {
+          process.kill(w.pid as number, 'SIGTERM');
+        }
+      } catch {
+        // ignore
+      }
+      removePromptWorkerHandle(sanitized, w.name);
+    }
   }
 
   // 5. Remove team-scoped worker instructions file (no mutation of project AGENTS.md)
@@ -931,10 +1094,12 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
   const config = await readTeamConfig(sanitized, cwd);
   if (!config) return null;
 
-  // Check if tmux session still exists
-  const baseSession = config.tmux_session.split(':')[0];
-  const teamSessions = getTeamTmuxSessions(sanitized);
-  if (!teamSessions.includes(baseSession)) return null;
+  if (config.worker_launch_mode !== 'prompt') {
+    // Check if tmux session still exists
+    const baseSession = config.tmux_session.split(':')[0];
+    const teamSessions = getTeamTmuxSessions(sanitized);
+    if (!teamSessions.includes(baseSession)) return null;
+  }
 
   return {
     teamName: sanitized,
@@ -957,10 +1122,19 @@ async function findActiveTeams(cwd: string, leaderSessionId: string): Promise<st
     const cfg = await readTeamConfig(teamName, cwd);
     const manifest = await readTeamManifestV2(teamName, cwd);
     if (manifest?.policy?.one_team_per_leader_session === false) continue;
+    const workerLaunchMode = cfg?.worker_launch_mode
+      ?? manifest?.policy?.worker_launch_mode
+      ?? 'interactive';
     const tmuxSession = (manifest?.tmux_session || cfg?.tmux_session || `omx-team-${teamName}`).split(':')[0];
     if (leaderSessionId) {
       const ownerSessionId = manifest?.leader?.session_id?.trim() ?? '';
       if (ownerSessionId && ownerSessionId !== leaderSessionId) continue;
+    }
+    if (workerLaunchMode === 'prompt') {
+      if ((cfg?.workers ?? []).some((worker) => isPromptWorkerAlive(cfg!, worker))) {
+        active.push(teamName);
+      }
+      continue;
     }
     if (sessions.has(tmuxSession)) active.push(teamName);
   }
@@ -1050,10 +1224,23 @@ async function emitMonitorDerivedEvents(
 }
 
 function notifyWorker(config: TeamConfig, workerIndex: number, message: string, workerPaneId?: string): boolean {
+  const worker = config.workers.find((candidate) => candidate.index === workerIndex);
+  if (!worker) return false;
+
+  if (config.worker_launch_mode === 'prompt') {
+    const handle = getPromptWorkerHandle(config.name, worker.name);
+    if (!handle) return false;
+    try {
+      sendToWorkerStdin(handle.child.stdin, message);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   if (!config.tmux_session || !isTmuxAvailable()) return false;
   try {
-    const workerCli = config.workers.find((worker) => worker.index === workerIndex)?.worker_cli;
-    sendToWorker(config.tmux_session, workerIndex, message, workerPaneId, workerCli);
+    sendToWorker(config.tmux_session, workerIndex, message, workerPaneId, worker.worker_cli);
     return true;
   } catch {
     return false;

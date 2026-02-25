@@ -1,8 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { PassThrough } from 'node:stream';
 import {
   buildClientAttachedReconcileHookName,
   assertTeamWorkerCliBinaryAvailable,
+  buildWorkerProcessLaunchSpec,
   buildReconcileHudResizeArgs,
   buildRegisterClientAttachedReconcileArgs,
   buildRegisterResizeHookArgs,
@@ -25,12 +27,14 @@ import {
   killWorkerByPaneId,
   listTeamSessions,
   resolveTeamWorkerCli,
+  resolveTeamWorkerLaunchMode,
   resolveWorkerCliForSend,
   resolveTeamWorkerCliPlan,
   buildWorkerSubmitPlan,
   sanitizeTeamName,
   shouldAttemptAdaptiveRetry,
   sendToWorker,
+  sendToWorkerStdin,
   sleepFractionalSeconds,
   translateWorkerLaunchArgsForCli,
   waitForWorkerReady,
@@ -717,6 +721,64 @@ describe('team worker CLI helpers', () => {
     assert.equal(plan.queueFirstRound, true);
     assert.equal(plan.submitKeyPressesPerRound, 2);
     assert.equal(plan.allowAdaptiveRetry, true);
+  });
+});
+
+describe('team worker launch mode helpers', () => {
+  it('resolveTeamWorkerLaunchMode defaults to interactive and accepts prompt', () => {
+    assert.equal(resolveTeamWorkerLaunchMode({}), 'interactive');
+    assert.equal(resolveTeamWorkerLaunchMode({ OMX_TEAM_WORKER_LAUNCH_MODE: 'interactive' }), 'interactive');
+    assert.equal(resolveTeamWorkerLaunchMode({ OMX_TEAM_WORKER_LAUNCH_MODE: 'prompt' }), 'prompt');
+    assert.equal(resolveTeamWorkerLaunchMode({ OMX_TEAM_WORKER_LAUNCH_MODE: ' PROMPT ' }), 'prompt');
+  });
+
+  it('resolveTeamWorkerLaunchMode rejects unsupported values', () => {
+    assert.throws(
+      () => resolveTeamWorkerLaunchMode({ OMX_TEAM_WORKER_LAUNCH_MODE: 'tmux' }),
+      /Invalid OMX_TEAM_WORKER_LAUNCH_MODE value/i,
+    );
+  });
+
+  it('buildWorkerProcessLaunchSpec returns command/args/env for prompt process spawn', () => {
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const spec = buildWorkerProcessLaunchSpec(
+        'alpha-team',
+        2,
+        ['--model', 'gpt-5.3-codex'],
+        '/tmp/workspace',
+        { OMX_TEAM_STATE_ROOT: '/tmp/workspace/.omx/state' },
+        'codex',
+      );
+      assert.equal(spec.command, 'codex');
+      assert.equal(spec.workerCli, 'codex');
+      assert.deepEqual(spec.args, ['--model', 'gpt-5.3-codex']);
+      assert.equal(spec.env.OMX_TEAM_WORKER, 'alpha-team/worker-2');
+      assert.equal(spec.env.OMX_TEAM_STATE_ROOT, '/tmp/workspace/.omx/state');
+    } finally {
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+});
+
+describe('sendToWorkerStdin', () => {
+  it('writes a newline-terminated trigger message to worker stdin', () => {
+    const stdin = new PassThrough();
+    let captured = '';
+    stdin.on('data', (chunk) => {
+      captured += chunk.toString();
+    });
+
+    sendToWorkerStdin(stdin, 'check inbox now');
+    assert.equal(captured, 'check inbox now\n');
+  });
+
+  it('validates trigger text before writing to stdin', () => {
+    const stdin = new PassThrough();
+    assert.throws(() => sendToWorkerStdin(stdin, ''), /non-empty/i);
+    assert.throws(() => sendToWorkerStdin(stdin, 'a'.repeat(200)), /< 200 characters/i);
   });
 });
 

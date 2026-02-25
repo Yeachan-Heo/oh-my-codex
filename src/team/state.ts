@@ -27,6 +27,8 @@ export interface TeamConfig {
   resize_hook_name: string | null;
   /** Registered HUD resize hook target in "<session>:<window>" form. */
   resize_hook_target: string | null;
+  /** Team worker launch transport: interactive tmux or prompt-mode stdin piping. */
+  worker_launch_mode: 'interactive' | 'prompt';
 }
 
 export interface WorkerInfo {
@@ -94,6 +96,7 @@ export interface TeamLeader {
 
 export interface TeamPolicy {
   display_mode: 'split_pane' | 'auto';
+  worker_launch_mode: 'interactive' | 'prompt';
   delegation_only: boolean;
   plan_approval_required: boolean;
   nested_teams_allowed: boolean;
@@ -284,9 +287,13 @@ function defaultLeader(): TeamLeader {
   };
 }
 
-function defaultPolicy(displayMode: TeamPolicy['display_mode'] = 'auto'): TeamPolicy {
+function defaultPolicy(
+  displayMode: TeamPolicy['display_mode'] = 'auto',
+  workerLaunchMode: TeamPolicy['worker_launch_mode'] = 'interactive',
+): TeamPolicy {
   return {
     display_mode: displayMode,
+    worker_launch_mode: workerLaunchMode,
     delegation_only: false,
     plan_approval_required: false,
     nested_teams_allowed: false,
@@ -326,6 +333,13 @@ function resolveDisplayModeFromEnv(env: NodeJS.ProcessEnv): TeamPolicy['display_
   if (raw === 'split_pane' || raw === 'tmux') return 'split_pane';
   if (raw === 'auto') return 'auto';
   return 'auto';
+}
+
+function resolveWorkerLaunchModeFromEnv(env: NodeJS.ProcessEnv): TeamPolicy['worker_launch_mode'] {
+  const raw = readEnvValue(env, ['OMX_TEAM_WORKER_LAUNCH_MODE']);
+  if (!raw || raw === 'interactive') return 'interactive';
+  if (raw === 'prompt') return 'prompt';
+  throw new Error(`Invalid OMX_TEAM_WORKER_LAUNCH_MODE value "${raw}". Expected: interactive, prompt`);
 }
 
 function resolvePermissionsSnapshot(env: NodeJS.ProcessEnv): PermissionsSnapshot {
@@ -566,6 +580,7 @@ export async function initTeamState(
   const leaderWorkerId = readEnvValue(env, ['OMX_TEAM_WORKER']) ?? 'leader-fixed';
   const displayMode = resolveDisplayModeFromEnv(env);
   const permissionsSnapshot = resolvePermissionsSnapshot(env);
+  const workerLaunchMode = resolveWorkerLaunchModeFromEnv(env);
 
   const config: TeamConfig = {
     name: teamName,
@@ -584,6 +599,7 @@ export async function initTeamState(
     hud_pane_id: null,
     resize_hook_name: null,
     resize_hook_target: null,
+    worker_launch_mode: workerLaunchMode,
   };
 
   await writeAtomic(join(root, 'config.json'), JSON.stringify(config, null, 2));
@@ -608,7 +624,7 @@ export async function initTeamState(
         session_id: leaderSessionId,
         worker_id: leaderWorkerId,
       },
-      policy: defaultPolicy(displayMode),
+      policy: defaultPolicy(displayMode, workerLaunchMode),
       permissions_snapshot: permissionsSnapshot,
       tmux_session: config.tmux_session,
       worker_count: workerCount,
@@ -650,6 +666,10 @@ async function writeConfig(cfg: TeamConfig, cwd: string): Promise<void> {
       hud_pane_id: normalized.hud_pane_id,
       resize_hook_name: normalized.resize_hook_name,
       resize_hook_target: normalized.resize_hook_target,
+      policy: {
+        ...existing.policy,
+        worker_launch_mode: normalized.worker_launch_mode,
+      },
     };
     await writeTeamManifestV2(merged, cwd);
   }
@@ -673,16 +693,19 @@ function teamConfigFromManifest(manifest: TeamManifestV2): TeamConfig {
     hud_pane_id: manifest.hud_pane_id,
     resize_hook_name: manifest.resize_hook_name,
     resize_hook_target: manifest.resize_hook_target,
+    worker_launch_mode: manifest.policy?.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive',
   };
 }
 
 function normalizeTeamConfig(config: TeamConfig): TeamConfig {
+  const workerLaunchMode = config.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive';
   return {
     ...config,
     leader_pane_id: config.leader_pane_id ?? null,
     hud_pane_id: config.hud_pane_id ?? null,
     resize_hook_name: config.resize_hook_name ?? null,
     resize_hook_target: config.resize_hook_target ?? null,
+    worker_launch_mode: workerLaunchMode,
   };
 }
 
@@ -693,7 +716,7 @@ function teamManifestFromConfig(config: TeamConfig): TeamManifestV2 {
     name: normalized.name,
     task: normalized.task,
     leader: defaultLeader(),
-    policy: defaultPolicy(),
+    policy: defaultPolicy('auto', normalized.worker_launch_mode),
     permissions_snapshot: defaultPermissionsSnapshot(),
     tmux_session: normalized.tmux_session,
     worker_count: normalized.worker_count,

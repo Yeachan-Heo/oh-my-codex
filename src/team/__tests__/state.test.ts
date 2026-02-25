@@ -16,6 +16,7 @@ import {
   listTasks,
   migrateV1ToV2,
   readTask,
+  readTeamConfig,
   readTeamManifestV2,
   transitionTaskStatus,
   releaseTaskClaim,
@@ -1182,6 +1183,7 @@ describe('team state', () => {
         {
           ...process.env,
           OMX_TEAM_DISPLAY_MODE: 'tmux',
+          OMX_TEAM_WORKER_LAUNCH_MODE: 'prompt',
           CODEX_APPROVAL_MODE: 'on-request',
           CODEX_SANDBOX_MODE: 'workspace-write',
           CODEX_NETWORK_ACCESS: '0',
@@ -1190,12 +1192,39 @@ describe('team state', () => {
       );
 
       const manifest = await readTeamManifestV2('team-env', cwd);
+      const config = await readTeamConfig('team-env', cwd);
       assert.ok(manifest);
+      assert.ok(config);
       assert.equal(manifest?.policy.display_mode, 'split_pane');
+      assert.equal(manifest?.policy.worker_launch_mode, 'prompt');
+      assert.equal(config?.worker_launch_mode, 'prompt');
       assert.equal(manifest?.permissions_snapshot.approval_mode, 'on-request');
       assert.equal(manifest?.permissions_snapshot.sandbox_mode, 'workspace-write');
       assert.equal(manifest?.permissions_snapshot.network_access, false);
       assert.equal(manifest?.leader.session_id, 'session-xyz');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('initTeamState rejects invalid OMX_TEAM_WORKER_LAUNCH_MODE values', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-state-'));
+    try {
+      await assert.rejects(
+        () => initTeamState(
+          'team-env-invalid',
+          't',
+          'executor',
+          1,
+          cwd,
+          DEFAULT_MAX_WORKERS,
+          {
+            ...process.env,
+            OMX_TEAM_WORKER_LAUNCH_MODE: 'tmux',
+          },
+        ),
+        /Invalid OMX_TEAM_WORKER_LAUNCH_MODE value/i,
+      );
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

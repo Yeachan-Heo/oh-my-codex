@@ -29,11 +29,13 @@ const OMX_BYPASS_DEFAULT_SYSTEM_PROMPT_ENV = 'OMX_BYPASS_DEFAULT_SYSTEM_PROMPT';
 const OMX_MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
 const OMX_TEAM_WORKER_CLI_ENV = 'OMX_TEAM_WORKER_CLI';
 const OMX_TEAM_WORKER_CLI_MAP_ENV = 'OMX_TEAM_WORKER_CLI_MAP';
+const OMX_TEAM_WORKER_LAUNCH_MODE_ENV = 'OMX_TEAM_WORKER_LAUNCH_MODE';
 const OMX_TEAM_AUTO_INTERRUPT_RETRY_ENV = 'OMX_TEAM_AUTO_INTERRUPT_RETRY';
 const CLAUDE_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
 
 export type TeamWorkerCli = 'codex' | 'claude';
 type TeamWorkerCliMode = 'auto' | TeamWorkerCli;
+export type TeamWorkerLaunchMode = 'interactive' | 'prompt';
 
 export interface WorkerSubmitPlan {
   shouldInterrupt: boolean;
@@ -46,6 +48,13 @@ export interface WorkerSubmitPlan {
 interface WorkerLaunchSpec {
   shell: string;
   rcFile: string | null;
+}
+
+export interface WorkerProcessLaunchSpec {
+  workerCli: TeamWorkerCli;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
 }
 
 interface TmuxPaneInfo {
@@ -317,6 +326,15 @@ function normalizeTeamWorkerCliMode(raw: string | undefined, sourceEnv: string =
   throw new Error(`Invalid ${sourceEnv} value "${raw}". Expected: auto, codex, claude`);
 }
 
+export function resolveTeamWorkerLaunchMode(
+  env: NodeJS.ProcessEnv = process.env,
+): TeamWorkerLaunchMode {
+  const raw = String(env[OMX_TEAM_WORKER_LAUNCH_MODE_ENV] ?? 'interactive').trim().toLowerCase();
+  if (raw === '' || raw === 'interactive') return 'interactive';
+  if (raw === 'prompt') return 'prompt';
+  throw new Error(`Invalid ${OMX_TEAM_WORKER_LAUNCH_MODE_ENV} value "${env[OMX_TEAM_WORKER_LAUNCH_MODE_ENV]}". Expected: interactive, prompt`);
+}
+
 function extractModelOverride(args: string[]): string | null {
   let model: string | null = null;
   for (let i = 0; i < args.length; i++) {
@@ -454,22 +472,50 @@ export function buildWorkerStartupCommand(
   extraEnv: Record<string, string> = {},
   workerCliOverride?: TeamWorkerCli,
 ): string {
-  const spec = buildWorkerLaunchSpec(process.env.SHELL);
+  const processSpec = buildWorkerProcessLaunchSpec(
+    teamName,
+    workerIndex,
+    launchArgs,
+    cwd,
+    extraEnv,
+    workerCliOverride,
+  );
+  const launchSpec = buildWorkerLaunchSpec(process.env.SHELL);
+  const quotedArgs = processSpec.args.map(shellQuoteSingle).join(' ');
+  const cliInvocation = quotedArgs.length > 0 ? `exec ${processSpec.command} ${quotedArgs}` : `exec ${processSpec.command}`;
+  const rcPrefix = launchSpec.rcFile ? `if [ -f ${launchSpec.rcFile} ]; then source ${launchSpec.rcFile}; fi; ` : '';
+  const inner = `${rcPrefix}${cliInvocation}`;
+  const envParts = Object.entries(processSpec.env).map(([key, value]) => `${key}=${value}`);
+
+  return `env ${envParts.map(shellQuoteSingle).join(' ')} ${shellQuoteSingle(launchSpec.shell)} -lc ${shellQuoteSingle(inner)}`;
+}
+
+export function buildWorkerProcessLaunchSpec(
+  teamName: string,
+  workerIndex: number,
+  launchArgs: string[] = [],
+  cwd: string = process.cwd(),
+  extraEnv: Record<string, string> = {},
+  workerCliOverride?: TeamWorkerCli,
+): WorkerProcessLaunchSpec {
   const fullLaunchArgs = resolveWorkerLaunchArgs(launchArgs, cwd);
   const workerCli = workerCliOverride ?? resolveTeamWorkerCli(fullLaunchArgs, process.env);
   const cliLaunchArgs = translateWorkerLaunchArgsForCli(workerCli, fullLaunchArgs);
-  const quotedArgs = cliLaunchArgs.map(shellQuoteSingle).join(' ');
-  const cliInvocation = quotedArgs.length > 0 ? `exec ${workerCli} ${quotedArgs}` : `exec ${workerCli}`;
-  const rcPrefix = spec.rcFile ? `if [ -f ${spec.rcFile} ]; then source ${spec.rcFile}; fi; ` : '';
-  const inner = `${rcPrefix}${cliInvocation}`;
 
-  const envParts = [`OMX_TEAM_WORKER=${teamName}/worker-${workerIndex}`];
+  const workerEnv: Record<string, string> = {
+    OMX_TEAM_WORKER: `${teamName}/worker-${workerIndex}`,
+  };
   for (const [key, value] of Object.entries(extraEnv)) {
     if (typeof value !== 'string' || value.trim() === '') continue;
-    envParts.push(`${key}=${value}`);
+    workerEnv[key] = value;
   }
 
-  return `env ${envParts.map(shellQuoteSingle).join(' ')} ${shellQuoteSingle(spec.shell)} -lc ${shellQuoteSingle(inner)}`;
+  return {
+    workerCli,
+    command: workerCli,
+    args: cliLaunchArgs,
+    env: workerEnv,
+  };
 }
 
 // Sanitize team name: lowercase, alphanumeric + hyphens, max 30 chars
@@ -1024,6 +1070,29 @@ export function normalizeTmuxCapture(value: string): string {
     .trim();
 }
 
+function assertWorkerTriggerText(text: string): void {
+  if (text.length >= 200) {
+    throw new Error('sendToWorker: text must be < 200 characters');
+  }
+  if (text.trim().length === 0) {
+    throw new Error('sendToWorker: text must be non-empty');
+  }
+  if (text.includes(INJECTION_MARKER)) {
+    throw new Error('sendToWorker: injection marker is not allowed');
+  }
+}
+
+export function sendToWorkerStdin(
+  stdin: Pick<NodeJS.WritableStream, 'write' | 'writable'> | null | undefined,
+  text: string,
+): void {
+  assertWorkerTriggerText(text);
+  if (!stdin || !stdin.writable) {
+    throw new Error('sendToWorkerStdin: stdin is not writable');
+  }
+  stdin.write(`${text}\n`);
+}
+
 // Send SHORT text (<200 chars) to worker via tmux send-keys
 // Validates: text < 200 chars, no injection marker
 // Throws on violation
@@ -1034,15 +1103,7 @@ export function sendToWorker(
   workerPaneId?: string,
   workerCli?: TeamWorkerCli,
 ): void {
-  if (text.length >= 200) {
-    throw new Error('sendToWorker: text must be < 200 characters');
-  }
-  if (text.trim().length === 0) {
-    throw new Error('sendToWorker: text must be non-empty');
-  }
-  if (text.includes(INJECTION_MARKER)) {
-    throw new Error('sendToWorker: injection marker is not allowed');
-  }
+  assertWorkerTriggerText(text);
 
   const target = paneTarget(sessionName, workerIndex, workerPaneId);
   const strategy = resolveSendStrategyFromEnv();
