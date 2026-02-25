@@ -74,6 +74,7 @@ import {
   isLowComplexityAgentType,
   resolveTeamWorkerLaunchArgs,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
+  resolveTeamLowComplexityDefaultModel,
   parseTeamWorkerLaunchArgs,
   splitWorkerLaunchArgs,
 } from './model-contract.js';
@@ -189,7 +190,7 @@ export function resolveWorkerLaunchArgsFromEnv(
     ? ['--model', inheritedLeaderModel.trim()]
     : [];
   const fallbackModel = isLowComplexityAgentType(agentType)
-    ? TEAM_LOW_COMPLEXITY_DEFAULT_MODEL
+    ? resolveTeamLowComplexityDefaultModel(env.CODEX_HOME)
     : undefined;
 
   // Detect if an explicit reasoning override exists before resolving (for log source labelling)
