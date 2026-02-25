@@ -142,6 +142,36 @@ describe('HUD resize hook command builders', () => {
     assert.deepEqual(unregistered, ['set-hook', '-u', '-t', 'my-session:0', registered[3] as string]);
   });
 
+  it('hook indices stay within signed 32-bit range (issue #240)', () => {
+    // buildResizeHookSlot and buildClientAttachedHookSlot must produce indices
+    // in [0, 2147483647) so tmux (signed 32-bit) does not overflow.
+    const longName = 'omx_resize_' + 'a'.repeat(200);
+    const resizeArgs = buildRegisterResizeHookArgs('sess:0', longName, '%1');
+    const attachedArgs = buildRegisterClientAttachedReconcileArgs('sess:0', longName, '%1');
+
+    const resizeSlot = resizeArgs[3] ?? '';
+    const attachedSlot = attachedArgs[3] ?? '';
+
+    const resizeIndex = Number((resizeSlot.match(/\[(\d+)\]/) ?? [])[1]);
+    const attachedIndex = Number((attachedSlot.match(/\[(\d+)\]/) ?? [])[1]);
+
+    assert.ok(resizeIndex >= 0, `resize index must be non-negative, got ${resizeIndex}`);
+    assert.ok(resizeIndex < 2147483647, `resize index must be < 2^31-1, got ${resizeIndex}`);
+    assert.ok(attachedIndex >= 0, `attached index must be non-negative, got ${attachedIndex}`);
+    assert.ok(attachedIndex < 2147483647, `attached index must be < 2^31-1, got ${attachedIndex}`);
+  });
+
+  it('hook indices are deterministic across calls', () => {
+    const name = 'omx_resize_team_session_0_1';
+    const a = buildRegisterResizeHookArgs('s:0', name, '%1');
+    const b = buildRegisterResizeHookArgs('s:0', name, '%1');
+    assert.equal(a[3], b[3]);
+
+    const c = buildRegisterClientAttachedReconcileArgs('s:0', name, '%1');
+    const d = buildRegisterClientAttachedReconcileArgs('s:0', name, '%1');
+    assert.equal(c[3], d[3]);
+  });
+
   it('buildScheduleDelayedHudResizeArgs schedules tmux-side delayed reconcile', () => {
     assert.deepEqual(
       buildScheduleDelayedHudResizeArgs('%1'),

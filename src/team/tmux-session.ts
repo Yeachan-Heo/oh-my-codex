@@ -185,20 +185,23 @@ function buildBestEffortShellCommand(command: string): string {
   return `${command} >/dev/null 2>&1 || true`;
 }
 
+/** Upper bound for tmux hook indices (signed 32-bit max). */
+const TMUX_HOOK_INDEX_MAX = 2147483647;
+
 function buildResizeHookSlot(hookName: string): string {
   let hash = 0;
   for (let i = 0; i < hookName.length; i++) {
-    hash = (hash * 31 + hookName.charCodeAt(i)) >>> 0;
+    hash = (hash * 31 + hookName.charCodeAt(i)) | 0;
   }
-  return `client-resized[${hash}]`;
+  return `client-resized[${Math.abs(hash) % TMUX_HOOK_INDEX_MAX}]`;
 }
 
 function buildClientAttachedHookSlot(hookName: string): string {
   let hash = 0;
   for (let i = 0; i < hookName.length; i++) {
-    hash = (hash * 31 + hookName.charCodeAt(i)) >>> 0;
+    hash = (hash * 31 + hookName.charCodeAt(i)) | 0;
   }
-  return `client-attached[${hash}]`;
+  return `client-attached[${Math.abs(hash) % TMUX_HOOK_INDEX_MAX}]`;
 }
 
 export function buildRegisterResizeHookArgs(
