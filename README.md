@@ -209,7 +209,7 @@ Notes:
   - `user`: `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`
   - `project`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`
 - Launch behavior: if persisted scope is `project`, `omx` launch auto-uses `CODEX_HOME=./.codex` (unless `CODEX_HOME` is already set).
-- Existing `AGENTS.md` is preserved unless `--force` is used (and active-session safety checks still apply).
+- Existing `AGENTS.md` is preserved by default. In interactive TTY runs, setup prompts before overwrite; `--force` overwrites without prompt (active-session safety checks still apply).
 - `config.toml` updates (for both scopes):
   - `notify = ["node", "..."]`
   - `model_reasoning_effort = "high"`

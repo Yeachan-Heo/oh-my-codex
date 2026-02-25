@@ -163,4 +163,41 @@ describe('omx setup scope behavior', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('preserves existing AGENTS.md in non-interactive runs without --force', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-scope-'));
+    try {
+      const home = join(wd, 'home');
+      const existingAgents = '# custom agents instructions\n\nkeep this file\n';
+      await mkdir(home, { recursive: true });
+      await writeFile(join(wd, 'AGENTS.md'), existingAgents);
+
+      const res = runOmx(wd, ['setup', '--scope=project'], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.match(res.stdout, /AGENTS\.md already exists \(use --force to overwrite\)\./);
+      assert.equal(await readFile(join(wd, 'AGENTS.md'), 'utf-8'), existingAgents);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('overwrites existing AGENTS.md with --force', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-scope-'));
+    try {
+      const home = join(wd, 'home');
+      await mkdir(home, { recursive: true });
+      await writeFile(join(wd, 'AGENTS.md'), '# old custom file\n');
+
+      const res = runOmx(wd, ['setup', '--scope=project', '--force'], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+
+      const overwritten = await readFile(join(wd, 'AGENTS.md'), 'utf-8');
+      assert.match(overwritten, /# oh-my-codex - Intelligent Multi-Agent Orchestration/);
+      assert.doesNotMatch(overwritten, /# old custom file/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });

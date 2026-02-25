@@ -24,6 +24,7 @@ interface SetupOptions {
   dryRun?: boolean;
   scope?: SetupScope;
   verbose?: boolean;
+  agentsOverwritePrompt?: () => Promise<boolean>;
 }
 
 /**
@@ -144,6 +145,24 @@ async function promptForSetupScope(defaultScope: SetupScope): Promise<SetupScope
   }
 }
 
+async function promptForAgentsOverwrite(): Promise<boolean> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    return false;
+  }
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    const answer = (await rl.question('AGENTS.md already exists. Overwrite with template? [y/N]: '))
+      .trim()
+      .toLowerCase();
+    return answer === 'y' || answer === 'yes';
+  } finally {
+    rl.close();
+  }
+}
+
 async function resolveSetupScope(projectRoot: string, requestedScope?: SetupScope): Promise<ResolvedSetupScope> {
   if (requestedScope) {
     return { scope: requestedScope, source: 'cli' };
@@ -176,7 +195,13 @@ async function persistSetupScope(
 }
 
 export async function setup(options: SetupOptions = {}): Promise<void> {
-  const { force = false, dryRun = false, scope: requestedScope, verbose = false } = options;
+  const {
+    force = false,
+    dryRun = false,
+    scope: requestedScope,
+    verbose = false,
+    agentsOverwritePrompt,
+  } = options;
   const pkgRoot = getPackageRoot();
   const projectRoot = process.cwd();
   const resolvedScope = await resolveSetupScope(projectRoot, requestedScope);
@@ -282,17 +307,29 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log('[6/8] Generating AGENTS.md...');
   const agentsMdSrc = join(pkgRoot, 'templates', 'AGENTS.md');
   const agentsMdDst = join(projectRoot, 'AGENTS.md');
+  const agentsMdExists = existsSync(agentsMdDst);
 
   // Guard: refuse to overwrite AGENTS.md during active session
   const activeSession = await readSessionState(projectRoot);
   const sessionIsActive = activeSession && !isSessionStale(activeSession);
 
   if (existsSync(agentsMdSrc)) {
-    if (sessionIsActive && force) {
+    let shouldOverwriteAgentsMd = force;
+    if (!force && agentsMdExists && process.stdin.isTTY && process.stdout.isTTY) {
+      shouldOverwriteAgentsMd = agentsOverwritePrompt
+        ? await agentsOverwritePrompt()
+        : await promptForAgentsOverwrite();
+    }
+
+    if (sessionIsActive && shouldOverwriteAgentsMd) {
       console.log('  WARNING: Active omx session detected (pid ' + activeSession!.pid + ').');
       console.log('  Skipping AGENTS.md overwrite to avoid corrupting runtime overlay.');
-      console.log('  Stop the active session first, then re-run setup --force.');
-    } else if (force || !existsSync(agentsMdDst)) {
+      if (force) {
+        console.log('  Stop the active session first, then re-run setup --force.');
+      } else {
+        console.log('  Stop the active session first, then re-run setup and approve overwrite (or use --force).');
+      }
+    } else if (shouldOverwriteAgentsMd || !agentsMdExists) {
       if (!dryRun) {
         const content = await readFile(agentsMdSrc, 'utf-8');
         const rewritten = applyScopePathRewritesToAgentsTemplate(content, resolvedScope.scope);
