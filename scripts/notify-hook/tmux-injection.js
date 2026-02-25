@@ -245,13 +245,13 @@ export async function handleTmuxInjection({
     return;
   }
 
-  const { renderPrompt } = await import('./payload-parser.js');
-  const prompt = renderPrompt(config.prompt_template, {
+  const { renderPrompt, injectLanguageReminder } = await import('./payload-parser.js');
+  const prompt = injectLanguageReminder(renderPrompt(config.prompt_template, {
     mode: mode || 'unknown',
     threadId,
     turnId,
     timestamp: nowIso,
-  });
+  }), sourceText);
   const fallbackPane = safeString(process.env.TMUX_PANE || '');
   const resolution = await resolvePaneTarget(config.target, fallbackPane, cwd, modePane);
   if (!resolution.paneTarget) {

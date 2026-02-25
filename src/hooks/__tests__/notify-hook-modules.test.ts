@@ -284,3 +284,29 @@ describe('notify-hook/state-io – normalizeNotifyState', () => {
     assert.equal(s.last_event_at, '2025-01-01T00:00:00Z');
   });
 });
+
+// ---------------------------------------------------------------------------
+// payload-parser.js – non-Latin detection + language reminder injection
+// ---------------------------------------------------------------------------
+describe('notify-hook/payload-parser – language reminder injection', () => {
+  it('detects non-Latin script in user input', async () => {
+    const { hasNonLatinScript } = await loadModule('notify-hook/payload-parser.js');
+    assert.equal(hasNonLatinScript('Привет, как дела?'), true);
+    assert.equal(hasNonLatinScript('こんにちは、お願いします'), true);
+    assert.equal(hasNonLatinScript('hello world'), false);
+  });
+
+  it('injects language reminder for non-Latin input', async () => {
+    const { injectLanguageReminder, LANGUAGE_REMINDER_MARKER } = await loadModule('notify-hook/payload-parser.js');
+    const prompt = injectLanguageReminder('Continue from current mode state. [OMX_TMUX_INJECT]', '帮我修复这个问题');
+    assert.match(prompt, /\[OMX_LANG_REMINDER\]/);
+    assert.match(prompt, /Continue in the user's language\./);
+    assert.match(prompt, new RegExp(LANGUAGE_REMINDER_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  });
+
+  it('does not inject reminder for Latin-only text', async () => {
+    const { injectLanguageReminder } = await loadModule('notify-hook/payload-parser.js');
+    const prompt = injectLanguageReminder('Continue [OMX_TMUX_INJECT]', 'Please fix issue 253');
+    assert.equal(prompt, 'Continue [OMX_TMUX_INJECT]');
+  });
+});
