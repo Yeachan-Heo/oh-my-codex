@@ -200,6 +200,20 @@ export function buildUnregisterResizeHookArgs(hookTarget: string, hookName: stri
   return ['set-hook', '-u', '-t', hookTarget, buildResizeHookSlot(hookName)];
 }
 
+function buildRegisterResizeHookArgsLegacy(hookTarget: string, hudPaneId: string): string[] {
+  const resizeCommand = shellQuoteSingle(`tmux ${buildHudResizeCommand(hudPaneId)}`);
+  return ['set-hook', '-t', hookTarget, 'client-resized', `run-shell -b ${resizeCommand}`];
+}
+
+function buildUnregisterResizeHookArgsLegacy(hookTarget: string): string[] {
+  return ['set-hook', '-u', '-t', hookTarget, 'client-resized'];
+}
+
+function isIndexedHookOptionUnsupported(stderr: string): boolean {
+  const normalized = stderr.toLowerCase();
+  return normalized.includes('invalid option: client-resized[') || normalized.includes('invalid option: client-attached[');
+}
+
 export function buildClientAttachedReconcileHookName(
   teamName: string,
   sessionName: string,
@@ -233,7 +247,10 @@ export function buildUnregisterClientAttachedReconcileArgs(hookTarget: string, h
 
 export function unregisterResizeHook(hookTarget: string, hookName: string): boolean {
   const result = runTmux(buildUnregisterResizeHookArgs(hookTarget, hookName));
-  return result.ok;
+  if (result.ok) return true;
+  if (!isIndexedHookOptionUnsupported(result.stderr)) return false;
+  const fallback = runTmux(buildUnregisterResizeHookArgsLegacy(hookTarget));
+  return fallback.ok;
 }
 
 export function buildScheduleDelayedHudResizeArgs(
@@ -623,7 +640,13 @@ export function createTeamSession(
           resizeHookName = buildResizeHookName(safeTeamName, sessionName, windowIndex, hudPaneId);
           const registerHook = runTmux(buildRegisterResizeHookArgs(resizeHookTarget, resizeHookName, hudPaneId));
           if (!registerHook.ok) {
-            throw new Error(`failed to register resize hook ${resizeHookName}: ${registerHook.stderr}`);
+            if (!isIndexedHookOptionUnsupported(registerHook.stderr)) {
+              throw new Error(`failed to register resize hook ${resizeHookName}: ${registerHook.stderr}`);
+            }
+            const registerHookLegacy = runTmux(buildRegisterResizeHookArgsLegacy(resizeHookTarget, hudPaneId));
+            if (!registerHookLegacy.ok) {
+              throw new Error(`failed to register resize hook ${resizeHookName}: ${registerHook.stderr}; fallback: ${registerHookLegacy.stderr}`);
+            }
           }
           registeredResizeHook = { name: resizeHookName, target: resizeHookTarget };
 
@@ -662,7 +685,7 @@ export function createTeamSession(
     };
   } catch (error) {
     if (registeredResizeHook) {
-      runTmux(buildUnregisterResizeHookArgs(registeredResizeHook.target, registeredResizeHook.name));
+      unregisterResizeHook(registeredResizeHook.target, registeredResizeHook.name);
     }
     for (const paneId of rollbackPaneIds) {
       runTmux(['kill-pane', '-t', paneId]);

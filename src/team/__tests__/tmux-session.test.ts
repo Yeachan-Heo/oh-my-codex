@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildClientAttachedReconcileHookName,
   assertTeamWorkerCliBinaryAvailable,
@@ -31,6 +34,7 @@ import {
   sanitizeTeamName,
   shouldAttemptAdaptiveRetry,
   sendToWorker,
+  unregisterResizeHook,
   sleepFractionalSeconds,
   translateWorkerLaunchArgsForCli,
   waitForWorkerReady,
@@ -150,6 +154,49 @@ describe('HUD resize hook command builders', () => {
     const args = buildReconcileHudResizeArgs('%7');
     assert.equal(args.includes('split-window'), false);
     assert.deepEqual(args, ['resize-pane', '-t', '%7', '-y', String(HUD_TMUX_HEIGHT_LINES)]);
+  });
+});
+
+describe('unregisterResizeHook compatibility fallback', () => {
+  it('retries with legacy hook slot when indexed slot is rejected', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'omx-fake-tmux-'));
+    const tmuxPath = join(tmp, 'tmux');
+    const logPath = join(tmp, 'tmux.log');
+    writeFileSync(
+      tmuxPath,
+      `#!/usr/bin/env bash
+echo "$*" >> "$OMX_TEST_TMUX_LOG"
+if [[ "$*" == *"client-resized["* ]]; then
+  echo "invalid option: client-resized[123]" >&2
+  exit 1
+fi
+if [[ "$*" == *" client-resized" ]]; then
+  exit 0
+fi
+exit 0
+`,
+      { encoding: 'utf-8' },
+    );
+    chmodSync(tmuxPath, 0o755);
+
+    const prevPath = process.env.PATH;
+    const prevLog = process.env.OMX_TEST_TMUX_LOG;
+    process.env.PATH = `${tmp}:${prevPath || ''}`;
+    process.env.OMX_TEST_TMUX_LOG = logPath;
+    try {
+      const ok = unregisterResizeHook('session:0', 'omx_resize_team_session_0_1');
+      assert.equal(ok, true);
+      const lines = readFileSync(logPath, 'utf-8').trim().split('\n').filter(Boolean);
+      assert.equal(lines.length, 2);
+      assert.match(lines[0] ?? '', /client-resized\[\d+\]$/);
+      assert.match(lines[1] ?? '', /client-resized$/);
+    } finally {
+      if (typeof prevPath === 'string') process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      if (typeof prevLog === 'string') process.env.OMX_TEST_TMUX_LOG = prevLog;
+      else delete process.env.OMX_TEST_TMUX_LOG;
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 
