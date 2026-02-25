@@ -4,6 +4,9 @@
 
 import { asNumber, safeString, clampPct } from './utils.js';
 
+export const LANGUAGE_REMINDER_MARKER = '[OMX_LANG_REMINDER]';
+export const LANGUAGE_REMINDER_TEXT = `${LANGUAGE_REMINDER_MARKER} User input includes non-Latin script. Continue in the user's language.`;
+
 export function extractLimitPct(limit) {
   if (limit == null) return null;
   if (typeof limit === 'number' || typeof limit === 'string') return clampPct(asNumber(limit));
@@ -119,4 +122,22 @@ export function renderPrompt(template, context) {
     .replaceAll('{{thread_id}}', context.threadId)
     .replaceAll('{{turn_id}}', context.turnId)
     .replaceAll('{{timestamp}}', context.timestamp);
+}
+
+export function hasNonLatinScript(text) {
+  const source = safeString(text);
+  if (!source) return false;
+  for (const char of source) {
+    if (!/\p{Letter}/u.test(char)) continue;
+    if (/\p{Script=Latin}/u.test(char)) continue;
+    return true;
+  }
+  return false;
+}
+
+export function injectLanguageReminder(prompt, sourceText) {
+  const basePrompt = safeString(prompt);
+  if (!hasNonLatinScript(sourceText)) return basePrompt;
+  if (basePrompt.includes(LANGUAGE_REMINDER_MARKER)) return basePrompt;
+  return `${basePrompt}\n${LANGUAGE_REMINDER_TEXT}`;
 }
