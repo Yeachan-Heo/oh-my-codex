@@ -155,6 +155,40 @@ describe('generateOverlay', () => {
     const overlay = await generateOverlay(tempDir, 'test-session-6');
     assert.ok(!overlay.includes('autopilot'));
   });
+
+  it('adds blocked ralph planning gate when PRD/test spec are missing', async () => {
+    const sessionId = 'ralph-gate-blocked';
+    const sessionDir = join(tempDir, '.omx', 'state', 'sessions', sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(sessionDir, 'ralph-state.json'),
+      JSON.stringify({ active: true, iteration: 0, max_iterations: 50, current_phase: 'starting' })
+    );
+    await mkdir(join(tempDir, '.omx', 'plans'), { recursive: true });
+
+    const overlay = await generateOverlay(tempDir, sessionId);
+    assert.match(overlay, /\*\*Ralph Ralplan-First Gate:\*\* BLOCKED/);
+    assert.match(overlay, /`prd-\*\.md`/);
+    assert.match(overlay, /`test-spec-\*\.md`/);
+  });
+
+  it('unlocks ralph planning gate when PRD and test spec exist', async () => {
+    const sessionId = 'ralph-gate-unlocked';
+    const sessionDir = join(tempDir, '.omx', 'state', 'sessions', sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(sessionDir, 'ralph-state.json'),
+      JSON.stringify({ active: true, iteration: 1, max_iterations: 50, current_phase: 'starting' })
+    );
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-issue-259.md'), '# PRD\n');
+    await writeFile(join(plansDir, 'test-spec-issue-259.md'), '# Test Spec\n');
+
+    const overlay = await generateOverlay(tempDir, sessionId);
+    assert.match(overlay, /\*\*Ralph Ralplan-First Gate:\*\* UNLOCKED/);
+    assert.match(overlay, /Planning artifacts present: PRD \+ test spec/);
+  });
 });
 
 describe('applyOverlay + stripOverlay roundtrip', () => {

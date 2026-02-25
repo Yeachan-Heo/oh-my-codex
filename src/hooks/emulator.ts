@@ -96,13 +96,13 @@ export const HOOK_MAPPING: Record<HookEvent, {
  */
 export const KEYWORD_TRIGGERS: Record<string, string> = {
   'autopilot': 'Activate autopilot skill for autonomous execution',
-  'ralph': 'Activate ralph persistence loop with verification',
+  'ralph': 'Activate ralph persistence loop with verification (planning-gated: require PRD + test spec before implementation tools)',
   'ultrawork': 'Activate ultrawork parallel execution mode',
   'ulw': 'Activate ultrawork parallel execution mode',
   'ecomode': 'Activate ecomode for token-efficient execution',
   'eco': 'Activate ecomode for token-efficient execution',
   'plan': 'Activate planning skill',
-  'ralplan': 'Activate consensus planning (planner + architect + critic)',
+  'ralplan': 'Activate consensus planning (planner + architect + critic) and complete PRD + test spec before implementation',
   'team': 'Activate coordinated team mode',
   'coordinated team': 'Activate coordinated team mode',
   'swarm': 'Activate coordinated team mode (swarm is a compatibility alias for team)',
@@ -123,6 +123,11 @@ export function generateKeywordDetectionSection(): string {
 <keyword_detection>
 When you see these keywords in user messages, activate the corresponding skill:
 ${lines}
+
+Ralplan-first execution gate:
+- Before implementation/tool execution, ensure both artifacts exist in \`.omx/plans/\`: \`prd-*.md\` and \`test-spec-*.md\`.
+- If ralph is active and either artifact is missing, stay in planning mode and do not execute implementation tools.
+- Only begin implementation after the planning gate is complete.
 
 To activate a skill, use the corresponding slash command or invoke the skill directly.
 If a keyword is detected, announce the activation to the user before proceeding.
