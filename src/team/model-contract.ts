@@ -1,3 +1,5 @@
+import { getTeamLowComplexityModel, HARDCODED_TEAM_LOW_COMPLEXITY_MODEL } from '../config/models.js';
+
 const MADMAX_FLAG = '--madmax';
 const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
 const MODEL_FLAG = '--model';
@@ -11,7 +13,7 @@ const LOW_COMPLEXITY_AGENT_TYPES = new Set([
   'writer',
 ]);
 
-export const TEAM_LOW_COMPLEXITY_DEFAULT_MODEL = 'gpt-5.3-codex-spark';
+export const TEAM_LOW_COMPLEXITY_DEFAULT_MODEL = HARDCODED_TEAM_LOW_COMPLEXITY_MODEL;
 
 export interface ParsedTeamWorkerLaunchArgs {
   passthrough: string[];
@@ -141,4 +143,8 @@ export function isLowComplexityAgentType(agentType?: string): boolean {
   if (normalized === '') return false;
   if (normalized.endsWith('-low')) return true;
   return LOW_COMPLEXITY_AGENT_TYPES.has(normalized);
+}
+
+export function resolveTeamLowComplexityDefaultModel(codexHomeOverride?: string): string {
+  return getTeamLowComplexityModel(codexHomeOverride);
 }

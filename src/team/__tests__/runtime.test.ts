@@ -66,6 +66,27 @@ describe('runtime', () => {
     assert.deepEqual(args, ['--no-alt-screen', '--model', TEAM_LOW_COMPLEXITY_DEFAULT_MODEL]);
   });
 
+  it('resolveWorkerLaunchArgsFromEnv reads low-complexity model from config when present', async () => {
+    const previousCodexHome = process.env.CODEX_HOME;
+    const tempCodexHome = await mkdtemp(join(tmpdir(), 'omx-codex-home-'));
+    await writeFile(
+      join(tempCodexHome, '.omx-config.json'),
+      JSON.stringify({ models: { team_low_complexity: 'gpt-4.1-mini' } }),
+    );
+    process.env.CODEX_HOME = tempCodexHome;
+    try {
+      const args = resolveWorkerLaunchArgsFromEnv(
+        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
+        'explore',
+      );
+      assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-4.1-mini']);
+    } finally {
+      if (typeof previousCodexHome === 'string') process.env.CODEX_HOME = previousCodexHome;
+      else delete process.env.CODEX_HOME;
+      await rm(tempCodexHome, { recursive: true, force: true });
+    }
+  });
+
   it('resolveWorkerLaunchArgsFromEnv does not inject low-complexity default for standard agent types', () => {
     const args = resolveWorkerLaunchArgsFromEnv(
       { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },

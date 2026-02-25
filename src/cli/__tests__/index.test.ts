@@ -161,6 +161,19 @@ describe('resolveWorkerSparkModel', () => {
   it('returns undefined for empty args', () => {
     assert.equal(resolveWorkerSparkModel([]), undefined);
   });
+
+  it('reads low-complexity team model from config when codexHomeOverride is provided', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-codex-home-'));
+    try {
+      await writeFile(
+        join(codexHome, '.omx-config.json'),
+        JSON.stringify({ models: { team_low_complexity: 'gpt-4.1-mini' } }),
+      );
+      assert.equal(resolveWorkerSparkModel(['--spark'], codexHome), 'gpt-4.1-mini');
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('resolveTeamWorkerLaunchArgsEnv (spark)', () => {

@@ -22,8 +22,8 @@ export interface ModelsConfig {
   [mode: string]: string | undefined;
 }
 
-function readModelsBlock(): ModelsConfig | null {
-  const configPath = join(codexHome(), '.omx-config.json');
+function readModelsBlock(codexHomeOverride?: string): ModelsConfig | null {
+  const configPath = join(codexHomeOverride || codexHome(), '.omx-config.json');
   if (!existsSync(configPath)) return null;
   try {
     const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
@@ -36,14 +36,15 @@ function readModelsBlock(): ModelsConfig | null {
   }
 }
 
-const HARDCODED_DEFAULT_MODEL = 'gpt-5.3-codex';
+export const HARDCODED_DEFAULT_MODEL = 'gpt-5.3-codex';
+export const HARDCODED_TEAM_LOW_COMPLEXITY_MODEL = 'gpt-5.3-codex-spark';
 
 /**
  * Get the configured model for a specific mode.
  * Resolution: mode-specific override > "default" key > 'gpt-5.3-codex'
  */
-export function getModelForMode(mode: string): string {
-  const models = readModelsBlock();
+export function getModelForMode(mode: string, codexHomeOverride?: string): string {
+  const models = readModelsBlock(codexHomeOverride);
   if (!models) return HARDCODED_DEFAULT_MODEL;
 
   const modeValue = models[mode];
@@ -57,4 +58,27 @@ export function getModelForMode(mode: string): string {
   }
 
   return HARDCODED_DEFAULT_MODEL;
+}
+
+const TEAM_LOW_COMPLEXITY_MODEL_KEYS = [
+  'team_low_complexity',
+  'team-low-complexity',
+  'teamLowComplexity',
+];
+
+/**
+ * Get the low-complexity team worker model.
+ * Resolution: explicit low-complexity key(s) > hardcoded spark fallback.
+ */
+export function getTeamLowComplexityModel(codexHomeOverride?: string): string {
+  const models = readModelsBlock(codexHomeOverride);
+  if (models) {
+    for (const key of TEAM_LOW_COMPLEXITY_MODEL_KEYS) {
+      const value = models[key];
+      if (typeof value === 'string' && value.trim() !== '') {
+        return value.trim();
+      }
+    }
+  }
+  return HARDCODED_TEAM_LOW_COMPLEXITY_MODEL;
 }

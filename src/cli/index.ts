@@ -53,6 +53,7 @@ import { dispatchHookEvent } from '../hooks/extensibility/dispatcher.js';
 import {
   collectInheritableTeamWorkerArgs as collectInheritableTeamWorkerArgsShared,
   resolveTeamWorkerLaunchArgs,
+  resolveTeamLowComplexityDefaultModel,
 } from '../team/model-contract.js';
 import {
   parseWorktreeMode,
@@ -88,7 +89,7 @@ Options:
   --madmax      DANGEROUS: bypass Codex approvals and sandbox
                 (alias for --dangerously-bypass-approvals-and-sandbox)
   --spark       Use the Codex spark model (~1.3x faster) for team workers only
-                Workers get --model gpt-5.3-codex-spark; leader model unchanged
+                Workers get the configured low-complexity team model; leader model unchanged
   --madmax-spark  spark model for workers + bypass approvals for leader and workers
                 (shorthand for: --spark --madmax)
   -w, --worktree[=<name>]
@@ -106,7 +107,6 @@ const HIGH_REASONING_FLAG = '--high';
 const XHIGH_REASONING_FLAG = '--xhigh';
 const SPARK_FLAG = '--spark';
 const MADMAX_SPARK_FLAG = '--madmax-spark';
-const SPARK_MODEL = 'gpt-5.3-codex-spark';
 const CONFIG_FLAG = '-c';
 const LONG_CONFIG_FLAG = '--config';
 const REASONING_KEY = 'model_reasoning_effort';
@@ -413,7 +413,8 @@ export async function launchWithHud(args: string[]): Promise<void> {
 
   const launchCwd = process.cwd();
   const parsedWorktree = parseWorktreeMode(args);
-  const workerSparkModel = resolveWorkerSparkModel(parsedWorktree.remainingArgs);
+  const codexHomeOverride = resolveCodexHomeForLaunch(launchCwd, process.env);
+  const workerSparkModel = resolveWorkerSparkModel(parsedWorktree.remainingArgs, codexHomeOverride);
   const normalizedArgs = normalizeCodexLaunchArgs(parsedWorktree.remainingArgs);
   let cwd = launchCwd;
   if (parsedWorktree.mode.enabled) {
@@ -451,7 +452,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
 
   // ── Phase 2: run ────────────────────────────────────────────────────────
   try {
-    runCodex(cwd, normalizedArgs, sessionId, workerSparkModel);
+    runCodex(cwd, normalizedArgs, sessionId, workerSparkModel, codexHomeOverride);
   } finally {
     // ── Phase 3: postLaunch ─────────────────────────────────────────────
     await postLaunch(cwd, sessionId);
@@ -520,10 +521,10 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
  * raw (pre-normalize) args, or undefined if neither flag is present.
  * Used to route the spark model to team workers without affecting the leader.
  */
-export function resolveWorkerSparkModel(args: string[]): string | undefined {
+export function resolveWorkerSparkModel(args: string[], codexHomeOverride?: string): string | undefined {
   for (const arg of args) {
     if (arg === SPARK_FLAG || arg === MADMAX_SPARK_FLAG) {
-      return SPARK_MODEL;
+      return resolveTeamLowComplexityDefaultModel(codexHomeOverride);
     }
   }
   return undefined;
@@ -872,7 +873,13 @@ async function preLaunch(cwd: string, sessionId: string): Promise<void> {
  * runCodex: Launch Codex CLI (blocks until exit).
  * All 3 paths (new tmux, existing tmux, no tmux) block via execSync/execFileSync.
  */
-function runCodex(cwd: string, args: string[], sessionId: string, workerDefaultModel?: string): void {
+function runCodex(
+  cwd: string,
+  args: string[],
+  sessionId: string,
+  workerDefaultModel?: string,
+  codexHomeOverride?: string,
+): void {
   const launchArgs = injectModelInstructionsBypassArgs(
     cwd,
     args,
@@ -888,7 +895,6 @@ function runCodex(cwd: string, args: string[], sessionId: string, workerDefaultM
     inheritLeaderFlags,
     workerDefaultModel,
   );
-  const codexHomeOverride = resolveCodexHomeForLaunch(cwd, process.env);
   const codexBaseEnv = codexHomeOverride
     ? { ...process.env, CODEX_HOME: codexHomeOverride }
     : process.env;

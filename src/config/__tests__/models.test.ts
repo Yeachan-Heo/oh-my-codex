@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { getModelForMode } from '../models.js';
+import { getModelForMode, getTeamLowComplexityModel } from '../models.js';
 
 describe('getModelForMode', () => {
   let tempDir: string;
@@ -77,5 +77,15 @@ describe('getModelForMode', () => {
   it('returns hardcoded default for malformed JSON', async () => {
     await writeFile(join(tempDir, '.omx-config.json'), 'not-json');
     assert.equal(getModelForMode('team'), 'gpt-5.3-codex');
+  });
+
+  it('returns low-complexity team model when configured', async () => {
+    await writeConfig({ models: { team_low_complexity: 'gpt-4.1-mini' } });
+    assert.equal(getTeamLowComplexityModel(), 'gpt-4.1-mini');
+  });
+
+  it('returns hardcoded low-complexity fallback when not configured', async () => {
+    await writeConfig({ models: { team: 'gpt-4.1' } });
+    assert.equal(getTeamLowComplexityModel(), 'gpt-5.3-codex-spark');
   });
 });
