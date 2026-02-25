@@ -65,7 +65,7 @@ omx --xhigh --madmax
 
 ## New in v0.5.0
 
-- **Scope-aware setup** with `omx setup --scope user|project-local|project` for flexible install modes.
+- **Scope-aware setup** with `omx setup --scope user|project` for flexible install modes.
 - **Spark worker routing** via `--spark` / `--madmax-spark` so team workers can use `gpt-5.3-codex-spark` without forcing the leader model.
 - **Catalog consolidation** — removed deprecated prompts (`deep-executor`, `scientist`) and 9 deprecated skills for a leaner surface.
 - **Notifier verbosity levels** for fine-grained CCNotifier output control.
@@ -141,7 +141,7 @@ See `docs/hooks-extension.md` for the full extension workflow and event model.
 --force
 --dry-run
 --verbose
---scope <user|project-local|project>  # setup only
+--scope <user|project>  # setup only
 ```
 
 `--madmax` maps to Codex `--dangerously-bypass-approvals-and-sandbox`.
@@ -207,11 +207,10 @@ Notes:
 - `.omx/setup-scope.json` (persisted setup scope)
 - Scope-dependent installs:
   - `user`: `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`
-  - `project-local`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`
-  - `project`: skips prompt/skill/config/native-agent installs
-- Launch behavior: if persisted scope is `project-local`, `omx` launch auto-uses `CODEX_HOME=./.codex` (unless `CODEX_HOME` is already set).
+  - `project`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`
+- Launch behavior: if persisted scope is `project`, `omx` launch auto-uses `CODEX_HOME=./.codex` (unless `CODEX_HOME` is already set).
 - Existing `AGENTS.md` is preserved unless `--force` is used (and active-session safety checks still apply).
-- `config.toml` updates (for `user`/`project-local` scopes):
+- `config.toml` updates (for both scopes):
   - `notify = ["node", "..."]`
   - `model_reasoning_effort = "high"`
   - `developer_instructions = "..."`
@@ -223,8 +222,8 @@ Notes:
 
 ## Agents and Skills
 
-- Prompts: `prompts/*.md` (installed to `~/.codex/prompts/` for `user`, `./.codex/prompts/` for `project-local`)
-- Skills: `skills/*/SKILL.md` (installed to `~/.agents/skills/` for `user`, `./.agents/skills/` for `project-local`)
+- Prompts: `prompts/*.md` (installed to `~/.codex/prompts/` for `user`, `./.codex/prompts/` for `project`)
+- Skills: `skills/*/SKILL.md` (installed to `~/.agents/skills/` for `user`, `./.agents/skills/` for `project`)
 
 Examples:
 - Agents: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`

@@ -120,7 +120,7 @@ All notable changes to this project are documented in this file.
 
 ### Added
 - Consolidated the prompt/skill catalog and hardened team runtime contracts after the mainline merge (PR #137).
-- Added setup scope-aware install modes (`user`, `project-local`, `project`) with persisted scope behavior.
+- Added setup scope-aware install modes (`user`, `project`) with persisted scope behavior.
 - Added spark worker routing via `--spark` / `--madmax-spark` so team workers can use `gpt-5.3-codex-spark` without forcing the leader model.
 - Added notifier verbosity levels for CCNotifier output control.
 

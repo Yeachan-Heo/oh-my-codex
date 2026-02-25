@@ -10,14 +10,14 @@ Use this skill when users want to install or refresh oh-my-codex for the **curre
 ## Command
 
 ```bash
-omx setup [--force] [--dry-run] [--verbose] [--scope <user|project-local|project>]
+omx setup [--force] [--dry-run] [--verbose] [--scope <user|project>]
 ```
 
 Supported setup flags (current implementation):
 - `--force`: overwrite/reinstall managed artifacts where applicable
 - `--dry-run`: print actions without mutating files
 - `--verbose`: print per-file/per-step details
-- `--scope`: choose install scope (`user`, `project-local`, `project`)
+- `--scope`: choose install scope (`user`, `project`)
 
 ## What this setup actually does
 
@@ -25,20 +25,14 @@ Supported setup flags (current implementation):
 
 1. Resolve setup scope:
    - `--scope` explicit value
-   - else persisted `./.omx/setup-scope.json`
+   - else persisted `./.omx/setup-scope.json` (with automatic migration of legacy values)
    - else interactive prompt on TTY (default `user`)
    - else default `user` (safe for CI/tests)
-2. Create project OMX directories (`./.omx/state`, `./.omx/plans`, `./.omx/logs`) and persist effective scope
-3. For `user`/`project-local` scope:
-   - install prompts
-   - remove legacy prompt shims
-   - install native agent configs
-   - install skills
-   - merge OMX config.toml
-4. For `project` scope: skip prompt/skill/config/native-agent installs with console messages
-6. Verify required team MCP comm tool exports exist in built `dist/mcp/state-server.js`
-7. Generate project-root `./AGENTS.md` from `templates/AGENTS.md` (or skip when existing and no force)
-8. Configure notify hook references and write `./.omx/hud-config.json`
+2. Create directories and persist effective scope
+3. Install prompts, native agent configs, skills, and merge config.toml (scope determines target directories)
+4. Verify required team MCP comm tool exports exist in built `dist/mcp/state-server.js`
+5. Generate project-root `./AGENTS.md` from `templates/AGENTS.md` (or skip when existing and no force)
+6. Configure notify hook references and write `./.omx/hud-config.json`
 
 ## Important behavior notes
 
@@ -46,10 +40,10 @@ Supported setup flags (current implementation):
 - Local project orchestration file is `./AGENTS.md` (project root).
 - Scope targets:
   - `user`: user directories (`~/.codex`, `~/.agents/skills`, `~/.omx/agents`)
-  - `project-local`: local directories (`./.codex`, `./.agents/skills`, `./.omx/agents`)
-  - `project`: project-only OMX setup (`./.omx/*`, `AGENTS.md`, HUD)
-- If persisted scope is `project-local`, `omx` launch automatically uses `CODEX_HOME=./.codex` unless user explicitly overrides `CODEX_HOME`.
+  - `project`: local directories (`./.codex`, `./.agents/skills`, `./.omx/agents`)
+- If persisted scope is `project`, `omx` launch automatically uses `CODEX_HOME=./.codex` unless user explicitly overrides `CODEX_HOME`.
 - With `--force`, AGENTS overwrite may still be skipped if an active OMX session is detected (safety guard).
+- Legacy persisted scope values (`project-local`) are automatically migrated to `project` with a one-time warning.
 
 ## Recommended workflow
 
@@ -70,8 +64,8 @@ omx doctor
 ## Expected verification indicators
 
 From `omx doctor`, expect:
-- Prompts installed (scope-dependent: user or project-local)
-- Skills installed (scope-dependent: user or project-local)
+- Prompts installed (scope-dependent: user or project)
+- Skills installed (scope-dependent: user or project)
 - AGENTS.md found in project root
 - `.omx/state` exists
 - OMX MCP servers configured in scope target `config.toml` (`~/.codex/config.toml` or `./.codex/config.toml`)

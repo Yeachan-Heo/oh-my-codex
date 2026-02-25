@@ -97,7 +97,7 @@ Options:
   --dry-run     Show what would be done without doing it
   --verbose     Show detailed output
   --scope       Setup scope for "omx setup" only:
-                user | project-local | project
+                user | project
 `;
 
 const MADMAX_FLAG = '--madmax';
@@ -127,13 +127,26 @@ export interface ResolvedCliInvocation {
   launchArgs: string[];
 }
 
+/**
+ * Legacy scope values that may appear in persisted setup-scope.json files.
+ * Both 'project-local' (renamed) and old 'project' (minimal, removed) are
+ * migrated to the current 'project' scope on read.
+ */
+const LEGACY_SCOPE_MIGRATION_SYNC: Record<string, SetupScope> = {
+  'project-local': 'project',
+};
+
 export function readPersistedSetupScope(cwd: string): SetupScope | undefined {
   const scopePath = join(cwd, '.omx', 'setup-scope.json');
   if (!existsSync(scopePath)) return undefined;
   try {
     const parsed = JSON.parse(readFileSync(scopePath, 'utf-8')) as Partial<{ scope: string }>;
-    if (typeof parsed.scope === 'string' && SETUP_SCOPES.includes(parsed.scope as SetupScope)) {
-      return parsed.scope as SetupScope;
+    if (typeof parsed.scope === 'string') {
+      if (SETUP_SCOPES.includes(parsed.scope as SetupScope)) {
+        return parsed.scope as SetupScope;
+      }
+      const migrated = LEGACY_SCOPE_MIGRATION_SYNC[parsed.scope];
+      if (migrated) return migrated;
     }
   } catch {
     // Ignore malformed persisted scope and use defaults.
@@ -144,7 +157,7 @@ export function readPersistedSetupScope(cwd: string): SetupScope | undefined {
 export function resolveCodexHomeForLaunch(cwd: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   if (env.CODEX_HOME && env.CODEX_HOME.trim() !== '') return env.CODEX_HOME;
   const persistedScope = readPersistedSetupScope(cwd);
-  if (persistedScope === 'project-local') {
+  if (persistedScope === 'project') {
     return join(cwd, '.codex');
   }
   return undefined;

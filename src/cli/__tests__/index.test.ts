@@ -215,7 +215,7 @@ describe('resolveSetupScopeArg', () => {
   });
 
   it('parses --scope <value> form', () => {
-    assert.equal(resolveSetupScopeArg(['--dry-run', '--scope', 'project-local']), 'project-local');
+    assert.equal(resolveSetupScopeArg(['--dry-run', '--scope', 'project']), 'project');
   });
 
   it('parses --scope=<value> form', () => {
@@ -237,13 +237,13 @@ describe('resolveSetupScopeArg', () => {
   });
 });
 
-describe('project-local launch scope helpers', () => {
+describe('project launch scope helpers', () => {
   it('reads persisted setup scope when valid', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-scope-'));
     try {
       await mkdir(join(wd, '.omx'), { recursive: true });
-      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project-local' }));
-      assert.equal(readPersistedSetupScope(wd), 'project-local');
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+      assert.equal(readPersistedSetupScope(wd), 'project');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -260,11 +260,11 @@ describe('project-local launch scope helpers', () => {
     }
   });
 
-  it('uses project-local CODEX_HOME when persisted scope is project-local', async () => {
+  it('uses project CODEX_HOME when persisted scope is project', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-scope-'));
     try {
       await mkdir(join(wd, '.omx'), { recursive: true });
-      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project-local' }));
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
       assert.equal(resolveCodexHomeForLaunch(wd, {}), join(wd, '.codex'));
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -275,8 +275,30 @@ describe('project-local launch scope helpers', () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-scope-'));
     try {
       await mkdir(join(wd, '.omx'), { recursive: true });
-      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project-local' }));
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
       assert.equal(resolveCodexHomeForLaunch(wd, { CODEX_HOME: '/tmp/explicit-codex-home' }), '/tmp/explicit-codex-home');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('migrates legacy "project-local" persisted scope to "project"', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-scope-'));
+    try {
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project-local' }));
+      assert.equal(readPersistedSetupScope(wd), 'project');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves CODEX_HOME for legacy "project-local" persisted scope', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-scope-'));
+    try {
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project-local' }));
+      assert.equal(resolveCodexHomeForLaunch(wd, {}), join(wd, '.codex'));
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

@@ -15,7 +15,7 @@ You are affected if you:
 ## What changed (high level)
 
 - Catalog consolidation for prompts/skills and cleanup of deprecated entries.
-- `omx setup` now supports scope-aware install modes.
+- `omx setup` now supports scope-aware install modes (`user`, `project`). Legacy `project-local` values are auto-migrated.
 - Spark worker routing added for team workers (`--spark`, `--madmax-spark`).
 - Notifier verbosity controls added.
 - tmux runtime hardening updates landed, including post-review pane capture/input hardening.
@@ -73,7 +73,7 @@ Run this checklist after pulling latest mainline:
   ```
 - [ ] Validate setup scope options are available:
   ```bash
-  omx help | rg -e "--scope|project-local|project"
+  omx help | rg -e "--scope|project"
   ```
 - [ ] Validate team/tmux health checks:
   ```bash
