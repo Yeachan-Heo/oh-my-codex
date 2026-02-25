@@ -35,6 +35,13 @@ describe('keyword detector swarm/team compatibility', () => {
     assert.ok(swarmMatch);
     assert.equal(swarmMatch.priority, teamMatch.priority);
   });
+
+  it('prefers ralplan over ralph when both keywords are present', () => {
+    const match = detectPrimaryKeyword('use ralph mode but do ralplan first');
+
+    assert.ok(match);
+    assert.equal(match.skill, 'ralplan');
+  });
 });
 
 describe('keyword detection guidance generation', () => {
@@ -44,5 +51,14 @@ describe('keyword detection guidance generation', () => {
     assert.match(section, /When user says "coordinated team": Activate coordinated team mode/);
     assert.match(section, /When user says "swarm": Activate coordinated team mode \(swarm is a compatibility alias for team\)/);
     assert.match(section, /When user says "coordinated swarm": Activate coordinated team mode \(swarm is a compatibility alias for team\)/);
+  });
+
+  it('includes ralplan-first planning gate guidance', () => {
+    const section = generateKeywordDetectionSection();
+
+    assert.match(section, /Ralplan-first execution gate:/);
+    assert.match(section, /`prd-\*\.md`/);
+    assert.match(section, /`test-spec-\*\.md`/);
+    assert.match(section, /if ralph is active/i);
   });
 });

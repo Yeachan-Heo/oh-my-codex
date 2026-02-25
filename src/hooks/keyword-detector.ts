@@ -20,12 +20,12 @@ export interface KeywordMatch {
 const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> = [
   // Execution modes
   { pattern: /\bautopilot\b/i, skill: 'autopilot', priority: 10 },
-  { pattern: /\bralph\b/i, skill: 'ralph', priority: 10 },
+  { pattern: /\bralph\b/i, skill: 'ralph', priority: 9 },
   { pattern: /\bultrawork\b|\bulw\b/i, skill: 'ultrawork', priority: 10 },
   { pattern: /\becomode\b|\beco\b/i, skill: 'ecomode', priority: 10 },
 
   // Planning
-  { pattern: /\bralplan\b/i, skill: 'ralplan', priority: 9 },
+  { pattern: /\bralplan\b/i, skill: 'ralplan', priority: 11 },
   { pattern: /\bplan\s+(?:this|the)\b/i, skill: 'plan', priority: 8 },
 
   // Coordination

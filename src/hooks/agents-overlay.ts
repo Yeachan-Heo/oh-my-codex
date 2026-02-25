@@ -14,7 +14,7 @@
  * - Session metadata
  */
 
-import { readFile, writeFile, mkdir, rm } from 'fs/promises';
+import { readFile, writeFile, mkdir, rm, readdir } from 'fs/promises';
 import { dirname, join } from 'path';
 import { existsSync } from 'fs';
 import { omxNotepadPath, omxProjectMemoryPath } from '../utils/paths.js';
@@ -127,6 +127,31 @@ interface OverlayData {
   projectMemory: string;
 }
 
+async function isRalphActive(cwd: string, sessionId?: string): Promise<boolean> {
+  const refs = await listModeStateFilesWithScopePreference(cwd, sessionId);
+  const ralphRef = refs.find((ref) => ref.mode === 'ralph');
+  if (!ralphRef) return false;
+
+  try {
+    const data = JSON.parse(await readFile(ralphRef.path, 'utf-8'));
+    return data?.active === true;
+  } catch {
+    return false;
+  }
+}
+
+async function readRalphPlanningArtifacts(cwd: string): Promise<{ hasPrd: boolean; hasTestSpec: boolean }> {
+  const plansDir = join(cwd, '.omx', 'plans');
+  if (!existsSync(plansDir)) {
+    return { hasPrd: false, hasTestSpec: false };
+  }
+
+  const files = await readdir(plansDir).catch(() => [] as string[]);
+  const hasPrd = files.some((file) => /^prd-.*\.md$/i.test(file));
+  const hasTestSpec = files.some((file) => /^test-?spec-.*\.md$/i.test(file));
+  return { hasPrd, hasTestSpec };
+}
+
 async function readActiveModes(cwd: string, sessionId?: string): Promise<string> {
   const refs = await listModeStateFilesWithScopePreference(cwd, sessionId);
 
@@ -214,11 +239,13 @@ function getCompactionInstructions(): string {
  * Total output is capped at MAX_OVERLAY_SIZE chars.
  */
 export async function generateOverlay(cwd: string, sessionId?: string): Promise<string> {
-  const [activeModes, notepadPriority, projectMemory, codebaseMap] = await Promise.all([
+  const [activeModes, notepadPriority, projectMemory, codebaseMap, ralphActive, planningArtifacts] = await Promise.all([
     readActiveModes(cwd, sessionId),
     readNotepadPriority(cwd),
     readProjectMemorySummary(cwd),
     generateCodebaseMap(cwd),
+    isRalphActive(cwd, sessionId),
+    readRalphPlanningArtifacts(cwd),
   ]);
 
   // Build sections with deterministic overflow behavior.
@@ -261,6 +288,24 @@ export async function generateOverlay(cwd: string, sessionId?: string): Promise<
       key: 'project_context',
       text: `**Project Context:**\n${truncate(projectMemory, 1000)}`,
       optional: true,
+    });
+  }
+
+  if (ralphActive) {
+    const gateStatus = planningArtifacts.hasPrd && planningArtifacts.hasTestSpec
+      ? 'UNLOCKED'
+      : 'BLOCKED';
+    const missing: string[] = [];
+    if (!planningArtifacts.hasPrd) missing.push('`prd-*.md`');
+    if (!planningArtifacts.hasTestSpec) missing.push('`test-spec-*.md`');
+    const details = missing.length > 0
+      ? `Missing: ${missing.join(', ')}`
+      : 'Planning artifacts present: PRD + test spec';
+
+    sections.push({
+      key: 'ralph_planning_gate',
+      text: `**Ralph Ralplan-First Gate:** ${gateStatus}\n- Requirement: complete planning artifacts before implementation/tool execution.\n- ${details}\n- Path: \`.omx/plans/\``,
+      optional: false,
     });
   }
 
