@@ -334,6 +334,24 @@ async function main() {
     }
   }
 
+  // 8.5. Skill activation tracking: update skill-active-state.json when a keyword is detected.
+  try {
+    const { recordSkillActivation } = await import('../dist/hooks/keyword-detector.js');
+    const inputMessages = normalizeInputMessages(payload);
+    const latestUserInput = safeString(inputMessages.length > 0 ? inputMessages[inputMessages.length - 1] : '');
+    if (latestUserInput) {
+      await recordSkillActivation({
+        stateDir,
+        text: latestUserInput,
+        sessionId: payloadSessionId,
+        threadId: safeString(payload['thread-id'] || payload.thread_id || ''),
+        turnId: safeString(payload['turn-id'] || payload.turn_id || ''),
+      });
+    }
+  } catch {
+    // Non-fatal: keyword detector module may not be built yet
+  }
+
   // 9. Auto-nudge: detect Codex stall patterns and automatically send a continuation prompt.
   //    Works for both leader and worker contexts.
   try {

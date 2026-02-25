@@ -11,11 +11,41 @@
  * to an external hook handler.
  */
 
+import { readFile, writeFile } from 'fs/promises';
+import { join } from 'path';
+
 export interface KeywordMatch {
   keyword: string;
   skill: string;
   priority: number;
 }
+
+export type SkillActivePhase = 'planning' | 'executing' | 'reviewing' | 'completing';
+
+export interface SkillActiveState {
+  version: 1;
+  active: boolean;
+  skill: string;
+  keyword: string;
+  phase: SkillActivePhase;
+  activated_at: string;
+  updated_at: string;
+  source: 'keyword-detector';
+  session_id?: string;
+  thread_id?: string;
+  turn_id?: string;
+}
+
+export interface RecordSkillActivationInput {
+  stateDir: string;
+  text: string;
+  sessionId?: string;
+  threadId?: string;
+  turnId?: string;
+  nowIso?: string;
+}
+
+export const SKILL_ACTIVE_STATE_FILE = 'skill-active-state.json';
 
 const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> = [
   // Execution modes
@@ -71,4 +101,43 @@ export function detectKeywords(text: string): KeywordMatch[] {
 export function detectPrimaryKeyword(text: string): KeywordMatch | null {
   const matches = detectKeywords(text);
   return matches.length > 0 ? matches[0] : null;
+}
+
+/**
+ * Persist active skill state when a keyword activation is detected.
+ * Returns null when no keyword is detected.
+ */
+export async function recordSkillActivation(input: RecordSkillActivationInput): Promise<SkillActiveState | null> {
+  const match = detectPrimaryKeyword(input.text);
+  if (!match) return null;
+
+  const nowIso = input.nowIso ?? new Date().toISOString();
+  const statePath = join(input.stateDir, SKILL_ACTIVE_STATE_FILE);
+  const previous = await readJsonIfExists<Partial<SkillActiveState> | null>(statePath, null);
+  const activatedAt = typeof previous?.activated_at === 'string' && previous.activated_at !== ''
+    ? previous.activated_at
+    : nowIso;
+
+  const state: SkillActiveState = {
+    version: 1,
+    active: true,
+    skill: match.skill,
+    keyword: match.keyword,
+    phase: 'planning',
+    activated_at: activatedAt,
+    updated_at: nowIso,
+    source: 'keyword-detector',
+    ...(input.sessionId ? { session_id: input.sessionId } : {}),
+    ...(input.threadId ? { thread_id: input.threadId } : {}),
+    ...(input.turnId ? { turn_id: input.turnId } : {}),
+  };
+
+  await writeFile(statePath, JSON.stringify(state, null, 2)).catch(() => {});
+  return state;
+}
+
+async function readJsonIfExists<T>(path: string, fallback: T): Promise<T> {
+  return readFile(path, 'utf-8')
+    .then((content) => JSON.parse(content) as T)
+    .catch(() => fallback);
 }

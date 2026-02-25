@@ -12,6 +12,62 @@ import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
 import { DEFAULT_MARKER } from '../tmux-hook-engine.js';
 
+export const SKILL_ACTIVE_STATE_FILE = 'skill-active-state.json';
+const SKILL_PHASES = new Set(['planning', 'executing', 'reviewing', 'completing']);
+
+function normalizeSkillPhase(phase) {
+  const normalized = safeString(phase).toLowerCase().trim();
+  return SKILL_PHASES.has(normalized) ? normalized : 'planning';
+}
+
+export function normalizeSkillActiveState(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const skill = safeString(raw.skill);
+  if (!skill) return null;
+  return {
+    version: asNumber(raw.version) ?? 1,
+    active: raw.active !== false,
+    skill,
+    keyword: safeString(raw.keyword),
+    phase: normalizeSkillPhase(raw.phase),
+    activated_at: safeString(raw.activated_at),
+    updated_at: safeString(raw.updated_at),
+    source: safeString(raw.source),
+  };
+}
+
+export function inferSkillPhaseFromText(text, currentPhase = 'planning') {
+  const lower = safeString(text).toLowerCase();
+  if (!lower) return normalizeSkillPhase(currentPhase);
+
+  const hasAny = (patterns) => patterns.some((p) => lower.includes(p));
+
+  if (hasAny(['all tests pass', 'build succeeded', 'completed', 'complete', 'done', 'final summary', 'summary'])) {
+    return 'completing';
+  }
+  if (hasAny(['verify', 'verified', 'verification', 'review', 'reviewed', 'diagnostic', 'typecheck', 'test'])) {
+    return 'reviewing';
+  }
+  if (hasAny(['implement', 'implemented', 'apply patch', 'change', 'fix', 'update', 'refactor'])) {
+    return 'executing';
+  }
+  if (hasAny(['plan', 'approach', 'steps', 'todo'])) {
+    return 'planning';
+  }
+  return normalizeSkillPhase(currentPhase);
+}
+
+async function loadSkillActiveState(stateDir) {
+  const raw = await readJsonIfExists(join(stateDir, SKILL_ACTIVE_STATE_FILE), null);
+  return normalizeSkillActiveState(raw);
+}
+
+async function persistSkillActiveState(stateDir, state) {
+  await writeFile(join(stateDir, SKILL_ACTIVE_STATE_FILE), JSON.stringify(state, null, 2)).catch(() => {});
+}
+
 export const DEFAULT_STALL_PATTERNS = [
   'if you want',
   'would you like',
@@ -135,6 +191,19 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
   const config = await loadAutoNudgeConfig();
   if (!config.enabled) return;
 
+  const skillState = await loadSkillActiveState(stateDir);
+  const lastMessage = safeString(payload['last-assistant-message'] || payload.last_assistant_message || '');
+  if (skillState) {
+    const inferredPhase = inferSkillPhaseFromText(lastMessage, skillState.phase);
+    if (inferredPhase !== skillState.phase || skillState.active !== (inferredPhase !== 'completing')) {
+      skillState.phase = inferredPhase;
+      skillState.active = inferredPhase !== 'completing';
+      skillState.updated_at = new Date().toISOString();
+      await persistSkillActiveState(stateDir, skillState);
+    }
+    if (skillState.phase === 'completing') return;
+  }
+
   // Check nudge count against session limit
   const nudgeStatePath = join(stateDir, 'auto-nudge-state.json');
   let nudgeState = await readJsonIfExists(nudgeStatePath, null);
@@ -148,7 +217,6 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
   const paneId = await resolveNudgePaneTarget(stateDir);
 
   // Check last assistant message for stall patterns (fast path)
-  const lastMessage = safeString(payload['last-assistant-message'] || payload.last_assistant_message || '');
   let detected = detectStallPattern(lastMessage, config.patterns);
   let source = 'payload';
 
@@ -180,6 +248,13 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
     nudgeState.nudgeCount = nudgeCount + 1;
     nudgeState.lastNudgeAt = nowIso;
     await writeFile(nudgeStatePath, JSON.stringify(nudgeState, null, 2)).catch(() => {});
+
+    if (skillState && skillState.phase === 'planning') {
+      skillState.phase = 'executing';
+      skillState.active = true;
+      skillState.updated_at = nowIso;
+      await persistSkillActiveState(stateDir, skillState);
+    }
 
     await logTmuxHookEvent(logsDir, {
       timestamp: nowIso,

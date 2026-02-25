@@ -213,6 +213,48 @@ describe('notify-hook/auto-nudge – normalizeAutoNudgeConfig', () => {
 });
 
 // ---------------------------------------------------------------------------
+// auto-nudge.js – skill-active state phase helpers
+// ---------------------------------------------------------------------------
+describe('notify-hook/auto-nudge – normalizeSkillActiveState', () => {
+  it('returns null for invalid input', async () => {
+    const { normalizeSkillActiveState } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(normalizeSkillActiveState(null), null);
+    assert.equal(normalizeSkillActiveState({}), null);
+  });
+
+  it('normalizes valid skill-active state', async () => {
+    const { normalizeSkillActiveState } = await loadModule('notify-hook/auto-nudge.js');
+    const state = normalizeSkillActiveState({
+      version: 1,
+      active: true,
+      skill: 'autopilot',
+      keyword: 'autopilot',
+      phase: 'EXECUTING',
+      source: 'keyword-detector',
+    });
+    assert.ok(state);
+    assert.equal(state.skill, 'autopilot');
+    assert.equal(state.phase, 'executing');
+    assert.equal(state.active, true);
+  });
+});
+
+describe('notify-hook/auto-nudge – inferSkillPhaseFromText', () => {
+  it('maps planning/executing/reviewing/completing signals', async () => {
+    const { inferSkillPhaseFromText } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(inferSkillPhaseFromText('Here is the plan with next steps.'), 'planning');
+    assert.equal(inferSkillPhaseFromText('I implemented the patch and updated files.'), 'executing');
+    assert.equal(inferSkillPhaseFromText('I verified with tests and typecheck.'), 'reviewing');
+    assert.equal(inferSkillPhaseFromText('All tests pass. Completed with summary.'), 'completing');
+  });
+
+  it('falls back to the current phase when no signal is present', async () => {
+    const { inferSkillPhaseFromText } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(inferSkillPhaseFromText('neutral text', 'reviewing'), 'reviewing');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // team-worker.js – parseTeamWorkerEnv
 // ---------------------------------------------------------------------------
 describe('notify-hook/team-worker – parseTeamWorkerEnv', () => {
