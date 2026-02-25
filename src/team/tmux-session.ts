@@ -63,6 +63,8 @@ interface TmuxPaneInfo {
   startCommand: string;
 }
 
+type SpawnSyncLike = typeof spawnSync;
+
 function runTmux(args: string[]): { ok: true; stdout: string } | { ok: false; stderr: string } {
   const result = spawnSync('tmux', args, { encoding: 'utf-8' });
   if (result.error) {
@@ -72,6 +74,42 @@ function runTmux(args: string[]): { ok: true; stdout: string } | { ok: false; st
     return { ok: false, stderr: (result.stderr || '').trim() || `tmux exited ${result.status}` };
   }
   return { ok: true, stdout: (result.stdout || '').trim() };
+}
+
+export function isMsysOrGitBash(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform !== 'win32') return false;
+  const msystem = String(env.MSYSTEM ?? '').trim();
+  if (msystem !== '') return true;
+  const ostype = String(env.OSTYPE ?? '').trim();
+  if (/(msys|mingw|cygwin)/i.test(ostype)) return true;
+  return false;
+}
+
+function fallbackMsysPathTranslation(value: string): string {
+  const drivePathMatch = value.match(/^([A-Za-z]):[\\/](.*)$/);
+  if (!drivePathMatch) return value;
+  const drive = drivePathMatch[1]?.toLowerCase();
+  const tail = drivePathMatch[2]?.replace(/\\/g, '/');
+  if (!drive || !tail) return value;
+  return `/${drive}/${tail}`;
+}
+
+export function translatePathForMsys(
+  value: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  spawnImpl: SpawnSyncLike = spawnSync,
+): string {
+  if (typeof value !== 'string' || value.trim() === '') return value;
+  if (!isMsysOrGitBash(env, platform)) return value;
+
+  const result = spawnImpl('cygpath', ['-u', value], { encoding: 'utf-8' });
+  if (!result.error && result.status === 0) {
+    const translated = (result.stdout || '').trim();
+    if (translated !== '') return translated;
+  }
+
+  return fallbackMsysPathTranslation(value);
 }
 
 function baseSessionName(target: string): string {
@@ -448,7 +486,7 @@ function shouldBypassDefaultSystemPrompt(env: NodeJS.ProcessEnv): boolean {
 }
 
 function buildModelInstructionsOverride(cwd: string, env: NodeJS.ProcessEnv): string {
-  const filePath = env[OMX_MODEL_INSTRUCTIONS_FILE_ENV] || join(cwd, 'AGENTS.md');
+  const filePath = translatePathForMsys(env[OMX_MODEL_INSTRUCTIONS_FILE_ENV] || join(cwd, 'AGENTS.md'));
   return `${MODEL_INSTRUCTIONS_FILE_KEY}="${escapeTomlString(filePath)}"`;
 }
 
@@ -556,7 +594,7 @@ export function isWsl2(): boolean {
  * OMX requires tmux, which is unavailable on native Windows.
  */
 export function isNativeWindows(): boolean {
-  return process.platform === 'win32' && !isWsl2();
+  return process.platform === 'win32' && !isWsl2() && !isMsysOrGitBash();
 }
 
 // Check if tmux is available
@@ -619,6 +657,7 @@ export function createTeamSession(
     for (let i = 1; i <= workerCount; i++) {
       const startup = workerStartups[i - 1] || {};
       const workerCwd = startup.cwd || cwd;
+      const tmuxWorkerCwd = translatePathForMsys(workerCwd);
       const workerEnv = startup.env || {};
       const cmd = buildWorkerStartupCommand(
         safeTeamName,
@@ -641,7 +680,7 @@ export function createTeamSession(
         '-F',
         '#{pane_id}',
         '-c',
-        workerCwd,
+        tmuxWorkerCwd,
         cmd,
       ]);
       if (!split.ok) {
@@ -678,9 +717,10 @@ export function createTeamSession(
     let resizeHookTarget: string | null = null;
     const omxEntry = process.argv[1];
     if (omxEntry && omxEntry.trim() !== '') {
-      const hudCmd = `node ${shellQuoteSingle(omxEntry)} hud --watch`;
+      const hudCmd = `node ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
+      const hudCwd = translatePathForMsys(cwd);
       const hudResult = runTmux([
-        'split-window', '-v', '-l', String(HUD_TMUX_TEAM_HEIGHT_LINES), '-t', leaderPaneId, '-d', '-P', '-F', '#{pane_id}', '-c', cwd, hudCmd,
+        'split-window', '-v', '-l', String(HUD_TMUX_TEAM_HEIGHT_LINES), '-t', leaderPaneId, '-d', '-P', '-F', '#{pane_id}', '-c', hudCwd, hudCmd,
       ]);
       if (hudResult.ok) {
         const id = hudResult.stdout.split('\n')[0]?.trim() ?? '';
