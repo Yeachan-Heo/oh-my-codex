@@ -3,6 +3,7 @@ import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
 
 export const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+export const STATE_MODE_SEGMENT_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const STATE_FILE_SUFFIX = '-state.json';
 
 export type StateFileScope = 'root' | 'session';
@@ -22,6 +23,30 @@ export function validateSessionId(sessionId: unknown): string | undefined {
     throw new Error('session_id must match ^[A-Za-z0-9_-]{1,64}$');
   }
   return sessionId;
+}
+
+export function validateStateModeSegment(mode: unknown): string {
+  if (typeof mode !== 'string') {
+    throw new Error('mode must be a string');
+  }
+  const normalized = mode.trim();
+  if (!normalized) {
+    throw new Error('mode must be a non-empty string');
+  }
+  if (normalized.includes('..')) {
+    throw new Error('mode must not contain ".."');
+  }
+  if (normalized.includes('/') || normalized.includes('\\')) {
+    throw new Error('mode must not contain path separators');
+  }
+  if (!STATE_MODE_SEGMENT_PATTERN.test(normalized)) {
+    throw new Error('mode must match ^[A-Za-z0-9_-]{1,64}$');
+  }
+  return normalized;
+}
+
+function getStateFilename(mode: string): string {
+  return `${validateStateModeSegment(mode)}${STATE_FILE_SUFFIX}`;
 }
 
 function convertWindowsToWslPath(raw: string): string {
@@ -71,7 +96,7 @@ export function getStateDir(workingDirectory?: string, sessionId?: string): stri
 }
 
 export function getStatePath(mode: string, workingDirectory?: string, sessionId?: string): string {
-  return join(getStateDir(workingDirectory, sessionId), `${mode}-state.json`);
+  return join(getStateDir(workingDirectory, sessionId), getStateFilename(mode));
 }
 
 export type StateScopeSource = 'explicit' | 'session' | 'root';
@@ -146,7 +171,8 @@ export async function getReadScopedStatePaths(
   explicitSessionId?: string,
 ): Promise<string[]> {
   const dirs = await getReadScopedStateDirs(workingDirectory, explicitSessionId);
-  return dirs.map((dir) => join(dir, `${mode}-state.json`));
+  const fileName = getStateFilename(mode);
+  return dirs.map((dir) => join(dir, fileName));
 }
 
 export async function getAllSessionScopedStatePaths(
@@ -154,7 +180,8 @@ export async function getAllSessionScopedStatePaths(
   workingDirectory?: string,
 ): Promise<string[]> {
   const sessionDirs = await getAllSessionScopedStateDirs(workingDirectory);
-  return sessionDirs.map((dir) => join(dir, `${mode}-state.json`));
+  const fileName = getStateFilename(mode);
+  return sessionDirs.map((dir) => join(dir, fileName));
 }
 
 export async function getAllScopedStatePaths(

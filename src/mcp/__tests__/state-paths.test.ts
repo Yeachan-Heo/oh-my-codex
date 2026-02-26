@@ -13,6 +13,7 @@ import {
   resolveWorkingDirectoryForState,
   getStateDir,
   getStatePath,
+  validateStateModeSegment,
   validateSessionId,
 } from '../state-paths.js';
 
@@ -26,6 +27,19 @@ describe('validateSessionId', () => {
     assert.throws(() => validateSessionId(''), /session_id must match/);
     assert.throws(() => validateSessionId('bad/id'), /session_id must match/);
     assert.throws(() => validateSessionId(123), /session_id must be a string/);
+  });
+});
+
+describe('validateStateModeSegment', () => {
+  it('accepts safe mode names', () => {
+    assert.equal(validateStateModeSegment('ralph'), 'ralph');
+    assert.equal(validateStateModeSegment('ultraqa'), 'ultraqa');
+  });
+
+  it('rejects traversal and path separators', () => {
+    assert.throws(() => validateStateModeSegment('../evil'), /must not contain "\.\."/);
+    assert.throws(() => validateStateModeSegment('foo/bar'), /path separators/);
+    assert.throws(() => validateStateModeSegment('foo\\bar'), /path separators/);
   });
 });
 
@@ -63,6 +77,10 @@ describe('state paths', () => {
       getStatePath('ralph', '/repo', 'sess1'),
       '/repo/.omx/state/sessions/sess1/ralph-state.json'
     );
+  });
+
+  it('throws when mode contains traversal tokens', () => {
+    assert.throws(() => getStatePath('../../etc/passwd', '/repo'), /must not contain "\.\."/);
   });
 
   it('enumerates global-only path', async () => {
