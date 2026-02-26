@@ -95,3 +95,86 @@ describe('star-prompt state path', () => {
     assert.ok(p.includes(join('.omx', 'state')), `Expected path to include .omx/state, got: ${p}`);
   });
 });
+
+describe('starRepo', () => {
+  it('returns ok when gh api exits successfully', async () => {
+    const { starRepo } = await import('../star-prompt.js');
+    assert.deepEqual(starRepo((() => ({
+      status: 0,
+      stdout: '',
+      stderr: '',
+    })) as any), { ok: true });
+  });
+
+  it('returns error details when gh api exits non-zero', async () => {
+    const { starRepo } = await import('../star-prompt.js');
+    const result = starRepo((() => ({
+      status: 1,
+      stdout: '',
+      stderr: 'authentication failed',
+    })) as any);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error, 'authentication failed');
+    }
+  });
+
+  it('returns spawn error when command fails to launch', async () => {
+    const { starRepo } = await import('../star-prompt.js');
+    const result = starRepo((() => ({
+      status: null,
+      stdout: '',
+      stderr: '',
+      error: new Error('spawn ENOENT'),
+    })) as any);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.error, /ENOENT/);
+    }
+  });
+});
+
+describe('maybePromptGithubStar', () => {
+  it('prints thank-you only when starring succeeds', async () => {
+    const logs: string[] = [];
+    const warns: string[] = [];
+    const { maybePromptGithubStar } = await import('../star-prompt.js');
+
+    await maybePromptGithubStar({
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      hasBeenPromptedFn: async () => false,
+      isGhInstalledFn: () => true,
+      markPromptedFn: async () => {},
+      askYesNoFn: async () => true,
+      starRepoFn: () => ({ ok: true }),
+      logFn: (message) => logs.push(message),
+      warnFn: (message) => warns.push(message),
+    });
+
+    assert.deepEqual(logs, ['[omx] Thanks for the star!']);
+    assert.deepEqual(warns, []);
+  });
+
+  it('does not print thank-you when starring fails', async () => {
+    const logs: string[] = [];
+    const warns: string[] = [];
+    const { maybePromptGithubStar } = await import('../star-prompt.js');
+
+    await maybePromptGithubStar({
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      hasBeenPromptedFn: async () => false,
+      isGhInstalledFn: () => true,
+      markPromptedFn: async () => {},
+      askYesNoFn: async () => true,
+      starRepoFn: () => ({ ok: false, error: 'authentication failed' }),
+      logFn: (message) => logs.push(message),
+      warnFn: (message) => warns.push(message),
+    });
+
+    assert.deepEqual(logs, []);
+    assert.equal(warns.length, 1);
+    assert.match(warns[0], /Could not star repository automatically/);
+  });
+});

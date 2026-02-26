@@ -8,7 +8,7 @@ import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { spawnSync } from 'child_process';
+import * as childProcess from 'child_process';
 import { createInterface } from 'readline/promises';
 
 const REPO = 'Yeachan-Heo/oh-my-codex';
@@ -43,7 +43,7 @@ export async function markPrompted(): Promise<void> {
 }
 
 export function isGhInstalled(): boolean {
-  const result = spawnSync('gh', ['--version'], {
+  const result = childProcess.spawnSync('gh', ['--version'], {
     encoding: 'utf-8',
     stdio: ['ignore', 'ignore', 'ignore'],
     timeout: 3000,
@@ -51,12 +51,33 @@ export function isGhInstalled(): boolean {
   return !result.error && result.status === 0;
 }
 
-function starRepo(): void {
-  spawnSync('gh', ['api', '-X', 'PUT', `/user/starred/${REPO}`], {
+export type StarRepoResult = { ok: true } | { ok: false; error: string };
+
+interface MaybePromptGithubStarDeps {
+  stdinIsTTY?: boolean;
+  stdoutIsTTY?: boolean;
+  hasBeenPromptedFn?: () => Promise<boolean>;
+  isGhInstalledFn?: () => boolean;
+  markPromptedFn?: () => Promise<void>;
+  askYesNoFn?: (question: string) => Promise<boolean>;
+  starRepoFn?: () => StarRepoResult;
+  logFn?: (message: string) => void;
+  warnFn?: (message: string) => void;
+}
+
+export function starRepo(spawnSyncFn: typeof childProcess.spawnSync = childProcess.spawnSync): StarRepoResult {
+  const result = spawnSyncFn('gh', ['api', '-X', 'PUT', `/user/starred/${REPO}`], {
     encoding: 'utf-8',
-    stdio: ['ignore', 'ignore', 'ignore'],
+    stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 10000,
   });
+  if (result.error) return { ok: false, error: result.error.message };
+  if (result.status !== 0) {
+    const stderr = (result.stderr || '').trim();
+    const stdout = (result.stdout || '').trim();
+    return { ok: false, error: stderr || stdout || `gh exited ${result.status}` };
+  }
+  return { ok: true };
 }
 
 async function askYesNo(question: string): Promise<boolean> {
@@ -69,17 +90,32 @@ async function askYesNo(question: string): Promise<boolean> {
   }
 }
 
-export async function maybePromptGithubStar(): Promise<void> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) return;
-  if (await hasBeenPrompted()) return;
-  if (!isGhInstalled()) return;
+export async function maybePromptGithubStar(deps: MaybePromptGithubStarDeps = {}): Promise<void> {
+  const stdinIsTTY = deps.stdinIsTTY ?? process.stdin.isTTY;
+  const stdoutIsTTY = deps.stdoutIsTTY ?? process.stdout.isTTY;
+  if (!stdinIsTTY || !stdoutIsTTY) return;
+
+  const hasBeenPromptedImpl = deps.hasBeenPromptedFn ?? hasBeenPrompted;
+  if (await hasBeenPromptedImpl()) return;
+
+  const isGhInstalledImpl = deps.isGhInstalledFn ?? isGhInstalled;
+  if (!isGhInstalledImpl()) return;
 
   // Mark as prompted before asking so we never prompt again even if interrupted.
-  await markPrompted();
+  const markPromptedImpl = deps.markPromptedFn ?? markPrompted;
+  await markPromptedImpl();
 
-  const approved = await askYesNo('[omx] Enjoying oh-my-codex? Star it on GitHub? [Y/n] ');
+  const askYesNoImpl = deps.askYesNoFn ?? askYesNo;
+  const approved = await askYesNoImpl('[omx] Enjoying oh-my-codex? Star it on GitHub? [Y/n] ');
   if (!approved) return;
 
-  starRepo();
-  console.log('[omx] Thanks for the star!');
+  const starRepoImpl = deps.starRepoFn ?? starRepo;
+  const star = starRepoImpl();
+  if (star.ok) {
+    const log = deps.logFn ?? console.log;
+    log('[omx] Thanks for the star!');
+    return;
+  }
+  const warn = deps.warnFn ?? console.warn;
+  warn(`[omx] Could not star repository automatically: ${star.error}`);
 }
