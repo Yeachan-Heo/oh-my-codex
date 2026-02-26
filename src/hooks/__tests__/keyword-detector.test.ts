@@ -257,4 +257,39 @@ describe('keyword detector skill-active-state lifecycle', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it('resets activated_at when keyword changes within the same skill', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-keyword-switch-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const statePath = join(stateDir, SKILL_ACTIVE_STATE_FILE);
+    try {
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        statePath,
+        JSON.stringify({
+          version: 1,
+          active: true,
+          skill: 'autopilot',
+          keyword: 'autopilot',
+          phase: 'planning',
+          activated_at: '2026-02-25T00:00:00.000Z',
+          updated_at: '2026-02-25T00:10:00.000Z',
+          source: 'keyword-detector',
+        }),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: 'I want a starter API',
+        nowIso: '2026-02-26T00:00:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'autopilot');
+      assert.notEqual(result.keyword.toLowerCase(), 'autopilot');
+      assert.equal(result.activated_at, '2026-02-26T00:00:00.000Z');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });
