@@ -70,6 +70,32 @@ describe('omx setup scope behavior', () => {
     }
   });
 
+  it('doctor respects persisted project setup scope paths', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-doctor-scope-'));
+    try {
+      const home = join(wd, 'home');
+      await mkdir(home, { recursive: true });
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+
+      await mkdir(join(wd, '.codex', 'prompts'), { recursive: true });
+      await mkdir(join(wd, '.agents', 'skills', 'sample-skill'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(join(wd, '.codex', 'prompts', 'executor.md'), '# executor\n');
+      await writeFile(join(wd, '.agents', 'skills', 'sample-skill', 'SKILL.md'), '# skill\n');
+      await writeFile(join(wd, '.codex', 'config.toml'), 'omx_enabled = true\n[mcp_servers.omx_state]\ncommand = "node"\n');
+
+      const res = runOmx(wd, ['doctor'], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.match(res.stdout, /Resolved setup scope: project \(from \.omx\/setup-scope\.json\)/);
+      assert.match(res.stdout, new RegExp(`Codex home: ${wd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/\\.codex`));
+      assert.doesNotMatch(res.stdout, new RegExp(`${home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/\\.codex`));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('does not persist setup scope on --dry-run', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-scope-'));
     try {

@@ -25,14 +25,87 @@ interface Check {
   message: string;
 }
 
+type DoctorSetupScope = 'user' | 'project';
+
+interface DoctorScopeResolution {
+  scope: DoctorSetupScope;
+  source: 'persisted' | 'default';
+}
+
+interface DoctorPaths {
+  codexHomeDir: string;
+  configPath: string;
+  promptsDir: string;
+  skillsDir: string;
+  stateDir: string;
+}
+
+const LEGACY_SCOPE_MIGRATION: Record<string, DoctorSetupScope> = {
+  'project-local': 'project',
+};
+
+async function resolveDoctorScope(cwd: string): Promise<DoctorScopeResolution> {
+  const scopePath = join(cwd, '.omx', 'setup-scope.json');
+  if (!existsSync(scopePath)) {
+    return { scope: 'user', source: 'default' };
+  }
+
+  try {
+    const raw = await readFile(scopePath, 'utf-8');
+    const parsed = JSON.parse(raw) as Partial<{ scope: string }>;
+    if (typeof parsed.scope === 'string') {
+      if (parsed.scope === 'user' || parsed.scope === 'project') {
+        return { scope: parsed.scope, source: 'persisted' };
+      }
+      const migrated = LEGACY_SCOPE_MIGRATION[parsed.scope];
+      if (migrated) {
+        return { scope: migrated, source: 'persisted' };
+      }
+    }
+  } catch {
+    // ignore invalid persisted scope and fall back to default
+  }
+
+  return { scope: 'user', source: 'default' };
+}
+
+function resolveDoctorPaths(cwd: string, scope: DoctorSetupScope): DoctorPaths {
+  if (scope === 'project') {
+    const codexHomeDir = join(cwd, '.codex');
+    return {
+      codexHomeDir,
+      configPath: join(codexHomeDir, 'config.toml'),
+      promptsDir: join(codexHomeDir, 'prompts'),
+      skillsDir: join(cwd, '.agents', 'skills'),
+      stateDir: omxStateDir(cwd),
+    };
+  }
+
+  return {
+    codexHomeDir: codexHome(),
+    configPath: codexConfigPath(),
+    promptsDir: codexPromptsDir(),
+    skillsDir: userSkillsDir(),
+    stateDir: omxStateDir(cwd),
+  };
+}
+
 export async function doctor(options: DoctorOptions = {}): Promise<void> {
   if (options.team) {
     await doctorTeam();
     return;
   }
 
+  const cwd = process.cwd();
+  const scopeResolution = await resolveDoctorScope(cwd);
+  const paths = resolveDoctorPaths(cwd, scopeResolution.scope);
+  const scopeSourceMessage = scopeResolution.source === 'persisted'
+    ? ' (from .omx/setup-scope.json)'
+    : '';
+
   console.log('oh-my-codex doctor');
   console.log('==================\n');
+  console.log(`Resolved setup scope: ${scopeResolution.scope}${scopeSourceMessage}\n`);
 
   const checks: Check[] = [];
 
@@ -43,25 +116,25 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
   checks.push(checkNodeVersion());
 
   // Check 3: Codex home directory
-  checks.push(checkDirectory('Codex home', codexHome()));
+  checks.push(checkDirectory('Codex home', paths.codexHomeDir));
 
   // Check 4: Config file
-  checks.push(await checkConfig());
+  checks.push(await checkConfig(paths.configPath));
 
   // Check 5: Prompts installed
-  checks.push(await checkPrompts());
+  checks.push(await checkPrompts(paths.promptsDir));
 
   // Check 6: Skills installed
-  checks.push(await checkSkills());
+  checks.push(await checkSkills(paths.skillsDir));
 
   // Check 7: AGENTS.md in project
   checks.push(checkAgentsMd());
 
   // Check 8: State directory
-  checks.push(checkDirectory('State dir', omxStateDir()));
+  checks.push(checkDirectory('State dir', paths.stateDir));
 
   // Check 9: MCP servers configured
-  checks.push(await checkMcpServers());
+  checks.push(await checkMcpServers(paths.configPath));
 
   // Print results
   let passCount = 0;
@@ -322,8 +395,7 @@ function checkDirectory(name: string, path: string): Check {
   return { name, status: 'warn', message: `${path} (not created yet)` };
 }
 
-async function checkConfig(): Promise<Check> {
-  const configPath = codexConfigPath();
+async function checkConfig(configPath: string): Promise<Check> {
   if (!existsSync(configPath)) {
     return { name: 'Config', status: 'warn', message: 'config.toml not found' };
   }
@@ -339,8 +411,7 @@ async function checkConfig(): Promise<Check> {
   }
 }
 
-async function checkPrompts(): Promise<Check> {
-  const dir = codexPromptsDir();
+async function checkPrompts(dir: string): Promise<Check> {
   const expectations = getCatalogExpectations();
   if (!existsSync(dir)) {
     return { name: 'Prompts', status: 'warn', message: 'prompts directory not found' };
@@ -357,8 +428,7 @@ async function checkPrompts(): Promise<Check> {
   }
 }
 
-async function checkSkills(): Promise<Check> {
-  const dir = userSkillsDir();
+async function checkSkills(dir: string): Promise<Check> {
   const expectations = getCatalogExpectations();
   if (!existsSync(dir)) {
     return { name: 'Skills', status: 'warn', message: 'skills directory not found' };
@@ -383,8 +453,7 @@ function checkAgentsMd(): Check {
   return { name: 'AGENTS.md', status: 'warn', message: 'not found in project root (run omx setup)' };
 }
 
-async function checkMcpServers(): Promise<Check> {
-  const configPath = codexConfigPath();
+async function checkMcpServers(configPath: string): Promise<Check> {
   if (!existsSync(configPath)) {
     return { name: 'MCP Servers', status: 'warn', message: 'config.toml not found' };
   }
