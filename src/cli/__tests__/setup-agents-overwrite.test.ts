@@ -40,6 +40,20 @@ async function runSetupWithCapturedLogs(
   }
 }
 
+async function readCurrentLinuxStartTicks(): Promise<number | undefined> {
+  if (process.platform !== 'linux') return undefined;
+  try {
+    const stat = await readFile('/proc/self/stat', 'utf-8');
+    const commandEnd = stat.lastIndexOf(')');
+    if (commandEnd === -1) return undefined;
+    const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+    const ticks = Number(fields[19]);
+    return Number.isFinite(ticks) ? ticks : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 describe('omx setup AGENTS overwrite prompt behavior', () => {
   it('overwrites existing AGENTS.md when prompt accepts in TTY', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agents-'));
@@ -89,6 +103,7 @@ describe('omx setup AGENTS overwrite prompt behavior', () => {
     const restoreTty = setMockTty(true);
     const existing = '# active session file\n';
     try {
+      const pidStartTicks = await readCurrentLinuxStartTicks();
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
       await writeFile(join(wd, 'AGENTS.md'), existing);
       await writeFile(
@@ -98,6 +113,7 @@ describe('omx setup AGENTS overwrite prompt behavior', () => {
           started_at: new Date().toISOString(),
           cwd: wd,
           pid: process.pid,
+          pid_start_ticks: pidStartTicks,
         }, null, 2)
       );
 

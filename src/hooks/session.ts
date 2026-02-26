@@ -7,7 +7,7 @@
 
 import { readFile, writeFile, mkdir, unlink, appendFile } from 'fs/promises';
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { omxStateDir, omxLogsDir } from '../utils/paths.js';
 
 export interface SessionState {
@@ -15,11 +15,14 @@ export interface SessionState {
   started_at: string;
   cwd: string;
   pid: number;
+  platform?: NodeJS.Platform;
+  pid_start_ticks?: number;
+  pid_cmdline?: string;
 }
 
 const SESSION_FILE = 'session.json';
 const HISTORY_FILE = 'session-history.jsonl';
-// No age-based threshold: only PID liveness determines staleness.
+// No age-based threshold: staleness is determined by PID liveness/identity.
 // Long-running sessions (>2h) are legitimate and should not be reaped.
 
 function sessionPath(cwd: string): string {
@@ -74,18 +77,100 @@ export async function readSessionState(cwd: string): Promise<SessionState | null
   }
 }
 
-/**
- * Check if a session is stale (PID dead or started >2h ago).
- */
-export function isSessionStale(state: SessionState): boolean {
-  // Only consider a session stale if the owning PID is dead.
-  // Long-running sessions are legitimate and must not be reaped by age alone.
+interface LinuxProcessIdentity {
+  startTicks: number;
+  cmdline: string | null;
+}
+
+interface SessionStaleCheckOptions {
+  platform?: NodeJS.Platform;
+  isPidAlive?: (pid: number) => boolean;
+  readLinuxIdentity?: (pid: number) => LinuxProcessIdentity | null;
+}
+
+function defaultIsPidAlive(pid: number): boolean {
   try {
-    process.kill(state.pid, 0);
-    return false; // PID is alive, session is active
+    process.kill(pid, 0);
+    return true;
   } catch {
-    return true; // PID is dead, session is stale
+    return false;
   }
+}
+
+function parseLinuxProcStartTicks(statContent: string): number | null {
+  const commandEnd = statContent.lastIndexOf(')');
+  if (commandEnd === -1) return null;
+
+  const remainder = statContent.slice(commandEnd + 1).trim();
+  const fields = remainder.split(/\s+/);
+  if (fields.length <= 19) return null;
+
+  const startTicks = Number(fields[19]);
+  return Number.isFinite(startTicks) ? startTicks : null;
+}
+
+function normalizeCmdline(cmdline: string | null | undefined): string | null {
+  if (!cmdline) return null;
+  const normalized = cmdline.replace(/\s+/g, ' ').trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function readLinuxProcessIdentity(pid: number): LinuxProcessIdentity | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
+    const startTicks = parseLinuxProcStartTicks(stat);
+    if (startTicks == null) return null;
+
+    let cmdline: string | null = null;
+    try {
+      cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf-8')
+        .replace(/\u0000+/g, ' ')
+        .trim();
+    } catch {
+      cmdline = null;
+    }
+
+    return {
+      startTicks,
+      cmdline: normalizeCmdline(cmdline),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if a session is stale.
+ * - If the owning PID is dead, it is stale.
+ * - On Linux, require process identity validation (start ticks, optional cmdline).
+ *   If identity cannot be validated, treat the session as stale.
+ */
+export function isSessionStale(
+  state: SessionState,
+  options: SessionStaleCheckOptions = {},
+): boolean {
+  if (!Number.isInteger(state.pid) || state.pid <= 0) return true;
+
+  const isPidAlive = options.isPidAlive ?? defaultIsPidAlive;
+  if (!isPidAlive(state.pid)) return true;
+
+  const platform = options.platform ?? process.platform;
+  if (platform !== 'linux') return false;
+
+  const readIdentity = options.readLinuxIdentity ?? readLinuxProcessIdentity;
+  const liveIdentity = readIdentity(state.pid);
+  if (!liveIdentity) return true;
+
+  if (typeof state.pid_start_ticks !== 'number') return true;
+  if (state.pid_start_ticks !== liveIdentity.startTicks) return true;
+
+  const expectedCmdline = normalizeCmdline(state.pid_cmdline);
+  if (expectedCmdline) {
+    const liveCmdline = normalizeCmdline(liveIdentity.cmdline);
+    if (!liveCmdline || liveCmdline !== expectedCmdline) return true;
+  }
+
+  return false;
 }
 
 /**
@@ -94,12 +179,18 @@ export function isSessionStale(state: SessionState): boolean {
 export async function writeSessionStart(cwd: string, sessionId: string): Promise<void> {
   const stateDir = omxStateDir(cwd);
   await mkdir(stateDir, { recursive: true });
+  const linuxIdentity = process.platform === 'linux'
+    ? readLinuxProcessIdentity(process.pid)
+    : null;
 
   const state: SessionState = {
     session_id: sessionId,
     started_at: new Date().toISOString(),
     cwd,
     pid: process.pid,
+    platform: process.platform,
+    pid_start_ticks: linuxIdentity?.startTicks,
+    pid_cmdline: linuxIdentity?.cmdline ?? undefined,
   };
 
   await writeFile(sessionPath(cwd), JSON.stringify(state, null, 2));
