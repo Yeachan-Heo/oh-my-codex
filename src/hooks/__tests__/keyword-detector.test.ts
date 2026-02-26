@@ -257,5 +257,4 @@ describe('keyword detector skill-active-state lifecycle', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
-  });
 });
