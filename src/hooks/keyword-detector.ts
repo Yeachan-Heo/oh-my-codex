@@ -71,6 +71,29 @@ const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> =
   priority: entry.priority,
 }));
 
+const KEYWORDS_REQUIRING_INTENT = new Set(['team', 'swarm']);
+
+const TEAM_SWARM_INTENT_PATTERNS: Record<'team' | 'swarm', RegExp[]> = {
+  team: [
+    /(?:^|[^\w])\$(?:team)\b/i,
+    /\/prompts:team\b/i,
+    /\b(?:use|run|start|enable|launch|invoke|activate|orchestrate|coordinate)\s+(?:a\s+|an\s+|the\s+)?team\b/i,
+    /\bteam\s+(?:mode|orchestration|workflow|agents?)\b/i,
+  ],
+  swarm: [
+    /(?:^|[^\w])\$(?:swarm)\b/i,
+    /\/prompts:swarm\b/i,
+    /\b(?:use|run|start|enable|launch|invoke|activate|orchestrate|coordinate)\s+(?:a\s+|an\s+|the\s+)?swarm\b/i,
+    /\bswarm\s+(?:mode|orchestration|workflow|agents?)\b/i,
+  ],
+};
+
+function hasIntentContextForKeyword(text: string, keyword: string): boolean {
+  if (!KEYWORDS_REQUIRING_INTENT.has(keyword.toLowerCase())) return true;
+  const k = keyword.toLowerCase() as 'team' | 'swarm';
+  return TEAM_SWARM_INTENT_PATTERNS[k].some((pattern) => pattern.test(text));
+}
+
 /**
  * Detect keywords in user input text
  * Returns matching skills sorted by priority (highest first)
@@ -81,6 +104,7 @@ export function detectKeywords(text: string): KeywordMatch[] {
   for (const { pattern, skill, priority } of KEYWORD_MAP) {
     const match = text.match(pattern);
     if (match) {
+      if (!hasIntentContextForKeyword(text, match[0].toLowerCase())) continue;
       matches.push({
         keyword: match[0],
         skill,

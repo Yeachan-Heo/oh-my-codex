@@ -49,12 +49,34 @@ describe('keyword detector swarm/team compatibility', () => {
   });
 
   it('keeps swarm trigger priority aligned with team trigger', () => {
-    const teamMatch = detectKeywords('team agents should handle this').find((entry) => entry.skill === 'team');
-    const swarmMatch = detectKeywords('swarm should handle this').find((entry) => entry.skill === 'team');
+    const teamMatch = detectKeywords('use team agents for this').find((entry) => entry.skill === 'team');
+    const swarmMatch = detectKeywords('use swarm for this').find((entry) => entry.skill === 'team');
 
     assert.ok(teamMatch);
     assert.ok(swarmMatch);
     assert.equal(swarmMatch.priority, teamMatch.priority);
+  });
+
+  it('does not trigger team keyword from filesystem/team-state path text', () => {
+    const match = detectPrimaryKeyword('You have 1 new message(s). Check .omx/state/team/execute-plan/mailbox/worker-3.json');
+    assert.equal(match, null);
+  });
+
+  it('does not trigger team skill from incidental prose usage', () => {
+    const match = detectPrimaryKeyword('the team reviewed the document and shared feedback');
+    assert.equal(match, null);
+  });
+
+  it('still triggers team for explicit $team invocation', () => {
+    const match = detectPrimaryKeyword('please run $team now');
+    assert.ok(match);
+    assert.equal(match.skill, 'team');
+  });
+
+  it('still triggers swarm for explicit /prompts:swarm invocation', () => {
+    const match = detectPrimaryKeyword('use /prompts:swarm for this');
+    assert.ok(match);
+    assert.equal(match.skill, 'team');
   });
 
   it('prefers ralplan over ralph when both keywords are present', () => {
