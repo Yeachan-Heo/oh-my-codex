@@ -6,6 +6,7 @@
 import { execSync, execFileSync, spawn } from 'child_process';
 import { basename, dirname, join } from 'path';
 import { existsSync, readFileSync } from 'fs';
+import { constants as osConstants } from 'os';
 import { setup, SETUP_SCOPES, type SetupScope } from './setup.js';
 import { doctor } from './doctor.js';
 import { version } from './version.js';
@@ -204,6 +205,83 @@ export type CodexLaunchPolicy = 'inside-tmux' | 'direct';
 
 export function resolveCodexLaunchPolicy(env: NodeJS.ProcessEnv = process.env): CodexLaunchPolicy {
   return env.TMUX ? 'inside-tmux' : 'direct';
+}
+
+type ExecFileSyncFailure = NodeJS.ErrnoException & {
+  status?: number | null;
+  signal?: NodeJS.Signals | null;
+};
+
+export interface CodexExecFailureClassification {
+  kind: 'exit' | 'launch-error';
+  code?: string;
+  message: string;
+  exitCode?: number;
+  signal?: NodeJS.Signals;
+}
+
+export function resolveSignalExitCode(signal: NodeJS.Signals | null | undefined): number {
+  if (!signal) return 1;
+  const signalNumber = osConstants.signals[signal];
+  if (typeof signalNumber === 'number' && Number.isFinite(signalNumber)) {
+    return 128 + signalNumber;
+  }
+  return 1;
+}
+
+export function classifyCodexExecFailure(error: unknown): CodexExecFailureClassification {
+  if (!error || typeof error !== 'object') {
+    return {
+      kind: 'launch-error',
+      message: String(error),
+    };
+  }
+
+  const err = error as ExecFileSyncFailure;
+  const code = typeof err.code === 'string' ? err.code : undefined;
+  const message = typeof err.message === 'string' && err.message.length > 0
+    ? err.message
+    : 'unknown codex launch failure';
+  const hasExitStatus = typeof err.status === 'number';
+  const hasSignal = typeof err.signal === 'string' && err.signal.length > 0;
+
+  if (hasExitStatus || hasSignal) {
+    return {
+      kind: 'exit',
+      code,
+      message,
+      exitCode: hasExitStatus ? err.status as number : resolveSignalExitCode(err.signal),
+      signal: hasSignal ? err.signal as NodeJS.Signals : undefined,
+    };
+  }
+
+  return {
+    kind: 'launch-error',
+    code,
+    message,
+  };
+}
+
+function runCodexBlocking(cwd: string, launchArgs: string[], codexEnv: NodeJS.ProcessEnv): void {
+  try {
+    execFileSync('codex', launchArgs, { cwd, stdio: 'inherit', env: codexEnv });
+  } catch (error) {
+    const classified = classifyCodexExecFailure(error);
+    if (classified.kind === 'exit') {
+      process.exitCode = classified.exitCode ?? 1;
+      if (classified.signal) {
+        console.error(`[omx] codex exited due to signal ${classified.signal}`);
+      }
+      return;
+    }
+
+    if (classified.code === 'ENOENT') {
+      console.error('[omx] failed to launch codex: executable not found in PATH');
+    } else {
+      console.error(`[omx] failed to launch codex: ${classified.message}`);
+    }
+    throw error;
+  }
 }
 
 interface TmuxPaneSnapshot {
@@ -925,9 +1003,7 @@ function runCodex(
     }
 
     try {
-      execFileSync('codex', launchArgs, { cwd, stdio: 'inherit', env: codexEnv });
-    } catch {
-      // Codex exited
+      runCodexBlocking(cwd, launchArgs, codexEnv);
     } finally {
       const cleanupPaneIds = buildHudPaneCleanupTargets(
         listHudWatchPaneIdsInCurrentWindow(currentPaneId),
@@ -1015,11 +1091,7 @@ function runCodex(
         }
       }
       // tmux not available or failed, just run codex directly
-      try {
-        execFileSync('codex', launchArgs, { cwd, stdio: 'inherit', env: codexEnv });
-      } catch {
-        // Codex exited
-      }
+      runCodexBlocking(cwd, launchArgs, codexEnv);
     }
   }
 }

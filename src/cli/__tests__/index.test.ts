@@ -9,6 +9,8 @@ import {
   buildTmuxSessionName,
   resolveCliInvocation,
   resolveCodexLaunchPolicy,
+  classifyCodexExecFailure,
+  resolveSignalExitCode,
   parseTmuxPaneSnapshot,
   findHudWatchPaneIds,
   buildHudPaneCleanupTargets,
@@ -325,6 +327,30 @@ describe('resolveCodexLaunchPolicy', () => {
 
   it('uses tmux-aware launch path when already inside tmux', () => {
     assert.equal(resolveCodexLaunchPolicy({ TMUX: '/tmp/tmux-1000/default,123,0' }), 'inside-tmux');
+  });
+});
+
+describe('classifyCodexExecFailure', () => {
+  it('classifies child process exit status as codex exit', () => {
+    const err = Object.assign(new Error('codex exited 9'), { status: 9 });
+    const classified = classifyCodexExecFailure(err);
+    assert.equal(classified.kind, 'exit');
+    assert.equal(classified.exitCode, 9);
+  });
+
+  it('classifies signal termination as codex exit and maps to signal-based exit code', () => {
+    const err = Object.assign(new Error('terminated'), { status: null, signal: 'SIGTERM' as NodeJS.Signals });
+    const classified = classifyCodexExecFailure(err);
+    assert.equal(classified.kind, 'exit');
+    assert.equal(classified.signal, 'SIGTERM');
+    assert.equal(classified.exitCode, resolveSignalExitCode('SIGTERM'));
+  });
+
+  it('classifies ENOENT as launch error', () => {
+    const err = Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' });
+    const classified = classifyCodexExecFailure(err);
+    assert.equal(classified.kind, 'launch-error');
+    assert.equal(classified.code, 'ENOENT');
   });
 });
 
