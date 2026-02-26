@@ -11,6 +11,23 @@ import {
 } from '../keyword-detector.js';
 import { generateKeywordDetectionSection } from '../emulator.js';
 import { isUnderspecifiedForExecution, applyRalplanGate } from '../keyword-detector.js';
+import { KEYWORD_TRIGGER_DEFINITIONS } from '../keyword-registry.js';
+
+async function readTemplateKeywords(): Promise<string[]> {
+  const templatePath = join(process.cwd(), 'templates', 'AGENTS.md');
+  const content = await readFile(templatePath, 'utf-8');
+  const lines = content.split('\n');
+  const keywords = new Set<string>();
+
+  for (const line of lines) {
+    if (!line.startsWith('| "') || !line.includes('| `$')) continue;
+    const [firstColumn] = line.split('|').slice(1, 2);
+    const matches = firstColumn?.matchAll(/"([^"]+)"/g) ?? [];
+    for (const match of matches) keywords.add(match[1]);
+  }
+
+  return [...keywords];
+}
 
 describe('keyword detector swarm/team compatibility', () => {
   it('maps "coordinated team" phrase to team orchestration skill', () => {

@@ -11,6 +11,9 @@
  * to an external hook handler.
  */
 
+import { readFile, writeFile } from 'fs/promises';
+import { join } from 'path';
+import { KEYWORD_TRIGGER_DEFINITIONS, compareKeywordMatches } from './keyword-registry.js';
 import { classifyTaskSize, isHeavyMode, type TaskSizeResult, type TaskSizeThresholds } from './task-size-detector.js';
 
 export interface KeywordMatch {
@@ -313,4 +316,54 @@ export function getAllKeywordsWithSizeCheck(
     taskSizeResult,
     suppressedKeywords,
   };
+}
+
+/**
+ * Persist active skill state when a keyword activation is detected.
+ * Returns null when no keyword is detected.
+ */
+export async function recordSkillActivation(input: RecordSkillActivationInput): Promise<SkillActiveState | null> {
+  const match = detectPrimaryKeyword(input.text);
+  if (!match) return null;
+
+  const nowIso = input.nowIso ?? new Date().toISOString();
+  const statePath = join(input.stateDir, SKILL_ACTIVE_STATE_FILE);
+  const previous = await readJsonIfExists<Partial<SkillActiveState> | null>(statePath, null);
+  const sameSkillLifecycle = previous?.active === true
+    && typeof previous.skill === 'string'
+    && previous.skill === match.skill
+    && typeof previous.keyword === 'string'
+    && previous.keyword.toLowerCase() === match.keyword.toLowerCase();
+  const activatedAt = sameSkillLifecycle && typeof previous?.activated_at === 'string' && previous.activated_at !== ''
+    ? previous.activated_at
+    : nowIso;
+
+  const state: SkillActiveState = {
+    version: 1,
+    active: true,
+    skill: match.skill,
+    keyword: match.keyword,
+    phase: 'planning',
+    activated_at: activatedAt,
+    updated_at: nowIso,
+    source: 'keyword-detector',
+    ...(input.sessionId ? { session_id: input.sessionId } : {}),
+    ...(input.threadId ? { thread_id: input.threadId } : {}),
+    ...(input.turnId ? { turn_id: input.turnId } : {}),
+  };
+
+  await writeFile(statePath, JSON.stringify(state, null, 2)).catch((error: unknown) => {
+    console.warn('[omx] warning: failed to persist keyword activation state', {
+      path: statePath,
+      skill: state.skill,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+  return state;
+}
+
+async function readJsonIfExists<T>(path: string, fallback: T): Promise<T> {
+  return readFile(path, 'utf-8')
+    .then((content) => JSON.parse(content) as T)
+    .catch(() => fallback);
 }
