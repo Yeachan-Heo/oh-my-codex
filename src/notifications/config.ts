@@ -545,13 +545,20 @@ function getEnabledReplyPlatformConfig<T extends { enabled: boolean }>(
 export function getReplyListenerPlatformConfig(
   config: FullNotificationConfig | null,
 ): {
+  telegramEnabled: boolean;
   telegramBotToken?: string;
   telegramChatId?: string;
+  discordEnabled: boolean;
   discordBotToken?: string;
   discordChannelId?: string;
   discordMention?: string;
 } {
-  if (!config) return {};
+  if (!config) {
+    return {
+      telegramEnabled: false,
+      discordEnabled: false,
+    };
+  }
 
   const telegramConfig =
     getEnabledReplyPlatformConfig<TelegramNotificationConfig>(
@@ -564,15 +571,17 @@ export function getReplyListenerPlatformConfig(
       "discord-bot",
     );
 
+  const telegramEnabled = !!(telegramConfig?.botToken && telegramConfig?.chatId);
+  const discordEnabled = !!(discordBotConfig?.botToken && discordBotConfig?.channelId);
+
   return {
-    telegramBotToken: telegramConfig?.botToken || config.telegram?.botToken,
-    telegramChatId: telegramConfig?.chatId || config.telegram?.chatId,
-    discordBotToken:
-      discordBotConfig?.botToken || config["discord-bot"]?.botToken,
-    discordChannelId:
-      discordBotConfig?.channelId || config["discord-bot"]?.channelId,
-    discordMention:
-      discordBotConfig?.mention || config["discord-bot"]?.mention,
+    telegramEnabled,
+    telegramBotToken: telegramEnabled ? telegramConfig?.botToken : undefined,
+    telegramChatId: telegramEnabled ? telegramConfig?.chatId : undefined,
+    discordEnabled,
+    discordBotToken: discordEnabled ? discordBotConfig?.botToken : undefined,
+    discordChannelId: discordEnabled ? discordBotConfig?.channelId : undefined,
+    discordMention: discordEnabled ? discordBotConfig?.mention : undefined,
   };
 }
 
@@ -595,6 +604,40 @@ function parseDiscordUserIds(
   }
 
   return [];
+}
+
+const REPLY_POLL_INTERVAL_MIN_MS = 500;
+const REPLY_POLL_INTERVAL_MAX_MS = 60_000;
+const REPLY_POLL_INTERVAL_DEFAULT_MS = 3_000;
+const REPLY_RATE_LIMIT_MIN_PER_MINUTE = 1;
+const REPLY_RATE_LIMIT_DEFAULT_PER_MINUTE = 10;
+const REPLY_MAX_MESSAGE_LENGTH_MIN = 1;
+const REPLY_MAX_MESSAGE_LENGTH_MAX = 4_000;
+const REPLY_MAX_MESSAGE_LENGTH_DEFAULT = 500;
+
+function parseIntegerInput(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    const parsed = Number.parseInt(trimmed, 10);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function normalizeInteger(
+  value: number | undefined,
+  fallback: number,
+  min: number,
+  max?: number,
+): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  if (value < min) return min;
+  if (max !== undefined && value > max) return max;
+  return value;
 }
 
 export function getReplyConfig(): import("./types.js").ReplyConfig | null {
@@ -629,11 +672,31 @@ export function getReplyConfig(): import("./types.js").ReplyConfig | null {
     );
   }
 
+  const pollIntervalMs = normalizeInteger(
+    parseIntegerInput(process.env.OMX_REPLY_POLL_INTERVAL_MS)
+      ?? parseIntegerInput(replyRaw?.pollIntervalMs),
+    REPLY_POLL_INTERVAL_DEFAULT_MS,
+    REPLY_POLL_INTERVAL_MIN_MS,
+    REPLY_POLL_INTERVAL_MAX_MS,
+  );
+  const rateLimitPerMinute = normalizeInteger(
+    parseIntegerInput(process.env.OMX_REPLY_RATE_LIMIT)
+      ?? parseIntegerInput(replyRaw?.rateLimitPerMinute),
+    REPLY_RATE_LIMIT_DEFAULT_PER_MINUTE,
+    REPLY_RATE_LIMIT_MIN_PER_MINUTE,
+  );
+  const maxMessageLength = normalizeInteger(
+    parseIntegerInput(replyRaw?.maxMessageLength),
+    REPLY_MAX_MESSAGE_LENGTH_DEFAULT,
+    REPLY_MAX_MESSAGE_LENGTH_MIN,
+    REPLY_MAX_MESSAGE_LENGTH_MAX,
+  );
+
   return {
     enabled: true,
-    pollIntervalMs: parseInt(process.env.OMX_REPLY_POLL_INTERVAL_MS || "") || replyRaw?.pollIntervalMs || 3000,
-    maxMessageLength: replyRaw?.maxMessageLength || 500,
-    rateLimitPerMinute: parseInt(process.env.OMX_REPLY_RATE_LIMIT || "") || replyRaw?.rateLimitPerMinute || 10,
+    pollIntervalMs,
+    maxMessageLength,
+    rateLimitPerMinute,
     includePrefix: process.env.OMX_REPLY_INCLUDE_PREFIX !== "false" && (replyRaw?.includePrefix !== false),
     authorizedDiscordUserIds,
   };

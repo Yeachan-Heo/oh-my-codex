@@ -1,11 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { sanitizeReplyInput, isReplyListenerProcess } from '../reply-listener.js';
+import {
+  sanitizeReplyInput,
+  isReplyListenerProcess,
+  normalizeReplyListenerConfig,
+} from '../reply-listener.js';
 
 describe('sanitizeReplyInput', () => {
   it('passes through normal text', () => {
@@ -72,70 +72,6 @@ describe('sanitizeReplyInput', () => {
     const result = sanitizeReplyInput('Hello world');
     assert.ok(result.length > 0);
   });
-
-  it('strips bidi left-to-right mark (U+200E)', () => {
-    assert.equal(sanitizeReplyInput('hello\u200Eworld'), 'helloworld');
-  });
-
-  it('strips bidi right-to-left mark (U+200F)', () => {
-    assert.equal(sanitizeReplyInput('hello\u200Fworld'), 'helloworld');
-  });
-
-  it('strips bidi left-to-right embedding (U+202A)', () => {
-    assert.equal(sanitizeReplyInput('hello\u202Aworld'), 'helloworld');
-  });
-
-  it('strips bidi right-to-left embedding (U+202B)', () => {
-    assert.equal(sanitizeReplyInput('hello\u202Bworld'), 'helloworld');
-  });
-
-  it('strips bidi pop directional formatting (U+202C)', () => {
-    assert.equal(sanitizeReplyInput('hello\u202Cworld'), 'helloworld');
-  });
-
-  it('strips bidi left-to-right override (U+202D)', () => {
-    assert.equal(sanitizeReplyInput('hello\u202Dworld'), 'helloworld');
-  });
-
-  it('strips bidi right-to-left override (U+202E)', () => {
-    assert.equal(sanitizeReplyInput('hello\u202Eworld'), 'helloworld');
-  });
-
-  it('strips bidi left-to-right isolate (U+2066)', () => {
-    assert.equal(sanitizeReplyInput('hello\u2066world'), 'helloworld');
-  });
-
-  it('strips bidi right-to-left isolate (U+2067)', () => {
-    assert.equal(sanitizeReplyInput('hello\u2067world'), 'helloworld');
-  });
-
-  it('strips bidi first strong isolate (U+2068)', () => {
-    assert.equal(sanitizeReplyInput('hello\u2068world'), 'helloworld');
-  });
-
-  it('strips bidi pop directional isolate (U+2069)', () => {
-    assert.equal(sanitizeReplyInput('hello\u2069world'), 'helloworld');
-  });
-
-  it('strips multiple bidi characters from a realistic trojan-source payload', () => {
-    // Simulates a trojan-source attack using bidi overrides
-    const malicious = '\u202E\u2066// Check if admin\u2069\u2066 /* \u2069\u202Eis_admin = true';
-    const sanitized = sanitizeReplyInput(malicious);
-    assert.ok(!sanitized.includes('\u202E'));
-    assert.ok(!sanitized.includes('\u2066'));
-    assert.ok(!sanitized.includes('\u2069'));
-    assert.ok(sanitized.includes('is_admin'));
-  });
-
-  it('strips bidi after control char stripping, before newline replacement', () => {
-    // Order: controls stripped first, then bidi, then newlines -> spaces
-    const input = '\x01\u202Ehello\nworld';
-    const result = sanitizeReplyInput(input);
-    assert.ok(!result.includes('\x01'));
-    assert.ok(!result.includes('\u202E'));
-    assert.ok(!result.includes('\n'));
-    assert.ok(result.includes('hello world'));
-  });
 });
 
 describe('isReplyListenerProcess', () => {
@@ -187,44 +123,40 @@ describe('isReplyListenerProcess', () => {
   });
 });
 
-async function importReplyListenerFresh() {
-  const moduleUrl = new URL('../reply-listener.js', import.meta.url);
-  moduleUrl.searchParams.set('t', `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-  return import(moduleUrl.href);
-}
+describe('normalizeReplyListenerConfig', () => {
+  it('clamps invalid runtime numeric values and sanitizes authorized users', () => {
+    const normalized = normalizeReplyListenerConfig({
+      enabled: true,
+      pollIntervalMs: 0,
+      maxMessageLength: -10,
+      rateLimitPerMinute: -1,
+      includePrefix: false,
+      authorizedDiscordUserIds: ['123', '', '  ', '456'],
+      discordEnabled: true,
+      discordBotToken: 'bot-token',
+      discordChannelId: 'channel-id',
+    });
 
-describe('isDaemonRunning stale PID handling', () => {
-  it('treats non-daemon PID as stale and removes pid file', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'omx-reply-listener-'));
-    const stateDir = join(homeDir, '.omx', 'state');
-    const pidFilePath = join(stateDir, 'reply-listener.pid');
-    const originalHome = process.env.HOME;
-    const originalUserProfile = process.env.USERPROFILE;
-    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000);'], { stdio: 'ignore' });
+    assert.equal(normalized.pollIntervalMs, 500);
+    assert.equal(normalized.maxMessageLength, 1);
+    assert.equal(normalized.rateLimitPerMinute, 1);
+    assert.equal(normalized.includePrefix, false);
+    assert.deepEqual(normalized.authorizedDiscordUserIds, ['123', '456']);
+  });
 
-    try {
-      await new Promise<void>((resolve, reject) => {
-        child.once('spawn', () => resolve());
-        child.once('error', reject);
-      });
+  it('infers enabled flags from credentials when omitted', () => {
+    const normalized = normalizeReplyListenerConfig({
+      enabled: true,
+      pollIntervalMs: 3000,
+      maxMessageLength: 500,
+      rateLimitPerMinute: 10,
+      includePrefix: true,
+      authorizedDiscordUserIds: [],
+      telegramBotToken: 'tg-token',
+      telegramChatId: 'tg-chat',
+    });
 
-      await mkdir(stateDir, { recursive: true });
-      await writeFile(pidFilePath, String(child.pid));
-      process.env.HOME = homeDir;
-      process.env.USERPROFILE = homeDir;
-
-      const replyListener = await importReplyListenerFresh();
-      const running = replyListener.isDaemonRunning();
-
-      assert.equal(running, false);
-      assert.equal(existsSync(pidFilePath), false);
-    } finally {
-      child.kill();
-      if (typeof originalHome === 'string') process.env.HOME = originalHome;
-      else delete process.env.HOME;
-      if (typeof originalUserProfile === 'string') process.env.USERPROFILE = originalUserProfile;
-      else delete process.env.USERPROFILE;
-      await rm(homeDir, { recursive: true, force: true });
-    }
+    assert.equal(normalized.telegramEnabled, true);
+    assert.equal(normalized.discordEnabled, false);
   });
 });

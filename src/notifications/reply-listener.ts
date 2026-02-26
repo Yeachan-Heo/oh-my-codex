@@ -55,6 +55,14 @@ const DEFAULT_STATE_DIR = join(homedir(), '.omx', 'state');
 const PID_FILE_PATH = join(DEFAULT_STATE_DIR, 'reply-listener.pid');
 const STATE_FILE_PATH = join(DEFAULT_STATE_DIR, 'reply-listener-state.json');
 const LOG_FILE_PATH = join(DEFAULT_STATE_DIR, 'reply-listener.log');
+const MIN_REPLY_POLL_INTERVAL_MS = 500;
+const MAX_REPLY_POLL_INTERVAL_MS = 60_000;
+const DEFAULT_REPLY_POLL_INTERVAL_MS = 3_000;
+const MIN_REPLY_RATE_LIMIT_PER_MINUTE = 1;
+const DEFAULT_REPLY_RATE_LIMIT_PER_MINUTE = 10;
+const MIN_REPLY_MAX_MESSAGE_LENGTH = 1;
+const MAX_REPLY_MAX_MESSAGE_LENGTH = 4_000;
+const DEFAULT_REPLY_MAX_MESSAGE_LENGTH = 500;
 
 export interface ReplyListenerState {
   isRunning: boolean;
@@ -69,8 +77,10 @@ export interface ReplyListenerState {
 }
 
 export interface ReplyListenerDaemonConfig extends ReplyConfig {
+  telegramEnabled?: boolean;
   telegramBotToken?: string;
   telegramChatId?: string;
+  discordEnabled?: boolean;
   discordBotToken?: string;
   discordChannelId?: string;
   discordMention?: string;
@@ -135,6 +145,55 @@ function log(message: string): void {
   } catch {
     // Ignore log write errors
   }
+}
+
+function normalizeInteger(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max?: number,
+): number {
+  const numeric = typeof value === 'number'
+    ? Math.trunc(value)
+    : (typeof value === 'string' && value.trim()
+        ? Number.parseInt(value, 10)
+        : Number.NaN);
+  if (!Number.isFinite(numeric)) return fallback;
+  if (numeric < min) return min;
+  if (max !== undefined && numeric > max) return max;
+  return numeric;
+}
+
+export function normalizeReplyListenerConfig(config: ReplyListenerDaemonConfig): ReplyListenerDaemonConfig {
+  const discordEnabled = config.discordEnabled ?? !!(config.discordBotToken && config.discordChannelId);
+  const telegramEnabled = config.telegramEnabled ?? !!(config.telegramBotToken && config.telegramChatId);
+
+  return {
+    ...config,
+    discordEnabled,
+    telegramEnabled,
+    pollIntervalMs: normalizeInteger(
+      config.pollIntervalMs,
+      DEFAULT_REPLY_POLL_INTERVAL_MS,
+      MIN_REPLY_POLL_INTERVAL_MS,
+      MAX_REPLY_POLL_INTERVAL_MS,
+    ),
+    rateLimitPerMinute: normalizeInteger(
+      config.rateLimitPerMinute,
+      DEFAULT_REPLY_RATE_LIMIT_PER_MINUTE,
+      MIN_REPLY_RATE_LIMIT_PER_MINUTE,
+    ),
+    maxMessageLength: normalizeInteger(
+      config.maxMessageLength,
+      DEFAULT_REPLY_MAX_MESSAGE_LENGTH,
+      MIN_REPLY_MAX_MESSAGE_LENGTH,
+      MAX_REPLY_MAX_MESSAGE_LENGTH,
+    ),
+    includePrefix: config.includePrefix !== false,
+    authorizedDiscordUserIds: Array.isArray(config.authorizedDiscordUserIds)
+      ? config.authorizedDiscordUserIds.filter((id): id is string => typeof id === 'string' && id.trim() !== '')
+      : [],
+  };
 }
 
 function readDaemonState(): ReplyListenerState | null {
@@ -323,6 +382,7 @@ async function pollDiscord(
   state: ReplyListenerState,
   rateLimiter: RateLimiter,
 ): Promise<void> {
+  if (config.discordEnabled === false) return;
   if (!config.discordBotToken || !config.discordChannelId) return;
   if (config.authorizedDiscordUserIds.length === 0) return;
   if (Date.now() < discordBackoffUntil) return;
@@ -453,6 +513,7 @@ async function pollTelegram(
   state: ReplyListenerState,
   rateLimiter: RateLimiter,
 ): Promise<void> {
+  if (config.telegramEnabled === false) return;
   if (!config.telegramBotToken || !config.telegramChatId) return;
 
   try {
@@ -694,7 +755,15 @@ export function startReplyListener(config: ReplyListenerDaemonConfig): DaemonRes
     };
   }
 
-  writeDaemonConfig(config);
+  const normalizedConfig = normalizeReplyListenerConfig(config);
+  if (!normalizedConfig.discordEnabled && !normalizedConfig.telegramEnabled) {
+    return {
+      success: false,
+      message: 'No enabled reply listener platforms configured',
+    };
+  }
+
+  writeDaemonConfig(normalizedConfig);
   ensureStateDir();
 
   const modulePath = __filename.replace(/\.ts$/, '.js');
