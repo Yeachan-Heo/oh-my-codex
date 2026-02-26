@@ -12,7 +12,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { execFile } from 'child_process';
 import { readFile, readdir } from 'fs/promises';
-import { join, relative, extname, basename } from 'path';
+import { join, relative, extname, basename, resolve } from 'path';
 import { existsSync } from 'fs';
 import { promisify } from 'util';
 
@@ -514,6 +514,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const file = a.file as string;
       const line = a.line as number;
       const char = a.character as number;
+      const includeDeclaration = a.includeDeclaration as boolean | undefined;
+      const effectiveIncludeDeclaration = includeDeclaration !== false;
       if (!file || !line) return errorResult('file and line are required');
       const content = await readFile(file, 'utf-8');
       const lines = content.split('\n');
@@ -542,10 +544,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const match = line.match(/^(.+?):(\d+):(.+)$/);
           if (!match) return null;
           return { file: match[1], line: parseInt(match[2], 10), content: match[3].trim() };
-        }).filter(Boolean);
-        return text({ symbol, referenceCount: refs.length, references: refs.slice(0, 100) });
+        }).filter((entry): entry is { file: string; line: number; content: string } => entry !== null);
+
+        const declarationLines = new Set(
+          extractSymbols(content)
+            .filter((s) => s.name === symbol)
+            .map((s) => s.line)
+        );
+        const normalizedTargetFile = resolve(file);
+        const filteredRefs = effectiveIncludeDeclaration
+          ? refs
+          : refs.filter((ref) => {
+            if (resolve(ref.file) !== normalizedTargetFile) return true;
+            return !declarationLines.has(ref.line);
+          });
+
+        return text({
+          symbol,
+          includeDeclaration: effectiveIncludeDeclaration,
+          referenceCount: filteredRefs.length,
+          references: filteredRefs.slice(0, 100),
+        });
       } catch {
-        return text({ symbol, referenceCount: 0, references: [], note: 'grep search returned no results' });
+        return text({
+          symbol,
+          includeDeclaration: effectiveIncludeDeclaration,
+          referenceCount: 0,
+          references: [],
+          note: 'grep search returned no results',
+        });
       }
     }
 
