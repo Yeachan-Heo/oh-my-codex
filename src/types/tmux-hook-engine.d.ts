@@ -18,6 +18,7 @@ declare module '*tmux-hook-engine.js' {
     prompt_template: string;
     marker: string;
     dry_run: boolean;
+    skip_if_scrolling: boolean;
     log_level: 'error' | 'info' | 'debug';
   }
 
@@ -42,6 +43,7 @@ declare module '*tmux-hook-engine.js' {
     now: number;
     state: Record<string, unknown>;
   }): { allow: boolean; reason: string; dedupeKey?: string };
+  export function buildPaneInModeArgv(paneTarget: string): string[];
   export function buildSendKeysArgv(args: {
     paneTarget: string;
     prompt: string;
