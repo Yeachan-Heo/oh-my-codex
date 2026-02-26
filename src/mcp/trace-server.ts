@@ -12,7 +12,8 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { readFile, readdir } from 'fs/promises';
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { createReadStream, existsSync } from 'fs';
+import { createInterface } from 'readline';
 import { listModeStateFilesWithScopePreference } from './state-paths.js';
 
 function text(data: unknown) {
@@ -28,28 +29,101 @@ interface TraceEntry {
   output_preview?: string;
 }
 
-async function readLogFiles(logsDir: string, last?: number): Promise<TraceEntry[]> {
-  if (!existsSync(logsDir)) return [];
+function compareTraceTimestamp(a: TraceEntry, b: TraceEntry): number {
+  return (a.timestamp || '').localeCompare(b.timestamp || '');
+}
+
+function keepLastEntries(entries: TraceEntry[], entry: TraceEntry, limit: number): void {
+  if (limit <= 0) return;
+
+  if (entries.length < limit) {
+    entries.push(entry);
+    entries.sort(compareTraceTimestamp);
+    return;
+  }
+
+  if (compareTraceTimestamp(entry, entries[0]) <= 0) return;
+
+  entries[0] = entry;
+  let i = 0;
+  while (i + 1 < entries.length && compareTraceTimestamp(entries[i], entries[i + 1]) > 0) {
+    [entries[i], entries[i + 1]] = [entries[i + 1], entries[i]];
+    i++;
+  }
+}
+
+async function* iterateLogEntries(logsDir: string): AsyncGenerator<TraceEntry> {
+  if (!existsSync(logsDir)) return;
 
   const files = (await readdir(logsDir))
     .filter(f => f.startsWith('turns-') && f.endsWith('.jsonl'))
     .sort();
 
-  const entries: TraceEntry[] = [];
-
   for (const file of files) {
-    const content = await readFile(join(logsDir, file), 'utf-8');
-    for (const line of content.split('\n')) {
+    const rl = createInterface({
+      input: createReadStream(join(logsDir, file), { encoding: 'utf-8' }),
+      crlfDelay: Infinity,
+    });
+
+    for await (const line of rl) {
       if (!line.trim()) continue;
       try {
-        entries.push(JSON.parse(line));
+        yield JSON.parse(line) as TraceEntry;
       } catch { /* skip malformed */ }
     }
   }
+}
 
-  entries.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
-  if (last && last > 0) return entries.slice(-last);
+export async function readLogFiles(logsDir: string, last?: number): Promise<TraceEntry[]> {
+  if (last && last > 0) {
+    const entries: TraceEntry[] = [];
+    for await (const entry of iterateLogEntries(logsDir)) {
+      keepLastEntries(entries, entry, last);
+    }
+    return entries;
+  }
+
+  const entries: TraceEntry[] = [];
+  for await (const entry of iterateLogEntries(logsDir)) {
+    entries.push(entry);
+  }
+
+  entries.sort(compareTraceTimestamp);
   return entries;
+}
+
+interface LogSummary {
+  totalTurns: number;
+  turnsByType: Record<string, number>;
+  firstTimestamp: string | null;
+  lastTimestamp: string | null;
+}
+
+export async function summarizeLogFiles(logsDir: string): Promise<LogSummary> {
+  const turnsByType: Record<string, number> = {};
+  let totalTurns = 0;
+  let firstTimestamp: string | null = null;
+  let lastTimestamp: string | null = null;
+
+  for await (const turn of iterateLogEntries(logsDir)) {
+    totalTurns++;
+
+    const type = turn.type || 'unknown';
+    turnsByType[type] = (turnsByType[type] || 0) + 1;
+
+    const timestamp = turn.timestamp || '';
+    if (!timestamp) continue;
+
+    if (!firstTimestamp || timestamp.localeCompare(firstTimestamp) < 0) {
+      firstTimestamp = timestamp;
+    }
+
+    if (!lastTimestamp || timestamp.localeCompare(lastTimestamp) > 0) {
+      lastTimestamp = timestamp;
+    }
+  }
+
+  return { totalTurns, turnsByType, firstTimestamp, lastTimestamp };
 }
 
 // ── State file readers for mode timeline ────────────────────────────────────
@@ -205,17 +279,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     case 'trace_summary': {
-      const [turns, modeEvents, metrics] = await Promise.all([
-        readLogFiles(logsDir),
+      const [logSummary, modeEvents, metrics] = await Promise.all([
+        summarizeLogFiles(logsDir),
         readModeEvents(wd),
         readMetrics(omxDir),
       ]);
-
-      const turnsByType: Record<string, number> = {};
-      for (const t of turns) {
-        const type = t.type || 'unknown';
-        turnsByType[type] = (turnsByType[type] || 0) + 1;
-      }
 
       const modesByName: Record<string, { starts: number; ends: number }> = {};
       for (const e of modeEvents) {
@@ -224,8 +292,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (e.event === 'mode_end') modesByName[e.mode].ends++;
       }
 
-      const firstTurn = turns.length > 0 ? turns[0].timestamp : null;
-      const lastTurn = turns.length > 0 ? turns[turns.length - 1].timestamp : null;
+      const firstTurn = logSummary.firstTimestamp;
+      const lastTurn = logSummary.lastTimestamp;
       let durationMs = 0;
       if (firstTurn && lastTurn) {
         durationMs = new Date(lastTurn).getTime() - new Date(firstTurn).getTime();
@@ -233,8 +301,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       return text({
         turns: {
-          total: turns.length,
-          byType: turnsByType,
+          total: logSummary.totalTurns,
+          byType: logSummary.turnsByType,
           firstAt: firstTurn,
           lastAt: lastTurn,
           durationMs,
