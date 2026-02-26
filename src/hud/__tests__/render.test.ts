@@ -374,6 +374,22 @@ describe('renderHud – hudNotify (last activity)', () => {
     const result = renderHud(emptyCtx(), 'focused');
     assert.ok(!result.includes('last:'));
   });
+
+  it('omits last activity when timestamp is invalid', () => {
+    const ctx = { ...emptyCtx(), hudNotify: { last_turn_at: 'not-a-date', turn_count: 5 } };
+    const result = renderHud(ctx, 'focused');
+    assert.ok(!result.includes('last:'));
+  });
+
+  it('clamps future last activity timestamps to zero seconds', () => {
+    const fixedNow = 1_700_000_000_000;
+    const lastTurnAt = new Date(fixedNow + 120_000).toISOString();
+    mock.method(Date, 'now', () => fixedNow);
+
+    const ctx = { ...emptyCtx(), hudNotify: { last_turn_at: lastTurnAt, turn_count: 5 } };
+    const result = renderHud(ctx, 'focused');
+    assert.ok(result.includes('last:0s ago'));
+  });
 });
 
 // ── Session duration ──────────────────────────────────────────────────────────
@@ -412,6 +428,22 @@ describe('renderHud – session duration', () => {
   it('omits session duration when session is null', () => {
     const result = renderHud(emptyCtx(), 'focused');
     assert.ok(!result.includes('session:'));
+  });
+
+  it('omits session duration when started_at is invalid', () => {
+    const ctx = { ...emptyCtx(), session: { session_id: 's1', started_at: 'invalid-iso' } };
+    const result = renderHud(ctx, 'focused');
+    assert.ok(!result.includes('session:'));
+  });
+
+  it('clamps future started_at to zero seconds', () => {
+    const fixedNow = 1_700_000_000_000;
+    const startedAt = new Date(fixedNow + 120_000).toISOString();
+    mock.method(Date, 'now', () => fixedNow);
+
+    const ctx = { ...emptyCtx(), session: { session_id: 's1', started_at: startedAt } };
+    const result = renderHud(ctx, 'focused');
+    assert.ok(result.includes('session:0s'));
   });
 });
 

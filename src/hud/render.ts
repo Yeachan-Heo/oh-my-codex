@@ -9,6 +9,14 @@ import { green, yellow, cyan, dim, bold, getRalphColor, RESET } from './colors.j
 
 const SEP = dim(' | ');
 
+function elapsedSeconds(timestamp: string): number | null {
+  const at = new Date(timestamp).getTime();
+  if (!Number.isFinite(at)) return null;
+  const diffSec = Math.round((Date.now() - at) / 1000);
+  if (!Number.isFinite(diffSec)) return null;
+  return Math.max(0, diffSec);
+}
+
 function formatTokenCount(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
@@ -106,9 +114,8 @@ function renderQuota(ctx: HudRenderContext): string | null {
 
 function renderLastActivity(ctx: HudRenderContext): string | null {
   if (!ctx.hudNotify?.last_turn_at) return null;
-  const lastAt = new Date(ctx.hudNotify.last_turn_at).getTime();
-  const now = Date.now();
-  const diffSec = Math.round((now - lastAt) / 1000);
+  const diffSec = elapsedSeconds(ctx.hudNotify.last_turn_at);
+  if (diffSec === null) return null;
 
   if (diffSec < 60) return dim(`last:${diffSec}s ago`);
   const diffMin = Math.round(diffSec / 60);
@@ -122,9 +129,8 @@ function renderTotalTurns(ctx: HudRenderContext): string | null {
 
 function renderSessionDuration(ctx: HudRenderContext): string | null {
   if (!ctx.session?.started_at) return null;
-  const startedAt = new Date(ctx.session.started_at).getTime();
-  const now = Date.now();
-  const diffSec = Math.round((now - startedAt) / 1000);
+  const diffSec = elapsedSeconds(ctx.session.started_at);
+  if (diffSec === null) return null;
 
   if (diffSec < 60) return dim(`session:${diffSec}s`);
   if (diffSec < 3600) return dim(`session:${Math.round(diffSec / 60)}m`);
