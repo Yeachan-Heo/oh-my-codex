@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { execSync } from 'child_process';
 import {
   isAlreadyTriggered,
   writeTriggerMarker,
@@ -17,6 +18,25 @@ function makeTmpDir(): string {
   const dir = join(tmpdir(), `omx-cs-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+function initGitRepo(dir: string): void {
+  execSync('git init', { cwd: dir, stdio: 'ignore' });
+  execSync('git config user.email "omx-test@example.com"', { cwd: dir, stdio: 'ignore' });
+  execSync('git config user.name "OMX Test"', { cwd: dir, stdio: 'ignore' });
+  writeFileSync(join(dir, 'tracked.ts'), 'export const initial = 1;\n', 'utf-8');
+  execSync('git add tracked.ts', { cwd: dir, stdio: 'ignore' });
+  execSync('git commit -m "init"', { cwd: dir, stdio: 'ignore' });
+}
+
+function writeEnabledCodeSimplifierConfig(homeDir: string): void {
+  const configDir = join(homeDir, '.omx');
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(
+    join(configDir, 'config.json'),
+    JSON.stringify({ codeSimplifier: { enabled: true, maxFiles: 5 } }, null, 2),
+    'utf-8',
+  );
 }
 
 describe('code-simplifier trigger marker', () => {
@@ -136,34 +156,69 @@ describe('getModifiedFiles', () => {
 describe('processCodeSimplifier', () => {
   let stateDir: string;
   let cwd: string;
+  let homeDir: string;
+  let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
 
   beforeEach(() => {
     stateDir = makeTmpDir();
     cwd = makeTmpDir();
+    homeDir = makeTmpDir();
+    originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
+    process.env.HOME = homeDir;
+    process.env.USERPROFILE = homeDir;
   });
 
   afterEach(() => {
+    if (typeof originalHome === 'string') {
+      process.env.HOME = originalHome;
+    } else {
+      delete process.env.HOME;
+    }
+
+    if (typeof originalUserProfile === 'string') {
+      process.env.USERPROFILE = originalUserProfile;
+    } else {
+      delete process.env.USERPROFILE;
+    }
+
     rmSync(stateDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
+    rmSync(homeDir, { recursive: true, force: true });
   });
 
   it('returns not triggered when disabled (no config)', () => {
-    // processCodeSimplifier reads ~/.omx/config.json which likely has
-    // codeSimplifier.enabled = false or absent in test environments
+    // processCodeSimplifier reads ~/.omx/config.json and is disabled by default.
     const result = processCodeSimplifier(cwd, stateDir);
 
     assert.equal(result.triggered, false);
     assert.equal(result.message, '');
   });
 
-  it('clears marker on second call (cycle prevention)', () => {
-    // Simulate a marker from a previous trigger
-    writeTriggerMarker(stateDir);
+  it('triggers deterministically when enabled config and modified files are present', () => {
+    initGitRepo(cwd);
+    writeEnabledCodeSimplifierConfig(homeDir);
+    writeFileSync(join(cwd, 'tracked.ts'), 'export const changed = 2;\n', 'utf-8');
+
+    const result = processCodeSimplifier(cwd, stateDir);
+
+    assert.equal(result.triggered, true);
+    assert.match(result.message, /tracked\.ts/);
+    assert.equal(isAlreadyTriggered(stateDir), true);
+  });
+
+  it('clears marker on second call after a successful trigger (cycle prevention)', () => {
+    initGitRepo(cwd);
+    writeEnabledCodeSimplifierConfig(homeDir);
+    writeFileSync(join(cwd, 'tracked.ts'), 'export const changed = 2;\n', 'utf-8');
+
+    const first = processCodeSimplifier(cwd, stateDir);
+    assert.equal(first.triggered, true);
     assert.equal(isAlreadyTriggered(stateDir), true);
 
-    // Even if config is disabled, the marker-clearing logic is tested
-    // by directly checking marker state
-    clearTriggerMarker(stateDir);
+    const second = processCodeSimplifier(cwd, stateDir);
+    assert.equal(second.triggered, false);
     assert.equal(isAlreadyTriggered(stateDir), false);
   });
 });
