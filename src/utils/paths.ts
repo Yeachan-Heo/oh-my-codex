@@ -3,8 +3,10 @@
  * Resolves Codex CLI config, skills, prompts, and state directories
  */
 
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { homedir } from 'os';
+import { fileURLToPath } from 'url';
+import { existsSync } from 'fs';
 
 /** Codex CLI home directory (~/.codex/) */
 export function codexHome(): string {
@@ -63,13 +65,19 @@ export function omxAgentsConfigDir(): string {
 
 /** Get the package root directory (where agents/, skills/, prompts/ live) */
 export function packageRoot(): string {
-  // From dist/utils/ or src/utils/, go up two levels
-  const { dirname } = require('path');
-  const { fileURLToPath } = require('url');
   try {
     const __filename = fileURLToPath(import.meta.url);
-    return join(dirname(__filename), '..', '..');
+    const __dirname = dirname(__filename);
+    const candidate = join(__dirname, '..', '..');
+    if (existsSync(join(candidate, 'package.json'))) {
+      return candidate;
+    }
+    const candidate2 = join(__dirname, '..');
+    if (existsSync(join(candidate2, 'package.json'))) {
+      return candidate2;
+    }
   } catch {
-    return join(__dirname, '..', '..');
+    // fall through to cwd fallback
   }
+  return process.cwd();
 }

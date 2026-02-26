@@ -2,6 +2,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'path';
 import { homedir } from 'os';
+import { existsSync } from 'fs';
 import {
   codexHome,
   codexConfigPath,
@@ -13,6 +14,7 @@ import {
   omxNotepadPath,
   omxPlansDir,
   omxLogsDir,
+  packageRoot,
 } from '../paths.js';
 
 describe('codexHome', () => {
@@ -152,5 +154,12 @@ describe('omxLogsDir', () => {
 
   it('defaults to cwd when no projectRoot given', () => {
     assert.equal(omxLogsDir(), join(process.cwd(), '.omx', 'logs'));
+  });
+});
+
+describe('packageRoot', () => {
+  it('resolves to a directory containing package.json', () => {
+    const root = packageRoot();
+    assert.equal(existsSync(join(root, 'package.json')), true);
   });
 });
