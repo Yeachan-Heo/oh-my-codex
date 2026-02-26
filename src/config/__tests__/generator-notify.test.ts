@@ -253,4 +253,33 @@ describe('config generator', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('escapes Windows-style backslashes for MCP server args', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
+    try {
+      const configPath = join(wd, 'config.toml');
+      const windowsPkgRoot = 'C:\\Users\\alice\\oh-my-codex';
+      await mergeConfig(configPath, windowsPkgRoot);
+      const toml = await readFile(configPath, 'utf-8');
+
+      assert.match(
+        toml,
+        /args = \["C:\\\\Users\\\\alice\\\\oh-my-codex\/dist\/mcp\/state-server\.js"\]/,
+      );
+      assert.match(
+        toml,
+        /args = \["C:\\\\Users\\\\alice\\\\oh-my-codex\/dist\/mcp\/memory-server\.js"\]/,
+      );
+      assert.match(
+        toml,
+        /args = \["C:\\\\Users\\\\alice\\\\oh-my-codex\/dist\/mcp\/code-intel-server\.js"\]/,
+      );
+      assert.match(
+        toml,
+        /args = \["C:\\\\Users\\\\alice\\\\oh-my-codex\/dist\/mcp\/trace-server\.js"\]/,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
