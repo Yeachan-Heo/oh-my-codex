@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { isSessionStale, type SessionState } from '../session.js';
+import { mkdtemp, rm } from 'fs/promises';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { isSessionStale, readSessionState, type SessionState, writeSessionStart } from '../session.js';
 
 function makeState(overrides: Partial<SessionState> = {}): SessionState {
   return {
@@ -88,5 +91,19 @@ describe('isSessionStale', () => {
     });
 
     assert.equal(stale, false);
+  });
+
+  it('writeSessionStart persists identity metadata fields', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-'));
+    try {
+      await writeSessionStart(cwd, 'sess-write');
+      const state = await readSessionState(cwd);
+      assert.ok(state);
+      assert.equal(state.platform, process.platform);
+      assert.equal(Number.isInteger(state.pid), true);
+      assert.ok(Object.prototype.hasOwnProperty.call(state, 'pid_start_ticks'));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });
