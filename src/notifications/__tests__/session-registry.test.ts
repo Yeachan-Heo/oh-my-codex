@@ -1,6 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, rmSync, readFileSync } from 'fs';
+import { mkdtemp, mkdir, writeFile, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
@@ -173,5 +174,42 @@ describe('session-registry module exports', () => {
   it('exports pruneStale function', async () => {
     const mod = await import('../session-registry.js');
     assert.equal(typeof mod.pruneStale, 'function');
+  });
+});
+
+async function importSessionRegistryFresh() {
+  const moduleUrl = new URL('../session-registry.js', import.meta.url);
+  moduleUrl.searchParams.set('t', `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  return import(moduleUrl.href);
+}
+
+describe('session-registry lock contention behavior', () => {
+  it('registerMessage times out and returns false instead of blocking indefinitely', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'omx-session-registry-lock-'));
+    const stateDir = join(homeDir, '.omx', 'state');
+    const lockPath = join(stateDir, 'reply-session-registry.lock');
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+
+    try {
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(lockPath, JSON.stringify({ pid: process.pid, token: 'held-by-test' }), 'utf-8');
+      process.env.HOME = homeDir;
+      process.env.USERPROFILE = homeDir;
+
+      const registry = await importSessionRegistryFresh();
+      const started = Date.now();
+      const ok = registry.registerMessage(createMockMapping());
+      const elapsedMs = Date.now() - started;
+
+      assert.equal(ok, false);
+      assert.ok(elapsedMs < 7000, `expected bounded wait, got ${elapsedMs}ms`);
+    } finally {
+      if (typeof originalHome === 'string') process.env.HOME = originalHome;
+      else delete process.env.HOME;
+      if (typeof originalUserProfile === 'string') process.env.USERPROFILE = originalUserProfile;
+      else delete process.env.USERPROFILE;
+      await rm(homeDir, { recursive: true, force: true });
+    }
   });
 });

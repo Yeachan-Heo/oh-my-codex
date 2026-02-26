@@ -29,6 +29,7 @@ const REGISTRY_LOCK_PATH = join(homedir(), '.omx', 'state', 'reply-session-regis
 const SECURE_FILE_MODE = 0o600;
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const LOCK_TIMEOUT_MS = 2000;
+const LOCK_WAIT_TIMEOUT_MS = 4000;
 const LOCK_RETRY_MS = 20;
 const LOCK_STALE_MS = 10000;
 
@@ -180,14 +181,18 @@ function acquireRegistryLock(): RegistryLockHandle | null {
   return null;
 }
 
-function acquireRegistryLockOrWait(): RegistryLockHandle {
-  while (true) {
+function acquireRegistryLockOrWait(maxWaitMs: number = LOCK_WAIT_TIMEOUT_MS): RegistryLockHandle | null {
+  const started = Date.now();
+  while (Date.now() - started < maxWaitMs) {
     const lock = acquireRegistryLock();
     if (lock !== null) {
       return lock;
     }
-    sleepMs(LOCK_RETRY_MS);
+    if (Date.now() - started < maxWaitMs) {
+      sleepMs(LOCK_RETRY_MS);
+    }
   }
+  return null;
 }
 
 function releaseRegistryLock(lock: RegistryLockHandle): void {
@@ -205,8 +210,11 @@ function releaseRegistryLock(lock: RegistryLockHandle): void {
   removeLockIfUnchanged(snapshot);
 }
 
-function withRegistryLockOrWait<T>(onLocked: () => T): T {
+function withRegistryLockOrWait<T>(onLocked: () => T, onLockUnavailable: () => T): T {
   const lock = acquireRegistryLockOrWait();
+  if (lock === null) {
+    return onLockUnavailable();
+  }
   try {
     return onLocked();
   } finally {
@@ -227,8 +235,8 @@ function withRegistryLock<T>(onLocked: () => T, onLockUnavailable: () => T): T {
   }
 }
 
-export function registerMessage(mapping: SessionMapping): void {
-  withRegistryLockOrWait(
+export function registerMessage(mapping: SessionMapping): boolean {
+  return withRegistryLockOrWait(
     () => {
       ensureRegistryDir();
 
@@ -245,12 +253,20 @@ export function registerMessage(mapping: SessionMapping): void {
       } finally {
         closeSync(fd);
       }
+      return true;
+    },
+    () => {
+      console.warn('[notifications] session registry lock unavailable; skipping reply correlation write');
+      return false;
     },
   );
 }
 
 export function loadAllMappings(): SessionMapping[] {
-  return withRegistryLockOrWait(() => readAllMappingsUnsafe());
+  return withRegistryLockOrWait(
+    () => readAllMappingsUnsafe(),
+    () => [],
+  );
 }
 
 function readAllMappingsUnsafe(): SessionMapping[] {
