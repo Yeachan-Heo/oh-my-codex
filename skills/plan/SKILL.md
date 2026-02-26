@@ -4,7 +4,7 @@ description: Strategic planning with optional interview workflow
 ---
 
 <Purpose>
-Plan creates comprehensive, actionable work plans through intelligent interaction. It auto-detects whether to interview the user (broad requests) or plan directly (detailed requests), and supports consensus mode (iterative Planner/Architect/Critic loop) and review mode (Critic evaluation of existing plans).
+Plan creates comprehensive, actionable work plans through intelligent interaction. It auto-detects whether to interview the user (broad requests) or plan directly (detailed requests), and supports consensus mode (iterative Planner/Architect/Critic loop with RALPLAN-DR structured deliberation) and review mode (Critic evaluation of existing plans).
 </Purpose>
 
 <Use_When>
@@ -31,7 +31,8 @@ Jumping into code without understanding requirements leads to rework, scope cree
 - Ask one question at a time during interviews -- never batch multiple questions
 - Gather codebase facts via `explore` agent before asking the user about them
 - Plans must meet quality standards: 80%+ claims cite file/line, 90%+ criteria are testable
-- Consensus mode auto-proceeds by default; add `--interactive` to require explicit user approval before proceeding to implementation
+- Consensus mode outputs the final plan by default; add `--interactive` to enable execution handoff
+- Consensus mode uses RALPLAN-DR short mode by default; switch to deliberate mode with `--deliberate` or when the request explicitly signals high risk (auth/security, data migration, destructive/irreversible changes, production incident, compliance/PII, public API breakage)
 </Execution_Policy>
 
 <Steps>
@@ -42,8 +43,8 @@ Jumping into code without understanding requirements leads to rework, scope cree
 |------|---------|----------|
 | Interview | Default for broad requests | Interactive requirements gathering |
 | Direct | `--direct`, or detailed request | Skip interview, generate plan directly |
-| Consensus | `--consensus`, "ralplan" | Planner -> Architect -> Critic loop until agreement; auto-proceeds by default |
-| Consensus Interactive | `--consensus --interactive` | Same as Consensus but pauses for user feedback at draft and approval steps |
+| Consensus | `--consensus`, "ralplan" | Planner -> Architect -> Critic loop until agreement with RALPLAN-DR structured deliberation (short by default, `--deliberate` for high-risk); outputs plan by default |
+| Consensus Interactive | `--consensus --interactive` | Same as Consensus but pauses for user feedback at draft and approval steps, then hands off to execution |
 | Review | `--review`, "review this plan" | Critic evaluation of existing plan |
 
 ### Interview Mode (broad/vague requests)
@@ -63,31 +64,48 @@ Jumping into code without understanding requirements leads to rework, scope cree
 
 ### Consensus Mode (`--consensus` / "ralplan")
 
-Default behavior is **non-interactive**: the workflow auto-proceeds through all steps without pausing for user input. Add `--interactive` to enable confirmation prompts at the draft and approval steps.
+**RALPLAN-DR modes**: **Short** (default, bounded structure) and **Deliberate** (for `--deliberate` or explicit high-risk requests). Both modes keep the same Planner -> Architect -> Critic sequence. The workflow auto-proceeds through planning steps (Planner/Architect/Critic) but outputs the final plan without executing.
 
-1. **Planner** creates initial plan
-2. **User feedback** (only in `--interactive` mode):
-   - Use `AskUserQuestion` to present the draft plan with these options:
-     - **Proceed to review** — send to Architect and Critic for evaluation
-     - **Request changes** — return to step 1 with user feedback incorporated
-     - **Skip review** — go directly to final approval (step 6)
-   - Without `--interactive`: automatically proceed to Architect review (step 3)
-3. **Architect** reviews for architectural soundness (prefer `ask_codex` with `architect` role)
-4. **Critic** evaluates against quality criteria (prefer `ask_codex` with `critic` role)
-5. If Critic rejects: iterate with feedback (max 5 iterations)
-6. On Critic approval:
-   - **`--interactive` mode**: use `AskUserQuestion` to present the plan with these options:
-     - **Approve and execute** — proceed to implementation via ralph+ultrawork
-     - **Request changes** — return to step 1 with user feedback
-     - **Reject** — discard the plan entirely
-   - **Default (non-interactive)**: automatically approve and proceed to execution
-7. (`--interactive` only) User chooses via the structured `AskUserQuestion` UI (never ask for approval in plain text)
-8. On approval: **MUST** invoke `/ralph` with the approved plan path from `.omx/plans/` as context. Do NOT implement directly. Do NOT edit source code files in the planning agent. The ralph skill handles execution via ultrawork parallel agents.
+1. **Planner** creates initial plan and a compact **RALPLAN-DR summary** before any Architect review. The summary **MUST** include:
+   - **Principles** (3-5)
+   - **Decision Drivers** (top 3)
+   - **Viable Options** (>=2) with bounded pros/cons for each option
+   - If only one viable option remains, an explicit **invalidation rationale** for the alternatives that were rejected
+   - In **deliberate mode**: a **pre-mortem** (3 failure scenarios) and an **expanded test plan** covering **unit / integration / e2e / observability**
+2. **User feedback** *(--interactive only)*: If running with `--interactive`, **MUST** use `AskUserQuestion` to present the draft plan **plus the RALPLAN-DR Principles / Decision Drivers / Options summary for early direction alignment** with these options:
+   - **Proceed to review** — send to Architect and Critic for evaluation
+   - **Request changes** — return to step 1 with user feedback incorporated
+   - **Skip review** — go directly to final approval (step 7)
+   If NOT running with `--interactive`, automatically proceed to review (step 3).
+3. **Architect** reviews for architectural soundness using `ask_codex` with `agent_role: "architect"`. Architect review **MUST** include: strongest steelman counterargument (antithesis) against the favored option, at least one meaningful tradeoff tension, and (when possible) a synthesis path. In deliberate mode, Architect should explicitly flag principle violations. **Wait for this step to complete before proceeding to step 4.** Do NOT run steps 3 and 4 in parallel.
+4. **Critic** evaluates against quality criteria using `ask_codex` with `agent_role: "critic"`. Critic **MUST** verify principle-option consistency, fair alternative exploration, risk mitigation clarity, testable acceptance criteria, and concrete verification steps. Critic **MUST** explicitly reject shallow alternatives, driver contradictions, vague risks, or weak verification. In deliberate mode, Critic **MUST** reject missing/weak pre-mortem or missing/weak expanded test plan. Run only after step 3 is complete.
+5. **Re-review loop** (max 5 iterations): If Critic rejects or iterates, execute this closed loop:
+   a. Collect all feedback from Architect + Critic
+   b. Pass feedback to Planner to produce a revised plan
+   c. **Return to Step 3** — Architect reviews the revised plan
+   d. **Return to Step 4** — Critic evaluates the revised plan
+   e. Repeat until Critic approves OR max 5 iterations reached
+   f. If max iterations reached without approval, present the best version to user via `AskUserQuestion` with note that expert consensus was not reached
+6. **Apply improvements**: When reviewers approve with improvement suggestions, merge all accepted improvements into the plan file before proceeding. Final consensus output **MUST** include an **ADR** section with: **Decision**, **Drivers**, **Alternatives considered**, **Why chosen**, **Consequences**, **Follow-ups**. Specifically:
+   a. Collect all improvement suggestions from Architect and Critic responses
+   b. Deduplicate and categorize the suggestions
+   c. Update the plan file in `.omx/plans/` with the accepted improvements (add missing details, refine steps, strengthen acceptance criteria, ADR updates, etc.)
+   d. Note which improvements were applied in a brief changelog section at the end of the plan
+7. On Critic approval (with improvements applied): *(--interactive only)* If running with `--interactive`, use `AskUserQuestion` to present the plan with these options:
+   - **Approve and execute** — proceed to implementation via ralph+ultrawork
+   - **Approve and implement via team** — proceed to implementation via coordinated parallel team agents
+   - **Request changes** — return to step 1 with user feedback
+   - **Reject** — discard the plan entirely
+   If NOT running with `--interactive`, output the final approved plan and stop. Do NOT auto-execute.
+8. *(--interactive only)* User chooses via the structured `AskUserQuestion` UI (never ask for approval in plain text)
+9. On user approval (--interactive only):
+   - **Approve and execute**: **MUST** invoke `$ralph` with the approved plan path from `.omx/plans/` as context. Do NOT implement directly. Do NOT edit source code files in the planning agent. The ralph skill handles execution via ultrawork parallel agents.
+   - **Approve and implement via team**: **MUST** invoke `$team` with the approved plan path from `.omx/plans/` as context. Do NOT implement directly. The team skill coordinates parallel agents across the staged pipeline for faster execution on large tasks.
 
 ### Review Mode (`--review`)
 
 1. Read plan file from `.omx/plans/`
-2. Evaluate via Critic (prefer `ask_codex` with `critic` role)
+2. Evaluate via Critic using `ask_codex` with `agent_role: "critic"`
 3. Return verdict: APPROVED, REVISE (with specific feedback), or REJECT (replanning required)
 
 ### Plan Output Format
@@ -98,6 +116,9 @@ Every plan includes:
 - Implementation Steps (with file references)
 - Risks and Mitigations
 - Verification Steps
+- For consensus/ralplan: **RALPLAN-DR summary** (Principles, Decision Drivers, Options)
+- For consensus/ralplan final output: **ADR** (Decision, Drivers, Alternatives considered, Why chosen, Consequences, Follow-ups)
+- For deliberate consensus mode: **Pre-mortem (3 scenarios)** and **Expanded Test Plan** (unit/integration/e2e/observability)
 
 Plans are saved to `.omx/plans/`. Drafts go to `.omx/drafts/`.
 </Steps>
@@ -111,9 +132,10 @@ Plans are saved to `.omx/plans/`. Drafts go to `.omx/drafts/`.
 - Use `ask_codex` with `agent_role: "analyst"` for requirements analysis
 - Use `ask_codex` with `agent_role: "critic"` for plan review in consensus and review modes
 - If ToolSearch finds no MCP tools or Codex is unavailable, fall back to equivalent OMX prompt agents -- never block on external tools
-- In consensus mode with `--interactive`, **MUST** use `AskUserQuestion` for the user feedback step (step 2) and the final approval step (step 6) -- never ask for approval in plain text
-- In consensus mode **without** `--interactive`, auto-proceed through all steps without pausing for user input
-- In consensus mode, on approval **MUST** invoke `/ralph` for execution (step 8) -- never implement directly in the planning agent
+- **CRITICAL — Consensus mode agent calls MUST be sequential, never parallel.** Always await the Architect result before issuing the Critic call.
+- In consensus mode, default to RALPLAN-DR short mode; enable deliberate mode on `--deliberate` or explicit high-risk signals (auth/security, migrations, destructive changes, production incidents, compliance/PII, public API breakage)
+- In consensus mode with `--interactive`: use `AskUserQuestion` for the user feedback step (step 2) and the final approval step (step 7) -- never ask for approval in plain text. Without `--interactive`, auto-proceed through planning steps without pausing. Output the final plan without execution.
+- In consensus mode with `--interactive`, on user approval **MUST** invoke `$ralph` for execution (step 9) -- never implement directly in the planning agent
 </Tool_Usage>
 
 <Examples>
@@ -169,8 +191,8 @@ Why bad: Decision fatigue. Present one option with trade-offs, get reaction, the
 <Escalation_And_Stop_Conditions>
 - Stop interviewing when requirements are clear enough to plan -- do not over-interview
 - In consensus mode, stop after 5 Planner/Architect/Critic iterations and present the best version
-- Consensus mode auto-proceeds to implementation by default; with `--interactive`, requires explicit user approval before implementation begins
-- If the user says "just do it" or "skip planning", **MUST** invoke `/ralph` to transition to execution mode. Do NOT implement directly in the planning agent.
+- Consensus mode outputs the plan by default; with `--interactive`, user can approve and hand off to ralph/team
+- If the user says "just do it" or "skip planning", **MUST** invoke `$ralph` to transition to execution mode. Do NOT implement directly in the planning agent.
 - Escalate to the user when there are irreconcilable trade-offs that require a business decision
 </Escalation_And_Stop_Conditions>
 
@@ -180,8 +202,10 @@ Why bad: Decision fatigue. Present one option with trade-offs, get reaction, the
 - [ ] All risks have mitigations identified
 - [ ] No vague terms without metrics ("fast" -> "p99 < 200ms")
 - [ ] Plan saved to `.omx/plans/`
-- [ ] In consensus mode with `--interactive`: user explicitly approved before any execution
-- [ ] In consensus mode without `--interactive`: auto-proceeded to execution after Critic approval
+- [ ] In consensus mode: RALPLAN-DR summary includes 3-5 principles, top 3 drivers, and >=2 viable options (or explicit invalidation rationale)
+- [ ] In consensus mode final output: ADR section included (Decision / Drivers / Alternatives considered / Why chosen / Consequences / Follow-ups)
+- [ ] In deliberate consensus mode: pre-mortem (3 scenarios) + expanded test plan (unit/integration/e2e/observability) included
+- [ ] In consensus mode with `--interactive`: user explicitly approved before any execution; without `--interactive`: output final plan after Critic approval (no auto-execution)
 </Final_Checklist>
 
 <Advanced>
@@ -228,5 +252,5 @@ Before asking any interview question, classify it:
 
 ## Deprecation Notice
 
-The separate `/planner`, `/ralplan`, and `/review` skills have been merged into `/plan`. All workflows (interview, direct, consensus, review) are available through `/plan`.
+The separate `/planner`, `/ralplan`, and `/review` skills have been merged into `$plan`. All workflows (interview, direct, consensus, review) are available through `$plan`.
 </Advanced>

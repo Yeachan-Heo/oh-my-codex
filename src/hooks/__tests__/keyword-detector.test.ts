@@ -10,23 +10,7 @@ import {
   SKILL_ACTIVE_STATE_FILE,
 } from '../keyword-detector.js';
 import { generateKeywordDetectionSection } from '../emulator.js';
-import { KEYWORD_TRIGGER_DEFINITIONS } from '../keyword-registry.js';
-
-afterEach(() => {
-  mock.restoreAll();
-});
-
-async function readTemplateKeywords(): Promise<string[]> {
-  const template = await readFile(join(process.cwd(), 'templates', 'AGENTS.md'), 'utf-8');
-  const lines = template.split('\n').filter((line) => line.startsWith('| "'));
-  const keywords: string[] = [];
-  for (const line of lines) {
-    const firstCell = line.split('|')[1] ?? '';
-    const matches = firstCell.matchAll(/"([^"]+)"/g);
-    for (const match of matches) keywords.push(match[1]);
-  }
-  return keywords;
-}
+import { isUnderspecifiedForExecution, applyRalplanGate } from '../keyword-detector.js';
 
 describe('keyword detector swarm/team compatibility', () => {
   it('maps "coordinated team" phrase to team orchestration skill', () => {
@@ -256,5 +240,167 @@ describe('keyword detector skill-active-state lifecycle', () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+});
+
+describe('isUnderspecifiedForExecution', () => {
+  it('flags vague prompt with no files or functions', () => {
+    assert.equal(isUnderspecifiedForExecution('ralph fix this'), true);
+  });
+
+  it('flags short vague prompt', () => {
+    assert.equal(isUnderspecifiedForExecution('autopilot build the app'), true);
+  });
+
+  it('flags prompt with only keyword and generic words', () => {
+    assert.equal(isUnderspecifiedForExecution('team improve performance'), true);
+  });
+
+  it('passes prompt with a file path reference', () => {
+    assert.equal(isUnderspecifiedForExecution('ralph fix src/hooks/bridge.ts'), false);
+  });
+
+  it('passes prompt with a file extension reference', () => {
+    assert.equal(isUnderspecifiedForExecution('fix the bug in auth.ts'), false);
+  });
+
+  it('passes prompt with a directory/file path', () => {
+    assert.equal(isUnderspecifiedForExecution('update src/hooks/emulator.ts'), false);
+  });
+
+  it('passes prompt with a camelCase symbol', () => {
+    assert.equal(isUnderspecifiedForExecution('team fix processKeywordDetector'), false);
+  });
+
+  it('passes prompt with a PascalCase symbol', () => {
+    assert.equal(isUnderspecifiedForExecution('ralph update UserModel'), false);
+  });
+
+  it('passes prompt with snake_case symbol', () => {
+    assert.equal(isUnderspecifiedForExecution('fix user_model validation'), false);
+  });
+
+  it('passes prompt with an issue number', () => {
+    assert.equal(isUnderspecifiedForExecution('autopilot implement #42'), false);
+  });
+
+  it('passes prompt with numbered steps', () => {
+    assert.equal(isUnderspecifiedForExecution('ralph do:\n1. Add input validation\n2. Write tests\n3. Update README'), false);
+  });
+
+  it('passes prompt with acceptance criteria keyword', () => {
+    assert.equal(isUnderspecifiedForExecution('add login - acceptance criteria: user sees error on bad password'), false);
+  });
+
+  it('passes prompt with a specific error reference', () => {
+    assert.equal(isUnderspecifiedForExecution('ralph fix TypeError in auth handler'), false);
+  });
+
+  it('passes with force: escape hatch prefix', () => {
+    assert.equal(isUnderspecifiedForExecution('force: ralph refactor the auth module'), false);
+  });
+
+  it('passes with ! escape hatch prefix', () => {
+    assert.equal(isUnderspecifiedForExecution('! autopilot optimize everything'), false);
+  });
+
+  it('returns true for empty string', () => {
+    assert.equal(isUnderspecifiedForExecution(''), true);
+  });
+
+  it('returns true for whitespace only', () => {
+    assert.equal(isUnderspecifiedForExecution('   '), true);
+  });
+
+  it('passes prompt with test runner command', () => {
+    assert.equal(isUnderspecifiedForExecution('ralph npm test && fix failures'), false);
+  });
+
+  it('passes longer prompt that exceeds word threshold', () => {
+    // 16+ effective words without specific signals → passes (not underspecified by word count)
+    const longVague = 'please help me improve the overall quality and performance and reliability of this system going forward';
+    assert.equal(isUnderspecifiedForExecution(longVague), false);
+  });
+
+  it('false positive prevention: camelCase identifiers pass', () => {
+    assert.equal(isUnderspecifiedForExecution('fix getUserById to handle null'), false);
+  });
+});
+
+describe('applyRalplanGate', () => {
+  it('redirects underspecified execution keywords to ralplan', () => {
+    const result = applyRalplanGate(['ralph'], 'ralph fix this');
+    assert.equal(result.gateApplied, true);
+    assert.ok(result.keywords.includes('ralplan'));
+    assert.ok(!result.keywords.includes('ralph'));
+  });
+
+  it('redirects autopilot to ralplan when underspecified', () => {
+    const result = applyRalplanGate(['autopilot'], 'autopilot build the app');
+    assert.equal(result.gateApplied, true);
+    assert.ok(result.keywords.includes('ralplan'));
+  });
+
+  it('does not gate well-specified prompts', () => {
+    const result = applyRalplanGate(['ralph'], 'ralph fix src/hooks/bridge.ts null check');
+    assert.equal(result.gateApplied, false);
+    assert.ok(result.keywords.includes('ralph'));
+  });
+
+  it('does not gate when cancel is present', () => {
+    const result = applyRalplanGate(['cancel', 'ralph'], 'cancel ralph');
+    assert.equal(result.gateApplied, false);
+  });
+
+  it('does not gate when ralplan is already present', () => {
+    const result = applyRalplanGate(['ralplan'], 'ralplan add auth');
+    assert.equal(result.gateApplied, false);
+    assert.ok(result.keywords.includes('ralplan'));
+  });
+
+  it('does not gate non-execution keywords', () => {
+    const result = applyRalplanGate(['analyze'], 'analyze this');
+    assert.equal(result.gateApplied, false);
+  });
+
+  it('preserves non-execution keywords when gating', () => {
+    const result = applyRalplanGate(['ralph', 'tdd'], 'ralph tdd fix this');
+    assert.equal(result.gateApplied, true);
+    assert.ok(result.keywords.includes('tdd'));
+    assert.ok(result.keywords.includes('ralplan'));
+    assert.ok(!result.keywords.includes('ralph'));
+  });
+
+  it('handles force: escape hatch — does not gate', () => {
+    const result = applyRalplanGate(['ralph'], 'force: ralph refactor the auth module');
+    assert.equal(result.gateApplied, false);
+  });
+
+  it('gates multiple execution keywords at once', () => {
+    const result = applyRalplanGate(['ralph', 'team'], 'ralph team fix this');
+    assert.equal(result.gateApplied, true);
+    assert.ok(result.keywords.includes('ralplan'));
+    assert.ok(!result.keywords.includes('ralph'));
+    assert.ok(!result.keywords.includes('team'));
+    assert.ok(result.gatedKeywords.includes('ralph'));
+    assert.ok(result.gatedKeywords.includes('team'));
+  });
+
+  it('returns empty keywords unchanged when no keywords', () => {
+    const result = applyRalplanGate([], 'fix this');
+    assert.equal(result.gateApplied, false);
+    assert.deepEqual(result.keywords, []);
+  });
+
+  it('does not duplicate ralplan if already in filtered list', () => {
+    // ultrawork is an execution keyword; after filtering, ralplan added once
+    const result = applyRalplanGate(['ultrawork'], 'ultrawork do stuff');
+    assert.equal(result.keywords.filter(k => k === 'ralplan').length, 1);
+  });
+
+  it('reports gatedKeywords correctly', () => {
+    const result = applyRalplanGate(['ralph', 'ultrawork'], 'ralph ultrawork build');
+    assert.ok(result.gatedKeywords.includes('ralph'));
+    assert.ok(result.gatedKeywords.includes('ultrawork'));
   });
 });

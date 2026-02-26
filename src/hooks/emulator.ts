@@ -96,16 +96,22 @@ export const HOOK_MAPPING: Record<HookEvent, {
  * Keyword detection configuration (embedded in AGENTS.md)
  * Instead of external hook detection, the model is instructed to self-detect
  */
-export const KEYWORD_TRIGGERS: Record<string, string> = Object.fromEntries(
-  KEYWORD_TRIGGER_DEFINITIONS.map((entry) => {
-    const guidance = entry.skill === 'ralph'
-      ? `${entry.guidance} (planning-gated: require PRD + test spec before implementation tools)`
-      : entry.skill === 'ralplan'
-        ? `${entry.guidance} and complete PRD + test spec before implementation`
-        : entry.guidance;
-    return [entry.keyword, guidance];
-  }),
-);
+export const KEYWORD_TRIGGERS: Record<string, string> = {
+  'autopilot': 'Activate autopilot skill for autonomous execution',
+  'ralph': 'Activate ralph persistence loop with verification',
+  'ultrawork': 'Activate ultrawork parallel execution mode',
+  'ulw': 'Activate ultrawork parallel execution mode',
+  'ecomode': 'Activate ecomode for token-efficient execution',
+  'eco': 'Activate ecomode for token-efficient execution',
+  'plan': 'Activate planning skill',
+  'ralplan': 'Activate consensus planning with RALPLAN-DR structured deliberation (planner + architect + critic)',
+  'team': 'Activate coordinated team mode',
+  'coordinated team': 'Activate coordinated team mode',
+  'swarm': 'Activate coordinated team mode (swarm is a compatibility alias for team)',
+  'coordinated swarm': 'Activate coordinated team mode (swarm is a compatibility alias for team)',
+  'research': 'Activate parallel research mode',
+  'cancel': 'Cancel active execution modes',
+};
 
 /**
  * Generate the keyword detection section for AGENTS.md
@@ -127,6 +133,8 @@ Ralplan-first execution gate:
 
 To activate a skill, use the corresponding slash command or invoke the skill directly.
 If a keyword is detected, announce the activation to the user before proceeding.
+
+Pre-execution gate: When an execution keyword (ralph, autopilot, team, ultrawork) is detected but the prompt lacks specific files, functions, issue numbers, or structured steps, redirect to $ralplan for scoping before execution. User can bypass with "force:" or "!" prefix.
 </keyword_detection>
 `;
 }
