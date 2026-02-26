@@ -1134,7 +1134,35 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
   const config = await readTeamConfig(sanitized, cwd);
   if (!config) return null;
 
-  if (config.worker_launch_mode !== 'prompt') {
+  if (config.worker_launch_mode === 'prompt') {
+    const hasLivePromptWorker = config.workers.some((worker) => isPromptWorkerAlive(config, worker));
+    if (!hasLivePromptWorker) return null;
+
+    const missingHandles = config.workers
+      .filter((worker) => {
+        if (!Number.isFinite(worker.pid) || (worker.pid ?? 0) <= 0) return false;
+        try {
+          process.kill(worker.pid as number, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      })
+      .filter((worker) => !getPromptWorkerHandle(sanitized, worker.name));
+    if (missingHandles.length > 0) {
+      const detail = missingHandles.map((worker) => `${worker.name}:${worker.pid ?? 'unknown'}`).join(',');
+      await appendTeamEvent(
+        sanitized,
+        {
+          type: 'worker_stopped',
+          worker: 'leader-fixed',
+          reason: `prompt_resume_unavailable:missing_handle:${detail}`,
+        },
+        cwd,
+      ).catch(() => {});
+      return null;
+    }
+  } else {
     // Check if tmux session still exists
     const baseSession = config.tmux_session.split(':')[0];
     const teamSessions = getTeamTmuxSessions(sanitized);

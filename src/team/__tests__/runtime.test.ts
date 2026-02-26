@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile, readFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { existsSync } from 'fs';
+import { spawn } from 'child_process';
 import {
   initTeamState,
   createTask,
@@ -665,6 +666,48 @@ process.on('SIGTERM', () => process.exit(0));
       const runtime = await resumeTeam('missing-team', cwd);
       assert.equal(runtime, null);
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('resumeTeam returns null for prompt teams when worker handles are missing after restart', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-prompt-resume-'));
+    const sleeper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      stdio: 'ignore',
+      detached: false,
+    });
+    let sleeperPid = sleeper.pid ?? 0;
+    const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const prevLeaderCwd = process.env.OMX_TEAM_LEADER_CWD;
+    delete process.env.OMX_TEAM_STATE_ROOT;
+    delete process.env.OMX_TEAM_LEADER_CWD;
+
+    try {
+      await initTeamState('team-prompt-resume', 'prompt resume test', 'executor', 1, cwd);
+      const configPath = join(cwd, '.omx', 'state', 'team', 'team-prompt-resume', 'config.json');
+      const config = JSON.parse(await readFile(configPath, 'utf-8')) as any;
+      config.worker_launch_mode = 'prompt';
+      config.tmux_session = 'prompt-team-prompt-resume';
+      config.leader_pane_id = null;
+      config.hud_pane_id = null;
+      config.workers[0].pid = sleeperPid;
+      config.workers[0].pane_id = null;
+      await writeFile(configPath, JSON.stringify(config, null, 2));
+
+      const runtime = await resumeTeam('team-prompt-resume', cwd);
+      assert.equal(runtime, null);
+    } finally {
+      if (sleeperPid > 0) {
+        try {
+          process.kill(sleeperPid, 'SIGKILL');
+        } catch {
+          // already exited
+        }
+      }
+      if (typeof prevTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      if (typeof prevLeaderCwd === 'string') process.env.OMX_TEAM_LEADER_CWD = prevLeaderCwd;
+      else delete process.env.OMX_TEAM_LEADER_CWD;
       await rm(cwd, { recursive: true, force: true });
     }
   });
