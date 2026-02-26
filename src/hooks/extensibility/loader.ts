@@ -1,8 +1,7 @@
 import { createHash } from 'crypto';
 import { existsSync } from 'fs';
-import { mkdir, readdir, stat } from 'fs/promises';
+import { mkdir, readdir, readFile, stat } from 'fs/promises';
 import { basename, join } from 'path';
-import { pathToFileURL } from 'url';
 import type { HookPluginDescriptor } from './types.js';
 
 export const HOOK_PLUGIN_ENABLE_ENV = 'OMX_HOOK_PLUGINS';
@@ -54,10 +53,12 @@ export async function ensureHooksDir(cwd: string): Promise<string> {
   return dir;
 }
 
+const ON_HOOK_EVENT_EXPORT_PATTERN = /(?:^|\n)\s*export\s+(?:async\s+)?function\s+onHookEvent\b|(?:^|\n)\s*export\s+(?:const|let|var)\s+onHookEvent\b|(?:^|\n)\s*export\s*\{[^}]*\bonHookEvent\b[^}]*\}/m;
+
 async function validatePluginExport(pluginPath: string): Promise<{ valid: boolean; reason?: string }> {
   try {
-    const mod = await import(`${pathToFileURL(pluginPath).href}?v=${Date.now()}`);
-    if (!mod || typeof mod.onHookEvent !== 'function') {
+    const source = await readFile(pluginPath, 'utf-8');
+    if (!ON_HOOK_EVENT_EXPORT_PATTERN.test(source)) {
       return { valid: false, reason: 'missing_onHookEvent_export' };
     }
     return { valid: true };
