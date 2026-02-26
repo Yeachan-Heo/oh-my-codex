@@ -1,6 +1,7 @@
 import type { TeamTask } from './state.js';
 import { mkdir, readFile, rm, stat, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
+import { getFixLoopInstructions, getVerificationInstructions } from '../verification/verifier.js';
 
 const TEAM_OVERLAY_START = '<!-- OMX:TEAM:WORKER:START -->';
 const TEAM_OVERLAY_END = '<!-- OMX:TEAM:WORKER:END -->';
@@ -9,6 +10,22 @@ const LOCK_OWNER_FILE = 'owner.json';
 const LOCK_TIMEOUT_MS = 5000;
 const LOCK_POLL_INTERVAL_MS = 100;
 const LOCK_STALE_MS = 30_000;
+
+function buildVerificationSection(taskDescription: string): string {
+  const verification = getVerificationInstructions('standard', taskDescription).trim();
+  const fixLoop = getFixLoopInstructions().trim();
+  return `
+## Verification Requirements
+
+${verification}
+
+${fixLoop}
+
+When marking completion, include structured verification evidence in your task result:
+- \`Verification:\`
+- One or more PASS/FAIL checks with command/output references
+`;
+}
 
 /**
  * Generate generic AGENTS.md overlay for team workers.
@@ -265,6 +282,8 @@ ${taskList}
 11. Wait for the next instruction from the lead
 12. For team_* MCP tools, do not pass \`workingDirectory\` unless the lead explicitly asks (if resolution fails, use leader cwd: \`${leaderCwd}\`)
 
+${buildVerificationSection('each assigned task')}
+
 ## Scope Rules
 - Only edit files described in your task descriptions
 - Do NOT edit files that belong to other workers
@@ -300,6 +319,8 @@ ${taskDescription}
 4. Complete the work
 5. Write \`{"status": "completed", "result": "brief summary"}\` when done
 6. Write \`{"state": "idle"}\` to your status file
+
+${buildVerificationSection(taskDescription)}
 `;
 }
 

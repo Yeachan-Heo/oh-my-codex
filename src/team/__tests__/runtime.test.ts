@@ -382,6 +382,52 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
+  it('monitorTeam keeps phase in team-verify when completed code tasks lack verification evidence', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-verify-gate-'));
+    const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    delete process.env.OMX_TEAM_STATE_ROOT;
+    try {
+      await initTeamState('team-verify-gate', 'verification gate test', 'executor', 1, cwd);
+      const task = await createTask(
+        'team-verify-gate',
+        {
+          subject: 'code change',
+          description: 'implement feature',
+          status: 'completed',
+          owner: 'worker-1',
+          requires_code_change: true,
+        },
+        cwd,
+      );
+
+      const first = await monitorTeam('team-verify-gate', cwd);
+      assert.ok(first);
+      assert.equal(first?.phase, 'team-verify');
+      assert.equal(
+        first?.recommendations.some((r) => r.includes(`task-${task.id}`) && r.includes('Verification evidence missing')),
+        true,
+      );
+
+      const taskPath = join(cwd, '.omx', 'state', 'team', 'team-verify-gate', 'tasks', `task-${task.id}.json`);
+      const fromDisk = JSON.parse(await readFile(taskPath, 'utf-8')) as Record<string, unknown>;
+      fromDisk.result = [
+        'Summary: done',
+        'Verification:',
+        '- PASS build: `npm run build`',
+        '- PASS tests: `node --test dist/foo.test.js`',
+      ].join('\n');
+      await writeAtomic(taskPath, JSON.stringify(fromDisk, null, 2));
+
+      const second = await monitorTeam('team-verify-gate', cwd);
+      assert.ok(second);
+      assert.equal(second?.phase, 'complete');
+    } finally {
+      if (typeof prevTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('monitorTeam emits worker_idle and task_completed events based on transitions', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-'));
     try {

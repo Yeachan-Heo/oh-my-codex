@@ -4,6 +4,7 @@ import {
   getVerificationInstructions,
   determineTaskSize,
   getFixLoopInstructions,
+  hasStructuredVerificationEvidence,
 } from '../verifier.js';
 
 describe('determineTaskSize', () => {
@@ -110,5 +111,30 @@ describe('getFixLoopInstructions', () => {
     assert.ok(result.includes('escalate'));
     assert.ok(result.includes('What was attempted'));
     assert.ok(result.includes('Recommended next steps'));
+  });
+});
+
+describe('hasStructuredVerificationEvidence', () => {
+  it('returns true for structured verification summaries', () => {
+    const summary = `
+Summary: done
+Verification Evidence:
+- PASS build: \`npm run build\`
+- PASS tests: \`node --test dist/foo.test.js\`
+`;
+    assert.equal(hasStructuredVerificationEvidence(summary), true);
+  });
+
+  it('returns false for unstructured summaries', () => {
+    assert.equal(
+      hasStructuredVerificationEvidence('Implemented fix and opened PR.'),
+      false,
+    );
+  });
+
+  it('returns false for missing input', () => {
+    assert.equal(hasStructuredVerificationEvidence(undefined), false);
+    assert.equal(hasStructuredVerificationEvidence(null), false);
+    assert.equal(hasStructuredVerificationEvidence(''), false);
   });
 });

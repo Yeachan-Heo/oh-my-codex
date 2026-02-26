@@ -84,6 +84,7 @@ import {
 } from './model-contract.js';
 import { inferPhaseTargetFromTaskCounts, reconcilePhaseStateForMonitor } from './phase-controller.js';
 import { getTeamTmuxSessions } from '../notifications/tmux.js';
+import { hasStructuredVerificationEvidence } from '../verification/verifier.js';
 import {
   ensureWorktree,
   planWorktreeTarget,
@@ -798,10 +799,23 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
     failed: allTasks.filter(t => t.status === 'failed').length,
   };
 
+  const verificationPendingTasks = allTasks.filter(
+    (task) => task.status === 'completed'
+      && task.requires_code_change === true
+      && !hasStructuredVerificationEvidence(task.result),
+  );
+  if (verificationPendingTasks.length > 0) {
+    for (const task of verificationPendingTasks) {
+      recommendations.push(`Verification evidence missing for task-${task.id}; require structured PASS/FAIL evidence before terminal success`);
+    }
+  }
+
   const allTasksTerminal = taskCounts.pending === 0 && taskCounts.blocked === 0 && taskCounts.in_progress === 0;
 
   const persistedPhase = await readTeamPhaseState(sanitized, cwd);
-  const targetPhase = inferPhaseTargetFromTaskCounts(taskCounts);
+  const targetPhase = inferPhaseTargetFromTaskCounts(taskCounts, {
+    verificationPending: verificationPendingTasks.length > 0,
+  });
   const phaseState: TeamPhaseState = reconcilePhaseStateForMonitor(persistedPhase, targetPhase);
   await writeTeamPhaseState(sanitized, phaseState, cwd);
   const phase: TeamPhase | TerminalPhase = phaseState.current_phase;

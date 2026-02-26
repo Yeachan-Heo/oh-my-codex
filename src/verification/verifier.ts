@@ -21,6 +21,26 @@ export interface VerificationEvidence {
 }
 
 /**
+ * Heuristic check for structured verification evidence in a task completion summary.
+ * Intended for runtime completion gating (best-effort, backward-compatible).
+ */
+export function hasStructuredVerificationEvidence(summary: string | null | undefined): boolean {
+  if (typeof summary !== 'string') return false;
+  const text = summary.trim();
+  if (text === '') return false;
+
+  const hasVerificationSection = /verification(?:\s+evidence)?\s*:/i.test(text)
+    || /##\s*verification/i.test(text);
+  if (!hasVerificationSection) return false;
+
+  const hasEvidenceSignal = /\b(pass|passed|fail|failed)\b/i.test(text)
+    || /`[^`]+`/.test(text)
+    || /\b(command|test|build|typecheck|lint)\b/i.test(text);
+
+  return hasEvidenceSignal;
+}
+
+/**
  * Generate verification instructions for a given task size
  */
 export function getVerificationInstructions(

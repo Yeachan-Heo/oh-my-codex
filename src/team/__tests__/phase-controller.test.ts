@@ -17,6 +17,16 @@ describe('phase-controller', () => {
     );
   });
 
+  it('infers team-verify when terminal tasks still need verification evidence', () => {
+    assert.equal(
+      inferPhaseTargetFromTaskCounts(
+        { pending: 0, blocked: 0, in_progress: 0, failed: 0 },
+        { verificationPending: true },
+      ),
+      'team-verify',
+    );
+  });
+
   it('advances team-exec to complete via verify stage', () => {
     const next = reconcilePhaseStateForMonitor(
       {
@@ -49,5 +59,20 @@ describe('phase-controller', () => {
     assert.equal(next.current_phase, 'team-exec');
     assert.equal(next.current_fix_attempt, 0);
     assert.ok(next.transitions.some((t) => t.from === 'complete' && t.to === 'team-exec'));
+  });
+
+  it('moves team-exec to team-verify when verification is pending', () => {
+    const next = reconcilePhaseStateForMonitor(
+      {
+        current_phase: 'team-exec',
+        max_fix_attempts: 3,
+        current_fix_attempt: 0,
+        transitions: [],
+        updated_at: new Date().toISOString(),
+      },
+      'team-verify',
+    );
+    assert.equal(next.current_phase, 'team-verify');
+    assert.ok(next.transitions.some((t) => t.to === 'team-verify'));
   });
 });

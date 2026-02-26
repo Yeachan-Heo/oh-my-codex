@@ -183,6 +183,8 @@ describe('worker bootstrap', () => {
     assert.match(inbox, /\*\*Task 2\*\*: Second task/);
     assert.match(inbox, /Resolve canonical team state root/);
     assert.match(inbox, /<team_state_root>\/team\/team-inbox\/tasks\/task-<id>\.json/);
+    assert.match(inbox, /Verification Requirements/);
+    assert.match(inbox, /Fix-Verify Loop/);
   });
 
   it('generateInitialInbox shows blocked_by info for blocked tasks', () => {
@@ -208,6 +210,8 @@ describe('worker bootstrap', () => {
     assert.match(inbox, /Implement parser update/);
     assert.match(inbox, /team_state_root/);
     assert.match(inbox, /team\/team-followup\/tasks\/task-42\.json/);
+    assert.match(inbox, /Verification Requirements/);
+    assert.match(inbox, /PASS\/FAIL/);
   });
 
   it('generateShutdownInbox contains exit instruction and concrete ack path', () => {

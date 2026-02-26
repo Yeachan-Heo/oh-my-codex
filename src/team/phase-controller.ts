@@ -9,10 +9,14 @@ import {
 import { type TeamPhaseState } from './state.js';
 
 export function inferPhaseTargetFromTaskCounts(
-  taskCounts: { pending: number; blocked: number; in_progress: number; failed: number }
+  taskCounts: { pending: number; blocked: number; in_progress: number; failed: number },
+  options: { verificationPending?: boolean } = {},
 ): TeamPhase | TerminalPhase {
   const allTasksTerminal = taskCounts.pending === 0 && taskCounts.blocked === 0 && taskCounts.in_progress === 0;
-  if (allTasksTerminal && taskCounts.failed === 0) return 'complete';
+  if (allTasksTerminal && taskCounts.failed === 0) {
+    if (options.verificationPending) return 'team-verify';
+    return 'complete';
+  }
   if (allTasksTerminal && taskCounts.failed > 0) return 'team-fix';
   return 'team-exec';
 }
@@ -50,6 +54,14 @@ function toPhaseState(state: TeamState): TeamPhaseState {
 
 function buildTransitionPath(from: TeamPhase | TerminalPhase, to: TeamPhase | TerminalPhase): Array<TeamPhase | TerminalPhase> {
   if (from === to) return [];
+
+  if (to === 'team-verify') {
+    if (from === 'team-plan') return ['team-prd', 'team-exec', 'team-verify'];
+    if (from === 'team-prd') return ['team-exec', 'team-verify'];
+    if (from === 'team-exec') return ['team-verify'];
+    if (from === 'team-fix') return ['team-exec', 'team-verify'];
+    return [];
+  }
 
   if (to === 'team-exec') {
     if (from === 'team-plan') return ['team-prd', 'team-exec'];
