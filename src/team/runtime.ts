@@ -1074,19 +1074,24 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   const leaderPaneId = config.leader_pane_id;
   const hudPaneId = config.hud_pane_id;
   if (config.worker_launch_mode === 'interactive') {
+    let resizeHookWarning: string | null = null;
     if (config.resize_hook_name && config.resize_hook_target) {
-      const unregistered = unregisterResizeHook(config.resize_hook_target, config.resize_hook_name);
+      const resizeHookName = config.resize_hook_name;
+      const unregistered = unregisterResizeHook(config.resize_hook_target, resizeHookName);
       if (!unregistered && isTmuxAvailable()) {
         const baseSession = sessionName.split(':')[0];
         const sessionStillActive = listTeamSessions().includes(baseSession);
         if (sessionStillActive) {
-          throw new Error(`failed to unregister resize hook ${config.resize_hook_name}`);
+          resizeHookWarning = `failed to unregister resize hook ${resizeHookName}`;
         }
       }
     }
     config.resize_hook_name = null;
     config.resize_hook_target = null;
     await saveTeamConfig(config, cwd);
+    if (resizeHookWarning) {
+      console.warn(`[team shutdown] ${sanitized}: ${resizeHookWarning}; continuing teardown`);
+    }
     for (const w of config.workers) {
       try {
         // Guard: never kill the leader's own pane or the HUD pane.

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, readFile, mkdir } from 'fs/promises';
+import { mkdtemp, rm, writeFile, readFile, mkdir, chmod } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { existsSync } from 'fs';
@@ -507,6 +507,86 @@ process.on('SIGTERM', () => process.exit(0));
       assert.equal(existsSync(teamRoot), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('shutdownTeam continues cleanup when resize hook unregister fails while session remains active', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-gate-failed-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-runtime-fake-tmux-'));
+    const previousPath = process.env.PATH;
+    const previousTmuxLog = process.env.TMUX_TEST_LOG;
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    try {
+      await initTeamState('team-shutdown-gate-failed', 'shutdown resize hook failure test', 'executor', 1, cwd);
+      const configPath = join(cwd, '.omx', 'state', 'team', 'team-shutdown-gate-failed', 'config.json');
+      const manifestPath = join(cwd, '.omx', 'state', 'team', 'team-shutdown-gate-failed', 'manifest.v2.json');
+      const config = JSON.parse(await readFile(configPath, 'utf-8')) as Record<string, unknown>;
+      config.tmux_session = 'omx-team-team-shutdown-gate-failed';
+      config.resize_hook_name = 'omx_resize_team_shutdown_gate_failed_test';
+      config.resize_hook_target = 'omx-team-team-shutdown-gate-failed:0';
+      await writeFile(configPath, JSON.stringify(config, null, 2));
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as Record<string, unknown>;
+      manifest.tmux_session = 'omx-team-team-shutdown-gate-failed';
+      manifest.resize_hook_name = 'omx_resize_team_shutdown_gate_failed_test';
+      manifest.resize_hook_target = 'omx-team-team-shutdown-gate-failed:0';
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const tmuxStubPath = join(fakeBinDir, 'tmux');
+      await writeFile(
+        tmuxStubPath,
+        `#!/bin/sh
+set -eu
+if [ -n "\${TMUX_TEST_LOG:-}" ]; then
+  printf '%s\\n' "$*" >> "$TMUX_TEST_LOG"
+fi
+case "$1" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  list-sessions)
+    echo "omx-team-team-shutdown-gate-failed"
+    exit 0
+    ;;
+  set-hook)
+    if [ "\${2:-}" = "-u" ]; then
+      echo "simulated unregister failure" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  list-panes)
+    exit 1
+    ;;
+  kill-session)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+      );
+      await chmod(tmuxStubPath, 0o755);
+
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+      process.env.TMUX_TEST_LOG = tmuxLogPath;
+
+      await shutdownTeam('team-shutdown-gate-failed', cwd);
+
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-shutdown-gate-failed');
+      assert.equal(existsSync(teamRoot), false);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /set-hook -u -t omx-team-team-shutdown-gate-failed:0 client-resized\[\d+\]/);
+      assert.match(tmuxLog, /kill-session -t omx-team-team-shutdown-gate-failed/);
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      if (typeof previousTmuxLog === 'string') process.env.TMUX_TEST_LOG = previousTmuxLog;
+      else delete process.env.TMUX_TEST_LOG;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
     }
   });
 
