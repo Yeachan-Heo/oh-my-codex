@@ -281,10 +281,10 @@ describe('config generator idempotency (#384)', () => {
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, 'utf-8');
 
-      // User's [tui] is preserved (not stripped by orphan-strip)
-      // The OMX block also writes [tui], so there will be 2 — this is
-      // expected for legacy markerless configs. On the next run, the
-      // marker-based stripper handles the OMX [tui] correctly.
+      // User's [tui] is preserved (not stripped by orphan-strip).
+      // The OMX block also writes [tui], so there will be 2 — this is a
+      // known limitation for legacy markerless configs. Full convergence
+      // requires either renaming the OMX TUI key or a merge strategy.
       assert.match(toml, /status_line = \["git-branch"\]/, 'user tui setting preserved');
     } finally {
       await rm(wd, { recursive: true, force: true });
