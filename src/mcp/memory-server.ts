@@ -10,9 +10,10 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { readFile, writeFile, mkdir, appendFile } from 'fs/promises';
+import { readFile, writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { parseNotepadPruneDaysOld } from './memory-validation.js';
 
 function getMemoryPath(wd?: string): string {
   return join(wd || process.cwd(), '.omx', 'project-memory.json');
@@ -144,7 +145,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          daysOld: { type: 'integer', description: 'Prune entries older than this many days (default: 7)' },
+          daysOld: { type: 'integer', minimum: 0, description: 'Prune entries older than this many days (default: 7)' },
           workingDirectory: { type: 'string' },
         },
       },
@@ -282,7 +283,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!existsSync(notePath)) {
         return text({ pruned: 0, message: 'No notepad file found' });
       }
-      const days = (a.daysOld as number) || 7;
+      const parsedDays = parseNotepadPruneDaysOld(a.daysOld);
+      if (!parsedDays.ok) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: parsedDays.error }) }],
+          isError: true,
+        };
+      }
+      const days = parsedDays.days;
       const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
       const content = await readFile(notePath, 'utf-8');
       const workingSection = extractSection(content, 'WORKING MEMORY');
