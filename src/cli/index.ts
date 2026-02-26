@@ -674,7 +674,11 @@ function sanitizeTmuxToken(value: string): string {
 }
 
 export function buildTmuxSessionName(cwd: string, sessionId: string): string {
-  const dirToken = sanitizeTmuxToken(basename(cwd));
+  const parentDir = basename(dirname(cwd));
+  const dirName = basename(cwd);
+  const dirToken = parentDir.endsWith('.omx-worktrees')
+    ? sanitizeTmuxToken(`${parentDir.slice(0, -'.omx-worktrees'.length)}-${dirName}`)
+    : sanitizeTmuxToken(dirName);
   let branchToken = 'detached';
   try {
     const branch = execSync('git rev-parse --abbrev-ref HEAD', {

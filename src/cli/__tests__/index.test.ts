@@ -452,6 +452,16 @@ describe('buildTmuxSessionName', () => {
     assert.equal(name.includes('_'), false);
     assert.equal(name.includes(' '), false);
   });
+
+  it('includes repo name when cwd is inside .omx-worktrees', () => {
+    const name = buildTmuxSessionName('/home/user/my-repo.omx-worktrees/launch-feature-x', 'omx-123-abc');
+    assert.match(name, /^omx-my-repo-launch-feature-x-/);
+  });
+
+  it('includes repo name for detached worktree paths', () => {
+    const name = buildTmuxSessionName('/projects/cool-project.omx-worktrees/launch-detached', 'omx-456-def');
+    assert.match(name, /^omx-cool-project-launch-detached-/);
+  });
 });
 
 describe('team worker launch arg inheritance helpers', () => {
