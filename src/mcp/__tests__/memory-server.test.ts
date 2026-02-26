@@ -28,6 +28,7 @@ describe('mcp/memory-server module contract', () => {
 
   it('retains section helpers and stdio bootstrap', async () => {
     const src = await readFile(join(process.cwd(), 'src/mcp/memory-server.ts'), 'utf8');
+    assert.match(src, /resolveWorkingDirectoryForState/);
     assert.match(src, /function extractSection\(content: string, section: string\): string/);
     assert.match(src, /function replaceSection\(content: string, section: string, newContent: string\): string/);
     assert.match(src, /function appendToSection\(content: string, section: string, entry: string\): string/);

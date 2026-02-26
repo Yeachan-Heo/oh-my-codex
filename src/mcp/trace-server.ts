@@ -14,7 +14,7 @@ import { readFile, readdir } from 'fs/promises';
 import { join } from 'path';
 import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
-import { listModeStateFilesWithScopePreference } from './state-paths.js';
+import { listModeStateFilesWithScopePreference, resolveWorkingDirectoryForState } from './state-paths.js';
 import { shouldAutoStartMcpServer } from './bootstrap.js';
 
 function text(data: unknown) {
@@ -236,7 +236,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   const a = (args || {}) as Record<string, unknown>;
-  const wd = (a.workingDirectory as string) || process.cwd();
+  let wd: string;
+  try {
+    wd = resolveWorkingDirectoryForState(a.workingDirectory as string | undefined);
+  } catch (error) {
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ error: (error as Error).message }) }],
+      isError: true,
+    };
+  }
   const omxDir = join(wd, '.omx');
   const logsDir = join(omxDir, 'logs');
 

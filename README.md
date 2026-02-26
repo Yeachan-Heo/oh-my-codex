@@ -147,6 +147,17 @@ See `docs/hooks-extension.md` for the full extension workflow and event model.
 `--madmax` maps to Codex `--dangerously-bypass-approvals-and-sandbox`.
 Use it only in trusted/external sandbox environments.
 
+### MCP workingDirectory policy (optional hardening)
+
+By default, MCP state/memory/trace tools accept caller-provided `workingDirectory`.
+To constrain this, set an allowlist of roots:
+
+```bash
+export OMX_MCP_WORKDIR_ROOTS="/path/to/project:/path/to/another-root"
+```
+
+When set, `workingDirectory` values outside these roots are rejected.
+
 ## Codex-First Prompt Control
 
 By default, OMX injects:

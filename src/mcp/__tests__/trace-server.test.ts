@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { readFile } from 'node:fs/promises';
 
 describe('trace-server session-scoped mode discovery', () => {
   it('includes mode events from session-scoped state files', async () => {
@@ -125,5 +126,12 @@ describe('trace-server log readers', () => {
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
+  });
+});
+
+describe('trace-server workingDirectory handling', () => {
+  it('normalizes workingDirectory via state-paths resolver', async () => {
+    const src = await readFile(join(process.cwd(), 'src/mcp/trace-server.ts'), 'utf8');
+    assert.match(src, /resolveWorkingDirectoryForState/);
   });
 });

@@ -9,6 +9,19 @@ describe('MCP state/team tools path traversal prevention', () => {
   // Disable auto-start so tests can import the module directly
   process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
 
+  it('rejects invalid workingDirectory inputs containing NUL bytes', async () => {
+    const { handleStateToolCall } = await import('../state-server.js');
+    const resp = await handleStateToolCall({
+      params: {
+        name: 'state_read',
+        arguments: { mode: 'team', workingDirectory: 'bad\0path' },
+      },
+    });
+    assert.equal(resp.isError, true, 'Expected isError=true for invalid workingDirectory');
+    const body = JSON.parse(resp.content[0]?.text ?? '{}') as { error?: string };
+    assert.match(body.error || '', /NUL byte/);
+  });
+
   it('rejects traversal in team_name for team_read_config', async () => {
     const { handleStateToolCall } = await import('../state-server.js');
     const wd = await mkdtemp(join(tmpdir(), 'omx-traversal-'));

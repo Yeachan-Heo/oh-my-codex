@@ -15,13 +15,14 @@ import { join } from 'path';
 import { existsSync } from 'fs';
 import { parseNotepadPruneDaysOld } from './memory-validation.js';
 import { shouldAutoStartMcpServer } from './bootstrap.js';
+import { resolveWorkingDirectoryForState } from './state-paths.js';
 
-function getMemoryPath(wd?: string): string {
-  return join(wd || process.cwd(), '.omx', 'project-memory.json');
+function getMemoryPath(wd: string): string {
+  return join(wd, '.omx', 'project-memory.json');
 }
 
-function getNotepadPath(wd?: string): string {
-  return join(wd || process.cwd(), '.omx', 'notepad.md');
+function getNotepadPath(wd: string): string {
+  return join(wd, '.omx', 'notepad.md');
 }
 
 interface ProjectMemory {
@@ -167,7 +168,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   const a = (args || {}) as Record<string, unknown>;
-  const wd = a.workingDirectory as string | undefined;
+  let wd: string;
+  try {
+    wd = resolveWorkingDirectoryForState(a.workingDirectory as string | undefined);
+  } catch (error) {
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ error: (error as Error).message }) }],
+      isError: true,
+    };
+  }
 
   switch (name) {
     // === Project Memory ===
@@ -186,7 +195,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     case 'project_memory_write': {
       const memPath = getMemoryPath(wd);
-      await mkdir(join(wd || process.cwd(), '.omx'), { recursive: true });
+      await mkdir(join(wd, '.omx'), { recursive: true });
       const merge = a.merge as boolean;
       const newMem = a.memory as Record<string, unknown>;
       if (merge && existsSync(memPath)) {
@@ -201,7 +210,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     case 'project_memory_add_note': {
       const memPath = getMemoryPath(wd);
-      await mkdir(join(wd || process.cwd(), '.omx'), { recursive: true });
+      await mkdir(join(wd, '.omx'), { recursive: true });
       let data: ProjectMemory = {};
       if (existsSync(memPath)) {
         data = JSON.parse(await readFile(memPath, 'utf-8'));
@@ -218,7 +227,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     case 'project_memory_add_directive': {
       const memPath = getMemoryPath(wd);
-      await mkdir(join(wd || process.cwd(), '.omx'), { recursive: true });
+      await mkdir(join(wd, '.omx'), { recursive: true });
       let data: ProjectMemory = {};
       if (existsSync(memPath)) {
         data = JSON.parse(await readFile(memPath, 'utf-8'));
@@ -251,7 +260,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     case 'notepad_write_priority': {
       const notePath = getNotepadPath(wd);
-      await mkdir(join(wd || process.cwd(), '.omx'), { recursive: true });
+      await mkdir(join(wd, '.omx'), { recursive: true });
       const content = a.content as string;
       let existing = existsSync(notePath) ? await readFile(notePath, 'utf-8') : '';
       existing = replaceSection(existing, 'PRIORITY', content.slice(0, 500));
@@ -261,7 +270,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     case 'notepad_write_working': {
       const notePath = getNotepadPath(wd);
-      await mkdir(join(wd || process.cwd(), '.omx'), { recursive: true });
+      await mkdir(join(wd, '.omx'), { recursive: true });
       const entry = `\n[${new Date().toISOString()}] ${a.content as string}`;
       let existing = existsSync(notePath) ? await readFile(notePath, 'utf-8') : '';
       existing = appendToSection(existing, 'WORKING MEMORY', entry);
@@ -271,7 +280,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     case 'notepad_write_manual': {
       const notePath = getNotepadPath(wd);
-      await mkdir(join(wd || process.cwd(), '.omx'), { recursive: true });
+      await mkdir(join(wd, '.omx'), { recursive: true });
       const entry = `\n${a.content as string}`;
       let existing = existsSync(notePath) ? await readFile(notePath, 'utf-8') : '';
       existing = appendToSection(existing, 'MANUAL', entry);

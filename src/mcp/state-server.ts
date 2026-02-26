@@ -21,7 +21,6 @@ import {
   getStateDir,
   getStatePath,
   resolveWorkingDirectoryForState,
-  validateStateModeSegment,
   validateSessionId,
 } from './state-paths.js';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
@@ -76,7 +75,6 @@ const SUPPORTED_MODES = [
   'autopilot', 'ultrapilot', 'team', 'pipeline',
   'ralph', 'ultrawork', 'ultraqa', 'ecomode', 'ralplan',
 ] as const;
-const SUPPORTED_MODE_SET = new Set<string>(SUPPORTED_MODES);
 
 const STATE_TOOL_NAMES = new Set([
   'state_read',
@@ -119,14 +117,6 @@ const TEAM_COMM_TOOL_NAMES = new Set([
 const TEAM_UPDATE_TASK_MUTABLE_FIELDS = new Set(['subject', 'description', 'blocked_by', 'requires_code_change']);
 const TEAM_UPDATE_TASK_REQUEST_FIELDS = new Set(['team_name', 'task_id', 'workingDirectory', ...TEAM_UPDATE_TASK_MUTABLE_FIELDS]);
 const stateWriteQueues = new Map<string, Promise<void>>();
-
-function validateSupportedMode(mode: unknown): string {
-  const normalized = validateStateModeSegment(mode);
-  if (!SUPPORTED_MODE_SET.has(normalized)) {
-    throw new Error(`mode must be one of: ${SUPPORTED_MODES.join(', ')}`);
-  }
-  return normalized;
-}
 
 async function withStateWriteLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   const tail = stateWriteQueues.get(path) ?? Promise.resolve();
@@ -755,19 +745,20 @@ export async function handleStateToolCall(request: {
   params: { name: string; arguments?: Record<string, unknown> };
 }) {
   const { name, arguments: args } = request.params;
-  const argsRecord = (args as Record<string, unknown>) || {};
-  const wd = argsRecord.workingDirectory as string | undefined;
-  const normalizedWd = resolveWorkingDirectoryForState(wd);
+  const wd = (args as Record<string, unknown>)?.workingDirectory as string | undefined;
+  let normalizedWd: string;
+  try {
+    normalizedWd = resolveWorkingDirectoryForState(wd);
+  } catch (error) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ error: (error as Error).message }) }],
+      isError: true,
+    };
+  }
   let cwd = normalizedWd;
   let explicitSessionId: string | undefined;
-  let validatedMode: string | undefined;
   try {
-    explicitSessionId = validateSessionId(argsRecord.session_id);
-    if (name === 'state_read' || name === 'state_write' || name === 'state_clear') {
-      validatedMode = validateSupportedMode(argsRecord.mode);
-    } else if (name === 'state_get_status' && argsRecord.mode !== undefined) {
-      validatedMode = validateSupportedMode(argsRecord.mode);
-    }
+    explicitSessionId = validateSessionId((args as Record<string, unknown>)?.session_id);
   } catch (error) {
     return {
       content: [{ type: 'text', text: JSON.stringify({ error: (error as Error).message }) }],
@@ -821,7 +812,7 @@ export async function handleStateToolCall(request: {
 
   switch (name) {
     case 'state_read': {
-      const mode = validatedMode as string;
+      const mode = (args as Record<string, unknown>).mode as string;
       const paths = await getReadScopedStatePaths(mode, cwd, explicitSessionId);
       const path = paths.find((candidate) => existsSync(candidate));
       if (!path) {
@@ -832,7 +823,7 @@ export async function handleStateToolCall(request: {
     }
 
     case 'state_write': {
-      const mode = validatedMode as string;
+      const mode = (args as Record<string, unknown>).mode as string;
       const path = getStatePath(mode, cwd, effectiveSessionId);
       const {
         mode: _m,
@@ -886,7 +877,7 @@ export async function handleStateToolCall(request: {
     }
 
     case 'state_clear': {
-      const mode = validatedMode as string;
+      const mode = (args as Record<string, unknown>).mode as string;
       const allSessions = (args as Record<string, unknown>).all_sessions === true;
 
       if (!allSessions) {
@@ -944,7 +935,7 @@ export async function handleStateToolCall(request: {
     }
 
     case 'state_get_status': {
-      const mode = validatedMode;
+      const mode = (args as Record<string, unknown>)?.mode as string | undefined;
       const stateDirs = await getReadScopedStateDirs(cwd, explicitSessionId);
       const statuses: Record<string, unknown> = {};
       const seenModes = new Set<string>();
