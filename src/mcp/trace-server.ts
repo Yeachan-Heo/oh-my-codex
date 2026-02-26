@@ -11,8 +11,9 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { readFile, readdir } from 'fs/promises';
+import { createReadStream, existsSync } from 'fs';
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { createInterface } from 'readline';
 import { listModeStateFilesWithScopePreference } from './state-paths.js';
 
 function text(data: unknown) {
@@ -28,28 +29,87 @@ interface TraceEntry {
   output_preview?: string;
 }
 
-async function readLogFiles(logsDir: string, last?: number): Promise<TraceEntry[]> {
+async function listTurnLogFiles(logsDir: string): Promise<string[]> {
   if (!existsSync(logsDir)) return [];
-
-  const files = (await readdir(logsDir))
+  return (await readdir(logsDir))
     .filter(f => f.startsWith('turns-') && f.endsWith('.jsonl'))
     .sort();
+}
 
-  const entries: TraceEntry[] = [];
-
+async function* iterateTurnEntries(logsDir: string): AsyncGenerator<TraceEntry> {
+  const files = await listTurnLogFiles(logsDir);
   for (const file of files) {
-    const content = await readFile(join(logsDir, file), 'utf-8');
-    for (const line of content.split('\n')) {
+    const stream = createReadStream(join(logsDir, file), { encoding: 'utf-8' });
+    const rl = createInterface({ input: stream, crlfDelay: Infinity });
+    for await (const line of rl) {
       if (!line.trim()) continue;
       try {
-        entries.push(JSON.parse(line));
-      } catch { /* skip malformed */ }
+        yield JSON.parse(line) as TraceEntry;
+      } catch {
+        // skip malformed
+      }
+    }
+  }
+}
+
+function sortByTimestampAsc(entries: TraceEntry[]): void {
+  entries.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+}
+
+function pushLastEntry(buffer: TraceEntry[], entry: TraceEntry, max: number): void {
+  if (buffer.length < max) {
+    buffer.push(entry);
+    return;
+  }
+  buffer.shift();
+  buffer.push(entry);
+}
+
+export async function readTurnTimeline(logsDir: string, last?: number): Promise<{ entries: TraceEntry[]; totalAvailable: number }> {
+  if (!existsSync(logsDir)) return { entries: [], totalAvailable: 0 };
+
+  const keepLast = typeof last === 'number' && Number.isFinite(last) && last > 0;
+  const entries: TraceEntry[] = [];
+  let totalAvailable = 0;
+
+  for await (const entry of iterateTurnEntries(logsDir)) {
+    totalAvailable++;
+    if (keepLast) {
+      pushLastEntry(entries, entry, Math.floor(last));
+    } else {
+      entries.push(entry);
     }
   }
 
-  entries.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
-  if (last && last > 0) return entries.slice(-last);
-  return entries;
+  sortByTimestampAsc(entries);
+  return { entries, totalAvailable };
+}
+
+interface TurnSummary {
+  total: number;
+  byType: Record<string, number>;
+  firstAt: string | null;
+  lastAt: string | null;
+}
+
+export async function summarizeTurns(logsDir: string): Promise<TurnSummary> {
+  let total = 0;
+  const byType: Record<string, number> = {};
+  let firstAt: string | null = null;
+  let lastAt: string | null = null;
+
+  for await (const entry of iterateTurnEntries(logsDir)) {
+    total++;
+    const type = entry.type || 'unknown';
+    byType[type] = (byType[type] || 0) + 1;
+
+    if (entry.timestamp) {
+      if (!firstAt || entry.timestamp < firstAt) firstAt = entry.timestamp;
+      if (!lastAt || entry.timestamp > lastAt) lastAt = entry.timestamp;
+    }
+  }
+
+  return { total, byType, firstAt, lastAt };
 }
 
 // ── State file readers for mode timeline ────────────────────────────────────
@@ -171,13 +231,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const filter = (a.filter as string) || 'all';
 
       const [turns, modeEvents] = await Promise.all([
-        filter !== 'modes' ? readLogFiles(logsDir, last) : Promise.resolve([]),
+        filter !== 'modes' ? readTurnTimeline(logsDir, last) : Promise.resolve({ entries: [], totalAvailable: 0 }),
         filter !== 'turns' ? readModeEvents(wd) : Promise.resolve([]),
       ]);
 
       type TimelineEntry = { timestamp: string; type: string; [key: string]: unknown };
       const timeline: TimelineEntry[] = [
-        ...turns.map(t => ({
+        ...turns.entries.map(t => ({
           timestamp: t.timestamp,
           type: 'turn',
           turn_type: t.type,
@@ -195,27 +255,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       timeline.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
       const result = last ? timeline.slice(-last) : timeline;
+      const totalAvailable = filter === 'turns'
+        ? turns.totalAvailable
+        : (filter === 'modes' ? modeEvents.length : turns.totalAvailable + modeEvents.length);
 
       return text({
         entryCount: result.length,
-        totalAvailable: timeline.length,
+        totalAvailable,
         filter,
         timeline: result,
       });
     }
 
     case 'trace_summary': {
-      const [turns, modeEvents, metrics] = await Promise.all([
-        readLogFiles(logsDir),
+      const [turnSummary, modeEvents, metrics] = await Promise.all([
+        summarizeTurns(logsDir),
         readModeEvents(wd),
         readMetrics(omxDir),
       ]);
-
-      const turnsByType: Record<string, number> = {};
-      for (const t of turns) {
-        const type = t.type || 'unknown';
-        turnsByType[type] = (turnsByType[type] || 0) + 1;
-      }
 
       const modesByName: Record<string, { starts: number; ends: number }> = {};
       for (const e of modeEvents) {
@@ -224,8 +281,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (e.event === 'mode_end') modesByName[e.mode].ends++;
       }
 
-      const firstTurn = turns.length > 0 ? turns[0].timestamp : null;
-      const lastTurn = turns.length > 0 ? turns[turns.length - 1].timestamp : null;
+      const firstTurn = turnSummary.firstAt;
+      const lastTurn = turnSummary.lastAt;
       let durationMs = 0;
       if (firstTurn && lastTurn) {
         durationMs = new Date(lastTurn).getTime() - new Date(firstTurn).getTime();
@@ -233,8 +290,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       return text({
         turns: {
-          total: turns.length,
-          byType: turnsByType,
+          total: turnSummary.total,
+          byType: turnSummary.byType,
           firstAt: firstTurn,
           lastAt: lastTurn,
           durationMs,
