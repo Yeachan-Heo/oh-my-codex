@@ -28,6 +28,17 @@ import { ensureTmuxHookInitialized } from '../cli/tmux-hook.js';
 import { RALPH_PHASES, validateAndNormalizeRalphState } from '../ralph/contract.js';
 import { ensureCanonicalRalphArtifacts } from '../ralph/persistence.js';
 import {
+  TEAM_NAME_SAFE_PATTERN,
+  WORKER_NAME_SAFE_PATTERN,
+  TASK_ID_SAFE_PATTERN,
+  TEAM_TASK_STATUSES,
+  TEAM_EVENT_TYPES,
+  TEAM_TASK_APPROVAL_STATUSES,
+  type TeamTaskStatus,
+  type TeamEventType,
+  type TeamTaskApprovalStatus,
+} from '../team/contracts.js';
+import {
   teamSendMessage as sendDirectMessage,
   teamBroadcast as broadcastMessage,
   teamListMailbox as listMailboxMessages,
@@ -104,27 +115,8 @@ const TEAM_COMM_TOOL_NAMES = new Set([
   'team_write_task_approval',
 ]);
 
-const TEAM_NAME_SAFE_PATTERN = /^[a-z0-9][a-z0-9-]{0,29}$/;
-const WORKER_NAME_SAFE_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const TASK_ID_SAFE_PATTERN = /^\d{1,20}$/;
-const TEAM_TASK_STATUSES = ['pending', 'blocked', 'in_progress', 'completed', 'failed'] as const;
-const TEAM_EVENT_TYPES = [
-  'task_completed',
-  'task_failed',
-  'worker_idle',
-  'worker_stopped',
-  'message_received',
-  'shutdown_ack',
-  'approval_decision',
-  'team_leader_nudge',
-] as const;
-const TEAM_TASK_APPROVAL_STATUSES = ['pending', 'approved', 'rejected'] as const;
 const TEAM_UPDATE_TASK_MUTABLE_FIELDS = new Set(['subject', 'description', 'blocked_by', 'requires_code_change']);
 const TEAM_UPDATE_TASK_REQUEST_FIELDS = new Set(['team_name', 'task_id', 'workingDirectory', ...TEAM_UPDATE_TASK_MUTABLE_FIELDS]);
-
-type TeamTaskStatus = typeof TEAM_TASK_STATUSES[number];
-type TeamEventType = typeof TEAM_EVENT_TYPES[number];
-type TeamTaskApprovalStatus = typeof TEAM_TASK_APPROVAL_STATUSES[number];
 
 function isFiniteInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && Number.isFinite(value);

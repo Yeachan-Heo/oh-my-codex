@@ -5,6 +5,14 @@ import { randomUUID } from 'crypto';
 import { performance } from 'perf_hooks';
 import { omxStateDir } from '../utils/paths.js';
 import { type TeamPhase, type TerminalPhase } from './orchestrator.js';
+import {
+  TEAM_NAME_SAFE_PATTERN,
+  WORKER_NAME_SAFE_PATTERN,
+  TASK_ID_SAFE_PATTERN,
+  TEAM_TASK_STATUSES,
+  canTransitionTeamTaskStatus,
+  isTerminalTeamTaskStatus,
+} from './contracts.js';
 
 export interface TeamConfig {
   name: string;
@@ -230,25 +238,14 @@ export const ABSOLUTE_MAX_WORKERS = 20;
 const DEFAULT_CLAIM_LEASE_MS = 15 * 60 * 1000;
 const LOCK_STALE_MS = 5 * 60 * 1000;
 
-const WORKER_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const TASK_ID_PATTERN = /^\d{1,20}$/;
 type TeamTaskStatus = TeamTask['status'];
 
-const TERMINAL_TASK_STATUSES: ReadonlySet<TeamTaskStatus> = new Set(['completed', 'failed']);
-const TASK_STATUS_TRANSITIONS: Readonly<Record<TeamTaskStatus, readonly TeamTaskStatus[]>> = {
-  pending: [],
-  blocked: [],
-  in_progress: ['completed', 'failed'],
-  completed: [],
-  failed: [],
-};
-
 function isTerminalTaskStatus(status: TeamTaskStatus): boolean {
-  return TERMINAL_TASK_STATUSES.has(status);
+  return isTerminalTeamTaskStatus(status);
 }
 
 function canTransitionTaskStatus(from: TeamTaskStatus, to: TeamTaskStatus): boolean {
-  return TASK_STATUS_TRANSITIONS[from]?.includes(to) ?? false;
+  return canTransitionTeamTaskStatus(from, to);
 }
 
 function assertPathWithinDir(filePath: string, rootDir: string): void {
@@ -260,7 +257,7 @@ function assertPathWithinDir(filePath: string, rootDir: string): void {
 }
 
 function validateWorkerName(name: string): void {
-  if (!WORKER_NAME_PATTERN.test(name)) {
+  if (!WORKER_NAME_SAFE_PATTERN.test(name)) {
     throw new Error(
       `Invalid worker name: "${name}". Must match /^[a-z0-9][a-z0-9-]{0,63}$/ (lowercase alphanumeric + hyphens, max 64 chars).`
     );
@@ -268,7 +265,7 @@ function validateWorkerName(name: string): void {
 }
 
 function validateTaskId(taskId: string): void {
-  if (!TASK_ID_PATTERN.test(taskId)) {
+  if (!TASK_ID_SAFE_PATTERN.test(taskId)) {
     throw new Error(
       `Invalid task ID: "${taskId}". Must be a positive integer (digits only, max 20 digits).`
     );
@@ -450,8 +447,7 @@ function summarySnapshotPath(teamName: string, cwd: string): string {
 
 // Validate team name: alphanumeric + hyphens only, max 30 chars
 function validateTeamName(name: string): void {
-  const re = /^[a-z0-9][a-z0-9-]{0,29}$/;
-  if (!re.test(name)) {
+  if (!TEAM_NAME_SAFE_PATTERN.test(name)) {
     throw new Error(
       `Invalid team name: "${name}". Team name must match /^[a-z0-9][a-z0-9-]{0,29}$/ (lowercase alphanumeric + hyphens, max 30 chars).`
     );
@@ -481,11 +477,10 @@ function isWorkerStatus(value: unknown): value is WorkerStatus {
 function isTeamTask(value: unknown): value is TeamTask {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
-  const allowed = ['pending', 'blocked', 'in_progress', 'completed', 'failed'];
   if (typeof v.id !== 'string') return false;
   if (typeof v.subject !== 'string') return false;
   if (typeof v.description !== 'string') return false;
-  if (typeof v.status !== 'string' || !allowed.includes(v.status)) return false;
+  if (typeof v.status !== 'string' || !TEAM_TASK_STATUSES.includes(v.status as TeamTaskStatus)) return false;
   if (typeof v.created_at !== 'string') return false;
   return true;
 }

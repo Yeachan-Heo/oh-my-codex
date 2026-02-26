@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
+import { TEAM_EVENT_TYPES } from '../../team/contracts.js';
 
 const ALL_EVENT_TYPES = [
   'task_completed',
@@ -15,19 +16,13 @@ const ALL_EVENT_TYPES = [
 ] as const;
 
 describe('team_append_event schema validation', () => {
-  it('schema enum is sourced from TEAM_EVENT_TYPES and contains expected values', async () => {
+  it('schema enum is sourced from shared TEAM_EVENT_TYPES contract and contains expected values', async () => {
     const src = await readFile(join(process.cwd(), 'src/mcp/state-server.ts'), 'utf8');
-
-    const constMatch = src.match(/const TEAM_EVENT_TYPES = \[([\s\S]*?)\] as const;/);
-    assert.ok(constMatch, 'Expected to find TEAM_EVENT_TYPES constant in state-server.ts');
 
     const enumRefMatch = src.match(/name:\s*'team_append_event'[\s\S]*?enum:\s*\[\.\.\.TEAM_EVENT_TYPES\]/);
     assert.ok(enumRefMatch, 'Expected team_append_event schema to reference TEAM_EVENT_TYPES');
 
-    const enumValues = constMatch[1]
-      .split(',')
-      .map((s: string) => s.trim().replace(/^'|'$/g, ''))
-      .filter(Boolean);
+    const enumValues = [...TEAM_EVENT_TYPES];
 
     assert.equal(
       enumValues.length,
