@@ -58,4 +58,56 @@ describe('state-server Ralph phase contract', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('rejects terminal Ralph phase when active=true', async () => {
+    process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
+    const { handleStateToolCall } = await import('../state-server.js');
+
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ralph-phase-'));
+    try {
+      const response = await handleStateToolCall({
+        params: {
+          name: 'state_write',
+          arguments: {
+            workingDirectory: wd,
+            mode: 'ralph',
+            active: true,
+            current_phase: 'complete',
+          },
+        },
+      });
+      assert.equal(response.isError, true);
+      const body = JSON.parse(response.content[0]?.text || '{}') as { error?: string };
+      assert.match(body.error || '', /terminal Ralph phases require active=false/i);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects fractional iteration values for Ralph state', async () => {
+    process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
+    const { handleStateToolCall } = await import('../state-server.js');
+
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ralph-phase-'));
+    try {
+      const response = await handleStateToolCall({
+        params: {
+          name: 'state_write',
+          arguments: {
+            workingDirectory: wd,
+            mode: 'ralph',
+            active: true,
+            current_phase: 'executing',
+            iteration: 0.25,
+            max_iterations: 10.5,
+          },
+        },
+      });
+      assert.equal(response.isError, true);
+      const body = JSON.parse(response.content[0]?.text || '{}') as { error?: string };
+      assert.match(body.error || '', /finite integer/i);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });

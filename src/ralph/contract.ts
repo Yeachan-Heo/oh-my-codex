@@ -11,6 +11,7 @@ export const RALPH_PHASES = [
 export type RalphPhase = typeof RALPH_PHASES[number];
 
 const RALPH_PHASE_SET = new Set<string>(RALPH_PHASES);
+const RALPH_TERMINAL_PHASE_SET = new Set<RalphPhase>(['complete', 'failed', 'cancelled']);
 
 const LEGACY_PHASE_ALIASES: Record<string, RalphPhase> = {
   start: 'starting',
@@ -95,15 +96,24 @@ export function validateAndNormalizeRalphState(
 
   if (next.iteration != null) {
     const value = asFiniteNumber(next.iteration);
-    if (value === null || value < 0) {
-      return { ok: false, error: 'ralph.iteration must be a finite number >= 0' };
+    if (value === null || !Number.isInteger(value) || value < 0) {
+      return { ok: false, error: 'ralph.iteration must be a finite integer >= 0' };
     }
   }
 
   if (next.max_iterations != null) {
     const value = asFiniteNumber(next.max_iterations);
-    if (value === null || value <= 0) {
-      return { ok: false, error: 'ralph.max_iterations must be a finite number > 0' };
+    if (value === null || !Number.isInteger(value) || value <= 0) {
+      return { ok: false, error: 'ralph.max_iterations must be a finite integer > 0' };
+    }
+  }
+
+  if (typeof next.current_phase === 'string' && RALPH_TERMINAL_PHASE_SET.has(next.current_phase as RalphPhase)) {
+    if (next.active === true) {
+      return { ok: false, error: 'terminal Ralph phases require active=false' };
+    }
+    if (next.completed_at == null) {
+      next.completed_at = nowIso;
     }
   }
 
