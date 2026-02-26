@@ -10,7 +10,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { homedir as osHomedir } from 'os';
 import { execSync } from 'child_process';
 
 /** Config shape for the code-simplifier feature */
@@ -43,8 +43,9 @@ export const TRIGGER_MARKER_FILENAME = 'code-simplifier-triggered.marker';
  * Read the global OMX config from ~/.omx/config.json.
  * Returns null if the file does not exist or cannot be parsed.
  */
-export function readOmxConfig(): OmxGlobalConfig | null {
-  const configPath = join(homedir(), '.omx', 'config.json');
+export function readOmxConfig(configDir?: string): OmxGlobalConfig | null {
+  const home = configDir ?? (process.env.HOME || process.env.USERPROFILE || osHomedir());
+  const configPath = join(home, '.omx', 'config.json');
 
   if (!existsSync(configPath)) {
     return null;
@@ -61,8 +62,8 @@ export function readOmxConfig(): OmxGlobalConfig | null {
  * Check whether the code-simplifier feature is enabled in config.
  * Disabled by default — requires explicit opt-in.
  */
-export function isCodeSimplifierEnabled(): boolean {
-  const config = readOmxConfig();
+export function isCodeSimplifierEnabled(configDir?: string): boolean {
+  const config = readOmxConfig(configDir);
   return config?.codeSimplifier?.enabled === true;
 }
 
@@ -185,8 +186,9 @@ export function buildSimplifierMessage(files: string[]): string {
 export function processCodeSimplifier(
   cwd: string,
   stateDir: string,
+  configDir?: string,
 ): CodeSimplifierResult {
-  if (!isCodeSimplifierEnabled()) {
+  if (!isCodeSimplifierEnabled(configDir)) {
     return { triggered: false, message: '' };
   }
 
@@ -196,7 +198,7 @@ export function processCodeSimplifier(
     return { triggered: false, message: '' };
   }
 
-  const config = readOmxConfig();
+  const config = readOmxConfig(configDir);
   const extensions = config?.codeSimplifier?.extensions ?? DEFAULT_EXTENSIONS;
   const maxFiles = config?.codeSimplifier?.maxFiles ?? DEFAULT_MAX_FILES;
   const files = getModifiedFiles(cwd, extensions, maxFiles);

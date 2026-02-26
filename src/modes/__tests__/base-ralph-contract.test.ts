@@ -12,7 +12,7 @@ describe('modes/base ralph contract integration', () => {
     try {
       await assert.rejects(
         () => startMode('ralph', 'demo', 0, wd),
-        /ralph\.max_iterations must be a finite number > 0/,
+        /ralph\.max_iterations must be a finite (number|integer) > 0/,
       );
       assert.equal(existsSync(join(wd, '.omx', 'state', 'ralph-state.json')), false);
     } finally {

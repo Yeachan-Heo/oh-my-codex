@@ -230,7 +230,7 @@ describe('processCodeSimplifier', () => {
     writeEnabledCodeSimplifierConfig(homeDir);
     writeFileSync(join(cwd, 'tracked.ts'), 'export const changed = 2;\n', 'utf-8');
 
-    const result = processCodeSimplifier(cwd, stateDir);
+    const result = processCodeSimplifier(cwd, stateDir, homeDir);
 
     assert.equal(result.triggered, true);
     assert.match(result.message, /tracked\.ts/);
@@ -242,11 +242,11 @@ describe('processCodeSimplifier', () => {
     writeEnabledCodeSimplifierConfig(homeDir);
     writeFileSync(join(cwd, 'tracked.ts'), 'export const changed = 2;\n', 'utf-8');
 
-    const first = processCodeSimplifier(cwd, stateDir);
+    const first = processCodeSimplifier(cwd, stateDir, homeDir);
     assert.equal(first.triggered, true);
     assert.equal(isAlreadyTriggered(stateDir), true);
 
-    const second = processCodeSimplifier(cwd, stateDir);
+    const second = processCodeSimplifier(cwd, stateDir, homeDir);
     assert.equal(second.triggered, false);
     assert.equal(isAlreadyTriggered(stateDir), false);
   });
