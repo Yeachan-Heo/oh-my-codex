@@ -174,10 +174,12 @@ function stripOrphanedOmxSections(config: string): string {
 
     if (tableMatch) {
       const tableName = tableMatch[1];
+      // Note: [tui] is NOT stripped here because it could be user-owned.
+      // The marker-based stripExistingOmxBlocks already handles [tui]
+      // when it lives inside the OMX marker block.
       const isOmxSection =
         /^mcp_servers\.omx_/.test(tableName) ||
-        isOmxAgentSection(tableName, omxAgentNames) ||
-        tableName === 'tui';
+        isOmxAgentSection(tableName, omxAgentNames);
 
       if (isOmxSection) {
         // Remove preceding OMX comment lines and blank lines

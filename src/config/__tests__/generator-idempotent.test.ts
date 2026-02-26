@@ -85,6 +85,8 @@ describe('config generator idempotency (#384)', () => {
     try {
       const configPath = join(wd, 'config.toml');
       // Simulate a legacy config written without OMX markers
+      // Note: [tui] is intentionally excluded — orphan-strip does not
+      // claim [tui] to avoid deleting user-owned TUI settings.
       const legacy = [
         'model = "o3"',
         '',
@@ -104,9 +106,6 @@ describe('config generator idempotency (#384)', () => {
         'command = "node"',
         'args = ["/old/path/memory-server.js"]',
         'enabled = true',
-        '',
-        '[tui]',
-        'status_line = ["model"]',
         '',
         '[user.custom]',
         'name = "kept"',
@@ -233,6 +232,60 @@ describe('config generator idempotency (#384)', () => {
       const omxBlockStart = toml.indexOf('# oh-my-codex (OMX) Configuration');
       const agentIdx = toml.indexOf('[agents.executor]');
       assert.ok(agentIdx > omxBlockStart, 'agents.executor should be inside OMX block');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves non-OMX agent sections', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-idem-'));
+    try {
+      const configPath = join(wd, 'config.toml');
+      const userAgents = [
+        '[agents."my-custom-bot"]',
+        'description = "My custom agent"',
+        'config_file = "/home/user/my-bot.toml"',
+        '',
+        '[agents.myreviewer]',
+        'description = "Company code reviewer"',
+        'config_file = "/home/user/reviewer.toml"',
+        '',
+      ].join('\n');
+      await writeFile(configPath, userAgents);
+
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, 'utf-8');
+
+      // User-defined agents must survive
+      assert.match(toml, /^\[agents\."my-custom-bot"\]$/m, 'user agent my-custom-bot preserved');
+      assert.match(toml, /^description = "My custom agent"$/m, 'user agent description preserved');
+      assert.match(toml, /^\[agents\.myreviewer\]$/m, 'user agent myreviewer preserved');
+      assert.match(toml, /^description = "Company code reviewer"$/m, 'user agent description preserved');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves user [tui] section (not claimed by orphan-strip)', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-idem-'));
+    try {
+      const configPath = join(wd, 'config.toml');
+      // User has their own [tui] settings before OMX was installed
+      const userTui = [
+        '[tui]',
+        'status_line = ["git-branch"]',
+        '',
+      ].join('\n');
+      await writeFile(configPath, userTui);
+
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, 'utf-8');
+
+      // User's [tui] is preserved (not stripped by orphan-strip)
+      // The OMX block also writes [tui], so there will be 2 — this is
+      // expected for legacy markerless configs. On the next run, the
+      // marker-based stripper handles the OMX [tui] correctly.
+      assert.match(toml, /status_line = \["git-branch"\]/, 'user tui setting preserved');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
