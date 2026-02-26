@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { existsSync } from 'fs';
 import { mkdir, readdir, stat } from 'fs/promises';
 import { basename, join } from 'path';
@@ -15,6 +16,10 @@ function sanitizePluginId(fileName: string): string {
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '');
   return normalized || 'plugin';
+}
+
+function shortFileHash(fileName: string): string {
+  return createHash('sha256').update(fileName).digest('hex').slice(0, 8);
 }
 
 function readTimeout(raw: string | undefined, fallback: number): number {
@@ -73,7 +78,7 @@ export async function discoverHookPlugins(cwd: string): Promise<HookPluginDescri
   if (!existsSync(dir)) return [];
 
   const names = await readdir(dir).catch(() => [] as string[]);
-  const plugins: HookPluginDescriptor[] = [];
+  const discovered: Array<{ idBase: string; file: string; path: string }> = [];
 
   for (const name of names) {
     if (!name.endsWith('.mjs')) continue;
@@ -81,17 +86,27 @@ export async function discoverHookPlugins(cwd: string): Promise<HookPluginDescri
     const st = await stat(path).catch(() => null);
     if (!st || !st.isFile()) continue;
 
-    const id = sanitizePluginId(name);
-    plugins.push({
+    discovered.push({ idBase: sanitizePluginId(name), file: name, path });
+  }
+
+  const idCounts = new Map<string, number>();
+  for (const plugin of discovered) {
+    idCounts.set(plugin.idBase, (idCounts.get(plugin.idBase) ?? 0) + 1);
+  }
+
+  const plugins: HookPluginDescriptor[] = discovered.map((plugin) => {
+    const hasCollision = (idCounts.get(plugin.idBase) ?? 0) > 1;
+    const id = hasCollision ? `${plugin.idBase}-${shortFileHash(plugin.file)}` : plugin.idBase;
+    return {
       id,
       name: id,
-      file: name,
-      path,
-      filePath: path,
-      fileName: name,
+      file: plugin.file,
+      path: plugin.path,
+      filePath: plugin.path,
+      fileName: plugin.file,
       valid: true,
-    });
-  }
+    };
+  });
 
   plugins.sort((a, b) => a.file.localeCompare(b.file));
   return plugins;

@@ -165,6 +165,30 @@ describe('discoverHookPlugins', () => {
     }
   });
 
+  it('adds deterministic hash suffix when sanitized IDs collide', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-discover-'));
+    try {
+      const dir = join(cwd, '.omx', 'hooks');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'my.plugin.mjs'), 'export function onHookEvent() {}');
+      await writeFile(join(dir, 'my plugin.mjs'), 'export function onHookEvent() {}');
+
+      const plugins = await discoverHookPlugins(cwd);
+      assert.equal(plugins.length, 2);
+      assert.notEqual(plugins[0].id, plugins[1].id);
+      assert.match(plugins[0].id, /^my-plugin-[a-f0-9]{8}$/);
+      assert.match(plugins[1].id, /^my-plugin-[a-f0-9]{8}$/);
+
+      const discoveredAgain = await discoverHookPlugins(cwd);
+      assert.deepEqual(
+        plugins.map((plugin) => plugin.id),
+        discoveredAgain.map((plugin) => plugin.id),
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('skips subdirectories', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-discover-'));
     try {
