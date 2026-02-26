@@ -316,6 +316,94 @@ describe('notify-hook per-worker idle notification', () => {
     });
   });
 
+  it('can be disabled via OMX_TEAM_WORKER_IDLE_NOTIFY=0', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const logsDir = join(cwd, '.omx', 'logs');
+      const teamName = 'disabled-zero';
+      const teamDir = join(stateDir, 'team', teamName);
+      const workersDir = join(teamDir, 'workers');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'devsess:0',
+        workers: [{ name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] }],
+      });
+
+      await writeJson(join(workersDir, 'worker-1', 'status.json'), {
+        state: 'idle',
+        updated_at: new Date().toISOString(),
+      });
+      await writeJson(join(workersDir, 'worker-1', 'prev-notify-state.json'), {
+        state: 'working',
+        updated_at: new Date(Date.now() - 5000).toISOString(),
+      });
+
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHookAsWorker(cwd, fakeBinDir, `${teamName}/worker-1`, {
+        OMX_TEAM_WORKER_IDLE_NOTIFY: '0',
+      });
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      if (existsSync(tmuxLogPath)) {
+        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+        assert.doesNotMatch(tmuxLog, /worker-1 idle/, 'should NOT fire when disabled with 0');
+      }
+    });
+  });
+
+  it('can be disabled via OMX_TEAM_WORKER_IDLE_NOTIFY=off', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const logsDir = join(cwd, '.omx', 'logs');
+      const teamName = 'disabled-off';
+      const teamDir = join(stateDir, 'team', teamName);
+      const workersDir = join(teamDir, 'workers');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'devsess:0',
+        workers: [{ name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] }],
+      });
+
+      await writeJson(join(workersDir, 'worker-1', 'status.json'), {
+        state: 'idle',
+        updated_at: new Date().toISOString(),
+      });
+      await writeJson(join(workersDir, 'worker-1', 'prev-notify-state.json'), {
+        state: 'working',
+        updated_at: new Date(Date.now() - 5000).toISOString(),
+      });
+
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHookAsWorker(cwd, fakeBinDir, `${teamName}/worker-1`, {
+        OMX_TEAM_WORKER_IDLE_NOTIFY: 'off',
+      });
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      if (existsSync(tmuxLogPath)) {
+        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+        assert.doesNotMatch(tmuxLog, /worker-1 idle/, 'should NOT fire when disabled with off');
+      }
+    });
+  });
+
   it('writes worker_idle event to events.ndjson', async () => {
     await withTempWorkingDir(async (cwd) => {
       const stateDir = join(cwd, '.omx', 'state');
