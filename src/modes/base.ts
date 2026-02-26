@@ -7,6 +7,7 @@ import { readFile, writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
+import { validateAndNormalizeRalphState } from '../ralph/contract.js';
 
 export interface ModeState {
   active: boolean;
@@ -26,6 +27,23 @@ export type ModeName = 'autopilot' | 'ralph' | 'ultrawork' | 'ecomode' |
   'ultrapilot' | 'team' | 'pipeline' | 'ultraqa' | 'ralplan';
 
 const EXCLUSIVE_MODES: ModeName[] = ['autopilot', 'ralph', 'ultrawork', 'ultrapilot'];
+
+function normalizeRalphModeStateOrThrow(state: ModeState): ModeState {
+  const originalPhase = state.current_phase;
+  const validation = validateAndNormalizeRalphState(state as Record<string, unknown>);
+  if (!validation.ok || !validation.state) {
+    throw new Error(validation.error || 'Invalid ralph mode state');
+  }
+  const normalized = validation.state as ModeState;
+  if (
+    typeof originalPhase === 'string'
+    && typeof normalized.current_phase === 'string'
+    && normalized.current_phase !== originalPhase
+  ) {
+    normalized.ralph_phase_normalized_from = originalPhase;
+  }
+  return normalized;
+}
 
 function stateDir(projectRoot?: string): string {
   return join(projectRoot || process.cwd(), '.omx', 'state');
@@ -75,7 +93,10 @@ export async function startMode(
     started_at: new Date().toISOString(),
   };
 
-  const state = withModeRuntimeContext({}, stateBase) as ModeState;
+  const withContext = withModeRuntimeContext({}, stateBase) as ModeState;
+  const state = mode === 'ralph'
+    ? normalizeRalphModeStateOrThrow(withContext)
+    : withContext;
   await writeFile(statePath(mode, projectRoot), JSON.stringify(state, null, 2));
   return state;
 }
@@ -105,7 +126,10 @@ export async function updateModeState(
   if (!current) throw new Error(`Mode ${mode} not found`);
 
   const updatedBase = { ...current, ...updates };
-  const updated = withModeRuntimeContext(current, updatedBase) as ModeState;
+  const normalizedBase = mode === 'ralph'
+    ? normalizeRalphModeStateOrThrow(updatedBase as ModeState)
+    : updatedBase;
+  const updated = withModeRuntimeContext(current, normalizedBase) as ModeState;
   await writeFile(statePath(mode, projectRoot), JSON.stringify(updated, null, 2));
   return updated;
 }
