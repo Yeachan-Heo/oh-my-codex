@@ -72,12 +72,18 @@ export async function startMode(
       const otherPath = statePath(other, projectRoot);
       if (existsSync(otherPath)) {
         try {
-          const otherState = JSON.parse(await readFile(otherPath, 'utf-8'));
+          const raw = await readFile(otherPath, 'utf-8');
+          const otherState = JSON.parse(raw) as { active?: unknown };
           if (otherState.active) {
             throw new Error(`Cannot start ${mode}: ${other} is already active. Run cancel first.`);
           }
         } catch (e) {
-          if ((e as Error).message.includes('Cannot start')) throw e;
+          const err = e as NodeJS.ErrnoException;
+          if (err?.message.includes('Cannot start')) throw err;
+          if (err?.code === 'ENOENT') continue;
+          throw new Error(
+            `Cannot start ${mode}: ${other} state file is malformed or unreadable (${otherPath}). Run cancel or repair the state file.`
+          );
         }
       }
     }

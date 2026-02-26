@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startMode } from '../base.js';
@@ -21,5 +21,20 @@ describe('modes/base tmux pane capture', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
-});
 
+  it('blocks exclusive mode startup when another exclusive state file is malformed', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-mode-malformed-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'ralph-state.json'), '{ "active": true');
+
+      await assert.rejects(
+        () => startMode('autopilot', 'test', 1, wd),
+        /state file is malformed or unreadable/i,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+});
