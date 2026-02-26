@@ -135,7 +135,12 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   const nowIso = input.nowIso ?? new Date().toISOString();
   const statePath = join(input.stateDir, SKILL_ACTIVE_STATE_FILE);
   const previous = await readJsonIfExists<Partial<SkillActiveState> | null>(statePath, null);
-  const activatedAt = typeof previous?.activated_at === 'string' && previous.activated_at !== ''
+  const sameSkillLifecycle = previous?.active === true
+    && typeof previous.skill === 'string'
+    && previous.skill === match.skill
+    && typeof previous.keyword === 'string'
+    && previous.keyword.toLowerCase() === match.keyword.toLowerCase();
+  const activatedAt = sameSkillLifecycle && typeof previous?.activated_at === 'string' && previous.activated_at !== ''
     ? previous.activated_at
     : nowIso;
 
