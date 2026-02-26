@@ -172,12 +172,14 @@ describe('parseTmuxTail', () => {
     assert.strictEqual(parseTmuxTail(raw), '');
   });
 
-  it('trims whitespace from individual lines', () => {
+  it('trims trailing whitespace from individual lines', () => {
     const raw = '  leading spaces  \n\t tabbed line \t';
     const result = parseTmuxTail(raw);
     assert.ok(result.includes('leading spaces'));
     assert.ok(result.includes('tabbed line'));
-    assert.ok(!result.startsWith(' '));
+    // Trailing whitespace should be removed
+    assert.ok(!result.endsWith(' '));
+    assert.ok(!result.endsWith('\t'));
   });
 
   it('handles combined ANSI codes and spinner lines', () => {
@@ -186,6 +188,62 @@ describe('parseTmuxTail', () => {
     assert.ok(!result.includes('Thinking'));
     assert.ok(result.includes('Real output'));
     assert.ok(result.includes('Done'));
+  });
+
+  it('removes lines composed entirely of box-drawing characters', () => {
+    const raw = [
+      '─────────────────────',
+      '╔══════════╗',
+      '│ content  │',
+      '└──────────┘',
+      'Actual output',
+    ].join('\n');
+    const result = parseTmuxTail(raw);
+    assert.ok(!result.includes('─────'));
+    assert.ok(!result.includes('╔'));
+    assert.ok(!result.includes('└'));
+    assert.ok(result.includes('Actual output'));
+  });
+
+  it('removes OMX HUD status lines', () => {
+    const raw = [
+      '[OMX#3] ultrawork active',
+      '[OMX] idle',
+      'Normal output line',
+    ].join('\n');
+    const result = parseTmuxTail(raw);
+    assert.ok(!result.includes('[OMX'));
+    assert.ok(result.includes('Normal output line'));
+  });
+
+  it('removes bypass-permissions indicator lines starting with ⏵', () => {
+    const raw = '⏵ bypass active\nNormal output';
+    const result = parseTmuxTail(raw);
+    assert.ok(!result.includes('⏵'));
+    assert.ok(result.includes('Normal output'));
+  });
+
+  it('removes bare shell prompt lines', () => {
+    const raw = '>\n$\n%\n#\n❯\nsome command output';
+    const result = parseTmuxTail(raw);
+    assert.ok(!result.split('\n').some(l => /^[❯>$%#]+$/.test(l.trim())));
+    assert.ok(result.includes('some command output'));
+  });
+
+  it('drops lines with low alphanumeric density (< 15%) for long lines', () => {
+    // A line of 10 chars with 0 alphanumeric = 0% density
+    const raw = '!@#$%^&*()  \nNormal line with words';
+    const result = parseTmuxTail(raw);
+    assert.ok(!result.includes('!@#$%^&*()'));
+    assert.ok(result.includes('Normal line with words'));
+  });
+
+  it('keeps short lines (< 8 chars) even with low alphanumeric density', () => {
+    // "---" is 3 chars, below the 8-char threshold for density check
+    const raw = '---\nNormal output';
+    const result = parseTmuxTail(raw);
+    assert.ok(result.includes('---'));
+    assert.ok(result.includes('Normal output'));
   });
 
   it('buildTmuxTailBlock uses parseTmuxTail output', () => {

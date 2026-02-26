@@ -86,6 +86,28 @@ export {
 export { notify, loadNotificationConfig } from "./notifier.js";
 export type { NotificationConfig, NotificationPayload } from "./notifier.js";
 
+// Template engine exports
+export {
+  interpolateTemplate,
+  validateTemplate,
+  computeTemplateVariables,
+  getDefaultTemplate,
+} from "./template-engine.js";
+
+// Hook config exports
+export {
+  getHookConfig,
+  resetHookConfigCache,
+  resolveEventTemplate,
+  mergeHookConfigIntoNotificationConfig,
+} from "./hook-config.js";
+export type {
+  HookNotificationConfig,
+  HookEventConfig,
+  PlatformTemplateOverride,
+  TemplateVariable,
+} from "./hook-config-types.js";
+
 import type {
   NotificationEvent,
   FullNotificationPayload,
@@ -96,6 +118,25 @@ import { formatNotification } from "./formatter.js";
 import { dispatchNotifications } from "./dispatcher.js";
 import { getCurrentTmuxSession, captureTmuxPane } from "./tmux.js";
 import { basename } from "path";
+import type { OpenClawHookEvent } from "../openclaw/types.js";
+
+// Suppress unused import — used by callers via re-export
+void getActiveProfileName;
+
+/**
+ * Map a NotificationEvent to an OpenClawHookEvent.
+ * Returns null for events that have no OpenClaw equivalent.
+ */
+function toOpenClawEvent(event: NotificationEvent): OpenClawHookEvent | null {
+  switch (event) {
+    case "session-start": return "session-start";
+    case "session-end": return "session-end";
+    case "session-idle": return "session-idle";
+    case "ask-user-question": return "ask-user-question";
+    case "session-stop": return "stop";
+    default: return null;
+  }
+}
 
 /**
  * High-level notification function for lifecycle events.
@@ -155,6 +196,28 @@ export async function notifyLifecycle(
     payload.message = data.message || formatNotification(payload);
 
     const result = await dispatchNotifications(config, event, payload);
+
+    // Fire-and-forget OpenClaw gateway call (if OMX_OPENCLAW=1)
+    if (process.env.OMX_OPENCLAW === "1") {
+      try {
+        const openClawEvent = toOpenClawEvent(event);
+        if (openClawEvent !== null) {
+          const { wakeOpenClaw } = await import("../openclaw/index.js");
+          // Non-blocking: do not await to avoid delaying notification return
+          void wakeOpenClaw(openClawEvent, {
+            sessionId: payload.sessionId,
+            projectPath: payload.projectPath,
+            tmuxSession: payload.tmuxSession,
+            contextSummary: payload.contextSummary,
+            reason: payload.reason,
+            question: payload.question,
+            tmuxTail: payload.tmuxTail,
+          });
+        }
+      } catch {
+        // OpenClaw failures must never affect notification dispatch
+      }
+    }
 
     if (result.anySuccess && payload.tmuxPaneId) {
       try {

@@ -241,12 +241,13 @@ export function isDaemonRunning(): boolean {
 
 export function sanitizeReplyInput(text: string): string {
   return text
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
-    .replace(/\r?\n/g, ' ')
-    .replace(/\\/g, '\\\\')
-    .replace(/`/g, '\\`')
-    .replace(/\$\(/g, '\\$(')
-    .replace(/\$\{/g, '\\${')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')                  // Strip control chars (keep \n, \r, \t)
+    .replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '')            // Strip bidi override characters
+    .replace(/\r?\n/g, ' ')                                               // Newlines -> spaces
+    .replace(/\\/g, '\\\\')                                               // Escape backslashes
+    .replace(/`/g, '\\`')                                                 // Escape backticks
+    .replace(/\$\(/g, '\\$(')                                             // Escape $()
+    .replace(/\$\{/g, '\\${')                                             // Escape ${}
     .trim();
 }
 

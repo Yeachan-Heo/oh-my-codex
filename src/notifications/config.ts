@@ -19,6 +19,7 @@ import type {
   TelegramNotificationConfig,
   VerbosityLevel,
 } from "./types.js";
+import { getHookConfig, mergeHookConfigIntoNotificationConfig } from "./hook-config.js";
 
 const CONFIG_FILE = join(codexHome(), ".omx-config.json");
 
@@ -82,6 +83,23 @@ export function validateMention(raw: string | undefined): string | undefined {
   return undefined;
 }
 
+/**
+ * Validate Slack mention format.
+ * Accepts: <@UXXXXXXXX> (user), <!channel>, <!here>, <!everyone>, <!subteam^SXXXXXXXXX> (user group).
+ * Returns the mention string if valid, undefined otherwise.
+ */
+export function validateSlackMention(raw: string | undefined): string | undefined {
+  const mention = normalizeOptional(raw);
+  if (!mention) return undefined;
+  // <@U...> or <@W...> user mention
+  if (/^<@[UW][A-Z0-9]{8,11}>$/.test(mention)) return mention;
+  // <!channel>, <!here>, <!everyone>
+  if (/^<!(?:channel|here|everyone)>$/.test(mention)) return mention;
+  // <!subteam^S...> user group
+  if (/^<!subteam\^S[A-Z0-9]{8,11}>$/.test(mention)) return mention;
+  return undefined;
+}
+
 export function parseMentionAllowedMentions(
   mention: string | undefined,
 ): { users?: string[]; roles?: string[] } {
@@ -142,6 +160,7 @@ export function buildConfigFromEnv(): FullNotificationConfig | null {
     config.slack = {
       enabled: true,
       webhookUrl: slackWebhook,
+      mention: validateSlackMention(process.env.OMX_SLACK_MENTION),
     };
     hasAnyPlatform = true;
   }
@@ -196,6 +215,20 @@ function mergeEnvIntoFileConfig(
 
   if (!merged.slack && envConfig.slack) {
     merged.slack = envConfig.slack;
+  } else if (merged.slack && envConfig.slack) {
+    merged.slack = {
+      ...merged.slack,
+      webhookUrl: merged.slack.webhookUrl || envConfig.slack.webhookUrl,
+      mention:
+        merged.slack.mention !== undefined
+          ? validateSlackMention(merged.slack.mention)
+          : envConfig.slack.mention,
+    };
+  } else if (merged.slack) {
+    merged.slack = {
+      ...merged.slack,
+      mention: validateSlackMention(merged.slack.mention),
+    };
   }
 
   return merged;
@@ -267,6 +300,12 @@ export function getActiveProfileName(): string | null {
   return notifications.defaultProfile || null;
 }
 
+function applyHookConfigIfPresent(config: FullNotificationConfig): FullNotificationConfig {
+  const hookConfig = getHookConfig();
+  if (!hookConfig) return config;
+  return mergeHookConfigIntoNotificationConfig(hookConfig, config);
+}
+
 export function getNotificationConfig(
   profileName?: string,
 ): FullNotificationConfig | null {
@@ -282,10 +321,10 @@ export function getNotificationConfig(
           return null;
         }
         const envConfig = buildConfigFromEnv();
-        if (envConfig) {
-          return mergeEnvIntoFileConfig(profileConfig, envConfig);
-        }
-        return profileConfig;
+        const merged = envConfig
+          ? mergeEnvIntoFileConfig(profileConfig, envConfig)
+          : profileConfig;
+        return applyHookConfigIfPresent(merged);
       }
 
       // Fall back to flat config (backward compatible)
@@ -294,7 +333,7 @@ export function getNotificationConfig(
       }
       const envConfig = buildConfigFromEnv();
       if (envConfig) {
-        return mergeEnvIntoFileConfig(notifications, envConfig);
+        return applyHookConfigIfPresent(mergeEnvIntoFileConfig(notifications, envConfig));
       }
       const envMention = validateMention(process.env.OMX_DISCORD_MENTION);
       if (envMention) {
@@ -305,17 +344,19 @@ export function getNotificationConfig(
         if (patched.discord && patched.discord.mention === undefined) {
           patched.discord = { ...patched.discord, mention: envMention };
         }
-        return patched;
+        return applyHookConfigIfPresent(patched);
       }
-      return notifications;
+      return applyHookConfigIfPresent(notifications);
     }
   }
 
   const envConfig = buildConfigFromEnv();
-  if (envConfig) return envConfig;
+  if (envConfig) return applyHookConfigIfPresent(envConfig);
 
   if (raw) {
-    return migrateStopHookCallbacks(raw);
+    const migrated = migrateStopHookCallbacks(raw);
+    if (migrated) return applyHookConfigIfPresent(migrated);
+    return null;
   }
 
   return null;

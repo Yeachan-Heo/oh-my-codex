@@ -2,6 +2,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   validateMention,
+  validateSlackMention,
   parseMentionAllowedMentions,
   buildConfigFromEnv,
 } from '../config.js';
@@ -17,6 +18,7 @@ const ENV_KEYS = [
   'OMX_TELEGRAM_NOTIFIER_CHAT_ID',
   'OMX_TELEGRAM_NOTIFIER_UID',
   'OMX_SLACK_WEBHOOK_URL',
+  'OMX_SLACK_MENTION',
 ];
 
 function clearEnvVars(): void {
@@ -173,10 +175,9 @@ describe('buildConfigFromEnv', () => {
     process.env.OMX_SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/test';
     const config = buildConfigFromEnv();
     assert.ok(config);
-    assert.deepEqual(config.slack, {
-      enabled: true,
-      webhookUrl: 'https://hooks.slack.com/services/test',
-    });
+    assert.equal(config.slack!.enabled, true);
+    assert.equal(config.slack!.webhookUrl, 'https://hooks.slack.com/services/test');
+    assert.equal(config.slack!.mention, undefined);
   });
 
   it('uses OMX_TELEGRAM_NOTIFIER_BOT_TOKEN as fallback', () => {
@@ -220,5 +221,79 @@ describe('buildConfigFromEnv', () => {
     assert.ok(config);
     assert.equal(config['discord-bot']!.mention, '<@12345678901234567>');
     assert.equal(config.discord!.mention, '<@12345678901234567>');
+  });
+
+  it('includes validated Slack mention from OMX_SLACK_MENTION env var', () => {
+    process.env.OMX_SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/test';
+    process.env.OMX_SLACK_MENTION = '<!here>';
+    const config = buildConfigFromEnv();
+    assert.ok(config);
+    assert.equal(config.slack!.mention, '<!here>');
+  });
+
+  it('rejects invalid Slack mention in OMX_SLACK_MENTION env var', () => {
+    process.env.OMX_SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/test';
+    process.env.OMX_SLACK_MENTION = '@everyone';
+    const config = buildConfigFromEnv();
+    assert.ok(config);
+    assert.equal(config.slack!.mention, undefined);
+  });
+});
+
+describe('validateSlackMention', () => {
+  it('accepts user mention <@UXXXXXXXX>', () => {
+    assert.equal(validateSlackMention('<@UABCDE1234>'), '<@UABCDE1234>');
+  });
+
+  it('accepts workspace user mention <@WXXXXXXXX>', () => {
+    assert.equal(validateSlackMention('<@WABCDE1234>'), '<@WABCDE1234>');
+  });
+
+  it('accepts <!channel>', () => {
+    assert.equal(validateSlackMention('<!channel>'), '<!channel>');
+  });
+
+  it('accepts <!here>', () => {
+    assert.equal(validateSlackMention('<!here>'), '<!here>');
+  });
+
+  it('accepts <!everyone>', () => {
+    assert.equal(validateSlackMention('<!everyone>'), '<!everyone>');
+  });
+
+  it('accepts <!subteam^SXXXXXXXX>', () => {
+    assert.equal(validateSlackMention('<!subteam^SABCDE1234>'), '<!subteam^SABCDE1234>');
+  });
+
+  it('rejects @here (no angle brackets)', () => {
+    assert.equal(validateSlackMention('@here'), undefined);
+  });
+
+  it('rejects @everyone (no angle brackets)', () => {
+    assert.equal(validateSlackMention('@everyone'), undefined);
+  });
+
+  it('rejects plain text', () => {
+    assert.equal(validateSlackMention('hello world'), undefined);
+  });
+
+  it('rejects Discord user mention format', () => {
+    assert.equal(validateSlackMention('<@12345678901234567>'), undefined);
+  });
+
+  it('returns undefined for empty string', () => {
+    assert.equal(validateSlackMention(''), undefined);
+  });
+
+  it('returns undefined for undefined', () => {
+    assert.equal(validateSlackMention(undefined), undefined);
+  });
+
+  it('trims whitespace and validates', () => {
+    assert.equal(validateSlackMention('  <!here>  '), '<!here>');
+  });
+
+  it('rejects whitespace-only string', () => {
+    assert.equal(validateSlackMention('   '), undefined);
   });
 });

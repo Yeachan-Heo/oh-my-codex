@@ -74,6 +74,8 @@ export interface SlackNotificationConfig {
   channel?: string;
   /** Optional username override */
   username?: string;
+  /** Optional mention to prepend to messages (e.g. "<!here>", "<@UXXXXXXXX>") */
+  mention?: string;
 }
 
 /** Generic webhook configuration */
@@ -176,6 +178,10 @@ export interface FullNotificationPayload {
   tmuxPaneId?: string;
   /** Captured tmux pane output (tail lines) for session-level notifications */
   tmuxTail?: string;
+  /** Agent name (populated by extensibility plugins, not set by core Codex CLI hooks) */
+  agentName?: string;
+  /** Agent type (populated by extensibility plugins, not set by core Codex CLI hooks) */
+  agentType?: string;
 }
 
 /** Result of a notification send attempt */

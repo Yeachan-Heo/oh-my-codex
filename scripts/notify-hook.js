@@ -329,6 +329,7 @@ async function main() {
   if (!isTeamWorker) {
     try {
       const { notifyLifecycle } = await import('../dist/notifications/index.js');
+      const { shouldSendIdleNotification, recordIdleNotificationSent } = await import('../dist/notifications/idle-cooldown.js');
       const sessionJsonPath = join(stateDir, 'session.json');
       let notifySessionId = '';
       try {
@@ -336,11 +337,14 @@ async function main() {
         notifySessionId = safeString(sessionData && sessionData.session_id ? sessionData.session_id : '');
       } catch { /* no session file */ }
 
-      if (notifySessionId) {
-        await notifyLifecycle('session-idle', {
+      if (notifySessionId && shouldSendIdleNotification(stateDir, notifySessionId)) {
+        const idleResult = await notifyLifecycle('session-idle', {
           sessionId: notifySessionId,
           projectPath: cwd,
         });
+        if (idleResult && idleResult.anySuccess) {
+          recordIdleNotificationSent(stateDir, notifySessionId);
+        }
         try {
           const { buildNativeHookEvent } = await import('../dist/hooks/extensibility/events.js');
           const { dispatchHookEvent } = await import('../dist/hooks/extensibility/dispatcher.js');
