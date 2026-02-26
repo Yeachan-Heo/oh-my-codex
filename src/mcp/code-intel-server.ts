@@ -187,10 +187,41 @@ async function findSgBinary(): Promise<string | null> {
   return null;
 }
 
+interface AstGrepRunOptions {
+  path?: string;
+  maxResults?: number;
+  context?: number;
+  replacement?: string;
+  dryRun?: boolean;
+}
+
+export function buildAstGrepRunArgs(
+  pattern: string,
+  language: string,
+  options: AstGrepRunOptions,
+): string[] {
+  const args: string[] = ['run', '--pattern', pattern, '--lang', language];
+
+  if (options.replacement) {
+    args.push('--rewrite', options.replacement);
+    if (!options.dryRun) {
+      args.push('--update-all');
+    }
+  } else {
+    args.push('--json');
+  }
+
+  if (options.path) {
+    args.push(options.path);
+  }
+
+  return args;
+}
+
 async function runAstGrep(
   pattern: string,
   language: string,
-  options: { path?: string; maxResults?: number; context?: number; replacement?: string; dryRun?: boolean }
+  options: AstGrepRunOptions
 ): Promise<{ matches: unknown[]; command: string }> {
   const sg = await findSgBinary();
   if (!sg) {
@@ -203,20 +234,7 @@ async function runAstGrep(
     args.push('--yes', '@ast-grep/cli');
   }
 
-  if (options.replacement && !options.dryRun) {
-    // Rewrite mode
-    args.push('run', '--pattern', pattern, '--rewrite', options.replacement, '--lang', language);
-  } else if (options.replacement && options.dryRun) {
-    // Dry run rewrite
-    args.push('run', '--pattern', pattern, '--rewrite', options.replacement, '--lang', language);
-  } else {
-    // Search mode
-    args.push('run', '--pattern', pattern, '--lang', language, '--json');
-  }
-
-  if (options.path) {
-    args.push(options.path);
-  }
+  args.push(...buildAstGrepRunArgs(pattern, language, options));
 
   try {
     const { stdout } = await exec(cmd, args, { timeout: 30000 });

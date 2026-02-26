@@ -33,4 +33,17 @@ describe('mcp/code-intel-server module contract', () => {
     assert.match(src, /const transport = new StdioServerTransport\(\);/);
     assert.match(src, /server\.connect\(transport\)\.catch\(console\.error\);/);
   });
+
+  it('applies ast-grep rewrites only when dryRun=false', async () => {
+    const src = await readFile(join(process.cwd(), 'src/mcp/code-intel-server.ts'), 'utf8');
+    assert.match(src, /export function buildAstGrepRunArgs/);
+    assert.match(src, /if \(!options\.dryRun\) \{\s*args\.push\('--update-all'\);/);
+    assert.match(src, /args\.push\('--rewrite', options\.replacement\);/);
+  });
+
+  it('keeps dry-run/search behavior distinct from apply mode', async () => {
+    const src = await readFile(join(process.cwd(), 'src/mcp/code-intel-server.ts'), 'utf8');
+    assert.match(src, /if \(options\.replacement\) \{/);
+    assert.match(src, /else \{\s*args\.push\('--json'\);/);
+  });
 });
