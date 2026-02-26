@@ -35,8 +35,8 @@ export interface TeamConfig {
   resize_hook_name: string | null;
   /** Registered HUD resize hook target in "<session>:<window>" form. */
   resize_hook_target: string | null;
-  /** Team worker launch transport: interactive tmux or prompt-mode stdin piping. */
-  worker_launch_mode: 'interactive' | 'prompt';
+  /** Monotonic counter for worker index assignment during scaling. */
+  next_worker_index?: number;
 }
 
 export interface WorkerInfo {
@@ -62,7 +62,7 @@ export interface WorkerHeartbeat {
 }
 
 export interface WorkerStatus {
-  state: 'idle' | 'working' | 'blocked' | 'done' | 'failed' | 'unknown';
+  state: 'idle' | 'working' | 'blocked' | 'done' | 'failed' | 'draining' | 'unknown';
   current_task_id?: string;
   reason?: string;
   updated_at: string;
@@ -137,6 +137,8 @@ export interface TeamManifestV2 {
   hud_pane_id: string | null;
   resize_hook_name: string | null;
   resize_hook_target: string | null;
+  /** Monotonic counter for worker index assignment during scaling. */
+  next_worker_index?: number;
 }
 
 export interface TeamWorkspaceMetadata {
@@ -470,7 +472,7 @@ function isWorkerStatus(value: unknown): value is WorkerStatus {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
   const state = v.state;
-  const allowed = ['idle', 'working', 'blocked', 'done', 'failed', 'unknown'];
+  const allowed = ['idle', 'working', 'blocked', 'done', 'failed', 'draining', 'unknown'];
   if (typeof state !== 'string' || !allowed.includes(state)) return false;
   return typeof v.updated_at === 'string';
 }
@@ -595,7 +597,7 @@ export async function initTeamState(
     hud_pane_id: null,
     resize_hook_name: null,
     resize_hook_target: null,
-    worker_launch_mode: workerLaunchMode,
+    next_worker_index: workerCount + 1,
   };
 
   await writeAtomic(join(root, 'config.json'), JSON.stringify(config, null, 2));
@@ -634,6 +636,7 @@ export async function initTeamState(
       hud_pane_id: null,
       resize_hook_name: null,
       resize_hook_target: null,
+      next_worker_index: workerCount + 1,
     },
     cwd
   );
@@ -662,10 +665,7 @@ async function writeConfig(cfg: TeamConfig, cwd: string): Promise<void> {
       hud_pane_id: normalized.hud_pane_id,
       resize_hook_name: normalized.resize_hook_name,
       resize_hook_target: normalized.resize_hook_target,
-      policy: {
-        ...existing.policy,
-        worker_launch_mode: normalized.worker_launch_mode,
-      },
+      next_worker_index: normalized.next_worker_index ?? existing.next_worker_index,
     };
     await writeTeamManifestV2(merged, cwd);
   }
@@ -689,7 +689,7 @@ function teamConfigFromManifest(manifest: TeamManifestV2): TeamConfig {
     hud_pane_id: manifest.hud_pane_id,
     resize_hook_name: manifest.resize_hook_name,
     resize_hook_target: manifest.resize_hook_target,
-    worker_launch_mode: manifest.policy?.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive',
+    next_worker_index: manifest.next_worker_index,
   };
 }
 
@@ -726,6 +726,7 @@ function teamManifestFromConfig(config: TeamConfig): TeamManifestV2 {
     hud_pane_id: normalized.hud_pane_id,
     resize_hook_name: normalized.resize_hook_name,
     resize_hook_target: normalized.resize_hook_target,
+    next_worker_index: normalized.next_worker_index,
   };
 }
 
@@ -875,6 +876,73 @@ export async function readWorkerStatus(teamName: string, workerName: string, cwd
     return parsed;
   } catch {
     return { state: 'unknown', updated_at: new Date().toISOString() };
+  }
+}
+
+// Atomic write worker status
+export async function writeWorkerStatus(
+  teamName: string,
+  workerName: string,
+  status: WorkerStatus,
+  cwd: string
+): Promise<void> {
+  const p = join(workerDir(teamName, workerName, cwd), 'status.json');
+  await writeAtomic(p, JSON.stringify(status, null, 2));
+}
+
+// File-based scaling lock to prevent concurrent scale_up/scale_down operations
+export async function withScalingLock<T>(
+  teamName: string,
+  cwd: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const lockDir = join(teamDir(teamName, cwd), '.lock.scaling');
+  const ownerPath = join(lockDir, 'owner');
+  const ownerToken = `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+  const deadline = Date.now() + 10_000;
+  // Ensure parent directory exists before entering spin loop
+  await mkdir(dirname(lockDir), { recursive: true });
+  while (true) {
+    try {
+      await mkdir(lockDir);
+      try {
+        await writeFile(ownerPath, ownerToken, 'utf8');
+      } catch (error) {
+        await rm(lockDir, { recursive: true, force: true });
+        throw error;
+      }
+      break;
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code !== 'EEXIST') throw error;
+      try {
+        const info = await stat(lockDir);
+        const ageMs = Date.now() - info.mtimeMs;
+        if (ageMs > LOCK_STALE_MS) {
+          await rm(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        // best effort
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`Timed out acquiring scaling lock for team ${teamName}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    try {
+      const currentOwner = await readFile(ownerPath, 'utf8');
+      if (currentOwner.trim() === ownerToken) {
+        await rm(lockDir, { recursive: true, force: true });
+      }
+    } catch {
+      // best effort
+    }
   }
 }
 

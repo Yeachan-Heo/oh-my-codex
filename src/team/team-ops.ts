@@ -93,5 +93,11 @@ export { writeMonitorSnapshot as teamWriteMonitorSnapshot } from './state.js';
 export { readTeamPhase as teamReadPhase } from './state.js';
 export { writeTeamPhase as teamWritePhase } from './state.js';
 
+// === Worker status write ===
+export { writeWorkerStatus as teamWriteWorkerStatus } from './state.js';
+
+// === Scaling lock ===
+export { withScalingLock as teamWithScalingLock } from './state.js';
+
 // === Atomic write (shared utility) ===
 export { writeAtomic } from './state.js';
