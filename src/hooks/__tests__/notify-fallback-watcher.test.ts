@@ -147,7 +147,7 @@ describe('notify-fallback watcher', () => {
           env: { ...process.env, HOME: tempHome },
         }
       );
-      await sleep(150);
+      await sleep(400);
 
       await appendLine(rolloutPath, {
         timestamp: new Date(Date.now() + 500).toISOString(),
@@ -159,12 +159,19 @@ describe('notify-fallback watcher', () => {
         },
       });
 
-      await sleep(500);
+      // Poll for the watcher to process the new event instead of fixed sleep
+      const turnLog = join(wd, '.omx', 'logs', `turns-${new Date().toISOString().split('T')[0]}.jsonl`);
+      const deadline = Date.now() + 5_000;
+      let turnLines: string[] = [];
+      while (Date.now() < deadline) {
+        turnLines = await readLines(turnLog);
+        if (turnLines.length > 0) break;
+        await sleep(100);
+      }
+
       child.kill('SIGTERM');
       await sleep(100);
 
-      const turnLog = join(wd, '.omx', 'logs', `turns-${new Date().toISOString().split('T')[0]}.jsonl`);
-      const turnLines = await readLines(turnLog);
       assert.equal(turnLines.length, 1);
       assert.match(turnLines[0], new RegExp(newTurn));
       assert.doesNotMatch(turnLines[0], new RegExp(oldTurn));

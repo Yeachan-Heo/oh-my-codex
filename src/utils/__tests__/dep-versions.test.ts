@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 function readInstalledVersion(pkg: string): string {
@@ -19,8 +19,15 @@ function semverGte(version: string, minimum: string): boolean {
   return pa >= pb;
 }
 
+/** Skip reason when a package is not installed (worktrees, CI without install). */
+function skipUnless(pkg: string): string | undefined {
+  return existsSync(join('node_modules', pkg, 'package.json'))
+    ? undefined
+    : `${pkg} not installed (node_modules unavailable)`;
+}
+
 describe('transitive dependency minimum safe versions (issue #170)', () => {
-  it('ajv is at least 8.18.0 (fixes GHSA-2g4f-4pwh-qvx6 ReDoS)', () => {
+  it('ajv is at least 8.18.0 (fixes GHSA-2g4f-4pwh-qvx6 ReDoS)', { skip: skipUnless('ajv') }, () => {
     const version = readInstalledVersion('ajv');
     assert.ok(
       semverGte(version, '8.18.0'),
@@ -28,7 +35,7 @@ describe('transitive dependency minimum safe versions (issue #170)', () => {
     );
   });
 
-  it('hono is at least 4.11.10 (fixes GHSA-gq3j-xvxp-8hrf timing attack)', () => {
+  it('hono is at least 4.11.10 (fixes GHSA-gq3j-xvxp-8hrf timing attack)', { skip: skipUnless('hono') }, () => {
     const version = readInstalledVersion('hono');
     assert.ok(
       semverGte(version, '4.11.10'),
