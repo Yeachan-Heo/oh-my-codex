@@ -77,6 +77,34 @@ describe('config generator', () => {
     }
   });
 
+  it('escapes Windows-style paths in MCP server args', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
+    try {
+      const configPath = join(wd, 'config.toml');
+      await mergeConfig(configPath, 'C:\\Users\\alice\\oh-my-codex');
+      const toml = await readFile(configPath, 'utf-8');
+
+      assert.match(
+        toml,
+        /^args = \["C:\\\\Users\\\\alice\\\\oh-my-codex\/dist\/mcp\/state-server\.js"\]$/m
+      );
+      assert.match(
+        toml,
+        /^args = \["C:\\\\Users\\\\alice\\\\oh-my-codex\/dist\/mcp\/memory-server\.js"\]$/m
+      );
+      assert.match(
+        toml,
+        /^args = \["C:\\\\Users\\\\alice\\\\oh-my-codex\/dist\/mcp\/code-intel-server\.js"\]$/m
+      );
+      assert.match(
+        toml,
+        /^args = \["C:\\\\Users\\\\alice\\\\oh-my-codex\/dist\/mcp\/trace-server\.js"\]$/m
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('re-runs setup replacing OMX config cleanly', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
     try {

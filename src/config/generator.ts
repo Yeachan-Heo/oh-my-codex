@@ -32,11 +32,15 @@ const OMX_TOP_LEVEL_KEYS = [
   'developer_instructions',
 ] as const;
 
-function getOmxTopLevelLines(pkgRoot: string): string[] {
-  const notifyHookPath = join(pkgRoot, 'scripts', 'notify-hook.js');
-  const escapedPath = notifyHookPath
+function escapeTomlBasicString(value: string): string {
+  return value
     .replace(/\\/g, '\\\\')
     .replace(/"/g, '\\"');
+}
+
+function getOmxTopLevelLines(pkgRoot: string): string[] {
+  const notifyHookPath = join(pkgRoot, 'scripts', 'notify-hook.js');
+  const escapedPath = escapeTomlBasicString(notifyHookPath);
 
   return [
     '# oh-my-codex top-level settings (must be before any [table])',
@@ -194,9 +198,7 @@ function getAgentEntries(agentsConfigDir: string): string[] {
   for (const [name, agent] of Object.entries(AGENT_DEFINITIONS)) {
     // TOML table headers with special chars need quoting
     const tableKey = name.includes('-') ? `agents."${name}"` : `agents.${name}`;
-    const configFile = join(agentsConfigDir, `${name}.toml`)
-      .replace(/\\/g, '\\\\')
-      .replace(/"/g, '\\"');
+    const configFile = escapeTomlBasicString(join(agentsConfigDir, `${name}.toml`));
 
     entries.push('');
     entries.push(`[${tableKey}]`);
@@ -212,10 +214,10 @@ function getAgentEntries(agentsConfigDir: string): string[] {
  * Contains ONLY [table] sections — no bare keys.
  */
 function getOmxTablesBlock(pkgRoot: string, agentsConfigDir: string): string {
-  const stateServerPath = join(pkgRoot, 'dist', 'mcp', 'state-server.js');
-  const memoryServerPath = join(pkgRoot, 'dist', 'mcp', 'memory-server.js');
-  const codeIntelServerPath = join(pkgRoot, 'dist', 'mcp', 'code-intel-server.js');
-  const traceServerPath = join(pkgRoot, 'dist', 'mcp', 'trace-server.js');
+  const stateServerPath = escapeTomlBasicString(join(pkgRoot, 'dist', 'mcp', 'state-server.js'));
+  const memoryServerPath = escapeTomlBasicString(join(pkgRoot, 'dist', 'mcp', 'memory-server.js'));
+  const codeIntelServerPath = escapeTomlBasicString(join(pkgRoot, 'dist', 'mcp', 'code-intel-server.js'));
+  const traceServerPath = escapeTomlBasicString(join(pkgRoot, 'dist', 'mcp', 'trace-server.js'));
 
   return [
     '',
