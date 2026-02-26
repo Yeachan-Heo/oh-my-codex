@@ -5,6 +5,7 @@ import { appendFile, mkdir, readFile, readdir, stat, writeFile } from 'fs/promis
 import { spawnSync } from 'child_process';
 import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
+import { drainPendingTeamDispatch } from './notify-hook/team-dispatch.js';
 
 function argValue(name, fallback = '') {
   const idx = process.argv.indexOf(name);
@@ -28,6 +29,7 @@ const logPath = join(logsDir, `notify-fallback-${new Date().toISOString().split(
 const fileState = new Map();
 const seenTurnKeys = new Set();
 let stopping = false;
+const dispatchTickMax = Number(argValue('--dispatch-max-per-tick', '5')) || 5;
 
 function safeString(v) {
   return typeof v === 'string' ? v : '';
@@ -210,6 +212,7 @@ async function tick() {
   if (stopping) return;
   await ensureTrackedFiles();
   await pollFiles();
+  await drainPendingTeamDispatch({ cwd, stateDir, logsDir, maxPerTick: dispatchTickMax }).catch(() => {});
   await writeState();
   setTimeout(tick, pollMs);
 }
@@ -241,6 +244,7 @@ async function main() {
   if (runOnce) {
     await ensureTrackedFiles();
     await pollFiles();
+    await drainPendingTeamDispatch({ cwd, stateDir, logsDir, maxPerTick: dispatchTickMax }).catch(() => {});
     await writeState();
     await eventLog({ type: 'watcher_once_complete', seen_turns: seenTurnKeys.size });
     process.exit(0);

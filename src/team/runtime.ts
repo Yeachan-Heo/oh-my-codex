@@ -36,12 +36,17 @@ import {
   teamReadTask as readTask,
   teamListTasks as listTasks,
   teamReadManifest as readTeamManifestV2,
+  teamNormalizePolicy as normalizeTeamPolicy,
   teamClaimTask as claimTask,
   teamReleaseTaskClaim as releaseTaskClaim,
   teamAppendEvent as appendTeamEvent,
   teamReadTaskApproval as readTaskApproval,
   teamListMailbox as listMailboxMessages,
   teamMarkMessageNotified as markMessageNotified,
+  teamEnqueueDispatchRequest as enqueueDispatchRequest,
+  teamMarkDispatchRequestNotified as markDispatchRequestNotified,
+  teamTransitionDispatchRequest as transitionDispatchRequest,
+  teamReadDispatchRequest as readDispatchRequest,
   teamCleanup as cleanupTeamState,
   teamSaveConfig as saveTeamConfig,
   teamWriteShutdownRequest as writeShutdownRequest,
@@ -57,11 +62,14 @@ import {
   type TeamTask,
   type TeamMonitorSnapshotState,
   type TeamPhaseState,
+  type TeamPolicy,
 } from './team-ops.js';
 import {
   queueInboxInstruction,
   queueDirectMailboxMessage,
   queueBroadcastMailboxMessage,
+  waitForDispatchReceipt,
+  type DispatchOutcome,
 } from './mcp-comm.js';
 import {
   generateWorkerOverlay,
@@ -645,6 +653,8 @@ export async function startTeam(
 
     // 7. Wait for all workers to be ready (interactive mode), then bootstrap them
     const allTasks = await listTasks(sanitized, leaderCwd);
+    const manifest = await readTeamManifestV2(sanitized, leaderCwd);
+    const dispatchPolicy = resolveDispatchPolicy(manifest?.policy, workerLaunchMode);
     for (let i = 1; i <= workerCount; i++) {
       const workerName = `worker-${i}`;
       const paneId = workerPaneIds[i - 1];
@@ -701,17 +711,19 @@ export async function startTeam(
         leaderCwd,
       });
       const trigger = generateTriggerMessage(workerName, sanitized);
-      const notified = await queueInboxInstruction({
+      const dispatchOutcome = await dispatchCriticalInboxInstruction({
         teamName: sanitized,
+        config: config!,
         workerName,
         workerIndex: i,
         paneId,
         inbox,
         triggerMessage: trigger,
         cwd: leaderCwd,
-        notify: (_target, message) => notifyWorker(config!, i, message, paneId),
+        dispatchPolicy,
+        inboxCorrelationKey: `startup:${workerName}`,
       });
-      if (!notified) {
+      if (!dispatchOutcome.ok) {
         throw new Error(`worker_notify_failed:${workerName}`);
       }
     }
@@ -823,6 +835,8 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
   const sanitized = sanitizeTeamName(teamName);
   const config = await readTeamConfig(sanitized, cwd);
   if (!config) return null;
+  const manifest = await readTeamManifestV2(sanitized, cwd);
+  const dispatchPolicy = resolveDispatchPolicy(manifest?.policy, config.worker_launch_mode);
   const previousSnapshot = await readMonitorSnapshot(sanitized, cwd);
 
   const sessionName = config.tmux_session;
@@ -936,6 +950,7 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
     config,
     workers,
     previousSnapshot?.mailboxNotifiedByMessageId ?? {},
+    dispatchPolicy,
     cwd
   );
   const mailboxDeliveryMs = performance.now() - mailboxDeliveryStartMs;
@@ -1012,6 +1027,7 @@ export async function assignTask(
   if (!config) throw new Error(`Team ${sanitized} not found`);
   const workerInfo = config.workers.find(w => w.name === workerName);
   if (!workerInfo) throw new Error(`Worker ${workerName} not found in team`);
+  const dispatchPolicy = resolveDispatchPolicy(manifest?.policy, config.worker_launch_mode);
 
   const claim = await claimTask(sanitized, taskId, workerName, task.version ?? 1, cwd);
   if (!claim.ok) {
@@ -1023,17 +1039,19 @@ export async function assignTask(
 
   try {
     const inbox = generateTaskAssignmentInbox(workerName, sanitized, taskId, task.description);
-    const notified = await queueInboxInstruction({
+    const outcome = await dispatchCriticalInboxInstruction({
       teamName: sanitized,
+      config,
       workerName,
       workerIndex: workerInfo.index,
       paneId: workerInfo.pane_id,
       inbox,
       triggerMessage: generateTriggerMessage(workerName, sanitized),
       cwd,
-      notify: (_target, message) => notifyWorker(config, workerInfo.index, message, workerInfo.pane_id),
+      dispatchPolicy,
+      inboxCorrelationKey: `assign:${taskId}:${workerName}`,
     });
-    if (!notified) {
+    if (!outcome.ok) {
       throw new Error('worker_notify_failed');
     }
   } catch (error) {
@@ -1123,6 +1141,8 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   }
 
   const sessionName = config.tmux_session;
+  const manifest = await readTeamManifestV2(sanitized, cwd);
+  const dispatchPolicy = resolveDispatchPolicy(manifest?.policy, config.worker_launch_mode);
   const shutdownRequestTimes = new Map<string, string>();
 
   // 1. Send shutdown inbox to each worker
@@ -1131,19 +1151,18 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       const requestedAt = new Date().toISOString();
       await writeShutdownRequest(sanitized, w.name, 'leader-fixed', cwd);
       shutdownRequestTimes.set(w.name, requestedAt);
-      const notified = await queueInboxInstruction({
+      await dispatchCriticalInboxInstruction({
         teamName: sanitized,
+        config,
         workerName: w.name,
         workerIndex: w.index,
         paneId: w.pane_id,
         inbox: generateShutdownInbox(sanitized, w.name),
         triggerMessage: generateTriggerMessage(w.name, sanitized),
         cwd,
-        notify: (_target, message) => notifyWorker(config, w.index, message, w.pane_id),
+        dispatchPolicy,
+        inboxCorrelationKey: `shutdown:${w.name}`,
       });
-      if (!notified) {
-        // best effort: worker may already be gone
-      }
     } catch { /* worker might already be dead */ }
   }
 
@@ -1422,28 +1441,302 @@ async function emitMonitorDerivedEvents(
   }
 }
 
-function notifyWorker(config: TeamConfig, workerIndex: number, message: string, workerPaneId?: string): boolean {
+function notifyWorkerOutcome(config: TeamConfig, workerIndex: number, message: string, workerPaneId?: string): DispatchOutcome {
   const worker = config.workers.find((candidate) => candidate.index === workerIndex);
-  if (!worker) return false;
+  if (!worker) return { ok: false, transport: 'none', reason: 'worker_not_found' };
 
   if (config.worker_launch_mode === 'prompt') {
     const handle = getPromptWorkerHandle(config.name, worker.name);
-    if (!handle) return false;
+    if (!handle) return { ok: false, transport: 'prompt_stdin', reason: 'prompt_worker_handle_missing' };
     try {
       sendToWorkerStdin(handle.child.stdin, message);
-      return true;
-    } catch {
-      return false;
+      return { ok: true, transport: 'prompt_stdin', reason: 'prompt_stdin_sent' };
+    } catch (error) {
+      return {
+        ok: false,
+        transport: 'prompt_stdin',
+        reason: `prompt_stdin_failed:${error instanceof Error ? error.message : String(error)}`,
+      };
     }
   }
 
-  if (!config.tmux_session || !isTmuxAvailable()) return false;
+  if (!config.tmux_session || !isTmuxAvailable()) {
+    return { ok: false, transport: 'tmux_send_keys', reason: 'tmux_unavailable' };
+  }
   try {
     sendToWorker(config.tmux_session, workerIndex, message, workerPaneId, worker.worker_cli);
-    return true;
-  } catch {
-    return false;
+    return { ok: true, transport: 'tmux_send_keys', reason: 'tmux_send_keys_sent' };
+  } catch (error) {
+    return {
+      ok: false,
+      transport: 'tmux_send_keys',
+      reason: `tmux_send_keys_failed:${error instanceof Error ? error.message : String(error)}`,
+    };
   }
+}
+
+function resolveDispatchPolicy(
+  manifestPolicy: TeamPolicy | null | undefined,
+  workerLaunchMode: TeamConfig['worker_launch_mode'],
+): TeamPolicy {
+  return normalizeTeamPolicy(manifestPolicy, {
+    display_mode: manifestPolicy?.display_mode === 'split_pane' ? 'split_pane' : 'auto',
+    worker_launch_mode: workerLaunchMode,
+  });
+}
+
+async function dispatchCriticalInboxInstruction(params: {
+  teamName: string;
+  config: TeamConfig;
+  workerName: string;
+  workerIndex: number;
+  paneId?: string;
+  inbox: string;
+  triggerMessage: string;
+  cwd: string;
+  dispatchPolicy: TeamPolicy;
+  inboxCorrelationKey: string;
+}): Promise<DispatchOutcome> {
+  const { teamName, config, workerName, workerIndex, paneId, inbox, triggerMessage, cwd, dispatchPolicy, inboxCorrelationKey } = params;
+
+  if (config.worker_launch_mode === 'prompt') {
+    return await queueInboxInstruction({
+      teamName,
+      workerName,
+      workerIndex,
+      paneId,
+      inbox,
+      triggerMessage,
+      cwd,
+      transportPreference: 'prompt_stdin',
+      fallbackAllowed: false,
+      inboxCorrelationKey,
+      notify: (_target, message) => notifyWorkerOutcome(config, workerIndex, message, paneId),
+    });
+  }
+
+  if (dispatchPolicy.dispatch_mode === 'transport_direct') {
+    return await queueInboxInstruction({
+      teamName,
+      workerName,
+      workerIndex,
+      paneId,
+      inbox,
+      triggerMessage,
+      cwd,
+      transportPreference: 'transport_direct',
+      fallbackAllowed: false,
+      inboxCorrelationKey,
+      notify: (_target, message) => notifyWorkerOutcome(config, workerIndex, message, paneId),
+    });
+  }
+
+  const queued = await queueInboxInstruction({
+    teamName,
+    workerName,
+    workerIndex,
+    paneId,
+    inbox,
+    triggerMessage,
+    cwd,
+    transportPreference: 'hook_preferred_with_fallback',
+    fallbackAllowed: true,
+    inboxCorrelationKey,
+    notify: () => ({ ok: true, transport: 'hook', reason: 'queued_for_hook_dispatch' }),
+  });
+
+  if (!queued.request_id) return { ...queued, ok: false, reason: 'dispatch_request_missing_id' };
+
+  const receipt = await waitForDispatchReceipt(teamName, queued.request_id, cwd, {
+    timeoutMs: dispatchPolicy.dispatch_ack_timeout_ms,
+    pollMs: 50,
+  });
+  if (receipt && (receipt.status === 'notified' || receipt.status === 'delivered')) {
+    return { ok: true, transport: 'hook', reason: `hook_receipt_${receipt.status}`, request_id: queued.request_id };
+  }
+  if (receipt?.status === 'failed') {
+    const fallback = notifyWorkerOutcome(config, workerIndex, triggerMessage, paneId);
+    if (fallback.ok) {
+      await transitionDispatchRequest(
+        teamName,
+        queued.request_id,
+        'failed',
+        'failed',
+        { last_reason: `fallback_confirmed_after_failed_receipt:${fallback.reason}` },
+        cwd,
+      ).catch(() => {});
+      return {
+        ok: true,
+        transport: fallback.transport,
+        reason: `fallback_confirmed_after_failed_receipt:${fallback.reason}`,
+        request_id: queued.request_id,
+      };
+    }
+    await transitionDispatchRequest(
+      teamName,
+      queued.request_id,
+      receipt.status,
+      'failed',
+      { last_reason: `fallback_attempted_but_unconfirmed:${fallback.reason}` },
+      cwd,
+    ).catch(() => {});
+    return {
+      ok: false,
+      transport: fallback.transport,
+      reason: `fallback_attempted_but_unconfirmed:${fallback.reason}`,
+      request_id: queued.request_id,
+    };
+  }
+
+  const fallback = notifyWorkerOutcome(config, workerIndex, triggerMessage, paneId);
+  if (fallback.ok) {
+    const marked = await markDispatchRequestNotified(
+      teamName,
+      queued.request_id,
+      { last_reason: `fallback_confirmed:${fallback.reason}` },
+      cwd,
+    );
+    if (!marked) {
+      await transitionDispatchRequest(
+        teamName,
+        queued.request_id,
+        'failed',
+        'failed',
+        { last_reason: `fallback_confirmed_after_failed_receipt:${fallback.reason}` },
+        cwd,
+      ).catch(() => {});
+    }
+    return {
+      ok: true,
+      transport: fallback.transport,
+      reason: `hook_timeout_fallback_confirmed:${fallback.reason}`,
+      request_id: queued.request_id,
+    };
+  }
+
+  const current = await readDispatchRequest(teamName, queued.request_id, cwd);
+  if (current && current.status !== 'failed') {
+    await transitionDispatchRequest(
+      teamName,
+      queued.request_id,
+      current.status,
+      'failed',
+      { last_reason: `fallback_attempted_but_unconfirmed:${fallback.reason}` },
+      cwd,
+    ).catch(() => {});
+  }
+  return {
+    ok: false,
+    transport: fallback.transport,
+    reason: `fallback_attempted_but_unconfirmed:${fallback.reason}`,
+    request_id: queued.request_id,
+  };
+}
+
+async function finalizeHookPreferredMailboxDispatch(params: {
+  teamName: string;
+  requestId: string;
+  workerName: string;
+  workerIndex: number;
+  paneId?: string;
+  messageId: string;
+  triggerMessage: string;
+  config: TeamConfig;
+  dispatchPolicy: TeamPolicy;
+  cwd: string;
+}): Promise<DispatchOutcome> {
+  const { teamName, requestId, workerName, workerIndex, paneId, messageId, triggerMessage, config, dispatchPolicy, cwd } = params;
+  const receipt = await waitForDispatchReceipt(teamName, requestId, cwd, {
+    timeoutMs: dispatchPolicy.dispatch_ack_timeout_ms,
+    pollMs: 50,
+  });
+  if (receipt && (receipt.status === 'notified' || receipt.status === 'delivered')) {
+    await markMessageNotified(teamName, workerName, messageId, cwd).catch(() => false);
+    return { ok: true, transport: 'hook', reason: `hook_receipt_${receipt.status}`, request_id: requestId, message_id: messageId };
+  }
+
+  const fallback = notifyWorkerOutcome(config, workerIndex, triggerMessage, paneId);
+  if (receipt?.status === 'failed') {
+    if (fallback.ok) {
+      await markMessageNotified(teamName, workerName, messageId, cwd).catch(() => false);
+      await transitionDispatchRequest(
+        teamName,
+        requestId,
+        'failed',
+        'failed',
+        { message_id: messageId, last_reason: `fallback_confirmed_after_failed_receipt:${fallback.reason}` },
+        cwd,
+      ).catch(() => {});
+      return {
+        ok: true,
+        transport: fallback.transport,
+        reason: `fallback_confirmed_after_failed_receipt:${fallback.reason}`,
+        request_id: requestId,
+        message_id: messageId,
+      };
+    }
+    await transitionDispatchRequest(
+      teamName,
+      requestId,
+      'failed',
+      'failed',
+      { message_id: messageId, last_reason: `fallback_attempted_but_unconfirmed:${fallback.reason}` },
+      cwd,
+    ).catch(() => {});
+    return {
+      ok: false,
+      transport: fallback.transport,
+      reason: `fallback_attempted_but_unconfirmed:${fallback.reason}`,
+      request_id: requestId,
+      message_id: messageId,
+    };
+  }
+
+  if (fallback.ok) {
+    await markMessageNotified(teamName, workerName, messageId, cwd).catch(() => false);
+    const marked = await markDispatchRequestNotified(
+      teamName,
+      requestId,
+      { message_id: messageId, last_reason: `fallback_confirmed:${fallback.reason}` },
+      cwd,
+    );
+    if (!marked) {
+      await transitionDispatchRequest(
+        teamName,
+        requestId,
+        'failed',
+        'failed',
+        { message_id: messageId, last_reason: `fallback_confirmed_after_failed_receipt:${fallback.reason}` },
+        cwd,
+      ).catch(() => {});
+    }
+    return {
+      ok: true,
+      transport: fallback.transport,
+      reason: `hook_timeout_fallback_confirmed:${fallback.reason}`,
+      request_id: requestId,
+      message_id: messageId,
+    };
+  }
+
+  const current = await readDispatchRequest(teamName, requestId, cwd);
+  if (current) {
+    await transitionDispatchRequest(
+      teamName,
+      requestId,
+      current.status,
+      'failed',
+      { message_id: messageId, last_reason: `fallback_attempted_but_unconfirmed:${fallback.reason}` },
+      cwd,
+    ).catch(() => {});
+  }
+  return {
+    ok: false,
+    transport: fallback.transport,
+    reason: `fallback_attempted_but_unconfirmed:${fallback.reason}`,
+    request_id: requestId,
+    message_id: messageId,
+  };
 }
 
 function notifyLeader(config: TeamConfig, message: string): boolean {
@@ -1456,6 +1749,7 @@ async function deliverPendingMailboxMessages(
   config: TeamConfig,
   workers: TeamSnapshot['workers'],
   previousNotifications: Record<string, string>,
+  dispatchPolicy: TeamPolicy,
   cwd: string,
 ): Promise<Record<string, string>> {
   const nextNotifications: Record<string, string> = {};
@@ -1488,18 +1782,56 @@ async function deliverPendingMailboxMessages(
     if (unnotified.length === 0) continue;
     if (!worker.alive) continue;
 
-    const notifiedNow = notifyWorker(
-      config,
-      workerInfo.index,
-      generateMailboxTriggerMessage(worker.name, teamName, unnotified.length),
-      workerInfo.pane_id,
-    );
-
-    if (!notifiedNow) continue;
-
     for (const msg of unnotified) {
-      const notified = await markMessageNotified(teamName, worker.name, msg.message_id, cwd);
-      if (notified) {
+      const triggerMessage = generateMailboxTriggerMessage(worker.name, teamName, 1);
+      const transportPreference = config.worker_launch_mode === 'prompt'
+        ? 'prompt_stdin'
+        : (dispatchPolicy.dispatch_mode === 'transport_direct' ? 'transport_direct' : 'hook_preferred_with_fallback');
+      const fallbackAllowed = transportPreference === 'hook_preferred_with_fallback';
+      const queued = await enqueueDispatchRequest(
+        teamName,
+        {
+          kind: 'mailbox',
+          to_worker: worker.name,
+          worker_index: workerInfo.index,
+          pane_id: workerInfo.pane_id,
+          trigger_message: triggerMessage,
+          message_id: msg.message_id,
+          transport_preference: transportPreference,
+          fallback_allowed: fallbackAllowed,
+        },
+        cwd,
+      );
+
+      let outcome: DispatchOutcome;
+      if (transportPreference === 'hook_preferred_with_fallback') {
+        outcome = await finalizeHookPreferredMailboxDispatch({
+          teamName,
+          requestId: queued.request.request_id,
+          workerName: worker.name,
+          workerIndex: workerInfo.index,
+          paneId: workerInfo.pane_id,
+          messageId: msg.message_id,
+          triggerMessage,
+          config,
+          dispatchPolicy,
+          cwd,
+        });
+      } else {
+        const direct = notifyWorkerOutcome(config, workerInfo.index, triggerMessage, workerInfo.pane_id);
+        outcome = { ...direct, request_id: queued.request.request_id, message_id: msg.message_id };
+        if (outcome.ok) {
+          await markMessageNotified(teamName, worker.name, msg.message_id, cwd).catch(() => false);
+          await markDispatchRequestNotified(
+            teamName,
+            queued.request.request_id,
+            { message_id: msg.message_id, last_reason: outcome.reason },
+            cwd,
+          ).catch(() => null);
+        }
+      }
+
+      if (outcome.ok) {
         nextNotifications[msg.message_id] = new Date().toISOString();
       }
     }
@@ -1522,33 +1854,67 @@ export async function sendWorkerMessage(
   const sanitized = sanitizeTeamName(teamName);
   const config = await readTeamConfig(sanitized, cwd);
   if (!config) throw new Error(`Team ${sanitized} not found`);
+  const manifest = await readTeamManifestV2(sanitized, cwd);
+  const dispatchPolicy = resolveDispatchPolicy(manifest?.policy, config.worker_launch_mode);
   if (toWorker === 'leader-fixed') {
-    await queueDirectMailboxMessage({
+    const outcome = await queueDirectMailboxMessage({
       teamName: sanitized,
       fromWorker,
       toWorker,
       body,
       triggerMessage: `Team ${sanitized}: new worker message for leader from ${fromWorker}`,
       cwd,
-      notify: (_target, message) => notifyLeader(config, message),
+      transportPreference: 'transport_direct',
+      fallbackAllowed: false,
+      notify: (_target, message) => ({ ok: notifyLeader(config, message), transport: 'tmux_send_keys', reason: 'leader_notified' }),
     });
+    if (!outcome.ok) throw new Error(`mailbox_notify_failed:${outcome.reason}`);
     return;
   }
 
   const recipient = config.workers.find((w) => w.name === toWorker);
   if (!recipient) throw new Error(`Worker ${toWorker} not found in team`);
 
-  await queueDirectMailboxMessage({
+  const triggerMessage = generateMailboxTriggerMessage(toWorker, sanitized, 1);
+  const transportPreference = config.worker_launch_mode === 'prompt'
+    ? 'prompt_stdin'
+    : (dispatchPolicy.dispatch_mode === 'transport_direct' ? 'transport_direct' : 'hook_preferred_with_fallback');
+  const outcome = await queueDirectMailboxMessage({
     teamName: sanitized,
     fromWorker,
     toWorker,
     toWorkerIndex: recipient.index,
     toPaneId: recipient.pane_id,
     body,
-    triggerMessage: generateMailboxTriggerMessage(toWorker, sanitized, 1),
+    triggerMessage,
     cwd,
-    notify: (_target, message) => notifyWorker(config, recipient.index, message, recipient.pane_id),
+    transportPreference,
+    fallbackAllowed: transportPreference === 'hook_preferred_with_fallback',
+    notify: (_target, message) => (
+      transportPreference === 'hook_preferred_with_fallback'
+        ? { ok: true, transport: 'hook', reason: 'queued_for_hook_dispatch' }
+        : notifyWorkerOutcome(config, recipient.index, message, recipient.pane_id)
+    ),
   });
+  let finalOutcome = outcome;
+  if (transportPreference === 'hook_preferred_with_fallback') {
+    if (!outcome.request_id || !outcome.message_id) {
+      throw new Error('mailbox_notify_failed:dispatch_request_missing_id');
+    }
+    finalOutcome = await finalizeHookPreferredMailboxDispatch({
+      teamName: sanitized,
+      requestId: outcome.request_id,
+      workerName: recipient.name,
+      workerIndex: recipient.index,
+      paneId: recipient.pane_id,
+      messageId: outcome.message_id,
+      triggerMessage,
+      config,
+      dispatchPolicy,
+      cwd,
+    });
+  }
+  if (!finalOutcome.ok) throw new Error(`mailbox_notify_failed:${finalOutcome.reason}`);
 }
 
 export async function broadcastWorkerMessage(
@@ -1560,17 +1926,61 @@ export async function broadcastWorkerMessage(
   const sanitized = sanitizeTeamName(teamName);
   const config = await readTeamConfig(sanitized, cwd);
   if (!config) throw new Error(`Team ${sanitized} not found`);
+  const manifest = await readTeamManifestV2(sanitized, cwd);
+  const dispatchPolicy = resolveDispatchPolicy(manifest?.policy, config.worker_launch_mode);
+  const transportPreference = config.worker_launch_mode === 'prompt'
+    ? 'prompt_stdin'
+    : (dispatchPolicy.dispatch_mode === 'transport_direct' ? 'transport_direct' : 'hook_preferred_with_fallback');
 
-  await queueBroadcastMailboxMessage({
+  const outcomes = await queueBroadcastMailboxMessage({
     teamName: sanitized,
     fromWorker,
     recipients: config.workers.map((w) => ({ workerName: w.name, workerIndex: w.index, paneId: w.pane_id })),
     body,
     cwd,
     triggerFor: (workerName) => generateMailboxTriggerMessage(workerName, sanitized, 1),
+    transportPreference,
+    fallbackAllowed: transportPreference === 'hook_preferred_with_fallback',
     notify: (target, message) =>
-      typeof target.workerIndex === 'number'
-        ? notifyWorker(config, target.workerIndex, message, target.paneId)
-        : false,
+      transportPreference === 'hook_preferred_with_fallback'
+        ? { ok: true, transport: 'hook', reason: 'queued_for_hook_dispatch' }
+        : (typeof target.workerIndex === 'number'
+        ? notifyWorkerOutcome(config, target.workerIndex, message, target.paneId)
+        : { ok: false, transport: 'none', reason: 'missing_worker_index' }),
   });
+  const finalizedOutcomes: DispatchOutcome[] = [];
+  for (const outcome of outcomes) {
+    if (transportPreference !== 'hook_preferred_with_fallback') {
+      finalizedOutcomes.push(outcome);
+      continue;
+    }
+    if (!outcome.request_id || !outcome.message_id) {
+      finalizedOutcomes.push({ ...outcome, ok: false, reason: 'dispatch_request_missing_id' });
+      continue;
+    }
+    const target = outcome.to_worker
+      ? (config.workers.find((w) => w.name === outcome.to_worker) ?? null)
+      : null;
+    if (!target) {
+      finalizedOutcomes.push({ ...outcome, ok: false, reason: 'missing_worker_index' });
+      continue;
+    }
+    finalizedOutcomes.push(await finalizeHookPreferredMailboxDispatch({
+      teamName: sanitized,
+      requestId: outcome.request_id,
+      workerName: target.name,
+      workerIndex: target.index,
+      paneId: target.pane_id,
+      messageId: outcome.message_id,
+      triggerMessage: generateMailboxTriggerMessage(target.name, sanitized, 1),
+      config,
+      dispatchPolicy,
+      cwd,
+    }));
+  }
+  const results = transportPreference === 'hook_preferred_with_fallback' ? finalizedOutcomes : outcomes;
+  if (results.some((result) => !result.ok)) {
+    const firstFailure = results.find((result) => !result.ok);
+    throw new Error(`mailbox_notify_failed:${firstFailure?.reason ?? 'unknown'}`);
+  }
 }

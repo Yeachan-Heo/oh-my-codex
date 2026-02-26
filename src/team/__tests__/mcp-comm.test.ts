@@ -6,6 +6,7 @@ import { tmpdir } from 'os';
 import {
   initTeamState,
   listMailboxMessages,
+  listDispatchRequests,
 } from '../state.js';
 import {
   queueInboxInstruction,
@@ -20,7 +21,7 @@ describe('mcp-comm', () => {
       await initTeamState('alpha', 't', 'executor', 1, cwd);
 
       const events: string[] = [];
-      const ok = await queueInboxInstruction({
+      const outcome = await queueInboxInstruction({
         teamName: 'alpha',
         workerName: 'worker-1',
         workerIndex: 1,
@@ -32,10 +33,12 @@ describe('mcp-comm', () => {
           const inboxPath = join(cwd, '.omx', 'state', 'team', 'alpha', 'workers', 'worker-1', 'inbox.md');
           const content = await readFile(inboxPath, 'utf-8');
           assert.match(content, /# hi/);
-          return true;
+          return { ok: true, transport: 'tmux_send_keys', reason: 'sent' };
         },
       });
-      assert.equal(ok, true);
+      assert.equal(outcome.ok, true);
+      assert.equal(outcome.transport, 'tmux_send_keys');
+      assert.ok(outcome.request_id);
       assert.deepEqual(events, ['notify']);
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -47,7 +50,7 @@ describe('mcp-comm', () => {
     try {
       await initTeamState('alpha', 't', 'executor', 2, cwd);
 
-      await queueDirectMailboxMessage({
+      const outcome = await queueDirectMailboxMessage({
         teamName: 'alpha',
         fromWorker: 'worker-1',
         toWorker: 'worker-2',
@@ -55,13 +58,19 @@ describe('mcp-comm', () => {
         body: 'hello',
         triggerMessage: 'check mailbox',
         cwd,
-        notify: async () => true,
+        notify: async () => ({ ok: true, transport: 'tmux_send_keys', reason: 'sent' }),
       });
+      assert.equal(outcome.ok, true);
+      assert.ok(outcome.request_id);
+      assert.ok(outcome.message_id);
 
       const mailbox = await listMailboxMessages('alpha', 'worker-2', cwd);
       assert.equal(mailbox.length, 1);
       assert.equal(mailbox[0]?.body, 'hello');
       assert.ok(mailbox[0]?.notified_at);
+      const requests = await listDispatchRequests('alpha', cwd, { kind: 'mailbox' });
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0]?.message_id, mailbox[0]?.message_id);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -87,7 +96,7 @@ describe('mcp-comm', () => {
         triggerFor: (workerName) => `check mailbox ${workerName}`,
         notify: async (target) => {
           notified.push(target.workerName);
-          return true;
+          return { ok: true, transport: 'tmux_send_keys', reason: 'sent' };
         },
       });
 
@@ -97,6 +106,46 @@ describe('mcp-comm', () => {
       assert.equal(m2.length, 1);
       assert.ok(m2[0]?.notified_at);
       assert.deepEqual(notified.sort(), ['worker-2']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('prevents duplicate pending mailbox dispatch requests for same message id', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-mcp-comm-'));
+    try {
+      await initTeamState('alpha', 't', 'executor', 2, cwd);
+
+      const first = await queueDirectMailboxMessage({
+        teamName: 'alpha',
+        fromWorker: 'worker-1',
+        toWorker: 'worker-2',
+        toWorkerIndex: 2,
+        body: 'hello',
+        triggerMessage: 'check mailbox',
+        cwd,
+        notify: async () => ({ ok: false, transport: 'hook', reason: 'queued_pending' }),
+      });
+
+      assert.equal(first.ok, false);
+      assert.ok(first.message_id);
+      const requests = await listDispatchRequests('alpha', cwd, { kind: 'mailbox' });
+      assert.equal(requests.length, 1);
+
+      const second = await queueDirectMailboxMessage({
+        teamName: 'alpha',
+        fromWorker: 'worker-1',
+        toWorker: 'worker-2',
+        toWorkerIndex: 2,
+        body: 'hello-2',
+        triggerMessage: 'check mailbox',
+        cwd,
+        notify: async () => ({ ok: false, transport: 'hook', reason: 'queued_pending' }),
+      });
+      assert.equal(second.ok, false);
+      const allRequests = await listDispatchRequests('alpha', cwd, { kind: 'mailbox' });
+      // second message has distinct message_id -> second request exists
+      assert.equal(allRequests.length, 2);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

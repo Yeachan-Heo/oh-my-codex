@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { initTeamState, enqueueDispatchRequest, readDispatchRequest } from '../../team/state.js';
 
 async function appendLine(path: string, line: object): Promise<void> {
   const prev = await readFile(path, 'utf-8');
@@ -172,6 +173,57 @@ describe('notify-fallback watcher', () => {
       await rm(wd, { recursive: true, force: true });
       await rm(tempHome, { recursive: true, force: true });
       await rm(rolloutPath, { force: true });
+    }
+  });
+
+  it('runs bounded non-turn team dispatch drain tick in leader context', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-dispatch-'));
+    try {
+      await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
+      const queued = await enqueueDispatchRequest('dispatch-team', {
+        kind: 'inbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        trigger_message: 'dispatch ping',
+      }, wd);
+      const watcherScript = new URL('../../../scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../scripts/notify-hook.js', import.meta.url).pathname;
+      const result = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50', '--dispatch-max-per-tick', '1'],
+        { encoding: 'utf-8' },
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const request = await readDispatchRequest('dispatch-team', queued.request.request_id, wd);
+      assert.ok(request);
+      assert.notEqual(request?.status, 'pending');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('skips dispatch drain in worker context (leader-only guard)', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-dispatch-worker-'));
+    try {
+      await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
+      const queued = await enqueueDispatchRequest('dispatch-team', {
+        kind: 'inbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        trigger_message: 'dispatch ping',
+      }, wd);
+      const watcherScript = new URL('../../../scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../scripts/notify-hook.js', import.meta.url).pathname;
+      const result = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50', '--dispatch-max-per-tick', '1'],
+        { encoding: 'utf-8', env: { ...process.env, OMX_TEAM_WORKER: 'dispatch-team/worker-1' } },
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const request = await readDispatchRequest('dispatch-team', queued.request.request_id, wd);
+      assert.equal(request?.status, 'pending');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
     }
   });
 });

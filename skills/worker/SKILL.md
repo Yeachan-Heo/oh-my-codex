@@ -62,6 +62,10 @@ Check your mailbox for messages:
 
 When notified, read messages and follow any instructions. Use short ACK replies when appropriate.
 
+Note: leader dispatch is state-first. The durable queue lives at:
+`<team_state_root>/team/<teamName>/dispatch/requests.json`
+Hooks/watchers may nudge you after mailbox/inbox state is already written.
+
 Use MCP tools:
 - `team_mailbox_list` to read
 - `team_mailbox_mark_delivered` to acknowledge delivery

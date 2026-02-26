@@ -28,15 +28,22 @@ import {
   teamReadConfig as readTeamConfig,
   teamSaveConfig as saveTeamConfig,
   teamWriteWorkerIdentity as writeWorkerIdentity,
+  teamReadManifest as readTeamManifestV2,
+  teamNormalizePolicy as normalizeTeamPolicy,
   teamReadWorkerStatus as readWorkerStatus,
   teamWriteWorkerStatus as writeWorkerStatus,
   teamWithScalingLock as withScalingLock,
   teamAppendEvent as appendTeamEvent,
+  teamMarkDispatchRequestNotified as markDispatchRequestNotified,
+  teamReadDispatchRequest as readDispatchRequest,
+  teamTransitionDispatchRequest as transitionDispatchRequest,
   type WorkerInfo,
   type WorkerStatus,
 } from './team-ops.js';
 import {
   queueInboxInstruction,
+  waitForDispatchReceipt,
+  type DispatchOutcome,
 } from './mcp-comm.js';
 import {
   generateInitialInbox,
@@ -91,6 +98,25 @@ export interface ScaleError {
   error: string;
 }
 
+function notifyWorkerPaneOutcome(
+  sessionName: string,
+  workerIndex: number,
+  message: string,
+  paneId?: string,
+  workerCli?: 'codex' | 'claude',
+): DispatchOutcome {
+  try {
+    sendToWorker(sessionName, workerIndex, message, paneId, workerCli);
+    return { ok: true, transport: 'tmux_send_keys', reason: 'tmux_send_keys_sent' };
+  } catch (error) {
+    return {
+      ok: false,
+      transport: 'tmux_send_keys',
+      reason: `tmux_send_keys_failed:${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 // ── Scale Up ──────────────────────────────────────────────────────────────────
 
 /**
@@ -137,6 +163,11 @@ export async function scaleUp(
 
     const teamStateRoot = config.team_state_root ?? resolveCanonicalTeamStateRoot(leaderCwd);
     const sessionName = config.tmux_session;
+    const manifest = await readTeamManifestV2(sanitized, leaderCwd);
+    const dispatchPolicy = normalizeTeamPolicy(manifest?.policy, {
+      display_mode: manifest?.policy?.display_mode === 'split_pane' ? 'split_pane' : 'auto',
+      worker_launch_mode: config.worker_launch_mode,
+    });
 
     // Resolve the monotonic worker index counter
     let nextIndex = config.next_worker_index ?? (currentCount + 1);
@@ -232,7 +263,7 @@ export async function scaleUp(
       });
 
       const trigger = generateTriggerMessage(workerName, sanitized);
-      await queueInboxInstruction({
+      const queued = await queueInboxInstruction({
         teamName: sanitized,
         workerName,
         workerIndex,
@@ -240,8 +271,105 @@ export async function scaleUp(
         inbox,
         triggerMessage: trigger,
         cwd: leaderCwd,
-        notify: (_target, message) => notifyWorkerPane(sessionName, workerIndex, message, paneId, workerCliPlan[i]),
+        transportPreference: dispatchPolicy.dispatch_mode,
+        fallbackAllowed: true,
+        inboxCorrelationKey: `scale_up:${workerName}`,
+        notify: (_target, message) => {
+          if (dispatchPolicy.dispatch_mode === 'hook_preferred_with_fallback') {
+            return { ok: true, transport: 'hook', reason: 'queued_for_hook_dispatch' };
+          }
+          return notifyWorkerPaneOutcome(sessionName, workerIndex, message, paneId, workerCliPlan[i]);
+        },
       });
+      let outcome = queued;
+      if (dispatchPolicy.dispatch_mode === 'hook_preferred_with_fallback' && queued.request_id) {
+        const receipt = await waitForDispatchReceipt(sanitized, queued.request_id, leaderCwd, {
+          timeoutMs: dispatchPolicy.dispatch_ack_timeout_ms,
+          pollMs: 50,
+        });
+        if (receipt && (receipt.status === 'notified' || receipt.status === 'delivered')) {
+          outcome = { ok: true, transport: 'hook', reason: `hook_receipt_${receipt.status}`, request_id: queued.request_id };
+        } else {
+          const fallback = notifyWorkerPaneOutcome(sessionName, workerIndex, trigger, paneId, workerCliPlan[i]);
+          if (receipt?.status === 'failed') {
+            if (fallback.ok) {
+              await transitionDispatchRequest(
+                sanitized,
+                queued.request_id,
+                'failed',
+                'failed',
+                { last_reason: `fallback_confirmed_after_failed_receipt:${fallback.reason}` },
+                leaderCwd,
+              ).catch(() => {});
+              outcome = {
+                ok: true,
+                transport: fallback.transport,
+                reason: `fallback_confirmed_after_failed_receipt:${fallback.reason}`,
+                request_id: queued.request_id,
+              };
+            } else {
+              await transitionDispatchRequest(
+                sanitized,
+                queued.request_id,
+                'failed',
+                'failed',
+                { last_reason: `fallback_attempted_but_unconfirmed:${fallback.reason}` },
+                leaderCwd,
+              ).catch(() => {});
+              outcome = {
+                ok: false,
+                transport: fallback.transport,
+                reason: `fallback_attempted_but_unconfirmed:${fallback.reason}`,
+                request_id: queued.request_id,
+              };
+            }
+          } else if (fallback.ok) {
+            const marked = await markDispatchRequestNotified(
+              sanitized,
+              queued.request_id,
+              { last_reason: `fallback_confirmed:${fallback.reason}` },
+              leaderCwd,
+            );
+            if (!marked) {
+              await transitionDispatchRequest(
+                sanitized,
+                queued.request_id,
+                'failed',
+                'failed',
+                { last_reason: `fallback_confirmed_after_failed_receipt:${fallback.reason}` },
+                leaderCwd,
+              ).catch(() => {});
+            }
+            outcome = {
+              ok: true,
+              transport: fallback.transport,
+              reason: `hook_timeout_fallback_confirmed:${fallback.reason}`,
+              request_id: queued.request_id,
+            };
+          } else {
+            const current = await readDispatchRequest(sanitized, queued.request_id, leaderCwd);
+            if (current) {
+              await transitionDispatchRequest(
+                sanitized,
+                queued.request_id,
+                current.status,
+                'failed',
+                { last_reason: `fallback_attempted_but_unconfirmed:${fallback.reason}` },
+                leaderCwd,
+              ).catch(() => {});
+            }
+            outcome = {
+              ok: false,
+              transport: fallback.transport,
+              reason: `fallback_attempted_but_unconfirmed:${fallback.reason}`,
+              request_id: queued.request_id,
+            };
+          }
+        }
+      }
+      if (!outcome.ok) {
+        return { ok: false, error: `scale_up_dispatch_failed:${workerName}:${outcome.reason}` };
+      }
 
       addedWorkers.push(workerInfo);
       config.workers.push(workerInfo);
@@ -436,19 +564,4 @@ function resolveWorkerLaunchArgsForScaling(env: NodeJS.ProcessEnv, agentType: st
     inheritedArgs,
     fallbackModel,
   });
-}
-
-function notifyWorkerPane(
-  sessionName: string,
-  workerIndex: number,
-  message: string,
-  paneId?: string,
-  workerCli?: 'codex' | 'claude',
-): boolean {
-  try {
-    sendToWorker(sessionName, workerIndex, message, paneId, workerCli);
-    return true;
-  } catch {
-    return false;
-  }
 }

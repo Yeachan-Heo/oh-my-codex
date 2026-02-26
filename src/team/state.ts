@@ -106,11 +106,52 @@ export interface TeamLeader {
 export interface TeamPolicy {
   display_mode: 'split_pane' | 'auto';
   worker_launch_mode: 'interactive' | 'prompt';
+  dispatch_mode: 'hook_preferred_with_fallback' | 'transport_direct';
+  dispatch_ack_timeout_ms: number;
   delegation_only: boolean;
   plan_approval_required: boolean;
   nested_teams_allowed: boolean;
   one_team_per_leader_session: boolean;
   cleanup_requires_all_workers_inactive: boolean;
+}
+
+export type TeamDispatchRequestKind = 'inbox' | 'mailbox' | 'nudge';
+export type TeamDispatchRequestStatus = 'pending' | 'notified' | 'delivered' | 'failed';
+export type TeamDispatchTransportPreference = 'hook_preferred_with_fallback' | 'transport_direct' | 'prompt_stdin';
+
+export interface TeamDispatchRequest {
+  request_id: string;
+  kind: TeamDispatchRequestKind;
+  team_name: string;
+  to_worker: string;
+  worker_index?: number;
+  pane_id?: string;
+  trigger_message: string;
+  message_id?: string;
+  inbox_correlation_key?: string;
+  transport_preference: TeamDispatchTransportPreference;
+  fallback_allowed: boolean;
+  status: TeamDispatchRequestStatus;
+  attempt_count: number;
+  created_at: string;
+  updated_at: string;
+  notified_at?: string;
+  delivered_at?: string;
+  failed_at?: string;
+  last_reason?: string;
+}
+
+export interface TeamDispatchRequestInput {
+  kind: TeamDispatchRequestKind;
+  to_worker: string;
+  worker_index?: number;
+  pane_id?: string;
+  trigger_message: string;
+  message_id?: string;
+  inbox_correlation_key?: string;
+  transport_preference?: TeamDispatchTransportPreference;
+  fallback_allowed?: boolean;
+  last_reason?: string;
 }
 
 export interface PermissionsSnapshot {
@@ -241,6 +282,9 @@ export const DEFAULT_MAX_WORKERS = 20;
 export const ABSOLUTE_MAX_WORKERS = 20;
 const DEFAULT_CLAIM_LEASE_MS = 15 * 60 * 1000;
 const LOCK_STALE_MS = 5 * 60 * 1000;
+const DEFAULT_DISPATCH_ACK_TIMEOUT_MS = 800;
+const MIN_DISPATCH_ACK_TIMEOUT_MS = 100;
+const MAX_DISPATCH_ACK_TIMEOUT_MS = 10_000;
 
 type TeamTaskStatus = TeamTask['status'];
 
@@ -295,11 +339,44 @@ function defaultPolicy(
   return {
     display_mode: displayMode,
     worker_launch_mode: workerLaunchMode,
+    dispatch_mode: 'hook_preferred_with_fallback',
+    dispatch_ack_timeout_ms: DEFAULT_DISPATCH_ACK_TIMEOUT_MS,
     delegation_only: false,
     plan_approval_required: false,
     nested_teams_allowed: false,
     one_team_per_leader_session: true,
     cleanup_requires_all_workers_inactive: true,
+  };
+}
+
+function clampDispatchAckTimeoutMs(raw: unknown): number {
+  const asNum = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(asNum)) return DEFAULT_DISPATCH_ACK_TIMEOUT_MS;
+  const floored = Math.floor(asNum);
+  return Math.max(MIN_DISPATCH_ACK_TIMEOUT_MS, Math.min(MAX_DISPATCH_ACK_TIMEOUT_MS, floored));
+}
+
+export function normalizeTeamPolicy(
+  policy: Partial<TeamPolicy> | null | undefined,
+  defaults: Pick<TeamPolicy, 'display_mode' | 'worker_launch_mode'> = { display_mode: 'auto', worker_launch_mode: 'interactive' },
+): TeamPolicy {
+  const base = defaultPolicy(defaults.display_mode, defaults.worker_launch_mode);
+  const dispatchMode = policy?.dispatch_mode === 'transport_direct'
+    ? 'transport_direct'
+    : 'hook_preferred_with_fallback';
+
+  return {
+    ...base,
+    ...(policy ?? {}),
+    worker_launch_mode: policy?.worker_launch_mode === 'prompt' ? 'prompt' : base.worker_launch_mode,
+    display_mode: policy?.display_mode === 'split_pane' ? 'split_pane' : base.display_mode,
+    dispatch_mode: dispatchMode,
+    dispatch_ack_timeout_ms: clampDispatchAckTimeoutMs(policy?.dispatch_ack_timeout_ms),
+    delegation_only: policy?.delegation_only === true,
+    plan_approval_required: policy?.plan_approval_required === true,
+    nested_teams_allowed: policy?.nested_teams_allowed === true,
+    one_team_per_leader_session: policy?.one_team_per_leader_session !== false,
+    cleanup_requires_all_workers_inactive: policy?.cleanup_requires_all_workers_inactive !== false,
   };
 }
 
@@ -438,6 +515,14 @@ function mailboxLockDir(teamName: string, workerName: string, cwd: string): stri
   return p;
 }
 
+function dispatchRequestsPath(teamName: string, cwd: string): string {
+  return join(teamDir(teamName, cwd), 'dispatch', 'requests.json');
+}
+
+function dispatchLockDir(teamName: string, cwd: string): string {
+  return join(teamDir(teamName, cwd), 'dispatch', '.lock');
+}
+
 function approvalPath(teamName: string, taskId: string, cwd: string): string {
   validateTaskId(taskId);
   const p = join(teamDir(teamName, cwd), 'approvals', `task-${taskId}.json`);
@@ -557,6 +642,7 @@ export async function initTeamState(
   const tasksRoot = join(root, 'tasks');
   const claimsRoot = join(root, 'claims');
   const mailboxRoot = join(root, 'mailbox');
+  const dispatchRoot = join(root, 'dispatch');
   const eventsRoot = join(root, 'events');
   const approvalsRoot = join(root, 'approvals');
 
@@ -564,8 +650,10 @@ export async function initTeamState(
   await mkdir(tasksRoot, { recursive: true });
   await mkdir(claimsRoot, { recursive: true });
   await mkdir(mailboxRoot, { recursive: true });
+  await mkdir(dispatchRoot, { recursive: true });
   await mkdir(eventsRoot, { recursive: true });
   await mkdir(approvalsRoot, { recursive: true });
+  await writeAtomic(join(dispatchRoot, 'requests.json'), JSON.stringify([], null, 2));
 
   const workers: WorkerInfo[] = [];
   for (let i = 1; i <= workerCount; i++) {
@@ -674,7 +762,11 @@ async function writeConfig(cfg: TeamConfig, cwd: string): Promise<void> {
 }
 
 function teamConfigFromManifest(manifest: TeamManifestV2): TeamConfig {
-  const workerLaunchMode = manifest.policy?.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive';
+  const normalizedPolicy = normalizeTeamPolicy(manifest.policy, {
+    display_mode: manifest.policy?.display_mode === 'split_pane' ? 'split_pane' : 'auto',
+    worker_launch_mode: manifest.policy?.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive',
+  });
+  const workerLaunchMode = normalizedPolicy.worker_launch_mode;
   return {
     name: manifest.name,
     task: manifest.task,
@@ -711,12 +803,21 @@ function normalizeTeamConfig(config: TeamConfig): TeamConfig {
 
 function teamManifestFromConfig(config: TeamConfig): TeamManifestV2 {
   const normalized = normalizeTeamConfig(config);
+  const policy = normalizeTeamPolicy(
+    {
+      worker_launch_mode: normalized.worker_launch_mode,
+    },
+    {
+      display_mode: 'auto',
+      worker_launch_mode: normalized.worker_launch_mode,
+    },
+  );
   return {
     schema_version: 2,
     name: normalized.name,
     task: normalized.task,
     leader: defaultLeader(),
-    policy: defaultPolicy('auto', normalized.worker_launch_mode),
+    policy,
     permissions_snapshot: defaultPermissionsSnapshot(),
     tmux_session: normalized.tmux_session,
     worker_count: normalized.worker_count,
@@ -735,8 +836,22 @@ function teamManifestFromConfig(config: TeamConfig): TeamManifestV2 {
 }
 
 export async function writeTeamManifestV2(manifest: TeamManifestV2, cwd: string): Promise<void> {
+  const normalizedPolicy = normalizeTeamPolicy(manifest.policy, {
+    display_mode: manifest.policy?.display_mode === 'split_pane' ? 'split_pane' : 'auto',
+    worker_launch_mode: manifest.policy?.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive',
+  });
   const p = teamManifestV2Path(manifest.name, cwd);
-  await writeAtomic(p, JSON.stringify(manifest, null, 2));
+  await writeAtomic(
+    p,
+    JSON.stringify(
+      {
+        ...manifest,
+        policy: normalizedPolicy,
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 export async function readTeamManifestV2(teamName: string, cwd: string): Promise<TeamManifestV2 | null> {
@@ -746,7 +861,13 @@ export async function readTeamManifestV2(teamName: string, cwd: string): Promise
     const raw = await readFile(p, 'utf8');
     const parsed = JSON.parse(raw) as unknown;
     if (!isTeamManifestV2(parsed)) return null;
-    return parsed;
+    return {
+      ...parsed,
+      policy: normalizeTeamPolicy(parsed.policy, {
+        display_mode: parsed.policy?.display_mode === 'split_pane' ? 'split_pane' : 'auto',
+        worker_launch_mode: parsed.policy?.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive',
+      }),
+    };
   } catch {
     return null;
   }
@@ -765,7 +886,7 @@ export async function migrateV1ToV2(teamName: string, cwd: string): Promise<Team
     if (!parsed || typeof parsed !== 'object') return null;
     const manifest = teamManifestFromConfig(parsed as TeamConfig);
     await writeTeamManifestV2(manifest, cwd);
-    return manifest;
+    return await readTeamManifestV2(teamName, cwd);
   } catch {
     return null;
   }
@@ -1499,6 +1620,269 @@ async function readMailbox(teamName: string, workerName: string, cwd: string): P
 async function writeMailbox(teamName: string, mailbox: TeamMailbox, cwd: string): Promise<void> {
   const p = mailboxPath(teamName, mailbox.worker, cwd);
   await writeAtomic(p, JSON.stringify(mailbox, null, 2));
+}
+
+function isDispatchKind(value: unknown): value is TeamDispatchRequestKind {
+  return value === 'inbox' || value === 'mailbox' || value === 'nudge';
+}
+
+function isDispatchStatus(value: unknown): value is TeamDispatchRequestStatus {
+  return value === 'pending' || value === 'notified' || value === 'delivered' || value === 'failed';
+}
+
+function normalizeDispatchRequest(
+  teamName: string,
+  raw: Partial<TeamDispatchRequest>,
+  nowIso: string = new Date().toISOString(),
+): TeamDispatchRequest | null {
+  if (!isDispatchKind(raw.kind)) return null;
+  if (typeof raw.to_worker !== 'string' || raw.to_worker.trim() === '') return null;
+  if (typeof raw.trigger_message !== 'string' || raw.trigger_message.trim() === '') return null;
+
+  const status = isDispatchStatus(raw.status) ? raw.status : 'pending';
+  return {
+    request_id: typeof raw.request_id === 'string' && raw.request_id.trim() !== '' ? raw.request_id : randomUUID(),
+    kind: raw.kind,
+    team_name: teamName,
+    to_worker: raw.to_worker,
+    worker_index: typeof raw.worker_index === 'number' ? raw.worker_index : undefined,
+    pane_id: typeof raw.pane_id === 'string' && raw.pane_id !== '' ? raw.pane_id : undefined,
+    trigger_message: raw.trigger_message,
+    message_id: typeof raw.message_id === 'string' && raw.message_id !== '' ? raw.message_id : undefined,
+    inbox_correlation_key:
+      typeof raw.inbox_correlation_key === 'string' && raw.inbox_correlation_key !== '' ? raw.inbox_correlation_key : undefined,
+    transport_preference:
+      raw.transport_preference === 'transport_direct' || raw.transport_preference === 'prompt_stdin'
+        ? raw.transport_preference
+        : 'hook_preferred_with_fallback',
+    fallback_allowed: raw.fallback_allowed !== false,
+    status,
+    attempt_count: Number.isFinite(raw.attempt_count) ? Math.max(0, Math.floor(raw.attempt_count as number)) : 0,
+    created_at: typeof raw.created_at === 'string' && raw.created_at !== '' ? raw.created_at : nowIso,
+    updated_at: typeof raw.updated_at === 'string' && raw.updated_at !== '' ? raw.updated_at : nowIso,
+    notified_at: typeof raw.notified_at === 'string' && raw.notified_at !== '' ? raw.notified_at : undefined,
+    delivered_at: typeof raw.delivered_at === 'string' && raw.delivered_at !== '' ? raw.delivered_at : undefined,
+    failed_at: typeof raw.failed_at === 'string' && raw.failed_at !== '' ? raw.failed_at : undefined,
+    last_reason: typeof raw.last_reason === 'string' && raw.last_reason !== '' ? raw.last_reason : undefined,
+  };
+}
+
+async function readDispatchRequests(teamName: string, cwd: string): Promise<TeamDispatchRequest[]> {
+  const path = dispatchRequestsPath(teamName, cwd);
+  try {
+    if (!existsSync(path)) return [];
+    const raw = await readFile(path, 'utf8');
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const nowIso = new Date().toISOString();
+    return parsed
+      .map((entry) => normalizeDispatchRequest(teamName, (entry ?? {}) as Partial<TeamDispatchRequest>, nowIso))
+      .filter((entry): entry is TeamDispatchRequest => entry !== null);
+  } catch {
+    return [];
+  }
+}
+
+async function writeDispatchRequests(teamName: string, requests: TeamDispatchRequest[], cwd: string): Promise<void> {
+  await writeAtomic(dispatchRequestsPath(teamName, cwd), JSON.stringify(requests, null, 2));
+}
+
+async function withDispatchLock<T>(teamName: string, cwd: string, fn: () => Promise<T>): Promise<T> {
+  const root = teamDir(teamName, cwd);
+  if (!existsSync(root)) throw new Error(`Team ${teamName} not found`);
+  const lockDir = dispatchLockDir(teamName, cwd);
+  const ownerPath = join(lockDir, 'owner');
+  const ownerToken = `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+  const deadline = Date.now() + 5000;
+  await mkdir(dirname(lockDir), { recursive: true });
+
+  while (true) {
+    try {
+      await mkdir(lockDir, { recursive: false });
+      try {
+        await writeFile(ownerPath, ownerToken, 'utf8');
+      } catch (error) {
+        await rm(lockDir, { recursive: true, force: true });
+        throw error;
+      }
+      break;
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code !== 'EEXIST') throw error;
+      try {
+        const info = await stat(lockDir);
+        if (Date.now() - info.mtimeMs > LOCK_STALE_MS) {
+          await rm(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        // best effort
+      }
+      if (Date.now() > deadline) throw new Error(`Timed out acquiring dispatch lock for ${teamName}`);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    try {
+      const currentOwner = await readFile(ownerPath, 'utf8');
+      if (currentOwner.trim() === ownerToken) {
+        await rm(lockDir, { recursive: true, force: true });
+      }
+    } catch {
+      // best effort
+    }
+  }
+}
+
+function equivalentPendingDispatch(
+  existing: TeamDispatchRequest,
+  input: TeamDispatchRequestInput,
+): boolean {
+  if (existing.status !== 'pending') return false;
+  if (existing.kind !== input.kind) return false;
+  if (existing.to_worker !== input.to_worker) return false;
+
+  if (input.kind === 'mailbox') {
+    return Boolean(input.message_id) && existing.message_id === input.message_id;
+  }
+
+  if (input.kind === 'inbox' && input.inbox_correlation_key) {
+    return existing.inbox_correlation_key === input.inbox_correlation_key;
+  }
+
+  return existing.trigger_message === input.trigger_message;
+}
+
+export async function enqueueDispatchRequest(
+  teamName: string,
+  requestInput: TeamDispatchRequestInput,
+  cwd: string,
+): Promise<{ request: TeamDispatchRequest; deduped: boolean }> {
+  if (!isDispatchKind(requestInput.kind)) throw new Error(`Invalid dispatch request kind: ${String(requestInput.kind)}`);
+  if (requestInput.kind === 'mailbox' && (!requestInput.message_id || requestInput.message_id.trim() === '')) {
+    throw new Error('mailbox dispatch requests require message_id');
+  }
+  validateWorkerName(requestInput.to_worker);
+
+  return await withDispatchLock(teamName, cwd, async () => {
+    const requests = await readDispatchRequests(teamName, cwd);
+    const existing = requests.find((req) => equivalentPendingDispatch(req, requestInput));
+    if (existing) return { request: existing, deduped: true };
+
+    const nowIso = new Date().toISOString();
+    const request = normalizeDispatchRequest(
+      teamName,
+      {
+        request_id: randomUUID(),
+        ...requestInput,
+        status: 'pending',
+        attempt_count: 0,
+        created_at: nowIso,
+        updated_at: nowIso,
+      },
+      nowIso,
+    );
+    if (!request) throw new Error('failed_to_normalize_dispatch_request');
+
+    requests.push(request);
+    await writeDispatchRequests(teamName, requests, cwd);
+    return { request, deduped: false };
+  });
+}
+
+export async function listDispatchRequests(
+  teamName: string,
+  cwd: string,
+  opts: { status?: TeamDispatchRequestStatus; kind?: TeamDispatchRequestKind; to_worker?: string; limit?: number } = {},
+): Promise<TeamDispatchRequest[]> {
+  const requests = await readDispatchRequests(teamName, cwd);
+  let filtered = requests;
+  if (opts.status) filtered = filtered.filter((req) => req.status === opts.status);
+  if (opts.kind) filtered = filtered.filter((req) => req.kind === opts.kind);
+  if (opts.to_worker) filtered = filtered.filter((req) => req.to_worker === opts.to_worker);
+  if (typeof opts.limit === 'number' && opts.limit > 0) filtered = filtered.slice(0, opts.limit);
+  return filtered;
+}
+
+export async function readDispatchRequest(teamName: string, requestId: string, cwd: string): Promise<TeamDispatchRequest | null> {
+  const requests = await readDispatchRequests(teamName, cwd);
+  return requests.find((req) => req.request_id === requestId) ?? null;
+}
+
+function canTransitionDispatchStatus(
+  from: TeamDispatchRequestStatus,
+  to: TeamDispatchRequestStatus,
+): boolean {
+  if (from === to) return true;
+  if (from === 'pending' && (to === 'notified' || to === 'failed')) return true;
+  if (from === 'notified' && (to === 'delivered' || to === 'failed')) return true;
+  return false;
+}
+
+export async function transitionDispatchRequest(
+  teamName: string,
+  requestId: string,
+  from: TeamDispatchRequestStatus,
+  to: TeamDispatchRequestStatus,
+  patch: Partial<TeamDispatchRequest> = {},
+  cwd: string,
+): Promise<TeamDispatchRequest | null> {
+  return await withDispatchLock(teamName, cwd, async () => {
+    const requests = await readDispatchRequests(teamName, cwd);
+    const index = requests.findIndex((req) => req.request_id === requestId);
+    if (index < 0) return null;
+    const existing = requests[index]!;
+    if (existing.status !== from && existing.status !== to) return null;
+    if (!canTransitionDispatchStatus(existing.status, to)) return null;
+
+    const nowIso = new Date().toISOString();
+    const nextAttemptCount = Math.max(
+      existing.attempt_count,
+      Number.isFinite(patch.attempt_count)
+        ? Math.floor(patch.attempt_count as number)
+        : (existing.status === to ? existing.attempt_count : existing.attempt_count + 1),
+    );
+    const next: TeamDispatchRequest = {
+      ...existing,
+      ...patch,
+      status: to,
+      attempt_count: Math.max(0, nextAttemptCount),
+      updated_at: nowIso,
+    };
+    if (to === 'notified') next.notified_at = patch.notified_at ?? nowIso;
+    if (to === 'delivered') next.delivered_at = patch.delivered_at ?? nowIso;
+    if (to === 'failed') next.failed_at = patch.failed_at ?? nowIso;
+    requests[index] = next;
+    await writeDispatchRequests(teamName, requests, cwd);
+    return next;
+  });
+}
+
+export async function markDispatchRequestNotified(
+  teamName: string,
+  requestId: string,
+  patch: Partial<TeamDispatchRequest> = {},
+  cwd: string,
+): Promise<TeamDispatchRequest | null> {
+  const current = await readDispatchRequest(teamName, requestId, cwd);
+  if (!current) return null;
+  if (current.status === 'notified' || current.status === 'delivered') return current;
+  return await transitionDispatchRequest(teamName, requestId, current.status, 'notified', patch, cwd);
+}
+
+export async function markDispatchRequestDelivered(
+  teamName: string,
+  requestId: string,
+  patch: Partial<TeamDispatchRequest> = {},
+  cwd: string,
+): Promise<TeamDispatchRequest | null> {
+  const current = await readDispatchRequest(teamName, requestId, cwd);
+  if (!current) return null;
+  if (current.status === 'delivered') return current;
+  return await transitionDispatchRequest(teamName, requestId, current.status, 'delivered', patch, cwd);
 }
 
 export async function sendDirectMessage(

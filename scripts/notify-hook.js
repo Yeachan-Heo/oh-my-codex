@@ -14,6 +14,7 @@
  *   auto-nudge.js      – stall-pattern detection and auto-nudge
  *   linked-sync.js     – linked ralph/team terminal sync
  *   tmux-injection.js  – tmux prompt injection
+ *   team-dispatch.js   – durable team dispatch queue consumer
  *   team-leader-nudge.js – leader mailbox nudge
  *   team-worker.js     – worker heartbeat and idle notification
  */
@@ -36,6 +37,7 @@ import {
   readdir,
 } from './notify-hook/state-io.js';
 import { isLeaderStale, resolveLeaderStalenessThresholdMs, maybeNudgeTeamLeader } from './notify-hook/team-leader-nudge.js';
+import { drainPendingTeamDispatch } from './notify-hook/team-dispatch.js';
 import { syncLinkedRalphOnTeamTerminal } from './notify-hook/linked-sync.js';
 import { handleTmuxInjection } from './notify-hook/tmux-injection.js';
 import { maybeAutoNudge, resolveNudgePaneTarget } from './notify-hook/auto-nudge.js';
@@ -291,6 +293,15 @@ async function main() {
   if (!isTeamWorker) {
     try {
       await handleTmuxInjection({ payload, cwd, stateDir, logsDir });
+    } catch {
+      // Non-critical
+    }
+  }
+
+  // 5.5. Opportunistic team dispatch drain (leader session only).
+  if (!isTeamWorker) {
+    try {
+      await drainPendingTeamDispatch({ cwd, stateDir, logsDir, maxPerTick: 5 });
     } catch {
       // Non-critical
     }

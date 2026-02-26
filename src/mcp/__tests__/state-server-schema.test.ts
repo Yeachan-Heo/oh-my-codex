@@ -11,6 +11,7 @@ const ALL_EVENT_TYPES = [
   'worker_stopped',
   'message_received',
   'shutdown_ack',
+  'shutdown_gate',
   'approval_decision',
   'team_leader_nudge',
 ] as const;
@@ -26,8 +27,8 @@ describe('team_append_event schema validation', () => {
 
     assert.equal(
       enumValues.length,
-      8,
-      `Expected 8 enum values, got ${enumValues.length}: ${enumValues.join(', ')}`
+      9,
+      `Expected 9 enum values, got ${enumValues.length}: ${enumValues.join(', ')}`
     );
 
     for (const eventType of ALL_EVENT_TYPES) {

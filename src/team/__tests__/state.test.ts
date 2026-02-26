@@ -33,6 +33,12 @@ import {
   updateWorkerHeartbeat,
   writeAtomic,
   writeWorkerInbox,
+  enqueueDispatchRequest,
+  listDispatchRequests,
+  markDispatchRequestNotified,
+  markDispatchRequestDelivered,
+  transitionDispatchRequest,
+  readDispatchRequest,
 } from '../state.js';
 
 describe('team state', () => {
@@ -91,6 +97,117 @@ describe('team state', () => {
 
       const m2 = await migrateV1ToV2('team-mig', cwd);
       assert.deepEqual(m2, onDisk1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes legacy manifest policy with dispatch defaults and timeout bounds', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-manifest-policy-'));
+    try {
+      await initTeamState('team-policy', 't', 'executor', 1, cwd);
+      const manifestPath = join(cwd, '.omx', 'state', 'team', 'team-policy', 'manifest.v2.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+      const policy = (manifest.policy ?? {}) as Record<string, unknown>;
+      delete policy.dispatch_mode;
+      policy.dispatch_ack_timeout_ms = 999_999;
+      manifest.policy = policy;
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const loaded = await readTeamManifestV2('team-policy', cwd);
+      assert.equal(loaded?.policy.dispatch_mode, 'hook_preferred_with_fallback');
+      assert.equal(loaded?.policy.dispatch_ack_timeout_ms, 10_000);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('dispatch request store enqueues, dedupes, and transitions idempotently', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-dispatch-store-'));
+    try {
+      await initTeamState('team-dispatch', 't', 'executor', 1, cwd);
+      const first = await enqueueDispatchRequest(
+        'team-dispatch',
+        {
+          kind: 'mailbox',
+          to_worker: 'worker-1',
+          message_id: 'msg-1',
+          trigger_message: 'check mailbox',
+        },
+        cwd,
+      );
+      assert.equal(first.deduped, false);
+
+      const dup = await enqueueDispatchRequest(
+        'team-dispatch',
+        {
+          kind: 'mailbox',
+          to_worker: 'worker-1',
+          message_id: 'msg-1',
+          trigger_message: 'check mailbox',
+        },
+        cwd,
+      );
+      assert.equal(dup.deduped, true);
+      assert.equal(dup.request.request_id, first.request.request_id);
+
+      const notified = await markDispatchRequestNotified('team-dispatch', first.request.request_id, {}, cwd);
+      assert.equal(notified?.status, 'notified');
+      const notifiedAgain = await markDispatchRequestNotified('team-dispatch', first.request.request_id, {}, cwd);
+      assert.equal(notifiedAgain?.status, 'notified');
+      const delivered = await markDispatchRequestDelivered('team-dispatch', first.request.request_id, {}, cwd);
+      assert.equal(delivered?.status, 'delivered');
+      const listed = await listDispatchRequests('team-dispatch', cwd);
+      assert.equal(listed.length, 1);
+      assert.equal(listed[0]?.message_id, 'msg-1');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('dispatch request store allows failed->failed reason patch and blocks failed->notified', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-dispatch-store-failed-'));
+    try {
+      await initTeamState('team-dispatch-failed', 't', 'executor', 1, cwd);
+      const queued = await enqueueDispatchRequest(
+        'team-dispatch-failed',
+        {
+          kind: 'inbox',
+          to_worker: 'worker-1',
+          trigger_message: 'ping',
+        },
+        cwd,
+      );
+      await transitionDispatchRequest(
+        'team-dispatch-failed',
+        queued.request.request_id,
+        'pending',
+        'failed',
+        { last_reason: 'initial_failure' },
+        cwd,
+      );
+
+      const invalidNotified = await markDispatchRequestNotified(
+        'team-dispatch-failed',
+        queued.request.request_id,
+        { last_reason: 'should_not_transition' },
+        cwd,
+      );
+      assert.equal(invalidNotified, null);
+
+      const patched = await transitionDispatchRequest(
+        'team-dispatch-failed',
+        queued.request.request_id,
+        'failed',
+        'failed',
+        { last_reason: 'fallback_confirmed_after_failed_receipt:tmux_send_keys_sent' },
+        cwd,
+      );
+      assert.equal(patched?.status, 'failed');
+      assert.equal(patched?.last_reason, 'fallback_confirmed_after_failed_receipt:tmux_send_keys_sent');
+      const reread = await readDispatchRequest('team-dispatch-failed', queued.request.request_id, cwd);
+      assert.equal(reread?.status, 'failed');
+      assert.equal(reread?.last_reason, 'fallback_confirmed_after_failed_receipt:tmux_send_keys_sent');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

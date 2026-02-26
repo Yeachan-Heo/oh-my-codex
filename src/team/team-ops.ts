@@ -27,6 +27,11 @@ export type {
   TeamMailboxMessage,
   TeamMailbox,
   TaskApprovalRecord,
+  TeamDispatchRequest,
+  TeamDispatchRequestInput,
+  TeamDispatchRequestKind,
+  TeamDispatchRequestStatus,
+  TeamDispatchTransportPreference,
   TaskReadiness,
   ClaimTaskResult,
   TransitionTaskResult,
@@ -48,6 +53,7 @@ export { writeTeamManifestV2 as teamWriteManifest } from './state.js';
 export { saveTeamConfig as teamSaveConfig } from './state.js';
 export { cleanupTeamState as teamCleanup } from './state.js';
 export { migrateV1ToV2 as teamMigrateV1ToV2 } from './state.js';
+export { normalizeTeamPolicy as teamNormalizePolicy } from './state.js';
 
 // === Worker operations ===
 export { writeWorkerIdentity as teamWriteWorkerIdentity } from './state.js';
@@ -72,6 +78,12 @@ export { broadcastMessage as teamBroadcast } from './state.js';
 export { listMailboxMessages as teamListMailbox } from './state.js';
 export { markMessageDelivered as teamMarkMessageDelivered } from './state.js';
 export { markMessageNotified as teamMarkMessageNotified } from './state.js';
+export { enqueueDispatchRequest as teamEnqueueDispatchRequest } from './state.js';
+export { listDispatchRequests as teamListDispatchRequests } from './state.js';
+export { readDispatchRequest as teamReadDispatchRequest } from './state.js';
+export { transitionDispatchRequest as teamTransitionDispatchRequest } from './state.js';
+export { markDispatchRequestNotified as teamMarkDispatchRequestNotified } from './state.js';
+export { markDispatchRequestDelivered as teamMarkDispatchRequestDelivered } from './state.js';
 
 // === Events ===
 export { appendTeamEvent as teamAppendEvent } from './state.js';

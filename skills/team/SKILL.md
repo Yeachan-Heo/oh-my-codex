@@ -173,8 +173,9 @@ Semantics:
 
 - `.omx/state/team/<team>/...` files
 - Team mailbox files:
-  - `.omx/state/team/<team>/mailbox/leader-fixed.json`
-  - `.omx/state/team/<team>/mailbox/worker-<n>.json`
+- `.omx/state/team/<team>/mailbox/leader-fixed.json`
+- `.omx/state/team/<team>/mailbox/worker-<n>.json`
+- `.omx/state/team/<team>/dispatch/requests.json` (durable dispatch queue; hook-preferred, fallback-aware)
 
 ### Key Files
 
