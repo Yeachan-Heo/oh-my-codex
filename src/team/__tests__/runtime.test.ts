@@ -425,6 +425,68 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
+  it('shutdownTeam blocks when pending tasks remain (shutdown gate)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-gate-'));
+    try {
+      await initTeamState('team-shutdown-gate-pending', 'shutdown gate pending test', 'executor', 1, cwd);
+      await createTask(
+        'team-shutdown-gate-pending',
+        { subject: 'pending', description: 'd', status: 'pending' },
+        cwd,
+      );
+
+      await assert.rejects(
+        () => shutdownTeam('team-shutdown-gate-pending', cwd),
+        /shutdown_gate_blocked:pending=1,blocked=0,in_progress=0,failed=0/,
+      );
+
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-shutdown-gate-pending');
+      assert.equal(existsSync(teamRoot), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('shutdownTeam blocks when failed tasks remain (completion gate)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-gate-failed-'));
+    try {
+      await initTeamState('team-shutdown-gate-failed', 'shutdown gate failed test', 'executor', 1, cwd);
+      await createTask(
+        'team-shutdown-gate-failed',
+        { subject: 'failed', description: 'd', status: 'failed' },
+        cwd,
+      );
+
+      await assert.rejects(
+        () => shutdownTeam('team-shutdown-gate-failed', cwd),
+        /shutdown_gate_blocked:pending=0,blocked=0,in_progress=0,failed=1/,
+      );
+
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-shutdown-gate-failed');
+      assert.equal(existsSync(teamRoot), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('shutdownTeam force=true bypasses shutdown gate and cleans up', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-gate-force-'));
+    try {
+      await initTeamState('team-shutdown-gate-force', 'shutdown gate force test', 'executor', 1, cwd);
+      await createTask(
+        'team-shutdown-gate-force',
+        { subject: 'pending', description: 'd', status: 'pending' },
+        cwd,
+      );
+
+      await shutdownTeam('team-shutdown-gate-force', cwd, { force: true });
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-shutdown-gate-force');
+      assert.equal(existsSync(teamRoot), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('shutdownTeam handles persisted resize hook metadata during cleanup', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-resize-meta-'));
     try {
