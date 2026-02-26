@@ -467,20 +467,45 @@ async function installSkills(
     const skillMd = join(skillSrc, 'SKILL.md');
     if (!existsSync(skillMd)) continue;
 
+    let copied = 0;
+    let overwritten = 0;
+    let skipped = 0;
+    const skillFiles = await readdir(skillSrc);
+
     if (!options.dryRun) {
       await mkdir(skillDst, { recursive: true });
-      // Copy all files in the skill directory
-      const skillFiles = await readdir(skillSrc);
-      for (const sf of skillFiles) {
-        const sfPath = join(skillSrc, sf);
-        const sfStat = await stat(sfPath);
-        if (sfStat.isFile()) {
-          await copyFile(sfPath, join(skillDst, sf));
-        }
+    }
+
+    for (const sf of skillFiles) {
+      const sfPath = join(skillSrc, sf);
+      const sfStat = await stat(sfPath);
+      if (!sfStat.isFile()) continue;
+
+      const dstPath = join(skillDst, sf);
+      const dstExists = existsSync(dstPath);
+      if (dstExists && !options.force) {
+        skipped++;
+        continue;
+      }
+
+      if (!options.dryRun) {
+        await copyFile(sfPath, dstPath);
+      }
+      if (dstExists) {
+        overwritten++;
+      } else {
+        copied++;
       }
     }
-    if (options.verbose) console.log(`  ${entry.name}/`);
-    count++;
+
+    if (copied + overwritten > 0) {
+      count++;
+    }
+    if (options.verbose) {
+      console.log(
+        `  ${entry.name}/ (copied: ${copied}, overwritten: ${overwritten}, skipped: ${skipped})`,
+      );
+    }
   }
   return count;
 }
