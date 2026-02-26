@@ -10,6 +10,19 @@ import {
   SKILL_ACTIVE_STATE_FILE,
 } from '../keyword-detector.js';
 import { generateKeywordDetectionSection } from '../emulator.js';
+import { KEYWORD_TRIGGER_DEFINITIONS } from '../keyword-registry.js';
+
+async function readTemplateKeywords(): Promise<string[]> {
+  const template = await readFile(join(process.cwd(), 'templates', 'AGENTS.md'), 'utf-8');
+  const lines = template.split('\n').filter((line) => line.startsWith('| "'));
+  const keywords: string[] = [];
+  for (const line of lines) {
+    const firstCell = line.split('|')[1] ?? '';
+    const matches = firstCell.matchAll(/"([^"]+)"/g);
+    for (const match of matches) keywords.push(match[1]);
+  }
+  return keywords;
+}
 
 describe('keyword detector swarm/team compatibility', () => {
   it('maps "coordinated team" phrase to team orchestration skill', () => {
@@ -50,9 +63,23 @@ describe('keyword detector swarm/team compatibility', () => {
     assert.ok(match);
     assert.equal(match.skill, 'ralplan');
   });
+
+  it('applies longest-match tie-breaker when priorities are equal', () => {
+    const match = detectPrimaryKeyword('please run a coordinated swarm for this');
+
+    assert.ok(match);
+    assert.equal(match.skill, 'team');
+    assert.equal(match.keyword.toLowerCase(), 'coordinated swarm');
+  });
 });
 
 describe('keyword detection guidance generation', () => {
+  it('keeps template keyword table and runtime keyword registry in sync', async () => {
+    const templateKeywords = new Set((await readTemplateKeywords()).map((v) => v.toLowerCase()));
+    const registryKeywords = new Set(KEYWORD_TRIGGER_DEFINITIONS.map((v) => v.keyword.toLowerCase()));
+    assert.deepEqual([...registryKeywords].sort(), [...templateKeywords].sort());
+  });
+
   it('includes swarm alias activation guidance', () => {
     const section = generateKeywordDetectionSection();
 

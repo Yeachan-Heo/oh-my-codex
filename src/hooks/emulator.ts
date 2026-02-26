@@ -21,6 +21,8 @@
  * - OMX: AGENTS.md instructs model -> model self-detects keyword -> model loads skill
  */
 
+import { KEYWORD_TRIGGER_DEFINITIONS } from './keyword-registry.js';
+
 /**
  * Hook event types (for compatibility with OMC concepts)
  */
@@ -94,22 +96,16 @@ export const HOOK_MAPPING: Record<HookEvent, {
  * Keyword detection configuration (embedded in AGENTS.md)
  * Instead of external hook detection, the model is instructed to self-detect
  */
-export const KEYWORD_TRIGGERS: Record<string, string> = {
-  'autopilot': 'Activate autopilot skill for autonomous execution',
-  'ralph': 'Activate ralph persistence loop with verification (planning-gated: require PRD + test spec before implementation tools)',
-  'ultrawork': 'Activate ultrawork parallel execution mode',
-  'ulw': 'Activate ultrawork parallel execution mode',
-  'ecomode': 'Activate ecomode for token-efficient execution',
-  'eco': 'Activate ecomode for token-efficient execution',
-  'plan': 'Activate planning skill',
-  'ralplan': 'Activate consensus planning (planner + architect + critic) and complete PRD + test spec before implementation',
-  'team': 'Activate coordinated team mode',
-  'coordinated team': 'Activate coordinated team mode',
-  'swarm': 'Activate coordinated team mode (swarm is a compatibility alias for team)',
-  'coordinated swarm': 'Activate coordinated team mode (swarm is a compatibility alias for team)',
-  'research': 'Activate parallel research mode',
-  'cancel': 'Cancel active execution modes',
-};
+export const KEYWORD_TRIGGERS: Record<string, string> = Object.fromEntries(
+  KEYWORD_TRIGGER_DEFINITIONS.map((entry) => {
+    const guidance = entry.skill === 'ralph'
+      ? `${entry.guidance} (planning-gated: require PRD + test spec before implementation tools)`
+      : entry.skill === 'ralplan'
+        ? `${entry.guidance} and complete PRD + test spec before implementation`
+        : entry.guidance;
+    return [entry.keyword, guidance];
+  }),
+);
 
 /**
  * Generate the keyword detection section for AGENTS.md

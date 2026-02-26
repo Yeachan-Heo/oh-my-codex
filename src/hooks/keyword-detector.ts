@@ -13,6 +13,7 @@
 
 import { readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
+import { KEYWORD_TRIGGER_DEFINITIONS, compareKeywordMatches } from './keyword-registry.js';
 
 export interface KeywordMatch {
   keyword: string;
@@ -47,32 +48,28 @@ export interface RecordSkillActivationInput {
 
 export const SKILL_ACTIVE_STATE_FILE = 'skill-active-state.json';
 
-const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> = [
-  // Execution modes
-  { pattern: /\bautopilot\b/i, skill: 'autopilot', priority: 10 },
-  { pattern: /\bralph\b/i, skill: 'ralph', priority: 9 },
-  { pattern: /\bultrawork\b|\bulw\b/i, skill: 'ultrawork', priority: 10 },
-  { pattern: /\becomode\b|\beco\b/i, skill: 'ecomode', priority: 10 },
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
-  // Planning
-  { pattern: /\bralplan\b/i, skill: 'ralplan', priority: 11 },
-  { pattern: /\bplan\s+(?:this|the)\b/i, skill: 'plan', priority: 8 },
+function isWordChar(ch: string | undefined): boolean {
+  return Boolean(ch && /[A-Za-z0-9_]/.test(ch));
+}
 
-  // Coordination
-  { pattern: /\bteam\b|\bcoordinated\s+team\b/i, skill: 'team', priority: 8 },
-  { pattern: /\bswarm\b|\bcoordinated\s+swarm\b/i, skill: 'team', priority: 8 },
+function keywordToPattern(keyword: string): RegExp {
+  const escaped = escapeRegex(keyword);
+  const startsWithWord = isWordChar(keyword[0]);
+  const endsWithWord = isWordChar(keyword[keyword.length - 1]);
+  const prefix = startsWithWord ? '\\b' : '';
+  const suffix = endsWithWord ? '\\b' : '';
+  return new RegExp(`${prefix}${escaped}${suffix}`, 'i');
+}
 
-  // Shortcuts
-  { pattern: /\banalyze\b|\bdebug\b|\binvestigate\b/i, skill: 'analyze', priority: 6 },
-  { pattern: /\bdeepsearch\b|\bsearch.*codebase\b/i, skill: 'deepsearch', priority: 6 },
-  { pattern: /\btdd\b|\btest.first\b/i, skill: 'tdd', priority: 6 },
-  { pattern: /\bfix.build\b|\btype.errors?\b/i, skill: 'build-fix', priority: 6 },
-  { pattern: /\breview.code\b|\bcode.review\b/i, skill: 'code-review', priority: 6 },
-  { pattern: /\bsecurity.review\b/i, skill: 'security-review', priority: 6 },
-
-  // Utilities
-  { pattern: /\bcancel\b.*\b(?:mode|all)\b/i, skill: 'cancel', priority: 5 },
-];
+const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> = KEYWORD_TRIGGER_DEFINITIONS.map((entry) => ({
+  pattern: keywordToPattern(entry.keyword),
+  skill: entry.skill,
+  priority: entry.priority,
+}));
 
 /**
  * Detect keywords in user input text
@@ -92,7 +89,7 @@ export function detectKeywords(text: string): KeywordMatch[] {
     }
   }
 
-  return matches.sort((a, b) => b.priority - a.priority);
+  return matches.sort(compareKeywordMatches);
 }
 
 /**
