@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseTeamStartArgs } from '../team.js';
+import { DEFAULT_MAX_WORKERS } from '../../team/state.js';
 
 describe('parseTeamStartArgs', () => {
   it('parses default team start args without worktree', () => {
@@ -29,5 +30,17 @@ describe('parseTeamStartArgs', () => {
     assert.equal(result.parsed.agentType, 'executor');
     assert.equal(result.parsed.task, 'ship it');
     assert.equal(result.parsed.teamName, 'ship-it');
+  });
+
+  it('accepts the maximum supported worker count', () => {
+    const result = parseTeamStartArgs([`${DEFAULT_MAX_WORKERS}:executor`, 'ship', 'it']);
+    assert.equal(result.parsed.workerCount, DEFAULT_MAX_WORKERS);
+  });
+
+  it('rejects worker count above the supported maximum', () => {
+    assert.throws(
+      () => parseTeamStartArgs([`${DEFAULT_MAX_WORKERS + 1}:executor`, 'ship', 'it']),
+      new RegExp(`Expected 1-${DEFAULT_MAX_WORKERS}`),
+    );
   });
 });

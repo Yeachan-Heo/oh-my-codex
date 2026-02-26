@@ -1,5 +1,6 @@
 import { updateModeState, startMode, readModeState } from '../modes/base.js';
 import { monitorTeam, resumeTeam, shutdownTeam, startTeam, type TeamRuntime } from '../team/runtime.js';
+import { DEFAULT_MAX_WORKERS } from '../team/state.js';
 import { sanitizeTeamName } from '../team/tmux-session.js';
 import { parseWorktreeMode, type WorktreeMode } from '../team/worktree.js';
 
@@ -14,6 +15,8 @@ interface ParsedTeamArgs {
   teamName: string;
   ralph: boolean;
 }
+
+const MIN_WORKER_COUNT = 1;
 
 export interface ParsedTeamStartArgs {
   parsed: ParsedTeamArgs;
@@ -44,8 +47,8 @@ function parseTeamArgs(args: string[]): ParsedTeamArgs {
   const match = first.match(/^(\d+)(?::([a-z][a-z0-9-]*))?$/i);
   if (match) {
     const count = Number.parseInt(match[1], 10);
-    if (!Number.isFinite(count) || count < 1 || count > 20) {
-      throw new Error(`Invalid worker count "${match[1]}". Expected 1-20.`);
+    if (!Number.isFinite(count) || count < MIN_WORKER_COUNT || count > DEFAULT_MAX_WORKERS) {
+      throw new Error(`Invalid worker count "${match[1]}". Expected ${MIN_WORKER_COUNT}-${DEFAULT_MAX_WORKERS}.`);
     }
     workerCount = count;
     if (match[2]) agentType = match[2];
