@@ -74,6 +74,10 @@ export function validateCatalogManifest(input: unknown): CatalogManifest {
       ? entry.canonical.trim()
       : undefined;
 
+    if ((entry.status === 'alias' || entry.status === 'merged') && !canonical) {
+      throw new Error(`catalog_manifest_invalid:skills[${index}].canonical`);
+    }
+
     return {
       name,
       category: entry.category as CatalogSkillCategory,
@@ -105,6 +109,10 @@ export function validateCatalogManifest(input: unknown): CatalogManifest {
     const canonical = typeof entry.canonical === 'string' && entry.canonical.trim() !== ''
       ? entry.canonical.trim()
       : undefined;
+
+    if ((entry.status === 'alias' || entry.status === 'merged') && !canonical) {
+      throw new Error(`catalog_manifest_invalid:agents[${index}].canonical`);
+    }
 
     return {
       name,
