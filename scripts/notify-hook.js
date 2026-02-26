@@ -44,6 +44,7 @@ import {
   resolveTeamStateDirForWorker,
   updateWorkerHeartbeat,
   maybeNotifyLeaderAllWorkersIdle,
+  maybeNotifyLeaderWorkerIdle,
 } from './notify-hook/team-worker.js';
 import { DEFAULT_MARKER } from './tmux-hook-engine.js';
 
@@ -245,6 +246,15 @@ async function main() {
       }
     } catch {
       // Non-critical: heartbeat write failure should never block the hook
+    }
+  }
+
+  // 4.55. Notify leader when individual worker transitions to idle (worker session only)
+  if (isTeamWorker && parsedTeamWorker) {
+    try {
+      await maybeNotifyLeaderWorkerIdle({ cwd, stateDir, logsDir, parsedTeamWorker });
+    } catch {
+      // Non-critical
     }
   }
 

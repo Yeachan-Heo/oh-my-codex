@@ -68,6 +68,21 @@ export function parseTeamWorkerEnv(rawValue) {
   return { teamName: match[1], workerName: match[2] };
 }
 
+export function resolveWorkerIdleNotifyEnabled() {
+  const raw = safeString(process.env.OMX_TEAM_WORKER_IDLE_NOTIFY || '').trim().toLowerCase();
+  // Default: enabled. Disable with "false", "0", or "off".
+  if (raw === 'false' || raw === '0' || raw === 'off') return false;
+  return true;
+}
+
+export function resolveWorkerIdleCooldownMs() {
+  const raw = safeString(process.env.OMX_TEAM_WORKER_IDLE_COOLDOWN_MS || '');
+  const parsed = asNumber(raw);
+  // Default: 30 seconds. Guard against unreasonable values.
+  if (parsed !== null && parsed >= 5_000 && parsed <= 10 * 60_000) return parsed;
+  return 30_000;
+}
+
 export function resolveAllWorkersIdleCooldownMs() {
   const raw = safeString(process.env.OMX_TEAM_ALL_IDLE_COOLDOWN_MS || '');
   const parsed = asNumber(raw);
@@ -205,6 +220,133 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
     await logTmuxHookEvent(logsDir, {
       timestamp: nowIso,
       type: 'all_workers_idle_notification',
+      team: teamName,
+      tmux_target: tmuxTarget,
+      worker: workerName,
+      error: err instanceof Error ? err.message : safeString(err),
+    }).catch(() => {});
+  }
+}
+
+export async function maybeNotifyLeaderWorkerIdle({ cwd, stateDir, logsDir, parsedTeamWorker }) {
+  if (!resolveWorkerIdleNotifyEnabled()) return;
+
+  const { teamName, workerName } = parsedTeamWorker;
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+
+  // Read current worker status (full object for task context)
+  const workerDir = join(stateDir, 'team', teamName, 'workers', workerName);
+  const statusPath = join(workerDir, 'status.json');
+  let currentState = 'unknown';
+  let currentTaskId = '';
+  let currentReason = '';
+  try {
+    if (existsSync(statusPath)) {
+      const parsed = JSON.parse(await readFile(statusPath, 'utf-8'));
+      if (parsed && typeof parsed.state === 'string') currentState = parsed.state;
+      if (parsed && typeof parsed.current_task_id === 'string') currentTaskId = parsed.current_task_id;
+      if (parsed && typeof parsed.reason === 'string') currentReason = parsed.reason;
+    }
+  } catch { /* ignore */ }
+
+  // Read and update previous state for transition detection
+  const prevStatePath = join(workerDir, 'prev-notify-state.json');
+  let prevState = 'unknown';
+  try {
+    if (existsSync(prevStatePath)) {
+      const parsed = JSON.parse(await readFile(prevStatePath, 'utf-8'));
+      if (parsed && typeof parsed.state === 'string') prevState = parsed.state;
+    }
+  } catch { /* ignore */ }
+
+  // Always update prev state (atomic write)
+  try {
+    await mkdir(workerDir, { recursive: true });
+    const tmpPath = prevStatePath + '.tmp.' + process.pid;
+    await writeFile(tmpPath, JSON.stringify({ state: currentState, updated_at: nowIso }, null, 2));
+    await rename(tmpPath, prevStatePath);
+  } catch { /* best effort */ }
+
+  // Only fire on working->idle transition (non-idle to idle)
+  if (currentState !== 'idle') return;
+  if (prevState === 'idle' || prevState === 'done') return;
+
+  // Check per-worker cooldown
+  const cooldownPath = join(workerDir, 'worker-idle-notify.json');
+  const cooldownMs = resolveWorkerIdleCooldownMs();
+  let lastNotifiedMs = 0;
+  try {
+    if (existsSync(cooldownPath)) {
+      const parsed = JSON.parse(await readFile(cooldownPath, 'utf-8'));
+      lastNotifiedMs = asNumber(parsed && parsed.last_notified_at_ms) ?? 0;
+    }
+  } catch { /* ignore */ }
+  if ((nowMs - lastNotifiedMs) < cooldownMs) return;
+
+  // Read team config for tmux target
+  const teamInfo = await readTeamWorkersForIdleCheck(stateDir, teamName);
+  if (!teamInfo) return;
+  const { tmuxSession, leaderPaneId } = teamInfo;
+  const tmuxTarget = leaderPaneId || tmuxSession;
+  if (!tmuxTarget) return;
+
+  // Build notification message with context
+  const parts = [`[OMX] ${workerName} idle`];
+  if (prevState && prevState !== 'unknown') parts.push(`(was: ${prevState})`);
+  if (currentTaskId) parts.push(`task: ${currentTaskId}`);
+  if (currentReason) parts.push(`reason: ${currentReason}`);
+  const message = `${parts.join('. ')}. ${DEFAULT_MARKER}`;
+
+  try {
+    await runProcess('tmux', ['send-keys', '-t', tmuxTarget, '-l', message], 3000);
+    await new Promise(r => setTimeout(r, 100));
+    await runProcess('tmux', ['send-keys', '-t', tmuxTarget, 'C-m'], 3000);
+    await new Promise(r => setTimeout(r, 100));
+    await runProcess('tmux', ['send-keys', '-t', tmuxTarget, 'C-m'], 3000);
+
+    // Update cooldown state
+    try {
+      const tmpPath = cooldownPath + '.tmp.' + process.pid;
+      await writeFile(tmpPath, JSON.stringify({
+        last_notified_at_ms: nowMs,
+        last_notified_at: nowIso,
+        prev_state: prevState,
+      }, null, 2));
+      await rename(tmpPath, cooldownPath);
+    } catch { /* best effort */ }
+
+    // Write event to events.ndjson
+    const eventsDir = join(stateDir, 'team', teamName, 'events');
+    const eventsPath = join(eventsDir, 'events.ndjson');
+    try {
+      await mkdir(eventsDir, { recursive: true });
+      const event = {
+        event_id: `worker-idle-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        team: teamName,
+        type: 'worker_idle',
+        worker: workerName,
+        prev_state: prevState,
+        task_id: currentTaskId || null,
+        reason: currentReason || null,
+        created_at: nowIso,
+      };
+      await appendFile(eventsPath, JSON.stringify(event) + '\n');
+    } catch { /* best effort */ }
+
+    await logTmuxHookEvent(logsDir, {
+      timestamp: nowIso,
+      type: 'worker_idle_notification',
+      team: teamName,
+      tmux_target: tmuxTarget,
+      worker: workerName,
+      prev_state: prevState,
+      task_id: currentTaskId || null,
+    });
+  } catch (err) {
+    await logTmuxHookEvent(logsDir, {
+      timestamp: nowIso,
+      type: 'worker_idle_notification',
       team: teamName,
       tmux_target: tmuxTarget,
       worker: workerName,
