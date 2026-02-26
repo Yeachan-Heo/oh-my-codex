@@ -21,7 +21,6 @@ import {
   getWorkerPanePid,
   killWorker,
   buildWorkerStartupCommand,
-  resolveTeamWorkerCli,
   resolveTeamWorkerCliPlan,
 } from './tmux-session.js';
 import { spawnSync } from 'child_process';
@@ -32,9 +31,7 @@ import {
   teamReadWorkerStatus as readWorkerStatus,
   teamWriteWorkerStatus as writeWorkerStatus,
   teamWithScalingLock as withScalingLock,
-  teamReadManifest as readTeamManifestV2,
   teamAppendEvent as appendTeamEvent,
-  type TeamConfig,
   type WorkerInfo,
   type WorkerStatus,
 } from './team-ops.js';
@@ -49,8 +46,6 @@ import {
   resolveTeamWorkerLaunchArgs,
   isLowComplexityAgentType,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
-  splitWorkerLaunchArgs,
-  parseTeamWorkerLaunchArgs,
 } from './model-contract.js';
 // Inlined to avoid circular dependency with runtime.ts
 function resolveCanonicalTeamStateRoot(leaderCwd: string): string {
