@@ -232,6 +232,11 @@ export function isDaemonRunning(): boolean {
     return false;
   }
 
+  if (!isReplyListenerProcess(pid)) {
+    removePidFile();
+    return false;
+  }
+
   return true;
 }
 
