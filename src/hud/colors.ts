@@ -14,34 +14,62 @@ const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
 const CYAN = '\x1b[36m';
 
+let colorOutputEnabled = true;
+
+type ColorEnv = Record<string, string | undefined>;
+
+export function shouldEnableColorOutput(
+  isTTY: boolean | undefined = process.stdout.isTTY,
+  env: ColorEnv = process.env as ColorEnv,
+): boolean {
+  if (!isTTY) return false;
+  if (typeof env.NO_COLOR === 'string') return false;
+  if ((env.TERM || '').toLowerCase() === 'dumb') return false;
+  return true;
+}
+
+export function setColorEnabled(enabled: boolean): void {
+  colorOutputEnabled = enabled;
+}
+
+export function isColorEnabled(): boolean {
+  return colorOutputEnabled;
+}
+
+function wrap(color: string, text: string): string {
+  if (!colorOutputEnabled) return text;
+  return `${color}${text}${RESET}`;
+}
+
 export function green(text: string): string {
-  return `${GREEN}${text}${RESET}`;
+  return wrap(GREEN, text);
 }
 
 export function yellow(text: string): string {
-  return `${YELLOW}${text}${RESET}`;
+  return wrap(YELLOW, text);
 }
 
 export function red(text: string): string {
-  return `${RED}${text}${RESET}`;
+  return wrap(RED, text);
 }
 
 export function cyan(text: string): string {
-  return `${CYAN}${text}${RESET}`;
+  return wrap(CYAN, text);
 }
 
 export function dim(text: string): string {
-  return `${DIM}${text}${RESET}`;
+  return wrap(DIM, text);
 }
 
 export function bold(text: string): string {
-  return `${BOLD}${text}${RESET}`;
+  return wrap(BOLD, text);
 }
 
 /**
  * Get color code based on ralph iteration progress.
  */
 export function getRalphColor(iteration: number, maxIterations: number): string {
+  if (!colorOutputEnabled) return '';
   const warningThreshold = Math.floor(maxIterations * 0.7);
   const criticalThreshold = Math.floor(maxIterations * 0.9);
 
@@ -54,6 +82,7 @@ export function getRalphColor(iteration: number, maxIterations: number): string 
  * Get color for todo/turn progress.
  */
 export function getTodoColor(completed: number, total: number): string {
+  if (!colorOutputEnabled) return '';
   if (total === 0) return DIM;
   const percent = (completed / total) * 100;
   if (percent >= 80) return GREEN;
@@ -74,5 +103,8 @@ export function coloredBar(percent: number, width: number = 10): string {
   const empty = safeWidth - filled;
 
   const color = safePercent >= 85 ? RED : safePercent >= 70 ? YELLOW : GREEN;
+  if (!colorOutputEnabled) {
+    return `${'█'.repeat(filled)}${'░'.repeat(empty)}`;
+  }
   return `${color}${'█'.repeat(filled)}${DIM}${'░'.repeat(empty)}${RESET}`;
 }

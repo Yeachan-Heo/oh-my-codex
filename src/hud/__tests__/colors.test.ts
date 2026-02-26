@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   RESET,
@@ -11,6 +11,9 @@ import {
   getRalphColor,
   getTodoColor,
   coloredBar,
+  setColorEnabled,
+  isColorEnabled,
+  shouldEnableColorOutput,
 } from '../colors.js';
 
 const GREEN = '\x1b[32m';
@@ -19,6 +22,10 @@ const RED_CODE = '\x1b[31m';
 const CYAN_CODE = '\x1b[36m';
 const DIM_CODE = '\x1b[2m';
 const BOLD_CODE = '\x1b[1m';
+
+afterEach(() => {
+  setColorEnabled(true);
+});
 
 describe('RESET', () => {
   it('is the ANSI reset escape code', () => {
@@ -241,5 +248,27 @@ describe('coloredBar', () => {
     const bar = coloredBar(50, 0);
     assert.equal((bar.match(/█/g) || []).length, 0);
     assert.equal((bar.match(/░/g) || []).length, 0);
+  });
+});
+
+describe('color output toggles', () => {
+  it('disables ANSI wrapping when setColorEnabled(false)', () => {
+    setColorEnabled(false);
+    assert.equal(isColorEnabled(), false);
+    assert.equal(green('hello'), 'hello');
+    assert.equal(dim('x'), 'x');
+    assert.equal(coloredBar(50, 4), '██░░');
+    assert.equal(getRalphColor(1, 10), '');
+    assert.equal(getTodoColor(1, 2), '');
+  });
+
+  it('shouldEnableColorOutput returns false for non-tty/no-color/dumb term', () => {
+    assert.equal(shouldEnableColorOutput(false, {}), false);
+    assert.equal(shouldEnableColorOutput(true, { NO_COLOR: '1' }), false);
+    assert.equal(shouldEnableColorOutput(true, { TERM: 'dumb' }), false);
+  });
+
+  it('shouldEnableColorOutput returns true for tty when color is allowed', () => {
+    assert.equal(shouldEnableColorOutput(true, { TERM: 'xterm-256color' }), true);
   });
 });

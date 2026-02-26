@@ -2,6 +2,7 @@ import { describe, it, mock, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { renderHud } from '../render.js';
 import type { HudRenderContext } from '../types.js';
+import { setColorEnabled } from '../colors.js';
 
 const RESET = '\x1b[0m';
 const DIM = '\x1b[2m';
@@ -11,6 +12,7 @@ const CYAN = '\x1b[36m';
 
 afterEach(() => {
   mock.restoreAll();
+  setColorEnabled(true);
 });
 
 function emptyCtx(): HudRenderContext {
@@ -40,6 +42,13 @@ describe('renderHud – empty context', () => {
   it('includes the [OMX] label', () => {
     const result = renderHud(emptyCtx(), 'focused');
     assert.ok(result.includes('[OMX]'));
+  });
+
+  it('renders plain text with no ANSI escapes when colors are disabled', () => {
+    setColorEnabled(false);
+    const result = renderHud(emptyCtx(), 'focused');
+    assert.equal(/\x1b\[[0-9;]*m/.test(result), false);
+    assert.equal(result.includes('[OMX]'), true);
   });
 });
 
