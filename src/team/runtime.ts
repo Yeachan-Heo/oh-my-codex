@@ -143,6 +143,16 @@ export interface TeamStartOptions {
   worktreeMode?: WorktreeMode;
 }
 
+interface ShutdownGateCounts {
+  total: number;
+  pending: number;
+  blocked: number;
+  in_progress: number;
+  completed: number;
+  failed: number;
+  allowed: boolean;
+}
+
 const MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
 const TEAM_STATE_ROOT_ENV = 'OMX_TEAM_STATE_ROOT';
 const TEAM_LEADER_CWD_ENV = 'OMX_TEAM_LEADER_CWD';
@@ -957,6 +967,36 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     await cleanupTeamState(sanitized, cwd);
     restoreTeamModelInstructionsFile(sanitized);
     return;
+  }
+
+  if (!force) {
+    const allTasks = await listTasks(sanitized, cwd);
+    const gate: ShutdownGateCounts = {
+      total: allTasks.length,
+      pending: allTasks.filter((t) => t.status === 'pending').length,
+      blocked: allTasks.filter((t) => t.status === 'blocked').length,
+      in_progress: allTasks.filter((t) => t.status === 'in_progress').length,
+      completed: allTasks.filter((t) => t.status === 'completed').length,
+      failed: allTasks.filter((t) => t.status === 'failed').length,
+      allowed: false,
+    };
+    gate.allowed = gate.pending === 0 && gate.blocked === 0 && gate.in_progress === 0 && gate.failed === 0;
+
+    await appendTeamEvent(
+      sanitized,
+      {
+        type: 'shutdown_gate',
+        worker: 'leader-fixed',
+        reason: `allowed=${gate.allowed} total=${gate.total} pending=${gate.pending} blocked=${gate.blocked} in_progress=${gate.in_progress} completed=${gate.completed} failed=${gate.failed}`,
+      },
+      cwd,
+    ).catch(() => {});
+
+    if (!gate.allowed) {
+      throw new Error(
+        `shutdown_gate_blocked:pending=${gate.pending},blocked=${gate.blocked},in_progress=${gate.in_progress},failed=${gate.failed}`,
+      );
+    }
   }
 
   const sessionName = config.tmux_session;

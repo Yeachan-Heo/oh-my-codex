@@ -147,6 +147,7 @@ export interface TeamEvent {
     | 'worker_stopped'
     | 'message_received'
     | 'shutdown_ack'
+    | 'shutdown_gate'
     | 'approval_decision'
     | 'team_leader_nudge';
   worker: string;
