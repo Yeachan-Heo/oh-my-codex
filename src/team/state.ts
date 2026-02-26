@@ -27,6 +27,7 @@ export interface TeamConfig {
   leader_cwd?: string;
   team_state_root?: string;
   workspace_mode?: 'single' | 'worktree';
+  worker_launch_mode: 'interactive' | 'prompt';
   /** Leader's own tmux pane ID — must never be killed during worker cleanup. */
   leader_pane_id: string | null;
   /** HUD pane spawned below the leader column — excluded from worker pane cleanup. */
@@ -593,6 +594,7 @@ export async function initTeamState(
     leader_cwd: workspace.leader_cwd,
     team_state_root: workspace.team_state_root,
     workspace_mode: workspace.workspace_mode,
+    worker_launch_mode: workerLaunchMode,
     leader_pane_id: null,
     hud_pane_id: null,
     resize_hook_name: null,
@@ -665,6 +667,10 @@ async function writeConfig(cfg: TeamConfig, cwd: string): Promise<void> {
       hud_pane_id: normalized.hud_pane_id,
       resize_hook_name: normalized.resize_hook_name,
       resize_hook_target: normalized.resize_hook_target,
+      policy: {
+        ...existing.policy,
+        worker_launch_mode: normalized.worker_launch_mode,
+      },
       next_worker_index: normalized.next_worker_index ?? existing.next_worker_index,
     };
     await writeTeamManifestV2(merged, cwd);
@@ -685,6 +691,7 @@ function teamConfigFromManifest(manifest: TeamManifestV2): TeamConfig {
     leader_cwd: manifest.leader_cwd,
     team_state_root: manifest.team_state_root,
     workspace_mode: manifest.workspace_mode,
+    worker_launch_mode: manifest.policy.worker_launch_mode,
     leader_pane_id: manifest.leader_pane_id,
     hud_pane_id: manifest.hud_pane_id,
     resize_hook_name: manifest.resize_hook_name,
