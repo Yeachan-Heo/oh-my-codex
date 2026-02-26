@@ -130,8 +130,27 @@ async function main() {
           const statePath = join(scopedDir, f);
           const state = JSON.parse(await readFile(statePath, 'utf-8'));
           if (state.active) {
-            state.iteration = (state.iteration || 0) + 1;
-            state.last_turn_at = new Date().toISOString();
+            const nowIso = new Date().toISOString();
+            const nextIteration = (state.iteration || 0) + 1;
+            state.iteration = nextIteration;
+            state.last_turn_at = nowIso;
+
+            const maxIterations = asNumber(state.max_iterations);
+            if (maxIterations !== null && maxIterations > 0 && nextIteration >= maxIterations) {
+              state.active = false;
+              if (typeof state.current_phase !== 'string' || !state.current_phase.trim()) {
+                state.current_phase = 'complete';
+              } else if (!['cancelled', 'failed', 'complete'].includes(state.current_phase)) {
+                state.current_phase = 'complete';
+              }
+              if (typeof state.completed_at !== 'string' || !state.completed_at) {
+                state.completed_at = nowIso;
+              }
+              if (typeof state.stop_reason !== 'string' || !state.stop_reason) {
+                state.stop_reason = 'max_iterations_reached';
+              }
+            }
+
             await writeFile(statePath, JSON.stringify(state, null, 2));
           }
         }

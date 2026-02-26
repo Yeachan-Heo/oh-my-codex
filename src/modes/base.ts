@@ -168,10 +168,3 @@ export async function listActiveModes(projectRoot?: string): Promise<Array<{ mod
   }
   return active;
 }
-
-/**
- * Check if mode should continue (not exceeded max iterations, still active)
- */
-export function shouldContinue(state: ModeState): boolean {
-  return state.active && state.iteration < state.max_iterations;
-}
