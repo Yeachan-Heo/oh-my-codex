@@ -85,15 +85,16 @@ export function getModifiedFiles(
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 5000,
     });
-    const trimmedOutput = output.trim();
-    if (trimmedOutput.length === 0) {
+    const lines = output
+      .split('\n')
+      .map((line) => line.trimEnd())
+      .filter((line) => line.trim().length > 0);
+
+    if (lines.length === 0) {
       return [];
     }
 
-    const candidates = trimmedOutput
-      .split('\n')
-      .map((line) => line.trimEnd())
-      .filter((line) => line.length > 0)
+    const candidates = lines
       .flatMap((line) => {
         if (line.startsWith('?? ')) {
           return [line.slice(3).trim()];

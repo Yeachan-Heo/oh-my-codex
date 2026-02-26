@@ -58,4 +58,3 @@ describe('modes/base ralph contract integration', () => {
     }
   });
 });
-
