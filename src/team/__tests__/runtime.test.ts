@@ -310,6 +310,75 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
+  it('shutdownTeam force-kills prompt workers that ignore SIGTERM', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-prompt-stubborn-'));
+    const binDir = join(cwd, 'bin');
+    const fakeCodexPath = join(binDir, 'codex');
+    await mkdir(binDir, { recursive: true });
+    await writeFile(
+      fakeCodexPath,
+      `#!/usr/bin/env node
+process.stdin.resume();
+setInterval(() => {}, 1000);
+process.on('SIGTERM', () => {
+  // Intentionally ignore SIGTERM so runtime teardown must escalate.
+});
+`,
+      { mode: 0o755 },
+    );
+
+    const prevPath = process.env.PATH;
+    const prevTmux = process.env.TMUX;
+    const prevLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+
+    process.env.PATH = `${binDir}:${prevPath ?? ''}`;
+    delete process.env.TMUX;
+    process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
+    process.env.OMX_TEAM_WORKER_CLI = 'codex';
+
+    let runtime: TeamRuntime | null = null;
+    let workerPid = 0;
+    try {
+      runtime = await withoutTeamWorkerEnv(() =>
+        startTeam(
+          'team-prompt-stubborn',
+          'prompt-mode stubborn worker teardown',
+          'executor',
+          1,
+          [{ subject: 's', description: 'd', owner: 'worker-1' }],
+          cwd,
+        ));
+      workerPid = runtime.config.workers[0]?.pid ?? 0;
+      assert.ok(workerPid > 0, 'prompt worker PID should be captured');
+
+      await shutdownTeam(runtime.teamName, cwd, { force: true });
+      runtime = null;
+
+      let alive = false;
+      try {
+        process.kill(workerPid, 0);
+        alive = true;
+      } catch {
+        alive = false;
+      }
+      assert.equal(alive, false, `worker pid ${workerPid} should be terminated after shutdown`);
+    } finally {
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
+      }
+      if (typeof prevPath === 'string') process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
+      else delete process.env.TMUX;
+      if (typeof prevLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = prevLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('monitorTeam returns null for non-existent team', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-'));
     try {

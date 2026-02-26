@@ -164,6 +164,9 @@ interface PromptWorkerHandle {
 
 const promptWorkerRegistry = new Map<string, Map<string, PromptWorkerHandle>>();
 const previousModelInstructionsFileByTeam = new Map<string, string | undefined>();
+const PROMPT_WORKER_SIGTERM_WAIT_MS = 3_000;
+const PROMPT_WORKER_SIGKILL_WAIT_MS = 2_000;
+const PROMPT_WORKER_EXIT_POLL_MS = 100;
 
 function resolveWorkerReadyTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = env.OMX_TEAM_READY_TIMEOUT_MS;
@@ -227,6 +230,109 @@ function removePromptWorkerHandle(teamName: string, workerName: string): void {
   if (!teamHandles) return;
   teamHandles.delete(workerName);
   if (teamHandles.size === 0) promptWorkerRegistry.delete(teamName);
+}
+
+function isPidAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForPidExit(pid: number, timeoutMs: number): Promise<boolean> {
+  if (!isPidAlive(pid)) return true;
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, PROMPT_WORKER_EXIT_POLL_MS));
+    if (!isPidAlive(pid)) return true;
+  }
+  return !isPidAlive(pid);
+}
+
+interface PromptWorkerTeardownResult {
+  terminated: boolean;
+  forcedKill: boolean;
+  pid: number | null;
+  error?: string;
+}
+
+async function teardownPromptWorker(
+  teamName: string,
+  workerName: string,
+  fallbackPid: number | undefined,
+  cwd: string,
+  context: 'startup_rollback' | 'shutdown',
+): Promise<PromptWorkerTeardownResult> {
+  const handle = getPromptWorkerHandle(teamName, workerName);
+  const pid = Number.isFinite(handle?.pid)
+    ? (handle!.pid as number)
+    : (Number.isFinite(fallbackPid) && (fallbackPid ?? 0) > 0 ? (fallbackPid as number) : null);
+
+  if (pid === null) {
+    removePromptWorkerHandle(teamName, workerName);
+    return { terminated: true, forcedKill: false, pid: null };
+  }
+
+  try {
+    if (handle && handle.child.exitCode === null && !handle.child.killed) {
+      handle.child.kill('SIGTERM');
+    } else {
+      process.kill(pid, 'SIGTERM');
+    }
+  } catch {
+    // Best effort.
+  }
+
+  const exitedOnTerm = await waitForPidExit(pid, PROMPT_WORKER_SIGTERM_WAIT_MS);
+  if (exitedOnTerm) {
+    removePromptWorkerHandle(teamName, workerName);
+    return { terminated: true, forcedKill: false, pid };
+  }
+
+  await appendTeamEvent(
+    teamName,
+    {
+      type: 'worker_stopped',
+      worker: workerName,
+      reason: `prompt_force_kill:${context}:pid=${pid}`,
+    },
+    cwd,
+  ).catch(() => {});
+
+  try {
+    if (handle && handle.child.exitCode === null) {
+      handle.child.kill('SIGKILL');
+    } else {
+      process.kill(pid, 'SIGKILL');
+    }
+  } catch {
+    // Best effort.
+  }
+
+  const exitedOnKill = await waitForPidExit(pid, PROMPT_WORKER_SIGKILL_WAIT_MS);
+  if (!exitedOnKill) {
+    await appendTeamEvent(
+      teamName,
+      {
+        type: 'worker_stopped',
+        worker: workerName,
+        reason: `prompt_teardown_failed:${context}:pid=${pid}`,
+      },
+      cwd,
+    ).catch(() => {});
+    return {
+      terminated: false,
+      forcedKill: true,
+      pid,
+      error: 'still_alive_after_sigkill',
+    };
+  }
+
+  removePromptWorkerHandle(teamName, workerName);
+  return { terminated: true, forcedKill: true, pid };
 }
 
 function isPromptWorkerAlive(config: TeamConfig, worker: WorkerInfo): boolean {
@@ -659,18 +765,21 @@ export async function startTeam(
       }
     }
     if (workerLaunchMode === 'prompt' && config) {
+      const promptTeardownFailures: string[] = [];
       for (const worker of config.workers) {
-        try {
-          const handle = getPromptWorkerHandle(sanitized, worker.name);
-          if (handle) {
-            handle.child.kill('SIGTERM');
-          } else if (Number.isFinite(worker.pid) && (worker.pid ?? 0) > 0) {
-            process.kill(worker.pid as number, 'SIGTERM');
-          }
-        } catch {
-          // best effort
+        const teardown = await teardownPromptWorker(
+          sanitized,
+          worker.name,
+          worker.pid as number | undefined,
+          leaderCwd,
+          'startup_rollback',
+        );
+        if (!teardown.terminated) {
+          promptTeardownFailures.push(`${worker.name}:${teardown.error || 'unknown_error'}`);
         }
-        removePromptWorkerHandle(sanitized, worker.name);
+      }
+      if (promptTeardownFailures.length > 0) {
+        rollbackErrors.push(`promptTeardown:${promptTeardownFailures.join(',')}`);
       }
     }
 
@@ -1108,18 +1217,21 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       try { destroyTeamSession(sessionName); } catch { /* ignore */ }
     }
   } else {
+    const promptTeardownFailures: string[] = [];
     for (const w of config.workers) {
-      const handle = getPromptWorkerHandle(sanitized, w.name);
-      try {
-        if (handle) {
-          handle.child.kill('SIGTERM');
-        } else if (Number.isFinite(w.pid) && (w.pid ?? 0) > 0) {
-          process.kill(w.pid as number, 'SIGTERM');
-        }
-      } catch {
-        // ignore
+      const teardown = await teardownPromptWorker(
+        sanitized,
+        w.name,
+        w.pid as number | undefined,
+        cwd,
+        'shutdown',
+      );
+      if (!teardown.terminated) {
+        promptTeardownFailures.push(`${w.name}:${teardown.error || 'unknown_error'}`);
       }
-      removePromptWorkerHandle(sanitized, w.name);
+    }
+    if (promptTeardownFailures.length > 0) {
+      throw new Error(`shutdown_prompt_teardown_failed:${promptTeardownFailures.join(',')}`);
     }
   }
 
