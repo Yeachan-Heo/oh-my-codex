@@ -21,8 +21,6 @@
  * - OMX: AGENTS.md instructs model -> model self-detects keyword -> model loads skill
  */
 
-import { KEYWORD_TRIGGER_DEFINITIONS } from './keyword-registry.js';
-
 /**
  * Hook event types (for compatibility with OMC concepts)
  */
