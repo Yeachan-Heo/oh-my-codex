@@ -900,10 +900,10 @@ export async function withScalingLock<T>(
   const ownerPath = join(lockDir, 'owner');
   const ownerToken = `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
   const deadline = Date.now() + 10_000;
+  // Ensure parent directory exists before entering spin loop
+  await mkdir(dirname(lockDir), { recursive: true });
   while (true) {
     try {
-      // Ensure parent directory exists before atomic lock creation
-      await mkdir(dirname(lockDir), { recursive: true });
       await mkdir(lockDir);
       try {
         await writeFile(ownerPath, ownerToken, 'utf8');
