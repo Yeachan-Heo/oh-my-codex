@@ -55,7 +55,6 @@ import {
   type WorkerHeartbeat,
   type WorkerStatus,
   type TeamTask,
-  type ShutdownAck,
   type TeamMonitorSnapshotState,
   type TeamPhaseState,
 } from './team-ops.js';

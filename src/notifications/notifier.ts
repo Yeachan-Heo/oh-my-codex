@@ -152,7 +152,6 @@ async function sendTelegramNotification(
   botToken: string,
   chatId: string
 ): Promise<void> {
-  const iconMap = { info: 'info', success: 'white_check_mark', warning: 'warning', error: 'x' };
   const text = `*[OMX] ${payload.title}*\n${payload.message}`;
 
   try {

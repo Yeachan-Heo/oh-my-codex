@@ -91,7 +91,7 @@ import type {
   FullNotificationPayload,
   DispatchResult,
 } from "./types.js";
-import { getNotificationConfig, isEventEnabled, getActiveProfileName, getVerbosity, shouldIncludeTmuxTail } from "./config.js";
+import { getNotificationConfig, isEventEnabled, getVerbosity, shouldIncludeTmuxTail } from "./config.js";
 import { formatNotification } from "./formatter.js";
 import { dispatchNotifications } from "./dispatcher.js";
 import { getCurrentTmuxSession, captureTmuxPane } from "./tmux.js";

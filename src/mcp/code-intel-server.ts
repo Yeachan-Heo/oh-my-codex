@@ -20,10 +20,6 @@ const execFileAsync = promisify(execFile);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function cwd(wd?: string): string {
-  return wd || process.cwd();
-}
-
 function text(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
 }

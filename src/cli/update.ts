@@ -9,7 +9,6 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { createInterface } from 'readline/promises';
 import { getPackageRoot } from '../utils/package.js';
-import { notify } from '../notifications/notifier.js';
 
 interface UpdateState {
   last_checked_at: string;

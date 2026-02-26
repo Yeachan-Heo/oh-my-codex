@@ -18,7 +18,7 @@ import { readFile, writeFile, mkdir, rm, readdir } from 'fs/promises';
 import { dirname, join } from 'path';
 import { existsSync } from 'fs';
 import { omxNotepadPath, omxProjectMemoryPath } from '../utils/paths.js';
-import { getBaseStateDir, getStateDir, listModeStateFilesWithScopePreference } from '../mcp/state-paths.js';
+import { getStateDir, listModeStateFilesWithScopePreference } from '../mcp/state-paths.js';
 import { generateCodebaseMap } from './codebase-map.js';
 
 const START_MARKER = '<!-- OMX:RUNTIME:START -->';
@@ -119,13 +119,6 @@ function capBodyToMax(sections: OverlaySection[], maxBody: number): string {
 }
 
 // ── Overlay generation ───────────────────────────────────────────────────────
-
-interface OverlayData {
-  sessionId: string;
-  activeModes: string;
-  notepadPriority: string;
-  projectMemory: string;
-}
 
 async function isRalphActive(cwd: string, sessionId?: string): Promise<boolean> {
   const refs = await listModeStateFilesWithScopePreference(cwd, sessionId);

@@ -13,8 +13,7 @@
  * - Safe: all errors return empty string (never blocks session start)
  */
 
-import { readFile } from 'fs/promises';
-import { join, extname, basename } from 'path';
+import { extname, basename } from 'path';
 import { execSync } from 'child_process';
 
 /** Max chars for the whole map output. */
@@ -22,9 +21,6 @@ const MAX_MAP_CHARS = 1000;
 
 /** Max files listed per directory entry. */
 const MAX_FILES_PER_DIR = 10;
-
-/** Max exported symbols extracted per file. */
-const MAX_EXPORTS_PER_FILE = 8;
 
 /** Max directories to include. */
 const MAX_DIRS = 14;
@@ -48,28 +44,6 @@ function getTrackedSourceFiles(cwd: string): string[] {
       .trim()
       .split('\n')
       .filter((f) => f && SOURCE_EXTS.has(extname(f)));
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Extract exported symbol names from a source file using line-by-line regex.
- * No AST — intentionally fast and approximate.
- */
-async function extractExports(absPath: string): Promise<string[]> {
-  try {
-    const content = await readFile(absPath, 'utf-8');
-    const found: string[] = [];
-    for (const line of content.split('\n')) {
-      if (found.length >= MAX_EXPORTS_PER_FILE) break;
-      // export [async] function|class|const|type|interface|enum Name
-      const m =
-        line.match(/^export\s+(?:async\s+)?(?:function|class|const|let|var|type|interface|enum)\s+(\w+)/) ||
-        line.match(/^export\s+default\s+(?:async\s+)?(?:function|class)\s+(\w+)/);
-      if (m) found.push(m[1]);
-    }
-    return found;
   } catch {
     return [];
   }
@@ -112,14 +86,14 @@ function sortDirs(dirs: string[]): string[] {
 }
 
 /**
- * Build a single directory line, optionally with key exports.
+ * Build a single directory line.
  * Format: `  src/hooks/: agents-overlay, codebase-map, session`
  */
-function buildDirLine(dir: string, files: string[], exports: Map<string, string[]>): string {
+function buildDirLine(dir: string, files: string[]): string {
   const names = files
     .slice(0, MAX_FILES_PER_DIR)
     .map((f) => basename(f).replace(/\.(ts|tsx|js|mjs)$/, ''))
-    .filter((n, i, arr) => n !== 'index' || arr.length === 1); // keep index only if sole file
+    .filter((n, _index, arr) => n !== 'index' || arr.length === 1); // keep index only if sole file
 
   if (names.length === 0) return '';
 
@@ -144,8 +118,6 @@ export async function generateCodebaseMap(cwd: string): Promise<string> {
 
     // For the src/ directory, break down sub-directories for finer granularity
     const lines: string[] = [];
-    const exportMap = new Map<string, string[]>();
-
     for (const dir of sortedDirs.slice(0, MAX_DIRS)) {
       const dirFiles = grouped.get(dir) ?? [];
 
@@ -161,11 +133,11 @@ export async function generateCodebaseMap(cwd: string): Promise<string> {
         const sortedSubs = [...subGrouped.keys()].sort((a, b) => a.localeCompare(b));
         for (const sub of sortedSubs.slice(0, MAX_DIRS)) {
           const subFiles = subGrouped.get(sub) ?? [];
-          const line = buildDirLine(sub, subFiles, exportMap);
+          const line = buildDirLine(sub, subFiles);
           if (line) lines.push(line);
         }
       } else {
-        const line = buildDirLine(dir, dirFiles, exportMap);
+        const line = buildDirLine(dir, dirFiles);
         if (line) lines.push(line);
       }
     }

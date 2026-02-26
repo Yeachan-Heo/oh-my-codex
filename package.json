@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "check:no-unused": "tsc -p tsconfig.no-unused.json",
     "dev": "tsc --watch",
     "setup": "node bin/omx.js setup",
     "doctor": "node bin/omx.js doctor",

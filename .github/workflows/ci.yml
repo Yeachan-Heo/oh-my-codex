@@ -22,6 +22,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx tsc --noEmit
+      - run: npm run check:no-unused
 
   test:
     name: Test

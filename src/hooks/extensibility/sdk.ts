@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import { appendFile, mkdir, readFile, unlink, writeFile } from 'fs/promises';
 import { createHash } from 'crypto';
-import { dirname, join, resolve } from 'path';
+import { dirname, join } from 'path';
 import { spawnSync } from 'child_process';
 import type {
   HookEventEnvelope,

@@ -18,7 +18,6 @@ import {
   getBaseStateDir,
   getStateDir,
   listModeStateFilesWithScopePreference,
-  resolveStateScope,
 } from '../mcp/state-paths.js';
 import { maybeCheckAndPromptUpdate } from './update.js';
 import { maybePromptGithubStar } from './star-prompt.js';
@@ -528,10 +527,6 @@ export function resolveWorkerSparkModel(args: string[], codexHomeOverride?: stri
     }
   }
   return undefined;
-}
-
-function isReasoningOverride(value: string): boolean {
-  return new RegExp(`^${REASONING_KEY}\\s*=`).test(value.trim());
 }
 
 function isModelInstructionsOverride(value: string): boolean {

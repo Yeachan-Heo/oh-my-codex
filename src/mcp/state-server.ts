@@ -56,7 +56,6 @@ import {
   teamWriteMonitorSnapshot,
   teamReadTaskApproval,
   teamWriteTaskApproval,
-  teamSaveConfig,
   type TeamMonitorSnapshotState,
 } from '../team/team-ops.js';
 
@@ -65,7 +64,6 @@ const SUPPORTED_MODES = [
   'ralph', 'ultrawork', 'ultraqa', 'ecomode', 'ralplan',
 ] as const;
 
-type Mode = typeof SUPPORTED_MODES[number];
 const STATE_TOOL_NAMES = new Set([
   'state_read',
   'state_write',
