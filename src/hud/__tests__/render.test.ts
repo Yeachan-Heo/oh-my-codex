@@ -10,6 +10,10 @@ const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
 const CYAN = '\x1b[36m';
 
+function stripSgr(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
 afterEach(() => {
   mock.restoreAll();
   setColorEnabled(true);
@@ -563,5 +567,24 @@ describe('renderHud – separator', () => {
     const ctx = { ...emptyCtx(), gitBranch: 'solo' };
     const result = renderHud(ctx, 'focused');
     assert.ok(!result.includes(' | '));
+  });
+});
+
+// ── Sanitization ─────────────────────────────────────────────────────────────
+
+describe('renderHud – sanitization', () => {
+  it('strips terminal control characters from dynamic state text', () => {
+    const injected = 'safe\x1b]8;;https://evil.example\x07click\x1b]8;;\x07\nnext';
+    const ctx = {
+      ...emptyCtx(),
+      gitBranch: injected,
+      autopilot: { active: true, current_phase: injected },
+      team: { active: true, team_name: injected },
+      pipeline: { active: true, current_phase: injected },
+    };
+
+    const plain = stripSgr(renderHud(ctx, 'focused'));
+    assert.doesNotMatch(plain, /[\x00-\x1f\x7f-\x9f]/);
+    assert.ok(plain.includes('safe]8;;https://evil.exampleclick]8;;next'));
   });
 });

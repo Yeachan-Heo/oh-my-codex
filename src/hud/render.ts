@@ -5,14 +5,13 @@
  */
 
 import type { HudRenderContext, HudPreset } from './types.js';
-import { green, yellow, cyan, dim, bold, getRalphColor, RESET, isColorEnabled } from './colors.js';
+import { green, yellow, cyan, dim, bold, getRalphColor, RESET } from './colors.js';
 
-function elapsedSeconds(timestamp: string): number | null {
-  const at = new Date(timestamp).getTime();
-  if (!Number.isFinite(at)) return null;
-  const diffSec = Math.round((Date.now() - at) / 1000);
-  if (!Number.isFinite(diffSec)) return null;
-  return Math.max(0, diffSec);
+const SEP = dim(' | ');
+const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f-\u009f]/g;
+
+function sanitizeDynamicText(value: string): string {
+  return value.replace(CONTROL_CHARS_RE, '');
 }
 
 function formatTokenCount(value: number): string {
@@ -37,15 +36,14 @@ function isCurrentSessionMetrics(ctx: HudRenderContext): boolean {
 
 function renderGitBranch(ctx: HudRenderContext): string | null {
   if (!ctx.gitBranch) return null;
-  return cyan(ctx.gitBranch);
+  const gitBranch = sanitizeDynamicText(ctx.gitBranch);
+  if (!gitBranch) return null;
+  return cyan(gitBranch);
 }
 
 function renderRalph(ctx: HudRenderContext): string | null {
   if (!ctx.ralph) return null;
   const { iteration, max_iterations } = ctx.ralph;
-  if (!isColorEnabled()) {
-    return `ralph:${iteration}/${max_iterations}`;
-  }
   const color = getRalphColor(iteration, max_iterations);
   return `${color}ralph:${iteration}/${max_iterations}${RESET}`;
 }
@@ -57,14 +55,14 @@ function renderUltrawork(ctx: HudRenderContext): string | null {
 
 function renderAutopilot(ctx: HudRenderContext): string | null {
   if (!ctx.autopilot) return null;
-  const phase = ctx.autopilot.current_phase || 'active';
+  const phase = sanitizeDynamicText(ctx.autopilot.current_phase || 'active') || 'active';
   return yellow(`autopilot:${phase}`);
 }
 
 function renderTeam(ctx: HudRenderContext): string | null {
   if (!ctx.team) return null;
   const count = ctx.team.agent_count;
-  const name = ctx.team.team_name;
+  const name = ctx.team.team_name ? sanitizeDynamicText(ctx.team.team_name) : '';
   if (count !== undefined && count > 0) {
     return green(`team:${count} workers`);
   }
@@ -81,7 +79,7 @@ function renderEcomode(ctx: HudRenderContext): string | null {
 
 function renderPipeline(ctx: HudRenderContext): string | null {
   if (!ctx.pipeline) return null;
-  const phase = ctx.pipeline.current_phase || 'active';
+  const phase = sanitizeDynamicText(ctx.pipeline.current_phase || 'active') || 'active';
   return cyan(`pipeline:${phase}`);
 }
 
@@ -115,8 +113,9 @@ function renderQuota(ctx: HudRenderContext): string | null {
 
 function renderLastActivity(ctx: HudRenderContext): string | null {
   if (!ctx.hudNotify?.last_turn_at) return null;
-  const diffSec = elapsedSeconds(ctx.hudNotify.last_turn_at);
-  if (diffSec === null) return null;
+  const lastAt = new Date(ctx.hudNotify.last_turn_at).getTime();
+  const now = Date.now();
+  const diffSec = Math.round((now - lastAt) / 1000);
 
   if (diffSec < 60) return dim(`last:${diffSec}s ago`);
   const diffMin = Math.round(diffSec / 60);
@@ -130,8 +129,9 @@ function renderTotalTurns(ctx: HudRenderContext): string | null {
 
 function renderSessionDuration(ctx: HudRenderContext): string | null {
   if (!ctx.session?.started_at) return null;
-  const diffSec = elapsedSeconds(ctx.session.started_at);
-  if (diffSec === null) return null;
+  const startedAt = new Date(ctx.session.started_at).getTime();
+  const now = Date.now();
+  const diffSec = Math.round((now - startedAt) / 1000);
 
   if (diffSec < 60) return dim(`session:${diffSec}s`);
   if (diffSec < 3600) return dim(`session:${Math.round(diffSec / 60)}m`);
@@ -204,7 +204,6 @@ export function renderHud(ctx: HudRenderContext, preset: HudPreset): string {
   const parts = elements
     .map(fn => fn(ctx))
     .filter((s): s is string => s !== null);
-  const separator = dim(' | ');
 
   const ver = ctx.version ? `#${ctx.version.replace(/^v/, '')}` : '';
   const label = bold(`[OMX${ver}]`);
@@ -213,5 +212,5 @@ export function renderHud(ctx: HudRenderContext, preset: HudPreset): string {
     return label + ' ' + dim('No active modes.');
   }
 
-  return label + ' ' + parts.join(separator);
+  return label + ' ' + parts.join(SEP);
 }
