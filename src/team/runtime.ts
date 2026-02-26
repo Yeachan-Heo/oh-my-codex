@@ -1895,7 +1895,7 @@ export async function sendWorkerMessage(
       ),
     });
     let finalOutcome = outcome;
-    const canLeaderFallbackDirectly = Boolean(config.tmux_session) && isTmuxAvailable();
+    const canLeaderFallbackDirectly = Boolean(config.leader_pane_id) && isTmuxAvailable();
     if (leaderTransportPreference === 'hook_preferred_with_fallback' && canLeaderFallbackDirectly) {
       if (!outcome.request_id || !outcome.message_id) {
         throw new Error('mailbox_notify_failed:dispatch_request_missing_id');

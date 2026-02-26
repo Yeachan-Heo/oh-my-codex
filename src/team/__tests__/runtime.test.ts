@@ -10,6 +10,7 @@ import {
   createTask,
   writeWorkerIdentity,
   readTeamConfig,
+  saveTeamConfig,
   listMailboxMessages,
   listDispatchRequests,
   updateWorkerHeartbeat,
@@ -1226,6 +1227,11 @@ process.exit(0);
       process.env.PATH = `${binDir}:${prevPath ?? ''}`;
 
       await initTeamState('team-leader-hook', 'leader hook fallback test', 'executor', 1, cwd);
+      const cfg = await readTeamConfig('team-leader-hook', cwd);
+      assert.ok(cfg);
+      if (!cfg) throw new Error('missing team config');
+      cfg.leader_pane_id = '%999';
+      await saveTeamConfig(cfg, cwd);
       await sendWorkerMessage('team-leader-hook', 'worker-1', 'leader-fixed', 'hello leader', cwd);
 
       const mailbox = await listMailboxMessages('team-leader-hook', 'leader-fixed', cwd);
