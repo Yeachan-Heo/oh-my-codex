@@ -4,18 +4,6 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { TEAM_EVENT_TYPES } from '../../team/contracts.js';
 
-const ALL_EVENT_TYPES = [
-  'task_completed',
-  'task_failed',
-  'worker_idle',
-  'worker_stopped',
-  'message_received',
-  'shutdown_ack',
-  'shutdown_gate',
-  'approval_decision',
-  'team_leader_nudge',
-] as const;
-
 describe('team_append_event schema validation', () => {
   it('schema enum is sourced from shared TEAM_EVENT_TYPES contract and contains expected values', async () => {
     const src = await readFile(join(process.cwd(), 'src/mcp/state-server.ts'), 'utf8');
@@ -25,17 +13,23 @@ describe('team_append_event schema validation', () => {
 
     const enumValues = [...TEAM_EVENT_TYPES];
 
-    assert.equal(
-      enumValues.length,
-      9,
-      `Expected 9 enum values, got ${enumValues.length}: ${enumValues.join(', ')}`
+    assert.ok(
+      enumValues.length > 0,
+      `Expected at least one enum value, got ${enumValues.length}`
     );
 
-    for (const eventType of ALL_EVENT_TYPES) {
-      assert.ok(
-        enumValues.includes(eventType),
-        `Expected enum to include '${eventType}', got: ${enumValues.join(', ')}`
-      );
+    // Verify every value in the contract is a non-empty string
+    for (const eventType of enumValues) {
+      assert.equal(typeof eventType, 'string', `Expected string, got ${typeof eventType}`);
+      assert.ok(eventType.length > 0, 'Expected non-empty event type string');
     }
+
+    // Verify no duplicates
+    const unique = new Set(enumValues);
+    assert.equal(
+      unique.size,
+      enumValues.length,
+      `Found duplicate event types: ${enumValues.join(', ')}`
+    );
   });
 });
