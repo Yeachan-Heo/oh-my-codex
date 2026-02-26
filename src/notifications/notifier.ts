@@ -10,6 +10,7 @@ import { existsSync } from 'fs';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
+const HTTP_REQUEST_TIMEOUT_MS = 10_000;
 
 export interface NotificationConfig {
   desktop?: boolean;
@@ -28,6 +29,14 @@ export interface NotificationPayload {
   type: 'info' | 'success' | 'warning' | 'error';
   mode?: string;
   projectPath?: string;
+}
+
+interface JsonHttpsRequestOptions {
+  hostname: string;
+  path: string;
+  body: string;
+  errorPrefix: string;
+  timeoutMs?: number;
 }
 
 /**
@@ -113,6 +122,32 @@ async function sendDesktopNotification(payload: NotificationPayload): Promise<vo
   }
 }
 
+export async function _sendJsonHttpsRequest(options: JsonHttpsRequestOptions): Promise<void> {
+  const { default: https } = await import('https');
+  await new Promise<void>((resolve, reject) => {
+    const req = https.request({
+      hostname: options.hostname,
+      path: options.path,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    }, (res) => {
+      res.resume();
+      if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+        reject(new Error(`${options.errorPrefix}_http_${res.statusCode || 'unknown'}`));
+        return;
+      }
+      resolve();
+    });
+
+    req.setTimeout(options.timeoutMs ?? HTTP_REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error(`${options.errorPrefix}_request_timeout`));
+    });
+    req.on('error', reject);
+    req.write(options.body);
+    req.end();
+  });
+}
+
 async function sendDiscordNotification(payload: NotificationPayload, webhookUrl: string): Promise<void> {
   const colorMap = { info: 3447003, success: 3066993, warning: 15105570, error: 15158332 };
   const body = JSON.stringify({
@@ -126,21 +161,12 @@ async function sendDiscordNotification(payload: NotificationPayload, webhookUrl:
   });
 
   try {
-    const { default: https } = await import('https');
-    await new Promise<void>((resolve, reject) => {
-      const url = new URL(webhookUrl);
-      const req = https.request({
-        hostname: url.hostname,
-        path: url.pathname,
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      }, (res) => {
-        res.resume();
-        resolve();
-      });
-      req.on('error', reject);
-      req.write(body);
-      req.end();
+    const url = new URL(webhookUrl);
+    await _sendJsonHttpsRequest({
+      hostname: url.hostname,
+      path: url.pathname,
+      body,
+      errorPrefix: 'discord',
     });
   } catch {
     // Discord notification is best-effort
@@ -155,21 +181,12 @@ async function sendTelegramNotification(
   const text = `*[OMX] ${payload.title}*\n${payload.message}`;
 
   try {
-    const { default: https } = await import('https');
     const body = JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' });
-    await new Promise<void>((resolve, reject) => {
-      const req = https.request({
-        hostname: 'api.telegram.org',
-        path: `/bot${botToken}/sendMessage`,
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      }, (res) => {
-        res.resume();
-        resolve();
-      });
-      req.on('error', reject);
-      req.write(body);
-      req.end();
+    await _sendJsonHttpsRequest({
+      hostname: 'api.telegram.org',
+      path: `/bot${botToken}/sendMessage`,
+      body,
+      errorPrefix: 'telegram',
     });
   } catch {
     // Telegram notification is best-effort

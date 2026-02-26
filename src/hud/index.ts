@@ -14,36 +14,61 @@ import { readAllState, readHudConfig } from './state.js';
 import { renderHud } from './render.js';
 import type { HudFlags, HudPreset } from './types.js';
 import { HUD_TMUX_HEIGHT_LINES } from './constants.js';
-import { setColorEnabled, shouldEnableColorOutput } from './colors.js';
 
-type IntervalHandle = ReturnType<typeof setInterval>;
+type SleepFn = (ms: number, signal?: AbortSignal) => Promise<void>;
 
-interface RunWatchModeDeps {
-  readAllStateFn: typeof readAllState;
-  readHudConfigFn: typeof readHudConfig;
-  renderHudFn: typeof renderHud;
-  writeStdout: (text: string) => void;
-  writeStderr: (text: string) => void;
-  registerSigint: (handler: () => void) => void;
-  setIntervalFn: (handler: () => void, delayMs: number) => IntervalHandle;
-  clearIntervalFn: (handle: IntervalHandle) => void;
-  isTTY: boolean | undefined;
-  env: Record<string, string | undefined>;
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  if (!signal) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    };
+
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
-function resolveWatchModeDeps(overrides: Partial<RunWatchModeDeps> = {}): RunWatchModeDeps {
-  return {
-    readAllStateFn: overrides.readAllStateFn ?? readAllState,
-    readHudConfigFn: overrides.readHudConfigFn ?? readHudConfig,
-    renderHudFn: overrides.renderHudFn ?? renderHud,
-    writeStdout: overrides.writeStdout ?? ((text: string) => { process.stdout.write(text); }),
-    writeStderr: overrides.writeStderr ?? ((text: string) => { process.stderr.write(text); }),
-    registerSigint: overrides.registerSigint ?? ((handler: () => void) => { process.on('SIGINT', handler); }),
-    setIntervalFn: overrides.setIntervalFn ?? setInterval,
-    clearIntervalFn: overrides.clearIntervalFn ?? clearInterval,
-    isTTY: overrides.isTTY ?? process.stdout.isTTY,
-    env: overrides.env ?? (process.env as Record<string, string | undefined>),
-  };
+export async function watchRenderLoop(
+  render: () => Promise<void>,
+  options: {
+    intervalMs?: number;
+    signal?: AbortSignal;
+    onError?: (error: unknown) => void;
+    sleepFn?: SleepFn;
+  } = {},
+): Promise<void> {
+  const intervalMs = Math.max(0, options.intervalMs ?? 1000);
+  const sleepFn = options.sleepFn ?? sleep;
+  const signal = options.signal;
+
+  while (!signal?.aborted) {
+    const startedAt = Date.now();
+    try {
+      await render();
+    } catch (error) {
+      options.onError?.(error);
+    }
+
+    if (signal?.aborted) return;
+    const elapsedMs = Date.now() - startedAt;
+    await sleepFn(Math.max(0, intervalMs - elapsedMs), signal);
+  }
 }
 
 function parseHudPreset(value: string | undefined): HudPreset | undefined {
@@ -75,7 +100,6 @@ function parseFlags(args: string[]): HudFlags {
 }
 
 async function renderOnce(cwd: string, flags: HudFlags): Promise<void> {
-  setColorEnabled(shouldEnableColorOutput(process.stdout.isTTY, process.env));
   const [ctx, config] = await Promise.all([
     readAllState(cwd),
     readHudConfig(cwd),
@@ -89,104 +113,6 @@ async function renderOnce(cwd: string, flags: HudFlags): Promise<void> {
   }
 
   console.log(renderHud(ctx, preset));
-}
-
-export async function runWatchMode(
-  cwd: string,
-  flags: HudFlags,
-  depsOverrides: Partial<RunWatchModeDeps> = {},
-): Promise<void> {
-  const deps = resolveWatchModeDeps(depsOverrides);
-  const ansiEnabled = shouldEnableColorOutput(deps.isTTY, deps.env);
-  setColorEnabled(ansiEnabled);
-
-  let firstRender = true;
-  let stopped = false;
-  let renderInFlight = false;
-  let rerenderQueued = false;
-  let interval: IntervalHandle | null = null;
-  let resolveDone: (() => void) | undefined;
-  const done = new Promise<void>((resolve) => {
-    resolveDone = resolve;
-  });
-
-  const stop = (exitCode?: number) => {
-    if (stopped) return;
-    stopped = true;
-    if (interval) {
-      deps.clearIntervalFn(interval);
-      interval = null;
-    }
-    if (ansiEnabled) {
-      deps.writeStdout('\x1b[?25h\x1b[2J\x1b[H');
-    }
-    if (typeof exitCode === 'number' && exitCode !== 0) {
-      process.exitCode = exitCode;
-    }
-    resolveDone?.();
-  };
-
-  const renderFrame = async () => {
-    const [ctx, config] = await Promise.all([
-      deps.readAllStateFn(cwd),
-      deps.readHudConfigFn(cwd),
-    ]);
-    const preset = flags.preset ?? config.preset;
-    const line = deps.renderHudFn(ctx, preset);
-
-    if (ansiEnabled) {
-      if (firstRender) {
-        deps.writeStdout('\x1b[2J\x1b[H');
-        firstRender = false;
-      } else {
-        deps.writeStdout('\x1b[H');
-      }
-      deps.writeStdout(line + '\x1b[K\n\x1b[J');
-      return;
-    }
-
-    deps.writeStdout(`${line}\n`);
-  };
-
-  const tick = () => {
-    if (stopped) return;
-    if (renderInFlight) {
-      rerenderQueued = true;
-      return;
-    }
-    renderInFlight = true;
-    void (async () => {
-      try {
-        await renderFrame();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        deps.writeStderr(`HUD watch render failed: ${message}\n`);
-        stop(1);
-        return;
-      } finally {
-        renderInFlight = false;
-      }
-
-      if (rerenderQueued && !stopped) {
-        rerenderQueued = false;
-        tick();
-      }
-    })();
-  };
-
-  if (ansiEnabled) {
-    deps.writeStdout('\x1b[?25l');
-  }
-
-  deps.registerSigint(() => {
-    stop(0);
-  });
-
-  interval = deps.setIntervalFn(() => {
-    tick();
-  }, 1000);
-  tick();
-  await done;
 }
 
 export async function hudCommand(args: string[]): Promise<void> {
@@ -203,7 +129,44 @@ export async function hudCommand(args: string[]): Promise<void> {
     return;
   }
 
-  await runWatchMode(cwd, flags);
+  // Watch mode: overwrite in-place (no flicker)
+  let firstRender = true;
+  const render = async () => {
+    if (firstRender) {
+      process.stdout.write('\x1b[2J\x1b[H'); // Clear screen on first render only
+      firstRender = false;
+    } else {
+      process.stdout.write('\x1b[H'); // Move cursor to top-left (no clear)
+    }
+    const [ctx, config] = await Promise.all([
+      readAllState(cwd),
+      readHudConfig(cwd),
+    ]);
+    const preset = flags.preset ?? config.preset;
+    const line = renderHud(ctx, preset);
+    process.stdout.write(line + '\x1b[K\n\x1b[J'); // Write line, clear rest of line + below
+  };
+
+  process.stdout.write('\x1b[?25l'); // Hide cursor
+  const abortController = new AbortController();
+  const onSigint = () => {
+    abortController.abort();
+  };
+
+  process.on('SIGINT', onSigint);
+  try {
+    await render();
+    await watchRenderLoop(render, {
+      intervalMs: 1000,
+      signal: abortController.signal,
+      onError: (error) => {
+        console.warn('[omx] warning: hud watch render failed', error);
+      },
+    });
+  } finally {
+    process.off('SIGINT', onSigint);
+    process.stdout.write('\x1b[?25h\x1b[2J\x1b[H'); // Show cursor + clear
+  }
 }
 
 /** Shell-escape a string using single-quote wrapping (POSIX-safe). */

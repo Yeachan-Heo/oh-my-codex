@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -103,6 +103,41 @@ describe('dispatchHookEvent', () => {
       assert.equal(result.results.length, 1);
       assert.equal(result.results[0].ok, true);
       assert.equal(result.results[0].plugin, 'good');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not execute plugin top-level code in the parent process', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-'));
+    try {
+      const dir = join(cwd, '.omx', 'hooks');
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        join(dir, 'top-level-side-effect.mjs'),
+        `import { appendFileSync } from 'node:fs';
+import { join } from 'node:path';
+appendFileSync(join(process.cwd(), '.omx', 'top-level-pids.log'), String(process.pid) + '\\n');
+export async function onHookEvent() {}
+`,
+      );
+
+      const event = buildHookEvent('session-start');
+      const result = await dispatchHookEvent(event, {
+        cwd,
+        env: { ...process.env, OMX_HOOK_PLUGINS: '1' },
+      });
+
+      assert.equal(result.enabled, true);
+      assert.equal(result.results.length, 1);
+      assert.equal(result.results[0].ok, true);
+
+      const pids = (await readFile(join(cwd, '.omx', 'top-level-pids.log'), 'utf-8'))
+        .trim()
+        .split('\n')
+        .filter(Boolean);
+      assert.equal(pids.length, 1);
+      assert.notEqual(pids[0], String(process.pid));
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

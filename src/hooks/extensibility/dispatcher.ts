@@ -7,7 +7,6 @@ import {
   discoverHookPlugins,
   isHookPluginsEnabled,
   resolveHookPluginTimeoutMs,
-  validateHookPluginExport,
 } from './loader.js';
 import type {
   HookDispatchOptions,
@@ -230,33 +229,6 @@ export async function dispatchHookEvent(
   const sideEffectsEnabled = options.sideEffectsEnabled ?? (!inTeamWorker || allowTeamSideEffects);
 
   for (const plugin of plugins) {
-    const validation = await validateHookPluginExport(plugin.path);
-    if (!validation.valid) {
-      const invalid: HookPluginDispatchResult = {
-        plugin: plugin.id,
-        path: plugin.path,
-        file: plugin.file,
-        plugin_id: plugin.id,
-        ok: false,
-        status: 'invalid_export',
-        reason: validation.reason || 'invalid_export',
-        durationMs: 0,
-        duration_ms: 0,
-      };
-      summary.results.push(invalid);
-      await appendHooksLog(cwd, {
-        type: 'hook_plugin_dispatch',
-        event: event.event,
-        source: event.source,
-        plugin: plugin.id,
-        file: plugin.file,
-        ok: false,
-        status: invalid.status,
-        reason: invalid.reason,
-      });
-      continue;
-    }
-
     const result = await runPluginRunner(plugin, event, { ...options, cwd, env }, sideEffectsEnabled);
     summary.results.push(result);
 
