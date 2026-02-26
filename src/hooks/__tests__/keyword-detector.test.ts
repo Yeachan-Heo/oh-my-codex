@@ -1,6 +1,6 @@
 import { afterEach, describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -188,5 +188,74 @@ describe('keyword detector skill-active-state lifecycle', () => {
     assert.equal(result.skill, 'autopilot');
     assert.equal(warnings.length, 1);
     assert.match(String(warnings[0][0]), /failed to persist keyword activation state/);
+  });
+
+  it('preserves activated_at for same-skill continuation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-continuation-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const statePath = join(stateDir, SKILL_ACTIVE_STATE_FILE);
+    try {
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        statePath,
+        JSON.stringify({
+          version: 1,
+          active: true,
+          skill: 'autopilot',
+          keyword: 'autopilot',
+          phase: 'planning',
+          activated_at: '2026-02-25T00:00:00.000Z',
+          updated_at: '2026-02-25T00:10:00.000Z',
+          source: 'keyword-detector',
+        }),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: 'autopilot keep going',
+        nowIso: '2026-02-26T00:00:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.activated_at, '2026-02-25T00:00:00.000Z');
+      assert.equal(result.updated_at, '2026-02-26T00:00:00.000Z');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('resets activated_at when skill changes', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-skill-switch-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const statePath = join(stateDir, SKILL_ACTIVE_STATE_FILE);
+    try {
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        statePath,
+        JSON.stringify({
+          version: 1,
+          active: true,
+          skill: 'autopilot',
+          keyword: 'autopilot',
+          phase: 'planning',
+          activated_at: '2026-02-25T00:00:00.000Z',
+          updated_at: '2026-02-25T00:10:00.000Z',
+          source: 'keyword-detector',
+        }),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: 'please run ralph now',
+        nowIso: '2026-02-26T00:00:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'ralph');
+      assert.equal(result.activated_at, '2026-02-26T00:00:00.000Z');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
   });
 });
