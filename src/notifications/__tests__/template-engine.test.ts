@@ -90,6 +90,19 @@ describe('computeTemplateVariables', () => {
   });
 });
 
+describe('validateTemplate - reply context variables', () => {
+  it('accepts replyChannel, replyTarget, replyThread as known variables', () => {
+    const { valid, unknownVars } = validateTemplate('{{replyChannel}} {{replyTarget}} {{replyThread}}');
+    assert.equal(valid, true);
+    assert.deepEqual(unknownVars, []);
+  });
+
+  it('accepts reply variables in conditionals', () => {
+    const { valid } = validateTemplate('{{#if replyChannel}}channel: {{replyChannel}}{{/if}}');
+    assert.equal(valid, true);
+  });
+});
+
 describe('interpolateTemplate', () => {
   it('replaces {{variable}} placeholders', () => {
     const result = interpolateTemplate('Session: {{sessionId}}', makePayload({ sessionId: 'abc' }));

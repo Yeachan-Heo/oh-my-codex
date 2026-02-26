@@ -63,6 +63,9 @@ export function validateGatewayUrl(url: string): boolean {
  * - {{timestamp}} - ISO timestamp
  * - {{event}} - hook event name
  * - {{instruction}} - interpolated instruction (for command gateway)
+ * - {{replyChannel}} - originating channel (from OPENCLAW_REPLY_CHANNEL env var)
+ * - {{replyTarget}} - reply target user/bot (from OPENCLAW_REPLY_TARGET env var)
+ * - {{replyThread}} - reply thread ID (from OPENCLAW_REPLY_THREAD env var)
  *
  * Unresolved variables are left as-is (not replaced with empty string).
  */

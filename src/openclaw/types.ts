@@ -83,6 +83,12 @@ export interface OpenClawPayload {
   tmuxSession?: string;
   /** Recent tmux pane output (for stop/session-end events) */
   tmuxTail?: string;
+  /** Originating channel for reply routing (if OPENCLAW_REPLY_CHANNEL is set) */
+  channel?: string;
+  /** Reply target user/bot (if OPENCLAW_REPLY_TARGET is set) */
+  to?: string;
+  /** Reply thread ID (if OPENCLAW_REPLY_THREAD is set) */
+  threadId?: string;
   /** Context data from the hook (whitelisted fields only) */
   context: OpenClawContext;
 }
@@ -103,6 +109,12 @@ export interface OpenClawContext {
   question?: string;
   /** Recent tmux pane output (captured automatically for stop/session-end events) */
   tmuxTail?: string;
+  /** Originating channel for reply routing (from OPENCLAW_REPLY_CHANNEL env var) */
+  replyChannel?: string;
+  /** Reply target user/bot (from OPENCLAW_REPLY_TARGET env var) */
+  replyTarget?: string;
+  /** Reply thread ID for threaded conversations (from OPENCLAW_REPLY_THREAD env var) */
+  replyThread?: string;
 }
 
 /** Result of a gateway wake attempt */

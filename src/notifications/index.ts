@@ -212,6 +212,8 @@ export async function notifyLifecycle(
             reason: payload.reason,
             question: payload.question,
             tmuxTail: payload.tmuxTail,
+            // Reply context env vars are read inside wakeOpenClaw;
+            // callers do not need to pass them explicitly.
           });
         }
       } catch {

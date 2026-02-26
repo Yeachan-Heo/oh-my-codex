@@ -113,6 +113,150 @@ describe("wakeOpenClaw", () => {
     assert.ok(result!.error?.includes("OMX_OPENCLAW_COMMAND"));
   });
 
+  it("includes channel/to/threadId in HTTP payload when OPENCLAW_REPLY_* env vars set", async () => {
+    process.env.OMX_OPENCLAW = "1";
+    process.env.OPENCLAW_REPLY_CHANNEL = "#general";
+    process.env.OPENCLAW_REPLY_TARGET = "user42";
+    process.env.OPENCLAW_REPLY_THREAD = "thread-abc";
+
+    // Use a local HTTP server to capture the payload
+    const { createServer } = await import("http");
+    let capturedBody = "";
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        capturedBody = body;
+        res.writeHead(200);
+        res.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    const port = typeof addr === "object" && addr ? addr.port : 0;
+
+    const configPath = join(tmpDir, "openclaw.json");
+    writeFileSync(configPath, JSON.stringify({
+      enabled: true,
+      gateways: { gw: { type: "http", url: `http://127.0.0.1:${port}/hook` } },
+      hooks: {
+        "session-start": { gateway: "gw", instruction: "hello", enabled: true },
+      },
+    }));
+    process.env.OMX_OPENCLAW_CONFIG = configPath;
+    const { wakeOpenClaw } = await import("../index.js");
+    const { resetOpenClawConfigCache } = await import("../config.js");
+    resetOpenClawConfigCache();
+
+    const result = await wakeOpenClaw("session-start", { sessionId: "s1" });
+    server.close();
+
+    assert.ok(result !== null);
+    assert.equal(result!.success, true);
+
+    const parsed = JSON.parse(capturedBody);
+    assert.equal(parsed.channel, "#general");
+    assert.equal(parsed.to, "user42");
+    assert.equal(parsed.threadId, "thread-abc");
+    // Also in whitelisted context
+    assert.equal(parsed.context.replyChannel, "#general");
+    assert.equal(parsed.context.replyTarget, "user42");
+    assert.equal(parsed.context.replyThread, "thread-abc");
+  });
+
+  it("omits channel/to/threadId from HTTP payload when env vars not set", async () => {
+    process.env.OMX_OPENCLAW = "1";
+    delete process.env.OPENCLAW_REPLY_CHANNEL;
+    delete process.env.OPENCLAW_REPLY_TARGET;
+    delete process.env.OPENCLAW_REPLY_THREAD;
+
+    const { createServer } = await import("http");
+    let capturedBody = "";
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        capturedBody = body;
+        res.writeHead(200);
+        res.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    const port = typeof addr === "object" && addr ? addr.port : 0;
+
+    const configPath = join(tmpDir, "openclaw.json");
+    writeFileSync(configPath, JSON.stringify({
+      enabled: true,
+      gateways: { gw: { type: "http", url: `http://127.0.0.1:${port}/hook` } },
+      hooks: {
+        "session-start": { gateway: "gw", instruction: "hello", enabled: true },
+      },
+    }));
+    process.env.OMX_OPENCLAW_CONFIG = configPath;
+    const { wakeOpenClaw } = await import("../index.js");
+    const { resetOpenClawConfigCache } = await import("../config.js");
+    resetOpenClawConfigCache();
+
+    const result = await wakeOpenClaw("session-start", { sessionId: "s1" });
+    server.close();
+
+    assert.ok(result !== null);
+    assert.equal(result!.success, true);
+
+    const parsed = JSON.parse(capturedBody);
+    assert.equal(parsed.channel, undefined, "channel should be absent");
+    assert.equal(parsed.to, undefined, "to should be absent");
+    assert.equal(parsed.threadId, undefined, "threadId should be absent");
+    assert.equal(parsed.context.replyChannel, undefined);
+    assert.equal(parsed.context.replyTarget, undefined);
+    assert.equal(parsed.context.replyThread, undefined);
+  });
+
+  it("context.replyChannel takes precedence over env var", async () => {
+    process.env.OMX_OPENCLAW = "1";
+    process.env.OPENCLAW_REPLY_CHANNEL = "env-channel";
+
+    const { createServer } = await import("http");
+    let capturedBody = "";
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        capturedBody = body;
+        res.writeHead(200);
+        res.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    const port = typeof addr === "object" && addr ? addr.port : 0;
+
+    const configPath = join(tmpDir, "openclaw.json");
+    writeFileSync(configPath, JSON.stringify({
+      enabled: true,
+      gateways: { gw: { type: "http", url: `http://127.0.0.1:${port}/hook` } },
+      hooks: {
+        "session-start": { gateway: "gw", instruction: "hello", enabled: true },
+      },
+    }));
+    process.env.OMX_OPENCLAW_CONFIG = configPath;
+    const { wakeOpenClaw } = await import("../index.js");
+    const { resetOpenClawConfigCache } = await import("../config.js");
+    resetOpenClawConfigCache();
+
+    const result = await wakeOpenClaw("session-start", {
+      sessionId: "s1",
+      replyChannel: "ctx-channel",
+    });
+    server.close();
+
+    assert.ok(result !== null);
+    const parsed = JSON.parse(capturedBody);
+    assert.equal(parsed.channel, "ctx-channel", "context value should win over env var");
+    assert.equal(parsed.context.replyChannel, "ctx-channel");
+  });
+
   it("succeeds with command gateway when both env vars set", async () => {
     process.env.OMX_OPENCLAW = "1";
     process.env.OMX_OPENCLAW_COMMAND = "1";

@@ -89,6 +89,39 @@ describe('interpolateInstruction', () => {
   });
 });
 
+describe('interpolateInstruction - reply context variables', () => {
+  it('replaces {{replyChannel}} variable', () => {
+    const result = interpolateInstruction('channel: {{replyChannel}}', { replyChannel: 'general' });
+    assert.equal(result, 'channel: general');
+  });
+
+  it('replaces {{replyTarget}} variable', () => {
+    const result = interpolateInstruction('to: {{replyTarget}}', { replyTarget: '@bot' });
+    assert.equal(result, 'to: @bot');
+  });
+
+  it('replaces {{replyThread}} variable', () => {
+    const result = interpolateInstruction('thread: {{replyThread}}', { replyThread: 'thread-123' });
+    assert.equal(result, 'thread: thread-123');
+  });
+
+  it('leaves reply variables as-is when undefined', () => {
+    const result = interpolateInstruction(
+      '{{replyChannel}} {{replyTarget}} {{replyThread}}',
+      { replyChannel: undefined, replyTarget: undefined, replyThread: undefined },
+    );
+    assert.equal(result, '{{replyChannel}} {{replyTarget}} {{replyThread}}');
+  });
+
+  it('replaces all reply variables together', () => {
+    const result = interpolateInstruction(
+      'notify {{replyTarget}} in {{replyChannel}} thread {{replyThread}}',
+      { replyChannel: '#dev', replyTarget: 'user42', replyThread: 'ts-999' },
+    );
+    assert.equal(result, 'notify user42 in #dev thread ts-999');
+  });
+});
+
 describe('isCommandGateway', () => {
   it('returns true for command gateway', () => {
     assert.equal(isCommandGateway({ type: 'command', command: 'notify-send test' }), true);

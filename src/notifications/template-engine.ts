@@ -18,6 +18,8 @@ const KNOWN_VARIABLES = new Set<string>([
   "reason", "activeMode", "iteration", "maxIterations",
   "question", "incompleteTasks", "agentName", "agentType",
   "tmuxTail", "tmuxPaneId",
+  // Reply context (from OPENCLAW_REPLY_* env vars)
+  "replyChannel", "replyTarget", "replyThread",
   // Computed variables
   "duration", "time", "modesDisplay", "iterationDisplay",
   "agentDisplay", "projectDisplay", "footer", "tmuxTailBlock",

@@ -54,6 +54,9 @@ function buildWhitelistedContext(context: OpenClawContext): OpenClawContext {
   if (context.reason !== undefined) result.reason = context.reason;
   if (context.question !== undefined) result.question = context.question;
   if (context.tmuxTail !== undefined) result.tmuxTail = context.tmuxTail;
+  if (context.replyChannel !== undefined) result.replyChannel = context.replyChannel;
+  if (context.replyTarget !== undefined) result.replyTarget = context.replyTarget;
+  if (context.replyThread !== undefined) result.replyThread = context.replyThread;
   return result;
 }
 
@@ -84,11 +87,24 @@ export async function wakeOpenClaw(
     // Single timestamp for both template variables and payload
     const now = new Date().toISOString();
 
+    // Read originating channel context from env vars (set by external bot/automation)
+    const replyChannel = context.replyChannel ?? process.env.OPENCLAW_REPLY_CHANNEL ?? undefined;
+    const replyTarget = context.replyTarget ?? process.env.OPENCLAW_REPLY_TARGET ?? undefined;
+    const replyThread = context.replyThread ?? process.env.OPENCLAW_REPLY_THREAD ?? undefined;
+
+    // Merge reply context into the context object for whitelisting
+    const enrichedContext: OpenClawContext = {
+      ...context,
+      ...(replyChannel !== undefined && { replyChannel }),
+      ...(replyTarget !== undefined && { replyTarget }),
+      ...(replyThread !== undefined && { replyThread }),
+    };
+
     // Auto-detect tmux session if not provided in context
-    const tmuxSession = context.tmuxSession ?? getCurrentTmuxSession() ?? undefined;
+    const tmuxSession = enrichedContext.tmuxSession ?? getCurrentTmuxSession() ?? undefined;
 
     // Auto-capture tmux pane content for stop/session-end events (best-effort)
-    let tmuxTail = context.tmuxTail;
+    let tmuxTail = enrichedContext.tmuxTail;
     if (!tmuxTail && (event === "stop" || event === "session-end") && process.env.TMUX) {
       try {
         const paneId = process.env.TMUX_PANE;
@@ -102,17 +118,20 @@ export async function wakeOpenClaw(
 
     // Build template variables from whitelisted context fields
     const variables: Record<string, string | undefined> = {
-      sessionId: context.sessionId,
-      projectPath: context.projectPath,
-      projectName: context.projectPath ? basename(context.projectPath) : undefined,
+      sessionId: enrichedContext.sessionId,
+      projectPath: enrichedContext.projectPath,
+      projectName: enrichedContext.projectPath ? basename(enrichedContext.projectPath) : undefined,
       tmuxSession,
-      prompt: context.prompt,
-      contextSummary: context.contextSummary,
-      reason: context.reason,
-      question: context.question,
+      prompt: enrichedContext.prompt,
+      contextSummary: enrichedContext.contextSummary,
+      reason: enrichedContext.reason,
+      question: enrichedContext.question,
       tmuxTail,
       event,
       timestamp: now,
+      replyChannel,
+      replyTarget,
+      replyThread,
     };
 
     // Add interpolated instruction to variables for command gateway {{instruction}} placeholder
@@ -130,12 +149,15 @@ export async function wakeOpenClaw(
         event,
         instruction: interpolatedInstruction,
         timestamp: now,
-        sessionId: context.sessionId,
-        projectPath: context.projectPath,
-        projectName: context.projectPath ? basename(context.projectPath) : undefined,
+        sessionId: enrichedContext.sessionId,
+        projectPath: enrichedContext.projectPath,
+        projectName: enrichedContext.projectPath ? basename(enrichedContext.projectPath) : undefined,
         tmuxSession,
         tmuxTail,
-        context: buildWhitelistedContext(context),
+        ...(replyChannel !== undefined && { channel: replyChannel }),
+        ...(replyTarget !== undefined && { to: replyTarget }),
+        ...(replyThread !== undefined && { threadId: replyThread }),
+        context: buildWhitelistedContext(enrichedContext),
       };
       result = await wakeGateway(gatewayName, gateway, payload);
     }
