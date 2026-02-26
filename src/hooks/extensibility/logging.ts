@@ -14,5 +14,10 @@ export async function appendHookPluginLog(cwd: string, entry: HookPluginLogConte
     timestamp: entry.timestamp || new Date().toISOString(),
     ...entry,
   };
-  await appendFile(path, JSON.stringify(payload) + '\n').catch(() => {});
+  await appendFile(path, JSON.stringify(payload) + '\n').catch((error: unknown) => {
+    console.warn('[omx] warning: failed to append hook plugin log entry', {
+      path,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 }

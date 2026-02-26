@@ -129,7 +129,13 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
     ...(input.turnId ? { turn_id: input.turnId } : {}),
   };
 
-  await writeFile(statePath, JSON.stringify(state, null, 2)).catch(() => {});
+  await writeFile(statePath, JSON.stringify(state, null, 2)).catch((error: unknown) => {
+    console.warn('[omx] warning: failed to persist keyword activation state', {
+      path: statePath,
+      skill: state.skill,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
   return state;
 }
 

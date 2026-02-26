@@ -173,7 +173,12 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
       active: false,
       current_phase: 'cancelled',
       completed_at: new Date().toISOString(),
-    }).catch(() => {});
+    }).catch((error: unknown) => {
+      console.warn('[omx] warning: failed to persist team mode shutdown state', {
+        team: name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
     console.log(`Team shutdown complete: ${name}`);
     return;
   }

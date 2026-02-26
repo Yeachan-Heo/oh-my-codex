@@ -32,7 +32,12 @@ function hooksLogPath(cwd: string): string {
 
 async function appendHooksLog(cwd: string, payload: Record<string, unknown>): Promise<void> {
   await mkdir(join(cwd, '.omx', 'logs'), { recursive: true });
-  await appendFile(hooksLogPath(cwd), `${JSON.stringify({ timestamp: new Date().toISOString(), ...payload })}\n`).catch(() => {});
+  await appendFile(hooksLogPath(cwd), `${JSON.stringify({ timestamp: new Date().toISOString(), ...payload })}\n`).catch((error: unknown) => {
+    console.warn('[omx] warning: failed to append hook dispatch log entry', {
+      cwd,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 }
 
 function isTeamWorker(env: NodeJS.ProcessEnv): boolean {

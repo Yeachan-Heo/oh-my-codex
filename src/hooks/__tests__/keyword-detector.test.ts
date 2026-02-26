@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { afterEach, describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,6 +11,10 @@ import {
 } from '../keyword-detector.js';
 import { generateKeywordDetectionSection } from '../emulator.js';
 import { KEYWORD_TRIGGER_DEFINITIONS } from '../keyword-registry.js';
+
+afterEach(() => {
+  mock.restoreAll();
+});
 
 async function readTemplateKeywords(): Promise<string[]> {
   const template = await readFile(join(process.cwd(), 'templates', 'AGENTS.md'), 'utf-8');
@@ -144,5 +148,23 @@ describe('keyword detector skill-active-state lifecycle', () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+
+  it('emits a warning when skill-active-state persistence fails', async () => {
+    const warnings: unknown[][] = [];
+    mock.method(console, 'warn', (...args: unknown[]) => {
+      warnings.push(args);
+    });
+
+    const result = await recordSkillActivation({
+      stateDir: join('/definitely-missing', 'nested', 'state-dir'),
+      text: 'please run autopilot',
+      nowIso: '2026-02-25T00:00:00.000Z',
+    });
+
+    assert.ok(result);
+    assert.equal(result.skill, 'autopilot');
+    assert.equal(warnings.length, 1);
+    assert.match(String(warnings[0][0]), /failed to persist keyword activation state/);
   });
 });

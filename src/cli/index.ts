@@ -1226,12 +1226,20 @@ async function startNotifyFallbackWatcher(cwd: string): Promise<void> {
       if (prev && typeof prev.pid === 'number') {
         process.kill(prev.pid, 'SIGTERM');
       }
-    } catch {
-      // Ignore stale PID parse/kill errors.
+    } catch (error: unknown) {
+      console.warn('[omx] warning: failed to stop stale notify fallback watcher', {
+        path: pidPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
-  await mkdir(join(cwd, '.omx', 'state'), { recursive: true }).catch(() => {});
+  await mkdir(join(cwd, '.omx', 'state'), { recursive: true }).catch((error: unknown) => {
+    console.warn('[omx] warning: failed to create notify fallback watcher state directory', {
+      cwd,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
   const child = spawn(
     process.execPath,
     [watcherScript, '--cwd', cwd, '--notify-script', notifyScript],
@@ -1246,7 +1254,12 @@ async function startNotifyFallbackWatcher(cwd: string): Promise<void> {
   await writeFile(
     pidPath,
     JSON.stringify({ pid: child.pid, started_at: new Date().toISOString() }, null, 2)
-  ).catch(() => {});
+  ).catch((error: unknown) => {
+    console.warn('[omx] warning: failed to write notify fallback watcher pid file', {
+      path: pidPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 }
 
 async function startHookDerivedWatcher(cwd: string): Promise<void> {
@@ -1264,12 +1277,20 @@ async function startHookDerivedWatcher(cwd: string): Promise<void> {
       if (prev && typeof prev.pid === 'number') {
         process.kill(prev.pid, 'SIGTERM');
       }
-    } catch {
-      // Ignore stale PID parse/kill errors.
+    } catch (error: unknown) {
+      console.warn('[omx] warning: failed to stop stale hook-derived watcher', {
+        path: pidPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
-  await mkdir(join(cwd, '.omx', 'state'), { recursive: true }).catch(() => {});
+  await mkdir(join(cwd, '.omx', 'state'), { recursive: true }).catch((error: unknown) => {
+    console.warn('[omx] warning: failed to create hook-derived watcher state directory', {
+      cwd,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
   const child = spawn(
     process.execPath,
     [watcherScript, '--cwd', cwd],
@@ -1285,7 +1306,12 @@ async function startHookDerivedWatcher(cwd: string): Promise<void> {
   await writeFile(
     pidPath,
     JSON.stringify({ pid: child.pid, started_at: new Date().toISOString() }, null, 2)
-  ).catch(() => {});
+  ).catch((error: unknown) => {
+    console.warn('[omx] warning: failed to write hook-derived watcher pid file', {
+      path: pidPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 }
 
 async function stopNotifyFallbackWatcher(cwd: string): Promise<void> {
@@ -1298,11 +1324,19 @@ async function stopNotifyFallbackWatcher(cwd: string): Promise<void> {
     if (parsed && typeof parsed.pid === 'number') {
       process.kill(parsed.pid, 'SIGTERM');
     }
-  } catch {
-    // Ignore stop errors.
+  } catch (error: unknown) {
+    console.warn('[omx] warning: failed to stop notify fallback watcher process', {
+      path: pidPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
-  await unlink(pidPath).catch(() => {});
+  await unlink(pidPath).catch((error: unknown) => {
+    console.warn('[omx] warning: failed to remove notify fallback watcher pid file', {
+      path: pidPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 }
 
 async function stopHookDerivedWatcher(cwd: string): Promise<void> {
@@ -1315,11 +1349,19 @@ async function stopHookDerivedWatcher(cwd: string): Promise<void> {
     if (parsed && typeof parsed.pid === 'number') {
       process.kill(parsed.pid, 'SIGTERM');
     }
-  } catch {
-    // Ignore stop errors.
+  } catch (error: unknown) {
+    console.warn('[omx] warning: failed to stop hook-derived watcher process', {
+      path: pidPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
-  await unlink(pidPath).catch(() => {});
+  await unlink(pidPath).catch((error: unknown) => {
+    console.warn('[omx] warning: failed to remove hook-derived watcher pid file', {
+      path: pidPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 }
 
 async function flushNotifyFallbackOnce(cwd: string): Promise<void> {
