@@ -17,7 +17,6 @@ import {
   isTmuxAvailable,
   waitForWorkerReady,
   dismissTrustPromptIfPresent,
-  sleepFractionalSeconds,
   sendToWorker,
   isWorkerAlive,
   getWorkerPanePid,
