@@ -16,6 +16,8 @@ import {
   sanitizeTeamName,
   isTmuxAvailable,
   waitForWorkerReady,
+  dismissTrustPromptIfPresent,
+  sleepFractionalSeconds,
   sendToWorker,
   isWorkerAlive,
   getWorkerPanePid,
@@ -365,6 +367,14 @@ export async function scaleUp(
               request_id: queued.request_id,
             };
           }
+        }
+      }
+      // Retry dispatch once if a trust prompt is blocking the worker pane (fixes #393).
+      if (!outcome.ok && dismissTrustPromptIfPresent(sessionName, workerIndex, paneId)) {
+        waitForWorkerReady(sessionName, workerIndex, readyTimeoutMs, paneId);
+        const retry = notifyWorkerPaneOutcome(sessionName, workerIndex, trigger, paneId, workerCliPlan[i]);
+        if (retry.ok) {
+          outcome = retry;
         }
       }
       if (!outcome.ok) {

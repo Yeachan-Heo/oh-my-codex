@@ -13,6 +13,8 @@ import {
   resolveTeamWorkerCliPlan,
   resolveTeamWorkerLaunchMode,
   waitForWorkerReady,
+  dismissTrustPromptIfPresent,
+  sleepFractionalSeconds,
   sendToWorker,
   sendToWorkerStdin,
   notifyLeaderStatus,
@@ -706,23 +708,43 @@ export async function startTeam(
       }
 
       // Queue inbox via MCP/state then notify worker via tmux transport.
+      // Retry dispatch up to 3 times to handle Codex trust prompts that may
+      // block the worker pane during startup (fixes #393).
       const inbox = generateInitialInbox(workerName, sanitized, agentType, workerTasks, {
         teamStateRoot,
         leaderCwd,
       });
       const trigger = generateTriggerMessage(workerName, sanitized);
-      const dispatchOutcome = await dispatchCriticalInboxInstruction({
-        teamName: sanitized,
-        config: config!,
-        workerName,
-        workerIndex: i,
-        paneId,
-        inbox,
-        triggerMessage: trigger,
-        cwd: leaderCwd,
-        dispatchPolicy,
-        inboxCorrelationKey: `startup:${workerName}`,
-      });
+      const maxStartupDispatchRetries = 3;
+      const startupRetryDelayS = 3;
+      let dispatchOutcome: DispatchOutcome = { ok: false, transport: 'none', reason: 'not_attempted' };
+      for (let attempt = 1; attempt <= maxStartupDispatchRetries; attempt++) {
+        dispatchOutcome = await dispatchCriticalInboxInstruction({
+          teamName: sanitized,
+          config: config!,
+          workerName,
+          workerIndex: i,
+          paneId,
+          inbox,
+          triggerMessage: trigger,
+          cwd: leaderCwd,
+          dispatchPolicy,
+          inboxCorrelationKey: `startup:${workerName}`,
+        });
+        if (dispatchOutcome.ok) break;
+        if (attempt < maxStartupDispatchRetries) {
+          // Check for trust prompt blocking the worker and dismiss it before retry
+          if (workerLaunchMode === 'interactive') {
+            if (dismissTrustPromptIfPresent(sessionName, i, paneId)) {
+              waitForWorkerReady(sessionName, i, workerReadyTimeoutMs, paneId);
+            } else {
+              sleepFractionalSeconds(startupRetryDelayS);
+            }
+          } else {
+            sleepFractionalSeconds(startupRetryDelayS);
+          }
+        }
+      }
       if (!dispatchOutcome.ok) {
         throw new Error(`worker_notify_failed:${workerName}`);
       }
@@ -1038,19 +1060,33 @@ export async function assignTask(
   }
 
   try {
+    // Retry dispatch up to 2 times to handle trust prompts during assignment (fixes #393).
     const inbox = generateTaskAssignmentInbox(workerName, sanitized, taskId, task.description);
-    const outcome = await dispatchCriticalInboxInstruction({
-      teamName: sanitized,
-      config,
-      workerName,
-      workerIndex: workerInfo.index,
-      paneId: workerInfo.pane_id,
-      inbox,
-      triggerMessage: generateTriggerMessage(workerName, sanitized),
-      cwd,
-      dispatchPolicy,
-      inboxCorrelationKey: `assign:${taskId}:${workerName}`,
-    });
+    const maxAssignRetries = 2;
+    const assignRetryDelayS = 2;
+    let outcome: DispatchOutcome = { ok: false, transport: 'none', reason: 'not_attempted' };
+    for (let attempt = 1; attempt <= maxAssignRetries; attempt++) {
+      outcome = await dispatchCriticalInboxInstruction({
+        teamName: sanitized,
+        config,
+        workerName,
+        workerIndex: workerInfo.index,
+        paneId: workerInfo.pane_id,
+        inbox,
+        triggerMessage: generateTriggerMessage(workerName, sanitized),
+        cwd,
+        dispatchPolicy,
+        inboxCorrelationKey: `assign:${taskId}:${workerName}`,
+      });
+      if (outcome.ok) break;
+      if (attempt < maxAssignRetries && config.worker_launch_mode === 'interactive' && config.tmux_session) {
+        if (dismissTrustPromptIfPresent(config.tmux_session, workerInfo.index, workerInfo.pane_id)) {
+          waitForWorkerReady(config.tmux_session, workerInfo.index, 15_000, workerInfo.pane_id);
+        } else {
+          sleepFractionalSeconds(assignRetryDelayS);
+        }
+      }
+    }
     if (!outcome.ok) {
       throw new Error('worker_notify_failed');
     }

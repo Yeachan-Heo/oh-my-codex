@@ -1073,6 +1073,7 @@ export function waitForWorkerReady(
   const maxBackoffMs = 8000;
   const startedAt = Date.now();
   let blockedByTrustPrompt = false;
+  let trustPromptDismissed = false;
 
   const sendRobustEnter = (): void => {
     const target = paneTarget(sessionName, workerIndex, workerPaneId);
@@ -1091,6 +1092,7 @@ export function waitForWorkerReady(
       // Opt-out by setting OMX_TEAM_AUTO_TRUST=0.
       if (process.env.OMX_TEAM_AUTO_TRUST !== '0') {
         sendRobustEnter();
+        trustPromptDismissed = true;
         return false;
       }
       blockedByTrustPrompt = true;
@@ -1103,6 +1105,12 @@ export function waitForWorkerReady(
   while (Date.now() - startedAt < timeoutMs) {
     if (check()) return true;
     if (blockedByTrustPrompt) return false;
+    // After dismissing a trust prompt, reset backoff so we re-check quickly
+    // instead of sleeping 2s/4s/8s while the worker is starting up.
+    if (trustPromptDismissed) {
+      delayMs = initialBackoffMs;
+      trustPromptDismissed = false;
+    }
     const remaining = timeoutMs - (Date.now() - startedAt);
     if (remaining <= 0) break;
     sleepSeconds(Math.max(0, Math.min(delayMs, remaining)) / 1000);
@@ -1110,6 +1118,29 @@ export function waitForWorkerReady(
   }
 
   return false;
+}
+
+/**
+ * Detect and auto-dismiss a Codex "Trust this directory?" prompt in a worker pane.
+ * Returns true if a trust prompt was found and dismissed, false otherwise.
+ * Opt-out: set OMX_TEAM_AUTO_TRUST=0 to disable auto-dismissal.
+ */
+export function dismissTrustPromptIfPresent(
+  sessionName: string,
+  workerIndex: number,
+  workerPaneId?: string,
+): boolean {
+  if (process.env.OMX_TEAM_AUTO_TRUST === '0') return false;
+  if (!isTmuxAvailable()) return false;
+  const target = paneTarget(sessionName, workerIndex, workerPaneId);
+  const result = runTmux(['capture-pane', '-t', target, '-p']);
+  if (!result.ok) return false;
+  if (!paneHasTrustPrompt(result.stdout)) return false;
+  // Trust prompt detected; send Enter twice to dismiss (trust + follow-up splash)
+  runTmux(['send-keys', '-t', target, 'C-m']);
+  sleepFractionalSeconds(0.12);
+  runTmux(['send-keys', '-t', target, 'C-m']);
+  return true;
 }
 
 function paneTailContainsLiteralLine(target: string, text: string): boolean {

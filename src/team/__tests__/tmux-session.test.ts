@@ -41,6 +41,7 @@ import {
   translateWorkerLaunchArgsForCli,
   waitForWorkerReady,
   paneIsBootstrapping,
+  dismissTrustPromptIfPresent,
 } from '../tmux-session.js';
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../../hud/constants.js';
 
@@ -896,6 +897,37 @@ describe('tmux-dependent functions when tmux is unavailable', () => {
     withEmptyPath(() => {
       assert.equal(waitForWorkerReady('omx-team-x', 1, 1), false);
     });
+  });
+});
+
+describe('dismissTrustPromptIfPresent', () => {
+  it('returns false when tmux is unavailable', () => {
+    withEmptyPath(() => {
+      assert.equal(dismissTrustPromptIfPresent('omx-team-x', 1), false);
+    });
+  });
+
+  it('returns false when OMX_TEAM_AUTO_TRUST is disabled', () => {
+    const prev = process.env.OMX_TEAM_AUTO_TRUST;
+    process.env.OMX_TEAM_AUTO_TRUST = '0';
+    try {
+      assert.equal(dismissTrustPromptIfPresent('omx-team-x', 1), false);
+    } finally {
+      if (typeof prev === 'string') process.env.OMX_TEAM_AUTO_TRUST = prev;
+      else delete process.env.OMX_TEAM_AUTO_TRUST;
+    }
+  });
+
+  it('returns false when OMX_TEAM_AUTO_TRUST is unset (auto-trust enabled) but tmux unavailable', () => {
+    const prev = process.env.OMX_TEAM_AUTO_TRUST;
+    delete process.env.OMX_TEAM_AUTO_TRUST;
+    try {
+      withEmptyPath(() => {
+        assert.equal(dismissTrustPromptIfPresent('omx-team-x', 1), false);
+      });
+    } finally {
+      if (typeof prev === 'string') process.env.OMX_TEAM_AUTO_TRUST = prev;
+    }
   });
 });
 
