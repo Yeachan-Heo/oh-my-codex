@@ -160,6 +160,27 @@ If autopilot was cancelled or failed, run `/autopilot` again to resume from wher
 3. Specify constraints -- "using TypeScript", "with PostgreSQL"
 4. Let it run -- avoid interrupting unless truly needed
 
+## Pipeline Orchestrator (v0.8+)
+
+Autopilot can be driven by the configurable pipeline orchestrator (`src/pipeline/`), which
+sequences stages through a uniform `PipelineStage` interface:
+
+```
+RALPLAN (consensus planning) -> team-exec (Codex CLI workers) -> ralph-verify (architect verification)
+```
+
+Pipeline configuration options:
+
+```toml
+[omc.autopilot.pipeline]
+maxRalphIterations = 10    # Ralph verification iteration ceiling
+workerCount = 2            # Number of Codex CLI team workers
+agentType = "executor"     # Agent type for team workers
+```
+
+The pipeline persists state via `pipeline-state.json` and supports resume from the last
+incomplete stage. See `src/pipeline/orchestrator.ts` for the full API.
+
 ## Troubleshooting
 
 **Stuck in a phase?** Check TODO list for blocked tasks, run `state_read({mode: "autopilot"})`, or cancel and resume.
