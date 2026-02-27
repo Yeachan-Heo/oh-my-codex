@@ -40,6 +40,7 @@ import {
   sleepFractionalSeconds,
   translateWorkerLaunchArgsForCli,
   waitForWorkerReady,
+  paneIsBootstrapping,
 } from '../tmux-session.js';
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../../hud/constants.js';
 
@@ -292,6 +293,64 @@ describe('shouldAttemptAdaptiveRetry', () => {
     assert.equal(
       shouldAttemptAdaptiveRetry('auto', true, true, readyCapture, 'hello'),
       true,
+    );
+  });
+});
+
+describe('paneIsBootstrapping (#391)', () => {
+  it('detects "loading" keyword', () => {
+    assert.equal(paneIsBootstrapping(['loading model weights…']), true);
+  });
+
+  it('detects "model: loading" pattern', () => {
+    assert.equal(paneIsBootstrapping(['gpt-4o', 'model: loading']), true);
+  });
+
+  it('detects "initializing" keyword', () => {
+    assert.equal(paneIsBootstrapping(['Initializing workspace']), true);
+  });
+
+  it('detects "connecting to" keyword', () => {
+    assert.equal(paneIsBootstrapping(['connecting to server']), true);
+  });
+
+  it('returns false for normal ready prompt', () => {
+    assert.equal(paneIsBootstrapping(['› ']), false);
+  });
+
+  it('returns false for status bar without loading', () => {
+    assert.equal(paneIsBootstrapping(['gpt-4o', '50% left', '› ']), false);
+  });
+});
+
+describe('paneLooksReady gate: status-only is not ready (#391)', () => {
+  // These verify the fix for #391: status bar markers alone (gpt-*, % left,
+  // Claude Code v*) must NOT count as ready without a prompt character.
+  // We test indirectly via shouldAttemptAdaptiveRetry since paneLooksReady is
+  // not exported, but the adaptive retry guard calls paneLooksReady internally.
+  it('shouldAttemptAdaptiveRetry returns false for status-only capture (no prompt)', () => {
+    // Capture has Codex status bar but no prompt character — paneLooksReady
+    // should return false, so adaptive retry should also return false.
+    const statusOnlyCapture = 'gpt-4o  50% left';
+    assert.equal(
+      shouldAttemptAdaptiveRetry('auto', true, true, statusOnlyCapture, 'gpt-4o'),
+      false,
+    );
+  });
+
+  it('shouldAttemptAdaptiveRetry returns false for Claude status-only capture', () => {
+    const statusOnlyCapture = 'Claude Code v1.2.3  claude-sonnet-4-20250514';
+    assert.equal(
+      shouldAttemptAdaptiveRetry('auto', true, true, statusOnlyCapture, 'Claude Code'),
+      false,
+    );
+  });
+
+  it('shouldAttemptAdaptiveRetry returns false when pane is bootstrapping', () => {
+    const loadingCapture = 'gpt-4o\nmodel: loading\n› hello';
+    assert.equal(
+      shouldAttemptAdaptiveRetry('auto', true, true, loadingCapture, 'hello'),
+      false,
     );
   });
 });

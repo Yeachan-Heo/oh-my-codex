@@ -111,6 +111,85 @@ describe('notify-hook team dispatch consumer', () => {
     }
   });
 
+  it('leaves unconfirmed injection as pending for retry (#391)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
+    try {
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      const queued = await enqueueDispatchRequest('alpha', {
+        kind: 'inbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        trigger_message: 'ping',
+      }, cwd);
+
+      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const mod = await import(pathToFileURL(modulePath).href);
+      // First tick: injector returns unconfirmed → should stay pending
+      const result = await mod.drainPendingTeamDispatch({
+        cwd,
+        maxPerTick: 5,
+        injector: async () => ({ ok: true, reason: 'tmux_send_keys_unconfirmed' }),
+      });
+      assert.equal(result.processed, 0, 'unconfirmed should not count as processed');
+      assert.ok(result.skipped >= 1, 'unconfirmed should be skipped for retry');
+      const request = await readDispatchRequest('alpha', queued.request.request_id, cwd);
+      assert.equal(request?.status, 'pending', 'status should remain pending');
+      assert.equal(request?.last_reason, 'tmux_send_keys_unconfirmed');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('promotes unconfirmed to notified after max attempts (#391)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
+    try {
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      const queued = await enqueueDispatchRequest('alpha', {
+        kind: 'inbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        trigger_message: 'ping',
+      }, cwd);
+
+      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const mod = await import(pathToFileURL(modulePath).href);
+      const injector = async () => ({ ok: true, reason: 'tmux_send_keys_unconfirmed' });
+      // Drain 3 times to exhaust max attempts (MAX_UNCONFIRMED_ATTEMPTS=3)
+      await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5, injector });
+      await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5, injector });
+      const result = await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5, injector });
+      assert.equal(result.processed, 1, 'should be promoted to notified on 3rd attempt');
+      const request = await readDispatchRequest('alpha', queued.request.request_id, cwd);
+      assert.equal(request?.status, 'notified');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('confirmed injection marks notified immediately (#391)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
+    try {
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      await enqueueDispatchRequest('alpha', {
+        kind: 'inbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        trigger_message: 'ping',
+      }, cwd);
+
+      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const mod = await import(pathToFileURL(modulePath).href);
+      const result = await mod.drainPendingTeamDispatch({
+        cwd,
+        maxPerTick: 5,
+        injector: async () => ({ ok: true, reason: 'tmux_send_keys_confirmed' }),
+      });
+      assert.equal(result.processed, 1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('skips non-hook transport preferences in hook consumer', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
     try {

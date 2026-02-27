@@ -865,6 +865,14 @@ function paneTarget(sessionName: string, workerIndex: number, workerPaneId?: str
   return `${sessionName}:${workerIndex}`;
 }
 
+export function paneIsBootstrapping(lines: string[]): boolean {
+  return lines.some((line) =>
+    /\b(loading|initializing|starting up)\b/i.test(line) ||
+    /\bmodel:\s*loading\b/i.test(line) ||
+    /\bconnecting\s+to\b/i.test(line),
+  );
+}
+
 function paneLooksReady(captured: string): boolean {
   const content = captured.trimEnd();
   if (content === '') return false;
@@ -875,17 +883,24 @@ function paneLooksReady(captured: string): boolean {
     .map(l => l.trimEnd())
     .filter(l => l.trim() !== '');
 
+  // Negative gate: loading/startup states override all positive signals.
+  // Fixes #391: status bar markers (gpt-*, % left) can appear before the CLI
+  // is truly input-ready, causing typed triggers to sit as unsent drafts.
+  if (paneIsBootstrapping(lines)) return false;
+
   const lastLine = lines.length > 0 ? lines[lines.length - 1] : '';
+  // Strong positive: prompt character on last line means input-ready.
   if (/^\s*[›>❯]\s*/u.test(lastLine)) return true;
 
-  // Codex TUI often renders a status bar/footer instead of a raw shell prompt.
-  // Treat common Codex UI markers as "ready enough" for inbox-trigger dispatch.
+  // Prompt character anywhere in the captured output (e.g. Codex TUI renders
+  // the prompt line above a status footer).
   const hasCodexPromptLine = lines.some((line) => /^\s*›\s*/u.test(line));
-  const hasCodexStatus = lines.some((line) => /\bgpt-[\w.-]+\b/i.test(line) || /\b\d+% left\b/i.test(line));
   const hasClaudePromptLine = lines.some((line) => /^\s*❯\s*/u.test(line));
-  const hasClaudeStatus = lines.some((line) => /\bClaude Code v[\d.]+\b/i.test(line) || /\bclaude-[\w.-]+\b/i.test(line));
-  if (hasCodexPromptLine || hasCodexStatus || hasClaudePromptLine || hasClaudeStatus) return true;
+  if (hasCodexPromptLine || hasClaudePromptLine) return true;
 
+  // Status-only markers (model name in status bar, token budget) are NOT
+  // sufficient on their own — they can appear during bootstrap before the CLI
+  // accepts input.  Require an actual prompt character (checked above).
   return false;
 }
 
@@ -1204,10 +1219,23 @@ export function sendToWorker(
     throw new Error('sendToWorker: submit_failed (trigger text still visible after retries)');
   }
 
-  // One last best-effort double C-m nudge, then continue.
+  // One last best-effort double C-m nudge, then verify.
   runTmux(['send-keys', '-t', target, 'C-m']);
   sleepFractionalSeconds(0.12);
   runTmux(['send-keys', '-t', target, 'C-m']);
+
+  // Post-submit verification: wait briefly and confirm the worker consumed the
+  // trigger (draft disappeared or active-task indicator appeared). Fixes #391.
+  sleepFractionalSeconds(0.3);
+  const verifyResult = runTmux(['capture-pane', '-t', target, '-p', '-S', '-80']);
+  if (verifyResult.ok) {
+    if (paneHasActiveTask(verifyResult.stdout)) return;
+    if (!paneTailContainsLiteralLine(target, text)) return;
+    // Draft still visible and no active task — one more C-m attempt.
+    sendKeyOrThrow(target, 'C-m', 'C-m');
+    sleepFractionalSeconds(0.15);
+    sendKeyOrThrow(target, 'C-m', 'C-m');
+  }
 }
 
 export function notifyLeaderStatus(sessionName: string, message: string): boolean {

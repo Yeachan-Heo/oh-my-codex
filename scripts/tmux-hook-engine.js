@@ -154,6 +154,10 @@ export function buildPaneInModeArgv(paneTarget) {
   return ['display-message', '-p', '-t', paneTarget, '#{pane_in_mode}'];
 }
 
+export function buildCapturePaneArgv(paneTarget, tailLines = 80) {
+  return ['capture-pane', '-t', paneTarget, '-p', '-S', `-${tailLines}`];
+}
+
 export function buildSendKeysArgv({ paneTarget, prompt, dryRun }) {
   if (dryRun) return null;
   // Use a 2-step send for reliability:
