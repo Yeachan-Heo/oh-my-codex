@@ -250,6 +250,64 @@ describe('Pipeline Orchestrator', () => {
       ]);
     });
 
+    it('fires correct transitions when middle stage is skipped', async () => {
+      const transitions: Array<[string, string]> = [];
+      const stages: PipelineStage[] = [
+        makeStage('a'),
+        {
+          name: 'b-skipped',
+          canSkip: () => true,
+          async run(): Promise<StageResult> {
+            return { status: 'completed', artifacts: {}, duration_ms: 0 };
+          },
+        },
+        makeStage('c'),
+      ];
+
+      await runPipeline({
+        name: 'skip-transition-test',
+        task: 'test',
+        stages,
+        cwd: tempDir,
+        onStageTransition: (from, to) => transitions.push([from, to]),
+      });
+
+      assert.deepEqual(transitions, [
+        ['a', 'b-skipped'],
+        ['b-skipped', 'c'],
+      ]);
+    });
+
+    it('passes previousStageResult to the next stage', async () => {
+      let receivedPrevResult: StageResult | undefined;
+
+      const stages: PipelineStage[] = [
+        {
+          name: 'first',
+          async run(): Promise<StageResult> {
+            return {
+              status: 'completed',
+              artifacts: { marker: 'first-stage' },
+              duration_ms: 42,
+            };
+          },
+        },
+        {
+          name: 'second',
+          async run(ctx: StageContext): Promise<StageResult> {
+            receivedPrevResult = ctx.previousStageResult;
+            return { status: 'completed', artifacts: {}, duration_ms: 0 };
+          },
+        },
+      ];
+
+      await runPipeline({ name: 'prev-result-test', task: 'test', stages, cwd: tempDir });
+
+      assert.ok(receivedPrevResult);
+      assert.equal(receivedPrevResult!.status, 'completed');
+      assert.deepEqual(receivedPrevResult!.artifacts, { marker: 'first-stage' });
+    });
+
     it('persists pipeline state to mode state file', async () => {
       await runPipeline({
         name: 'persist-test',
@@ -369,6 +427,26 @@ describe('Pipeline Orchestrator', () => {
         cwd: tempDir,
       });
       assert.equal(await canResumePipeline(tempDir), false);
+    });
+
+    it('returns true when pipeline state is active and in-progress', async () => {
+      // Manually write an in-progress pipeline state
+      const { mkdir: mkdirFs, writeFile: writeFileFs } = await import('fs/promises');
+      const stateDir = join(tempDir, '.omx', 'state');
+      await mkdirFs(stateDir, { recursive: true });
+      await writeFileFs(
+        join(stateDir, 'pipeline-state.json'),
+        JSON.stringify({
+          active: true,
+          mode: 'pipeline',
+          iteration: 1,
+          max_iterations: 3,
+          current_phase: 'stage:team-exec',
+          pipeline_name: 'resume-test',
+          started_at: new Date().toISOString(),
+        }),
+      );
+      assert.equal(await canResumePipeline(tempDir), true);
     });
   });
 

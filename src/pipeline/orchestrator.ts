@@ -63,6 +63,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
   const stageResults: Record<string, StageResult> = {};
   const artifacts: Record<string, unknown> = {};
   let previousResult: StageResult | undefined;
+  let lastStageName: string | undefined;
 
   for (let i = 0; i < config.stages.length; i++) {
     const stage = config.stages[i];
@@ -75,6 +76,11 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       cwd,
       sessionId: config.sessionId,
     };
+
+    // Fire transition callback from last completed/skipped stage to this one
+    if (lastStageName && config.onStageTransition) {
+      config.onStageTransition(lastStageName, stage.name);
+    }
 
     // Check if stage should be skipped
     if (stage.canSkip?.(ctx)) {
@@ -91,17 +97,9 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
         pipeline_stage_results: { ...stageResults },
       } as Partial<PipelineModeStateExtension>, cwd);
 
-      if (config.onStageTransition && i + 1 < config.stages.length) {
-        config.onStageTransition(stage.name, config.stages[i + 1].name);
-      }
-
+      lastStageName = stage.name;
       previousResult = skippedResult;
       continue;
-    }
-
-    // Notify stage transition
-    if (i > 0 && config.onStageTransition) {
-      config.onStageTransition(config.stages[i - 1].name, stage.name);
     }
 
     // Update state to running
@@ -160,6 +158,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       };
     }
 
+    lastStageName = stage.name;
     previousResult = result;
   }
 
