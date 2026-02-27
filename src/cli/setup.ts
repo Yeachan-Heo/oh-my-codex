@@ -39,7 +39,7 @@ const LEGACY_SCOPE_MIGRATION: Record<string, 'project'> = {
 export const SETUP_SCOPES = ['user', 'project'] as const;
 export type SetupScope = typeof SETUP_SCOPES[number];
 
-interface ScopeDirectories {
+export interface ScopeDirectories {
   codexConfigFile: string;
   codexHomeDir: string;
   nativeAgentsDir: string;
@@ -80,7 +80,7 @@ function getScopeFilePath(projectRoot: string): string {
   return join(projectRoot, '.omx', 'setup-scope.json');
 }
 
-function resolveScopeDirectories(scope: SetupScope, projectRoot: string): ScopeDirectories {
+export function resolveScopeDirectories(scope: SetupScope, projectRoot: string): ScopeDirectories {
   if (scope === 'project') {
     const codexHomeDir = join(projectRoot, '.codex');
     return {

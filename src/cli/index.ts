@@ -8,6 +8,7 @@ import { basename, dirname, join } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { constants as osConstants } from 'os';
 import { setup, SETUP_SCOPES, type SetupScope } from './setup.js';
+import { uninstall } from './uninstall.js';
 import { doctor } from './doctor.js';
 import { version } from './version.js';
 import { tmuxHookCommand } from './tmux-hook.js';
@@ -67,6 +68,7 @@ oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
 Usage:
   omx           Launch Codex CLI (HUD auto-attaches only when already inside tmux)
   omx setup     Install skills, prompts, MCP servers, and AGENTS.md
+  omx uninstall Remove OMX configuration and clean up installed artifacts
   omx doctor    Check installation health
   omx doctor --team  Check team/swarm runtime health diagnostics
   omx team      Spawn parallel worker panes in tmux and bootstrap inbox/task state
@@ -96,6 +98,8 @@ Options:
                 Launch Codex in a git worktree (detached when no name is given)
   --force       Force reinstall (overwrite existing files)
   --dry-run     Show what would be done without doing it
+  --keep-config Skip config.toml cleanup during uninstall
+  --purge       Remove .omx/ cache directory during uninstall
   --verbose     Show detailed output
   --scope       Setup scope for "omx setup" only:
                 user | project
@@ -120,7 +124,7 @@ type ReasoningMode = typeof REASONING_MODES[number];
 const REASONING_MODE_SET = new Set<string>(REASONING_MODES);
 const REASONING_USAGE = 'Usage: omx reasoning <low|medium|high|xhigh>';
 
-type CliCommand = 'launch' | 'setup' | 'doctor' | 'team' | 'version' | 'tmux-hook' | 'hooks' | 'hud' | 'status' | 'cancel' | 'help' | 'reasoning' | string;
+type CliCommand = 'launch' | 'setup' | 'uninstall' | 'doctor' | 'team' | 'version' | 'tmux-hook' | 'hooks' | 'hud' | 'status' | 'cancel' | 'help' | 'reasoning' | string;
 
 export interface ResolvedCliInvocation {
   command: CliCommand;
@@ -339,7 +343,7 @@ export function buildHudPaneCleanupTargets(existingPaneIds: string[], createdPan
 
 export async function main(args: string[]): Promise<void> {
   const knownCommands = new Set([
-    'launch', 'setup', 'doctor', 'team', 'ralph', 'version', 'tmux-hook', 'hooks', 'hud', 'status', 'cancel', 'help', '--help', '-h',
+    'launch', 'setup', 'uninstall', 'doctor', 'team', 'ralph', 'version', 'tmux-hook', 'hooks', 'hud', 'status', 'cancel', 'help', '--help', '-h',
   ]);
   const firstArg = args[0];
   const { command, launchArgs } = resolveCliInvocation(args);
@@ -361,6 +365,15 @@ export async function main(args: string[]): Promise<void> {
           force: options.force,
           dryRun: options.dryRun,
           verbose: options.verbose,
+          scope: resolveSetupScopeArg(args.slice(1)),
+        });
+        break;
+      case 'uninstall':
+        await uninstall({
+          dryRun: options.dryRun,
+          keepConfig: flags.has('--keep-config'),
+          verbose: options.verbose,
+          purge: flags.has('--purge'),
           scope: resolveSetupScopeArg(args.slice(1)),
         });
         break;

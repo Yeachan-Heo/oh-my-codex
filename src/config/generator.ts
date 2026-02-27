@@ -52,7 +52,7 @@ function getOmxTopLevelLines(pkgRoot: string): string[] {
  * Remove any existing OMX-owned top-level keys so we can re-insert them
  * cleanly.  Also removes the comment line that precedes them.
  */
-function stripOmxTopLevelKeys(config: string): string {
+export function stripOmxTopLevelKeys(config: string): string {
   let lines = config.split(/\r?\n/);
 
   // Remove the OMX top-level comment line
@@ -141,11 +141,60 @@ function upsertFeatureFlags(config: string): string {
   return lines.join('\n');
 }
 
+/**
+ * Remove OMX-owned feature flags from the [features] section.
+ * If the section becomes empty after removal, remove the section header too.
+ */
+export function stripOmxFeatureFlags(config: string): string {
+  const lines = config.split(/\r?\n/);
+  const featuresStart = lines.findIndex((line) => /^\s*\[features\]\s*$/.test(line));
+
+  if (featuresStart < 0) return config;
+
+  let sectionEnd = lines.length;
+  for (let i = featuresStart + 1; i < lines.length; i++) {
+    if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(lines[i])) {
+      sectionEnd = i;
+      break;
+    }
+  }
+
+  const omxFlags = ['multi_agent', 'child_agents_md', 'collab'];
+  const filtered: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (i > featuresStart && i < sectionEnd) {
+      const isOmxFlag = omxFlags.some((f) =>
+        new RegExp(`^\\s*${f}\\s*=`).test(lines[i])
+      );
+      if (isOmxFlag) continue;
+    }
+    filtered.push(lines[i]);
+  }
+
+  // If [features] section is now empty, remove the header too
+  const newFeaturesStart = filtered.findIndex((l) => /^\s*\[features\]\s*$/.test(l));
+  if (newFeaturesStart >= 0) {
+    let newSectionEnd = filtered.length;
+    for (let i = newFeaturesStart + 1; i < filtered.length; i++) {
+      if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(filtered[i])) {
+        newSectionEnd = i;
+        break;
+      }
+    }
+    const sectionContent = filtered.slice(newFeaturesStart + 1, newSectionEnd);
+    if (sectionContent.every((l) => l.trim() === '')) {
+      filtered.splice(newFeaturesStart, newSectionEnd - newFeaturesStart);
+    }
+  }
+
+  return filtered.join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // OMX [table] sections block (appended at end of file)
 // ---------------------------------------------------------------------------
 
-function stripExistingOmxBlocks(config: string): { cleaned: string; removed: number } {
+export function stripExistingOmxBlocks(config: string): { cleaned: string; removed: number } {
   const marker = 'oh-my-codex (OMX) Configuration';
   const endMarker = '# End oh-my-codex';
   let cleaned = config;
