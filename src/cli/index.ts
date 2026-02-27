@@ -1523,8 +1523,6 @@ async function cancelModes(): Promise<void> {
 
     const ralphLinksUltrawork = (state: Record<string, unknown>): boolean =>
       state.linked_ultrawork === true || state.linked_mode === 'ultrawork';
-    const ralphLinksEcomode = (state: Record<string, unknown>): boolean =>
-      state.linked_ecomode === true || state.linked_mode === 'ecomode';
 
     const team = states.get('team');
     const ralph = states.get('ralph');
@@ -1538,14 +1536,12 @@ async function cancelModes(): Promise<void> {
         ralph.state.linked_team_terminal_at = nowIso;
         changed.add('ralph');
         if (ralphLinksUltrawork(ralph.state)) cancelMode('ultrawork', 'cancelled', true);
-        if (ralphLinksEcomode(ralph.state)) cancelMode('ecomode', 'cancelled', true);
       }
     }
 
     if (ralph && ralph.state.active === true) {
       cancelMode('ralph', 'cancelled', true);
       if (ralphLinksUltrawork(ralph.state)) cancelMode('ultrawork', 'cancelled', true);
-      if (ralphLinksEcomode(ralph.state)) cancelMode('ecomode', 'cancelled', true);
     }
 
     if (!hadActiveRalph) {

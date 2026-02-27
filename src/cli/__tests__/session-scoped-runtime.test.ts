@@ -48,7 +48,7 @@ describe('CLI session-scoped state parity', () => {
     }
   });
 
-  it('cancels linked ultrawork but leaves unrelated mode unchanged when Ralph is active', async () => {
+  it('cancels linked ultrawork when Ralph is active', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralph-link-'));
     try {
       const stateDir = join(wd, '.omx', 'state');
@@ -69,16 +69,11 @@ describe('CLI session-scoped state parity', () => {
         active: true,
         current_phase: 'executing',
       }));
-      await writeFile(join(sessionDir, 'ecomode-state.json'), JSON.stringify({
-        active: true,
-        current_phase: 'executing',
-      }));
 
       const cancelResult = runOmx(wd, 'cancel');
       assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
       assert.match(cancelResult.stdout, /Cancelled: ralph/);
       assert.match(cancelResult.stdout, /Cancelled: ultrawork/);
-      assert.doesNotMatch(cancelResult.stdout, /Cancelled: ecomode/);
 
       const ralph = JSON.parse(await readFile(join(sessionDir, 'ralph-state.json'), 'utf-8'));
       assert.equal(ralph.active, false);
@@ -88,10 +83,6 @@ describe('CLI session-scoped state parity', () => {
       const ultrawork = JSON.parse(await readFile(join(sessionDir, 'ultrawork-state.json'), 'utf-8'));
       assert.equal(ultrawork.active, false);
       assert.equal(ultrawork.current_phase, 'cancelled');
-
-      const ecomode = JSON.parse(await readFile(join(sessionDir, 'ecomode-state.json'), 'utf-8'));
-      assert.equal(ecomode.active, true);
-      assert.equal(ecomode.current_phase, 'executing');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

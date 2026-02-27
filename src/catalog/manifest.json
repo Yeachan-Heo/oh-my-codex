@@ -6,7 +6,7 @@
     { "name": "ralph", "category": "execution", "status": "active", "core": true },
     { "name": "ultrawork", "category": "execution", "status": "active", "core": true },
     { "name": "team", "category": "execution", "status": "active", "core": true },
-    { "name": "ecomode", "category": "execution", "status": "merged", "canonical": "ultrawork" },
+    { "name": "ecomode", "category": "execution", "status": "deprecated", "canonical": "ultrawork" },
     { "name": "ultraqa", "category": "execution", "status": "merged", "canonical": "ralph" },
     { "name": "swarm", "category": "execution", "status": "alias", "canonical": "team" },
 

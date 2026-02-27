@@ -27,8 +27,6 @@ function emptyCtx(): HudRenderContext {
     ultrawork: null,
     autopilot: null,
     team: null,
-    ecomode: null,
-    pipeline: null,
     metrics: null,
     hudNotify: null,
     session: null,
@@ -176,42 +174,6 @@ describe('renderHud – team', () => {
   it('omits team when null', () => {
     const result = renderHud(emptyCtx(), 'focused');
     assert.ok(!result.includes('team'));
-  });
-});
-
-// ── Ecomode ───────────────────────────────────────────────────────────────────
-
-describe('renderHud – ecomode', () => {
-  it('renders "ecomode" as dim text', () => {
-    const ctx = { ...emptyCtx(), ecomode: { active: true } };
-    const result = renderHud(ctx, 'focused');
-    assert.ok(result.includes(`${DIM}ecomode${RESET}`));
-  });
-
-  it('omits ecomode when null', () => {
-    const result = renderHud(emptyCtx(), 'focused');
-    assert.ok(!result.includes('ecomode'));
-  });
-});
-
-// ── Pipeline ──────────────────────────────────────────────────────────────────
-
-describe('renderHud – pipeline', () => {
-  it('renders pipeline with the current phase', () => {
-    const ctx = { ...emptyCtx(), pipeline: { active: true, current_phase: 'exec' } };
-    const result = renderHud(ctx, 'focused');
-    assert.ok(result.includes(`${CYAN}pipeline:exec${RESET}`));
-  });
-
-  it('defaults phase to "active" when not set', () => {
-    const ctx = { ...emptyCtx(), pipeline: { active: true } };
-    const result = renderHud(ctx, 'focused');
-    assert.ok(result.includes('pipeline:active'));
-  });
-
-  it('omits pipeline when null', () => {
-    const result = renderHud(emptyCtx(), 'focused');
-    assert.ok(!result.includes('pipeline'));
   });
 });
 
@@ -511,12 +473,10 @@ describe('renderHud – presets', () => {
     assert.ok(result.includes('turns:3'));
   });
 
-  it('minimal preset excludes autopilot, ecomode, pipeline, quota', () => {
+  it('minimal preset excludes autopilot and quota', () => {
     const ctx = {
       ...emptyCtx(),
       autopilot: { active: true, current_phase: 'exec' },
-      ecomode: { active: true },
-      pipeline: { active: true, current_phase: 'run' },
       metrics: {
         total_turns: 10,
         session_turns: 3,
@@ -526,8 +486,6 @@ describe('renderHud – presets', () => {
     };
     const result = renderHud(ctx, 'minimal');
     assert.ok(!result.includes('autopilot'));
-    assert.ok(!result.includes('ecomode'));
-    assert.ok(!result.includes('pipeline'));
     assert.ok(!result.includes('quota'));
   });
 
@@ -542,10 +500,10 @@ describe('renderHud – presets', () => {
 
   it('focused preset is the default for unrecognised preset values', () => {
     // TypeScript prevents invalid values, but we can test the focused default
-    const ctx = { ...emptyCtx(), ecomode: { active: true } };
-    // focused includes ecomode; minimal does not
-    assert.ok(renderHud(ctx, 'focused').includes('ecomode'));
-    assert.ok(!renderHud(ctx, 'minimal').includes('ecomode'));
+    const ctx = { ...emptyCtx(), autopilot: { active: true, current_phase: 'exec' } };
+    // focused includes autopilot; minimal does not
+    assert.ok(renderHud(ctx, 'focused').includes('autopilot'));
+    assert.ok(!renderHud(ctx, 'minimal').includes('autopilot'));
   });
 });
 
@@ -580,7 +538,6 @@ describe('renderHud – sanitization', () => {
       gitBranch: injected,
       autopilot: { active: true, current_phase: injected },
       team: { active: true, team_name: injected },
-      pipeline: { active: true, current_phase: injected },
     };
 
     const plain = stripSgr(renderHud(ctx, 'focused'));

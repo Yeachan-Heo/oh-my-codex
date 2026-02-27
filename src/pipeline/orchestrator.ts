@@ -19,7 +19,7 @@ import type {
   StageResult,
 } from './types.js';
 
-const MODE_NAME = 'pipeline' as const;
+const MODE_NAME = 'autopilot' as const;
 
 // ---------------------------------------------------------------------------
 // Pipeline orchestrator

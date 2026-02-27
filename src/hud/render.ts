@@ -73,17 +73,6 @@ function renderTeam(ctx: HudRenderContext): string | null {
   return green('team');
 }
 
-function renderEcomode(ctx: HudRenderContext): string | null {
-  if (!ctx.ecomode) return null;
-  return dim('ecomode');
-}
-
-function renderPipeline(ctx: HudRenderContext): string | null {
-  if (!ctx.pipeline) return null;
-  const phase = sanitizeDynamicText(ctx.pipeline.current_phase || 'active') || 'active';
-  return cyan(`pipeline:${phase}`);
-}
-
 function renderTurns(ctx: HudRenderContext): string | null {
   if (!ctx.metrics || !isCurrentSessionMetrics(ctx)) return null;
   return dim(`turns:${ctx.metrics.session_turns}`);
@@ -163,8 +152,6 @@ const FOCUSED_ELEMENTS: ElementRenderer[] = [
   renderUltrawork,
   renderAutopilot,
   renderTeam,
-  renderPipeline,
-  renderEcomode,
   renderTurns,
   renderTokens,
   renderQuota,
@@ -178,8 +165,6 @@ const FULL_ELEMENTS: ElementRenderer[] = [
   renderUltrawork,
   renderAutopilot,
   renderTeam,
-  renderPipeline,
-  renderEcomode,
   renderTurns,
   renderTokens,
   renderQuota,

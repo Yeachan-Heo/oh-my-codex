@@ -16,8 +16,6 @@ import type {
   UltraworkStateForHud,
   AutopilotStateForHud,
   TeamStateForHud,
-  EcomodeStateForHud,
-  PipelineStateForHud,
   HudMetrics,
   HudNotifyState,
   HudConfig,
@@ -61,16 +59,6 @@ export async function readAutopilotState(cwd: string): Promise<AutopilotStateFor
 
 export async function readTeamState(cwd: string): Promise<TeamStateForHud | null> {
   const state = await readScopedModeState<TeamStateForHud>(cwd, 'team');
-  return state?.active ? state : null;
-}
-
-export async function readEcomodeState(cwd: string): Promise<EcomodeStateForHud | null> {
-  const state = await readScopedModeState<EcomodeStateForHud>(cwd, 'ecomode');
-  return state?.active ? state : null;
-}
-
-export async function readPipelineState(cwd: string): Promise<PipelineStateForHud | null> {
-  const state = await readScopedModeState<PipelineStateForHud>(cwd, 'pipeline');
   return state?.active ? state : null;
 }
 
@@ -126,18 +114,16 @@ export async function readAllState(cwd: string): Promise<HudRenderContext> {
   const version = readVersion();
   const gitBranch = readGitBranch(cwd);
 
-  const [ralph, ultrawork, autopilot, team, ecomode, pipeline, metrics, hudNotify, session] =
+  const [ralph, ultrawork, autopilot, team, metrics, hudNotify, session] =
     await Promise.all([
       readRalphState(cwd),
       readUltraworkState(cwd),
       readAutopilotState(cwd),
       readTeamState(cwd),
-      readEcomodeState(cwd),
-      readPipelineState(cwd),
       readMetrics(cwd),
       readHudNotifyState(cwd),
       readSessionState(cwd),
     ]);
 
-  return { version, gitBranch, ralph, ultrawork, autopilot, team, ecomode, pipeline, metrics, hudNotify, session };
+  return { version, gitBranch, ralph, ultrawork, autopilot, team, metrics, hudNotify, session };
 }

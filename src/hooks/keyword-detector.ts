@@ -246,7 +246,7 @@ export function isUnderspecifiedForExecution(text: string): boolean {
 
   // Strip mode keywords for effective word counting
   const stripped = trimmed
-    .replace(/\b(?:ralph|autopilot|team|ultrawork|ultrapilot|ulw|swarm)\b/gi, '')
+    .replace(/\b(?:ralph|autopilot|team|ultrawork|ulw|swarm)\b/gi, '')
     .trim();
   const effectiveWords = stripped.split(/\s+/).filter(w => w.length > 0).length;
 

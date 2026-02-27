@@ -31,12 +31,6 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: 'coordinated team', skill: 'team', priority: 8, guidance: 'Activate coordinated team mode' },
   { keyword: 'coordinated swarm', skill: 'team', priority: 8, guidance: 'Activate coordinated team mode (swarm is a compatibility alias for team)' },
 
-  { keyword: 'pipeline', skill: 'pipeline', priority: 8, guidance: 'Activate pipeline orchestrator (RALPLAN -> team-exec -> ralph-verify)' },
-
-  { keyword: 'ecomode', skill: 'ecomode', priority: 10, guidance: 'Activate ecomode for token-efficient execution' },
-  { keyword: 'eco', skill: 'ecomode', priority: 10, guidance: 'Activate ecomode for token-efficient execution' },
-  { keyword: 'budget', skill: 'ecomode', priority: 10, guidance: 'Activate ecomode for token-efficient execution' },
-
   { keyword: 'cancel', skill: 'cancel', priority: 5, guidance: 'Cancel active execution modes' },
   { keyword: 'stop', skill: 'cancel', priority: 5, guidance: 'Cancel active execution modes' },
   { keyword: 'abort', skill: 'cancel', priority: 5, guidance: 'Cancel active execution modes' },

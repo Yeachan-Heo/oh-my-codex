@@ -17,8 +17,6 @@ function emptyCtx(): HudRenderContext {
     ultrawork: null,
     autopilot: null,
     team: null,
-    ecomode: null,
-    pipeline: null,
     metrics: null,
     hudNotify: null,
     session: null,

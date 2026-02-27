@@ -72,9 +72,16 @@ import {
 } from '../team/team-ops.js';
 
 const SUPPORTED_MODES = [
-  'autopilot', 'ultrapilot', 'team', 'pipeline',
-  'ralph', 'ultrawork', 'ultraqa', 'ecomode', 'ralplan',
+  'autopilot', 'team',
+  'ralph', 'ultrawork', 'ultraqa', 'ralplan',
 ] as const;
+
+/** @deprecated Modes removed in v4.6. Kept for deprecation warnings only. */
+const DEPRECATED_MODE_MAP: Record<string, string> = {
+  ultrapilot: 'team',
+  pipeline: 'team',
+  ecomode: 'ultrawork',
+};
 
 const STATE_TOOL_NAMES = new Set([
   'state_read',

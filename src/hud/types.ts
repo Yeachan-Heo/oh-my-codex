@@ -29,17 +29,6 @@ export interface TeamStateForHud {
   team_name?: string;
 }
 
-/** Ecomode state for HUD display */
-export interface EcomodeStateForHud {
-  active: boolean;
-}
-
-/** Pipeline state for HUD display */
-export interface PipelineStateForHud {
-  active: boolean;
-  current_phase?: string;
-}
-
 /** Metrics tracked by notify hook */
 export interface HudMetrics {
   total_turns: number;
@@ -73,8 +62,6 @@ export interface HudRenderContext {
   ultrawork: UltraworkStateForHud | null;
   autopilot: AutopilotStateForHud | null;
   team: TeamStateForHud | null;
-  ecomode: EcomodeStateForHud | null;
-  pipeline: PipelineStateForHud | null;
   metrics: HudMetrics | null;
   hudNotify: HudNotifyState | null;
   session: SessionStateForHud | null;

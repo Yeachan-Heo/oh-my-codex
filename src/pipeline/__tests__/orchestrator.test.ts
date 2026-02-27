@@ -438,7 +438,7 @@ describe('Pipeline Orchestrator', () => {
         join(stateDir, 'pipeline-state.json'),
         JSON.stringify({
           active: true,
-          mode: 'pipeline',
+          mode: 'autopilot',
           iteration: 1,
           max_iterations: 3,
           current_phase: 'stage:team-exec',

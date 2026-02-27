@@ -1,6 +1,6 @@
 /**
  * Base mode lifecycle management for oh-my-codex
- * All execution modes (autopilot, ralph, ultrawork, ecomode) share this base.
+ * All execution modes (autopilot, ralph, ultrawork, team, ultraqa, ralplan) share this base.
  */
 
 import { readFile, writeFile, mkdir } from 'fs/promises';
@@ -23,10 +23,28 @@ export interface ModeState {
   [key: string]: unknown;
 }
 
-export type ModeName = 'autopilot' | 'ralph' | 'ultrawork' | 'ecomode' |
-  'ultrapilot' | 'team' | 'pipeline' | 'ultraqa' | 'ralplan';
+export type ModeName = 'autopilot' | 'ralph' | 'ultrawork' | 'team' | 'ultraqa' | 'ralplan';
 
-const EXCLUSIVE_MODES: ModeName[] = ['autopilot', 'ralph', 'ultrawork', 'ultrapilot'];
+/** @deprecated These mode names were removed in v4.6. Use the canonical modes instead. */
+export type DeprecatedModeName = 'ultrapilot' | 'pipeline' | 'ecomode';
+
+const DEPRECATED_MODES: Record<DeprecatedModeName, string> = {
+  ultrapilot: 'Use "team" instead. ultrapilot has been merged into team mode.',
+  pipeline: 'Use "team" instead. pipeline has been merged into team mode.',
+  ecomode: 'Use "ultrawork" instead. ecomode has been merged into ultrawork mode.',
+};
+
+/**
+ * Check if a mode name is deprecated and return a warning message if so.
+ * Returns null if the mode is not deprecated.
+ */
+export function getDeprecationWarning(mode: string): string | null {
+  const warning = DEPRECATED_MODES[mode as DeprecatedModeName];
+  if (!warning) return null;
+  return `[DEPRECATED] Mode "${mode}" is deprecated. ${warning}`;
+}
+
+const EXCLUSIVE_MODES: ModeName[] = ['autopilot', 'ralph', 'ultrawork'];
 
 function normalizeRalphModeStateOrThrow(state: ModeState): ModeState {
   const originalPhase = state.current_phase;
