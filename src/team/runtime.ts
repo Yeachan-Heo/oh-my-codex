@@ -711,19 +711,36 @@ export async function startTeam(
         leaderCwd,
       });
       const trigger = generateTriggerMessage(workerName, sanitized);
-      const dispatchOutcome = await dispatchCriticalInboxInstruction({
-        teamName: sanitized,
-        config: config!,
-        workerName,
-        workerIndex: i,
-        paneId,
-        inbox,
-        triggerMessage: trigger,
-        cwd: leaderCwd,
-        dispatchPolicy,
-        inboxCorrelationKey: `startup:${workerName}`,
-      });
-      if (!dispatchOutcome.ok) {
+      // Retry dispatch to tolerate transient worker startup delays (e.g. trust
+      // prompt auto-approval, MCP handshake, or Codex TUI boot lag).  Without
+      // retries a single failed notify kills the entire team immediately.
+      const maxDispatchRetries = 5;
+      const dispatchRetryDelayMs = 3_000;
+      let dispatchOutcome: DispatchOutcome | undefined;
+
+      for (let attempt = 1; attempt <= maxDispatchRetries; attempt++) {
+        dispatchOutcome = await dispatchCriticalInboxInstruction({
+          teamName: sanitized,
+          config: config!,
+          workerName,
+          workerIndex: i,
+          paneId,
+          inbox,
+          triggerMessage: trigger,
+          cwd: leaderCwd,
+          dispatchPolicy,
+          inboxCorrelationKey: `startup:${workerName}`,
+        });
+        if (dispatchOutcome.ok) break;
+        if (attempt < maxDispatchRetries) {
+          console.log(
+            `[omx:team] ${workerName} notify attempt ${attempt}/${maxDispatchRetries} failed` +
+            ` (${dispatchOutcome.reason ?? 'unknown'}), retrying in ${dispatchRetryDelayMs / 1000}s…`,
+          );
+          await new Promise((r) => setTimeout(r, dispatchRetryDelayMs));
+        }
+      }
+      if (!dispatchOutcome?.ok) {
         throw new Error(`worker_notify_failed:${workerName}`);
       }
     }

@@ -1068,6 +1068,8 @@ export function waitForWorkerReady(
     runTmux(['send-keys', '-t', target, 'C-m']);
   };
 
+  let trustAutoApproved = false;
+
   const check = (): boolean => {
     const result = runTmux(['capture-pane', '-t', paneTarget(sessionName, workerIndex, workerPaneId), '-p']);
     if (!result.ok) return false;
@@ -1076,6 +1078,7 @@ export function waitForWorkerReady(
       // Opt-out by setting OMX_TEAM_AUTO_TRUST=0.
       if (process.env.OMX_TEAM_AUTO_TRUST !== '0') {
         sendRobustEnter();
+        trustAutoApproved = true;
         return false;
       }
       blockedByTrustPrompt = true;
@@ -1088,6 +1091,12 @@ export function waitForWorkerReady(
   while (Date.now() - startedAt < timeoutMs) {
     if (check()) return true;
     if (blockedByTrustPrompt) return false;
+    // After auto-approving trust, reset backoff to poll more frequently while
+    // Codex finishes booting (the exponential backoff may have grown large).
+    if (trustAutoApproved) {
+      delayMs = initialBackoffMs;
+      trustAutoApproved = false;
+    }
     const remaining = timeoutMs - (Date.now() - startedAt);
     if (remaining <= 0) break;
     sleepSeconds(Math.max(0, Math.min(delayMs, remaining)) / 1000);
