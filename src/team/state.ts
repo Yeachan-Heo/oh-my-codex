@@ -201,6 +201,8 @@ export interface TeamEvent {
     | 'shutdown_ack'
     | 'shutdown_gate'
     | 'shutdown_gate_forced'
+    | 'ralph_cleanup_policy'
+    | 'ralph_cleanup_summary'
     | 'approval_decision'
     | 'team_leader_nudge';
   worker: string;
