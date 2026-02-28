@@ -53,4 +53,11 @@ describe('hook emulator keyword guidance generation', () => {
       assert.match(section, new RegExp(action.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     }
   });
+
+  it('includes visual iteration gate guidance', () => {
+    const section = generateKeywordDetectionSection();
+    assert.match(section, /\$visual-verdict/);
+    assert.match(section, /Visual iteration gate/i);
+    assert.match(section, /score \+ qualitative next actions/i);
+  });
 });

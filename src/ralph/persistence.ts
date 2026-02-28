@@ -3,11 +3,34 @@ import { existsSync } from 'fs';
 import { mkdir, readFile, readdir, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { getStateDir } from '../mcp/state-paths.js';
+import { VISUAL_NEXT_ACTIONS_LIMIT, type VisualVerdictStatus } from '../visual/constants.js';
 
 const LEGACY_PRD_PATH = '.omx/prd.json';
 const LEGACY_PROGRESS_PATH = '.omx/progress.txt';
 const PRD_PREFIX = 'prd-';
 const PRD_SUFFIX = '.md';
+const DEFAULT_VISUAL_THRESHOLD = 90;
+
+export interface RalphVisualFeedback {
+  score: number;
+  verdict: VisualVerdictStatus;
+  category_match: boolean;
+  differences: string[];
+  suggestions: string[];
+  reasoning?: string;
+  threshold?: number;
+}
+
+export interface RalphProgressLedger {
+  schema_version: number;
+  source?: string;
+  source_sha256?: string;
+  strategy?: string;
+  created_at?: string;
+  updated_at?: string;
+  entries: Array<Record<string, unknown>>;
+  visual_feedback?: Array<Record<string, unknown>>;
+}
 
 export interface RalphCanonicalArtifacts {
   canonicalPrdPath?: string;
@@ -76,6 +99,49 @@ function splitProgressLines(content: string): string[] {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
+}
+
+async function ensureCanonicalProgressLedgerFile(canonicalProgressPath: string): Promise<void> {
+  if (existsSync(canonicalProgressPath)) return;
+  const now = new Date().toISOString();
+  const payload: RalphProgressLedger = {
+    schema_version: 2,
+    created_at: now,
+    updated_at: now,
+    entries: [],
+    visual_feedback: [],
+  };
+  await mkdir(join(canonicalProgressPath, '..'), { recursive: true });
+  await writeFile(canonicalProgressPath, `${stableJsonPretty(payload)}\n`);
+}
+
+async function readCanonicalProgressLedger(canonicalProgressPath: string): Promise<RalphProgressLedger> {
+  if (!existsSync(canonicalProgressPath)) {
+    await ensureCanonicalProgressLedgerFile(canonicalProgressPath);
+  }
+  try {
+    const parsed = JSON.parse(await readFile(canonicalProgressPath, 'utf-8')) as RalphProgressLedger;
+    const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
+    const visual_feedback = Array.isArray(parsed.visual_feedback) ? parsed.visual_feedback : [];
+    const now = new Date().toISOString();
+    return {
+      ...parsed,
+      schema_version: typeof parsed.schema_version === 'number' ? parsed.schema_version : 2,
+      entries,
+      visual_feedback,
+      created_at: typeof parsed.created_at === 'string' ? parsed.created_at : now,
+      updated_at: now,
+    };
+  } catch {
+    const now = new Date().toISOString();
+    return {
+      schema_version: 2,
+      created_at: now,
+      updated_at: now,
+      entries: [],
+      visual_feedback: [],
+    };
+  }
 }
 
 async function writeMigrationMarker(
@@ -174,14 +240,17 @@ async function migrateLegacyProgressIfNeeded(
   const raw = await readFile(legacyProgressPath, 'utf-8');
   const lines = splitProgressLines(raw);
   const payload = {
-    schema_version: 1,
+    schema_version: 2,
     source: LEGACY_PROGRESS_PATH,
     source_sha256: sha256(raw),
     strategy: 'one-way-read-only',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
     entries: lines.map((line, index) => ({
       index: index + 1,
       text: line,
     })),
+    visual_feedback: [],
   };
   await mkdir(join(canonicalProgressPath, '..'), { recursive: true });
   await writeFile(canonicalProgressPath, `${stableJsonPretty(payload)}\n`);
@@ -198,6 +267,45 @@ async function migrateLegacyProgressIfNeeded(
   return true;
 }
 
+export async function recordRalphVisualFeedback(
+  cwd: string,
+  feedback: RalphVisualFeedback,
+  sessionId?: string,
+): Promise<void> {
+  const canonicalProgressPath = join(getStateDir(cwd, sessionId), 'ralph-progress.json');
+  const ledger = await readCanonicalProgressLedger(canonicalProgressPath);
+  const threshold = Number.isFinite(feedback.threshold) ? Number(feedback.threshold) : DEFAULT_VISUAL_THRESHOLD;
+  const nextActions = [
+    ...feedback.suggestions,
+    ...feedback.differences.map((diff) => `Resolve difference: ${diff}`),
+  ]
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(0, VISUAL_NEXT_ACTIONS_LIMIT);
+  const entry = {
+    recorded_at: new Date().toISOString(),
+    score: feedback.score,
+    verdict: feedback.verdict,
+    category_match: feedback.category_match,
+    threshold,
+    passes_threshold: feedback.score >= threshold,
+    differences: feedback.differences,
+    suggestions: feedback.suggestions,
+    reasoning: feedback.reasoning ?? '',
+    next_actions: nextActions,
+    qualitative_feedback: {
+      summary: feedback.reasoning ?? feedback.verdict,
+      next_actions: nextActions,
+    },
+  };
+  const visualFeedback = Array.isArray(ledger.visual_feedback) ? ledger.visual_feedback : [];
+  visualFeedback.push(entry);
+  ledger.visual_feedback = visualFeedback.slice(-30);
+  ledger.updated_at = new Date().toISOString();
+  await mkdir(join(canonicalProgressPath, '..'), { recursive: true });
+  await writeFile(canonicalProgressPath, `${stableJsonPretty(ledger)}\n`);
+}
+
 export async function ensureCanonicalRalphArtifacts(
   cwd: string,
   sessionId?: string,
@@ -209,6 +317,7 @@ export async function ensureCanonicalRalphArtifacts(
   const canonicalPrdFiles = await listCanonicalPrdFiles(cwd);
   const migratedPrdResult = await migrateLegacyPrdIfNeeded(cwd, canonicalPrdFiles[0]);
   const migratedProgress = await migrateLegacyProgressIfNeeded(cwd, canonicalProgressPath);
+  await ensureCanonicalProgressLedgerFile(canonicalProgressPath);
 
   return {
     canonicalPrdPath: migratedPrdResult.canonicalPrdPath,

@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ensureCanonicalRalphArtifacts } from '../persistence.js';
+import { ensureCanonicalRalphArtifacts, recordRalphVisualFeedback } from '../persistence.js';
+import { VISUAL_NEXT_ACTIONS_LIMIT } from '../../visual/constants.js';
 
 describe('ensureCanonicalRalphArtifacts', () => {
   it('keeps canonical files authoritative when they already exist', async () => {
@@ -63,10 +64,37 @@ describe('ensureCanonicalRalphArtifacts', () => {
       assert.equal(canonicalProgress.source, '.omx/progress.txt');
       assert.equal(Array.isArray(canonicalProgress.entries), true);
       assert.equal(canonicalProgress.entries.length, 2);
+      assert.equal(Array.isArray(canonicalProgress.visual_feedback), true);
 
       // Legacy artifacts remain untouched for compatibility window.
       assert.equal(await readFile(legacyPrdPath, 'utf-8'), legacyPrdBefore);
       assert.equal(await readFile(legacyProgressPath, 'utf-8'), legacyProgressBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('records visual feedback with numeric and qualitative guidance for the next iteration', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-visual-feedback-'));
+    try {
+      const artifacts = await ensureCanonicalRalphArtifacts(cwd, 'sessVisual');
+      await recordRalphVisualFeedback(cwd, {
+        score: 82,
+        verdict: 'revise',
+        category_match: true,
+        differences: ['CTA alignment drifts by 4px'],
+        suggestions: ['Align CTA to the same baseline as reference card'],
+        reasoning: 'Layout is close but CTA still misaligned.',
+      }, 'sessVisual');
+
+      const progress = JSON.parse(await readFile(artifacts.canonicalProgressPath, 'utf-8'));
+      assert.equal(Array.isArray(progress.visual_feedback), true);
+      assert.equal(progress.visual_feedback.length, 1);
+      assert.equal(progress.visual_feedback[0].score, 82);
+      assert.equal(progress.visual_feedback[0].qualitative_feedback.summary, 'Layout is close but CTA still misaligned.');
+      assert.equal(Array.isArray(progress.visual_feedback[0].qualitative_feedback.next_actions), true);
+      assert.equal(progress.visual_feedback[0].qualitative_feedback.next_actions.length > 0, true);
+      assert.equal(progress.visual_feedback[0].next_actions.length <= VISUAL_NEXT_ACTIONS_LIMIT, true);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

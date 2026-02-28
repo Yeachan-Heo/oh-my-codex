@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.02.20.1",
+  "catalogVersion": "2026.02.28.1",
   "skills": [
     { "name": "autopilot", "category": "execution", "status": "active", "core": true },
     { "name": "ralph", "category": "execution", "status": "active", "core": true },
     { "name": "ultrawork", "category": "execution", "status": "active", "core": true },
     { "name": "team", "category": "execution", "status": "active", "core": true },
-    { "name": "ecomode", "category": "execution", "status": "deprecated", "canonical": "ultrawork" },
+    { "name": "ecomode", "category": "execution", "status": "merged", "canonical": "ultrawork" },
     { "name": "ultraqa", "category": "execution", "status": "merged", "canonical": "ralph" },
     { "name": "swarm", "category": "execution", "status": "alias", "canonical": "team" },
 
@@ -19,6 +19,7 @@
     { "name": "build-fix", "category": "shortcut", "status": "alias", "canonical": "build-fixer" },
     { "name": "code-review", "category": "shortcut", "status": "active", "canonical": "code-reviewer" },
     { "name": "security-review", "category": "shortcut", "status": "active", "canonical": "security-reviewer" },
+    { "name": "visual-verdict", "category": "shortcut", "status": "active", "canonical": "vision" },
     { "name": "frontend-ui-ux", "category": "shortcut", "status": "alias", "canonical": "designer" },
     { "name": "git-master", "category": "shortcut", "status": "alias", "canonical": "git-master" },
     { "name": "review", "category": "shortcut", "status": "alias", "canonical": "plan --review" },

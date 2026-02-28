@@ -26,6 +26,7 @@
         <li><code>$autopilot</code> - full autonomous execution</li>
         <li><code>$ralph</code> - persistence loop until completion</li>
         <li><code>$ultrawork</code> - max parallel execution</li>
+        <li><code>$visual-verdict</code> - structured visual QA loop for screenshot/reference matching</li>
         <li><code>$team</code> - coordinated multi-agent pipeline</li>
         <li><code>$ecomode</code> - token-efficient model routing</li>
         <li><code>$ultraqa</code> - test/verify/fix loop</li>
@@ -64,8 +65,16 @@
       <pre><code>$autopilot "build a release checklist"
 $team 3:executor "fix all TypeScript errors"
 $plan "plan migration from v1 to v2"
+$visual-verdict "compare generated screenshot against refs"
 $code-review "review current branch"
 $doctor</code></pre>
+
+      <h2>Visual Verdict Guidance</h2>
+      <ul>
+        <li>Use for visual tasks with reference image(s) + generated screenshot.</li>
+        <li>Pass threshold target: <strong>90+</strong>.</li>
+        <li>Use pixel diff / pixelmatch overlays only as secondary debugging support.</li>
+      </ul>
     </main>
 
     <footer>

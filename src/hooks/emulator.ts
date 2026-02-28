@@ -122,6 +122,8 @@ To activate a skill, use the corresponding slash command or invoke the skill dir
 If a keyword is detected, announce the activation to the user before proceeding.
 
 Pre-execution gate: When an execution keyword (ralph, autopilot, team, ultrawork) is detected but the prompt lacks specific files, functions, issue numbers, or structured steps, redirect to $ralplan for scoping before execution. User can bypass with "force:" or "!" prefix.
+
+Visual iteration gate: For visual tasks (reference image(s) + generated screenshot), invoke $visual-verdict every iteration before the next edit and persist structured feedback (score + qualitative next actions) to progress tracking.
 </keyword_detection>
 `;
 }
