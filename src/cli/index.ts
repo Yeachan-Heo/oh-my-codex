@@ -355,6 +355,11 @@ export async function main(args: string[]): Promise<void> {
     team: flags.has('--team'),
   };
 
+  if (flags.has('--help') || flags.has('-h')) {
+    console.log(HELP);
+    return;
+  }
+
   try {
     switch (command) {
       case 'launch':
