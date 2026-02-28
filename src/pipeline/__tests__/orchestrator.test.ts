@@ -316,7 +316,7 @@ describe('Pipeline Orchestrator', () => {
         cwd: tempDir,
       });
 
-      const statePath = join(tempDir, '.omx', 'state', 'pipeline-state.json');
+      const statePath = join(tempDir, '.omx', 'state', 'autopilot-state.json');
       assert.ok(existsSync(statePath), 'pipeline state file should exist');
 
       const raw = await readFile(statePath, 'utf-8');
@@ -334,7 +334,7 @@ describe('Pipeline Orchestrator', () => {
         cwd: tempDir,
       });
 
-      const statePath = join(tempDir, '.omx', 'state', 'pipeline-state.json');
+      const statePath = join(tempDir, '.omx', 'state', 'autopilot-state.json');
       const raw = await readFile(statePath, 'utf-8');
       const state = JSON.parse(raw);
       assert.equal(state.active, false);
@@ -435,7 +435,7 @@ describe('Pipeline Orchestrator', () => {
       const stateDir = join(tempDir, '.omx', 'state');
       await mkdirFs(stateDir, { recursive: true });
       await writeFileFs(
-        join(stateDir, 'pipeline-state.json'),
+        join(stateDir, 'autopilot-state.json'),
         JSON.stringify({
           active: true,
           mode: 'autopilot',

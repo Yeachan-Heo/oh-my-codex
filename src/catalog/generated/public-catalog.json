@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-02-20T14:01:36.185Z",
+  "generatedAt": "2026-02-28T00:15:18.714Z",
   "version": "2026.02.20.1",
   "counts": {
     "skillCount": 30,
@@ -400,10 +400,6 @@
     }
   ],
   "aliases": [
-    {
-      "name": "ecomode",
-      "canonical": "ultrawork"
-    },
     {
       "name": "ultraqa",
       "canonical": "ralph"

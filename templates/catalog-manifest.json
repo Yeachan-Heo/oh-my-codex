@@ -33,7 +33,7 @@
     {
       "name": "ecomode",
       "category": "execution",
-      "status": "merged",
+      "status": "deprecated",
       "canonical": "ultrawork",
       "core": false,
       "internalRequired": false
