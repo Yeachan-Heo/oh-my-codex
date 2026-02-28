@@ -32,6 +32,8 @@ const OMX_TEAM_WORKER_CLI_MAP_ENV = 'OMX_TEAM_WORKER_CLI_MAP';
 const OMX_TEAM_WORKER_LAUNCH_MODE_ENV = 'OMX_TEAM_WORKER_LAUNCH_MODE';
 const OMX_TEAM_AUTO_INTERRUPT_RETRY_ENV = 'OMX_TEAM_AUTO_INTERRUPT_RETRY';
 const CLAUDE_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
+const OMX_LEADER_NODE_PATH_ENV = 'OMX_LEADER_NODE_PATH';
+const OMX_LEADER_CLI_PATH_ENV = 'OMX_LEADER_CLI_PATH';
 
 export type TeamWorkerCli = 'codex' | 'claude';
 type TeamWorkerCliMode = 'auto' | TeamWorkerCli;
@@ -470,6 +472,30 @@ function commandExists(binary: string): boolean {
   return true;
 }
 
+/**
+ * Resolve the absolute path of a binary from the leader's current environment.
+ * Returns the absolute path or the bare command name as fallback.
+ */
+function resolveAbsoluteBinaryPath(binary: string): string {
+  const result = spawnSync('which', [binary], { encoding: 'utf-8', timeout: 5000 });
+  if (result.status === 0 && result.stdout.trim()) {
+    return result.stdout.trim();
+  }
+  return binary;
+}
+
+/**
+ * Resolve the leader's node binary path.
+ * Caches results for the process lifetime.
+ */
+let _leaderPaths: { node: string; } | null = null;
+function resolveLeaderNodePath(): string {
+  if (!_leaderPaths) {
+    _leaderPaths = { node: resolveAbsoluteBinaryPath('node') };
+  }
+  return _leaderPaths.node;
+}
+
 export function assertTeamWorkerCliBinaryAvailable(
   workerCli: TeamWorkerCli,
   existsImpl: (binary: string) => boolean = commandExists,
@@ -519,10 +545,12 @@ export function buildWorkerStartupCommand(
     workerCliOverride,
   );
   const launchSpec = buildWorkerLaunchSpec(process.env.SHELL);
+  const leaderNodeDir = resolveLeaderNodePath().replace(/\/[^/]+$/, ''); // dirname
+  const pathPrefix = leaderNodeDir ? `export PATH='${leaderNodeDir}':$PATH; ` : '';
   const quotedArgs = processSpec.args.map(shellQuoteSingle).join(' ');
   const cliInvocation = quotedArgs.length > 0 ? `exec ${processSpec.command} ${quotedArgs}` : `exec ${processSpec.command}`;
   const rcPrefix = launchSpec.rcFile ? `if [ -f ${launchSpec.rcFile} ]; then source ${launchSpec.rcFile}; fi; ` : '';
-  const inner = `${rcPrefix}${cliInvocation}`;
+  const inner = `${rcPrefix}${pathPrefix}${cliInvocation}`;
   const envParts = Object.entries(processSpec.env).map(([key, value]) => `${key}=${value}`);
 
   return `env ${envParts.map(shellQuoteSingle).join(' ')} ${shellQuoteSingle(launchSpec.shell)} -lc ${shellQuoteSingle(inner)}`;
@@ -540,8 +568,11 @@ export function buildWorkerProcessLaunchSpec(
   const workerCli = workerCliOverride ?? resolveTeamWorkerCli(fullLaunchArgs, process.env);
   const cliLaunchArgs = translateWorkerLaunchArgsForCli(workerCli, fullLaunchArgs);
 
+  const resolvedCliPath = resolveAbsoluteBinaryPath(workerCli);
   const workerEnv: Record<string, string> = {
     OMX_TEAM_WORKER: `${teamName}/worker-${workerIndex}`,
+    [OMX_LEADER_NODE_PATH_ENV]: resolveLeaderNodePath(),
+    [OMX_LEADER_CLI_PATH_ENV]: resolvedCliPath,
   };
   for (const [key, value] of Object.entries(extraEnv)) {
     if (typeof value !== 'string' || value.trim() === '') continue;
@@ -550,7 +581,7 @@ export function buildWorkerProcessLaunchSpec(
 
   return {
     workerCli,
-    command: workerCli,
+    command: resolvedCliPath,
     args: cliLaunchArgs,
     env: workerEnv,
   };

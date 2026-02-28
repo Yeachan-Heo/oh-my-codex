@@ -287,6 +287,13 @@ const DEFAULT_DISPATCH_ACK_TIMEOUT_MS = 800;
 const MIN_DISPATCH_ACK_TIMEOUT_MS = 100;
 const MAX_DISPATCH_ACK_TIMEOUT_MS = 10_000;
 
+const OMX_DISPATCH_LOCK_TIMEOUT_ENV = 'OMX_DISPATCH_LOCK_TIMEOUT_MS';
+const DEFAULT_DISPATCH_LOCK_TIMEOUT_MS = 15_000;
+const MIN_DISPATCH_LOCK_TIMEOUT_MS = 1_000;
+const MAX_DISPATCH_LOCK_TIMEOUT_MS = 120_000;
+const DISPATCH_LOCK_INITIAL_POLL_MS = 25;
+const DISPATCH_LOCK_MAX_POLL_MS = 500;
+
 type TeamTaskStatus = TeamTask['status'];
 
 function isTerminalTaskStatus(status: TeamTaskStatus): boolean {
@@ -1688,13 +1695,23 @@ async function writeDispatchRequests(teamName: string, requests: TeamDispatchReq
   await writeAtomic(dispatchRequestsPath(teamName, cwd), JSON.stringify(requests, null, 2));
 }
 
+export function resolveDispatchLockTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[OMX_DISPATCH_LOCK_TIMEOUT_ENV];
+  if (raw === undefined || raw === '') return DEFAULT_DISPATCH_LOCK_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_DISPATCH_LOCK_TIMEOUT_MS;
+  return Math.max(MIN_DISPATCH_LOCK_TIMEOUT_MS, Math.min(MAX_DISPATCH_LOCK_TIMEOUT_MS, Math.floor(parsed)));
+}
+
 async function withDispatchLock<T>(teamName: string, cwd: string, fn: () => Promise<T>): Promise<T> {
   const root = teamDir(teamName, cwd);
   if (!existsSync(root)) throw new Error(`Team ${teamName} not found`);
   const lockDir = dispatchLockDir(teamName, cwd);
   const ownerPath = join(lockDir, 'owner');
   const ownerToken = `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
-  const deadline = Date.now() + 5000;
+  const timeoutMs = resolveDispatchLockTimeoutMs(process.env);
+  const deadline = Date.now() + timeoutMs;
+  let pollMs = DISPATCH_LOCK_INITIAL_POLL_MS;
   await mkdir(dirname(lockDir), { recursive: true });
 
   while (true) {
@@ -1719,8 +1736,16 @@ async function withDispatchLock<T>(teamName: string, cwd: string, fn: () => Prom
       } catch {
         // best effort
       }
-      if (Date.now() > deadline) throw new Error(`Timed out acquiring dispatch lock for ${teamName}`);
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      if (Date.now() > deadline) {
+        throw new Error(
+          `Timed out acquiring dispatch lock for ${teamName} after ${timeoutMs}ms. ` +
+          `Set ${OMX_DISPATCH_LOCK_TIMEOUT_ENV} to increase (current: ${timeoutMs}ms, max: ${MAX_DISPATCH_LOCK_TIMEOUT_MS}ms).`
+        );
+      }
+      // Exponential backoff with jitter to reduce thundering herd
+      const jitter = 0.5 + Math.random() * 0.5;
+      await new Promise((resolve) => setTimeout(resolve, Math.floor(pollMs * jitter)));
+      pollMs = Math.min(pollMs * 2, DISPATCH_LOCK_MAX_POLL_MS);
     }
   }
 
