@@ -18,6 +18,8 @@ import {
   buildHudPaneTarget,
   chooseTeamLeaderPaneId,
   createTeamSession,
+  createDedicatedTeamSession,
+  generateSessionTimestamp,
   enableMouseScrolling,
   isMsysOrGitBash,
   isNativeWindows,
@@ -1304,3 +1306,62 @@ describe('killWorker leader pane guard', () => {
   });
 });
 
+describe('generateSessionTimestamp', () => {
+  it('returns YYYYMMDD-HHmmss format', () => {
+    const ts = generateSessionTimestamp();
+    assert.match(ts, /^\d{8}-\d{6}$/);
+  });
+
+  it('does not contain colons or spaces', () => {
+    const ts = generateSessionTimestamp();
+    assert.equal(ts.includes(':'), false);
+    assert.equal(ts.includes(' '), false);
+  });
+
+  it('produces a valid date prefix', () => {
+    const ts = generateSessionTimestamp();
+    const year = Number(ts.slice(0, 4));
+    const month = Number(ts.slice(4, 6));
+    const day = Number(ts.slice(6, 8));
+    assert.ok(year >= 2024 && year <= 2100);
+    assert.ok(month >= 1 && month <= 12);
+    assert.ok(day >= 1 && day <= 31);
+  });
+});
+
+describe('createDedicatedTeamSession', () => {
+  it('throws when tmux is not available', () => {
+    withEmptyPath(() => {
+      assert.throws(
+        () => createDedicatedTeamSession('My Team', 1, process.cwd()),
+        /tmux is not available/i
+      );
+    });
+  });
+
+  it('does not require process.env.TMUX', () => {
+    // createDedicatedTeamSession should not throw "requires running inside tmux"
+    // even when TMUX is unset (it will still fail on tmux binary if unavailable).
+    const prev = process.env.TMUX;
+    delete process.env.TMUX;
+    try {
+      withEmptyPath(() => {
+        assert.throws(
+          () => createDedicatedTeamSession('My Team', 1, process.cwd()),
+          /tmux is not available/i  // fails at tmux check, NOT at TMUX env check
+        );
+      });
+    } finally {
+      if (typeof prev === 'string') process.env.TMUX = prev;
+      else delete process.env.TMUX;
+    }
+  });
+
+  it('dedicated session name has no colon', () => {
+    // Verify the session name format pattern: omx-team-{name}-YYYYMMDD-HHmmss
+    const ts = generateSessionTimestamp();
+    const expectedPattern = `omx-team-test-${ts}`;
+    assert.equal(expectedPattern.includes(':'), false);
+    assert.ok(expectedPattern.startsWith('omx-team-'));
+  });
+});

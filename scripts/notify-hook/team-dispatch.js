@@ -123,7 +123,12 @@ function defaultInjectTarget(request, config) {
     if (worker?.pane_id) return { type: 'pane', value: worker.pane_id };
   }
   if (typeof request.worker_index === 'number' && config.tmux_session) {
-    return { type: 'pane', value: `${config.tmux_session}.${request.worker_index}` };
+    if (config.tmux_session.includes(':')) {
+      // split-pane topology: session:window.paneIndex
+      return { type: 'pane', value: `${config.tmux_session}.${request.worker_index}` };
+    }
+    // dedicated session topology: all workers in window 0 as panes
+    return { type: 'pane', value: `${config.tmux_session}:0.${request.worker_index - 1}` };
   }
   if (config.tmux_session) return { type: 'session', value: config.tmux_session };
   return null;
