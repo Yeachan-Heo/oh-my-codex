@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -32,6 +32,75 @@ async function readLines(path: string): Promise<string[]> {
 
 async function sleep(ms: number): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function buildFakeTmux(tmuxLogPath: string): string {
+  return `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "capture-pane" ]]; then
+  if [[ -n "\${OMX_TEST_CAPTURE_SEQUENCE_FILE:-}" && -f "\${OMX_TEST_CAPTURE_SEQUENCE_FILE}" ]]; then
+    counterFile="\${OMX_TEST_CAPTURE_COUNTER_FILE:-\${OMX_TEST_CAPTURE_SEQUENCE_FILE}.idx}"
+    idx=0
+    if [[ -f "$counterFile" ]]; then idx="$(cat "$counterFile")"; fi
+    lineNo=$((idx + 1))
+    line="$(sed -n "\${lineNo}p" "\${OMX_TEST_CAPTURE_SEQUENCE_FILE}" || true)"
+    if [[ -z "$line" ]]; then
+      line="$(tail -n 1 "\${OMX_TEST_CAPTURE_SEQUENCE_FILE}" || true)"
+    fi
+    printf "%s\\n" "$line"
+    echo "$lineNo" > "$counterFile"
+    exit 0
+  fi
+  if [[ -n "\${OMX_TEST_CAPTURE_FILE:-}" && -f "\${OMX_TEST_CAPTURE_FILE}" ]]; then
+    cat "\${OMX_TEST_CAPTURE_FILE}"
+  fi
+  exit 0
+fi
+if [[ "$cmd" == "display-message" ]]; then
+  target=""
+  fmt=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -t)
+        shift
+        target="$1"
+        ;;
+      *)
+        fmt="$1"
+        ;;
+    esac
+    shift || true
+  done
+  if [[ "$fmt" == "#{pane_in_mode}" ]]; then
+    echo "0"
+    exit 0
+  fi
+  if [[ "$fmt" == "#{pane_id}" ]]; then
+    echo "\${target:-%42}"
+    exit 0
+  fi
+  if [[ "$fmt" == "#{pane_current_path}" ]]; then
+    pwd
+    exit 0
+  fi
+  if [[ "$fmt" == "#S" ]]; then
+    echo "session-test"
+    exit 0
+  fi
+  exit 0
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  echo "%42 1"
+  exit 0
+fi
+exit 0
+`;
 }
 
 describe('notify-fallback watcher', () => {
@@ -222,6 +291,118 @@ describe('notify-fallback watcher', () => {
       assert.equal(result.status, 0, result.stderr || result.stdout);
       const request = await readDispatchRequest('dispatch-team', queued.request.request_id, wd);
       assert.equal(request?.status, 'pending');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('watcher retry does not retype when pre-capture still contains trigger', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-dispatch-cm-'));
+    const fakeBinDir = join(wd, 'fake-bin');
+    const tmuxLogPath = join(wd, 'tmux.log');
+    const captureFile = join(wd, 'capture.txt');
+    try {
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+      await writeFile(captureFile, 'dispatch ping');
+
+      await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
+      const queued = await enqueueDispatchRequest('dispatch-team', {
+        kind: 'inbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        pane_id: '%42',
+        trigger_message: 'dispatch ping',
+      }, wd);
+
+      const watcherScript = new URL('../../../scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../scripts/notify-hook.js', import.meta.url).pathname;
+      const env = {
+        ...process.env,
+        PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+        OMX_TEST_CAPTURE_FILE: captureFile,
+      };
+
+      const first = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50', '--dispatch-max-per-tick', '1'],
+        { encoding: 'utf-8', env },
+      );
+      assert.equal(first.status, 0, first.stderr || first.stdout);
+
+      const second = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50', '--dispatch-max-per-tick', '1'],
+        { encoding: 'utf-8', env },
+      );
+      assert.equal(second.status, 0, second.stderr || second.stdout);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
+      const typeMatches = tmuxLog.match(/send-keys -t %42 -l dispatch ping/g) || [];
+      assert.equal(typeMatches.length, 1, 'watcher retries should be submit-only when draft remains visible');
+      assert.ok(!/send-keys[^\n]*-l[^\n]*C-m/.test(tmuxLog), 'must keep -l payload and C-m submits isolated');
+
+      const request = await readDispatchRequest('dispatch-team', queued.request.request_id, wd);
+      assert.equal(request?.status, 'pending');
+      assert.equal(request?.last_reason, 'tmux_send_keys_unconfirmed');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('watcher retry allows one fallback retype only when pre-capture misses trigger', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-dispatch-cm-fallback-'));
+    const fakeBinDir = join(wd, 'fake-bin');
+    const tmuxLogPath = join(wd, 'tmux.log');
+    const captureSeqFile = join(wd, 'capture-seq.txt');
+    const captureCounterFile = join(wd, 'capture-seq.idx');
+    try {
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+      await writeFile(captureSeqFile, [
+        'dispatch ping', 'dispatch ping', 'dispatch ping',
+        'ready',
+        'dispatch ping', 'dispatch ping', 'dispatch ping',
+        'ready',
+        'dispatch ping', 'dispatch ping', 'dispatch ping',
+      ].join('\n'));
+
+      await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
+      const queued = await enqueueDispatchRequest('dispatch-team', {
+        kind: 'inbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        pane_id: '%42',
+        trigger_message: 'dispatch ping',
+      }, wd);
+
+      const watcherScript = new URL('../../../scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../scripts/notify-hook.js', import.meta.url).pathname;
+      const env = {
+        ...process.env,
+        PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+        OMX_TEST_CAPTURE_SEQUENCE_FILE: captureSeqFile,
+        OMX_TEST_CAPTURE_COUNTER_FILE: captureCounterFile,
+      };
+
+      for (let i = 0; i < 3; i += 1) {
+        const run = spawnSync(
+          process.execPath,
+          [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50', '--dispatch-max-per-tick', '1'],
+          { encoding: 'utf-8', env },
+        );
+        assert.equal(run.status, 0, run.stderr || run.stdout);
+      }
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
+      const typeMatches = tmuxLog.match(/send-keys -t %42 -l dispatch ping/g) || [];
+      assert.equal(typeMatches.length, 2, 'fresh + one retry fallback retype max');
+
+      const request = await readDispatchRequest('dispatch-team', queued.request.request_id, wd);
+      assert.equal(request?.status, 'failed');
+      assert.equal(request?.last_reason, 'unconfirmed_after_max_retries');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

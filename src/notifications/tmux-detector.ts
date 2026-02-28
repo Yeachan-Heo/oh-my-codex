@@ -76,14 +76,14 @@ export function analyzePaneContent(content: string): PaneAnalysis {
  * Builds the ordered list of tmux send-keys argv arrays needed to type text
  * into a pane and optionally submit it.
  *
- * Enter (C-m) is always sent in its own dedicated send-keys call, never
- * bundled with the text payload. This prevents Shift+Enter injection: without
+ * C-m (carriage return) is always sent in its own dedicated send-keys call, never
+ * bundled with the text payload. This prevents newline/submit injection: without
  * this isolation a C-m (or any other tmux key name) embedded in the text
  * could be interpreted as a key press by tmux when sent without -l (issue #107).
  *
  * @param paneId     tmux pane identifier, e.g. "%3"
  * @param text       text to type; embedded newlines are replaced with spaces
- *                   to prevent them from acting as Enter when sent literally
+ *                   to prevent them from acting as submit keypresses when sent literally
  * @param pressEnter when true, appends two isolated C-m submit calls
  * @returns          array of argv arrays, one per send-keys invocation
  */
@@ -92,7 +92,7 @@ export function buildSendPaneArgvs(
   text: string,
   pressEnter: boolean = true,
 ): string[][] {
-  // Replace newlines with spaces so they cannot act as Enter when the text
+  // Replace newlines with spaces so they cannot act as submit keypresses when the text
   // is delivered byte-for-byte via -l (literal) mode.
   const safe = text.replace(/\r?\n/g, ' ');
 
@@ -102,8 +102,8 @@ export function buildSendPaneArgvs(
   const argvs: string[][] = [['send-keys', '-t', paneId, '-l', '--', safe]];
 
   if (pressEnter) {
-    // Codex CLI uses raw input mode where 'Enter' key name is unreliable;
-    // send C-m (carriage return) twice for reliable prompt submission.
+    // Codex CLI uses raw input mode; send C-m (carriage return) twice
+    // for reliable prompt submission.
     // Each C-m is an isolated send-keys call — never bundled with the text
     // above (issue #107).
     argvs.push(['send-keys', '-t', paneId, 'C-m']);

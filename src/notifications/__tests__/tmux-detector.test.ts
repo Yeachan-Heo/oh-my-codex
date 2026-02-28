@@ -92,8 +92,8 @@ describe('analyzePaneContent', () => {
   });
 });
 
-// issue #107: Enter/C-m must be sent in an isolated, separate send-keys call —
-// never bundled with text — to prevent Shift+Enter injection.
+// issue #107: C-m must be sent in an isolated, separate send-keys call —
+// never bundled with text — to prevent submit injection.
 describe('buildSendPaneArgvs', () => {
   it('sends text with -l (literal) flag so key names in text are not interpreted', () => {
     const argvs = buildSendPaneArgvs('%3', 'hello world', false);
@@ -110,7 +110,7 @@ describe('buildSendPaneArgvs', () => {
     assert.equal(textArgv[sepIdx + 1], '-flag-like', 'text must come immediately after --');
   });
 
-  it('sends Enter as an isolated separate argv — never bundled with text', () => {
+  it('sends C-m as an isolated separate argv — never bundled with text', () => {
     const argvs = buildSendPaneArgvs('%3', 'hello', true);
     assert.ok(argvs.length >= 2, 'must have at least text argv + one C-m argv');
 
@@ -140,7 +140,7 @@ describe('buildSendPaneArgvs', () => {
     assert.ok(!argvs[0].includes('C-m'), 'no C-m when pressEnter=false');
   });
 
-  it('strips newlines from text to prevent literal Enter injection via -l', () => {
+  it('strips newlines from text to prevent literal submit injection via -l', () => {
     const argvs = buildSendPaneArgvs('%3', 'line1\nline2\r\nline3', false);
     const textArgv = argvs[0];
     const text = textArgv[textArgv.length - 1];
