@@ -8,6 +8,7 @@ import {
   sanitizeTeamName,
   isTmuxAvailable,
   createTeamSession,
+  createDedicatedTeamSession,
   buildWorkerProcessLaunchSpec,
   resolveTeamWorkerCli,
   resolveTeamWorkerCliPlan,
@@ -482,12 +483,16 @@ export async function startTeam(
   }
 
   const workerLaunchMode = resolveTeamWorkerLaunchMode(process.env);
-  const displayMode = workerLaunchMode === 'interactive' ? 'split_pane' : 'auto';
+  const useDedicatedSession = process.env.OMX_TEAM_DEDICATED_SESSION !== '0';
+  const displayMode = workerLaunchMode === 'interactive'
+    ? (useDedicatedSession ? 'dedicated_session' : 'split_pane')
+    : 'auto';
   if (workerLaunchMode === 'interactive') {
     if (!isTmuxAvailable()) {
       throw new Error('Team mode requires tmux. Install with: apt install tmux / brew install tmux');
     }
-    if (!process.env.TMUX) {
+    // Dedicated session mode can create sessions from outside tmux
+    if (!useDedicatedSession && !process.env.TMUX) {
       throw new Error('Team mode requires running inside tmux current leader pane');
     }
   }
@@ -619,7 +624,9 @@ export async function startTeam(
 
     // 6. Create worker runtime (interactive tmux panes or prompt-mode child processes)
     if (workerLaunchMode === 'interactive') {
-      const createdSession = createTeamSession(sanitized, workerCount, leaderCwd, workerLaunchArgs, workerStartups);
+      const createdSession = useDedicatedSession
+        ? createDedicatedTeamSession(sanitized, workerCount, leaderCwd, workerLaunchArgs, workerStartups)
+        : createTeamSession(sanitized, workerCount, leaderCwd, workerLaunchArgs, workerStartups);
       sessionName = createdSession.name;
       sessionCreated = true;
       createdWorkerPaneIds.push(...createdSession.workerPaneIds);
