@@ -20,6 +20,7 @@ All notable changes to this project are documented in this file.
 - Team dispatch retries on Codex trust prompt instead of rolling back (#395).
 - Team dispatch draft consumption verified before marking notified (#392).
 - Config generator prevents duplicate OMX blocks on repeated `omx setup` (#386).
+- Team operator docs now clarify Claude-pane Enter (`C-m`) can queue while busy and document state-first/safe manual intervention guidance for `$team`.
 
 ### Changed
 - Deprecated ultrapilot, pipeline, and ecomode modes (#399).

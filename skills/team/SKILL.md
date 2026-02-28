@@ -138,7 +138,7 @@ Normalization requirements:
 Follow this exact lifecycle when running `$team`:
 
 1. Start team and verify startup evidence (team line, tmux target, panes, ACK mailbox)
-2. Monitor task and worker progress (`omx team status <team>`)
+2. Monitor task and worker progress with runtime/state tools first (`omx team status <team>`, `omx team resume <team>`, mailbox/state files)
 3. Wait for terminal task state before shutdown:
    - `pending=0`
    - `in_progress=0`
@@ -147,6 +147,7 @@ Follow this exact lifecycle when running `$team`:
 5. Verify shutdown evidence and state cleanup
 
 Do not run `shutdown` while workers are actively writing updates unless user explicitly requested abort/cancel.
+Do not treat ad-hoc pane typing as primary control flow when runtime/state evidence is available.
 
 ## Operational Commands
 
@@ -237,6 +238,26 @@ Useful runtime env vars:
   - Force strict send-keys submit failure behavior
 
 ## Failure Modes and Diagnosis
+
+Operator note (important for Claude panes):
+- Manual Enter injection (`tmux send-keys ... C-m`) can appear to "do nothing" when a worker is actively processing; Enter may be queued by the pane/task flow.
+- This is not necessarily a runtime bug. Confirm worker/team state before diagnosing dispatch failure.
+- Avoid repeated blind Enter spam; it can create noisy duplicate submits once the pane becomes idle.
+
+### Safe Manual Intervention (last resort)
+
+Use only after checking `omx team status <team>` and mailbox/state evidence:
+
+1. Capture pane tail to confirm current worker state:
+   - `tmux capture-pane -t %<worker-pane> -p -S -120`
+2. If the pane is stuck in an interactive state, safely return to idle prompt first:
+   - optional interrupt `C-c` or escape flow (CLI-specific) once, then re-check pane capture
+3. Send one concise trigger (single line) and wait for evidence:
+   - `tmux send-keys -t %<worker-pane> "ack + continue current task; report status" C-m`
+4. Re-check:
+   - pane output via `capture-pane`
+   - mailbox updates (`mailbox/leader-fixed.json` or worker mailbox)
+   - `omx team status <team>`
 
 ### `worker_notify_failed:<worker>`
 
