@@ -989,19 +989,20 @@ export async function updateWorkerHeartbeat(
 
 // Read worker status (returns {state:'unknown'} on missing/malformed)
 export async function readWorkerStatus(teamName: string, workerName: string, cwd: string): Promise<WorkerStatus> {
+  const unknownStatus: WorkerStatus = { state: 'unknown', updated_at: '1970-01-01T00:00:00.000Z' };
   try {
     const p = join(workerDir(teamName, workerName, cwd), 'status.json');
     if (!existsSync(p)) {
-      return { state: 'unknown', updated_at: new Date().toISOString() };
+      return unknownStatus;
     }
     const raw = await readFile(p, 'utf8');
     const parsed = JSON.parse(raw) as unknown;
     if (!isWorkerStatus(parsed)) {
-      return { state: 'unknown', updated_at: new Date().toISOString() };
+      return unknownStatus;
     }
     return parsed;
   } catch {
-    return { state: 'unknown', updated_at: new Date().toISOString() };
+    return unknownStatus;
   }
 }
 

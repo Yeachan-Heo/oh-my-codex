@@ -225,6 +225,68 @@ describe('notify-hook all-workers-idle notification', () => {
     });
   });
 
+  it('does not notify when a worker heartbeat is stale', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'stale-heartbeat';
+      const teamDir = join(stateDir, 'team', teamName);
+      const workersDir = join(teamDir, 'workers');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(workersDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'devsess:0',
+        workers: [
+          { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
+          { name: 'worker-2', index: 2, role: 'executor', assigned_tasks: [] },
+        ],
+      });
+
+      await mkdir(join(workersDir, 'worker-1'), { recursive: true });
+      await writeJson(join(workersDir, 'worker-1', 'status.json'), {
+        state: 'idle',
+        updated_at: new Date().toISOString(),
+      });
+      await writeJson(join(workersDir, 'worker-1', 'heartbeat.json'), {
+        pid: 123,
+        last_turn_at: new Date().toISOString(),
+        turn_count: 1,
+        alive: true,
+      });
+
+      await mkdir(join(workersDir, 'worker-2'), { recursive: true });
+      await writeJson(join(workersDir, 'worker-2', 'status.json'), {
+        state: 'idle',
+        updated_at: new Date().toISOString(),
+      });
+      await writeJson(join(workersDir, 'worker-2', 'heartbeat.json'), {
+        pid: 456,
+        last_turn_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+        turn_count: 1,
+        alive: true,
+      });
+
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHookAsWorker(cwd, fakeBinDir, `${teamName}/worker-1`);
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      if (existsSync(tmuxLogPath)) {
+        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+        assert.doesNotMatch(tmuxLog, /\[OMX\] All .* idle/, 'stale heartbeat should suppress all-workers-idle notification');
+      }
+    });
+  });
+
   it('does not notify when current worker is not idle', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');

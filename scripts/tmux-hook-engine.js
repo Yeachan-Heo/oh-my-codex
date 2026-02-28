@@ -158,17 +158,18 @@ export function buildCapturePaneArgv(paneTarget, tailLines = 80) {
   return ['capture-pane', '-t', paneTarget, '-p', '-S', `-${tailLines}`];
 }
 
-export function buildSendKeysArgv({ paneTarget, prompt, dryRun }) {
+export function buildSendKeysArgv({ paneTarget, prompt, dryRun, submitKeyPresses = 2 }) {
   if (dryRun) return null;
+  const pressCountRaw = Number.isFinite(submitKeyPresses) ? Math.floor(submitKeyPresses) : 2;
+  const pressCount = Math.max(1, Math.min(4, pressCountRaw));
+  const submitArgv = Array.from({ length: pressCount }, () => ([
+    'send-keys', '-t', paneTarget, 'C-m',
+  ]));
   // Use a 2-step send for reliability:
   // 1) literal prompt bytes, 2) explicit carriage return.
   return {
     typeArgv: ['send-keys', '-t', paneTarget, '-l', prompt],
-    // Codex CLI uses raw input mode where 'Enter' key name is unreliable;
-    // send 'C-m' (carriage return) twice for reliable prompt submission.
-    submitArgv: [
-      ['send-keys', '-t', paneTarget, 'C-m'],
-      ['send-keys', '-t', paneTarget, 'C-m'],
-    ],
+    // Codex generally prefers two presses; Claude typically needs one.
+    submitArgv,
   };
 }

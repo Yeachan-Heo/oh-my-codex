@@ -140,7 +140,7 @@ describe('notify-hook team dispatch consumer', () => {
     }
   });
 
-  it('promotes unconfirmed to notified after max attempts (#391)', async () => {
+  it('marks unconfirmed as failed after max attempts (#391)', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
     try {
       await initTeamState('alpha', 'task', 'executor', 1, cwd);
@@ -158,9 +158,11 @@ describe('notify-hook team dispatch consumer', () => {
       await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5, injector });
       await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5, injector });
       const result = await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5, injector });
-      assert.equal(result.processed, 1, 'should be promoted to notified on 3rd attempt');
+      assert.equal(result.processed, 1, 'should transition to failed on 3rd attempt');
+      assert.equal(result.failed, 1);
       const request = await readDispatchRequest('alpha', queued.request.request_id, cwd);
-      assert.equal(request?.status, 'notified');
+      assert.equal(request?.status, 'failed');
+      assert.equal(request?.last_reason, 'unconfirmed_after_max_retries');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

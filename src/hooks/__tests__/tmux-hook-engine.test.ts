@@ -232,6 +232,18 @@ describe('buildSendKeysArgv', () => {
       ],
     });
 
+    assert.deepEqual(buildSendKeysArgv({
+      paneTarget: '%7',
+      prompt: 'continue',
+      dryRun: false,
+      submitKeyPresses: 1,
+    }), {
+      typeArgv: ['send-keys', '-t', '%7', '-l', 'continue'],
+      submitArgv: [
+        ['send-keys', '-t', '%7', 'C-m'],
+      ],
+    });
+
     assert.equal(buildSendKeysArgv({
       paneTarget: '%3',
       prompt: 'continue',

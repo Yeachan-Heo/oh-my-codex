@@ -91,6 +91,63 @@ export function resolveAllWorkersIdleCooldownMs() {
   return 60_000;
 }
 
+export function resolveStatusStaleMs() {
+  const raw = safeString(process.env.OMX_TEAM_STATUS_STALE_MS || '');
+  const parsed = asNumber(raw);
+  if (parsed !== null && parsed >= 5_000 && parsed <= 60 * 60_000) return parsed;
+  return 120_000;
+}
+
+export function resolveHeartbeatStaleMs() {
+  const raw = safeString(process.env.OMX_TEAM_HEARTBEAT_STALE_MS || '');
+  const parsed = asNumber(raw);
+  if (parsed !== null && parsed >= 5_000 && parsed <= 60 * 60_000) return parsed;
+  return 180_000;
+}
+
+function parseIsoMs(value) {
+  const normalized = safeString(value).trim();
+  if (!normalized) return null;
+  const ms = Date.parse(normalized);
+  if (!Number.isFinite(ms)) return null;
+  return ms;
+}
+
+function isFreshIso(value, maxAgeMs, nowMs) {
+  const ts = parseIsoMs(value);
+  if (!Number.isFinite(ts)) return false;
+  return (nowMs - ts) <= maxAgeMs;
+}
+
+async function readWorkerStatusSnapshot(stateDir, teamName, workerName, nowMs = Date.now()) {
+  const statusPath = join(stateDir, 'team', teamName, 'workers', workerName, 'status.json');
+  try {
+    if (!existsSync(statusPath)) return { state: 'unknown', updated_at: null, fresh: false };
+    const raw = await readFile(statusPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    const state = parsed && typeof parsed.state === 'string' ? parsed.state : 'unknown';
+    const updatedAt = parsed && typeof parsed.updated_at === 'string' ? parsed.updated_at : null;
+    const fresh = isFreshIso(updatedAt, resolveStatusStaleMs(), nowMs);
+    return { state, updated_at: updatedAt, fresh };
+  } catch {
+    return { state: 'unknown', updated_at: null, fresh: false };
+  }
+}
+
+async function readWorkerHeartbeatSnapshot(stateDir, teamName, workerName, nowMs = Date.now()) {
+  const heartbeatPath = join(stateDir, 'team', teamName, 'workers', workerName, 'heartbeat.json');
+  try {
+    if (!existsSync(heartbeatPath)) return { last_turn_at: null, fresh: true, missing: true };
+    const raw = await readFile(heartbeatPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    const lastTurnAt = parsed && typeof parsed.last_turn_at === 'string' ? parsed.last_turn_at : null;
+    const fresh = isFreshIso(lastTurnAt, resolveHeartbeatStaleMs(), nowMs);
+    return { last_turn_at: lastTurnAt, fresh, missing: false };
+  } catch {
+    return { last_turn_at: null, fresh: false, missing: false };
+  }
+}
+
 export async function readWorkerStatusState(stateDir, teamName, workerName) {
   if (!workerName) return 'unknown';
   const statusPath = join(stateDir, 'team', teamName, 'workers', workerName, 'status.json');
@@ -151,8 +208,10 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
   const nowIso = new Date(nowMs).toISOString();
 
   // Only trigger check when this worker is idle
-  const myState = await readWorkerStatusState(stateDir, teamName, workerName);
-  if (myState !== 'idle') return;
+  const mySnapshot = await readWorkerStatusSnapshot(stateDir, teamName, workerName, nowMs);
+  if (mySnapshot.state !== 'idle' || !mySnapshot.fresh) return;
+  const myHeartbeat = await readWorkerHeartbeatSnapshot(stateDir, teamName, workerName, nowMs);
+  if (!myHeartbeat.fresh) return;
 
   // Read team config to get worker list and leader tmux target
   const teamInfo = await readTeamWorkersForIdleCheck(stateDir, teamName);
@@ -169,10 +228,17 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
   if ((nowMs - lastNotifiedMs) < cooldownMs) return;
 
   // Check if ALL workers are idle (or done)
-  const states = await Promise.all(
-    workers.map(w => readWorkerStatusState(stateDir, teamName, safeString(w && w.name ? w.name : '')))
+  const snapshots = await Promise.all(
+    workers.map(async (w) => {
+      const worker = safeString(w && w.name ? w.name : '');
+      const status = await readWorkerStatusSnapshot(stateDir, teamName, worker, nowMs);
+      const heartbeat = await readWorkerHeartbeatSnapshot(stateDir, teamName, worker, nowMs);
+      return { worker, status, heartbeat };
+    }),
   );
-  const allIdle = states.length > 0 && states.every(s => s === 'idle' || s === 'done');
+  const allIdle = snapshots.length > 0 && snapshots.every(({ status, heartbeat }) =>
+    (status.state === 'idle' || status.state === 'done') && status.fresh && heartbeat.fresh
+  );
   if (!allIdle) return;
 
   const N = workers.length;
@@ -241,12 +307,14 @@ export async function maybeNotifyLeaderWorkerIdle({ cwd, stateDir, logsDir, pars
   let currentState = 'unknown';
   let currentTaskId = '';
   let currentReason = '';
+  let statusFresh = false;
   try {
     if (existsSync(statusPath)) {
       const parsed = JSON.parse(await readFile(statusPath, 'utf-8'));
       if (parsed && typeof parsed.state === 'string') currentState = parsed.state;
       if (parsed && typeof parsed.current_task_id === 'string') currentTaskId = parsed.current_task_id;
       if (parsed && typeof parsed.reason === 'string') currentReason = parsed.reason;
+      statusFresh = isFreshIso(parsed && typeof parsed.updated_at === 'string' ? parsed.updated_at : null, resolveStatusStaleMs(), nowMs);
     }
   } catch { /* ignore */ }
 
@@ -270,7 +338,11 @@ export async function maybeNotifyLeaderWorkerIdle({ cwd, stateDir, logsDir, pars
 
   // Only fire on working->idle transition (non-idle to idle)
   if (currentState !== 'idle') return;
-  if (prevState === 'idle' || prevState === 'done') return;
+  if (!statusFresh) return;
+  if (prevState === 'idle' || prevState === 'done' || prevState === 'unknown') return;
+
+  const heartbeat = await readWorkerHeartbeatSnapshot(stateDir, teamName, workerName, nowMs);
+  if (!heartbeat.fresh) return;
 
   // Check per-worker cooldown
   const cooldownPath = join(workerDir, 'worker-idle-notify.json');

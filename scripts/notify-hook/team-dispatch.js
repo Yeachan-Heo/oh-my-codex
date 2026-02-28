@@ -129,6 +129,17 @@ function defaultInjectTarget(request, config) {
   return null;
 }
 
+function resolveWorkerCliForRequest(request, config) {
+  const workers = Array.isArray(config?.workers) ? config.workers : [];
+  const idx = Number.isFinite(request?.worker_index) ? Number(request.worker_index) : null;
+  if (idx !== null) {
+    const worker = workers.find((candidate) => Number(candidate?.index) === idx);
+    const workerCli = safeString(worker?.worker_cli).trim().toLowerCase();
+    if (workerCli === 'claude') return 'claude';
+  }
+  return 'codex';
+}
+
 function normalizeCaptureText(value) {
   return safeString(value).replace(/\r/g, '').replace(/\s+/g, ' ').trim();
 }
@@ -163,6 +174,7 @@ async function injectDispatchRequest(request, config, cwd) {
     paneTarget: resolution.paneTarget,
     prompt: request.trigger_message,
     dryRun: false,
+    submitKeyPresses: resolveWorkerCliForRequest(request, config) === 'claude' ? 1 : 2,
   });
   await runProcess('tmux', argv.typeArgv, 3000);
   for (const submit of argv.submitArgv) {
@@ -279,6 +291,23 @@ export async function drainPendingTeamDispatch({
               worker: request.to_worker,
               attempt: request.attempt_count,
               reason: result.reason,
+            });
+            continue;
+          }
+          if (result.reason === 'tmux_send_keys_unconfirmed') {
+            request.status = 'failed';
+            request.failed_at = nowIso;
+            request.last_reason = 'unconfirmed_after_max_retries';
+            processed += 1;
+            failed += 1;
+            mutated = true;
+            await appendDispatchLog(logsDir, {
+              type: 'dispatch_failed',
+              team: teamName,
+              request_id: request.request_id,
+              worker: request.to_worker,
+              message_id: request.message_id || null,
+              reason: request.last_reason,
             });
             continue;
           }

@@ -567,7 +567,7 @@ describe('notify-hook per-worker idle notification', () => {
     });
   });
 
-  it('fires on first invocation when no prev state file exists (unknown->idle)', async () => {
+  it('does not fire on first invocation when no prev state file exists (unknown->idle)', async () => {
     await withTempWorkingDir(async (cwd) => {
       const stateDir = join(cwd, '.omx', 'state');
       const logsDir = join(cwd, '.omx', 'logs');
@@ -601,9 +601,58 @@ describe('notify-hook per-worker idle notification', () => {
       const result = runNotifyHookAsWorker(cwd, fakeBinDir, `${teamName}/worker-1`);
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
-      assert.ok(existsSync(tmuxLogPath), 'tmux should have been called');
-      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /worker-1 idle/, 'should fire on unknown->idle transition');
+      if (existsSync(tmuxLogPath)) {
+        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+        assert.doesNotMatch(tmuxLog, /worker-1 idle/, 'should NOT fire on unknown->idle transition');
+      }
+    });
+  });
+
+  it('does not fire when worker status is stale', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const logsDir = join(cwd, '.omx', 'logs');
+      const teamName = 'stale-status';
+      const teamDir = join(stateDir, 'team', teamName);
+      const workersDir = join(teamDir, 'workers');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'devsess:0',
+        workers: [{ name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] }],
+      });
+
+      await writeJson(join(workersDir, 'worker-1', 'status.json'), {
+        state: 'idle',
+        updated_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+      });
+      await writeJson(join(workersDir, 'worker-1', 'prev-notify-state.json'), {
+        state: 'working',
+        updated_at: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+      });
+      await writeJson(join(workersDir, 'worker-1', 'heartbeat.json'), {
+        pid: 123,
+        last_turn_at: new Date().toISOString(),
+        turn_count: 1,
+        alive: true,
+      });
+
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHookAsWorker(cwd, fakeBinDir, `${teamName}/worker-1`);
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      if (existsSync(tmuxLogPath)) {
+        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+        assert.doesNotMatch(tmuxLog, /worker-1 idle/, 'stale status should suppress worker-idle notification');
+      }
     });
   });
 
