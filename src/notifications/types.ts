@@ -126,6 +126,9 @@ export interface FullNotificationConfig {
   slack?: SlackNotificationConfig;
   webhook?: WebhookNotificationConfig;
 
+  /** OpenClaw gateway (enabled flag only — full config lives in openclaw subsystem) */
+  openclaw?: { enabled: boolean };
+
   /** Per-event configuration */
   events?: {
     "session-start"?: EventNotificationConfig;

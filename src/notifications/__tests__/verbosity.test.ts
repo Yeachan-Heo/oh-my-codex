@@ -187,6 +187,45 @@ describe('isEventEnabled with verbosity', () => {
     const config = makeConfig({ verbosity: 'minimal' });
     assert.equal(isEventEnabled(config, 'ask-user-question'), true);
   });
+
+  it('openclaw-only config passes the platform gate', () => {
+    delete process.env.OMX_NOTIFY_VERBOSITY;
+    const config: FullNotificationConfig = {
+      enabled: true,
+      openclaw: { enabled: true },
+    };
+    assert.equal(isEventEnabled(config, 'session-start'), true);
+  });
+
+  it('openclaw-only config returns true when event has no per-event override', () => {
+    delete process.env.OMX_NOTIFY_VERBOSITY;
+    const config: FullNotificationConfig = {
+      enabled: true,
+      openclaw: { enabled: true },
+    };
+    assert.equal(isEventEnabled(config, 'session-end'), true);
+  });
+
+  it('openclaw-only config returns false when globally disabled', () => {
+    delete process.env.OMX_NOTIFY_VERBOSITY;
+    const config: FullNotificationConfig = {
+      enabled: false,
+      openclaw: { enabled: true },
+    };
+    assert.equal(isEventEnabled(config, 'session-start'), false);
+  });
+
+  it('openclaw-only config falls through to top-level check when event config exists without platform overrides', () => {
+    delete process.env.OMX_NOTIFY_VERBOSITY;
+    const config: FullNotificationConfig = {
+      enabled: true,
+      openclaw: { enabled: true },
+      events: {
+        'session-start': { enabled: true },
+      },
+    };
+    assert.equal(isEventEnabled(config, 'session-start'), true);
+  });
 });
 
 // ---------------------------------------------------------------------------

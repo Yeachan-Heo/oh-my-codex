@@ -440,7 +440,8 @@ export function isEventEnabled(
       config["discord-bot"]?.enabled ||
       config.telegram?.enabled ||
       config.slack?.enabled ||
-      config.webhook?.enabled
+      config.webhook?.enabled ||
+      config.openclaw?.enabled
     );
   }
 
@@ -459,7 +460,8 @@ export function isEventEnabled(
     config["discord-bot"]?.enabled ||
     config.telegram?.enabled ||
     config.slack?.enabled ||
-    config.webhook?.enabled
+    config.webhook?.enabled ||
+    config.openclaw?.enabled
   );
 }
 

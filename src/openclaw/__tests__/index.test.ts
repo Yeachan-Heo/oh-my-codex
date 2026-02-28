@@ -257,6 +257,52 @@ describe("wakeOpenClaw", () => {
     assert.equal(parsed.context.replyChannel, "ctx-channel");
   });
 
+  it("includes text field as alias of instruction in HTTP payload", async () => {
+    process.env.OMX_OPENCLAW = "1";
+    delete process.env.OPENCLAW_REPLY_CHANNEL;
+    delete process.env.OPENCLAW_REPLY_TARGET;
+    delete process.env.OPENCLAW_REPLY_THREAD;
+
+    const { createServer } = await import("http");
+    let capturedBody = "";
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        capturedBody = body;
+        res.writeHead(200);
+        res.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    const port = typeof addr === "object" && addr ? addr.port : 0;
+
+    const configPath = join(tmpDir, "openclaw.json");
+    writeFileSync(configPath, JSON.stringify({
+      enabled: true,
+      gateways: { gw: { type: "http", url: `http://127.0.0.1:${port}/hook` } },
+      hooks: {
+        "session-start": { gateway: "gw", instruction: "do the thing", enabled: true },
+      },
+    }));
+    process.env.OMX_OPENCLAW_CONFIG = configPath;
+    const { wakeOpenClaw } = await import("../index.js");
+    const { resetOpenClawConfigCache } = await import("../config.js");
+    resetOpenClawConfigCache();
+
+    const result = await wakeOpenClaw("session-start", { sessionId: "s1" });
+    server.close();
+
+    assert.ok(result !== null);
+    assert.equal(result!.success, true);
+
+    const parsed = JSON.parse(capturedBody);
+    assert.equal(parsed.instruction, "do the thing");
+    assert.equal(parsed.text, "do the thing", "text should be an alias of instruction");
+    assert.equal(parsed.text, parsed.instruction, "text and instruction must be identical");
+  });
+
   it("succeeds with command gateway when both env vars set", async () => {
     process.env.OMX_OPENCLAW = "1";
     process.env.OMX_OPENCLAW_COMMAND = "1";
