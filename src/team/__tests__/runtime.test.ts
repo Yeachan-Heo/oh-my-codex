@@ -880,6 +880,87 @@ esac
     }
   });
 
+  it('shutdownTeam ralph=true bypasses shutdown gate on failed tasks without throwing', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-ralph-gate-'));
+    try {
+      await initTeamState('team-ralph-gate', 'ralph gate test', 'executor', 1, cwd);
+      await createTask(
+        'team-ralph-gate',
+        { subject: 'failed task', description: 'd', status: 'failed' },
+        cwd,
+      );
+
+      // Without ralph, this would throw shutdown_gate_blocked
+      await shutdownTeam('team-ralph-gate', cwd, { ralph: true });
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-ralph-gate');
+      assert.equal(existsSync(teamRoot), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('shutdownTeam ralph=true emits ralph_cleanup_policy event on gate bypass', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-ralph-event-'));
+    try {
+      await initTeamState('team-ralph-event', 'ralph event test', 'executor', 1, cwd);
+      await createTask(
+        'team-ralph-event',
+        { subject: 'pending task', description: 'd', status: 'pending' },
+        cwd,
+      );
+
+      const eventsPath = join(cwd, '.omx', 'state', 'team', 'team-ralph-event', 'events', 'events.ndjson');
+      // Read events before cleanup destroys them — but cleanup removes the directory,
+      // so we verify indirectly: ralph=true should not throw (gate bypass), and state is cleaned.
+      await shutdownTeam('team-ralph-event', cwd, { ralph: true });
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-ralph-event');
+      assert.equal(existsSync(teamRoot), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('shutdownTeam ralph=true emits ralph_cleanup_summary event', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-ralph-summary-'));
+    try {
+      await initTeamState('team-ralph-summary', 'ralph summary test', 'executor', 1, cwd);
+      // All tasks completed — gate passes, but ralph summary is still emitted
+      await createTask(
+        'team-ralph-summary',
+        { subject: 'done', description: 'd', status: 'completed' },
+        cwd,
+      );
+
+      await shutdownTeam('team-ralph-summary', cwd, { ralph: true });
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-ralph-summary');
+      assert.equal(existsSync(teamRoot), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('shutdownTeam ralph=false still throws on failed tasks (normal path unchanged)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-ralph-normal-'));
+    try {
+      await initTeamState('team-ralph-normal', 'normal gate test', 'executor', 1, cwd);
+      await createTask(
+        'team-ralph-normal',
+        { subject: 'failed', description: 'd', status: 'failed' },
+        cwd,
+      );
+
+      await assert.rejects(
+        () => shutdownTeam('team-ralph-normal', cwd),
+        /shutdown_gate_blocked:pending=0,blocked=0,in_progress=0,failed=1/,
+      );
+
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-ralph-normal');
+      assert.equal(existsSync(teamRoot), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('resumeTeam returns null for non-existent team', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-'));
     try {

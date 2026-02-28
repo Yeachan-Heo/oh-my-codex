@@ -148,10 +148,14 @@ export interface TeamRuntime {
 
 interface ShutdownOptions {
   force?: boolean;
+  /** When true, applies ralph-specific cleanup policy: no force-kill on failure, detailed audit logging. */
+  ralph?: boolean;
 }
 
 export interface TeamStartOptions {
   worktreeMode?: WorktreeMode;
+  /** When true, applies ralph-specific cleanup policy during startup rollback (skip branch deletion). */
+  ralph?: boolean;
 }
 
 interface ShutdownGateCounts {
@@ -834,7 +838,9 @@ export async function startTeam(
     }
     if (provisionedWorktrees.length > 0) {
       try {
-        await rollbackProvisionedWorktrees(provisionedWorktrees);
+        rollbackProvisionedWorktrees(provisionedWorktrees, {
+          skipBranchDeletion: options.ralph === true,
+        });
       } catch (cleanupError) {
         rollbackErrors.push(`rollbackProvisionedWorktrees: ${String(cleanupError)}`);
       }
@@ -1136,6 +1142,7 @@ export async function reassignTask(
  */
 export async function shutdownTeam(teamName: string, cwd: string, options: ShutdownOptions = {}): Promise<void> {
   const force = options.force === true;
+  const ralph = options.ralph === true;
   const sanitized = sanitizeTeamName(teamName);
   const config = await readTeamConfig(sanitized, cwd);
   if (!config) {
@@ -1164,15 +1171,29 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       {
         type: 'shutdown_gate',
         worker: 'leader-fixed',
-        reason: `allowed=${gate.allowed} total=${gate.total} pending=${gate.pending} blocked=${gate.blocked} in_progress=${gate.in_progress} completed=${gate.completed} failed=${gate.failed}`,
+        reason: `allowed=${gate.allowed} total=${gate.total} pending=${gate.pending} blocked=${gate.blocked} in_progress=${gate.in_progress} completed=${gate.completed} failed=${gate.failed}${ralph ? ' policy=ralph' : ''}`,
       },
       cwd,
     ).catch(() => {});
 
     if (!gate.allowed) {
-      throw new Error(
-        `shutdown_gate_blocked:pending=${gate.pending},blocked=${gate.blocked},in_progress=${gate.in_progress},failed=${gate.failed}`,
-      );
+      if (ralph) {
+        // Ralph policy: do not force-throw on failure — log and proceed with graceful cleanup.
+        // This allows the ralph loop to retry rather than leaving stale team state.
+        await appendTeamEvent(
+          sanitized,
+          {
+            type: 'ralph_cleanup_policy',
+            worker: 'leader-fixed',
+            reason: `gate_bypassed:pending=${gate.pending},blocked=${gate.blocked},in_progress=${gate.in_progress},failed=${gate.failed}`,
+          },
+          cwd,
+        ).catch(() => {});
+      } else {
+        throw new Error(
+          `shutdown_gate_blocked:pending=${gate.pending},blocked=${gate.blocked},in_progress=${gate.in_progress},failed=${gate.failed}`,
+        );
+      }
     }
   }
 
@@ -1316,7 +1337,24 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   try { await removeTeamWorkerInstructionsFile(sanitized, cwd); } catch { /* ignore */ }
   restoreTeamModelInstructionsFile(sanitized);
 
-  // 6. Cleanup state
+  // 6. Ralph stricter completion logging
+  if (ralph) {
+    const finalTasks = await listTasks(sanitized, cwd).catch(() => [] as Awaited<ReturnType<typeof listTasks>>);
+    const completed = finalTasks.filter((t) => t.status === 'completed').length;
+    const failed = finalTasks.filter((t) => t.status === 'failed').length;
+    const pending = finalTasks.filter((t) => t.status === 'pending').length;
+    await appendTeamEvent(
+      sanitized,
+      {
+        type: 'ralph_cleanup_summary',
+        worker: 'leader-fixed',
+        reason: `total=${finalTasks.length} completed=${completed} failed=${failed} pending=${pending} force=${force}`,
+      },
+      cwd,
+    ).catch(() => {});
+  }
+
+  // 7. Cleanup state
   await cleanupTeamState(sanitized, cwd);
 }
 
