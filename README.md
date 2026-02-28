@@ -213,6 +213,28 @@ Notes:
 - Trigger submission uses adaptive retries by default (queue/submit, then safe clear-line+resend fallback when needed).
 - In Claude worker mode, OMX spawns workers as plain `claude` (no extra launch args) and ignores explicit `--model` / `--config` / `--effort` overrides so Claude uses default `settings.json`.
 
+Optional auto-run + cleanup helper scripts:
+
+```bash
+# Start team, monitor until terminal tasks, then run shutdown/cleanup
+bash ./scripts/team-auto-run.sh --worktree=feature-x ralph 3:executor "ship with verification"
+
+# Standalone cleanup for an existing team
+bash ./scripts/team-post-shutdown-cleanup.sh <team-name>
+```
+
+Dedicated policy for `omx team ralph ...` in `team-auto-run.sh`:
+- default `TEAM_AUTO_FORCE_ON_FAILURE=0` (do not force teardown on failed tasks)
+- default `TEAM_AUTO_DELETE_BRANCHES=0` (preserve branches for re-verify/fix loops)
+- emits explicit guard logs when failures remain
+
+You can override defaults explicitly:
+
+```bash
+TEAM_AUTO_FORCE_ON_FAILURE=1 TEAM_AUTO_DELETE_BRANCHES=1 \
+  bash ./scripts/team-auto-run.sh --worktree=feature-x ralph 3:executor "task"
+```
+
 ## What `omx setup` writes
 
 - `.omx/setup-scope.json` (persisted setup scope)
