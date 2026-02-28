@@ -39,6 +39,7 @@ import {
   markDispatchRequestDelivered,
   transitionDispatchRequest,
   readDispatchRequest,
+  resolveDispatchLockTimeoutMs,
 } from '../state.js';
 
 describe('team state', () => {
@@ -1404,6 +1405,56 @@ describe('team state', () => {
       const result = await claimTask('team-x', 'non-existent-999', 'worker-1', null, cwd);
       assert.equal(result.ok, false);
       assert.equal((result as { ok: false; error: string }).error, 'task_not_found');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('resolveDispatchLockTimeoutMs returns default when env not set', () => {
+    assert.equal(resolveDispatchLockTimeoutMs({}), 15_000);
+    assert.equal(resolveDispatchLockTimeoutMs({ OMX_DISPATCH_LOCK_TIMEOUT_MS: '' }), 15_000);
+    assert.equal(resolveDispatchLockTimeoutMs({ OMX_DISPATCH_LOCK_TIMEOUT_MS: 'not-a-number' }), 15_000);
+  });
+
+  it('resolveDispatchLockTimeoutMs reads from env and clamps to bounds', () => {
+    // Reads value from env
+    assert.equal(resolveDispatchLockTimeoutMs({ OMX_DISPATCH_LOCK_TIMEOUT_MS: '30000' }), 30_000);
+    // Clamps to minimum
+    assert.equal(resolveDispatchLockTimeoutMs({ OMX_DISPATCH_LOCK_TIMEOUT_MS: '0' }), 1_000);
+    assert.equal(resolveDispatchLockTimeoutMs({ OMX_DISPATCH_LOCK_TIMEOUT_MS: '-500' }), 1_000);
+    // Clamps to maximum
+    assert.equal(resolveDispatchLockTimeoutMs({ OMX_DISPATCH_LOCK_TIMEOUT_MS: '999999' }), 120_000);
+    // Floors non-integer
+    assert.equal(resolveDispatchLockTimeoutMs({ OMX_DISPATCH_LOCK_TIMEOUT_MS: '5000.9' }), 5_000);
+  });
+
+  it('dispatch lock error message includes timeout hint', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-lock-timeout-'));
+    try {
+      await initTeamState('team-lock-hint', 'task', 'executor', 1, cwd);
+      // Hold the lock by creating the lock directory manually
+      const lockDir = join(cwd, '.omx', 'state', 'team', 'team-lock-hint', 'dispatch', '.lock');
+      await mkdir(lockDir, { recursive: true });
+
+      // Use a very short timeout via env override so the test is fast
+      const origEnv = process.env.OMX_DISPATCH_LOCK_TIMEOUT_MS;
+      process.env.OMX_DISPATCH_LOCK_TIMEOUT_MS = '1000';
+      try {
+        await assert.rejects(
+          () => enqueueDispatchRequest('team-lock-hint', { kind: 'inbox', to_worker: 'worker-1', trigger_message: 'test' }, cwd),
+          (err: Error) => {
+            assert.ok(err.message.includes('OMX_DISPATCH_LOCK_TIMEOUT_MS'), `Expected hint in error, got: ${err.message}`);
+            return true;
+          }
+        );
+      } finally {
+        if (origEnv === undefined) {
+          delete process.env.OMX_DISPATCH_LOCK_TIMEOUT_MS;
+        } else {
+          process.env.OMX_DISPATCH_LOCK_TIMEOUT_MS = origEnv;
+        }
+        await rm(lockDir, { recursive: true, force: true });
+      }
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

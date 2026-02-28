@@ -111,5 +111,8 @@ export { writeWorkerStatus as teamWriteWorkerStatus } from './state.js';
 // === Scaling lock ===
 export { withScalingLock as teamWithScalingLock } from './state.js';
 
+// === Dispatch lock helpers ===
+export { resolveDispatchLockTimeoutMs } from './state.js';
+
 // === Atomic write (shared utility) ===
 export { writeAtomic } from './state.js';

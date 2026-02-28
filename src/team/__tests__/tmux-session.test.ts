@@ -366,7 +366,7 @@ describe('buildWorkerStartupCommand', () => {
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
     try {
       const cmd = buildWorkerStartupCommand('alpha', 1, ['--model', 'claude-3-7-sonnet']);
-      assert.match(cmd, /exec claude/);
+      assert.match(cmd, /exec .*claude/);
       assert.equal((cmd.match(/--dangerously-skip-permissions/g) || []).length, 1);
       assert.doesNotMatch(cmd, /--model/);
       assert.doesNotMatch(cmd, /model_instructions_file=/);
@@ -389,11 +389,11 @@ describe('buildWorkerStartupCommand', () => {
     try {
       process.env.OMX_TEAM_WORKER_CLI = 'codex';
       const codexCmd = buildWorkerStartupCommand('alpha', 1, ['--model', 'claude-3-7-sonnet']);
-      assert.match(codexCmd, /exec codex/);
+      assert.match(codexCmd, /exec .*codex/);
 
       process.env.OMX_TEAM_WORKER_CLI = 'claude';
       const claudeCmd = buildWorkerStartupCommand('alpha', 1, ['--model', 'gpt-5']);
-      assert.match(claudeCmd, /exec claude/);
+      assert.match(claudeCmd, /exec .*claude/);
       assert.equal((claudeCmd.match(/--dangerously-skip-permissions/g) || []).length, 1);
       assert.doesNotMatch(claudeCmd, /--model/);
     } finally {
@@ -420,7 +420,7 @@ describe('buildWorkerStartupCommand', () => {
         {},
         'claude',
       );
-      assert.match(cmd, /exec claude/);
+      assert.match(cmd, /exec .*claude/);
       assert.equal((cmd.match(/--dangerously-skip-permissions/g) || []).length, 1);
       assert.doesNotMatch(cmd, /dangerously-bypass-approvals-and-sandbox/);
       assert.doesNotMatch(cmd, /--model/);
@@ -445,7 +445,7 @@ describe('buildWorkerStartupCommand', () => {
         '-c', 'model_instructions_file="/tmp/custom.md"',
         '--model', 'claude-3-7-sonnet',
       ]);
-      assert.match(cmd, /exec claude/);
+      assert.match(cmd, /exec .*claude/);
       assert.equal((cmd.match(/--dangerously-skip-permissions/g) || []).length, 1);
       assert.doesNotMatch(cmd, /dangerously-bypass-approvals-and-sandbox/);
       assert.doesNotMatch(cmd, /model_instructions_file=/);
@@ -472,7 +472,7 @@ describe('buildWorkerStartupCommand', () => {
     process.argv = [...prevArgv, '--madmax'];
     try {
       const cmd = buildWorkerStartupCommand('alpha', 1);
-      assert.match(cmd, /exec claude/);
+      assert.match(cmd, /exec .*claude/);
       assert.equal((cmd.match(/--dangerously-skip-permissions/g) || []).length, 1);
       assert.doesNotMatch(cmd, /dangerously-bypass-approvals-and-sandbox/);
     } finally {
@@ -496,7 +496,7 @@ describe('buildWorkerStartupCommand', () => {
       assert.match(cmd, /OMX_TEAM_WORKER=alpha\/worker-2/);
       assert.match(cmd, /'\/bin\/zsh' -lc/);
       assert.match(cmd, /source ~\/\.zshrc/);
-      assert.match(cmd, /exec codex/);
+      assert.match(cmd, /exec .*codex/);
     } finally {
       if (typeof prevShell === 'string') process.env.SHELL = prevShell;
       else delete process.env.SHELL;
@@ -513,7 +513,7 @@ describe('buildWorkerStartupCommand', () => {
     try {
       const cmd = buildWorkerStartupCommand('alpha', 1, ['--model', 'gpt-5']);
       assert.match(cmd, /source ~\/\.bashrc/);
-      assert.match(cmd, /exec codex/);
+      assert.match(cmd, /exec .*codex/);
       assert.match(cmd, /--model/);
       assert.match(cmd, /gpt-5/);
     } finally {
@@ -597,7 +597,7 @@ describe('buildWorkerStartupCommand', () => {
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
     try {
       const cmd = buildWorkerStartupCommand('alpha', 1, ['-c', 'model_reasoning_effort="xhigh"']);
-      assert.match(cmd, /exec codex/);
+      assert.match(cmd, /exec .*codex/);
       assert.match(cmd, /'-c'/);
       assert.match(cmd, /'model_reasoning_effort=\"xhigh\"'/);
     } finally {
@@ -840,11 +840,40 @@ describe('team worker launch mode helpers', () => {
         { OMX_TEAM_STATE_ROOT: '/tmp/workspace/.omx/state' },
         'codex',
       );
-      assert.equal(spec.command, 'codex');
+      // command is now the resolved absolute path (or bare binary if which fails)
       assert.equal(spec.workerCli, 'codex');
+      assert.ok(typeof spec.command === 'string' && spec.command.length > 0, 'command must be a non-empty string');
       assert.deepEqual(spec.args, ['--model', 'gpt-5.3-codex']);
       assert.equal(spec.env.OMX_TEAM_WORKER, 'alpha-team/worker-2');
       assert.equal(spec.env.OMX_TEAM_STATE_ROOT, '/tmp/workspace/.omx/state');
+    } finally {
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('buildWorkerProcessLaunchSpec includes leader node and CLI path env vars', () => {
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const spec = buildWorkerProcessLaunchSpec(
+        'beta-team',
+        1,
+        [],
+        '/tmp/workspace',
+        {},
+        'codex',
+      );
+      assert.ok(
+        typeof spec.env.OMX_LEADER_NODE_PATH === 'string' && spec.env.OMX_LEADER_NODE_PATH.length > 0,
+        'OMX_LEADER_NODE_PATH must be set',
+      );
+      assert.ok(
+        typeof spec.env.OMX_LEADER_CLI_PATH === 'string' && spec.env.OMX_LEADER_CLI_PATH.length > 0,
+        'OMX_LEADER_CLI_PATH must be set',
+      );
+      // command matches the resolved CLI path stored in env
+      assert.equal(spec.command, spec.env.OMX_LEADER_CLI_PATH);
     } finally {
       if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
