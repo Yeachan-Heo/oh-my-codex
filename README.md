@@ -42,6 +42,24 @@ Codex CLI is strong for direct tasks. OMX adds structure for larger work:
 
 OMX is an add-on, not a fork. It uses Codex-native extension points.
 
+## Positioning: CLI-first orchestration, MCP-backed state
+
+OMX is best used as an **outer CLI orchestration layer**:
+- **Control plane (CLI/runtime):** `omx team`, tmux workers, lifecycle commands
+- **Capability/state plane (MCP):** task state, mailbox, memory, diagnostics tools
+
+Practical mode split:
+- **`$team` / `omx team`**: durable, inspectable, resumable multi-worker execution
+- **`$ultrawork`**: lightweight parallel fanout for independent tasks (component mode)
+
+Low-token team profile example:
+
+```bash
+OMX_TEAM_WORKER_CLI=codex \
+OMX_TEAM_WORKER_LAUNCH_ARGS='--model gpt-5.3-codex-spark -c model_reasoning_effort="low"' \
+omx team 2:explore "short scoped analysis task"
+```
+
 ## Requirements
 
 - macOS or Linux (Windows via WSL2)
