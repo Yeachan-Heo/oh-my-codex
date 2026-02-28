@@ -176,14 +176,33 @@ async function injectDispatchRequest(request, config, cwd) {
     dryRun: false,
     submitKeyPresses: resolveWorkerCliForRequest(request, config) === 'claude' ? 1 : 2,
   });
-  await runProcess('tmux', argv.typeArgv, 3000);
+
+  const attemptCountAtStart = Number.isFinite(request.attempt_count)
+    ? Math.max(0, Math.floor(request.attempt_count))
+    : 0;
+  let preCaptureHasTrigger = false;
+  if (attemptCountAtStart >= 1) {
+    try {
+      const preCapture = await runProcess('tmux', buildCapturePaneArgv(resolution.paneTarget), 2000);
+      preCaptureHasTrigger = capturedPaneContainsTrigger(preCapture.stdout, request.trigger_message);
+    } catch {
+      preCaptureHasTrigger = false;
+    }
+  }
+
+  const shouldTypePrompt = attemptCountAtStart === 0
+    || (attemptCountAtStart === 1 && !preCaptureHasTrigger);
+  if (shouldTypePrompt) {
+    await runProcess('tmux', argv.typeArgv, 3000);
+  }
+
   for (const submit of argv.submitArgv) {
     await runProcess('tmux', submit, 3000);
   }
 
   // Post-injection verification: confirm the trigger text was consumed.
   // Fixes #391: without this, dispatch marks 'notified' even when the worker
-  // pane is sitting on an unsent draft (Enter was not effectively applied).
+  // pane is sitting on an unsent draft (C-m was not effectively applied).
   const captureArgv = buildCapturePaneArgv(resolution.paneTarget);
   for (let round = 0; round < INJECT_VERIFY_ROUNDS; round++) {
     await new Promise((r) => setTimeout(r, INJECT_VERIFY_DELAY_MS));

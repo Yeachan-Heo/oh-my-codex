@@ -1109,7 +1109,7 @@ export function waitForWorkerReady(
   const sendRobustEnter = (): void => {
     const target = paneTarget(sessionName, workerIndex, workerPaneId);
     // Trust + follow-up splash can require two submits in Codex TUI.
-    // Use C-m (carriage return) instead of Enter for raw-mode compatibility.
+    // Use C-m (carriage return) for raw-mode compatibility.
     runTmux(['send-keys', '-t', target, 'C-m']);
     sleepFractionalSeconds(0.12);
     runTmux(['send-keys', '-t', target, 'C-m']);
@@ -1167,7 +1167,7 @@ export function dismissTrustPromptIfPresent(
   const result = runTmux(['capture-pane', '-t', target, '-p']);
   if (!result.ok) return false;
   if (!paneHasTrustPrompt(result.stdout)) return false;
-  // Trust prompt detected; send Enter twice to dismiss (trust + follow-up splash)
+  // Trust prompt detected; send C-m twice to dismiss (trust + follow-up splash)
   runTmux(['send-keys', '-t', target, 'C-m']);
   sleepFractionalSeconds(0.12);
   runTmux(['send-keys', '-t', target, 'C-m']);
@@ -1239,7 +1239,7 @@ export function sendToWorker(
 
   sendLiteralTextOrThrow(target, text);
 
-  // Allow the input buffer to settle before sending Enter
+  // Allow the input buffer to settle before sending C-m
   sleepFractionalSeconds(0.15);
 
   const allowAutoInterruptRetry = process.env[OMX_TEAM_AUTO_INTERRUPT_RETRY_ENV] !== '0';
