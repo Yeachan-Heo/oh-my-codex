@@ -4,6 +4,29 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-02-28
+
+55 files changed. Pipeline orchestrator, uninstall command, team dispatch hardening, and config idempotency.
+
+### Added
+- Configurable pipeline orchestrator with stage-based execution (ralph-verify, ralplan, team-exec) (#398).
+- `omx uninstall` command with `--dry-run`, `--keep-config`, `--purge`, and `--scope` options (#389).
+- Openclaw dispatcher passes originating channel context to webhook hooks (#387).
+
+### Fixed
+- CLI subcommand `--help` flag now shows help text instead of executing the command (#404).
+- Team idle/dispatch detection parity between Claude and Codex workers (#402).
+- Team dispatch lock timeout and binary path mismatch resolved (#401).
+- Team dispatch retries on Codex trust prompt instead of rolling back (#395).
+- Team dispatch draft consumption verified before marking notified (#392).
+- Config generator prevents duplicate OMX blocks on repeated `omx setup` (#386).
+
+### Changed
+- Deprecated ultrapilot, pipeline, and ecomode modes (#399).
+- Removed unused `DEPRECATED_MODE_MAP` from state-server.
+- Updated pipeline test state file paths and regenerated catalog.
+- Added links to CLI reference, notifications, and workflows in README.
+
 ## [0.7.2] - 2026-02-26
 
 Hotfix: team shutdown `--force` flag was not being parsed from CLI arguments.
