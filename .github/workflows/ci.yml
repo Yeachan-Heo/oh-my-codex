@@ -71,3 +71,24 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+
+  ci-status:
+    name: CI Status
+    if: always()
+    runs-on: ubuntu-latest
+    needs: [typecheck, test, ralph-persistence-gate, build]
+    steps:
+      - name: Check required job results
+        run: |
+          if [[ "${{ needs.typecheck.result }}" != "success" ]] ||
+             [[ "${{ needs.test.result }}" != "success" ]] ||
+             [[ "${{ needs.ralph-persistence-gate.result }}" != "success" ]] ||
+             [[ "${{ needs.build.result }}" != "success" ]]; then
+            echo "::error::One or more required CI jobs failed"
+            echo "  typecheck: ${{ needs.typecheck.result }}"
+            echo "  test: ${{ needs.test.result }}"
+            echo "  ralph-persistence-gate: ${{ needs.ralph-persistence-gate.result }}"
+            echo "  build: ${{ needs.build.result }}"
+            exit 1
+          fi
+          echo "All required CI checks passed"
