@@ -1463,6 +1463,27 @@ export function listTeamSessions(): string[] {
 }
 
 /**
+ * Send a trigger message directly to the leader pane via tmux send-keys.
+ * Used as the direct-inject fallback when hook-based dispatch to the leader
+ * times out. Unlike notifyLeaderMailboxAsync (which only writes to the
+ * mailbox file), this actually injects text into the leader's tmux pane
+ * so the leader sees it immediately. Fixes #437.
+ */
+export async function sendToLeaderPane(
+  leaderPaneId: string,
+  text: string,
+): Promise<void> {
+  const send = runTmux(['send-keys', '-t', leaderPaneId, '-l', '--', text]);
+  if (!send.ok) {
+    throw new Error(`sendToLeaderPane: failed to send text: ${send.stderr}`);
+  }
+  await sleep(150);
+  await sendKeyAsync(leaderPaneId, 'C-m');
+  await sleep(100);
+  await sendKeyAsync(leaderPaneId, 'C-m');
+}
+
+/**
  * Notify the leader via mailbox instead of tmux display-message.
  * This is the async mailbox-based replacement for notifyLeaderStatus.
  */
