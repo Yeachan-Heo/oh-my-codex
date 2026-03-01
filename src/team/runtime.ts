@@ -8,7 +8,6 @@ import {
   sanitizeTeamName,
   isTmuxAvailable,
   createTeamSession,
-  createDedicatedTeamSession,
   buildWorkerProcessLaunchSpec,
   resolveTeamWorkerCli,
   resolveTeamWorkerCliPlan,
@@ -483,16 +482,12 @@ export async function startTeam(
   }
 
   const workerLaunchMode = resolveTeamWorkerLaunchMode(process.env);
-  const useDedicatedSession = process.env.OMX_TEAM_DEDICATED_SESSION === '1';
-  const displayMode = workerLaunchMode === 'interactive'
-    ? (useDedicatedSession ? 'dedicated_session' : 'split_pane')
-    : 'auto';
+  const displayMode = workerLaunchMode === 'interactive' ? 'split_pane' : 'auto';
   if (workerLaunchMode === 'interactive') {
     if (!isTmuxAvailable()) {
       throw new Error('Team mode requires tmux. Install with: apt install tmux / brew install tmux');
     }
-    // Dedicated session mode can create sessions from outside tmux
-    if (!useDedicatedSession && !process.env.TMUX) {
+    if (!process.env.TMUX) {
       throw new Error('Team mode requires running inside tmux current leader pane');
     }
   }
@@ -624,15 +619,9 @@ export async function startTeam(
 
     // 6. Create worker runtime (interactive tmux panes or prompt-mode child processes)
     if (workerLaunchMode === 'interactive') {
-      const createdSession = useDedicatedSession
-        ? createDedicatedTeamSession(sanitized, workerCount, leaderCwd, workerLaunchArgs, workerStartups)
-        : createTeamSession(sanitized, workerCount, leaderCwd, workerLaunchArgs, workerStartups);
+      const createdSession = createTeamSession(sanitized, workerCount, leaderCwd, workerLaunchArgs, workerStartups);
       sessionName = createdSession.name;
       sessionCreated = true;
-      if (useDedicatedSession) {
-        console.log(`[omx:team] Workers launched in dedicated session: ${sessionName}`);
-        console.log(`[omx:team] To view workers: tmux attach -t ${sessionName}`);
-      }
       createdWorkerPaneIds.push(...createdSession.workerPaneIds);
       createdLeaderPaneId = createdSession.leaderPaneId;
       config.tmux_session = sessionName;
@@ -1172,15 +1161,8 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   const sanitized = sanitizeTeamName(teamName);
   const config = await readTeamConfig(sanitized, cwd);
   if (!config) {
-    // No config -- try to kill all matching tmux sessions (including timestamped dedicated sessions) and clean up
-    const orphanedSessions = getTeamTmuxSessions(sanitized);
-    if (orphanedSessions.length > 0) {
-      for (const session of orphanedSessions) {
-        try { destroyTeamSession(session); } catch { /* ignore */ }
-      }
-    } else {
-      try { destroyTeamSession(`omx-team-${sanitized}`); } catch { /* ignore */ }
-    }
+    // No config -- just try to kill tmux session and clean up
+    try { destroyTeamSession(`omx-team-${sanitized}`); } catch { /* ignore */ }
     await cleanupTeamState(sanitized, cwd);
     restoreTeamModelInstructionsFile(sanitized);
     return;
