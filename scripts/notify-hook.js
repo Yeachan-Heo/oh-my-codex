@@ -404,6 +404,32 @@ async function main() {
     // Non-critical
   }
 
+  // 10.5. Visual verdict persistence (non-fatal, observable – issue #421)
+  if (!isTeamWorker) {
+    try {
+      const { maybePersistVisualVerdict } = await import('./notify-hook/visual-verdict.js');
+      await maybePersistVisualVerdict({
+        payload,
+        stateDir,
+        logsDir,
+        sessionId: payloadSessionId,
+        turnId: safeString(payload['turn-id'] || payload.turn_id || ''),
+      });
+    } catch (err) {
+      // Structured warning for module import failure (issue #421)
+      const warnEntry = JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'warn',
+        type: 'visual_verdict_import_failure',
+        error: err?.message || String(err),
+        session_id: payloadSessionId,
+        turn_id: safeString(payload['turn-id'] || payload.turn_id || ''),
+      });
+      const warnFile = join(logsDir, `notify-hook-${new Date().toISOString().split('T')[0]}.jsonl`);
+      await appendFile(warnFile, warnEntry + '\n').catch(() => {});
+    }
+  }
+
   // 10. Code simplifier: delegate recently modified files for simplification.
   //     Opt-in via ~/.omx/config.json: { "codeSimplifier": { "enabled": true } }
   if (!isTeamWorker) {

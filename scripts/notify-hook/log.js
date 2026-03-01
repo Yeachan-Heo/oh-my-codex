@@ -9,3 +9,8 @@ export async function logTmuxHookEvent(logsDir, event) {
   const file = join(logsDir, `tmux-hook-${new Date().toISOString().split('T')[0]}.jsonl`);
   await appendFile(file, JSON.stringify(event) + '\n').catch(() => {});
 }
+
+export async function logNotifyHookEvent(logsDir, event) {
+  const file = join(logsDir, `notify-hook-${new Date().toISOString().split('T')[0]}.jsonl`);
+  await appendFile(file, JSON.stringify(event) + '\n').catch(() => {});
+}
