@@ -17,11 +17,9 @@ import {
   sleepFractionalSeconds,
   sendToWorker,
   sendToWorkerStdin,
-  notifyLeaderStatus,
   isWorkerAlive,
   getWorkerPanePid,
   killWorker,
-  killWorkerByPaneId,
   killWorkerByPaneIdAsync,
   unregisterResizeHook,
   destroyTeamSession,
@@ -1854,11 +1852,6 @@ async function finalizeHookPreferredMailboxDispatch(params: {
     request_id: requestId,
     message_id: messageId,
   };
-}
-
-function notifyLeader(config: TeamConfig, message: string): boolean {
-  if (!config.tmux_session) return false;
-  return notifyLeaderStatus(config.tmux_session, message);
 }
 
 async function notifyLeaderAsync(config: TeamConfig, message: string, cwd: string): Promise<boolean> {

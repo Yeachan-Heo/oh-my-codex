@@ -190,7 +190,7 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 async function runTmuxAsync(args: string[]): Promise<{ok: true; stdout: string} | {ok: false; stderr: string}> {
   try {
-    const { stdout, stderr } = await execFileAsync('tmux', args, { encoding: 'utf-8' });
+    const { stdout } = await execFileAsync('tmux', args, { encoding: 'utf-8' });
     return { ok: true, stdout: (stdout || '').trim() };
   } catch (error: unknown) {
     const err = error as { stderr?: string; message?: string };
@@ -1107,13 +1107,6 @@ export function shouldAttemptAdaptiveRetry(
   return true;
 }
 
-function sendKeyOrThrow(target: string, key: string, label: string): void {
-  const result = runTmux(['send-keys', '-t', target, key]);
-  if (!result.ok) {
-    throw new Error(`sendToWorker: failed to send ${label}: ${result.stderr}`);
-  }
-}
-
 function sendLiteralTextOrThrow(target: string, text: string): void {
   const send = runTmux(['send-keys', '-t', target, '-l', '--', text]);
   if (!send.ok) {
@@ -1232,12 +1225,6 @@ export function dismissTrustPromptIfPresent(
   sleepFractionalSeconds(0.12);
   runTmux(['send-keys', '-t', target, 'C-m']);
   return true;
-}
-
-function paneTailContainsLiteralLine(target: string, text: string): boolean {
-  const result = runTmux(['capture-pane', '-t', target, '-p', '-S', '-80']);
-  if (!result.ok) return false;
-  return normalizeTmuxCapture(result.stdout).includes(normalizeTmuxCapture(text));
 }
 
 export function normalizeTmuxCapture(value: string): string {
