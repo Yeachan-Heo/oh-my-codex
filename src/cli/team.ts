@@ -157,12 +157,16 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
       console.log(`No resumable team found for ${name}`);
       return;
     }
+    const existingState = await readModeState('team').catch(() => null);
+    const preservedRalph = existingState?.active === true
+      && existingState?.team_name === runtime.teamName
+      && existingState?.linked_ralph === true;
     await ensureTeamModeState({
       task: runtime.config.task,
       workerCount: runtime.config.worker_count,
       agentType: runtime.config.agent_type,
       teamName: runtime.teamName,
-      ralph: false,
+      ralph: preservedRalph,
     });
     await renderStartSummary(runtime);
     return;
@@ -175,7 +179,7 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
     const ralphFlag = teamArgs.includes('--ralph');
     const ralphFromState = !ralphFlag
       ? await readModeState('team').then(
-          (s) => s?.active === true && s?.linked_ralph === true,
+          (s) => s?.active === true && s?.linked_ralph === true && s?.team_name === name,
           () => false,
         )
       : false;

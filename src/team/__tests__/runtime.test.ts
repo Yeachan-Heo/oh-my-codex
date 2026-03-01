@@ -899,13 +899,13 @@ esac
     }
   });
 
-  it('shutdownTeam ralph=true emits ralph_cleanup_policy event on gate bypass', async () => {
+  it('shutdownTeam ralph=true emits ralph_cleanup_policy event on gate bypass (failure-only)', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-ralph-event-'));
     try {
       await initTeamState('team-ralph-event', 'ralph event test', 'executor', 1, cwd);
       await createTask(
         'team-ralph-event',
-        { subject: 'pending task', description: 'd', status: 'pending' },
+        { subject: 'failed task', description: 'd', status: 'failed' },
         cwd,
       );
 
@@ -915,6 +915,29 @@ esac
       await shutdownTeam('team-ralph-event', cwd, { ralph: true });
       const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-ralph-event');
       assert.equal(existsSync(teamRoot), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('shutdownTeam ralph=true still throws when active work exists (pending/blocked/in_progress)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-ralph-active-'));
+    try {
+      await initTeamState('team-ralph-active', 'ralph active work test', 'executor', 1, cwd);
+      await createTask(
+        'team-ralph-active',
+        { subject: 'pending task', description: 'd', status: 'pending' },
+        cwd,
+      );
+
+      // Ralph should NOT bypass when there are pending/blocked/in_progress tasks
+      await assert.rejects(
+        () => shutdownTeam('team-ralph-active', cwd, { ralph: true }),
+        /shutdown_gate_blocked:pending=1,blocked=0,in_progress=0,failed=0/,
+      );
+
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-ralph-active');
+      assert.equal(existsSync(teamRoot), true);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
