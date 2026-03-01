@@ -982,7 +982,7 @@ function runCodex(
     sessionModelInstructionsPath(cwd, sessionId),
   );
   const omxBin = process.argv[1];
-  const hudCmd = buildTmuxShellCommand('node', [omxBin, 'hud', '--watch']);
+  const hudCmd = buildTmuxPaneCommand('node', [omxBin, 'hud', '--watch']);
   const inheritLeaderFlags = process.env[TEAM_INHERIT_LEADER_FLAGS_ENV] !== '0';
   const workerLaunchArgs = resolveTeamWorkerLaunchArgsEnv(
     process.env[TEAM_WORKER_LAUNCH_ARGS_ENV],
@@ -1038,7 +1038,7 @@ function runCodex(
     }
   } else {
     // Not in tmux: create a new tmux session with codex + HUD pane
-    const codexCmd = buildTmuxShellCommand('codex', launchArgs);
+    const codexCmd = buildTmuxPaneCommand('codex', launchArgs);
     const tmuxSessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const sessionName = buildTmuxSessionName(cwd, tmuxSessionId);
     let createdDetachedSession = false;
@@ -1151,6 +1151,24 @@ function killTmuxPane(paneId: string): void {
 
 export function buildTmuxShellCommand(command: string, args: string[]): string {
   return [quoteShellArg(command), ...args.map(quoteShellArg)].join(' ');
+}
+
+/**
+ * Wrap a command for tmux pane execution so the user's shell profile is
+ * sourced.  Without this, tmux runs `default-shell -c "cmd"` which is
+ * non-interactive/non-login and skips .zshrc / .bashrc.
+ */
+export function buildTmuxPaneCommand(command: string, args: string[], shellPath: string | undefined = process.env.SHELL): string {
+  const bareCmd = buildTmuxShellCommand(command, args);
+  let rcSource = '';
+  if (shellPath && /\/zsh$/i.test(shellPath)) {
+    rcSource = 'if [ -f ~/.zshrc ]; then source ~/.zshrc; fi; ';
+  } else if (shellPath && /\/bash$/i.test(shellPath)) {
+    rcSource = 'if [ -f ~/.bashrc ]; then source ~/.bashrc; fi; ';
+  }
+  const shellBin = shellPath && shellPath.trim() !== '' ? shellPath : '/bin/sh';
+  const inner = `${rcSource}exec ${bareCmd}`;
+  return `${quoteShellArg(shellBin)} -lc ${quoteShellArg(inner)}`;
 }
 
 function quoteShellArg(value: string): string {
