@@ -163,7 +163,7 @@ describe('worktree ensure + rollback', () => {
       assert.equal(existsSync(ensured.worktreePath), true);
       assert.equal(branchExists(repo, 'feature/rollback'), true);
 
-      rollbackProvisionedWorktrees([ensured]);
+      await rollbackProvisionedWorktrees([ensured]);
       assert.equal(existsSync(ensured.worktreePath), false);
       assert.equal(branchExists(repo, 'feature/rollback'), false);
     } finally {
@@ -188,7 +188,7 @@ describe('worktree ensure + rollback', () => {
       assert.equal(existsSync(ensured.worktreePath), true);
       assert.equal(branchExists(repo, 'feature/ralph-keep'), true);
 
-      rollbackProvisionedWorktrees([ensured], { skipBranchDeletion: true });
+      await rollbackProvisionedWorktrees([ensured], { skipBranchDeletion: true });
       assert.equal(existsSync(ensured.worktreePath), false);
       // Branch is preserved when skipBranchDeletion is true (ralph policy)
       assert.equal(branchExists(repo, 'feature/ralph-keep'), true);

@@ -849,7 +849,7 @@ export async function startTeam(
     }
     if (provisionedWorktrees.length > 0) {
       try {
-        rollbackProvisionedWorktrees(provisionedWorktrees, {
+        await rollbackProvisionedWorktrees(provisionedWorktrees, {
           skipBranchDeletion: options.ralph === true,
         });
       } catch (cleanupError) {

@@ -128,10 +128,10 @@ async function main(): Promise<void> {
     // 1. Collect task results
     const taskResults = collectTaskResults(stateRoot, teamName);
 
-    // 2. Shutdown team
+    // 2. Shutdown team (force cleanup on failure/cancellation to bypass shutdown gate)
     if (runtime) {
       try {
-        await shutdownTeam(runtime.teamName, runtime.cwd);
+        await shutdownTeam(runtime.teamName, runtime.cwd, { force: status === 'failed' });
       } catch (err) {
         process.stderr.write(`[runtime-cli] shutdownTeam error: ${err}\n`);
       }
@@ -237,8 +237,11 @@ async function main(): Promise<void> {
       return;
     }
 
-    // Check failure heuristics
-    const allWorkersDead = workerPaneIds.length > 0 && snap.deadWorkers.length >= workerPaneIds.length;
+    // Check failure heuristics (use refreshed pane set, not stale startup snapshot)
+    const currentWorkerPaneIds = runtime.config.workers
+      .map(w => w.pane_id)
+      .filter((id): id is string => !!id);
+    const allWorkersDead = currentWorkerPaneIds.length > 0 && snap.deadWorkers.length >= currentWorkerPaneIds.length;
     const hasOutstandingWork = (snap.tasks.pending + snap.tasks.in_progress) > 0;
 
     const deadWorkerFailure = allWorkersDead && hasOutstandingWork;
