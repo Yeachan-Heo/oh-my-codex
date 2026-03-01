@@ -1177,8 +1177,9 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     ).catch(() => {});
 
     if (!gate.allowed) {
-      if (ralph) {
-        // Ralph policy: do not force-throw on failure — log and proceed with graceful cleanup.
+      const hasActiveWork = gate.pending > 0 || gate.blocked > 0 || gate.in_progress > 0;
+      if (ralph && !hasActiveWork) {
+        // Ralph policy: bypass on failure-only scenarios (no pending/blocked/in_progress tasks).
         // This allows the ralph loop to retry rather than leaving stale team state.
         await appendTeamEvent(
           sanitized,
