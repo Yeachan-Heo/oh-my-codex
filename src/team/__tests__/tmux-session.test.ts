@@ -198,23 +198,23 @@ describe('HUD resize hook command builders', () => {
 });
 
 describe('sendToWorker validation', () => {
-  it('rejects text over 200 chars', () => {
-    assert.throws(
-      () => sendToWorker('omx-team-x', 1, 'a'.repeat(200)),
+  it('rejects text over 200 chars', async () => {
+    await assert.rejects(
+      sendToWorker('omx-team-x', 1, 'a'.repeat(200)),
       /< 200/i
     );
   });
 
-  it('rejects empty/whitespace text', () => {
-    assert.throws(
-      () => sendToWorker('omx-team-x', 1, '   '),
+  it('rejects empty/whitespace text', async () => {
+    await assert.rejects(
+      sendToWorker('omx-team-x', 1, '   '),
       /non-empty/i
     );
   });
 
-  it('rejects injection marker', () => {
-    assert.throws(
-      () => sendToWorker('omx-team-x', 1, `hello [OMX_TMUX_INJECT]`),
+  it('rejects injection marker', async () => {
+    await assert.rejects(
+      sendToWorker('omx-team-x', 1, `hello [OMX_TMUX_INJECT]`),
       /marker/i
     );
   });

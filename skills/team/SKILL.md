@@ -343,6 +343,49 @@ When operating this skill, provide concrete progress evidence:
 Do not claim success without file/pane evidence.
 Do not claim clean completion if shutdown occurred with `in_progress>0`.
 
+## MCP Job Lifecycle Tools
+
+For programmatic or agent-driven team spawning (as opposed to interactive CLI use), OMX exposes four MCP tools via the `team-server`:
+
+| Tool | Description |
+|------|-------------|
+| `omx_run_team_start` | Spawn tmux CLI workers in the background; returns a `jobId` immediately |
+| `omx_run_team_status` | Non-blocking status check for a running job |
+| `omx_run_team_wait` | Block until the job completes, with automatic idle-pane nudging |
+| `omx_run_team_cleanup` | Kill worker tmux panes for a job (early stop only) |
+
+### CLI vs MCP Tools
+
+- **`omx team ...` CLI** — Primary method for interactive team orchestration. Use this when you are operating inside a live tmux session and want direct pane visibility.
+- **`omx_run_team_*` MCP tools** — For programmatic or agent-driven team spawning (analogous to OMC's `omc_run_team_*` tools). Use these when an agent needs to launch workers, poll status, and collect results without manual intervention.
+
+### Naming Distinction
+
+Two cleanup tools exist and must not be confused:
+
+- `team_cleanup` (**state-server**): Deletes team state **files** on disk (`.omx/state/team/<team>/`). Use after a team run is fully complete.
+- `omx_run_team_cleanup` (**team-server**): Kills tmux worker **panes** for a job. Use only when stopping workers early; otherwise `omx_run_team_wait` handles natural termination.
+
+### Basic Usage Example
+
+```
+1. omx_run_team_start({
+     teamName: "fix-bugs",
+     agentTypes: ["codex"],
+     tasks: [{ subject: "Fix bug", description: "..." }],
+     cwd: "/path/to/project"
+   })
+   → Returns { jobId: "omx-abc123" }
+
+2. omx_run_team_wait({ job_id: "omx-abc123", timeout_ms: 300000 })
+   → Blocks until done, auto-nudges idle panes
+
+3. omx_run_team_cleanup({ job_id: "omx-abc123" })
+   → Only needed if stopping workers early
+```
+
+`omx_run_team_status` can be called between steps 1 and 2 for a non-blocking poll if you need to interleave other work while workers run.
+
 ## Limitations
 
 - Worktree provisioning requires a git repository and can fail on branch/path collisions

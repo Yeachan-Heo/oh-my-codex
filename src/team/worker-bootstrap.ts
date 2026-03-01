@@ -57,6 +57,16 @@ You are a team worker in team "${teamName}". Your identity and assigned tasks ar
 12. Check your mailbox for messages at <team_state_root>/team/${teamName}/mailbox/{your-name}.json
 13. For team_* MCP tools, do not pass workingDirectory unless the lead explicitly tells you to
 
+## Message Protocol
+When calling team_send_message, you MUST always include:
+- from_worker: "<your-worker-name>" (your identity — check your inbox file for your worker name, never omit this)
+- to_worker: "leader-fixed" (to message the leader) or "worker-N" (for peers)
+
+Example:
+team_send_message({ team_name: "${teamName}", from_worker: "<your-worker-name>", to_worker: "leader-fixed", body: "Task completed" })
+
+CRITICAL: Never omit from_worker. The MCP server cannot auto-detect your identity.
+
 ## Rules
 - Do NOT edit files outside the paths listed in your task description
 - If you need to modify a shared file, report to the lead by writing to your status file with state "blocked"
@@ -281,6 +291,13 @@ ${taskList}
 10. Write \`{"state": "idle", "updated_at": "<current ISO timestamp>"}\` to \`${teamStateRoot}/team/${teamName}/workers/${workerName}/status.json\`
 11. Wait for the next instruction from the lead
 12. For team_* MCP tools, do not pass \`workingDirectory\` unless the lead explicitly asks (if resolution fails, use leader cwd: \`${leaderCwd}\`)
+
+## Message Protocol
+When using team_send_message MCP tool, ALWAYS include from_worker with YOUR worker name:
+- from_worker: "${workerName}"
+- to_worker: "leader-fixed" (for leader) or "worker-N" (for peers)
+
+Example: team_send_message({ team_name: "${teamName}", from_worker: "${workerName}", to_worker: "leader-fixed", body: "ACK: initialized" })
 
 ${buildVerificationSection('each assigned task')}
 

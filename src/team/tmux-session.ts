@@ -1,6 +1,9 @@
-import { spawnSync } from 'child_process';
+import { spawnSync, execFile } from 'child_process';
+import { promisify } from 'util';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+
+const execFileAsync = promisify(execFile);
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../hud/constants.js';
 
 export interface TeamSession {
@@ -179,6 +182,62 @@ export function sleepFractionalSeconds(
   const ms = toFractionalSleepMs(seconds);
   if (ms <= 0) return;
   sleepImpl(ms);
+}
+
+// ── Async tmux helpers ──────────────────────────────────────────────────────
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+async function runTmuxAsync(args: string[]): Promise<{ok: true; stdout: string} | {ok: false; stderr: string}> {
+  try {
+    const { stdout } = await execFileAsync('tmux', args, { encoding: 'utf-8' });
+    return { ok: true, stdout: (stdout || '').trim() };
+  } catch (error: unknown) {
+    const err = error as { stderr?: string; message?: string };
+    return { ok: false, stderr: (err.stderr || err.message || '').trim() || 'tmux command failed' };
+  }
+}
+
+async function sendKeyAsync(target: string, key: string): Promise<void> {
+  const result = await runTmuxAsync(['send-keys', '-t', target, key]);
+  if (!result.ok) {
+    throw new Error(`sendKeyAsync: failed to send ${key}: ${result.stderr}`);
+  }
+}
+
+async function capturePaneAsync(target: string): Promise<string> {
+  const result = await runTmuxAsync(['capture-pane', '-t', target, '-p', '-S', '-80']);
+  if (!result.ok) return '';
+  return result.stdout;
+}
+
+async function isWorkerAliveAsync(sessionName: string, workerIndex: number, workerPaneId?: string): Promise<boolean> {
+  const result = await runTmuxAsync([
+    'list-panes',
+    '-t', paneTarget(sessionName, workerIndex, workerPaneId),
+    '-F',
+    '#{pane_dead} #{pane_pid}',
+  ]);
+  if (!result.ok) return false;
+
+  const line = result.stdout.split('\n')[0]?.trim();
+  if (!line) return false;
+
+  const parts = line.split(/\s+/);
+  if (parts.length < 2) return false;
+
+  const paneDead = parts[0];
+  const pid = Number.parseInt(parts[1], 10);
+
+  if (paneDead === '1') return false;
+  if (!Number.isFinite(pid)) return false;
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function shellQuoteSingle(value: string): string {
@@ -904,7 +963,7 @@ export function paneIsBootstrapping(lines: string[]): boolean {
   );
 }
 
-function paneLooksReady(captured: string): boolean {
+export function paneLooksReady(captured: string): boolean {
   const content = captured.trimEnd();
   if (content === '') return false;
 
@@ -946,7 +1005,7 @@ function paneHasTrustPrompt(captured: string): boolean {
   return hasQuestion && hasActiveChoices;
 }
 
-function paneHasActiveTask(captured: string): boolean {
+export function paneHasActiveTask(captured: string): boolean {
   const lines = captured
     .split('\n')
     .map((line) => line.replace(/\r/g, '').trim())
@@ -1048,13 +1107,6 @@ export function shouldAttemptAdaptiveRetry(
   return true;
 }
 
-function sendKeyOrThrow(target: string, key: string, label: string): void {
-  const result = runTmux(['send-keys', '-t', target, key]);
-  if (!result.ok) {
-    throw new Error(`sendToWorker: failed to send ${label}: ${result.stderr}`);
-  }
-}
-
 function sendLiteralTextOrThrow(target: string, text: string): void {
   const send = runTmux(['send-keys', '-t', target, '-l', '--', text]);
   if (!send.ok) {
@@ -1062,31 +1114,32 @@ function sendLiteralTextOrThrow(target: string, text: string): void {
   }
 }
 
-function attemptSubmitRounds(
+async function attemptSubmitRounds(
   target: string,
   text: string,
   rounds: number,
   queueFirstRound: boolean,
   submitKeyPressesPerRound: number,
-): boolean {
+): Promise<boolean> {
   const presses = Math.max(1, Math.floor(submitKeyPressesPerRound));
   for (let round = 0; round < rounds; round++) {
-    sleepFractionalSeconds(0.1);
+    await sleep(100);
     if (round === 0 && queueFirstRound) {
-      sendKeyOrThrow(target, 'Tab', 'Tab');
-      sleepFractionalSeconds(0.08);
-      sendKeyOrThrow(target, 'C-m', 'C-m');
+      await sendKeyAsync(target, 'Tab');
+      await sleep(80);
+      await sendKeyAsync(target, 'C-m');
     } else {
       for (let press = 0; press < presses; press++) {
-        sendKeyOrThrow(target, 'C-m', 'C-m');
+        await sendKeyAsync(target, 'C-m');
         if (press < presses - 1) {
-          sleepFractionalSeconds(0.2);
+          await sleep(200);
         }
       }
     }
-    sleepFractionalSeconds(0.14);
-    if (!paneTailContainsLiteralLine(target, text)) return true;
-    sleepFractionalSeconds(0.14);
+    await sleep(140);
+    const captured = await capturePaneAsync(target);
+    if (!normalizeTmuxCapture(captured).includes(normalizeTmuxCapture(text))) return true;
+    await sleep(140);
   }
   return false;
 }
@@ -1174,12 +1227,6 @@ export function dismissTrustPromptIfPresent(
   return true;
 }
 
-function paneTailContainsLiteralLine(target: string, text: string): boolean {
-  const result = runTmux(['capture-pane', '-t', target, '-p', '-S', '-80']);
-  if (!result.ok) return false;
-  return normalizeTmuxCapture(result.stdout).includes(normalizeTmuxCapture(text));
-}
-
 export function normalizeTmuxCapture(value: string): string {
   return value
     .replace(/\r/g, '')
@@ -1213,13 +1260,13 @@ export function sendToWorkerStdin(
 // Send SHORT text (<200 chars) to worker via tmux send-keys
 // Validates: text < 200 chars, no injection marker
 // Throws on violation
-export function sendToWorker(
+export async function sendToWorker(
   sessionName: string,
   workerIndex: number,
   text: string,
   workerPaneId?: string,
   workerCli?: TeamWorkerCli,
-): void {
+): Promise<void> {
   assertWorkerTriggerText(text);
 
   const target = paneTarget(sessionName, workerIndex, workerPaneId);
@@ -1228,32 +1275,32 @@ export function sendToWorker(
 
   // Guard: if the trust prompt is still present, advance it first so our trigger text
   // doesn't get typed into the trust screen and ignored.
-  const captured = runTmux(['capture-pane', '-t', target, '-p', '-S', '-80']);
-  const paneBusy = captured.ok ? paneHasActiveTask(captured.stdout) : false;
-  if (captured.ok && paneHasTrustPrompt(captured.stdout)) {
-    sendKeyOrThrow(target, 'C-m', 'C-m');
-    sleepFractionalSeconds(0.12);
-    sendKeyOrThrow(target, 'C-m', 'C-m');
-    sleepFractionalSeconds(0.2);
+  const capturedStr = await capturePaneAsync(target);
+  const paneBusy = paneHasActiveTask(capturedStr);
+  if (paneHasTrustPrompt(capturedStr)) {
+    await sendKeyAsync(target, 'C-m');
+    await sleep(120);
+    await sendKeyAsync(target, 'C-m');
+    await sleep(200);
   }
 
   sendLiteralTextOrThrow(target, text);
 
   // Allow the input buffer to settle before sending C-m
-  sleepFractionalSeconds(0.15);
+  await sleep(150);
 
   const allowAutoInterruptRetry = process.env[OMX_TEAM_AUTO_INTERRUPT_RETRY_ENV] !== '0';
   const submitPlan = buildWorkerSubmitPlan(strategy, resolvedWorkerCli, paneBusy, allowAutoInterruptRetry);
   if (submitPlan.shouldInterrupt) {
     // Explicit interrupt mode: abort current turn first, then submit the new command.
-    sendKeyOrThrow(target, 'C-c', 'C-c');
-    sleepFractionalSeconds(0.1);
+    await sendKeyAsync(target, 'C-c');
+    await sleep(100);
   }
 
   // Submit deterministically using CLI-specific plan:
   // - Codex: queue-first Tab+C-m when configured/busy, then double C-m rounds.
   // - Claude: direct C-m rounds only (never queue-first Tab).
-  if (attemptSubmitRounds(
+  if (await attemptSubmitRounds(
     target,
     text,
     submitPlan.rounds,
@@ -1263,15 +1310,14 @@ export function sendToWorker(
 
   // Adaptive escalation for "likely unsent trigger text at ready prompt" cases:
   // clear line, re-send trigger, then re-submit with deterministic C-m rounds.
-  const latestCaptureResult = runTmux(['capture-pane', '-t', target, '-p', '-S', '-80']);
-  const latestCapture = latestCaptureResult.ok ? latestCaptureResult.stdout : null;
-  if (shouldAttemptAdaptiveRetry(strategy, paneBusy, submitPlan.allowAdaptiveRetry, latestCapture, text)) {
+  const latestCapture = await capturePaneAsync(target);
+  if (shouldAttemptAdaptiveRetry(strategy, paneBusy, submitPlan.allowAdaptiveRetry, latestCapture || null, text)) {
     // Keep this branch non-interrupting to avoid canceling active turns on false positives.
-    sendKeyOrThrow(target, 'C-u', 'C-u');
-    sleepFractionalSeconds(0.08);
+    await sendKeyAsync(target, 'C-u');
+    await sleep(80);
     sendLiteralTextOrThrow(target, text);
-    sleepFractionalSeconds(0.12);
-    if (attemptSubmitRounds(target, text, 4, false, submitPlan.submitKeyPressesPerRound)) return;
+    await sleep(120);
+    if (await attemptSubmitRounds(target, text, 4, false, submitPlan.submitKeyPressesPerRound)) return;
   }
 
   // Fail-open by default: Codex may keep the last submitted line visible even after executing it.
@@ -1282,21 +1328,21 @@ export function sendToWorker(
   }
 
   // One last best-effort double C-m nudge, then verify.
-  runTmux(['send-keys', '-t', target, 'C-m']);
-  sleepFractionalSeconds(0.12);
-  runTmux(['send-keys', '-t', target, 'C-m']);
+  await sendKeyAsync(target, 'C-m');
+  await sleep(120);
+  await sendKeyAsync(target, 'C-m');
 
   // Post-submit verification: wait briefly and confirm the worker consumed the
   // trigger (draft disappeared or active-task indicator appeared). Fixes #391.
-  sleepFractionalSeconds(0.3);
-  const verifyResult = runTmux(['capture-pane', '-t', target, '-p', '-S', '-80']);
-  if (verifyResult.ok) {
-    if (paneHasActiveTask(verifyResult.stdout)) return;
-    if (!paneTailContainsLiteralLine(target, text)) return;
+  await sleep(300);
+  const verifyCapture = await capturePaneAsync(target);
+  if (verifyCapture) {
+    if (paneHasActiveTask(verifyCapture)) return;
+    if (!normalizeTmuxCapture(verifyCapture).includes(normalizeTmuxCapture(text))) return;
     // Draft still visible and no active task — one more C-m attempt.
-    sendKeyOrThrow(target, 'C-m', 'C-m');
-    sleepFractionalSeconds(0.15);
-    sendKeyOrThrow(target, 'C-m', 'C-m');
+    await sendKeyAsync(target, 'C-m');
+    await sleep(150);
+    await sendKeyAsync(target, 'C-m');
   }
 }
 
@@ -1354,20 +1400,20 @@ export function isWorkerAlive(sessionName: string, workerIndex: number, workerPa
 
 // Kill a specific worker: send C-c, then C-d, then kill-pane if still alive.
 // leaderPaneId: when provided, the kill is skipped entirely if workerPaneId matches it.
-export function killWorker(sessionName: string, workerIndex: number, workerPaneId?: string, leaderPaneId?: string): void {
+export async function killWorker(sessionName: string, workerIndex: number, workerPaneId?: string, leaderPaneId?: string): Promise<void> {
   // Guard: never kill the leader's own pane.
   if (leaderPaneId && workerPaneId === leaderPaneId) return;
 
-  runTmux(['send-keys', '-t', paneTarget(sessionName, workerIndex, workerPaneId), 'C-c']);
-  sleepSeconds(1);
+  await runTmuxAsync(['send-keys', '-t', paneTarget(sessionName, workerIndex, workerPaneId), 'C-c']);
+  await sleep(1000);
 
-  if (isWorkerAlive(sessionName, workerIndex, workerPaneId)) {
-    runTmux(['send-keys', '-t', paneTarget(sessionName, workerIndex, workerPaneId), 'C-d']);
-    sleepSeconds(1);
+  if (await isWorkerAliveAsync(sessionName, workerIndex, workerPaneId)) {
+    await runTmuxAsync(['send-keys', '-t', paneTarget(sessionName, workerIndex, workerPaneId), 'C-d']);
+    await sleep(1000);
   }
 
-  if (isWorkerAlive(sessionName, workerIndex, workerPaneId)) {
-    runTmux(['kill-pane', '-t', paneTarget(sessionName, workerIndex, workerPaneId)]);
+  if (await isWorkerAliveAsync(sessionName, workerIndex, workerPaneId)) {
+    await runTmuxAsync(['kill-pane', '-t', paneTarget(sessionName, workerIndex, workerPaneId)]);
   }
 }
 
@@ -1377,6 +1423,22 @@ export function killWorkerByPaneId(workerPaneId: string, leaderPaneId?: string):
   // Guard: never kill the leader's own pane.
   if (leaderPaneId && workerPaneId === leaderPaneId) return;
   runTmux(['kill-pane', '-t', workerPaneId]);
+}
+
+export async function killWorkerByPaneIdAsync(workerPaneId: string, leaderPaneId?: string): Promise<void> {
+  if (!workerPaneId.startsWith('%')) return;
+  // Guard: never kill the leader's own pane.
+  if (leaderPaneId && workerPaneId === leaderPaneId) return;
+  await runTmuxAsync(['kill-pane', '-t', workerPaneId]);
+}
+
+export async function killWorkerPanes(paneIds: string[], leaderPaneId: string, graceMs: number = 2000): Promise<void> {
+  const perPaneGrace = paneIds.length > 0 ? Math.max(100, Math.floor(graceMs / paneIds.length)) : 0;
+  for (const paneId of paneIds) {
+    if (paneId === leaderPaneId) continue; // never kill leader
+    await killWorkerByPaneIdAsync(paneId, leaderPaneId);
+    await sleep(perPaneGrace);
+  }
 }
 
 // Kill entire tmux session. Tolerates already-dead sessions.
@@ -1398,4 +1460,23 @@ export function listTeamSessions(): string[] {
     .map(line => line.trim())
     .filter(Boolean)
     .map(baseSessionName);
+}
+
+/**
+ * Notify the leader via mailbox instead of tmux display-message.
+ * This is the async mailbox-based replacement for notifyLeaderStatus.
+ */
+export async function notifyLeaderMailboxAsync(
+  teamName: string,
+  fromWorker: string,
+  message: string,
+  cwd: string,
+): Promise<boolean> {
+  try {
+    const { sendDirectMessage } = await import('./state.js');
+    await sendDirectMessage(teamName, fromWorker, 'leader-fixed', message, cwd);
+    return true;
+  } catch {
+    return false;
+  }
 }

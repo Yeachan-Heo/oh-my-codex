@@ -645,7 +645,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'team_cleanup',
-      description: 'Delete all team state (config, tasks, workers, events).',
+      description: 'Delete all team state files on disk (config, tasks, workers, events). Does NOT kill tmux panes -- use omx_run_team_cleanup for that.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -971,7 +971,16 @@ export async function handleStateToolCall(request: {
       const fromWorker = String((args as Record<string, unknown>).from_worker || '').trim();
       const toWorker = String((args as Record<string, unknown>).to_worker || '').trim();
       const body = String((args as Record<string, unknown>).body || '').trim();
-      if (!teamName || !fromWorker || !toWorker || !body) {
+      if (!fromWorker) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            error: 'from_worker is required. You must identify yourself. Check your worker name in your inbox file or AGENTS.md overlay.',
+            hint: 'Your worker name was set when you were spawned (e.g., "worker-1", "worker-2", or "leader-fixed").'
+          }) }],
+          isError: true,
+        };
+      }
+      if (!teamName || !toWorker || !body) {
         return {
           content: [{ type: 'text', text: JSON.stringify({ error: 'team_name, from_worker, to_worker, body are required' }) }],
           isError: true,
