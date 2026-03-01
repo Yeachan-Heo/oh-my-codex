@@ -71,6 +71,8 @@ export interface OpenClawPayload {
   event: OpenClawHookEvent;
   /** Interpolated instruction text */
   instruction: string;
+  /** Alias of instruction — allows OpenClaw /hooks/wake to consume the payload directly */
+  text: string;
   /** ISO timestamp */
   timestamp: string;
   /** Session identifier (if available) */

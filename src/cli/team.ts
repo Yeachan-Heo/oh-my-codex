@@ -170,9 +170,16 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
 
   if (subcommand === 'shutdown') {
     const name = teamArgs[1];
-    if (!name) throw new Error('Usage: omx team shutdown <team-name> [--force]');
+    if (!name) throw new Error('Usage: omx team shutdown <team-name> [--force] [--ralph]');
     const force = teamArgs.includes('--force');
-    await shutdownTeam(name, cwd, { force });
+    const ralphFlag = teamArgs.includes('--ralph');
+    const ralphFromState = !ralphFlag
+      ? await readModeState('team').then(
+          (s) => s?.active === true && s?.linked_ralph === true,
+          () => false,
+        )
+      : false;
+    await shutdownTeam(name, cwd, { force, ralph: ralphFlag || ralphFromState });
     await updateModeState('team', {
       active: false,
       current_phase: 'cancelled',
@@ -196,7 +203,7 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
     parsed.workerCount,
     tasks,
     cwd,
-    { worktreeMode: parsedWorktree.mode },
+    { worktreeMode: parsedWorktree.mode, ralph: parsed.ralph },
   );
 
   await ensureTeamModeState(parsed);

@@ -148,6 +148,7 @@ export async function wakeOpenClaw(
       const payload = {
         event,
         instruction: interpolatedInstruction,
+        text: interpolatedInstruction,
         timestamp: now,
         sessionId: enrichedContext.sessionId,
         projectPath: enrichedContext.projectPath,

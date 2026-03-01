@@ -316,7 +316,15 @@ export function ensureWorktree(plan: PlannedWorktreeTarget | { enabled: false })
   };
 }
 
-export function rollbackProvisionedWorktrees(results: Array<EnsureWorktreeResult | { enabled: false }>): void {
+export interface RollbackWorktreeOptions {
+  /** When true, skip `git branch -D` for branches created during provisioning (ralph policy). */
+  skipBranchDeletion?: boolean;
+}
+
+export function rollbackProvisionedWorktrees(
+  results: Array<EnsureWorktreeResult | { enabled: false }>,
+  options: RollbackWorktreeOptions = {},
+): void {
   const created = results
     .filter((result): result is EnsureWorktreeResult => result.enabled === true && result.created)
     .reverse();
@@ -335,6 +343,7 @@ export function rollbackProvisionedWorktrees(results: Array<EnsureWorktreeResult
       continue;
     }
 
+    if (options.skipBranchDeletion) continue;
     if (!result.createdBranch || !result.branchName) continue;
 
     const entriesAfterRemove = listWorktrees(result.repoRoot);
