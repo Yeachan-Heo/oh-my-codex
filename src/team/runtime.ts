@@ -19,8 +19,8 @@ import {
   sendToWorkerStdin,
   isWorkerAlive,
   getWorkerPanePid,
-  killWorker,
   killWorkerByPaneIdAsync,
+  teardownWorkerPanes,
   unregisterResizeHook,
   destroyTeamSession,
   listTeamSessions,
@@ -1315,16 +1315,13 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     if (resizeHookWarning) {
       console.warn(`[team shutdown] ${sanitized}: ${resizeHookWarning}; continuing teardown`);
     }
-    for (const w of config.workers) {
-      try {
-        // Guard: never kill the leader's own pane or the HUD pane.
-        if (leaderPaneId && w.pane_id === leaderPaneId) continue;
-        if (hudPaneId && w.pane_id === hudPaneId) continue;
-        if (isWorkerAlive(sessionName, w.index, w.pane_id)) {
-          await killWorker(sessionName, w.index, w.pane_id, leaderPaneId ?? undefined);
-        }
-      } catch { /* ignore */ }
-    }
+    const workerPaneIds = config.workers
+      .map((w) => w.pane_id)
+      .filter((paneId): paneId is string => typeof paneId === 'string' && paneId.trim().length > 0);
+    await teardownWorkerPanes(workerPaneIds, {
+      leaderPaneId,
+      hudPaneId,
+    });
 
     // 4. Destroy tmux session
     if (!sessionName.includes(':')) {

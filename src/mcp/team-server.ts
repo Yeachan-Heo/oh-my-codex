@@ -18,6 +18,7 @@ import { spawn } from 'child_process';
 import { homedir } from 'os';
 import { z } from 'zod';
 import { killWorkerPanes } from '../team/tmux-session.js';
+import { teamReadConfig as readTeamConfig } from '../team/team-ops.js';
 import { NudgeTracker } from '../team/idle-nudge.js';
 import { shouldAutoStartMcpServer } from './bootstrap.js';
 
@@ -83,8 +84,117 @@ function loadJobFromDisk(jobId: string): OmxTeamJob | undefined {
 }
 
 async function loadPaneIds(jobId: string): Promise<{ paneIds: string[]; leaderPaneId: string } | null> {
-  try { return JSON.parse(await readFile(join(OMX_JOBS_DIR, `${jobId}-panes.json`), 'utf-8')); }
+  try {
+    const parsed = JSON.parse(await readFile(join(OMX_JOBS_DIR, `${jobId}-panes.json`), 'utf-8')) as {
+      paneIds?: unknown;
+      leaderPaneId?: unknown;
+    };
+    const paneIds = Array.isArray(parsed.paneIds)
+      ? parsed.paneIds.filter((paneId): paneId is string => typeof paneId === 'string' && paneId.trim().startsWith('%'))
+      : [];
+    const leaderPaneId = typeof parsed.leaderPaneId === 'string' && parsed.leaderPaneId.trim().startsWith('%')
+      ? parsed.leaderPaneId.trim()
+      : '';
+    return { paneIds, leaderPaneId };
+  }
   catch { return null; }
+}
+
+function normalizePaneId(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.startsWith('%') ? trimmed : null;
+}
+
+async function listLiveSessionPaneIds(sessionName: string): Promise<string[]> {
+  if (!sessionName || !sessionName.trim()) return [];
+  return await new Promise((resolve) => {
+    const child = spawn('tmux', ['list-panes', '-t', sessionName, '-F', '#{pane_id}'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const outChunks: Buffer[] = [];
+    child.stdout.on('data', (chunk: Buffer) => outChunks.push(chunk));
+    child.on('close', (code) => {
+      if (code !== 0) {
+        resolve([]);
+        return;
+      }
+      const paneIds = Buffer.concat(outChunks).toString('utf-8')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((paneId) => paneId.startsWith('%'));
+      resolve(paneIds);
+    });
+    child.on('error', () => resolve([]));
+  });
+}
+
+interface CleanupSelection {
+  targets: string[];
+  leaderPaneId: string;
+  hudPaneId: string;
+  counts: {
+    from_panes_file: number;
+    from_team_config: number;
+    from_live_session: number;
+    deduped_total: number;
+  };
+}
+
+async function resolveCleanupTargets(jobId: string, job: OmxTeamJob): Promise<CleanupSelection> {
+  const panes = await loadPaneIds(jobId);
+  const paneFileIds = panes?.paneIds ?? [];
+  const paneFileSet = new Set(paneFileIds);
+  const paneFileLeader = normalizePaneId(panes?.leaderPaneId);
+
+  const config = (job.teamName && job.cwd)
+    ? await readTeamConfig(job.teamName, job.cwd)
+    : null;
+  const configWorkerPaneIds = (config?.workers ?? [])
+    .map((worker) => normalizePaneId(worker.pane_id))
+    .filter((paneId): paneId is string => paneId !== null);
+  const configSet = new Set(configWorkerPaneIds);
+
+  const knownIdentity = new Set<string>([...paneFileSet, ...configSet]);
+  const liveSessionPaneIds = config?.tmux_session ? await listLiveSessionPaneIds(config.tmux_session) : [];
+  const liveIntersection = liveSessionPaneIds.filter((paneId) => knownIdentity.has(paneId));
+  const liveIntersectionSet = new Set(liveIntersection);
+  const deduped = Array.from(new Set<string>([...knownIdentity, ...liveIntersectionSet]));
+
+  return {
+    targets: deduped,
+    leaderPaneId: normalizePaneId(config?.leader_pane_id) ?? paneFileLeader ?? '',
+    hudPaneId: normalizePaneId(config?.hud_pane_id) ?? '',
+    counts: {
+      from_panes_file: paneFileSet.size,
+      from_team_config: configSet.size,
+      from_live_session: liveIntersectionSet.size,
+      deduped_total: deduped.length,
+    },
+  };
+}
+
+interface CleanupSummary {
+  job_id: string;
+  status: 'cleaned' | 'noop' | 'error';
+  targets: {
+    from_panes_file: number;
+    from_team_config: number;
+    from_live_session: number;
+    deduped_total: number;
+  };
+  excluded: {
+    leader: number;
+    hud: number;
+    invalid: number;
+  };
+  kill: {
+    attempted: number;
+    succeeded: number;
+    failed: number;
+  };
+  grace_ms: number;
+  cleaned_up_at: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +274,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+export async function handleTeamToolCall(request: {
+  params: {
+    name: string;
+    arguments?: Record<string, unknown>;
+  };
+}) {
   const { name, arguments: args } = request.params;
   const a = (args || {}) as Record<string, unknown>;
 
@@ -314,14 +429,54 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { job_id: jobId, grace_ms: graceMs } = cleanupSchema.parse(a);
         const job = omxTeamJobs.get(jobId) ?? loadJobFromDisk(jobId);
         if (!job) return { content: [{ type: 'text' as const, text: `Job ${jobId} not found` }] };
-        const panes = await loadPaneIds(jobId);
-        if (!panes?.paneIds?.length) {
-          return { content: [{ type: 'text' as const, text: 'No pane IDs recorded for this job -- nothing to clean up.' }] };
+        const selected = await resolveCleanupTargets(jobId, job);
+        const cleanedUpAt = new Date().toISOString();
+        if (selected.targets.length === 0) {
+          const summary: CleanupSummary = {
+            job_id: jobId,
+            status: 'noop',
+            targets: selected.counts,
+            excluded: { leader: 0, hud: 0, invalid: 0 },
+            kill: { attempted: 0, succeeded: 0, failed: 0 },
+            grace_ms: graceMs,
+            cleaned_up_at: cleanedUpAt,
+          };
+          return {
+            content: [
+              { type: 'text' as const, text: 'No pane IDs recorded for this job -- nothing to clean up.' },
+              { type: 'text' as const, text: JSON.stringify(summary) },
+            ],
+          };
         }
-        await killWorkerPanes(panes.paneIds, panes.leaderPaneId, graceMs);
-        job.cleanedUpAt = new Date().toISOString();
+
+        const killSummary = await killWorkerPanes(
+          selected.targets,
+          selected.leaderPaneId,
+          graceMs,
+          selected.hudPaneId,
+        );
+        const summary: CleanupSummary = {
+          job_id: jobId,
+          status: killSummary.kill.attempted > 0 ? 'cleaned' : 'noop',
+          targets: selected.counts,
+          excluded: killSummary.excluded,
+          kill: killSummary.kill,
+          grace_ms: graceMs,
+          cleaned_up_at: cleanedUpAt,
+        };
+        job.cleanedUpAt = cleanedUpAt;
         persistJob(jobId, job);
-        return { content: [{ type: 'text' as const, text: `Cleaned up ${panes.paneIds.length} worker pane(s).` }] };
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: killSummary.kill.attempted > 0
+                ? `Cleaned up ${selected.targets.length} worker pane(s).`
+                : 'No pane IDs recorded for this job -- nothing to clean up.',
+            },
+            { type: 'text' as const, text: JSON.stringify(summary) },
+          ],
+        };
       }
 
       default:
@@ -333,7 +488,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       isError: true,
     };
   }
-});
+}
+
+server.setRequestHandler(CallToolRequestSchema, handleTeamToolCall);
 
 if (shouldAutoStartMcpServer('team')) {
   const transport = new StdioServerTransport();

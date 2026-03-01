@@ -1432,13 +1432,106 @@ export async function killWorkerByPaneIdAsync(workerPaneId: string, leaderPaneId
   await runTmuxAsync(['kill-pane', '-t', workerPaneId]);
 }
 
-export async function killWorkerPanes(paneIds: string[], leaderPaneId: string, graceMs: number = 2000): Promise<void> {
-  const perPaneGrace = paneIds.length > 0 ? Math.max(100, Math.floor(graceMs / paneIds.length)) : 0;
+export interface PaneTeardownSummary {
+  attemptedPaneIds: string[];
+  excluded: {
+    leader: number;
+    hud: number;
+    invalid: number;
+  };
+  kill: {
+    attempted: number;
+    succeeded: number;
+    failed: number;
+  };
+}
+
+export interface PaneTeardownOptions {
+  leaderPaneId?: string | null;
+  hudPaneId?: string | null;
+  graceMs?: number;
+}
+
+function normalizePaneTarget(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('%')) return null;
+  return trimmed;
+}
+
+function normalizePaneTargets(
+  paneIds: string[],
+  options: PaneTeardownOptions = {},
+): { killablePaneIds: string[]; excluded: PaneTeardownSummary['excluded'] } {
+  const leaderPaneId = normalizePaneTarget(options.leaderPaneId);
+  const hudPaneId = normalizePaneTarget(options.hudPaneId);
+  const excluded = { leader: 0, hud: 0, invalid: 0 };
+  const deduped = new Set<string>();
+  const killablePaneIds: string[] = [];
+
   for (const paneId of paneIds) {
-    if (paneId === leaderPaneId) continue; // never kill leader
-    await killWorkerByPaneIdAsync(paneId, leaderPaneId);
+    const normalized = normalizePaneTarget(paneId);
+    if (!normalized) {
+      excluded.invalid += 1;
+      continue;
+    }
+    if (leaderPaneId && normalized === leaderPaneId) {
+      excluded.leader += 1;
+      continue;
+    }
+    if (hudPaneId && normalized === hudPaneId) {
+      excluded.hud += 1;
+      continue;
+    }
+    if (deduped.has(normalized)) continue;
+    deduped.add(normalized);
+    killablePaneIds.push(normalized);
+  }
+
+  return { killablePaneIds, excluded };
+}
+
+/**
+ * Shared pane-id-direct teardown primitive for worker pane cleanup.
+ * Must remain liveness-agnostic: do not gate on isWorkerAlive/killWorker.
+ */
+export async function teardownWorkerPanes(
+  paneIds: string[],
+  options: PaneTeardownOptions = {},
+): Promise<PaneTeardownSummary> {
+  const { killablePaneIds, excluded } = normalizePaneTargets(paneIds, options);
+  const graceMs = options.graceMs ?? 2000;
+  const perPaneGrace = killablePaneIds.length > 0
+    ? Math.max(100, Math.floor(graceMs / killablePaneIds.length))
+    : 0;
+
+  const summary: PaneTeardownSummary = {
+    attemptedPaneIds: killablePaneIds,
+    excluded,
+    kill: {
+      attempted: killablePaneIds.length,
+      succeeded: 0,
+      failed: 0,
+    },
+  };
+
+  for (const paneId of killablePaneIds) {
+    const result = await runTmuxAsync(['kill-pane', '-t', paneId]);
+    if (result.ok) summary.kill.succeeded += 1;
+    else summary.kill.failed += 1;
     await sleep(perPaneGrace);
   }
+
+  return summary;
+}
+
+export async function killWorkerPanes(
+  paneIds: string[],
+  leaderPaneId: string,
+  graceMs: number = 2000,
+  hudPaneId?: string,
+): Promise<PaneTeardownSummary> {
+  return teardownWorkerPanes(paneIds, { leaderPaneId, hudPaneId: hudPaneId ?? null, graceMs });
 }
 
 // Kill entire tmux session. Tolerates already-dead sessions.

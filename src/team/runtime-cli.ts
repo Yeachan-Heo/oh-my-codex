@@ -11,6 +11,7 @@ import { writeFile, rename } from 'fs/promises';
 import { join } from 'path';
 import { startTeam, monitorTeam, shutdownTeam } from './runtime.js';
 import type { TeamRuntime } from './runtime.js';
+import { teamReadConfig as readTeamConfig } from './team-ops.js';
 
 interface CliInput {
   teamName: string;
@@ -35,6 +36,11 @@ interface CliOutput {
   workerCount: number;
 }
 
+export interface LivePaneState {
+  paneIds: string[];
+  leaderPaneId: string;
+}
+
 async function writePanesFile(
   jobId: string | undefined,
   paneIds: string[],
@@ -49,6 +55,42 @@ async function writePanesFile(
     JSON.stringify({ paneIds: [...paneIds], leaderPaneId }),
   );
   await rename(panesPath + '.tmp', panesPath);
+}
+
+export async function loadLivePaneState(teamName: string, cwd: string): Promise<LivePaneState | null> {
+  const config = await readTeamConfig(teamName, cwd);
+  if (!config) return null;
+  return {
+    paneIds: config.workers
+      .map((worker) => worker.pane_id)
+      .filter((paneId): paneId is string => typeof paneId === 'string' && paneId.trim().length > 0),
+    leaderPaneId: config.leader_pane_id ?? '',
+  };
+}
+
+export async function shutdownWithForceFallback(teamName: string, cwd: string): Promise<void> {
+  try {
+    await shutdownTeam(teamName, cwd);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes('shutdown_gate_blocked') && !message.includes('shutdown_rejected')) {
+      throw error;
+    }
+    await shutdownTeam(teamName, cwd, { force: true });
+  }
+}
+
+export function detectDeadWorkerFailure(
+  deadWorkerCount: number,
+  liveWorkerPaneCount: number,
+  hasOutstandingWork: boolean,
+  phase: string,
+): { deadWorkerFailure: boolean; fixingWithNoWorkers: boolean } {
+  const allWorkersDead = liveWorkerPaneCount > 0 && deadWorkerCount >= liveWorkerPaneCount;
+  return {
+    deadWorkerFailure: allWorkersDead && hasOutstandingWork,
+    fixingWithNoWorkers: phase === 'team-fix' && allWorkersDead,
+  };
 }
 
 function collectTaskResults(stateRoot: string, teamName: string): TaskResult[] {
@@ -131,7 +173,7 @@ async function main(): Promise<void> {
     // 2. Shutdown team
     if (runtime) {
       try {
-        await shutdownTeam(runtime.teamName, runtime.cwd);
+        await shutdownWithForceFallback(runtime.teamName, runtime.cwd);
       } catch (err) {
         process.stderr.write(`[runtime-cli] shutdownTeam error: ${err}\n`);
       }
@@ -179,16 +221,18 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Extract pane IDs from the runtime config
-  const workerPaneIds = runtime.config.workers
-    .map(w => w.pane_id)
-    .filter((id): id is string => !!id);
-  const leaderPaneId = runtime.config.leader_pane_id ?? '';
-
   // Persist pane IDs so MCP server can clean up explicitly via omx_run_team_cleanup.
   const jobId = process.env.OMX_JOB_ID;
   try {
-    await writePanesFile(jobId, workerPaneIds, leaderPaneId);
+    const livePanes = await loadLivePaneState(teamName, cwd);
+    if (livePanes) {
+      await writePanesFile(jobId, livePanes.paneIds, livePanes.leaderPaneId);
+    } else {
+      const fallbackPaneIds = runtime.config.workers
+        .map((worker) => worker.pane_id)
+        .filter((paneId): paneId is string => typeof paneId === 'string' && paneId.trim().length > 0);
+      await writePanesFile(jobId, fallbackPaneIds, runtime.config.leader_pane_id ?? '');
+    }
   } catch (err) {
     process.stderr.write(`[runtime-cli] Failed to persist pane IDs: ${err}\n`);
   }
@@ -213,11 +257,12 @@ async function main(): Promise<void> {
     }
 
     // Refresh pane IDs (workers may have scaled)
+    let livePaneState: LivePaneState | null = null;
     try {
-      const currentPaneIds = runtime.config.workers
-        .map(w => w.pane_id)
-        .filter((id): id is string => !!id);
-      await writePanesFile(jobId, currentPaneIds, leaderPaneId);
+      livePaneState = await loadLivePaneState(teamName, cwd);
+      if (livePaneState) {
+        await writePanesFile(jobId, livePaneState.paneIds, livePaneState.leaderPaneId);
+      }
     } catch (err) {
       process.stderr.write(`[runtime-cli] Failed to persist pane IDs: ${err}\n`);
     }
@@ -238,11 +283,14 @@ async function main(): Promise<void> {
     }
 
     // Check failure heuristics
-    const allWorkersDead = workerPaneIds.length > 0 && snap.deadWorkers.length >= workerPaneIds.length;
     const hasOutstandingWork = (snap.tasks.pending + snap.tasks.in_progress) > 0;
-
-    const deadWorkerFailure = allWorkersDead && hasOutstandingWork;
-    const fixingWithNoWorkers = snap.phase === 'team-fix' && allWorkersDead;
+    const liveWorkerPaneCount = livePaneState?.paneIds.length ?? 0;
+    const { deadWorkerFailure, fixingWithNoWorkers } = detectDeadWorkerFailure(
+      snap.deadWorkers.length,
+      liveWorkerPaneCount,
+      hasOutstandingWork,
+      snap.phase,
+    );
 
     if (deadWorkerFailure || fixingWithNoWorkers) {
       process.stderr.write(`[runtime-cli] Failure detected: deadWorkerFailure=${deadWorkerFailure} fixingWithNoWorkers=${fixingWithNoWorkers}\n`);
@@ -252,7 +300,11 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(err => {
-  process.stderr.write(`[runtime-cli] Fatal error: ${err}\n`);
-  process.exit(1);
-});
+const shouldAutoStart = process.env.OMX_RUNTIME_CLI_DISABLE_AUTO_START !== '1';
+
+if (shouldAutoStart) {
+  main().catch(err => {
+    process.stderr.write(`[runtime-cli] Fatal error: ${err}\n`);
+    process.exit(1);
+  });
+}

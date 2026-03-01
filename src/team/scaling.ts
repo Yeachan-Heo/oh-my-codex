@@ -20,7 +20,7 @@ import {
   sendToWorker,
   isWorkerAlive,
   getWorkerPanePid,
-  killWorker,
+  teardownWorkerPanes,
   buildWorkerStartupCommand,
   resolveTeamWorkerCliPlan,
 } from './tmux-session.js';
@@ -522,14 +522,16 @@ export async function scaleDown(
 
     // Phase 3: Kill tmux panes and remove from config
     const leaderPaneId = config.leader_pane_id;
-    for (const w of targetWorkers) {
-      // Guard: never kill leader or HUD panes
-      if (leaderPaneId && w.pane_id === leaderPaneId) continue;
-      if (config.hud_pane_id && w.pane_id === config.hud_pane_id) continue;
+    const hudPaneId = config.hud_pane_id;
+    const targetPaneIds = targetWorkers
+      .map((w) => w.pane_id)
+      .filter((paneId): paneId is string => typeof paneId === 'string' && paneId.trim().length > 0);
+    await teardownWorkerPanes(targetPaneIds, {
+      leaderPaneId,
+      hudPaneId,
+    });
 
-      if (isWorkerAlive(sessionName, w.index, w.pane_id)) {
-        await killWorker(sessionName, w.index, w.pane_id, leaderPaneId ?? undefined);
-      }
+    for (const w of targetWorkers) {
       removedNames.push(w.name);
     }
 

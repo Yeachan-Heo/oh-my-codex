@@ -880,6 +880,127 @@ esac
     }
   });
 
+  it('shutdownTeam applies best-effort teardown even when worker pane is already dead', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-dead-pane-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-dead-pane-bin-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const tmuxStubPath = join(fakeBinDir, 'tmux');
+    const previousPath = process.env.PATH;
+    try {
+      await writeFile(
+        tmuxStubPath,
+        `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  list-panes)
+    exit 1
+    ;;
+  kill-pane)
+    if [ "\${3:-}" = "%404" ]; then
+      echo "missing pane" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  kill-session)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+      );
+      await chmod(tmuxStubPath, 0o755);
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      await initTeamState('team-shutdown-dead-pane', 'shutdown dead pane test', 'executor', 2, cwd);
+      const config = await readTeamConfig('team-shutdown-dead-pane', cwd);
+      assert.ok(config);
+      if (!config) return;
+      config.tmux_session = 'omx-team-team-shutdown-dead-pane';
+      config.workers[0]!.pane_id = '%404';
+      config.workers[1]!.pane_id = '%405';
+      await saveTeamConfig(config, cwd);
+
+      await shutdownTeam('team-shutdown-dead-pane', cwd, { force: true });
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-shutdown-dead-pane');
+      assert.equal(existsSync(teamRoot), false);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /kill-pane -t %404/);
+      assert.match(tmuxLog, /kill-pane -t %405/);
+      assert.match(tmuxLog, /kill-session -t omx-team-team-shutdown-dead-pane/);
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('shutdownTeam preserves leader and hud exclusions in teardown', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-exclusions-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-exclusions-bin-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const tmuxStubPath = join(fakeBinDir, 'tmux');
+    const previousPath = process.env.PATH;
+    try {
+      await writeFile(
+        tmuxStubPath,
+        `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  list-panes)
+    exit 1
+    ;;
+  kill-pane|kill-session)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+      );
+      await chmod(tmuxStubPath, 0o755);
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      await initTeamState('team-shutdown-exclusions', 'shutdown exclusions test', 'executor', 3, cwd);
+      const config = await readTeamConfig('team-shutdown-exclusions', cwd);
+      assert.ok(config);
+      if (!config) return;
+      config.tmux_session = 'omx-team-team-shutdown-exclusions';
+      config.leader_pane_id = '%11';
+      config.hud_pane_id = '%12';
+      config.workers[0]!.pane_id = '%11';
+      config.workers[1]!.pane_id = '%12';
+      config.workers[2]!.pane_id = '%13';
+      await saveTeamConfig(config, cwd);
+
+      await shutdownTeam('team-shutdown-exclusions', cwd, { force: true });
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
+      assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
+      assert.match(tmuxLog, /kill-pane -t %13/);
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
   it('shutdownTeam ralph=true bypasses shutdown gate on failed tasks without throwing', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-ralph-gate-'));
     try {

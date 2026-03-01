@@ -1,16 +1,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile, mkdir } from 'fs/promises';
+import { mkdtemp, rm, readFile, writeFile, mkdir, chmod } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { existsSync, readFileSync } from 'fs';
 import {
   initTeamState,
   readTeamConfig,
+  saveTeamConfig,
   readWorkerStatus,
   writeWorkerStatus,
   withScalingLock,
-  writeAtomic,
 } from '../state.js';
 import { isScalingEnabled, scaleUp, scaleDown } from '../scaling.js';
 
@@ -361,6 +361,88 @@ describe('scaleDown', () => {
       }
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('scaleDown teardown hardening', () => {
+  it('scaleDown removes workers when pane is already dead or missing', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-down-dead-'));
+    try {
+      await initTeamState('dead-pane', 'task', 'executor', 2, cwd);
+      const config = await readTeamConfig('dead-pane', cwd);
+      assert.ok(config);
+      if (!config) return;
+
+      config.workers[1]!.pane_id = '%404';
+      await saveTeamConfig(config, cwd);
+
+      const result = await scaleDown(
+        'dead-pane',
+        cwd,
+        { workerNames: ['worker-2'], force: true },
+        { OMX_TEAM_SCALING_ENABLED: '1' },
+      );
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+      assert.deepEqual(result.removedWorkers, ['worker-2']);
+
+      const updated = await readTeamConfig('dead-pane', cwd);
+      assert.ok(updated);
+      assert.equal(updated?.workers.some((worker) => worker.name === 'worker-2'), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('scaleDown never targets leader or hud panes during teardown', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-down-exclusions-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-down-fake-tmux-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const tmuxStubPath = join(fakeBinDir, 'tmux');
+    const previousPath = process.env.PATH;
+    try {
+      await writeFile(
+        tmuxStubPath,
+        `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${tmuxLogPath}"
+exit 0
+`,
+      );
+      await writeFile(tmuxLogPath, '');
+      await chmod(tmuxStubPath, 0o755);
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      await initTeamState('exclusions', 'task', 'executor', 4, cwd);
+      const config = await readTeamConfig('exclusions', cwd);
+      assert.ok(config);
+      if (!config) return;
+      config.leader_pane_id = '%11';
+      config.hud_pane_id = '%12';
+      config.workers[0]!.pane_id = '%11';
+      config.workers[1]!.pane_id = '%12';
+      config.workers[2]!.pane_id = '%13';
+      config.workers[3]!.pane_id = '%14';
+      await saveTeamConfig(config, cwd);
+
+      const result = await scaleDown(
+        'exclusions',
+        cwd,
+        { workerNames: ['worker-1', 'worker-2', 'worker-3'], force: true },
+        { OMX_TEAM_SCALING_ENABLED: '1' },
+      );
+      assert.equal(result.ok, true);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
+      assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
+      assert.match(tmuxLog, /kill-pane -t %13/);
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
     }
   });
 });
