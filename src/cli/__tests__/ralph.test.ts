@@ -125,4 +125,11 @@ describe('extractRalphTaskDescription', () => {
       'fix the bug'
     );
   });
+
+  it('single-dash -c=value form does not leak value into task text', () => {
+    assert.equal(
+      extractRalphTaskDescription(['-c=model_reasoning_effort="high"', 'fix', 'bug']),
+      'fix bug'
+    );
+  });
 });
