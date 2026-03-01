@@ -99,15 +99,15 @@ export interface ScaleError {
   error: string;
 }
 
-function notifyWorkerPaneOutcome(
+async function notifyWorkerPaneOutcome(
   sessionName: string,
   workerIndex: number,
   message: string,
   paneId?: string,
   workerCli?: 'codex' | 'claude',
-): DispatchOutcome {
+): Promise<DispatchOutcome> {
   try {
-    sendToWorker(sessionName, workerIndex, message, paneId, workerCli);
+    await sendToWorker(sessionName, workerIndex, message, paneId, workerCli);
     return { ok: true, transport: 'tmux_send_keys', reason: 'tmux_send_keys_sent' };
   } catch (error) {
     return {
@@ -275,11 +275,11 @@ export async function scaleUp(
         transportPreference: dispatchPolicy.dispatch_mode,
         fallbackAllowed: true,
         inboxCorrelationKey: `scale_up:${workerName}`,
-        notify: (_target, message) => {
+        notify: async (_target, message) => {
           if (dispatchPolicy.dispatch_mode === 'hook_preferred_with_fallback') {
             return { ok: true, transport: 'hook', reason: 'queued_for_hook_dispatch' };
           }
-          return notifyWorkerPaneOutcome(sessionName, workerIndex, message, paneId, workerCliPlan[i]);
+          return await notifyWorkerPaneOutcome(sessionName, workerIndex, message, paneId, workerCliPlan[i]);
         },
       });
       let outcome = queued;
@@ -291,7 +291,7 @@ export async function scaleUp(
         if (receipt && (receipt.status === 'notified' || receipt.status === 'delivered')) {
           outcome = { ok: true, transport: 'hook', reason: `hook_receipt_${receipt.status}`, request_id: queued.request_id };
         } else {
-          const fallback = notifyWorkerPaneOutcome(sessionName, workerIndex, trigger, paneId, workerCliPlan[i]);
+          const fallback = await notifyWorkerPaneOutcome(sessionName, workerIndex, trigger, paneId, workerCliPlan[i]);
           if (receipt?.status === 'failed') {
             if (fallback.ok) {
               await transitionDispatchRequest(
@@ -371,7 +371,7 @@ export async function scaleUp(
       // Retry dispatch once if a trust prompt is blocking the worker pane (fixes #393).
       if (!outcome.ok && dismissTrustPromptIfPresent(sessionName, workerIndex, paneId)) {
         waitForWorkerReady(sessionName, workerIndex, readyTimeoutMs, paneId);
-        const retry = notifyWorkerPaneOutcome(sessionName, workerIndex, trigger, paneId, workerCliPlan[i]);
+        const retry = await notifyWorkerPaneOutcome(sessionName, workerIndex, trigger, paneId, workerCliPlan[i]);
         if (retry.ok) {
           outcome = retry;
         }
@@ -528,7 +528,7 @@ export async function scaleDown(
       if (config.hud_pane_id && w.pane_id === config.hud_pane_id) continue;
 
       if (isWorkerAlive(sessionName, w.index, w.pane_id)) {
-        killWorker(sessionName, w.index, w.pane_id, leaderPaneId ?? undefined);
+        await killWorker(sessionName, w.index, w.pane_id, leaderPaneId ?? undefined);
       }
       removedNames.push(w.name);
     }
