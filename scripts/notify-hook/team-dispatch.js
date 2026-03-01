@@ -122,6 +122,13 @@ function defaultInjectTarget(request, config) {
     const worker = config.workers.find((candidate) => Number(candidate?.index) === request.worker_index);
     if (worker?.pane_id) return { type: 'pane', value: worker.pane_id };
   }
+  // Leader-fixed fallback: use config.leader_pane_id when request has no
+  // pane_id or worker_index (leader is not a worker). Without this, leader
+  // dispatch falls through to the session target which hits the active pane
+  // (likely a worker). Fixes #433.
+  if (request.to_worker === 'leader-fixed' && config.leader_pane_id) {
+    return { type: 'pane', value: config.leader_pane_id };
+  }
   if (typeof request.worker_index === 'number' && config.tmux_session) {
     if (config.tmux_session.includes(':')) {
       // split-pane topology: session:window.paneIndex
