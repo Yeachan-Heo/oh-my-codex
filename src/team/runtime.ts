@@ -16,6 +16,7 @@ import {
   dismissTrustPromptIfPresent,
   sleepFractionalSeconds,
   sendToWorker,
+  sendToLeaderPane,
   sendToWorkerStdin,
   isWorkerAlive,
   getWorkerPanePid,
@@ -838,7 +839,7 @@ export async function startTeam(
     }
     if (provisionedWorktrees.length > 0) {
       try {
-        rollbackProvisionedWorktrees(provisionedWorktrees, {
+        await rollbackProvisionedWorktrees(provisionedWorktrees, {
           skipBranchDeletion: options.ralph === true,
         });
       } catch (cleanupError) {
@@ -1852,6 +1853,18 @@ async function finalizeHookPreferredMailboxDispatch(params: {
 }
 
 async function notifyLeaderAsync(config: TeamConfig, message: string, cwd: string): Promise<boolean> {
+  // Primary: inject directly into the leader pane via tmux send-keys.
+  // This is the fallback path when hook-based dispatch timed out, so the
+  // leader needs a direct tmux notification to wake up. Fixes #437.
+  if (config.leader_pane_id && isTmuxAvailable()) {
+    try {
+      await sendToLeaderPane(config.leader_pane_id, message);
+      return true;
+    } catch {
+      // Fall through to mailbox
+    }
+  }
+  // Fallback: write to leader mailbox (leader picks up on next hook cycle)
   if (!config.tmux_session) return false;
   const { notifyLeaderMailboxAsync } = await import('./tmux-session.js');
   return notifyLeaderMailboxAsync(config.name, 'system', message, cwd);

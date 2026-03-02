@@ -173,7 +173,12 @@ async function main(): Promise<void> {
     // 2. Shutdown team
     if (runtime) {
       try {
-        await shutdownWithForceFallback(runtime.teamName, runtime.cwd);
+        if (status === 'failed') {
+          // Failure/cancellation path must force cleanup to bypass shutdown gate.
+          await shutdownTeam(runtime.teamName, runtime.cwd, { force: true });
+        } else {
+          await shutdownWithForceFallback(runtime.teamName, runtime.cwd);
+        }
       } catch (err) {
         process.stderr.write(`[runtime-cli] shutdownTeam error: ${err}\n`);
       }
