@@ -201,13 +201,16 @@ export async function scaleUp(
         workerCliPlan[i],
       );
 
-      // Find the right-most worker pane to split from, or leader pane
+      // Find the right-most worker pane to split from, or fall back to leader pane.
+      // Keep the initial split from leader horizontal to preserve the leader-left
+      // / workers-right composition.
       const splitTarget = config.workers.length > 0
         ? (config.workers[config.workers.length - 1]?.pane_id ?? config.leader_pane_id ?? '')
         : (config.leader_pane_id ?? '');
+      const splitDirection = splitTarget === (config.leader_pane_id ?? '') ? '-h' : '-v';
 
       const result = spawnSync('tmux', [
-        'split-window', '-v', '-t', splitTarget, '-d', '-P', '-F', '#{pane_id}', '-c', leaderCwd, cmd,
+        'split-window', splitDirection, '-t', splitTarget, '-d', '-P', '-F', '#{pane_id}', '-c', leaderCwd, cmd,
       ], { encoding: 'utf-8' });
 
       if (result.status !== 0) {
@@ -219,8 +222,8 @@ export async function scaleUp(
         return { ok: false, error: `Failed to capture pane ID for ${workerName}` };
       }
 
-      // Re-layout to keep things tidy
-      spawnSync('tmux', ['select-layout', '-t', sessionName, 'tiled'], { encoding: 'utf-8' });
+      // Intentionally avoid forcing `select-layout tiled` here.
+      // Tiled relayout reflows leader/HUD panes and breaks team window layout.
 
       // Get PID
       const panePid = getWorkerPanePid(sessionName, workerIndex, paneId);
