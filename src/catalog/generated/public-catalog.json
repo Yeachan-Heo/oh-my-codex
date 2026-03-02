@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-02-28T00:15:18.714Z",
+  "generatedAt": "2026-03-02T16:07:41.105Z",
   "version": "2026.02.20.1",
   "counts": {
-    "skillCount": 30,
+    "skillCount": 32,
     "promptCount": 29,
-    "activeSkillCount": 16,
+    "activeSkillCount": 18,
     "activeAgentCount": 18
   },
   "coreSkills": [
@@ -151,6 +151,20 @@
       "category": "shortcut",
       "status": "alias",
       "canonical": "plan --review",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "ask-claude",
+      "category": "shortcut",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "ask-gemini",
+      "category": "shortcut",
+      "status": "active",
       "core": false,
       "internalRequired": false
     },

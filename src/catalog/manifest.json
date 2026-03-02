@@ -22,6 +22,8 @@
     { "name": "frontend-ui-ux", "category": "shortcut", "status": "alias", "canonical": "designer" },
     { "name": "git-master", "category": "shortcut", "status": "alias", "canonical": "git-master" },
     { "name": "review", "category": "shortcut", "status": "alias", "canonical": "plan --review" },
+    { "name": "ask-claude", "category": "shortcut", "status": "active" },
+    { "name": "ask-gemini", "category": "shortcut", "status": "active" },
 
     { "name": "cancel", "category": "utility", "status": "active" },
     { "name": "doctor", "category": "utility", "status": "active" },

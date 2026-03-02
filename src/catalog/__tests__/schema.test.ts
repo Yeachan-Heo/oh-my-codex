@@ -58,4 +58,13 @@ describe('catalog schema', () => {
     assert.ok(counts.activeSkillCount > 0);
     assert.ok(counts.activeAgentCount > 0);
   });
+
+  it('includes ask-claude and ask-gemini as active built-in skills', () => {
+    const parsed = validateCatalogManifest(readSourceManifest());
+    const askClaude = parsed.skills.find((skill) => skill.name === 'ask-claude');
+    const askGemini = parsed.skills.find((skill) => skill.name === 'ask-gemini');
+
+    assert.equal(askClaude?.status, 'active');
+    assert.equal(askGemini?.status, 'active');
+  });
 });

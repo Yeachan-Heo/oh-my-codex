@@ -142,6 +142,20 @@
       "internalRequired": false
     },
     {
+      "name": "ask-claude",
+      "category": "shortcut",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "ask-gemini",
+      "category": "shortcut",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
       "name": "cancel",
       "category": "utility",
       "status": "active",

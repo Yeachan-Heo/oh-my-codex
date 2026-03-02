@@ -132,6 +132,8 @@ describe('omx setup scope behavior', () => {
       assert.equal(existsSync(localAgents), true);
       assert.equal(existsSync(join(localAgents, 'executor.toml')), true);
       assert.equal(existsSync(join(localSkills, 'omx-setup', 'SKILL.md')), true);
+      assert.equal(existsSync(join(localSkills, 'ask-claude', 'SKILL.md')), true);
+      assert.equal(existsSync(join(localSkills, 'ask-gemini', 'SKILL.md')), true);
       assert.ok((await readdir(localPrompts)).length > 0, 'local prompts should be installed');
       assert.equal(existsSync(agentsMdPath), true);
 
