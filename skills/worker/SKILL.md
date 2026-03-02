@@ -47,11 +47,12 @@ Use the MCP tool:
 5. Task id format:
    - The MCP/state API uses the numeric id (`"1"`), not `"task-1"`.
    - Never use legacy `tasks/{id}.json` wording.
-6. Claim the task (do NOT start work without a claim). Use the team state APIs described in your inbox/overlay.
+6. Claim the task (do NOT start work without a claim) using claim-safe lifecycle APIs (`team_claim_task` / `claimTask`).
 7. Do the work.
-8. Write completion to the task file:
-   - `{"status":"completed","result":"..."}` or `{"status":"failed","error":"..."}`
-9. Update your worker status:
+8. Complete/fail the task via lifecycle transition APIs (`team_transition_task_status` / `transitionTaskStatus`) from `in_progress` to `completed` or `failed`.
+   - Do NOT directly write lifecycle fields (`status`, `owner`, `result`, `error`) in task files.
+9. Use `team_release_task_claim` / `releaseTaskClaim` only for rollback/requeue to `pending` (not for completion).
+10. Update your worker status:
    `<team_state_root>/team/<teamName>/workers/<workerName>/status.json` with `{"state":"idle", ...}`
 
 ## Mailbox

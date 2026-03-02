@@ -49,13 +49,16 @@ You are a team worker in team "${teamName}". Your identity and assigned tasks ar
 5. Read your task from <team_state_root>/team/${teamName}/tasks/task-<id>.json (example: task-1.json)
 6. Task id format:
    - State/MCP APIs use task_id: "<id>" (example: "1"), never "task-1"
-7. Request a claim via the state API (claimTask); do not directly set status to "in_progress" in the task file
+7. Request a claim via the state API (\`claimTask\` / \`team_claim_task\`); do not directly set lifecycle fields in the task file
 8. Do the work using your tools
-9. On completion: write {"status": "completed", "result": "summary of what was done"} to the task file
-10. Update your status: write {"state": "idle", "updated_at": "<current ISO timestamp>"} to <team_state_root>/team/${teamName}/workers/{your-name}/status.json
-11. Wait for new instructions (the lead will send them via your terminal)
-12. Check your mailbox for messages at <team_state_root>/team/${teamName}/mailbox/{your-name}.json
-13. For team_* MCP tools, do not pass workingDirectory unless the lead explicitly tells you to
+9. On completion/failure, use lifecycle transition APIs:
+   - \`transitionTaskStatus\` / \`team_transition_task_status\` with from \`"in_progress"\` to \`"completed"\` or \`"failed"\`
+   - Include \`result\` (for completed) or \`error\` (for failed) in the transition patch
+10. Use \`releaseTaskClaim\` / \`team_release_task_claim\` only for rollback/requeue to \`pending\` (not for completion)
+11. Update your status: write {"state": "idle", "updated_at": "<current ISO timestamp>"} to <team_state_root>/team/${teamName}/workers/{your-name}/status.json
+12. Wait for new instructions (the lead will send them via your terminal)
+13. Check your mailbox for messages at <team_state_root>/team/${teamName}/mailbox/{your-name}.json
+14. For team_* MCP tools, do not pass workingDirectory unless the lead explicitly tells you to
 
 ## Message Protocol
 When calling team_send_message, you MUST always include:
@@ -70,7 +73,7 @@ CRITICAL: Never omit from_worker. The MCP server cannot auto-detect your identit
 ## Rules
 - Do NOT edit files outside the paths listed in your task description
 - If you need to modify a shared file, report to the lead by writing to your status file with state "blocked"
-- ALWAYS write results to the task file before reporting done
+- Do NOT write lifecycle fields (\`status\`, \`owner\`, \`result\`, \`error\`) directly in task files; use claim-safe lifecycle APIs
 - If blocked, write {"state": "blocked", "reason": "..."} to your status file
 - Do NOT spawn sub-agents (no spawn_agent). Complete work in this worker session only.
 </team_worker_protocol>
@@ -295,12 +298,13 @@ ${taskList}
 5. Read the task file for your selected task id at \`${teamStateRoot}/team/${teamName}/tasks/task-<id>.json\` (example: \`task-1.json\`)
 6. Task id format:
    - State/MCP APIs use \`task_id: "<id>"\` (example: \`"1"\`), not \`"task-1"\`.
-7. Request a claim via state API (\`claimTask\`) to claim it
+7. Request a claim via state API (\`claimTask\` / \`team_claim_task\`) to claim it
 8. Complete the work described in the task
-9. Write \`{"status": "completed", "result": "brief summary"}\` to the task file
-10. Write \`{"state": "idle", "updated_at": "<current ISO timestamp>"}\` to \`${teamStateRoot}/team/${teamName}/workers/${workerName}/status.json\`
-11. Wait for the next instruction from the lead
-12. For team_* MCP tools, do not pass \`workingDirectory\` unless the lead explicitly asks (if resolution fails, use leader cwd: \`${leaderCwd}\`)
+9. Complete/fail it via lifecycle transition API (\`transitionTaskStatus\` / \`team_transition_task_status\`) from \`"in_progress"\` to \`"completed"\` or \`"failed"\` (include \`result\`/\`error\`)
+10. Use \`releaseTaskClaim\` / \`team_release_task_claim\` only for rollback to \`pending\`
+11. Write \`{"state": "idle", "updated_at": "<current ISO timestamp>"}\` to \`${teamStateRoot}/team/${teamName}/workers/${workerName}/status.json\`
+12. Wait for the next instruction from the lead
+13. For team_* MCP tools, do not pass \`workingDirectory\` unless the lead explicitly asks (if resolution fails, use leader cwd: \`${leaderCwd}\`)
 
 ## Message Protocol
 When using team_send_message MCP tool, ALWAYS include from_worker with YOUR worker name:
@@ -342,10 +346,11 @@ ${taskDescription}
 1. Resolve canonical team state root and read the task file at \`<team_state_root>/team/${teamName}/tasks/task-${taskId}.json\`
 2. Task id format:
    - State/MCP APIs use \`task_id: "${taskId}"\` (not \`"task-${taskId}"\`).
-3. Request a claim via state API (\`claimTask\`)
+3. Request a claim via state API (\`claimTask\` / \`team_claim_task\`)
 4. Complete the work
-5. Write \`{"status": "completed", "result": "brief summary"}\` when done
-6. Write \`{"state": "idle", "updated_at": "<current ISO timestamp>"}\` to your status file
+5. Complete/fail via lifecycle transition API (\`transitionTaskStatus\` / \`team_transition_task_status\`) from \`"in_progress"\` to \`"completed"\` or \`"failed"\` (include \`result\`/\`error\`)
+6. Use \`releaseTaskClaim\` / \`team_release_task_claim\` only for rollback to \`pending\`
+7. Write \`{"state": "idle", "updated_at": "<current ISO timestamp>"}\` to your status file
 
 ${buildVerificationSection(taskDescription)}
 `;
