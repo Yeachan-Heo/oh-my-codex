@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.02.20.1",
+  "catalogVersion": "2026.02.28.1",
   "skills": [
     {
       "name": "autopilot",
@@ -33,7 +33,7 @@
     {
       "name": "ecomode",
       "category": "execution",
-      "status": "deprecated",
+      "status": "merged",
       "canonical": "ultrawork",
       "core": false,
       "internalRequired": false
@@ -114,6 +114,14 @@
       "category": "shortcut",
       "status": "active",
       "canonical": "security-reviewer",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "visual-verdict",
+      "category": "shortcut",
+      "status": "active",
+      "canonical": "vision",
       "core": false,
       "internalRequired": false
     },

@@ -29,7 +29,7 @@ Multi-agent orchestration layer for [OpenAI Codex CLI](https://github.com/openai
 OMX turns Codex from a single-session agent into a coordinated system with:
 - Role prompts (`/prompts:name`) for specialized agents
 - Workflow skills (`$name`) for repeatable execution modes
-- Team orchestration in tmux (`omx team`, `$team`)
+- Team orchestration (`omx team`, `$team`) with tmux interactive mode (default) or non-tmux prompt mode
 - Persistent state + memory via MCP servers
 
 ## Why OMX
@@ -41,6 +41,24 @@ Codex CLI is strong for direct tasks. OMX adds structure for larger work:
 - Operational controls for launch, verification, and cancellation
 
 OMX is an add-on, not a fork. It uses Codex-native extension points.
+
+## Positioning: CLI-first orchestration, MCP-backed state
+
+OMX is best used as an **outer CLI orchestration layer**:
+- **Control plane (CLI/runtime):** `omx team`, tmux workers, lifecycle commands
+- **Capability/state plane (MCP):** task state, mailbox, memory, diagnostics tools
+
+Practical mode split:
+- **`$team` / `omx team`**: durable, inspectable, resumable multi-worker execution
+- **`$ultrawork`**: lightweight parallel fanout for independent tasks (component mode)
+
+Low-token team profile example:
+
+```bash
+OMX_TEAM_WORKER_CLI=codex \
+OMX_TEAM_WORKER_LAUNCH_ARGS='--model gpt-5.3-codex-spark -c model_reasoning_effort="low"' \
+omx team 2:explore "short scoped analysis task"
+```
 
 ## Requirements
 
@@ -110,7 +128,7 @@ omx                # Launch Codex (+ HUD in tmux when available)
 omx setup          # Install prompts/skills/config by scope + project AGENTS.md/.omx
 omx doctor         # Installation/runtime diagnostics
 omx doctor --team  # Team/swarm diagnostics
-omx team ...       # Start/status/resume/shutdown tmux team workers
+omx team ...       # Start/status/resume/shutdown team workers (interactive tmux by default)
 omx status         # Show active modes
 omx cancel         # Cancel active execution modes
 omx reasoning <mode> # low|medium|high|xhigh
@@ -118,6 +136,12 @@ omx tmux-hook ...  # init|status|validate|test
 omx hooks ...      # init|status|validate|test (plugin extension workflow)
 omx hud ...        # --watch|--json|--preset
 omx help
+```
+
+Non-tmux team launch (advanced):
+
+```bash
+OMX_TEAM_WORKER_LAUNCH_MODE=prompt omx team 2:executor "task"
 ```
 
 ## Hooks Extension (Additive Surface)
@@ -253,6 +277,15 @@ Notes:
 Examples:
 - Agents: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
 - Skills: `autopilot`, `plan`, `team`, `ralph`, `ultrawork`, `cancel`
+
+### Visual QA Loop (`$visual-verdict`)
+
+Use `$visual-verdict` when a task depends on visual fidelity (reference image(s) + generated screenshot).
+
+- Return structured JSON: `score`, `verdict`, `category_match`, `differences[]`, `suggestions[]`, `reasoning`
+- Recommended pass threshold: **90+**
+- For visual tasks, run `$visual-verdict` every iteration before the next edit
+- Use pixel diff / pixelmatch overlays as **secondary debugging aids** (not the primary pass/fail signal)
 
 ## Project Layout
 

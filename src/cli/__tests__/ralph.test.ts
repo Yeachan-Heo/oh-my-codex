@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractRalphTaskDescription } from '../ralph.js';
+import { extractRalphTaskDescription, parseRalphLaunchVisualConfig } from '../ralph.js';
 
 describe('extractRalphTaskDescription', () => {
   it('returns plain task text from positional args', () => {
@@ -131,5 +131,40 @@ describe('extractRalphTaskDescription', () => {
       extractRalphTaskDescription(['-c=model_reasoning_effort="high"', 'fix', 'bug']),
       'fix bug'
     );
+  });
+});
+
+describe('parseRalphLaunchVisualConfig', () => {
+  it('collects repeated -i flags', () => {
+    const parsed = parseRalphLaunchVisualConfig([
+      '-i', 'refs/hn-home.png',
+      '-i', 'refs/hn-item.png',
+      'fix', 'layout',
+    ]);
+
+    assert.deepEqual(parsed.referenceImages, ['refs/hn-home.png', 'refs/hn-item.png']);
+    assert.equal(parsed.imagesDir, undefined);
+  });
+
+  it('supports equals forms and --images-dir', () => {
+    const parsed = parseRalphLaunchVisualConfig([
+      '-i=ref-a.png',
+      '--images-dir', 'fixtures/sns',
+      '--model', 'gpt-5',
+    ]);
+
+    assert.deepEqual(parsed.referenceImages, ['ref-a.png']);
+    assert.equal(parsed.imagesDir, 'fixtures/sns');
+  });
+
+  it('uses the last --images-dir value when repeated', () => {
+    const parsed = parseRalphLaunchVisualConfig([
+      '--images-dir=first',
+      '--images-dir', 'second',
+      '-i', 'ref.png',
+    ]);
+
+    assert.deepEqual(parsed.referenceImages, ['ref.png']);
+    assert.equal(parsed.imagesDir, 'second');
   });
 });

@@ -50,6 +50,44 @@ import {
 } from './notify-hook/team-worker.js';
 import { DEFAULT_MARKER } from './tmux-hook-engine.js';
 
+function extractJsonCandidates(rawMessage) {
+  const message = safeString(rawMessage).trim();
+  if (!message) return [];
+
+  const candidates = [message];
+  const fencePattern = /```(?:json)?\s*([\s\S]*?)```/gi;
+  for (const match of message.matchAll(fencePattern)) {
+    const block = safeString(match[1]).trim();
+    if (block) candidates.push(block);
+  }
+  return candidates;
+}
+
+async function maybePersistVisualVerdict({ cwd, payload, payloadSessionId }) {
+  const assistantMessage = safeString(payload['last-assistant-message'] || payload.last_assistant_message || '');
+  if (!assistantMessage) return;
+
+  const candidates = extractJsonCandidates(assistantMessage);
+  if (candidates.length === 0) return;
+
+  try {
+    const { buildVisualLoopFeedback } = await import('../dist/visual/verdict.js');
+    const { recordRalphVisualFeedback } = await import('../dist/ralph/persistence.js');
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate);
+        const feedback = buildVisualLoopFeedback(parsed);
+        await recordRalphVisualFeedback(cwd, feedback, payloadSessionId || undefined);
+        return;
+      } catch {
+        // Try next candidate
+      }
+    }
+  } catch {
+    // Non-fatal: skip when dist modules are unavailable.
+  }
+}
+
 async function main() {
   const rawPayload = process.argv[process.argv.length - 1];
   if (!rawPayload || rawPayload.startsWith('-')) {
@@ -161,6 +199,10 @@ async function main() {
       // Non-critical
     }
   }
+
+  // 2.2 Persist visual-verdict feedback emitted in runtime assistant output.
+  // This keeps visual loop guidance durable in ralph-progress.json outside test-only paths.
+  await maybePersistVisualVerdict({ cwd, payload, payloadSessionId });
 
   // If linked team reaches terminal state, mark linked ralph terminal/inactive too.
   if (!isTeamWorker) {

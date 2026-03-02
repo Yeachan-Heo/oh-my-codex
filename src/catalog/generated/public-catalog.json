@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-02-28T00:15:18.714Z",
-  "version": "2026.02.20.1",
+  "generatedAt": "2026-02-28T03:33:41.923Z",
+  "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 30,
+    "skillCount": 31,
     "promptCount": 29,
-    "activeSkillCount": 16,
+    "activeSkillCount": 17,
     "activeAgentCount": 18
   },
   "coreSkills": [
@@ -46,7 +46,7 @@
     {
       "name": "ecomode",
       "category": "execution",
-      "status": "deprecated",
+      "status": "merged",
       "canonical": "ultrawork",
       "core": false,
       "internalRequired": false
@@ -127,6 +127,14 @@
       "category": "shortcut",
       "status": "active",
       "canonical": "security-reviewer",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "visual-verdict",
+      "category": "shortcut",
+      "status": "active",
+      "canonical": "vision",
       "core": false,
       "internalRequired": false
     },
@@ -400,6 +408,10 @@
     }
   ],
   "aliases": [
+    {
+      "name": "ecomode",
+      "canonical": "ultrawork"
+    },
     {
       "name": "ultraqa",
       "canonical": "ralph"

@@ -45,18 +45,23 @@ Complex tasks often fail silently: partial implementations get declared "done", 
    - Standard work: MEDIUM tier (Sonnet) -- "Add error handling to this module"
    - Complex analysis: HIGH tier (Opus) -- "Debug this race condition"
 4. **Run long operations in background**: Builds, installs, test suites use `run_in_background: true`
-5. **Verify completion with fresh evidence**:
+5. **Visual task gate (when screenshot/reference images are present)**:
+   - Run `$visual-verdict` **before every next edit**.
+   - Require structured JSON output: `score`, `verdict`, `category_match`, `differences[]`, `suggestions[]`, `reasoning`.
+   - Persist verdict to `.omx/state/{scope}/ralph-progress.json` including numeric + qualitative feedback.
+   - Default pass threshold: `score >= 90`.
+6. **Verify completion with fresh evidence**:
    a. Identify what command proves the task is complete
    b. Run verification (test, build, lint)
    c. Read the output -- confirm it actually passed
    d. Check: zero pending/in_progress TODO items
-6. **Architect verification** (tiered):
+7. **Architect verification** (tiered):
    - <5 files, <100 lines with full tests: STANDARD tier minimum (architect-medium / Sonnet)
    - Standard changes: STANDARD tier (architect-medium / Sonnet)
    - >20 files or security/architectural changes: THOROUGH tier (architect / Opus)
    - Ralph floor: always at least STANDARD, even for small changes
-7. **On approval**: Run `/cancel` to cleanly exit and clean up all state files
-8. **On rejection**: Fix the issues raised, then re-verify at the same tier
+8. **On approval**: Run `/cancel` to cleanly exit and clean up all state files
+9. **On rejection**: Fix the issues raised, then re-verify at the same tier
 </Steps>
 
 <Tool_Usage>
@@ -147,6 +152,14 @@ When the user provides the `--prd` flag, initialize a Product Requirements Docum
 
 ### Detecting PRD Mode
 Check if `{{PROMPT}}` contains `--prd` or `--PRD`.
+
+### Visual Reference Flags (Optional)
+Ralph execution supports visual reference flags for screenshot tasks:
+- Repeatable image inputs: `-i <image-path>` (can be used multiple times)
+- Image directory input: `--images-dir <directory>`
+
+Example:
+`ralph -i refs/hn.png -i refs/hn-item.png --images-dir ./screenshots "match HackerNews layout"`
 
 ### PRD Workflow
 1. Create canonical PRD/progress artifacts:
