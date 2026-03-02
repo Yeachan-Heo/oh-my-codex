@@ -126,6 +126,14 @@
       "internalRequired": false
     },
     {
+      "name": "web-clone",
+      "category": "shortcut",
+      "status": "active",
+      "canonical": "vision",
+      "core": false,
+      "internalRequired": false
+    },
+    {
       "name": "frontend-ui-ux",
       "category": "shortcut",
       "status": "alias",

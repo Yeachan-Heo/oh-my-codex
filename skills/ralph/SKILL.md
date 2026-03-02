@@ -50,6 +50,7 @@ Complex tasks often fail silently: partial implementations get declared "done", 
    - Require structured JSON output: `score`, `verdict`, `category_match`, `differences[]`, `suggestions[]`, `reasoning`.
    - Persist verdict to `.omx/state/{scope}/ralph-progress.json` including numeric + qualitative feedback.
    - Default pass threshold: `score >= 90`.
+   - **URL-based cloning tasks**: When the task description contains a target URL (e.g., "clone https://example.com"), invoke `$web-clone` instead of `$visual-verdict`. The web-clone skill handles the full extraction → generation → verification pipeline and uses `$visual-verdict` internally for visual scoring.
 6. **Verify completion with fresh evidence**:
    a. Identify what command proves the task is complete
    b. Run verification (test, build, lint)

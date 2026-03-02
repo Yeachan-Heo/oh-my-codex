@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-02-28T03:33:41.923Z",
+  "generatedAt": "2026-03-02T08:41:47.126Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 31,
+    "skillCount": 32,
     "promptCount": 29,
-    "activeSkillCount": 17,
+    "activeSkillCount": 18,
     "activeAgentCount": 18
   },
   "coreSkills": [
@@ -132,6 +132,14 @@
     },
     {
       "name": "visual-verdict",
+      "category": "shortcut",
+      "status": "active",
+      "canonical": "vision",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "web-clone",
       "category": "shortcut",
       "status": "active",
       "canonical": "vision",

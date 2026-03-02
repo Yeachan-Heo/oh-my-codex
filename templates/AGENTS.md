@@ -158,6 +158,7 @@ Do not ask for confirmation — just read the skill file and follow its instruct
 | "fix build", "type errors" | `$build-fix` | Read `~/.agents/skills/build-fix/SKILL.md`, fix build errors |
 | "review code" | `$code-review` | Read `~/.agents/skills/code-review/SKILL.md`, run code review |
 | "security review" | `$security-review` | Read `~/.agents/skills/security-review/SKILL.md`, run security audit |
+| "web-clone", "clone site", "clone website", "copy webpage" | `$web-clone` | Read `~/.agents/skills/web-clone/SKILL.md`, start website cloning pipeline |
 
 Detection rules:
 - Keywords are case-insensitive and match anywhere in the user's message
@@ -181,6 +182,7 @@ Workflow Skills:
 - `ralph`: Self-referential persistence loop with verification
 - `ultrawork`: Maximum parallelism with parallel agent orchestration
 - `visual-verdict`: Structured visual QA verdict loop for screenshot/reference comparisons
+- `web-clone`: URL-driven website cloning with visual + functional verification
 - `ecomode`: Token-efficient execution using lightweight models
 - `team`: N coordinated agents on shared task list
 - `swarm`: N coordinated agents on shared task list (compatibility facade over team)
