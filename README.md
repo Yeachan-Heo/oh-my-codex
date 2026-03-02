@@ -45,7 +45,7 @@ OMX is an add-on, not a fork. It uses Codex-native extension points.
 ## Requirements
 
 - macOS or Linux (Windows via WSL2)
-- Node.js >= 20
+- Node.js >= 20 (CI validates Node 20 and current LTS, currently Node 22)
 - Codex CLI installed (`npm install -g @openai/codex`)
 - Codex auth configured
 
