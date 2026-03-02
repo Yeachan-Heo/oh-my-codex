@@ -273,6 +273,80 @@ describe('scaleUp', () => {
       else delete process.env.PATH;
     }
   });
+
+  it('preserves leader/HUD layout by avoiding tiled relayout during scale-up', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-layout-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-layout-bin-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const tmuxStubPath = join(fakeBinDir, 'tmux');
+    const previousPath = process.env.PATH;
+
+    try {
+      await writeFile(
+        tmuxStubPath,
+        `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${tmuxLogPath}"
+case "\${1:-}" in
+  -V)
+    echo "tmux 3.2a"
+    ;;
+  split-window)
+    echo "%31"
+    ;;
+  list-panes)
+    echo "42424"
+    ;;
+  capture-pane)
+    echo ""
+    ;;
+esac
+exit 0
+`,
+      );
+      await chmod(tmuxStubPath, 0o755);
+      await writeFile(tmuxLogPath, '');
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      await initTeamState('scale-up-layout', 'task', 'executor', 1, cwd);
+
+      const config = await readTeamConfig('scale-up-layout', cwd);
+      assert.ok(config);
+      if (!config) return;
+      config.tmux_session = 'omx-team-scale-up-layout';
+      config.leader_pane_id = '%11';
+      config.workers[0]!.pane_id = '%21';
+      await saveTeamConfig(config, cwd);
+
+      const manifestPath = join(cwd, '.omx', 'state', 'team', 'scale-up-layout', 'manifest.v2.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as { policy?: Record<string, unknown> };
+      manifest.policy = {
+        ...(manifest.policy ?? {}),
+        dispatch_mode: 'transport_direct',
+      };
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const result = await scaleUp(
+        'scale-up-layout',
+        1,
+        'executor',
+        [],
+        cwd,
+        { OMX_TEAM_SCALING_ENABLED: '1', OMX_TEAM_SKIP_READY_WAIT: '1' },
+      );
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /split-window -v -t %21/);
+      assert.doesNotMatch(tmuxLog, /select-layout .*tiled/);
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('scaleDown', () => {
