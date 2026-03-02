@@ -25,6 +25,40 @@ const VERDICT_PATTERNS = [
  */
 const VERDICT_CANDIDATE_RE = /(?:\*\*Status\*\*\s*:|Verdict\s*:)/i;
 
+function extractJsonCandidates(rawMessage) {
+  const message = safeString(rawMessage).trim();
+  if (!message) return [];
+
+  const candidates = [message];
+  const fencePattern = /```(?:json)?\s*([\s\S]*?)```/gi;
+  for (const match of message.matchAll(fencePattern)) {
+    const block = safeString(match[1]).trim();
+    if (block) candidates.push(block);
+  }
+  return candidates;
+}
+
+async function maybePersistRuntimeVisualFeedback({ cwd, output, sessionId }) {
+  if (!cwd || !output) return;
+
+  const candidates = extractJsonCandidates(output);
+  if (candidates.length === 0) return;
+
+  const { buildVisualLoopFeedback } = await import('../../dist/visual/verdict.js');
+  const { recordRalphVisualFeedback } = await import('../../dist/ralph/persistence.js');
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      const feedback = buildVisualLoopFeedback(parsed);
+      await recordRalphVisualFeedback(cwd, feedback, sessionId || undefined);
+      return;
+    } catch {
+      // Try next candidate
+    }
+  }
+}
+
 /**
  * Attempt to extract a structured verdict from free-form text.
  * Returns `{ verdict, raw }` on success, `null` otherwise.
@@ -50,11 +84,26 @@ export function parseVisualVerdict(text) {
  *
  * Module import failure is handled by the caller in notify-hook.js.
  */
-export async function maybePersistVisualVerdict({ payload, stateDir, logsDir, sessionId, turnId }) {
+export async function maybePersistVisualVerdict({ cwd, payload, stateDir, logsDir, sessionId, turnId }) {
   const output = safeString(
     payload?.['last-assistant-message'] || payload?.last_assistant_message || '',
   );
   if (!output) return;
+
+  // Runtime visual feedback (JSON/fenced JSON) for ralph-progress persistence.
+  // Non-fatal and observable via warn-level structured logging.
+  try {
+    await maybePersistRuntimeVisualFeedback({ cwd, output, sessionId });
+  } catch (err) {
+    await logNotifyHookEvent(logsDir, {
+      timestamp: new Date().toISOString(),
+      level: 'warn',
+      type: 'visual_runtime_feedback_persist_failure',
+      error: err?.message || String(err),
+      session_id: sessionId,
+      turn_id: turnId,
+    });
+  }
 
   const parsed = parseVisualVerdict(output);
 

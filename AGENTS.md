@@ -49,7 +49,7 @@ To inject role-specific behavior, the parent MUST read the role prompt and pass 
 
 Delegation steps:
 1. Decide which agent role to delegate to (e.g., `architect`, `executor`, `debugger`)
-2. Read the role prompt: `./.codex/prompts/{role}.md`
+2. Read the role prompt: `~/.codex/prompts/{role}.md`
 3. Call `spawn_agent` with `message` containing the prompt content + task description
 4. The child agent receives full role context and executes the task independently
 
@@ -61,7 +61,7 @@ spawn_agent(message: "<test-engineer prompt>\n\nTask: Write tests for the auth c
 ```
 
 Each child agent:
-- Receives its role-specific prompt (from ./.codex/prompts/)
+- Receives its role-specific prompt (from ~/.codex/prompts/)
 - Inherits AGENTS.md context (via child_agents_md feature flag)
 - Runs in an isolated context with its own tool access
 - Returns results to the parent when complete
@@ -79,8 +79,8 @@ Codex CLI uses these prefixes for custom commands:
 - `$name` — invoke a skill (e.g., `$ralph "fix all tests"`, `$autopilot "build REST API"`)
 - `/skills` — browse available skills interactively
 
-Agent prompts (in `./.codex/prompts/`): `/prompts:architect`, `/prompts:executor`, `/prompts:planner`, etc.
-Workflow skills (in `./.agents/skills/`): `$ralph`, `$autopilot`, `$plan`, `$ralplan`, `$team`, etc.
+Agent prompts (in `~/.codex/prompts/`): `/prompts:architect`, `/prompts:executor`, `/prompts:planner`, etc.
+Workflow skills (in `~/.agents/skills/`): `$ralph`, `$autopilot`, `$plan`, `$ralplan`, `$team`, etc.
 </invocation_conventions>
 
 <model_routing>
