@@ -12,6 +12,7 @@
 
 import { join, resolve } from 'path';
 import { mkdir } from 'fs/promises';
+import { withFileLock } from './state.js';
 import {
   sanitizeTeamName,
   isTmuxAvailable,
@@ -33,7 +34,6 @@ import {
   teamNormalizePolicy as normalizeTeamPolicy,
   teamReadWorkerStatus as readWorkerStatus,
   teamWriteWorkerStatus as writeWorkerStatus,
-  teamWithScalingLock as withScalingLock,
   teamAppendEvent as appendTeamEvent,
   teamMarkDispatchRequestNotified as markDispatchRequestNotified,
   teamReadDispatchRequest as readDispatchRequest,
@@ -96,6 +96,11 @@ export interface ScaleDownResult {
 export interface ScaleError {
   ok: false;
   error: string;
+}
+
+async function withScalingLock<T>(teamName: string, cwd: string, fn: () => Promise<T>): Promise<T> {
+  const lockDir = join(resolveCanonicalTeamStateRoot(cwd), 'team', teamName, '.lock.scaling');
+  return await withFileLock(lockDir, { timeoutMs: 10_000, staleMs: 5 * 60 * 1000, initialPollMs: 50 }, fn);
 }
 
 async function notifyWorkerPaneOutcome(
