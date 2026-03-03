@@ -45,7 +45,8 @@ interface DispatchDeps {
   validateWorkerName: (name: string) => void;
   withDispatchLock: <T>(teamName: string, cwd: string, fn: () => Promise<T>) => Promise<T>;
   readDispatchRequests: (teamName: string, cwd: string) => Promise<TeamDispatchRequest[]>;
-  writeDispatchRequests: (teamName: string, requests: TeamDispatchRequest[], cwd: string) => Promise<void>;
+  readDispatchRequest: (teamName: string, requestId: string, cwd: string) => Promise<TeamDispatchRequest | null>;
+  writeDispatchRequest: (teamName: string, request: TeamDispatchRequest, cwd: string) => Promise<void>;
 }
 
 function isDispatchKind(value: unknown): value is TeamDispatchRequestKind {
@@ -146,8 +147,7 @@ export async function enqueueDispatchRequest(
     );
     if (!request) throw new Error('failed_to_normalize_dispatch_request');
 
-    requests.push(request);
-    await deps.writeDispatchRequests(deps.teamName, requests, deps.cwd);
+    await deps.writeDispatchRequest(deps.teamName, request, deps.cwd);
     return { request, deduped: false };
   });
 }
@@ -166,8 +166,7 @@ export async function listDispatchRequests(
 }
 
 export async function readDispatchRequest(requestId: string, deps: DispatchDeps): Promise<TeamDispatchRequest | null> {
-  const requests = await deps.readDispatchRequests(deps.teamName, deps.cwd);
-  return requests.find((req) => req.request_id === requestId) ?? null;
+  return await deps.readDispatchRequest(deps.teamName, requestId, deps.cwd);
 }
 
 export async function transitionDispatchRequest(
@@ -178,11 +177,8 @@ export async function transitionDispatchRequest(
   deps: DispatchDeps,
 ): Promise<TeamDispatchRequest | null> {
   return await deps.withDispatchLock(deps.teamName, deps.cwd, async () => {
-    const requests = await deps.readDispatchRequests(deps.teamName, deps.cwd);
-    const index = requests.findIndex((req) => req.request_id === requestId);
-    if (index < 0) return null;
-
-    const existing = requests[index]!;
+    const existing = await deps.readDispatchRequest(deps.teamName, requestId, deps.cwd);
+    if (!existing) return null;
     if (existing.status !== from && existing.status !== to) return null;
     if (!canTransitionDispatchStatus(existing.status, to)) return null;
 
@@ -205,8 +201,7 @@ export async function transitionDispatchRequest(
     if (to === 'delivered') next.delivered_at = patch.delivered_at ?? nowIso;
     if (to === 'failed') next.failed_at = patch.failed_at ?? nowIso;
 
-    requests[index] = next;
-    await deps.writeDispatchRequests(deps.teamName, requests, deps.cwd);
+    await deps.writeDispatchRequest(deps.teamName, next, deps.cwd);
     return next;
   });
 }

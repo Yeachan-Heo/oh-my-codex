@@ -32,6 +32,10 @@ export interface TeamTask {
   completedAt?: string;
 }
 
+function unreachablePhase(phase: never): never {
+  throw new Error(`Unknown team phase: ${String(phase)}`);
+}
+
 /**
  * Phase transition rules
  */
@@ -143,6 +147,8 @@ export function getPhaseAgents(phase: TeamPhase): string[] {
       return ['verifier', 'quality-reviewer', 'security-reviewer'];
     case 'team-fix':
       return ['executor', 'build-fixer', 'debugger'];
+    default:
+      return unreachablePhase(phase);
   }
 }
 
@@ -161,5 +167,7 @@ export function getPhaseInstructions(phase: TeamPhase): string {
       return 'PHASE: Verification. Use /verifier for evidence collection, /quality-reviewer for review. Output: pass/fail with evidence.';
     case 'team-fix':
       return 'PHASE: Fixing. Use /debugger for root cause, /executor for fixes. Output: fixed code, re-verify needed.';
+    default:
+      return unreachablePhase(phase);
   }
 }

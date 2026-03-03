@@ -559,8 +559,12 @@ function mailboxLockDir(teamName: string, workerName: string, cwd: string): stri
   return p;
 }
 
-function dispatchRequestsPath(teamName: string, cwd: string): string {
-  return join(teamDir(teamName, cwd), 'dispatch', 'requests.json');
+function dispatchDir(teamName: string, cwd: string): string {
+  return join(teamDir(teamName, cwd), 'dispatch');
+}
+
+function dispatchRequestPath(teamName: string, requestId: string, cwd: string): string {
+  return join(dispatchDir(teamName, cwd), `${requestId}.json`);
 }
 
 function dispatchLockDir(teamName: string, cwd: string): string {
@@ -702,7 +706,6 @@ export async function initTeamState(
   await mkdir(dispatchRoot, { recursive: true });
   await mkdir(eventsRoot, { recursive: true });
   await mkdir(approvalsRoot, { recursive: true });
-  await writeAtomic(join(dispatchRoot, 'requests.json'), JSON.stringify([], null, 2));
 
   const workers: WorkerInfo[] = [];
   for (let i = 1; i <= workerCount; i++) {
@@ -1497,23 +1500,40 @@ async function writeMailbox(teamName: string, mailbox: TeamMailbox, cwd: string)
 }
 
 async function readDispatchRequests(teamName: string, cwd: string): Promise<TeamDispatchRequest[]> {
-  const path = dispatchRequestsPath(teamName, cwd);
+  const dir = dispatchDir(teamName, cwd);
+  const files = await readdir(dir).catch((): string[] => []);
+  const nowIso = new Date().toISOString();
+  const requests: TeamDispatchRequest[] = [];
+
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue;
+    try {
+      const raw = await readFile(join(dir, file), 'utf8');
+      const parsed = JSON.parse(raw) as unknown;
+      const normalized = normalizeDispatchRequestImpl(teamName, (parsed ?? {}) as Partial<TeamDispatchRequest>, nowIso);
+      if (normalized) requests.push(normalized);
+    } catch {
+      continue;
+    }
+  }
+
+  return requests;
+}
+
+async function readDispatchRequestFile(teamName: string, requestId: string, cwd: string): Promise<TeamDispatchRequest | null> {
+  const path = dispatchRequestPath(teamName, requestId, cwd);
   try {
-    if (!existsSync(path)) return [];
     const raw = await readFile(path, 'utf8');
     const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    const nowIso = new Date().toISOString();
-    return parsed
-      .map((entry) => normalizeDispatchRequestImpl(teamName, (entry ?? {}) as Partial<TeamDispatchRequest>, nowIso))
-      .filter((entry): entry is TeamDispatchRequest => entry !== null);
+    return normalizeDispatchRequestImpl(teamName, (parsed ?? {}) as Partial<TeamDispatchRequest>);
   } catch {
-    return [];
+    return null;
   }
 }
 
-async function writeDispatchRequests(teamName: string, requests: TeamDispatchRequest[], cwd: string): Promise<void> {
-  await writeAtomic(dispatchRequestsPath(teamName, cwd), JSON.stringify(requests, null, 2));
+async function writeDispatchRequest(teamName: string, request: TeamDispatchRequest, cwd: string): Promise<void> {
+  const path = dispatchRequestPath(teamName, request.request_id, cwd);
+  await writeAtomic(path, JSON.stringify(request, null, 2));
 }
 
 export function resolveDispatchLockTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
@@ -1535,7 +1555,8 @@ export async function enqueueDispatchRequest(
     validateWorkerName,
     withDispatchLock,
     readDispatchRequests,
-    writeDispatchRequests,
+    readDispatchRequest: readDispatchRequestFile,
+    writeDispatchRequest,
   });
 }
 
@@ -1550,7 +1571,8 @@ export async function listDispatchRequests(
     validateWorkerName,
     withDispatchLock,
     readDispatchRequests,
-    writeDispatchRequests,
+    readDispatchRequest: readDispatchRequestFile,
+    writeDispatchRequest,
   });
 }
 
@@ -1561,7 +1583,8 @@ export async function readDispatchRequest(teamName: string, requestId: string, c
     validateWorkerName,
     withDispatchLock,
     readDispatchRequests,
-    writeDispatchRequests,
+    readDispatchRequest: readDispatchRequestFile,
+    writeDispatchRequest,
   });
 }
 
@@ -1579,7 +1602,8 @@ export async function transitionDispatchRequest(
     validateWorkerName,
     withDispatchLock,
     readDispatchRequests,
-    writeDispatchRequests,
+    readDispatchRequest: readDispatchRequestFile,
+    writeDispatchRequest,
   });
 }
 
@@ -1595,7 +1619,8 @@ export async function markDispatchRequestNotified(
     validateWorkerName,
     withDispatchLock,
     readDispatchRequests,
-    writeDispatchRequests,
+    readDispatchRequest: readDispatchRequestFile,
+    writeDispatchRequest,
   });
 }
 
@@ -1611,7 +1636,8 @@ export async function markDispatchRequestDelivered(
     validateWorkerName,
     withDispatchLock,
     readDispatchRequests,
-    writeDispatchRequests,
+    readDispatchRequest: readDispatchRequestFile,
+    writeDispatchRequest,
   });
 }
 
