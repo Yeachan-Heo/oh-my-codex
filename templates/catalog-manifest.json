@@ -70,6 +70,13 @@
       "internalRequired": false
     },
     {
+      "name": "deep-interview",
+      "category": "planning",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
       "name": "analyze",
       "category": "shortcut",
       "status": "alias",

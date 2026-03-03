@@ -87,6 +87,30 @@ describe('keyword detector swarm/team compatibility', () => {
     assert.equal(match.skill, 'team');
     assert.equal(match.keyword.toLowerCase(), 'coordinated swarm');
   });
+
+  it('maps "deep interview" phrase to deep-interview skill', () => {
+    const match = detectPrimaryKeyword('please run a deep interview before planning');
+
+    assert.ok(match);
+    assert.equal(match.skill, 'deep-interview');
+    assert.equal(match.keyword.toLowerCase(), 'deep interview');
+  });
+
+  it('maps "gather requirements" to deep-interview skill', () => {
+    const match = detectPrimaryKeyword('let us gather requirements first');
+
+    assert.ok(match);
+    assert.equal(match.skill, 'deep-interview');
+    assert.equal(match.keyword.toLowerCase(), 'gather requirements');
+  });
+
+  it('prefers "deep interview" over "interview" for deterministic longest-match behavior', () => {
+    const match = detectPrimaryKeyword('deep interview this request first');
+
+    assert.ok(match);
+    assert.equal(match.skill, 'deep-interview');
+    assert.equal(match.keyword.toLowerCase(), 'deep interview');
+  });
 });
 
 describe('keyword detection guidance generation', () => {

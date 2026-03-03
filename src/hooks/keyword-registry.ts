@@ -19,6 +19,10 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: 'ulw', skill: 'ultrawork', priority: 10, guidance: 'Activate ultrawork parallel execution mode' },
   { keyword: 'parallel', skill: 'ultrawork', priority: 10, guidance: 'Activate ultrawork parallel execution mode' },
 
+  { keyword: 'deep interview', skill: 'deep-interview', priority: 8, guidance: 'Activate structured requirement interview workflow' },
+  { keyword: 'gather requirements', skill: 'deep-interview', priority: 8, guidance: 'Activate structured requirement interview workflow' },
+  { keyword: 'interview', skill: 'deep-interview', priority: 8, guidance: 'Activate structured requirement interview workflow' },
+
   { keyword: 'plan this', skill: 'plan', priority: 8, guidance: 'Activate planning skill' },
   { keyword: 'plan the', skill: 'plan', priority: 8, guidance: 'Activate planning skill' },
   { keyword: "let's plan", skill: 'plan', priority: 8, guidance: 'Activate planning skill' },

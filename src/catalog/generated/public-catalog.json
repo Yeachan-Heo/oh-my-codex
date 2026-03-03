@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-03-03T06:42:55.204Z",
+  "generatedAt": "2026-03-03T08:10:14.452Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 33,
+    "skillCount": 34,
     "promptCount": 29,
-    "activeSkillCount": 19,
+    "activeSkillCount": 20,
     "activeAgentCount": 18
   },
   "coreSkills": [
@@ -80,6 +80,13 @@
       "status": "active",
       "canonical": "plan",
       "core": true,
+      "internalRequired": false
+    },
+    {
+      "name": "deep-interview",
+      "category": "planning",
+      "status": "active",
+      "core": false,
       "internalRequired": false
     },
     {

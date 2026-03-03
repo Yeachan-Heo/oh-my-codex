@@ -162,11 +162,15 @@ Example:
 `ralph -i refs/hn.png -i refs/hn-item.png --images-dir ./screenshots "match HackerNews layout"`
 
 ### PRD Workflow
-1. Create canonical PRD/progress artifacts:
+1. Run deep-interview in quick mode before creating PRD artifacts:
+   - Execute: `$deep-interview --quick <task>`
+   - Complete a compact requirements pass (context, goals, scope, constraints, validation)
+   - Persist interview output to `.omx/interviews/{slug}-{timestamp}.md`
+2. Create canonical PRD/progress artifacts:
    - PRD: `.omx/plans/prd-{slug}.md`
    - Progress ledger: `.omx/state/{scope}/ralph-progress.json` (session scope when available, else root scope)
-2. Parse the task (everything after `--prd` flag)
-3. Break down into user stories:
+3. Parse the task (everything after `--prd` flag)
+4. Break down into user stories:
 
 ```json
 {
@@ -186,9 +190,9 @@ Example:
 }
 ```
 
-4. Initialize canonical progress ledger at `.omx/state/{scope}/ralph-progress.json`
-5. Guidelines: right-sized stories (one session each), verifiable criteria, independent stories, priority order (foundational work first)
-6. Proceed to normal ralph loop using user stories as the task list
+5. Initialize canonical progress ledger at `.omx/state/{scope}/ralph-progress.json`
+6. Guidelines: right-sized stories (one session each), verifiable criteria, independent stories, priority order (foundational work first)
+7. Proceed to normal ralph loop using user stories as the task list
 
 ### Example
 User input: `--prd build a todo app with React and TypeScript`
