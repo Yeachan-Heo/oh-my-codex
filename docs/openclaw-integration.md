@@ -46,6 +46,21 @@ Include when relevant:
 - `{{question}}` (`ask-user-question`)
 - `{{reason}}` (`session-end`)
 
+### Structured instruction format
+
+For production deployments, use a structured format that clawdbot agents can parse efficiently:
+
+```
+[event|exec]
+project={{projectName}} session={{sessionId}} tmux={{tmuxSession}}
+필드1: 값
+필드2: 값
+```
+
+The `[event|exec]` prefix indicates this is an executable hook that requires agent action.
+Korean field names (요약, 우선순위, 주의사항, 성과, 검증, 다음) provide consistent structure
+for dev teams using Korean as their primary language.
+
 ### Verbosity strategy
 
 - `minimal`: very short pings (high signal, low narrative)
@@ -190,6 +205,11 @@ message/webhook forwarding), e.g. for `#omc-dev`.
 >
 > Command gateway timeout precedence: `gateways.<name>.timeout` > `OMX_OPENCLAW_COMMAND_TIMEOUT_MS` > `5000`.
 > For `clawdbot agent` workflows, use `120000` (2 minutes) to avoid premature timeout.
+>
+> **Production best practices:**
+> - Use `|| true` at the end of the command to prevent OMX hook failures from blocking sessions
+> - Use `.jsonl` extension with append (`>>`) for structured log aggregation
+> - Use `--reply-to 'channel:CHANNEL_ID'` format for reliable Discord delivery (preferred over aliases)
 
 For Korean-first tmux follow-up operations in `#omc-dev`, see the dev guide section below.
 
@@ -210,7 +230,7 @@ For Korean-first tmux follow-up operations in `#omc-dev`, see the dev guide sect
       "gateways": {
         "local": {
           "type": "command",
-          "command": "(clawdbot agent --session-id omx-hooks --message {{instruction}} --thinking minimal --deliver --reply-channel discord --reply-to '#omc-dev' --timeout 120 --json >/tmp/omx-openclaw-agent.log 2>&1)",
+          "command": "(clawdbot agent --session-id omx-hooks --message {{instruction}} --thinking minimal --deliver --reply-channel discord --reply-to 'channel:1468539002985644084' --timeout 120 --json >>/tmp/omx-openclaw-agent.jsonl 2>&1 || true)",
           "timeout": 120000
         }
       },
@@ -218,27 +238,27 @@ For Korean-first tmux follow-up operations in `#omc-dev`, see the dev guide sect
         "session-start": {
           "enabled": true,
           "gateway": "local",
-          "instruction": "OMX hook=session-start project={{projectName}} session={{sessionId}} tmux={{tmuxSession}}. 한국어로 간단한 상태 업데이트를 #omc-dev에 전달하고, 필요한 후속조치는 SOUL.md를 참고해 진행하세요."
+          "instruction": "[session-start|exec]\nproject={{projectName}} session={{sessionId}} tmux={{tmuxSession}}\n요약: 시작 맥락 1문장\n우선순위: 지금 할 일 1~2개\n주의사항: 리스크/의존성(없으면 없음)"
         },
         "session-idle": {
           "enabled": true,
           "gateway": "local",
-          "instruction": "OMX hook=session-idle project={{projectName}} session={{sessionId}} tmux={{tmuxSession}}. 한국어로 idle 상태를 짧게 공유하고, 진행중이던 작업을 SOUL.md 기준으로 팔로업하세요."
+          "instruction": "[session-idle|exec]\nsession={{sessionId}} tmux={{tmuxSession}}\n요약: idle 원인 1문장\n복구계획: 즉시 조치 1~2개\n의사결정: 사용자 입력 필요 여부"
         },
         "ask-user-question": {
           "enabled": true,
           "gateway": "local",
-          "instruction": "OMX hook=ask-user-question session={{sessionId}} tmux={{tmuxSession}} question={{question}}. 한국어로 사용자 응답이 필요함을 #omc-dev에 알리고 즉시 후속 요청을 남기세요."
+          "instruction": "[ask-user-question|exec]\nsession={{sessionId}} tmux={{tmuxSession}} question={{question}}\n핵심질문: 필요한 답변 1문장\n영향: 미응답 시 영향 1문장\n권장응답: 가장 빠른 답변 형태"
         },
         "stop": {
           "enabled": true,
           "gateway": "local",
-          "instruction": "OMX hook=session-stop project={{projectName}} session={{sessionId}} tmux={{tmuxSession}}. 한국어로 중단 상태를 공유하고 필요한 정리 액션을 SOUL.md 기준으로 수행하세요."
+          "instruction": "[session-stop|exec]\nsession={{sessionId}} tmux={{tmuxSession}}\n요약: 중단 사유\n현재상태: 저장/미완료 항목\n재개: 첫 액션 1개"
         },
         "session-end": {
           "enabled": true,
           "gateway": "local",
-          "instruction": "OMX hook=session-end project={{projectName}} session={{sessionId}} tmux={{tmuxSession}} reason={{reason}}. 한국어로 완료 요약 1줄을 #omc-dev에 남기고 필요한 후속조치를 SOUL.md 기준으로 이어가세요."
+          "instruction": "[session-end|exec]\nproject={{projectName}} session={{sessionId}} tmux={{tmuxSession}} reason={{reason}}\n성과: 완료 결과 1~2문장\n검증: 확인/테스트 결과\n다음: 후속 액션 1~2개"
         }
       }
     }
@@ -255,7 +275,9 @@ Use this profile when `#omc-dev` should receive OpenClaw notifications as
 
 - Write all hook instructions in Korean.
 - Explicitly require Korean in each instruction template.
-- Prefer Discord channel ID (`channel:<id>`) over channel alias for reliability.
+- **Prefer `--reply-to 'channel:CHANNEL_ID'` format** over channel aliases for reliability.
+  - Example: `--reply-to 'channel:1468539002985644084'` (for #omc-dev)
+  - Channel aliases like `#omc-dev` may fail if the bot doesn't have the channel cached.
 
 Example instruction style:
 
@@ -291,8 +313,13 @@ When a hook suggests active work or pending user action:
 Troubleshooting commands:
 
 ```bash
-tail -n 120 /tmp/omx-openclaw-agent.log
+# Inspect structured JSONL logs
+tail -n 120 /tmp/omx-openclaw-agent.jsonl | jq -s '.[] | {timestamp: (.timestamp // .time), status: (.status // .error // "ok")}'
 
+# Search for errors in logs
+rg '"error"|"failed"|"timeout"' /tmp/omx-openclaw-agent.jsonl | tail -20
+
+# Manual retry with production-tested settings
 clawdbot agent --session-id omx-hooks \
   --message "OMX hook retry 점검: session={{sessionId}} tmux={{tmuxSession}}" \
   --thinking minimal --deliver --reply-channel discord --reply-to 'channel:1468539002985644084' \
@@ -346,3 +373,6 @@ test "$OMX_OPENCLAW_COMMAND" = "1" && echo "OMX_OPENCLAW_COMMAND=1" || echo "mis
 - **Timeout/connection refused**: host/port/firewall issue.
 - **Command gateway disabled**: set both `OMX_OPENCLAW=1` and `OMX_OPENCLAW_COMMAND=1`.
 - **Command killed by `SIGTERM`**: increase `gateways.<name>.timeout` (recommend `120000` for clawdbot agent) or set `OMX_OPENCLAW_COMMAND_TIMEOUT_MS`.
+- **Hook failures blocking sessions**: ensure command ends with `|| true` to prevent OMX from waiting on clawdbot failures.
+- **Missing logs**: use `.jsonl` extension with append (`>>`) for persistent structured logging.
+- **Discord delivery failures**: use `--reply-to 'channel:CHANNEL_ID'` format instead of channel aliases.

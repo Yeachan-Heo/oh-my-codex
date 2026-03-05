@@ -155,12 +155,15 @@ Notes:
 - For dev operations, enforce Korean output in all hook instructions.
 - Include both `session={{sessionId}}` and `tmux={{tmuxSession}}` in hook text for traceability.
 - If follow-up is needed, explicitly instruct clawdbot to consult `SOUL.md` and continue in `#omc-dev`.
+- **Error handling**: Append `|| true` to prevent OMX hook failures from blocking the session.
+- **JSONL logging**: Use `.jsonl` extension and append (`>>`) for structured log aggregation.
+- **Reply target format**: Use `--reply-to 'channel:CHANNEL_ID'` for reliability (preferred over channel aliases).
 
-Example (targeting `#omc-dev`):
+Example (targeting `#omc-dev` with production-tested settings):
 
 ```bash
 jq \
-  --arg command "(clawdbot agent --session-id omx-hooks --message {{instruction}} --thinking minimal --deliver --reply-channel discord --reply-to '#omc-dev' --timeout 120 --json >/tmp/omx-openclaw-agent.log 2>&1)" \
+  --arg command "(clawdbot agent --session-id omx-hooks --message {{instruction}} --thinking minimal --deliver --reply-channel discord --reply-to 'channel:1468539002985644084' --timeout 120 --json >>/tmp/omx-openclaw-agent.jsonl 2>&1 || true)" \
   '.notifications = (.notifications // {enabled: true}) |
    .notifications.enabled = true |
    .notifications.verbosity = "verbose" |
@@ -210,7 +213,7 @@ Verification for this mode:
 
 ```bash
 clawdbot agent --session-id omx-hooks --message "OMX hook test via clawdbot agent path" \
-  --thinking minimal --deliver --reply-channel discord --reply-to '#omc-dev' --timeout 120 --json
+  --thinking minimal --deliver --reply-channel discord --reply-to 'channel:1468539002985644084' --timeout 120 --json
 ```
 
 Dev runbook (Korean + tmux follow-up):
@@ -222,8 +225,11 @@ tmux list-sessions -F '#{session_name}' | rg '^omx-' || true
 # 2) confirm hook templates include session/tmux context
 jq '.notifications.openclaw.hooks' "$CONFIG_FILE"
 
-# 3) inspect agent logs when delivery looks broken
-tail -n 120 /tmp/omx-openclaw-agent.log
+# 3) inspect agent JSONL logs when delivery looks broken
+tail -n 120 /tmp/omx-openclaw-agent.jsonl | jq -s '.[] | {timestamp: (.timestamp // .time), status: (.status // .error // "ok")}'
+
+# 4) check for recent errors in logs
+rg '"error"|"failed"|"timeout"' /tmp/omx-openclaw-agent.jsonl | tail -20
 ```
 
 ### 4c) Compatibility + precedence contract
