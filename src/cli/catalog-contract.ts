@@ -14,9 +14,12 @@ export function getCatalogExpectations(): CatalogExpectations {
   }
 
   const counts = getCatalogCounts();
+  const installableSkillCount = manifest.skills
+    .filter((skill) => skill.status === 'active' || skill.status === 'internal')
+    .length;
   return {
     promptMin: Math.max(1, counts.promptCount - SAFETY_BUFFER),
-    skillMin: Math.max(1, counts.skillCount - SAFETY_BUFFER),
+    skillMin: Math.max(1, installableSkillCount - SAFETY_BUFFER),
   };
 }
 
@@ -24,8 +27,11 @@ export function getCatalogHeadlineCounts(): { prompts: number; skills: number } 
   const manifest = tryReadCatalogManifest();
   if (!manifest) return null;
   const counts = getCatalogCounts();
+  const installableSkillCount = manifest.skills
+    .filter((skill) => skill.status === 'active' || skill.status === 'internal')
+    .length;
   return {
     prompts: counts.promptCount,
-    skills: counts.skillCount,
+    skills: installableSkillCount,
   };
 }
