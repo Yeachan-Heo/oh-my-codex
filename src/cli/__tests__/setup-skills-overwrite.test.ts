@@ -26,6 +26,8 @@ describe('omx setup skills overwrite behavior', () => {
       assert.equal(installed.has('ultraqa'), false);
       assert.equal(installed.has('ralph-init'), false);
       assert.equal(installed.has('frontend-ui-ux'), false);
+      assert.equal(installed.has('pipeline'), false);
+      assert.equal(installed.has('configure-notifications'), false);
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
@@ -54,6 +56,31 @@ describe('omx setup skills overwrite behavior', () => {
       for (const staleSkill of staleSkills) {
         assert.equal(existsSync(join(wd, '.agents', 'skills', staleSkill)), false);
       }
+      assert.equal(existsSync(join(wd, '.agents', 'skills', 'team')), true);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('removes stale unlisted shipped skill directories on --force', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-'));
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+
+      await setup({ scope: 'project' });
+
+      const staleSkill = 'pipeline';
+      const staleDir = join(wd, '.agents', 'skills', staleSkill);
+      await mkdir(staleDir, { recursive: true });
+      await writeFile(join(staleDir, 'SKILL.md'), `# stale ${staleSkill}\n`);
+      assert.equal(existsSync(staleDir), true);
+
+      await setup({ scope: 'project', force: true });
+
+      assert.equal(existsSync(join(wd, '.agents', 'skills', staleSkill)), false);
       assert.equal(existsSync(join(wd, '.agents', 'skills', 'team')), true);
     } finally {
       process.chdir(previousCwd);

@@ -464,9 +464,11 @@ async function installSkills(
     : null;
   const isInstallableStatus = (status: string | undefined): boolean => status === 'active' || status === 'internal';
   const entries = await readdir(srcDir, { withFileTypes: true });
+  const shippedSkillNames = new Set<string>();
   let count = 0;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    shippedSkillNames.add(entry.name);
     const status = skillStatusByName?.get(entry.name);
     if (skillStatusByName && !isInstallableStatus(status)) {
       if (options.verbose) {
@@ -523,16 +525,20 @@ async function installSkills(
   }
 
   if (options.force && manifest && existsSync(dstDir)) {
-    for (const skill of manifest.skills) {
-      if (isInstallableStatus(skill.status)) continue;
-      const staleSkillDir = join(dstDir, skill.name);
+    for (const staleSkill of shippedSkillNames) {
+      const status = skillStatusByName?.get(staleSkill);
+      if (isInstallableStatus(status)) continue;
+
+      const staleSkillDir = join(dstDir, staleSkill);
       if (!existsSync(staleSkillDir)) continue;
+
       if (!options.dryRun) {
         await rm(staleSkillDir, { recursive: true, force: true });
       }
       if (options.verbose) {
         const prefix = options.dryRun ? 'would remove stale skill' : 'removed stale skill';
-        console.log(`  ${prefix} ${skill.name}/ (status: ${skill.status})`);
+        const label = status ?? 'unlisted';
+        console.log(`  ${prefix} ${staleSkill}/ (status: ${label})`);
       }
     }
   }
