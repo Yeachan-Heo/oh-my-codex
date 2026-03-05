@@ -152,6 +152,9 @@ Notes:
 - During troubleshooting, avoid swallowing command output; route it to a log file.
 - Timeout precedence: `gateways.<name>.timeout` > `OMX_OPENCLAW_COMMAND_TIMEOUT_MS` > `5000`.
 - For clawdbot agent workflows, set `gateways.<name>.timeout` to `120000` (recommended).
+- For dev operations, enforce Korean output in all hook instructions.
+- Include both `session={{sessionId}}` and `tmux={{tmuxSession}}` in hook text for traceability.
+- If follow-up is needed, explicitly instruct clawdbot to consult `SOUL.md` and continue in `#omc-dev`.
 
 Example (targeting `#omc-dev`):
 
@@ -179,27 +182,27 @@ jq \
    .notifications.openclaw.hooks["session-start"] = {
      enabled: true,
      gateway: "local",
-     instruction: "OMX hook=session-start project={{projectName}} session={{sessionId}}. Send concise status update."
+     instruction: "OMX hook=session-start project={{projectName}} session={{sessionId}} tmux={{tmuxSession}}. 한국어로 상태를 공유하고 SOUL.md를 참고해 필요한 후속 조치를 #omc-dev에 안내하세요."
    } |
    .notifications.openclaw.hooks["session-idle"] = {
      enabled: true,
      gateway: "local",
-     instruction: "OMX hook=session-idle project={{projectName}} session={{sessionId}}. Send brief idle update."
+     instruction: "OMX hook=session-idle project={{projectName}} session={{sessionId}} tmux={{tmuxSession}}. 한국어로 idle 상황을 간단히 공유하고 진행중인 작업 팔로업을 안내하세요."
    } |
    .notifications.openclaw.hooks["ask-user-question"] = {
      enabled: true,
      gateway: "local",
-     instruction: "OMX hook=ask-user-question session={{sessionId}} question={{question}}. ACTION NEEDED: request user reply."
+     instruction: "OMX hook=ask-user-question session={{sessionId}} tmux={{tmuxSession}} question={{question}}. 한국어로 사용자 응답 필요를 #omc-dev에 알리고 즉시 액션 아이템을 제시하세요."
    } |
    .notifications.openclaw.hooks["stop"] = {
      enabled: true,
      gateway: "local",
-     instruction: "OMX hook=session-stop project={{projectName}} session={{sessionId}}. Send stop update."
+     instruction: "OMX hook=session-stop project={{projectName}} session={{sessionId}} tmux={{tmuxSession}}. 한국어로 중단 상태와 정리 액션을 SOUL.md 기준으로 전달하세요."
    } |
    .notifications.openclaw.hooks["session-end"] = {
      enabled: true,
      gateway: "local",
-     instruction: "OMX hook=session-end project={{projectName}} session={{sessionId}} reason={{reason}}. Send completion summary in one line."
+     instruction: "OMX hook=session-end project={{projectName}} session={{sessionId}} tmux={{tmuxSession}} reason={{reason}}. 한국어로 완료 요약을 1줄로 남기고 필요한 후속 조치를 안내하세요."
    }' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
 ```
 
@@ -208,6 +211,19 @@ Verification for this mode:
 ```bash
 clawdbot agent --session-id omx-hooks --message "OMX hook test via clawdbot agent path" \
   --thinking minimal --deliver --reply-channel discord --reply-to '#omc-dev' --timeout 120 --json
+```
+
+Dev runbook (Korean + tmux follow-up):
+
+```bash
+# 1) identify active OMX tmux sessions
+tmux list-sessions -F '#{session_name}' | rg '^omx-' || true
+
+# 2) confirm hook templates include session/tmux context
+jq '.notifications.openclaw.hooks' "$CONFIG_FILE"
+
+# 3) inspect agent logs when delivery looks broken
+tail -n 120 /tmp/omx-openclaw-agent.log
 ```
 
 ### 4c) Compatibility + precedence contract

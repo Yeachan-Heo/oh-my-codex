@@ -126,4 +126,31 @@ describe("OpenClaw setup workflow contracts", () => {
       "openclaw integration doc should include #omc-dev target example",
     );
   });
+
+  it("documents dev runbook requirements: Korean output, tmux session tracing, and SOUL.md follow-up", () => {
+    assert.ok(
+      configureNotificationsSkill.includes("한국어"),
+      "configure-notifications should include Korean output guidance for clawdbot agent workflow",
+    );
+    assert.ok(
+      configureNotificationsSkill.includes("{{tmuxSession}}"),
+      "configure-notifications should include tmuxSession template guidance",
+    );
+    assert.ok(
+      configureNotificationsSkill.includes("SOUL.md"),
+      "configure-notifications should include SOUL.md follow-up guidance",
+    );
+    assert.ok(
+      openclawIntegrationDoc.includes("Dev Guide: OpenClaw + Clawdbot Agent"),
+      "openclaw integration doc should include dedicated dev guide section",
+    );
+    assert.ok(
+      openclawIntegrationDoc.includes("{{tmuxSession}}"),
+      "openclaw integration doc should include tmuxSession tracing guidance",
+    );
+    assert.ok(
+      openclawIntegrationDoc.includes("SOUL.md"),
+      "openclaw integration doc should include SOUL.md follow-up guidance",
+    );
+  });
 });

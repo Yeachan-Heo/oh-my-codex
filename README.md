@@ -325,6 +325,13 @@ For OpenClaw with **clawdbot agent turns** (instead of direct message forwarding
 configure a command gateway using `clawdbot agent --deliver --reply-channel ... --reply-to ...`
 and map hook events (`session-start`, `session-idle`, `ask-user-question`, `session-stop`, `session-end`).
 
+For dev teams using `#omc-dev`, the OpenClaw guide includes a dedicated runbook for:
+- Korean-only hook responses
+- `sessionId` + `tmuxSession` tracing
+- `SOUL.md`-based follow-up workflow
+
+See: `docs/openclaw-integration.md` (Dev Guide section).
+
 Required env gates for OpenClaw command mode:
 
 ```bash
