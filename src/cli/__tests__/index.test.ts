@@ -27,6 +27,8 @@ import {
   buildDetachedSessionBootstrapSteps,
   buildDetachedSessionFinalizeSteps,
   buildDetachedSessionRollbackSteps,
+  resolveNotifyTempContract,
+  buildNotifyTempStartupMessages,
 } from '../index.js';
 import { HUD_TMUX_HEIGHT_LINES } from '../../hud/constants.js';
 
@@ -145,6 +147,83 @@ describe('normalizeCodexLaunchArgs', () => {
       normalizeCodexLaunchArgs(['--worktree=feature/demo', '--model', 'gpt-5']),
       ['--model', 'gpt-5'],
     );
+  });
+
+  it('does not forward notify-temp flags/selectors to leader codex args', () => {
+    const parsed = resolveNotifyTempContract(
+      ['--notify-temp', '--discord', '--custom', 'openclaw:ops', '--custom=my-hook', '--model', 'gpt-5'],
+      {},
+    );
+    assert.deepEqual(normalizeCodexLaunchArgs(parsed.passthroughArgs), ['--model', 'gpt-5']);
+  });
+});
+
+describe('resolveNotifyTempContract', () => {
+  it('activates from --notify-temp with no providers', () => {
+    const parsed = resolveNotifyTempContract(['--notify-temp', '--model', 'gpt-5'], {});
+    assert.equal(parsed.contract.active, true);
+    assert.equal(parsed.contract.source, 'cli');
+    assert.deepEqual(parsed.contract.canonicalSelectors, []);
+    assert.deepEqual(parsed.passthroughArgs, ['--model', 'gpt-5']);
+  });
+
+  it('auto-activates when provider selectors are present', () => {
+    const parsed = resolveNotifyTempContract(['--discord', '--slack'], {});
+    assert.equal(parsed.contract.active, true);
+    assert.equal(parsed.contract.source, 'providers');
+    assert.deepEqual(parsed.contract.canonicalSelectors, ['discord', 'slack']);
+    assert.equal(parsed.contract.warnings.some((line) => line.includes('imply temp mode')), true);
+  });
+
+  it('supports repeated --custom forms and canonicalizes selectors', () => {
+    const parsed = resolveNotifyTempContract(
+      ['--custom', 'OpenClaw:Ops', '--custom=my-hook', '--custom=', '--custom'],
+      {},
+    );
+    assert.deepEqual(parsed.contract.canonicalSelectors, ['openclaw:ops', 'custom:my-hook']);
+    assert.equal(parsed.contract.warnings.length >= 1, true);
+  });
+
+  it('activates from OMX_NOTIFY_TEMP=1 env parity', () => {
+    const parsed = resolveNotifyTempContract(['--model', 'gpt-5'], { OMX_NOTIFY_TEMP: '1' });
+    assert.equal(parsed.contract.active, true);
+    assert.equal(parsed.contract.source, 'env');
+    assert.deepEqual(parsed.passthroughArgs, ['--model', 'gpt-5']);
+  });
+});
+
+
+
+describe('buildNotifyTempStartupMessages', () => {
+  it('always emits summary when temp mode is active', () => {
+    const result = buildNotifyTempStartupMessages(
+      {
+        active: true,
+        selectors: ['discord'],
+        canonicalSelectors: ['discord'],
+        warnings: [],
+        source: 'cli',
+      },
+      true,
+    );
+    assert.deepEqual(result.infoLines, [
+      'notify temp: active | providers=discord | persistent-routing=bypassed',
+    ]);
+    assert.deepEqual(result.warningLines, []);
+  });
+
+  it('emits no-valid-provider warning when no provider is configured', () => {
+    const result = buildNotifyTempStartupMessages(
+      {
+        active: true,
+        selectors: [],
+        canonicalSelectors: [],
+        warnings: ['notify temp: provider selectors imply temp mode (auto-activated)'],
+        source: 'providers',
+      },
+      false,
+    );
+    assert.equal(result.warningLines.includes('notify temp: no valid providers resolved; notifications skipped'), true);
   });
 });
 
@@ -417,12 +496,34 @@ describe('detached tmux new-session sequencing', () => {
       "'node' '/tmp/omx.js' 'hud' '--watch'",
       '--model gpt-5',
       '/tmp/codex-home',
+      '{"active":true}',
     );
     assert.deepEqual(steps.map((step) => step.name), ['new-session', 'split-and-capture-hud-pane']);
     assert.equal(steps[1]?.args[3], String(HUD_TMUX_HEIGHT_LINES));
     assert.equal(steps[1]?.args[6], 'omx-demo');
     assert.equal(steps[1]?.args.includes('-P'), true);
     assert.equal(steps[1]?.args.includes('#{pane_id}'), true);
+    assert.equal(steps[0]?.args.includes('-e'), true);
+    assert.equal(steps[0]?.args.includes('OMX_NOTIFY_TEMP_CONTRACT={\"active\":true}'), true);
+  });
+
+  it('buildDetachedSessionBootstrapSteps forwards temp contract env to detached tmux session', () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      'omx-demo',
+      '/tmp/project',
+      "'codex' '--model' 'gpt-5'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      null,
+      undefined,
+      '{"active":true,"canonicalSelectors":["discord"]}',
+    );
+    const newSession = steps.find((step) => step.name === 'new-session');
+    assert.ok(newSession);
+    assert.equal(
+      newSession!.args.includes('-e')
+      && newSession!.args.some((arg) => arg.startsWith('OMX_NOTIFY_TEMP_CONTRACT=')),
+      true,
+    );
   });
 
   it('buildDetachedSessionFinalizeSteps keeps schedule after split-capture and before attach', () => {

@@ -128,6 +128,12 @@ import type {
   DispatchResult,
 } from "./types.js";
 import { getNotificationConfig, isEventEnabled, getVerbosity, shouldIncludeTmuxTail, getActiveProfileName } from "./config.js";
+import {
+  getSelectedOpenClawGatewayNames,
+  isOpenClawSelectedInTempContract,
+  readNotifyTempContractFromEnv,
+  type NotifyTempContract,
+} from "./temp-contract.js";
 import { formatNotification } from "./formatter.js";
 import { dispatchNotifications } from "./dispatcher.js";
 import { getCurrentTmuxSession, captureTmuxPane } from "./tmux.js";
@@ -149,6 +155,30 @@ function toOpenClawEvent(event: NotificationEvent): OpenClawHookEvent | null {
     case "ask-user-question": return "ask-user-question";
     case "session-stop": return "stop";
     default: return null;
+  }
+}
+
+export async function shouldDispatchOpenClaw(
+  event: OpenClawHookEvent,
+  tempContract: NotifyTempContract | null,
+  env: NodeJS.ProcessEnv = process.env,
+) : Promise<boolean> {
+  if (env.OMX_OPENCLAW !== "1") return false;
+  if (!tempContract?.active) return true;
+  if (!isOpenClawSelectedInTempContract(tempContract)) return false;
+
+  const selectedGatewayNames = getSelectedOpenClawGatewayNames(tempContract);
+  if (selectedGatewayNames.size === 0) return false;
+
+  try {
+    const { getOpenClawConfig, resolveGateway } = await import("../openclaw/config.js");
+    const config = getOpenClawConfig();
+    if (!config) return false;
+    const resolved = resolveGateway(config, event);
+    if (!resolved) return false;
+    return selectedGatewayNames.has(resolved.gatewayName.toLowerCase());
+  } catch {
+    return false;
   }
 }
 
@@ -211,11 +241,13 @@ export async function notifyLifecycle(
 
     const result = await dispatchNotifications(config, event, payload);
 
-    // Fire-and-forget OpenClaw gateway call (if OMX_OPENCLAW=1)
-    if (process.env.OMX_OPENCLAW === "1") {
-      try {
-        const openClawEvent = toOpenClawEvent(event);
-        if (openClawEvent !== null) {
+    // Fire-and-forget OpenClaw gateway call
+    const openClawEvent = toOpenClawEvent(event);
+    if (openClawEvent !== null) {
+      const tempContract = readNotifyTempContractFromEnv(process.env);
+      const openClawAllowed = await shouldDispatchOpenClaw(openClawEvent, tempContract, process.env);
+      if (openClawAllowed) {
+        try {
           const { wakeOpenClaw } = await import("../openclaw/index.js");
           // Non-blocking: do not await to avoid delaying notification return
           void wakeOpenClaw(openClawEvent, {
@@ -229,9 +261,9 @@ export async function notifyLifecycle(
             // Reply context env vars are read inside wakeOpenClaw;
             // callers do not need to pass them explicitly.
           });
+        } catch {
+          // OpenClaw failures must never affect notification dispatch
         }
-      } catch {
-        // OpenClaw failures must never affect notification dispatch
       }
     }
 

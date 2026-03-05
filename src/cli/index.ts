@@ -72,6 +72,13 @@ import {
   planWorktreeTarget,
   ensureWorktree,
 } from '../team/worktree.js';
+import {
+  OMX_NOTIFY_TEMP_CONTRACT_ENV,
+  parseNotifyTempContractFromArgs,
+  serializeNotifyTempContract,
+  type NotifyTempContract,
+  type ParseNotifyTempContractResult,
+} from '../notifications/temp-contract.js';
 
 const HELP = `
 oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
@@ -106,6 +113,12 @@ Options:
                 Workers get the configured low-complexity team model; leader model unchanged
   --madmax-spark  spark model for workers + bypass approvals for leader and workers
                 (shorthand for: --spark --madmax)
+  --notify-temp  Enable temporary notification routing for this run/session only
+  --discord      Select Discord provider for temporary notification mode
+  --slack        Select Slack provider for temporary notification mode
+  --telegram     Select Telegram provider for temporary notification mode
+  --custom <name>
+                Select custom/OpenClaw gateway name for temporary notification mode
   -w, --worktree[=<name>]
                 Launch Codex in a git worktree (detached when no name is given)
   --force       Force reinstall (overwrite existing files)
@@ -216,6 +229,10 @@ export function resolveCliInvocation(args: string[]): ResolvedCliInvocation {
     return { command: 'launch', launchArgs: args.slice(1) };
   }
   return { command: firstArg, launchArgs: [] };
+}
+
+export function resolveNotifyTempContract(args: string[], env: NodeJS.ProcessEnv = process.env): ParseNotifyTempContractResult {
+  return parseNotifyTempContractFromArgs(args, env);
 }
 
 export type CodexLaunchPolicy = 'inside-tmux' | 'direct';
@@ -532,9 +549,10 @@ export async function launchWithHud(args: string[]): Promise<void> {
 
   const launchCwd = process.cwd();
   const parsedWorktree = parseWorktreeMode(args);
+  const notifyTempResult = resolveNotifyTempContract(parsedWorktree.remainingArgs, process.env);
   const codexHomeOverride = resolveCodexHomeForLaunch(launchCwd, process.env);
-  const workerSparkModel = resolveWorkerSparkModel(parsedWorktree.remainingArgs, codexHomeOverride);
-  const normalizedArgs = normalizeCodexLaunchArgs(parsedWorktree.remainingArgs);
+  const workerSparkModel = resolveWorkerSparkModel(notifyTempResult.passthroughArgs, codexHomeOverride);
+  const normalizedArgs = normalizeCodexLaunchArgs(notifyTempResult.passthroughArgs);
   let cwd = launchCwd;
   if (parsedWorktree.mode.enabled) {
     const planned = planWorktreeTarget({
@@ -565,7 +583,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
 
   // ── Phase 1: preLaunch ──────────────────────────────────────────────────
   try {
-    await preLaunch(cwd, sessionId);
+    await preLaunch(cwd, sessionId, notifyTempResult.contract);
   } catch (err) {
     // preLaunch errors must NOT prevent Codex from starting
     console.error(`[omx] preLaunch warning: ${err instanceof Error ? err.message : err}`);
@@ -573,7 +591,10 @@ export async function launchWithHud(args: string[]): Promise<void> {
 
   // ── Phase 2: run ────────────────────────────────────────────────────────
   try {
-    runCodex(cwd, normalizedArgs, sessionId, workerSparkModel, codexHomeOverride);
+    const notifyTempContractRaw = notifyTempResult.contract.active
+      ? serializeNotifyTempContract(notifyTempResult.contract)
+      : null;
+    runCodex(cwd, normalizedArgs, sessionId, workerSparkModel, codexHomeOverride, notifyTempContractRaw);
   } finally {
     // ── Phase 3: postLaunch ─────────────────────────────────────────────
     await postLaunch(cwd, sessionId);
@@ -849,11 +870,13 @@ export function buildDetachedSessionBootstrapSteps(
   hudCmd: string,
   workerLaunchArgs: string | null,
   codexHomeOverride?: string,
+  notifyTempContractRaw?: string | null,
 ): DetachedSessionTmuxStep[] {
   const newSessionArgs: string[] = [
     'new-session', '-d', '-s', sessionName, '-c', cwd,
     ...(workerLaunchArgs ? ['-e', `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`] : []),
     ...(codexHomeOverride ? ['-e', `CODEX_HOME=${codexHomeOverride}`] : []),
+    ...(notifyTempContractRaw ? ['-e', `${OMX_NOTIFY_TEMP_CONTRACT_ENV}=${notifyTempContractRaw}`] : []),
     codexCmd,
   ];
   const splitCaptureArgs: string[] = [
@@ -929,13 +952,31 @@ export function buildDetachedSessionRollbackSteps(
   return steps;
 }
 
+
+export function buildNotifyTempStartupMessages(
+  contract: NotifyTempContract,
+  hasValidProviders: boolean,
+): { infoLines: string[]; warningLines: string[] } {
+  const providers = contract.canonicalSelectors.length > 0
+    ? contract.canonicalSelectors.join(',')
+    : 'none';
+  const infoLines = [
+    `notify temp: active | providers=${providers} | persistent-routing=bypassed`,
+  ];
+  const warningLines = [...contract.warnings];
+  if (!hasValidProviders) {
+    warningLines.push('notify temp: no valid providers resolved; notifications skipped');
+  }
+  return { infoLines, warningLines };
+}
+
 /**
  * preLaunch: Prepare environment before Codex starts.
  * 1. Orphan cleanup (stale session from a crashed launch)
  * 2. Generate runtime overlay + write session-scoped model instructions file
  * 3. Write session.json
  */
-async function preLaunch(cwd: string, sessionId: string): Promise<void> {
+async function preLaunch(cwd: string, sessionId: string, notifyTempContract?: NotifyTempContract): Promise<void> {
   // 1. Orphan cleanup
   const existingSession = await readSessionState(cwd);
   if (existingSession && isSessionStale(existingSession)) {
@@ -976,8 +1017,22 @@ async function preLaunch(cwd: string, sessionId: string): Promise<void> {
     // Non-fatal
   }
 
-  // 6. Send session-start lifecycle notification (best effort)
+  // 6. Emit temp notification startup summary + warnings, then send session-start lifecycle notification (best effort)
   try {
+    if (notifyTempContract?.active) {
+      process.env[OMX_NOTIFY_TEMP_CONTRACT_ENV] = serializeNotifyTempContract(notifyTempContract);
+      const { getNotificationConfig } = await import('../notifications/config.js');
+      const resolved = getNotificationConfig();
+      const startup = buildNotifyTempStartupMessages(notifyTempContract, Boolean(resolved?.enabled));
+      for (const info of startup.infoLines) {
+        console.log(`[omx] ${info}`);
+      }
+      for (const warning of startup.warningLines) {
+        console.warn(`[omx] ${warning}`);
+      }
+    } else {
+      delete process.env[OMX_NOTIFY_TEMP_CONTRACT_ENV];
+    }
     const { notifyLifecycle } = await import('../notifications/index.js');
     await notifyLifecycle('session-start', {
       sessionId,
@@ -1014,6 +1069,7 @@ function runCodex(
   sessionId: string,
   workerDefaultModel?: string,
   codexHomeOverride?: string,
+  notifyTempContractRaw?: string | null,
 ): void {
   const launchArgs = injectModelInstructionsBypassArgs(
     cwd,
@@ -1036,6 +1092,9 @@ function runCodex(
   const codexEnv = workerLaunchArgs
     ? { ...codexBaseEnv, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }
     : codexBaseEnv;
+  const codexEnvWithNotify = notifyTempContractRaw
+    ? { ...codexEnv, [OMX_NOTIFY_TEMP_CONTRACT_ENV]: notifyTempContractRaw }
+    : codexEnv;
 
   if (resolveCodexLaunchPolicy(process.env) === 'inside-tmux') {
     // Already in tmux: launch codex in current pane, HUD in bottom split
@@ -1071,7 +1130,7 @@ function runCodex(
     }
 
     try {
-      runCodexBlocking(cwd, launchArgs, codexEnv);
+      runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
     } finally {
       const cleanupPaneIds = buildHudPaneCleanupTargets(
         listHudWatchPaneIdsInCurrentWindow(currentPaneId),
@@ -1099,6 +1158,7 @@ function runCodex(
         hudCmd,
         workerLaunchArgs,
         codexHomeOverride,
+        notifyTempContractRaw,
       );
       for (const step of bootstrapSteps) {
         const output = execFileSync('tmux', step.args, { stdio: step.name === 'new-session' ? 'ignore' : 'pipe', encoding: 'utf-8' });
@@ -1162,7 +1222,7 @@ function runCodex(
         }
       }
       // tmux not available or failed, just run codex directly
-      runCodexBlocking(cwd, launchArgs, codexEnv);
+      runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
     }
   }
 }
