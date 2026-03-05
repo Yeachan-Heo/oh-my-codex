@@ -304,6 +304,34 @@ Examples:
 - Agents: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
 - Skills: `autopilot`, `plan`, `team`, `ralph`, `ultrawork`, `cancel`
 
+### Notification Setup Skill (`$configure-notifications`)
+
+Use `$configure-notifications` as the unified entry point for notification setup:
+
+- Discord (webhook/bot)
+- Telegram (bot)
+- Slack (webhook)
+- OpenClaw / custom webhook / custom CLI command
+
+Examples:
+
+```text
+$configure-notifications "configure discord notifications"
+$configure-notifications "configure slack notifications"
+$configure-notifications "configure openclaw notifications"
+```
+
+For OpenClaw with **clawdbot agent turns** (instead of direct message forwarding),
+configure a command gateway using `clawdbot agent --deliver --reply-channel ... --reply-to ...`
+and map hook events (`session-start`, `session-idle`, `ask-user-question`, `session-stop`, `session-end`).
+
+Required env gates for OpenClaw command mode:
+
+```bash
+export OMX_OPENCLAW=1
+export OMX_OPENCLAW_COMMAND=1
+```
+
 ### Visual QA Loop (`$visual-verdict`)
 
 Use `$visual-verdict` when a task depends on visual fidelity (reference image(s) + generated screenshot).
@@ -349,7 +377,7 @@ npm test
 
 - **[Full Documentation](https://yeachan-heo.github.io/oh-my-codex-website/docs.html)** - Complete guide
 - **[CLI Reference](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#cli-reference)** - All `omx` commands, flags, and tools
-- **[Notifications Guide](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#notifications)** - Discord, Telegram, Slack, and webhook setup
+- **[Notifications Guide](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#notifications)** - Discord, Telegram, Slack, OpenClaw, and custom command/webhook setup
 - **[Recommended Workflows](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#workflows)** - Battle-tested skill chains for common tasks
 - **[Release Notes](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#release-notes)** - What's new in each version
 
@@ -359,6 +387,7 @@ npm test
 - Migration guide (post-v0.4.4 mainline): `docs/migration-mainline-post-v0.4.4.md`
 - Coverage and parity notes: `COVERAGE.md`
 - Hook extension workflow: `docs/hooks-extension.md`
+- OpenClaw integration examples: `docs/openclaw-integration.md`
 - Setup and contribution details: `CONTRIBUTING.md`
 
 ## Acknowledgments
