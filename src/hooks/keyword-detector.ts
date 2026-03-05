@@ -98,6 +98,34 @@ const TEAM_SWARM_INTENT_PATTERNS: Record<'team' | 'swarm', RegExp[]> = {
   ],
 };
 
+function hasExplicitPromptsInvocation(text: string): boolean {
+  return /(?:^|\s)\/prompts:[\w.-]+(?=[\s.,!?;:]|$)/i.test(text);
+}
+
+function extractExplicitSkillInvocations(text: string): KeywordMatch[] {
+  const results: KeywordMatch[] = [];
+  const regex = /(?:^|[^\w])\$([a-z][a-z0-9-]*)\b/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(text)) !== null) {
+    const token = (match[1] ?? '').toLowerCase();
+    if (!token) continue;
+
+    const normalizedSkill = token === 'swarm' ? 'team' : token;
+    const registryEntry = KEYWORD_TRIGGER_DEFINITIONS.find((entry) => entry.skill.toLowerCase() === normalizedSkill);
+    if (!registryEntry) continue;
+    if (results.some((item) => item.skill === normalizedSkill)) continue;
+
+    results.push({
+      keyword: `$${token}`,
+      skill: normalizedSkill,
+      priority: registryEntry.priority,
+    });
+  }
+
+  return results;
+}
+
 function hasIntentContextForKeyword(text: string, keyword: string): boolean {
   if (!KEYWORDS_REQUIRING_INTENT.has(keyword.toLowerCase())) return true;
   const k = keyword.toLowerCase() as 'team' | 'swarm';
@@ -106,16 +134,22 @@ function hasIntentContextForKeyword(text: string, keyword: string): boolean {
 
 /**
  * Detect keywords in user input text
- * Returns matching skills sorted by priority (highest first)
+ * Returns explicit `$skill` matches first (left-to-right),
+ * then appends implicit keyword matches sorted by priority.
  */
 export function detectKeywords(text: string): KeywordMatch[] {
-  const matches: KeywordMatch[] = [];
+  const explicit = extractExplicitSkillInvocations(text);
+  if (hasExplicitPromptsInvocation(text) && explicit.length === 0) {
+    return [];
+  }
+
+  const implicit: KeywordMatch[] = [];
 
   for (const { pattern, skill, priority } of KEYWORD_MAP) {
     const match = text.match(pattern);
     if (match) {
       if (!hasIntentContextForKeyword(text, match[0].toLowerCase())) continue;
-      matches.push({
+      implicit.push({
         keyword: match[0],
         skill,
         priority,
@@ -123,7 +157,14 @@ export function detectKeywords(text: string): KeywordMatch[] {
     }
   }
 
-  return matches.sort(compareKeywordMatches);
+  const merged: KeywordMatch[] = [...explicit];
+  const sortedImplicit = implicit.sort(compareKeywordMatches);
+  for (const item of sortedImplicit) {
+    if (merged.some((existing) => existing.skill === item.skill)) continue;
+    merged.push(item);
+  }
+
+  return merged;
 }
 
 /**

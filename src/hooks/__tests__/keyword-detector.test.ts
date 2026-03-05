@@ -13,6 +13,53 @@ import { isUnderspecifiedForExecution, applyRalplanGate } from '../keyword-detec
 import { KEYWORD_TRIGGER_DEFINITIONS } from '../keyword-registry.js';
 
 describe('keyword detector swarm/team compatibility', () => {
+  it('keeps explicit $skill order in detectKeywords results (left-to-right)', () => {
+    const matches = detectKeywords('$analyze $ultraqa $code-review now');
+    assert.deepEqual(matches.map((m) => m.skill).slice(0, 3), ['analyze', 'ultraqa', 'code-review']);
+  });
+
+  it('de-duplicates repeated explicit skill tokens', () => {
+    const matches = detectKeywords('$analyze $analyze root cause');
+    assert.deepEqual(matches.map((m) => m.skill), ['analyze']);
+  });
+
+  it('does not auto-detect keywords for explicit /prompts invocation without $skills', () => {
+    const matches = detectKeywords('/prompts:architect analyze this issue');
+    assert.deepEqual(matches, []);
+    const primary = detectPrimaryKeyword('/prompts:architect analyze this issue');
+    assert.equal(primary, null);
+  });
+
+  it('treats /prompts invocation with trailing punctuation as explicit command', () => {
+    const matches = detectKeywords('/prompts:architect, analyze this issue');
+    assert.deepEqual(matches, []);
+    const primary = detectPrimaryKeyword('/prompts:architect, analyze this issue');
+    assert.equal(primary, null);
+  });
+
+  it('maps analyze keyword to analyze skill', () => {
+    const match = detectPrimaryKeyword('please analyze this workflow');
+    assert.ok(match);
+    assert.equal(match.skill, 'analyze');
+  });
+
+  it('maps code-review keyword variants to code-review skill', () => {
+    const hyphen = detectPrimaryKeyword('run code-review before merge');
+    assert.ok(hyphen);
+    assert.equal(hyphen.skill, 'code-review');
+
+    const spaced = detectPrimaryKeyword('please do a code review');
+    assert.ok(spaced);
+    assert.equal(spaced.skill, 'code-review');
+  });
+
+  it('supports explicit multi-skill invocation by prioritizing left-most $skill', () => {
+    const match = detectPrimaryKeyword('$ultraqa $analyze $code-review run now');
+    assert.ok(match);
+    assert.equal(match.skill, 'ultraqa');
+    assert.equal(match.keyword.toLowerCase(), '$ultraqa');
+  });
+
   it('maps "coordinated team" phrase to team orchestration skill', () => {
     const match = detectPrimaryKeyword('run a coordinated team for implementation');
 
@@ -61,10 +108,9 @@ describe('keyword detector swarm/team compatibility', () => {
     assert.equal(match.skill, 'team');
   });
 
-  it('still triggers swarm for explicit /prompts:swarm invocation', () => {
+  it('does not trigger keyword detector for explicit /prompts:swarm invocation', () => {
     const match = detectPrimaryKeyword('use /prompts:swarm for this');
-    assert.ok(match);
-    assert.equal(match.skill, 'team');
+    assert.equal(match, null);
   });
 
   it('prefers ralplan over ralph when both keywords are present', () => {
@@ -134,6 +180,11 @@ describe('keyword detector swarm/team compatibility', () => {
 describe('keyword registry coverage', () => {
   it('includes key team/swarm aliases in runtime keyword registry', () => {
     const registryKeywords = new Set(KEYWORD_TRIGGER_DEFINITIONS.map((v) => v.keyword.toLowerCase()));
+    assert.ok(registryKeywords.has('ultraqa'));
+    assert.ok(registryKeywords.has('analyze'));
+    assert.ok(registryKeywords.has('investigate'));
+    assert.ok(registryKeywords.has('code review'));
+    assert.ok(registryKeywords.has('code-review'));
     assert.ok(registryKeywords.has('coordinated team'));
     assert.ok(registryKeywords.has('swarm'));
     assert.ok(registryKeywords.has('coordinated swarm'));
