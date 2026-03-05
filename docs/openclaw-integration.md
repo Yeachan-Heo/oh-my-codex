@@ -8,6 +8,9 @@ This guide covers two supported setup paths:
 ## Activation gates
 
 ```bash
+# Prefer exporting a token env var in your shell profile (avoid hardcoding secrets in JSON):
+export HOOKS_TOKEN="your-openclaw-hooks-token"
+
 # Required for OpenClaw dispatch pipeline
 export OMX_OPENCLAW=1
 
@@ -38,7 +41,7 @@ This keeps behavior deterministic and backward compatible.
           "type": "http",
           "url": "http://127.0.0.1:18789/hooks/agent",
           "headers": {
-            "Authorization": "Bearer YOUR_HOOKS_TOKEN"
+            "Authorization": "Bearer ${HOOKS_TOKEN}"
           }
         }
       },
@@ -70,7 +73,7 @@ This keeps behavior deterministic and backward compatible.
       "url": "http://127.0.0.1:18789/hooks/agent",
       "method": "POST",
       "headers": {
-        "Authorization": "Bearer YOUR_HOOKS_TOKEN"
+        "Authorization": "Bearer ${HOOKS_TOKEN}"
       },
       "events": ["session-end", "ask-user-question"],
       "instruction": "OMX event {{event}} for {{projectPath}}"
@@ -92,6 +95,10 @@ These aliases are normalized by OMX into internal OpenClaw gateway mappings.
 Use this when you want OMX hook events to trigger **agent turns** (not plain
 message/webhook forwarding), e.g. for `#omc-dev`.
 
+> Shell safety: template variables (for example `{{instruction}}`) are interpolated into the
+> command string. Keep templates simple and avoid shell metacharacters in user-derived content.
+> For troubleshooting, temporarily remove output redirection and inspect command output.
+
 ```json
 {
   "notifications": {
@@ -109,7 +116,7 @@ message/webhook forwarding), e.g. for `#omc-dev`.
       "gateways": {
         "local": {
           "type": "command",
-          "command": "(clawdbot agent --session-id omx-hooks --message {{instruction}} --thinking minimal --deliver --reply-channel discord --reply-to '#omc-dev' --timeout 120 --json >/dev/null 2>&1 || true)"
+          "command": "(clawdbot agent --session-id omx-hooks --message {{instruction}} --thinking minimal --deliver --reply-channel discord --reply-to '#omc-dev' --timeout 120 --json >/tmp/omx-openclaw-agent.log 2>&1)"
         }
       },
       "hooks": {
@@ -150,7 +157,7 @@ message/webhook forwarding), e.g. for `#omc-dev`.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:18789/hooks/wake \
-  -H "Authorization: Bearer YOUR_HOOKS_TOKEN" \
+  -H "Authorization: Bearer ${HOOKS_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{"text":"OMX wake smoke test","mode":"now"}'
 ```
@@ -162,9 +169,9 @@ Expected pass signal: JSON includes `"ok":true`.
 ```bash
 curl -sS -o /tmp/omx-openclaw-agent-check.json -w "HTTP %{http_code}\n" \
   -X POST http://127.0.0.1:18789/hooks/agent \
-  -H "Authorization: Bearer YOUR_HOOKS_TOKEN" \
+  -H "Authorization: Bearer ${HOOKS_TOKEN}" \
   -H "Content-Type: application/json" \
-  -d '{"instruction":"OMX delivery verification","event":"session-end","sessionId":"manual-check"}'
+  -d '{"message":"OMX delivery verification","instruction":"OMX delivery verification","event":"session-end","sessionId":"manual-check"}'
 ```
 
 Expected pass signal: HTTP 2xx + accepted response body.
@@ -173,7 +180,7 @@ Expected pass signal: HTTP 2xx + accepted response body.
 
 ```bash
 # token present
-test -n "$YOUR_HOOKS_TOKEN" && echo "token ok" || echo "token missing"
+test -n "$HOOKS_TOKEN" && echo "token ok" || echo "token missing"
 
 # reachability
 curl -sS -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:18789 || echo "gateway unreachable"

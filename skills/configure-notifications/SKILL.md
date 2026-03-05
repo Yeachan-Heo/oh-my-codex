@@ -135,17 +135,26 @@ jq \
    }' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
 ```
 
+> Activation gate: OpenClaw-backed dispatch is active only when `OMX_OPENCLAW=1`.
+> For command gateways, also require `OMX_OPENCLAW_COMMAND=1`.
+
 ### 4b-1) OpenClaw + Clawdbot Agent Workflow (recommended for dev)
 
 If the user explicitly asks to route hook notifications through **clawdbot agent turns**
 (not direct message/webhook forwarding), use a command gateway that invokes
 `clawdbot agent` and delivers back to Discord.
 
+Notes:
+- Hook name mapping is intentional: notifications `session-stop` -> OpenClaw hook `stop`.
+- OMX shell-escapes template substitutions for command gateways (including `{{instruction}}`).
+- Keep `instruction` templates concise and avoid untrusted shell metacharacters.
+- During troubleshooting, avoid swallowing command output; route it to a log file.
+
 Example (targeting `#omc-dev`):
 
 ```bash
 jq \
-  --arg command "(clawdbot agent --session-id omx-hooks --message {{instruction}} --thinking minimal --deliver --reply-channel discord --reply-to '#omc-dev' --timeout 120 --json >/dev/null 2>&1 || true)" \
+  --arg command "(clawdbot agent --session-id omx-hooks --message {{instruction}} --thinking minimal --deliver --reply-channel discord --reply-to '#omc-dev' --timeout 120 --json >/tmp/omx-openclaw-agent.log 2>&1)" \
   '.notifications = (.notifications // {enabled: true}) |
    .notifications.enabled = true |
    .notifications.verbosity = "verbose" |
