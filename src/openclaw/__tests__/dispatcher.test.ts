@@ -71,14 +71,19 @@ describe('interpolateInstruction', () => {
     assert.equal(result, 'Session abc ended');
   });
 
-  it('leaves unknown variables as-is (not empty)', () => {
+  it('replaces unknown variables with empty string', () => {
     const result = interpolateInstruction('{{unknownVar}} text', {});
-    assert.equal(result, '{{unknownVar}} text');
+    assert.equal(result, ' text');
   });
 
-  it('leaves undefined variables as-is', () => {
+  it('replaces undefined variables with empty string', () => {
     const result = interpolateInstruction('{{sessionId}}', { sessionId: undefined });
-    assert.equal(result, '{{sessionId}}');
+    assert.equal(result, '');
+  });
+
+  it('replaces undefined tmuxSession with empty string', () => {
+    const result = interpolateInstruction('tmux:{{tmuxSession}}', { tmuxSession: undefined });
+    assert.equal(result, 'tmux:');
   });
 
   it('replaces multiple variables', () => {
@@ -106,12 +111,12 @@ describe('interpolateInstruction - reply context variables', () => {
     assert.equal(result, 'thread: thread-123');
   });
 
-  it('leaves reply variables as-is when undefined', () => {
+  it('replaces reply variables with empty string when undefined', () => {
     const result = interpolateInstruction(
       '{{replyChannel}} {{replyTarget}} {{replyThread}}',
       { replyChannel: undefined, replyTarget: undefined, replyThread: undefined },
     );
-    assert.equal(result, '{{replyChannel}} {{replyTarget}} {{replyThread}}');
+    assert.equal(result, '  ');
   });
 
   it('replaces all reply variables together', () => {

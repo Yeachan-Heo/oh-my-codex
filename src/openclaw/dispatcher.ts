@@ -76,14 +76,14 @@ export function validateGatewayUrl(url: string): boolean {
  * - {{replyTarget}} - reply target user/bot (from OPENCLAW_REPLY_TARGET env var)
  * - {{replyThread}} - reply thread ID (from OPENCLAW_REPLY_THREAD env var)
  *
- * Unresolved variables are left as-is (not replaced with empty string).
+ * Unresolved variables are replaced with empty string.
  */
 export function interpolateInstruction(
   template: string,
   variables: Record<string, string | undefined>,
 ): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) => {
-    return variables[key] ?? match;
+  return template.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => {
+    return variables[key] ?? "";
   });
 }
 
