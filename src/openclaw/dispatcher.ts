@@ -6,8 +6,8 @@
  * to avoid blocking hooks.
  *
  * SECURITY: Command gateway requires OMX_OPENCLAW_COMMAND=1 opt-in.
- * Hard 5-second timeout (non-configurable). Prefers execFile for
- * simple commands; falls back to sh -c only for shell metacharacters.
+ * Command timeout is configurable with safe bounds.
+ * Prefers execFile for simple commands; falls back to sh -c only for shell metacharacters.
  */
 
 import type {
@@ -21,8 +21,16 @@ import type {
 /** Default per-request timeout for HTTP gateways */
 const DEFAULT_HTTP_TIMEOUT_MS = 10_000;
 
-/** Hard non-configurable timeout for command gateways */
-const COMMAND_TIMEOUT_MS = 5_000;
+/** Default command gateway timeout (backward-compatible default) */
+const DEFAULT_COMMAND_TIMEOUT_MS = 5_000;
+
+/**
+ * Command timeout safety bounds.
+ * - Minimum 100ms: avoids immediate/near-zero timeout misconfiguration.
+ * - Maximum 300000ms (5 minutes): prevents runaway long-lived command processes.
+ */
+const MIN_COMMAND_TIMEOUT_MS = 100;
+const MAX_COMMAND_TIMEOUT_MS = 300_000;
 
 /** Shell metacharacters that require sh -c instead of execFile */
 const SHELL_METACHAR_RE = /[|&;><`$()]/;
@@ -97,6 +105,33 @@ export function shellEscapeArg(value: string): string {
 }
 
 /**
+ * Resolve command gateway timeout with precedence:
+ * gateway timeout > OMX_OPENCLAW_COMMAND_TIMEOUT_MS > default.
+ */
+export function resolveCommandTimeoutMs(
+  gatewayTimeout?: number,
+  envTimeoutRaw: string | undefined = process.env.OMX_OPENCLAW_COMMAND_TIMEOUT_MS,
+): number {
+  const parseFinite = (value: unknown): number | undefined => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+    return value;
+  };
+
+  const parseEnv = (value: string | undefined): number | undefined => {
+    if (!value) return undefined;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
+
+  const rawTimeout =
+    parseFinite(gatewayTimeout) ??
+    parseEnv(envTimeoutRaw) ??
+    DEFAULT_COMMAND_TIMEOUT_MS;
+
+  return Math.min(MAX_COMMAND_TIMEOUT_MS, Math.max(MIN_COMMAND_TIMEOUT_MS, Math.trunc(rawTimeout)));
+}
+
+/**
  * Wake an HTTP-type OpenClaw gateway with the given payload.
  */
 export async function wakeGateway(
@@ -151,7 +186,8 @@ export async function wakeGateway(
  *
  * SECURITY REQUIREMENTS:
  * - Requires OMX_OPENCLAW_COMMAND=1 opt-in (separate gate from OMX_OPENCLAW)
- * - Hard 5-second timeout (non-configurable)
+ * - Timeout is configurable via gateway.timeout or OMX_OPENCLAW_COMMAND_TIMEOUT_MS
+ *   with safe clamping bounds and backward-compatible default 5000ms
  * - Prefers execFile for simple commands (no metacharacters)
  * - Falls back to sh -c only when metacharacters detected
  * - detached: false to prevent orphan processes
@@ -179,6 +215,7 @@ export async function wakeCommandGateway(
 
   try {
     const { execFile, exec } = await import("child_process");
+    const timeout = resolveCommandTimeoutMs(gatewayConfig.timeout);
 
     // Interpolate variables with shell escaping
     const interpolated = gatewayConfig.command.replace(
@@ -236,7 +273,7 @@ export async function wakeCommandGateway(
       if (hasMetachars) {
         // Fall back to sh -c for complex commands with metacharacters
         child = exec(interpolated, {
-          timeout: COMMAND_TIMEOUT_MS,
+          timeout,
           env: { ...process.env },
         });
       } else {
@@ -245,7 +282,7 @@ export async function wakeCommandGateway(
         const cmd = parts[0];
         const args = parts.slice(1);
         child = execFile(cmd, args, {
-          timeout: COMMAND_TIMEOUT_MS,
+          timeout,
           env: { ...process.env },
         });
       }

@@ -16,6 +16,10 @@ export OMX_OPENCLAW=1
 
 # Required in addition for command gateways
 export OMX_OPENCLAW_COMMAND=1
+
+# Optional global default for command gateway timeout (ms)
+# Precedence: gateway timeout > env override > 5000 default
+export OMX_OPENCLAW_COMMAND_TIMEOUT_MS=120000
 ```
 
 ## Canonical precedence contract
@@ -98,6 +102,9 @@ message/webhook forwarding), e.g. for `#omc-dev`.
 > Shell safety: template variables (for example `{{instruction}}`) are interpolated into the
 > command string. Keep templates simple and avoid shell metacharacters in user-derived content.
 > For troubleshooting, temporarily remove output redirection and inspect command output.
+>
+> Command gateway timeout precedence: `gateways.<name>.timeout` > `OMX_OPENCLAW_COMMAND_TIMEOUT_MS` > `5000`.
+> For `clawdbot agent` workflows, use `120000` (2 minutes) to avoid premature timeout.
 
 ```json
 {
@@ -116,7 +123,8 @@ message/webhook forwarding), e.g. for `#omc-dev`.
       "gateways": {
         "local": {
           "type": "command",
-          "command": "(clawdbot agent --session-id omx-hooks --message {{instruction}} --thinking minimal --deliver --reply-channel discord --reply-to '#omc-dev' --timeout 120 --json >/tmp/omx-openclaw-agent.log 2>&1)"
+          "command": "(clawdbot agent --session-id omx-hooks --message {{instruction}} --thinking minimal --deliver --reply-channel discord --reply-to '#omc-dev' --timeout 120 --json >/tmp/omx-openclaw-agent.log 2>&1)",
+          "timeout": 120000
         }
       },
       "hooks": {
@@ -197,3 +205,4 @@ test "$OMX_OPENCLAW_COMMAND" = "1" && echo "OMX_OPENCLAW_COMMAND=1" || echo "mis
 - **5xx**: gateway runtime issue; inspect logs.
 - **Timeout/connection refused**: host/port/firewall issue.
 - **Command gateway disabled**: set both `OMX_OPENCLAW=1` and `OMX_OPENCLAW_COMMAND=1`.
+- **Command killed by `SIGTERM`**: increase `gateways.<name>.timeout` (recommend `120000` for clawdbot agent) or set `OMX_OPENCLAW_COMMAND_TIMEOUT_MS`.

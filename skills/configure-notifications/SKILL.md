@@ -137,6 +137,7 @@ jq \
 
 > Activation gate: OpenClaw-backed dispatch is active only when `OMX_OPENCLAW=1`.
 > For command gateways, also require `OMX_OPENCLAW_COMMAND=1`.
+> Optional timeout env override: `OMX_OPENCLAW_COMMAND_TIMEOUT_MS` (ms).
 
 ### 4b-1) OpenClaw + Clawdbot Agent Workflow (recommended for dev)
 
@@ -149,6 +150,8 @@ Notes:
 - OMX shell-escapes template substitutions for command gateways (including `{{instruction}}`).
 - Keep `instruction` templates concise and avoid untrusted shell metacharacters.
 - During troubleshooting, avoid swallowing command output; route it to a log file.
+- Timeout precedence: `gateways.<name>.timeout` > `OMX_OPENCLAW_COMMAND_TIMEOUT_MS` > `5000`.
+- For clawdbot agent workflows, set `gateways.<name>.timeout` to `120000` (recommended).
 
 Example (targeting `#omc-dev`):
 
@@ -169,7 +172,8 @@ jq \
    .notifications.openclaw.gateways = (.notifications.openclaw.gateways // {}) |
    .notifications.openclaw.gateways["local"] = {
      type: "command",
-     command: $command
+     command: $command,
+     timeout: 120000
    } |
    .notifications.openclaw.hooks = (.notifications.openclaw.hooks // {}) |
    .notifications.openclaw.hooks["session-start"] = {

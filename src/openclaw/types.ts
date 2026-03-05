@@ -38,7 +38,11 @@ export interface OpenClawCommandGatewayConfig {
   /** Command template with {{variable}} placeholders.
    *  Variables are shell-escaped automatically before interpolation. */
   command: string;
-  /** Per-command timeout in ms (non-configurable hard limit: 5000ms for security) */
+  /**
+   * Per-command timeout in ms.
+   * Precedence: gateway timeout > OMX_OPENCLAW_COMMAND_TIMEOUT_MS > default (5000ms).
+   * Runtime clamps to safe bounds.
+   */
   timeout?: number;
 }
 
