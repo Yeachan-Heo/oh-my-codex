@@ -180,6 +180,29 @@ describe('runtime', () => {
     assert.doesNotMatch(startupLog, /thinking_level=/);
   });
 
+  it('resolveWorkerLaunchArgsFromEnv logs model=gemini without thinking_level for gemini CLI', () => {
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+    try {
+      const args = resolveWorkerLaunchArgsFromEnv(
+        {
+          OMX_TEAM_WORKER_CLI: 'gemini',
+          OMX_TEAM_WORKER_LAUNCH_ARGS: '--model gemini-2.0-pro',
+        },
+        'executor',
+      );
+      assert.deepEqual(args, ['--model', 'gemini-2.0-pro']);
+    } finally {
+      console.log = originalLog;
+    }
+    const startupLog = logs.find((line) => line.includes('worker startup resolution:'));
+    assert.ok(startupLog);
+    assert.match(startupLog, /model=gemini/);
+    assert.match(startupLog, /source=local-settings/);
+    assert.doesNotMatch(startupLog, /thinking_level=/);
+  });
+
   it('resolveWorkerLaunchArgsFromEnv keeps codex thinking_level logging for mixed CLI maps', () => {
     const logs: string[] = [];
     const originalLog = console.log;

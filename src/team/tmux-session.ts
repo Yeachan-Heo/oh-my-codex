@@ -38,10 +38,12 @@ const OMX_TEAM_WORKER_CLI_MAP_ENV = 'OMX_TEAM_WORKER_CLI_MAP';
 const OMX_TEAM_WORKER_LAUNCH_MODE_ENV = 'OMX_TEAM_WORKER_LAUNCH_MODE';
 const OMX_TEAM_AUTO_INTERRUPT_RETRY_ENV = 'OMX_TEAM_AUTO_INTERRUPT_RETRY';
 const CLAUDE_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
+const GEMINI_APPROVAL_MODE_FLAG = '--approval-mode';
+const GEMINI_APPROVAL_MODE_YOLO = 'yolo';
 const OMX_LEADER_NODE_PATH_ENV = 'OMX_LEADER_NODE_PATH';
 const OMX_LEADER_CLI_PATH_ENV = 'OMX_LEADER_CLI_PATH';
 
-export type TeamWorkerCli = 'codex' | 'claude';
+export type TeamWorkerCli = 'codex' | 'claude' | 'gemini';
 type TeamWorkerCliMode = 'auto' | TeamWorkerCli;
 export type TeamWorkerLaunchMode = 'interactive' | 'prompt';
 
@@ -418,8 +420,8 @@ function hasModelInstructionsOverride(args: string[]): boolean {
 function normalizeTeamWorkerCliMode(raw: string | undefined, sourceEnv: string = OMX_TEAM_WORKER_CLI_ENV): TeamWorkerCliMode {
   const normalized = String(raw ?? 'auto').trim().toLowerCase();
   if (normalized === '' || normalized === 'auto') return 'auto';
-  if (normalized === 'codex' || normalized === 'claude') return normalized;
-  throw new Error(`Invalid ${sourceEnv} value "${raw}". Expected: auto, codex, claude`);
+  if (normalized === 'codex' || normalized === 'claude' || normalized === 'gemini') return normalized;
+  throw new Error(`Invalid ${sourceEnv} value "${raw}". Expected: auto, codex, claude, gemini`);
 }
 
 export function resolveTeamWorkerLaunchMode(
@@ -459,7 +461,9 @@ export function resolveTeamWorkerCli(launchArgs: string[] = [], env: NodeJS.Proc
 
 function resolveTeamWorkerCliFromLaunchArgs(launchArgs: string[] = []): TeamWorkerCli {
   const model = extractModelOverride(launchArgs);
-  return model && /claude/i.test(model) ? 'claude' : 'codex';
+  if (model && /claude/i.test(model)) return 'claude';
+  if (model && /gemini/i.test(model)) return 'gemini';
+  return 'codex';
 }
 
 export function resolveTeamWorkerCliPlan(
@@ -487,7 +491,7 @@ export function resolveTeamWorkerCliPlan(
   if (entries.length === 0 || entries.every((part) => part.length === 0)) {
     throw new Error(
       `Invalid ${OMX_TEAM_WORKER_CLI_MAP_ENV} value "${env[OMX_TEAM_WORKER_CLI_MAP_ENV]}". `
-        + `Expected comma-separated values: auto|codex|claude.`,
+        + `Expected comma-separated values: auto|codex|claude|gemini.`,
     );
   }
   if (entries.some((part) => part.length === 0)) {
@@ -512,6 +516,12 @@ export function resolveTeamWorkerCliPlan(
 
 export function translateWorkerLaunchArgsForCli(workerCli: TeamWorkerCli, args: string[]): string[] {
   if (workerCli === 'codex') return [...args];
+  if (workerCli === 'gemini') {
+    const model = extractModelOverride(args);
+    return model
+      ? [GEMINI_APPROVAL_MODE_FLAG, GEMINI_APPROVAL_MODE_YOLO, MODEL_FLAG, model]
+      : [GEMINI_APPROVAL_MODE_FLAG, GEMINI_APPROVAL_MODE_YOLO];
+  }
 
   // Claude workers must launch with exactly one permissions bypass flag.
   // All other launch args are dropped to avoid Codex-only flags and model/config overrides.
@@ -559,7 +569,7 @@ export function assertTeamWorkerCliBinaryAvailable(
   if (existsImpl(workerCli)) return;
   throw new Error(
     `Selected team worker CLI "${workerCli}" is not available on PATH. `
-      + `Install "${workerCli}" or set ${OMX_TEAM_WORKER_CLI_ENV}=codex|claude.`,
+      + `Install "${workerCli}" or set ${OMX_TEAM_WORKER_CLI_ENV}=codex|claude|gemini.`,
   );
 }
 

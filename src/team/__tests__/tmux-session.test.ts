@@ -377,6 +377,31 @@ describe('paneLooksReady gate: status-only is not ready (#391)', () => {
 });
 
 describe('buildWorkerStartupCommand', () => {
+  it('auto-selects gemini worker CLI from gemini model', () => {
+    const prevShell = process.env.SHELL;
+    const prevCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/bin/bash';
+    delete process.env.OMX_TEAM_WORKER_CLI; // auto
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, ['--model', 'gemini-2.0-pro']);
+      assert.match(cmd, /exec .*gemini/);
+      assert.match(cmd, /--approval-mode/);
+      assert.match(cmd, /yolo/);
+      assert.match(cmd, /--model/);
+      assert.match(cmd, /gemini-2.0-pro/);
+      assert.doesNotMatch(cmd, /\s-i(\s|$)/);
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
   it('auto-selects claude worker CLI from claude model', () => {
     const prevShell = process.env.SHELL;
     const prevCli = process.env.OMX_TEAM_WORKER_CLI;
@@ -721,8 +746,18 @@ describe('team worker CLI helpers', () => {
   it('resolveTeamWorkerCli auto-detects claude models', () => {
     assert.equal(resolveTeamWorkerCli(['--model', 'claude-3-7-sonnet'], {}), 'claude');
     assert.equal(resolveTeamWorkerCli(['--model=claude-sonnet-4-6'], {}), 'claude');
+    assert.equal(resolveTeamWorkerCli(['--model', 'gemini-2.0-pro'], {}), 'gemini');
     assert.equal(resolveTeamWorkerCli(['--model', 'gpt-5'], {}), 'codex');
     assert.equal(resolveTeamWorkerCli([], {}), 'codex');
+  });
+
+  it('resolveTeamWorkerCli accepts explicit gemini override', () => {
+    assert.equal(resolveTeamWorkerCli([], { OMX_TEAM_WORKER_CLI: 'gemini' }), 'gemini');
+  });
+
+  it('resolveTeamWorkerCliPlan accepts gemini in CLI map', () => {
+    const plan = resolveTeamWorkerCliPlan(3, [], { OMX_TEAM_WORKER_CLI_MAP: 'codex,gemini,claude' });
+    assert.deepEqual(plan, ['codex', 'gemini', 'claude']);
   });
 
   it('translateWorkerLaunchArgsForCli preserves args for codex', () => {
@@ -737,6 +772,17 @@ describe('team worker CLI helpers', () => {
     );
   });
 
+  it('translateWorkerLaunchArgsForCli emits approval-mode and optional model for gemini', () => {
+    assert.deepEqual(
+      translateWorkerLaunchArgsForCli('gemini', ['--model', 'gemini-2.0-pro', '--json']),
+      ['--approval-mode', 'yolo', '--model', 'gemini-2.0-pro'],
+    );
+    assert.deepEqual(
+      translateWorkerLaunchArgsForCli('gemini', ['--json']),
+      ['--approval-mode', 'yolo'],
+    );
+  });
+
   it('assertTeamWorkerCliBinaryAvailable throws clear error when binary missing', () => {
     assert.throws(
       () => assertTeamWorkerCliBinaryAvailable('claude', () => false),
@@ -748,9 +794,9 @@ describe('team worker CLI helpers', () => {
     const plan = resolveTeamWorkerCliPlan(
       4,
       [],
-      { OMX_TEAM_WORKER_CLI_MAP: 'codex,codex,claude,claude' },
+      { OMX_TEAM_WORKER_CLI_MAP: 'codex,codex,gemini,claude' },
     );
-    assert.deepEqual(plan, ['codex', 'codex', 'claude', 'claude']);
+    assert.deepEqual(plan, ['codex', 'codex', 'gemini', 'claude']);
   });
 
   it('resolveTeamWorkerCliPlan accepts single-value map and expands to all workers', () => {

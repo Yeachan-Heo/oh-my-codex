@@ -88,6 +88,24 @@ function loadJobFromDisk(jobId: string): OmxTeamJob | undefined {
   }
 }
 
+function parseJsonFromStdout(rawStdout: string): { parsed?: Record<string, unknown>; text: string } {
+  const text = rawStdout.trim();
+  if (!text) return { text };
+  try {
+    return { parsed: JSON.parse(text) as Record<string, unknown>, text };
+  } catch {
+    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        return { parsed: JSON.parse(lines[i]) as Record<string, unknown>, text: lines[i] };
+      } catch {
+        // continue
+      }
+    }
+    return { text };
+  }
+}
+
 async function loadPaneIds(jobId: string): Promise<{ paneIds: string[]; leaderPaneId: string } | null> {
   try {
     const parsed = JSON.parse(await readFile(join(OMX_JOBS_DIR, `${jobId}-panes.json`), 'utf-8')) as {
@@ -219,12 +237,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'omx_run_team_start',
-      description: 'Spawn tmux CLI workers (codex/claude) in the background. Returns jobId immediately. Poll with omx_run_team_status.',
+      description: 'Spawn tmux CLI workers (codex/claude/gemini) in the background. Returns jobId immediately. Poll with omx_run_team_status.',
       inputSchema: {
         type: 'object',
         properties: {
           teamName: { type: 'string', description: 'Slug name for the team' },
-          agentTypes: { type: 'array', items: { type: 'string' }, description: '"codex" or "claude" per worker' },
+          agentTypes: { type: 'array', items: { type: 'string' }, description: '"codex", "claude", or "gemini" per worker' },
           tasks: {
             type: 'array',
             items: {
@@ -322,16 +340,17 @@ export async function handleTeamToolCall(request: {
           const stdout = Buffer.concat(outChunks).toString('utf-8').trim();
           const stderr = Buffer.concat(errChunks).toString('utf-8').trim();
           if (stdout) {
-            try {
-              const parsed = JSON.parse(stdout) as { status?: string };
-              const s = parsed.status;
+            const { parsed, text } = parseJsonFromStdout(stdout);
+            if (parsed) {
+              const s = typeof parsed.status === 'string' ? parsed.status : undefined;
               if (job.status === 'running') {
                 job.status = (s === 'completed' || s === 'failed') ? s : 'failed';
               }
-            } catch {
+              job.result = text;
+            } else {
               if (job.status === 'running') job.status = 'failed';
+              job.result = stdout;
             }
-            job.result = stdout;
           }
           if (job.status === 'running') {
             if (code === 0) job.status = 'completed';

@@ -382,7 +382,7 @@ function spawnPromptWorker(
   workerCwd: string,
   launchArgs: string[],
   workerEnv: Record<string, string>,
-  workerCli: 'codex' | 'claude',
+  workerCli: 'codex' | 'claude' | 'gemini',
 ): ChildProcessByStdio<Writable, null, null> {
   const processSpec = buildWorkerProcessLaunchSpec(
     teamName,
@@ -437,6 +437,8 @@ export function resolveWorkerLaunchArgsFromEnv(
   const effectiveWorkerCli = resolveEffectiveWorkerCliForStartupLog(resolved, env);
   if (effectiveWorkerCli === 'claude') {
     console.log('[omx:team] worker startup resolution: model=claude source=local-settings');
+  } else if (effectiveWorkerCli === 'gemini') {
+    console.log('[omx:team] worker startup resolution: model=gemini source=local-settings');
   } else {
     console.log(`[omx:team] worker startup resolution: model=${resolvedModel} thinking_level=${thinkingLevel} source=${source}`);
   }
@@ -447,7 +449,7 @@ export function resolveWorkerLaunchArgsFromEnv(
 function resolveEffectiveWorkerCliForStartupLog(
   resolvedLaunchArgs: string[],
   env: NodeJS.ProcessEnv,
-): 'codex' | 'claude' {
+): 'codex' | 'claude' | 'gemini' {
   const rawCliMap = String(env.OMX_TEAM_WORKER_CLI_MAP ?? '').trim();
   if (rawCliMap !== '') {
     const entries = rawCliMap
@@ -459,12 +461,13 @@ function resolveEffectiveWorkerCliForStartupLog(
         ...env,
         OMX_TEAM_WORKER_CLI: 'auto',
       });
-      const resolvedMap = entries.map((entry): 'codex' | 'claude' | null => {
+      const resolvedMap = entries.map((entry): 'codex' | 'claude' | 'gemini' | null => {
         if (entry === 'auto') return autoCli;
-        if (entry === 'codex' || entry === 'claude') return entry;
+        if (entry === 'codex' || entry === 'claude' || entry === 'gemini') return entry;
         return null;
       });
       if (resolvedMap.every((entry) => entry === 'claude')) return 'claude';
+      if (resolvedMap.every((entry) => entry === 'gemini')) return 'gemini';
       if (resolvedMap.some((entry) => entry === 'codex')) return 'codex';
     }
   }

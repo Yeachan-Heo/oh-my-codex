@@ -12,6 +12,23 @@ async function loadRuntimeCliModule() {
 }
 
 describe('runtime-cli helpers', () => {
+  it('normalizes per-worker providers and validates supported values', async () => {
+    const runtimeCli = await loadRuntimeCliModule();
+
+    assert.deepEqual(
+      runtimeCli.normalizeAgentTypes(['codex', 'gemini'], 2),
+      ['codex', 'gemini'],
+    );
+    assert.deepEqual(
+      runtimeCli.normalizeAgentTypes(['gemini'], 3),
+      ['gemini'],
+    );
+    assert.throws(
+      () => runtimeCli.normalizeAgentTypes(['codex', 'invalid'], 2),
+      /Expected codex\\|claude\\|gemini/,
+    );
+  });
+
   it('refreshes pane targets from live team config after scale changes', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-cli-live-'));
     try {

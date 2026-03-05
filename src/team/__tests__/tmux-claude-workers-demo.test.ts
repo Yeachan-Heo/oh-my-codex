@@ -145,6 +145,12 @@ describe('tmux claude workers demo', () => {
       const result = translateWorkerLaunchArgsForCli('claude', args);
       assert.deepEqual(result, ['--dangerously-skip-permissions']);
     });
+
+    it('returns gemini approval-mode yolo with model passthrough', () => {
+      const args = ['--model', 'gemini-2.0-pro', '--json'];
+      const result = translateWorkerLaunchArgsForCli('gemini', args);
+      assert.deepEqual(result, ['--approval-mode', 'yolo', '--model', 'gemini-2.0-pro']);
+    });
   });
 
   describe('full demo scenario with 6 mixed workers', () => {
@@ -239,6 +245,17 @@ describe('tmux claude workers demo', () => {
       });
 
       assert.deepEqual(plan, ['codex']);
+    });
+
+    it('handles single worker with gemini', () => {
+      const plan = resolveTeamWorkerCliPlan(1, [], {
+        OMX_TEAM_WORKER_CLI_MAP: 'gemini',
+      });
+      assert.deepEqual(plan, ['gemini']);
+
+      const spec = buildWorkerProcessLaunchSpec('team', 1, ['--model', 'gemini-2.0-pro'], '/tmp', {}, 'gemini');
+      assert.equal(spec.workerCli, 'gemini');
+      assert.deepEqual(spec.args, ['--approval-mode', 'yolo', '--model', 'gemini-2.0-pro']);
     });
 
     it('rejects invalid CLI map with empty entries', () => {

@@ -22,6 +22,8 @@ interface CliInput {
   pollIntervalMs?: number;
 }
 
+type TeamWorkerProvider = 'codex' | 'claude' | 'gemini';
+
 interface TaskResult {
   taskId: string;
   status: string;
@@ -113,6 +115,18 @@ function collectTaskResults(stateRoot: string, teamName: string): TaskResult[] {
   } catch {
     return [];
   }
+}
+
+export function normalizeAgentTypes(raw: string[], workerCount: number): TeamWorkerProvider[] {
+  const providers = raw.map((entry) => String(entry || '').trim().toLowerCase());
+  const invalid = providers.filter((entry) => entry !== 'codex' && entry !== 'claude' && entry !== 'gemini');
+  if (invalid.length > 0) {
+    throw new Error(`Invalid agentTypes entries: ${invalid.join(', ')}. Expected codex|claude|gemini.`);
+  }
+  if (providers.length !== 1 && providers.length !== workerCount) {
+    throw new Error(`agentTypes length must be 1 or ${workerCount}; received ${providers.length}.`);
+  }
+  return providers as TeamWorkerProvider[];
 }
 
 async function main(): Promise<void> {
@@ -217,16 +231,24 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 
   // Start the team — OMX's startTeam takes individual parameters
-  const agentType = agentTypes[0] ?? 'codex';
+  const agentType = 'executor';
   try {
-    runtime = await startTeam(
-      teamName,
-      tasks.map(t => t.subject).join('; '),
-      agentType,
-      workerCount,
-      tasks,
-      cwd,
-    );
+    const providers = normalizeAgentTypes(agentTypes, workerCount);
+    const previousCliMap = process.env.OMX_TEAM_WORKER_CLI_MAP;
+    try {
+      process.env.OMX_TEAM_WORKER_CLI_MAP = providers.join(',');
+      runtime = await startTeam(
+        teamName,
+        tasks.map(t => t.subject).join('; '),
+        agentType,
+        workerCount,
+        tasks,
+        cwd,
+      );
+    } finally {
+      if (typeof previousCliMap === 'string') process.env.OMX_TEAM_WORKER_CLI_MAP = previousCliMap;
+      else delete process.env.OMX_TEAM_WORKER_CLI_MAP;
+    }
   } catch (err) {
     process.stderr.write(`[runtime-cli] startTeam failed: ${err}\n`);
     process.exit(1);
