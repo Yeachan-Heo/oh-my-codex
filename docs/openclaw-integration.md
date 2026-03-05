@@ -87,6 +87,63 @@ This keeps behavior deterministic and backward compatible.
 
 These aliases are normalized by OMX into internal OpenClaw gateway mappings.
 
+## Option C: Clawdbot agent-command workflow (recommended for dev)
+
+Use this when you want OMX hook events to trigger **agent turns** (not plain
+message/webhook forwarding), e.g. for `#omc-dev`.
+
+```json
+{
+  "notifications": {
+    "enabled": true,
+    "verbosity": "verbose",
+    "events": {
+      "session-start": { "enabled": true },
+      "session-idle": { "enabled": true },
+      "ask-user-question": { "enabled": true },
+      "session-stop": { "enabled": true },
+      "session-end": { "enabled": true }
+    },
+    "openclaw": {
+      "enabled": true,
+      "gateways": {
+        "local": {
+          "type": "command",
+          "command": "(clawdbot agent --session-id omx-hooks --message {{instruction}} --thinking minimal --deliver --reply-channel discord --reply-to '#omc-dev' --timeout 120 --json >/dev/null 2>&1 || true)"
+        }
+      },
+      "hooks": {
+        "session-start": {
+          "enabled": true,
+          "gateway": "local",
+          "instruction": "OMX hook=session-start project={{projectName}} session={{sessionId}}. Send concise status update."
+        },
+        "session-idle": {
+          "enabled": true,
+          "gateway": "local",
+          "instruction": "OMX hook=session-idle project={{projectName}} session={{sessionId}}. Send brief idle update."
+        },
+        "ask-user-question": {
+          "enabled": true,
+          "gateway": "local",
+          "instruction": "OMX hook=ask-user-question session={{sessionId}} question={{question}}. ACTION NEEDED: request user reply."
+        },
+        "stop": {
+          "enabled": true,
+          "gateway": "local",
+          "instruction": "OMX hook=session-stop project={{projectName}} session={{sessionId}}. Send stop update."
+        },
+        "session-end": {
+          "enabled": true,
+          "gateway": "local",
+          "instruction": "OMX hook=session-end project={{projectName}} session={{sessionId}} reason={{reason}}. Send completion summary in one line."
+        }
+      }
+    }
+  }
+}
+```
+
 ## Verification (required)
 
 ### A) Wake smoke test (`/hooks/wake`)

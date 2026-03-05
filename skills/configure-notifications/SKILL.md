@@ -135,6 +135,68 @@ jq \
    }' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
 ```
 
+### 4b-1) OpenClaw + Clawdbot Agent Workflow (recommended for dev)
+
+If the user explicitly asks to route hook notifications through **clawdbot agent turns**
+(not direct message/webhook forwarding), use a command gateway that invokes
+`clawdbot agent` and delivers back to Discord.
+
+Example (targeting `#omc-dev`):
+
+```bash
+jq \
+  --arg command "(clawdbot agent --session-id omx-hooks --message {{instruction}} --thinking minimal --deliver --reply-channel discord --reply-to '#omc-dev' --timeout 120 --json >/dev/null 2>&1 || true)" \
+  '.notifications = (.notifications // {enabled: true}) |
+   .notifications.enabled = true |
+   .notifications.verbosity = "verbose" |
+   .notifications.events = (.notifications.events // {}) |
+   .notifications.events["session-start"] = {enabled: true} |
+   .notifications.events["session-idle"] = {enabled: true} |
+   .notifications.events["ask-user-question"] = {enabled: true} |
+   .notifications.events["session-stop"] = {enabled: true} |
+   .notifications.events["session-end"] = {enabled: true} |
+   .notifications.openclaw = (.notifications.openclaw // {}) |
+   .notifications.openclaw.enabled = true |
+   .notifications.openclaw.gateways = (.notifications.openclaw.gateways // {}) |
+   .notifications.openclaw.gateways["local"] = {
+     type: "command",
+     command: $command
+   } |
+   .notifications.openclaw.hooks = (.notifications.openclaw.hooks // {}) |
+   .notifications.openclaw.hooks["session-start"] = {
+     enabled: true,
+     gateway: "local",
+     instruction: "OMX hook=session-start project={{projectName}} session={{sessionId}}. Send concise status update."
+   } |
+   .notifications.openclaw.hooks["session-idle"] = {
+     enabled: true,
+     gateway: "local",
+     instruction: "OMX hook=session-idle project={{projectName}} session={{sessionId}}. Send brief idle update."
+   } |
+   .notifications.openclaw.hooks["ask-user-question"] = {
+     enabled: true,
+     gateway: "local",
+     instruction: "OMX hook=ask-user-question session={{sessionId}} question={{question}}. ACTION NEEDED: request user reply."
+   } |
+   .notifications.openclaw.hooks["stop"] = {
+     enabled: true,
+     gateway: "local",
+     instruction: "OMX hook=session-stop project={{projectName}} session={{sessionId}}. Send stop update."
+   } |
+   .notifications.openclaw.hooks["session-end"] = {
+     enabled: true,
+     gateway: "local",
+     instruction: "OMX hook=session-end project={{projectName}} session={{sessionId}} reason={{reason}}. Send completion summary in one line."
+   }' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+```
+
+Verification for this mode:
+
+```bash
+clawdbot agent --session-id omx-hooks --message "OMX hook test via clawdbot agent path" \
+  --thinking minimal --deliver --reply-channel discord --reply-to '#omc-dev' --timeout 120 --json
+```
+
 ### 4c) Compatibility + precedence contract
 
 OMX accepts both:

@@ -111,4 +111,19 @@ describe("OpenClaw setup workflow contracts", () => {
       "openclaw integration doc should document explicit openclaw precedence",
     );
   });
+
+  it("documents clawdbot agent command workflow for OpenClaw command gateways", () => {
+    assert.ok(
+      configureNotificationsSkill.includes("clawdbot agent"),
+      "configure-notifications should document clawdbot agent workflow",
+    );
+    assert.ok(
+      openclawIntegrationDoc.includes("clawdbot agent"),
+      "openclaw integration doc should document clawdbot agent workflow",
+    );
+    assert.ok(
+      openclawIntegrationDoc.includes("#omc-dev"),
+      "openclaw integration doc should include #omc-dev target example",
+    );
+  });
 });
