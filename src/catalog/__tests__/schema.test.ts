@@ -59,6 +59,14 @@ describe('catalog schema', () => {
     assert.ok(counts.activeAgentCount > 0);
   });
 
+  it('includes enterprise as an active execution skill', () => {
+    const parsed = validateCatalogManifest(readSourceManifest());
+    const enterprise = parsed.skills.find((skill) => skill.name === 'enterprise');
+
+    assert.equal(enterprise?.status, 'active');
+    assert.equal(enterprise?.category, 'execution');
+  });
+
   it('includes ask-claude and ask-gemini as active built-in skills', () => {
     const parsed = validateCatalogManifest(readSourceManifest());
     const askClaude = parsed.skills.find((skill) => skill.name === 'ask-claude');

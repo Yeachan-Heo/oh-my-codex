@@ -29,6 +29,18 @@ export interface TeamStateForHud {
   team_name?: string;
 }
 
+/** Enterprise state for HUD display */
+export interface EnterpriseStateForHud {
+  active: boolean;
+  current_phase?: string;
+  division_count?: number;
+  subordinate_count?: number;
+  chairman_state?: string;
+  healthy_worker_count?: number;
+  stale_worker_count?: number;
+  offline_worker_count?: number;
+}
+
 /** Metrics tracked by notify hook */
 export interface HudMetrics {
   total_turns: number;
@@ -62,6 +74,7 @@ export interface HudRenderContext {
   ultrawork: UltraworkStateForHud | null;
   autopilot: AutopilotStateForHud | null;
   team: TeamStateForHud | null;
+  enterprise: EnterpriseStateForHud | null;
   metrics: HudMetrics | null;
   hudNotify: HudNotifyState | null;
   session: SessionStateForHud | null;

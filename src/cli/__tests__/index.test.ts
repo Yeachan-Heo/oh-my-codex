@@ -297,6 +297,13 @@ describe('resolveCliInvocation', () => {
     });
   });
 
+  it('resolves enterprise to enterprise command', () => {
+    assert.deepEqual(resolveCliInvocation(['enterprise', 'status']), {
+      command: 'enterprise',
+      launchArgs: [],
+    });
+  });
+
   it('resolves --help to the help command instead of launch', () => {
     assert.deepEqual(resolveCliInvocation(['--help']), {
       command: 'help',

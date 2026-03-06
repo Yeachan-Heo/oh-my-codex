@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.02.28.1",
+  "catalogVersion": "2026.03.06.1",
   "skills": [
     {
       "name": "autopilot",
@@ -25,6 +25,13 @@
       "category": "execution",
       "status": "active",
       "core": true
+    },
+    {
+      "name": "enterprise",
+      "category": "execution",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
     },
     {
       "name": "ecomode",
@@ -64,7 +71,8 @@
     {
       "name": "analyze",
       "category": "shortcut",
-      "status": "active"
+      "status": "alias",
+      "canonical": "debugger"
     },
     {
       "name": "deepsearch",
@@ -93,8 +101,8 @@
     {
       "name": "security-review",
       "category": "shortcut",
-      "status": "deprecated",
-      "canonical": "code-review"
+      "status": "active",
+      "canonical": "security-reviewer"
     },
     {
       "name": "visual-verdict",
@@ -123,7 +131,7 @@
     {
       "name": "review",
       "category": "shortcut",
-      "status": "deprecated",
+      "status": "alias",
       "canonical": "plan --review"
     },
     {
@@ -247,12 +255,12 @@
     {
       "name": "architect",
       "category": "build",
-      "status": "internal"
+      "status": "active"
     },
     {
       "name": "debugger",
       "category": "build",
-      "status": "internal"
+      "status": "active"
     },
     {
       "name": "executor",
@@ -285,7 +293,7 @@
     {
       "name": "security-reviewer",
       "category": "review",
-      "status": "internal"
+      "status": "active"
     },
     {
       "name": "performance-reviewer",
@@ -296,7 +304,7 @@
     {
       "name": "code-reviewer",
       "category": "review",
-      "status": "internal"
+      "status": "active"
     },
     {
       "name": "dependency-expert",

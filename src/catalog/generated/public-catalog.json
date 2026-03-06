@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-03-06T15:17:09.157Z",
-  "version": "2026.02.28.1",
+  "generatedAt": "2026-03-06T00:19:14.230Z",
+  "version": "2026.03.06.1",
   "counts": {
-    "skillCount": 38,
+    "skillCount": 39,
     "promptCount": 29,
-    "activeSkillCount": 22,
-    "activeAgentCount": 14
+    "activeSkillCount": 23,
+    "activeAgentCount": 18
   },
   "coreSkills": [
     "autopilot",
@@ -41,6 +41,13 @@
       "category": "execution",
       "status": "active",
       "core": true,
+      "internalRequired": false
+    },
+    {
+      "name": "enterprise",
+      "category": "execution",
+      "status": "active",
+      "core": false,
       "internalRequired": false
     },
     {
@@ -92,7 +99,8 @@
     {
       "name": "analyze",
       "category": "shortcut",
-      "status": "active",
+      "status": "alias",
+      "canonical": "debugger",
       "core": false,
       "internalRequired": false
     },
@@ -131,8 +139,8 @@
     {
       "name": "security-review",
       "category": "shortcut",
-      "status": "deprecated",
-      "canonical": "code-review",
+      "status": "active",
+      "canonical": "security-reviewer",
       "core": false,
       "internalRequired": false
     },
@@ -171,7 +179,7 @@
     {
       "name": "review",
       "category": "shortcut",
-      "status": "deprecated",
+      "status": "alias",
       "canonical": "plan --review",
       "core": false,
       "internalRequired": false
@@ -320,12 +328,12 @@
     {
       "name": "architect",
       "category": "build",
-      "status": "internal"
+      "status": "active"
     },
     {
       "name": "debugger",
       "category": "build",
-      "status": "internal"
+      "status": "active"
     },
     {
       "name": "executor",
@@ -358,7 +366,7 @@
     {
       "name": "security-reviewer",
       "category": "review",
-      "status": "internal"
+      "status": "active"
     },
     {
       "name": "performance-reviewer",
@@ -369,7 +377,7 @@
     {
       "name": "code-reviewer",
       "category": "review",
-      "status": "internal"
+      "status": "active"
     },
     {
       "name": "dependency-expert",
@@ -472,6 +480,10 @@
       "canonical": "team"
     },
     {
+      "name": "analyze",
+      "canonical": "debugger"
+    },
+    {
       "name": "deepsearch",
       "canonical": "explore"
     },
@@ -490,6 +502,10 @@
     {
       "name": "git-master",
       "canonical": "git-master"
+    },
+    {
+      "name": "review",
+      "canonical": "plan --review"
     },
     {
       "name": "configure-discord",

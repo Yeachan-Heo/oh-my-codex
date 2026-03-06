@@ -27,6 +27,7 @@ function emptyCtx(): HudRenderContext {
     ultrawork: null,
     autopilot: null,
     team: null,
+    enterprise: null,
     metrics: null,
     hudNotify: null,
     session: null,
@@ -174,6 +175,22 @@ describe('renderHud – team', () => {
   it('omits team when null', () => {
     const result = renderHud(emptyCtx(), 'focused');
     assert.ok(!result.includes('team'));
+  });
+});
+
+
+// ── Enterprise ───────────────────────────────────────────────────────────────
+
+describe('renderHud – enterprise', () => {
+  it('renders enterprise division/subordinate counts with chairman state and health summary', () => {
+    const ctx = { ...emptyCtx(), enterprise: { active: true, division_count: 2, subordinate_count: 5, chairman_state: 'working', healthy_worker_count: 3, stale_worker_count: 1, offline_worker_count: 0 } };
+    const result = renderHud(ctx, 'focused');
+    assert.ok(result.includes(`${YELLOW}enterprise:2d/5s:working h3/s1/o0${RESET}`));
+  });
+
+  it('omits enterprise when null', () => {
+    const result = renderHud(emptyCtx(), 'focused');
+    assert.ok(!result.includes('enterprise'));
   });
 });
 

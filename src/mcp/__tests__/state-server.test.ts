@@ -92,4 +92,36 @@ describe('state-server directory initialization', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('supports enterprise mode state roundtrips', async () => {
+    process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
+    const { handleStateToolCall } = await import('../state-server.js');
+
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-server-enterprise-'));
+    try {
+      const writeResp = await handleStateToolCall({
+        params: {
+          name: 'state_write',
+          arguments: {
+            workingDirectory: wd,
+            mode: 'enterprise',
+            state: { active: true, current_phase: 'enterprise-exec' },
+          },
+        },
+      });
+      assert.equal(writeResp.isError, undefined);
+
+      const readResp = await handleStateToolCall({
+        params: {
+          name: 'state_read',
+          arguments: { workingDirectory: wd, mode: 'enterprise' },
+        },
+      });
+      const persisted = JSON.parse(readResp.content[0]?.text || '{}') as { active?: boolean; current_phase?: string };
+      assert.equal(persisted.active, true);
+      assert.equal(persisted.current_phase, 'enterprise-exec');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });

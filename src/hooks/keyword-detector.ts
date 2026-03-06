@@ -81,9 +81,9 @@ const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> =
   priority: entry.priority,
 }));
 
-const KEYWORDS_REQUIRING_INTENT = new Set(['team', 'swarm']);
+const KEYWORDS_REQUIRING_INTENT = new Set(['team', 'swarm', 'enterprise']);
 
-const TEAM_SWARM_INTENT_PATTERNS: Record<'team' | 'swarm', RegExp[]> = {
+const ORCHESTRATION_INTENT_PATTERNS: Record<'team' | 'swarm' | 'enterprise', RegExp[]> = {
   team: [
     /(?:^|[^\w])\$(?:team)\b/i,
     /\/prompts:team\b/i,
@@ -95,6 +95,13 @@ const TEAM_SWARM_INTENT_PATTERNS: Record<'team' | 'swarm', RegExp[]> = {
     /\/prompts:swarm\b/i,
     /\b(?:use|run|start|enable|launch|invoke|activate|orchestrate|coordinate)\s+(?:a\s+|an\s+|the\s+)?swarm\b/i,
     /\bswarm\s+(?:mode|orchestration|workflow|agents?)\b/i,
+  ],
+  enterprise: [
+    /(?:^|[^\w])\$(?:enterprise)\b/i,
+    /\/prompts:enterprise\b/i,
+    /\b(?:use|run|start|enable|launch|invoke|activate|orchestrate|coordinate)\s+(?:a\s+|an\s+|the\s+)?enterprise(?:\s+mode|\s+orchestration|\s+workflow)?\b/i,
+    /\benterprise\s+(?:mode|orchestration|workflow)\b/i,
+    /\bchairman(?:-style)?\s+(?:mode|orchestration|workflow)\b/i,
   ],
 };
 
@@ -128,8 +135,8 @@ function extractExplicitSkillInvocations(text: string): KeywordMatch[] {
 
 function hasIntentContextForKeyword(text: string, keyword: string): boolean {
   if (!KEYWORDS_REQUIRING_INTENT.has(keyword.toLowerCase())) return true;
-  const k = keyword.toLowerCase() as 'team' | 'swarm';
-  return TEAM_SWARM_INTENT_PATTERNS[k].some((pattern) => pattern.test(text));
+  const k = keyword.toLowerCase() as 'team' | 'swarm' | 'enterprise';
+  return ORCHESTRATION_INTENT_PATTERNS[k].some((pattern) => pattern.test(text));
 }
 
 /**

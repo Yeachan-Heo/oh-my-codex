@@ -49,6 +49,7 @@ const SUPPORTED_MODES = [
 	"ultrawork",
 	"ultraqa",
 	"ralplan",
+	"enterprise",
 ] as const;
 
 const STATE_TOOL_NAMES = new Set([

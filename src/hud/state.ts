@@ -16,6 +16,7 @@ import type {
   UltraworkStateForHud,
   AutopilotStateForHud,
   TeamStateForHud,
+  EnterpriseStateForHud,
   HudMetrics,
   HudNotifyState,
   HudConfig,
@@ -60,6 +61,43 @@ export async function readAutopilotState(cwd: string): Promise<AutopilotStateFor
 export async function readTeamState(cwd: string): Promise<TeamStateForHud | null> {
   const state = await readScopedModeState<TeamStateForHud>(cwd, 'team');
   return state?.active ? state : null;
+}
+
+
+async function readEnterpriseHealthCounts(cwd: string): Promise<{ healthy_worker_count: number; stale_worker_count: number; offline_worker_count: number }> {
+  const enterpriseRoot = join(cwd, '.omx', 'state', 'enterprise', 'worker-heartbeat');
+  const result = { healthy_worker_count: 0, stale_worker_count: 0, offline_worker_count: 0 };
+  try {
+    const { readdir } = await import('fs/promises');
+    const files = await readdir(enterpriseRoot);
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
+      const heartbeat = await readJsonFile<{ alive?: boolean; lastHeartbeatAt?: string }>(join(enterpriseRoot, file));
+      if (!heartbeat || heartbeat.alive !== true) {
+        result.offline_worker_count += 1;
+        continue;
+      }
+      const last = new Date(String(heartbeat.lastHeartbeatAt ?? '')).getTime();
+      if (!Number.isFinite(last)) {
+        result.offline_worker_count += 1;
+        continue;
+      }
+      if (Date.now() - last > 60_000) result.stale_worker_count += 1;
+      else result.healthy_worker_count += 1;
+    }
+  } catch {
+    // ignore missing heartbeat state
+  }
+  return result;
+}
+
+export async function readEnterpriseState(cwd: string): Promise<EnterpriseStateForHud | null> {
+  const state = await readScopedModeState<EnterpriseStateForHud>(cwd, 'enterprise');
+  if (!state?.active) return null;
+  return {
+    ...state,
+    ...(await readEnterpriseHealthCounts(cwd)),
+  };
 }
 
 export async function readMetrics(cwd: string): Promise<HudMetrics | null> {
@@ -114,16 +152,17 @@ export async function readAllState(cwd: string): Promise<HudRenderContext> {
   const version = readVersion();
   const gitBranch = readGitBranch(cwd);
 
-  const [ralph, ultrawork, autopilot, team, metrics, hudNotify, session] =
+  const [ralph, ultrawork, autopilot, team, enterprise, metrics, hudNotify, session] =
     await Promise.all([
       readRalphState(cwd),
       readUltraworkState(cwd),
       readAutopilotState(cwd),
       readTeamState(cwd),
+      readEnterpriseState(cwd),
       readMetrics(cwd),
       readHudNotifyState(cwd),
       readSessionState(cwd),
     ]);
 
-  return { version, gitBranch, ralph, ultrawork, autopilot, team, metrics, hudNotify, session };
+  return { version, gitBranch, ralph, ultrawork, autopilot, team, enterprise, metrics, hudNotify, session };
 }

@@ -15,6 +15,7 @@ import { tmuxHookCommand } from './tmux-hook.js';
 import { hooksCommand } from './hooks.js';
 import { hudCommand } from '../hud/index.js';
 import { teamCommand } from './team.js';
+import { enterpriseCommand } from './enterprise.js';
 import { ralphCommand } from './ralph.js';
 import { askCommand } from './ask.js';
 import {
@@ -91,6 +92,7 @@ Usage:
   omx doctor --team  Check team/swarm runtime health diagnostics
   omx ask       Ask local provider CLI (claude|gemini) and write artifact output
   omx team      Spawn parallel worker panes in tmux and bootstrap inbox/task state
+  omx enterprise Start bounded enterprise orchestration mode
   omx ralph     Launch Codex with ralph persistence mode active
   omx version   Show version information
   omx tmux-hook Manage tmux prompt injection workaround (init|status|validate|test)
@@ -146,7 +148,7 @@ const ALLOWED_SHELLS = new Set([
   '/usr/local/bin/bash', '/usr/local/bin/zsh', '/usr/local/bin/fish',
 ]);
 
-type CliCommand = 'launch' | 'setup' | 'uninstall' | 'doctor' | 'ask' | 'team' | 'version' | 'tmux-hook' | 'hooks' | 'hud' | 'status' | 'cancel' | 'help' | 'reasoning' | string;
+type CliCommand = 'launch' | 'setup' | 'uninstall' | 'doctor' | 'ask' | 'team' | 'enterprise' | 'version' | 'tmux-hook' | 'hooks' | 'hud' | 'status' | 'cancel' | 'help' | 'reasoning' | string;
 
 export interface ResolvedCliInvocation {
   command: CliCommand;
@@ -373,7 +375,7 @@ export function buildHudPaneCleanupTargets(existingPaneIds: string[], createdPan
 
 export async function main(args: string[]): Promise<void> {
   const knownCommands = new Set([
-    'launch', 'setup', 'uninstall', 'doctor', 'ask', 'team', 'ralph', 'version', 'tmux-hook', 'hooks', 'hud', 'status', 'cancel', 'help', '--help', '-h',
+    'launch', 'setup', 'uninstall', 'doctor', 'ask', 'team', 'enterprise', 'ralph', 'version', 'tmux-hook', 'hooks', 'hud', 'status', 'cancel', 'help', '--help', '-h',
   ]);
   const firstArg = args[0];
   const { command, launchArgs } = resolveCliInvocation(args);
@@ -421,6 +423,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case 'team':
         await teamCommand(args.slice(1), options);
+        break;
+      case 'enterprise':
+        await enterpriseCommand(args.slice(1));
         break;
       case 'ralph':
         await ralphCommand(args.slice(1));
@@ -487,7 +492,34 @@ async function showStatus(): Promise<void> {
       }
       const file = basename(path);
       const mode = file.replace('-state.json', '');
-      console.log(`${mode}: ${state.active === true ? 'ACTIVE' : 'inactive'} (phase: ${String(state.current_phase || 'n/a')})`);
+      const phase = String(state.current_phase || 'n/a');
+      if (mode === 'enterprise') {
+        const divisionCount = typeof state.division_count === 'number' ? ` divisions=${state.division_count}` : '';
+        const subordinateCount = typeof state.subordinate_count === 'number' ? ` subordinates=${state.subordinate_count}` : '';
+        const chairmanState = typeof state.chairman_state === 'string' ? ` chairman=${state.chairman_state}` : '';
+        const liveSession = typeof state.live_tmux_session === 'string' && state.live_tmux_session.trim() !== ''
+          ? ` live=${state.live_tmux_session}`
+          : '';
+        console.log(`${mode}: ${state.active === true ? 'ACTIVE' : 'inactive'} (phase: ${phase}${divisionCount}${subordinateCount}${chairmanState}${liveSession})`);
+        const monitorPath = join(cwd, '.omx', 'state', 'enterprise-monitor-snapshot.json');
+        if (existsSync(monitorPath)) {
+          try {
+            const monitor = JSON.parse(await readFile(monitorPath, 'utf-8')) as { divisions?: Array<{ leadLabel?: string; state?: string; completedCount?: number; subordinateCount?: number }> };
+            for (const division of monitor.divisions ?? []) {
+              const label = String(division.leadLabel || 'division');
+              const stateLabel = String(division.state || 'unknown');
+              const completed = typeof division.completedCount === 'number' ? division.completedCount : 0;
+              const total = typeof division.subordinateCount === 'number' ? division.subordinateCount : 0;
+              console.log(`  - ${label}: ${stateLabel} (${completed}/${total})`);
+            }
+          } catch (err) {
+            process.stderr.write(`[cli/index] operation failed: ${err}
+`);
+          }
+        }
+        continue;
+      }
+      console.log(`${mode}: ${state.active === true ? 'ACTIVE' : 'inactive'} (phase: ${phase})`);
     }
   } catch (err) {
     process.stderr.write(`[cli/index] operation failed: ${err}\n`);

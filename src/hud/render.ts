@@ -73,6 +73,25 @@ function renderTeam(ctx: HudRenderContext): string | null {
   return green('team');
 }
 
+function renderEnterprise(ctx: HudRenderContext): string | null {
+  if (!ctx.enterprise) return null;
+  const divisions = ctx.enterprise.division_count;
+  const subordinates = ctx.enterprise.subordinate_count;
+  const chairmanState = ctx.enterprise.chairman_state ? sanitizeDynamicText(ctx.enterprise.chairman_state) : '';
+  const healthy = ctx.enterprise.healthy_worker_count;
+  const stale = ctx.enterprise.stale_worker_count;
+  const offline = ctx.enterprise.offline_worker_count;
+  const healthSuffix = typeof healthy === 'number' || typeof stale === 'number' || typeof offline === 'number'
+    ? ` h${healthy ?? 0}/s${stale ?? 0}/o${offline ?? 0}`
+    : '';
+  if (typeof divisions === 'number' && typeof subordinates === 'number') {
+    const suffix = chairmanState ? `:${chairmanState}` : '';
+    return yellow(`enterprise:${divisions}d/${subordinates}s${suffix}${healthSuffix}`);
+  }
+  if (chairmanState) return yellow(`enterprise:${chairmanState}${healthSuffix}`);
+  return yellow(`enterprise${healthSuffix}`);
+}
+
 function renderTurns(ctx: HudRenderContext): string | null {
   if (!ctx.metrics || !isCurrentSessionMetrics(ctx)) return null;
   return dim(`turns:${ctx.metrics.session_turns}`);
@@ -143,6 +162,7 @@ const MINIMAL_ELEMENTS: ElementRenderer[] = [
   renderRalph,
   renderUltrawork,
   renderTeam,
+  renderEnterprise,
   renderTurns,
 ];
 
@@ -152,6 +172,7 @@ const FOCUSED_ELEMENTS: ElementRenderer[] = [
   renderUltrawork,
   renderAutopilot,
   renderTeam,
+  renderEnterprise,
   renderTurns,
   renderTokens,
   renderQuota,
@@ -165,6 +186,7 @@ const FULL_ELEMENTS: ElementRenderer[] = [
   renderUltrawork,
   renderAutopilot,
   renderTeam,
+  renderEnterprise,
   renderTurns,
   renderTokens,
   renderQuota,

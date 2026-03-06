@@ -19,8 +19,8 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: 'ulw', skill: 'ultrawork', priority: 10, guidance: 'Activate ultrawork parallel execution mode' },
   { keyword: 'parallel', skill: 'ultrawork', priority: 10, guidance: 'Activate ultrawork parallel execution mode' },
   { keyword: 'ultraqa', skill: 'ultraqa', priority: 8, guidance: 'Activate UltraQA cycling workflow' },
-  { keyword: 'analyze', skill: 'analyze', priority: 7, guidance: 'Activate analysis router (debugger default; architect for structural analysis)' },
-  { keyword: 'investigate', skill: 'analyze', priority: 7, guidance: 'Activate analysis router (debugger default; architect for structural analysis)' },
+  { keyword: 'analyze', skill: 'analyze', priority: 7, guidance: 'Activate deep analysis workflow' },
+  { keyword: 'investigate', skill: 'analyze', priority: 7, guidance: 'Activate deep analysis workflow' },
 
   { keyword: 'deep interview', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
   { keyword: 'gather requirements', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
@@ -36,6 +36,7 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: 'ralplan', skill: 'ralplan', priority: 11, guidance: 'Activate consensus planning (planner + architect + critic)' },
   { keyword: 'consensus plan', skill: 'ralplan', priority: 11, guidance: 'Activate consensus planning (planner + architect + critic)' },
 
+  { keyword: 'enterprise', skill: 'enterprise', priority: 8, guidance: 'Activate bounded enterprise orchestration mode' },
   { keyword: 'team', skill: 'team', priority: 8, guidance: 'Activate coordinated team mode' },
   { keyword: 'swarm', skill: 'team', priority: 8, guidance: 'Activate coordinated team mode (swarm is a compatibility alias for team)' },
   { keyword: 'coordinated team', skill: 'team', priority: 8, guidance: 'Activate coordinated team mode' },
@@ -51,10 +52,10 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: 'fix build', skill: 'build-fix', priority: 6, guidance: 'Activate build-fix workflow' },
   { keyword: 'type errors', skill: 'build-fix', priority: 6, guidance: 'Activate build-fix workflow' },
 
-  { keyword: 'code review', skill: 'code-review', priority: 6, guidance: 'Activate code-review workflow for quality/api/performance/style concerns' },
-  { keyword: 'code-review', skill: 'code-review', priority: 6, guidance: 'Activate code-review workflow for quality/api/performance/style concerns' },
-  { keyword: 'review code', skill: 'code-review', priority: 6, guidance: 'Activate code-review workflow for quality/api/performance/style concerns' },
-  { keyword: 'security review', skill: 'security-review', priority: 6, guidance: 'Activate compatibility security-review workflow; prefer code-review for new general reviews' },
+  { keyword: 'code review', skill: 'code-review', priority: 6, guidance: 'Activate code-review workflow' },
+  { keyword: 'code-review', skill: 'code-review', priority: 6, guidance: 'Activate code-review workflow' },
+  { keyword: 'review code', skill: 'code-review', priority: 6, guidance: 'Activate code-review workflow' },
+  { keyword: 'security review', skill: 'security-review', priority: 6, guidance: 'Activate security-review workflow' },
 ] as const;
 
 export function compareKeywordMatches(a: { priority: number; keyword: string }, b: { priority: number; keyword: string }): number {

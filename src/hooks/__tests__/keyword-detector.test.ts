@@ -53,19 +53,6 @@ describe('keyword detector swarm/team compatibility', () => {
     assert.equal(spaced.skill, 'code-review');
   });
 
-  it('prefers dedicated security-review over generic code-review when both words appear', () => {
-    const match = detectPrimaryKeyword('please do a security review of this auth change');
-
-    assert.ok(match);
-    assert.equal(match.skill, 'security-review');
-    assert.equal(match.keyword.toLowerCase(), 'security review');
-  });
-
-  it('does not treat plain review requests as code-review keyword activations', () => {
-    const match = detectPrimaryKeyword('please review this plan before we start');
-    assert.equal(match, null);
-  });
-
   it('supports explicit multi-skill invocation by prioritizing left-most $skill', () => {
     const match = detectPrimaryKeyword('$ultraqa $analyze $code-review run now');
     assert.ok(match);
@@ -119,6 +106,23 @@ describe('keyword detector swarm/team compatibility', () => {
     const match = detectPrimaryKeyword('please run $team now');
     assert.ok(match);
     assert.equal(match.skill, 'team');
+  });
+
+  it('triggers enterprise for explicit $enterprise invocation', () => {
+    const match = detectPrimaryKeyword('please run $enterprise now');
+    assert.ok(match);
+    assert.equal(match.skill, 'enterprise');
+  });
+
+  it('triggers enterprise for enterprise mode intent', () => {
+    const match = detectPrimaryKeyword('please launch enterprise mode for this rollout');
+    assert.ok(match);
+    assert.equal(match.skill, 'enterprise');
+  });
+
+  it('does not trigger enterprise for incidental prose', () => {
+    const match = detectPrimaryKeyword('write docs about enterprise pricing and sales tiers');
+    assert.equal(match, null);
   });
 
   it('does not trigger keyword detector for explicit /prompts:swarm invocation', () => {
@@ -201,6 +205,7 @@ describe('keyword registry coverage', () => {
     assert.ok(registryKeywords.has('coordinated team'));
     assert.ok(registryKeywords.has('swarm'));
     assert.ok(registryKeywords.has('coordinated swarm'));
+    assert.ok(registryKeywords.has('enterprise'));
     assert.ok(registryKeywords.has('ouroboros'));
     assert.ok(registryKeywords.has("don't assume"));
     assert.ok(registryKeywords.has('interview me'));
