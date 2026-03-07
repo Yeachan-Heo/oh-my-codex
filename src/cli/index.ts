@@ -56,6 +56,8 @@ import {
   enableMouseScrolling,
   isNativeWindows,
   isWsl2,
+  listWezTermPanes,
+  resolveWezTermBinary,
 } from '../team/tmux-session.js';
 import { getPackageRoot } from '../utils/package.js';
 import { codexConfigPath } from '../utils/paths.js';
@@ -79,6 +81,7 @@ import {
   type NotifyTempContract,
   type ParseNotifyTempContractResult,
 } from '../notifications/temp-contract.js';
+import { buildCliLaunchSpec } from '../utils/cli-launch.js';
 
 const HELP = `
 oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
@@ -238,7 +241,9 @@ export function resolveNotifyTempContract(args: string[], env: NodeJS.ProcessEnv
 export type CodexLaunchPolicy = 'inside-tmux' | 'direct';
 
 export function resolveCodexLaunchPolicy(env: NodeJS.ProcessEnv = process.env): CodexLaunchPolicy {
-  return env.TMUX ? 'inside-tmux' : 'direct';
+  if (env.TMUX) return 'inside-tmux';
+  if (isNativeWindows() && String(env.WEZTERM_PANE ?? '').trim() !== '') return 'inside-tmux';
+  return 'direct';
 }
 
 type ExecFileSyncFailure = NodeJS.ErrnoException & {
@@ -297,8 +302,9 @@ export function classifyCodexExecFailure(error: unknown): CodexExecFailureClassi
 }
 
 function runCodexBlocking(cwd: string, launchArgs: string[], codexEnv: NodeJS.ProcessEnv): void {
+  const codexLaunch = buildCliLaunchSpec('codex', launchArgs, codexEnv);
   try {
-    execFileSync('codex', launchArgs, { cwd, stdio: 'inherit', env: codexEnv });
+    execFileSync(codexLaunch.command, codexLaunch.args, { cwd, stdio: 'inherit', env: codexEnv });
   } catch (error) {
     const classified = classifyCodexExecFailure(error);
     if (classified.kind === 'exit') {
@@ -533,20 +539,6 @@ async function reasoningCommand(args: string[]): Promise<void> {
 }
 
 export async function launchWithHud(args: string[]): Promise<void> {
-  // ── Win32 guard ──────────────────────────────────────────────────────
-  if (isNativeWindows()) {
-    console.error(
-      '[omx] OMX requires tmux, which is not available on native Windows.\n' +
-      '[omx] Please use one of the following supported environments:\n' +
-      '[omx]   - WSL2 (Windows Subsystem for Linux 2)\n' +
-      '[omx]   - macOS\n' +
-      '[omx]   - Linux\n' +
-      '[omx] See: https://docs.microsoft.com/en-us/windows/wsl/install',
-    );
-    process.exitCode = 1;
-    return;
-  }
-
   const launchCwd = process.cwd();
   const parsedWorktree = parseWorktreeMode(args);
   const notifyTempResult = resolveNotifyTempContract(parsedWorktree.remainingArgs, process.env);
@@ -1096,6 +1088,12 @@ function runCodex(
     ? { ...codexEnv, [OMX_NOTIFY_TEMP_CONTRACT_ENV]: notifyTempContractRaw }
     : codexEnv;
 
+  if (isNativeWindows()) {
+    // Native Windows skips tmux/HUD orchestration and launches Codex directly.
+    runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
+    return;
+  }
+
   if (resolveCodexLaunchPolicy(process.env) === 'inside-tmux') {
     // Already in tmux: launch codex in current pane, HUD in bottom split
     const currentPaneId = process.env.TMUX_PANE;
@@ -1228,6 +1226,16 @@ function runCodex(
 }
 
 function listHudWatchPaneIdsInCurrentWindow(currentPaneId?: string): string[] {
+  if (isNativeWindows()) {
+    const activePaneId = String(currentPaneId ?? process.env.WEZTERM_PANE ?? '').trim();
+    if (!activePaneId) return [];
+    const activePane = listWezTermPanes().find((pane) => String(pane.pane_id) === activePaneId);
+    if (!activePane) return [];
+    return listWezTermPanes()
+      .filter((pane) => pane.workspace === activePane.workspace && pane.title?.toLowerCase() === 'node.exe')
+      .map((pane) => String(pane.pane_id))
+      .filter((paneId) => paneId !== activePaneId);
+  }
   try {
     const output = execFileSync(
       'tmux',
@@ -1242,6 +1250,18 @@ function listHudWatchPaneIdsInCurrentWindow(currentPaneId?: string): string[] {
 }
 
 function createHudWatchPane(cwd: string, hudCmd: string): string | null {
+  if (isNativeWindows()) {
+    const currentPaneId = String(process.env.WEZTERM_PANE ?? '').trim()
+      || String(listWezTermPanes().find((pane) => pane.is_active)?.pane_id ?? '').trim();
+    if (!currentPaneId) return null;
+    const omxBin = process.argv[1];
+    const output = execFileSync(
+      resolveWezTermBinary(),
+      ['cli', '--prefer-mux', 'split-pane', '--pane-id', currentPaneId, '--bottom', '--cells', String(HUD_TMUX_HEIGHT_LINES), '--cwd', cwd, process.execPath, omxBin, 'hud', '--watch'],
+      { encoding: 'utf-8' }
+    );
+    return output.trim().split('\n')[0]?.trim() ?? null;
+  }
   const output = execFileSync(
     'tmux',
     ['split-window', '-v', '-l', String(HUD_TMUX_HEIGHT_LINES), '-d', '-c', cwd, '-P', '-F', '#{pane_id}', hudCmd],
@@ -1251,6 +1271,15 @@ function createHudWatchPane(cwd: string, hudCmd: string): string | null {
 }
 
 function killTmuxPane(paneId: string): void {
+  if (isNativeWindows()) {
+    if (!/^\d+$/.test(paneId)) return;
+    try {
+      execFileSync(resolveWezTermBinary(), ['cli', '--prefer-mux', 'kill-pane', '--pane-id', paneId], { stdio: 'ignore' });
+    } catch (err) {
+      process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    }
+    return;
+  }
   if (!paneId.startsWith('%')) return;
   try {
     execFileSync('tmux', ['kill-pane', '-t', paneId], { stdio: 'ignore' });

@@ -15,6 +15,12 @@ import { renderHud } from './render.js';
 import type { HudFlags, HudPreset, HudRenderContext } from './types.js';
 import { HUD_TMUX_HEIGHT_LINES } from './constants.js';
 import { sleep } from '../utils/sleep.js';
+import {
+  isNativeWindows,
+  isWezTermAvailable,
+  listWezTermPanes,
+  resolveWezTermBinary,
+} from '../team/tmux-session.js';
 
 type SleepFn = (ms: number, signal?: AbortSignal) => Promise<void>;
 
@@ -278,6 +284,49 @@ export function buildTmuxSplitArgs(
 }
 
 async function launchTmuxPane(cwd: string, flags: HudFlags): Promise<void> {
+  if (isNativeWindows()) {
+    if (!isWezTermAvailable()) {
+      console.error('WezTerm is not available. Start WezTerm first, then run: omx hud --tmux');
+      process.exit(1);
+    }
+    const currentPaneId = String(process.env.WEZTERM_PANE ?? '').trim();
+    const fallbackPaneId = listWezTermPanes().find((pane) => pane.is_active)?.pane_id;
+    const targetPaneId = currentPaneId || (fallbackPaneId != null ? String(fallbackPaneId) : '');
+    if (!targetPaneId) {
+      console.error('No active WezTerm pane detected. Focus a WezTerm pane, then run: omx hud --tmux');
+      process.exit(1);
+    }
+
+    const omxBin = process.argv[1];
+    const safePreset = parseHudPreset(flags.preset);
+    const args = [
+      'cli',
+      '--prefer-mux',
+      'split-pane',
+      '--pane-id',
+      targetPaneId,
+      '--bottom',
+      '--cells',
+      String(HUD_TMUX_HEIGHT_LINES),
+      '--cwd',
+      cwd,
+      process.execPath,
+      omxBin,
+      'hud',
+      '--watch',
+      ...(safePreset ? [`--preset=${safePreset}`] : []),
+    ];
+
+    try {
+      execFileSync(resolveWezTermBinary(), args, { stdio: 'inherit' });
+      console.log('HUD launched in WezTerm pane below.');
+      return;
+    } catch {
+      console.error('Failed to create WezTerm split. Ensure WezTerm mux is available.');
+      process.exit(1);
+    }
+  }
+
   // Check if we're inside tmux
   if (!process.env.TMUX) {
     console.error('Not inside a tmux session. Start tmux first, then run: omx hud --tmux');

@@ -1,11 +1,12 @@
 import { join, resolve } from 'path';
 import { existsSync } from 'fs';
-import { readdir, readFile } from 'fs/promises';
+import { readdir, readFile, mkdir, writeFile } from 'fs/promises';
 import { performance } from 'perf_hooks';
 import { spawn, type ChildProcessByStdio } from 'child_process';
 import type { Writable } from 'stream';
 import {
   sanitizeTeamName,
+  isNativeWindows,
   isTmuxAvailable,
   createTeamSession,
   buildWorkerProcessLaunchSpec,
@@ -85,7 +86,7 @@ import {
   generateMailboxTriggerMessage,
 } from './worker-bootstrap.js';
 import { loadRolePrompt } from './role-router.js';
-import { codexPromptsDir } from '../utils/paths.js';
+import { codexPromptsDir, packageRoot as getPackageRoot } from '../utils/paths.js';
 import { type TeamPhase, type TerminalPhase } from './orchestrator.js';
 import {
   isLowComplexityAgentType,
@@ -371,6 +372,53 @@ function isPromptWorkerAlive(config: TeamConfig, worker: WorkerInfo): boolean {
   }
 }
 
+const TEAM_START_RETRY_ATTEMPTS = 6;
+const TEAM_START_RETRY_DELAY_MS = 2000;
+const TEAM_SHUTDOWN_SETTLE_TIMEOUT_MS = 15000;
+const TEAM_SHUTDOWN_SETTLE_POLL_MS = 500;
+
+async function sleepMs(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForInteractiveSessionCleanup(
+  sessionName: string,
+  timeoutMs: number = TEAM_SHUTDOWN_SETTLE_TIMEOUT_MS,
+): Promise<boolean> {
+  const baseSession = sessionName.split(':')[0];
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (Date.now() < deadline) {
+    if (!listTeamSessions().includes(baseSession)) {
+      return true;
+    }
+    await sleepMs(TEAM_SHUTDOWN_SETTLE_POLL_MS);
+  }
+  return !listTeamSessions().includes(baseSession);
+}
+
+async function ensureWorkerOmxShim(
+  teamName: string,
+  workerName: string,
+  teamStateRoot: string,
+): Promise<string> {
+  const shimDir = join(teamStateRoot, 'team', teamName, 'workers', workerName, 'bin');
+  const omxEntry = resolve(getPackageRoot(), 'bin', 'omx.js');
+  const normalizedOmxEntry = omxEntry.replace(/'/g, "''");
+  await mkdir(shimDir, { recursive: true });
+  await writeFile(
+    join(shimDir, 'omx.cmd'),
+    `@echo off\r\n"%OMX_LEADER_NODE_PATH%" "${omxEntry}" %*\r\n`,
+    'utf8',
+  );
+  await writeFile(
+    join(shimDir, 'omx.ps1'),
+    `$node = if ($env:OMX_LEADER_NODE_PATH) { $env:OMX_LEADER_NODE_PATH } else { 'node' }\r\n`
+      + `& $node '${normalizedOmxEntry}' @args\r\n`,
+    'utf8',
+  );
+  return shimDir;
+}
+
 export { TEAM_LOW_COMPLEXITY_DEFAULT_MODEL };
 
 export { resolveCanonicalTeamStateRoot };
@@ -496,10 +544,10 @@ export async function startTeam(
   const workerLaunchMode = resolveTeamWorkerLaunchMode(process.env);
   const displayMode = workerLaunchMode === 'interactive' ? 'split_pane' : 'auto';
   if (workerLaunchMode === 'interactive') {
-    if (!isTmuxAvailable()) {
+    if (!isNativeWindows() && !isTmuxAvailable()) {
       throw new Error('Team mode requires tmux. Install with: apt install tmux / brew install tmux');
     }
-    if (!process.env.TMUX) {
+    if (!isNativeWindows() && !process.env.TMUX) {
       throw new Error('Team mode requires running inside tmux current leader pane');
     }
   }
@@ -549,7 +597,14 @@ export async function startTeam(
   const leaderSessionId = await resolveLeaderSessionId(leaderCwd);
 
   // Topology guard: one active team per leader session/process context.
-  const activeTeams = await findActiveTeams(leaderCwd, leaderSessionId);
+  let activeTeams: string[] = [];
+  for (let attempt = 0; attempt < TEAM_START_RETRY_ATTEMPTS; attempt++) {
+    activeTeams = await findActiveTeams(leaderCwd, leaderSessionId);
+    if (activeTeams.length === 0) break;
+    if (attempt < TEAM_START_RETRY_ATTEMPTS - 1) {
+      await sleepMs(TEAM_START_RETRY_DELAY_MS);
+    }
+  }
   if (activeTeams.length > 0) {
     throw new Error(`leader_session_conflict: active team exists (${activeTeams.join(', ')})`);
   }
@@ -672,6 +727,14 @@ export async function startTeam(
         initialPrompt: plan.initialPrompt,
       };
     });
+
+    for (let i = 0; i < workerBootstrapPlans.length; i++) {
+      const plan = workerBootstrapPlans[i];
+      if (!plan) continue;
+      const shimDir = await ensureWorkerOmxShim(sanitized, plan.workerName, teamStateRoot);
+      const inheritedPath = workerStartups[i]?.env.PATH || process.env.PATH || '';
+      workerStartups[i]!.env.PATH = `${shimDir};${inheritedPath}`;
+    }
 
     const workerPaneIds = Array.from({ length: workerCount }, () => undefined as string | undefined);
 
@@ -819,7 +882,7 @@ export async function startTeam(
         }
       }
       if (!dispatchOutcome.ok) {
-        throw new Error(`worker_notify_failed:${workerName}`);
+        throw new Error(`worker_notify_failed:${workerName}:${dispatchOutcome.reason}`);
       }
     }
     await saveTeamConfig(config, leaderCwd);
@@ -1417,6 +1480,10 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
         process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
       }
     }
+    const settled = await waitForInteractiveSessionCleanup(sessionName);
+    if (!settled) {
+      console.warn(`[team shutdown] ${sanitized}: session cleanup still pending after ${TEAM_SHUTDOWN_SETTLE_TIMEOUT_MS}ms`);
+    }
   } else {
     const promptTeardownFailures: string[] = [];
     for (const w of config.workers) {
@@ -1505,7 +1572,9 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
   } else {
     // Check if tmux session still exists
     const baseSession = config.tmux_session.split(':')[0];
-    const teamSessions = getTeamTmuxSessions(sanitized);
+    const teamSessions = isNativeWindows()
+      ? listTeamSessions()
+      : getTeamTmuxSessions(sanitized);
     if (!teamSessions.includes(baseSession)) return null;
   }
 
@@ -1651,7 +1720,7 @@ async function notifyWorkerOutcome(config: TeamConfig, workerIndex: number, mess
     }
   }
 
-  if (!config.tmux_session || !isTmuxAvailable()) {
+  if (!config.tmux_session || (!isNativeWindows() && !isTmuxAvailable())) {
     return { ok: false, transport: 'tmux_send_keys', reason: 'tmux_unavailable' };
   }
   try {

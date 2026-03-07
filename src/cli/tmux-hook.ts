@@ -3,6 +3,8 @@ import { mkdir, readFile, writeFile } from 'fs/promises';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { getPackageRoot } from '../utils/package.js';
+import { isNativeWindows } from '../team/tmux-session.js';
+import { resolveBinaryOnPath } from '../utils/cli-launch.js';
 
 type TmuxTargetType = 'session' | 'pane';
 
@@ -53,6 +55,8 @@ const DEFAULT_CONFIG: TmuxHookConfig = {
   log_level: 'info',
   skip_if_scrolling: true,
 };
+
+const WEZTERM_PATH_ENV = 'OMX_WEZTERM_PATH';
 
 const HELP = `
 Usage:
@@ -216,7 +220,73 @@ function runTmux(args: string[]): { ok: true; stdout: string } | { ok: false; st
   return { ok: true, stdout: (result.stdout || '').trim() };
 }
 
+function resolveWezTermBinary(): string {
+  const envOverride = String(process.env[WEZTERM_PATH_ENV] ?? '').trim();
+  if (envOverride) return envOverride;
+
+  const resolved = resolveBinaryOnPath('wezterm');
+  if (resolved !== 'wezterm') return resolved;
+
+  const candidates = [
+    'C:\\Program Files\\WezTerm\\wezterm.exe',
+    join(process.env.LOCALAPPDATA || '', 'Programs', 'WezTerm', 'wezterm.exe'),
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+
+  return 'wezterm';
+}
+
+function runWezTerm(args: string[]): { ok: true; stdout: string } | { ok: false; stderr: string } {
+  const result = spawnSync(resolveWezTermBinary(), ['cli', '--prefer-mux', ...args], { encoding: 'utf-8' });
+  if (result.error) {
+    return { ok: false, stderr: result.error.message };
+  }
+  if (result.status !== 0) {
+    return { ok: false, stderr: (result.stderr || '').trim() || `wezterm exited ${result.status}` };
+  }
+  return { ok: true, stdout: (result.stdout || '').trim() };
+}
+
+interface WezTermPaneInfo {
+  pane_id: number;
+  workspace: string;
+  is_active?: boolean;
+}
+
+function listWezTermPanes(): WezTermPaneInfo[] {
+  const result = runWezTerm(['list', '--format', 'json']);
+  if (!result.ok) return [];
+  try {
+    const parsed = JSON.parse(result.stdout) as WezTermPaneInfo[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function resolveValidateTarget(config: TmuxHookConfig): { ok: true; target: string } | { ok: false; reason: string } {
+  if (isNativeWindows()) {
+    const panes = listWezTermPanes();
+    if (panes.length === 0) {
+      return { ok: false, reason: 'no WezTerm panes found' };
+    }
+
+    if (config.target.type === 'pane') {
+      const pane = panes.find((entry) => String(entry.pane_id) === config.target.value.trim());
+      if (!pane) return { ok: false, reason: 'WezTerm pane not found' };
+      return { ok: true, target: String(pane.pane_id) };
+    }
+
+    const workspace = config.target.value.trim();
+    const pane = panes.find((entry) => entry.workspace === workspace && entry.is_active)
+      || panes.find((entry) => entry.workspace === workspace);
+    if (!pane) return { ok: false, reason: 'WezTerm workspace has no panes' };
+    return { ok: true, target: String(pane.pane_id) };
+  }
+
   if (config.target.type === 'pane') {
     const paneCheck = runTmux(['display-message', '-p', '-t', config.target.value, '#{pane_id}']);
     if (!paneCheck.ok || paneCheck.stdout === '') {
@@ -242,6 +312,17 @@ function resolveValidateTarget(config: TmuxHookConfig): { ok: true; target: stri
 }
 
 function detectActivePaneFromList(): InitialTargetDetection | null {
+  if (isNativeWindows()) {
+    const panes = listWezTermPanes();
+    if (panes.length === 0) return null;
+    const active = panes.find((entry) => entry.is_active) || panes[0];
+    if (!active) return null;
+    return {
+      target: { type: 'pane', value: String(active.pane_id) },
+      sessionName: active.workspace || undefined,
+    };
+  }
+
   const paneList = runTmux(['list-panes', '-a', '-F', '#{pane_id}\t#{pane_active}\t#{session_name}']);
   if (!paneList.ok || paneList.stdout.trim() === '') return null;
 
@@ -265,6 +346,10 @@ function detectActivePaneFromList(): InitialTargetDetection | null {
 }
 
 function detectInitialTarget(): InitialTargetDetection | null {
+  if (isNativeWindows()) {
+    return detectActivePaneFromList();
+  }
+
   const tmuxPaneEnv = process.env.TMUX_PANE;
   if (tmuxPaneEnv) {
     const pane = runTmux(['display-message', '-p', '-t', tmuxPaneEnv, '#{pane_id}']);
@@ -408,10 +493,10 @@ async function validateTmuxHookConfig(): Promise<void> {
   const resolved = resolveValidateTarget(config);
 
   if (!resolved.ok) {
-    throw new Error(`tmux target validation failed: ${resolved.reason}`);
+    throw new Error(`hook target validation failed: ${resolved.reason}`);
   }
 
-  console.log('tmux-hook config is valid.');
+  console.log('hook config is valid.');
   console.log(`Resolved target pane: ${resolved.target}`);
   console.log(`Mode gating: ${config.allowed_modes.join(', ')}`);
   if (!config.enabled) {

@@ -44,7 +44,7 @@ Use CLI interop:
 Copy/paste template:
 
 ```bash
-omx team api send-message --input "{\"team_name\":\"<teamName>\",\"from_worker\":\"<workerName>\",\"to_worker\":\"leader-fixed\",\"body\":\"ACK: <workerName> initialized\"}" --json
+omx team api send-message --input '{"team_name":"<teamName>","from_worker":"<workerName>","to_worker":"leader-fixed","body":"ACK: <workerName> initialized"}' --json
 ```
 
 ## Inbox + Tasks
@@ -63,12 +63,20 @@ omx team api send-message --input "{\"team_name\":\"<teamName>\",\"from_worker\"
    - The MCP/state API uses the numeric id (`"1"`), not `"task-1"`.
    - Never use legacy `tasks/{id}.json` wording.
 6. Claim the task (do NOT start work without a claim) using claim-safe lifecycle CLI interop (`omx team api claim-task --json`).
+   Copy/paste template:
+   `omx team api claim-task --input '{"team_name":"<teamName>","task_id":"<id>","worker":"<workerName>","expected_version":1}' --json`
 7. Do the work.
 8. Complete/fail the task via lifecycle transition CLI interop (`omx team api transition-task-status --json`) from `in_progress` to `completed` or `failed`.
    - Do NOT directly write lifecycle fields (`status`, `owner`, `result`, `error`) in task files.
+   Completion template:
+   `omx team api transition-task-status --input '{"team_name":"<teamName>","task_id":"<id>","from":"in_progress","to":"completed","claim_token":"<claim-token>","result":"<summary with verification evidence>"}' --json`
+   Failure template:
+   `omx team api transition-task-status --input '{"team_name":"<teamName>","task_id":"<id>","from":"in_progress","to":"failed","claim_token":"<claim-token>","error":"<failure summary>"}' --json`
 9. Use `omx team api release-task-claim --json` only for rollback/requeue to `pending` (not for completion).
 10. Update your worker status:
    `<team_state_root>/team/<teamName>/workers/<workerName>/status.json` with `{"state":"idle", ...}`
+   PowerShell template:
+   `Set-Content -Path '<team_state_root>/team/<teamName>/workers/<workerName>/status.json' -Value '{"state":"idle","updated_at":"<ISO>"}'`
 
 ## Mailbox
 
@@ -89,9 +97,17 @@ Use CLI interop:
 Copy/paste templates:
 
 ```bash
-omx team api mailbox-list --input "{\"team_name\":\"<teamName>\",\"worker\":\"<workerName>\"}" --json
-omx team api mailbox-mark-delivered --input "{\"team_name\":\"<teamName>\",\"worker\":\"<workerName>\",\"message_id\":\"<MESSAGE_ID>\"}" --json
+omx team api mailbox-list --input '{"team_name":"<teamName>","worker":"<workerName>"}' --json
+omx team api mailbox-mark-delivered --input '{"team_name":"<teamName>","worker":"<workerName>","message_id":"<MESSAGE_ID>"}' --json
 ```
+
+## Completion Gate
+
+Task work is not finished until all of the following are true:
+
+1. The task has been transitioned via `omx team api transition-task-status`
+2. Your worker status file says `idle`
+3. You have stopped making changes for that task
 
 ## Dispatch Discipline (state-first)
 

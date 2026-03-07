@@ -5,11 +5,12 @@
 import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
-import { execFileSync, spawnSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import {
   codexHome, codexConfigPath, codexPromptsDir,
   userSkillsDir, omxStateDir,
 } from '../utils/paths.js';
+import { spawnBinarySync } from '../utils/cli-launch.js';
 import { getCatalogExpectations } from './catalog-contract.js';
 
 interface DoctorOptions {
@@ -382,12 +383,16 @@ function listTeamTmuxSessions(): Set<string> | null {
 }
 
 function checkCodexCli(): Check {
-  try {
-    const version = execFileSync('codex', ['--version'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  const result = spawnBinarySync('codex', ['--version'], {
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: process.env,
+  });
+  if (!result.error && result.status === 0) {
+    const version = String(result.stdout || '').trim();
     return { name: 'Codex CLI', status: 'pass', message: `installed (${version})` };
-  } catch {
-    return { name: 'Codex CLI', status: 'fail', message: 'not found - install from https://github.com/openai/codex' };
   }
+  return { name: 'Codex CLI', status: 'fail', message: 'not found - install from https://github.com/openai/codex' };
 }
 
 function checkNodeVersion(): Check {

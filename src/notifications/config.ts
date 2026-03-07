@@ -330,52 +330,12 @@ function normalizeCustomTransportGate(config: FullNotificationConfig): FullNotif
   };
 }
 
-function buildTempModeConfigFromContract(): FullNotificationConfig | null {
-  const contract = readNotifyTempContractFromEnv(process.env);
-  const envActive = isNotifyTempEnvActive(process.env);
-  if (!contract?.active && !envActive) return null;
-
-  const selectors = getTempBuiltinSelectors(contract);
-  const envConfig = buildConfigFromEnv();
-  const config: FullNotificationConfig = { enabled: false };
-
-  if (selectors.has("discord")) {
-    if (envConfig?.discord) config.discord = envConfig.discord;
-    if (envConfig?.["discord-bot"]) config["discord-bot"] = envConfig["discord-bot"];
-  }
-  if (selectors.has("telegram") && envConfig?.telegram) {
-    config.telegram = envConfig.telegram;
-  }
-  if (selectors.has("slack") && envConfig?.slack) {
-    config.slack = envConfig.slack;
-  }
-  if (isOpenClawSelectedInTempContract(contract)) {
-    config.openclaw = { enabled: true };
-  }
-
-  config.enabled = Boolean(
-    config.discord?.enabled
-    || config["discord-bot"]?.enabled
-    || config.telegram?.enabled
-    || config.slack?.enabled
-    || config.openclaw?.enabled,
-  );
-
-  return config;
-}
-
-export function getNotificationConfig(
-  profileName?: string,
-): FullNotificationConfig | null {
-  const tempModeConfig = buildTempModeConfigFromContract();
-  if (tempModeConfig) return tempModeConfig;
-
+function buildConfiguredNotificationConfig(profileName?: string): FullNotificationConfig | null {
   const raw = readRawConfig();
 
   if (raw) {
     const notifications = raw.notifications as NotificationsBlock | undefined;
     if (notifications) {
-      // Try profile resolution first
       const profileConfig = resolveProfileConfig(notifications, profileName);
       if (profileConfig) {
         if (typeof profileConfig.enabled !== "boolean") {
@@ -388,7 +348,6 @@ export function getNotificationConfig(
         return applyHookConfigIfPresent(normalizeCustomTransportGate(merged));
       }
 
-      // Fall back to flat config (backward compatible)
       if (typeof notifications.enabled !== "boolean") {
         return null;
       }
@@ -423,6 +382,48 @@ export function getNotificationConfig(
   }
 
   return null;
+}
+
+function buildTempModeConfigFromContract(profileName?: string): FullNotificationConfig | null {
+  const contract = readNotifyTempContractFromEnv(process.env);
+  const envActive = isNotifyTempEnvActive(process.env);
+  if (!contract?.active && !envActive) return null;
+
+  const selectors = getTempBuiltinSelectors(contract);
+  const baseConfig = buildConfiguredNotificationConfig(profileName);
+  const config: FullNotificationConfig = { enabled: false };
+
+  if (selectors.has("discord")) {
+    if (baseConfig?.discord) config.discord = baseConfig.discord;
+    if (baseConfig?.["discord-bot"]) config["discord-bot"] = baseConfig["discord-bot"];
+  }
+  if (selectors.has("telegram") && baseConfig?.telegram) {
+    config.telegram = baseConfig.telegram;
+  }
+  if (selectors.has("slack") && baseConfig?.slack) {
+    config.slack = baseConfig.slack;
+  }
+  if (isOpenClawSelectedInTempContract(contract)) {
+    config.openclaw = { enabled: true };
+  }
+
+  config.enabled = Boolean(
+    config.discord?.enabled
+    || config["discord-bot"]?.enabled
+    || config.telegram?.enabled
+    || config.slack?.enabled
+    || config.openclaw?.enabled,
+  );
+
+  return config;
+}
+
+export function getNotificationConfig(
+  profileName?: string,
+): FullNotificationConfig | null {
+  const tempModeConfig = buildTempModeConfigFromContract(profileName);
+  if (tempModeConfig) return tempModeConfig;
+  return buildConfiguredNotificationConfig(profileName);
 }
 
 const VALID_VERBOSITY_LEVELS: VerbosityLevel[] = ["verbose", "agent", "session", "minimal"];

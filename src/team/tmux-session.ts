@@ -1,6 +1,6 @@
 import { spawnSync, execFile } from 'child_process';
 import { promisify } from 'util';
-import { readFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import {
   CODEX_BYPASS_FLAG,
@@ -9,6 +9,14 @@ import {
   LONG_CONFIG_FLAG,
   MODEL_FLAG,
 } from '../cli/constants.js';
+import {
+  buildCliLaunchSpec,
+  isWslEnvironment,
+  isWindowsShellWrapped,
+  resolveBinaryOnPath,
+  spawnBinarySync,
+} from '../utils/cli-launch.js';
+import { getPackageRoot } from '../utils/package.js';
 import { sleep, sleepSync } from '../utils/sleep.js';
 
 const execFileAsync = promisify(execFile);
@@ -43,6 +51,7 @@ const GEMINI_APPROVAL_MODE_FLAG = '--approval-mode';
 const GEMINI_APPROVAL_MODE_YOLO = 'yolo';
 const OMX_LEADER_NODE_PATH_ENV = 'OMX_LEADER_NODE_PATH';
 const OMX_LEADER_CLI_PATH_ENV = 'OMX_LEADER_CLI_PATH';
+const WEZTERM_PATH_ENV = 'OMX_WEZTERM_PATH';
 
 export type TeamWorkerCli = 'codex' | 'claude' | 'gemini';
 type TeamWorkerCliMode = 'auto' | TeamWorkerCli;
@@ -85,6 +94,95 @@ function runTmux(args: string[]): { ok: true; stdout: string } | { ok: false; st
     return { ok: false, stderr: (result.stderr || '').trim() || `tmux exited ${result.status}` };
   }
   return { ok: true, stdout: (result.stdout || '').trim() };
+}
+
+export function resolveWezTermBinary(): string {
+  const envOverride = String(process.env[WEZTERM_PATH_ENV] ?? '').trim();
+  if (envOverride) return envOverride;
+
+  const resolved = resolveBinaryOnPath('wezterm');
+  if (resolved !== 'wezterm') return resolved;
+
+  const candidates = [
+    'C:\\Program Files\\WezTerm\\wezterm.exe',
+    join(process.env.LOCALAPPDATA || '', 'Programs', 'WezTerm', 'wezterm.exe'),
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+
+  return 'wezterm';
+}
+
+export function runWezTermCli(args: string[]): { ok: true; stdout: string } | { ok: false; stderr: string } {
+  const result = spawnSync(resolveWezTermBinary(), ['cli', '--prefer-mux', ...args], { encoding: 'utf-8' });
+  if (result.error) {
+    return { ok: false, stderr: result.error.message };
+  }
+  if (result.status !== 0) {
+    return { ok: false, stderr: (result.stderr || '').trim() || `wezterm exited ${result.status}` };
+  }
+  return { ok: true, stdout: (result.stdout || '').trim() };
+}
+
+async function runWezTermCliAsync(args: string[]): Promise<{ok: true; stdout: string} | {ok: false; stderr: string}> {
+  try {
+    const { stdout } = await execFileAsync(resolveWezTermBinary(), ['cli', '--prefer-mux', ...args], { encoding: 'utf-8' });
+    return { ok: true, stdout: (stdout || '').trim() };
+  } catch (error: unknown) {
+    const err = error as { stderr?: string; message?: string };
+    return { ok: false, stderr: (err.stderr || err.message || '').trim() || 'wezterm cli command failed' };
+  }
+}
+
+export interface WezTermPaneInfo {
+  window_id: number;
+  tab_id: number;
+  pane_id: number;
+  workspace: string;
+  title?: string;
+  cwd?: string;
+  is_active?: boolean;
+}
+
+export function listWezTermPanes(): WezTermPaneInfo[] {
+  const result = runWezTermCli(['list', '--format', 'json']);
+  if (!result.ok) return [];
+  try {
+    const parsed = JSON.parse(result.stdout) as WezTermPaneInfo[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function isWezTermAvailable(): boolean {
+  const binary = resolveWezTermBinary();
+  const result = spawnSync(binary, ['--version'], { encoding: 'utf-8' });
+  return !result.error && result.status === 0;
+}
+
+function isWezTermPaneId(value: string | null | undefined): boolean {
+  return typeof value === 'string' && /^\d+$/.test(value.trim());
+}
+
+function writeWezTermLaunchConfig(
+  teamName: string,
+  workerName: string,
+  workerCwd: string,
+  processSpec: WorkerProcessLaunchSpec,
+): string {
+  const workerDir = join(workerCwd, '.omx', 'state', 'team', teamName, 'workers', workerName);
+  mkdirSync(workerDir, { recursive: true });
+  const configPath = join(workerDir, 'wezterm-launch.json');
+  writeFileSync(configPath, JSON.stringify({
+    command: processSpec.command,
+    args: processSpec.args,
+    env: processSpec.env,
+    cwd: workerCwd,
+  }, null, 2));
+  return configPath;
 }
 
 export function isMsysOrGitBash(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): boolean {
@@ -199,6 +297,24 @@ async function runTmuxAsync(args: string[]): Promise<{ok: true; stdout: string} 
 }
 
 async function sendKeyAsync(target: string, key: string): Promise<void> {
+  if (isNativeWindows() && isWezTermPaneId(target)) {
+    const keyMap: Record<string, string> = {
+      'C-m': '\r',
+      'C-c': '\u0003',
+      'C-d': '\u0004',
+      'C-u': '\u0015',
+      Tab: '\t',
+    };
+    const mapped = keyMap[key];
+    if (!mapped) {
+      throw new Error(`sendKeyAsync: unsupported key ${key} for wezterm transport`);
+    }
+    const result = await runWezTermCliAsync(['send-text', '--pane-id', target, '--no-paste', mapped]);
+    if (!result.ok) {
+      throw new Error(`sendKeyAsync: failed to send ${key}: ${result.stderr}`);
+    }
+    return;
+  }
   const result = await runTmuxAsync(['send-keys', '-t', target, key]);
   if (!result.ok) {
     throw new Error(`sendKeyAsync: failed to send ${key}: ${result.stderr}`);
@@ -206,12 +322,22 @@ async function sendKeyAsync(target: string, key: string): Promise<void> {
 }
 
 async function capturePaneAsync(target: string): Promise<string> {
+  if (isNativeWindows() && isWezTermPaneId(target)) {
+    const result = await runWezTermCliAsync(['get-text', '--pane-id', target, '--start-line', '-80']);
+    if (!result.ok) return '';
+    return result.stdout;
+  }
   const result = await runTmuxAsync(['capture-pane', '-t', target, '-p', '-S', '-80']);
   if (!result.ok) return '';
   return result.stdout;
 }
 
 async function isWorkerAliveAsync(sessionName: string, workerIndex: number, workerPaneId?: string): Promise<boolean> {
+  if (isNativeWindows() && isWezTermPaneId(workerPaneId)) {
+    void sessionName;
+    void workerIndex;
+    return listWezTermPanes().some((pane) => String(pane.pane_id) === workerPaneId);
+  }
   const result = await runTmuxAsync([
     'list-panes',
     '-t', paneTarget(sessionName, workerIndex, workerPaneId),
@@ -534,7 +660,7 @@ export function translateWorkerLaunchArgsForCli(workerCli: TeamWorkerCli, args: 
 }
 
 function commandExists(binary: string): boolean {
-  const result = spawnSync(binary, ['--version'], { encoding: 'utf-8' });
+  const result = spawnBinarySync(binary, ['--version'], { encoding: 'utf-8', env: process.env });
   if (result.error) {
     const code = (result.error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') return false;
@@ -547,11 +673,7 @@ function commandExists(binary: string): boolean {
  * Returns the absolute path or the bare command name as fallback.
  */
 function resolveAbsoluteBinaryPath(binary: string): string {
-  const result = spawnSync('which', [binary], { encoding: 'utf-8', timeout: 5000 });
-  if (result.status === 0 && result.stdout.trim()) {
-    return result.stdout.trim();
-  }
-  return binary;
+  return resolveBinaryOnPath(binary);
 }
 
 /**
@@ -561,7 +683,9 @@ function resolveAbsoluteBinaryPath(binary: string): string {
 let _leaderPaths: { node: string; } | null = null;
 function resolveLeaderNodePath(): string {
   if (!_leaderPaths) {
-    _leaderPaths = { node: resolveAbsoluteBinaryPath('node') };
+    _leaderPaths = {
+      node: isWindowsShellWrapped() ? process.execPath : resolveAbsoluteBinaryPath('node'),
+    };
   }
   return _leaderPaths.node;
 }
@@ -640,12 +764,11 @@ export function buildWorkerProcessLaunchSpec(
   const fullLaunchArgs = resolveWorkerLaunchArgs(launchArgs, cwd);
   const workerCli = workerCliOverride ?? resolveTeamWorkerCli(fullLaunchArgs, process.env);
   const cliLaunchArgs = translateWorkerLaunchArgsForCli(workerCli, fullLaunchArgs, initialPrompt);
-
-  const resolvedCliPath = resolveAbsoluteBinaryPath(workerCli);
+  const workerLaunch = buildCliLaunchSpec(workerCli, cliLaunchArgs, process.env);
   const workerEnv: Record<string, string> = {
     OMX_TEAM_WORKER: `${teamName}/worker-${workerIndex}`,
     [OMX_LEADER_NODE_PATH_ENV]: resolveLeaderNodePath(),
-    [OMX_LEADER_CLI_PATH_ENV]: resolvedCliPath,
+    [OMX_LEADER_CLI_PATH_ENV]: workerCli,
   };
   for (const [key, value] of Object.entries(extraEnv)) {
     if (typeof value !== 'string' || value.trim() === '') continue;
@@ -654,8 +777,8 @@ export function buildWorkerProcessLaunchSpec(
 
   return {
     workerCli,
-    command: resolvedCliPath,
-    args: cliLaunchArgs,
+    command: workerLaunch.command,
+    args: workerLaunch.args,
     env: workerEnv,
   };
 }
@@ -682,15 +805,7 @@ export function sanitizeTeamName(name: string): string {
  * Fallback: check /proc/version for the Microsoft kernel string.
  */
 export function isWsl2(): boolean {
-  if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) {
-    return true;
-  }
-  try {
-    const version = readFileSync('/proc/version', 'utf-8');
-    return /microsoft/i.test(version);
-  } catch {
-    return false;
-  }
+  return isWslEnvironment();
 }
 
 /**
@@ -698,11 +813,12 @@ export function isWsl2(): boolean {
  * OMX requires tmux, which is unavailable on native Windows.
  */
 export function isNativeWindows(): boolean {
-  return process.platform === 'win32' && !isWsl2() && !isMsysOrGitBash();
+  return isWindowsShellWrapped() && !isMsysOrGitBash();
 }
 
 // Check if tmux is available
 export function isTmuxAvailable(): boolean {
+  if (isNativeWindows()) return false;
   const result = spawnSync('tmux', ['-V'], { encoding: 'utf-8' });
   if (result.error) return false;
   return result.status === 0;
@@ -718,6 +834,115 @@ export function createTeamSession(
   workerLaunchArgs: string[] = [],
   workerStartups: Array<{ cwd?: string; env?: Record<string, string>; initialPrompt?: string }> = [],
 ): TeamSession {
+  if (isNativeWindows()) {
+    if (!isWezTermAvailable()) {
+      throw new Error('wezterm is not available');
+    }
+    if (!Number.isInteger(workerCount) || workerCount < 1) {
+      throw new Error(`workerCount must be >= 1 (got ${workerCount})`);
+    }
+
+    const normalizedWorkerLaunchArgs = resolveWorkerLaunchArgs(workerLaunchArgs, cwd);
+    const workerCliPlan = resolveTeamWorkerCliPlan(workerCount, normalizedWorkerLaunchArgs, process.env);
+    for (const workerCli of new Set(workerCliPlan)) {
+      assertTeamWorkerCliBinaryAvailable(workerCli);
+    }
+
+    const safeTeamName = sanitizeTeamName(teamName);
+    const workspaceName = `omx-team-${safeTeamName}`;
+    const leaderSpawn = runWezTermCli([
+      'spawn',
+      '--new-window',
+      '--workspace',
+      workspaceName,
+      '--cwd',
+      cwd,
+      'cmd.exe',
+      '/d',
+      '/k',
+      `title OMX Leader ${safeTeamName}`,
+    ]);
+    if (!leaderSpawn.ok) {
+      throw new Error(`failed to create wezterm leader pane: ${leaderSpawn.stderr}`);
+    }
+    const leaderPaneId = leaderSpawn.stdout.split('\n')[0]?.trim() ?? '';
+    if (!isWezTermPaneId(leaderPaneId)) {
+      throw new Error(`failed to capture wezterm leader pane id: ${leaderSpawn.stdout}`);
+    }
+
+    const workerPaneIds: string[] = [];
+    for (let i = 1; i <= workerCount; i++) {
+      const startup = workerStartups[i - 1] || {};
+      const workerCwd = startup.cwd || cwd;
+      const workerEnv = startup.env || {};
+      const processSpec = buildWorkerProcessLaunchSpec(
+        safeTeamName,
+        i,
+        workerLaunchArgs,
+        workerCwd,
+        workerEnv,
+        workerCliPlan[i - 1],
+        startup.initialPrompt,
+      );
+      const launchConfigPath = writeWezTermLaunchConfig(safeTeamName, `worker-${i}`, workerCwd, processSpec);
+      const split = runWezTermCli([
+        'split-pane',
+        '--pane-id',
+        leaderPaneId,
+        i === 1 ? '--right' : '--bottom',
+        '--cwd',
+        workerCwd,
+        process.execPath,
+        join(getPackageRoot(), 'scripts', 'wezterm-worker-launch.js'),
+        launchConfigPath,
+      ]);
+      if (!split.ok) {
+        throw new Error(`failed to create wezterm worker pane ${i}: ${split.stderr}`);
+      }
+      const paneId = split.stdout.split('\n')[0]?.trim() ?? '';
+      if (!isWezTermPaneId(paneId)) {
+        throw new Error(`failed to capture wezterm worker pane id for worker ${i}`);
+      }
+      workerPaneIds.push(paneId);
+    }
+
+    let hudPaneId: string | null = null;
+    const omxEntry = process.argv[1];
+    if (omxEntry && omxEntry.trim() !== '') {
+      const hudSplit = runWezTermCli([
+        'split-pane',
+        '--pane-id',
+        leaderPaneId,
+        '--bottom',
+        '--cells',
+        String(HUD_TMUX_TEAM_HEIGHT_LINES),
+        '--cwd',
+        cwd,
+        process.execPath,
+        omxEntry,
+        'hud',
+        '--watch',
+      ]);
+      if (hudSplit.ok) {
+        const paneId = hudSplit.stdout.split('\n')[0]?.trim() ?? '';
+        if (isWezTermPaneId(paneId)) {
+          hudPaneId = paneId;
+        }
+      }
+    }
+
+    return {
+      name: workspaceName,
+      workerCount,
+      cwd,
+      workerPaneIds,
+      leaderPaneId,
+      hudPaneId,
+      resizeHookName: null,
+      resizeHookTarget: null,
+    };
+  }
+
   if (!isTmuxAvailable()) {
     throw new Error('tmux is not available');
   }
@@ -969,6 +1194,7 @@ export function enableMouseScrolling(sessionTarget: string): boolean {
 
 function paneTarget(sessionName: string, workerIndex: number, workerPaneId?: string): string {
   if (workerPaneId && workerPaneId.startsWith('%')) return workerPaneId;
+  if (isNativeWindows() && isWezTermPaneId(workerPaneId)) return workerPaneId as string;
   if (sessionName.includes(':')) {
     return `${sessionName}.${workerIndex}`;
   }
@@ -1135,6 +1361,13 @@ export function shouldAttemptAdaptiveRetry(
 }
 
 function sendLiteralTextOrThrow(target: string, text: string): void {
+  if (isNativeWindows() && isWezTermPaneId(target)) {
+    const send = runWezTermCli(['send-text', '--pane-id', target, '--no-paste', text]);
+    if (!send.ok) {
+      throw new Error(`sendToWorker: failed to send text: ${send.stderr}`);
+    }
+    return;
+  }
   const send = runTmux(['send-keys', '-t', target, '-l', '--', text]);
   if (!send.ok) {
     throw new Error(`sendToWorker: failed to send text: ${send.stderr}`);
@@ -1180,6 +1413,20 @@ export function waitForWorkerReady(
   timeoutMs: number = 15000,
   workerPaneId?: string,
 ): boolean {
+  if (isNativeWindows() && isWezTermPaneId(workerPaneId)) {
+    const paneId = workerPaneId as string;
+    void sessionName;
+    void workerIndex;
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const captured = runWezTermCli(['get-text', '--pane-id', paneId, '--start-line', '-40']);
+      if (captured.ok && paneLooksReady(captured.stdout)) {
+        return true;
+      }
+      sleepSeconds(0.5);
+    }
+    return true;
+  }
   const initialBackoffMs = 300;
   const maxBackoffMs = 8000;
   const startedAt = Date.now();
@@ -1241,6 +1488,11 @@ export function dismissTrustPromptIfPresent(
   workerIndex: number,
   workerPaneId?: string,
 ): boolean {
+  if (isNativeWindows() && isWezTermPaneId(workerPaneId)) {
+    void sessionName;
+    void workerIndex;
+    return false;
+  }
   if (process.env.OMX_TEAM_AUTO_TRUST === '0') return false;
   if (!isTmuxAvailable()) return false;
   const target = paneTarget(sessionName, workerIndex, workerPaneId);
@@ -1374,6 +1626,7 @@ export async function sendToWorker(
 }
 
 export function notifyLeaderStatus(sessionName: string, message: string): boolean {
+  if (isNativeWindows()) return false;
   if (!isTmuxAvailable()) return false;
   const trimmed = message.trim();
   if (!trimmed) return false;
@@ -1384,6 +1637,11 @@ export function notifyLeaderStatus(sessionName: string, message: string): boolea
 
 // Get PID of the shell process in a worker's tmux pane
 export function getWorkerPanePid(sessionName: string, workerIndex: number, workerPaneId?: string): number | null {
+  if (isNativeWindows() && isWezTermPaneId(workerPaneId)) {
+    void sessionName;
+    void workerIndex;
+    return null;
+  }
   const result = runTmux(['list-panes', '-t', paneTarget(sessionName, workerIndex, workerPaneId), '-F', '#{pane_pid}']);
   if (!result.ok) return null;
 
@@ -1397,6 +1655,11 @@ export function getWorkerPanePid(sessionName: string, workerIndex: number, worke
 
 // Check if worker's tmux pane has a running process
 export function isWorkerAlive(sessionName: string, workerIndex: number, workerPaneId?: string): boolean {
+  if (isNativeWindows() && isWezTermPaneId(workerPaneId)) {
+    void sessionName;
+    void workerIndex;
+    return listWezTermPanes().some((pane) => String(pane.pane_id) === workerPaneId);
+  }
   const result = runTmux([
     'list-panes',
     '-t', paneTarget(sessionName, workerIndex, workerPaneId),
@@ -1446,6 +1709,11 @@ export async function killWorker(sessionName: string, workerIndex: number, worke
 
 // leaderPaneId: when provided, the kill is skipped if workerPaneId matches it.
 export function killWorkerByPaneId(workerPaneId: string, leaderPaneId?: string): void {
+  if (isNativeWindows() && isWezTermPaneId(workerPaneId)) {
+    if (leaderPaneId && workerPaneId === leaderPaneId) return;
+    runWezTermCli(['kill-pane', '--pane-id', workerPaneId]);
+    return;
+  }
   if (!workerPaneId.startsWith('%')) return;
   // Guard: never kill the leader's own pane.
   if (leaderPaneId && workerPaneId === leaderPaneId) return;
@@ -1453,6 +1721,11 @@ export function killWorkerByPaneId(workerPaneId: string, leaderPaneId?: string):
 }
 
 export async function killWorkerByPaneIdAsync(workerPaneId: string, leaderPaneId?: string): Promise<void> {
+  if (isNativeWindows() && isWezTermPaneId(workerPaneId)) {
+    if (leaderPaneId && workerPaneId === leaderPaneId) return;
+    await runWezTermCliAsync(['kill-pane', '--pane-id', workerPaneId]);
+    return;
+  }
   if (!workerPaneId.startsWith('%')) return;
   // Guard: never kill the leader's own pane.
   if (leaderPaneId && workerPaneId === leaderPaneId) return;
@@ -1482,6 +1755,7 @@ export interface PaneTeardownOptions {
 function normalizePaneTarget(value: string | null | undefined): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
+  if (isNativeWindows() && /^\d+$/.test(trimmed)) return trimmed;
   if (!trimmed.startsWith('%')) return null;
   return trimmed;
 }
@@ -1543,7 +1817,9 @@ export async function teardownWorkerPanes(
   };
 
   for (const paneId of killablePaneIds) {
-    const result = await runTmuxAsync(['kill-pane', '-t', paneId]);
+    const result = isNativeWindows()
+      ? await runWezTermCliAsync(['kill-pane', '--pane-id', paneId])
+      : await runTmuxAsync(['kill-pane', '-t', paneId]);
     if (result.ok) summary.kill.succeeded += 1;
     else summary.kill.failed += 1;
     await sleep(perPaneGrace);
@@ -1563,6 +1839,15 @@ export async function killWorkerPanes(
 
 // Kill entire tmux session. Tolerates already-dead sessions.
 export function destroyTeamSession(sessionName: string): void {
+  if (isNativeWindows()) {
+    const paneIds = listWezTermPanes()
+      .filter((pane) => pane.workspace === sessionName)
+      .map((pane) => String(pane.pane_id));
+    for (const paneId of paneIds) {
+      runWezTermCli(['kill-pane', '--pane-id', paneId]);
+    }
+    return;
+  }
   try {
     runTmux(['kill-session', '-t', sessionName]);
   } catch {
@@ -1572,6 +1857,13 @@ export function destroyTeamSession(sessionName: string): void {
 
 // List all tmux sessions matching omx-team-* pattern
 export function listTeamSessions(): string[] {
+  if (isNativeWindows()) {
+    return [...new Set(
+      listWezTermPanes()
+        .map((pane) => pane.workspace)
+        .filter((workspace) => workspace.startsWith('omx-team-')),
+    )];
+  }
   const result = runTmux(['list-sessions', '-F', '#{session_name}']);
   if (!result.ok) return [];
 
@@ -1593,6 +1885,15 @@ export async function sendToLeaderPane(
   leaderPaneId: string,
   text: string,
 ): Promise<void> {
+  if (isNativeWindows() && isWezTermPaneId(leaderPaneId)) {
+    const send = await runWezTermCliAsync(['send-text', '--pane-id', leaderPaneId, '--no-paste', text]);
+    if (!send.ok) {
+      throw new Error(`sendToLeaderPane: failed to send text: ${send.stderr}`);
+    }
+    await sleep(150);
+    await runWezTermCliAsync(['send-text', '--pane-id', leaderPaneId, '--no-paste', '\r']);
+    return;
+  }
   const send = runTmux(['send-keys', '-t', leaderPaneId, '-l', '--', text]);
   if (!send.ok) {
     throw new Error(`sendToLeaderPane: failed to send text: ${send.stderr}`);

@@ -10,6 +10,33 @@ const PROVIDER_BINARIES = {
 };
 const ASK_ORIGINAL_TASK_ENV = 'OMX_ASK_ORIGINAL_TASK';
 
+function resolveBinaryOnWindows(binary) {
+  const probe = spawnSync('where.exe', [binary], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  if (probe.status !== 0 || !probe.stdout) return binary;
+  const resolved = probe.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  return resolved || binary;
+}
+
+function buildLaunchSpec(binary, args) {
+  if (process.platform === 'win32') {
+    const resolvedBinary = resolveBinaryOnWindows(binary);
+    const psCommand = [`& '${resolvedBinary.replace(/'/g, "''")}'`]
+      .concat(args.map((part) => `'${String(part).replace(/'/g, "''")}'`))
+      .join(' ');
+    return {
+      command: 'powershell.exe',
+      args: ['-NoProfile', '-Command', psCommand],
+    };
+  }
+  return { command: binary, args };
+}
+
 function usage() {
   console.error('Usage: omx ask <claude|gemini> "<prompt>"');
   console.error('Legacy direct usage: node scripts/run-provider-advisor.js <claude|gemini> <prompt...>');
@@ -56,7 +83,8 @@ function parseArgs(argv) {
 }
 
 function ensureBinary(binary) {
-  const probe = spawnSync(binary, ['--version'], {
+  const launch = buildLaunchSpec(binary, ['--version']);
+  const probe = spawnSync(launch.command, launch.args, {
     stdio: 'ignore',
     encoding: 'utf8',
   });
@@ -144,7 +172,8 @@ async function main() {
 
   ensureBinary(binary);
 
-  const run = spawnSync(binary, ['-p', prompt], {
+  const launch = buildLaunchSpec(binary, ['-p', prompt]);
+  const run = spawnSync(launch.command, launch.args, {
     encoding: 'utf8',
     maxBuffer: 10 * 1024 * 1024,
   });
