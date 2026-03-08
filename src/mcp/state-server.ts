@@ -5,6 +5,7 @@
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
 	CallToolRequestSchema,
 	ListToolsRequestSchema,
@@ -35,7 +36,7 @@ import {
 	validateAndNormalizeRalphState,
 } from "../ralph/contract.js";
 import { ensureCanonicalRalphArtifacts } from "../ralph/persistence.js";
-import { autoStartStdioMcpServer } from "./bootstrap.js";
+import { shouldAutoStartMcpServer } from "./bootstrap.js";
 import {
 	LEGACY_TEAM_MCP_TOOLS,
 	buildLegacyTeamDeprecationHint,
@@ -527,4 +528,7 @@ export async function handleStateToolCall(request: {
 server.setRequestHandler(CallToolRequestSchema, handleStateToolCall);
 
 // Start server
-autoStartStdioMcpServer("state", server);
+if (shouldAutoStartMcpServer("state")) {
+	const transport = new StdioServerTransport();
+	server.connect(transport).catch(console.error);
+}

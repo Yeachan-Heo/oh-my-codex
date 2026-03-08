@@ -5,6 +5,7 @@
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -13,7 +14,7 @@ import { readFile, writeFile, mkdir, rename } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { parseNotepadPruneDaysOld } from './memory-validation.js';
-import { autoStartStdioMcpServer } from './bootstrap.js';
+import { shouldAutoStartMcpServer } from './bootstrap.js';
 import { resolveWorkingDirectoryForState } from './state-paths.js';
 
 function getMemoryPath(wd: string): string {
@@ -454,4 +455,7 @@ function appendToSection(content: string, section: string, entry: string): strin
   return content.slice(0, nextHeader) + entry + content.slice(nextHeader);
 }
 
-autoStartStdioMcpServer('memory', server);
+if (shouldAutoStartMcpServer('memory')) {
+  const transport = new StdioServerTransport();
+  server.connect(transport).catch(console.error);
+}
