@@ -21,6 +21,10 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, JSON.stringify(value, null, 2));
 }
 
+function escapeRegex(value: string): string {
+  return value.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+}
+
 /**
  * Build a fake tmux binary that logs all invocations and optionally returns
  * capture-pane content from OMX_TEST_CAPTURE_FILE.
@@ -370,14 +374,13 @@ describe('notify-hook auto-nudge', () => {
     });
   });
 
-  it('still auto-nudges stall phrases when skill-active state is stale completing', async () => {
+  it('acquires the deep-interview input lock when deep-interview activates', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
       const stateDir = join(omxDir, 'state');
       const logsDir = join(omxDir, 'logs');
       const codexHome = join(cwd, 'codex-home');
       const fakeBinDir = join(cwd, 'fake-bin');
-      const tmuxLogPath = join(cwd, 'tmux.log');
 
       await mkdir(logsDir, { recursive: true });
       await mkdir(stateDir, { recursive: true });
@@ -387,103 +390,29 @@ describe('notify-hook auto-nudge', () => {
       await writeJson(join(codexHome, '.omx-config.json'), {
         autoNudge: { enabled: true, delaySec: 0 },
       });
-      await writeJson(join(stateDir, 'skill-active-state.json'), {
-        version: 1,
-        active: false,
-        skill: 'autopilot',
-        keyword: 'autopilot',
-        phase: 'completing',
-        activated_at: '2026-02-25T00:00:00.000Z',
-        updated_at: '2026-02-25T00:00:00.000Z',
-        source: 'keyword-detector',
-      });
 
-      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(join(cwd, 'tmux.log')));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'I can finish the cleanup too, if you want.',
+        'input-messages': ['please run a deep interview first'],
+        'last-assistant-message': 'Round 1 | Target: Goal Clarity',
       });
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
-      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'should still nudge when completion phase is stale but message has a stall phrase');
+      const skillState = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')) as {
+        skill: string;
+        input_lock?: { active: boolean; blocked_inputs: string[]; message: string };
+      };
+      assert.equal(skillState.skill, 'deep-interview');
+      assert.equal(skillState.input_lock?.active, true);
+      assert.deepEqual(skillState.input_lock?.blocked_inputs, ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead']);
+      assert.match(skillState.input_lock?.message || '', /Deep interview is active/i);
     });
   });
 
-  it('does not auto-nudge for true completion text when skill-active state is completing', async () => {
-    await withTempWorkingDir(async (cwd) => {
-      const omxDir = join(cwd, '.omx');
-      const stateDir = join(omxDir, 'state');
-      const logsDir = join(omxDir, 'logs');
-      const codexHome = join(cwd, 'codex-home');
-      const fakeBinDir = join(cwd, 'fake-bin');
-      const tmuxLogPath = join(cwd, 'tmux.log');
-
-      await mkdir(logsDir, { recursive: true });
-      await mkdir(stateDir, { recursive: true });
-      await mkdir(codexHome, { recursive: true });
-      await mkdir(fakeBinDir, { recursive: true });
-
-      await writeJson(join(codexHome, '.omx-config.json'), {
-        autoNudge: { enabled: true, delaySec: 0 },
-      });
-      await writeJson(join(stateDir, 'skill-active-state.json'), {
-        version: 1,
-        active: false,
-        skill: 'autopilot',
-        keyword: 'autopilot',
-        phase: 'completing',
-        activated_at: '2026-02-25T00:00:00.000Z',
-        updated_at: '2026-02-25T00:00:00.000Z',
-        source: 'keyword-detector',
-      });
-
-      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
-      await chmod(join(fakeBinDir, 'tmux'), 0o755);
-
-      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'I completed the refactoring. All tests pass.',
-      });
-      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
-
-      if (existsSync(tmuxLogPath)) {
-        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-        assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l/, 'should remain quiet for true completion text');
-      }
-    });
-  });
-
-  it('detects all default stall patterns case-insensitively', async () => {
-    const patterns = [
-      'If You Want me to make changes',
-      'Would You Like me to continue?',
-      'Shall I proceed with the implementation?',
-      'Next I Can refactor the module for clarity.',
-      'Do You Want Me To apply this fix?',
-      'Let Me Know If you need anything else.',
-      'Want Me To make those changes?',
-      'Let Me Know what you think.',
-      'Just Let Me Know when ready.',
-      'I Can Also refactor the tests.',
-      'I Could Also add more tests if needed.',
-      'READY TO PROCEED with the next step.',
-      'Should I go ahead and deploy?',
-      'Whenever You are ready, I can start.',
-      'Say Go when you are ready.',
-      'Say Yes to confirm the changes.',
-      'Type Continue to proceed with the next step.',
-      "And I'll Continue once you confirm.",
-      "And I'll Proceed with the deployment.",
-      "I'll Keep Driving the implementation forward.",
-      "I'll Keep Pushing on the test coverage.",
-      "I'll Move Forward with the remaining items.",
-      "I'll Drive Forward from here.",
-      "I'll Proceed From Here with the next task.",
-      "I'll Continue From this point onward.",
-    ];
-
-    for (const message of patterns) {
+  for (const blockedResponse of ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead']) {
+    it(`blocks deep-interview auto-approval injection for "${blockedResponse}"`, async () => {
       await withTempWorkingDir(async (cwd) => {
         const omxDir = join(cwd, '.omx');
         const stateDir = join(omxDir, 'state');
@@ -498,23 +427,205 @@ describe('notify-hook auto-nudge', () => {
         await mkdir(fakeBinDir, { recursive: true });
 
         await writeJson(join(codexHome, '.omx-config.json'), {
-          autoNudge: { enabled: true, delaySec: 0 },
+          autoNudge: { enabled: true, delaySec: 0, response: blockedResponse },
+        });
+        await writeJson(join(stateDir, 'skill-active-state.json'), {
+          version: 1,
+          active: true,
+          skill: 'deep-interview',
+          keyword: 'deep interview',
+          phase: 'planning',
+          activated_at: '2026-02-25T00:00:00.000Z',
+          updated_at: '2026-02-25T00:00:00.000Z',
+          source: 'keyword-detector',
+          input_lock: {
+            active: true,
+            scope: 'deep-interview-auto-approval',
+            acquired_at: '2026-02-25T00:00:00.000Z',
+            blocked_inputs: ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead'],
+            message: 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.',
+          },
         });
 
         await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
         await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
         const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-          'last-assistant-message': message,
+          'last-assistant-message': 'Would you like me to continue?',
         });
-        assert.equal(result.status, 0, `hook failed for pattern "${message}": ${result.stderr || result.stdout}`);
+        assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
-        assert.ok(existsSync(tmuxLogPath), `tmux should be called for pattern: "${message}"`);
         const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-        assert.match(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, `should nudge with marker for: "${message}"`);
+        assert.match(tmuxLog, /Deep interview is active; auto-approval shortcuts are blocked until the interview finishes\. \[OMX_TMUX_INJECT\]/);
+        assert.equal(tmuxLog.includes(`send-keys -t %99 -l ${blockedResponse} [OMX_TMUX_INJECT]`), false);
       });
-    }
+    });
+  }
+
+  it('releases the deep-interview input lock on success', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0 },
+      });
+      await writeJson(join(stateDir, 'skill-active-state.json'), {
+        version: 1,
+        active: true,
+        skill: 'deep-interview',
+        keyword: 'deep interview',
+        phase: 'planning',
+        activated_at: '2026-02-25T00:00:00.000Z',
+        updated_at: '2026-02-25T00:00:00.000Z',
+        source: 'keyword-detector',
+        input_lock: {
+          active: true,
+          scope: 'deep-interview-auto-approval',
+          acquired_at: '2026-02-25T00:00:00.000Z',
+          blocked_inputs: ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead'],
+          message: 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.',
+        },
+      });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(join(cwd, 'tmux.log')));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'Interview completed. Final summary ready.',
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const skillState = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')) as {
+        active: boolean;
+        phase: string;
+        input_lock?: { active: boolean; released_at?: string; exit_reason?: string };
+      };
+      assert.equal(skillState.active, false);
+      assert.equal(skillState.phase, 'completing');
+      assert.equal(skillState.input_lock?.active, false);
+      assert.ok(skillState.input_lock?.released_at);
+      assert.equal(skillState.input_lock?.exit_reason, 'success');
+    });
   });
+
+  it('releases the deep-interview input lock on error', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0 },
+      });
+      await writeJson(join(stateDir, 'skill-active-state.json'), {
+        version: 1,
+        active: true,
+        skill: 'deep-interview',
+        keyword: 'deep interview',
+        phase: 'planning',
+        activated_at: '2026-02-25T00:00:00.000Z',
+        updated_at: '2026-02-25T00:00:00.000Z',
+        source: 'keyword-detector',
+        input_lock: {
+          active: true,
+          scope: 'deep-interview-auto-approval',
+          acquired_at: '2026-02-25T00:00:00.000Z',
+          blocked_inputs: ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead'],
+          message: 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.',
+        },
+      });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(join(cwd, 'tmux.log')));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'Deep interview failed with error: unable to continue.',
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const skillState = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')) as {
+        active: boolean;
+        phase: string;
+        input_lock?: { active: boolean; released_at?: string; exit_reason?: string };
+      };
+      assert.equal(skillState.active, false);
+      assert.equal(skillState.phase, 'completing');
+      assert.equal(skillState.input_lock?.active, false);
+      assert.ok(skillState.input_lock?.released_at);
+      assert.equal(skillState.input_lock?.exit_reason, 'error');
+    });
+  });
+
+  it('releases the deep-interview input lock on abort', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0 },
+      });
+      await writeJson(join(stateDir, 'skill-active-state.json'), {
+        version: 1,
+        active: true,
+        skill: 'deep-interview',
+        keyword: 'deep interview',
+        phase: 'planning',
+        activated_at: '2026-02-25T00:00:00.000Z',
+        updated_at: '2026-02-25T00:00:00.000Z',
+        source: 'keyword-detector',
+        input_lock: {
+          active: true,
+          scope: 'deep-interview-auto-approval',
+          acquired_at: '2026-02-25T00:00:00.000Z',
+          blocked_inputs: ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead'],
+          message: 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.',
+        },
+      });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(join(cwd, 'tmux.log')));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'input-messages': ['abort'],
+        'last-assistant-message': 'Stopping interview now.',
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const skillState = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')) as {
+        skill: string;
+        active: boolean;
+        phase: string;
+        input_lock?: { active: boolean; released_at?: string };
+      };
+      assert.equal(skillState.skill, 'deep-interview');
+      assert.equal(skillState.active, false);
+      assert.equal(skillState.phase, 'completing');
+      assert.equal(skillState.input_lock?.active, false);
+      assert.ok(skillState.input_lock?.released_at);
+    });
+  });
+
 
   it('uses custom patterns from config', async () => {
     await withTempWorkingDir(async (cwd) => {

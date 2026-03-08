@@ -13,11 +13,102 @@ import { logTmuxHookEvent } from './log.js';
 import { DEFAULT_MARKER } from '../tmux-hook-engine.js';
 
 export const SKILL_ACTIVE_STATE_FILE = 'skill-active-state.json';
+export const DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS = ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead'];
+export const DEEP_INTERVIEW_INPUT_LOCK_MESSAGE = 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.';
+const DEEP_INTERVIEW_ERROR_PATTERNS = [' error', ' failed', ' failure', ' exception', 'unable to continue', 'cannot continue', 'could not continue'];
+const DEEP_INTERVIEW_ABORT_PATTERNS = ['aborted', 'cancelled', 'canceled'];
+const DEEP_INTERVIEW_ABORT_INPUTS = new Set(['abort', 'cancel', 'stop']);
 const SKILL_PHASES = new Set(['planning', 'executing', 'reviewing', 'completing']);
 
 function normalizeSkillPhase(phase) {
   const normalized = safeString(phase).toLowerCase().trim();
   return SKILL_PHASES.has(normalized) ? normalized : 'planning';
+}
+
+function normalizeInputLock(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    active: raw.active !== false,
+    scope: safeString(raw.scope),
+    acquired_at: safeString(raw.acquired_at),
+    released_at: safeString(raw.released_at),
+    blocked_inputs: Array.isArray(raw.blocked_inputs)
+      ? raw.blocked_inputs.map((value) => safeString(value).toLowerCase()).filter(Boolean)
+      : [...DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS],
+    message: safeString(raw.message) || DEEP_INTERVIEW_INPUT_LOCK_MESSAGE,
+    exit_reason: safeString(raw.exit_reason),
+  };
+}
+
+export function normalizeBlockedAutoApprovalInput(text) {
+  return safeString(text)
+    .toLowerCase()
+    .replace(/\[omx_tmux_inject\]/gi, '')
+    .replace(/[^a-z]+/g, ' ')
+    .trim();
+}
+
+export function isBlockedAutoApprovalInput(text, blockedInputs = DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS) {
+  const normalized = normalizeBlockedAutoApprovalInput(text);
+  if (!normalized) return false;
+  if (blockedInputs.some((entry) => normalizeBlockedAutoApprovalInput(entry) === normalized)) return true;
+
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return false;
+
+  const blockedTokenSet = new Set(
+    blockedInputs.flatMap((entry) => normalizeBlockedAutoApprovalInput(entry).split(/\s+/).filter(Boolean)),
+  );
+  return tokens.every((token) => blockedTokenSet.has(token));
+}
+
+function isDeepInterviewAbortInput(text) {
+  return DEEP_INTERVIEW_ABORT_INPUTS.has(normalizeBlockedAutoApprovalInput(text));
+}
+
+function hasAnySubstring(text, patterns) {
+  const lower = safeString(text).toLowerCase();
+  return patterns.some((pattern) => lower.includes(pattern));
+}
+
+export function isDeepInterviewAutoApprovalLocked(skillState) {
+  return Boolean(
+    skillState
+    && skillState.skill === 'deep-interview'
+    && skillState.input_lock
+    && (safeString(skillState.input_lock.scope) === '' || skillState.input_lock.scope === 'deep-interview-auto-approval')
+    && skillState.input_lock.active === true,
+  );
+}
+
+export function inferDeepInterviewReleaseReason({ skillState, latestUserInput = '', lastMessage = '' }) {
+  if (!isDeepInterviewAutoApprovalLocked(skillState)) {
+    return null;
+  }
+  if (isDeepInterviewAbortInput(latestUserInput) || hasAnySubstring(lastMessage, DEEP_INTERVIEW_ABORT_PATTERNS)) {
+    return 'abort';
+  }
+  if (hasAnySubstring(` ${safeString(lastMessage).toLowerCase()}`, DEEP_INTERVIEW_ERROR_PATTERNS)) {
+    return 'error';
+  }
+  if (skillState.phase === 'completing') {
+    return 'success';
+  }
+  return null;
+}
+
+function releaseDeepInterviewInputLock(skillState, reason, nowIso) {
+  if (!skillState?.input_lock) return skillState;
+  skillState.input_lock = {
+    ...skillState.input_lock,
+    active: false,
+    released_at: nowIso,
+    exit_reason: reason,
+  };
+  skillState.phase = 'completing';
+  skillState.active = false;
+  skillState.updated_at = nowIso;
+  return skillState;
 }
 
 export function normalizeSkillActiveState(raw) {
@@ -35,6 +126,7 @@ export function normalizeSkillActiveState(raw) {
     activated_at: safeString(raw.activated_at),
     updated_at: safeString(raw.updated_at),
     source: safeString(raw.source),
+    input_lock: normalizeInputLock(raw.input_lock),
   };
 }
 
@@ -66,6 +158,12 @@ async function loadSkillActiveState(stateDir) {
 
 async function persistSkillActiveState(stateDir, state) {
   await writeFile(join(stateDir, SKILL_ACTIVE_STATE_FILE), JSON.stringify(state, null, 2)).catch(() => {});
+}
+
+function latestUserInputFromPayload(payload) {
+  const inputMessages = payload['input-messages'] || payload.input_messages || [];
+  if (!Array.isArray(inputMessages) || inputMessages.length === 0) return '';
+  return safeString(inputMessages[inputMessages.length - 1]);
 }
 
 export const DEFAULT_STALL_PATTERNS = [
@@ -134,15 +232,11 @@ export async function loadAutoNudgeConfig() {
 
 export function detectStallPattern(text, patterns) {
   if (!text || typeof text !== 'string') return false;
-  // Broader tail window (~800 chars / ~15-20 lines) for context
   const tail = text.slice(-800).toLowerCase();
   const lowerPatterns = patterns.map(p => p.toLowerCase());
-  // Focus on last few lines where stall prompts typically appear
   const lines = tail.split('\n').filter(l => l.trim());
   const hotZone = lines.slice(-3).join('\n');
-  // Primary: check last few lines (highest signal)
   if (lowerPatterns.some(p => hotZone.includes(p))) return true;
-  // Secondary: check broader tail window
   return lowerPatterns.some(p => tail.includes(p));
 }
 
@@ -158,11 +252,9 @@ export async function capturePane(paneId, lines = 10) {
 }
 
 export async function resolveNudgePaneTarget(stateDir) {
-  // 1. Try TMUX_PANE env var (inherited from the Codex process)
   const envPane = safeString(process.env.TMUX_PANE || '');
   if (envPane) return envPane;
 
-  // 2. Fallback: check active mode states for tmux_pane_id
   try {
     const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir);
     for (const dir of scopedDirs) {
@@ -187,93 +279,111 @@ export async function resolveNudgePaneTarget(stateDir) {
   return '';
 }
 
+async function emitInjectionMessage(paneId, message) {
+  const markedResponse = `${message} ${DEFAULT_MARKER}`;
+  await runProcess('tmux', ['send-keys', '-t', paneId, '-l', markedResponse], 3000);
+  await new Promise(r => setTimeout(r, 100));
+  await runProcess('tmux', ['send-keys', '-t', paneId, 'C-m'], 3000);
+  await new Promise(r => setTimeout(r, 100));
+  await runProcess('tmux', ['send-keys', '-t', paneId, 'C-m'], 3000);
+}
+
 export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
   const config = await loadAutoNudgeConfig();
   if (!config.enabled) return;
 
-  const skillState = await loadSkillActiveState(stateDir);
   const lastMessage = safeString(payload['last-assistant-message'] || payload.last_assistant_message || '');
-  if (skillState) {
-    const inferredPhase = inferSkillPhaseFromText(lastMessage, skillState.phase);
-    if (inferredPhase !== skillState.phase || skillState.active !== (inferredPhase !== 'completing')) {
+  const latestUserInput = latestUserInputFromPayload(payload);
+  let skillState = await loadSkillActiveState(stateDir);
+  let releaseReason = null;
+
+  try {
+    if (skillState) {
+      const inferredPhase = inferSkillPhaseFromText(lastMessage, skillState.phase);
       skillState.phase = inferredPhase;
       skillState.active = inferredPhase !== 'completing';
       skillState.updated_at = new Date().toISOString();
-      await persistSkillActiveState(stateDir, skillState);
-    }
-  }
-
-  // Check nudge count against session limit
-  const nudgeStatePath = join(stateDir, 'auto-nudge-state.json');
-  let nudgeState = await readJsonIfExists(nudgeStatePath, null);
-  if (!nudgeState || typeof nudgeState !== 'object') {
-    nudgeState = { nudgeCount: 0, lastNudgeAt: '' };
-  }
-  const nudgeCount = asNumber(nudgeState.nudgeCount) ?? 0;
-  if (Number.isFinite(config.maxNudgesPerSession) && nudgeCount >= config.maxNudgesPerSession) return;
-
-  // Resolve pane target early (needed for both capture-pane check and sending)
-  const paneId = await resolveNudgePaneTarget(stateDir);
-
-  // Check last assistant message for stall patterns (fast path)
-  let detected = detectStallPattern(lastMessage, config.patterns);
-  let source = 'payload';
-
-  // Fallback: capture the last 10 lines of tmux pane output
-  if (!detected && paneId) {
-    const captured = await capturePane(paneId);
-    detected = detectStallPattern(captured, config.patterns);
-    source = 'capture-pane';
-  }
-
-  // Preserve completion quietness unless we explicitly see a stall phrase.
-  // This handles stale skill-state files that remain in "completing" while
-  // the assistant still asks for permission ("if you want", etc.).
-  if (skillState?.phase === 'completing' && !detected) return;
-
-  if (!detected || !paneId) return;
-
-  // Short delay to let the agent settle before nudging
-  if (config.delaySec > 0) {
-    await new Promise(r => setTimeout(r, config.delaySec * 1000));
-  }
-
-  const nowIso = new Date().toISOString();
-  try {
-    // Send the response text as literal bytes, then submit with double C-m
-    // Codex CLI needs C-m sent twice with a short delay for reliable prompt submission
-    const markedResponse = `${config.response} ${DEFAULT_MARKER}`;
-    await runProcess('tmux', ['send-keys', '-t', paneId, '-l', markedResponse], 3000);
-    await new Promise(r => setTimeout(r, 100));
-    await runProcess('tmux', ['send-keys', '-t', paneId, 'C-m'], 3000);
-    await new Promise(r => setTimeout(r, 100));
-    await runProcess('tmux', ['send-keys', '-t', paneId, 'C-m'], 3000);
-
-    nudgeState.nudgeCount = nudgeCount + 1;
-    nudgeState.lastNudgeAt = nowIso;
-    await writeFile(nudgeStatePath, JSON.stringify(nudgeState, null, 2)).catch(() => {});
-
-    if (skillState && skillState.phase === 'planning') {
-      skillState.phase = 'executing';
-      skillState.active = true;
-      skillState.updated_at = nowIso;
+      releaseReason = inferDeepInterviewReleaseReason({ skillState, latestUserInput, lastMessage });
       await persistSkillActiveState(stateDir, skillState);
     }
 
-    await logTmuxHookEvent(logsDir, {
-      timestamp: nowIso,
-      type: 'auto_nudge',
-      pane_id: paneId,
-      response: config.response,
-      source,
-      nudge_count: nudgeState.nudgeCount,
-    });
-  } catch (err) {
-    await logTmuxHookEvent(logsDir, {
-      timestamp: nowIso,
-      type: 'auto_nudge',
-      pane_id: paneId,
-      error: err instanceof Error ? err.message : safeString(err),
-    }).catch(() => {});
+    const nudgeStatePath = join(stateDir, 'auto-nudge-state.json');
+    let nudgeState = await readJsonIfExists(nudgeStatePath, null);
+    if (!nudgeState || typeof nudgeState !== 'object') {
+      nudgeState = { nudgeCount: 0, lastNudgeAt: '' };
+    }
+    const nudgeCount = asNumber(nudgeState.nudgeCount) ?? 0;
+    if (Number.isFinite(config.maxNudgesPerSession) && nudgeCount >= config.maxNudgesPerSession) return;
+
+    const paneId = await resolveNudgePaneTarget(stateDir);
+
+    let detected = detectStallPattern(lastMessage, config.patterns);
+    let source = 'payload';
+
+    if (!detected && paneId) {
+      const captured = await capturePane(paneId);
+      detected = detectStallPattern(captured, config.patterns);
+      source = 'capture-pane';
+    }
+
+    if (skillState?.phase === 'completing' && !detected) return;
+    if (!detected || !paneId) return;
+
+    const deepInterviewLockActive = isDeepInterviewAutoApprovalLocked(skillState) && !releaseReason;
+    if (deepInterviewLockActive && isBlockedAutoApprovalInput(config.response, skillState.input_lock?.blocked_inputs)) {
+      const blockedMessage = skillState.input_lock?.message || DEEP_INTERVIEW_INPUT_LOCK_MESSAGE;
+      await emitInjectionMessage(paneId, blockedMessage);
+      await logTmuxHookEvent(logsDir, {
+        timestamp: new Date().toISOString(),
+        type: 'auto_nudge_blocked',
+        pane_id: paneId,
+        response: config.response,
+        source,
+        blocked_by: 'deep-interview-lock',
+        message: blockedMessage,
+      }).catch(() => {});
+      return;
+    }
+
+    if (config.delaySec > 0) {
+      await new Promise(r => setTimeout(r, config.delaySec * 1000));
+    }
+
+    const nowIso = new Date().toISOString();
+    try {
+      await emitInjectionMessage(paneId, config.response);
+
+      nudgeState.nudgeCount = nudgeCount + 1;
+      nudgeState.lastNudgeAt = nowIso;
+      await writeFile(nudgeStatePath, JSON.stringify(nudgeState, null, 2)).catch(() => {});
+
+      if (skillState && skillState.phase === 'planning') {
+        skillState.phase = 'executing';
+        skillState.active = true;
+        skillState.updated_at = nowIso;
+        await persistSkillActiveState(stateDir, skillState);
+      }
+
+      await logTmuxHookEvent(logsDir, {
+        timestamp: nowIso,
+        type: 'auto_nudge',
+        pane_id: paneId,
+        response: config.response,
+        source,
+        nudge_count: nudgeState.nudgeCount,
+      });
+    } catch (err) {
+      await logTmuxHookEvent(logsDir, {
+        timestamp: nowIso,
+        type: 'auto_nudge',
+        pane_id: paneId,
+        error: err instanceof Error ? err.message : safeString(err),
+      }).catch(() => {});
+    }
+  } finally {
+    if (releaseReason && skillState && isDeepInterviewAutoApprovalLocked(skillState)) {
+      releaseDeepInterviewInputLock(skillState, releaseReason, new Date().toISOString());
+      await persistSkillActiveState(stateDir, skillState).catch(() => {});
+    }
   }
 }

@@ -254,6 +254,56 @@ describe('notify-hook/auto-nudge – inferSkillPhaseFromText', () => {
   });
 });
 
+describe('notify-hook/auto-nudge – blocked deep-interview auto approvals', () => {
+  it('normalizes injected approval text before matching blocked inputs', async () => {
+    const { normalizeBlockedAutoApprovalInput } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(normalizeBlockedAutoApprovalInput(' yes, proceed [OMX_TMUX_INJECT] '), 'yes proceed');
+  });
+
+  it('matches each blocked approval keyword or phrase', async () => {
+    const { isBlockedAutoApprovalInput, DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS } = await loadModule('notify-hook/auto-nudge.js');
+    for (const blocked of DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS) {
+      assert.equal(isBlockedAutoApprovalInput(blocked), true, `expected blocked input ${blocked} to match`);
+    }
+  });
+
+  it('blocks combined yes/proceed injection text', async () => {
+    const { isBlockedAutoApprovalInput } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(isBlockedAutoApprovalInput('yes, proceed'), true);
+  });
+
+  it('does not block unrelated responses', async () => {
+    const { isBlockedAutoApprovalInput } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(isBlockedAutoApprovalInput('deep interview is active; auto-approval shortcuts are blocked until the interview finishes.'), false);
+  });
+
+  it('infers success/error/abort lock release reasons', async () => {
+    const { inferDeepInterviewReleaseReason } = await loadModule('notify-hook/auto-nudge.js');
+    const baseState = {
+      skill: 'deep-interview',
+      phase: 'planning',
+      input_lock: { active: true },
+    };
+
+    assert.equal(inferDeepInterviewReleaseReason({
+      skillState: { ...baseState, phase: 'completing' },
+      latestUserInput: '',
+      lastMessage: 'Interview summary complete.',
+    }), 'success');
+    assert.equal(inferDeepInterviewReleaseReason({
+      skillState: baseState,
+      latestUserInput: '',
+      lastMessage: 'Interview failed with error: unable to continue.',
+    }), 'error');
+    assert.equal(inferDeepInterviewReleaseReason({
+      skillState: baseState,
+      latestUserInput: 'abort',
+      lastMessage: 'Stopping now.',
+    }), 'abort');
+  });
+});
+
+
 // ---------------------------------------------------------------------------
 // team-worker.js – parseTeamWorkerEnv
 // ---------------------------------------------------------------------------
