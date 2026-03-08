@@ -70,6 +70,7 @@ When delegating:
 Rules:
 - Max 6 concurrent child agents.
 - Child prompts stay under AGENTS.md authority.
+- `worker` is a team-runtime surface, not a general-purpose child role.
 - Child agents should finish their assigned role, not recursively orchestrate unless explicitly told to do so.
 </child_agent_protocol>
 
