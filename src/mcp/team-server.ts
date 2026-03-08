@@ -5,7 +5,6 @@
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -21,7 +20,7 @@ import { killWorkerPanes } from '../team/tmux-session.js';
 import { teamReadConfig as readTeamConfig } from '../team/team-ops.js';
 import { NudgeTracker } from '../team/idle-nudge.js';
 import { getLatestTeamEventCursor, waitForTeamEvent } from '../team/state/events.js';
-import { shouldAutoStartMcpServer } from './bootstrap.js';
+import { autoStartStdioMcpServer } from './bootstrap.js';
 
 // ---------------------------------------------------------------------------
 // Zod schemas
@@ -565,7 +564,4 @@ export async function handleTeamToolCall(request: {
 
 server.setRequestHandler(CallToolRequestSchema, handleTeamToolCall);
 
-if (shouldAutoStartMcpServer('team')) {
-  const transport = new StdioServerTransport();
-  server.connect(transport).catch(console.error);
-}
+autoStartStdioMcpServer('team', server);

@@ -28,10 +28,12 @@ describe('mcp/code-intel-server module contract', () => {
     assert.match(src, /new Server\(\s*\{ name: 'omx-code-intel', version: '0\.1\.0' \}/);
   });
 
-  it('keeps stdio auto-connect bootstrap', async () => {
+  it('delegates stdio lifecycle bootstrapping to the shared MCP bootstrap helper', async () => {
     const src = await readFile(join(process.cwd(), 'src/mcp/code-intel-server.ts'), 'utf8');
-    assert.match(src, /const transport = new StdioServerTransport\(\);/);
-    assert.match(src, /server\.connect\(transport\)\.catch\(console\.error\);/);
+
+    assert.match(src, /autoStartStdioMcpServer\('code_intel', server\)/);
+    assert.doesNotMatch(src, /new StdioServerTransport\(\)/);
+    assert.doesNotMatch(src, /server\.connect\(transport\)\.catch\(console\.error\);/);
   });
 
   it('applies ast-grep rewrites only when dryRun=false', async () => {
