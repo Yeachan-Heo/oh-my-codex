@@ -22,7 +22,7 @@ describe('package bin contract', () => {
     const packageJsonPath = join(process.cwd(), 'package.json');
     const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as PackageJson;
 
-    assert.deepEqual(pkg.bin, { omx: './bin/omx.js' });
+    assert.deepEqual(pkg.bin, { omx: 'bin/omx.js' });
 
     const binPath = join(process.cwd(), 'bin', 'omx.js');
     assert.equal(existsSync(binPath), true, 'expected bin/omx.js to exist');

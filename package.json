@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "omx": "./bin/omx.js"
+    "omx": "bin/omx.js"
   },
   "scripts": {
     "build": "tsc",
