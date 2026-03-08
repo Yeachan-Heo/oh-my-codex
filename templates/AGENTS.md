@@ -36,12 +36,13 @@ Keep runtime marker contracts stable and non-destructive when overlays are appli
 </operating_principles>
 
 ## Working agreements
+- Write a cleanup plan before modifying code for cleanup/refactor/deslop work.
+- Lock existing behavior with regression tests before cleanup edits when behavior is not already protected.
 - Prefer deletion over addition.
-- Keep diffs small, reviewable, and reversible.
-- Reuse existing patterns before adding abstractions.
+- Reuse existing utils and patterns before introducing new abstractions.
 - No new dependencies without explicit request.
-- For cleanup/refactor/deslop work, write a cleanup plan first and protect behavior with tests when needed.
-- Run lint, typecheck, tests, and static analysis after changes when applicable.
+- Keep diffs small, reviewable, and reversible.
+- Run lint, typecheck, tests, and static analysis after changes.
 - Final reports must include changed files, simplifications made, and remaining risks.
 
 ---
@@ -71,6 +72,7 @@ Rules:
 - Max 6 concurrent child agents.
 - Child prompts stay under AGENTS.md authority.
 - `worker` is a team-runtime surface, not a general-purpose child role.
+- Child agents should report recommended handoffs upward.
 - Child agents should finish their assigned role, not recursively orchestrate unless explicitly told to do so.
 </child_agent_protocol>
 
@@ -213,7 +215,7 @@ Anti-slop workflow:
 - Cleanup/refactor/deslop requests route through `$ai-slop-cleaner` unless the user explicitly requests otherwise.
 - Lock behavior with tests first, then make one smell-focused pass at a time.
 - Prefer deletion, reuse, and boundary repair over new layers.
-- Keep writer/reviewer separation for cleanup plans and approvals.
+- Keep writer/reviewer pass separation for cleanup plans and approvals.
 
 Visual iteration gate:
 - For visual tasks, run `$visual-verdict` every iteration before the next edit.
