@@ -5,7 +5,6 @@
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -15,7 +14,7 @@ import { join } from 'path';
 import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
 import { listModeStateFilesWithScopePreference, resolveWorkingDirectoryForState } from './state-paths.js';
-import { shouldAutoStartMcpServer } from './bootstrap.js';
+import { autoStartStdioMcpServer } from './bootstrap.js';
 
 function text(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
@@ -334,7 +333,4 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-if (shouldAutoStartMcpServer('trace')) {
-  const transport = new StdioServerTransport();
-  server.connect(transport).catch(console.error);
-}
+autoStartStdioMcpServer('trace', server);
