@@ -36,6 +36,16 @@ Keep runtime marker contracts stable and non-destructive when overlays are appli
 <!-- OMX:GUIDANCE:OPERATING:END -->
 </operating_principles>
 
+## Working agreements
+- Write a cleanup plan before modifying code for cleanup/refactor/deslop work.
+- Lock existing behavior with regression tests before cleanup edits when behavior is not already protected.
+- Prefer deletion over addition.
+- Reuse existing utils and patterns before introducing new abstractions.
+- No new dependencies without explicit request.
+- Keep diffs small, reviewable, and reversible.
+- Run lint, typecheck, tests, and static analysis after changes.
+- Final reports must include changed files, simplifications made, and remaining risks.
+
 ---
 
 <delegation_rules>
@@ -160,6 +170,7 @@ Do not ask for confirmation — just read the skill file and follow its instruct
 | "autopilot", "build me", "I want a" | `$autopilot` | Read `~/.agents/skills/autopilot/SKILL.md`, execute autonomous pipeline |
 | "ultrawork", "ulw", "parallel" | `$ultrawork` | Read `~/.agents/skills/ultrawork/SKILL.md`, execute parallel agents |
 | "ultraqa" | `$ultraqa` | Read `~/.agents/skills/ultraqa/SKILL.md`, run QA cycling workflow |
+| "anti-slop", "cleanup", "refactor", "deslop" | `$ai-slop-cleaner` | Read `~/.agents/skills/ai-slop-cleaner/SKILL.md`, run the tests-first anti-slop cleanup workflow |
 | "analyze", "investigate" | `$analyze` | Read `~/.agents/skills/analyze/SKILL.md`, run deep analysis |
 | "plan this", "plan the", "let's plan" | `$plan` | Read `~/.agents/skills/plan/SKILL.md`, start planning workflow |
 | "interview", "deep interview", "gather requirements", "interview me", "don't assume", "ouroboros" | `$deep-interview` | Read `~/.agents/skills/deep-interview/SKILL.md`, run Ouroboros-inspired Socratic ambiguity-gated interview workflow |
@@ -202,6 +213,7 @@ Workflow Skills:
 - `team`: N coordinated agents on shared task list
 - `swarm`: N coordinated agents on shared task list (compatibility facade over team)
 - `ultraqa`: QA cycling -- test, verify, fix, repeat
+- `ai-slop-cleaner`: Tests-first anti-slop cleanup workflow with cleanup planning, smell-by-smell passes, and reviewer separation
 - `plan`: Strategic planning with optional RALPLAN-DR consensus mode
 - `deep-interview`: Socratic deep interview with Ouroboros-inspired mathematical ambiguity gating before execution
 - `ralplan`: Iterative consensus planning with RALPLAN-DR structured deliberation (planner + architect + critic); supports `--deliberate` for high-risk work
@@ -217,6 +229,7 @@ Agent Shortcuts:
 - `git-master` -> git-master: Git commit and history management
 
 Utilities:
+- `review`: Reviewer-only pass for existing plans or cleanup artifacts; use a separate reviewer context and never self-approve
 - `cancel`: Cancel active execution modes
 - `note`: Save notes for session persistence
 - `doctor`: Diagnose installation issues
@@ -311,6 +324,14 @@ Parallelization:
 - Prefer Team mode as the primary parallel execution surface. Use ad hoc parallelism only when Team overhead is disproportionate to the task.
 - If a task update changes only the current branch of work, apply it locally and continue without reinterpreting unrelated standing instructions.
 - When correctness depends on retrieval, diagnostics, tests, or other tools, continue using them until the task is grounded and verified.
+
+Anti-slop workflow:
+- For cleanup/refactor/deslop requests, route through `$ai-slop-cleaner` unless the user explicitly requests a different workflow.
+- Lock behavior with regression tests first, then write a cleanup plan before code changes.
+- Categorize issues (duplication, dead code, needless abstraction, boundary violations, missing tests) and execute one smell-focused pass at a time.
+- Prefer deletion, reuse, and boundary repair over new layers or dependencies.
+- Minimum cleanup quality gates: lint -> typecheck -> relevant unit/integration tests -> static/security scan when available.
+- Use writer/reviewer pass separation for plans, cleanup proposals, and approval: the context/agent that writes the change or plan must not be the final reviewer or approver.
 
 Visual iteration gate:
 - For visual tasks (reference image(s) + generated screenshot), run `$visual-verdict` every iteration before the next edit.

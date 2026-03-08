@@ -109,6 +109,13 @@
       "internalRequired": false
     },
     {
+      "name": "ai-slop-cleaner",
+      "category": "shortcut",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
       "name": "code-review",
       "category": "shortcut",
       "status": "active",

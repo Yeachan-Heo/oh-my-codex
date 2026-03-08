@@ -86,6 +86,11 @@
       "canonical": "build-fixer"
     },
     {
+      "name": "ai-slop-cleaner",
+      "category": "shortcut",
+      "status": "active"
+    },
+    {
       "name": "code-review",
       "category": "shortcut",
       "status": "active",

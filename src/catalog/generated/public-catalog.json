@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-03-06T00:19:14.230Z",
+  "generatedAt": "2026-03-08T08:08:24.819Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 38,
+    "skillCount": 39,
     "promptCount": 29,
-    "activeSkillCount": 22,
+    "activeSkillCount": 23,
     "activeAgentCount": 18
   },
   "coreSkills": [
@@ -118,6 +118,13 @@
       "category": "shortcut",
       "status": "alias",
       "canonical": "build-fixer",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "ai-slop-cleaner",
+      "category": "shortcut",
+      "status": "active",
       "core": false,
       "internalRequired": false
     },

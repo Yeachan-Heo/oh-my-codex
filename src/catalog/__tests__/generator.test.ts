@@ -42,6 +42,7 @@ describe('catalog reader/contract', () => {
     assert.ok(contract.coreSkills.includes('autopilot'));
     assert.ok(contract.skills.some((s) => s.name === 'ask-claude' && s.status === 'active'));
     assert.ok(contract.skills.some((s) => s.name === 'ask-gemini' && s.status === 'active'));
+    assert.ok(contract.skills.some((s) => s.name === 'ai-slop-cleaner' && s.status === 'active'));
   });
 
   it('template manifest can be synced from source manifest', async () => {
