@@ -638,8 +638,9 @@ export function buildWorkerProcessLaunchSpec(
   workerCliOverride?: TeamWorkerCli,
   initialPrompt?: string,
 ): WorkerProcessLaunchSpec {
-  const fullLaunchArgs = resolveWorkerLaunchArgs(launchArgs, cwd);
-  const workerCli = workerCliOverride ?? resolveTeamWorkerCli(fullLaunchArgs, process.env);
+  const effectiveEnv: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
+  const fullLaunchArgs = resolveWorkerLaunchArgs(launchArgs, cwd, effectiveEnv);
+  const workerCli = workerCliOverride ?? resolveTeamWorkerCli(fullLaunchArgs, effectiveEnv);
   const cliLaunchArgs = translateWorkerLaunchArgsForCli(workerCli, fullLaunchArgs, initialPrompt);
 
   const resolvedCliPath = resolveAbsoluteBinaryPath(workerCli);

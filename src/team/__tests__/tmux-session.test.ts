@@ -706,6 +706,32 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
+
+  it('uses per-worker OMX_MODEL_INSTRUCTIONS_FILE from extraEnv when building process launch spec', () => {
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const prevInstr = process.env.OMX_MODEL_INSTRUCTIONS_FILE;
+    delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    delete process.env.OMX_MODEL_INSTRUCTIONS_FILE;
+    try {
+      const spec = buildWorkerProcessLaunchSpec(
+        'alpha',
+        1,
+        ['-c', 'model_reasoning_effort="low"'],
+        '/tmp/project',
+        { OMX_MODEL_INSTRUCTIONS_FILE: '/tmp/project/.omx/state/team/alpha/workers/worker-1/AGENTS.md' },
+        'codex',
+      );
+      const joined = spec.args.join(' ');
+      assert.match(joined, /model_reasoning_effort="low"/);
+      assert.match(joined, /model_instructions_file="\/tmp\/project\/.omx\/state\/team\/alpha\/workers\/worker-1\/AGENTS\.md"/);
+    } finally {
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof prevInstr === 'string') process.env.OMX_MODEL_INSTRUCTIONS_FILE = prevInstr;
+      else delete process.env.OMX_MODEL_INSTRUCTIONS_FILE;
+    }
+  });
+
   it('does not inject model_instructions_file override when disabled', () => {
     const prevShell = process.env.SHELL;
     process.env.SHELL = '/bin/bash';

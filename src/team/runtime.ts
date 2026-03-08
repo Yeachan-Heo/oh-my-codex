@@ -85,6 +85,7 @@ import {
   generateShutdownInbox,
   generateTriggerMessage,
   generateMailboxTriggerMessage,
+  writeWorkerRoleInstructionsFile,
 } from './worker-bootstrap.js';
 import { loadRolePrompt } from './role-router.js';
 import { codexPromptsDir } from '../utils/paths.js';
@@ -494,7 +495,7 @@ export async function startTeam(
   task: string,
   agentType: string,
   workerCount: number,
-  tasks: Array<{ subject: string; description: string; owner?: string; blocked_by?: string[] }>,
+  tasks: Array<{ subject: string; description: string; owner?: string; blocked_by?: string[]; role?: string }>,
   cwd: string,
   options: TeamStartOptions = {},
 ): Promise<TeamRuntime> {
@@ -612,6 +613,7 @@ export async function startTeam(
         status: 'pending',
         owner: t.owner,
         blocked_by: t.blocked_by,
+        role: t.role,
       }, leaderCwd);
     }
 
@@ -626,6 +628,7 @@ export async function startTeam(
       workerTasks: TeamTask[];
       workerRole: string;
       rolePromptContent: string | null;
+      instructionsFilePath: string;
       inbox: string;
       trigger: string;
       initialPrompt?: string;
@@ -642,9 +645,11 @@ export async function startTeam(
       const workerRole = taskRoles.length > 0 && uniqueTaskRoles.size === 1
         ? taskRoles[0]
         : agentType;
-      const rolePromptContent = workerRole !== agentType
-        ? await loadRolePrompt(workerRole, codexPromptsDir())
-        : null;
+      const rolePromptContent = await loadRolePrompt(workerRole, join(leaderCwd, '.codex', 'prompts'))
+        ?? await loadRolePrompt(workerRole, codexPromptsDir());
+      const instructionsFilePath = rolePromptContent
+        ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, workerInstructionsPath, workerRole, rolePromptContent)
+        : workerInstructionsPath;
       const inbox = generateInitialInbox(workerName, sanitized, agentType, workerTasks, {
         teamStateRoot,
         leaderCwd,
@@ -670,6 +675,7 @@ export async function startTeam(
         workerTasks,
         workerRole,
         rolePromptContent,
+        instructionsFilePath,
         inbox,
         trigger,
         initialPrompt,
@@ -682,6 +688,7 @@ export async function startTeam(
       const env: Record<string, string> = {
         [TEAM_STATE_ROOT_ENV]: teamStateRoot,
         [TEAM_LEADER_CWD_ENV]: leaderCwd,
+        [MODEL_INSTRUCTIONS_FILE_ENV]: plan.instructionsFilePath,
       };
       if (plan.workerWorkspace.worktreePath) {
         env.OMX_TEAM_WORKTREE_PATH = plan.workerWorkspace.worktreePath;
@@ -791,6 +798,7 @@ export async function startTeam(
       if (paneId) identity.pane_id = paneId;
       if (config.workers[i - 1]) {
         config.workers[i - 1].pane_id = paneId;
+        config.workers[i - 1].role = workerRole;
         config.workers[i - 1].worker_cli = workerCliPlan[i - 1];
         config.workers[i - 1].working_dir = workerWorkspace.cwd;
         config.workers[i - 1].worktree_path = workerWorkspace.worktreePath;

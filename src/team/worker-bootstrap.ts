@@ -176,6 +176,39 @@ export async function writeTeamWorkerInstructionsFile(
 }
 
 /**
+ * Compose a per-worker startup instructions file by layering the team worker
+ * instructions with the resolved role prompt content.
+ */
+export async function writeWorkerRoleInstructionsFile(
+  teamName: string,
+  workerName: string,
+  cwd: string,
+  baseInstructionsPath: string,
+  workerRole: string,
+  rolePromptContent: string,
+): Promise<string> {
+  const base = await readFile(baseInstructionsPath, 'utf-8').catch(() => '');
+  const roleOverlay = `
+<!-- OMX:TEAM:ROLE:START -->
+<team_worker_role>
+You are operating as the **${workerRole}** role for this team run. Apply the following role-local guidance in addition to the team worker protocol.
+
+${rolePromptContent.trim()}
+</team_worker_role>
+<!-- OMX:TEAM:ROLE:END -->
+`;
+  const composed = base.trim().length > 0
+    ? `${base.trimEnd()}
+
+${roleOverlay}`
+    : roleOverlay.trimStart();
+  const outPath = join(cwd, '.omx', 'state', 'team', teamName, 'workers', workerName, 'AGENTS.md');
+  await mkdir(dirname(outPath), { recursive: true });
+  await writeFile(outPath, composed);
+  return outPath;
+}
+
+/**
  * Remove the team-scoped model instructions file.
  */
 export async function removeTeamWorkerInstructionsFile(

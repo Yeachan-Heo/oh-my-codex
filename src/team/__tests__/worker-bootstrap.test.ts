@@ -8,6 +8,7 @@ import {
   applyWorkerOverlay,
   stripWorkerOverlay,
   writeTeamWorkerInstructionsFile,
+  writeWorkerRoleInstructionsFile,
   removeTeamWorkerInstructionsFile,
   generateInitialInbox,
   generateTaskAssignmentInbox,
@@ -339,6 +340,31 @@ describe('worker bootstrap', () => {
       // Verify project AGENTS.md was NOT modified
       const projectContent = await readFile(join(cwd, 'AGENTS.md'), 'utf8');
       assert.doesNotMatch(projectContent, /<!-- OMX:TEAM:WORKER:START -->/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+
+  it('writeWorkerRoleInstructionsFile layers role prompt on top of team worker instructions', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-worker-bootstrap-'));
+    try {
+      const overlay = generateWorkerOverlay('role-team');
+      const basePath = await writeTeamWorkerInstructionsFile('role-team', cwd, overlay);
+      const outPath = await writeWorkerRoleInstructionsFile(
+        'role-team',
+        'worker-2',
+        cwd,
+        basePath,
+        'writer',
+        '<identity>Writer role prompt</identity>',
+      );
+
+      const content = await readFile(outPath, 'utf8');
+      assert.match(content, /team "role-team"/);
+      assert.match(content, /<!-- OMX:TEAM:ROLE:START -->/);
+      assert.match(content, /\*\*writer\*\* role/);
+      assert.match(content, /<identity>Writer role prompt<\/identity>/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -49,6 +49,7 @@ import {
 import {
   generateInitialInbox,
   generateTriggerMessage,
+  writeWorkerRoleInstructionsFile,
 } from './worker-bootstrap.js';
 import { loadRolePrompt } from './role-router.js';
 import { codexPromptsDir } from '../utils/paths.js';
@@ -226,9 +227,16 @@ export async function scaleUp(
       }
 
       // Build startup command and create tmux pane
+      const rolePromptContent = await loadRolePrompt(workerRole, join(leaderCwd, '.codex', 'prompts'))
+        ?? await loadRolePrompt(workerRole, codexPromptsDir());
+      const teamInstructionsPath = join(leaderCwd, '.omx', 'state', 'team', sanitized, 'worker-agents.md');
+      const instructionsFilePath = rolePromptContent
+        ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, teamInstructionsPath, workerRole, rolePromptContent)
+        : teamInstructionsPath;
       const extraEnv: Record<string, string> = {
         OMX_TEAM_STATE_ROOT: teamStateRoot,
         OMX_TEAM_LEADER_CWD: leaderCwd,
+        OMX_MODEL_INSTRUCTIONS_FILE: instructionsFilePath,
       };
       const preferredReasoning = resolveAgentReasoningEffort(workerRole) ?? resolveAgentReasoningEffort(agentType);
       const workerLaunchArgs = resolveWorkerLaunchArgsForScaling(env, agentType, preferredReasoning);
@@ -294,11 +302,6 @@ export async function scaleUp(
 
       // Get assigned tasks for this worker
       const workerTasks = tasks.filter(t => t.owner === workerName);
-
-      // Load role-specific prompt content if role differs from default
-      const rolePromptContent = workerRole !== agentType
-        ? await loadRolePrompt(workerRole, codexPromptsDir())
-        : null;
 
       const inbox = generateInitialInbox(workerName, sanitized, agentType, workerTasks.map((t, idx) => ({
         id: String(idx + 1),

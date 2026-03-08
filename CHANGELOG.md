@@ -4,6 +4,9 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **Team task-role startup injection now matches runtime role reasoning** — routed/scaled worker roles now persist into team state, compose per-worker startup instructions from the matching role prompt, and continue to use role-based default reasoning unless an explicit launch override is provided.
+
 ## [0.8.8] - 2026-03-08
 
 5 non-merge commits from `main..dev`. Contributor: [@Yeachan-Heo](https://github.com/Yeachan-Heo).

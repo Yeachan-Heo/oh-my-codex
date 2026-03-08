@@ -426,6 +426,122 @@ sleep 5
     }
   });
 
+
+  it('startTeam preserves routed task roles into team state and worker launch args', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-role-routing-'));
+    const binDir = join(cwd, 'bin');
+    const fakeCodexPath = join(binDir, 'codex');
+    const captureDir = join(cwd, 'captures');
+    const promptsDir = join(cwd, '.codex', 'prompts');
+    await mkdir(binDir, { recursive: true });
+    await mkdir(captureDir, { recursive: true });
+    await mkdir(promptsDir, { recursive: true });
+    await writeFile(join(promptsDir, 'test-engineer.md'), '<identity>Test Engineer</identity>');
+    await writeFile(join(promptsDir, 'writer.md'), '<identity>You are Writer.</identity>');
+    await writeFile(
+      fakeCodexPath,
+      `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const worker = String(process.env.OMX_TEAM_WORKER || 'unknown').replace(/[^a-zA-Z0-9_-]+/g, '__');
+const out = path.join(process.env.OMX_ARGV_CAPTURE_DIR, worker + '.json');
+fs.writeFileSync(out, JSON.stringify({ argv: process.argv.slice(2), worker }, null, 2));
+process.stdin.resume();
+setTimeout(() => process.exit(0), 5000);
+process.on('SIGTERM', () => process.exit(0));
+`,
+      { mode: 0o755 },
+    );
+
+    const prevPath = process.env.PATH;
+    const prevTmux = process.env.TMUX;
+    const prevLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevCaptureDir = process.env.OMX_ARGV_CAPTURE_DIR;
+
+    process.env.PATH = `${binDir}:${prevPath ?? ''}`;
+    delete process.env.TMUX;
+    process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
+    process.env.OMX_TEAM_WORKER_CLI = 'codex';
+    process.env.OMX_ARGV_CAPTURE_DIR = captureDir;
+
+    let runtime: TeamRuntime | null = null;
+    try {
+      runtime = await withoutTeamWorkerEnv(() =>
+        startTeam(
+          'team-role-routing',
+          'heuristic routing handoff',
+          'executor',
+          2,
+          [
+            { subject: 'test routing report only', description: 'test routing report only', owner: 'worker-1', role: 'test-engineer' },
+            { subject: 'document routing report only', description: 'document routing report only', owner: 'worker-2', role: 'writer' },
+          ],
+          cwd,
+        ));
+
+      assert.equal(runtime.config.worker_launch_mode, 'prompt');
+      assert.equal(runtime.config.workers[0]?.role, 'test-engineer');
+      assert.equal(runtime.config.workers[1]?.role, 'writer');
+
+      const config = await readTeamConfig(runtime.teamName, cwd);
+      assert.equal(config?.workers[0]?.role, 'test-engineer');
+      assert.equal(config?.workers[1]?.role, 'writer');
+
+      const task1 = await readTask(runtime.teamName, '1', cwd);
+      const task2 = await readTask(runtime.teamName, '2', cwd);
+      assert.equal(task1?.role, 'test-engineer');
+      assert.equal(task2?.role, 'writer');
+
+      const worker1Instructions = await readFile(join(cwd, '.omx', 'state', 'team', runtime.teamName, 'workers', 'worker-1', 'AGENTS.md'), 'utf-8');
+      const worker2Instructions = await readFile(join(cwd, '.omx', 'state', 'team', runtime.teamName, 'workers', 'worker-2', 'AGENTS.md'), 'utf-8');
+      assert.match(worker1Instructions, /You are operating as the \*\*test-engineer\*\* role/);
+      assert.match(worker1Instructions, /Test Engineer/);
+      assert.match(worker2Instructions, /You are operating as the \*\*writer\*\* role/);
+      assert.match(worker2Instructions, /You are Writer\./);
+
+      let worker1Args: string[] | null = null;
+      let worker2Args: string[] | null = null;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const worker1Path = join(captureDir, 'team-role-routing__worker-1.json');
+        const worker2Path = join(captureDir, 'team-role-routing__worker-2.json');
+        if (existsSync(worker1Path) && existsSync(worker2Path)) {
+          worker1Args = JSON.parse(await readFile(worker1Path, 'utf-8')).argv;
+          worker2Args = JSON.parse(await readFile(worker2Path, 'utf-8')).argv;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      assert.ok(worker1Args, 'worker-1 argv capture file should be written');
+      assert.ok(worker2Args, 'worker-2 argv capture file should be written');
+      const worker1Joined = worker1Args!.join(' ');
+      const worker2Joined = worker2Args!.join(' ');
+      assert.match(worker1Joined, /model_reasoning_effort="medium"/);
+      assert.match(worker1Joined, /model_instructions_file=.*worker-1\/AGENTS\.md/);
+      assert.match(worker2Joined, /model_reasoning_effort="low"/);
+      assert.match(worker2Joined, /model_instructions_file=.*worker-2\/AGENTS\.md/);
+
+      await shutdownTeam(runtime.teamName, cwd, { force: true });
+      runtime = null;
+    } finally {
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
+      }
+      if (typeof prevPath === 'string') process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
+      else delete process.env.TMUX;
+      if (typeof prevLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = prevLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevCaptureDir === 'string') process.env.OMX_ARGV_CAPTURE_DIR = prevCaptureDir;
+      else delete process.env.OMX_ARGV_CAPTURE_DIR;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('startTeam supports prompt launch mode without tmux and pipes trigger text via stdin', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-prompt-'));
     const binDir = join(cwd, 'bin');
