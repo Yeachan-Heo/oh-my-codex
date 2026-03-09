@@ -51,7 +51,8 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0"
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "zod": "^3.23.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.4",
