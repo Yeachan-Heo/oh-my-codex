@@ -139,6 +139,65 @@ describe('notify-hook team leader nudge', () => {
     });
   });
 
+  it('falls back to global team-state when session-scoped state is active but team-state.json remains global', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const sessionId = 'sess-idle-fallback';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const teamName = 'idle-global-fallback';
+      const teamDir = join(stateDir, 'team', teamName);
+      const workersDir = join(teamDir, 'workers');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(sessionDir, { recursive: true });
+      await mkdir(workersDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(stateDir, 'session.json'), { session_id: sessionId });
+      await writeJson(join(stateDir, 'team-state.json'), {
+        active: true,
+        team_name: teamName,
+        current_phase: 'team-exec',
+      });
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'idle-global:0',
+        leader_pane_id: '%97',
+        workers: [
+          { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
+          { name: 'worker-2', index: 2, role: 'executor', assigned_tasks: [] },
+        ],
+      });
+      await writeJson(join(stateDir, 'hud-state.json'), {
+        last_turn_at: new Date().toISOString(),
+        turn_count: 1,
+      });
+      for (const worker of ['worker-1', 'worker-2']) {
+        await mkdir(join(workersDir, worker), { recursive: true });
+        await writeJson(join(workersDir, worker, 'status.json'), {
+          state: 'idle',
+          updated_at: new Date().toISOString(),
+        });
+      }
+
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir);
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /send-keys/);
+      assert.match(tmuxLog, /-t %97/, 'should still target the leader pane');
+      assert.match(tmuxLog, /\[OMX\] All 2 workers idle/, 'global team-state fallback should still fire idle nudge');
+    });
+  });
+
   it('nudges leader via tmux send-keys when team is active and mailbox has messages', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');

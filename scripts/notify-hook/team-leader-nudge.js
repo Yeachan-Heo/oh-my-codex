@@ -156,7 +156,8 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
   const activeTeamNames = new Set();
   try {
     const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir);
-    for (const scopedDir of scopedDirs) {
+    const candidateStateDirs = [...new Set([...scopedDirs, stateDir])];
+    for (const scopedDir of candidateStateDirs) {
       const teamStatePath = join(scopedDir, 'team-state.json');
       if (!existsSync(teamStatePath)) continue;
       const parsed = JSON.parse(await readFile(teamStatePath, 'utf-8'));
