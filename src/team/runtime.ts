@@ -262,6 +262,7 @@ function isPidAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false;
     process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
     return false;
   }
@@ -309,7 +310,9 @@ async function teardownPromptWorker(
       process.kill(pid, 'SIGTERM');
     }
   } catch (err) {
-    process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
+    if ((err as NodeJS.ErrnoException).code !== 'ESRCH') {
+      process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
+    }
     // Best effort.
   }
 
@@ -336,7 +339,9 @@ async function teardownPromptWorker(
       process.kill(pid, 'SIGKILL');
     }
   } catch (err) {
-    process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
+    if ((err as NodeJS.ErrnoException).code !== 'ESRCH') {
+      process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
+    }
     // Best effort.
   }
 
@@ -366,14 +371,7 @@ async function teardownPromptWorker(
 function isPromptWorkerAlive(config: TeamConfig, worker: WorkerInfo): boolean {
   const handle = getPromptWorkerHandle(config.name, worker.name);
   if (handle?.child.exitCode === null && !handle.child.killed) return true;
-  if (!Number.isFinite(worker.pid) || (worker.pid ?? 0) <= 0) return false;
-  try {
-    process.kill(worker.pid as number, 0);
-    return true;
-  } catch (err) {
-    process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
-    return false;
-  }
+  return isPidAlive(worker.pid as number);
 }
 
 export { TEAM_LOW_COMPLEXITY_DEFAULT_MODEL };
@@ -1084,11 +1082,18 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
   }
 
   const allTasksTerminal = taskCounts.pending === 0 && taskCounts.blocked === 0 && taskCounts.in_progress === 0;
+  const deadWorkerStall =
+    config.worker_launch_mode === 'prompt'
+    && config.workers.length > 0
+    && deadWorkers.length >= config.workers.length
+    && !allTasksTerminal;
 
   const persistedPhase = await readTeamPhaseState(sanitized, cwd);
-  const targetPhase = inferPhaseTargetFromTaskCounts(taskCounts, {
-    verificationPending: verificationPendingTasks.length > 0,
-  });
+  const targetPhase = deadWorkerStall
+    ? 'failed'
+    : inferPhaseTargetFromTaskCounts(taskCounts, {
+      verificationPending: verificationPendingTasks.length > 0,
+    });
   const phaseState: TeamPhaseState = reconcilePhaseStateForMonitor(persistedPhase, targetPhase);
   await writeTeamPhaseState(sanitized, phaseState, cwd);
   const phase: TeamPhase | TerminalPhase = phaseState.current_phase;
@@ -1096,8 +1101,11 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
   for (const taskId of reclaimedTaskIds) {
     recommendations.push(`Reclaimed expired claim for task-${taskId}`);
   }
+  if (deadWorkerStall) {
+    recommendations.push('All workers are dead while work remains; mark the team failed or restart with fresh workers.');
+  }
 
-  await emitMonitorDerivedEvents(sanitized, taskView, workers, previousSnapshot, cwd);
+  await emitMonitorDerivedEvents(sanitized, taskView, workers, previousSnapshot, config.worker_launch_mode, cwd);
   const mailboxDeliveryStartMs = performance.now();
   const mailboxNotifiedByMessageId = await deliverPendingMailboxMessages(
     sanitized,
@@ -1529,13 +1537,7 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
     const missingHandles = config.workers
       .filter((worker) => {
         if (!Number.isFinite(worker.pid) || (worker.pid ?? 0) <= 0) return false;
-        try {
-          process.kill(worker.pid as number, 0);
-          return true;
-        } catch (err) {
-          process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
-          return false;
-        }
+        return isPidAlive(worker.pid as number);
       })
       .filter((worker) => !getPromptWorkerHandle(sanitized, worker.name));
     if (missingHandles.length > 0) {
@@ -1625,15 +1627,14 @@ async function emitMonitorDerivedEvents(
   tasks: TeamTask[],
   workers: TeamSnapshot['workers'],
   previous: TeamMonitorSnapshotState | null,
+  workerLaunchMode: TeamConfig['worker_launch_mode'],
   cwd: string,
 ): Promise<void> {
-  if (!previous) return;
-
   for (const task of tasks) {
-    const prevStatus = previous.taskStatusById[task.id];
+    const prevStatus = previous?.taskStatusById[task.id];
     if (prevStatus && prevStatus !== 'completed' && task.status === 'completed') {
       // Skip if a task_completed event was already emitted by transitionTaskStatus (issue #161).
-      if (previous.completedEventTaskIds?.[task.id]) continue;
+      if (previous?.completedEventTaskIds?.[task.id]) continue;
       await appendTeamEvent(
         teamName,
         {
@@ -1649,8 +1650,9 @@ async function emitMonitorDerivedEvents(
   }
 
   for (const worker of workers) {
-    const prevAlive = previous.workerAliveByName[worker.name];
-    if (prevAlive === true && worker.alive === false) {
+    const prevAlive = previous?.workerAliveByName[worker.name];
+    const shouldEmitInitialPromptWorkerStop = workerLaunchMode === 'prompt' && prevAlive === undefined;
+    if ((prevAlive === true || shouldEmitInitialPromptWorkerStop) && worker.alive === false) {
       await appendTeamEvent(
         teamName,
         {
@@ -1664,7 +1666,7 @@ async function emitMonitorDerivedEvents(
       );
     }
 
-    const prevState = previous.workerStateByName[worker.name];
+    const prevState = previous?.workerStateByName[worker.name];
     if (prevState && prevState !== worker.status.state) {
       await appendTeamEvent(
         teamName,

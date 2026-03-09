@@ -1,8 +1,9 @@
 import { updateModeState, startMode, readModeState } from '../modes/base.js';
-import { monitorTeam, resumeTeam, shutdownTeam, startTeam, type TeamRuntime } from '../team/runtime.js';
+import { monitorTeam, resumeTeam, shutdownTeam, startTeam, type TeamRuntime, type TeamSnapshot } from '../team/runtime.js';
 import { DEFAULT_MAX_WORKERS } from '../team/state.js';
 import { sanitizeTeamName } from '../team/tmux-session.js';
-import { waitForTeamEvent } from '../team/state/events.js';
+import { readTeamEvents, waitForTeamEvent } from '../team/state/events.js';
+import type { TeamEvent } from '../team/state.js';
 import { parseWorktreeMode, type WorktreeMode } from '../team/worktree.js';
 import { routeTaskToRole } from '../team/role-router.js';
 import {
@@ -239,6 +240,26 @@ function slugifyTask(task: string): string {
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 30) || 'team-task';
+}
+
+function snapshotHasDeadWorkerStall(snapshot: TeamSnapshot): boolean {
+  return snapshot.deadWorkers.length > 0 && (snapshot.tasks.pending + snapshot.tasks.in_progress) > 0;
+}
+
+function buildDeadWorkerAwaitEvent(teamName: string, snapshot: TeamSnapshot): TeamEvent | null {
+  const deadWorker = snapshot.workers.find((worker) => worker.alive === false);
+  if (!deadWorker) return null;
+  return {
+    event_id: `snapshot-${Date.now()}`,
+    team: sanitizeTeamName(teamName),
+    type: 'worker_stopped',
+    worker: deadWorker.name,
+    task_id: deadWorker.status.current_task_id,
+    message_id: null,
+    reason: deadWorker.status.reason ?? 'dead_worker_detected_during_await',
+    created_at: deadWorker.status.updated_at || new Date().toISOString(),
+    source_type: 'await_snapshot',
+  };
 }
 
 function parseTeamArgs(args: string[]): ParsedTeamArgs {
@@ -553,12 +574,37 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
       return;
     }
 
-    const result = await waitForTeamEvent(name, cwd, {
-      afterEventId: afterEventId || undefined,
-      timeoutMs,
-      pollMs: 100,
+    const baselineCursor = afterEventId || (await readTeamEvents(name, cwd, { wakeableOnly: true }).then((events) => events.at(-1)?.event_id ?? ''));
+    const snapshot = await monitorTeam(name, cwd);
+    const immediateEvent = await readTeamEvents(name, cwd, {
+      afterEventId: baselineCursor || undefined,
       wakeableOnly: true,
-    });
+    }).then((events) => events[0]);
+
+    const result =
+      immediateEvent
+        ? { status: 'event' as const, cursor: immediateEvent.event_id, event: immediateEvent }
+        : snapshot && snapshotHasDeadWorkerStall(snapshot)
+          ? await readTeamEvents(name, cwd, { wakeableOnly: true }).then((events) => {
+            const latestWakeableEvent = events.at(-1);
+            if (latestWakeableEvent) {
+              return {
+                status: 'event' as const,
+                cursor: latestWakeableEvent.event_id,
+                event: latestWakeableEvent,
+              };
+            }
+            const fallbackEvent = buildDeadWorkerAwaitEvent(name, snapshot);
+            return fallbackEvent
+              ? { status: 'event' as const, cursor: baselineCursor, event: fallbackEvent }
+              : { status: 'timeout' as const, cursor: baselineCursor };
+          })
+          : await waitForTeamEvent(name, cwd, {
+            afterEventId: baselineCursor || undefined,
+            timeoutMs,
+            pollMs: 100,
+            wakeableOnly: true,
+          });
 
     if (wantsJson) {
       console.log(JSON.stringify({

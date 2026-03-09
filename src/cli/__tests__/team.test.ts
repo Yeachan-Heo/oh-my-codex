@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseTeamStartArgs, teamCommand } from '../team.js';
@@ -394,6 +394,81 @@ describe('teamCommand await', () => {
     } finally {
       console.log = originalLog;
       process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('returns a dead-worker event for the prompt-launch smoke path instead of timing out', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-await-prompt-dead-'));
+    const binDir = join(wd, 'bin');
+    const fakeCodexPath = join(binDir, 'codex');
+    const previousCwd = process.cwd();
+    const previousPath = process.env.PATH;
+    const previousTmux = process.env.TMUX;
+    const previousLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const previousWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const logs: string[] = [];
+    const stderr: string[] = [];
+    const originalLog = console.log;
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
+    const teamTask = 'issue 662 prompt dead worker smoke';
+    const teamName = parseTeamStartArgs(['1:executor', teamTask]).parsed.teamName;
+
+    await mkdir(binDir, { recursive: true });
+    await writeFile(
+      fakeCodexPath,
+      `#!/usr/bin/env node
+setTimeout(() => process.exit(0), 150);
+process.stdin.resume();
+process.on('SIGTERM', () => process.exit(0));
+`,
+    );
+    await chmod(fakeCodexPath, 0o755);
+
+    try {
+      process.chdir(wd);
+      process.env.PATH = `${binDir}:${previousPath ?? ''}`;
+      delete process.env.TMUX;
+      process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
+      process.env.OMX_TEAM_WORKER_CLI = 'codex';
+      console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
+      process.stderr.write = ((chunk: string | Uint8Array) => {
+        stderr.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write;
+
+      await teamCommand(['1:executor', teamTask]);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      logs.length = 0;
+      stderr.length = 0;
+      await teamCommand(['status', teamName]);
+      assert.match(logs.join('\n'), /phase=failed/);
+      assert.doesNotMatch(stderr.join('\n'), /ESRCH/);
+
+      logs.length = 0;
+      await teamCommand(['await', teamName, '--json', '--timeout-ms', '250']);
+      const payload = JSON.parse(logs.at(-1) ?? '{}') as {
+        team_name?: string;
+        status?: string;
+        event?: { type?: string; worker?: string; reason?: string | null } | null;
+      };
+      assert.equal(payload.team_name, teamName);
+      assert.equal(payload.status, 'event');
+      assert.equal(payload.event?.type, 'worker_stopped');
+      assert.equal(payload.event?.worker, 'worker-1');
+    } finally {
+      console.log = originalLog;
+      process.stderr.write = originalStderrWrite;
+      process.chdir(previousCwd);
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
+      else delete process.env.TMUX;
+      if (typeof previousLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = previousLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof previousWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = previousWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
       await rm(wd, { recursive: true, force: true });
     }
   });
