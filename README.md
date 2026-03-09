@@ -487,7 +487,3 @@ Inspired by [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode),
 ## License
 
 MIT
-
-## RTK Credit
-
-Built with [rtk](https://github.com/rtk-ai/rtk) for token-efficient CLI output compression.

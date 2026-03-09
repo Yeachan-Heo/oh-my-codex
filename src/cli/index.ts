@@ -80,7 +80,6 @@ import {
   type NotifyTempContract,
   type ParseNotifyTempContractResult,
 } from '../notifications/temp-contract.js';
-import { withRtkBashEnv } from '../rtk/index.js';
 
 const HELP = `
 oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
@@ -874,14 +873,12 @@ export function buildDetachedSessionBootstrapSteps(
   workerLaunchArgs: string | null,
   codexHomeOverride?: string,
   notifyTempContractRaw?: string | null,
-  bashEnvPath?: string,
 ): DetachedSessionTmuxStep[] {
   const newSessionArgs: string[] = [
     'new-session', '-d', '-s', sessionName, '-c', cwd,
     ...(workerLaunchArgs ? ['-e', `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`] : []),
     ...(codexHomeOverride ? ['-e', `CODEX_HOME=${codexHomeOverride}`] : []),
     ...(notifyTempContractRaw ? ['-e', `${OMX_NOTIFY_TEMP_CONTRACT_ENV}=${notifyTempContractRaw}`] : []),
-    ...(bashEnvPath ? ['-e', `BASH_ENV=${bashEnvPath}`] : []),
     codexCmd,
   ];
   const splitCaptureArgs: string[] = [
@@ -1091,10 +1088,9 @@ function runCodex(
     inheritLeaderFlags,
     workerDefaultModel,
   );
-  const envWithCodexHome = codexHomeOverride
+  const codexBaseEnv = codexHomeOverride
     ? { ...process.env, CODEX_HOME: codexHomeOverride }
     : process.env;
-  const codexBaseEnv = withRtkBashEnv(envWithCodexHome, codexHomeOverride);
   const codexEnv = workerLaunchArgs
     ? { ...codexBaseEnv, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }
     : codexBaseEnv;
@@ -1165,7 +1161,6 @@ function runCodex(
         workerLaunchArgs,
         codexHomeOverride,
         notifyTempContractRaw,
-        codexEnvWithNotify.BASH_ENV,
       );
       for (const step of bootstrapSteps) {
         const output = execFileSync('tmux', step.args, { stdio: step.name === 'new-session' ? 'ignore' : 'pipe', encoding: 'utf-8' });

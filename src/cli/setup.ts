@@ -34,10 +34,6 @@ import { getPackageRoot } from "../utils/package.js";
 import { readSessionState, isSessionStale } from "../hooks/session.js";
 import { getCatalogHeadlineCounts } from "./catalog-contract.js";
 import { tryReadCatalogManifest } from "../catalog/reader.js";
-import {
-  ensureRtkInstalledAndAliases,
-  syncRtkRuntimeConfig,
-} from "../rtk/index.js";
 
 interface SetupOptions {
   force?: boolean;
@@ -157,13 +153,6 @@ function getBackupContext(
     backupRoot: join(homedir(), ".omx", "backups", "setup", timestamp),
     baseRoot: homedir(),
   };
-}
-
-function shouldSkipRtkSetup(): boolean {
-  return (
-    process.env.OMX_SKIP_RTK_INSTALL === "1" ||
-    process.execArgv.some((arg) => arg === "--test" || arg.startsWith("--test="))
-  );
 }
 
 async function ensureBackup(
@@ -372,7 +361,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   );
 
   // Step 1: Ensure directories exist
-  console.log("[1/9] Creating directories...");
+  console.log("[1/8] Creating directories...");
   const dirs = [
     scopeDirs.codexHomeDir,
     scopeDirs.promptsDir,
@@ -394,50 +383,12 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   });
   console.log("  Done.\n");
 
-  if (shouldSkipRtkSetup()) {
-    console.log("[2/9] Skipping RTK install/alias bootstrap (test mode).");
-    console.log("  Done.\n");
-  } else {
-    console.log("[2/9] Ensuring RTK integration...");
-    const rtk = await ensureRtkInstalledAndAliases({ dryRun, verbose });
-    if (rtk.installed) {
-      const configWritten = await syncRtkRuntimeConfig(
-        scopeDirs.codexHomeDir,
-        true,
-        { dryRun, verbose },
-      );
-      const installMessage =
-        rtk.installMethod === "existing"
-          ? `RTK already installed (${rtk.executablePath}).`
-          : `RTK installed via ${rtk.installMethod}.`;
-      console.log(`  ${installMessage}`);
-      console.log(
-        `  ${rtk.aliasFileWritten ? (dryRun ? "Would refresh" : "Refreshed") : "Aliases up to date at"} ${rtk.aliasesPath}`,
-      );
-      if (configWritten) {
-        console.log(
-          `  ${dryRun ? "Would seed" : "Seeded"} ${join(scopeDirs.codexHomeDir, ".omx-config.json")} with rtk.enabled=true`,
-        );
-      }
-    } else if (dryRun) {
-      console.log(
-        "  RTK not found. Dry-run would try cargo install --git https://github.com/rtk-ai/rtk, then brew install rtk.",
-      );
-    } else {
-      console.log(
-        "  WARNING: RTK install failed. Tried cargo install --git https://github.com/rtk-ai/rtk, then brew install rtk.",
-      );
-      console.log("  Session-scoped RTK aliases were not configured.");
-    }
-    console.log();
-  }
-
   const catalogCounts = getCatalogHeadlineCounts();
   const summary = createEmptyRunSummary();
   const backupContext = getBackupContext(resolvedScope.scope, projectRoot);
 
   // Step 2: Install agent prompts
-  console.log("[3/9] Installing agent prompts...");
+  console.log("[2/8] Installing agent prompts...");
   {
     const promptsSrc = join(pkgRoot, "prompts");
     const promptsDst = scopeDirs.promptsDir;
@@ -477,7 +428,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   }
 
   // Step 3: Install native agent configs
-  console.log("[4/9] Installing native agent configs...");
+  console.log("[3/8] Installing native agent configs...");
   {
     summary.nativeAgents = await refreshNativeAgentConfigs(
       pkgRoot,
@@ -495,7 +446,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   }
 
   // Step 4: Install skills
-  console.log("[5/9] Installing skills...");
+  console.log("[4/8] Installing skills...");
   {
     const skillsSrc = join(pkgRoot, "skills");
     const skillsDst = scopeDirs.skillsDir;
@@ -514,7 +465,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   }
 
   // Step 5: Update config.toml
-  console.log("[6/9] Updating config.toml...");
+  console.log("[5/8] Updating config.toml...");
   await updateManagedConfig(
     scopeDirs.codexConfigFile,
     pkgRoot,
@@ -526,7 +477,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log(`  Config refresh complete (${scopeDirs.codexConfigFile}).\n`);
 
   // Step 5.5: Verify team CLI interop surface is available.
-  console.log("[6.5/9] Verifying Team CLI API interop...");
+  console.log("[5.5/8] Verifying Team CLI API interop...");
   const teamToolsCheck = await verifyTeamCliApiInterop(pkgRoot);
   if (teamToolsCheck.ok) {
     console.log("  omx team api command detected (CLI-first interop ready)");
@@ -537,7 +488,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log();
 
   // Step 6: Generate AGENTS.md
-  console.log("[7/9] Generating AGENTS.md...");
+  console.log("[6/8] Generating AGENTS.md...");
   const agentsMdSrc = join(pkgRoot, "templates", "AGENTS.md");
   const agentsMdDst = join(projectRoot, "AGENTS.md");
   const agentsMdExists = existsSync(agentsMdDst);
@@ -591,12 +542,12 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log();
 
   // Step 7: Set up notify hook
-  console.log("[8/9] Configuring notification hook...");
+  console.log("[7/8] Configuring notification hook...");
   await setupNotifyHook(pkgRoot, { dryRun, verbose });
   console.log("  Done.\n");
 
   // Step 8: Configure HUD
-  console.log("[9/9] Configuring HUD...");
+  console.log("[8/8] Configuring HUD...");
   const hudConfigPath = join(projectRoot, ".omx", "hud-config.json");
   if (force || !existsSync(hudConfigPath)) {
     if (!dryRun) {

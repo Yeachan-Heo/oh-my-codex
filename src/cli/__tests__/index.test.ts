@@ -502,7 +502,6 @@ describe('detached tmux new-session sequencing', () => {
       '--model gpt-5',
       '/tmp/codex-home',
       '{"active":true}',
-      '/tmp/.omx/rtk-aliases.sh',
     );
     assert.deepEqual(steps.map((step) => step.name), ['new-session', 'split-and-capture-hud-pane']);
     assert.equal(steps[1]?.args[3], String(HUD_TMUX_HEIGHT_LINES));
@@ -511,7 +510,6 @@ describe('detached tmux new-session sequencing', () => {
     assert.equal(steps[1]?.args.includes('#{pane_id}'), true);
     assert.equal(steps[0]?.args.includes('-e'), true);
     assert.equal(steps[0]?.args.includes('OMX_NOTIFY_TEMP_CONTRACT={\"active\":true}'), true);
-    assert.equal(steps[0]?.args.includes('BASH_ENV=/tmp/.omx/rtk-aliases.sh'), true);
   });
 
   it('buildDetachedSessionBootstrapSteps forwards temp contract env to detached tmux session', () => {

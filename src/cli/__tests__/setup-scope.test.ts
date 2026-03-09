@@ -21,7 +21,6 @@ function runOmx(
     encoding: 'utf-8',
     env: {
       ...process.env,
-      OMX_SKIP_RTK_INSTALL: '1',
       ...(resolvedHome && !envOverrides.CODEX_HOME ? { CODEX_HOME: join(resolvedHome, '.codex') } : {}),
       ...envOverrides,
     },
@@ -90,7 +89,6 @@ describe('omx setup scope behavior', () => {
       await writeFile(join(wd, '.codex', 'prompts', 'executor.md'), '# executor\n');
       await writeFile(join(wd, '.agents', 'skills', 'sample-skill', 'SKILL.md'), '# skill\n');
       await writeFile(join(wd, '.codex', 'config.toml'), 'omx_enabled = true\n[mcp_servers.omx_state]\ncommand = "node"\n');
-      await writeFile(join(wd, '.codex', '.omx-config.json'), JSON.stringify({ rtk: { enabled: false } }));
 
       const res = runOmx(wd, ['doctor'], { HOME: home });
       if (shouldSkipForSpawnPermissions(res.error)) return;

@@ -11,13 +11,6 @@ import {
   userSkillsDir, omxStateDir,
 } from '../utils/paths.js';
 import { getCatalogExpectations } from './catalog-contract.js';
-import {
-  isRtkInstalled,
-  readRtkEnabledSetting,
-  resolveRtkExecutable,
-  resolveRtkBashEnv,
-  rtkAliasesPath,
-} from '../rtk/index.js';
 
 interface DoctorOptions {
   verbose?: boolean;
@@ -142,9 +135,6 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
   // Check 9: MCP servers configured
   checks.push(await checkMcpServers(paths.configPath));
-
-  // Check 10: RTK integration
-  checks.push(checkRtk(paths.codexHomeDir));
 
   // Print results
   let passCount = 0;
@@ -502,49 +492,4 @@ async function checkMcpServers(configPath: string): Promise<Check> {
   } catch {
     return { name: 'MCP Servers', status: 'fail', message: 'cannot read config.toml' };
   }
-}
-
-function checkRtk(codexHomeDir: string): Check {
-  const explicitEnabled = readRtkEnabledSetting(codexHomeDir);
-  const installed = isRtkInstalled();
-  const executable = resolveRtkExecutable();
-  const aliases = rtkAliasesPath();
-  const bashEnv = resolveRtkBashEnv(codexHomeDir);
-
-  if (explicitEnabled === false) {
-    if (installed) {
-      return {
-        name: 'RTK',
-        status: 'pass',
-        message: `installed (${executable}) but disabled via .omx-config.json`,
-      };
-    }
-    return {
-      name: 'RTK',
-      status: 'pass',
-      message: 'disabled via .omx-config.json',
-    };
-  }
-
-  if (!installed) {
-    return {
-      name: 'RTK',
-      status: 'fail',
-      message: 'not found - run "omx setup" to install RTK and generate session aliases',
-    };
-  }
-
-  if (!existsSync(aliases) || !bashEnv) {
-    return {
-      name: 'RTK',
-      status: 'warn',
-      message: `installed (${executable}) but aliases missing at ${aliases} - run "omx setup --force"`,
-    };
-  }
-
-  return {
-    name: 'RTK',
-    status: 'pass',
-    message: `installed (${executable}); session aliases ready (${aliases})`,
-  };
 }

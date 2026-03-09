@@ -17,7 +17,7 @@ function runOmx(
   const r = spawnSync(process.execPath, [omxBin, ...argv], {
     cwd,
     encoding: 'utf-8',
-    env: { ...process.env, OMX_SKIP_RTK_INSTALL: '1', ...envOverrides },
+    env: { ...process.env, ...envOverrides },
   });
   return {
     status: r.status,
