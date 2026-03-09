@@ -1442,6 +1442,29 @@ function hookDerivedWatcherPidPath(cwd: string): string {
   return join(cwd, '.omx', 'state', 'hook-derived-watcher.pid');
 }
 
+function parseWatcherPidFile(content: string): number | null {
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as { pid?: unknown };
+    return typeof parsed.pid === 'number' && Number.isFinite(parsed.pid) && parsed.pid > 0 ? parsed.pid : null;
+  } catch {
+    const pid = Number.parseInt(trimmed, 10);
+    return Number.isFinite(pid) && pid > 0 ? pid : null;
+  }
+}
+
+function tryKillPid(pid: number, signal: NodeJS.Signals = 'SIGTERM'): boolean {
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
 async function startNotifyFallbackWatcher(cwd: string): Promise<void> {
   if (process.env.OMX_NOTIFY_FALLBACK === '0') return;
 
@@ -1455,9 +1478,9 @@ async function startNotifyFallbackWatcher(cwd: string): Promise<void> {
   // Stop stale watcher from a previous run.
   if (existsSync(pidPath)) {
     try {
-      const prev = JSON.parse(await readFile(pidPath, 'utf-8')) as { pid?: number };
-      if (prev && typeof prev.pid === 'number') {
-        process.kill(prev.pid, 'SIGTERM');
+      const prevPid = parseWatcherPidFile(await readFile(pidPath, 'utf-8'));
+      if (prevPid) {
+        tryKillPid(prevPid, 'SIGTERM');
       }
     } catch (error: unknown) {
       console.warn('[omx] warning: failed to stop stale notify fallback watcher', {
@@ -1475,7 +1498,20 @@ async function startNotifyFallbackWatcher(cwd: string): Promise<void> {
   });
   const child = spawn(
     process.execPath,
-    [watcherScript, '--cwd', cwd, '--notify-script', notifyScript],
+    [
+      watcherScript,
+      '--cwd',
+      cwd,
+      '--notify-script',
+      notifyScript,
+      '--pid-file',
+      pidPath,
+      '--parent-pid',
+      String(process.pid),
+      ...(process.env.OMX_NOTIFY_FALLBACK_MAX_LIFETIME_MS
+        ? ['--max-lifetime-ms', process.env.OMX_NOTIFY_FALLBACK_MAX_LIFETIME_MS]
+        : []),
+    ],
     {
       cwd,
       detached: true,
@@ -1553,9 +1589,9 @@ async function stopNotifyFallbackWatcher(cwd: string): Promise<void> {
   if (!existsSync(pidPath)) return;
 
   try {
-    const parsed = JSON.parse(await readFile(pidPath, 'utf-8')) as { pid?: number };
-    if (parsed && typeof parsed.pid === 'number') {
-      process.kill(parsed.pid, 'SIGTERM');
+    const pid = parseWatcherPidFile(await readFile(pidPath, 'utf-8'));
+    if (pid) {
+      tryKillPid(pid, 'SIGTERM');
     }
   } catch (error: unknown) {
     console.warn('[omx] warning: failed to stop notify fallback watcher process', {

@@ -44,6 +44,26 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs: number = 30
   throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
+function isPidAlive(pid: number | undefined): boolean {
+  if (!pid || !Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number = 4000): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await Promise.race([
+    once(child, 'exit'),
+    sleep(timeoutMs).then(() => {
+      throw new Error(`process ${child.pid ?? 'unknown'} did not exit within ${timeoutMs}ms`);
+    }),
+  ]);
+}
+
 function buildFakeTmux(tmuxLogPath: string): string {
   return `#!/usr/bin/env bash
 set -eu
@@ -483,6 +503,201 @@ describe('notify-fallback watcher', () => {
       assert.equal(request?.last_reason, 'unconfirmed_after_max_retries');
     } finally {
       await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('exits when the tracked parent pid is gone', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-parent-exit-'));
+    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-parent-home-'));
+    const watcherScript = new URL('../../../scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+    const notifyHook = new URL('../../../scripts/notify-hook.js', import.meta.url).pathname;
+    const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+    let child: ReturnType<typeof spawn> | undefined;
+
+    try {
+      const shortLivedParent = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 10)'], {
+        stdio: 'ignore',
+      });
+      assert.ok(shortLivedParent.pid, 'expected short-lived parent pid');
+      const parentPid = shortLivedParent.pid as number;
+      await once(shortLivedParent, 'exit');
+
+      child = spawn(
+        process.execPath,
+        [
+          watcherScript,
+          '--cwd',
+          wd,
+          '--notify-script',
+          notifyHook,
+          '--poll-ms',
+          '50',
+          '--parent-pid',
+          String(parentPid),
+          '--max-lifetime-ms',
+          '5000',
+        ],
+        {
+          cwd: wd,
+          stdio: 'ignore',
+          env: { ...process.env, HOME: tempHome },
+        }
+      );
+
+      await waitForExit(child, 4000);
+      assert.equal(child.exitCode, 0);
+
+      const logEntries = (await readFile(logPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      assert.ok(logEntries.some((entry: { type?: string; reason?: string }) => (
+        entry.type === 'watcher_stop' && entry.reason === 'parent_gone'
+      )));
+    } finally {
+      if (child && isPidAlive(child.pid)) {
+        child.kill('SIGTERM');
+        await waitForExit(child, 4000).catch(() => {});
+      }
+      await rm(wd, { recursive: true, force: true });
+      await rm(tempHome, { recursive: true, force: true });
+    }
+  });
+
+  it('replaces a stale watcher from the per-cwd pid file', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-stale-pid-'));
+    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-stale-home-'));
+    const watcherScript = new URL('../../../scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+    const notifyHook = new URL('../../../scripts/notify-hook.js', import.meta.url).pathname;
+    const pidPath = join(wd, '.omx', 'state', 'notify-fallback.pid');
+    let first: ReturnType<typeof spawn> | undefined;
+    let second: ReturnType<typeof spawn> | undefined;
+
+    try {
+      first = spawn(
+        process.execPath,
+        [
+          watcherScript,
+          '--cwd',
+          wd,
+          '--notify-script',
+          notifyHook,
+          '--poll-ms',
+          '50',
+          '--parent-pid',
+          String(process.pid),
+          '--max-lifetime-ms',
+          '5000',
+        ],
+        {
+          cwd: wd,
+          stdio: 'ignore',
+          env: { ...process.env, HOME: tempHome },
+        }
+      );
+      assert.ok(first.pid, 'expected first watcher pid');
+
+      await waitFor(async () => {
+        try {
+          const pidFile = JSON.parse(await readFile(pidPath, 'utf-8')) as { pid?: number };
+          return pidFile.pid === first?.pid;
+        } catch {
+          return false;
+        }
+      }, 4000, 50);
+
+      second = spawn(
+        process.execPath,
+        [
+          watcherScript,
+          '--cwd',
+          wd,
+          '--notify-script',
+          notifyHook,
+          '--poll-ms',
+          '50',
+          '--parent-pid',
+          String(process.pid),
+          '--max-lifetime-ms',
+          '5000',
+        ],
+        {
+          cwd: wd,
+          stdio: 'ignore',
+          env: { ...process.env, HOME: tempHome },
+        }
+      );
+      assert.ok(second.pid, 'expected second watcher pid');
+
+      await waitForExit(first, 4000);
+      assert.equal(first.exitCode, 0);
+
+      await waitFor(async () => {
+        try {
+          const pidFile = JSON.parse(await readFile(pidPath, 'utf-8')) as { pid?: number };
+          return pidFile.pid === second?.pid;
+        } catch {
+          return false;
+        }
+      }, 4000, 50);
+
+      assert.ok(isPidAlive(second.pid), 'expected replacement watcher to remain alive');
+    } finally {
+      if (second && isPidAlive(second.pid)) {
+        second.kill('SIGTERM');
+        await waitForExit(second, 4000).catch(() => {});
+      }
+      if (first && isPidAlive(first.pid)) {
+        first.kill('SIGTERM');
+        await waitForExit(first, 4000).catch(() => {});
+      }
+      await rm(wd, { recursive: true, force: true });
+      await rm(tempHome, { recursive: true, force: true });
+    }
+  });
+
+  it('exits after the configured max lifetime', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-max-life-'));
+    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-max-home-'));
+    const watcherScript = new URL('../../../scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+    const notifyHook = new URL('../../../scripts/notify-hook.js', import.meta.url).pathname;
+    const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+    let child: ReturnType<typeof spawn> | undefined;
+
+    try {
+      child = spawn(
+        process.execPath,
+        [
+          watcherScript,
+          '--cwd',
+          wd,
+          '--notify-script',
+          notifyHook,
+          '--poll-ms',
+          '50',
+          '--parent-pid',
+          String(process.pid),
+          '--max-lifetime-ms',
+          '200',
+        ],
+        {
+          cwd: wd,
+          stdio: 'ignore',
+          env: { ...process.env, HOME: tempHome },
+        }
+      );
+
+      await waitForExit(child, 4000);
+      assert.equal(child.exitCode, 0);
+
+      const logEntries = (await readFile(logPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      assert.ok(logEntries.some((entry: { type?: string; reason?: string }) => (
+        entry.type === 'watcher_stop' && entry.reason === 'max_lifetime_exceeded'
+      )));
+    } finally {
+      if (child && isPidAlive(child.pid)) {
+        child.kill('SIGTERM');
+        await waitForExit(child, 4000).catch(() => {});
+      }
+      await rm(wd, { recursive: true, force: true });
+      await rm(tempHome, { recursive: true, force: true });
     }
   });
 });
