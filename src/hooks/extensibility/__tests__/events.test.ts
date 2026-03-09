@@ -13,6 +13,8 @@ describe('isDerivedEventName', () => {
     assert.equal(isDerivedEventName('session-start'), false);
     assert.equal(isDerivedEventName('session-end'), false);
     assert.equal(isDerivedEventName('turn-complete'), false);
+    assert.equal(isDerivedEventName('test-started'), false);
+    assert.equal(isDerivedEventName('pr-created'), false);
   });
 
   it('returns false for unknown events', () => {

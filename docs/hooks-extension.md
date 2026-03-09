@@ -43,6 +43,8 @@ Native events are emitted from existing lifecycle/notify paths:
 - `turn-complete`
 - `session-idle`
 
+For clawhip-oriented operational routing, see [Clawhip Event Contract](./clawhip-event-contract.md).
+
 Envelope fields include:
 
 - `schema_version: "1"`

@@ -41,6 +41,7 @@ import { drainPendingTeamDispatch } from './notify-hook/team-dispatch.js';
 import { syncLinkedRalphOnTeamTerminal } from './notify-hook/linked-sync.js';
 import { handleTmuxInjection } from './notify-hook/tmux-injection.js';
 import { maybeAutoNudge, resolveNudgePaneTarget } from './notify-hook/auto-nudge.js';
+import { buildOperationalContext, deriveAssistantSignalEvents, readRepositoryMetadata } from './notify-hook/operational-events.js';
 import {
   parseTeamWorkerEnv,
   resolveTeamStateDirForWorker,
@@ -318,20 +319,51 @@ async function main() {
 
   // 7. Dispatch native turn-complete hook event (best effort, post-dedupe)
   try {
-    const { buildNativeHookEvent } = await import('../dist/hooks/extensibility/events.js');
+    const { buildNativeHookEvent, buildDerivedHookEvent } = await import('../dist/hooks/extensibility/events.js');
     const { dispatchHookEvent } = await import('../dist/hooks/extensibility/dispatcher.js');
+    const sessionIdForHooks = safeString(payload.session_id || payload['session-id'] || '');
+    const threadIdForHooks = safeString(payload['thread-id'] || payload.thread_id || '');
+    const turnIdForHooks = safeString(payload['turn-id'] || payload.turn_id || '');
+    const modeForHooks = safeString(payload.mode || '');
+    const outputPreview = safeString(payload['last-assistant-message'] || payload.last_assistant_message || '').slice(0, 400);
     const event = buildNativeHookEvent('turn-complete', {
       source: safeString(payload.source || 'native'),
       type: safeString(payload.type || 'agent-turn-complete'),
       input_messages: normalizeInputMessages(payload),
-      output_preview: safeString(payload['last-assistant-message'] || payload.last_assistant_message || '').slice(0, 400),
+      output_preview: outputPreview,
+      ...readRepositoryMetadata(cwd),
+      session_name: sessionIdForHooks || undefined,
+      project_path: cwd,
+      project_name: safeString(payload.project_name || ''),
     }, {
-      session_id: safeString(payload.session_id || payload['session-id'] || ''),
-      thread_id: safeString(payload['thread-id'] || payload.thread_id || ''),
-      turn_id: safeString(payload['turn-id'] || payload.turn_id || ''),
-      mode: safeString(payload.mode || ''),
+      session_id: sessionIdForHooks,
+      thread_id: threadIdForHooks,
+      turn_id: turnIdForHooks,
+      mode: modeForHooks,
     });
     await dispatchHookEvent(event, { cwd });
+
+    for (const signal of deriveAssistantSignalEvents(outputPreview)) {
+      const derivedEvent = buildDerivedHookEvent(signal.event, buildOperationalContext({
+        cwd,
+        normalizedEvent: signal.normalized_event,
+        sessionId: sessionIdForHooks,
+        text: outputPreview,
+        status: signal.normalized_event,
+        errorSummary: signal.error_summary,
+        extra: {
+          source_event: safeString(payload.type || 'agent-turn-complete'),
+        },
+      }), {
+        session_id: sessionIdForHooks,
+        thread_id: threadIdForHooks,
+        turn_id: turnIdForHooks,
+        mode: modeForHooks,
+        confidence: signal.confidence,
+        parser_reason: signal.parser_reason,
+      });
+      await dispatchHookEvent(derivedEvent, { cwd });
+    }
   } catch {
     // Non-fatal: extensibility modules may not be built yet
   }
@@ -360,8 +392,16 @@ async function main() {
           const { buildNativeHookEvent } = await import('../dist/hooks/extensibility/events.js');
           const { dispatchHookEvent } = await import('../dist/hooks/extensibility/dispatcher.js');
           const event = buildNativeHookEvent('session-idle', {
-            project_path: cwd,
-            reason: 'post_turn_idle_notification',
+            ...buildOperationalContext({
+              cwd,
+              normalizedEvent: 'blocked',
+              sessionId: notifySessionId,
+              status: 'blocked',
+              extra: {
+                project_path: cwd,
+                reason: 'post_turn_idle_notification',
+              },
+            }),
           }, {
             session_id: notifySessionId,
             thread_id: safeString(payload['thread-id'] || payload.thread_id || ''),

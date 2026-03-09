@@ -4,6 +4,12 @@ import { existsSync } from 'fs';
 import { appendFile, mkdir, readFile, readdir, stat, writeFile } from 'fs/promises';
 import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
+import {
+  buildOperationalContext,
+  classifyExecCommand,
+  parseCommandResult,
+  parseExecCommandArgs,
+} from './notify-hook/operational-events.js';
 
 function argValue(name, fallback = '') {
   const idx = process.argv.indexOf(name);
@@ -28,6 +34,7 @@ const watcherStatePath = join(stateDir, 'hook-derived-watcher-state.json');
 const logPath = join(logsDir, `hook-derived-watcher-${new Date().toISOString().split('T')[0]}.jsonl`);
 
 const fileState = new Map();
+const pendingCalls = new Map();
 let stopping = false;
 let flushedOnShutdown = false;
 
@@ -178,6 +185,54 @@ function inferDerivedEvent(parsed, meta) {
   return null;
 }
 
+function updateTurnState(parsed, meta) {
+  if (!parsed || parsed.type !== 'event_msg' || !parsed.payload) return;
+  const payloadType = safeString(parsed.payload.type);
+  if (payloadType === 'task_started') {
+    meta.currentTurnId = safeString(parsed.payload.turn_id);
+    return;
+  }
+  if (payloadType === 'task_complete' || payloadType === 'turn_aborted') {
+    meta.currentTurnId = '';
+  }
+}
+
+function inferOperationalCall(parsed, meta) {
+  if (!parsed || parsed.type !== 'response_item' || !parsed.payload) return null;
+  const payload = parsed.payload;
+
+  if (payload.type === 'function_call' && payload.name === 'exec_command') {
+    const { command, workdir } = parseExecCommandArgs(payload.arguments);
+    const classified = classifyExecCommand(command);
+    if (!classified) return null;
+    return {
+      phase: 'start',
+      kind: classified.kind,
+      callId: safeString(payload.call_id),
+      timestamp: safeString(parsed.timestamp) || new Date().toISOString(),
+      command: classified.command,
+      workdir: workdir || cwd,
+      toolName: safeString(payload.name),
+      turnId: meta.currentTurnId || undefined,
+    };
+  }
+
+  if (payload.type === 'function_call_output') {
+    const callId = safeString(payload.call_id);
+    if (!callId || !pendingCalls.has(callId)) return null;
+    const existing = pendingCalls.get(callId);
+    return {
+      ...existing,
+      phase: 'finish',
+      timestamp: safeString(parsed.timestamp) || new Date().toISOString(),
+      result: parseCommandResult(payload.output),
+      output: safeString(payload.output),
+    };
+  }
+
+  return null;
+}
+
 async function dispatchDerivedEvent(event) {
   try {
     const { dispatchHookEvent } = await import('../dist/hooks/extensibility/dispatcher.js');
@@ -209,6 +264,57 @@ async function dispatchDerivedEvent(event) {
   }
 }
 
+async function dispatchOperationalEvent(input) {
+  try {
+    const { buildDerivedHookEvent } = await import('../dist/hooks/extensibility/events.js');
+    const { dispatchHookEvent } = await import('../dist/hooks/extensibility/dispatcher.js');
+    const baseContext = buildOperationalContext({
+      cwd: input.workdir || cwd,
+      normalizedEvent: input.event,
+      sessionId: input.sessionId || '',
+      sessionName: input.sessionId || '',
+      text: input.output || '',
+      output: input.output || '',
+      command: input.command || '',
+      toolName: input.toolName || '',
+      status: input.status || '',
+      prNumber: input.prNumber,
+      prUrl: input.prUrl,
+      errorSummary: input.errorSummary,
+      extra: input.extra || {},
+    });
+    const event = buildDerivedHookEvent(input.event, baseContext, {
+      session_id: input.sessionId || undefined,
+      thread_id: input.threadId || undefined,
+      turn_id: input.turnId || undefined,
+      parser_reason: input.parserReason,
+      confidence: input.confidence,
+    });
+    await dispatchHookEvent(event, {
+      cwd,
+      allowTeamWorkerSideEffects: false,
+    });
+    await derivedLog({
+      type: 'operational_event_dispatch',
+      event: input.event,
+      thread_id: input.threadId,
+      turn_id: input.turnId,
+      parser_reason: input.parserReason,
+      ok: true,
+    });
+  } catch (err) {
+    await derivedLog({
+      type: 'operational_event_dispatch',
+      event: input.event,
+      thread_id: input.threadId,
+      turn_id: input.turnId,
+      parser_reason: input.parserReason,
+      ok: false,
+      error: err instanceof Error ? err.message : 'dispatch_failed',
+    });
+  }
+}
+
 async function ensureTrackedFiles() {
   const files = await discoverRolloutFiles();
   for (const path of files) {
@@ -223,12 +329,82 @@ async function ensureTrackedFiles() {
       offset,
       partial: '',
       dispatched: 0,
+      currentTurnId: '',
     });
   }
 }
 
 async function processLine(meta, line) {
   const parsed = parseJsonLine(line);
+  updateTurnState(parsed, meta);
+
+  const operational = inferOperationalCall(parsed, meta);
+  if (operational?.phase === 'start') {
+    if (operational.callId) {
+      pendingCalls.set(operational.callId, {
+        kind: operational.kind,
+        callId: operational.callId,
+        command: operational.command,
+        workdir: operational.workdir,
+        toolName: operational.toolName,
+        threadId: meta.threadId,
+        sessionId: meta.sessionId,
+        turnId: operational.turnId,
+      });
+    }
+    if (operational.kind === 'test') {
+      await dispatchOperationalEvent({
+        event: 'test-started',
+        workdir: operational.workdir,
+        sessionId: meta.sessionId,
+        threadId: meta.threadId,
+        turnId: operational.turnId,
+        command: operational.command,
+        toolName: operational.toolName,
+        status: 'started',
+        parserReason: 'exec_command_test_start',
+        confidence: 0.92,
+      });
+    }
+  } else if (operational?.phase === 'finish') {
+    if (operational.callId) pendingCalls.delete(operational.callId);
+    if (operational.kind === 'test') {
+      if (operational.result?.success !== true && operational.result?.success !== false) return;
+      await dispatchOperationalEvent({
+        event: operational.result?.success === false ? 'test-failed' : 'test-finished',
+        workdir: operational.workdir,
+        sessionId: meta.sessionId,
+        threadId: meta.threadId,
+        turnId: operational.turnId,
+        command: operational.command,
+        toolName: operational.toolName,
+        status: operational.result?.success === false ? 'failed' : 'finished',
+        errorSummary: operational.result?.error_summary,
+        parserReason: 'exec_command_test_result',
+        confidence: 0.95,
+        extra: {
+          ...(operational.result?.exit_code !== undefined ? { exit_code: operational.result.exit_code } : {}),
+        },
+      });
+    }
+    if (operational.kind === 'pr-create' && operational.result?.success !== false && (operational.result?.pr_number !== undefined || operational.result?.pr_url)) {
+      await dispatchOperationalEvent({
+        event: 'pr-created',
+        workdir: operational.workdir,
+        sessionId: meta.sessionId,
+        threadId: meta.threadId,
+        turnId: operational.turnId,
+        command: operational.command,
+        toolName: operational.toolName,
+        status: 'finished',
+        prNumber: operational.result.pr_number,
+        prUrl: operational.result.pr_url,
+        parserReason: 'exec_command_pr_create_result',
+        confidence: 0.97,
+      });
+    }
+  }
+
   const derived = inferDerivedEvent(parsed, meta);
   if (!derived) return;
   await dispatchDerivedEvent(derived);
@@ -267,6 +443,7 @@ async function writeState() {
     max_file_age_ms: maxFileAgeMs,
     tracked_files: fileState.size,
     dispatched_events: tracked,
+    pending_calls: pendingCalls.size,
   };
   await writeFile(watcherStatePath, JSON.stringify(state, null, 2)).catch(() => {});
 }

@@ -706,6 +706,65 @@ function buildModelInstructionsOverride(cwd: string, env: NodeJS.ProcessEnv, def
   return `${MODEL_INSTRUCTIONS_FILE_KEY}="${escapeTomlString(filePath)}"`;
 }
 
+function tryReadGitValue(cwd: string, args: string[]): string | undefined {
+  try {
+    const value = execFileSync('git', args, {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+    }).trim();
+    return value || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function extractIssueNumber(text: string): number | undefined {
+  const explicit = text.match(/\bissue\s*#(\d+)\b/i);
+  if (explicit) return Number.parseInt(explicit[1], 10);
+  const generic = text.match(/(^|[^\w/])#(\d+)\b/);
+  return generic ? Number.parseInt(generic[2], 10) : undefined;
+}
+
+function resolveNativeSessionName(cwd: string, sessionId: string): string {
+  if (process.env.TMUX) {
+    try {
+      const tmuxSession = execFileSync('tmux', ['display-message', '-p', '#S'], {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 2000,
+      }).trim();
+      if (tmuxSession) return tmuxSession;
+    } catch {
+      // best effort only
+    }
+  }
+  return buildTmuxSessionName(cwd, sessionId);
+}
+
+function buildNativeHookBaseContext(
+  cwd: string,
+  sessionId: string,
+  normalizedEvent: 'started' | 'blocked' | 'finished' | 'failed',
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const repoPath = tryReadGitValue(cwd, ['rev-parse', '--show-toplevel']) || cwd;
+  const branch = tryReadGitValue(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const issueNumber = extractIssueNumber([branch, basename(cwd)].filter(Boolean).join(' '));
+
+  return {
+    normalized_event: normalizedEvent,
+    session_name: resolveNativeSessionName(cwd, sessionId),
+    repo_path: repoPath,
+    repo_name: basename(repoPath),
+    worktree_path: cwd,
+    ...(branch ? { branch } : {}),
+    ...(issueNumber !== undefined ? { issue_number: issueNumber } : {}),
+    ...extra,
+  };
+}
+
 export function injectModelInstructionsBypassArgs(
   cwd: string,
   args: string[],
@@ -1050,10 +1109,11 @@ async function preLaunch(cwd: string, sessionId: string, notifyTempContract?: No
   try {
     await emitNativeHookEvent(cwd, 'session-start', {
       session_id: sessionId,
-      context: {
+      context: buildNativeHookBaseContext(cwd, sessionId, 'started', {
         project_path: cwd,
         project_name: basename(cwd),
-      },
+        status: 'started',
+      }),
     });
   } catch (err) {
     process.stderr.write(`[cli/index] operation failed: ${err}\n`);
@@ -1395,14 +1455,21 @@ async function postLaunch(cwd: string, sessionId: string): Promise<void> {
     const durationMs = sessionStartedAt
       ? Date.now() - new Date(sessionStartedAt).getTime()
       : undefined;
+    const normalizedEvent = process.exitCode && process.exitCode !== 0 ? 'failed' : 'finished';
+    const errorSummary = normalizedEvent === 'failed'
+      ? `codex exited with code ${process.exitCode}`
+      : undefined;
     await emitNativeHookEvent(cwd, 'session-end', {
       session_id: sessionId,
-      context: {
+      context: buildNativeHookBaseContext(cwd, sessionId, normalizedEvent, {
         project_path: cwd,
         project_name: basename(cwd),
         duration_ms: durationMs,
         reason: 'session_exit',
-      },
+        status: normalizedEvent === 'failed' ? 'failed' : 'finished',
+        ...(process.exitCode !== undefined ? { exit_code: process.exitCode } : {}),
+        ...(errorSummary ? { error_summary: errorSummary } : {}),
+      }),
     });
   } catch (err) {
     process.stderr.write(`[cli/index] operation failed: ${err}\n`);

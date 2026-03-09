@@ -112,6 +112,65 @@ describe('notify-hook/utils – clampPct', () => {
 });
 
 // ---------------------------------------------------------------------------
+// operational-events.js
+// ---------------------------------------------------------------------------
+describe('notify-hook/operational-events – classifyExecCommand', () => {
+  it('classifies concrete test commands without matching search commands', async () => {
+    const { classifyExecCommand } = await loadModule('notify-hook/operational-events.js');
+    assert.deepEqual(classifyExecCommand('npm test'), { kind: 'test', command: 'npm test' });
+    assert.equal(classifyExecCommand('rg "npm test" src'), null);
+  });
+
+  it('classifies gh pr create commands', async () => {
+    const { classifyExecCommand } = await loadModule('notify-hook/operational-events.js');
+    assert.deepEqual(classifyExecCommand('gh pr create --base dev --fill'), {
+      kind: 'pr-create',
+      command: 'gh pr create --base dev --fill',
+    });
+  });
+});
+
+describe('notify-hook/operational-events – parseCommandResult', () => {
+  it('extracts exit code and PR metadata from command output', async () => {
+    const { parseCommandResult } = await loadModule('notify-hook/operational-events.js');
+    const parsed = parseCommandResult('Process exited with code 0\nOutput:\nhttps://github.com/acme/repo/pull/663\n');
+    assert.equal(parsed.exit_code, 0);
+    assert.equal(parsed.success, true);
+    assert.equal(parsed.pr_number, 663);
+    assert.equal(parsed.pr_url, 'https://github.com/acme/repo/pull/663');
+  });
+
+  it('extracts error summary for failed commands', async () => {
+    const { parseCommandResult } = await loadModule('notify-hook/operational-events.js');
+    const parsed = parseCommandResult('Process exited with code 1\nstderr:\nError: test suite failed\n');
+    assert.equal(parsed.exit_code, 1);
+    assert.equal(parsed.success, false);
+    assert.match(parsed.error_summary || '', /failed/i);
+  });
+});
+
+describe('notify-hook/operational-events – deriveAssistantSignalEvents', () => {
+  it('detects handoff-needed and retry-needed from assistant text', async () => {
+    const { deriveAssistantSignalEvents } = await loadModule('notify-hook/operational-events.js');
+    const signals = deriveAssistantSignalEvents('If you want, next I can do one of two things: retry the flaky step or handoff the follow-up.');
+    assert.equal(signals.some((signal: { event?: string }) => signal.event === 'handoff-needed'), true);
+    assert.equal(signals.some((signal: { event?: string }) => signal.event === 'retry-needed'), true);
+  });
+
+  it('detects completion and failure conservatively', async () => {
+    const { deriveAssistantSignalEvents } = await loadModule('notify-hook/operational-events.js');
+    assert.equal(
+      deriveAssistantSignalEvents('Implementation completed. Final summary ready.').some((signal: { event?: string }) => signal.event === 'finished'),
+      true,
+    );
+    assert.equal(
+      deriveAssistantSignalEvents('The operation failed with error: unable to continue.').some((signal: { event?: string }) => signal.event === 'failed'),
+      true,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // auto-nudge.js – detectStallPattern
 // ---------------------------------------------------------------------------
 describe('notify-hook/auto-nudge – detectStallPattern', () => {
