@@ -484,6 +484,10 @@ npm test
 
 Inspired by [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode), adapted for Codex CLI.
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Yeachan-Heo/oh-my-codex&type=Date)](https://www.star-history.com/#Yeachan-Heo/oh-my-codex&Date)
+
 ## License
 
 MIT
