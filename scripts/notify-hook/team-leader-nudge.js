@@ -16,9 +16,9 @@ const LEADER_NOTIFICATION_DEFERRED_TYPE = 'leader_notification_deferred';
 export function resolveLeaderNudgeIntervalMs() {
   const raw = safeString(process.env.OMX_TEAM_LEADER_NUDGE_MS || '');
   const parsed = asNumber(raw);
-  // Default: 2 minutes. Guard against spam.
+  // Default: 30 seconds for stale-leader follow-up. Guard against spam.
   if (parsed !== null && parsed >= 10_000 && parsed <= 30 * 60_000) return parsed;
-  return 120_000;
+  return 30_000;
 }
 
 export function resolveLeaderAllIdleNudgeCooldownMs() {
@@ -233,10 +233,12 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     const dueByIdleCooldown = !Number.isFinite(prevIdleAtMs) || (nowMs - prevIdleAtMs >= idleCooldownMs);
     const shouldSendAllIdleNudge = allWorkersIdle && dueByIdleCooldown;
 
-    // stalePanesNudge must respect the same dueByTime rate limit (issue #116)
+    // Stale-leader follow-up is the only periodic visible nudge path.
+    // This keeps the leader pane quieter when the leader is not actually stale.
     const stalePanesNudge = paneStatus.alive && leaderStale;
+    const staleFollowupDue = stalePanesNudge && dueByTime;
 
-    if (!shouldSendAllIdleNudge && !hasNewMessage && !dueByTime) continue;
+    if (!shouldSendAllIdleNudge && !hasNewMessage && !staleFollowupDue) continue;
 
     let nudgeReason = '';
     let text = '';
@@ -247,15 +249,14 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     } else if (stalePanesNudge && hasNewMessage) {
       nudgeReason = 'stale_leader_with_messages';
       text = `Team ${teamName}: leader stale, ${paneStatus.paneCount} pane(s) active, ${messages.length} msg(s) pending. Run: omx team status ${teamName}`;
-    } else if (stalePanesNudge) {
+    } else if (staleFollowupDue) {
       nudgeReason = 'stale_leader_panes_alive';
       text = `Team ${teamName}: leader stale, ${paneStatus.paneCount} worker pane(s) still active. Run: omx team status ${teamName}`;
     } else if (hasNewMessage) {
       nudgeReason = 'new_mailbox_message';
       text = `Team ${teamName}: ${messages.length} msg(s) for leader. Run: omx team status ${teamName}`;
     } else {
-      nudgeReason = 'periodic_check';
-      text = `Team ${teamName} active. Run: omx team status ${teamName}`;
+      continue;
     }
     const capped = text.length > 180 ? `${text.slice(0, 177)}...` : text;
     const markedText = `${capped} ${DEFAULT_MARKER}`;

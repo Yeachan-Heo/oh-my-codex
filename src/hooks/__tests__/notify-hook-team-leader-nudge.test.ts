@@ -300,6 +300,121 @@ describe('notify-hook team leader nudge', () => {
     });
   });
 
+  it('does not send a generic periodic leader nudge when the leader is not stale', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'fresh-leader';
+      const teamDir = join(stateDir, 'team', teamName);
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(join(teamDir, 'mailbox'), { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(stateDir, 'team-state.json'), {
+        active: true,
+        team_name: teamName,
+        current_phase: 'team-exec',
+      });
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'omx-team-fresh',
+        leader_pane_id: '%95',
+      });
+      await writeJson(join(stateDir, 'hud-state.json'), {
+        last_turn_at: new Date().toISOString(),
+        turn_count: 2,
+      });
+
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, { OMX_TEAM_LEADER_NUDGE_MS: '30000' });
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      if (existsSync(tmuxLogPath)) {
+        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+        assert.doesNotMatch(tmuxLog, /Team fresh-leader/, 'non-stale leader should not receive generic periodic follow-up');
+      }
+    });
+  });
+
+  it('uses a 30s cadence for stale leader follow-up nudges', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'stale-cadence';
+      const teamDir = join(stateDir, 'team', teamName);
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+      const now = Date.now();
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(join(teamDir, 'mailbox'), { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(stateDir, 'team-state.json'), {
+        active: true,
+        team_name: teamName,
+        current_phase: 'team-exec',
+      });
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'omx-team-stale-cadence',
+        leader_pane_id: '%96',
+      });
+
+      const staleHud = {
+        last_turn_at: new Date(now - 300_000).toISOString(),
+        turn_count: 5,
+      };
+
+      await writeJson(join(stateDir, 'hud-state.json'), staleHud);
+      await writeJson(join(stateDir, 'team-leader-nudge.json'), {
+        last_nudged_by_team: {
+          [teamName]: {
+            at: new Date(now - 20_000).toISOString(),
+            last_message_id: '',
+          },
+        },
+      });
+
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const blocked = runNotifyHook(cwd, fakeBinDir, { OMX_TEAM_LEADER_NUDGE_MS: '30000' });
+      assert.equal(blocked.status, 0, `notify-hook failed: ${blocked.stderr || blocked.stdout}`);
+
+      if (existsSync(tmuxLogPath)) {
+        const firstLog = await readFile(tmuxLogPath, 'utf-8');
+        assert.doesNotMatch(firstLog, /Team stale-cadence:/, 'stale follow-up should be blocked inside the 30s window');
+      }
+
+      await writeJson(join(stateDir, 'hud-state.json'), staleHud);
+      await writeJson(join(stateDir, 'team-leader-nudge.json'), {
+        last_nudged_by_team: {
+          [teamName]: {
+            at: new Date(now - 31_000).toISOString(),
+            last_message_id: '',
+          },
+        },
+      });
+
+      const allowed = runNotifyHook(cwd, fakeBinDir, { OMX_TEAM_LEADER_NUDGE_MS: '30000' });
+      assert.equal(allowed.status, 0, `notify-hook failed: ${allowed.stderr || allowed.stdout}`);
+
+      const finalLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(finalLog, /Team stale-cadence:/);
+      assert.match(finalLog, /leader stale/);
+    });
+  });
+
   it('emits team_leader_nudge event to events.ndjson when nudge fires', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
