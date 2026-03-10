@@ -10,6 +10,7 @@ import {
   MODEL_FLAG,
 } from '../cli/constants.js';
 import { sleep, sleepSync } from '../utils/sleep.js';
+import { classifySpawnError, resolveCommandPathForPlatform, spawnPlatformCommandSync } from '../utils/platform-command.js';
 
 const execFileAsync = promisify(execFile);
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../hud/constants.js';
@@ -77,7 +78,7 @@ interface TmuxPaneInfo {
 type SpawnSyncLike = typeof spawnSync;
 
 function runTmux(args: string[]): { ok: true; stdout: string } | { ok: false; stderr: string } {
-  const result = spawnSync('tmux', args, { encoding: 'utf-8' });
+  const { result } = spawnPlatformCommandSync('tmux', args, { encoding: 'utf-8' });
   if (result.error) {
     return { ok: false, stderr: result.error.message };
   }
@@ -534,10 +535,9 @@ export function translateWorkerLaunchArgsForCli(workerCli: TeamWorkerCli, args: 
 }
 
 function commandExists(binary: string): boolean {
-  const result = spawnSync(binary, ['--version'], { encoding: 'utf-8' });
+  const { result } = spawnPlatformCommandSync(binary, ['--version'], { encoding: 'utf-8' });
   if (result.error) {
-    const code = (result.error as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT') return false;
+    return classifySpawnError(result.error as NodeJS.ErrnoException) !== 'missing';
   }
   return true;
 }
@@ -547,12 +547,7 @@ function commandExists(binary: string): boolean {
  * Returns the absolute path or the bare command name as fallback.
  */
 function resolveAbsoluteBinaryPath(binary: string): string {
-  const finder = process.platform === 'win32' ? 'where' : 'which';
-  const result = spawnSync(finder, [binary], { encoding: 'utf-8', timeout: 5000 });
-  if (result.status === 0 && result.stdout.trim()) {
-    return result.stdout.trim().split('\n')[0];
-  }
-  return binary;
+  return resolveCommandPathForPlatform(binary) || binary;
 }
 
 /**
@@ -705,7 +700,7 @@ export function isNativeWindows(): boolean {
 
 // Check if tmux is available
 export function isTmuxAvailable(): boolean {
-  const result = spawnSync('tmux', ['-V'], { encoding: 'utf-8' });
+  const { result } = spawnPlatformCommandSync('tmux', ['-V'], { encoding: 'utf-8' });
   if (result.error) return false;
   return result.status === 0;
 }

@@ -5,16 +5,12 @@
  * Codex CLI, and inject text into panes. Used by the reply-listener daemon.
  */
 
-import { execSync, execFileSync, spawnSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import { sleepSync } from '../utils/sleep.js';
+import { resolveCommandPathForPlatform } from '../utils/platform-command.js';
 
 export function isTmuxAvailable(): boolean {
-  try {
-    execSync('which tmux', { stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000 });
-    return true;
-  } catch {
-    return false;
-  }
+  return resolveCommandPathForPlatform('tmux') !== null;
 }
 
 /**

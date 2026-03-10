@@ -61,6 +61,7 @@ import {
 import { getPackageRoot } from '../utils/package.js';
 import { codexConfigPath } from '../utils/paths.js';
 import { HUD_TMUX_HEIGHT_LINES } from '../hud/constants.js';
+import { classifySpawnError, spawnPlatformCommandSync } from '../utils/platform-command.js';
 import { buildHookEvent } from '../hooks/extensibility/events.js';
 import { dispatchHookEvent } from '../hooks/extensibility/dispatcher.js';
 import {
@@ -298,24 +299,33 @@ export function classifyCodexExecFailure(error: unknown): CodexExecFailureClassi
 }
 
 function runCodexBlocking(cwd: string, launchArgs: string[], codexEnv: NodeJS.ProcessEnv): void {
-  try {
-    execFileSync('codex', launchArgs, { cwd, stdio: 'inherit', env: codexEnv });
-  } catch (error) {
-    const classified = classifyCodexExecFailure(error);
-    if (classified.kind === 'exit') {
-      process.exitCode = classified.exitCode ?? 1;
-      if (classified.signal) {
-        console.error(`[omx] codex exited due to signal ${classified.signal}`);
-      }
-      return;
-    }
+  const { result } = spawnPlatformCommandSync('codex', launchArgs, {
+    cwd,
+    stdio: 'inherit',
+    env: codexEnv,
+    encoding: 'utf-8',
+  });
 
-    if (classified.code === 'ENOENT') {
+  if (result.error) {
+    const errno = result.error as NodeJS.ErrnoException;
+    const kind = classifySpawnError(errno);
+    if (kind === 'missing') {
       console.error('[omx] failed to launch codex: executable not found in PATH');
+    } else if (kind === 'blocked') {
+      console.error(`[omx] failed to launch codex: executable is present but blocked in the current environment (${errno.code || 'blocked'})`);
     } else {
-      console.error(`[omx] failed to launch codex: ${classified.message}`);
+      console.error(`[omx] failed to launch codex: ${errno.message}`);
     }
-    throw error;
+    throw result.error;
+  }
+
+  if (result.status !== 0) {
+    process.exitCode = typeof result.status === 'number'
+      ? result.status
+      : resolveSignalExitCode(result.signal);
+    if (result.signal) {
+      console.error(`[omx] codex exited due to signal ${result.signal}`);
+    }
   }
 }
 
@@ -534,19 +544,28 @@ async function reasoningCommand(args: string[]): Promise<void> {
 }
 
 export async function launchWithHud(args: string[]): Promise<void> {
-  // ── Win32 guard ──────────────────────────────────────────────────────
-  if (isNativeWindows() && !isTmuxAvailable()) {
-    console.error(
-      '[omx] OMX requires tmux, which was not found on this system.\n' +
-      '[omx] Install a tmux provider for your platform:\n' +
-      '[omx]   - Windows: winget install psmux  (native tmux for Windows)\n' +
-      '[omx]   - WSL2: sudo apt install tmux\n' +
-      '[omx]   - macOS: brew install tmux\n' +
-      '[omx]   - Linux: sudo apt install tmux\n' +
-      '[omx] See: https://github.com/marlocarlo/psmux',
-    );
-    process.exitCode = 1;
-    return;
+  if (isNativeWindows()) {
+    const { result } = spawnPlatformCommandSync('tmux', ['-V'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    if (result.error) {
+      const errno = result.error as NodeJS.ErrnoException;
+      const kind = classifySpawnError(errno);
+      if (kind === 'missing') {
+        console.warn(
+          '[omx] warning: tmux was not found on native Windows. Continuing without tmux/HUD.\n' +
+          '[omx] To enable tmux-backed features, install psmux:\n' +
+          '[omx]   winget install psmux\n' +
+          '[omx] See: https://github.com/marlocarlo/psmux',
+        );
+      } else {
+        console.warn(`[omx] warning: tmux probe failed on native Windows (${errno.code || errno.message}). Continuing without tmux/HUD.`);
+      }
+    } else if (result.status !== 0 && !isTmuxAvailable()) {
+      const stderr = (result.stderr || '').trim();
+      console.warn(`[omx] warning: tmux reported an error on native Windows${stderr ? ` (${stderr})` : ''}. Continuing without tmux/HUD.`);
+    }
   }
 
   const launchCwd = process.cwd();

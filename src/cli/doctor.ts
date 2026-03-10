@@ -5,11 +5,11 @@
 import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
-import { execFileSync, spawnSync } from 'child_process';
 import {
   codexHome, codexConfigPath, codexPromptsDir,
   userSkillsDir, omxStateDir,
 } from '../utils/paths.js';
+import { classifySpawnError, spawnPlatformCommandSync } from '../utils/platform-command.js';
 import { getCatalogExpectations } from './catalog-contract.js';
 
 interface DoctorOptions {
@@ -359,7 +359,7 @@ function dedupeIssues(issues: TeamDoctorIssue[]): TeamDoctorIssue[] {
 }
 
 function listTeamTmuxSessions(): Set<string> | null {
-  const res = spawnSync('tmux', ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf-8' });
+  const { result: res } = spawnPlatformCommandSync('tmux', ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf-8' });
   if (res.error) {
     // tmux binary unavailable or not executable.
     return null;
@@ -382,12 +382,39 @@ function listTeamTmuxSessions(): Set<string> | null {
 }
 
 function checkCodexCli(): Check {
-  try {
-    const version = execFileSync('codex', ['--version'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-    return { name: 'Codex CLI', status: 'pass', message: `installed (${version})` };
-  } catch {
-    return { name: 'Codex CLI', status: 'fail', message: 'not found - install from https://github.com/openai/codex' };
+  const { result } = spawnPlatformCommandSync('codex', ['--version'], {
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  if (result.error) {
+    const code = (result.error as NodeJS.ErrnoException).code;
+    const kind = classifySpawnError(result.error as NodeJS.ErrnoException);
+    if (kind === 'missing') {
+      return { name: 'Codex CLI', status: 'fail', message: 'not found - install from https://github.com/openai/codex' };
+    }
+    if (kind === 'blocked') {
+      return {
+        name: 'Codex CLI',
+        status: 'fail',
+        message: `found but could not be executed in this environment (${code || 'blocked'})`,
+      };
+    }
+    return {
+      name: 'Codex CLI',
+      status: 'fail',
+      message: `probe failed - ${result.error.message}`,
+    };
   }
+  if (result.status === 0) {
+    const version = (result.stdout || '').trim();
+    return { name: 'Codex CLI', status: 'pass', message: `installed (${version})` };
+  }
+  const stderr = (result.stderr || '').trim();
+  return {
+    name: 'Codex CLI',
+    status: 'fail',
+    message: stderr !== '' ? `probe failed - ${stderr}` : `probe failed with exit ${result.status}`,
+  };
 }
 
 function checkNodeVersion(): Check {
