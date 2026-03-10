@@ -349,7 +349,27 @@ export function decomposeTaskString(
   return distributeTasksToWorkers(tasksWithRoles, workerCount);
 }
 
-/** Split a task string into sub-tasks using numbered lists or conjunctions. */
+const ACTIONABLE_TASK_PREFIX = /^(?:add|analy(?:se|ze)|audit|benchmark|build|clean(?:\s+up)?|create|debug|design|document|draft|fix|implement|improve|investigate|migrate|optimi(?:s|z)e|profile|refactor|repair|research|review|ship|summari(?:s|z)e|test|update|validate|verify|write)\b/i;
+const TASK_LABEL_PREFIX = /^(?:task|step|phase|part)\s+[\w-]+(?:\s+[\w-]+)?$/i;
+const CONTEXTUAL_DECOMPOSITION_CLAUSE = /\b(?:focusing on|focus on|including|covers?|covering|with|while|without|ensuring|suitable for|root cause|user impact|evidence pointers|actionable recommendations)\b/i;
+
+function countWords(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function looksLikeStandaloneWeakSubtask(part: string): boolean {
+  const normalized = part.trim().replace(/^[*-]\s*/, '');
+  return ACTIONABLE_TASK_PREFIX.test(normalized) || TASK_LABEL_PREFIX.test(normalized);
+}
+
+function canSafelySplitWeakTaskList(task: string, parts: string[]): boolean {
+  if (parts.length < 2) return false;
+  if (countWords(task) > 18) return false;
+  if (CONTEXTUAL_DECOMPOSITION_CLAUSE.test(task)) return false;
+  return parts.every((part) => countWords(part) <= 8 && looksLikeStandaloneWeakSubtask(part));
+}
+
+/** Split a task string into sub-tasks using numbered lists or conservative delimiters. */
 function splitTaskString(task: string): Array<{ subject: string; description: string }> {
   // Try numbered list: "1. foo 2. bar 3. baz" or "1) foo 2) bar"
   const numberedPattern = /(?:^|\s)(\d+)[.)]\s+/g;
@@ -368,12 +388,15 @@ function splitTaskString(task: string): Array<{ subject: string; description: st
     if (parts.length >= 2) return parts;
   }
 
-  // Try conjunction splitting: " and ", ", ", "; "
-  // Only split on top-level conjunctions (not inside quoted strings)
-  const conjunctionPattern = /(?:,\s+|\s+and\s+|;\s+)/i;
-  const parts = task.split(conjunctionPattern).map(s => s.trim()).filter(s => s.length > 0);
-  if (parts.length >= 2) {
-    return parts.map(p => ({ subject: p.slice(0, 80), description: p }));
+  const strongParts = task.split(/;\s+/).map(s => s.trim()).filter(s => s.length > 0);
+  if (strongParts.length >= 2) {
+    return strongParts.map((part) => ({ subject: part.slice(0, 80), description: part }));
+  }
+
+  // Commas / "and" only split when the overall input already looks like a flat task list.
+  const weakParts = task.split(/(?:,\s+and\s+|,\s+|\s+and\s+)/i).map(s => s.trim()).filter(s => s.length > 0);
+  if (canSafelySplitWeakTaskList(task, weakParts)) {
+    return weakParts.map((part) => ({ subject: part.slice(0, 80), description: part }));
   }
 
   // Single atomic task

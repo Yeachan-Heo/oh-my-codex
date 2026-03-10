@@ -67,6 +67,15 @@ describe('decomposeTaskString', () => {
     assert.match(tasks[2].description, /write benchmark/);
   });
 
+  it('keeps long prose prompts intact instead of shattering them into sentence fragments', () => {
+    const task = 'Analyze OMX team mode reliability/efficiency weaknesses, focusing on orchestration progress detection, heartbeat/task-state coupling, tmux/state-plane brittleness, and verification gaps. Produce concrete findings with root cause, user impact, evidence pointers, and actionable recommendations suitable for a GitHub issue.';
+    const tasks = decomposeTaskString(task, 3, 'executor', false);
+    assert.equal(tasks.length, 3);
+    assert.match(tasks[0].subject, /^Implement:/i);
+    assert.match(tasks[1].subject, /^Test:/i);
+    assert.match(tasks[2].subject, /^Review and document:/i);
+  });
+
   it('preserves backward compat: explicit agentType overrides routing', () => {
     const tasks = decomposeTaskString('write tests and build UI', 2, 'debugger', true);
     assert.equal(tasks[0].role, 'debugger');
