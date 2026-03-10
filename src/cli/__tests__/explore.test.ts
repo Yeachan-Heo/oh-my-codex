@@ -150,10 +150,21 @@ describe('resolveExploreHarnessCommand', () => {
     }
   });
 
-  it('builds cargo fallback command otherwise', () => {
-    const resolved = resolveExploreHarnessCommand(process.cwd(), {} as NodeJS.ProcessEnv);
-    assert.equal(resolved.command, 'cargo');
-    assert.ok(resolved.args.includes('--manifest-path'));
+  it('builds cargo fallback command otherwise', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-explore-fallback-'));
+    try {
+      const crateDir = join(wd, 'crates', 'omx-explore');
+      await mkdir(crateDir, { recursive: true });
+      await writeFile(join(wd, 'package.json'), '{}\n');
+      await writeFile(join(crateDir, 'Cargo.toml'), '[package]\nname = "omx-explore-harness"\nversion = "0.0.0"\n');
+
+      const resolved = resolveExploreHarnessCommand(wd, {} as NodeJS.ProcessEnv);
+      assert.equal(resolved.command, 'cargo');
+      assert.ok(resolved.args.includes('--manifest-path'));
+      assert.ok(resolved.args.includes(join(wd, 'crates', 'omx-explore', 'Cargo.toml')));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
   });
 });
 
