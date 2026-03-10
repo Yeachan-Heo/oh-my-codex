@@ -333,6 +333,7 @@ describe('teamCommand api', () => {
           type: 'leader_notification_deferred',
           worker: 'worker-1',
           to_worker: 'leader-fixed',
+          source_type: 'worker_idle',
           reason: 'leader_pane_missing_no_injection',
         }),
         '--json',
@@ -340,11 +341,12 @@ describe('teamCommand api', () => {
 
       const envelope = JSON.parse(logs.at(-1) ?? '{}') as {
         ok?: boolean;
-        data?: { event?: { type?: string; to_worker?: string; reason?: string } };
+        data?: { event?: { type?: string; to_worker?: string; reason?: string; source_type?: string } };
       };
       assert.equal(envelope.ok, true);
       assert.equal(envelope.data?.event?.type, 'leader_notification_deferred');
       assert.equal(envelope.data?.event?.to_worker, 'leader-fixed');
+      assert.equal(envelope.data?.event?.source_type, 'worker_idle');
       assert.equal(envelope.data?.event?.reason, 'leader_pane_missing_no_injection');
     } finally {
       console.log = originalLog;

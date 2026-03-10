@@ -111,7 +111,7 @@ export async function emitTeamNudgeEvent(cwd, teamName, reason, nowIso) {
   }
 }
 
-async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, nowIso, { tmuxSession = '', leaderPaneId = '' } = {}) {
+async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, nowIso, { tmuxSession = '', leaderPaneId = '', sourceType = 'leader_nudge' } = {}) {
   const eventsDir = join(cwd, '.omx', 'state', 'team', teamName, 'events');
   const eventsPath = join(eventsDir, 'events.ndjson');
   try {
@@ -127,6 +127,7 @@ async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, nowIso, { tmu
       tmux_session: tmuxSession || null,
       leader_pane_id: leaderPaneId || null,
       tmux_injection_attempted: false,
+      source_type: sourceType,
     };
     await appendFile(eventsPath, JSON.stringify(event) + '\n');
   } catch {
@@ -269,6 +270,7 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       await emitLeaderNudgeDeferredEvent(cwd, teamName, LEADER_PANE_MISSING_NO_INJECTION_REASON, nowIso, {
         tmuxSession,
         leaderPaneId,
+        sourceType: 'leader_nudge',
       });
       try {
         await logTmuxHookEvent(logsDir, {
@@ -281,6 +283,7 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
           leader_pane_id: leaderPaneId || null,
           tmux_session: tmuxSession || null,
           tmux_injection_attempted: false,
+          source_type: 'leader_nudge',
         });
       } catch { /* ignore */ }
       continue;

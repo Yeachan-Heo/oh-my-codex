@@ -130,6 +130,7 @@ describe('notify-hook all-workers-idle notification', () => {
         e.type === 'leader_notification_deferred' && e.reason === 'leader_pane_missing_no_injection');
       assert.ok(deferredEvent, 'should emit leader_notification_deferred with missing-pane reason');
       assert.equal(deferredEvent.to_worker, 'leader-fixed');
+      assert.equal(deferredEvent.source_type, 'all_workers_idle');
       assert.equal(deferredEvent.tmux_session, 'devsess:0');
       assert.equal(deferredEvent.leader_pane_id, null);
       assert.equal(deferredEvent.tmux_injection_attempted, false);
@@ -148,6 +149,7 @@ describe('notify-hook all-workers-idle notification', () => {
         .find((entry: { type?: string; reason?: string }) =>
           entry.type === 'leader_notification_deferred' && entry.reason === 'leader_pane_missing_no_injection');
       assert.ok(warn, 'should log leader_notification_deferred warning');
+      assert.equal(warn.source_type, 'all_workers_idle');
       assert.equal(warn.tmux_injection_attempted, false);
     });
   });

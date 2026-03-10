@@ -537,6 +537,7 @@ describe('notify-hook team leader nudge', () => {
       assert.equal(deferred.type, 'leader_notification_deferred');
       assert.equal(deferred.worker, 'leader-fixed');
       assert.equal(deferred.to_worker, 'leader-fixed');
+      assert.equal(deferred.source_type, 'leader_nudge');
       assert.equal(deferred.tmux_session, 'devsess:0');
       assert.equal(deferred.leader_pane_id, null);
       assert.equal(deferred.tmux_injection_attempted, false);

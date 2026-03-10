@@ -202,6 +202,7 @@ async function emitLeaderPaneMissingDeferred({
   tmuxSession,
   leaderPaneId,
   reason = 'leader_pane_missing_no_injection',
+  sourceType = 'unknown',
 }) {
   const nowIso = new Date().toISOString();
   await logTmuxHookEvent(logsDir, {
@@ -214,6 +215,7 @@ async function emitLeaderPaneMissingDeferred({
     leader_pane_id: leaderPaneId || null,
     tmux_session: tmuxSession || null,
     tmux_injection_attempted: false,
+    source_type: sourceType,
   }).catch(() => {});
 
   const eventsDir = join(stateDir, 'team', teamName, 'events');
@@ -230,6 +232,7 @@ async function emitLeaderPaneMissingDeferred({
     leader_pane_id: leaderPaneId || null,
     tmux_session: tmuxSession || null,
     tmux_injection_attempted: false,
+    source_type: sourceType,
   };
   await appendFile(eventsPath, JSON.stringify(event) + '\n').catch(() => {});
 }
@@ -304,6 +307,7 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
       logsDir,
       teamName,
       workerName,
+      sourceType: 'all_workers_idle',
       tmuxSession,
       leaderPaneId,
     });
@@ -448,6 +452,7 @@ export async function maybeNotifyLeaderWorkerIdle({ cwd, stateDir, logsDir, pars
       logsDir,
       teamName,
       workerName,
+      sourceType: 'worker_idle',
       tmuxSession,
       leaderPaneId,
     });

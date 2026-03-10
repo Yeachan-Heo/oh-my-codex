@@ -226,6 +226,7 @@ async function appendLeaderNotificationDeferredEvent({
   nowIso,
   tmuxSession = '',
   leaderPaneId = '',
+  sourceType = 'team_dispatch',
 }) {
   const eventsDir = join(stateDir, 'team', teamName, 'events');
   const eventsPath = join(eventsDir, 'events.ndjson');
@@ -242,6 +243,7 @@ async function appendLeaderNotificationDeferredEvent({
     tmux_session: tmuxSession || null,
     leader_pane_id: leaderPaneId || null,
     tmux_injection_attempted: false,
+    source_type: sourceType,
   };
   await mkdir(eventsDir, { recursive: true }).catch(() => {});
   await appendFile(eventsPath, JSON.stringify(event) + '\n').catch(() => {});
@@ -537,6 +539,7 @@ export async function drainPendingTeamDispatch({
               nowIso,
               tmuxSession: safeString(config?.tmux_session).trim(),
               leaderPaneId: safeString(config?.leader_pane_id).trim(),
+              sourceType: 'team_dispatch',
             });
           }
           continue;

@@ -538,6 +538,7 @@ export async function executeTeamApiOperation(
           prev_state: args.prev_state as string | undefined,
           to_worker: args.to_worker as string | undefined,
           worker_count: typeof args.worker_count === 'number' ? args.worker_count : undefined,
+          source_type: args.source_type as string | undefined,
         }, cwd);
         return { ok: true, operation, data: { event } };
       }

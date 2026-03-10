@@ -159,6 +159,7 @@ describe('notify-hook team dispatch consumer', () => {
         && event.request_id === queued.request.request_id
         && event.to_worker === 'leader-fixed');
       assert.ok(deferred, 'expected leader_notification_deferred event for missing leader pane');
+      assert.equal(deferred.source_type, 'team_dispatch');
       assert.equal(typeof deferred.tmux_session, 'string');
       assert.ok(deferred.tmux_session.length > 0);
       assert.equal(deferred.leader_pane_id, null);

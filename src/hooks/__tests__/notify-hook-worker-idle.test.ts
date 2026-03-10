@@ -130,6 +130,7 @@ describe('notify-hook per-worker idle notification', () => {
         entry.type === 'leader_notification_deferred' && entry.reason === 'leader_pane_missing_no_injection');
       assert.ok(event, 'should emit deferred event with missing-pane reason');
       assert.equal(event.to_worker, 'leader-fixed');
+      assert.equal(event.source_type, 'worker_idle');
       assert.equal(event.tmux_session, 'devsess:0');
       assert.equal(event.leader_pane_id, null);
       assert.equal(event.tmux_injection_attempted, false);
