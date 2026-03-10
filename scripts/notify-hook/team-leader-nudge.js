@@ -2,7 +2,7 @@
  * Team leader nudge: remind the leader to check teammate/mailbox state.
  */
 
-import { readFile, writeFile, mkdir, appendFile } from 'fs/promises';
+import { readFile, writeFile, mkdir, appendFile, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { asNumber, safeString } from './utils.js';
@@ -14,6 +14,12 @@ import { DEFAULT_MARKER } from '../tmux-hook-engine.js';
 const LEADER_PANE_MISSING_NO_INJECTION_REASON = 'leader_pane_missing_no_injection';
 const LEADER_PANE_SHELL_NO_INJECTION_REASON = 'leader_pane_shell_no_injection';
 const LEADER_NOTIFICATION_DEFERRED_TYPE = 'leader_notification_deferred';
+const ACK_WITHOUT_START_EVIDENCE_REASON = 'ack_without_start_evidence';
+const ACK_LIKE_PATTERNS = [
+  /^ack(?::\s*[a-z0-9-]+(?:\s+initialized)?)?[.!]*$/i,
+  /^(?:ok|okay|k|roger|copy|received|got it|understood|sounds good)[.!]*$/i,
+  /^(?:on it|will do|i(?:'|’)ll do it|working on it)[.!]*$/i,
+];
 
 export function resolveLeaderNudgeIntervalMs() {
   const raw = safeString(process.env.OMX_TEAM_LEADER_NUDGE_MS || '');
@@ -72,16 +78,24 @@ export async function isLeaderStale(stateDir, thresholdMs, nowMs) {
   return (nowMs - lastMs) >= thresholdMs;
 }
 
-async function readWorkerStatusState(stateDir, teamName, workerName) {
-  if (!workerName) return 'unknown';
+async function readWorkerStatusSnapshot(stateDir, teamName, workerName) {
+  if (!workerName) return { state: 'unknown', current_task_id: '' };
   const path = join(stateDir, 'team', teamName, 'workers', workerName, 'status.json');
   try {
-    if (!existsSync(path)) return 'unknown';
+    if (!existsSync(path)) return { state: 'unknown', current_task_id: '' };
     const parsed = JSON.parse(await readFile(path, 'utf-8'));
-    return safeString(parsed && parsed.state ? parsed.state : 'unknown') || 'unknown';
+    return {
+      state: safeString(parsed && parsed.state ? parsed.state : 'unknown') || 'unknown',
+      current_task_id: safeString(parsed && parsed.current_task_id ? parsed.current_task_id : '').trim(),
+    };
   } catch {
-    return 'unknown';
+    return { state: 'unknown', current_task_id: '' };
   }
+}
+
+async function readWorkerStatusState(stateDir, teamName, workerName) {
+  const snapshot = await readWorkerStatusSnapshot(stateDir, teamName, workerName);
+  return snapshot.state;
 }
 
 function normalizeMailboxMessages(rawMailbox) {
@@ -100,6 +114,76 @@ function normalizeMessageIdentity(msg) {
   const from = safeString(msg.from_worker || msg.from || '').trim();
   const body = safeString(msg.body || '').trim();
   return [createdAt, from, body].filter(Boolean).join('|');
+}
+
+function normalizeMailboxBody(body) {
+  return safeString(body).replace(/\s+/g, ' ').trim();
+}
+
+function isAckLikeMailboxBody(body) {
+  const normalized = normalizeMailboxBody(body);
+  if (!normalized) return false;
+  return ACK_LIKE_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function formatMailboxBodyForLeader(body, maxLength = 40) {
+  const normalized = normalizeMailboxBody(body);
+  if (!normalized) return 'ack-like update';
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+async function workerHasOwnedStartedTask(stateDir, teamName, workerName) {
+  const tasksDir = join(stateDir, 'team', teamName, 'tasks');
+  if (!existsSync(tasksDir)) return false;
+
+  try {
+    const taskFiles = (await readdir(tasksDir))
+      .filter((entry) => /^task-\d+\.json$/.test(entry))
+      .sort();
+    for (const entry of taskFiles) {
+      try {
+        const parsed = JSON.parse(await readFile(join(tasksDir, entry), 'utf-8'));
+        if (safeString(parsed?.owner).trim() !== workerName) continue;
+        const status = safeString(parsed?.status).trim();
+        if (status === 'in_progress' || status === 'completed' || status === 'failed') return true;
+      } catch {
+        // ignore malformed task files
+      }
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
+}
+
+async function getAckWithoutStartEvidence(stateDir, teamName, msg) {
+  if (!msg || typeof msg !== 'object') return null;
+  const fromWorker = safeString(msg.from_worker || '').trim();
+  if (!fromWorker || fromWorker === 'leader-fixed') return null;
+  if (!isAckLikeMailboxBody(msg.body)) return null;
+
+  const status = await readWorkerStatusSnapshot(stateDir, teamName, fromWorker);
+  if (
+    status.current_task_id
+    || status.state === 'working'
+    || status.state === 'blocked'
+    || status.state === 'done'
+    || status.state === 'failed'
+  ) {
+    return null;
+  }
+
+  if (await workerHasOwnedStartedTask(stateDir, teamName, fromWorker)) {
+    return null;
+  }
+
+  return {
+    worker: fromWorker,
+    body: formatMailboxBodyForLeader(msg.body),
+    statusState: status.state,
+  };
 }
 
 export async function emitTeamNudgeEvent(cwd, teamName, reason, nowIso) {
@@ -237,6 +321,9 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
 
     const hasNewMessage = newestId && newestId !== prevMsgId;
     const dueByTime = !Number.isFinite(prevAtMs) || (nowMs - prevAtMs >= intervalMs);
+    const ackWithoutStartEvidence = hasNewMessage
+      ? await getAckWithoutStartEvidence(stateDir, teamName, newest)
+      : null;
 
     const prevIdle = nudgeState.last_idle_nudged_by_team[teamName] && typeof nudgeState.last_idle_nudged_by_team[teamName] === 'object'
       ? nudgeState.last_idle_nudged_by_team[teamName]
@@ -259,6 +346,12 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       nudgeReason = 'all_workers_idle';
       const N = workerNames.length;
       text = `[OMX] All ${N} worker${N === 1 ? '' : 's'} idle. Ready for next instructions.`;
+    } else if (ackWithoutStartEvidence) {
+      nudgeReason = ACK_WITHOUT_START_EVIDENCE_REASON;
+      text =
+        `Team ${teamName}: ${ackWithoutStartEvidence.worker} said "${ackWithoutStartEvidence.body}" `
+        + `but has no work-start evidence yet (status: ${ackWithoutStartEvidence.statusState}, no owned in_progress task). `
+        + `Run: omx team status ${teamName}`;
     } else if (stalePanesNudge && hasNewMessage) {
       nudgeReason = 'stale_leader_with_messages';
       text = `Team ${teamName}: leader stale, ${paneStatus.paneCount} pane(s) active, ${messages.length} msg(s) pending. Run: omx team status ${teamName}`;

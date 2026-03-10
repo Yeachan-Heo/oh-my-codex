@@ -275,6 +275,149 @@ describe('notify-hook team leader nudge', () => {
     });
   });
 
+  it('surfaces ack-like mailbox replies without work-start evidence as missing-start nudges', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'ack-missing-start';
+      const teamDir = join(stateDir, 'team', teamName);
+      const mailboxDir = join(teamDir, 'mailbox');
+      const workersDir = join(teamDir, 'workers');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(mailboxDir, { recursive: true });
+      await mkdir(join(workersDir, 'worker-1'), { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(stateDir, 'team-state.json'), {
+        active: true,
+        team_name: teamName,
+        current_phase: 'team-exec',
+      });
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'ack-sess:0',
+        leader_pane_id: '%94',
+        workers: [
+          { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: ['1'] },
+        ],
+      });
+      await writeJson(join(mailboxDir, 'leader-fixed.json'), {
+        worker: 'leader-fixed',
+        messages: [
+          {
+            message_id: 'ack-1',
+            from_worker: 'worker-1',
+            to_worker: 'leader-fixed',
+            body: 'on it',
+            created_at: '2026-02-14T00:00:00.000Z',
+          },
+        ],
+      });
+
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir);
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /worker-1 said "on it"/);
+      assert.match(tmuxLog, /no work-start evidence yet/);
+      assert.match(tmuxLog, /status: unknown/);
+
+      const eventsPath = join(teamDir, 'events', 'events.ndjson');
+      const events = (await readFile(eventsPath, 'utf-8')).trim().split('\n').map(line => JSON.parse(line));
+      const nudgeEvent = events.find((e: { type?: string; reason?: string }) =>
+        e.type === 'team_leader_nudge' && e.reason === 'ack_without_start_evidence');
+      assert.ok(nudgeEvent, 'should emit an ack_without_start_evidence leader nudge');
+    });
+  });
+
+  it('does not classify ack-like replies as missing-start after a worker has claimed work', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'ack-with-start';
+      const teamDir = join(stateDir, 'team', teamName);
+      const mailboxDir = join(teamDir, 'mailbox');
+      const workersDir = join(teamDir, 'workers');
+      const tasksDir = join(teamDir, 'tasks');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(mailboxDir, { recursive: true });
+      await mkdir(join(workersDir, 'worker-1'), { recursive: true });
+      await mkdir(tasksDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(stateDir, 'team-state.json'), {
+        active: true,
+        team_name: teamName,
+        current_phase: 'team-exec',
+      });
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'ack-started:0',
+        leader_pane_id: '%95',
+        workers: [
+          { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: ['1'] },
+        ],
+      });
+      await writeJson(join(stateDir, 'hud-state.json'), {
+        last_turn_at: new Date().toISOString(),
+        turn_count: 1,
+      });
+      await writeJson(join(workersDir, 'worker-1', 'status.json'), {
+        state: 'working',
+        current_task_id: '1',
+        updated_at: new Date().toISOString(),
+      });
+      await writeJson(join(tasksDir, 'task-1.json'), {
+        id: '1',
+        subject: 'Investigate failure',
+        description: 'trace ack without start',
+        status: 'in_progress',
+        owner: 'worker-1',
+        created_at: new Date().toISOString(),
+      });
+      await writeJson(join(mailboxDir, 'leader-fixed.json'), {
+        worker: 'leader-fixed',
+        messages: [
+          {
+            message_id: 'ack-2',
+            from_worker: 'worker-1',
+            to_worker: 'leader-fixed',
+            body: 'on it',
+            created_at: '2026-02-14T00:00:00.000Z',
+          },
+        ],
+      });
+
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir);
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.doesNotMatch(tmuxLog, /no work-start evidence yet/);
+      assert.match(tmuxLog, /Team ack-with-start: 1 msg\(s\) for leader/);
+
+      const eventsPath = join(teamDir, 'events', 'events.ndjson');
+      const events = (await readFile(eventsPath, 'utf-8')).trim().split('\n').map(line => JSON.parse(line));
+      const nudgeEvent = events.find((e: { type?: string }) => e.type === 'team_leader_nudge');
+      assert.equal(nudgeEvent?.reason, 'new_mailbox_message');
+    });
+  });
+
 
   it('does not inject leader nudge into a shell pane', async () => {
     await withTempWorkingDir(async (cwd) => {
