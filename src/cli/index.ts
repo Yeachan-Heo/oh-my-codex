@@ -246,6 +246,10 @@ type ExecFileSyncFailure = NodeJS.ErrnoException & {
   signal?: NodeJS.Signals | null;
 };
 
+function hasErrnoCode(error: unknown, code: string): boolean {
+  return Boolean(error && typeof error === 'object' && 'code' in error && error.code === code);
+}
+
 export interface CodexExecFailureClassification {
   kind: 'exit' | 'launch-error';
   code?: string;
@@ -1458,10 +1462,12 @@ async function startNotifyFallbackWatcher(cwd: string): Promise<void> {
         process.kill(prev.pid, 'SIGTERM');
       }
     } catch (error: unknown) {
-      console.warn('[omx] warning: failed to stop stale notify fallback watcher', {
-        path: pidPath,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (!hasErrnoCode(error, 'ESRCH')) {
+        console.warn('[omx] warning: failed to stop stale notify fallback watcher', {
+          path: pidPath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
 
@@ -1556,10 +1562,12 @@ async function stopNotifyFallbackWatcher(cwd: string): Promise<void> {
       process.kill(parsed.pid, 'SIGTERM');
     }
   } catch (error: unknown) {
-    console.warn('[omx] warning: failed to stop notify fallback watcher process', {
-      path: pidPath,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    if (!hasErrnoCode(error, 'ESRCH')) {
+      console.warn('[omx] warning: failed to stop notify fallback watcher process', {
+        path: pidPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   await unlink(pidPath).catch((error: unknown) => {
