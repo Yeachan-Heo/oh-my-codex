@@ -1,0 +1,13 @@
+[workspace]
+members = ["crates/omx-cli", "crates/omx-process", "crates/omx-explore"]
+resolver = "2"
+
+[workspace.package]
+version = "0.8.11"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/Yeachan-Heo/oh-my-codex"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }

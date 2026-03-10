@@ -12,6 +12,8 @@ import {
 import { classifySpawnError, spawnPlatformCommandSync } from '../utils/platform-command.js';
 import { getCatalogExpectations } from './catalog-contract.js';
 import { parse as parseToml } from '@iarna/toml';
+import { resolvePackagedExploreHarnessCommand, EXPLORE_BIN_ENV } from './explore.js';
+import { getPackageRoot } from '../utils/package.js';
 
 interface DoctorOptions {
   verbose?: boolean;
@@ -115,6 +117,9 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
   // Check 2: Node.js version
   checks.push(checkNodeVersion());
+
+  // Check 2.5: Explore harness readiness
+  checks.push(checkExploreHarness());
 
   // Check 3: Codex home directory
   checks.push(checkDirectory('Codex home', paths.codexHomeDir));
@@ -427,6 +432,79 @@ function checkNodeVersion(): Check {
     return { name: 'Node.js', status: 'pass', message: `v${process.versions.node}` };
   }
   return { name: 'Node.js', status: 'fail', message: `v${process.versions.node} (need >= 20)` };
+}
+
+function checkExploreHarness(): Check {
+  const packageRoot = getPackageRoot();
+  const manifestPath = join(packageRoot, 'crates', 'omx-explore', 'Cargo.toml');
+  if (!existsSync(manifestPath)) {
+    return {
+      name: 'Explore Harness',
+      status: 'warn',
+      message: 'Rust harness sources not found in this install (omx explore unavailable until packaged or OMX_EXPLORE_BIN is set)',
+    };
+  }
+
+  const override = process.env[EXPLORE_BIN_ENV]?.trim();
+  if (override) {
+    const resolved = join(packageRoot, override);
+    if (existsSync(override) || existsSync(resolved)) {
+      return {
+        name: 'Explore Harness',
+        status: 'pass',
+        message: `${EXPLORE_BIN_ENV} configured (${override})`,
+      };
+    }
+    return {
+      name: 'Explore Harness',
+      status: 'warn',
+      message: `OMX_EXPLORE_BIN is set but path was not found (${override})`,
+    };
+  }
+
+  const packaged = resolvePackagedExploreHarnessCommand(packageRoot);
+  if (packaged) {
+    return {
+      name: 'Explore Harness',
+      status: 'pass',
+      message: `ready (packaged native binary: ${packaged.command})`,
+    };
+  }
+
+  const { result } = spawnPlatformCommandSync('cargo', ['--version'], {
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  if (result.error) {
+    const kind = classifySpawnError(result.error as NodeJS.ErrnoException);
+    if (kind === 'missing') {
+      return {
+        name: 'Explore Harness',
+        status: 'warn',
+        message: `Rust harness sources are packaged, but no compatible packaged prebuilt or cargo was found (install Rust or set ${EXPLORE_BIN_ENV} for omx explore)`,
+      };
+    }
+    return {
+      name: 'Explore Harness',
+      status: 'warn',
+      message: `Rust harness sources are packaged, but cargo probe failed (${result.error.message})`,
+    };
+  }
+
+  if (result.status === 0) {
+    const version = (result.stdout || '').trim();
+    return {
+      name: 'Explore Harness',
+      status: 'pass',
+      message: `ready (${version || 'cargo available'})`,
+    };
+  }
+
+  return {
+    name: 'Explore Harness',
+    status: 'warn',
+    message: `Rust harness sources are packaged, but cargo probe failed with exit ${result.status} (install Rust or set ${EXPLORE_BIN_ENV})`,
+  };
 }
 
 function checkDirectory(name: string, path: string): Check {

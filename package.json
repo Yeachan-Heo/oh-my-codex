@@ -9,23 +9,33 @@
   },
   "scripts": {
     "build": "tsc",
+    "build:explore": "cargo build -p omx-explore-harness",
+    "build:explore:release": "node scripts/build-explore-harness.js",
     "check:no-unused": "tsc -p tsconfig.no-unused.json",
     "dev": "tsc --watch",
     "lint": "biome lint .",
+    "prepack": "npm run build && npm run build:explore:release",
     "setup": "node bin/omx.js setup",
     "doctor": "node bin/omx.js doctor",
     "ask:claude": "./scripts/ask-claude.sh",
     "ask:gemini": "./scripts/ask-gemini.sh",
+    "test:explore": "cargo test -p omx-explore-harness && node --test dist/cli/__tests__/explore.test.js dist/hooks/__tests__/explore-routing.test.js",
     "test:node": "node --test $(find dist -name '*.test.js')",
     "test": "npm run build && npm run test:node && node scripts/generate-catalog-docs.js --check",
-    "coverage:team-critical": "npm run build && c8 --all --src dist/team --src dist/state --include 'dist/team/**/*.js' --include 'dist/state/**/*.js' --exclude '**/__tests__/**' --reporter=text-summary --reporter=lcov --reporter=json-summary --report-dir coverage/team --check-coverage --lines=78 --functions=90 --branches=70 --statements=78 node --test $(find dist/team/__tests__ dist/state/__tests__ -name '*.test.js')"
+    "coverage:team-critical": "npm run build && c8 --all --src dist/team --src dist/state --include 'dist/team/**/*.js' --include 'dist/state/**/*.js' --exclude '**/__tests__/**' --reporter=text-summary --reporter=lcov --reporter=json-summary --report-dir coverage/team --check-coverage --lines=78 --functions=90 --branches=70 --statements=78 node --test $(find dist/team/__tests__ dist/state/__tests__ -name '*.test.js')",
+    "test:compat:node": "npm run build && node --test dist/compat/__tests__/*.test.js",
+    "test:compat:rust": "cargo build && OMX_COMPAT_TARGET=./target/debug/omx npm run test:compat:node",
+    "postpack": "node scripts/cleanup-explore-harness.js"
   },
   "engines": {
     "node": ">=20"
   },
   "files": [
+    "Cargo.toml",
+    "Cargo.lock",
     "bin/",
     "dist/",
+    "crates/",
     "agents/",
     "skills/",
     "prompts/",

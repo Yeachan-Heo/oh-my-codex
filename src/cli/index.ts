@@ -16,6 +16,7 @@ import { hudCommand } from '../hud/index.js';
 import { teamCommand } from './team.js';
 import { ralphCommand } from './ralph.js';
 import { askCommand } from './ask.js';
+import { exploreCommand } from './explore.js';
 import { agentsInitCommand } from './agents-init.js';
 import { sessionCommand } from './session-search.js';
 import {
@@ -95,6 +96,7 @@ Usage:
   omx doctor --team  Check team/swarm runtime health diagnostics
   omx ask       Ask local provider CLI (claude|gemini) and write artifact output
   omx resume    Resume a previous interactive Codex session
+  omx explore   Run the low-cost read-only exploration harness
   omx session   Search prior local session transcripts and history artifacts
   omx agents-init [path]
                 Bootstrap lightweight AGENTS.md files for a repo/subtree
@@ -157,7 +159,8 @@ const ALLOWED_SHELLS = new Set([
 ]);
 const WINDOWS_DETACHED_BOOTSTRAP_DELAY_MS = 2500;
 
-type CliCommand = 'launch' | 'setup' | 'agents-init' | 'deepinit' | 'uninstall' | 'doctor' | 'ask' | 'team' | 'session' | 'resume' | 'version' | 'tmux-hook' | 'hooks' | 'hud' | 'status' | 'cancel' | 'help' | 'reasoning' | string;
+<<<<<<< HEAD
+type CliCommand = 'launch' | 'setup' | 'agents-init' | 'deepinit' | 'uninstall' | 'doctor' | 'ask' | 'explore' | 'team' | 'session' | 'resume' | 'version' | 'tmux-hook' | 'hooks' | 'hud' | 'status' | 'cancel' | 'help' | 'reasoning' | string;
 
 export interface ResolvedCliInvocation {
   command: CliCommand;
@@ -400,7 +403,7 @@ export function buildHudPaneCleanupTargets(existingPaneIds: string[], createdPan
 
 export async function main(args: string[]): Promise<void> {
   const knownCommands = new Set([
-    'launch', 'setup', 'agents-init', 'deepinit', 'uninstall', 'doctor', 'ask', 'team', 'ralph', 'session', 'resume', 'version', 'tmux-hook', 'hooks', 'hud', 'status', 'cancel', 'help', '--help', '-h',
+    'launch', 'setup', 'agents-init', 'deepinit', 'uninstall', 'doctor', 'ask', 'explore', 'team', 'ralph', 'session', 'resume', 'version', 'tmux-hook', 'hooks', 'hud', 'status', 'cancel', 'help', '--help', '-h',
   ]);
   const firstArg = args[0];
   const { command, launchArgs } = resolveCliInvocation(args);
@@ -456,6 +459,9 @@ export async function main(args: string[]): Promise<void> {
       }
       case 'ask':
         await askCommand(args.slice(1));
+        break;
+      case 'explore':
+        await exploreCommand(args.slice(1));
         break;
       case 'team':
         await teamCommand(args.slice(1), options);
