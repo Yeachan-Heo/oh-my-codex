@@ -1,10 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync, spawn } from 'child_process';
 import { mkdtemp, rm, writeFile, readFile, mkdir, chmod } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { existsSync } from 'fs';
-import { spawn } from 'child_process';
 import {
   initTeamState,
   createTask,
@@ -32,6 +32,17 @@ import {
   type TeamRuntime,
 } from '../runtime.js';
 import { resolveTeamLowComplexityDefaultModel } from '../model-contract.js';
+
+async function initRepo(): Promise<string> {
+  const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-worktree-repo-'));
+  execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd, stdio: 'ignore' });
+  await writeFile(join(cwd, 'README.md'), 'hello\n', 'utf-8');
+  execFileSync('git', ['add', 'README.md'], { cwd, stdio: 'ignore' });
+  execFileSync('git', ['commit', '-m', 'init'], { cwd, stdio: 'ignore' });
+  return cwd;
+}
 
 
 function expectedLowComplexityModel(codexHomeOverride?: string): string {
@@ -598,6 +609,70 @@ process.on('SIGTERM', () => process.exit(0));
       if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
       else delete process.env.OMX_TEAM_WORKER_CLI;
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('shutdownTeam removes team-created detached worktrees on normal shutdown', async () => {
+    const repo = await initRepo();
+    const binDir = join(repo, 'bin');
+    const fakeCodexPath = join(binDir, 'codex');
+    await mkdir(binDir, { recursive: true });
+    await writeFile(
+      fakeCodexPath,
+      `#!/usr/bin/env node
+process.stdin.resume();
+setTimeout(() => process.exit(0), 5000);
+process.on('SIGTERM', () => process.exit(0));
+`,
+      { mode: 0o755 },
+    );
+
+    const prevPath = process.env.PATH;
+    const prevTmux = process.env.TMUX;
+    const prevLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+
+    process.env.PATH = `${binDir}:${prevPath ?? ''}`;
+    delete process.env.TMUX;
+    process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
+    process.env.OMX_TEAM_WORKER_CLI = 'codex';
+
+    let runtime: TeamRuntime | null = null;
+    try {
+      runtime = await withoutTeamWorkerEnv(() =>
+        startTeam(
+          'team-detached-worktree-shutdown',
+          'detached worktree shutdown cleanup',
+          'executor',
+          1,
+          [],
+          repo,
+          { worktreeMode: { enabled: true, detached: true, name: null } },
+        ));
+
+      const worktreePath = runtime.config.workers[0]?.worktree_path;
+      assert.ok(worktreePath, 'worker worktree path should be persisted');
+      assert.equal(runtime.config.workers[0]?.worktree_created, true);
+      assert.equal(existsSync(worktreePath as string), true);
+
+      await shutdownTeam(runtime.teamName, repo);
+      runtime = null;
+
+      assert.equal(existsSync(worktreePath as string), false);
+      assert.equal(existsSync(join(repo, '.omx', 'state', 'team', 'team-detached-worktree-shutdown')), false);
+    } finally {
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, repo, { force: true }).catch(() => {});
+      }
+      if (typeof prevPath === 'string') process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
+      else delete process.env.TMUX;
+      if (typeof prevLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = prevLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      await rm(repo, { recursive: true, force: true });
     }
   });
 

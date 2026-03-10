@@ -197,6 +197,35 @@ interface ShutdownOptions {
   ralph?: boolean;
 }
 
+function collectProvisionedShutdownWorktrees(config: TeamConfig): EnsureWorktreeResult[] {
+  const seenWorktreePaths = new Set<string>();
+  const worktrees: EnsureWorktreeResult[] = [];
+
+  for (const worker of config.workers) {
+    if (worker.worktree_created !== true) continue;
+    if (worker.worktree_detached !== true) continue;
+    if (!worker.worktree_repo_root || !worker.worktree_path) continue;
+    if (!existsSync(worker.worktree_path)) continue;
+
+    const worktreePath = resolve(worker.worktree_path);
+    if (seenWorktreePaths.has(worktreePath)) continue;
+    seenWorktreePaths.add(worktreePath);
+
+    worktrees.push({
+      enabled: true,
+      repoRoot: worker.worktree_repo_root,
+      worktreePath,
+      detached: true,
+      branchName: null,
+      created: true,
+      reused: false,
+      createdBranch: false,
+    });
+  }
+
+  return worktrees;
+}
+
 export interface TeamStartOptions {
   worktreeMode?: WorktreeMode;
   /** When true, applies ralph-specific cleanup policy during startup rollback (skip branch deletion). */
@@ -558,9 +587,11 @@ export async function startTeam(
   const workspaceMode: 'single' | 'worktree' = activeWorktreeMode ? 'worktree' : 'single';
   const workerWorkspaceByName = new Map<string, {
     cwd: string;
+    worktreeRepoRoot?: string;
     worktreePath?: string;
     worktreeBranch?: string;
     worktreeDetached?: boolean;
+    worktreeCreated?: boolean;
   }>();
   const provisionedWorktrees: Array<EnsureWorktreeResult | { enabled: false }> = [];
   for (let i = 1; i <= workerCount; i++) {
@@ -582,9 +613,11 @@ export async function startTeam(
       if (ensured.enabled) {
         workerWorkspaceByName.set(workerName, {
           cwd: ensured.worktreePath,
+          worktreeRepoRoot: ensured.repoRoot,
           worktreePath: ensured.worktreePath,
           worktreeBranch: ensured.branchName ?? undefined,
           worktreeDetached: ensured.detached,
+          worktreeCreated: ensured.created,
         });
       }
     }
@@ -658,7 +691,14 @@ export async function startTeam(
     const allTasks = await listTasks(sanitized, leaderCwd);
     const workerBootstrapPlans = [] as Array<{
       workerName: string;
-      workerWorkspace: { cwd: string; worktreePath?: string; worktreeBranch?: string; worktreeDetached?: boolean; };
+      workerWorkspace: {
+        cwd: string;
+        worktreeRepoRoot?: string;
+        worktreePath?: string;
+        worktreeBranch?: string;
+        worktreeDetached?: boolean;
+        worktreeCreated?: boolean;
+      };
       workerTasks: TeamTask[];
       workerRole: string;
       rolePromptContent: string | null;
@@ -816,9 +856,11 @@ export async function startTeam(
         worker_cli: workerCliPlan[i - 1],
         assigned_tasks: workerTasks.map(t => t.id),
         working_dir: workerWorkspace.cwd,
+        worktree_repo_root: workerWorkspace.worktreeRepoRoot,
         worktree_path: workerWorkspace.worktreePath,
         worktree_branch: workerWorkspace.worktreeBranch,
         worktree_detached: workerWorkspace.worktreeDetached,
+        worktree_created: workerWorkspace.worktreeCreated,
         team_state_root: teamStateRoot,
       };
 
@@ -835,9 +877,11 @@ export async function startTeam(
         config.workers[i - 1].role = workerRole;
         config.workers[i - 1].worker_cli = workerCliPlan[i - 1];
         config.workers[i - 1].working_dir = workerWorkspace.cwd;
+        config.workers[i - 1].worktree_repo_root = workerWorkspace.worktreeRepoRoot;
         config.workers[i - 1].worktree_path = workerWorkspace.worktreePath;
         config.workers[i - 1].worktree_branch = workerWorkspace.worktreeBranch;
         config.workers[i - 1].worktree_detached = workerWorkspace.worktreeDetached;
+        config.workers[i - 1].worktree_created = workerWorkspace.worktreeCreated;
         config.workers[i - 1].team_state_root = teamStateRoot;
       }
 
@@ -1555,8 +1599,28 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     ).catch(() => {});
   }
 
+  const cleanupErrors: string[] = [];
+  const provisionedWorktrees = collectProvisionedShutdownWorktrees(config);
+  if (provisionedWorktrees.length > 0) {
+    try {
+      await rollbackProvisionedWorktrees(provisionedWorktrees, {
+        skipBranchDeletion: options.ralph === true,
+      });
+    } catch (err) {
+      cleanupErrors.push(`rollbackProvisionedWorktrees: ${String(err)}`);
+    }
+  }
+
   // 7. Cleanup state
-  await cleanupTeamState(sanitized, cwd);
+  try {
+    await cleanupTeamState(sanitized, cwd);
+  } catch (err) {
+    cleanupErrors.push(`cleanupTeamState: ${String(err)}`);
+  }
+
+  if (cleanupErrors.length > 0) {
+    throw new Error(cleanupErrors.join(' | '));
+  }
 }
 
 /**
