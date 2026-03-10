@@ -1,7 +1,7 @@
 use std::env;
 use std::ffi::OsString;
-use std::fs::{create_dir_all, read_to_string, remove_dir_all, remove_file, write};
-use std::io;
+use std::fs::{create_dir_all, read_to_string, remove_dir_all, remove_file, write, File};
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -89,8 +89,12 @@ where
     I: Iterator<Item = OsString>,
 {
     let args = parse_args(args)?;
-    let prompt_contract = read_to_string(&args.prompt_file)
-        .map_err(|err| format!("failed to read explore prompt contract {}: {err}", args.prompt_file.display()))?;
+    let prompt_contract = read_to_string(&args.prompt_file).map_err(|err| {
+        format!(
+            "failed to read explore prompt contract {}: {err}",
+            args.prompt_file.display()
+        )
+    })?;
 
     let spark_attempt = invoke_codex(&args, &args.spark_model, &prompt_contract)
         .map_err(|err| format!("spark attempt failed to launch: {err}"))?;
@@ -104,7 +108,10 @@ where
         args.spark_model, spark_attempt.status_code, args.fallback_model
     );
     if !spark_attempt.stderr.trim().is_empty() {
-        eprintln!("[omx explore] spark stderr: {}", spark_attempt.stderr.trim());
+        eprintln!(
+            "[omx explore] spark stderr: {}",
+            spark_attempt.stderr.trim()
+        );
     }
 
     let fallback_attempt = invoke_codex(&args, &args.fallback_model, &prompt_contract)
@@ -151,9 +158,13 @@ where
         match token_str.as_ref() {
             "--cwd" => cwd = Some(PathBuf::from(next_required(&mut args, "--cwd")?)),
             "--prompt" => prompt = Some(next_required(&mut args, "--prompt")?),
-            "--prompt-file" => prompt_file = Some(PathBuf::from(next_required(&mut args, "--prompt-file")?)),
+            "--prompt-file" => {
+                prompt_file = Some(PathBuf::from(next_required(&mut args, "--prompt-file")?))
+            }
             "--model-spark" => spark_model = Some(next_required(&mut args, "--model-spark")?),
-            "--model-fallback" => fallback_model = Some(next_required(&mut args, "--model-fallback")?),
+            "--model-fallback" => {
+                fallback_model = Some(next_required(&mut args, "--model-fallback")?)
+            }
             "--help" | "-h" => return Err(usage().to_string()),
             other => return Err(format!("unknown argument: {other}\n{}", usage())),
         }
@@ -164,7 +175,8 @@ where
         prompt: prompt.ok_or_else(|| format!("missing --prompt\n{}", usage()))?,
         prompt_file: prompt_file.ok_or_else(|| format!("missing --prompt-file\n{}", usage()))?,
         spark_model: spark_model.ok_or_else(|| format!("missing --model-spark\n{}", usage()))?,
-        fallback_model: fallback_model.ok_or_else(|| format!("missing --model-fallback\n{}", usage()))?,
+        fallback_model: fallback_model
+            .ok_or_else(|| format!("missing --model-fallback\n{}", usage()))?,
     };
 
     Ok(args)
@@ -185,15 +197,17 @@ fn usage() -> &'static str {
 }
 
 fn invoke_codex(args: &Args, model: &str, prompt_contract: &str) -> io::Result<AttemptResult> {
-    let codex_binary = resolve_codex_binary();
+    let codex_launch = resolve_codex_launch();
     let allowlist = prepare_allowlist_environment().map_err(io::Error::other)?;
     let output_path = temp_output_path();
     let final_prompt = compose_exec_prompt(&args.prompt, prompt_contract);
-    let mut command = Command::new(&codex_binary);
+    let mut command = Command::new(&codex_launch.program);
+    command.args(&codex_launch.leading_args);
     command
         .arg("exec")
         .arg("-C")
         .arg(&args.cwd)
+        .args(codex_support_dir_args())
         .arg("-m")
         .arg(model)
         .arg("-s")
@@ -220,6 +234,20 @@ fn invoke_codex(args: &Args, model: &str, prompt_contract: &str) -> io::Result<A
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodexLaunch {
+    program: String,
+    leading_args: Vec<String>,
+}
+
+fn resolve_codex_launch() -> CodexLaunch {
+    let codex_binary = resolve_codex_binary();
+    codex_launch_for_binary(&codex_binary).unwrap_or_else(|| CodexLaunch {
+        program: codex_binary,
+        leading_args: Vec::new(),
+    })
+}
+
 fn resolve_codex_binary() -> String {
     if let Some(value) = env::var(CODEX_BIN_ENV)
         .ok()
@@ -238,6 +266,77 @@ fn resolve_codex_binary() -> String {
     resolve_host_command("codex")
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "codex".to_string())
+}
+
+fn codex_launch_for_binary(codex_binary: &str) -> Option<CodexLaunch> {
+    let interpreter = read_shebang_interpreter(Path::new(codex_binary))?;
+    let (program, mut leading_args) = resolve_shebang_launch(&interpreter)?;
+    leading_args.push(codex_binary.to_string());
+    Some(CodexLaunch {
+        program,
+        leading_args,
+    })
+}
+
+fn read_shebang_interpreter(path: &Path) -> Option<String> {
+    let file = File::open(path).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut first_line = String::new();
+    if reader.read_line(&mut first_line).ok()? == 0 {
+        return None;
+    }
+    first_line
+        .strip_prefix("#!")
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn resolve_shebang_launch(shebang: &str) -> Option<(String, Vec<String>)> {
+    let parts: Vec<&str> = shebang.split_whitespace().collect();
+    let interpreter = *parts.first()?;
+    if interpreter.ends_with("/env") {
+        let target = parts.get(1).copied()?;
+        let resolved = resolve_host_command(target)?;
+        return Some((
+            resolved.display().to_string(),
+            parts
+                .iter()
+                .skip(2)
+                .map(|part| (*part).to_string())
+                .collect(),
+        ));
+    }
+
+    Some((
+        interpreter.to_string(),
+        parts
+            .iter()
+            .skip(1)
+            .map(|part| (*part).to_string())
+            .collect(),
+    ))
+}
+
+fn codex_support_dir_args() -> Vec<String> {
+    discover_codex_support_dirs()
+        .into_iter()
+        .flat_map(|dir| ["--add-dir".to_string(), dir.display().to_string()])
+        .collect()
+}
+
+fn discover_codex_support_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(home) = env::var_os("HOME").filter(|value| !value.is_empty()) {
+        let home = PathBuf::from(home);
+        for relative in [".omx", ".codex"] {
+            let dir = home.join(relative);
+            if dir.is_dir() {
+                dirs.push(dir);
+            }
+        }
+    }
+    dirs
 }
 
 fn temp_output_path() -> PathBuf {
@@ -268,19 +367,25 @@ fn compose_exec_prompt(user_prompt: &str, prompt_contract: &str) -> String {
 fn prepare_allowlist_environment() -> Result<AllowlistEnvironment, String> {
     let root = temp_allowlist_dir()?;
     let bin_dir = root.path.join("bin");
-    create_dir_all(&bin_dir)
-        .map_err(|err| format!("failed to create allowlist bin dir {}: {err}", bin_dir.display()))?;
+    create_dir_all(&bin_dir).map_err(|err| {
+        format!(
+            "failed to create allowlist bin dir {}: {err}",
+            bin_dir.display()
+        )
+    })?;
 
-    let self_exe = env::current_exe()
-        .map_err(|err| format!("failed to resolve current executable for allowlist wrappers: {err}"))?;
+    let self_exe = env::current_exe().map_err(|err| {
+        format!("failed to resolve current executable for allowlist wrappers: {err}")
+    })?;
     let bash_path = resolve_host_command("bash")
         .ok_or_else(|| "failed to locate host bash for allowlist wrapper".to_string())?;
     let sh_path = resolve_host_command("sh")
         .ok_or_else(|| "failed to locate host sh for allowlist wrapper".to_string())?;
 
     for command in ALLOWED_DIRECT_COMMANDS {
-        let real = resolve_host_command(command)
-            .ok_or_else(|| format!("failed to locate host command `{command}` for allowlist wrapper"))?;
+        let real = resolve_host_command(command).ok_or_else(|| {
+            format!("failed to locate host command `{command}` for allowlist wrapper")
+        })?;
         let wrapper_path = bin_dir.join(command);
         let wrapper = format!(
             "#!/bin/sh\nexec {} {} {} \"$@\"\n",
@@ -329,7 +434,8 @@ fn temp_allowlist_dir() -> Result<TempDirGuard, String> {
 }
 
 fn write_executable(path: &Path, content: &str) -> Result<(), String> {
-    write(path, content).map_err(|err| format!("failed to write wrapper {}: {err}", path.display()))?;
+    write(path, content)
+        .map_err(|err| format!("failed to write wrapper {}: {err}", path.display()))?;
     #[cfg(unix)]
     {
         use std::fs;
@@ -455,12 +561,17 @@ fn validate_shell_invocation(args: &[String]) -> Result<String, String> {
 
 fn validate_direct_command(command_name: &str, args: &[String]) -> Result<(), String> {
     if !ALLOWED_DIRECT_COMMANDS.contains(&command_name) {
-        return Err(format!("command `{command_name}` is not on the omx explore allowlist"));
+        return Err(format!(
+            "command `{command_name}` is not on the omx explore allowlist"
+        ));
     }
 
     match command_name {
         "rg" => {
-            if args.iter().any(|arg| arg == "--pre" || arg.starts_with("--pre=")) {
+            if args
+                .iter()
+                .any(|arg| arg == "--pre" || arg.starts_with("--pre="))
+            {
                 return Err("ripgrep `--pre` is not allowed in omx explore".to_string());
             }
         }
@@ -471,11 +582,16 @@ fn validate_direct_command(command_name: &str, args: &[String]) -> Result<(), St
                     "-exec" | "-execdir" | "-ok" | "-okdir" | "-delete"
                 )
             }) {
-                return Err("find actions that execute or delete are not allowed in omx explore".to_string());
+                return Err(
+                    "find actions that execute or delete are not allowed in omx explore"
+                        .to_string(),
+                );
             }
         }
         "sed" => {
-            if args.iter().any(|arg| arg == "-i" || arg.starts_with("-i") || arg == "--in-place")
+            if args
+                .iter()
+                .any(|arg| arg == "-i" || arg.starts_with("-i") || arg == "--in-place")
             {
                 return Err("sed in-place editing is not allowed in omx explore".to_string());
             }
@@ -548,6 +664,39 @@ mod tests {
     }
 
     #[test]
+    fn codex_launch_for_env_node_shebang_uses_host_node_absolute_path() {
+        let root = temp_allowlist_dir().expect("temp root");
+        let script_path = root.path.join("codex-script");
+        write(&script_path, b"#!/usr/bin/env node\nconsole.log(\"ok\");\n").expect("write script");
+
+        let launch = codex_launch_for_binary(script_path.to_str().expect("script path"))
+            .expect("launch config");
+        let expected_node = resolve_host_command("node").expect("host node path");
+        assert_eq!(launch.program, expected_node.display().to_string());
+        assert_eq!(launch.leading_args, vec![script_path.display().to_string()]);
+    }
+
+    #[test]
+    fn discover_codex_support_dirs_includes_home_omx_and_codex_when_present() {
+        let root = temp_allowlist_dir().expect("temp root");
+        let home_dir = root.path.join("home");
+        create_dir_all(home_dir.join(".omx")).expect("create .omx");
+        create_dir_all(home_dir.join(".codex")).expect("create .codex");
+        let original_home = env::var_os("HOME");
+        unsafe {
+            env::set_var("HOME", &home_dir);
+        }
+
+        let dirs = discover_codex_support_dirs();
+
+        match original_home {
+            Some(value) => unsafe { env::set_var("HOME", value) },
+            None => unsafe { env::remove_var("HOME") },
+        }
+        assert_eq!(dirs, vec![home_dir.join(".omx"), home_dir.join(".codex")]);
+    }
+
+    #[test]
     fn validate_shell_invocation_rejects_control_operators_and_paths() {
         assert!(validate_shell_invocation(&["-lc".into(), "rg auth src".into()]).is_ok());
         assert!(validate_shell_invocation(&["-lc".into(), "rg auth src | head".into()]).is_err());
@@ -561,7 +710,14 @@ mod tests {
         assert!(validate_direct_command("rg", &["--pre=python".into(), "needle".into()]).is_err());
         assert!(validate_direct_command("find", &[".".into(), "-type".into(), "f".into()]).is_ok());
         assert!(validate_direct_command("find", &[".".into(), "-delete".into()]).is_err());
-        assert!(validate_direct_command("sed", &["-n".into(), "1,20p".into(), "README.md".into()]).is_ok());
-        assert!(validate_direct_command("sed", &["-i".into(), "s/x/y/".into(), "README.md".into()]).is_err());
+        assert!(
+            validate_direct_command("sed", &["-n".into(), "1,20p".into(), "README.md".into()])
+                .is_ok()
+        );
+        assert!(validate_direct_command(
+            "sed",
+            &["-i".into(), "s/x/y/".into(), "README.md".into()]
+        )
+        .is_err());
     }
 }
