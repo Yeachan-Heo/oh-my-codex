@@ -1,0 +1,19 @@
+oh-my-codex doctor
+==================
+
+Resolved setup scope: user
+
+  [CODEX_CLI_STATUS]
+  [OK] Node.js: <NODE_VERSION>
+  [EXPLORE_HARNESS_STATUS]
+  [OK] Codex home: <CODEX_HOME>
+  [!!] Config: config.toml exists but no OMX entries yet (expected before first setup; run "omx setup --force" once)
+  [!!] Prompts: prompts directory not found
+  [!!] Skills: skills directory not found
+  [OK] AGENTS.md: user scope leaves project AGENTS.md unchanged
+  [!!] State dir: <REPO_STATE_DIR> (not created yet)
+  [!!] MCP Servers: 1 servers but no OMX servers yet (expected before first setup; run "omx setup --force" once)
+
+Results: <RESULTS>
+
+Run <SETUP_FOLLOWUP>
