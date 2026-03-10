@@ -34,10 +34,15 @@ describe('followup-planner', () => {
     assert.equal(plan.mode, 'team');
     assert.equal(plan.recommendedHeadcount, 3);
     assert.match(plan.staffingSummary, /test-engineer x1/);
+    assert.match(plan.staffingSummary, /reasoning/);
     assert.ok(plan.allocations.every((allocation) => ['executor', 'test-engineer', 'writer'].includes(allocation.role)));
     assert.ok(
       plan.allocations.some((allocation) => allocation.reason.includes('specialist') || allocation.reason.includes('verification')),
     );
+    assert.equal(plan.launchHints.shellCommand, 'omx team ralph 3:executor "Fix flaky integration tests and update README"');
+    assert.equal(plan.launchHints.skillCommand, '$team ralph 3:executor "Fix flaky integration tests and update README"');
+    assert.match(plan.verificationPlan.summary, /team -> ralph/i);
+    assert.equal(plan.verificationPlan.checkpoints.length, 3);
   });
 
   it('builds concrete ralph staffing guidance from the available roster', () => {
@@ -52,5 +57,9 @@ describe('followup-planner', () => {
     assert.match(plan.staffingSummary, /architect x1/);
     assert.match(plan.staffingSummary, /test-engineer x1/);
     assert.ok(plan.allocations.some((allocation) => allocation.reason.includes('sign-off')));
+    assert.equal(plan.launchHints.shellCommand, 'omx ralph "Investigate auth regression and verify the fix"');
+    assert.equal(plan.launchHints.skillCommand, '$ralph "Investigate auth regression and verify the fix"');
+    assert.match(plan.verificationPlan.summary, /persistent execution and verification owner/i);
+    assert.equal(plan.verificationPlan.checkpoints.length, 3);
   });
 });

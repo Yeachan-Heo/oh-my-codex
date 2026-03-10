@@ -100,7 +100,9 @@ When `$team` is used as a follow-up mode from ralplan, carry forward the approve
 
 - keep worker-role choices inside the known roster
 - state the recommended headcount and role counts
+- state the suggested reasoning level for each lane when available
 - explain why each lane exists (delivery, verification, specialist support)
+- include an explicit launch hint (`omx team ralph N "<task>"` / `$team ralph N "<task>"`) when the plan expects Ralph to verify after team delivery
 - if the ideal role is unavailable, choose the closest role from the roster and say so
 
 ## Current Runtime Behavior (As Implemented)

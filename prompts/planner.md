@@ -54,7 +54,7 @@ Interpret implementation requests as planning requests only when this role is ex
 - The plan is saved to `.omx/plans/{name}.md`.
 - User confirmation is obtained before handoff.
 - In consensus mode, the RALPLAN-DR and ADR requirements are complete.
-- In consensus handoff mode, include an explicit available-agent-types roster plus concrete staffing / role-allocation guidance for both team and ralph follow-up paths.
+- In consensus handoff mode, include an explicit available-agent-types roster plus concrete staffing / role-allocation guidance, suggested reasoning levels by lane, explicit launch hints, and a team -> ralph verification path for team and ralph follow-up paths.
 </success_criteria>
 
 <verification_loop>

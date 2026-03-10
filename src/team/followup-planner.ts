@@ -1,5 +1,6 @@
 import { join } from 'path';
 import { codexPromptsDir, packageRoot } from '../utils/paths.js';
+import { resolveAgentReasoningEffort, type TeamReasoningEffort } from './model-contract.js';
 import { listAvailableRoles, routeTaskToRole } from './role-router.js';
 
 export type FollowupMode = 'team' | 'ralph';
@@ -8,6 +9,18 @@ export interface FollowupAllocation {
   role: string;
   count: number;
   reason: string;
+  reasoningEffort?: TeamReasoningEffort;
+}
+
+export interface FollowupLaunchHints {
+  shellCommand: string;
+  skillCommand: string;
+  rationale: string;
+}
+
+export interface FollowupVerificationPlan {
+  summary: string;
+  checkpoints: string[];
 }
 
 export interface FollowupStaffingPlan {
@@ -17,6 +30,8 @@ export interface FollowupStaffingPlan {
   allocations: FollowupAllocation[];
   rosterSummary: string;
   staffingSummary: string;
+  launchHints: FollowupLaunchHints;
+  verificationPlan: FollowupVerificationPlan;
 }
 
 export interface ResolveAvailableAgentTypesOptions {
@@ -71,18 +86,75 @@ function mergeAllocation(
   reason: string,
 ): void {
   if (count <= 0) return;
-  const existing = allocations.find((item) => item.role === role && item.reason === reason);
+  const reasoningEffort = resolveAgentReasoningEffort(role);
+  const existing = allocations.find(
+    (item) => item.role === role && item.reason === reason && item.reasoningEffort === reasoningEffort,
+  );
   if (existing) {
     existing.count += count;
     return;
   }
-  allocations.push({ role, count, reason });
+  allocations.push({ role, count, reason, reasoningEffort });
 }
 
 function summarizeAllocations(allocations: readonly FollowupAllocation[]): string {
   return allocations
-    .map((allocation) => `${allocation.role} x${allocation.count} (${allocation.reason})`)
+    .map((allocation) => {
+      const reasoning = allocation.reasoningEffort ? `, ${allocation.reasoningEffort} reasoning` : '';
+      return `${allocation.role} x${allocation.count} (${allocation.reason}${reasoning})`;
+    })
     .join('; ');
+}
+
+function toQuotedCliArg(value: string): string {
+  return JSON.stringify(value);
+}
+
+function buildLaunchHints(
+  mode: FollowupMode,
+  task: string,
+  recommendedHeadcount: number,
+  fallbackRole: string,
+): FollowupLaunchHints {
+  if (mode === 'team') {
+    return {
+      shellCommand: `omx team ralph ${recommendedHeadcount}:${fallbackRole} ${toQuotedCliArg(task)}`,
+      skillCommand: `$team ralph ${recommendedHeadcount}:${fallbackRole} ${toQuotedCliArg(task)}`,
+      rationale: 'Launch team with linked Ralph follow-up so delivery lanes stay parallel but final verification remains persistent and evidence-backed.',
+    };
+  }
+
+  return {
+    shellCommand: `omx ralph ${toQuotedCliArg(task)}`,
+    skillCommand: `$ralph ${toQuotedCliArg(task)}`,
+    rationale: 'Launch Ralph directly when one persistent implementation + verification loop is sufficient without team coordination overhead.',
+  };
+}
+
+function buildVerificationPlan(
+  mode: FollowupMode,
+  allocations: readonly FollowupAllocation[],
+): FollowupVerificationPlan {
+  if (mode === 'team') {
+    const qualityLane = allocations.find((allocation) => allocation.reason.includes('verification'));
+    return {
+      summary: 'Use a linked team -> ralph path: team workers deliver in parallel, then Ralph closes with fresh evidence, regression checks, and final sign-off.',
+      checkpoints: [
+        'Launch via `omx team ralph ...` (or `$team ralph ...`) so Ralph stays linked to the team run.',
+        `Keep ${qualityLane?.role ?? 'the verification lane'} focused on tests, regression coverage, and evidence capture before team shutdown.`,
+        'Reserve Ralph for post-team completion review, acceptance-criteria validation, and final architecture/completion sign-off.',
+      ],
+    };
+  }
+
+  return {
+    summary: 'Use Ralph as the persistent execution and verification owner: implementation happens first, then evidence/regression checks, then final sign-off.',
+    checkpoints: [
+      'Run fresh verification commands before claiming completion.',
+      'Keep the evidence/regression lane current with test/build output.',
+      'Finish with the final sign-off lane reviewing completion evidence against acceptance criteria.',
+    ],
+  };
 }
 
 function pickSpecialistRole(
@@ -168,5 +240,7 @@ export function buildFollowupStaffingPlan(
     allocations,
     rosterSummary: availableAgentTypes.join(', '),
     staffingSummary: summarizeAllocations(allocations),
+    launchHints: buildLaunchHints(mode, task, workerCount, fallbackRole),
+    verificationPlan: buildVerificationPlan(mode, allocations),
   };
 }

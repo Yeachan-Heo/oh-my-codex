@@ -162,12 +162,13 @@ describe('Team Exec Stage', () => {
         cwd: '/tmp/test',
       });
 
-      assert.match(instruction, /^omx team 3:executor/);
+      assert.match(instruction, /^omx team ralph 3:executor /);
       assert.match(instruction, /implement feature/);
       assert.match(instruction, /staffing=/);
+      assert.match(instruction, /verify=/);
     });
 
-    it('truncates long task descriptions', () => {
+    it('still emits a launch instruction for long task descriptions', () => {
       const longTask = 'a'.repeat(1000);
       const staffingPlan = buildFollowupStaffingPlan('team', longTask, ['executor', 'test-engineer'], {
         workerCount: 1,
@@ -182,8 +183,8 @@ describe('Team Exec Stage', () => {
         cwd: '/tmp',
       });
 
-      // The instruction should contain a truncated version (500 chars max)
-      assert.ok(instruction.length < longTask.length);
+      assert.match(instruction, /^omx team ralph 1:executor /);
+      assert.match(instruction, /staffing=/);
     });
   });
 });
@@ -246,12 +247,14 @@ describe('Ralph Verify Stage', () => {
         executionArtifacts: {},
       });
 
-      assert.match(instruction, /max 15 iterations/);
+      assert.match(instruction, /max_iterations=15/);
+      assert.match(instruction, /^omx ralph /);
       assert.match(instruction, /verify feature/);
       assert.match(instruction, /staffing=/);
+      assert.match(instruction, /verify=/);
     });
 
-    it('truncates long task descriptions', () => {
+    it('still emits a launch instruction for long task descriptions', () => {
       const longTask = 'b'.repeat(500);
       const staffingPlan = buildFollowupStaffingPlan('ralph', longTask, ['architect', 'executor', 'test-engineer']);
       const instruction = buildRalphInstruction({
@@ -263,7 +266,8 @@ describe('Ralph Verify Stage', () => {
         executionArtifacts: {},
       });
 
-      assert.ok(instruction.length < longTask.length);
+      assert.match(instruction, /^omx ralph /);
+      assert.match(instruction, /staffing=/);
     });
   });
 });

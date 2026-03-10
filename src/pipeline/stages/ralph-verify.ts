@@ -102,5 +102,5 @@ export interface RalphVerifyDescriptor {
  * Build the ralph CLI instruction from a descriptor.
  */
 export function buildRalphInstruction(descriptor: RalphVerifyDescriptor): string {
-  return `ralph verify (max ${descriptor.maxIterations} iterations): ${descriptor.task.slice(0, 200)} | staffing=${descriptor.staffingPlan.staffingSummary}`;
+  return `${descriptor.staffingPlan.launchHints.shellCommand} # max_iterations=${descriptor.maxIterations} # staffing=${descriptor.staffingPlan.staffingSummary} # verify=${descriptor.staffingPlan.verificationPlan.summary}`;
 }
