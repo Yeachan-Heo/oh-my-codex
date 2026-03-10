@@ -483,6 +483,92 @@ sleep 5
     }
   });
 
+  it('startTeam preserves explicit codex launch args while forcing bypass in prompt mode', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-codex-explicit-launch-'));
+    const binDir = join(cwd, 'bin');
+    const fakeCodexPath = join(binDir, 'codex');
+    const capturePath = join(cwd, 'codex-argv.json');
+    await mkdir(binDir, { recursive: true });
+    await writeFile(
+      fakeCodexPath,
+      `#!/usr/bin/env node
+const fs = require('fs');
+fs.writeFileSync(process.env.OMX_CODEX_ARGV_CAPTURE_PATH, JSON.stringify(process.argv.slice(2), null, 2));
+process.stdin.resume();
+setTimeout(() => process.exit(0), 5000);
+process.on('SIGTERM', () => process.exit(0));
+`,
+      { mode: 0o755 },
+    );
+
+    const prevPath = process.env.PATH;
+    const prevTmux = process.env.TMUX;
+    const prevLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevLaunchArgs = process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+    const prevCapture = process.env.OMX_CODEX_ARGV_CAPTURE_PATH;
+
+    process.env.PATH = `${binDir}:${prevPath ?? ''}`;
+    delete process.env.TMUX;
+    process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
+    process.env.OMX_TEAM_WORKER_CLI = 'codex';
+    process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = '--model gpt-5.3-codex-spark -c model_reasoning_effort="low"';
+    process.env.OMX_CODEX_ARGV_CAPTURE_PATH = capturePath;
+
+    let runtime: TeamRuntime | null = null;
+    try {
+      runtime = await withoutTeamWorkerEnv(() =>
+        startTeam(
+          'team-codex-explicit-launch',
+          'codex prompt-mode team bootstrap',
+          'explore',
+          1,
+          [{ subject: 's', description: 'd', owner: 'worker-1' }],
+          cwd,
+        ));
+
+      assert.equal(runtime.config.worker_launch_mode, 'prompt');
+      assert.equal((runtime.config.workers[0]?.pid ?? 0) > 0, true);
+
+      let argv: string[] | null = null;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        if (existsSync(capturePath)) {
+          argv = JSON.parse(await readFile(capturePath, 'utf-8')) as string[];
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assert.ok(argv, 'codex argv capture file should be written');
+      assert.equal(argv.includes('--dangerously-bypass-approvals-and-sandbox'), true);
+      assert.equal(argv.filter((arg) => arg === '--dangerously-bypass-approvals-and-sandbox').length, 1);
+      assert.equal(argv.includes('--model'), true);
+      assert.equal(argv[argv.indexOf('--model') + 1], 'gpt-5.3-codex-spark');
+      assert.equal(argv.includes('-c'), true);
+      assert.equal(argv.includes('model_reasoning_effort="low"'), true);
+      assert.equal(argv.some((arg) => arg.includes('model_instructions_file=')), true);
+
+      await shutdownTeam(runtime.teamName, cwd, { force: true });
+      runtime = null;
+    } finally {
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
+      }
+      if (typeof prevPath === 'string') process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
+      else delete process.env.TMUX;
+      if (typeof prevLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = prevLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevLaunchArgs === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = prevLaunchArgs;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+      if (typeof prevCapture === 'string') process.env.OMX_CODEX_ARGV_CAPTURE_PATH = prevCapture;
+      else delete process.env.OMX_CODEX_ARGV_CAPTURE_PATH;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
 
   it('startTeam preserves routed task roles into team state and worker launch args', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-role-routing-'));

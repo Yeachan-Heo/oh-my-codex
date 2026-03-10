@@ -663,6 +663,33 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
+  it('forces codex bypass under explicit launch-arg profiles', () => {
+    const prevShell = process.env.SHELL;
+    process.env.SHELL = '/bin/bash';
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const profiles = [
+        ['--model', 'gpt-5', '-c', 'model_reasoning_effort="high"'],
+        ['--model', 'gpt-5.3-codex-spark', '-c', 'model_reasoning_effort="low"'],
+      ];
+
+      for (const launchArgs of profiles) {
+        const cmd = buildWorkerStartupCommand('alpha', 1, launchArgs, process.cwd(), {}, 'codex');
+        assert.match(cmd, /exec .*codex/);
+        assert.equal((cmd.match(/--dangerously-bypass-approvals-and-sandbox/g) || []).length, 1);
+        assert.match(cmd, /--model/);
+        assert.match(cmd, new RegExp(launchArgs[1]!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+        assert.match(cmd, new RegExp(launchArgs[3]!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      }
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
   it('supports worker-specific reasoning overrides for codex and strips them for claude workers', () => {
     const prevShell = process.env.SHELL;
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
@@ -981,7 +1008,7 @@ describe('team worker launch mode helpers', () => {
       // command is now the resolved absolute path (or bare binary if which fails)
       assert.equal(spec.workerCli, 'codex');
       assert.ok(typeof spec.command === 'string' && spec.command.length > 0, 'command must be a non-empty string');
-      assert.deepEqual(spec.args, ['--model', 'gpt-5.3-codex']);
+      assert.deepEqual(spec.args, ['--model', 'gpt-5.3-codex', '--dangerously-bypass-approvals-and-sandbox']);
       assert.equal(spec.env.OMX_TEAM_WORKER, 'alpha-team/worker-2');
       assert.equal(spec.env.OMX_TEAM_STATE_ROOT, '/tmp/workspace/.omx/state');
     } finally {

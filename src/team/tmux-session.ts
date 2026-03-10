@@ -637,6 +637,9 @@ export function buildWorkerProcessLaunchSpec(
   const fullLaunchArgs = resolveWorkerLaunchArgs(launchArgs, cwd, effectiveEnv);
   const workerCli = workerCliOverride ?? resolveTeamWorkerCli(fullLaunchArgs, effectiveEnv);
   const cliLaunchArgs = translateWorkerLaunchArgsForCli(workerCli, fullLaunchArgs, initialPrompt);
+  const effectiveCliLaunchArgs = workerCli === 'codex' && !cliLaunchArgs.includes(CODEX_BYPASS_FLAG)
+    ? [...cliLaunchArgs, CODEX_BYPASS_FLAG]
+    : cliLaunchArgs;
 
   const resolvedCliPath = resolveAbsoluteBinaryPath(workerCli);
   const workerEnv: Record<string, string> = {
@@ -652,7 +655,7 @@ export function buildWorkerProcessLaunchSpec(
   return {
     workerCli,
     command: resolvedCliPath,
-    args: cliLaunchArgs,
+    args: effectiveCliLaunchArgs,
     env: workerEnv,
   };
 }
