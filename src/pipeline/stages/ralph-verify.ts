@@ -6,6 +6,10 @@
  */
 
 import type { PipelineStage, StageContext, StageResult } from '../types.js';
+import {
+  buildFollowupStaffingPlan,
+  resolveAvailableAgentTypes,
+} from '../../team/followup-planner.js';
 
 export interface RalphVerifyStageOptions {
   /**
@@ -37,6 +41,10 @@ export function createRalphVerifyStage(options: RalphVerifyStageOptions = {}): P
       try {
         // Extract execution context from previous stage
         const teamArtifacts = ctx.artifacts['team-exec'] as Record<string, unknown> | undefined;
+        const availableAgentTypes = await resolveAvailableAgentTypes(ctx.cwd);
+        const staffingPlan = buildFollowupStaffingPlan('ralph', ctx.task, availableAgentTypes, {
+          workerCount: Math.min(maxIterations, 3),
+        });
 
         // Build ralph verification descriptor
         const verifyDescriptor: RalphVerifyDescriptor = {
@@ -44,6 +52,8 @@ export function createRalphVerifyStage(options: RalphVerifyStageOptions = {}): P
           maxIterations,
           cwd: ctx.cwd,
           sessionId: ctx.sessionId,
+          availableAgentTypes,
+          staffingPlan,
           executionArtifacts: teamArtifacts ?? {},
         };
 
@@ -52,6 +62,8 @@ export function createRalphVerifyStage(options: RalphVerifyStageOptions = {}): P
           artifacts: {
             verifyDescriptor,
             maxIterations,
+            availableAgentTypes,
+            staffingPlan,
             stage: 'ralph-verify',
             instruction: buildRalphInstruction(verifyDescriptor),
           },
@@ -81,6 +93,8 @@ export interface RalphVerifyDescriptor {
   maxIterations: number;
   cwd: string;
   sessionId?: string;
+  availableAgentTypes: string[];
+  staffingPlan: ReturnType<typeof buildFollowupStaffingPlan>;
   executionArtifacts: Record<string, unknown>;
 }
 
@@ -88,5 +102,5 @@ export interface RalphVerifyDescriptor {
  * Build the ralph CLI instruction from a descriptor.
  */
 export function buildRalphInstruction(descriptor: RalphVerifyDescriptor): string {
-  return `ralph verify (max ${descriptor.maxIterations} iterations): ${descriptor.task.slice(0, 200)}`;
+  return `ralph verify (max ${descriptor.maxIterations} iterations): ${descriptor.task.slice(0, 200)} | staffing=${descriptor.staffingPlan.staffingSummary}`;
 }

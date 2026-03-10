@@ -94,6 +94,15 @@ Before launching `omx team`, require a grounded context snapshot:
 
 Do not start worker panes until this gate is satisfied; if forced to proceed quickly, state explicit scope/risk limitations in the launch report.
 
+## Follow-up Staffing Contract
+
+When `$team` is used as a follow-up mode from ralplan, carry forward the approved plan's explicit **available-agent-types roster** and convert it into concrete staffing guidance before launch:
+
+- keep worker-role choices inside the known roster
+- state the recommended headcount and role counts
+- explain why each lane exists (delivery, verification, specialist support)
+- if the ideal role is unavailable, choose the closest role from the roster and say so
+
 ## Current Runtime Behavior (As Implemented)
 
 `omx team` currently performs:

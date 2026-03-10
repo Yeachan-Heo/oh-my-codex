@@ -1,5 +1,9 @@
 import { startMode, updateModeState } from '../modes/base.js';
 import { ensureCanonicalRalphArtifacts } from '../ralph/persistence.js';
+import {
+  buildFollowupStaffingPlan,
+  resolveAvailableAgentTypes,
+} from '../team/followup-planner.js';
 
 export const RALPH_HELP = `omx ralph - Launch Codex with ralph persistence mode active
 
@@ -91,10 +95,15 @@ export async function ralphCommand(args: string[]): Promise<void> {
   }
   const artifacts = await ensureCanonicalRalphArtifacts(cwd);
   const task = extractRalphTaskDescription(normalizedArgs);
+  const availableAgentTypes = await resolveAvailableAgentTypes(cwd);
+  const staffingPlan = buildFollowupStaffingPlan('ralph', task, availableAgentTypes);
   await startMode('ralph', task, 50);
   await updateModeState('ralph', {
     current_phase: 'starting',
     canonical_progress_path: artifacts.canonicalProgressPath,
+    available_agent_types: availableAgentTypes,
+    staffing_summary: staffingPlan.staffingSummary,
+    staffing_allocations: staffingPlan.allocations,
     ...(artifacts.canonicalPrdPath ? { canonical_prd_path: artifacts.canonicalPrdPath } : {}),
   });
   if (artifacts.migratedPrd) {
@@ -104,6 +113,8 @@ export async function ralphCommand(args: string[]): Promise<void> {
     console.log('[ralph] Migrated legacy progress -> ' + artifacts.canonicalProgressPath);
   }
   console.log('[ralph] Ralph persistence mode active. Launching Codex...');
+  console.log(`[ralph] available_agent_types: ${staffingPlan.rosterSummary}`);
+  console.log(`[ralph] staffing_plan: ${staffingPlan.staffingSummary}`);
   const { launchWithHud } = await import('./index.js');
   const codexArgs = filterRalphCodexArgs(normalizedArgs);
   await launchWithHud(codexArgs);

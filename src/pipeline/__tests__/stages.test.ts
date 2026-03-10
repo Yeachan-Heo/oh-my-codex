@@ -8,6 +8,7 @@ import type { StageContext } from '../types.js';
 import { createRalplanStage } from '../stages/ralplan.js';
 import { createTeamExecStage, buildTeamInstruction } from '../stages/team-exec.js';
 import { createRalphVerifyStage, buildRalphInstruction } from '../stages/ralph-verify.js';
+import { buildFollowupStaffingPlan } from '../../team/followup-planner.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -132,6 +133,9 @@ describe('Team Exec Stage', () => {
 
     const descriptor = (result.artifacts as Record<string, unknown>).teamDescriptor as Record<string, unknown>;
     assert.ok((descriptor.task as string).includes('plan-content'));
+    assert.ok(Array.isArray(descriptor.availableAgentTypes));
+    assert.ok((descriptor.availableAgentTypes as unknown[]).length > 0);
+    assert.equal(typeof (descriptor.staffingPlan as Record<string, unknown>).staffingSummary, 'string');
   });
 
   it('falls back to raw task when no ralplan artifacts exist', async () => {
@@ -140,28 +144,40 @@ describe('Team Exec Stage', () => {
 
     const descriptor = (result.artifacts as Record<string, unknown>).teamDescriptor as Record<string, unknown>;
     assert.equal(descriptor.task, 'raw task description');
+    assert.equal(typeof (descriptor.staffingPlan as Record<string, unknown>).staffingSummary, 'string');
   });
 
   describe('buildTeamInstruction', () => {
     it('builds correct CLI instruction', () => {
+      const staffingPlan = buildFollowupStaffingPlan('team', 'implement feature', ['executor', 'test-engineer'], {
+        workerCount: 3,
+      });
       const instruction = buildTeamInstruction({
         task: 'implement feature',
         workerCount: 3,
         agentType: 'executor',
+        availableAgentTypes: ['executor', 'test-engineer'],
+        staffingPlan,
         useWorktrees: false,
         cwd: '/tmp/test',
       });
 
       assert.match(instruction, /^omx team 3:executor/);
       assert.match(instruction, /implement feature/);
+      assert.match(instruction, /staffing=/);
     });
 
     it('truncates long task descriptions', () => {
       const longTask = 'a'.repeat(1000);
+      const staffingPlan = buildFollowupStaffingPlan('team', longTask, ['executor', 'test-engineer'], {
+        workerCount: 1,
+      });
       const instruction = buildTeamInstruction({
         task: longTask,
         workerCount: 1,
         agentType: 'executor',
+        availableAgentTypes: ['executor', 'test-engineer'],
+        staffingPlan,
         useWorktrees: false,
         cwd: '/tmp',
       });
@@ -214,27 +230,36 @@ describe('Ralph Verify Stage', () => {
     const descriptor = (result.artifacts as Record<string, unknown>).verifyDescriptor as Record<string, unknown>;
     const execArtifacts = descriptor.executionArtifacts as Record<string, unknown>;
     assert.ok(execArtifacts.teamDescriptor);
+    assert.ok(Array.isArray(descriptor.availableAgentTypes));
+    assert.equal(typeof (descriptor.staffingPlan as Record<string, unknown>).staffingSummary, 'string');
   });
 
   describe('buildRalphInstruction', () => {
     it('includes max iterations in instruction', () => {
+      const staffingPlan = buildFollowupStaffingPlan('ralph', 'verify feature', ['architect', 'executor', 'test-engineer']);
       const instruction = buildRalphInstruction({
         task: 'verify feature',
         maxIterations: 15,
         cwd: '/tmp',
+        availableAgentTypes: ['architect', 'executor', 'test-engineer'],
+        staffingPlan,
         executionArtifacts: {},
       });
 
       assert.match(instruction, /max 15 iterations/);
       assert.match(instruction, /verify feature/);
+      assert.match(instruction, /staffing=/);
     });
 
     it('truncates long task descriptions', () => {
       const longTask = 'b'.repeat(500);
+      const staffingPlan = buildFollowupStaffingPlan('ralph', longTask, ['architect', 'executor', 'test-engineer']);
       const instruction = buildRalphInstruction({
         task: longTask,
         maxIterations: 10,
         cwd: '/tmp',
+        availableAgentTypes: ['architect', 'executor', 'test-engineer'],
+        staffingPlan,
         executionArtifacts: {},
       });
 

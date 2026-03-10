@@ -7,6 +7,11 @@ import type { TeamEvent } from '../team/state.js';
 import { parseWorktreeMode, type WorktreeMode } from '../team/worktree.js';
 import { routeTaskToRole } from '../team/role-router.js';
 import {
+  buildFollowupStaffingPlan,
+  resolveAvailableAgentTypes,
+  type FollowupStaffingPlan,
+} from '../team/followup-planner.js';
+import {
   TEAM_API_OPERATIONS,
   resolveTeamApiOperation,
   executeTeamApiOperation,
@@ -417,6 +422,12 @@ async function ensureTeamModeState(
     ? [...new Set(tasks.map(t => t.role ?? parsed.agentType))].join(',')
     : parsed.agentType;
 
+  const availableAgentTypes = await resolveAvailableAgentTypes(process.cwd());
+  const staffingPlan = buildFollowupStaffingPlan('team', parsed.task, availableAgentTypes, {
+    workerCount: parsed.workerCount,
+    fallbackRole: parsed.agentType,
+  });
+
   const existing = await readModeState('team');
   if (existing?.active) {
     await updateModeState('team', {
@@ -426,6 +437,9 @@ async function ensureTeamModeState(
       team_name: parsed.teamName,
       agent_count: parsed.workerCount,
       agent_types: roleDistribution,
+      available_agent_types: availableAgentTypes,
+      staffing_summary: staffingPlan.staffingSummary,
+      staffing_allocations: staffingPlan.allocations,
     });
     return;
   }
@@ -437,14 +451,21 @@ async function ensureTeamModeState(
     team_name: parsed.teamName,
     agent_count: parsed.workerCount,
     agent_types: roleDistribution,
+    available_agent_types: availableAgentTypes,
+    staffing_summary: staffingPlan.staffingSummary,
+    staffing_allocations: staffingPlan.allocations,
   });
 }
 
-async function renderStartSummary(runtime: TeamRuntime): Promise<void> {
+async function renderStartSummary(runtime: TeamRuntime, staffingPlan?: FollowupStaffingPlan): Promise<void> {
   console.log(`Team started: ${runtime.teamName}`);
   console.log(`tmux target: ${runtime.sessionName}`);
   console.log(`workers: ${runtime.config.worker_count}`);
   console.log(`agent_type: ${runtime.config.agent_type}`);
+  if (staffingPlan) {
+    console.log(`available_agent_types: ${staffingPlan.rosterSummary}`);
+    console.log(`staffing_plan: ${staffingPlan.staffingSummary}`);
+  }
 
   const snapshot = await monitorTeam(runtime.teamName, runtime.cwd);
   if (!snapshot) {
@@ -655,7 +676,12 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
       teamName: runtime.teamName,
       ralph: preservedRalph,
     });
-    await renderStartSummary(runtime);
+    const availableAgentTypes = await resolveAvailableAgentTypes(cwd);
+    const staffingPlan = buildFollowupStaffingPlan('team', runtime.config.task, availableAgentTypes, {
+      workerCount: runtime.config.worker_count,
+      fallbackRole: runtime.config.agent_type,
+    });
+    await renderStartSummary(runtime, staffingPlan);
     return;
   }
 
@@ -687,6 +713,11 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
 
   const parsed = parseTeamArgs(teamArgs);
   const tasks = decomposeTaskString(parsed.task, parsed.workerCount, parsed.agentType, parsed.explicitAgentType);
+  const availableAgentTypes = await resolveAvailableAgentTypes(cwd);
+  const staffingPlan = buildFollowupStaffingPlan('team', parsed.task, availableAgentTypes, {
+    workerCount: parsed.workerCount,
+    fallbackRole: parsed.agentType,
+  });
   const runtime = await startTeam(
     parsed.teamName,
     parsed.task,
@@ -701,5 +732,5 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
   if (options.verbose) {
     console.log(`linked_ralph=${parsed.ralph}`);
   }
-  await renderStartSummary(runtime);
+  await renderStartSummary(runtime, staffingPlan);
 }
