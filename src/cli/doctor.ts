@@ -11,6 +11,7 @@ import {
 } from '../utils/paths.js';
 import { classifySpawnError, spawnPlatformCommandSync } from '../utils/platform-command.js';
 import { getCatalogExpectations } from './catalog-contract.js';
+import { parse as parseToml } from '@iarna/toml';
 
 interface DoctorOptions {
   verbose?: boolean;
@@ -435,16 +436,47 @@ function checkDirectory(name: string, path: string): Check {
   return { name, status: 'warn', message: `${path} (not created yet)` };
 }
 
+function validateToml(content: string): string | null {
+  try {
+    parseToml(content);
+    return null;
+  } catch (error) {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    return 'unknown TOML parse error';
+  }
+}
+
 async function checkConfig(configPath: string): Promise<Check> {
   if (!existsSync(configPath)) {
     return { name: 'Config', status: 'warn', message: 'config.toml not found' };
   }
+
   try {
     const content = await readFile(configPath, 'utf-8');
+    const tomlError = validateToml(content);
+
+    if (tomlError) {
+      const hint =
+        tomlError.includes("Can't redefine existing key") ||
+        tomlError.includes('duplicate') ||
+        tomlError.includes('[tui]')
+          ? 'possible duplicate TOML table such as [tui]'
+          : 'invalid TOML syntax';
+
+      return {
+        name: 'Config',
+        status: 'fail',
+        message: `invalid config.toml (${hint})`,
+      };
+    }
+
     const hasOmx = content.includes('omx_') || content.includes('oh-my-codex');
     if (hasOmx) {
       return { name: 'Config', status: 'pass', message: 'config.toml has OMX entries' };
     }
+
     return {
       name: 'Config',
       status: 'warn',

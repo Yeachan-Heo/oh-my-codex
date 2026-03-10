@@ -51,6 +51,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@iarna/toml": "^2.2.5",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "zod": "^4.3.6"
   },
