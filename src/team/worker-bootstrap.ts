@@ -442,7 +442,7 @@ Type \`exit\` or press Ctrl+C to end your Codex session.
  * Always < 200 characters, ASCII-safe.
  */
 export function generateTriggerMessage(workerName: string, teamName: string): string {
-  return `Read and follow the instructions in .omx/state/team/${teamName}/workers/${workerName}/inbox.md`;
+  return `Read .omx/state/team/${teamName}/workers/${workerName}/inbox.md, start work now, then report concrete progress (not ACK-only).`;
 }
 
 /**
@@ -451,5 +451,5 @@ export function generateTriggerMessage(workerName: string, teamName: string): st
  */
 export function generateMailboxTriggerMessage(workerName: string, teamName: string, count: number): string {
   const n = Number.isFinite(count) ? Math.max(1, Math.floor(count)) : 1;
-  return `You have ${n} new message(s). Check .omx/state/team/${teamName}/mailbox/${workerName}.json`;
+  return `You have ${n} new message(s). Check .omx/state/team/${teamName}/mailbox/${workerName}.json, act now, and reply with concrete progress (not ACK-only).`;
 }
