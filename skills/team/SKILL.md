@@ -42,6 +42,22 @@ omx team "debug flaky integration tests"
 omx team ralph "ship end-to-end fix with verification"
 ```
 
+### Why `team ralph` exists as a separate launch form
+
+`omx team ralph ...` is not just shorthand for "run team now, decide on Ralph
+later." It creates a linked team+Ralph lifecycle from launch time.
+
+- **Linked lifecycle/state:** the team run is marked `linked_ralph`, Ralph is
+  marked `linked_team`, and team terminal phases can propagate into Ralph state.
+- **Cleanup/shutdown:** linked cancellation and shutdown happen in order: team
+  cleanup first, then Ralph terminalization/cleanup metadata.
+- **Operator choice:**
+  - use plain `omx team ...` when you only want coordinated workers
+  - use `omx team ralph ...` when persistent Ralph verification/cleanup is part
+    of the plan from the start
+  - use plain `team` and start Ralph later only when you want a deliberately
+    separate manual follow-up after reviewing output or changing scope
+
 ### Claude teammates (v0.6.0+)
 
 Important: `N:agent-type` (for example `2:executor`) selects the **worker role prompt**, not the worker CLI (`codex` vs `claude`).

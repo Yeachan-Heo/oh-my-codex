@@ -344,6 +344,32 @@ omx team 3:executor "execute the approved ralplan with shared runtime coordinati
 
 Planned documentation/product direction: make `ralplan` produce stronger team follow-up guidance by default, including worker placement hints and an explicit follow-up path such as `--followup team`.
 
+### Why `omx team ralph` is a distinct launch mode
+
+Use `omx team ralph ...` when the team run and Ralph follow-up should behave as
+one linked lifecycle, not as two unrelated commands.
+
+- **Linked lifecycle/state:** team starts with `linked_ralph=true`, Ralph tracks
+  `linked_team=true`, and terminal team phases propagate into Ralph state. That
+  gives one operator-visible chain for resume/cancel/final verification instead
+  of a manual handoff after the fact.
+- **Cleanup/shutdown:** linked shutdown uses the Ralph-aware cleanup policy.
+  Team cleanup happens first, Ralph is terminalized from the linked team result,
+  branch rollback preserves worktree branches, and the run records linked
+  terminal metadata plus Ralph cleanup events.
+- **Why not just `team` then later `ralph`:** if you start plain `team` and only
+  launch Ralph afterward, OMX treats them as separate runs. You do not get
+  linked terminal propagation, linked cancel ordering, or automatic Ralph-aware
+  shutdown semantics for that original team run.
+
+Use this quick rule:
+
+| Path | Use when |
+|---|---|
+| `omx team ...` | You want parallel worker coordination only; you will inspect/close the run yourself. |
+| `omx team ralph ...` | You already know the team run should roll straight into persistent Ralph verification and linked cleanup. |
+| `omx team ...` then later `omx ask ... ralph` | You intentionally want a separate, manual second pass after reviewing team output or changing scope. |
+
 ### Ralph Cleanup Policy
 
 When a team runs in ralph mode (`omx team ralph ...`), the shutdown cleanup
