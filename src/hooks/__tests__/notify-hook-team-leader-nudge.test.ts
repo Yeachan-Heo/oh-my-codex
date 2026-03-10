@@ -42,6 +42,29 @@ exit 0
 `;
 }
 
+function buildFakeTmuxWithListPanes(tmuxLogPath: string, listPaneLines: string[]): string {
+  const escapedLines = listPaneLines
+    .map((line) => line.replaceAll('\\', '\\\\').replaceAll('"', '\\"'))
+    .join('\\n');
+  return `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  printf "%b\\n" "${escapedLines}"
+  exit 0
+fi
+exit 0
+`;
+}
+
 function runNotifyHook(
   cwd: string,
   fakeBinDir: string,
@@ -297,6 +320,53 @@ describe('notify-hook team leader nudge', () => {
       assert.match(tmuxLog, /leader stale/);
       assert.match(tmuxLog, /pane\(s\) still active/);
       assert.match(tmuxLog, /\[OMX_TMUX_INJECT\]/, 'should include injection marker');
+    });
+  });
+
+  it('does not treat leader and HUD panes as active worker panes when worker pane ids are known', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'stale-no-workers';
+      const teamDir = join(stateDir, 'team', teamName);
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(join(teamDir, 'mailbox'), { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(stateDir, 'team-state.json'), {
+        active: true,
+        team_name: teamName,
+        current_phase: 'team-exec',
+      });
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'omx-team-stale-no-workers',
+        leader_pane_id: '%92',
+        hud_pane_id: '%93',
+        workers: [
+          { name: 'worker-1', index: 1, pane_id: '%10' },
+          { name: 'worker-2', index: 2, pane_id: '%11' },
+        ],
+      });
+
+      await writeJson(join(stateDir, 'hud-state.json'), {
+        last_turn_at: new Date(Date.now() - 300_000).toISOString(),
+        turn_count: 5,
+      });
+
+      await writeFile(fakeTmuxPath, buildFakeTmuxWithListPanes(tmuxLogPath, ['%92 12345', '%93 12346']));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir);
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.doesNotMatch(tmuxLog, /send-keys -t %92 -l Team stale-no-workers: leader stale/);
     });
   });
 

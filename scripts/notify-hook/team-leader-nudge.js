@@ -37,7 +37,7 @@ export function resolveLeaderStalenessThresholdMs() {
   return 180_000;
 }
 
-export async function checkWorkerPanesAlive(tmuxTarget) {
+export async function checkWorkerPanesAlive(tmuxTarget, workerPaneIds = []) {
   const sessionName = tmuxTarget.split(':')[0];
   try {
     const result = await runProcess('tmux', ['list-panes', '-t', sessionName, '-F', '#{pane_id} #{pane_pid}'], 2000);
@@ -45,7 +45,15 @@ export async function checkWorkerPanesAlive(tmuxTarget) {
       .split('\n')
       .map(l => l.trim())
       .filter(Boolean);
-    return { alive: lines.length > 0, paneCount: lines.length };
+    const workerPaneIdSet = new Set(
+      Array.isArray(workerPaneIds)
+        ? workerPaneIds.map((paneId) => safeString(paneId).trim()).filter(Boolean)
+        : [],
+    );
+    const relevantLines = workerPaneIdSet.size > 0
+      ? lines.filter((line) => workerPaneIdSet.has(line.split(/\s+/, 1)[0] || ''))
+      : lines;
+    return { alive: relevantLines.length > 0, paneCount: relevantLines.length };
   } catch {
     return { alive: false, paneCount: 0 };
   }
@@ -190,13 +198,6 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     } catch {
       // ignore
     }
-    if (!tmuxSession && !leaderPaneId) continue;
-    const tmuxTarget = leaderPaneId;
-
-    const paneStatus = tmuxSession
-      ? await checkWorkerPanesAlive(tmuxSession)
-      : { alive: false, paneCount: 0 };
-
     let mailbox = null;
     try {
       const mailboxPath = join(omxDir, 'state', 'team', teamName, 'mailbox', 'leader-fixed.json');
@@ -211,6 +212,14 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     const workerNames = Array.isArray(workers)
       ? workers.map((w) => safeString(w && w.name ? w.name : '')).filter(Boolean)
       : [];
+    const workerPaneIds = Array.isArray(workers)
+      ? workers.map((w) => safeString(w && w.pane_id ? w.pane_id : '')).filter(Boolean)
+      : [];
+    if (!tmuxSession && !leaderPaneId) continue;
+    const tmuxTarget = leaderPaneId;
+    const paneStatus = tmuxSession
+      ? await checkWorkerPanesAlive(tmuxSession, workerPaneIds)
+      : { alive: false, paneCount: 0 };
     const workerStates = workerNames.length > 0
       ? await Promise.all(workerNames.map((workerName) => readWorkerStatusState(stateDir, teamName, workerName)))
       : [];
