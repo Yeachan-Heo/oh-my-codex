@@ -28,6 +28,7 @@ import {
   assignTask,
   sendWorkerMessage,
   resolveWorkerLaunchArgsFromEnv,
+  waitForClaudeStartupEvidence,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
   type TeamRuntime,
 } from '../runtime.js';
@@ -295,6 +296,51 @@ describe('runtime', () => {
     assert.ok(geminiLog);
     assert.doesNotMatch(claudeLog ?? '', /thinking_level=/);
     assert.doesNotMatch(geminiLog ?? '', /thinking_level=/);
+  });
+
+  it('waitForClaudeStartupEvidence requires first-start ACK/task progress before startup dispatch is treated as settled', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-claude-startup-'));
+    try {
+      await initTeamState('claude-startup', 'startup evidence test', 'executor', 1, cwd);
+
+      const none = await waitForClaudeStartupEvidence({
+        teamName: 'claude-startup',
+        workerName: 'worker-1',
+        cwd,
+        timeoutMs: 25,
+        pollMs: 5,
+      });
+      assert.equal(none, 'none');
+
+      await sendWorkerMessage('claude-startup', 'worker-1', 'leader-fixed', 'ACK', cwd);
+      const ack = await waitForClaudeStartupEvidence({
+        teamName: 'claude-startup',
+        workerName: 'worker-1',
+        cwd,
+        timeoutMs: 25,
+        pollMs: 5,
+      });
+      assert.equal(ack, 'leader_ack');
+
+      await writeAtomic(
+        join(cwd, '.omx', 'state', 'team', 'claude-startup', 'workers', 'worker-1', 'status.json'),
+        JSON.stringify({
+          state: 'working',
+          current_task_id: 'task-1',
+          updated_at: new Date().toISOString(),
+        }, null, 2),
+      );
+      const taskClaim = await waitForClaudeStartupEvidence({
+        teamName: 'claude-startup',
+        workerName: 'worker-1',
+        cwd,
+        timeoutMs: 25,
+        pollMs: 5,
+      });
+      assert.equal(taskClaim, 'task_claim');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it('resolveWorkerLaunchArgsFromEnv logs source=none/default-none when thinking is not explicit', () => {

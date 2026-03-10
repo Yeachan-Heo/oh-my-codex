@@ -216,6 +216,8 @@ interface ShutdownGateCounts {
 const MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
 const TEAM_STATE_ROOT_ENV = 'OMX_TEAM_STATE_ROOT';
 const TEAM_LEADER_CWD_ENV = 'OMX_TEAM_LEADER_CWD';
+const CLAUDE_STARTUP_EVIDENCE_TIMEOUT_MS = 2_000;
+const CLAUDE_STARTUP_EVIDENCE_POLL_MS = 100;
 
 interface PromptWorkerHandle {
   child: ChildProcessByStdio<Writable, null, null>;
@@ -233,6 +235,46 @@ function resolveWorkerReadyTimeoutMs(env: NodeJS.ProcessEnv): number {
   const parsed = Number.parseInt(String(raw ?? ''), 10);
   if (Number.isFinite(parsed) && parsed >= 5_000) return parsed;
   return 45_000;
+}
+
+type ClaudeStartupEvidence = 'task_claim' | 'worker_progress' | 'leader_ack' | 'none';
+
+async function readClaudeStartupEvidence(
+  teamName: string,
+  workerName: string,
+  cwd: string,
+): Promise<ClaudeStartupEvidence> {
+  const status = await readWorkerStatus(teamName, workerName, cwd);
+  if (typeof status.current_task_id === 'string' && status.current_task_id.trim() !== '') {
+    return 'task_claim';
+  }
+  if (status.state === 'working' || status.state === 'blocked' || status.state === 'done' || status.state === 'failed') {
+    return 'worker_progress';
+  }
+  const leaderMailbox = await listMailboxMessages(teamName, 'leader-fixed', cwd).catch(() => []);
+  if (leaderMailbox.some((message) => message?.from_worker === workerName)) {
+    return 'leader_ack';
+  }
+  return 'none';
+}
+
+export async function waitForClaudeStartupEvidence(params: {
+  teamName: string;
+  workerName: string;
+  cwd: string;
+  timeoutMs?: number;
+  pollMs?: number;
+}): Promise<ClaudeStartupEvidence> {
+  const timeoutMs = Math.max(0, Math.floor(params.timeoutMs ?? CLAUDE_STARTUP_EVIDENCE_TIMEOUT_MS));
+  const pollMs = Math.max(25, Math.floor(params.pollMs ?? CLAUDE_STARTUP_EVIDENCE_POLL_MS));
+  const deadline = Date.now() + timeoutMs;
+
+  while (true) {
+    const evidence = await readClaudeStartupEvidence(params.teamName, params.workerName, params.cwd);
+    if (evidence !== 'none') return evidence;
+    if (Date.now() >= deadline) return 'none';
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
 }
 
 function shouldSkipWorkerReadyWait(env: NodeJS.ProcessEnv): boolean {
@@ -867,11 +909,13 @@ export async function startTeam(
             workerName,
             workerIndex: i,
             paneId,
+            workerCli: workerCliPlan[i - 1],
             inbox,
             triggerMessage: trigger,
             cwd: leaderCwd,
             dispatchPolicy,
             inboxCorrelationKey: `startup:${workerName}`,
+            requireClaudeStartupEvidence: true,
           });
           if (dispatchOutcome.ok) break;
           if (attempt < maxStartupDispatchRetries) {
@@ -1825,13 +1869,28 @@ async function dispatchCriticalInboxInstruction(params: {
   workerName: string;
   workerIndex: number;
   paneId?: string;
+  workerCli?: TeamWorkerCli;
   inbox: string;
   triggerMessage: string;
   cwd: string;
   dispatchPolicy: TeamPolicy;
   inboxCorrelationKey: string;
+  requireClaudeStartupEvidence?: boolean;
 }): Promise<DispatchOutcome> {
-  const { teamName, config, workerName, workerIndex, paneId, inbox, triggerMessage, cwd, dispatchPolicy, inboxCorrelationKey } = params;
+  const {
+    teamName,
+    config,
+    workerName,
+    workerIndex,
+    paneId,
+    workerCli,
+    inbox,
+    triggerMessage,
+    cwd,
+    dispatchPolicy,
+    inboxCorrelationKey,
+    requireClaudeStartupEvidence,
+  } = params;
 
   if (config.worker_launch_mode === 'prompt') {
     return await queueInboxInstruction({
@@ -1885,8 +1944,27 @@ async function dispatchCriticalInboxInstruction(params: {
     timeoutMs: dispatchPolicy.dispatch_ack_timeout_ms,
     pollMs: 50,
   });
-  if (receipt && (receipt.status === 'notified' || receipt.status === 'delivered')) {
-    return { ok: true, transport: 'hook', reason: `hook_receipt_${receipt.status}`, request_id: queued.request_id };
+  if (receipt?.status === 'delivered') {
+    return { ok: true, transport: 'hook', reason: 'hook_receipt_delivered', request_id: queued.request_id };
+  }
+  let claudeStartupEvidence: ClaudeStartupEvidence = 'none';
+  if (receipt?.status === 'notified') {
+    if (!(requireClaudeStartupEvidence && workerCli === 'claude')) {
+      return { ok: true, transport: 'hook', reason: 'hook_receipt_notified', request_id: queued.request_id };
+    }
+    claudeStartupEvidence = await waitForClaudeStartupEvidence({
+      teamName,
+      workerName,
+      cwd,
+    });
+    if (claudeStartupEvidence !== 'none') {
+      return {
+        ok: true,
+        transport: 'hook',
+        reason: `hook_receipt_notified_with_${claudeStartupEvidence}`,
+        request_id: queued.request_id,
+      };
+    }
   }
   if (receipt?.status === 'failed') {
     const fallback = await notifyWorkerOutcome(config, workerIndex, triggerMessage, paneId);
@@ -1923,6 +2001,12 @@ async function dispatchCriticalInboxInstruction(params: {
   }
 
   const fallback = await notifyWorkerOutcome(config, workerIndex, triggerMessage, paneId);
+  const claudeStartupFallbackLabel = receipt?.status === 'notified' && requireClaudeStartupEvidence && workerCli === 'claude'
+    ? 'claude_startup_no_evidence'
+    : null;
+  const fallbackFailureReason = claudeStartupFallbackLabel
+    ? `${claudeStartupFallbackLabel}_fallback_failed:${fallback.reason}`
+    : `fallback_attempted_but_unconfirmed:${fallback.reason}`;
   if (fallback.ok) {
     const marked = await markDispatchRequestNotified(
       teamName,
@@ -1943,7 +2027,9 @@ async function dispatchCriticalInboxInstruction(params: {
     return {
       ok: true,
       transport: fallback.transport,
-      reason: `hook_timeout_fallback_confirmed:${fallback.reason}`,
+      reason: claudeStartupFallbackLabel
+        ? `${claudeStartupFallbackLabel}_fallback_confirmed:${fallback.reason}`
+        : `hook_timeout_fallback_confirmed:${fallback.reason}`,
       request_id: queued.request_id,
     };
   }
@@ -1955,14 +2041,14 @@ async function dispatchCriticalInboxInstruction(params: {
       queued.request_id,
       current.status,
       'failed',
-      { last_reason: `fallback_attempted_but_unconfirmed:${fallback.reason}` },
+      { last_reason: fallbackFailureReason },
       cwd,
     ).catch(() => {});
   }
   return {
     ok: false,
     transport: fallback.transport,
-    reason: `fallback_attempted_but_unconfirmed:${fallback.reason}`,
+    reason: fallbackFailureReason,
     request_id: queued.request_id,
   };
 }
