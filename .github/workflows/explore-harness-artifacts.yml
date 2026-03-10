@@ -1,0 +1,98 @@
+name: Explore Harness Artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: explore-harness-artifacts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-harness:
+    name: Build harness (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: omx-explore-harness-linux-x64
+            binary_path: bin/omx-explore-harness
+          - os: macos-latest
+            artifact_name: omx-explore-harness-macos-x64
+            binary_path: bin/omx-explore-harness
+          - os: windows-latest
+            artifact_name: omx-explore-harness-windows-x64
+            binary_path: bin/omx-explore-harness.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build explore harness release binary
+        run: npm run build:explore:release
+
+      - name: Prepare release bundle
+        shell: bash
+        run: |
+          mkdir -p release/${{ matrix.artifact_name }}
+          cp "${{ matrix.binary_path }}" "release/${{ matrix.artifact_name }}/"
+          cp bin/omx-explore-harness.meta.json "release/${{ matrix.artifact_name }}/"
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const outDir = path.join(process.cwd(), 'release', process.env.ARTIFACT_NAME);
+          const manifestPath = path.join(outDir, 'release-manifest.json');
+          const metadataPath = path.join(outDir, 'omx-explore-harness.meta.json');
+          const meta = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+          const manifest = {
+            version: process.env.GITHUB_REF_NAME || 'dev',
+            artifact_name: process.env.ARTIFACT_NAME,
+            platform: meta.platform,
+            arch: meta.arch,
+            binary: meta.binaryName,
+            generated_at: new Date().toISOString(),
+            source: 'github-actions',
+          };
+          fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+          NODE
+        env:
+          ARTIFACT_NAME: ${{ matrix.artifact_name }}
+
+      - name: Upload explore harness artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: release/${{ matrix.artifact_name }}/
+          if-no-files-found: error
+
+  release-manifest-summary:
+    name: Release Manifest Summary
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    needs: [build-harness]
+    steps:
+      - name: Write release summary
+        run: |
+          {
+            echo '## Explore Harness Release Assets'
+            echo ''
+            echo '- omx-explore-harness-linux-x64'
+            echo '- omx-explore-harness-macos-x64'
+            echo '- omx-explore-harness-windows-x64'
+            echo ''
+            echo 'Each uploaded artifact now contains:'
+            echo '- native harness binary'
+            echo '- `omx-explore-harness.meta.json`'
+            echo '- `release-manifest.json`'
+          } >> "$GITHUB_STEP_SUMMARY"

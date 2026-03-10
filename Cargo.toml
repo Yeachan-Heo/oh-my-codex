@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/omx-cli", "crates/omx-process"]
+members = ["crates/omx-cli", "crates/omx-process", "crates/omx-explore"]
 resolver = "2"
 
 [workspace.package]

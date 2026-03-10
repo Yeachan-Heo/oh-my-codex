@@ -55,6 +55,24 @@ describe('generateOverlay', () => {
     assert.doesNotMatch(defaultOverlay, /\*\*Orchestration Mode:\*\* team/);
   });
 
+  it('adds advisory explore routing guidance only when USE_OMX_EXPLORE_CMD is enabled', async () => {
+    const previous = process.env.USE_OMX_EXPLORE_CMD;
+    try {
+      delete process.env.USE_OMX_EXPLORE_CMD;
+      const disabledOverlay = await generateOverlay(tempDir, 'explore-routing-off');
+      assert.doesNotMatch(disabledOverlay, /\*\*Explore Command Preference:\*\*/);
+
+      process.env.USE_OMX_EXPLORE_CMD = '1';
+      const enabledOverlay = await generateOverlay(tempDir, 'explore-routing-on');
+      assert.match(enabledOverlay, /\*\*Explore Command Preference:\*\* enabled via `USE_OMX_EXPLORE_CMD`/);
+      assert.match(enabledOverlay, /strongly prefer `omx explore`/);
+      assert.match(enabledOverlay, /advisory steering/i);
+    } finally {
+      if (typeof previous === 'string') process.env.USE_OMX_EXPLORE_CMD = previous;
+      else delete process.env.USE_OMX_EXPLORE_CMD;
+    }
+  });
+
   it('generates overlay with active modes', async () => {
     const sessionId = 'test-session-2';
     const sessionDir = join(tempDir, '.omx', 'state', 'sessions', sessionId);

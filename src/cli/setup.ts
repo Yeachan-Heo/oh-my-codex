@@ -591,6 +591,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log("  3. Skills are available via /skills or implicit matching");
   console.log("  4. The AGENTS.md orchestration brain is loaded automatically");
   console.log("  5. Native agent roles registered in config.toml [agents.*]");
+  console.log('  6. "omx explore" prefers a packaged native harness; source installs still need Rust (cargo) unless OMX_EXPLORE_BIN is set');
   if (isGitHubCliConfigured()) {
     console.log("\nSupport the project: gh repo star Yeachan-Heo/oh-my-codex");
   }

@@ -1,0 +1,8 @@
+[package]
+name = "omx-explore-harness"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "omx-explore-harness"
+path = "src/main.rs"
