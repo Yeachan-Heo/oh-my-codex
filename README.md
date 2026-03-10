@@ -247,7 +247,7 @@ Packaging / install notes:
 - `npm pack` / publish now builds and ships a native `bin/omx-explore-harness` binary for the publisher platform, and runtime prefers that packaged binary before falling back to `cargo run`.
 - If no packaged native binary matches the current install, runtime falls back to `cargo run --manifest-path crates/omx-explore/Cargo.toml -- ...`, so source-based installs still need a Rust toolchain unless you point `OMX_EXPLORE_BIN` at a prebuilt harness binary.
 - GitHub Actions now includes a dedicated multi-platform artifact workflow (`.github/workflows/explore-harness-artifacts.yml`) that builds release harness binaries for Linux, macOS, and Windows.
-- Tag builds now upload per-platform release bundles containing the native binary, `omx-explore-harness.meta.json`, and a small `release-manifest.json` for future release/install consumption.
+- Tag builds now upload per-platform release bundles containing the native binary, `omx-explore-harness.meta.json`, and a small `release-manifest.json`, then attach zipped per-platform bundles plus an aggregate `explore-harness-release-manifest.json` to the matching GitHub Release.
 - Helpful local commands:
 
 ```bash
