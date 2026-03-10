@@ -11,7 +11,13 @@ import {
   TEAM_API_OPERATIONS,
   type TeamApiOperation,
 } from '../api-interop.js';
-import { initTeamState, createTask } from '../state.js';
+import {
+  initTeamState,
+  createTask,
+  sendDirectMessage,
+  enqueueDispatchRequest,
+  readDispatchRequest,
+} from '../state.js';
 
 async function setupTeam(name: string): Promise<{ cwd: string; cleanup: () => Promise<void> }> {
   const cwd = await mkdtemp(join(tmpdir(), `omx-interop-${name}-`));
@@ -252,7 +258,7 @@ describe('executeTeamApiOperation: mailbox-list', () => {
 // ─── mailbox-mark-delivered ───────────────────────────────────────────────
 
 describe('executeTeamApiOperation: mailbox-mark-delivered', () => {
-  it('marks a message delivered after sending', async () => {
+  it('marks a message delivered after sending and promotes matching dispatch receipt', async () => {
     const { cwd, cleanup } = await setupTeam('mark-dlv');
     try {
       // Ensure the worker-2 mailbox directory exists so sendDirectMessage can write
@@ -260,16 +266,49 @@ describe('executeTeamApiOperation: mailbox-mark-delivered', () => {
       const sendResult = await executeTeamApiOperation('send-message', {
         team_name: 'mark-dlv', from_worker: 'worker-1', to_worker: 'worker-2', body: 'ack',
       }, cwd);
-      // Send must succeed to test mark-delivered
       assert.equal(sendResult.ok, true);
       const msg = sendResult.data.message as Record<string, unknown>;
       const msgId = String(msg?.message_id ?? '');
       assert.ok(msgId, 'message should have a message_id');
+
+      const dispatch = await enqueueDispatchRequest('mark-dlv', {
+        kind: 'mailbox',
+        to_worker: 'worker-2',
+        worker_index: 2,
+        message_id: msgId,
+        trigger_message: 'check mailbox',
+      }, cwd);
+
       const result = await executeTeamApiOperation('mailbox-mark-delivered', {
         team_name: 'mark-dlv', worker: 'worker-2', message_id: msgId,
       }, cwd);
-      // Mark operation returns a valid envelope (pass or fail based on state layer)
-      assert.ok(typeof result.ok === 'boolean');
+      assert.equal(result.ok, true);
+      if (!result.ok) throw new Error('expected successful mailbox-mark-delivered result');
+      assert.equal(result.data.dispatch_request_id, dispatch.request.request_id);
+      assert.equal(result.data.dispatch_updated, true);
+
+      const updatedDispatch = await readDispatchRequest('mark-dlv', dispatch.request.request_id, cwd);
+      assert.equal(updatedDispatch?.status, 'delivered');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('reports when no matching mailbox dispatch request exists', async () => {
+    const { cwd, cleanup } = await setupTeam('mark-dlv-no-dispatch');
+    try {
+      const message = await sendDirectMessage('mark-dlv-no-dispatch', 'worker-1', 'worker-2', 'ack', cwd);
+
+      const result = await executeTeamApiOperation('mailbox-mark-delivered', {
+        team_name: 'mark-dlv-no-dispatch',
+        worker: 'worker-2',
+        message_id: message.message_id,
+      }, cwd);
+
+      assert.equal(result.ok, true);
+      if (!result.ok) throw new Error('expected success envelope');
+      assert.equal(result.data.dispatch_request_id, null);
+      assert.equal(result.data.dispatch_updated, false);
     } finally {
       await cleanup();
     }

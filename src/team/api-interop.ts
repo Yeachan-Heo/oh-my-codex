@@ -17,6 +17,9 @@ import {
   teamListMailbox as listMailboxMessages,
   teamMarkMessageDelivered as markMessageDelivered,
   teamMarkMessageNotified as markMessageNotified,
+  teamListDispatchRequests,
+  teamMarkDispatchRequestNotified,
+  teamMarkDispatchRequestDelivered,
   teamCreateTask,
   teamReadTask,
   teamListTasks,
@@ -113,6 +116,33 @@ export type TeamApiOperation = typeof TEAM_API_OPERATIONS[number];
 export type TeamApiEnvelope =
   | { ok: true; operation: TeamApiOperation; data: Record<string, unknown> }
   | { ok: false; operation: TeamApiOperation | 'unknown'; error: { code: string; message: string } };
+
+async function markLatestMailboxDispatchDelivered(
+  teamName: string,
+  worker: string,
+  messageId: string,
+  cwd: string,
+): Promise<{ matched_request_id: string | null; dispatch_updated: boolean }> {
+  const requests = await teamListDispatchRequests(teamName, cwd, { kind: 'mailbox', to_worker: worker });
+  const matching = requests
+    .filter((request) => request.message_id === messageId)
+    .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+
+  const latest = matching[0];
+  if (!latest) {
+    return { matched_request_id: null, dispatch_updated: false };
+  }
+
+  if (latest.status === 'pending') {
+    await teamMarkDispatchRequestNotified(teamName, latest.request_id, { message_id: messageId }, cwd);
+  }
+
+  const delivered = await teamMarkDispatchRequestDelivered(teamName, latest.request_id, { message_id: messageId }, cwd);
+  return {
+    matched_request_id: latest.request_id,
+    dispatch_updated: delivered?.status === 'delivered',
+  };
+}
 
 function isFiniteInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && Number.isFinite(value);
@@ -310,7 +340,18 @@ export async function executeTeamApiOperation(
           return { ok: false, operation, error: { code: 'invalid_input', message: 'team_name, worker, message_id are required' } };
         }
         const updated = await markMessageDelivered(teamName, worker, messageId, cwd);
-        return { ok: true, operation, data: { worker, message_id: messageId, updated } };
+        const dispatch = await markLatestMailboxDispatchDelivered(teamName, worker, messageId, cwd);
+        return {
+          ok: true,
+          operation,
+          data: {
+            worker,
+            message_id: messageId,
+            updated,
+            dispatch_request_id: dispatch.matched_request_id,
+            dispatch_updated: dispatch.dispatch_updated,
+          },
+        };
       }
       case 'mailbox-mark-notified': {
         const teamName = String(args.team_name || '').trim();
