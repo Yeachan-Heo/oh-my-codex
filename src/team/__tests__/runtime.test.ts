@@ -813,6 +813,43 @@ process.on('SIGTERM', () => {
     }
   });
 
+
+
+  it('monitorTeam deactivates root team-state.json when the local phase becomes terminal', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-root-team-state-'));
+    try {
+      await initTeamState('team-root-sync', 'root sync test', 'executor', 1, cwd);
+      await createTask(
+        'team-root-sync',
+        {
+          subject: 'code change',
+          description: 'implement feature',
+          status: 'completed',
+          owner: 'worker-1',
+          requires_code_change: false,
+        },
+        cwd,
+      );
+      const rootStatePath = join(cwd, '.omx', 'state', 'team-state.json');
+      await writeFile(rootStatePath, JSON.stringify({
+        active: true,
+        current_phase: 'team-exec',
+        team_name: 'team-root-sync',
+      }, null, 2));
+
+      const snapshot = await monitorTeam('team-root-sync', cwd);
+      assert.ok(snapshot);
+      assert.equal(snapshot?.phase, 'complete');
+
+      const rootState = JSON.parse(await readFile(rootStatePath, 'utf-8')) as Record<string, unknown>;
+      assert.equal(rootState.active, false);
+      assert.equal(rootState.current_phase, 'complete');
+      assert.ok(typeof rootState.completed_at === 'string' && rootState.completed_at.length > 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('monitorTeam emits worker_state_changed, worker_idle, and task_completed events based on transitions', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-'));
     try {

@@ -104,6 +104,7 @@ import { resolveCanonicalTeamStateRoot } from './state-root.js';
 import { inferPhaseTargetFromTaskCounts, reconcilePhaseStateForMonitor } from './phase-controller.js';
 import { getTeamTmuxSessions } from '../notifications/tmux.js';
 import { hasStructuredVerificationEvidence } from '../verification/verifier.js';
+import { readModeState, updateModeState } from '../modes/base.js';
 import {
   ensureWorktree,
   planWorktreeTarget,
@@ -144,6 +145,41 @@ export interface TeamSnapshot {
     total_ms: number;
     updated_at: string;
   };
+}
+
+async function syncRootTeamModeStateOnTerminalPhase(
+  teamName: string,
+  phase: TeamPhase | TerminalPhase,
+  cwd: string,
+): Promise<void> {
+  if (phase !== 'complete' && phase !== 'failed' && phase !== 'cancelled') return;
+
+  try {
+    const teamState = await readModeState('team', cwd);
+    if (!teamState) return;
+
+    const stateTeamName = typeof teamState.team_name === 'string' ? teamState.team_name.trim() : '';
+    if (stateTeamName && stateTeamName !== teamName) return;
+
+    const alreadySynced = teamState.active === false
+      && teamState.current_phase === phase
+      && typeof teamState.completed_at === 'string'
+      && teamState.completed_at.length > 0;
+    if (alreadySynced) return;
+
+    const updates: Record<string, unknown> = {
+      active: false,
+      current_phase: phase,
+      team_name: teamName,
+    };
+    if (typeof teamState.completed_at !== 'string' || !teamState.completed_at) {
+      updates.completed_at = new Date().toISOString();
+    }
+
+    await updateModeState('team', updates, cwd);
+  } catch {
+    // Best-effort compatibility sync only.
+  }
 }
 
 /** Runtime handle returned by startTeam */
@@ -1097,6 +1133,7 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
   const phaseState: TeamPhaseState = reconcilePhaseStateForMonitor(persistedPhase, targetPhase);
   await writeTeamPhaseState(sanitized, phaseState, cwd);
   const phase: TeamPhase | TerminalPhase = phaseState.current_phase;
+  await syncRootTeamModeStateOnTerminalPhase(sanitized, phase, cwd);
 
   for (const taskId of reclaimedTaskIds) {
     recommendations.push(`Reclaimed expired claim for task-${taskId}`);

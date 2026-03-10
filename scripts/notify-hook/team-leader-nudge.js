@@ -9,8 +9,10 @@ import { asNumber, safeString } from './utils.js';
 import { readJsonIfExists, getScopedStateDirsForCurrentSession } from './state-io.js';
 import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
+import { checkPaneReadyForTeamSendKeys } from './team-tmux-guard.js';
 import { DEFAULT_MARKER } from '../tmux-hook-engine.js';
 const LEADER_PANE_MISSING_NO_INJECTION_REASON = 'leader_pane_missing_no_injection';
+const LEADER_PANE_SHELL_NO_INJECTION_REASON = 'leader_pane_shell_no_injection';
 const LEADER_NOTIFICATION_DEFERRED_TYPE = 'leader_notification_deferred';
 
 export function resolveLeaderNudgeIntervalMs() {
@@ -119,7 +121,7 @@ export async function emitTeamNudgeEvent(cwd, teamName, reason, nowIso) {
   }
 }
 
-async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, nowIso, { tmuxSession = '', leaderPaneId = '', sourceType = 'leader_nudge' } = {}) {
+async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, nowIso, { tmuxSession = '', leaderPaneId = '', paneCurrentCommand = '', sourceType = 'leader_nudge' } = {}) {
   const eventsDir = join(cwd, '.omx', 'state', 'team', teamName, 'events');
   const eventsPath = join(eventsDir, 'events.ndjson');
   try {
@@ -135,6 +137,7 @@ async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, nowIso, { tmu
       tmux_session: tmuxSession || null,
       leader_pane_id: leaderPaneId || null,
       tmux_injection_attempted: false,
+      pane_current_command: paneCurrentCommand || null,
       source_type: sourceType,
     };
     await appendFile(eventsPath, JSON.stringify(event) + '\n');
@@ -292,6 +295,36 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
           leader_pane_id: leaderPaneId || null,
           tmux_session: tmuxSession || null,
           tmux_injection_attempted: false,
+          source_type: 'leader_nudge',
+        });
+      } catch { /* ignore */ }
+      continue;
+    }
+
+    const paneGuard = await checkPaneReadyForTeamSendKeys(tmuxTarget);
+    if (!paneGuard.ok) {
+      nudgeState.last_nudged_by_team[teamName] = { at: nowIso, last_message_id: newestId || prevMsgId || '' };
+      if (shouldSendAllIdleNudge) {
+        nudgeState.last_idle_nudged_by_team[teamName] = { at: nowIso, worker_count: workerNames.length };
+      }
+      await emitLeaderNudgeDeferredEvent(cwd, teamName, LEADER_PANE_SHELL_NO_INJECTION_REASON, nowIso, {
+        tmuxSession,
+        leaderPaneId,
+        paneCurrentCommand: paneGuard.paneCurrentCommand,
+        sourceType: 'leader_nudge',
+      });
+      try {
+        await logTmuxHookEvent(logsDir, {
+          timestamp: nowIso,
+          type: LEADER_NOTIFICATION_DEFERRED_TYPE,
+          team: teamName,
+          worker: 'leader-fixed',
+          to_worker: 'leader-fixed',
+          reason: LEADER_PANE_SHELL_NO_INJECTION_REASON,
+          leader_pane_id: leaderPaneId || null,
+          tmux_session: tmuxSession || null,
+          tmux_injection_attempted: false,
+          pane_current_command: paneGuard.paneCurrentCommand || null,
           source_type: 'leader_nudge',
         });
       } catch { /* ignore */ }

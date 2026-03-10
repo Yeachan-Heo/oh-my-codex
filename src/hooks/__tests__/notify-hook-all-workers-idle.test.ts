@@ -203,6 +203,90 @@ describe('notify-hook all-workers-idle notification', () => {
     });
   });
 
+
+  it('does not inject all-workers-idle into a shell leader pane', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'shell-pane-all-idle';
+      const teamDir = join(stateDir, 'team', teamName);
+      const workersDir = join(teamDir, 'workers');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(workersDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'devsess:81',
+        leader_pane_id: '%181',
+        workers: [
+          { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
+          { name: 'worker-2', index: 2, role: 'executor', assigned_tasks: [] },
+        ],
+      });
+
+      for (const worker of ['worker-1', 'worker-2']) {
+        await mkdir(join(workersDir, worker), { recursive: true });
+        await writeJson(join(workersDir, worker, 'status.json'), {
+          state: 'idle',
+          updated_at: new Date().toISOString(),
+        });
+      }
+
+      const fakeTmux = `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  target=""
+  format=""
+  while (($#)); do
+    case "$1" in
+      -p) shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) format="$1"; shift ;;
+    esac
+  done
+  if [[ "$format" == "#{pane_current_command}" && "$target" == "%181" ]]; then
+    echo "zsh"
+    exit 0
+  fi
+  exit 0
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  echo "%1 12345"
+  exit 0
+fi
+exit 0
+`;
+      await writeFile(fakeTmuxPath, fakeTmux);
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHookAsWorker(cwd, fakeBinDir, `${teamName}/worker-1`);
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.doesNotMatch(tmuxLog, /send-keys -t %181/, 'must not inject into shell pane');
+
+      const eventsPath = join(teamDir, 'events', 'events.ndjson');
+      assert.ok(existsSync(eventsPath), 'events.ndjson should exist');
+      const events = (await readFile(eventsPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const deferred = events.find((event: { type?: string; reason?: string }) =>
+        event.type === 'leader_notification_deferred' && event.reason === 'leader_pane_shell_no_injection');
+      assert.ok(deferred, 'should defer shell-pane all-workers-idle notification');
+      assert.equal(deferred.pane_current_command, 'zsh');
+    });
+  });
+
   it('targets leader pane id when leader_pane_id is present', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');

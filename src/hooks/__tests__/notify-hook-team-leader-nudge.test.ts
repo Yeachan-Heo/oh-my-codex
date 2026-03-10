@@ -275,6 +275,93 @@ describe('notify-hook team leader nudge', () => {
     });
   });
 
+
+  it('does not inject leader nudge into a shell pane', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'shell-guard';
+      const teamDir = join(stateDir, 'team', teamName);
+      const mailboxDir = join(teamDir, 'mailbox');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(mailboxDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(stateDir, 'team-state.json'), {
+        active: true,
+        team_name: teamName,
+        current_phase: 'team-exec',
+      });
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'shell-guard:0',
+        leader_pane_id: '%71',
+      });
+      await writeJson(join(mailboxDir, 'leader-fixed.json'), {
+        worker: 'leader-fixed',
+        messages: [
+          {
+            message_id: 'm1',
+            from_worker: 'worker-1',
+            to_worker: 'leader-fixed',
+            body: 'ACK',
+            created_at: '2026-02-14T00:00:00.000Z',
+          },
+        ],
+      });
+
+      const fakeTmux = `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  target=""
+  format=""
+  while (($#)); do
+    case "$1" in
+      -p) shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) format="$1"; shift ;;
+    esac
+  done
+  if [[ "$format" == "#{pane_current_command}" && "$target" == "%71" ]]; then
+    echo "zsh"
+  fi
+  exit 0
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  echo "%1 12345"
+  exit 0
+fi
+exit 0
+`;
+      await writeFile(fakeTmuxPath, fakeTmux);
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir);
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.doesNotMatch(tmuxLog, /send-keys -t %71/, 'should not inject into a shell pane');
+
+      const eventsPath = join(teamDir, 'events', 'events.ndjson');
+      const events = (await readFile(eventsPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const deferred = events.find((entry: { type?: string; reason?: string }) =>
+        entry.type === 'leader_notification_deferred' && entry.reason === 'leader_pane_shell_no_injection');
+      assert.ok(deferred, 'should emit deferred event for shell-pane leader');
+      assert.equal(deferred.pane_current_command, 'zsh');
+    });
+  });
+
   it('nudges when worker panes are alive and leader is stale (no recent HUD turn)', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
