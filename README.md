@@ -58,8 +58,13 @@ OMX is best used as an **outer CLI orchestration layer**:
 - **Capability/state plane (MCP):** task state, mailbox, memory, diagnostics tools
 
 Practical mode split:
-- **`$team` / `omx team`**: durable, inspectable, resumable multi-worker execution
+- **`$team` / `omx team`**: durable, inspectable, resumable multi-worker execution with live lanes, shared blockers, and visible handoff / rebalancing when one worker gets stuck
 - **`$ultrawork`**: lightweight parallel fanout for independent tasks (component mode)
+
+Why team mode exists even when ultrawork already exists:
+- Use **ultrawork** when tasks are mostly independent and the leader can merge results afterward.
+- Use **team mode** when the work benefits from shared situational awareness: workers can discover blockers early, hand work across lanes, and keep execution visible through tmux panes plus durable state.
+- Team mode is the better fit for orchestration-heavy or edge-case-heavy work where runtime control, recovery, and inspectability matter as much as raw fanout.
 
 Low-token team profile example:
 
@@ -313,6 +318,30 @@ omx team shutdown <team-name>
 ```
 
 Important rule: do not shutdown while tasks are still `in_progress` unless aborting.
+
+### Recommended high-control workflow: `ralplan -> team -> ralph`
+
+For contributors who want tighter control than `autopilot` but more coordination than `$ultrawork`, the strongest workflow is:
+
+```text
+ralplan -> team -> ralph
+```
+
+Why this combination works well:
+- **`ralplan`** turns a rough request into a spec, acceptance checks, and a lane-ready breakdown before workers start.
+- **`$team`** executes that plan with durable worker coordination, visible runtime state, and better handling of blockers than simple fanout.
+- **`$ralph`** keeps the loop alive until verification is real, evidence is fresh, and cleanup is explicit.
+
+In practice, this is the right workflow when you want to stay in control of planning and orchestration while still getting parallel execution. `autopilot` can chain these modes for you, but advanced users will often prefer running the sequence directly so they can tune worker roles, follow-up stages, and verification thresholds themselves.
+
+Example:
+
+```bash
+omx ask --agent-prompt planner "ralplan: break this feature into worker lanes and acceptance checks"
+omx team 3:executor "execute the approved ralplan with shared runtime coordination"
+```
+
+Planned documentation/product direction: make `ralplan` produce stronger team follow-up guidance by default, including worker placement hints and an explicit follow-up path such as `--followup team`.
 
 ### Ralph Cleanup Policy
 
