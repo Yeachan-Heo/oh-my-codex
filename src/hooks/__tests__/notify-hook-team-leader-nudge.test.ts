@@ -494,6 +494,7 @@ exit 0
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /display-message -p -t %71 #\{pane_current_command\}/);
       assert.doesNotMatch(tmuxLog, /send-keys -t %71/, 'should not inject into a shell pane');
 
       const eventsPath = join(teamDir, 'events', 'events.ndjson');
@@ -502,6 +503,52 @@ exit 0
         entry.type === 'leader_notification_deferred' && entry.reason === 'leader_pane_shell_no_injection');
       assert.ok(deferred, 'should emit deferred event for shell-pane leader');
       assert.equal(deferred.pane_current_command, 'zsh');
+    });
+  });
+
+  it('syncs stale root team-state to inactive when team-local phase is already terminal', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'terminal-sync';
+      const teamDir = join(stateDir, 'team', teamName);
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(teamDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(stateDir, 'team-state.json'), {
+        active: true,
+        team_name: teamName,
+        current_phase: 'team-exec',
+      });
+      await writeJson(join(teamDir, 'phase.json'), {
+        current_phase: 'complete',
+        transitions: [
+          { from: 'team-verify', to: 'complete', at: '2026-03-09T19:20:19.088Z' },
+        ],
+        updated_at: '2026-03-09T19:20:19.088Z',
+      });
+
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir);
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      const syncedState = JSON.parse(await readFile(join(stateDir, 'team-state.json'), 'utf-8'));
+      assert.equal(syncedState.active, false);
+      assert.equal(syncedState.current_phase, 'complete');
+      assert.equal(syncedState.completed_at, '2026-03-09T19:20:19.088Z');
+
+      if (existsSync(tmuxLogPath)) {
+        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+        assert.doesNotMatch(tmuxLog, /send-keys/, 'must not nudge a terminal team');
+      }
     });
   });
 

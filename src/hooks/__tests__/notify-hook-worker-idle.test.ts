@@ -208,6 +208,7 @@ exit 0
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /display-message -p -t %79 #\{pane_current_command\}/);
       assert.doesNotMatch(tmuxLog, /send-keys -t %79/, 'should not inject worker-idle into a shell pane');
 
       const eventsPath = join(teamDir, 'events', 'events.ndjson');
@@ -216,6 +217,10 @@ exit 0
         entry.type === 'leader_notification_deferred' && entry.reason === 'leader_pane_shell_no_injection');
       assert.ok(deferred, 'should emit deferred shell-pane event');
       assert.equal(deferred.pane_current_command, 'zsh');
+
+      const cooldown = JSON.parse(await readFile(join(workersDir, 'worker-1', 'worker-idle-notify.json'), 'utf-8'));
+      assert.equal(cooldown.delivery, 'deferred_shell');
+      assert.equal(cooldown.pane_current_command, 'zsh');
     });
   });
 

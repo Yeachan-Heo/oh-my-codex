@@ -5,7 +5,7 @@
 import { readFile, writeFile, mkdir, appendFile, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { asNumber, safeString } from './utils.js';
+import { asNumber, safeString, isTerminalPhase } from './utils.js';
 import { readJsonIfExists, getScopedStateDirsForCurrentSession } from './state-io.js';
 import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
@@ -84,6 +84,66 @@ export async function isLeaderStale(stateDir, thresholdMs, nowMs) {
   const lastMs = Date.parse(lastTurnAt);
   if (!Number.isFinite(lastMs)) return true;
   return (nowMs - lastMs) >= thresholdMs;
+}
+
+function resolveTerminalAtFromPhaseDoc(parsed, fallbackIso) {
+  const transitions = Array.isArray(parsed && parsed.transitions) ? parsed.transitions : [];
+  for (let idx = transitions.length - 1; idx >= 0; idx -= 1) {
+    const at = safeString(transitions[idx] && transitions[idx].at).trim();
+    if (at) return at;
+  }
+  const updatedAt = safeString(parsed && parsed.updated_at).trim();
+  return updatedAt || fallbackIso;
+}
+
+async function readTeamPhaseSnapshot(stateDir, teamName, nowIso) {
+  const phasePath = join(stateDir, 'team', teamName, 'phase.json');
+  try {
+    if (!existsSync(phasePath)) return { currentPhase: '', terminal: false, completedAt: '' };
+    const parsed = JSON.parse(await readFile(phasePath, 'utf-8'));
+    const currentPhase = safeString(parsed && parsed.current_phase).trim();
+    return {
+      currentPhase,
+      terminal: isTerminalPhase(currentPhase),
+      completedAt: resolveTerminalAtFromPhaseDoc(parsed, nowIso),
+    };
+  } catch {
+    return { currentPhase: '', terminal: false, completedAt: '' };
+  }
+}
+
+async function syncScopedTeamStateFromPhase(teamStatePath, teamName, phaseSnapshot, nowIso) {
+  if (!phaseSnapshot || !phaseSnapshot.terminal) return false;
+  try {
+    if (!existsSync(teamStatePath)) return false;
+    const parsed = JSON.parse(await readFile(teamStatePath, 'utf-8'));
+    if (!parsed || safeString(parsed.team_name).trim() !== teamName) return false;
+
+    let changed = false;
+    if (parsed.active !== false) {
+      parsed.active = false;
+      changed = true;
+    }
+    if (safeString(parsed.current_phase).trim() !== phaseSnapshot.currentPhase) {
+      parsed.current_phase = phaseSnapshot.currentPhase;
+      changed = true;
+    }
+    if (safeString(parsed.completed_at).trim() !== phaseSnapshot.completedAt && phaseSnapshot.completedAt) {
+      parsed.completed_at = phaseSnapshot.completedAt;
+      changed = true;
+    }
+    if (safeString(parsed.last_turn_at).trim() !== nowIso) {
+      parsed.last_turn_at = nowIso;
+      changed = true;
+    }
+
+    if (changed) {
+      await writeFile(teamStatePath, JSON.stringify(parsed, null, 2));
+    }
+    return changed;
+  } catch {
+    return false;
+  }
 }
 
 async function readWorkerStatusSnapshot(stateDir, teamName, workerName) {
@@ -371,7 +431,15 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       const parsed = JSON.parse(await readFile(teamStatePath, 'utf-8'));
       if (!parsed || parsed.active !== true) continue;
       const teamName = safeString(parsed.team_name || '').trim();
-      if (teamName) activeTeamNames.add(teamName);
+      if (!teamName) continue;
+
+      const phaseSnapshot = await readTeamPhaseSnapshot(stateDir, teamName, nowIso);
+      if (phaseSnapshot.terminal) {
+        await syncScopedTeamStateFromPhase(teamStatePath, teamName, phaseSnapshot, nowIso);
+        continue;
+      }
+
+      activeTeamNames.add(teamName);
     }
   } catch {
     // Non-critical
