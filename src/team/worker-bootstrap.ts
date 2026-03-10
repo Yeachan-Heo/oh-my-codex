@@ -437,19 +437,40 @@ Type \`exit\` or press Ctrl+C to end your Codex session.
 `;
 }
 
+function buildInstructionPath(...parts: string[]): string {
+  return join(...parts).replaceAll('\\', '/');
+}
+
 /**
  * Generate the SHORT send-keys trigger message.
  * Always < 200 characters, ASCII-safe.
  */
-export function generateTriggerMessage(workerName: string, teamName: string): string {
-  return `Read .omx/state/team/${teamName}/workers/${workerName}/inbox.md, start work now, then report concrete progress (not ACK-only).`;
+export function generateTriggerMessage(
+  workerName: string,
+  teamName: string,
+  teamStateRoot: string = '.omx/state',
+): string {
+  const inboxPath = buildInstructionPath(teamStateRoot, 'team', teamName, 'workers', workerName, 'inbox.md');
+  if (teamStateRoot !== '.omx/state') {
+    return `Read ${inboxPath}, work now, report progress.`;
+  }
+  return `Read ${inboxPath}, start work now, then report concrete progress (not ACK-only).`;
 }
 
 /**
  * Generate a SHORT trigger for mailbox notifications.
  * Always < 200 characters, ASCII-safe.
  */
-export function generateMailboxTriggerMessage(workerName: string, teamName: string, count: number): string {
+export function generateMailboxTriggerMessage(
+  workerName: string,
+  teamName: string,
+  count: number,
+  teamStateRoot: string = '.omx/state',
+): string {
   const n = Number.isFinite(count) ? Math.max(1, Math.floor(count)) : 1;
-  return `You have ${n} new message(s). Check .omx/state/team/${teamName}/mailbox/${workerName}.json, act now, and reply with concrete progress (not ACK-only).`;
+  const mailboxPath = buildInstructionPath(teamStateRoot, 'team', teamName, 'mailbox', workerName + '.json');
+  if (teamStateRoot !== '.omx/state') {
+    return `${n} new msg(s): check ${mailboxPath}, act and report progress.`;
+  }
+  return `You have ${n} new message(s). Check ${mailboxPath}, act now, and reply with concrete progress (not ACK-only).`;
 }

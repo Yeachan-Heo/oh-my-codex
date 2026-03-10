@@ -245,6 +245,7 @@ interface ShutdownGateCounts {
 const MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
 const TEAM_STATE_ROOT_ENV = 'OMX_TEAM_STATE_ROOT';
 const TEAM_LEADER_CWD_ENV = 'OMX_TEAM_LEADER_CWD';
+const WORKTREE_TRIGGER_STATE_ROOT = '$OMX_TEAM_STATE_ROOT';
 const CLAUDE_STARTUP_EVIDENCE_TIMEOUT_MS = 2_000;
 const CLAUDE_STARTUP_EVIDENCE_POLL_MS = 100;
 
@@ -258,6 +259,10 @@ const previousModelInstructionsFileByTeam = new Map<string, string | undefined>(
 const PROMPT_WORKER_SIGTERM_WAIT_MS = 3_000;
 const PROMPT_WORKER_SIGKILL_WAIT_MS = 2_000;
 const PROMPT_WORKER_EXIT_POLL_MS = 100;
+
+function resolveInstructionStateRoot(worktreePath?: string | null): string | undefined {
+  return worktreePath ? WORKTREE_TRIGGER_STATE_ROOT : undefined;
+}
 
 function resolveWorkerReadyTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = env.OMX_TEAM_READY_TIMEOUT_MS;
@@ -772,7 +777,11 @@ export async function startTeam(
         workerRole,
         rolePromptContent: rolePromptContent ?? undefined,
       });
-      const trigger = generateTriggerMessage(workerName, sanitized);
+      const trigger = generateTriggerMessage(
+        workerName,
+        sanitized,
+        resolveInstructionStateRoot(workerWorkspace.worktreePath),
+      );
       const preferredReasoning = resolveAgentReasoningEffort(workerRole) ?? resolveAgentReasoningEffort(agentType);
       const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(
         process.env,
@@ -1355,7 +1364,11 @@ export async function assignTask(
         workerIndex: workerInfo.index,
         paneId: workerInfo.pane_id,
         inbox,
-        triggerMessage: generateTriggerMessage(workerName, sanitized),
+        triggerMessage: generateTriggerMessage(
+          workerName,
+          sanitized,
+          resolveInstructionStateRoot(workerInfo.worktree_path),
+        ),
         cwd,
         dispatchPolicy,
         inboxCorrelationKey: `assign:${taskId}:${workerName}`,
@@ -1505,7 +1518,11 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
         workerIndex: w.index,
         paneId: w.pane_id,
         inbox: generateShutdownInbox(sanitized, w.name),
-        triggerMessage: generateTriggerMessage(w.name, sanitized),
+        triggerMessage: generateTriggerMessage(
+          w.name,
+          sanitized,
+          resolveInstructionStateRoot(w.worktree_path),
+        ),
         cwd,
         dispatchPolicy,
         inboxCorrelationKey: `shutdown:${w.name}`,
@@ -2320,7 +2337,12 @@ async function deliverPendingMailboxMessages(
     if (!worker.alive) continue;
 
     for (const msg of unnotified) {
-      const triggerMessage = generateMailboxTriggerMessage(worker.name, teamName, 1);
+      const triggerMessage = generateMailboxTriggerMessage(
+        worker.name,
+        teamName,
+        1,
+        resolveInstructionStateRoot(workerInfo.worktree_path),
+      );
       const transportPreference = config.worker_launch_mode === 'prompt'
         ? 'prompt_stdin'
         : (dispatchPolicy.dispatch_mode === 'transport_direct' ? 'transport_direct' : 'hook_preferred_with_fallback');
@@ -2456,7 +2478,12 @@ export async function sendWorkerMessage(
   const recipient = config.workers.find((w) => w.name === toWorker);
   if (!recipient) throw new Error(`Worker ${toWorker} not found in team`);
 
-  const triggerMessage = generateMailboxTriggerMessage(toWorker, sanitized, 1);
+  const triggerMessage = generateMailboxTriggerMessage(
+    toWorker,
+    sanitized,
+    1,
+    resolveInstructionStateRoot(recipient.worktree_path),
+  );
   const transportPreference = config.worker_launch_mode === 'prompt'
     ? 'prompt_stdin'
     : (dispatchPolicy.dispatch_mode === 'transport_direct' ? 'transport_direct' : 'hook_preferred_with_fallback');
@@ -2519,7 +2546,12 @@ export async function broadcastWorkerMessage(
     recipients: config.workers.map((w) => ({ workerName: w.name, workerIndex: w.index, paneId: w.pane_id })),
     body,
     cwd,
-    triggerFor: (workerName) => generateMailboxTriggerMessage(workerName, sanitized, 1),
+    triggerFor: (workerName) => generateMailboxTriggerMessage(
+      workerName,
+      sanitized,
+      1,
+      resolveInstructionStateRoot(config.workers.find((worker) => worker.name === workerName)?.worktree_path),
+    ),
     transportPreference,
     fallbackAllowed: transportPreference === 'hook_preferred_with_fallback',
     notify: async (target, message) =>
@@ -2553,7 +2585,12 @@ export async function broadcastWorkerMessage(
       workerIndex: target.index,
       paneId: target.pane_id,
       messageId: outcome.message_id,
-      triggerMessage: generateMailboxTriggerMessage(target.name, sanitized, 1),
+      triggerMessage: generateMailboxTriggerMessage(
+        target.name,
+        sanitized,
+        1,
+        resolveInstructionStateRoot(target.worktree_path),
+      ),
       config,
       dispatchPolicy,
       cwd,

@@ -70,6 +70,22 @@ function withoutTeamWorkerEnv<T>(fn: () => T): T {
   }
 }
 
+async function waitForFileText(
+  filePath: string,
+  matcher: (content: string) => boolean,
+  timeoutMs: number = 3_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(filePath)) {
+      const content = await readFile(filePath, 'utf-8');
+      if (matcher(content)) return content;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`timed out waiting for ${filePath}`);
+}
+
 describe('runtime', () => {
   it('resolveWorkerLaunchArgsFromEnv injects low-complexity default model when missing', () => {
     const args = resolveWorkerLaunchArgsFromEnv(
@@ -655,6 +671,117 @@ process.on('SIGTERM', () => process.exit(0));
       if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
       else delete process.env.OMX_TEAM_WORKER_CLI;
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('startTeam routes detached worktree worker inbox and mailbox triggers through leader-root state references', async () => {
+    const repo = await initRepo();
+    const binDir = join(repo, 'bin');
+    const fakeCodexPath = join(binDir, 'codex');
+    const logDir = join(repo, 'worker-logs');
+    const stdinLogPath = join(logDir, 'stdin.log');
+    const envLogPath = join(logDir, 'env.json');
+    await mkdir(binDir, { recursive: true });
+    await writeFile(
+      fakeCodexPath,
+      `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const logDir = process.env.OMX_TEST_LOG_DIR;
+fs.mkdirSync(logDir, { recursive: true });
+fs.writeFileSync(path.join(logDir, 'env.json'), JSON.stringify({
+  cwd: process.cwd(),
+  teamStateRoot: process.env.OMX_TEAM_STATE_ROOT || '',
+  worker: process.env.OMX_TEAM_WORKER || '',
+}));
+process.stdin.on('data', (chunk) => {
+  fs.appendFileSync(path.join(logDir, 'stdin.log'), chunk.toString());
+});
+process.stdin.resume();
+setInterval(() => {}, 1000);
+process.on('SIGTERM', () => process.exit(0));
+`,
+      { mode: 0o755 },
+    );
+
+    const prevPath = process.env.PATH;
+    const prevTmux = process.env.TMUX;
+    const prevLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevLogDir = process.env.OMX_TEST_LOG_DIR;
+
+    process.env.PATH = `${binDir}:${prevPath ?? ''}`;
+    delete process.env.TMUX;
+    process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
+    process.env.OMX_TEAM_WORKER_CLI = 'codex';
+    process.env.OMX_TEST_LOG_DIR = logDir;
+
+    let runtime: TeamRuntime | null = null;
+    try {
+      runtime = await withoutTeamWorkerEnv(() =>
+        startTeam(
+          'team-detached-worktree-paths',
+          'detached worktree path resolution',
+          'executor',
+          1,
+          [{ subject: 's', description: 'd', owner: 'worker-1' }],
+          repo,
+          { worktreeMode: { enabled: true, detached: true, name: null } },
+        ));
+
+      const workerPath = runtime.config.workers[0]?.worktree_path;
+      assert.ok(workerPath, 'detached worker should have a worktree path');
+      assert.notEqual(workerPath, repo);
+
+      const startupLog = await waitForFileText(
+        stdinLogPath,
+        (content) => content.includes('/workers/worker-1/inbox.md'),
+      );
+      assert.match(
+        startupLog,
+        /\$OMX_TEAM_STATE_ROOT\/team\/team-detached-worktree-paths\/workers\/worker-1\/inbox\.md/,
+      );
+      assert.doesNotMatch(
+        startupLog,
+        /Read \.omx\/state\/team\/team-detached-worktree-paths\/workers\/worker-1\/inbox\.md/,
+      );
+
+      const envLog = JSON.parse(await waitForFileText(envLogPath, (content) => content.includes('teamStateRoot'))) as {
+        cwd: string;
+        teamStateRoot: string;
+        worker: string;
+      };
+      assert.equal(envLog.cwd, workerPath);
+      assert.equal(envLog.teamStateRoot, join(repo, '.omx', 'state'));
+      assert.equal(envLog.worker, 'team-detached-worktree-paths/worker-1');
+
+      await sendWorkerMessage(runtime.teamName, 'leader-fixed', 'worker-1', 'follow-up', repo);
+      const mailboxLog = await waitForFileText(
+        stdinLogPath,
+        (content) => content.includes('/mailbox/worker-1.json'),
+      );
+      assert.match(
+        mailboxLog,
+        /\$OMX_TEAM_STATE_ROOT\/team\/team-detached-worktree-paths\/mailbox\/worker-1\.json/,
+      );
+
+      await shutdownTeam(runtime.teamName, repo, { force: true });
+      runtime = null;
+    } finally {
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, repo, { force: true }).catch(() => {});
+      }
+      if (typeof prevPath === 'string') process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
+      else delete process.env.TMUX;
+      if (typeof prevLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = prevLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevLogDir === 'string') process.env.OMX_TEST_LOG_DIR = prevLogDir;
+      else delete process.env.OMX_TEST_LOG_DIR;
+      await rm(repo, { recursive: true, force: true });
     }
   });
 

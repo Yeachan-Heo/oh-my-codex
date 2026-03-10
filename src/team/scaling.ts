@@ -67,6 +67,7 @@ import { resolveCanonicalTeamStateRoot } from './state-root.js';
 // ── Environment gate ──────────────────────────────────────────────────────────
 
 const OMX_TEAM_SCALING_ENABLED_ENV = 'OMX_TEAM_SCALING_ENABLED';
+const WORKTREE_TRIGGER_STATE_ROOT = '$OMX_TEAM_STATE_ROOT';
 
 export function isScalingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env[OMX_TEAM_SCALING_ENABLED_ENV];
@@ -101,6 +102,10 @@ export interface ScaleDownResult {
 export interface ScaleError {
   ok: false;
   error: string;
+}
+
+function resolveInstructionStateRoot(worktreePath?: string | null): string | undefined {
+  return worktreePath ? WORKTREE_TRIGGER_STATE_ROOT : undefined;
 }
 
 async function notifyWorkerPaneOutcome(
@@ -332,7 +337,11 @@ export async function scaleUp(
         rolePromptContent: rolePromptContent ?? undefined,
       });
 
-      const trigger = generateTriggerMessage(workerName, sanitized);
+      const trigger = generateTriggerMessage(
+        workerName,
+        sanitized,
+        resolveInstructionStateRoot(workerInfo.worktree_path),
+      );
       const queued = await queueInboxInstruction({
         teamName: sanitized,
         workerName,
