@@ -246,8 +246,8 @@ const MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
 const TEAM_STATE_ROOT_ENV = 'OMX_TEAM_STATE_ROOT';
 const TEAM_LEADER_CWD_ENV = 'OMX_TEAM_LEADER_CWD';
 const WORKTREE_TRIGGER_STATE_ROOT = '$OMX_TEAM_STATE_ROOT';
-const CLAUDE_STARTUP_EVIDENCE_TIMEOUT_MS = 2_000;
-const CLAUDE_STARTUP_EVIDENCE_POLL_MS = 100;
+const STARTUP_EVIDENCE_TIMEOUT_MS = 2_000;
+const STARTUP_EVIDENCE_POLL_MS = 100;
 
 interface PromptWorkerHandle {
   child: ChildProcessByStdio<Writable, null, null>;
@@ -271,13 +271,13 @@ function resolveWorkerReadyTimeoutMs(env: NodeJS.ProcessEnv): number {
   return 45_000;
 }
 
-type ClaudeStartupEvidence = 'task_claim' | 'worker_progress' | 'leader_ack' | 'none';
+type WorkerStartupEvidence = 'task_claim' | 'worker_progress' | 'leader_ack' | 'none';
 
-async function readClaudeStartupEvidence(
+async function readWorkerStartupEvidence(
   teamName: string,
   workerName: string,
   cwd: string,
-): Promise<ClaudeStartupEvidence> {
+): Promise<WorkerStartupEvidence> {
   const status = await readWorkerStatus(teamName, workerName, cwd);
   if (typeof status.current_task_id === 'string' && status.current_task_id.trim() !== '') {
     return 'task_claim';
@@ -292,23 +292,43 @@ async function readClaudeStartupEvidence(
   return 'none';
 }
 
+function doesStartupEvidenceSettle(
+  workerCli: TeamWorkerCli,
+  evidence: WorkerStartupEvidence,
+): boolean {
+  if (evidence === 'none') return false;
+  if (workerCli === 'codex' && evidence === 'leader_ack') return false;
+  return true;
+}
+
+export async function waitForWorkerStartupEvidence(params: {
+  teamName: string;
+  workerName: string;
+  workerCli: TeamWorkerCli;
+  cwd: string;
+  timeoutMs?: number;
+  pollMs?: number;
+}): Promise<WorkerStartupEvidence> {
+  const timeoutMs = Math.max(0, Math.floor(params.timeoutMs ?? STARTUP_EVIDENCE_TIMEOUT_MS));
+  const pollMs = Math.max(25, Math.floor(params.pollMs ?? STARTUP_EVIDENCE_POLL_MS));
+  const deadline = Date.now() + timeoutMs;
+
+  while (true) {
+    const evidence = await readWorkerStartupEvidence(params.teamName, params.workerName, params.cwd);
+    if (doesStartupEvidenceSettle(params.workerCli, evidence)) return evidence;
+    if (Date.now() >= deadline) return 'none';
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
 export async function waitForClaudeStartupEvidence(params: {
   teamName: string;
   workerName: string;
   cwd: string;
   timeoutMs?: number;
   pollMs?: number;
-}): Promise<ClaudeStartupEvidence> {
-  const timeoutMs = Math.max(0, Math.floor(params.timeoutMs ?? CLAUDE_STARTUP_EVIDENCE_TIMEOUT_MS));
-  const pollMs = Math.max(25, Math.floor(params.pollMs ?? CLAUDE_STARTUP_EVIDENCE_POLL_MS));
-  const deadline = Date.now() + timeoutMs;
-
-  while (true) {
-    const evidence = await readClaudeStartupEvidence(params.teamName, params.workerName, params.cwd);
-    if (evidence !== 'none') return evidence;
-    if (Date.now() >= deadline) return 'none';
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
-  }
+}): Promise<WorkerStartupEvidence> {
+  return await waitForWorkerStartupEvidence({ ...params, workerCli: 'claude' });
 }
 
 function shouldSkipWorkerReadyWait(env: NodeJS.ProcessEnv): boolean {
@@ -968,7 +988,7 @@ export async function startTeam(
             cwd: leaderCwd,
             dispatchPolicy,
             inboxCorrelationKey: `startup:${workerName}`,
-            requireClaudeStartupEvidence: true,
+            requireWorkerStartupEvidence: true,
           });
           if (dispatchOutcome.ok) break;
           if (attempt < maxStartupDispatchRetries) {
@@ -1956,7 +1976,7 @@ async function dispatchCriticalInboxInstruction(params: {
   cwd: string;
   dispatchPolicy: TeamPolicy;
   inboxCorrelationKey: string;
-  requireClaudeStartupEvidence?: boolean;
+  requireWorkerStartupEvidence?: boolean;
 }): Promise<DispatchOutcome> {
   const {
     teamName,
@@ -1970,7 +1990,7 @@ async function dispatchCriticalInboxInstruction(params: {
     cwd,
     dispatchPolicy,
     inboxCorrelationKey,
-    requireClaudeStartupEvidence,
+    requireWorkerStartupEvidence,
   } = params;
 
   if (config.worker_launch_mode === 'prompt') {
@@ -2028,21 +2048,24 @@ async function dispatchCriticalInboxInstruction(params: {
   if (receipt?.status === 'delivered') {
     return { ok: true, transport: 'hook', reason: 'hook_receipt_delivered', request_id: queued.request_id };
   }
-  let claudeStartupEvidence: ClaudeStartupEvidence = 'none';
+  const requiresObservedStartupEvidence = requireWorkerStartupEvidence === true
+    && (workerCli === 'claude' || workerCli === 'codex');
+  let startupEvidence: WorkerStartupEvidence = 'none';
   if (receipt?.status === 'notified') {
-    if (!(requireClaudeStartupEvidence && workerCli === 'claude')) {
+    if (!requiresObservedStartupEvidence) {
       return { ok: true, transport: 'hook', reason: 'hook_receipt_notified', request_id: queued.request_id };
     }
-    claudeStartupEvidence = await waitForClaudeStartupEvidence({
+    startupEvidence = await waitForWorkerStartupEvidence({
       teamName,
       workerName,
+      workerCli,
       cwd,
     });
-    if (claudeStartupEvidence !== 'none') {
+    if (startupEvidence !== 'none') {
       return {
         ok: true,
         transport: 'hook',
-        reason: `hook_receipt_notified_with_${claudeStartupEvidence}`,
+        reason: `hook_receipt_notified_with_${startupEvidence}`,
         request_id: queued.request_id,
       };
     }
@@ -2082,11 +2105,11 @@ async function dispatchCriticalInboxInstruction(params: {
   }
 
   const fallback = await notifyWorkerOutcome(config, workerIndex, triggerMessage, paneId);
-  const claudeStartupFallbackLabel = receipt?.status === 'notified' && requireClaudeStartupEvidence && workerCli === 'claude'
-    ? 'claude_startup_no_evidence'
+  const startupFallbackLabel = receipt?.status === 'notified' && requiresObservedStartupEvidence
+    ? `${workerCli}_startup_no_evidence`
     : null;
-  const fallbackFailureReason = claudeStartupFallbackLabel
-    ? `${claudeStartupFallbackLabel}_fallback_failed:${fallback.reason}`
+  const fallbackFailureReason = startupFallbackLabel
+    ? `${startupFallbackLabel}_fallback_failed:${fallback.reason}`
     : `fallback_attempted_but_unconfirmed:${fallback.reason}`;
   if (fallback.ok) {
     const marked = await markDispatchRequestNotified(
@@ -2108,8 +2131,8 @@ async function dispatchCriticalInboxInstruction(params: {
     return {
       ok: true,
       transport: fallback.transport,
-      reason: claudeStartupFallbackLabel
-        ? `${claudeStartupFallbackLabel}_fallback_confirmed:${fallback.reason}`
+      reason: startupFallbackLabel
+        ? `${startupFallbackLabel}_fallback_confirmed:${fallback.reason}`
         : `hook_timeout_fallback_confirmed:${fallback.reason}`,
       request_id: queued.request_id,
     };

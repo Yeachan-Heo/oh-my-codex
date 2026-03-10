@@ -28,6 +28,7 @@ import {
   assignTask,
   sendWorkerMessage,
   resolveWorkerLaunchArgsFromEnv,
+  waitForWorkerStartupEvidence,
   waitForClaudeStartupEvidence,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
   type TeamRuntime,
@@ -360,6 +361,44 @@ describe('runtime', () => {
       const taskClaim = await waitForClaudeStartupEvidence({
         teamName: 'claude-startup',
         workerName: 'worker-1',
+        cwd,
+        timeoutMs: 25,
+        pollMs: 5,
+      });
+      assert.equal(taskClaim, 'task_claim');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('waitForWorkerStartupEvidence ignores Codex ACK-only startup replies until work is claimed', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-codex-startup-'));
+    try {
+      await initTeamState('codex-startup', 'startup evidence test', 'executor', 1, cwd);
+
+      await sendWorkerMessage('codex-startup', 'worker-1', 'leader-fixed', 'ACK', cwd);
+      const ackOnly = await waitForWorkerStartupEvidence({
+        teamName: 'codex-startup',
+        workerName: 'worker-1',
+        workerCli: 'codex',
+        cwd,
+        timeoutMs: 25,
+        pollMs: 5,
+      });
+      assert.equal(ackOnly, 'none');
+
+      await writeAtomic(
+        join(cwd, '.omx', 'state', 'team', 'codex-startup', 'workers', 'worker-1', 'status.json'),
+        JSON.stringify({
+          state: 'working',
+          current_task_id: 'task-1',
+          updated_at: new Date().toISOString(),
+        }, null, 2),
+      );
+      const taskClaim = await waitForWorkerStartupEvidence({
+        teamName: 'codex-startup',
+        workerName: 'worker-1',
+        workerCli: 'codex',
         cwd,
         timeoutMs: 25,
         pollMs: 5,
