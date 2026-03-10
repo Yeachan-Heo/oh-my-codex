@@ -83,7 +83,7 @@
 | code-review | DONE | ~/.agents/skills/code-review/SKILL.md |
 | security-review | DONE | ~/.agents/skills/security-review/SKILL.md |
 | tdd | DONE | ~/.agents/skills/tdd/SKILL.md |
-| ~~deepinit~~ | REMOVED (v0.5.0) | — |
+| deepinit | DONE (lightweight CLI successor) | `omx agents-init [path]` (`omx deepinit [path]` alias) |
 | deepsearch | DONE | ~/.agents/skills/deepsearch/SKILL.md |
 | analyze | DONE | ~/.agents/skills/analyze/SKILL.md |
 | build-fix | DONE | ~/.agents/skills/build-fix/SKILL.md |

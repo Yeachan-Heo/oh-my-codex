@@ -13,6 +13,8 @@ Use this skill when users want to install or refresh oh-my-codex for the **curre
 omx setup [--force] [--dry-run] [--verbose] [--scope <user|project>]
 ```
 
+If you only want lightweight `AGENTS.md` scaffolding for an existing repo or subtree, use `omx agents-init [path]` instead of full setup.
+
 Supported setup flags (current implementation):
 - `--force`: overwrite/reinstall managed artifacts where applicable
 - `--dry-run`: print actions without mutating files

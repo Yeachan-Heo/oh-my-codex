@@ -202,6 +202,7 @@ This experiment currently changes native prompt generation and metadata, not the
 ```bash
 omx                # Launch Codex (+ HUD in tmux when available)
 omx setup          # Install prompts/skills/config by scope + project .omx (AGENTS.md only for project scope)
+omx agents-init .  # Bootstrap lightweight AGENTS.md files for a repo/subtree
 omx doctor         # Installation/runtime diagnostics
 omx doctor --team  # Team/swarm diagnostics
 omx ask ...        # Ask local provider advisor (claude|gemini), writes .omx/artifacts/*
@@ -401,6 +402,24 @@ Notes:
 - Default setup output includes a compact per-category refresh summary; `--verbose` adds changed-file detail
 - `--force` is reserved for stronger maintenance behavior such as stale/deprecated skill cleanup; it is no longer required for ordinary refresh
 - The 1M GPT-5.4 context settings are experimental and can increase usage because requests beyond the standard context budget may count more heavily
+
+## Lightweight AGENTS bootstrap
+
+Use `omx agents-init [path]` when you only want a narrow AGENTS.md bootstrap helper instead of full OMX setup.
+
+- creates or refreshes `AGENTS.md` in the target directory plus its immediate child directories
+- skips generated/vendor/tooling directories such as `.git`, `.omx`, `.codex`, `.agents`, `node_modules`, `dist`, and `build`
+- preserves the `<!-- OMX:AGENTS-MANUAL:* -->` section on refresh
+- skips unmanaged existing `AGENTS.md` files unless you pass `--force`
+- does **not** install prompts, skills, config, or replace planning/execution workflows such as `team`, `ralph`, or `ralplan`
+
+Examples:
+
+```bash
+omx agents-init .
+omx agents-init ./src --dry-run
+omx agents-init . --force
+```
 
 ## Agents and Skills
 

@@ -301,6 +301,20 @@ describe('resolveCliInvocation', () => {
     });
   });
 
+  it('resolves agents-init to agents-init command', () => {
+    assert.deepEqual(resolveCliInvocation(['agents-init', '.']), {
+      command: 'agents-init',
+      launchArgs: [],
+    });
+  });
+
+  it('resolves deepinit to deepinit alias command', () => {
+    assert.deepEqual(resolveCliInvocation(['deepinit', 'src']), {
+      command: 'deepinit',
+      launchArgs: [],
+    });
+  });
+
   it('resolves --help to the help command instead of launch', () => {
     assert.deepEqual(resolveCliInvocation(['--help']), {
       command: 'help',

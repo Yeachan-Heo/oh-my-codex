@@ -52,7 +52,7 @@ Use these replacements in docs, scripts, and personal shortcuts.
 | `$ultrapilot` | `$team` | Use team-based parallel orchestration. |
 | `$psm` / `$project-session-manager` | No in-repo replacement | Remove from automation or maintain out-of-tree tooling. |
 | `$release` | No in-repo replacement | Use your project release process directly. |
-| `$deepinit` | No in-repo replacement | Keep AGENTS/doc initialization manual or in custom local tooling. |
+| `$deepinit` | `omx agents-init [path]` | Lightweight CLI successor for AGENTS.md bootstrap only; immediate child directories only, unmanaged files preserved unless `--force`. |
 | `$learn-about-omx` / `$learner` / `$writer-memory` | No in-repo replacement | Remove stale references from workflows/docs. |
 
 ## Verification checklist after upgrade

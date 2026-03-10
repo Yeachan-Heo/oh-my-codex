@@ -470,7 +470,7 @@ function checkAgentsMd(scope: DoctorSetupScope): Check {
   if (scope === 'user') {
     return { name: 'AGENTS.md', status: 'pass', message: 'user scope leaves project AGENTS.md unchanged' };
   }
-  return { name: 'AGENTS.md', status: 'warn', message: 'not found in project root (run omx setup)' };
+  return { name: 'AGENTS.md', status: 'warn', message: 'not found in project root (run omx agents-init . or omx setup --scope project)' };
 }
 
 async function checkMcpServers(configPath: string): Promise<Check> {
