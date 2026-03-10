@@ -13,11 +13,12 @@ import { logTmuxHookEvent } from './log.js';
 import { DEFAULT_MARKER } from '../tmux-hook-engine.js';
 
 export const SKILL_ACTIVE_STATE_FILE = 'skill-active-state.json';
-export const DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS = ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead'];
+export const DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS = ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead', 'next i should'];
 export const DEEP_INTERVIEW_INPUT_LOCK_MESSAGE = 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.';
 const DEEP_INTERVIEW_ERROR_PATTERNS = [' error', ' failed', ' failure', ' exception', 'unable to continue', 'cannot continue', 'could not continue'];
 const DEEP_INTERVIEW_ABORT_PATTERNS = ['aborted', 'cancelled', 'canceled'];
 const DEEP_INTERVIEW_ABORT_INPUTS = new Set(['abort', 'cancel', 'stop']);
+const DEEP_INTERVIEW_BLOCKED_APPROVAL_PREFIXES = new Set(['next i should']);
 const SKILL_PHASES = new Set(['planning', 'executing', 'reviewing', 'completing']);
 
 function normalizeSkillPhase(phase) {
@@ -52,6 +53,12 @@ export function isBlockedAutoApprovalInput(text, blockedInputs = DEEP_INTERVIEW_
   const normalized = normalizeBlockedAutoApprovalInput(text);
   if (!normalized) return false;
   if (blockedInputs.some((entry) => normalizeBlockedAutoApprovalInput(entry) === normalized)) return true;
+  if (
+    blockedInputs
+      .map((entry) => normalizeBlockedAutoApprovalInput(entry))
+      .filter((entry) => DEEP_INTERVIEW_BLOCKED_APPROVAL_PREFIXES.has(entry))
+      .some((prefix) => normalized.startsWith(`${prefix} `))
+  ) return true;
 
   const tokens = normalized.split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return false;

@@ -244,6 +244,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(result.skill, 'deep-interview');
       assert.equal(result.input_lock?.active, true);
       assert.deepEqual(result.input_lock?.blocked_inputs, [...DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS]);
+      assert.equal(result.input_lock?.blocked_inputs.includes('next i should'), true);
       assert.equal(result.input_lock?.message, DEEP_INTERVIEW_INPUT_LOCK_MESSAGE);
     } finally {
       await rm(cwd, { recursive: true, force: true });
