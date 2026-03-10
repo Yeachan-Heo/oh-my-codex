@@ -45,6 +45,14 @@ export function resolveLeaderStalenessThresholdMs() {
   return 180_000;
 }
 
+export function resolveLeaderProgressStallThresholdMs() {
+  const raw = safeString(process.env.OMX_TEAM_PROGRESS_STALL_MS || '');
+  const parsed = asNumber(raw);
+  // Default: 2 minutes. Guard against unreasonable values.
+  if (parsed !== null && parsed >= 10_000 && parsed <= 60 * 60_000) return parsed;
+  return 120_000;
+}
+
 export async function checkWorkerPanesAlive(tmuxTarget, workerPaneIds = []) {
   const sessionName = tmuxTarget.split(':')[0];
   try {
@@ -82,20 +90,120 @@ async function readWorkerStatusSnapshot(stateDir, teamName, workerName) {
   if (!workerName) return { state: 'unknown', current_task_id: '' };
   const path = join(stateDir, 'team', teamName, 'workers', workerName, 'status.json');
   try {
-    if (!existsSync(path)) return { state: 'unknown', current_task_id: '' };
+    if (!existsSync(path)) return { state: 'unknown', current_task_id: '', missing: true };
     const parsed = JSON.parse(await readFile(path, 'utf-8'));
     return {
       state: safeString(parsed && parsed.state ? parsed.state : 'unknown') || 'unknown',
       current_task_id: safeString(parsed && parsed.current_task_id ? parsed.current_task_id : '').trim(),
+      missing: false,
     };
   } catch {
-    return { state: 'unknown', current_task_id: '' };
+    return { state: 'unknown', current_task_id: '', missing: false };
   }
 }
 
 async function readWorkerStatusState(stateDir, teamName, workerName) {
   const snapshot = await readWorkerStatusSnapshot(stateDir, teamName, workerName);
   return snapshot.state;
+}
+
+async function readWorkerHeartbeatSnapshot(stateDir, teamName, workerName) {
+  if (!workerName) return { turn_count: null, missing: true };
+  const path = join(stateDir, 'team', teamName, 'workers', workerName, 'heartbeat.json');
+  try {
+    if (!existsSync(path)) return { turn_count: null, missing: true };
+    const parsed = JSON.parse(await readFile(path, 'utf-8'));
+    return {
+      turn_count: Number.isFinite(parsed?.turn_count) ? parsed.turn_count : null,
+      missing: false,
+    };
+  } catch {
+    return { turn_count: null, missing: false };
+  }
+}
+
+async function readTeamTaskProgressSnapshot(stateDir, teamName) {
+  const tasksDir = join(stateDir, 'team', teamName, 'tasks');
+  if (!existsSync(tasksDir)) {
+    return {
+      taskCounts: { pending: 0, blocked: 0, in_progress: 0, completed: 0, failed: 0 },
+      taskSignature: [],
+      workRemaining: false,
+    };
+  }
+
+  const taskCounts = { pending: 0, blocked: 0, in_progress: 0, completed: 0, failed: 0 };
+  const taskSignature = [];
+  try {
+    const taskFiles = (await readdir(tasksDir))
+      .filter((entry) => /^task-\d+\.json$/.test(entry))
+      .sort();
+    for (const entry of taskFiles) {
+      try {
+        const parsed = JSON.parse(await readFile(join(tasksDir, entry), 'utf-8'));
+        const id = safeString(parsed?.id || entry.replace(/^task-/, '').replace(/\.json$/, '')).trim();
+        const status = safeString(parsed?.status || 'pending').trim() || 'pending';
+        const owner = safeString(parsed?.owner || '').trim();
+        if (Object.hasOwn(taskCounts, status)) taskCounts[status] += 1;
+        taskSignature.push({ id, owner, status });
+      } catch {
+        // ignore malformed task files
+      }
+    }
+  } catch {
+    // ignore task-read failures
+  }
+
+  return {
+    taskCounts,
+    taskSignature,
+    workRemaining: taskCounts.pending > 0 || taskCounts.blocked > 0 || taskCounts.in_progress > 0,
+  };
+}
+
+async function readTeamProgressSnapshot(stateDir, teamName, workerNames) {
+  const [taskSnapshot, workerSnapshot] = await Promise.all([
+    readTeamTaskProgressSnapshot(stateDir, teamName),
+    Promise.all(
+      workerNames.map(async (workerName) => {
+        const [status, heartbeat] = await Promise.all([
+          readWorkerStatusSnapshot(stateDir, teamName, workerName),
+          readWorkerHeartbeatSnapshot(stateDir, teamName, workerName),
+        ]);
+        return {
+          worker: workerName,
+          state: status.state,
+          current_task_id: status.current_task_id,
+          status_missing: status.missing === true,
+          turn_count: heartbeat.turn_count,
+          heartbeat_missing: heartbeat.missing === true,
+        };
+      }),
+    ),
+  ]);
+
+  const missingSignalWorkers = workerSnapshot.filter(
+    ({ status_missing, heartbeat_missing }) => status_missing || heartbeat_missing,
+  ).length;
+
+  return {
+    ...taskSnapshot,
+    workerSnapshot,
+    missingSignalWorkers,
+    signature: JSON.stringify({
+      tasks: taskSnapshot.taskSignature,
+      workers: workerSnapshot,
+    }),
+  };
+}
+
+function formatDurationMs(durationMs) {
+  const seconds = Math.max(1, Math.round(durationMs / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds % 60 === 0) return `${seconds / 60}m`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${minutes}m${remainingSeconds}s`;
 }
 
 function normalizeMailboxMessages(rawMailbox) {
@@ -233,6 +341,7 @@ async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, nowIso, { tmu
 export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputedLeaderStale }) {
   const intervalMs = resolveLeaderNudgeIntervalMs();
   const idleCooldownMs = resolveLeaderAllIdleNudgeCooldownMs();
+  const progressStallThresholdMs = resolveLeaderProgressStallThresholdMs();
   const nowMs = Date.now();
   const nowIso = new Date().toISOString();
   const omxDir = join(cwd, '.omx');
@@ -247,6 +356,9 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
   }
   if (!nudgeState.last_idle_nudged_by_team || typeof nudgeState.last_idle_nudged_by_team !== 'object') {
     nudgeState.last_idle_nudged_by_team = {};
+  }
+  if (!nudgeState.progress_by_team || typeof nudgeState.progress_by_team !== 'object') {
+    nudgeState.progress_by_team = {};
   }
 
   const activeTeamNames = new Set();
@@ -311,6 +423,32 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       ? await Promise.all(workerNames.map((workerName) => readWorkerStatusState(stateDir, teamName, workerName)))
       : [];
     const allWorkersIdle = workerStates.length > 0 && workerStates.every((state) => state === 'idle' || state === 'done');
+    const progressSnapshot = await readTeamProgressSnapshot(stateDir, teamName, workerNames);
+    const prevProgress = nudgeState.progress_by_team[teamName] && typeof nudgeState.progress_by_team[teamName] === 'object'
+      ? nudgeState.progress_by_team[teamName]
+      : {};
+    const previousSignature = safeString(prevProgress.signature || '');
+    const previousProgressAtIso = safeString(prevProgress.last_progress_at || '');
+    const previousProgressAtMs = previousProgressAtIso ? Date.parse(previousProgressAtIso) : NaN;
+    const progressChanged = !previousSignature || previousSignature !== progressSnapshot.signature;
+    const effectiveProgressAtMs = progressChanged || !Number.isFinite(previousProgressAtMs)
+      ? nowMs
+      : previousProgressAtMs;
+    const effectiveProgressAtIso = new Date(effectiveProgressAtMs).toISOString();
+    const stalledForMs = Math.max(0, nowMs - effectiveProgressAtMs);
+    const teamProgressStalled =
+      progressSnapshot.workRemaining
+      && paneStatus.alive
+      && !allWorkersIdle
+      && !progressChanged
+      && stalledForMs >= progressStallThresholdMs;
+    nudgeState.progress_by_team[teamName] = {
+      signature: progressSnapshot.signature,
+      last_progress_at: effectiveProgressAtIso,
+      observed_at: nowIso,
+      missing_signal_workers: progressSnapshot.missingSignalWorkers,
+      work_remaining: progressSnapshot.workRemaining,
+    };
 
     const prev = nudgeState.last_nudged_by_team[teamName] && typeof nudgeState.last_nudged_by_team[teamName] === 'object'
       ? nudgeState.last_nudged_by_team[teamName]
@@ -318,6 +456,7 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     const prevAtIso = safeString(prev.at || '');
     const prevAtMs = prevAtIso ? Date.parse(prevAtIso) : NaN;
     const prevMsgId = safeString(prev.last_message_id || '');
+    const prevReason = safeString(prev.reason || '');
 
     const hasNewMessage = newestId && newestId !== prevMsgId;
     const dueByTime = !Number.isFinite(prevAtMs) || (nowMs - prevAtMs >= intervalMs);
@@ -336,9 +475,10 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     // Stale-leader follow-up is the only periodic visible nudge path.
     // This keeps the leader pane quieter when the leader is not actually stale.
     const stalePanesNudge = paneStatus.alive && leaderStale;
+    const stalledTeamNudge = teamProgressStalled && leaderStale && (dueByTime || prevReason !== 'leader_stale_with_stalled_team');
     const staleFollowupDue = stalePanesNudge && dueByTime;
 
-    if (!shouldSendAllIdleNudge && !hasNewMessage && !staleFollowupDue) continue;
+    if (!shouldSendAllIdleNudge && !hasNewMessage && !stalledTeamNudge && !staleFollowupDue) continue;
 
     let nudgeReason = '';
     let text = '';
@@ -351,6 +491,16 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       text =
         `Team ${teamName}: ${ackWithoutStartEvidence.worker} said "${ackWithoutStartEvidence.body}" `
         + `but has no work-start evidence yet (status: ${ackWithoutStartEvidence.statusState}, no owned in_progress task). `
+        + `Run: omx team status ${teamName}`;
+    } else if (stalledTeamNudge) {
+      nudgeReason = 'leader_stale_with_stalled_team';
+      const { pending, in_progress, blocked } = progressSnapshot.taskCounts;
+      const missingSignals = progressSnapshot.missingSignalWorkers > 0
+        ? `; ${progressSnapshot.missingSignalWorkers} worker signal${progressSnapshot.missingSignalWorkers === 1 ? '' : 's'} missing`
+        : '';
+      text =
+        `Team ${teamName}: leader stale, no team progress for ${formatDurationMs(stalledForMs)} `
+        + `(pending:${pending} in_progress:${in_progress} blocked:${blocked}${missingSignals}). `
         + `Run: omx team status ${teamName}`;
     } else if (stalePanesNudge && hasNewMessage) {
       nudgeReason = 'stale_leader_with_messages';
@@ -368,7 +518,7 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     const markedText = `${capped} ${DEFAULT_MARKER}`;
 
     if (!tmuxTarget) {
-      nudgeState.last_nudged_by_team[teamName] = { at: nowIso, last_message_id: newestId || prevMsgId || '' };
+      nudgeState.last_nudged_by_team[teamName] = { at: nowIso, last_message_id: newestId || prevMsgId || '', reason: nudgeReason };
       if (shouldSendAllIdleNudge) {
         nudgeState.last_idle_nudged_by_team[teamName] = { at: nowIso, worker_count: workerNames.length };
       }
@@ -396,7 +546,7 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
 
     const paneGuard = await checkPaneReadyForTeamSendKeys(tmuxTarget);
     if (!paneGuard.ok) {
-      nudgeState.last_nudged_by_team[teamName] = { at: nowIso, last_message_id: newestId || prevMsgId || '' };
+      nudgeState.last_nudged_by_team[teamName] = { at: nowIso, last_message_id: newestId || prevMsgId || '', reason: nudgeReason };
       if (shouldSendAllIdleNudge) {
         nudgeState.last_idle_nudged_by_team[teamName] = { at: nowIso, worker_count: workerNames.length };
       }
@@ -430,7 +580,7 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       await runProcess('tmux', ['send-keys', '-t', tmuxTarget, 'C-m'], 3000);
       await new Promise(r => setTimeout(r, 100));
       await runProcess('tmux', ['send-keys', '-t', tmuxTarget, 'C-m'], 3000);
-      nudgeState.last_nudged_by_team[teamName] = { at: nowIso, last_message_id: newestId || prevMsgId || '' };
+      nudgeState.last_nudged_by_team[teamName] = { at: nowIso, last_message_id: newestId || prevMsgId || '', reason: nudgeReason };
       if (shouldSendAllIdleNudge) {
         nudgeState.last_idle_nudged_by_team[teamName] = { at: nowIso, worker_count: workerNames.length };
       }
@@ -447,6 +597,8 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
           pane_count: paneStatus.paneCount,
           leader_stale: leaderStale,
           message_count: messages.length,
+          stalled_for_ms: teamProgressStalled ? stalledForMs : undefined,
+          missing_signal_workers: progressSnapshot.missingSignalWorkers,
         });
       } catch { /* ignore */ }
     } catch (err) {
