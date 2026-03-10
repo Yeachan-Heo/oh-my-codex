@@ -41,7 +41,12 @@ import { drainPendingTeamDispatch } from './notify-hook/team-dispatch.js';
 import { syncLinkedRalphOnTeamTerminal } from './notify-hook/linked-sync.js';
 import { handleTmuxInjection } from './notify-hook/tmux-injection.js';
 import { maybeAutoNudge, resolveNudgePaneTarget } from './notify-hook/auto-nudge.js';
-import { buildOperationalContext, deriveAssistantSignalEvents, readRepositoryMetadata } from './notify-hook/operational-events.js';
+import {
+  buildOperationalContext,
+  deriveAssistantSignalEvents,
+  readRepositoryMetadata,
+  resolveOperationalSessionName,
+} from './notify-hook/operational-events.js';
 import {
   parseTeamWorkerEnv,
   resolveTeamStateDirForWorker,
@@ -332,7 +337,7 @@ async function main() {
       input_messages: normalizeInputMessages(payload),
       output_preview: outputPreview,
       ...readRepositoryMetadata(cwd),
-      session_name: sessionIdForHooks || undefined,
+      session_name: resolveOperationalSessionName(cwd, sessionIdForHooks),
       project_path: cwd,
       project_name: safeString(payload.project_name || ''),
     }, {

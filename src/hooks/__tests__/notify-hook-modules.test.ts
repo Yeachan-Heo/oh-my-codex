@@ -149,6 +149,31 @@ describe('notify-hook/operational-events – parseCommandResult', () => {
   });
 });
 
+describe('notify-hook/operational-events – buildOperationalContext', () => {
+  it('resolves a stable session_name from cwd + session id', async () => {
+    const { buildOperationalContext } = await loadModule('notify-hook/operational-events.js');
+    const sessionId = 'omx-issue-663-session';
+    const originalTmux = process.env.TMUX;
+    delete process.env.TMUX;
+    try {
+      const context = buildOperationalContext({
+        cwd: process.cwd(),
+        normalizedEvent: 'pr-created',
+        sessionId,
+        status: 'finished',
+      });
+
+      assert.equal(typeof context.session_name, 'string');
+      assert.notEqual(context.session_name, sessionId);
+      assert.match(context.session_name || '', /^omx-/);
+      assert.match(context.session_name || '', /issue-663-session/);
+    } finally {
+      if (originalTmux === undefined) delete process.env.TMUX;
+      else process.env.TMUX = originalTmux;
+    }
+  });
+});
+
 describe('notify-hook/operational-events – deriveAssistantSignalEvents', () => {
   it('detects handoff-needed and retry-needed from assistant text', async () => {
     const { deriveAssistantSignalEvents } = await loadModule('notify-hook/operational-events.js');
@@ -157,15 +182,15 @@ describe('notify-hook/operational-events – deriveAssistantSignalEvents', () =>
     assert.equal(signals.some((signal: { event?: string }) => signal.event === 'retry-needed'), true);
   });
 
-  it('detects completion and failure conservatively', async () => {
+  it('avoids duplicate finished/failed assistant lifecycle signals', async () => {
     const { deriveAssistantSignalEvents } = await loadModule('notify-hook/operational-events.js');
     assert.equal(
       deriveAssistantSignalEvents('Implementation completed. Final summary ready.').some((signal: { event?: string }) => signal.event === 'finished'),
-      true,
+      false,
     );
     assert.equal(
       deriveAssistantSignalEvents('The operation failed with error: unable to continue.').some((signal: { event?: string }) => signal.event === 'failed'),
-      true,
+      false,
     );
   });
 });

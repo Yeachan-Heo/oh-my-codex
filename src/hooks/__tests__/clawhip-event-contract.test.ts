@@ -23,4 +23,10 @@ describe('clawhip event contract doc', () => {
       assert.match(contractDoc, new RegExp(eventName.replace('-', '\\-')));
     }
   });
+
+  it('documents lifecycle ownership and reduced assistant-signal noise', () => {
+    assert.match(contractDoc, /native session lifecycle events are the canonical source/i);
+    assert.match(contractDoc, /session_name.*stable across native and derived events/i);
+    assert.match(contractDoc, /do not duplicate session completion\/failure lifecycle events/i);
+  });
 });

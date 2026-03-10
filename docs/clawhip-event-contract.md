@@ -52,10 +52,17 @@ When available, OMX includes these fields in `context`:
 | `test-failed` | `test-failed` | derived | Derived from failed test command completion. |
 | `handoff-needed` | `handoff-needed` | native/derived | Human or orchestrator follow-up is needed. |
 
+## Lifecycle ownership
+
+- native session lifecycle events are the canonical source for `started`, `blocked`, `finished`, and `failed`
+- derived operational events add follow-up detail for `retry-needed`, `pr-created`, `test-*`, and `handoff-needed`
+- operational contexts resolve `session_name` from the OMX session id + worktree so session metadata stays stable across native and derived events
+
 ## Noise and duplicate controls
 
 - `notify-hook` turn dedupe suppresses duplicate `agent-turn-complete` processing by `thread_id + turn_id + type`.
 - `session-idle` emission still uses the idle cooldown gate.
+- assistant-text heuristics emit follow-up signals (`retry-needed`, `handoff-needed`) but do not duplicate session completion/failure lifecycle events.
 - team dispatch retry and failure events emit only on explicit queue transition branches.
 - rollout-derived command events are correlated by `call_id` and only emit once per matching command lifecycle.
 
