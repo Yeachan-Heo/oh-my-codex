@@ -196,7 +196,7 @@ This experiment currently changes native prompt generation and metadata, not the
 
 ```bash
 omx                # Launch Codex (+ HUD in tmux when available)
-omx setup          # Install prompts/skills/config by scope + project AGENTS.md/.omx
+omx setup          # Install prompts/skills/config by scope + project .omx (AGENTS.md only for project scope)
 omx doctor         # Installation/runtime diagnostics
 omx doctor --team  # Team/swarm diagnostics
 omx ask ...        # Ask local provider advisor (claude|gemini), writes .omx/artifacts/*
@@ -353,7 +353,8 @@ Notes:
   - `user`: `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`
   - `project`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`
 - Launch behavior: if persisted scope is `project`, `omx` launch auto-uses `CODEX_HOME=./.codex` (unless `CODEX_HOME` is already set).
-- Managed OMX artifacts refresh by default in both interactive and non-interactive runs: prompts, skills, native agent configs, project `AGENTS.md`, and the managed OMX portion of `config.toml`
+- Managed OMX artifacts refresh by default in both interactive and non-interactive runs: prompts, skills, native agent configs, and the managed OMX portion of `config.toml`
+- Project `AGENTS.md` is only generated/refreshed for `project` scope; `user` scope leaves any existing project `AGENTS.md` unchanged
 - If a managed file differs and will be overwritten, setup creates a backup first under `.omx/backups/setup/<timestamp>/...` (project scope) or `~/.omx/backups/setup/<timestamp>/...` (user scope)
 - Active-session safety still blocks `AGENTS.md` overwrite while an OMX session is running
 - `config.toml` updates (for both scopes):
@@ -366,7 +367,7 @@ Notes:
   - `[features] multi_agent = true, child_agents_md = true`
   - MCP server entries (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`)
   - `[tui] status_line`
-- Project `AGENTS.md`
+- Project `AGENTS.md` (project scope only)
 - `.omx/` runtime directories and HUD config
 - Default setup output includes a compact per-category refresh summary; `--verbose` adds changed-file detail
 - `--force` is reserved for stronger maintenance behavior such as stale/deprecated skill cleanup; it is no longer required for ordinary refresh

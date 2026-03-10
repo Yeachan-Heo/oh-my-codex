@@ -158,11 +158,14 @@ describe('omx setup scope behavior', () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-scope-'));
     try {
       const home = join(wd, 'home');
+      const existingAgents = '# keep my project agents instructions\n';
       await mkdir(home, { recursive: true });
+      await writeFile(join(wd, 'AGENTS.md'), existingAgents);
       const res = runOmx(wd, ['setup'], { HOME: home });
       if (shouldSkipForSpawnPermissions(res.error)) return;
       assert.equal(res.status, 0, res.stderr || res.stdout);
       assert.match(res.stdout, /Using setup scope: user/);
+      assert.match(res.stdout, /User scope leaves project AGENTS\.md unchanged\./);
 
       assert.equal(existsSync(join(home, '.codex', 'prompts')), true);
       assert.equal(existsSync(join(home, '.agents', 'skills')), true);
@@ -170,6 +173,31 @@ describe('omx setup scope behavior', () => {
       assert.equal(existsSync(join(wd, '.omx', 'setup-scope.json')), true);
       const persistedScope = JSON.parse(await readFile(join(wd, '.omx', 'setup-scope.json'), 'utf-8')) as { scope: string };
       assert.equal(persistedScope.scope, 'user');
+      assert.equal(await readFile(join(wd, 'AGENTS.md'), 'utf-8'), existingAgents);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('doctor does not warn about missing project AGENTS.md for user scope', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-doctor-user-scope-'));
+    try {
+      const home = join(wd, 'home');
+      await mkdir(join(home, '.codex', 'prompts'), { recursive: true });
+      await mkdir(join(home, '.agents', 'skills', 'sample-skill'), { recursive: true });
+      await mkdir(join(home, '.omx', 'agents'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'user' }));
+      await writeFile(join(home, '.codex', 'prompts', 'executor.md'), '# executor\n');
+      await writeFile(join(home, '.agents', 'skills', 'sample-skill', 'SKILL.md'), '# skill\n');
+      await writeFile(join(home, '.codex', 'config.toml'), 'omx_enabled = true\n[mcp_servers.omx_state]\ncommand = "node"\n');
+
+      const res = runOmx(wd, ['doctor'], { HOME: home, CODEX_HOME: join(home, '.codex') });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.match(res.stdout, /Resolved setup scope: user \(from \.omx\/setup-scope\.json\)/);
+      assert.match(res.stdout, /\[OK\] AGENTS\.md: user scope leaves project AGENTS\.md unchanged/);
+      assert.doesNotMatch(res.stdout, /AGENTS\.md: not found in project root/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

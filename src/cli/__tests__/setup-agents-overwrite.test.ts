@@ -56,6 +56,28 @@ async function readCurrentLinuxStartTicks(): Promise<number | undefined> {
 }
 
 describe('omx setup AGENTS refresh behavior', () => {
+  it('leaves project AGENTS.md untouched for user scope', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agents-'));
+    const restoreTty = setMockTty(true);
+    const existing = '# project-owned agents file\n';
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(join(wd, 'AGENTS.md'), existing);
+
+      const output = await runSetupWithCapturedLogs(wd, {
+        scope: 'user',
+      });
+
+      assert.match(output, /User scope leaves project AGENTS\.md unchanged\./);
+      assert.match(output, /agents_md: updated=0, unchanged=0, backed_up=0, skipped=1, removed=0/);
+      assert.equal(await readFile(join(wd, 'AGENTS.md'), 'utf-8'), existing);
+      assert.equal(existsSync(join(wd, '.omx', 'backups', 'setup')), false);
+    } finally {
+      restoreTty();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('refreshes existing AGENTS.md by default in TTY and creates a backup first', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agents-'));
     const restoreTty = setMockTty(true);

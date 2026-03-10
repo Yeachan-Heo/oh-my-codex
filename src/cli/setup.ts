@@ -489,55 +489,60 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 
   // Step 6: Generate AGENTS.md
   console.log("[6/8] Generating AGENTS.md...");
-  const agentsMdSrc = join(pkgRoot, "templates", "AGENTS.md");
-  const agentsMdDst = join(projectRoot, "AGENTS.md");
-  const agentsMdExists = existsSync(agentsMdDst);
-
-  // Guard: refuse to overwrite AGENTS.md during active session
-  const activeSession = await readSessionState(projectRoot);
-  const sessionIsActive = activeSession && !isSessionStale(activeSession);
-
-  if (existsSync(agentsMdSrc)) {
-    const content = await readFile(agentsMdSrc, "utf-8");
-    const rewritten = applyScopePathRewritesToAgentsTemplate(
-      content,
-      resolvedScope.scope,
-    );
-    let changed = true;
-    if (agentsMdExists) {
-      const existing = await readFile(agentsMdDst, "utf-8");
-      changed = existing !== rewritten;
-    }
-
-    if (sessionIsActive && agentsMdExists && changed) {
-      summary.agentsMd.skipped += 1;
-      console.log(
-        "  WARNING: Active omx session detected (pid " +
-          activeSession?.pid +
-          ").",
-      );
-      console.log(
-        "  Skipping AGENTS.md overwrite to avoid corrupting runtime overlay.",
-      );
-      console.log("  Stop the active session first, then re-run setup.");
-    } else {
-      await syncManagedContent(
-        rewritten,
-        agentsMdDst,
-        summary.agentsMd,
-        backupContext,
-        { dryRun, verbose },
-        "AGENTS.md",
-      );
-      if (summary.agentsMd.updated > 0) {
-        console.log("  Generated AGENTS.md in project root.");
-      } else if (summary.agentsMd.unchanged > 0) {
-        console.log("  AGENTS.md already up to date.");
-      }
-    }
-  } else {
+  if (resolvedScope.scope !== "project") {
     summary.agentsMd.skipped += 1;
-    console.log("  AGENTS.md template not found, skipping.");
+    console.log("  User scope leaves project AGENTS.md unchanged.");
+  } else {
+    const agentsMdSrc = join(pkgRoot, "templates", "AGENTS.md");
+    const agentsMdDst = join(projectRoot, "AGENTS.md");
+    const agentsMdExists = existsSync(agentsMdDst);
+
+    // Guard: refuse to overwrite AGENTS.md during active session
+    const activeSession = await readSessionState(projectRoot);
+    const sessionIsActive = activeSession && !isSessionStale(activeSession);
+
+    if (existsSync(agentsMdSrc)) {
+      const content = await readFile(agentsMdSrc, "utf-8");
+      const rewritten = applyScopePathRewritesToAgentsTemplate(
+        content,
+        resolvedScope.scope,
+      );
+      let changed = true;
+      if (agentsMdExists) {
+        const existing = await readFile(agentsMdDst, "utf-8");
+        changed = existing !== rewritten;
+      }
+
+      if (sessionIsActive && agentsMdExists && changed) {
+        summary.agentsMd.skipped += 1;
+        console.log(
+          "  WARNING: Active omx session detected (pid " +
+            activeSession?.pid +
+            ").",
+        );
+        console.log(
+          "  Skipping AGENTS.md overwrite to avoid corrupting runtime overlay.",
+        );
+        console.log("  Stop the active session first, then re-run setup.");
+      } else {
+        await syncManagedContent(
+          rewritten,
+          agentsMdDst,
+          summary.agentsMd,
+          backupContext,
+          { dryRun, verbose },
+          "AGENTS.md",
+        );
+        if (summary.agentsMd.updated > 0) {
+          console.log("  Generated AGENTS.md in project root.");
+        } else if (summary.agentsMd.unchanged > 0) {
+          console.log("  AGENTS.md already up to date.");
+        }
+      }
+    } else {
+      summary.agentsMd.skipped += 1;
+      console.log("  AGENTS.md template not found, skipping.");
+    }
   }
   console.log();
 
