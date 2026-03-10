@@ -32,6 +32,11 @@ function runOmx(
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '', error: r.error?.message };
 }
 
+
+async function createExploreTestPath(wd: string): Promise<string> {
+  return process.env.PATH || '';
+}
+
 async function writeEnvNodeCodexStub(wd: string, capturePath: string): Promise<string> {
   const stub = join(wd, 'codex-stub.js');
   await writeFile(
@@ -293,9 +298,11 @@ describe('exploreCommand', () => {
     try {
       const capturePath = join(wd, 'capture.json');
       const codexStub = await writeEnvNodeCodexStub(wd, capturePath);
+      const testPath = await createExploreTestPath(wd);
 
       const result = runOmx(wd, ['explore', '--prompt', 'find buildTmuxPaneCommand'], {
         OMX_EXPLORE_CODEX_BIN: codexStub,
+        PATH: testPath,
       });
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -324,11 +331,13 @@ describe('exploreCommand', () => {
     try {
       const capturePath = join(wd, 'capture.json');
       const codexStub = await writeEnvNodeCodexStub(wd, capturePath);
+      const testPath = await createExploreTestPath(wd);
       const promptPath = join(wd, 'prompt.md');
       await writeFile(promptPath, 'find prompt-file support\n');
 
       const result = runOmx(wd, ['explore', '--prompt-file', promptPath], {
         OMX_EXPLORE_CODEX_BIN: codexStub,
+        PATH: testPath,
       });
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
