@@ -1214,6 +1214,64 @@ describe('executeTeamApiOperation: cleanup', () => {
     const result = await executeTeamApiOperation('cleanup', {}, '/tmp');
     assert.equal(result.ok, false);
   });
+
+  it('routes cleanup through the shutdown gate for failed tasks on normal teams', async () => {
+    const { cwd, cleanup } = await setupTeam('cleanup-gate');
+    try {
+      await createTask('cleanup-gate', {
+        subject: 'failed task',
+        description: 'must keep team state when gate blocks cleanup',
+        status: 'failed',
+      }, cwd);
+
+      const result = await executeTeamApiOperation('cleanup', {
+        team_name: 'cleanup-gate',
+      }, cwd);
+      assert.equal(result.ok, false);
+      if (!result.ok) {
+        assert.match(result.error.message, /shutdown_gate_blocked:pending=0,blocked=0,in_progress=0,failed=1/);
+      }
+
+      const summary = await executeTeamApiOperation('get-summary', {
+        team_name: 'cleanup-gate',
+      }, cwd);
+      assert.equal(summary.ok, true);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('honors linked Ralph cleanup policy for failure-only cleanup', async () => {
+    const { cwd, cleanup } = await setupTeam('cleanup-linked-ralph');
+    try {
+      await createTask('cleanup-linked-ralph', {
+        subject: 'failed task',
+        description: 'linked Ralph cleanup should bypass failure-only shutdown gate',
+        status: 'failed',
+      }, cwd);
+      await writeFile(join(cwd, '.omx', 'state', 'team-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'team-exec',
+        linked_ralph: true,
+        team_name: 'cleanup-linked-ralph',
+      }, null, 2));
+
+      const result = await executeTeamApiOperation('cleanup', {
+        team_name: 'cleanup-linked-ralph',
+      }, cwd);
+      assert.equal(result.ok, true);
+
+      const summary = await executeTeamApiOperation('get-summary', {
+        team_name: 'cleanup-linked-ralph',
+      }, cwd);
+      assert.equal(summary.ok, false);
+      if (!summary.ok) {
+        assert.equal(summary.error.code, 'team_not_found');
+      }
+    } finally {
+      await cleanup();
+    }
+  });
 });
 
 // ─── write-shutdown-request ───────────────────────────────────────────────

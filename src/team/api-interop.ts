@@ -1,5 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve as resolvePath } from 'node:path';
+import { readModeState } from '../modes/base.js';
+import { shutdownTeam } from './runtime.js';
 import {
   TEAM_NAME_SAFE_PATTERN,
   WORKER_NAME_SAFE_PATTERN,
@@ -37,7 +39,6 @@ import {
   teamWriteWorkerIdentity,
   teamAppendEvent,
   teamGetSummary,
-  teamCleanup,
   teamWriteShutdownRequest,
   teamReadShutdownAck,
   teamReadMonitorSnapshot,
@@ -868,7 +869,11 @@ export async function executeTeamApiOperation(
       case 'cleanup': {
         const teamName = String(args.team_name || '').trim();
         if (!teamName) return { ok: false, operation, error: { code: 'invalid_input', message: 'team_name is required' } };
-        await teamCleanup(teamName, cwd);
+        const ralphFromState = await readModeState('team', cwd).then(
+          (state) => state?.active === true && state?.linked_ralph === true && state?.team_name === teamName,
+          () => false,
+        );
+        await shutdownTeam(teamName, cwd, { ralph: ralphFromState });
         return { ok: true, operation, data: { team_name: teamName } };
       }
       case 'write-shutdown-request': {
