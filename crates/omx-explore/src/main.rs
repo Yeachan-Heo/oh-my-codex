@@ -1000,10 +1000,13 @@ mod tests {
 
     #[test]
     fn resolve_shebang_launch_preserves_env_arguments() {
-        let python = resolve_host_command("python3")
-            .or_else(|| resolve_host_command("python"))
+        let _guard = env_lock();
+        let (python_name, python) = resolve_host_command("python3")
+            .map(|path| ("python3", path))
+            .or_else(|| resolve_host_command("python").map(|path| ("python", path)))
             .expect("host python path");
-        let launch = resolve_shebang_launch("/usr/bin/env python3 -I").expect("launch");
+        let shebang = format!("/usr/bin/env {} -I", python_name);
+        let launch = resolve_shebang_launch(&shebang).expect("launch");
         assert_eq!(launch.0, python.display().to_string());
         assert_eq!(launch.1, vec!["-I"]);
     }
