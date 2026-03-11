@@ -1,9 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parseTeamStartArgs, teamCommand } from '../../cli/team.js';
 
 const NOTIFY_HOOK_SCRIPT = new URL('../../../scripts/notify-hook.js', import.meta.url);
 
@@ -50,6 +51,82 @@ async function readJson<T>(path: string): Promise<T> {
 }
 
 describe('notify-hook linked team -> ralph terminal sync', () => {
+  it('syncs linked terminal state starting from a real omx team ralph launch', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const binDir = join(cwd, 'bin');
+      const fakeCodexPath = join(binDir, 'codex');
+      const previousCwd = process.cwd();
+      const previousPath = process.env.PATH;
+      const previousTmux = process.env.TMUX;
+      const previousLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      const previousWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+
+      await mkdir(binDir, { recursive: true });
+      await writeFile(
+        fakeCodexPath,
+        `#!/usr/bin/env node
+setTimeout(() => process.exit(0), 150);
+process.stdin.resume();
+process.on('SIGTERM', () => process.exit(0));
+`,
+      );
+      await chmod(fakeCodexPath, 0o755);
+
+      try {
+        process.chdir(cwd);
+        process.env.PATH = `${binDir}:${previousPath ?? ''}`;
+        delete process.env.TMUX;
+        process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
+        process.env.OMX_TEAM_WORKER_CLI = 'codex';
+
+        const teamTask = 'real launch linked notify sync';
+        const teamName = parseTeamStartArgs(['ralph', '1:executor', teamTask]).parsed.teamName;
+        await teamCommand(['ralph', '1:executor', teamTask]);
+
+        const stateDir = join(cwd, '.omx', 'state');
+        const teamStatePath = join(stateDir, 'team-state.json');
+        const ralphStatePath = join(stateDir, 'ralph-state.json');
+        const launchedTeamState = await readJson<Record<string, unknown>>(teamStatePath);
+        const launchedRalphState = await readJson<Record<string, unknown>>(ralphStatePath);
+
+        assert.equal(launchedTeamState.linked_ralph, true);
+        assert.equal(launchedTeamState.team_name, teamName);
+        assert.equal(launchedRalphState.active, true);
+        assert.equal(launchedRalphState.linked_team, true);
+        assert.equal(launchedRalphState.linked_mode, 'team');
+        assert.equal(launchedRalphState.team_name, teamName);
+        assert.equal(launchedRalphState.linked_team_terminal_phase, undefined);
+        assert.equal(launchedRalphState.linked_team_terminal_at, undefined);
+
+        await writeJson(teamStatePath, {
+          ...launchedTeamState,
+          active: false,
+          current_phase: 'complete',
+          completed_at: '2026-02-10T00:00:00.000Z',
+        });
+
+        runNotifyHook(cwd);
+
+        const ralphState = await readJson<Record<string, unknown>>(ralphStatePath);
+        assert.equal(ralphState.active, false);
+        assert.equal(ralphState.current_phase, 'complete');
+        assert.equal(ralphState.linked_team_terminal_phase, 'complete');
+        assert.equal(ralphState.linked_team_terminal_at, '2026-02-10T00:00:00.000Z');
+        assert.equal(ralphState.completed_at, '2026-02-10T00:00:00.000Z');
+      } finally {
+        process.chdir(previousCwd);
+        if (typeof previousPath === 'string') process.env.PATH = previousPath;
+        else delete process.env.PATH;
+        if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
+        else delete process.env.TMUX;
+        if (typeof previousLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = previousLaunchMode;
+        else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+        if (typeof previousWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = previousWorkerCli;
+        else delete process.env.OMX_TEAM_WORKER_CLI;
+      }
+    });
+  });
+
   it('updates root ralph state when linked team enters terminal phase', async () => {
     await withTempWorkingDir(async (cwd) => {
       const stateDir = join(cwd, '.omx', 'state');

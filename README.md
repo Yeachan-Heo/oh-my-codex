@@ -411,15 +411,19 @@ omx team 3:executor "execute the approved ralplan with shared runtime coordinati
 
 Planned documentation/product direction: make `ralplan` produce stronger team follow-up guidance by default, including worker placement hints and an explicit follow-up path such as `--followup team`.
 
-### Why `omx team ralph` is a distinct launch mode
+### Why `omx team ralph` is a linked launch path
 
 Use `omx team ralph ...` when the team run and Ralph follow-up should behave as
 one linked lifecycle, not as two unrelated commands.
 
-- **Linked lifecycle/state:** team starts with `linked_ralph=true`, Ralph tracks
-  `linked_team=true`, and terminal team phases propagate into Ralph state. That
-  gives one operator-visible chain for resume/cancel/final verification instead
-  of a manual handoff after the fact.
+It does **not** spin up a separate team runtime. OMX uses the normal
+`omx team` startup path, then seeds linked team/Ralph state from launch time so
+later status, shutdown, and cancel flows can observe one connected run.
+
+- **Linked lifecycle/state:** launch records `linked_ralph=true` in team state,
+  creates/updates Ralph state with `linked_team=true`, and later terminal team
+  phases propagate into Ralph state. That gives one operator-visible chain for
+  resume/cancel/final verification instead of a manual handoff after the fact.
 - **Cleanup/shutdown:** linked shutdown uses the Ralph-aware cleanup policy.
   Team cleanup happens first, Ralph is terminalized from the linked team result,
   branch rollback preserves worktree branches, and the run records linked

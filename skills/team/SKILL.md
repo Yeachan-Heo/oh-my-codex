@@ -42,13 +42,15 @@ omx team "debug flaky integration tests"
 omx team ralph "ship end-to-end fix with verification"
 ```
 
-### Why `team ralph` exists as a separate launch form
+### Why `team ralph` exists as a linked launch path
 
 `omx team ralph ...` is not just shorthand for "run team now, decide on Ralph
-later." It creates a linked team+Ralph lifecycle from launch time.
+later." It creates a linked team+Ralph lifecycle from launch time while still
+using the normal `omx team` runtime startup path.
 
-- **Linked lifecycle/state:** the team run is marked `linked_ralph`, Ralph is
-  marked `linked_team`, and team terminal phases can propagate into Ralph state.
+- **Linked lifecycle/state:** launch marks team state with `linked_ralph`,
+  creates/updates Ralph state with `linked_team`, and team terminal phases can
+  propagate into Ralph state.
 - **Cleanup/shutdown:** linked cancellation and shutdown happen in order: team
   cleanup first, then Ralph terminalization/cleanup metadata.
 - **Operator choice:**
