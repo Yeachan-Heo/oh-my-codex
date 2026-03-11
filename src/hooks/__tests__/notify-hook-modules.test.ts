@@ -207,6 +207,8 @@ describe('notify-hook/auto-nudge – detectStallPattern', () => {
     assert.equal(detectStallPattern('If you want, I can refactor.', DEFAULT_STALL_PATTERNS), true);
     assert.equal(detectStallPattern('Let me know if you need more help.', DEFAULT_STALL_PATTERNS), true);
     assert.equal(detectStallPattern('Ready to proceed whenever you are.', DEFAULT_STALL_PATTERNS), true);
+    assert.equal(detectStallPattern('I’M READY TO take the next step.', DEFAULT_STALL_PATTERNS), true);
+    assert.equal(detectStallPattern('KEEP GOING and I will finish the patch.', DEFAULT_STALL_PATTERNS), true);
   });
 
   it('detects team-worker follow-up phrases like continue with and next step', async () => {
@@ -229,6 +231,12 @@ describe('notify-hook/auto-nudge – detectStallPattern', () => {
     const custom = ['awaiting approval'];
     assert.equal(detectStallPattern('Changes staged. Awaiting approval.', custom), true);
     assert.equal(detectStallPattern('Would you like me to proceed?', custom), false);
+  });
+
+  it('ignores prior OMX injection lines so injected text cannot self-trigger detection', async () => {
+    const { detectStallPattern, DEFAULT_STALL_PATTERNS } = await loadModule('notify-hook/auto-nudge.js');
+    const text = 'Completed the change.\nyes, proceed [OMX_TMUX_INJECT]\nkeep going [OMX_TMUX_INJECT]';
+    assert.equal(detectStallPattern(text, DEFAULT_STALL_PATTERNS), false);
   });
 
   it('focuses detection on the last few lines (hotZone)', async () => {
