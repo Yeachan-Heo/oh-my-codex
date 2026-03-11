@@ -23,6 +23,7 @@
     "test:node": "node --test $(find dist -name '*.test.js')",
     "test": "npm run build && npm run test:node && node scripts/generate-catalog-docs.js --check",
     "coverage:team-critical": "npm run build && c8 --all --src dist/team --src dist/state --include 'dist/team/**/*.js' --include 'dist/state/**/*.js' --exclude '**/__tests__/**' --reporter=text-summary --reporter=lcov --reporter=json-summary --report-dir coverage/team --check-coverage --lines=78 --functions=90 --branches=70 --statements=78 node --test $(find dist/team/__tests__ dist/state/__tests__ -name '*.test.js')",
+    "coverage:ts:full": "npm run build && c8 --all --src dist --exclude '**/__tests__/**' --exclude 'dist/bin/**' --exclude 'dist/**/*.d.ts' --reporter=text-summary --reporter=lcov --reporter=json-summary --report-dir coverage/ts-full node --test $(find dist -name '*.test.js')",
     "test:compat:node": "npm run build && node --test dist/compat/__tests__/*.test.js",
     "test:compat:rust": "cargo build && OMX_COMPAT_TARGET=./target/debug/omx npm run test:compat:node",
     "build:sparkshell": "node scripts/build-sparkshell.mjs",
