@@ -133,6 +133,8 @@ From terminal:
 ```bash
 omx team 4:executor "parallelize a multi-module refactor"
 omx team status <team-name>
+omx team status <team-name> --json
+omx team status <team-name> --tail-lines 600
 omx team resume <team-name>
 omx team shutdown <team-name>
 ```
@@ -281,6 +283,31 @@ OMX now includes `omx hooks` for plugin scaffolding and validation.
 
 See `docs/hooks-extension.md` for the full extension workflow and event model.
 
+## Sparkshell (preview)
+
+`omx sparkshell <command> [args...]` runs through a JS -> Rust sidecar bridge for fast command execution with adaptive summaries when output exceeds `OMX_SPARKSHELL_LINES`.
+
+Current preview contract:
+- Short output stays raw; long output is summarized into markdown sections limited to `summary:`, `failures:`, and `warnings:`.
+- Summary mode uses the local Codex CLI via `codex exec` and prefers `OMX_SPARKSHELL_MODEL`, then `OMX_SPARK_MODEL`, then the spark default model.
+- `--spark` / `--madmax-spark` remain team-worker launch flags; sparkshell model routing is controlled by env vars instead.
+- Native binary lookup order is `OMX_SPARKSHELL_BIN`, then packaged `bin/native/<platform>-<arch>/omx-sparkshell[.exe]`, then repo-local `native/omx-sparkshell/target/release/omx-sparkshell[.exe]`.
+- Team/leader pane summarization is explicit opt-in via tmux pane mode, for example:
+
+```bash
+omx sparkshell --tmux-pane %12 --tail-lines 400
+```
+
+- tmux pane mode captures a larger pane tail (100-1000 lines) and applies the same raw-vs-summary behavior to worker/leader pane context.
+- sparkshell pane summarization is not always-on; it is enabled only when explicitly requested.
+
+Preview build helpers:
+
+```bash
+npm run build:sparkshell
+npm run test:sparkshell
+```
+
 ## Launch Flags
 
 ```bash
@@ -348,6 +375,8 @@ omx team <args>
 omx team --help
 omx team api --help
 omx team status <team-name>
+omx team status <team-name> --json
+omx team status <team-name> --tail-lines 600
 omx team resume <team-name>
 omx team shutdown <team-name>
 ```

@@ -70,12 +70,16 @@ interface OmxTeamJob {
 }
 
 const omxTeamJobs = new Map<string, OmxTeamJob>();
-const OMX_JOBS_DIR = join(homedir(), '.omx', 'team-jobs');
+
+function getOmxJobsDir(): string {
+  return join(homedir(), '.omx', 'team-jobs');
+}
 
 function persistJob(jobId: string, job: OmxTeamJob): void {
   try {
-    if (!existsSync(OMX_JOBS_DIR)) mkdirSync(OMX_JOBS_DIR, { recursive: true });
-    writeFileSync(join(OMX_JOBS_DIR, `${jobId}.json`), JSON.stringify(job), 'utf-8');
+    const jobsDir = getOmxJobsDir();
+    if (!existsSync(jobsDir)) mkdirSync(jobsDir, { recursive: true });
+    writeFileSync(join(jobsDir, `${jobId}.json`), JSON.stringify(job), 'utf-8');
   } catch (err) {
     process.stderr.write(`[team-server] persist job failed: ${err}\n`);
   }
@@ -83,7 +87,7 @@ function persistJob(jobId: string, job: OmxTeamJob): void {
 
 function loadJobFromDisk(jobId: string): OmxTeamJob | undefined {
   try {
-    return JSON.parse(readFileSync(join(OMX_JOBS_DIR, `${jobId}.json`), 'utf-8')) as OmxTeamJob;
+    return JSON.parse(readFileSync(join(getOmxJobsDir(), `${jobId}.json`), 'utf-8')) as OmxTeamJob;
   } catch (err) {
     process.stderr.write(`[team-server] load job failed: ${err}\n`);
     return undefined;
@@ -110,7 +114,7 @@ function parseJsonFromStdout(rawStdout: string): { parsed?: Record<string, unkno
 
 async function loadPaneIds(jobId: string): Promise<{ paneIds: string[]; leaderPaneId: string } | null> {
   try {
-    const parsed = JSON.parse(await readFile(join(OMX_JOBS_DIR, `${jobId}-panes.json`), 'utf-8')) as {
+    const parsed = JSON.parse(await readFile(join(getOmxJobsDir(), `${jobId}-panes.json`), 'utf-8')) as {
       paneIds?: unknown;
       leaderPaneId?: unknown;
     };
@@ -326,7 +330,7 @@ export async function handleTeamToolCall(request: {
         omxTeamJobs.set(jobId, job);
 
         const child = spawn('node', [runtimeCliPath], {
-          env: { ...process.env, OMX_JOB_ID: jobId, OMX_JOBS_DIR },
+          env: { ...process.env, OMX_JOB_ID: jobId, OMX_JOBS_DIR: getOmxJobsDir() },
           stdio: ['pipe', 'pipe', 'pipe'],
         });
         job.pid = child.pid;

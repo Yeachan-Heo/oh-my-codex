@@ -25,6 +25,8 @@
     "coverage:team-critical": "npm run build && c8 --all --src dist/team --src dist/state --include 'dist/team/**/*.js' --include 'dist/state/**/*.js' --exclude '**/__tests__/**' --reporter=text-summary --reporter=lcov --reporter=json-summary --report-dir coverage/team --check-coverage --lines=78 --functions=90 --branches=70 --statements=78 node --test $(find dist/team/__tests__ dist/state/__tests__ -name '*.test.js')",
     "test:compat:node": "npm run build && node --test dist/compat/__tests__/*.test.js",
     "test:compat:rust": "cargo build && OMX_COMPAT_TARGET=./target/debug/omx npm run test:compat:node",
+    "build:sparkshell": "node scripts/build-sparkshell.mjs",
+    "test:sparkshell": "node scripts/test-sparkshell.mjs",
     "postpack": "node scripts/cleanup-explore-harness.js"
   },
   "engines": {
@@ -40,7 +42,10 @@
     "skills/",
     "prompts/",
     "templates/",
-    "scripts/"
+    "scripts/",
+    "bin/native/",
+    "scripts/build-sparkshell.mjs",
+    "scripts/test-sparkshell.mjs"
   ],
   "keywords": [
     "codex",

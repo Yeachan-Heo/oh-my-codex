@@ -1,0 +1,8 @@
+[package]
+name = "omx-sparkshell"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "omx-sparkshell"
+path = "src/main.rs"

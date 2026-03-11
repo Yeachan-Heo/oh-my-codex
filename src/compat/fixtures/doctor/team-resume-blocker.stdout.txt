@@ -1,0 +1,6 @@
+oh-my-codex doctor --team
+=========================
+
+  [XX] resume_blocker: alpha references missing tmux session omx-team-alpha
+
+Results: 0 warnings, 1 failed

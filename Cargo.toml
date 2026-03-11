@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/omx-explore"]
+exclude = ["native/omx-sparkshell"]
 resolver = "2"
 
 [workspace.package]
