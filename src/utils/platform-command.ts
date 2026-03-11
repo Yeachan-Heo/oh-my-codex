@@ -22,6 +22,7 @@ const WINDOWS_DEFAULT_PATHEXT = ['.com', '.exe', '.bat', '.cmd', '.ps1'];
 const WINDOWS_DIRECT_EXTENSIONS = new Set(['.com', '.exe']);
 const WINDOWS_CMD_EXTENSIONS = new Set(['.bat', '.cmd']);
 const WINDOWS_EXTENSION_PRIORITY = ['.exe', '.com', '.ps1', '.cmd', '.bat'];
+const NODE_HOSTED_SCRIPT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 
 function isWindowsPathLike(command: string): boolean {
   return /^[A-Za-z]:/.test(command) || /[\\/]/.test(command);
@@ -155,6 +156,12 @@ export function buildPlatformCommandSpec(
   };
 }
 
+function shouldRetryWithNodeHost(spec: PlatformCommandSpec, error: NodeJS.ErrnoException | undefined | null, platform: NodeJS.Platform): boolean {
+  if (platform === 'win32') return false;
+  if (classifySpawnError(error) !== 'blocked') return false;
+  return NODE_HOSTED_SCRIPT_EXTENSIONS.has(extname(spec.command).toLowerCase());
+}
+
 export function spawnPlatformCommandSync(
   command: string,
   args: string[],
@@ -166,5 +173,15 @@ export function spawnPlatformCommandSync(
 ): ProbedPlatformCommand {
   const spec = buildPlatformCommandSpec(command, args, platform, env, existsImpl);
   const result = spawnImpl(spec.command, spec.args, options);
-  return { spec, result };
+  if (!shouldRetryWithNodeHost(spec, result.error as NodeJS.ErrnoException | undefined, platform)) {
+    return { spec, result };
+  }
+
+  const retrySpec: PlatformCommandSpec = {
+    command: process.execPath,
+    args: [spec.command, ...spec.args],
+    resolvedPath: spec.command,
+  };
+  const retryResult = spawnImpl(retrySpec.command, retrySpec.args, options);
+  return { spec: retrySpec, result: retryResult };
 }

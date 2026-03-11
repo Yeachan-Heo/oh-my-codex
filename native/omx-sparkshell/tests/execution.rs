@@ -113,7 +113,7 @@ fn summary_failure_falls_back_to_raw_output_with_notice() {
     let output = Command::new(sparkshell_bin())
         .env("PATH", path)
         .env("OMX_SPARKSHELL_LINES", "1")
-        .arg("sh")
+        .arg("/bin/sh")
         .arg("-c")
         .arg("printf 'one\ntwo\n'; printf 'child-err\n' >&2")
         .output()
@@ -209,6 +209,163 @@ fn tmux_pane_mode_captures_large_tail_and_summarizes() {
     let prompt = fs::read_to_string(prompt_log).expect("prompt log");
     assert!(prompt.contains("Command: tmux capture-pane"));
     assert!(prompt.contains("line-1"));
+
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn raw_mode_keeps_boundary_output_without_summary() {
+    let temp = unique_temp_dir("boundary-raw");
+    let codex = temp.join("codex");
+    let codex_log = temp.join("codex.log");
+    write_executable(
+        &codex,
+        &format!(
+            "#!/bin/sh
+printf '%s\n' invoked > '{}'
+exit 0
+",
+            codex_log.display()
+        ),
+    );
+
+    let path = format!(
+        "{}:{}",
+        temp.display(),
+        env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new(sparkshell_bin())
+        .env("PATH", path)
+        .env("OMX_SPARKSHELL_LINES", "2")
+        .arg("sh")
+        .arg("-c")
+        .arg("printf 'one\ntwo\n'")
+        .output()
+        .expect("run sparkshell");
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "one
+two
+"
+    );
+    assert!(
+        !codex_log.exists(),
+        "codex should not run at the raw/summary boundary"
+    );
+
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn summary_mode_uses_combined_stdout_and_stderr_threshold() {
+    let temp = unique_temp_dir("combined-threshold");
+    let codex = temp.join("codex");
+    let prompt_log = temp.join("prompt.log");
+    write_executable(
+        &codex,
+        &format!(
+            "#!/bin/sh
+cat > '{}'
+printf '%s\n' '- summary: combined output exceeded threshold'
+",
+            prompt_log.display()
+        ),
+    );
+
+    let path = format!(
+        "{}:{}",
+        temp.display(),
+        env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new(sparkshell_bin())
+        .env("PATH", path)
+        .env("OMX_SPARKSHELL_LINES", "2")
+        .arg("sh")
+        .arg("-c")
+        .arg("printf 'one\n' && printf 'warn\nextra\n' >&2")
+        .output()
+        .expect("run sparkshell");
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("combined output exceeded threshold"));
+    let prompt = fs::read_to_string(prompt_log).expect("prompt log");
+    assert!(prompt.contains("<<<STDERR"));
+    assert!(prompt.contains(
+        "warn
+extra"
+    ));
+
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn summary_failure_when_codex_is_missing_falls_back_to_raw_output() {
+    let empty_path = unique_temp_dir("missing-codex");
+    let output = Command::new(sparkshell_bin())
+        .env("PATH", empty_path.display().to_string())
+        .env("OMX_SPARKSHELL_LINES", "1")
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg("printf 'one\ntwo\n'; printf 'child-err\n' >&2")
+        .output()
+        .expect("run sparkshell");
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "one
+two
+"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("child-err"));
+    assert!(stderr.contains("summary unavailable"));
+
+    let _ = fs::remove_dir_all(empty_path);
+}
+
+#[test]
+fn tmux_pane_mode_uses_default_tail_lines_when_not_overridden() {
+    let temp = unique_temp_dir("tmux-default-tail");
+    let tmux = temp.join("tmux");
+    let codex = temp.join("codex");
+    let args_log = temp.join("tmux-args.log");
+    write_executable(
+        &tmux,
+        &format!(
+            "#!/bin/sh
+printf '%s\n' \"$@\" > '{}'
+printf 'line-1\nline-2\nline-3\n'
+",
+            args_log.display()
+        ),
+    );
+    write_executable(
+        &codex,
+        "#!/bin/sh
+printf '%s\n' '- summary: used default tmux tail'
+",
+    );
+
+    let path = format!(
+        "{}:{}",
+        temp.display(),
+        env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new(sparkshell_bin())
+        .env("PATH", path)
+        .env("OMX_SPARKSHELL_LINES", "1")
+        .arg("--tmux-pane")
+        .arg("%21")
+        .output()
+        .expect("run sparkshell");
+
+    assert!(output.status.success());
+    let tmux_args = fs::read_to_string(args_log).expect("tmux args");
+    assert!(tmux_args.contains("-200"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("used default tmux tail"));
 
     let _ = fs::remove_dir_all(temp);
 }

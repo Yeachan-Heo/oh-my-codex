@@ -19,7 +19,7 @@ function runOmx(
   const testDir = dirname(fileURLToPath(import.meta.url));
   const repoRoot = join(testDir, '..', '..', '..');
   const omxBin = join(repoRoot, 'bin', 'omx.js');
-  const result = spawnSync(process.execPath, [omxBin, ...argv], {
+  const result = spawnSync('node', [omxBin, ...argv], {
     cwd,
     encoding: 'utf-8',
     env: { ...process.env, ...envOverrides },

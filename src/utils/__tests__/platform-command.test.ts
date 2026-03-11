@@ -163,4 +163,48 @@ describe('spawnPlatformCommandSync', () => {
       await rm(fakeBin, { recursive: true, force: true });
     }
   });
+
+
+  it('retries blocked node-hosted scripts through process.execPath on non-Windows', () => {
+    const scriptPath = '/tmp/omx-explore-stub.js';
+    const calls: Array<{ command: string; args: readonly string[] }> = [];
+
+    const probed = spawnPlatformCommandSync(
+      scriptPath,
+      ['--prompt', 'find auth'],
+      { encoding: 'utf-8' },
+      'linux',
+      process.env,
+      undefined,
+      (((command: string, args: readonly string[]) => {
+        calls.push({ command, args });
+        if (calls.length === 1) {
+          return {
+            status: 0,
+            stdout: '',
+            stderr: '',
+            pid: 1,
+            output: [],
+            signal: null,
+            error: { code: 'EPERM', message: 'blocked' },
+          };
+        }
+        return {
+          status: 0,
+          stdout: '# Answer\nReady\n',
+          stderr: '',
+          pid: 2,
+          output: [],
+          signal: null,
+        };
+      }) as unknown) as typeof import('child_process').spawnSync,
+    );
+
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0]?.command, scriptPath);
+    assert.equal(calls[1]?.command, process.execPath);
+    assert.deepEqual(calls[1]?.args, [scriptPath, '--prompt', 'find auth']);
+    assert.equal(probed.result.stdout, '# Answer\nReady\n');
+    assert.equal(probed.spec.command, process.execPath);
+  });
 });

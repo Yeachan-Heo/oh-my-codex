@@ -18,15 +18,15 @@ const MAX_TMUX_TAIL_LINES: usize = 1000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SparkShellInput {
     Command(Vec<String>),
-    TmuxPane {
-        pane_id: String,
-        tail_lines: usize,
-    },
+    TmuxPane { pane_id: String, tail_lines: usize },
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().is_some_and(|arg| arg == "--help" || arg == "-h") {
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--help" || arg == "-h")
+    {
         println!("{}", usage_text());
         return;
     }
@@ -231,11 +231,8 @@ mod tests {
 
     #[test]
     fn parses_tmux_pane_mode_with_explicit_tail_lines() {
-        let parsed = parse_input(&strings(&[
-            "--tmux-pane=%22",
-            "--tail-lines=400",
-        ]))
-        .expect("parsed");
+        let parsed =
+            parse_input(&strings(&["--tmux-pane=%22", "--tail-lines=400"])).expect("parsed");
         assert_eq!(
             parsed,
             SparkShellInput::TmuxPane {
@@ -259,8 +256,7 @@ mod tests {
 
     #[test]
     fn rejects_tmux_pane_mode_with_positional_command() {
-        let error =
-            parse_input(&strings(&["--tmux-pane", "%11", "git", "status"])).unwrap_err();
+        let error = parse_input(&strings(&["--tmux-pane", "%11", "git", "status"])).unwrap_err();
         assert_eq!(
             error.to_string(),
             "tmux pane mode does not accept an additional command"
@@ -269,8 +265,8 @@ mod tests {
 
     #[test]
     fn rejects_out_of_range_tail_lines() {
-        let error = parse_input(&strings(&["--tmux-pane", "%11", "--tail-lines", "80"]))
-            .unwrap_err();
+        let error =
+            parse_input(&strings(&["--tmux-pane", "%11", "--tail-lines", "80"])).unwrap_err();
         assert_eq!(
             error.to_string(),
             "--tail-lines must be an integer between 100 and 1000"
@@ -279,8 +275,52 @@ mod tests {
 
     #[test]
     fn rejects_tail_lines_above_maximum() {
-        let error = parse_input(&strings(&["--tmux-pane", "%11", "--tail-lines", "1001"]))
-            .unwrap_err();
+        let error =
+            parse_input(&strings(&["--tmux-pane", "%11", "--tail-lines", "1001"])).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "--tail-lines must be an integer between 100 and 1000"
+        );
+    }
+
+    #[test]
+    fn tmux_pane_flag_rejects_missing_equals_value() {
+        let error = parse_input(&strings(&["--tmux-pane="])).unwrap_err();
+        assert_eq!(error.to_string(), "--tmux-pane requires a pane id");
+    }
+
+    #[test]
+    fn tmux_pane_flag_rejects_dash_prefixed_value() {
+        let error = parse_input(&strings(&["--tmux-pane", "--tail-lines"])).unwrap_err();
+        assert_eq!(error.to_string(), "--tmux-pane requires a pane id");
+    }
+
+    #[test]
+    fn tail_lines_accepts_boundary_values() {
+        let min = parse_input(&strings(&["--tmux-pane", "%11", "--tail-lines", "100"]))
+            .expect("min parsed");
+        let max = parse_input(&strings(&["--tmux-pane", "%11", "--tail-lines", "1000"]))
+            .expect("max parsed");
+        assert_eq!(
+            min,
+            SparkShellInput::TmuxPane {
+                pane_id: "%11".to_string(),
+                tail_lines: 100
+            }
+        );
+        assert_eq!(
+            max,
+            SparkShellInput::TmuxPane {
+                pane_id: "%11".to_string(),
+                tail_lines: 1000
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_non_numeric_tail_lines() {
+        let error =
+            parse_input(&strings(&["--tmux-pane", "%11", "--tail-lines", "bogus"])).unwrap_err();
         assert_eq!(
             error.to_string(),
             "--tail-lines must be an integer between 100 and 1000"
@@ -289,8 +329,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_tail_lines_value() {
-        let error = parse_input(&strings(&["--tmux-pane", "%11", "--tail-lines"]))
-            .unwrap_err();
+        let error = parse_input(&strings(&["--tmux-pane", "%11", "--tail-lines"])).unwrap_err();
         assert_eq!(error.to_string(), "--tail-lines requires a numeric value");
     }
 }

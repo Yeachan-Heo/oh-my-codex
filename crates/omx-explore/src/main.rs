@@ -1,6 +1,8 @@
 use std::env;
 use std::ffi::OsString;
-use std::fs::{canonicalize, create_dir_all, read_to_string, remove_dir_all, remove_file, write, File};
+use std::fs::{
+    canonicalize, create_dir_all, read_to_string, remove_dir_all, remove_file, write, File,
+};
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -136,7 +138,10 @@ fn print_attempt_output(attempt: AttemptResult) -> Result<(), String> {
         print!("{}", markdown);
         return Ok(());
     }
-    Err("codex completed successfully but did not produce the expected markdown output artifact".to_string())
+    Err(
+        "codex completed successfully but did not produce the expected markdown output artifact"
+            .to_string(),
+    )
 }
 
 fn parse_args<I>(mut args: I) -> Result<Args, String>
@@ -579,7 +584,9 @@ fn validate_direct_command(command_name: &str, args: &[String]) -> Result<(), St
                 return Err("grep stdin (`-`) is not allowed in omx explore".to_string());
             }
             if non_option_operands(args).len() < 2 {
-                return Err("grep requires a pattern and at least one file/path in omx explore".to_string());
+                return Err(
+                    "grep requires a pattern and at least one file/path in omx explore".to_string(),
+                );
             }
         }
         "find" => {
@@ -633,11 +640,9 @@ fn validate_direct_command(command_name: &str, args: &[String]) -> Result<(), St
             if operands.iter().any(|arg| *arg == "-") {
                 return Err("tail stdin (`-`) is not allowed in omx explore".to_string());
             }
-            if args
-                .iter()
-                .any(|arg| matches!(arg.as_str(), "-f" | "-F" | "--retry")
-                    || arg.starts_with("--follow"))
-            {
+            if args.iter().any(|arg| {
+                matches!(arg.as_str(), "-f" | "-F" | "--retry") || arg.starts_with("--follow")
+            }) {
                 return Err("tail follow/retry modes are not allowed in omx explore".to_string());
             }
         }
@@ -766,6 +771,14 @@ fn canonicalize_existing_prefix(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock")
+    }
 
     #[test]
     fn parse_args_requires_all_fields() {
@@ -812,6 +825,7 @@ mod tests {
 
     #[test]
     fn resolve_codex_binary_prefers_env_override() {
+        let _guard = env_lock();
         unsafe {
             env::set_var(CODEX_BIN_ENV, "/tmp/codex-stub");
         }
@@ -819,6 +833,35 @@ mod tests {
         unsafe {
             env::remove_var(CODEX_BIN_ENV);
         }
+    }
+
+    #[test]
+    fn resolve_codex_binary_resolves_bare_env_override_from_path() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let bin_dir = root.path.join("bin");
+        create_dir_all(&bin_dir).expect("create bin");
+        let fake_codex = bin_dir.join("codex-custom");
+        write(&fake_codex, b"#!/bin/sh\nexit 0\n").expect("write fake codex");
+        write_executable(&fake_codex, "#!/bin/sh\nexit 0\n").expect("chmod fake codex");
+
+        let original_path = env::var_os("PATH");
+        unsafe {
+            env::set_var(CODEX_BIN_ENV, "codex-custom");
+            env::set_var("PATH", &bin_dir);
+        }
+
+        let resolved = resolve_codex_binary();
+
+        unsafe {
+            env::remove_var(CODEX_BIN_ENV);
+        }
+        match original_path {
+            Some(value) => unsafe { env::set_var("PATH", value) },
+            None => unsafe { env::remove_var("PATH") },
+        }
+
+        assert_eq!(resolved, fake_codex.display().to_string());
     }
 
     #[test]
@@ -836,6 +879,7 @@ mod tests {
 
     #[test]
     fn discover_codex_support_dirs_includes_home_omx_and_codex_when_present() {
+        let _guard = env_lock();
         let root = temp_allowlist_dir().expect("temp root");
         let home_dir = root.path.join("home");
         create_dir_all(home_dir.join(".omx")).expect("create .omx");
@@ -861,7 +905,9 @@ mod tests {
         assert!(validate_shell_invocation(&["-lc".into(), "/usr/bin/rg auth src".into()]).is_err());
         assert!(validate_shell_invocation(&["-lc".into(), "find . -exec rm {} +".into()]).is_err());
         assert!(validate_shell_invocation(&["-lc".into(), "tail -f README.md".into()]).is_err());
-        assert!(validate_shell_invocation(&["-lc".into(), "sed -n 1,5p README.md".into()]).is_err());
+        assert!(
+            validate_shell_invocation(&["-lc".into(), "sed -n 1,5p README.md".into()]).is_err()
+        );
     }
 
     #[test]
@@ -874,7 +920,11 @@ mod tests {
         assert!(validate_direct_command("grep", &["needle".into(), "-".into()]).is_err());
         assert!(validate_direct_command("find", &[".".into(), "-type".into(), "f".into()]).is_ok());
         assert!(validate_direct_command("find", &[".".into(), "-delete".into()]).is_err());
-        assert!(validate_direct_command("find", &[".".into(), "-fprint".into(), "/tmp/out".into()]).is_err());
+        assert!(validate_direct_command(
+            "find",
+            &[".".into(), "-fprint".into(), "/tmp/out".into()]
+        )
+        .is_err());
         assert!(validate_direct_command("cat", &["README.md".into()]).is_ok());
         assert!(validate_direct_command("cat", &[]).is_err());
         assert!(validate_direct_command("cat", &["-".into()]).is_err());
@@ -885,20 +935,35 @@ mod tests {
         assert!(validate_direct_command("tail", &["README.md".into()]).is_ok());
         assert!(validate_direct_command("tail", &[]).is_err());
         assert!(validate_direct_command("tail", &["-f".into(), "README.md".into()]).is_err());
-        assert!(validate_direct_command("sed", &["-n".into(), "1,20p".into(), "README.md".into()]).is_err());
+        assert!(
+            validate_direct_command("sed", &["-n".into(), "1,20p".into(), "README.md".into()])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn validate_direct_command_covers_additional_head_wc_and_tail_rejections() {
+        assert!(validate_direct_command("head", &["-".into()]).is_err());
+        assert!(validate_direct_command("wc", &[]).is_err());
+        assert!(validate_direct_command("tail", &["--retry".into(), "README.md".into()]).is_err());
     }
 
     #[test]
     fn validate_direct_command_blocks_repo_escape_paths() {
+        let _guard = env_lock();
         unsafe {
             env::set_var(HARNESS_ROOT_ENV, "/repo");
         }
         assert!(validate_direct_command("cat", &["README.md".into()]).is_ok());
         assert!(validate_direct_command("ls", &["src".into()]).is_ok());
         assert!(validate_direct_command("rg", &["needle".into(), "src".into()]).is_ok());
-        assert!(validate_direct_command("grep", &["needle".into(), "../secret.txt".into()]).is_err());
+        assert!(
+            validate_direct_command("grep", &["needle".into(), "../secret.txt".into()]).is_err()
+        );
         assert!(validate_direct_command("cat", &["../secret.txt".into()]).is_err());
-        assert!(validate_direct_command("find", &["../".into(), "-type".into(), "f".into()]).is_err());
+        assert!(
+            validate_direct_command("find", &["../".into(), "-type".into(), "f".into()]).is_err()
+        );
         assert!(validate_direct_command("ls", &["/tmp".into()]).is_err());
         unsafe {
             env::remove_var(HARNESS_ROOT_ENV);
@@ -908,6 +973,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn validate_direct_command_blocks_symlink_escape_paths() {
+        let _guard = env_lock();
         use std::os::unix::fs::symlink;
 
         let root = temp_allowlist_dir().expect("temp root");
@@ -930,6 +996,127 @@ mod tests {
         assert!(result
             .expect_err("symlink escape should fail")
             .contains("resolves outside"));
+    }
+
+    #[test]
+    fn resolve_shebang_launch_preserves_env_arguments() {
+        let python = resolve_host_command("python3")
+            .or_else(|| resolve_host_command("python"))
+            .expect("host python path");
+        let launch = resolve_shebang_launch("/usr/bin/env python3 -I").expect("launch");
+        assert_eq!(launch.0, python.display().to_string());
+        assert_eq!(launch.1, vec!["-I"]);
+    }
+
+    #[test]
+    fn validate_shell_invocation_rejects_empty_and_wrong_flag_forms() {
+        assert!(validate_shell_invocation(&["-lc".into(), "   ".into()]).is_err());
+        assert!(validate_shell_invocation(&["--command".into(), "rg auth src".into()]).is_err());
+        assert!(validate_shell_invocation(&["-c".into()]).is_err());
+    }
+
+    #[test]
+    fn validate_direct_command_accepts_repo_internal_absolute_paths() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let repo = root.path.join("repo");
+        create_dir_all(repo.join("nested")).expect("create repo");
+        write(repo.join("nested").join("file.txt"), "ok").expect("write file");
+
+        unsafe {
+            env::set_var(HARNESS_ROOT_ENV, &repo);
+        }
+        let result = validate_direct_command(
+            "cat",
+            &[repo.join("nested").join("file.txt").display().to_string()],
+        );
+        unsafe {
+            env::remove_var(HARNESS_ROOT_ENV);
+        }
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn command_path_operands_handle_double_dash_and_find_roots() {
+        let rg_args = vec![
+            "needle".to_string(),
+            "--".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        assert_eq!(command_path_operands("rg", &rg_args), vec!["src/lib.rs"]);
+
+        let find_args = vec![
+            "src".to_string(),
+            "tests".to_string(),
+            "-type".to_string(),
+            "f".to_string(),
+        ];
+        assert_eq!(
+            command_path_operands("find", &find_args),
+            vec!["src", "tests"]
+        );
+    }
+
+    #[test]
+    fn run_with_args_reports_both_failed_attempts_with_codes_and_stderr() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let repo = root.path.join("repo");
+        create_dir_all(&repo).expect("create repo");
+        let prompt_file = root.path.join("prompt.md");
+        write(&prompt_file, "contract").expect("write prompt");
+        let fake_codex = root.path.join("codex-stub");
+        write_executable(
+            &fake_codex,
+            r#"#!/bin/sh
+model=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-m" ]; then
+    shift
+    model="$1"
+  fi
+  shift
+done
+printf 'simulated stderr for %s
+' "$model" >&2
+if [ "$model" = "spark-model" ]; then
+  exit 9
+fi
+exit 17
+"#,
+        )
+        .expect("write fake codex");
+
+        unsafe {
+            env::set_var(CODEX_BIN_ENV, &fake_codex);
+        }
+        let result = run_with_args(
+            vec![
+                "--cwd",
+                repo.to_str().expect("repo path"),
+                "--prompt",
+                "find tests",
+                "--prompt-file",
+                prompt_file.to_str().expect("prompt path"),
+                "--model-spark",
+                "spark-model",
+                "--model-fallback",
+                "fallback-model",
+            ]
+            .into_iter()
+            .map(OsString::from),
+        );
+        unsafe {
+            env::remove_var(CODEX_BIN_ENV);
+        }
+
+        let error = result.expect_err("both attempts should fail");
+        assert!(error.contains(
+            "both spark (`spark-model`) and fallback (`fallback-model`) attempts failed"
+        ));
+        assert!(error.contains("codes 9 / 17"));
+        assert!(error.contains("simulated stderr for fallback-model"));
     }
 
     #[test]

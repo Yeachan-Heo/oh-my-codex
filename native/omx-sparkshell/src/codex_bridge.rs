@@ -207,11 +207,23 @@ fn render_section(name: &str, entries: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_summary, read_summary_timeout_ms, resolve_model, DEFAULT_SPARK_MODEL};
+    use super::{
+        normalize_summary, read_summary_timeout_ms, resolve_model, DEFAULT_SPARK_MODEL,
+        DEFAULT_SUMMARY_TIMEOUT_MS,
+    };
     use std::env;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock")
+    }
 
     #[test]
     fn model_resolution_prefers_sparkshell_override() {
+        let _guard = env_lock();
         unsafe {
             env::set_var("OMX_SPARKSHELL_MODEL", "spark-a");
             env::set_var("OMX_SPARK_MODEL", "spark-b");
@@ -225,6 +237,7 @@ mod tests {
 
     #[test]
     fn model_resolution_falls_back_to_default() {
+        let _guard = env_lock();
         unsafe {
             env::remove_var("OMX_SPARKSHELL_MODEL");
             env::remove_var("OMX_SPARK_MODEL");
@@ -234,10 +247,70 @@ mod tests {
 
     #[test]
     fn timeout_defaults_when_unset() {
+        let _guard = env_lock();
         unsafe {
             env::remove_var("OMX_SPARKSHELL_SUMMARY_TIMEOUT_MS");
         }
         assert_eq!(read_summary_timeout_ms(), 60_000);
+    }
+
+    #[test]
+    fn model_resolution_ignores_blank_override_and_uses_secondary_env() {
+        let _guard = env_lock();
+        unsafe {
+            env::set_var("OMX_SPARKSHELL_MODEL", "   ");
+            env::set_var("OMX_SPARK_MODEL", "spark-b");
+        }
+        assert_eq!(resolve_model(), "spark-b");
+        unsafe {
+            env::remove_var("OMX_SPARKSHELL_MODEL");
+            env::remove_var("OMX_SPARK_MODEL");
+        }
+    }
+
+    #[test]
+    fn timeout_defaults_for_zero_and_invalid_values() {
+        let _guard = env_lock();
+        unsafe {
+            env::set_var("OMX_SPARKSHELL_SUMMARY_TIMEOUT_MS", "0");
+        }
+        assert_eq!(read_summary_timeout_ms(), DEFAULT_SUMMARY_TIMEOUT_MS);
+
+        unsafe {
+            env::set_var("OMX_SPARKSHELL_SUMMARY_TIMEOUT_MS", "bogus");
+        }
+        assert_eq!(read_summary_timeout_ms(), DEFAULT_SUMMARY_TIMEOUT_MS);
+
+        unsafe {
+            env::remove_var("OMX_SPARKSHELL_SUMMARY_TIMEOUT_MS");
+        }
+    }
+
+    #[test]
+    fn normalizes_indented_follow_up_bullets() {
+        let summary = normalize_summary(
+            "summary: command ran
+  second detail
+* failures: first failure
+  * nested detail
+warnings: caution
+",
+        )
+        .expect("normalized summary");
+        assert!(summary.contains("- summary: command ran"));
+        assert!(summary.contains("  - second detail"));
+        assert!(summary.contains("- failures: first failure"));
+        assert!(summary.contains("nested detail"));
+        assert!(summary.contains("- warnings: caution"));
+    }
+
+    #[test]
+    fn normalize_summary_returns_none_without_allowed_sections() {
+        assert!(normalize_summary(
+            "next steps: do a thing
+notes: nope"
+        )
+        .is_none());
     }
 
     #[test]
