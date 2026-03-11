@@ -97,6 +97,19 @@ OMX features like `omx team` require **tmux**:
 
 ## Quickstart (3 minutes)
 
+### Rust-native release path (cutover target)
+
+For the Rust-native cutover release, install the platform bundle from the release artifacts, add the extracted `omx` binary to your `PATH`, then run:
+
+```bash
+omx setup
+omx doctor
+```
+
+If an npm package is still published during the transition, treat it as a **launcher/downloader shim only**. Normal CLI execution should come from the native `omx` binary, not `dist/cli/index.js`.
+
+### Current source / pre-cutover npm flow
+
 ```bash
 npm install -g oh-my-codex
 omx setup
@@ -206,7 +219,6 @@ omx agents-init .  # Bootstrap lightweight AGENTS.md files for a repo/subtree
 omx doctor         # Installation/runtime diagnostics
 omx doctor --team  # Team/swarm diagnostics
 omx ask ...        # Ask local provider advisor (claude|gemini), writes .omx/artifacts/*
-omx explore ...    # Run the low-cost read-only exploration harness
 omx team ...       # Start/status/resume/shutdown team workers (interactive tmux by default)
 omx ralph          # Launch Codex with ralph persistence mode active
 omx status         # Show active modes
@@ -229,35 +241,6 @@ omx ask gemini --agent-prompt=planner --prompt "draft a rollout plan"
 # underlying provider flags from CLI help:
 # claude -p|--print "<prompt>"
 # gemini -p|--prompt "<prompt>"
-```
-
-Explore command examples:
-
-```bash
-omx explore --prompt "which files define team routing"
-omx explore --prompt-file prompts/explore-task.md
-USE_OMX_EXPLORE_CMD=1 omx   # advisory preference for simple read-only exploration prompts
-```
-
-`omx explore` is intentionally read-only and shell-only. The routing flag only adds advisory steering in generated session instructions; ambiguous or implementation-heavy requests stay on the normal Codex path, and OMX falls back normally if the explore harness is unavailable. The harness constrains Codex through a temporary allowlisted shell/bin layer so only approved repository-inspection command families are available during the offloaded run.
-
-- Current shell allowlist: `rg`, `grep`, `ls`, `find`, `wc`, `cat`, `head`, `tail`, `pwd`, `printf`
-- Current shell restrictions: no pipes, redirection, `&&`, `||`, `;`, subshells, path-qualified binaries, non-allowlisted commands, stdin-fed inspection, or path escapes outside the target repository (including existing symlink-resolved escapes)
-- `omx explore` is **not** a full parity surface for modern Codex read-only mode: it does not promise web search, MCP, images, or general-purpose tool access
-
-Packaging / install notes:
-
-- Published npm packages now include the Rust workspace files for the explore harness (`Cargo.toml`, `Cargo.lock`, `crates/`).
-- `npm pack` / publish now builds and ships a native `bin/omx-explore-harness` binary for the publisher platform, and runtime prefers that packaged binary before falling back to `cargo run`.
-- If no packaged native binary matches the current install, runtime falls back to `cargo run --manifest-path crates/omx-explore/Cargo.toml -- ...`, so source-based installs still need a Rust toolchain unless you point `OMX_EXPLORE_BIN` at a prebuilt harness binary.
-- GitHub Actions now includes a dedicated multi-platform artifact workflow (`.github/workflows/explore-harness-artifacts.yml`) that builds release harness binaries for Linux, macOS, and Windows.
-- Tag builds now upload per-platform release bundles containing the native binary, `omx-explore-harness.meta.json`, and a small `release-manifest.json`, then attach zipped per-platform bundles plus an aggregate `explore-harness-release-manifest.json` to the matching GitHub Release.
-- Helpful local commands:
-
-```bash
-npm run build:explore
-npm run build:explore:release
-npm run test:explore
 ```
 
 Non-tmux team launch (advanced):

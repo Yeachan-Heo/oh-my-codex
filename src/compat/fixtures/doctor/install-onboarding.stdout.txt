@@ -5,7 +5,6 @@ Resolved setup scope: user
 
   [CODEX_CLI_STATUS]
   [OK] Node.js: <NODE_VERSION>
-  [EXPLORE_HARNESS_STATUS]
   [OK] Codex home: <CODEX_HOME>
   [!!] Config: config.toml exists but no OMX entries yet (expected before first setup; run "omx setup --force" once)
   [!!] Prompts: prompts directory not found

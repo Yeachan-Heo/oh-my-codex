@@ -63,9 +63,6 @@ function normalizeInstallDoctorOutput(text: string, home: string, cwd: string): 
       if (line.startsWith('  [OK] Node.js:')) {
         return '  [OK] Node.js: <NODE_VERSION>';
       }
-      if (line.startsWith('  [OK] Explore Harness:') || line.startsWith('  [!!] Explore Harness:')) {
-        return '  [EXPLORE_HARNESS_STATUS]';
-      }
       if (line.startsWith('Results: ')) {
         return 'Results: <RESULTS>';
       }
