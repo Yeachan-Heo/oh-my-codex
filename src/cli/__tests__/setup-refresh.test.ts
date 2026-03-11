@@ -203,4 +203,31 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it("syncs shared MCP registry entries into config.toml during setup", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+      const registryPath = join(wd, "mcp-registry.json");
+      await writeFile(
+        registryPath,
+        JSON.stringify({
+          eslint: { command: "npx", args: ["@eslint/mcp@latest"], timeout: 9 },
+        }),
+      );
+
+      await runSetupInTempDir(wd, {
+        scope: "project",
+        mcpRegistryCandidates: [registryPath],
+      });
+
+      const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      assert.match(config, /oh-my-codex \(OMX\) Shared MCP Registry Sync/);
+      assert.match(config, /^\[mcp_servers\.eslint\]$/m);
+      assert.match(config, /^command = "npx"$/m);
+      assert.match(config, /^startup_timeout_sec = 9$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });

@@ -16,10 +16,13 @@ import { join } from "path";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { tryReadCatalogManifest } from "../catalog/reader.js";
 import { omxAgentsConfigDir } from "../utils/paths.js";
+import type { UnifiedMcpRegistryServer } from "./mcp-registry.js";
 
 interface MergeOptions {
   agentsConfigDir?: string;
   modelOverride?: string;
+  sharedMcpServers?: UnifiedMcpRegistryServer[];
+  sharedMcpRegistrySource?: string;
   verbose?: boolean;
 }
 
@@ -41,6 +44,9 @@ const OMX_TOP_LEVEL_KEYS = [
 const DEFAULT_SETUP_MODEL = "gpt-5.4";
 const DEFAULT_SETUP_MODEL_CONTEXT_WINDOW = 1000000;
 const DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT = 900000;
+const SHARED_MCP_REGISTRY_MARKER = "oh-my-codex (OMX) Shared MCP Registry Sync";
+const SHARED_MCP_REGISTRY_END_MARKER =
+  "# End oh-my-codex shared MCP registry sync";
 
 function unwrapTomlString(value: string | undefined): string | undefined {
   return value?.match(/^"(.*)"$/)?.[1];
@@ -379,6 +385,100 @@ export function stripExistingOmxBlocks(config: string): {
   return { cleaned, removed };
 }
 
+export function stripExistingSharedMcpRegistryBlock(config: string): {
+  cleaned: string;
+  removed: number;
+} {
+  let cleaned = config;
+  let removed = 0;
+
+  while (true) {
+    const markerIdx = cleaned.indexOf(SHARED_MCP_REGISTRY_MARKER);
+    if (markerIdx < 0) break;
+
+    let blockStart = cleaned.lastIndexOf("\n", markerIdx);
+    blockStart = blockStart >= 0 ? blockStart + 1 : 0;
+
+    const previousLineEnd = blockStart - 1;
+    if (previousLineEnd >= 0) {
+      const previousLineStart = cleaned.lastIndexOf("\n", previousLineEnd - 1);
+      const previousLine = cleaned.slice(
+        previousLineStart + 1,
+        previousLineEnd,
+      );
+      if (/^# =+$/.test(previousLine.trim())) {
+        blockStart = previousLineStart >= 0 ? previousLineStart + 1 : 0;
+      }
+    }
+
+    let blockEnd = cleaned.length;
+    const endIdx = cleaned.indexOf(SHARED_MCP_REGISTRY_END_MARKER, markerIdx);
+    if (endIdx >= 0) {
+      const endLineBreak = cleaned.indexOf("\n", endIdx);
+      blockEnd = endLineBreak >= 0 ? endLineBreak + 1 : cleaned.length;
+    }
+
+    const before = cleaned.slice(0, blockStart).trimEnd();
+    const after = cleaned.slice(blockEnd).trimStart();
+    cleaned = [before, after].filter(Boolean).join("\n\n");
+    removed += 1;
+  }
+
+  return { cleaned, removed };
+}
+
+function toMcpServerTableKey(name: string): string {
+  if (/^[A-Za-z0-9_-]+$/.test(name)) {
+    return `mcp_servers.${name}`;
+  }
+  return `mcp_servers."${escapeTomlString(name)}"`;
+}
+
+function configHasMcpServer(config: string, name: string): boolean {
+  const tableName = toMcpServerTableKey(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^\\s*\\[${tableName}\\]\\s*$`, "m").test(config);
+}
+
+function getSharedMcpRegistryBlock(
+  servers: UnifiedMcpRegistryServer[],
+  sourcePath: string | undefined,
+  existingConfig: string,
+): string {
+  if (servers.length === 0) return "";
+  const deduped = servers.filter((server) => !configHasMcpServer(existingConfig, server.name));
+  if (deduped.length === 0) return "";
+
+  const lines = [
+    "# ============================================================",
+    `# ${SHARED_MCP_REGISTRY_MARKER}`,
+    "# Managed by omx setup - edit the registry file instead",
+  ];
+  if (sourcePath) {
+    lines.push(`# Source: ${sourcePath}`);
+  }
+  lines.push("# ============================================================", "");
+
+  for (const server of deduped) {
+    lines.push(`# Shared MCP Server: ${server.name}`);
+    lines.push(`[${toMcpServerTableKey(server.name)}]`);
+    lines.push(`command = "${escapeTomlString(server.command)}"`);
+    lines.push(
+      `args = [${server.args
+        .map((arg) => `"${escapeTomlString(arg)}"`)
+        .join(", ")}]`,
+    );
+    lines.push(`enabled = ${server.enabled ? "true" : "false"}`);
+    if (typeof server.startupTimeoutSec === "number") {
+      lines.push(`startup_timeout_sec = ${server.startupTimeoutSec}`);
+    }
+    lines.push("");
+  }
+
+  lines.push("# ============================================================");
+  lines.push(SHARED_MCP_REGISTRY_END_MARKER);
+  return lines.join("\n");
+}
+
 /**
  * Generate [agents.<name>] entries for Codex native multi-agent support.
  * Each agent gets a description and config_file pointing to ~/.omx/agents/<name>.toml
@@ -518,6 +618,10 @@ export function buildMergedConfig(
     const stripped = stripExistingOmxBlocks(existing);
     existing = stripped.cleaned;
   }
+  if (existing.includes(SHARED_MCP_REGISTRY_MARKER)) {
+    const stripped = stripExistingSharedMcpRegistryBlock(existing);
+    existing = stripped.cleaned;
+  }
 
   existing = stripOmxTopLevelKeys(existing);
   if (options.modelOverride) {
@@ -535,8 +639,18 @@ export function buildMergedConfig(
     pkgRoot,
     options.agentsConfigDir || omxAgentsConfigDir(),
   );
+  const sharedRegistryBlock = getSharedMcpRegistryBlock(
+    options.sharedMcpServers ?? [],
+    options.sharedMcpRegistrySource,
+    existing,
+  );
 
-  return topLines.join("\n") + "\n\n" + existing.trimEnd() + "\n" + tablesBlock;
+  let body = existing.trimEnd();
+  if (sharedRegistryBlock) {
+    body = body ? `${body}\n\n${sharedRegistryBlock}` : sharedRegistryBlock;
+  }
+
+  return topLines.join("\n") + "\n\n" + body + "\n" + tablesBlock;
 }
 
 export async function mergeConfig(

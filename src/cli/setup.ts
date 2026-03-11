@@ -28,6 +28,7 @@ import {
   omxAgentsConfigDir,
 } from "../utils/paths.js";
 import { buildMergedConfig, getRootModelName } from "../config/generator.js";
+import { loadUnifiedMcpRegistry } from "../config/mcp-registry.js";
 import { generateAgentToml } from "../agents/native-config.js";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { getPackageRoot } from "../utils/package.js";
@@ -45,6 +46,7 @@ interface SetupOptions {
     currentModel: string,
     targetModel: string,
   ) => Promise<boolean>;
+  mcpRegistryCandidates?: string[];
 }
 
 /**
@@ -472,7 +474,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     scopeDirs.nativeAgentsDir,
     summary.config,
     backupContext,
-    { dryRun, verbose, modelUpgradePrompt },
+    { dryRun, verbose, modelUpgradePrompt, mcpRegistryCandidates: options.mcpRegistryCandidates },
   );
   console.log(`  Config refresh complete (${scopeDirs.codexConfigFile}).\n`);
 
@@ -959,7 +961,7 @@ async function updateManagedConfig(
   agentsConfigDir: string,
   summary: SetupCategorySummary,
   backupContext: SetupBackupContext,
-  options: Pick<SetupOptions, "dryRun" | "verbose" | "modelUpgradePrompt">,
+  options: Pick<SetupOptions, "dryRun" | "verbose" | "modelUpgradePrompt" | "mcpRegistryCandidates">,
 ): Promise<void> {
   const existing = existsSync(configPath)
     ? await readFile(configPath, "utf-8")
@@ -981,9 +983,23 @@ async function updateManagedConfig(
     }
   }
 
+  const sharedMcpRegistry = await loadUnifiedMcpRegistry({
+    candidates: options.mcpRegistryCandidates,
+  });
+  if (options.verbose && sharedMcpRegistry.sourcePath) {
+    console.log(
+      `  shared MCP registry: ${sharedMcpRegistry.sourcePath} (${sharedMcpRegistry.servers.length} servers)`,
+    );
+    for (const warning of sharedMcpRegistry.warnings) {
+      console.log(`  warning: ${warning}`);
+    }
+  }
+
   const finalConfig = buildMergedConfig(existing, pkgRoot, {
     agentsConfigDir,
     modelOverride,
+    sharedMcpServers: sharedMcpRegistry.servers,
+    sharedMcpRegistrySource: sharedMcpRegistry.sourcePath,
     verbose: options.verbose,
   });
   const changed = existing !== finalConfig;
