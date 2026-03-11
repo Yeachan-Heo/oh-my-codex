@@ -28,7 +28,11 @@ import {
   omxAgentsConfigDir,
 } from "../utils/paths.js";
 import { buildMergedConfig, getRootModelName } from "../config/generator.js";
-import { loadUnifiedMcpRegistry } from "../config/mcp-registry.js";
+import {
+  loadUnifiedMcpRegistry,
+  planClaudeCodeMcpSettingsSync,
+  type UnifiedMcpRegistryLoadResult,
+} from "../config/mcp-registry.js";
 import { generateAgentToml } from "../agents/native-config.js";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { getPackageRoot } from "../utils/package.js";
@@ -468,14 +472,34 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 
   // Step 5: Update config.toml
   console.log("[5/8] Updating config.toml...");
+  const sharedMcpRegistry = await loadUnifiedMcpRegistry({
+    candidates: options.mcpRegistryCandidates,
+  });
+  if (verbose && sharedMcpRegistry.sourcePath) {
+    console.log(
+      `  shared MCP registry: ${sharedMcpRegistry.sourcePath} (${sharedMcpRegistry.servers.length} servers)`,
+    );
+  }
+  for (const warning of sharedMcpRegistry.warnings) {
+    console.log(`  warning: ${warning}`);
+  }
   await updateManagedConfig(
     scopeDirs.codexConfigFile,
     pkgRoot,
     scopeDirs.nativeAgentsDir,
+    sharedMcpRegistry,
     summary.config,
     backupContext,
-    { dryRun, verbose, modelUpgradePrompt, mcpRegistryCandidates: options.mcpRegistryCandidates },
+    { dryRun, verbose, modelUpgradePrompt },
   );
+  if (resolvedScope.scope === "user") {
+    await syncClaudeCodeMcpSettings(
+      sharedMcpRegistry,
+      summary.config,
+      backupContext,
+      { dryRun, verbose },
+    );
+  }
   console.log(`  Config refresh complete (${scopeDirs.codexConfigFile}).\n`);
 
   // Step 5.5: Verify team CLI interop surface is available.
@@ -960,9 +984,10 @@ async function updateManagedConfig(
   configPath: string,
   pkgRoot: string,
   agentsConfigDir: string,
+  sharedMcpRegistry: UnifiedMcpRegistryLoadResult,
   summary: SetupCategorySummary,
   backupContext: SetupBackupContext,
-  options: Pick<SetupOptions, "dryRun" | "verbose" | "modelUpgradePrompt" | "mcpRegistryCandidates">,
+  options: Pick<SetupOptions, "dryRun" | "verbose" | "modelUpgradePrompt">,
 ): Promise<void> {
   const existing = existsSync(configPath)
     ? await readFile(configPath, "utf-8")
@@ -981,18 +1006,6 @@ async function updateManagedConfig(
       if (shouldUpgrade) {
         modelOverride = DEFAULT_SETUP_MODEL;
       }
-    }
-  }
-
-  const sharedMcpRegistry = await loadUnifiedMcpRegistry({
-    candidates: options.mcpRegistryCandidates,
-  });
-  if (options.verbose && sharedMcpRegistry.sourcePath) {
-    console.log(
-      `  shared MCP registry: ${sharedMcpRegistry.sourcePath} (${sharedMcpRegistry.servers.length} servers)`,
-    );
-    for (const warning of sharedMcpRegistry.warnings) {
-      console.log(`  warning: ${warning}`);
     }
   }
 
@@ -1042,6 +1055,54 @@ async function updateManagedConfig(
       `  ${options.dryRun ? "would update" : "updated"} config ${configPath}`,
     );
   }
+}
+
+function getClaudeCodeSettingsPath(homeDir = homedir()): string {
+  return join(homeDir, ".claude", "settings.json");
+}
+
+async function syncClaudeCodeMcpSettings(
+  sharedMcpRegistry: UnifiedMcpRegistryLoadResult,
+  summary: SetupCategorySummary,
+  backupContext: SetupBackupContext,
+  options: Pick<SetupOptions, "dryRun" | "verbose">,
+): Promise<void> {
+  if (sharedMcpRegistry.servers.length === 0) return;
+
+  const settingsPath = getClaudeCodeSettingsPath();
+  const existing = existsSync(settingsPath)
+    ? await readFile(settingsPath, "utf-8")
+    : "";
+  const syncPlan = planClaudeCodeMcpSettingsSync(
+    existing,
+    sharedMcpRegistry.servers,
+  );
+
+  for (const warning of syncPlan.warnings) {
+    console.log(`  warning: ${warning}`);
+  }
+  if (syncPlan.warnings.length > 0) {
+    summary.skipped += 1;
+    return;
+  }
+  if (!syncPlan.content) {
+    summary.unchanged += 1;
+    if (options.verbose && syncPlan.unchanged.length > 0) {
+      console.log(
+        `  shared MCP servers already present in Claude Code settings (${settingsPath})`,
+      );
+    }
+    return;
+  }
+
+  await syncManagedContent(
+    syncPlan.content,
+    settingsPath,
+    summary,
+    backupContext,
+    options,
+    `Claude Code MCP settings ${settingsPath} (+${syncPlan.added.join(", ")})`,
+  );
 }
 
 async function setupNotifyHook(

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import {
   getUnifiedMcpRegistryCandidates,
   loadUnifiedMcpRegistry,
+  planClaudeCodeMcpSettingsSync,
 } from "../mcp-registry.js";
 
 describe("unified MCP registry loader", () => {
@@ -92,5 +93,78 @@ describe("unified MCP registry loader", () => {
       "/tmp/home/.omx/mcp-registry.json",
       "/tmp/home/.omc/mcp-registry.json",
     ]);
+  });
+
+  it("plans Claude settings sync by adding only missing shared servers", () => {
+    const plan = planClaudeCodeMcpSettingsSync(
+      JSON.stringify(
+        {
+          theme: "dark",
+          mcpServers: {
+            gitnexus: {
+              command: "custom-gitnexus",
+              args: ["serve"],
+              enabled: true,
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      [
+        {
+          name: "gitnexus",
+          command: "gitnexus",
+          args: ["mcp"],
+          enabled: true,
+        },
+        {
+          name: "eslint",
+          command: "npx",
+          args: ["@eslint/mcp@latest"],
+          enabled: false,
+          startupTimeoutSec: 9,
+        },
+      ],
+    );
+
+    assert.deepEqual(plan.added, ["eslint"]);
+    assert.deepEqual(plan.unchanged, ["gitnexus"]);
+    assert.deepEqual(plan.warnings, []);
+
+    const parsed = JSON.parse(plan.content ?? "{}") as {
+      theme?: string;
+      mcpServers?: Record<string, { command: string; args: string[]; enabled: boolean }>;
+    };
+    assert.equal(parsed.theme, "dark");
+    assert.deepEqual(parsed.mcpServers?.gitnexus, {
+      command: "custom-gitnexus",
+      args: ["serve"],
+      enabled: true,
+    });
+    assert.deepEqual(parsed.mcpServers?.eslint, {
+      command: "npx",
+      args: ["@eslint/mcp@latest"],
+      enabled: false,
+    });
+  });
+
+  it('warns when Claude settings.json has a non-object "mcpServers" field', () => {
+    const plan = planClaudeCodeMcpSettingsSync(
+      JSON.stringify({ mcpServers: [] }),
+      [
+        {
+          name: "eslint",
+          command: "npx",
+          args: ["@eslint/mcp@latest"],
+          enabled: true,
+        },
+      ],
+    );
+
+    assert.equal(plan.content, undefined);
+    assert.deepEqual(plan.added, []);
+    assert.deepEqual(plan.unchanged, []);
+    assert.match(plan.warnings[0] ?? "", /mcpServers/);
   });
 });
