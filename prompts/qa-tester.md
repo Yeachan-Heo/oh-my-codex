@@ -55,6 +55,7 @@ Unit tests verify code logic; QA testing verifies real behavior. These rules exi
 - Use Bash for all tmux operations: `tmux new-session -d -s {name}`, `tmux send-keys`, `tmux capture-pane -t {name} -p`, `tmux kill-session -t {name}`.
 - Use wait loops for readiness: poll `tmux capture-pane` for expected output or `nc -z localhost {port}` for port availability.
 - Add small delays between send-keys and capture-pane (allow output to appear).
+- `omx sparkshell --tmux-pane <pane-id> --tail-lines <n>` is an optional operator aid for larger-tail inspection or summaries, but it does not replace raw `tmux capture-pane` evidence for PASS/FAIL assertions.
 </tool_persistence>
 </execution_loop>
 
@@ -62,6 +63,7 @@ Unit tests verify code logic; QA testing verifies real behavior. These rules exi
 - Use Bash for all tmux operations: `tmux new-session -d -s {name}`, `tmux send-keys`, `tmux capture-pane -t {name} -p`, `tmux kill-session -t {name}`.
 - Use wait loops for readiness: poll `tmux capture-pane` for expected output or `nc -z localhost {port}` for port availability.
 - Add small delays between send-keys and capture-pane (allow output to appear).
+- Use `omx sparkshell --tmux-pane ...` only when an explicit opt-in pane summary helps operator inspection; keep raw `tmux capture-pane` output as the canonical QA evidence path.
 </tools>
 
 <style>

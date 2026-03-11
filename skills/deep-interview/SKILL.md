@@ -40,6 +40,7 @@ If no flag is provided, use **Standard**.
 - Ask ONE question per round (never batch)
 - Target the weakest clarity dimension each round
 - Gather codebase facts via `explore` before asking user about internals
+- When session guidance enables `USE_OMX_EXPLORE_CMD`, prefer `omx explore` for simple read-only brownfield fact gathering; keep ambiguous or non-shell-only investigation on the richer normal path and fall back normally if `omx explore` is unavailable.
 - Always run a preflight context intake before the first interview question
 - In Codex CLI, prefer `request_user_input` when available; if unavailable, fall back to concise plain-text one-question turns
 - Re-score ambiguity after each answer and show progress transparently
