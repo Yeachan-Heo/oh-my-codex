@@ -17,6 +17,19 @@ export interface UnifiedMcpRegistryLoadResult {
   warnings: string[];
 }
 
+export interface ClaudeCodeMcpServerConfig {
+  command: string;
+  args: string[];
+  enabled: boolean;
+}
+
+export interface ClaudeCodeSettingsSyncPlan {
+  content?: string;
+  added: string[];
+  unchanged: string[];
+  warnings: string[];
+}
+
 interface LoadUnifiedMcpRegistryOptions {
   candidates?: string[];
   homeDir?: string;
@@ -24,6 +37,16 @@ interface LoadUnifiedMcpRegistryOptions {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toClaudeCodeMcpServerConfig(
+  server: UnifiedMcpRegistryServer,
+): ClaudeCodeMcpServerConfig {
+  return {
+    command: server.command,
+    args: [...server.args],
+    enabled: server.enabled,
+  };
 }
 
 function normalizeTimeout(
@@ -121,4 +144,77 @@ export async function loadUnifiedMcpRegistry(
   }
 
   return { servers, sourcePath, warnings };
+}
+
+export function planClaudeCodeMcpSettingsSync(
+  existingContent: string,
+  servers: UnifiedMcpRegistryServer[],
+): ClaudeCodeSettingsSyncPlan {
+  if (servers.length === 0) {
+    return { added: [], unchanged: [], warnings: [] };
+  }
+
+  let parsed: unknown = {};
+  const trimmed = existingContent.trim();
+  if (trimmed.length > 0) {
+    try {
+      parsed = JSON.parse(existingContent);
+    } catch (error) {
+      return {
+        added: [],
+        unchanged: [],
+        warnings: [`failed to parse Claude settings.json: ${String(error)}`],
+      };
+    }
+  }
+
+  if (!isRecord(parsed)) {
+    return {
+      added: [],
+      unchanged: [],
+      warnings: ["Claude settings.json must contain a JSON object"],
+    };
+  }
+
+  const currentMcpServers = parsed.mcpServers;
+  if (currentMcpServers !== undefined && !isRecord(currentMcpServers)) {
+    return {
+      added: [],
+      unchanged: [],
+      warnings: ['Claude settings.json field "mcpServers" must be an object'],
+    };
+  }
+
+  const nextMcpServers: Record<string, unknown> = {
+    ...(currentMcpServers ?? {}),
+  };
+  const added: string[] = [];
+  const unchanged: string[] = [];
+
+  for (const server of servers) {
+    if (Object.hasOwn(nextMcpServers, server.name)) {
+      unchanged.push(server.name);
+      continue;
+    }
+    nextMcpServers[server.name] = toClaudeCodeMcpServerConfig(server);
+    added.push(server.name);
+  }
+
+  if (added.length === 0) {
+    return { added, unchanged, warnings: [] };
+  }
+
+  return {
+    content: `${JSON.stringify(
+      {
+        ...parsed,
+        mcpServers: nextMcpServers,
+      },
+      null,
+      2,
+    )}\n`,
+    added,
+    unchanged,
+    warnings: [],
+  };
 }

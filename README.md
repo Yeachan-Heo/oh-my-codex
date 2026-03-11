@@ -491,6 +491,7 @@ Notes:
   - `[features] multi_agent = true, child_agents_md = true`
   - MCP server entries (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`)
   - If a shared MCP registry exists at `~/.omx/mcp-registry.json` (fallback: `~/.omc/mcp-registry.json`), setup syncs those entries into a dedicated managed block in `config.toml` (skipping names already defined elsewhere to avoid duplicate TOML tables)
+  - User-scoped setup also syncs missing shared MCP entries into `~/.claude/settings.json` without overwriting existing Claude Code MCP server definitions
   - `[tui] status_line`
 - Project `AGENTS.md` (project scope only)
 - `.omx/` runtime directories and HUD config

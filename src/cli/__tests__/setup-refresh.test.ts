@@ -230,4 +230,103 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it("syncs shared MCP registry entries into ~/.claude/settings.json for user scope", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    const previousHome = process.env.HOME;
+    const previousCodexHome = process.env.CODEX_HOME;
+    try {
+      process.env.HOME = wd;
+      delete process.env.CODEX_HOME;
+
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+      await mkdir(join(wd, ".claude"), { recursive: true });
+      await writeFile(
+        join(wd, ".claude", "settings.json"),
+        JSON.stringify(
+          {
+            uiTheme: "dark",
+            mcpServers: {
+              gitnexus: {
+                command: "custom-gitnexus",
+                args: ["serve"],
+                enabled: true,
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      const registryPath = join(wd, "mcp-registry.json");
+      await writeFile(
+        registryPath,
+        JSON.stringify({
+          gitnexus: { command: "gitnexus", args: ["mcp"] },
+          eslint: { command: "npx", args: ["@eslint/mcp@latest"], enabled: false },
+        }),
+      );
+
+      await runSetupInTempDir(wd, {
+        scope: "user",
+        mcpRegistryCandidates: [registryPath],
+      });
+
+      const settings = JSON.parse(
+        await readFile(join(wd, ".claude", "settings.json"), "utf-8"),
+      ) as {
+        uiTheme?: string;
+        mcpServers?: Record<string, { command: string; args: string[]; enabled: boolean }>;
+      };
+      assert.equal(settings.uiTheme, "dark");
+      assert.deepEqual(settings.mcpServers?.gitnexus, {
+        command: "custom-gitnexus",
+        args: ["serve"],
+        enabled: true,
+      });
+      assert.deepEqual(settings.mcpServers?.eslint, {
+        command: "npx",
+        args: ["@eslint/mcp@latest"],
+        enabled: false,
+      });
+    } finally {
+      if (typeof previousHome === "string") process.env.HOME = previousHome;
+      else delete process.env.HOME;
+      if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
+      else delete process.env.CODEX_HOME;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not write ~/.claude/settings.json during project-scoped setup", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    const previousHome = process.env.HOME;
+    const previousCodexHome = process.env.CODEX_HOME;
+    try {
+      process.env.HOME = wd;
+      delete process.env.CODEX_HOME;
+
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+      const registryPath = join(wd, "mcp-registry.json");
+      await writeFile(
+        registryPath,
+        JSON.stringify({
+          eslint: { command: "npx", args: ["@eslint/mcp@latest"] },
+        }),
+      );
+
+      await runSetupInTempDir(wd, {
+        scope: "project",
+        mcpRegistryCandidates: [registryPath],
+      });
+
+      assert.equal(existsSync(join(wd, ".claude", "settings.json")), false);
+    } finally {
+      if (typeof previousHome === "string") process.env.HOME = previousHome;
+      else delete process.env.HOME;
+      if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
+      else delete process.env.CODEX_HOME;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
