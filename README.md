@@ -243,7 +243,11 @@ omx explore --prompt-file prompts/explore-task.md
 USE_OMX_EXPLORE_CMD=1 omx   # advisory preference for simple read-only exploration prompts
 ```
 
-`omx explore` is intentionally read-only. The routing flag only adds advisory steering in generated session instructions; ambiguous or implementation-heavy requests stay on the normal Codex path, and OMX falls back normally if the explore harness is unavailable. The harness now also constrains Codex through a temporary allowlisted shell/bin layer so only approved read-only command families are available during the offloaded run.
+`omx explore` is intentionally read-only and shell-only. The routing flag only adds advisory steering in generated session instructions; ambiguous or implementation-heavy requests stay on the normal Codex path, and OMX falls back normally if the explore harness is unavailable. The harness constrains Codex through a temporary allowlisted shell/bin layer so only approved repository-inspection command families are available during the offloaded run.
+
+- Current shell allowlist: `rg`, `grep`, `ls`, `find`, `wc`, `cat`, `head`, `tail`, `pwd`, `printf`
+- Current shell restrictions: no pipes, redirection, `&&`, `||`, `;`, subshells, path-qualified binaries, non-allowlisted commands, stdin-fed inspection, or path escapes outside the target repository (including existing symlink-resolved escapes)
+- `omx explore` is **not** a full parity surface for modern Codex read-only mode: it does not promise web search, MCP, images, or general-purpose tool access
 
 Packaging / install notes:
 

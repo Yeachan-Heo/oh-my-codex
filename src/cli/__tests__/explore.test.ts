@@ -225,7 +225,7 @@ describe('buildExploreHarnessArgs', () => {
       '--prompt',
       'find auth',
       '--prompt-file',
-      '/pkg/prompts/explore.md',
+      '/pkg/prompts/explore-harness.md',
       '--model-spark',
       'spark-model',
       '--model-fallback',
