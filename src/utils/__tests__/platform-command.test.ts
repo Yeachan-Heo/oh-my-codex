@@ -107,6 +107,35 @@ describe('resolveCommandPathForPlatform', () => {
       await rm(fakeBin, { recursive: true, force: true });
     }
   });
+
+  it('resolves PATH entries to absolute paths on POSIX', async () => {
+    const fakeBin = await mkdtemp(join(tmpdir(), 'omx-platform-posix-'));
+    try {
+      const nodePath = join(fakeBin, 'node');
+      await writeFile(nodePath, '');
+      assert.equal(
+        resolveCommandPathForPlatform(
+          'node',
+          'linux',
+          { PATH: fakeBin },
+        ),
+        nodePath,
+      );
+    } finally {
+      await rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null on POSIX when the command is not present on PATH', () => {
+    assert.equal(
+      resolveCommandPathForPlatform(
+        'missing-binary',
+        'linux',
+        { PATH: '/tmp/does-not-exist' },
+      ),
+      null,
+    );
+  });
 });
 
 describe('classifySpawnError', () => {
