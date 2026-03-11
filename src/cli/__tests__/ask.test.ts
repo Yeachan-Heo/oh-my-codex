@@ -15,8 +15,8 @@ function runOmx(
 ): { status: number | null; stdout: string; stderr: string; error?: string } {
   const testDir = dirname(fileURLToPath(import.meta.url));
   const repoRoot = join(testDir, '..', '..', '..');
-  const omxBin = join(repoRoot, 'bin', 'omx.js');
-  const r = spawnSync(process.execPath, [omxBin, ...argv], {
+const omxBin = join(repoRoot, 'bin', process.platform === 'win32' ? 'omx.cmd' : 'omx');
+  const r = spawnSync(omxBin, argv, {
     cwd,
     encoding: 'utf-8',
     env: { ...process.env, ...envOverrides },

@@ -18,20 +18,20 @@ type NpmPackDryRunResult = {
 };
 
 describe('package bin contract', () => {
-  it('declares omx with an explicit relative bin path and ships an executable wrapper', () => {
+  it('declares omx with a native shell wrapper and does not pack JS runtime dist/', () => {
     const packageJsonPath = join(process.cwd(), 'package.json');
     const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as PackageJson;
 
-    assert.deepEqual(pkg.bin, { omx: 'bin/omx.js' });
+    assert.deepEqual(pkg.bin, { omx: 'bin/omx' });
 
-    const binPath = join(process.cwd(), 'bin', 'omx.js');
-    assert.equal(existsSync(binPath), true, 'expected bin/omx.js to exist');
+    const binPath = join(process.cwd(), 'bin', 'omx');
+    assert.equal(existsSync(binPath), true, 'expected bin/omx to exist');
 
     const binSource = readFileSync(binPath, 'utf-8');
-    assert.match(binSource, /^#!\/usr\/bin\/env node/);
+    assert.match(binSource, /^#!\/bin\/sh/);
 
     const stat = statSync(binPath);
-    assert.notEqual(stat.mode & 0o111, 0, 'expected bin/omx.js to be executable');
+    assert.notEqual(stat.mode & 0o111, 0, 'expected bin/omx to be executable');
 
     const packed = spawnSync('npm', ['pack', '--dry-run', '--json'], {
       cwd: process.cwd(),
@@ -43,8 +43,12 @@ describe('package bin contract', () => {
     const results = JSON.parse(packed.stdout) as NpmPackDryRunResult[];
     assert.equal(Array.isArray(results), true, 'expected npm pack --json array output');
 
-    const binEntry = results[0]?.files?.find((file) => file.path === 'bin/omx.js');
-    assert.ok(binEntry, 'expected npm pack output to include bin/omx.js');
-    assert.notEqual((binEntry.mode ?? 0) & 0o111, 0, 'expected packed bin/omx.js to keep execute bits');
+    const binEntry = results[0]?.files?.find((file) => file.path === 'bin/omx');
+    assert.ok(binEntry, 'expected npm pack output to include bin/omx');
+    assert.notEqual((binEntry.mode ?? 0) & 0o111, 0, 'expected packed bin/omx to keep execute bits');
+    const jsEntry = results[0]?.files?.find((file) => file.path === 'bin/omx.js');
+    assert.equal(jsEntry, undefined, 'expected npm pack output to exclude bin/omx.js');
+    const distEntry = results[0]?.files?.find((file) => file.path.startsWith('dist/'));
+    assert.equal(distEntry, undefined, 'expected npm pack output to exclude dist/');
   });
 });

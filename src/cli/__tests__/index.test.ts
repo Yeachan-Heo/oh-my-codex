@@ -7,7 +7,6 @@ import {
   normalizeCodexLaunchArgs,
   buildTmuxShellCommand,
   buildTmuxPaneCommand,
-  buildWindowsPromptCommand,
   buildTmuxSessionName,
   resolveCliInvocation,
   resolveCodexLaunchPolicy,
@@ -288,23 +287,9 @@ describe('resolveTeamWorkerLaunchArgsEnv (spark)', () => {
 });
 
 describe('resolveCliInvocation', () => {
-  it('resolves explore to explore command', () => {
-    assert.deepEqual(resolveCliInvocation(['explore', '--prompt', 'find', 'auth']), {
-      command: 'explore',
-      launchArgs: [],
-    });
-  });
-
   it('resolves ask to ask command', () => {
     assert.deepEqual(resolveCliInvocation(['ask', 'claude', 'hello']), {
       command: 'ask',
-      launchArgs: [],
-    });
-  });
-
-  it('resolves session to session command', () => {
-    assert.deepEqual(resolveCliInvocation(['session', 'search', 'startup evidence']), {
-      command: 'session',
       launchArgs: [],
     });
   });
@@ -494,8 +479,8 @@ describe('tmux HUD pane helpers', () => {
     const panes = parseTmuxPaneSnapshot(
       [
         '%1\tzsh\tzsh',
-        '%2\tnode\tnode /tmp/bin/omx.js hud --watch',
-        '%3\tnode\tnode /tmp/bin/omx.js hud --watch',
+        '%2\tomx\t/tmp/bin/omx hud --watch',
+        '%3\tomx\t/tmp/bin/omx hud --watch',
         '%4\tcodex\tcodex --model gpt-5',
       ].join('\n')
     );
@@ -527,7 +512,7 @@ describe('detached tmux new-session sequencing', () => {
       'omx-demo',
       '/tmp/project',
       "'codex' '--model' 'gpt-5'",
-      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      "'/tmp/omx' 'hud' '--watch'",
       '--model gpt-5',
       '/tmp/codex-home',
       '{"active":true}',
@@ -546,7 +531,7 @@ describe('detached tmux new-session sequencing', () => {
       'omx-demo',
       '/tmp/project',
       "'codex' '--model' 'gpt-5'",
-      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      "'/tmp/omx' 'hud' '--watch'",
       null,
       undefined,
       '{"active":true,"canonicalSelectors":["discord"]}',
@@ -558,21 +543,6 @@ describe('detached tmux new-session sequencing', () => {
       && newSession!.args.some((arg) => arg.startsWith('OMX_NOTIFY_TEMP_CONTRACT=')),
       true,
     );
-  });
-
-  it('buildDetachedSessionBootstrapSteps starts native Windows detached sessions with powershell', () => {
-    const steps = buildDetachedSessionBootstrapSteps(
-      'omx-demo',
-      'C:/project',
-      "'codex' '--dangerously-bypass-approvals-and-sandbox'",
-      "'node' 'omx.js' 'hud' '--watch'",
-      '--model gpt-5',
-      'C:/codex-home',
-      null,
-      true,
-    );
-    assert.equal(steps[0]?.name, 'new-session');
-    assert.equal(steps[0]?.args.at(-1), 'powershell.exe');
   });
 
   it('buildDetachedSessionFinalizeSteps keeps schedule after split-capture and before attach', () => {
@@ -601,14 +571,6 @@ describe('detached tmux new-session sequencing', () => {
     assert.match(schedule?.args[2] ?? '', new RegExp(`-y ${HUD_TMUX_HEIGHT_LINES}\\b`));
     assert.match((reconcile?.args ?? []).join(' '), />\/dev\/null 2>&1 \|\| true/);
     assert.match((reconcile?.args ?? []).join(' '), new RegExp(`-y ${HUD_TMUX_HEIGHT_LINES}\\b`));
-  });
-
-  it('buildDetachedSessionFinalizeSteps skips detached resize hooks on native Windows', () => {
-    const steps = buildDetachedSessionFinalizeSteps('omx-demo', '%12', '3', true, false, true);
-    assert.deepEqual(
-      steps.map((step) => step.name),
-      ['set-mouse', 'attach-session'],
-    );
   });
 
   it('buildDetachedSessionRollbackSteps unregisters hooks before killing session', () => {
@@ -674,19 +636,10 @@ describe('buildTmuxPaneCommand', () => {
   });
 });
 
-describe('buildWindowsPromptCommand', () => {
-  it('quotes detached Windows codex commands for PowerShell prompt injection', () => {
-    assert.equal(
-      buildWindowsPromptCommand('codex', ['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="high"', "it's"]),
-      "& 'codex' '--dangerously-bypass-approvals-and-sandbox' '-c' 'model_reasoning_effort=\"high\"' 'it''s'",
-    );
-  });
-});
-
 describe('buildTmuxSessionName', () => {
-  it('uses detached fallback quietly outside git repos', () => {
+  it('uses omx-directory-branch-session format', () => {
     const name = buildTmuxSessionName('/tmp/My Repo', 'omx-1770992424158-abc123');
-    assert.equal(name, 'omx-my-repo-detached-1770992424158-abc123');
+    assert.match(name, /^omx-my-repo-[a-z0-9-]+-1770992424158-abc123$/);
   });
 
   it('sanitizes invalid characters', () => {

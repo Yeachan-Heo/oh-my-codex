@@ -1,0 +1,1 @@
+Set model_reasoning_effort="high" in <CODEX_HOME>/config.toml

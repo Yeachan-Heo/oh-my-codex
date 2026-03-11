@@ -1,0 +1,1 @@
+artifact-path-from-stub.md

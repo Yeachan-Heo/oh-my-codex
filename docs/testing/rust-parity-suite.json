@@ -1,0 +1,26 @@
+{
+  "baseline_command": ["./bin/omx"],
+  "candidate_command": ["${OMX_RUST_BIN:-./target/debug/omx}"],
+  "defaults": {
+    "mode": "byte-exact",
+    "timeout_ms": 20000
+  },
+  "cases": [
+    {
+      "id": "help",
+      "argv": ["--help"]
+    },
+    {
+      "id": "version",
+      "argv": ["version"]
+    },
+    {
+      "id": "reasoning-help",
+      "argv": ["reasoning", "--help"]
+    },
+    {
+      "id": "reasoning-invalid",
+      "argv": ["reasoning", "turbo"]
+    }
+  ]
+}

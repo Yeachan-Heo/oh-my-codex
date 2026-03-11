@@ -189,7 +189,7 @@ npm run build
 2. Reinstall native agent configs:
 
 ```bash
-node bin/omx.js setup
+./bin/omx setup
 ```
 
 3. Inspect generated native agent configs in `~/.omx/agents/` and confirm they now include:
@@ -518,7 +518,7 @@ Use `$visual-verdict` when a task depends on visual fidelity (reference image(s)
 
 ```text
 oh-my-codex/
-  bin/omx.js
+  bin/omx
   src/
     cli/
     team/

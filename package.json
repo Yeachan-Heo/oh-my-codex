@@ -3,17 +3,16 @@
   "version": "0.8.11",
   "description": "Multi-agent orchestration layer for OpenAI Codex CLI",
   "type": "module",
-  "main": "dist/index.js",
   "bin": {
-    "omx": "bin/omx.js"
+    "omx": "bin/omx"
   },
   "scripts": {
     "build": "cargo build",
     "check:no-unused": "tsc -p tsconfig.no-unused.json",
     "dev": "tsc --watch",
     "lint": "biome lint .",
-    "setup": "node bin/omx.js setup",
-    "doctor": "node bin/omx.js doctor",
+    "setup": "cargo run -p omx-cli -- setup",
+    "doctor": "cargo run -p omx-cli -- doctor",
     "ask:claude": "./scripts/ask-claude.sh",
     "ask:gemini": "./scripts/ask-gemini.sh",
     "test:node": "npm run build:js && node --test $(find dist -name '*.test.js')",
@@ -28,7 +27,6 @@
   },
   "files": [
     "bin/",
-    "dist/",
     "agents/",
     "skills/",
     "prompts/",

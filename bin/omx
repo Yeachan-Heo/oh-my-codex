@@ -1,0 +1,48 @@
+#!/bin/sh
+set -eu
+
+case "$0" in
+  */*) SCRIPT_DIR=${0%/*} ;;
+  *) SCRIPT_DIR=. ;;
+esac
+ROOT="$SCRIPT_DIR/.."
+
+candidate_native_bin() {
+  if [ -n "${OMX_RUST_BIN:-}" ]; then
+    printf '%s\n' "$OMX_RUST_BIN"
+    return 0
+  fi
+
+  for candidate in \
+    "$ROOT/release/omx-x86_64-unknown-linux-gnu/omx" \
+    "$ROOT/release/omx-aarch64-apple-darwin/omx" \
+    "$ROOT/release/omx-x86_64-apple-darwin/omx" \
+    "$ROOT/release/omx-x86_64-pc-windows-msvc/omx.exe" \
+    "$ROOT/native/omx-x86_64-unknown-linux-gnu/omx" \
+    "$ROOT/native/omx-aarch64-apple-darwin/omx" \
+    "$ROOT/native/omx-x86_64-apple-darwin/omx" \
+    "$ROOT/native/omx-x86_64-pc-windows-msvc/omx.exe" \
+    "$ROOT/target/debug/omx" \
+    "$ROOT/target/debug/omx.exe" \
+    "$ROOT/bin/omx-native" \
+    "$ROOT/bin/omx-native.exe" \
+    "$ROOT/bin/omx.exe" \
+    "$ROOT/bin/omx"
+  do
+    if [ -x "$candidate" ] && [ "$candidate" != "$0" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+if ! NATIVE_BIN="$(candidate_native_bin)"; then
+  echo "oh-my-codex: native omx binary not found." >&2
+  echo "Searched under release/, native/, target/debug/, and bin/." >&2
+  echo "Build the Rust CLI with \"cargo build\" or set OMX_RUST_BIN." >&2
+  exit 1
+fi
+
+exec "$NATIVE_BIN" "$@"

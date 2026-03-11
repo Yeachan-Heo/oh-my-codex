@@ -1,0 +1,22 @@
+[package]
+name = "omx-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+autobins = false
+
+[[bin]]
+name = "omx"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+omx-process = { path = "../omx-process" }
