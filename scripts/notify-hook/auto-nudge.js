@@ -193,6 +193,8 @@ export const DEFAULT_STALL_PATTERNS = [
   'next step',
   'next steps',
   'ready to proceed',
+  'i\'m ready to',
+  'keep going',
   'should i',
   'whenever you',
   'say go',
@@ -207,6 +209,16 @@ export const DEFAULT_STALL_PATTERNS = [
   'proceed from here',
   'i\'ll continue from',
 ];
+
+function normalizeStallDetectionText(text) {
+  return safeString(text)
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .filter((line) => !line.includes(DEFAULT_MARKER))
+    .join('\n')
+    .toLowerCase()
+    .replace(/[’‘`]/g, '\'');
+}
 
 export function normalizeAutoNudgeConfig(raw) {
   if (!raw || typeof raw !== 'object') {
@@ -245,12 +257,14 @@ export async function loadAutoNudgeConfig() {
 
 export function detectStallPattern(text, patterns) {
   if (!text || typeof text !== 'string') return false;
-  const tail = text.slice(-800).toLowerCase();
-  const lowerPatterns = patterns.map(p => p.toLowerCase());
-  const lines = tail.split('\n').filter(l => l.trim());
+  const normalized = normalizeStallDetectionText(text);
+  if (!normalized) return false;
+  const tail = normalized.slice(-800);
+  const normalizedPatterns = patterns.map((pattern) => normalizeStallDetectionText(pattern)).filter(Boolean);
+  const lines = tail.split('\n').filter((line) => line.trim());
   const hotZone = lines.slice(-3).join('\n');
-  if (lowerPatterns.some(p => hotZone.includes(p))) return true;
-  return lowerPatterns.some(p => tail.includes(p));
+  if (normalizedPatterns.some((pattern) => hotZone.includes(pattern))) return true;
+  return normalizedPatterns.some((pattern) => tail.includes(pattern));
 }
 
 export async function capturePane(paneId, lines = 10) {

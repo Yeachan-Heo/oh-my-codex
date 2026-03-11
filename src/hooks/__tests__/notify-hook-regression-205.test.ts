@@ -35,6 +35,8 @@ describe('regression-205: DEFAULT_STALL_PATTERNS contains "if you want"', () => 
       DEFAULT_STALL_PATTERNS.includes('if you want'),
       `Expected DEFAULT_STALL_PATTERNS to contain "if you want", got: ${JSON.stringify(DEFAULT_STALL_PATTERNS)}`,
     );
+    assert.ok(DEFAULT_STALL_PATTERNS.includes('i\'m ready to'));
+    assert.ok(DEFAULT_STALL_PATTERNS.includes('keep going'));
   });
 });
 
@@ -55,6 +57,14 @@ describe('regression-205: detectStallPattern matches "if you want"', () => {
     assert.equal(
       detectStallPattern('IF YOU WANT I can do more.', DEFAULT_STALL_PATTERNS),
       true,
+    );
+  });
+
+  it('ignores OMX injection-marker lines when matching patterns', async () => {
+    const { detectStallPattern, DEFAULT_STALL_PATTERNS } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(
+      detectStallPattern('keep going [OMX_TMUX_INJECT]', DEFAULT_STALL_PATTERNS),
+      false,
     );
   });
 
