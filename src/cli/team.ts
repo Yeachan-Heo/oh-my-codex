@@ -1739,7 +1739,11 @@ export function buildTeamExecutionPlan(
 
   return {
     workerCount: effectiveWorkerCount,
-    tasks: distributeTasksToWorkers(tasksWithRoles, effectiveWorkerCount),
+    tasks: distributeTasksToWorkers(
+      tasksWithRoles,
+      effectiveWorkerCount,
+      explicitAgentType ? agentType : undefined,
+    ),
   };
 }
 
@@ -1844,8 +1848,12 @@ function createAspectSubtasks(
 function distributeTasksToWorkers(
   tasks: Array<{ subject: string; description: string; role?: string; blocked_by?: string[] }>,
   workerCount: number,
+  workerRole?: string,
 ): Array<{ subject: string; description: string; owner: string; role?: string }> {
-  const workers = Array.from({ length: workerCount }, (_, index) => ({ name: `worker-${index + 1}` }));
+  const workers = Array.from({ length: workerCount }, (_, index) => ({
+    name: `worker-${index + 1}`,
+    role: workerRole,
+  }));
   return allocateTasksToWorkers(tasks, workers).map(({ allocation_reason: _allocationReason, ...task }) => task);
 }
 

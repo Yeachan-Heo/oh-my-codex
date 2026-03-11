@@ -42,10 +42,21 @@ describe('decomposeTaskString', () => {
     }
   });
 
-  it('keeps explicit same-role tasks on a single specialization lane', () => {
+  it('distributes explicit same-role tasks across workers instead of collapsing to worker-1', () => {
     const tasks = decomposeTaskString('task A, task B, task C, task D', 2, 'executor', true);
     assert.equal(tasks.length, 4);
-    assert.deepEqual(tasks.map((task) => task.owner), ['worker-1', 'worker-1', 'worker-1', 'worker-1']);
+    assert.deepEqual(tasks.map((task) => task.owner), ['worker-1', 'worker-2', 'worker-1', 'worker-2']);
+  });
+
+  it('distributes explicit same-role verifier review tasks across all workers', () => {
+    const tasks = decomposeTaskString(
+      'review landed coverage; inspect heavy/manual doc residual risks; report blind spots and verification evidence',
+      3,
+      'verifier',
+      true,
+    );
+    assert.equal(tasks.length, 3);
+    assert.deepEqual(tasks.map((task) => task.owner), ['worker-1', 'worker-2', 'worker-3']);
   });
 
   it('clusters same-role work to preserve specialization when routing is mixed', () => {

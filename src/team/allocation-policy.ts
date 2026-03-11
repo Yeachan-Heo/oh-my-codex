@@ -20,14 +20,16 @@ interface WorkerAllocationState extends AllocationWorkerInput {
   primaryRole?: string;
 }
 
-function scoreWorker(task: AllocationTaskInput, worker: WorkerAllocationState): number {
+function scoreWorker(task: AllocationTaskInput, worker: WorkerAllocationState, uniformRolePool = false): number {
   let score = 0;
   const taskRole = task.role?.trim();
   const workerRole = worker.role?.trim();
 
-  if (taskRole && worker.primaryRole === taskRole) score += 18;
-  if (taskRole && workerRole === taskRole) score += 12;
-  if (taskRole && !worker.primaryRole && worker.assignedCount === 0) score += 5;
+  if (!uniformRolePool) {
+    if (taskRole && worker.primaryRole === taskRole) score += 18;
+    if (taskRole && workerRole === taskRole) score += 12;
+    if (taskRole && !worker.primaryRole && worker.assignedCount === 0) score += 9;
+  }
 
   score -= worker.assignedCount * 4;
 
@@ -57,11 +59,15 @@ export function chooseTaskOwner(
     };
   });
 
+  const uniformRolePool = Boolean(task.role?.trim())
+    && workerState.length > 0
+    && workerState.every((worker) => worker.role?.trim() === task.role?.trim());
+
   const ranked = workerState
     .map((worker, index) => ({
       worker,
       index,
-      score: scoreWorker(task, worker),
+      score: scoreWorker(task, worker, uniformRolePool),
     }))
     .sort((left, right) => {
       if (right.score !== left.score) return right.score - left.score;
