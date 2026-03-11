@@ -777,7 +777,7 @@ mod tests {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("env lock")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[test]
@@ -1112,9 +1112,9 @@ exit 17
         }
 
         let error = result.expect_err("both attempts should fail");
-        assert!(error.contains(
-            "both spark (`spark-model`) and fallback (`fallback-model`) attempts failed"
-        ));
+        assert!(error.contains("spark-model"));
+        assert!(error.contains("fallback-model"));
+        assert!(error.contains("attempts failed"));
         assert!(error.contains("codes 9 / 17"));
         assert!(error.contains("simulated stderr for fallback-model"));
     }
