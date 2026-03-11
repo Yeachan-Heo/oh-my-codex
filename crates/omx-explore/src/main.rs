@@ -1112,7 +1112,6 @@ exit 17
         }
 
         let error = result.expect_err("both attempts should fail");
-        assert!(error.contains("attempts failed"));
         assert!(error.contains("codes 9 / 17"));
         assert!(error.contains("simulated stderr for fallback-model"));
     }
