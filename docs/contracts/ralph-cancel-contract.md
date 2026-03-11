@@ -1,6 +1,8 @@
 # Ralph Cancellation Contract (Normative)
 
-This contract defines required post-conditions for Ralph cancellation.
+This contract defines required post-conditions for Ralph cancellation, whether
+Ralph was started directly or linked from the real `omx team ralph ...` launch
+path.
 
 ## Required post-conditions
 

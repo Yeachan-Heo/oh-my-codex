@@ -12,6 +12,20 @@ Ralph runtime state is stored at `.omx/state/{scope}/ralph-state.json` and MUST 
 - `completed_at?: ISO8601 string`
 - Optional linkage fields: `linked_ultrawork`, `linked_ecomode`, `linked_team`, `linked_mode`, `linked_team_terminal_phase`, `linked_team_terminal_at`
 
+## Team-linked launch path guarantees
+
+When Ralph is launched through `omx team ralph ...`, the authoritative scope
+MUST reflect that linked launch from the start:
+
+- team state records `linked_ralph=true` and the resolved `team_name`
+- Ralph state records `active=true`, `linked_team=true`, `linked_mode='team'`,
+  and the same `team_name`
+- `linked_team_terminal_phase` and `linked_team_terminal_at` stay unset until
+  the linked team reaches a terminal phase
+
+This is a linked launch path over the shared team runtime, not a separate team
+state schema.
+
 Legacy phase aliases may be normalized for compatibility, but persisted values MUST end in the frozen enum below.
 
 ## Frozen Ralph phase vocabulary
