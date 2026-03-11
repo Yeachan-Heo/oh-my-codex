@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { chmod, mkdtemp, readFile, rm, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -15,6 +16,7 @@ import {
   resolveExploreHarnessCommand,
   resolvePackagedExploreHarnessCommand,
 } from '../explore.js';
+import { withPackagedExploreHarnessHidden, withPackagedExploreHarnessLock } from './packaged-explore-harness-lock.js';
 
 function runOmx(
   cwd: string,
@@ -175,25 +177,27 @@ describe('resolveExploreHarnessCommand', () => {
   });
 
   it('prefers a packaged native harness binary when present', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-explore-native-'));
-    try {
-      const binDir = join(wd, 'bin');
-      await mkdir(binDir, { recursive: true });
-      await writeFile(join(wd, 'package.json'), '{}\n');
-      await writeFile(join(binDir, 'omx-explore-harness.meta.json'), JSON.stringify({
-        binaryName: packagedExploreHarnessBinaryName(),
-        platform: process.platform,
-        arch: process.arch,
-      }));
-      const nativePath = join(binDir, packagedExploreHarnessBinaryName());
-      await writeFile(nativePath, '#!/bin/sh\necho native\n');
-      await chmod(nativePath, 0o755);
+    await withPackagedExploreHarnessLock(async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-explore-native-'));
+      try {
+        const binDir = join(wd, 'bin');
+        await mkdir(binDir, { recursive: true });
+        await writeFile(join(wd, 'package.json'), '{}\n');
+        await writeFile(join(binDir, 'omx-explore-harness.meta.json'), JSON.stringify({
+          binaryName: packagedExploreHarnessBinaryName(),
+          platform: process.platform,
+          arch: process.arch,
+        }));
+        const nativePath = join(binDir, packagedExploreHarnessBinaryName());
+        await writeFile(nativePath, '#!/bin/sh\necho native\n');
+        await chmod(nativePath, 0o755);
 
-      const resolved = resolveExploreHarnessCommand(wd, {} as NodeJS.ProcessEnv);
-      assert.deepEqual(resolved, { command: nativePath, args: [] });
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
+        const resolved = resolveExploreHarnessCommand(wd, {} as NodeJS.ProcessEnv);
+        assert.deepEqual(resolved, { command: nativePath, args: [] });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
   });
 
   it('builds cargo fallback command otherwise', async () => {
@@ -306,31 +310,33 @@ describe('exploreCommand', () => {
   it('launches an env-node codex binary while keeping model shell commands allowlisted', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-explore-harness-e2e-'));
     try {
-      const capturePath = join(wd, 'capture.json');
-      const codexStub = await writeEnvNodeCodexStub(wd, capturePath);
-      const testPath = await createExploreTestPath(wd);
+      await withPackagedExploreHarnessHidden(async () => {
+        const capturePath = join(wd, 'capture.json');
+        const codexStub = await writeEnvNodeCodexStub(wd, capturePath);
+        const testPath = await createExploreTestPath(wd);
 
-      const result = runOmx(wd, ['explore', '--prompt', 'find buildTmuxPaneCommand'], {
-        OMX_EXPLORE_CODEX_BIN: codexStub,
-        PATH: testPath,
+        const result = runOmx(wd, ['explore', '--prompt', 'find buildTmuxPaneCommand'], {
+          OMX_EXPLORE_CODEX_BIN: codexStub,
+          PATH: testPath,
+        });
+
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        assert.equal(result.stdout, '# Answer\nHarness completed\n');
+        const captured = JSON.parse(await readFile(capturePath, 'utf-8')) as {
+          argv: string[];
+          path: string;
+          shell: string;
+          allowed: { status: number | null; stdout: string; stderr: string };
+          blocked: { status: number | null; stdout: string; stderr: string };
+        };
+        assert.ok(captured.argv.includes('exec'));
+        assert.match(captured.path, /omx-explore-allowlist-/);
+        assert.match(captured.shell, /omx-explore-allowlist-.*\/bin\/bash$/);
+        assert.equal(captured.allowed.status, 0, captured.allowed.stderr);
+        assert.match(captured.allowed.stdout, /ripgrep/i);
+        assert.notEqual(captured.blocked.status, 0);
+        assert.match(captured.blocked.stderr, /not on the omx explore allowlist/);
       });
-
-      assert.equal(result.status, 0, result.stderr || result.stdout);
-      assert.equal(result.stdout, '# Answer\nHarness completed\n');
-      const captured = JSON.parse(await readFile(capturePath, 'utf-8')) as {
-        argv: string[];
-        path: string;
-        shell: string;
-        allowed: { status: number | null; stdout: string; stderr: string };
-        blocked: { status: number | null; stdout: string; stderr: string };
-      };
-      assert.ok(captured.argv.includes('exec'));
-      assert.match(captured.path, /omx-explore-allowlist-/);
-      assert.match(captured.shell, /omx-explore-allowlist-.*\/bin\/bash$/);
-      assert.equal(captured.allowed.status, 0, captured.allowed.stderr);
-      assert.match(captured.allowed.stdout, /ripgrep/i);
-      assert.notEqual(captured.blocked.status, 0);
-      assert.match(captured.blocked.stderr, /not on the omx explore allowlist/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -339,21 +345,23 @@ describe('exploreCommand', () => {
   it('supports --prompt-file end-to-end with the harness', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-explore-harness-prompt-file-'));
     try {
-      const capturePath = join(wd, 'capture.json');
-      const codexStub = await writeEnvNodeCodexStub(wd, capturePath);
-      const testPath = await createExploreTestPath(wd);
-      const promptPath = join(wd, 'prompt.md');
-      await writeFile(promptPath, 'find prompt-file support\n');
+      await withPackagedExploreHarnessHidden(async () => {
+        const capturePath = join(wd, 'capture.json');
+        const codexStub = await writeEnvNodeCodexStub(wd, capturePath);
+        const testPath = await createExploreTestPath(wd);
+        const promptPath = join(wd, 'prompt.md');
+        await writeFile(promptPath, 'find prompt-file support\n');
 
-      const result = runOmx(wd, ['explore', '--prompt-file', promptPath], {
-        OMX_EXPLORE_CODEX_BIN: codexStub,
-        PATH: testPath,
+        const result = runOmx(wd, ['explore', '--prompt-file', promptPath], {
+          OMX_EXPLORE_CODEX_BIN: codexStub,
+          PATH: testPath,
+        });
+
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        assert.equal(result.stdout, '# Answer\nHarness completed\n');
+        const captured = JSON.parse(await readFile(capturePath, 'utf-8')) as { argv: string[] };
+        assert.ok(captured.argv.some((value) => value.includes('find prompt-file support')));
       });
-
-      assert.equal(result.status, 0, result.stderr || result.stdout);
-      assert.equal(result.stdout, '# Answer\nHarness completed\n');
-      const captured = JSON.parse(await readFile(capturePath, 'utf-8')) as { argv: string[] };
-      assert.ok(captured.argv.some((value) => value.includes('find prompt-file support')));
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
