@@ -1,6 +1,6 @@
 import { existsSync } from 'fs';
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from 'child_process';
-import { delimiter, extname, join } from 'path';
+import { delimiter, extname, join, resolve } from 'path';
 
 type ExistsSyncLike = (path: string) => boolean;
 type SpawnSyncLike = typeof spawnSync;
@@ -86,6 +86,32 @@ function resolveWindowsCommandPath(
   return null;
 }
 
+function resolvePosixCommandPath(
+  command: string,
+  env: NodeJS.ProcessEnv,
+  existsImpl: ExistsSyncLike,
+): string | null {
+  const trimmed = command.trim();
+  if (trimmed === '') return null;
+
+  if (trimmed.includes('/')) {
+    const candidate = resolve(trimmed);
+    return existsImpl(candidate) ? candidate : null;
+  }
+
+  const pathEntries = String(env.PATH ?? env.Path ?? '')
+    .split(delimiter)
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  for (const entry of pathEntries) {
+    const candidate = resolve(entry, trimmed);
+    if (existsImpl(candidate)) return candidate;
+  }
+
+  return null;
+}
+
 function quoteForCmd(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
@@ -119,7 +145,7 @@ export function resolveCommandPathForPlatform(
   if (platform === 'win32') {
     return resolveWindowsCommandPath(command, env, existsImpl);
   }
-  return command;
+  return resolvePosixCommandPath(command, env, existsImpl);
 }
 
 export function buildPlatformCommandSpec(

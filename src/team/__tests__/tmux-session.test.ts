@@ -60,6 +60,10 @@ function withEmptyPath<T>(fn: () => T): T {
   }
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 describe('sanitizeTeamName', () => {
   it('lowercases and strips invalid chars', () => {
     assert.equal(sanitizeTeamName('My Team!'), 'my-team');
@@ -602,6 +606,48 @@ describe('buildWorkerStartupCommand', () => {
       else delete process.env.SHELL;
       if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('resolves POSIX leader paths before building fish worker startup commands', async () => {
+    const fakeBin = await mkdtemp(join(tmpdir(), 'omx-worker-startup-posix-'));
+    const prevPath = process.env.PATH;
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.PATH = fakeBin;
+    process.env.SHELL = '/bin/fish';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const nodePath = join(fakeBin, 'node');
+      const codexPath = join(fakeBin, 'codex');
+      await writeFile(nodePath, '#!/bin/sh\n');
+      await writeFile(codexPath, '#!/bin/sh\n');
+      await chmod(nodePath, 0o755);
+      await chmod(codexPath, 0o755);
+
+      const { buildWorkerStartupCommand: buildFreshWorkerStartupCommand } = await import(`../tmux-session.js?posix-path=${Date.now()}`);
+      const cmd = buildFreshWorkerStartupCommand(
+        'alpha',
+        1,
+        ['-c', 'model_reasoning_effort="low"'],
+        process.cwd(),
+        {},
+        'codex',
+      );
+
+      assert.match(cmd, new RegExp(escapeRegExp(`OMX_LEADER_NODE_PATH=${nodePath}`)));
+      assert.match(cmd, new RegExp(escapeRegExp(`OMX_LEADER_CLI_PATH=${codexPath}`)));
+      assert.match(cmd, new RegExp(escapeRegExp(`export PATH='\\''${fakeBin}'\\'':$PATH; exec ${codexPath}`)));
+      assert.doesNotMatch(cmd, /export PATH='\\''node'\\'':\$PATH/);
+      assert.doesNotMatch(cmd, / exec codex(?:\s|')/);
+    } finally {
+      if (typeof prevPath === 'string') process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      await rm(fakeBin, { recursive: true, force: true });
     }
   });
 
