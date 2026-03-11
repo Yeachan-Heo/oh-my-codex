@@ -262,10 +262,10 @@ export async function resolveSessionOrchestrationMode(
 
     try {
       const state = JSON.parse(await readFile(statePath, 'utf-8')) as { active?: boolean; skill?: string };
-      if (state.active !== true) continue;
+      if (state.active !== true) return 'default';
       return state.skill === 'team' ? 'team' : 'default';
     } catch {
-      continue;
+      return 'default';
     }
   }
 

@@ -255,6 +255,35 @@ describe('resolveSessionOrchestrationMode', () => {
     const mode = await resolveSessionOrchestrationMode(tempDir, sessionId);
     assert.equal(mode, 'default');
   });
+
+  it('does not resurrect stale root team skill state when session-scoped skill state is inactive', async () => {
+    const sessionId = 'sess-team-complete';
+    const rootStatePath = join(tempDir, '.omx', 'state', 'skill-active-state.json');
+    const sessionDir = join(tempDir, '.omx', 'state', 'sessions', sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      rootStatePath,
+      JSON.stringify({ active: true, skill: 'team' }),
+    );
+    await writeFile(
+      join(sessionDir, 'skill-active-state.json'),
+      JSON.stringify({ active: false, skill: 'team', phase: 'completing' }),
+    );
+
+    const mode = await resolveSessionOrchestrationMode(tempDir, sessionId);
+    assert.equal(mode, 'default');
+  });
+
+  it('falls back to root team skill state only when no session-scoped skill state exists', async () => {
+    const sessionId = 'sess-root-fallback';
+    await writeFile(
+      join(tempDir, '.omx', 'state', 'skill-active-state.json'),
+      JSON.stringify({ active: true, skill: 'team' }),
+    );
+
+    const mode = await resolveSessionOrchestrationMode(tempDir, sessionId);
+    assert.equal(mode, 'team');
+  });
 });
 
 describe('applyOverlay + stripOverlay roundtrip', () => {

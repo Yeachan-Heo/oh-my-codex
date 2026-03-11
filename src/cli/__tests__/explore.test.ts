@@ -155,7 +155,7 @@ set -e
   cat ${JSON.stringify(blockedStderrPath)}
 } > ${JSON.stringify(capturePath)}
 
-printf '# Answer\nHarness completed\n' 
+printf '# Answer\nHarness completed\n' > "$output_path"
 `,
   );
   await chmod(stub, 0o755);
@@ -173,6 +173,7 @@ ${body}
   );
   await chmod(stub, 0o755);
   return stub;
+}
 
 async function writeExploreHarnessScenarioStub(wd: string, body: string): Promise<string> {
   const stub = join(wd, 'explore-scenario-stub.sh');
@@ -185,7 +186,6 @@ ${body}
   );
   await chmod(stub, 0o755);
   return stub;
-}
 }
 
 describe('parseExploreArgs', () => {
@@ -425,7 +425,7 @@ describe('exploreCommand', () => {
         const testPath = await createExploreTestPath(wd);
 
         const result = runOmx(wd, ['explore', '--prompt', 'find buildTmuxPaneCommand'], {
-          OMX_EXPLORE_BIN: harnessStub,
+          OMX_EXPLORE_CODEX_BIN: codexStub,
           PATH: testPath,
         });
         if (shouldSkipForSpawnPermissions(result.error)) return;
@@ -457,7 +457,7 @@ describe('exploreCommand', () => {
         await writeFile(promptPath, 'find prompt-file support\n');
 
         const result = runOmx(wd, ['explore', '--prompt-file', promptPath], {
-          OMX_EXPLORE_BIN: harnessStub,
+          OMX_EXPLORE_CODEX_BIN: codexStub,
           PATH: testPath,
         });
         if (shouldSkipForSpawnPermissions(result.error)) return;
@@ -490,7 +490,7 @@ exit 0
         );
 
         const result = await runExploreCommandForTest(wd, ['--prompt', 'surface the critical facts'], {
-          OMX_EXPLORE_BIN: codexStub,
+          OMX_EXPLORE_BIN: harnessStub,
         });
 
         assert.equal(result.exitCode, 0, result.stderr || result.stdout);
@@ -529,7 +529,7 @@ exit 0
         );
 
         const result = await runExploreCommandForTest(wd, ['--prompt', 'extract buried signals'], {
-          OMX_EXPLORE_BIN: codexStub,
+          OMX_EXPLORE_BIN: harnessStub,
         });
 
         assert.equal(result.exitCode, 0, result.stderr || result.stdout);
@@ -549,14 +549,14 @@ exit 0
         const harnessStub = await writeExploreHarnessScenarioStub(
           wd,
           `
-printf '[omx explore] spark model \`%s\` unavailable or failed (exit 17). Falling back to \`gpt-5.4\`.\n' "${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
+printf '[omx explore] spark model \`%s\` unavailable or failed (exit 17). Falling back to \`gpt-5.4\`.\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
 printf '[omx explore] spark stderr: spark timed out; retry with the frontier fallback\n' >&2
 printf '%s\n' '# Answer' '- recovered with fallback model' '- MUST: actionable recovery path remained available'
 `,
         );
 
         const result = await runExploreCommandForTest(wd, ['--prompt', 'validate fallback recovery'], {
-          OMX_EXPLORE_BIN: codexStub,
+          OMX_EXPLORE_BIN: harnessStub,
           OMX_EXPLORE_SPARK_MODEL: 'spark-test-model',
         });
 
@@ -578,15 +578,15 @@ printf '%s\n' '# Answer' '- recovered with fallback model' '- MUST: actionable r
         const harnessStub = await writeExploreHarnessScenarioStub(
           wd,
           `
-printf '[omx explore] spark model \`%s\` unavailable or failed (exit 23). Falling back to \`gpt-5.4\`.\n' "${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
+printf '[omx explore] spark model \`%s\` unavailable or failed (exit 23). Falling back to \`gpt-5.4\`.\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
 printf '[omx explore] spark stderr: spark backend unavailable; install the fallback runtime\n' >&2
-printf '[omx explore] both spark (\`%s\`) and fallback (\`gpt-5.4\`) attempts failed (codes 23 / 29). Last stderr: fallback backend unavailable; set OMX_EXPLORE_BIN to a working harness\n' "${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
+printf '[omx explore] both spark (\`%s\`) and fallback (\`gpt-5.4\`) attempts failed (codes 23 / 29). Last stderr: fallback backend unavailable; set OMX_EXPLORE_BIN to a working harness\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
 exit 1
 `,
         );
 
         const result = await runExploreCommandForTest(wd, ['--prompt', 'validate failure guidance'], {
-          OMX_EXPLORE_BIN: codexStub,
+          OMX_EXPLORE_BIN: harnessStub,
           OMX_EXPLORE_SPARK_MODEL: 'spark-test-model',
         });
 
