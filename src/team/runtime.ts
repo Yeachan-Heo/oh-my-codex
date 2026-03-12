@@ -344,9 +344,8 @@ function resolveManifestLookupCwds(cwd: string): string[] {
 
 function resolveGovernancePolicy(
   governance: TeamGovernance | null | undefined,
-  legacyPolicy?: Partial<TeamGovernance> | null,
 ): TeamGovernance {
-  return normalizeTeamGovernance(governance, legacyPolicy);
+  return normalizeTeamGovernance(governance);
 }
 
 async function assertNestedTeamAllowed(cwd: string): Promise<void> {
@@ -355,7 +354,7 @@ async function assertNestedTeamAllowed(cwd: string): Promise<void> {
 
   for (const candidateCwd of resolveManifestLookupCwds(cwd)) {
     const manifest = await readTeamManifestV2(workerContext.teamName, candidateCwd);
-    const governance = resolveGovernancePolicy(manifest?.governance, manifest?.policy as Partial<TeamGovernance> | undefined);
+    const governance = resolveGovernancePolicy(manifest?.governance);
     if (governance.nested_teams_allowed) return;
     if (manifest) break;
   }
@@ -1467,10 +1466,7 @@ export async function assignTask(
   const task = await readTask(sanitized, taskId, cwd);
   if (!task) throw new Error(`Task ${taskId} not found`);
   const manifest = await readTeamManifestV2(sanitized, cwd);
-  const governance = resolveGovernancePolicy(
-    manifest?.governance,
-    manifest?.policy as Partial<TeamGovernance> | undefined,
-  );
+  const governance = resolveGovernancePolicy(manifest?.governance);
 
   if (governance.delegation_only && workerName === 'leader-fixed') {
     throw new Error('delegation_only_violation');
@@ -1593,10 +1589,7 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     return;
   }
   const manifest = await readTeamManifestV2(sanitized, cwd);
-  const governance = resolveGovernancePolicy(
-    manifest?.governance,
-    manifest?.policy as Partial<TeamGovernance> | undefined,
-  );
+  const governance = resolveGovernancePolicy(manifest?.governance);
 
   if (!force) {
     const allTasks = await listTasks(sanitized, cwd);
@@ -1903,10 +1896,7 @@ async function findActiveTeams(cwd: string, leaderSessionId: string): Promise<st
     const teamName = e.name;
     const cfg = await readTeamConfig(teamName, cwd);
     const manifest = await readTeamManifestV2(teamName, cwd);
-    const governance = resolveGovernancePolicy(
-      manifest?.governance,
-      manifest?.policy as Partial<TeamGovernance> | undefined,
-    );
+    const governance = resolveGovernancePolicy(manifest?.governance);
     if (governance.one_team_per_leader_session === false) continue;
     const workerLaunchMode = cfg?.worker_launch_mode
       ?? manifest?.policy?.worker_launch_mode
