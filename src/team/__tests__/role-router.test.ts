@@ -129,6 +129,13 @@ describe('role-router', () => {
       assert.equal(result.confidence, 'high');
     });
 
+    it('keeps implementation-heavy auth work on the implementation fallback lane', () => {
+      const result = routeTaskToRole('Implement auth session refresh', 'Add authentication refresh handling and authorization checks to the login flow', 'team-exec', 'executor');
+      assert.equal(result.role, 'executor');
+      assert.equal(result.confidence, 'medium');
+      assert.match(result.reason, /implementation/i);
+    });
+
     it('routes refactoring tasks to code-simplifier', () => {
       const result = routeTaskToRole('Refactor auth', 'Simplify and clean up the authentication module', 'team-exec', 'executor');
       assert.equal(result.role, 'code-simplifier');
@@ -158,6 +165,13 @@ describe('role-router', () => {
       const r2 = routeTaskToRole('Write tests', 'Add test coverage', 'team-exec', 'executor');
       assert.equal(r1.role, r2.role);
       assert.equal(r1.confidence, r2.confidence);
+    });
+
+    it('recognizes common Korean documentation/test signals', () => {
+      const docs = routeTaskToRole('문서 업데이트', '배포 가이드와 README 문서를 정리', 'team-exec', 'executor');
+      const tests = routeTaskToRole('테스트 추가', '로그인 흐름 테스트와 커버리지 추가', 'team-exec', 'executor');
+      assert.equal(docs.role, 'writer');
+      assert.equal(tests.role, 'test-engineer');
     });
 
     it('handles null phase gracefully', () => {

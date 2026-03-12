@@ -26,6 +26,14 @@ describe('decomposeTaskString', () => {
     assert.match(tasks[2].description, /update docs/i);
   });
 
+  it('splits bulleted task lists without relying on sentence heuristics', () => {
+    const tasks = decomposeTaskString('- implement worker preview\n- add verification coverage\n- update docs', 3, 'executor', false);
+    assert.equal(tasks.length, 3);
+    assert.match(tasks[0].description, /implement worker preview/i);
+    assert.match(tasks[1].description, /verification coverage/i);
+    assert.match(tasks[2].description, /update docs/i);
+  });
+
   it('creates aspect sub-tasks for atomic tasks when the worker count is explicit', () => {
     const tasks = decomposeTaskString('implement user login', 3, 'executor', false, true);
     assert.equal(tasks.length, 3);
@@ -117,6 +125,22 @@ describe('decomposeTaskString', () => {
 
     const explicitTasks = decomposeTaskString('fix typo in README', 3, 'executor', false, true);
     assert.equal(explicitTasks.length, 3);
+  });
+
+  it('keeps medium-sized coupled implementation prompts single-lane by default', () => {
+    const task = 'Implement a staffing preview in omx team so the leader can inspect decomposition, role routing, and fanout reasons before launch.';
+    const plan = buildTeamExecutionPlan(task, 3, 'executor', false);
+    assert.equal(plan.workerCount, 1);
+    assert.equal(plan.tasks.length, 1);
+    assert.equal(plan.tasks[0].owner, 'worker-1');
+  });
+
+  it('still fans out atomic cross-cutting work when code-scoped parallelization signals are present', () => {
+    const task = 'Refactor cross-cutting staffing logic across src/cli/team.ts src/team/role-router.ts src/team/runtime.ts and `buildTeamExecutionPlan` to keep verification explanations aligned.';
+    const plan = buildTeamExecutionPlan(task, 3, 'executor', false);
+    assert.equal(plan.workerCount, 3);
+    assert.equal(plan.tasks.length, 3);
+    assert.match(plan.tasks[0].subject, /^Implement:/i);
   });
 
   it('preserves explicit worker-count fanout for analytic prompts', () => {

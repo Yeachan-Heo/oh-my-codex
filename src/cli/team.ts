@@ -1655,7 +1655,7 @@ export function parseTeamStartArgs(args: string[]): ParsedTeamStartArgs {
  * When the user specifies an explicit agent-type (e.g., `3:executor`), all tasks
  * get that role (backward compat). Otherwise, heuristic routing assigns roles.
  */
-type DecompositionStrategy = 'numbered' | 'conjunction' | 'atomic';
+type DecompositionStrategy = 'numbered' | 'bulleted' | 'conjunction' | 'atomic';
 
 interface DecompositionCandidate {
   subject: string;
@@ -1691,7 +1691,7 @@ function resolveTeamFanoutLimit(
   explicitWorkerCount: boolean,
   plan: DecompositionPlan,
 ): number {
-  if (requestedWorkerCount <= 1 || explicitAgentType || explicitWorkerCount || plan.strategy === 'numbered') {
+  if (requestedWorkerCount <= 1 || explicitAgentType || explicitWorkerCount || plan.strategy === 'numbered' || plan.strategy === 'bulleted') {
     return requestedWorkerCount;
   }
 
@@ -1704,6 +1704,10 @@ function resolveTeamFanoutLimit(
     if (size === 'small') {
       const proseHeavyAtomicTask = countWords(task) > 18 || CONTEXTUAL_DECOMPOSITION_CLAUSE.test(task);
       if (!proseHeavyAtomicTask) return 1;
+    }
+
+    if (!hasAtomicParallelizationSignals(task, size)) {
+      return 1;
     }
   }
 
@@ -1778,9 +1782,31 @@ const TASK_LABEL_PREFIX = /^(?:task|step|phase|part)\s+[\w-]+(?:\s+[\w-]+)?$/i;
 const ANALYSIS_TASK_PREFIX = /^(?:analy(?:se|ze)|audit|assess|evaluate|explore|investigate|research|review|study|summari(?:s|z)e)\b/i;
 const ANALYSIS_DELIVERABLE_SIGNAL = /\b(?:actionable recommendations?|evidence(?: pointers?)?|findings?|issue|operator|report|root cause|summary|user impact|write-?up)\b/i;
 const CONTEXTUAL_DECOMPOSITION_CLAUSE = /\b(?:focusing on|focus on|including|covers?|covering|with|while|without|ensuring|suitable for|root cause|user impact|evidence pointers|actionable recommendations)\b/i;
+const BULLET_LINE_PATTERN = /^(?:[-*•]|(?:\[\s?[xX]?\]))\s+(.+)$/;
+const FILE_REFERENCE_PATTERN = /(?:^|[\s`'"])([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)(?=$|[\s`'",;:])/g;
+const CODE_SYMBOL_PATTERN = /[`'][A-Za-z_][A-Za-z0-9_.-]*[`']/g;
+const PARALLELIZATION_SIGNAL = /\b(?:acceptance criteria|cross[\s-]cutting|independent|in parallel|separately|verification|verify|tests?|docs?|documentation|benchmarks?|migration|rollout)\b/i;
 
 function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function countDistinctMatches(text: string, pattern: RegExp): number {
+  const matches = new Set<string>();
+  for (const match of text.matchAll(new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`))) {
+    const value = (match[1] ?? match[0] ?? '').trim().toLowerCase();
+    if (value) matches.add(value);
+  }
+  return matches.size;
+}
+
+function hasAtomicParallelizationSignals(task: string, size: ReturnType<typeof classifyTaskSize>['size']): boolean {
+  const fileRefCount = countDistinctMatches(task, FILE_REFERENCE_PATTERN);
+  const symbolRefCount = countDistinctMatches(task, CODE_SYMBOL_PATTERN);
+  if (fileRefCount >= 2) return true;
+  if (fileRefCount >= 1 && symbolRefCount >= 1) return true;
+  if (PARALLELIZATION_SIGNAL.test(task) && size === 'large') return true;
+  return size === 'large' && countWords(task) >= 24;
 }
 
 function looksLikeStandaloneWeakSubtask(part: string): boolean {
@@ -1812,6 +1838,18 @@ function splitTaskString(task: string): DecompositionPlan {
       }
     }
     if (parts.length >= 2) return { strategy: 'numbered', subtasks: parts };
+  }
+
+  const bulletParts = task
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .map((line) => line.match(BULLET_LINE_PATTERN)?.[1]?.trim() ?? '')
+    .filter((line) => line.length > 0);
+  if (bulletParts.length >= 2) {
+    return {
+      strategy: 'bulleted',
+      subtasks: bulletParts.map((part) => ({ subject: part.slice(0, 80), description: part })),
+    };
   }
 
   const strongParts = task.split(/;\s+/).map(s => s.trim()).filter(s => s.length > 0);
