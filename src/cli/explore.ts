@@ -58,6 +58,20 @@ export function resolvePackagedExploreHarnessCommand(
   }
 }
 
+export function repoBuiltExploreHarnessCommand(
+  packageRoot = getPackageRoot(),
+  platform: NodeJS.Platform = process.platform,
+): ExploreHarnessCommand | undefined {
+  const binaryName = packagedExploreHarnessBinaryName(platform);
+  for (const mode of ['release', 'debug'] as const) {
+    const binaryPath = join(packageRoot, 'target', mode, binaryName);
+    if (existsSync(binaryPath)) {
+      return { command: binaryPath, args: [] };
+    }
+  }
+  return undefined;
+}
+
 function exploreUsageError(reason: string): Error {
   return new Error(`${reason}\n${EXPLORE_USAGE}`);
 }
@@ -143,6 +157,9 @@ export function resolveExploreHarnessCommand(
 
   const packaged = resolvePackagedExploreHarnessCommand(packageRoot);
   if (packaged) return packaged;
+
+  const repoBuilt = repoBuiltExploreHarnessCommand(packageRoot);
+  if (repoBuilt) return repoBuilt;
 
   const manifestPath = join(packageRoot, 'crates', 'omx-explore', 'Cargo.toml');
   if (!existsSync(manifestPath)) {

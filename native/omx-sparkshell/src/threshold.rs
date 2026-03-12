@@ -23,7 +23,11 @@ pub fn combined_visible_lines(stdout: &[u8], stderr: &[u8]) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{combined_visible_lines, count_visible_lines};
+    use crate::test_support::env_lock;
+    use super::{
+        combined_visible_lines, count_visible_lines, read_line_threshold, DEFAULT_MAX_VISIBLE_LINES,
+    };
+    use std::env;
 
     #[test]
     fn counts_trailing_partial_line() {
@@ -38,5 +42,33 @@ mod tests {
     #[test]
     fn combines_stdout_and_stderr() {
         assert_eq!(combined_visible_lines(b"one\ntwo\n", b"warn\n"), 3);
+    }
+
+    #[test]
+    fn threshold_defaults_for_zero_invalid_and_blank_values() {
+        let _guard = env_lock();
+        unsafe { env::set_var("OMX_SPARKSHELL_LINES", "0") };
+        assert_eq!(read_line_threshold(), DEFAULT_MAX_VISIBLE_LINES);
+
+        unsafe { env::set_var("OMX_SPARKSHELL_LINES", "not-a-number") };
+        assert_eq!(read_line_threshold(), DEFAULT_MAX_VISIBLE_LINES);
+
+        unsafe { env::set_var("OMX_SPARKSHELL_LINES", "   ") };
+        assert_eq!(read_line_threshold(), DEFAULT_MAX_VISIBLE_LINES);
+
+        unsafe { env::remove_var("OMX_SPARKSHELL_LINES") };
+    }
+
+    #[test]
+    fn threshold_accepts_trimmed_positive_values() {
+        let _guard = env_lock();
+        unsafe { env::set_var("OMX_SPARKSHELL_LINES", " 7 ") };
+        assert_eq!(read_line_threshold(), 7);
+        unsafe { env::remove_var("OMX_SPARKSHELL_LINES") };
+    }
+
+    #[test]
+    fn empty_output_counts_as_zero_lines() {
+        assert_eq!(count_visible_lines(b""), 0);
     }
 }

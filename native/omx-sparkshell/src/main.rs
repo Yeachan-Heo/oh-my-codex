@@ -2,6 +2,8 @@ mod codex_bridge;
 mod error;
 mod exec;
 mod prompt;
+#[cfg(test)]
+mod test_support;
 mod threshold;
 
 use crate::codex_bridge::summarize_output;

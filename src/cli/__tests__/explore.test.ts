@@ -13,6 +13,7 @@ import {
   loadExplorePrompt,
   packagedExploreHarnessBinaryName,
   parseExploreArgs,
+  repoBuiltExploreHarnessCommand,
   resolveExploreHarnessCommand,
   resolvePackagedExploreHarnessCommand,
 } from '../explore.js';
@@ -200,6 +201,27 @@ describe('resolveExploreHarnessCommand', () => {
     });
   });
 
+  it('uses an existing repo-built native harness before cargo fallback', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-explore-target-'));
+    try {
+      const targetDir = join(wd, 'target', 'release');
+      await mkdir(targetDir, { recursive: true });
+      await writeFile(join(wd, 'package.json'), '{}\n');
+      await writeFile(join(targetDir, packagedExploreHarnessBinaryName()), '#!/bin/sh\nexit 0\n');
+      await chmod(join(targetDir, packagedExploreHarnessBinaryName()), 0o755);
+      await mkdir(join(wd, 'crates', 'omx-explore'), { recursive: true });
+      await writeFile(join(wd, 'crates', 'omx-explore', 'Cargo.toml'), '[package]\nname="omx-explore-harness"\nversion="0.0.0"\n');
+
+      const repoBuilt = repoBuiltExploreHarnessCommand(wd);
+      assert.deepEqual(repoBuilt, { command: join(targetDir, packagedExploreHarnessBinaryName()), args: [] });
+
+      const resolved = resolveExploreHarnessCommand(wd, {} as NodeJS.ProcessEnv);
+      assert.deepEqual(resolved, { command: join(targetDir, packagedExploreHarnessBinaryName()), args: [] });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('builds cargo fallback command otherwise', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-explore-fallback-'));
     try {
@@ -333,6 +355,7 @@ describe('exploreCommand', () => {
         assert.match(captured.path, /omx-explore-allowlist-/);
         assert.match(captured.shell, /omx-explore-allowlist-.*\/bin\/bash$/);
         assert.equal(captured.allowed.status, 0, captured.allowed.stderr);
+        assert.ok(captured.argv.includes('model_reasoning_effort="low"'));
         assert.match(captured.allowed.stdout, /ripgrep/i);
         assert.notEqual(captured.blocked.status, 0);
         assert.match(captured.blocked.stderr, /not on the omx explore allowlist/);

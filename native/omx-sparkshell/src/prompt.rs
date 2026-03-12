@@ -1,4 +1,5 @@
 use crate::exec::CommandOutput;
+use std::env;
 use std::borrow::Cow;
 use std::path::Path;
 
@@ -79,6 +80,9 @@ const SWIFT: CommandFamily = CommandFamily {
     what_it_does: "Builds, tests, or packages Swift and Apple-platform projects.",
 };
 
+const DEFAULT_SUMMARY_MAX_LINES: usize = 400;
+const DEFAULT_SUMMARY_MAX_BYTES: usize = 24_000;
+
 pub fn select_command_family(command: &str) -> &'static CommandFamily {
     let base = command_basename(command);
     match base.as_ref() {
@@ -107,6 +111,12 @@ fn command_basename(command: &str) -> Cow<'_, str> {
 pub fn build_summary_prompt(command: &[String], output: &CommandOutput) -> String {
     let executable = command.first().map(String::as_str).unwrap_or("unknown");
     let family = select_command_family(executable);
+    let stdout_text = output.stdout_text();
+    let stderr_text = output.stderr_text();
+    let stdout_lines = count_lines(&stdout_text);
+    let stderr_lines = count_lines(&stderr_text);
+    let stdout_excerpt = truncate_for_prompt(&stdout_text, "stdout");
+    let stderr_excerpt = truncate_for_prompt(&stderr_text, "stderr");
     format!(
         concat!(
             "You summarize shell command output.\\n",
@@ -119,6 +129,10 @@ pub fn build_summary_prompt(command: &[String], output: &CommandOutput) -> Strin
             "Family description: {family_description}\\n",
             "Family what_it_does: {family_what_it_does}\\n",
             "Exit code: {exit_code}\\n\\n",
+            "STDOUT total lines: {stdout_lines}\\n",
+            "STDOUT total bytes: {stdout_bytes}\\n",
+            "STDERR total lines: {stderr_lines}\\n",
+            "STDERR total bytes: {stderr_bytes}\\n\\n",
             "STDOUT:\\n<<<STDOUT\\n{stdout}\\n>>>STDOUT\\n\\n",
             "STDERR:\\n<<<STDERR\\n{stderr}\\n>>>STDERR\\n"
         ),
@@ -128,9 +142,108 @@ pub fn build_summary_prompt(command: &[String], output: &CommandOutput) -> Strin
         family_description = family.description,
         family_what_it_does = family.what_it_does,
         exit_code = output.exit_code(),
-        stdout = output.stdout_text(),
-        stderr = output.stderr_text(),
+        stdout_lines = stdout_lines,
+        stdout_bytes = stdout_text.len(),
+        stderr_lines = stderr_lines,
+        stderr_bytes = stderr_text.len(),
+        stdout = stdout_excerpt,
+        stderr = stderr_excerpt,
     )
+}
+
+fn count_lines(text: &str) -> usize {
+    if text.is_empty() {
+        0
+    } else {
+        text.lines().count()
+    }
+}
+
+fn read_positive_usize_env(name: &str, default: usize) -> usize {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn truncate_for_prompt(text: &str, label: &str) -> String {
+    let max_lines = read_positive_usize_env(
+        "OMX_SPARKSHELL_SUMMARY_MAX_LINES",
+        DEFAULT_SUMMARY_MAX_LINES,
+    );
+    let max_bytes = read_positive_usize_env(
+        "OMX_SPARKSHELL_SUMMARY_MAX_BYTES",
+        DEFAULT_SUMMARY_MAX_BYTES,
+    );
+
+    let total_lines = count_lines(text);
+    let total_bytes = text.len();
+    let mut truncated = text.to_string();
+
+    if total_lines > max_lines {
+        let lines: Vec<&str> = text.lines().collect();
+        let head_count = max_lines / 2;
+        let tail_count = max_lines - head_count;
+        let mut excerpt: Vec<String> = Vec::with_capacity(max_lines + 1);
+        excerpt.extend(lines.iter().take(head_count).map(|line| (*line).to_string()));
+        excerpt.push(format!(
+            "[... truncated {label}: omitted {} of {total_lines} total lines ...]",
+            total_lines.saturating_sub(max_lines),
+        ));
+        excerpt.extend(
+            lines.iter()
+                .skip(total_lines - tail_count)
+                .map(|line| (*line).to_string()),
+        );
+        truncated = excerpt.join("\n");
+        if text.ends_with('\n') {
+            truncated.push('\n');
+        }
+    }
+
+    if truncated.len() > max_bytes {
+        let head_bytes = max_bytes / 2;
+        let tail_bytes = max_bytes.saturating_sub(head_bytes);
+        let prefix = safe_prefix(&truncated, head_bytes);
+        let suffix = safe_suffix(&truncated, tail_bytes);
+        let omitted_bytes = total_bytes.saturating_sub(prefix.len() + suffix.len());
+        truncated = format!(
+            "{prefix}\n[... truncated {label}: omitted approximately {omitted_bytes} of {total_bytes} total bytes ...]\n{suffix}"
+        );
+    }
+
+    truncated
+}
+
+fn safe_prefix(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut end = 0;
+    for (index, ch) in text.char_indices() {
+        let next = index + ch.len_utf8();
+        if next > max_bytes {
+            break;
+        }
+        end = next;
+    }
+    &text[..end]
+}
+
+fn safe_suffix(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let min_start = text.len().saturating_sub(max_bytes);
+    let mut start = text.len();
+    for (index, _) in text.char_indices() {
+        if index >= min_start {
+            start = index;
+            break;
+        }
+    }
+    &text[start..]
 }
 
 fn shell_join(command: &[String]) -> String {
@@ -152,8 +265,10 @@ fn shell_join(command: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::env_lock;
     use super::{build_summary_prompt, select_command_family};
     use crate::exec::CommandOutput;
+    use std::env;
     use std::process::Command;
 
     fn ok_status() -> std::process::ExitStatus {
@@ -184,5 +299,37 @@ mod tests {
         assert!(prompt.contains("Command family: git"));
         assert!(prompt.contains("<<<STDOUT"));
         assert!(prompt.contains("<<<STDERR"));
+    }
+
+    #[test]
+    fn prompt_truncates_large_streams_before_embedding_them() {
+        let _guard = env_lock();
+        unsafe {
+            env::set_var("OMX_SPARKSHELL_SUMMARY_MAX_LINES", "4");
+            env::set_var("OMX_SPARKSHELL_SUMMARY_MAX_BYTES", "120");
+        }
+
+        let output = CommandOutput {
+            status: ok_status(),
+            stdout: (1..=10)
+                .map(|value| format!("line-{value}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into_bytes(),
+            stderr: b"warning-a\nwarning-b\nwarning-c\nwarning-d\nwarning-e\n".to_vec(),
+        };
+        let prompt = build_summary_prompt(&["find".into(), "src".into()], &output);
+
+        unsafe {
+            env::remove_var("OMX_SPARKSHELL_SUMMARY_MAX_LINES");
+            env::remove_var("OMX_SPARKSHELL_SUMMARY_MAX_BYTES");
+        }
+
+        assert!(prompt.contains("STDOUT total lines: 10"));
+        assert!(prompt.contains("truncated stdout"));
+        assert!(prompt.contains("line-1"));
+        assert!(prompt.contains("line-10"));
+        assert!(!prompt.contains("line-5"));
+        assert!(prompt.contains("truncated stderr"));
     }
 }
