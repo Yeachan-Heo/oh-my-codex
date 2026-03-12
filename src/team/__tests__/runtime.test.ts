@@ -1522,7 +1522,17 @@ process.on('SIGTERM', () => {
   it('monitorTeam propagates linked terminal state into Ralph without waiting for notify-hook', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-linked-ralph-monitor-'));
     try {
-      await initTeamState('team-linked-ralph-monitor', 'linked runtime sync test', 'executor', 1, cwd);
+      await initTeamState(
+        'team-linked-ralph-monitor',
+        'linked runtime sync test',
+        'executor',
+        1,
+        cwd,
+        undefined,
+        process.env,
+        {},
+        'linked_ralph',
+      );
       await createTask(
         'team-linked-ralph-monitor',
         {
@@ -1560,6 +1570,62 @@ process.on('SIGTERM', () => {
       assert.equal(ralphState.linked_team_terminal_phase, 'complete');
       assert.ok(typeof ralphState.linked_team_terminal_at === 'string' && ralphState.linked_team_terminal_at);
       assert.ok(typeof ralphState.completed_at === 'string' && ralphState.completed_at);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('monitorTeam uses the persisted lifecycle_profile for linked Ralph sync', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-linked-ralph-persisted-monitor-'));
+    try {
+      const teamName = 'team-ralph-persist-monitor';
+      await initTeamState(
+        teamName,
+        'linked runtime persisted sync test',
+        'executor',
+        1,
+        cwd,
+        undefined,
+        process.env,
+        {},
+        'linked_ralph',
+      );
+      await createTask(
+        teamName,
+        {
+          subject: 'code change',
+          description: 'implement feature',
+          status: 'completed',
+          owner: 'worker-1',
+          requires_code_change: false,
+        },
+        cwd,
+      );
+
+      await writeFile(join(cwd, '.omx', 'state', 'team-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'team-exec',
+        team_name: teamName,
+      }, null, 2));
+      await writeFile(join(cwd, '.omx', 'state', 'ralph-state.json'), JSON.stringify({
+        active: true,
+        iteration: 1,
+        max_iterations: 10,
+        current_phase: 'executing',
+        started_at: '2026-03-11T00:00:00.000Z',
+        linked_team: true,
+        team_name: teamName,
+      }, null, 2));
+
+      const snapshot = await monitorTeam(teamName, cwd);
+      assert.ok(snapshot);
+      assert.equal(snapshot?.phase, 'complete');
+
+      const ralphState = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(ralphState.active, false);
+      assert.equal(ralphState.current_phase, 'complete');
+      assert.equal(ralphState.linked_team_terminal_phase, 'complete');
+      assert.ok(typeof ralphState.linked_team_terminal_at === 'string' && ralphState.linked_team_terminal_at);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -2273,7 +2339,17 @@ esac
   it('shutdownTeam ralph=true propagates linked Ralph cancellation before cleanup', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-linked-ralph-shutdown-'));
     try {
-      await initTeamState('team-linked-ralph-shutdown', 'linked shutdown sync test', 'executor', 1, cwd);
+      await initTeamState(
+        'team-linked-ralph-shutdown',
+        'linked shutdown sync test',
+        'executor',
+        1,
+        cwd,
+        undefined,
+        process.env,
+        {},
+        'linked_ralph',
+      );
       await createTask(
         'team-linked-ralph-shutdown',
         { subject: 'done', description: 'd', status: 'completed' },
@@ -2303,6 +2379,54 @@ esac
       assert.equal(ralphState.linked_team_terminal_phase, 'cancelled');
       assert.ok(typeof ralphState.linked_team_terminal_at === 'string' && ralphState.linked_team_terminal_at);
       assert.ok(typeof ralphState.completed_at === 'string' && ralphState.completed_at);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('shutdownTeam infers linked Ralph cleanup from persisted lifecycle_profile', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-linked-ralph-persisted-shutdown-'));
+    try {
+      const teamName = 'team-ralph-persist-stop';
+      await initTeamState(
+        teamName,
+        'linked shutdown persisted sync test',
+        'executor',
+        1,
+        cwd,
+        undefined,
+        process.env,
+        {},
+        'linked_ralph',
+      );
+      await createTask(
+        teamName,
+        { subject: 'done', description: 'd', status: 'completed' },
+        cwd,
+      );
+
+      await writeFile(join(cwd, '.omx', 'state', 'team-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'team-exec',
+        team_name: teamName,
+      }, null, 2));
+      await writeFile(join(cwd, '.omx', 'state', 'ralph-state.json'), JSON.stringify({
+        active: true,
+        iteration: 1,
+        max_iterations: 10,
+        current_phase: 'executing',
+        started_at: '2026-03-11T00:00:00.000Z',
+        linked_team: true,
+        team_name: teamName,
+      }, null, 2));
+
+      await shutdownTeam(teamName, cwd);
+
+      const ralphState = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(ralphState.active, false);
+      assert.equal(ralphState.current_phase, 'cancelled');
+      assert.equal(ralphState.linked_team_terminal_phase, 'cancelled');
+      assert.ok(typeof ralphState.linked_team_terminal_at === 'string' && ralphState.linked_team_terminal_at);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

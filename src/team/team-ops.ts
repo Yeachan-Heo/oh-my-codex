@@ -13,6 +13,7 @@
 // === Types (re-exported) ===
 export type {
   TeamConfig,
+  TeamLifecycleProfile,
   WorkerInfo,
   WorkerHeartbeat,
   WorkerStatus,
@@ -50,11 +51,13 @@ export { DEFAULT_MAX_WORKERS, ABSOLUTE_MAX_WORKERS } from './state.js';
 // === Team lifecycle ===
 export { initTeamState as teamInit } from './state.js';
 export { readTeamConfig as teamReadConfig } from './state.js';
+export { readTeamLifecycleProfile as teamReadLifecycleProfile } from './state.js';
 export { readTeamManifestV2 as teamReadManifest } from './state.js';
 export { writeTeamManifestV2 as teamWriteManifest } from './state.js';
 export { saveTeamConfig as teamSaveConfig } from './state.js';
 export { cleanupTeamState as teamCleanup } from './state.js';
 export { migrateV1ToV2 as teamMigrateV1ToV2 } from './state.js';
+export { isLinkedRalphLifecycleProfile, normalizeTeamLifecycleProfile } from './state.js';
 export { normalizeTeamPolicy as teamNormalizePolicy } from './state.js';
 export { normalizeTeamGovernance as teamNormalizeGovernance } from './state.js';
 

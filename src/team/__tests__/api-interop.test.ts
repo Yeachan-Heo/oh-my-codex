@@ -1272,6 +1272,43 @@ describe('executeTeamApiOperation: cleanup', () => {
       await cleanup();
     }
   });
+
+  it('cleanup infers linked Ralph from persisted lifecycle_profile without team mode state', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-interop-cleanup-linked-profile-'));
+    try {
+      await initTeamState(
+        'cleanup-linked-profile',
+        'test task',
+        'executor',
+        2,
+        cwd,
+        undefined,
+        process.env,
+        {},
+        'linked_ralph',
+      );
+      await createTask('cleanup-linked-profile', {
+        subject: 'failed task',
+        description: 'persisted linked Ralph cleanup should bypass failure-only shutdown gate',
+        status: 'failed',
+      }, cwd);
+
+      const result = await executeTeamApiOperation('cleanup', {
+        team_name: 'cleanup-linked-profile',
+      }, cwd);
+      assert.equal(result.ok, true);
+
+      const summary = await executeTeamApiOperation('get-summary', {
+        team_name: 'cleanup-linked-profile',
+      }, cwd);
+      assert.equal(summary.ok, false);
+      if (!summary.ok) {
+        assert.equal(summary.error.code, 'team_not_found');
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── write-shutdown-request ───────────────────────────────────────────────

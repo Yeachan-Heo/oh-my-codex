@@ -5,6 +5,7 @@ export interface TeamConfig {
   name: string;
   task: string;
   agent_type: string;
+  lifecycle_profile: TeamLifecycleProfile;
   worker_launch_mode: 'interactive' | 'prompt';
   worker_count: number;
   max_workers: number;
@@ -95,6 +96,8 @@ export interface TeamPolicy {
   dispatch_ack_timeout_ms: number;
 }
 
+export type TeamLifecycleProfile = 'default' | 'linked_ralph';
+
 /**
  * Lifecycle/workflow guardrails persisted alongside the manifest, but kept
  * separate from transport/runtime policy so each layer has a single owner.
@@ -156,6 +159,7 @@ export interface TeamManifestV2 {
   schema_version: 2;
   name: string;
   task: string;
+  lifecycle_profile: TeamLifecycleProfile;
   leader: TeamLeader;
   policy: TeamPolicy;
   governance: TeamGovernance;

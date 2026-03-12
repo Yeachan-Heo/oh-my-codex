@@ -64,6 +64,7 @@ export interface TeamConfig {
   name: string;
   task: string;
   agent_type: string;
+  lifecycle_profile: TeamLifecycleProfile;
   worker_launch_mode: 'interactive' | 'prompt';
   worker_count: number;
   max_workers: number; // default 20, configurable up to 20
@@ -159,6 +160,8 @@ export interface TeamPolicy {
   dispatch_ack_timeout_ms: number;
 }
 
+export type TeamLifecycleProfile = 'default' | 'linked_ralph';
+
 /**
  * Lifecycle/workflow guardrails persisted alongside the manifest, but kept
  * separate from transport/runtime policy so each layer has a single owner.
@@ -220,6 +223,7 @@ export interface TeamManifestV2 {
   schema_version: 2;
   name: string;
   task: string;
+  lifecycle_profile: TeamLifecycleProfile;
   leader: TeamLeader;
   policy: TeamPolicy;
   governance: TeamGovernance;
@@ -401,6 +405,16 @@ function defaultPolicy(
     dispatch_mode: 'hook_preferred_with_fallback',
     dispatch_ack_timeout_ms: DEFAULT_DISPATCH_ACK_TIMEOUT_MS,
   };
+}
+
+export function normalizeTeamLifecycleProfile(raw: unknown): TeamLifecycleProfile {
+  return raw === 'linked_ralph' ? 'linked_ralph' : 'default';
+}
+
+export function isLinkedRalphLifecycleProfile(
+  profile: TeamLifecycleProfile | null | undefined,
+): boolean {
+  return profile === 'linked_ralph';
 }
 
 function defaultGovernance(): TeamGovernance {
@@ -655,6 +669,7 @@ function isTeamManifestV2(value: unknown): value is TeamManifestV2 {
   if (typeof v.worker_count !== 'number') return false;
   if (typeof v.next_task_id !== 'number') return false;
   if (typeof v.created_at !== 'string') return false;
+  if ('lifecycle_profile' in v && typeof v.lifecycle_profile !== 'string') return false;
   if (!Array.isArray(v.workers)) return false;
   if (!(typeof v.leader_pane_id === 'string' || v.leader_pane_id === null)) return false;
   if (!(typeof v.hud_pane_id === 'string' || v.hud_pane_id === null)) return false;
@@ -702,6 +717,7 @@ export async function initTeamState(
   maxWorkers: number = DEFAULT_MAX_WORKERS,
   env: NodeJS.ProcessEnv = process.env,
   workspace: TeamWorkspaceMetadata = {},
+  lifecycleProfile: TeamLifecycleProfile = 'default',
 ): Promise<TeamConfig> {
   validateTeamName(teamName);
 
@@ -749,6 +765,7 @@ export async function initTeamState(
     name: teamName,
     task,
     agent_type: agentType,
+    lifecycle_profile: normalizeTeamLifecycleProfile(lifecycleProfile),
     worker_launch_mode: workerLaunchMode,
     worker_count: workerCount,
     max_workers: maxWorkers,
@@ -783,6 +800,7 @@ export async function initTeamState(
       schema_version: 2,
       name: teamName,
       task,
+      lifecycle_profile: config.lifecycle_profile,
       leader: {
         ...defaultLeader(),
         session_id: leaderSessionId,
@@ -821,6 +839,7 @@ async function writeConfig(cfg: TeamConfig, cwd: string): Promise<void> {
     const merged: TeamManifestV2 = {
       ...existing,
       task: normalized.task,
+      lifecycle_profile: normalized.lifecycle_profile,
       tmux_session: normalized.tmux_session,
       worker_count: normalized.worker_count,
       workers: normalized.workers,
@@ -848,6 +867,7 @@ function teamConfigFromManifest(manifest: TeamManifestV2): TeamConfig {
     name: manifest.name,
     task: manifest.task,
     agent_type: manifest.workers[0]?.role ?? 'executor',
+    lifecycle_profile: normalizeTeamLifecycleProfile(manifest.lifecycle_profile),
     worker_launch_mode: workerLaunchMode,
     worker_count: manifest.worker_count,
     max_workers: DEFAULT_MAX_WORKERS,
@@ -870,6 +890,7 @@ function normalizeTeamConfig(config: TeamConfig): TeamConfig {
   const workerLaunchMode = config.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive';
   return {
     ...config,
+    lifecycle_profile: normalizeTeamLifecycleProfile(config.lifecycle_profile),
     leader_pane_id: config.leader_pane_id ?? null,
     hud_pane_id: config.hud_pane_id ?? null,
     resize_hook_name: config.resize_hook_name ?? null,
@@ -893,6 +914,7 @@ function teamManifestFromConfig(config: TeamConfig): TeamManifestV2 {
     schema_version: 2,
     name: normalized.name,
     task: normalized.task,
+    lifecycle_profile: normalized.lifecycle_profile,
     leader: defaultLeader(),
     policy,
     governance: defaultGovernance(),
@@ -926,10 +948,11 @@ export async function writeTeamManifestV2(manifest: TeamManifestV2, cwd: string)
   await writeAtomic(
     p,
     JSON.stringify(
-      {
-        ...manifest,
-        policy: normalizedPolicy,
-        governance: normalizedGovernance,
+        {
+          ...manifest,
+          lifecycle_profile: normalizeTeamLifecycleProfile(manifest.lifecycle_profile),
+          policy: normalizedPolicy,
+          governance: normalizedGovernance,
       },
       null,
       2,
@@ -950,6 +973,7 @@ export async function readTeamManifestV2(teamName: string, cwd: string): Promise
     };
     return {
       ...parsedManifest,
+      lifecycle_profile: normalizeTeamLifecycleProfile(parsedManifest.lifecycle_profile),
       policy: normalizeTeamPolicy(parsedManifest.policy, {
         display_mode: parsedManifest.policy?.display_mode === 'split_pane' ? 'split_pane' : 'auto',
         worker_launch_mode: parsedManifest.policy?.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive',
@@ -1033,6 +1057,14 @@ export async function readTeamConfig(teamName: string, cwd: string): Promise<Tea
   } catch {
     return null;
   }
+}
+
+export async function readTeamLifecycleProfile(
+  teamName: string,
+  cwd: string,
+): Promise<TeamLifecycleProfile | null> {
+  const config = await readTeamConfig(teamName, cwd);
+  return config?.lifecycle_profile ?? null;
 }
 
 // Write worker identity file

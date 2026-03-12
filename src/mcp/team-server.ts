@@ -31,6 +31,7 @@ const startSchema = z.object({
   agentTypes: z.array(z.string()).min(1),
   tasks: z.array(z.object({ subject: z.string(), description: z.string() })).min(1),
   cwd: z.string().min(1),
+  lifecycle_profile: z.enum(['default', 'linked_ralph']).optional(),
 });
 
 const jobIdSchema = z.string().regex(/^omx-[a-z0-9]{1,12}$/);
@@ -321,7 +322,7 @@ export async function handleTeamToolCall(request: {
   try {
     switch (name) {
       case 'omx_run_team_start': {
-        const { teamName, agentTypes, tasks, cwd: inputCwd } = startSchema.parse(a);
+        const { teamName, agentTypes, tasks, cwd: inputCwd, lifecycle_profile: lifecycleProfile } = startSchema.parse(a);
 
         const jobId = `omx-${Date.now().toString(36)}`;
         const runtimeCliPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'team', 'runtime-cli.js');
@@ -336,7 +337,7 @@ export async function handleTeamToolCall(request: {
         job.pid = child.pid;
         persistJob(jobId, job);
 
-        child.stdin.write(JSON.stringify({ teamName, agentTypes, tasks, cwd: inputCwd }));
+        child.stdin.write(JSON.stringify({ teamName, agentTypes, tasks, cwd: inputCwd, lifecycleProfile }));
         child.stdin.end();
 
         const outChunks: Buffer[] = [];

@@ -2196,9 +2196,12 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
       return;
     }
     const existingState = await readModeState('team').catch(() => null);
-    const preservedRalph = existingState?.active === true
-      && existingState?.team_name === runtime.teamName
-      && existingState?.linked_ralph === true;
+    const preservedRalph = runtime.config.lifecycle_profile === 'linked_ralph'
+      || (
+        existingState?.active === true
+        && existingState?.team_name === runtime.teamName
+        && existingState?.linked_ralph === true
+      );
     await ensureTeamModeState({
       task: runtime.config.task,
       workerCount: runtime.config.worker_count,
@@ -2222,13 +2225,7 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
     if (!name) throw new Error('Usage: omx team shutdown <team-name> [--force] [--ralph]');
     const force = teamArgs.includes('--force');
     const ralphFlag = teamArgs.includes('--ralph');
-    const ralphFromState = !ralphFlag
-      ? await readModeState('team').then(
-          (s) => s?.active === true && s?.linked_ralph === true && s?.team_name === name,
-          () => false,
-        )
-      : false;
-    await shutdownTeam(name, cwd, { force, ralph: ralphFlag || ralphFromState });
+    await shutdownTeam(name, cwd, { force, ralph: ralphFlag });
     await updateModeState('team', {
       active: false,
       current_phase: 'cancelled',

@@ -12,6 +12,7 @@ import { join } from 'path';
 import { startTeam, monitorTeam, shutdownTeam } from './runtime.js';
 import type { TeamRuntime } from './runtime.js';
 import { teamReadConfig as readTeamConfig } from './team-ops.js';
+import type { TeamLifecycleProfile } from './team-ops.js';
 
 interface CliInput {
   teamName: string;
@@ -20,6 +21,7 @@ interface CliInput {
   tasks: Array<{ subject: string; description: string }>;
   cwd: string;
   pollIntervalMs?: number;
+  lifecycleProfile?: TeamLifecycleProfile;
 }
 
 type TeamWorkerProvider = 'codex' | 'claude' | 'gemini';
@@ -164,6 +166,7 @@ async function main(): Promise<void> {
     tasks,
     cwd,
     pollIntervalMs = 5000,
+    lifecycleProfile,
   } = input;
 
   const workerCount = input.workerCount ?? agentTypes.length;
@@ -244,6 +247,7 @@ async function main(): Promise<void> {
         workerCount,
         tasks,
         cwd,
+        { lifecycleProfile },
       );
     } finally {
       if (typeof previousCliMap === 'string') process.env.OMX_TEAM_WORKER_CLI_MAP = previousCliMap;

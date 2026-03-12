@@ -158,6 +158,28 @@ describe('team state', () => {
     }
   });
 
+  it('persists lifecycle_profile for linked Ralph runs and hydrates legacy manifests to default', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-manifest-lifecycle-'));
+    try {
+      await initTeamState('team-linked-profile', 't', 'executor', 1, cwd, DEFAULT_MAX_WORKERS, process.env, {}, 'linked_ralph');
+
+      const linkedConfig = await readTeamConfig('team-linked-profile', cwd);
+      const linkedManifest = await readTeamManifestV2('team-linked-profile', cwd);
+      assert.equal(linkedConfig?.lifecycle_profile, 'linked_ralph');
+      assert.equal(linkedManifest?.lifecycle_profile, 'linked_ralph');
+
+      const legacyManifestPath = join(cwd, '.omx', 'state', 'team', 'team-linked-profile', 'manifest.v2.json');
+      const legacyManifest = JSON.parse(await readFile(legacyManifestPath, 'utf8')) as Record<string, unknown>;
+      delete legacyManifest.lifecycle_profile;
+      await writeFile(legacyManifestPath, JSON.stringify(legacyManifest, null, 2));
+
+      const hydratedManifest = await readTeamManifestV2('team-linked-profile', cwd);
+      assert.equal(hydratedManifest?.lifecycle_profile, 'default');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('dispatch request store enqueues, dedupes, and transitions idempotently', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-dispatch-store-'));
     try {

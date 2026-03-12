@@ -32,6 +32,7 @@ import {
   teamInit as initTeamState,
   DEFAULT_MAX_WORKERS,
   teamReadConfig as readTeamConfig,
+  teamReadLifecycleProfile as readTeamLifecycleProfile,
   teamWriteWorkerIdentity as writeWorkerIdentity,
   teamReadWorkerHeartbeat as readWorkerHeartbeat,
   teamReadWorkerStatus as readWorkerStatus,
@@ -40,6 +41,7 @@ import {
   teamReadTask as readTask,
   teamListTasks as listTasks,
   teamReadManifest as readTeamManifestV2,
+  isLinkedRalphLifecycleProfile,
   teamNormalizeGovernance as normalizeTeamGovernance,
   teamNormalizePolicy as normalizeTeamPolicy,
   teamClaimTask as claimTask,
@@ -70,6 +72,7 @@ import {
   type TeamMonitorSnapshotState,
   type TeamPhaseState,
   type TeamGovernance,
+  type TeamLifecycleProfile,
   type TeamPolicy,
 } from './team-ops.js';
 import {
@@ -196,17 +199,20 @@ async function syncLinkedRalphModeStateOnTerminalPhase(
   if (phase !== 'complete' && phase !== 'failed' && phase !== 'cancelled') return;
 
   try {
-    const [teamState, ralphState] = await Promise.all([
+    const [teamLifecycleProfile, teamState, ralphState] = await Promise.all([
+      readTeamLifecycleProfile(teamName, cwd),
       readModeState('team', cwd),
       readModeState('ralph', cwd),
     ]);
-    if (!teamState || !ralphState) return;
+    if (!ralphState) return;
 
-    const stateTeamName = typeof teamState.team_name === 'string' ? teamState.team_name.trim() : '';
+    const stateTeamName = typeof teamState?.team_name === 'string' ? teamState.team_name.trim() : '';
     if (stateTeamName && stateTeamName !== teamName) return;
-    if (teamState.linked_ralph !== true || ralphState.linked_team !== true) return;
+    const ralphTeamName = typeof ralphState.team_name === 'string' ? ralphState.team_name.trim() : '';
+    if (ralphTeamName && ralphTeamName !== teamName) return;
+    if (!isLinkedRalphLifecycleProfile(teamLifecycleProfile) || ralphState.linked_team !== true) return;
 
-    const terminalAt = typeof teamState.completed_at === 'string' && teamState.completed_at
+    const terminalAt = typeof teamState?.completed_at === 'string' && teamState.completed_at
       ? teamState.completed_at
       : nowIso;
     const alreadySynced = ralphState.active === false
@@ -279,6 +285,22 @@ export interface TeamStartOptions {
   worktreeMode?: WorktreeMode;
   /** When true, applies ralph-specific cleanup policy during startup rollback (skip branch deletion). */
   ralph?: boolean;
+  lifecycleProfile?: TeamLifecycleProfile;
+}
+
+function resolveTeamLifecycleProfileFromStartOptions(options: TeamStartOptions): TeamLifecycleProfile {
+  if (options.lifecycleProfile) return options.lifecycleProfile;
+  return options.ralph === true ? 'linked_ralph' : 'default';
+}
+
+async function resolveLinkedRalphRun(teamName: string, cwd: string): Promise<boolean> {
+  const lifecycleProfile = await readTeamLifecycleProfile(teamName, cwd);
+  if (isLinkedRalphLifecycleProfile(lifecycleProfile)) return true;
+
+  const teamState = await readModeState('team', cwd).catch(() => null);
+  return teamState?.active === true
+    && teamState?.linked_ralph === true
+    && teamState?.team_name === teamName;
 }
 
 interface ShutdownGateCounts {
@@ -721,6 +743,8 @@ export async function startTeam(
   options: TeamStartOptions = {},
 ): Promise<TeamRuntime> {
   const leaderCwd = resolve(cwd);
+  const lifecycleProfile = resolveTeamLifecycleProfileFromStartOptions(options);
+  const linkedRalphRun = isLinkedRalphLifecycleProfile(lifecycleProfile);
   await assertNestedTeamAllowed(leaderCwd);
 
   const workerLaunchMode = resolveTeamWorkerLaunchMode(process.env);
@@ -820,6 +844,7 @@ export async function startTeam(
         team_state_root: teamStateRoot,
         workspace_mode: workspaceMode,
       },
+      lifecycleProfile,
     );
     if (!config) {
       throw new Error('failed to initialize team config');
@@ -1192,7 +1217,7 @@ export async function startTeam(
     if (provisionedWorktrees.length > 0) {
       try {
         await rollbackProvisionedWorktrees(provisionedWorktrees, {
-          skipBranchDeletion: options.ralph === true,
+          skipBranchDeletion: linkedRalphRun,
         });
       } catch (cleanupError) {
         rollbackErrors.push(`rollbackProvisionedWorktrees: ${String(cleanupError)}`);
@@ -1574,8 +1599,8 @@ export async function reassignTask(
  */
 export async function shutdownTeam(teamName: string, cwd: string, options: ShutdownOptions = {}): Promise<void> {
   const force = options.force === true;
-  const ralph = options.ralph === true;
   const sanitized = sanitizeTeamName(teamName);
+  const ralph = options.ralph === true || await resolveLinkedRalphRun(sanitized, cwd);
   const config = await readTeamConfig(sanitized, cwd);
   if (!config) {
     // No config -- just try to kill tmux session and clean up
@@ -1819,7 +1844,7 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   if (provisionedWorktrees.length > 0) {
     try {
       await rollbackProvisionedWorktrees(provisionedWorktrees, {
-        skipBranchDeletion: options.ralph === true,
+        skipBranchDeletion: ralph,
       });
     } catch (err) {
       cleanupErrors.push(`rollbackProvisionedWorktrees: ${String(err)}`);
