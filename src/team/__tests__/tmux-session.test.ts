@@ -560,14 +560,15 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
-  it('uses bash with ~/.bashrc and preserves launch args', () => {
+  it('resolves zsh regardless of SHELL and preserves launch args', () => {
     const prevShell = process.env.SHELL;
     process.env.SHELL = '/usr/bin/bash';
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
     try {
       const cmd = buildWorkerStartupCommand('alpha', 1, ['--model', 'gpt-5']);
-      assert.match(cmd, /source ~\/\.bashrc/);
+      assert.match(cmd, /\/bin\/zsh/, 'must resolve to zsh regardless of SHELL env');
+      assert.match(cmd, /source ~\/\.zshrc/, 'must source zshrc not bashrc');
       assert.match(cmd, /exec .*codex/);
       assert.match(cmd, /--model/);
       assert.match(cmd, /gpt-5/);
@@ -822,6 +823,59 @@ describe('buildWorkerStartupCommand', () => {
       else delete process.env.OMX_MODEL_INSTRUCTIONS_FILE;
       if (typeof prevMsystem === 'string') process.env.MSYSTEM = prevMsystem;
       else delete process.env.MSYSTEM;
+    }
+  });
+
+  it('resolves worker shell independently of user SHELL env var', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/usr/bin/fish';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [], process.cwd());
+      assert.doesNotMatch(cmd, /fish/, 'worker shell must not use fish from SHELL env');
+      assert.match(cmd, /\/bin\/(?:zsh|sh)/, 'worker shell must resolve to zsh or /bin/sh');
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('never emits fish-style PATH manipulation', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/usr/bin/fish';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [], process.cwd());
+      assert.doesNotMatch(cmd, /set -x PATH/, 'must not emit fish-style PATH manipulation');
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('sources ~/.zshrc when zsh is resolved as worker shell', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/usr/bin/fish';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [], process.cwd());
+      if (/\/zsh\b/.test(cmd)) {
+        assert.match(cmd, /\.zshrc/, 'must source .zshrc when using zsh shell');
+      } else {
+        assert.match(cmd, /\/bin\/sh/, 'must fall back to /bin/sh when zsh is unavailable');
+      }
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     }
   });
 });

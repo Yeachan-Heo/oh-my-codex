@@ -1,6 +1,6 @@
 import { spawnSync, execFile } from 'child_process';
 import { promisify } from 'util';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import {
   CODEX_BYPASS_FLAG,
@@ -386,16 +386,18 @@ export function buildReconcileHudResizeArgs(
   return ['run-shell', buildBestEffortShellCommand(`tmux ${buildHudResizeCommand(hudPaneId, heightLines)}`)];
 }
 
-function buildWorkerLaunchSpec(shellPath: string | undefined): WorkerLaunchSpec {
-  if (shellPath && /\/zsh$/i.test(shellPath)) {
-    return { shell: shellPath, rcFile: '~/.zshrc' };
+const ZSH_CANDIDATE_PATHS = ['/bin/zsh', '/usr/bin/zsh', '/usr/local/bin/zsh', '/opt/homebrew/bin/zsh'];
+
+function resolveZshPath(): string | null {
+  for (const p of ZSH_CANDIDATE_PATHS) {
+    if (existsSync(p)) return p;
   }
-  if (shellPath && /\/bash$/i.test(shellPath)) {
-    return { shell: shellPath, rcFile: '~/.bashrc' };
-  }
-  if (shellPath && shellPath.trim() !== '') {
-    return { shell: shellPath, rcFile: null };
-  }
+  return null;
+}
+
+function buildWorkerLaunchSpec(): WorkerLaunchSpec {
+  const zsh = resolveZshPath();
+  if (zsh) return { shell: zsh, rcFile: '~/.zshrc' };
   return { shell: '/bin/sh', rcFile: null };
 }
 
@@ -618,7 +620,7 @@ export function buildWorkerStartupCommand(
     workerCliOverride,
     initialPrompt,
   );
-  const launchSpec = buildWorkerLaunchSpec(process.env.SHELL);
+  const launchSpec = buildWorkerLaunchSpec();
   const leaderNodeDir = resolveLeaderNodePath().replace(/\/[^/]+$/, ''); // dirname
   const pathPrefix = leaderNodeDir ? `export PATH='${leaderNodeDir}':$PATH; ` : '';
   const quotedArgs = processSpec.args.map(shellQuoteSingle).join(' ');
