@@ -387,9 +387,13 @@ export function buildReconcileHudResizeArgs(
 }
 
 const ZSH_CANDIDATE_PATHS = ['/bin/zsh', '/usr/bin/zsh', '/usr/local/bin/zsh', '/opt/homebrew/bin/zsh'];
+const BASH_CANDIDATE_PATHS = ['/bin/bash', '/usr/bin/bash'];
 
 function resolveZshPath(): string | null {
   for (const p of ZSH_CANDIDATE_PATHS) {
+    if (existsSync(p)) return p;
+  }
+  for (const p of BASH_CANDIDATE_PATHS) {
     if (existsSync(p)) return p;
   }
   return null;
@@ -397,8 +401,12 @@ function resolveZshPath(): string | null {
 
 function buildWorkerLaunchSpec(): WorkerLaunchSpec {
   if (isMsysOrGitBash()) return { shell: '/bin/sh', rcFile: null };
-  const zsh = resolveZshPath();
-  if (zsh) return { shell: zsh, rcFile: '~/.zshrc' };
+  const shell = resolveZshPath();
+  if (shell) {
+    return /\/bash$/.test(shell)
+      ? { shell, rcFile: '~/.bashrc' }
+      : { shell, rcFile: '~/.zshrc' };
+  }
   return { shell: '/bin/sh', rcFile: null };
 }
 

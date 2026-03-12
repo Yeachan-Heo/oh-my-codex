@@ -834,7 +834,7 @@ describe('buildWorkerStartupCommand', () => {
     try {
       const cmd = buildWorkerStartupCommand('alpha', 1, [], process.cwd());
       assert.doesNotMatch(cmd, /fish/, 'worker shell must not use fish from SHELL env');
-      assert.match(cmd, /\/bin\/(?:zsh|sh)/, 'worker shell must resolve to zsh or /bin/sh');
+      assert.match(cmd, /\/bin\/(?:zsh|bash|sh)/, 'worker shell must resolve to zsh, bash, or /bin/sh');
     } finally {
       if (typeof prevShell === 'string') process.env.SHELL = prevShell;
       else delete process.env.SHELL;
@@ -868,8 +868,10 @@ describe('buildWorkerStartupCommand', () => {
       const cmd = buildWorkerStartupCommand('alpha', 1, [], process.cwd());
       if (/\/zsh\b/.test(cmd)) {
         assert.match(cmd, /\.zshrc/, 'must source .zshrc when using zsh shell');
+      } else if (/\/bash\b/.test(cmd)) {
+        assert.match(cmd, /\.bashrc/, 'must source .bashrc when using bash shell');
       } else {
-        assert.match(cmd, /\/bin\/sh/, 'must fall back to /bin/sh when zsh is unavailable');
+        assert.match(cmd, /\/bin\/sh/, 'must fall back to /bin/sh when zsh and bash are unavailable');
       }
     } finally {
       if (typeof prevShell === 'string') process.env.SHELL = prevShell;
