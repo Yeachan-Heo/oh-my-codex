@@ -731,7 +731,7 @@ describe("buildWorkerStartupCommand", () => {
 		}
 	});
 
-	it("resolves zsh regardless of SHELL and preserves launch args", () => {
+	it("resolves supported shell regardless of SHELL and preserves launch args", () => {
 		const prevShell = process.env.SHELL;
 		process.env.SHELL = "/usr/bin/bash";
 		const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
@@ -740,10 +740,28 @@ describe("buildWorkerStartupCommand", () => {
 			const cmd = buildWorkerStartupCommand("alpha", 1, ["--model", "gpt-5"]);
 			assert.match(
 				cmd,
-				/\/bin\/zsh/,
-				"must resolve to zsh regardless of SHELL env",
+				/\/(?:bin\/(?:zsh|bash|sh)|usr\/bin\/(?:zsh|bash)|usr\/local\/bin\/(?:zsh|bash)|opt\/homebrew\/bin\/zsh)\b/,
+				"must resolve to zsh, bash, or /bin/sh regardless of SHELL env",
 			);
-			assert.match(cmd, /source ~\/\.zshrc/, "must source zshrc not bashrc");
+			if (/\/zsh\b/.test(cmd)) {
+				assert.match(
+					cmd,
+					/source ~\/\.zshrc/,
+					"must source zshrc when using zsh",
+				);
+			} else if (/\/bash\b/.test(cmd)) {
+				assert.match(
+					cmd,
+					/source ~\/\.bashrc/,
+					"must source bashrc when using bash",
+				);
+			} else {
+				assert.match(
+					cmd,
+					/\/bin\/sh/,
+					"must fall back to /bin/sh when zsh and bash are unavailable",
+				);
+			}
 			assert.match(cmd, /exec .*codex/);
 			assert.match(cmd, /--model/);
 			assert.match(cmd, /gpt-5/);
