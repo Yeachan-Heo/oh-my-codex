@@ -64,7 +64,10 @@ async function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number = 
   ]);
 }
 
-function buildFakeTmux(tmuxLogPath: string): string {
+function buildFakeTmux(
+  tmuxLogPath: string,
+  options: { failSendKeys?: boolean; failSendKeysMatch?: string } = {},
+): string {
   return `#!/usr/bin/env bash
 set -eu
 echo "$@" >> "${tmuxLogPath}"
@@ -127,6 +130,15 @@ if [[ "$cmd" == "display-message" ]]; then
   exit 0
 fi
 if [[ "$cmd" == "send-keys" ]]; then
+  sendKeysArgs="$*"
+  if [[ "${options.failSendKeys === true ? '1' : '0'}" == "1" ]]; then
+    echo "send failed" >&2
+    exit 1
+  fi
+  if [[ -n "${options.failSendKeysMatch || ''}" && "$sendKeysArgs" == *"${options.failSendKeysMatch || ''}"* ]]; then
+    echo "send failed" >&2
+    exit 1
+  fi
   exit 0
 fi
 if [[ "$cmd" == "list-panes" ]]; then
@@ -633,6 +645,70 @@ describe('notify-fallback watcher', () => {
       const tmuxLog = await readFile(tmuxLogPath, 'utf8');
       const sends = tmuxLog.match(/send-keys -t %42 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/g) || [];
       assert.equal(sends.length, 1, 'terminal/cleared Ralph state must stop additional periodic steer sends');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps team control-plane pumping when Ralph continue steer fails', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-control-plane-split-'));
+    const fakeBinDir = join(wd, 'fake-bin');
+    const tmuxLogPath = join(wd, 'tmux.log');
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath, {
+        failSendKeysMatch: 'Ralph loop active continue',
+      }));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
+      const queued = await enqueueDispatchRequest('dispatch-team', {
+        kind: 'inbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        trigger_message: 'dispatch ping',
+      }, wd);
+      await writeFile(join(wd, '.omx', 'state', 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'executing',
+        tmux_pane_id: '%42',
+      }, null, 2));
+
+      const watcherScript = new URL('../../../scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../scripts/notify-hook.js', import.meta.url).pathname;
+      const result = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50', '--dispatch-max-per-tick', '1'],
+        {
+          encoding: 'utf-8',
+          env: {
+            ...process.env,
+            PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          },
+        },
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+
+      const request = await readDispatchRequest('dispatch-team', queued.request.request_id, wd);
+      assert.ok(request);
+
+      const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
+      const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+      assert.equal(watcherState.dispatch_drain?.run_count, 1);
+      assert.equal(watcherState.ralph_continue_steer?.last_reason, 'send_failed');
+      assert.match(watcherState.ralph_continue_steer?.last_error ?? '', /send failed/i);
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
+      assert.match(tmuxLog, /send-keys -t .* -l dispatch ping/);
+
+      const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+      const logEntries = (await readFile(logPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const drainEvent = logEntries.find((entry: { type?: string }) => entry.type === 'dispatch_drain_tick');
+      assert.ok(drainEvent, 'expected dispatch_drain_tick log event');
+      const ralphFailureEvent = logEntries.find((entry: { type?: string; reason?: string }) => (
+        entry.type === 'ralph_continue_steer' && entry.reason === 'send_failed'
+      ));
+      assert.ok(ralphFailureEvent, 'expected Ralph failure to be logged without aborting team control-plane pumping');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
