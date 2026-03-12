@@ -396,6 +396,7 @@ function resolveZshPath(): string | null {
 }
 
 function buildWorkerLaunchSpec(): WorkerLaunchSpec {
+  if (isMsysOrGitBash()) return { shell: '/bin/sh', rcFile: null };
   const zsh = resolveZshPath();
   if (zsh) return { shell: zsh, rcFile: '~/.zshrc' };
   return { shell: '/bin/sh', rcFile: null };
