@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'bun:test';
 import { SCENARIO_ROLE_CONTRACTS } from '../prompt-guidance-contract.js';
 import { assertContractSurface } from './prompt-guidance-test-helpers.js';
 

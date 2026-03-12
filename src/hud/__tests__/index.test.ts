@@ -1,4 +1,4 @@
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { runWatchMode } from '../index.js';
 import type { HudFlags, HudRenderContext } from '../types.js';

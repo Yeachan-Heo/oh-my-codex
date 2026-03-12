@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { describe, it } from 'bun:test';
 
 const RESULT_PREFIX = '__OMX_PLUGIN_RESULT__ ';
 

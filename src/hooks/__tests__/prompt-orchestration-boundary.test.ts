@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { describe, it } from 'bun:test';
 import { loadSurface } from './prompt-guidance-test-helpers.js';
 
 const PROMPTS_DIR = join(process.cwd(), 'prompts');

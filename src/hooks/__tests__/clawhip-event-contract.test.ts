@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { describe, it } from 'bun:test';
 
 const contractDoc = readFileSync(join(process.cwd(), 'docs', 'clawhip-event-contract.md'), 'utf-8');
 

@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { WAVE_TWO_CONTRACTS } from '../prompt-guidance-contract.js';
 import { assertContractSurface, loadSurface } from './prompt-guidance-test-helpers.js';

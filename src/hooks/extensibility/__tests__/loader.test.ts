@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { describe, it } from 'bun:test';
 import {
   HOOK_PLUGIN_ENABLE_ENV,
   HOOK_PLUGIN_TIMEOUT_ENV,

@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { analyzePaneContent, buildSendPaneArgvs, buildCapturePaneArgv, sendToPane } from '../tmux-detector.js';
 import type { PaneAnalysis } from '../tmux-detector.js';

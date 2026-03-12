@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { buildVisualLoopFeedback } from '../verdict.js';
 import { VISUAL_NEXT_ACTIONS_LIMIT } from '../constants.js';

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { PassThrough } from "node:stream";
-import { describe, it } from "node:test";
+import { describe, it } from "bun:test";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";

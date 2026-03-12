@@ -3,7 +3,7 @@ import { readFile } from 'node:fs';
 import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { describe, it } from 'bun:test';
 import { dispatchHookEvent } from '../dispatcher.js';
 import { buildHookEvent } from '../events.js';
 

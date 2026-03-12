@@ -2,7 +2,7 @@
  * Tests for OpenClaw gateway dispatcher.
  */
 
-import { describe, it, afterEach } from 'node:test';
+import { describe, it, afterEach } from 'bun:test';
 import assert from 'node:assert/strict';
 
 import {

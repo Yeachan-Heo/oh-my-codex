@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it } from 'bun:test';
 import { CATALOG_CONTRACTS, LEGACY_PROMPT_CONTRACTS, SPECIALIZED_PROMPT_CONTRACTS } from '../prompt-guidance-contract.js';
 import { assertContractSurface } from './prompt-guidance-test-helpers.js';
 

@@ -7,7 +7,7 @@
  * buildTmuxSplitArgs() + shellEscape() approach is safe.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { shellEscape, buildTmuxSplitArgs } from '../index.js';
 import { HUD_TMUX_HEIGHT_LINES } from '../constants.js';

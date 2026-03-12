@@ -2,7 +2,7 @@
  * Idempotency tests for config.toml generator (issue #384)
  * Verifies that repeated `omx setup` runs do not duplicate OMX sections.
  */
-import { describe, it } from "node:test";
+import { describe, it } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
