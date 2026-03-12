@@ -41,7 +41,6 @@ import {
   teamReadTask as readTask,
   teamListTasks as listTasks,
   teamReadManifest as readTeamManifestV2,
-  isLinkedRalphLifecycleProfile,
   teamNormalizeGovernance as normalizeTeamGovernance,
   teamNormalizePolicy as normalizeTeamPolicy,
   teamClaimTask as claimTask,
@@ -210,7 +209,7 @@ async function syncLinkedRalphModeStateOnTerminalPhase(
     if (stateTeamName && stateTeamName !== teamName) return;
     const ralphTeamName = typeof ralphState.team_name === 'string' ? ralphState.team_name.trim() : '';
     if (ralphTeamName && ralphTeamName !== teamName) return;
-    if (!isLinkedRalphLifecycleProfile(teamLifecycleProfile) || ralphState.linked_team !== true) return;
+    if (teamLifecycleProfile !== 'linked_ralph' || ralphState.linked_team !== true) return;
 
     const terminalAt = typeof teamState?.completed_at === 'string' && teamState.completed_at
       ? teamState.completed_at
@@ -295,7 +294,7 @@ function resolveTeamLifecycleProfileFromStartOptions(options: TeamStartOptions):
 
 async function resolveLinkedRalphRun(teamName: string, cwd: string): Promise<boolean> {
   const lifecycleProfile = await readTeamLifecycleProfile(teamName, cwd);
-  if (isLinkedRalphLifecycleProfile(lifecycleProfile)) return true;
+  if (lifecycleProfile === 'linked_ralph') return true;
 
   const teamState = await readModeState('team', cwd).catch(() => null);
   return teamState?.active === true
@@ -744,7 +743,7 @@ export async function startTeam(
 ): Promise<TeamRuntime> {
   const leaderCwd = resolve(cwd);
   const lifecycleProfile = resolveTeamLifecycleProfileFromStartOptions(options);
-  const linkedRalphRun = isLinkedRalphLifecycleProfile(lifecycleProfile);
+  const linkedRalphRun = lifecycleProfile === 'linked_ralph';
   await assertNestedTeamAllowed(leaderCwd);
 
   const workerLaunchMode = resolveTeamWorkerLaunchMode(process.env);

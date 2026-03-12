@@ -10,6 +10,7 @@ const EXPECTED_STATE_RE_EXPORTS = {
   ABSOLUTE_MAX_WORKERS: 'ABSOLUTE_MAX_WORKERS',
   teamInit: 'initTeamState',
   teamReadConfig: 'readTeamConfig',
+  teamReadLifecycleProfile: 'readTeamLifecycleProfile',
   teamReadManifest: 'readTeamManifestV2',
   teamWriteManifest: 'writeTeamManifestV2',
   teamSaveConfig: 'saveTeamConfig',
