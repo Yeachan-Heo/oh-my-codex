@@ -620,7 +620,10 @@ export function buildWorkerStartupCommand(
   );
   const launchSpec = buildWorkerLaunchSpec(process.env.SHELL);
   const leaderNodeDir = resolveLeaderNodePath().replace(/\/[^/]+$/, ''); // dirname
-  const pathPrefix = leaderNodeDir ? `export PATH='${leaderNodeDir}':$PATH; ` : '';
+  const isFish = /\/fish$/i.test(launchSpec.shell);
+  const pathPrefix = leaderNodeDir
+    ? (isFish ? `set -x PATH '${leaderNodeDir}' $PATH; ` : `export PATH='${leaderNodeDir}':$PATH; `)
+    : '';
   const quotedArgs = processSpec.args.map(shellQuoteSingle).join(' ');
   const cliInvocation = quotedArgs.length > 0 ? `exec ${processSpec.command} ${quotedArgs}` : `exec ${processSpec.command}`;
   const rcPrefix = launchSpec.rcFile ? `if [ -f ${launchSpec.rcFile} ]; then source ${launchSpec.rcFile}; fi; ` : '';

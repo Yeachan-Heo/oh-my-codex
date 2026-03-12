@@ -824,6 +824,43 @@ describe('buildWorkerStartupCommand', () => {
       else delete process.env.MSYSTEM;
     }
   });
+
+  it('uses fish-compatible PATH syntax when SHELL is fish', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/opt/homebrew/bin/fish';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [], '/tmp/project');
+      // Fish uses 'set -x PATH ... $PATH' instead of 'export PATH=...:$PATH'
+      assert.doesNotMatch(cmd, /export PATH=/);
+      assert.match(cmd, /set -x PATH/);
+      // Shell should still be fish
+      assert.match(cmd, /fish/);
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('does not use colon-separated PATH concatenation for fish shell', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/usr/bin/fish';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [], '/tmp/project');
+      // Fish PATH is space-separated, not colon-separated
+      assert.doesNotMatch(cmd, /':[$]PATH/);
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
 });
 
 describe('team worker CLI helpers', () => {
