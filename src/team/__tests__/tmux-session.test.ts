@@ -565,7 +565,9 @@ describe('buildWorkerStartupCommand', () => {
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
     try {
-      const cmd = buildWorkerStartupCommand('alpha', 2);
+      const cmd = withMockedExistsSync((candidate) => candidate === '/bin/zsh', () =>
+        buildWorkerStartupCommand('alpha', 2),
+      );
       assert.match(cmd, /OMX_TEAM_WORKER=alpha\/worker-2/);
       assert.match(cmd, /'\/bin\/zsh' -lc/);
       assert.match(cmd, /source ~\/\.zshrc/);
