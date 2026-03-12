@@ -919,7 +919,7 @@ describe('notify-fallback watcher', () => {
   });
 
   it('replaces a stale watcher from the per-cwd pid file', async () => {
-    const replacementTimeoutMs = 8000; // coverage/CI can delay watcher handoff beyond the default 4s.
+    const replacementTimeoutMs = 20000; // c8-instrumented Node20 full runs can delay watcher handoff well beyond 8s.
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-stale-pid-'));
     const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-stale-home-'));
     const watcherScript = new URL('../../../scripts/notify-fallback-watcher.js', import.meta.url).pathname;

@@ -40,6 +40,19 @@ function isPidAlive(pid) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForPidExit(pid, timeoutMs = 3000, stepMs = 50) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isPidAlive(pid)) return true;
+    await sleep(stepMs);
+  }
+  return !isPidAlive(pid);
+}
+
 const cwd = resolve(argValue('--cwd', process.cwd()));
 const notifyScript = resolve(argValue('--notify-script', join(cwd, 'scripts', 'notify-hook.js')));
 const runOnce = process.argv.includes('--once');
@@ -307,10 +320,18 @@ async function registerPidFile() {
   if (existingPid && existingPid !== process.pid && isPidAlive(existingPid)) {
     try {
       process.kill(existingPid, 'SIGTERM');
+      const exitedGracefully = await waitForPidExit(existingPid);
+      let forced = false;
+      if (!exitedGracefully && isPidAlive(existingPid)) {
+        forced = true;
+        process.kill(existingPid, 'SIGKILL');
+        await waitForPidExit(existingPid, 1000, 25);
+      }
       await eventLog({
         type: 'watcher_stale_pid_reaped',
         stale_pid: existingPid,
         pid_file: pidFilePath,
+        forced,
       });
     } catch (error) {
       await eventLog({
