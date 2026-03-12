@@ -386,10 +386,15 @@ export function buildReconcileHudResizeArgs(
   return ['run-shell', buildBestEffortShellCommand(`tmux ${buildHudResizeCommand(hudPaneId, heightLines)}`)];
 }
 
+const SUPPORTED_SHELL_PATTERN = /\/(bash|zsh)$/;
 const ZSH_CANDIDATE_PATHS = ['/bin/zsh', '/usr/bin/zsh', '/usr/local/bin/zsh', '/opt/homebrew/bin/zsh'];
 const BASH_CANDIDATE_PATHS = ['/bin/bash', '/usr/bin/bash'];
 
-function resolveZshPath(): string | null {
+function isSupportedShell(shellPath: string): boolean {
+  return SUPPORTED_SHELL_PATTERN.test(shellPath);
+}
+
+function resolveShellFallback(): string | null {
   for (const p of ZSH_CANDIDATE_PATHS) {
     if (existsSync(p)) return p;
   }
@@ -399,13 +404,25 @@ function resolveZshPath(): string | null {
   return null;
 }
 
+function rcFileForShell(shell: string): string | null {
+  if (/\/bash$/.test(shell)) return '~/.bashrc';
+  if (/\/zsh$/.test(shell)) return '~/.zshrc';
+  return null;
+}
+
 function buildWorkerLaunchSpec(): WorkerLaunchSpec {
   if (isMsysOrGitBash()) return { shell: '/bin/sh', rcFile: null };
-  const shell = resolveZshPath();
-  if (shell) {
-    return /\/bash$/.test(shell)
-      ? { shell, rcFile: '~/.bashrc' }
-      : { shell, rcFile: '~/.zshrc' };
+
+  // Preserve explicit supported-shell affinity (bash/zsh).
+  const userShell = process.env.SHELL;
+  if (userShell && isSupportedShell(userShell) && existsSync(userShell)) {
+    return { shell: userShell, rcFile: rcFileForShell(userShell) };
+  }
+
+  // Unsupported or missing shell — fall back to zsh > bash > /bin/sh.
+  const fallback = resolveShellFallback();
+  if (fallback) {
+    return { shell: fallback, rcFile: rcFileForShell(fallback) };
   }
   return { shell: '/bin/sh', rcFile: null };
 }

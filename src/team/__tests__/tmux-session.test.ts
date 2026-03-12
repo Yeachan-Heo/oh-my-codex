@@ -905,6 +905,41 @@ describe('buildWorkerStartupCommand', () => {
       else delete process.env.MSYSTEM;
     }
   });
+
+  it('preserves bash affinity when SHELL is /bin/bash', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/bin/bash';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [], process.cwd());
+      assert.match(cmd, /\/bin\/bash/, 'must use /bin/bash when SHELL is /bin/bash');
+      assert.match(cmd, /\.bashrc/, 'must source .bashrc for bash shell');
+      assert.doesNotMatch(cmd, /\/zsh/, 'must not override bash with zsh');
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('preserves zsh affinity when SHELL is /bin/zsh', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/bin/zsh';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [], process.cwd());
+      assert.match(cmd, /\/bin\/zsh/, 'must use /bin/zsh when SHELL is /bin/zsh');
+      assert.match(cmd, /\.zshrc/, 'must source .zshrc for zsh shell');
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
 });
 
 describe('team worker CLI helpers', () => {
