@@ -1658,6 +1658,34 @@ process.on('SIGTERM', () => {
     }
   });
 
+  it('shutdownTeam honors legacy policy cleanup override after governance hydration', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-gate-legacy-'));
+    try {
+      await initTeamState('team-shutdown-gate-legacy', 'shutdown gate legacy policy test', 'executor', 1, cwd);
+      await createTask(
+        'team-shutdown-gate-legacy',
+        { subject: 'pending', description: 'd', status: 'pending' },
+        cwd,
+      );
+
+      const manifestPath = join(cwd, '.omx', 'state', 'team', 'team-shutdown-gate-legacy', 'manifest.v2.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as any;
+      manifest.policy = {
+        ...(manifest.policy || {}),
+        cleanup_requires_all_workers_inactive: false,
+      };
+      delete manifest.governance;
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      await shutdownTeam('team-shutdown-gate-legacy', cwd);
+
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-shutdown-gate-legacy');
+      assert.equal(existsSync(teamRoot), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('shutdownTeam blocks when failed tasks remain (completion gate)', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-gate-failed-'));
     try {

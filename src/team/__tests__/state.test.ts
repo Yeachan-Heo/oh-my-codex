@@ -120,6 +120,8 @@ describe('team state', () => {
       delete policy.dispatch_mode;
       policy.dispatch_ack_timeout_ms = 999_999;
       policy.delegation_only = true;
+      policy.nested_teams_allowed = true;
+      policy.cleanup_requires_all_workers_inactive = false;
       manifest.policy = policy;
       delete manifest.governance;
       await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
@@ -128,7 +130,11 @@ describe('team state', () => {
       assert.equal(loaded?.policy.dispatch_mode, 'hook_preferred_with_fallback');
       assert.equal(loaded?.policy.dispatch_ack_timeout_ms, 10_000);
       assert.equal(loaded?.governance.delegation_only, true);
+      assert.equal(loaded?.governance.nested_teams_allowed, true);
+      assert.equal(loaded?.governance.cleanup_requires_all_workers_inactive, false);
       assert.equal('delegation_only' in (loaded?.policy ?? {}), false);
+      assert.equal('nested_teams_allowed' in (loaded?.policy ?? {}), false);
+      assert.equal('cleanup_requires_all_workers_inactive' in (loaded?.policy ?? {}), false);
 
       const freshCwd = await mkdtemp(join(tmpdir(), 'omx-team-manifest-policy-default-'));
       try {
