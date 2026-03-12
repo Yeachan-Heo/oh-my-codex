@@ -40,9 +40,9 @@ describe('runWatchMode', () => {
     const promise = runWatchMode('/tmp', WATCH_FLAGS, {
       isTTY: true,
       env: {},
-      readAllStateFn: async () => emptyCtx(),
-      readHudConfigFn: async () => ({ preset: 'focused' }),
-      renderHudFn: () => 'frame',
+      readAllStateFn: async (_cwd, config) => ({ ...emptyCtx(), gitBranch: config?.git.display ?? null }),
+      readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' } }),
+      renderHudFn: (ctx) => `frame:${ctx.gitBranch}`,
       writeStdout: (text) => { writes.push(text); },
       writeStderr: () => {},
       registerSigint: (handler) => { sigintHandler = handler; },
@@ -59,6 +59,7 @@ describe('runWatchMode', () => {
     assert.equal(clearCount, 1);
     assert.ok(writes.some((chunk) => chunk.includes('\x1b[?25l')), 'cursor should be hidden in watch mode');
     assert.ok(writes.some((chunk) => chunk.includes('\x1b[?25h\x1b[2J\x1b[H')), 'cursor should be restored on SIGINT');
+    assert.ok(writes.some((chunk) => chunk.includes('frame:repo-branch')));
   });
 
   it('coalesces ticks so slow renders do not overlap', async () => {
@@ -77,7 +78,7 @@ describe('runWatchMode', () => {
     const promise = runWatchMode('/tmp', WATCH_FLAGS, {
       isTTY: true,
       env: {},
-      readAllStateFn: async () => {
+      readAllStateFn: async (_cwd, config) => {
         callCount += 1;
         inFlight += 1;
         maxInFlight = Math.max(maxInFlight, inFlight);
@@ -90,7 +91,7 @@ describe('runWatchMode', () => {
           inFlight -= 1;
         }
       },
-      readHudConfigFn: async () => ({ preset: 'focused' }),
+      readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' } }),
       renderHudFn: () => 'frame',
       writeStdout: (text) => { writes.push(text); },
       writeStderr: () => {},
@@ -128,10 +129,10 @@ describe('runWatchMode', () => {
     await runWatchMode('/tmp', WATCH_FLAGS, {
       isTTY: true,
       env: {},
-      readAllStateFn: async () => {
+      readAllStateFn: async (_cwd, config) => {
         throw new Error('boom');
       },
-      readHudConfigFn: async () => ({ preset: 'focused' }),
+      readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' } }),
       renderHudFn: () => 'frame',
       writeStdout: (text) => { writes.push(text); },
       writeStderr: (text) => { errors.push(text); },

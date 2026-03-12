@@ -70,14 +70,37 @@ export interface HudRenderContext {
 /** HUD preset names */
 export type HudPreset = 'minimal' | 'focused' | 'full';
 
+export type HudGitDisplay = 'branch' | 'repo-branch';
+
+export interface HudGitConfig {
+  display?: HudGitDisplay;
+  remoteName?: string;
+  repoLabel?: string;
+}
+
 /** HUD configuration stored in .omx/hud-config.json */
 export interface HudConfig {
+  preset?: HudPreset;
+  git?: HudGitConfig;
+}
+
+export interface ResolvedHudGitConfig {
+  display: HudGitDisplay;
+  remoteName?: string;
+  repoLabel?: string;
+}
+
+export interface ResolvedHudConfig {
   preset: HudPreset;
+  git: ResolvedHudGitConfig;
 }
 
 /** Default HUD configuration */
-export const DEFAULT_HUD_CONFIG: HudConfig = {
+export const DEFAULT_HUD_CONFIG: ResolvedHudConfig = {
   preset: 'focused',
+  git: {
+    display: 'repo-branch',
+  },
 };
 
 /** CLI flags for omx hud */

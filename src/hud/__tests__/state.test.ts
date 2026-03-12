@@ -3,7 +3,17 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readGitBranch, readRalphState } from '../state.js';
+import { buildGitBranchLabel, readGitBranch, readRalphState } from '../state.js';
+
+function gitRunnerFromMap(map: Record<string, string | Error>) {
+  return (_cwd: string, args: string[]) => {
+    const command = `git ${args.join(' ')}`;
+    const value = map[command];
+    if (value instanceof Error) return null;
+    if (value === undefined) throw new Error(`Unexpected command: ${command}`);
+    return value;
+  };
+}
 
 describe('readGitBranch', () => {
   it('returns null in a non-git directory without printing git fatal noise', async () => {
@@ -29,6 +39,86 @@ describe('readGitBranch', () => {
     }
 
     assert.equal(stderrChunks.join('').includes('not a git repository'), false);
+  });
+});
+
+describe('buildGitBranchLabel', () => {
+  it('keeps the branch when origin lookup fails', () => {
+    const gitRunner = gitRunnerFromMap({
+      'git rev-parse --abbrev-ref HEAD': 'fix/hud-regression',
+      'git remote get-url origin': new Error('missing origin'),
+      'git remote': '',
+      'git rev-parse --show-toplevel': new Error('no top-level'),
+    });
+
+    assert.equal(buildGitBranchLabel('/repo', undefined, gitRunner), 'fix/hud-regression');
+  });
+
+  it('prefers configured remoteName over origin', () => {
+    const gitRunner = gitRunnerFromMap({
+      'git rev-parse --abbrev-ref HEAD': 'feature/test',
+      'git remote get-url upstream': 'git@github.com:acme/upstream-repo.git',
+      'git remote get-url origin': 'git@github.com:acme/origin-repo.git',
+    });
+
+    assert.equal(buildGitBranchLabel('/repo', {
+      preset: 'focused',
+      git: { display: 'repo-branch', remoteName: 'upstream' },
+    }, gitRunner), 'upstream-repo/feature/test');
+  });
+
+  it('prefers origin over first-remote fallback', () => {
+    const gitRunner = gitRunnerFromMap({
+      'git rev-parse --abbrev-ref HEAD': 'feature/test',
+      'git remote get-url origin': 'https://github.com/acme/origin-repo.git',
+    });
+
+    assert.equal(buildGitBranchLabel('/repo', undefined, gitRunner), 'origin-repo/feature/test');
+  });
+
+  it('falls back to the first resolvable remote when origin is absent', () => {
+    const gitRunner = gitRunnerFromMap({
+      'git rev-parse --abbrev-ref HEAD': 'feature/test',
+      'git remote get-url origin': new Error('missing origin'),
+      'git remote': 'upstream\nbackup',
+      'git remote get-url upstream': 'https://github.com/acme/upstream-repo.git',
+    });
+
+    assert.equal(buildGitBranchLabel('/repo', undefined, gitRunner), 'upstream-repo/feature/test');
+  });
+
+  it('falls back to repo basename when no remote resolves', () => {
+    const gitRunner = gitRunnerFromMap({
+      'git rev-parse --abbrev-ref HEAD': 'feature/test',
+      'git remote get-url origin': new Error('missing origin'),
+      'git remote': 'upstream',
+      'git remote get-url upstream': new Error('missing upstream'),
+      'git rev-parse --show-toplevel': '/tmp/project-repo',
+    });
+
+    assert.equal(buildGitBranchLabel('/repo', undefined, gitRunner), 'project-repo/feature/test');
+  });
+
+  it('omits repo prefix in branch display mode', () => {
+    const gitRunner = gitRunnerFromMap({
+      'git rev-parse --abbrev-ref HEAD': 'feature/test',
+    });
+
+    assert.equal(buildGitBranchLabel('/repo', {
+      preset: 'focused',
+      git: { display: 'branch' },
+    }, gitRunner), 'feature/test');
+  });
+
+  it('uses explicit repoLabel before any git remote lookup', () => {
+    const gitRunner = gitRunnerFromMap({
+      'git rev-parse --abbrev-ref HEAD': 'feature/test',
+    });
+
+    assert.equal(buildGitBranchLabel('/repo', {
+      preset: 'focused',
+      git: { display: 'repo-branch', repoLabel: 'manual' },
+    }, gitRunner), 'manual/feature/test');
   });
 });
 
