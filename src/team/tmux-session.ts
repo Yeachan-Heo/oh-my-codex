@@ -1,6 +1,6 @@
 import { spawnSync, execFile } from 'child_process';
 import { promisify } from 'util';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import {
   CODEX_BYPASS_FLAG,
@@ -387,17 +387,42 @@ export function buildReconcileHudResizeArgs(
   return ['run-shell', buildBestEffortShellCommand(`tmux ${buildHudResizeCommand(hudPaneId, heightLines)}`)];
 }
 
+const ZSH_CANDIDATE_PATHS = ['/bin/zsh', '/usr/bin/zsh', '/usr/local/bin/zsh', '/opt/homebrew/bin/zsh'];
+const BASH_CANDIDATE_PATHS = ['/bin/bash', '/usr/bin/bash'];
+
+function buildShellLaunchSpec(shell: string, rcFile: string | null): WorkerLaunchSpec {
+  return { shell, rcFile };
+}
+
+function resolveSupportedShellAffinity(shellPath: string | undefined): WorkerLaunchSpec | null {
+  if (!shellPath || shellPath.trim() === '' || !existsSync(shellPath)) return null;
+  if (/\/zsh$/i.test(shellPath)) return buildShellLaunchSpec(shellPath, '~/.zshrc');
+  if (/\/bash$/i.test(shellPath)) return buildShellLaunchSpec(shellPath, '~/.bashrc');
+  return null;
+}
+
+function resolveShellFromCandidates(paths: string[], rcFile: string): WorkerLaunchSpec | null {
+  for (const shellPath of paths) {
+    if (existsSync(shellPath)) return buildShellLaunchSpec(shellPath, rcFile);
+  }
+  return null;
+}
+
 function buildWorkerLaunchSpec(shellPath: string | undefined): WorkerLaunchSpec {
-  if (shellPath && /\/zsh$/i.test(shellPath)) {
-    return { shell: shellPath, rcFile: '~/.zshrc' };
+  if (isMsysOrGitBash()) {
+    return buildShellLaunchSpec('/bin/sh', null);
   }
-  if (shellPath && /\/bash$/i.test(shellPath)) {
-    return { shell: shellPath, rcFile: '~/.bashrc' };
-  }
-  if (shellPath && shellPath.trim() !== '') {
-    return { shell: shellPath, rcFile: null };
-  }
-  return { shell: '/bin/sh', rcFile: null };
+
+  const affinitySpec = resolveSupportedShellAffinity(shellPath);
+  if (affinitySpec) return affinitySpec;
+
+  const zshSpec = resolveShellFromCandidates(ZSH_CANDIDATE_PATHS, '~/.zshrc');
+  if (zshSpec) return zshSpec;
+
+  const bashSpec = resolveShellFromCandidates(BASH_CANDIDATE_PATHS, '~/.bashrc');
+  if (bashSpec) return bashSpec;
+
+  return buildShellLaunchSpec('/bin/sh', null);
 }
 
 function escapeTomlString(value: string): string {

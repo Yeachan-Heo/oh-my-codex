@@ -870,6 +870,64 @@ describe('buildWorkerStartupCommand', () => {
       else delete process.env.MSYSTEM;
     }
   });
+
+  it('ignores unsupported SHELL values and resolves a supported worker shell', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/usr/bin/fish';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [], process.cwd());
+      assert.doesNotMatch(cmd, /fish/, 'worker shell must not inherit unsupported fish SHELL');
+      assert.match(cmd, /\/(?:bin|usr\/bin|usr\/local\/bin|opt\/homebrew\/bin)\/(?:zsh|bash)\b|\/bin\/sh\b/);
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('never emits fish-style PATH manipulation for unsupported SHELL values', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/usr/bin/fish';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [], process.cwd());
+      assert.doesNotMatch(cmd, /set -x PATH/, 'must not emit fish PATH syntax');
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('uses /bin/sh on MSYS2/Windows regardless of zsh availability', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const prevMsystem = process.env.MSYSTEM;
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    process.env.SHELL = '/bin/zsh';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    process.env.MSYSTEM = 'MINGW64';
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [], 'C:\\repo');
+      assert.match(cmd, /\/bin\/sh/, 'must use /bin/sh on MSYS2/Windows');
+      assert.doesNotMatch(cmd, /\/zsh/, 'must not attempt zsh on Windows');
+      assert.doesNotMatch(cmd, /\.zshrc/, 'must not source zshrc on Windows');
+    } finally {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof prevMsystem === 'string') process.env.MSYSTEM = prevMsystem;
+      else delete process.env.MSYSTEM;
+    }
+  });
 });
 
 describe('team worker CLI helpers', () => {
