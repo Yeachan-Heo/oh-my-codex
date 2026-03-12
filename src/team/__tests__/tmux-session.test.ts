@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { PassThrough } from 'node:stream';
 import { mkdtemp, readFile, rm, writeFile, chmod } from 'fs/promises';
 import { join } from 'path';
@@ -57,6 +59,18 @@ function withEmptyPath<T>(fn: () => T): T {
   } finally {
     if (typeof prev === 'string') process.env.PATH = prev;
     else delete process.env.PATH;
+  }
+}
+
+function withMockedExistsSync<T>(mock: typeof fs.existsSync, fn: () => T): T {
+  const original = fs.existsSync;
+  fs.existsSync = mock;
+  syncBuiltinESMExports();
+  try {
+    return fn();
+  } finally {
+    fs.existsSync = original;
+    syncBuiltinESMExports();
   }
 }
 
@@ -926,6 +940,45 @@ describe('buildWorkerStartupCommand', () => {
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
       if (typeof prevMsystem === 'string') process.env.MSYSTEM = prevMsystem;
       else delete process.env.MSYSTEM;
+    }
+  });
+
+  it('falls back to bash when SHELL is unsupported and zsh candidates are unavailable', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/opt/custom/fish';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = withMockedExistsSync((candidate) => candidate === '/opt/custom/fish' || candidate === '/bin/bash', () =>
+        buildWorkerStartupCommand('alpha', 1, [], process.cwd()),
+      );
+      assert.match(cmd, /\/bin\/bash\b/, 'must fall back to bash when zsh is unavailable');
+      assert.match(cmd, /\.bashrc/, 'must source bash rc file for bash fallback');
+      assert.doesNotMatch(cmd, /fish/, 'must not launch unsupported fish shell');
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('falls back to /bin/sh when no supported shell candidates exist', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/opt/custom/fish';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = withMockedExistsSync((candidate) => candidate === '/opt/custom/fish', () =>
+        buildWorkerStartupCommand('alpha', 1, [], process.cwd()),
+      );
+      assert.match(cmd, /'\/bin\/sh' -lc\b/, 'must launch workers through /bin/sh when no supported shells exist');
+      assert.doesNotMatch(cmd, /\.zshrc|\.bashrc/, 'must not source zsh/bash rc files for /bin/sh fallback');
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     }
   });
 });
