@@ -65,7 +65,7 @@ OMX 最適合作為**外層 CLI 編排層**使用：
 
 ```bash
 OMX_TEAM_WORKER_CLI=codex \
-OMX_TEAM_WORKER_LAUNCH_ARGS='--model gpt-5.3-codex-spark -c model_reasoning_effort="low"' \
+OMX_TEAM_WORKER_LAUNCH_ARGS='-c model_reasoning_effort="low"' \
 omx team 2:explore "短暫有界的分析任務"
 ```
 
@@ -93,7 +93,7 @@ omx --xhigh --madmax
 ## v0.5.0 新功能
 
 - 透過 `omx setup --scope user|project` 實現**範圍感知設定** — 彈性的安裝模式。
-- 透過 `--spark` / `--madmax-spark` 實現 **Spark 工作進程路由** — 團隊工作進程可使用 `gpt-5.3-codex-spark`，無需強制套用領導者模型。
+- 透過 `--spark` / `--madmax-spark` 實現 **Spark 工作進程路由** — 團隊工作進程可使用 `OMX_DEFAULT_SPARK_MODEL`，無需強制套用領導者模型。
 - **目錄整合** — 移除已棄用的提示詞（`deep-executor`、`scientist`）及 9 個已棄用的技能，讓介面更為精簡。
 - **通知詳細程度等級** — 對 CCNotifier 輸出進行精細控制。
 

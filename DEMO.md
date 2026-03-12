@@ -212,7 +212,7 @@ export TEAM_NAME="e2e-team-demo"   # slugified from TEAM_TASK
 # Mixed worker CLIs (5+ workers, codex + claude)
 export OMX_TEAM_WORKER_CLI=auto
 export OMX_TEAM_WORKER_CLI_MAP=codex,codex,codex,claude,claude,claude
-export OMX_TEAM_WORKER_LAUNCH_ARGS='--model gpt-5.3-codex-spark -c model_reasoning_effort="low"'
+export OMX_TEAM_WORKER_LAUNCH_ARGS='-c model_reasoning_effort="low"'
 
 # 5-worker baseline
 omx team 5:executor "parallel team smoke"
@@ -332,7 +332,7 @@ export TEAM_TASK="e2e team demo"
 export TEAM_NAME="e2e-team-demo"
 export OMX_TEAM_WORKER_CLI=auto
 export OMX_TEAM_WORKER_CLI_MAP=codex,codex,codex,claude,claude,claude
-export OMX_TEAM_WORKER_LAUNCH_ARGS='--model gpt-5.3-codex-spark -c model_reasoning_effort="low"'
+export OMX_TEAM_WORKER_LAUNCH_ARGS='-c model_reasoning_effort="low"'
 
 echo "[1/8] start team (6 workers mixed codex/claude)"
 omx team 6:executor "$TEAM_TASK"
@@ -418,7 +418,7 @@ The bundled E2E demo script provides a complete, automated test of the tmux clau
 | `TEAM_NAME` | (slugified from TEAM_TASK) | Unique team identifier |
 | `OMX_TEAM_WORKER_CLI` | `auto` | Worker CLI selection mode |
 | `OMX_TEAM_WORKER_CLI_MAP` | (auto-generated) | Comma-separated CLI assignments per worker |
-| `OMX_TEAM_WORKER_LAUNCH_ARGS` | `--model gpt-5.3-codex-spark` | Arguments passed to worker CLIs |
+| `OMX_TEAM_WORKER_LAUNCH_ARGS` | `-c model_reasoning_effort="low"` | Arguments passed to worker CLIs (worker model falls back to `OMX_DEFAULT_SPARK_MODEL`) |
 
 #### Demo Flow
 

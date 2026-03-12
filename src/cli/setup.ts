@@ -39,6 +39,7 @@ import { getPackageRoot } from "../utils/package.js";
 import { readSessionState, isSessionStale } from "../hooks/session.js";
 import { getCatalogHeadlineCounts } from "./catalog-contract.js";
 import { tryReadCatalogManifest } from "../catalog/reader.js";
+import { DEFAULT_FRONTIER_MODEL } from "../config/models.js";
 
 interface SetupOptions {
   force?: boolean;
@@ -122,7 +123,7 @@ const REQUIRED_TEAM_CLI_API_MARKERS = [
 const DEFAULT_SETUP_SCOPE: SetupScope = "user";
 
 const LEGACY_SETUP_MODEL = "gpt-5.3-codex";
-const DEFAULT_SETUP_MODEL = "gpt-5.4";
+const DEFAULT_SETUP_MODEL = DEFAULT_FRONTIER_MODEL;
 
 function createEmptyCategorySummary(): SetupCategorySummary {
   return {

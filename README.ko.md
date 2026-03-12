@@ -75,7 +75,7 @@ omx --xhigh --madmax
 ## v0.5.0의 새로운 기능
 
 - `omx setup --scope user|project`를 통한 **범위 인식 설정** — 유연한 설치 모드.
-- `--spark` / `--madmax-spark`를 통한 **Spark worker 라우팅** — 팀 워커가 리더 모델을 강제하지 않고 `gpt-5.3-codex-spark`를 사용 가능.
+- `--spark` / `--madmax-spark`를 통한 **Spark worker 라우팅** — 팀 워커가 리더 모델을 강제하지 않고 `OMX_DEFAULT_SPARK_MODEL`를 사용 가능.
 - **카탈로그 통합** — 더 간결한 표면을 위해 deprecated 프롬프트(`deep-executor`, `scientist`)와 9개의 deprecated 스킬 제거.
 - **알림 상세 레벨** — CCNotifier 출력에 대한 세밀한 제어.
 

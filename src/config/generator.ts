@@ -16,6 +16,7 @@ import { join } from "path";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { tryReadCatalogManifest } from "../catalog/reader.js";
 import { omxAgentsConfigDir } from "../utils/paths.js";
+import { DEFAULT_FRONTIER_MODEL } from "./models.js";
 import type { UnifiedMcpRegistryServer } from "./mcp-registry.js";
 
 interface MergeOptions {
@@ -41,7 +42,7 @@ const OMX_TOP_LEVEL_KEYS = [
   "developer_instructions",
 ] as const;
 
-const DEFAULT_SETUP_MODEL = "gpt-5.4";
+const DEFAULT_SETUP_MODEL = DEFAULT_FRONTIER_MODEL;
 const DEFAULT_SETUP_MODEL_CONTEXT_WINDOW = 1000000;
 const DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT = 900000;
 const SHARED_MCP_REGISTRY_MARKER = "oh-my-codex (OMX) Shared MCP Registry Sync";

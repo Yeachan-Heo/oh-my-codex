@@ -75,7 +75,7 @@ omx --xhigh --madmax
 ## Novedades en v0.5.0
 
 - **Configuración con alcance** mediante `omx setup --scope user|project` para modos de instalación flexibles.
-- **Enrutamiento de Spark worker** vía `--spark` / `--madmax-spark` — los workers del equipo pueden usar `gpt-5.3-codex-spark` sin forzar el modelo líder.
+- **Enrutamiento de Spark worker** vía `--spark` / `--madmax-spark` — los workers del equipo pueden usar `OMX_DEFAULT_SPARK_MODEL` sin forzar el modelo líder.
 - **Consolidación del catálogo** — se eliminaron prompts obsoletos (`deep-executor`, `scientist`) y 9 skills obsoletos para una superficie más compacta.
 - **Niveles de detalle de notificaciones** para control granular de la salida de CCNotifier.
 

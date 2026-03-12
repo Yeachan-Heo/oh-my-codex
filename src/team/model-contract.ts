@@ -1,5 +1,5 @@
 import { getAgent } from '../agents/definitions.js';
-import { getSparkDefaultModel, HARDCODED_TEAM_LOW_COMPLEXITY_MODEL } from '../config/models.js';
+import { DEFAULT_SPARK_MODEL, getSparkDefaultModel } from '../config/models.js';
 
 const MADMAX_FLAG = '--madmax';
 const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
@@ -14,8 +14,8 @@ const LOW_COMPLEXITY_AGENT_TYPES = new Set([
   'writer',
 ]);
 
-// Hard fallback only; effective low-complexity resolution flows through resolveTeamLowComplexityDefaultModel().
-export const TEAM_LOW_COMPLEXITY_DEFAULT_MODEL = HARDCODED_TEAM_LOW_COMPLEXITY_MODEL;
+// Canonical default only; effective low-complexity resolution flows through resolveTeamLowComplexityDefaultModel().
+export const TEAM_LOW_COMPLEXITY_DEFAULT_MODEL = DEFAULT_SPARK_MODEL;
 export type TeamReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
 export interface ParsedTeamWorkerLaunchArgs {

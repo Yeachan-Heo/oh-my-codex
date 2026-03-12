@@ -8,6 +8,7 @@ import { arch as osArch, constants as osConstants } from 'os';
 import { isAbsolute, join, resolve } from 'path';
 import { getPackageRoot } from '../utils/package.js';
 import { classifySpawnError } from '../utils/platform-command.js';
+import { readConfiguredEnvOverrides } from '../config/models.js';
 import {
   SPARKSHELL_BIN_ENV as SPARKSHELL_BIN_ENV_SHARED,
   getPackageVersion,
@@ -155,9 +156,10 @@ export function runSparkShellBinary(
     spawnImpl = spawnSync,
   } = options;
 
+  const configEnvOverrides = readConfiguredEnvOverrides(env.CODEX_HOME);
   const spawnOptions: SpawnSyncOptionsWithStringEncoding = {
     cwd,
-    env,
+    env: { ...configEnvOverrides, ...env },
     stdio: 'inherit',
     encoding: 'utf-8',
   };

@@ -75,7 +75,7 @@ omx --xhigh --madmax
 ## v0.5.0の新機能
 
 - `omx setup --scope user|project`による**スコープ対応セットアップ** — 柔軟なインストールモード。
-- `--spark` / `--madmax-spark`による**Sparkワーカールーティング** — チームワーカーがリーダーモデルを強制せずに`gpt-5.3-codex-spark`を使用可能。
+- `--spark` / `--madmax-spark`による**Sparkワーカールーティング** — チームワーカーがリーダーモデルを強制せずに`OMX_DEFAULT_SPARK_MODEL`を使用可能。
 - **カタログ統合** — 非推奨プロンプト（`deep-executor`、`scientist`）と9つの非推奨スキルを削除し、よりスリムなサーフェスに。
 - **通知の詳細レベル** — CCNotifier出力のきめ細かい制御。
 

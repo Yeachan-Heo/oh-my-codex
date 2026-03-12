@@ -75,7 +75,7 @@ omx --xhigh --madmax
 ## v0.5.0 新功能
 
 - 通过 `omx setup --scope user|project` 实现**作用域感知设置** — 灵活的安装模式。
-- 通过 `--spark` / `--madmax-spark` 实现 **Spark worker 路由** — 团队 worker 可以使用 `gpt-5.3-codex-spark` 而无需强制使用领导者模型。
+- 通过 `--spark` / `--madmax-spark` 实现 **Spark worker 路由** — 团队 worker 可以使用 `OMX_DEFAULT_SPARK_MODEL` 而无需强制使用领导者模型。
 - **目录整合** — 移除已弃用的 prompt（`deep-executor`、`scientist`）和 9 个已弃用的 skill，使表面更精简。
 - **通知详细级别** — 对 CCNotifier 输出的精细控制。
 

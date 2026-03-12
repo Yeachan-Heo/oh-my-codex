@@ -176,9 +176,10 @@ Team/Swarm workers currently share one `agentType` and one launch-arg set.
 Model precedence:
 1. Explicit model in `OMX_TEAM_WORKER_LAUNCH_ARGS`
 2. Inherited leader `--model`
-3. Low-complexity default model from `OMX_SPARK_MODEL` (currently `gpt-5.3-codex-spark`)
+3. Low-complexity default model from `OMX_DEFAULT_SPARK_MODEL` (legacy alias: `OMX_SPARK_MODEL`)
 
 Normalize model flags to one canonical `--model <value>` entry.
+Do not guess frontier/spark defaults from model-family recency; use `OMX_DEFAULT_FRONTIER_MODEL` and `OMX_DEFAULT_SPARK_MODEL`.
 </team_model_resolution>
 
 ---

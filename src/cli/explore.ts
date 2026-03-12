@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'fs';
 import { getPackageRoot } from '../utils/package.js';
 import { spawnPlatformCommandSync } from '../utils/platform-command.js';
 import { resolveSparkShellBinaryPathWithHydration, runSparkShellBinary } from './sparkshell.js';
-import { DEFAULT_FRONTIER_MODEL, getSparkDefaultModel } from '../config/models.js';
+import { getMainDefaultModel, getSparkDefaultModel } from '../config/models.js';
 import {
   EXPLORE_BIN_ENV as EXPLORE_BIN_ENV_SHARED,
   hydrateNativeBinary,
@@ -326,7 +326,7 @@ export function buildExploreHarnessArgs(
     '--prompt', prompt,
     '--prompt-file', join(packageRoot, 'prompts', 'explore-harness.md'),
     '--model-spark', sparkModel,
-    '--model-fallback', DEFAULT_FRONTIER_MODEL,
+    '--model-fallback', getMainDefaultModel(),
   ];
 }
 

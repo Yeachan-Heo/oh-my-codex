@@ -1,17 +1,21 @@
 /**
  * Model Configuration
  *
- * Reads per-mode model overrides from .omx-config.json under the "models" key.
+ * Reads per-mode model overrides and default-env overrides from .omx-config.json.
  *
  * Config format:
  * {
+ *   "env": {
+ *     "OMX_DEFAULT_FRONTIER_MODEL": "your-frontier-model",
+ *     "OMX_DEFAULT_SPARK_MODEL": "your-spark-model"
+ *   },
  *   "models": {
  *     "default": "o4-mini",
  *     "team": "gpt-4.1"
  *   }
  * }
  *
- * Resolution: mode-specific > "default" key > OMX_MAIN_MODEL > DEFAULT_FRONTIER_MODEL (hardcoded fallback)
+ * Resolution: mode-specific > "default" key > OMX_DEFAULT_FRONTIER_MODEL > DEFAULT_FRONTIER_MODEL
  */
 
 import { readFileSync, existsSync } from 'fs';
@@ -22,73 +26,121 @@ export interface ModelsConfig {
   [mode: string]: string | undefined;
 }
 
-export const OMX_MAIN_MODEL_ENV = 'OMX_MAIN_MODEL';
+export interface OmxConfigEnv {
+  [key: string]: string | undefined;
+}
+
+interface OmxConfigFile {
+  env?: OmxConfigEnv;
+  models?: ModelsConfig;
+}
+
+export const OMX_DEFAULT_FRONTIER_MODEL_ENV = 'OMX_DEFAULT_FRONTIER_MODEL';
+export const OMX_DEFAULT_SPARK_MODEL_ENV = 'OMX_DEFAULT_SPARK_MODEL';
 export const OMX_SPARK_MODEL_ENV = 'OMX_SPARK_MODEL';
 
-function readModelsBlock(codexHomeOverride?: string): ModelsConfig | null {
+function readOmxConfigFile(codexHomeOverride?: string): OmxConfigFile | null {
   const configPath = join(codexHomeOverride || codexHome(), '.omx-config.json');
   if (!existsSync(configPath)) return null;
   try {
     const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-    if (raw && typeof raw.models === 'object' && raw.models !== null && !Array.isArray(raw.models)) {
-      return raw.models as ModelsConfig;
-    }
-    return null;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    return raw as OmxConfigFile;
   } catch {
     return null;
   }
 }
 
-export const DEFAULT_FRONTIER_MODEL = 'gpt-5.4';
-export const HARDCODED_DEFAULT_MODEL = DEFAULT_FRONTIER_MODEL;
-export const HARDCODED_TEAM_LOW_COMPLEXITY_MODEL = 'gpt-5.3-codex-spark';
+function readModelsBlock(codexHomeOverride?: string): ModelsConfig | null {
+  const config = readOmxConfigFile(codexHomeOverride);
+  if (!config) return null;
+  if (config.models && typeof config.models === 'object' && !Array.isArray(config.models)) {
+    return config.models;
+  }
+  return null;
+}
 
-function normalizeConfiguredModel(value: string | undefined): string | undefined {
+export const DEFAULT_FRONTIER_MODEL = 'gpt-5.4';
+export const DEFAULT_SPARK_MODEL = 'gpt-5.3-codex-spark';
+
+function normalizeConfiguredValue(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function readConfigEnvValue(key: string, codexHomeOverride?: string): string | undefined {
+  const config = readOmxConfigFile(codexHomeOverride);
+  if (!config || !config.env || typeof config.env !== 'object' || Array.isArray(config.env)) {
+    return undefined;
+  }
+  return normalizeConfiguredValue(config.env[key]);
 }
 
 function readTeamLowComplexityOverride(codexHomeOverride?: string): string | undefined {
   const models = readModelsBlock(codexHomeOverride);
   if (!models) return undefined;
   for (const key of TEAM_LOW_COMPLEXITY_MODEL_KEYS) {
-    const value = normalizeConfiguredModel(models[key]);
+    const value = normalizeConfiguredValue(models[key]);
     if (value) return value;
   }
   return undefined;
 }
 
-export function getEnvConfiguredMainDefaultModel(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  return normalizeConfiguredModel(env[OMX_MAIN_MODEL_ENV]);
+export function readConfiguredEnvOverrides(codexHomeOverride?: string): NodeJS.ProcessEnv {
+  const config = readOmxConfigFile(codexHomeOverride);
+  if (!config || !config.env || typeof config.env !== 'object' || Array.isArray(config.env)) {
+    return {};
+  }
+
+  const resolved: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(config.env)) {
+    const normalized = normalizeConfiguredValue(value);
+    if (normalized) resolved[key] = normalized;
+  }
+  return resolved;
 }
 
-export function getEnvConfiguredSparkDefaultModel(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  return normalizeConfiguredModel(env[OMX_SPARK_MODEL_ENV]);
+export function getEnvConfiguredMainDefaultModel(
+  env: NodeJS.ProcessEnv = process.env,
+  codexHomeOverride?: string,
+): string | undefined {
+  return normalizeConfiguredValue(env[OMX_DEFAULT_FRONTIER_MODEL_ENV])
+    ?? readConfigEnvValue(OMX_DEFAULT_FRONTIER_MODEL_ENV, codexHomeOverride);
+}
+
+export function getEnvConfiguredSparkDefaultModel(
+  env: NodeJS.ProcessEnv = process.env,
+  codexHomeOverride?: string,
+): string | undefined {
+  return normalizeConfiguredValue(env[OMX_DEFAULT_SPARK_MODEL_ENV])
+    ?? normalizeConfiguredValue(env[OMX_SPARK_MODEL_ENV])
+    ?? readConfigEnvValue(OMX_DEFAULT_SPARK_MODEL_ENV, codexHomeOverride)
+    ?? readConfigEnvValue(OMX_SPARK_MODEL_ENV, codexHomeOverride);
 }
 
 /**
  * Get the envvar-backed main/default model.
- * Resolution: OMX_MAIN_MODEL > DEFAULT_FRONTIER_MODEL
+ * Resolution: OMX_DEFAULT_FRONTIER_MODEL > DEFAULT_FRONTIER_MODEL
  */
-export function getMainDefaultModel(): string {
-  return getEnvConfiguredMainDefaultModel()
+export function getMainDefaultModel(codexHomeOverride?: string): string {
+  return getEnvConfiguredMainDefaultModel(process.env, codexHomeOverride)
     ?? DEFAULT_FRONTIER_MODEL;
 }
 
 /**
  * Get the configured model for a specific mode.
- * Resolution: mode-specific override > "default" key > OMX_MAIN_MODEL > DEFAULT_FRONTIER_MODEL
+ * Resolution: mode-specific override > "default" key > OMX_DEFAULT_FRONTIER_MODEL > DEFAULT_FRONTIER_MODEL
  */
 export function getModelForMode(mode: string, codexHomeOverride?: string): string {
   const models = readModelsBlock(codexHomeOverride);
-  const modeValue = normalizeConfiguredModel(models?.[mode]);
+  const modeValue = normalizeConfiguredValue(models?.[mode]);
   if (modeValue) return modeValue;
 
-  const defaultValue = normalizeConfiguredModel(models?.default);
+  const defaultValue = normalizeConfiguredValue(models?.default);
   if (defaultValue) return defaultValue;
 
-  return getMainDefaultModel();
+  return getMainDefaultModel(codexHomeOverride);
 }
 
 const TEAM_LOW_COMPLEXITY_MODEL_KEYS = [
@@ -99,17 +151,17 @@ const TEAM_LOW_COMPLEXITY_MODEL_KEYS = [
 
 /**
  * Get the envvar-backed spark/low-complexity default model.
- * Resolution: OMX_SPARK_MODEL > explicit low-complexity key(s) > hardcoded spark fallback.
+ * Resolution: OMX_DEFAULT_SPARK_MODEL > OMX_SPARK_MODEL > explicit low-complexity key(s) > DEFAULT_SPARK_MODEL
  */
 export function getSparkDefaultModel(codexHomeOverride?: string): string {
-  return getEnvConfiguredSparkDefaultModel()
+  return getEnvConfiguredSparkDefaultModel(process.env, codexHomeOverride)
     ?? readTeamLowComplexityOverride(codexHomeOverride)
-    ?? HARDCODED_TEAM_LOW_COMPLEXITY_MODEL;
+    ?? DEFAULT_SPARK_MODEL;
 }
 
 /**
  * Get the low-complexity team worker model.
- * Resolution: explicit low-complexity key(s) > OMX_SPARK_MODEL > hardcoded spark fallback.
+ * Resolution: explicit low-complexity key(s) > OMX_DEFAULT_SPARK_MODEL > OMX_SPARK_MODEL > DEFAULT_SPARK_MODEL
  */
 export function getTeamLowComplexityModel(codexHomeOverride?: string): string {
   return readTeamLowComplexityOverride(codexHomeOverride) ?? getSparkDefaultModel(codexHomeOverride);

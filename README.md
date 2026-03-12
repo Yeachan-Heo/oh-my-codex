@@ -70,7 +70,7 @@ Low-token Team Mode profile example:
 
 ```bash
 OMX_TEAM_WORKER_CLI=codex \
-OMX_TEAM_WORKER_LAUNCH_ARGS='--model gpt-5.3-codex-spark -c model_reasoning_effort="low"' \
+OMX_TEAM_WORKER_LAUNCH_ARGS='-c model_reasoning_effort="low"' \
 omx team 2:explore "short scoped analysis task"
 ```
 
@@ -104,6 +104,34 @@ omx doctor --team
 omx team 3:executor "ship the scoped task with verification"
 ```
 
+## Model defaults and local-model overrides
+
+OMX treats default model selection as a small explicit contract:
+
+- `OMX_DEFAULT_FRONTIER_MODEL` — canonical frontier/default leader model
+- `OMX_DEFAULT_SPARK_MODEL` — canonical spark / low-complexity worker model
+
+If upstream defaults change, update the single canonical source instead of scattering model literals across prompts/docs/runtime.
+
+For local-model setups, you can persist overrides in `~/.codex/.omx-config.json` (or `CODEX_HOME/.omx-config.json`) under the top-level `env` field:
+
+```json
+{
+  "env": {
+    "OMX_DEFAULT_FRONTIER_MODEL": "your-frontier-model",
+    "OMX_DEFAULT_SPARK_MODEL": "your-spark-model"
+  }
+}
+```
+
+Resolution order:
+
+1. Real shell env vars
+2. `.omx-config.json` `env` overrides
+3. OMX built-in canonical defaults
+
+The same config-driven env overrides are forwarded when OMX launches native helpers such as `omx sparkshell`, so local-model routing stays consistent.
+
 Recommended trusted-environment launch profile:
 
 ```bash
@@ -113,7 +141,7 @@ omx --xhigh --madmax
 ## New in v0.5.0
 
 - **Scope-aware setup** with `omx setup --scope user|project` for flexible install modes.
-- **Spark worker routing** via `--spark` / `--madmax-spark` so team workers can use `gpt-5.3-codex-spark` without forcing the leader model.
+- **Spark worker routing** via `--spark` / `--madmax-spark` so team workers use the `OMX_DEFAULT_SPARK_MODEL` default without forcing the leader model.
 - **Catalog consolidation** — removed deprecated prompts (`deep-executor`, `scientist`) and 9 deprecated skills for a leaner surface.
 - **Notifier verbosity levels** for fine-grained CCNotifier output control.
 
@@ -300,7 +328,7 @@ It remains an explicit operator-facing command, but OMX may also use it as a bac
 
 Current preview contract:
 - Short output stays raw; long output is summarized into markdown sections limited to `summary:`, `failures:`, and `warnings:`.
-- Summary mode uses the local Codex CLI via `codex exec` and prefers `OMX_SPARKSHELL_MODEL`, then `OMX_SPARK_MODEL`, then the spark default model.
+- Summary mode uses the local Codex CLI via `codex exec` and prefers `OMX_SPARKSHELL_MODEL`, then `OMX_DEFAULT_SPARK_MODEL`, then the spark default model.
 - `--spark` / `--madmax-spark` remain team-worker launch flags; sparkshell model routing is controlled by env vars instead.
 - Native binary lookup order is `OMX_SPARKSHELL_BIN`, then the hydrated native cache, then packaged dev artifacts (when present), then repo-local workspace output `target/release/omx-sparkshell[.exe]`.
 - Team/leader pane summarization is explicit opt-in via tmux pane mode, for example:
@@ -480,7 +508,7 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # optional: disable adaptive queue->resend fall
 
 Notes:
 - Worker launch args are still shared via `OMX_TEAM_WORKER_LAUNCH_ARGS` for model/config inheritance.
-- When no explicit worker model is provided, low-complexity worker fallback follows `OMX_SPARK_MODEL` (currently `gpt-5.3-codex-spark`).
+- When no explicit worker model is provided, low-complexity worker fallback follows `OMX_DEFAULT_SPARK_MODEL` (legacy alias: `OMX_SPARK_MODEL`).
 - `OMX_TEAM_WORKER_CLI_MAP` overrides `OMX_TEAM_WORKER_CLI` for per-worker selection.
 - Team mode now allocates `model_reasoning_effort` per teammate from the resolved worker role (`low` / `medium` / `high`) unless an explicit reasoning override already exists in `OMX_TEAM_WORKER_LAUNCH_ARGS`.
 - When a worker resolves to a concrete task role, OMX composes a per-worker startup instructions file that layers the corresponding role prompt on top of the shared team worker protocol; explicit `model_instructions_file` launch overrides still win.
@@ -502,9 +530,9 @@ Notes:
   - `notify = ["node", "..."]`
   - `model_reasoning_effort = "high"`
   - `developer_instructions = "..."`
-  - `model = "gpt-5.4"` when root `model` is absent (matching the current `OMX_MAIN_MODEL` default)
-  - if the existing root model is `gpt-5.3-codex`, interactive `omx setup` asks whether to upgrade it to `gpt-5.4`; non-interactive runs preserve the existing model
-  - `model_context_window = 1000000` and `model_auto_compact_token_limit = 900000` only when the effective root model is `gpt-5.4` and both context keys are absent
+  - `model = "<OMX_DEFAULT_FRONTIER_MODEL>"` when root `model` is absent
+  - if the existing root model matches the legacy pre-frontier default, interactive `omx setup` asks whether to upgrade it to `OMX_DEFAULT_FRONTIER_MODEL`; non-interactive runs preserve the existing model
+  - `model_context_window = 1000000` and `model_auto_compact_token_limit = 900000` only when the effective root model matches `OMX_DEFAULT_FRONTIER_MODEL` and both context keys are absent
   - `[features] multi_agent = true, child_agents_md = true`
   - MCP server entries (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`)
   - If a shared MCP registry exists at `~/.omx/mcp-registry.json` (fallback: `~/.omc/mcp-registry.json`), setup syncs those entries into a dedicated managed block in `config.toml` (skipping names already defined elsewhere to avoid duplicate TOML tables)

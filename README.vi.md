@@ -75,7 +75,7 @@ omx --xhigh --madmax
 ## Mới trong v0.5.0
 
 - **Thiết lập nhận biết phạm vi** qua `omx setup --scope user|project` cho các chế độ cài đặt linh hoạt.
-- **Định tuyến Spark worker** qua `--spark` / `--madmax-spark` — worker của đội có thể sử dụng `gpt-5.3-codex-spark` mà không ép buộc model lãnh đạo.
+- **Định tuyến Spark worker** qua `--spark` / `--madmax-spark` — worker của đội có thể sử dụng `OMX_DEFAULT_SPARK_MODEL` mà không ép buộc model lãnh đạo.
 - **Hợp nhất danh mục** — loại bỏ các prompt không dùng nữa (`deep-executor`, `scientist`) và 9 skill không dùng nữa để có bề mặt gọn hơn.
 - **Mức độ chi tiết thông báo** cho kiểm soát chi tiết đầu ra CCNotifier.
 

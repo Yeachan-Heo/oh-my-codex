@@ -75,7 +75,7 @@ omx --xhigh --madmax
 ## v0.5.0'daki Yenilikler
 
 - `omx setup --scope user|project` ile **kapsam duyarlı kurulum** — esnek kurulum modları.
-- `--spark` / `--madmax-spark` ile **Spark worker yönlendirmesi** — takım çalışanlarının lider modelini zorlamadan `gpt-5.3-codex-spark` kullanabilmesi.
+- `--spark` / `--madmax-spark` ile **Spark worker yönlendirmesi** — takım çalışanlarının lider modelini zorlamadan `OMX_DEFAULT_SPARK_MODEL` kullanabilmesi.
 - **Katalog birleştirme** — kullanımdan kaldırılmış prompt'lar (`deep-executor`, `scientist`) ve 9 kullanımdan kaldırılmış skill kaldırıldı.
 - **Bildirim ayrıntı seviyeleri** — CCNotifier çıktısı için ince taneli kontrol.
 

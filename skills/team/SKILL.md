@@ -173,7 +173,12 @@ Team mode resolves worker **model flags** from one shared launch-arg set (not pe
 Model precedence (highest to lowest):
 1. Explicit worker model in `OMX_TEAM_WORKER_LAUNCH_ARGS`
 2. Inherited leader `--model` flag
-3. Low-complexity default from `OMX_SPARK_MODEL` (currently `gpt-5.3-codex-spark`) when 1+2 are absent and team `agentType` is low-complexity
+3. Low-complexity default from `OMX_DEFAULT_SPARK_MODEL` (legacy alias: `OMX_SPARK_MODEL`) when 1+2 are absent and team `agentType` is low-complexity
+
+Default-model rule:
+- Do **not** assume a frontier or spark model from recency or model-family heuristics.
+- Use `OMX_DEFAULT_FRONTIER_MODEL` for frontier-default guidance.
+- Use `OMX_DEFAULT_SPARK_MODEL` for spark/low-complexity worker-default guidance.
 
 Thinking-level rule (critical):
 - **No model-name heuristic mapping.**

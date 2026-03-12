@@ -253,6 +253,43 @@ describe('runSparkShellBinary', () => {
       stdio: 'inherit',
     });
   });
+
+  it('merges .omx-config.json env overrides behind explicit shell env', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-sparkshell-config-env-'));
+    await writeFile(join(codexHome, '.omx-config.json'), JSON.stringify({
+      env: {
+        OMX_DEFAULT_FRONTIER_MODEL: 'frontier-local',
+        OMX_DEFAULT_SPARK_MODEL: 'spark-local',
+      },
+    }));
+
+    try {
+      let invokedEnv: NodeJS.ProcessEnv | undefined;
+      runSparkShellBinary('/fake/omx-sparkshell', ['git', 'status'], {
+        cwd: codexHome,
+        env: {
+          CODEX_HOME: codexHome,
+          OMX_DEFAULT_FRONTIER_MODEL: 'frontier-shell',
+        },
+        spawnImpl: ((_: string, __: string[], options: { env?: NodeJS.ProcessEnv }) => {
+          invokedEnv = options.env;
+          return {
+            pid: 1,
+            output: [],
+            stdout: null,
+            stderr: null,
+            status: 0,
+            signal: null,
+          };
+        }) as unknown as typeof spawnSync,
+      });
+
+      assert.equal(invokedEnv?.OMX_DEFAULT_FRONTIER_MODEL, 'frontier-shell');
+      assert.equal(invokedEnv?.OMX_DEFAULT_SPARK_MODEL, 'spark-local');
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('parseSparkShellFallbackInvocation', () => {

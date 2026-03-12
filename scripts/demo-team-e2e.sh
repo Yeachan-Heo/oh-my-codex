@@ -84,7 +84,7 @@ TEAM_TASK="${TEAM_TASK:-e2e team demo $(date -u +%Y%m%d%H%M%S)}"
 TEAM_NAME="${TEAM_NAME:-$(slugify "$TEAM_TASK")}"
 OMX_TEAM_WORKER_CLI="${OMX_TEAM_WORKER_CLI:-auto}"
 OMX_TEAM_WORKER_CLI_MAP="${OMX_TEAM_WORKER_CLI_MAP:-$(build_default_cli_map "$WORKER_COUNT")}"
-OMX_TEAM_WORKER_LAUNCH_ARGS="${OMX_TEAM_WORKER_LAUNCH_ARGS:---model gpt-5.3-codex-spark -c model_reasoning_effort=\"low\"}"
+OMX_TEAM_WORKER_LAUNCH_ARGS="${OMX_TEAM_WORKER_LAUNCH_ARGS:--c model_reasoning_effort=\"low\"}"
 
 TEAM_STARTED=0
 cleanup() {
