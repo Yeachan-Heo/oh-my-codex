@@ -111,6 +111,68 @@ async function waitForFileText(
   throw new Error(`timed out waiting for ${filePath}`);
 }
 
+type MockBinarySpec = {
+  name: string;
+  content: string;
+};
+
+
+function teamStateTestPath(cwd: string, ...parts: string[]): string {
+  const stateRoot = process.env.OMX_TEAM_STATE_ROOT ?? join(cwd, '.omx', 'state');
+  return join(stateRoot, ...parts);
+}
+
+async function withMockTmuxFixture<T>(
+  options: {
+    dirPrefix: string;
+    tmuxScript: (tmuxLogPath: string) => string;
+    binaries?: MockBinarySpec[];
+    env?: Record<string, string | undefined>;
+  },
+  run: (ctx: { fakeBinDir: string; tmuxLogPath: string }) => Promise<T>,
+): Promise<T> {
+  const fakeBinDir = await mkdtemp(join(tmpdir(), options.dirPrefix));
+  const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+  const tmuxStubPath = join(fakeBinDir, 'tmux');
+  const previousPath = process.env.PATH;
+  const previousEnv = new Map<string, string | undefined>();
+  const envOverrides = {
+    OMX_TEAM_STATE_ROOT: undefined,
+    ...(options.env ?? {}),
+  };
+
+  try {
+    await writeFile(tmuxStubPath, options.tmuxScript(tmuxLogPath));
+    await chmod(tmuxStubPath, 0o755);
+
+    for (const binary of options.binaries ?? []) {
+      const binaryPath = join(fakeBinDir, binary.name);
+      await writeFile(binaryPath, binary.content);
+      await chmod(binaryPath, 0o755);
+    }
+
+    process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+    for (const [key, value] of Object.entries(envOverrides)) {
+      previousEnv.set(key, process.env[key]);
+      if (typeof value === 'string') process.env[key] = value;
+      else delete process.env[key];
+    }
+
+    return await run({ fakeBinDir, tmuxLogPath });
+  } finally {
+    if (typeof previousPath === 'string') process.env.PATH = previousPath;
+    else delete process.env.PATH;
+
+    for (const [key, value] of previousEnv) {
+      if (typeof value === 'string') process.env[key] = value;
+      else delete process.env[key];
+    }
+
+    await rm(fakeBinDir, { recursive: true, force: true });
+  }
+}
+
 describe('runtime', () => {
   it('resolveWorkerLaunchArgsFromEnv injects low-complexity default model when missing', () => {
     const args = resolveWorkerLaunchArgsFromEnv(
@@ -899,20 +961,16 @@ process.on('SIGTERM', () => process.exit(0));
 
   it('startTeam relaunch re-creates HUD pane and re-registers reconcile hooks after shutdown', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-relaunch-hud-'));
-    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-runtime-relaunch-hud-bin-'));
-    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
-    const tmuxStubPath = join(fakeBinDir, 'tmux');
-    const geminiStubPath = join(fakeBinDir, 'gemini');
-    const previousPath = process.env.PATH;
     const previousTmux = process.env.TMUX;
     const previousTmuxPane = process.env.TMUX_PANE;
     const previousLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
     const previousWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
     let runtime: TeamRuntime | null = null;
     try {
-      await writeFile(
-        tmuxStubPath,
-        `#!/bin/sh
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-relaunch-hud-bin-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
 set -eu
 printf '%s\\n' "$*" >> "${tmuxLogPath}"
 case "\${1:-}" in
@@ -967,64 +1025,62 @@ case "\${1:-}" in
     ;;
 esac
 `,
-      );
-      await chmod(tmuxStubPath, 0o755);
-      await writeFile(
-        geminiStubPath,
-        `#!/bin/sh
+          binaries: [{
+            name: 'gemini',
+            content: `#!/bin/sh
 exit 0
 `,
+          }],
+        },
+        async ({ tmuxLogPath }) => {
+          process.env.TMUX = 'leader-session,stub,0';
+          process.env.TMUX_PANE = '%1';
+          process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
+          process.env.OMX_TEAM_WORKER_CLI = 'gemini';
+
+          runtime = await withoutTeamWorkerEnv(() =>
+            startTeam(
+              'team-rerun-hud',
+              'rerun hud restore',
+              'explore',
+              1,
+              [{ subject: 'restore hud', description: 'restore hud', owner: 'worker-1' }],
+              cwd,
+            ));
+          assert.equal(runtime.config.hud_pane_id, '%3');
+          assert.ok(runtime.config.resize_hook_name);
+
+          await shutdownTeam(runtime.teamName, cwd, { force: true });
+          runtime = null;
+
+          runtime = await withoutTeamWorkerEnv(() =>
+            startTeam(
+              'team-rerun-hud',
+              'rerun hud restore',
+              'explore',
+              1,
+              [{ subject: 'restore hud again', description: 'restore hud again', owner: 'worker-1' }],
+              cwd,
+            ));
+          assert.equal(runtime.config.hud_pane_id, '%3');
+          assert.ok(runtime.config.resize_hook_name);
+
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+          const hudSplitRe = new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %1 -d -P -F #\\{pane_id\\}`, 'g');
+          assert.equal(tmuxLog.match(hudSplitRe)?.length ?? 0, 3);
+          assert.equal(tmuxLog.match(/set-hook -t leader:0 client-resized\[\d+\]/g)?.length ?? 0, 2);
+          assert.equal(tmuxLog.match(/set-hook -t leader:0 client-attached\[\d+\]/g)?.length ?? 0, 2);
+          assert.equal(tmuxLog.match(/run-shell -b sleep \d+; tmux resize-pane -t %3 -y \d+ >/g)?.length ?? 0, 3);
+          assert.equal(tmuxLog.match(/run-shell tmux resize-pane -t %3 -y \d+ >/g)?.length ?? 0, 3);
+          assert.ok((tmuxLog.match(/select-layout -t leader:0 main-vertical/g)?.length ?? 0) >= 2);
+          assert.match(tmuxLog, /kill-pane -t %3/);
+        },
       );
-      await chmod(geminiStubPath, 0o755);
-
-      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
-      process.env.TMUX = 'leader-session,stub,0';
-      process.env.TMUX_PANE = '%1';
-      process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
-      process.env.OMX_TEAM_WORKER_CLI = 'gemini';
-
-      runtime = await withoutTeamWorkerEnv(() =>
-        startTeam(
-          'team-rerun-hud',
-          'rerun hud restore',
-          'explore',
-          1,
-          [{ subject: 'restore hud', description: 'restore hud', owner: 'worker-1' }],
-          cwd,
-        ));
-      assert.equal(runtime.config.hud_pane_id, '%3');
-      assert.ok(runtime.config.resize_hook_name);
-
-      await shutdownTeam(runtime.teamName, cwd, { force: true });
-      runtime = null;
-
-      runtime = await withoutTeamWorkerEnv(() =>
-        startTeam(
-          'team-rerun-hud',
-          'rerun hud restore',
-          'explore',
-          1,
-          [{ subject: 'restore hud again', description: 'restore hud again', owner: 'worker-1' }],
-          cwd,
-        ));
-      assert.equal(runtime.config.hud_pane_id, '%3');
-      assert.ok(runtime.config.resize_hook_name);
-
-      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      const hudSplitRe = new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %1 -d -P -F #\\{pane_id\\}`, 'g');
-      assert.equal(tmuxLog.match(hudSplitRe)?.length ?? 0, 3);
-      assert.equal(tmuxLog.match(/set-hook -t leader:0 client-resized\[\d+\]/g)?.length ?? 0, 2);
-      assert.equal(tmuxLog.match(/set-hook -t leader:0 client-attached\[\d+\]/g)?.length ?? 0, 2);
-      assert.equal(tmuxLog.match(/run-shell -b sleep \d+; tmux resize-pane -t %3 -y \d+ >/g)?.length ?? 0, 3);
-      assert.equal(tmuxLog.match(/run-shell tmux resize-pane -t %3 -y \d+ >/g)?.length ?? 0, 3);
-      assert.ok((tmuxLog.match(/select-layout -t leader:0 main-vertical/g)?.length ?? 0) >= 2);
-      assert.match(tmuxLog, /kill-pane -t %3/);
     } finally {
-      if (runtime) {
-        await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
+      const activeRuntime = runtime;
+      if (activeRuntime) {
+        await shutdownTeam((activeRuntime as TeamRuntime).teamName, cwd, { force: true }).catch(() => {});
       }
-      if (typeof previousPath === 'string') process.env.PATH = previousPath;
-      else delete process.env.PATH;
       if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
       else delete process.env.TMUX;
       if (typeof previousTmuxPane === 'string') process.env.TMUX_PANE = previousTmuxPane;
@@ -1034,7 +1090,6 @@ exit 0
       if (typeof previousWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = previousWorkerCli;
       else delete process.env.OMX_TEAM_WORKER_CLI;
       await rm(cwd, { recursive: true, force: true });
-      await rm(fakeBinDir, { recursive: true, force: true });
     }
   });
 
@@ -1701,7 +1756,7 @@ process.on('SIGTERM', () => {
         /shutdown_gate_blocked:pending=0,blocked=0,in_progress=0,failed=1/,
       );
 
-      const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-shutdown-gate-failed');
+      const teamRoot = teamStateTestPath(cwd, 'team', 'team-shutdown-gate-failed');
       assert.equal(existsSync(teamRoot), true);
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -1774,29 +1829,12 @@ process.on('SIGTERM', () => {
 
   it('shutdownTeam continues cleanup when resize hook unregister fails while session remains active', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-gate-failed-'));
-    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-runtime-fake-tmux-'));
-    const previousPath = process.env.PATH;
-    const previousTmuxLog = process.env.TMUX_TEST_LOG;
-    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
     try {
-      await initTeamState('team-shutdown-gate-failed', 'shutdown resize hook failure test', 'executor', 1, cwd);
-      const configPath = join(cwd, '.omx', 'state', 'team', 'team-shutdown-gate-failed', 'config.json');
-      const manifestPath = join(cwd, '.omx', 'state', 'team', 'team-shutdown-gate-failed', 'manifest.v2.json');
-      const config = JSON.parse(await readFile(configPath, 'utf-8')) as Record<string, unknown>;
-      config.tmux_session = 'omx-team-team-shutdown-gate-failed';
-      config.resize_hook_name = 'omx_resize_team_shutdown_gate_failed_test';
-      config.resize_hook_target = 'omx-team-team-shutdown-gate-failed:0';
-      await writeFile(configPath, JSON.stringify(config, null, 2));
-      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as Record<string, unknown>;
-      manifest.tmux_session = 'omx-team-team-shutdown-gate-failed';
-      manifest.resize_hook_name = 'omx_resize_team_shutdown_gate_failed_test';
-      manifest.resize_hook_target = 'omx-team-team-shutdown-gate-failed:0';
-      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
-
-      const tmuxStubPath = join(fakeBinDir, 'tmux');
-      await writeFile(
-        tmuxStubPath,
-        `#!/bin/sh
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-fake-tmux-',
+          env: { TMUX_TEST_LOG: undefined },
+          tmuxScript: () => `#!/bin/sh
 set -eu
 if [ -n "\${TMUX_TEST_LOG:-}" ]; then
   printf '%s\\n' "$*" >> "$TMUX_TEST_LOG"
@@ -1828,27 +1866,35 @@ case "$1" in
     ;;
 esac
 `,
+        },
+        async ({ tmuxLogPath }) => {
+          await initTeamState('team-shutdown-gate-failed', 'shutdown resize hook failure test', 'executor', 1, cwd);
+          const configPath = teamStateTestPath(cwd, 'team', 'team-shutdown-gate-failed', 'config.json');
+          const manifestPath = teamStateTestPath(cwd, 'team', 'team-shutdown-gate-failed', 'manifest.v2.json');
+          const config = JSON.parse(await readFile(configPath, 'utf-8')) as Record<string, unknown>;
+          config.tmux_session = 'omx-team-team-shutdown-gate-failed';
+          config.resize_hook_name = 'omx_resize_team_shutdown_gate_failed_test';
+          config.resize_hook_target = 'omx-team-team-shutdown-gate-failed:0';
+          await writeFile(configPath, JSON.stringify(config, null, 2));
+          const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as Record<string, unknown>;
+          manifest.tmux_session = 'omx-team-team-shutdown-gate-failed';
+          manifest.resize_hook_name = 'omx_resize_team_shutdown_gate_failed_test';
+          manifest.resize_hook_target = 'omx-team-team-shutdown-gate-failed:0';
+          await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+          process.env.TMUX_TEST_LOG = tmuxLogPath;
+
+          await shutdownTeam('team-shutdown-gate-failed', cwd);
+
+          const teamRoot = teamStateTestPath(cwd, 'team', 'team-shutdown-gate-failed');
+          assert.equal(existsSync(teamRoot), false);
+
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+          assert.match(tmuxLog, /set-hook -u -t omx-team-team-shutdown-gate-failed:0 client-resized\[\d+\]/);
+          assert.match(tmuxLog, /kill-session -t omx-team-team-shutdown-gate-failed/);
+        },
       );
-      await chmod(tmuxStubPath, 0o755);
-
-      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
-      process.env.TMUX_TEST_LOG = tmuxLogPath;
-
-      await shutdownTeam('team-shutdown-gate-failed', cwd);
-
-      const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-shutdown-gate-failed');
-      assert.equal(existsSync(teamRoot), false);
-
-      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /set-hook -u -t omx-team-team-shutdown-gate-failed:0 client-resized\[\d+\]/);
-      assert.match(tmuxLog, /kill-session -t omx-team-team-shutdown-gate-failed/);
     } finally {
-      if (typeof previousPath === 'string') process.env.PATH = previousPath;
-      else delete process.env.PATH;
-      if (typeof previousTmuxLog === 'string') process.env.TMUX_TEST_LOG = previousTmuxLog;
-      else delete process.env.TMUX_TEST_LOG;
       await rm(cwd, { recursive: true, force: true });
-      await rm(fakeBinDir, { recursive: true, force: true });
     }
   });
 
@@ -2003,14 +2049,11 @@ esac
 
   it('shutdownTeam applies best-effort teardown even when worker pane is already dead', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-dead-pane-'));
-    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-dead-pane-bin-'));
-    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
-    const tmuxStubPath = join(fakeBinDir, 'tmux');
-    const previousPath = process.env.PATH;
     try {
-      await writeFile(
-        tmuxStubPath,
-        `#!/bin/sh
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-shutdown-dead-pane-bin-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
 set -eu
 printf '%s\\n' "$*" >> "${tmuxLogPath}"
 case "$1" in
@@ -2036,46 +2079,40 @@ case "$1" in
     ;;
 esac
 `,
+        },
+        async ({ tmuxLogPath }) => {
+          await initTeamState('team-shutdown-dead-pane', 'shutdown dead pane test', 'executor', 2, cwd);
+          const config = await readTeamConfig('team-shutdown-dead-pane', cwd);
+          assert.ok(config);
+          if (!config) return;
+          config.tmux_session = 'omx-team-team-shutdown-dead-pane';
+          config.workers[0]!.pane_id = '%404';
+          config.workers[1]!.pane_id = '%405';
+          await saveTeamConfig(config, cwd);
+
+          await shutdownTeam('team-shutdown-dead-pane', cwd, { force: true });
+          const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-shutdown-dead-pane');
+          assert.equal(existsSync(teamRoot), false);
+
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+          assert.match(tmuxLog, /kill-pane -t %404/);
+          assert.match(tmuxLog, /kill-pane -t %405/);
+          assert.match(tmuxLog, /kill-session -t omx-team-team-shutdown-dead-pane/);
+        },
       );
-      await chmod(tmuxStubPath, 0o755);
-      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
-
-      await initTeamState('team-shutdown-dead-pane', 'shutdown dead pane test', 'executor', 2, cwd);
-      const config = await readTeamConfig('team-shutdown-dead-pane', cwd);
-      assert.ok(config);
-      if (!config) return;
-      config.tmux_session = 'omx-team-team-shutdown-dead-pane';
-      config.workers[0]!.pane_id = '%404';
-      config.workers[1]!.pane_id = '%405';
-      await saveTeamConfig(config, cwd);
-
-      await shutdownTeam('team-shutdown-dead-pane', cwd, { force: true });
-      const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-shutdown-dead-pane');
-      assert.equal(existsSync(teamRoot), false);
-
-      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /kill-pane -t %404/);
-      assert.match(tmuxLog, /kill-pane -t %405/);
-      assert.match(tmuxLog, /kill-session -t omx-team-team-shutdown-dead-pane/);
     } finally {
-      if (typeof previousPath === 'string') process.env.PATH = previousPath;
-      else delete process.env.PATH;
       await rm(cwd, { recursive: true, force: true });
-      await rm(fakeBinDir, { recursive: true, force: true });
     }
   });
 
 
   it('shutdownTeam restores a standalone HUD pane after tearing down the team HUD', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-restore-hud-'));
-    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-restore-hud-bin-'));
-    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
-    const tmuxStubPath = join(fakeBinDir, 'tmux');
-    const previousPath = process.env.PATH;
     try {
-      await writeFile(
-        tmuxStubPath,
-        `#!/bin/sh
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-shutdown-restore-hud-bin-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "${tmuxLogPath}"
 case "$1" in
@@ -2098,49 +2135,43 @@ case "$1" in
     ;;
 esac
 `,
+        },
+        async ({ tmuxLogPath }) => {
+          await initTeamState('team-shutdown-restore-hud', 'shutdown restore hud test', 'executor', 2, cwd);
+          const config = await readTeamConfig('team-shutdown-restore-hud', cwd);
+          assert.ok(config);
+          if (!config) return;
+          config.tmux_session = 'leader:0';
+          config.leader_pane_id = '%11';
+          config.hud_pane_id = '%12';
+          config.workers[0]!.pane_id = '%12';
+          config.workers[1]!.pane_id = '%13';
+          await saveTeamConfig(config, cwd);
+
+          await shutdownTeam('team-shutdown-restore-hud', cwd, { force: true });
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
+          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.match(tmuxLog, /kill-pane -t %13/);
+          assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\{pane_id\}`));
+          assert.match(tmuxLog, /run-shell -b sleep \d+; tmux resize-pane -t %44 -y \d+ >/);
+          assert.match(tmuxLog, /run-shell tmux resize-pane -t %44 -y \d+ >/);
+          assert.match(tmuxLog, /hud --watch/);
+          assert.match(tmuxLog, /select-pane -t %11/);
+        },
       );
-      await chmod(tmuxStubPath, 0o755);
-      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
-
-      await initTeamState('team-shutdown-restore-hud', 'shutdown restore hud test', 'executor', 2, cwd);
-      const config = await readTeamConfig('team-shutdown-restore-hud', cwd);
-      assert.ok(config);
-      if (!config) return;
-      config.tmux_session = 'leader:0';
-      config.leader_pane_id = '%11';
-      config.hud_pane_id = '%12';
-      config.workers[0]!.pane_id = '%12';
-      config.workers[1]!.pane_id = '%13';
-      await saveTeamConfig(config, cwd);
-
-      await shutdownTeam('team-shutdown-restore-hud', cwd, { force: true });
-      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
-      assert.match(tmuxLog, /kill-pane -t %12/);
-      assert.match(tmuxLog, /kill-pane -t %13/);
-      assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\{pane_id\}`));
-      assert.match(tmuxLog, /run-shell -b sleep \d+; tmux resize-pane -t %44 -y \d+ >/);
-      assert.match(tmuxLog, /run-shell tmux resize-pane -t %44 -y \d+ >/);
-      assert.match(tmuxLog, /hud --watch/);
-      assert.match(tmuxLog, /select-pane -t %11/);
     } finally {
-      if (typeof previousPath === 'string') process.env.PATH = previousPath;
-      else delete process.env.PATH;
       await rm(cwd, { recursive: true, force: true });
-      await rm(fakeBinDir, { recursive: true, force: true });
     }
   });
 
   it('shutdownTeam preserves leader exclusion while tearing down the hud pane', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-exclusions-'));
-    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-exclusions-bin-'));
-    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
-    const tmuxStubPath = join(fakeBinDir, 'tmux');
-    const previousPath = process.env.PATH;
     try {
-      await writeFile(
-        tmuxStubPath,
-        `#!/bin/sh
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-shutdown-exclusions-bin-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
 set -eu
 printf '%s\\n' "$*" >> "${tmuxLogPath}"
 case "$1" in
@@ -2159,32 +2190,29 @@ case "$1" in
     ;;
 esac
 `,
+        },
+        async ({ tmuxLogPath }) => {
+          await initTeamState('team-shutdown-exclusions', 'shutdown exclusions test', 'executor', 3, cwd);
+          const config = await readTeamConfig('team-shutdown-exclusions', cwd);
+          assert.ok(config);
+          if (!config) return;
+          config.tmux_session = 'omx-team-team-shutdown-exclusions';
+          config.leader_pane_id = '%11';
+          config.hud_pane_id = '%12';
+          config.workers[0]!.pane_id = '%11';
+          config.workers[1]!.pane_id = '%12';
+          config.workers[2]!.pane_id = '%13';
+          await saveTeamConfig(config, cwd);
+
+          await shutdownTeam('team-shutdown-exclusions', cwd, { force: true });
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
+          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.match(tmuxLog, /kill-pane -t %13/);
+        },
       );
-      await chmod(tmuxStubPath, 0o755);
-      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
-
-      await initTeamState('team-shutdown-exclusions', 'shutdown exclusions test', 'executor', 3, cwd);
-      const config = await readTeamConfig('team-shutdown-exclusions', cwd);
-      assert.ok(config);
-      if (!config) return;
-      config.tmux_session = 'omx-team-team-shutdown-exclusions';
-      config.leader_pane_id = '%11';
-      config.hud_pane_id = '%12';
-      config.workers[0]!.pane_id = '%11';
-      config.workers[1]!.pane_id = '%12';
-      config.workers[2]!.pane_id = '%13';
-      await saveTeamConfig(config, cwd);
-
-      await shutdownTeam('team-shutdown-exclusions', cwd, { force: true });
-      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
-      assert.match(tmuxLog, /kill-pane -t %12/);
-      assert.match(tmuxLog, /kill-pane -t %13/);
     } finally {
-      if (typeof previousPath === 'string') process.env.PATH = previousPath;
-      else delete process.env.PATH;
       await rm(cwd, { recursive: true, force: true });
-      await rm(fakeBinDir, { recursive: true, force: true });
     }
   });
 
@@ -2680,14 +2708,11 @@ esac
 
   it('sendWorkerMessage hook-preferred path injects leader mailbox read guidance when leader pane exists', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-leader-inject-'));
-    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-runtime-leader-inject-bin-'));
-    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
-    const tmuxStubPath = join(fakeBinDir, 'tmux');
-    const previousPath = process.env.PATH;
     try {
-      await writeFile(
-        tmuxStubPath,
-        `#!/bin/sh
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-leader-inject-bin-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "${tmuxLogPath}"
 case "\${1:-}" in
@@ -2699,38 +2724,35 @@ case "\${1:-}" in
     ;;
 esac
 `,
+        },
+        async ({ tmuxLogPath }) => {
+          await initTeamState('team-leader-inject', 'leader injection test', 'executor', 1, cwd);
+          const cfg = await readTeamConfig('team-leader-inject', cwd);
+          assert.ok(cfg);
+          if (!cfg) throw new Error('missing team config');
+          cfg.leader_pane_id = '%55';
+          await saveTeamConfig(cfg, cwd);
+
+          const manifestPath = teamStateTestPath(cwd, 'team', 'team-leader-inject', 'manifest.v2.json');
+          const manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
+          manifest.policy = { ...(manifest.policy || {}), dispatch_ack_timeout_ms: 100 };
+          await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+          await sendWorkerMessage('team-leader-inject', 'worker-1', 'leader-fixed', 'hello leader', cwd);
+
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+          assert.match(tmuxLog, /send-keys -t %55 -l -- Read \.omx\/state\/team\/team-leader-inject\/mailbox\/leader-fixed\.json; worker-1 sent a new message\. Reply with the next concrete step\./);
+
+          const mailbox = await listMailboxMessages('team-leader-inject', 'leader-fixed', cwd);
+          assert.ok(mailbox.some((m: { notified_at?: string }) => typeof m.notified_at === 'string' && m.notified_at.length > 0));
+
+          const requests = await listDispatchRequests('team-leader-inject', cwd, { kind: 'mailbox', to_worker: 'leader-fixed' });
+          const latest = requests[requests.length - 1];
+          assert.equal(latest?.status, 'notified');
+        },
       );
-      await chmod(tmuxStubPath, 0o755);
-      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
-
-      await initTeamState('team-leader-inject', 'leader injection test', 'executor', 1, cwd);
-      const cfg = await readTeamConfig('team-leader-inject', cwd);
-      assert.ok(cfg);
-      if (!cfg) throw new Error('missing team config');
-      cfg.leader_pane_id = '%55';
-      await saveTeamConfig(cfg, cwd);
-
-      const manifestPath = join(cwd, '.omx', 'state', 'team', 'team-leader-inject', 'manifest.v2.json');
-      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
-      manifest.policy = { ...(manifest.policy || {}), dispatch_ack_timeout_ms: 100 };
-      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
-
-      await sendWorkerMessage('team-leader-inject', 'worker-1', 'leader-fixed', 'hello leader', cwd);
-
-      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /send-keys -t %55 -l -- Read \.omx\/state\/team\/team-leader-inject\/mailbox\/leader-fixed\.json; worker-1 sent a new message\. Reply with the next concrete step\./);
-
-      const mailbox = await listMailboxMessages('team-leader-inject', 'leader-fixed', cwd);
-      assert.ok(mailbox.some((m: { notified_at?: string }) => typeof m.notified_at === 'string' && m.notified_at.length > 0));
-
-      const requests = await listDispatchRequests('team-leader-inject', cwd, { kind: 'mailbox', to_worker: 'leader-fixed' });
-      const latest = requests[requests.length - 1];
-      assert.equal(latest?.status, 'notified');
     } finally {
-      if (typeof previousPath === 'string') process.env.PATH = previousPath;
-      else delete process.env.PATH;
       await rm(cwd, { recursive: true, force: true });
-      await rm(fakeBinDir, { recursive: true, force: true });
     }
   });
 

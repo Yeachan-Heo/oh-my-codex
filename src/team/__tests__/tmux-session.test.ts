@@ -78,6 +78,28 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+async function withMockTmuxFixture<T>(
+  dirPrefix: string,
+  tmuxScript: (tmuxLogPath: string) => string,
+  run: (ctx: { logPath: string }) => Promise<T>,
+): Promise<T> {
+  const fakeBinDir = await mkdtemp(join(tmpdir(), dirPrefix));
+  const logPath = join(fakeBinDir, 'tmux.log');
+  const tmuxStubPath = join(fakeBinDir, 'tmux');
+  const previousPath = process.env.PATH;
+
+  try {
+    await writeFile(tmuxStubPath, tmuxScript(logPath));
+    await chmod(tmuxStubPath, 0o755);
+    process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+    return await run({ logPath });
+  } finally {
+    if (typeof previousPath === 'string') process.env.PATH = previousPath;
+    else delete process.env.PATH;
+    await rm(fakeBinDir, { recursive: true, force: true });
+  }
+}
+
 describe('sanitizeTeamName', () => {
   it('lowercases and strips invalid chars', () => {
     assert.equal(sanitizeTeamName('My Team!'), 'my-team');
@@ -1630,41 +1652,30 @@ describe('killWorker leader pane guard', () => {
 
 describe('teardownWorkerPanes shared primitive', () => {
   it('excludes leader and hud panes in shared pane-kill primitive', async () => {
-    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-tmux-teardown-'));
-    const logPath = join(fakeBinDir, 'tmux.log');
-    const tmuxStubPath = join(fakeBinDir, 'tmux');
-    const previousPath = process.env.PATH;
-    try {
-      await writeFile(
-        tmuxStubPath,
-        `#!/bin/sh
+    await withMockTmuxFixture(
+      'omx-tmux-teardown-',
+      (logPath) => `#!/bin/sh
 set -eu
 printf '%s\\n' "$*" >> "${logPath}"
 exit 0
 `,
-      );
-      await chmod(tmuxStubPath, 0o755);
-      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+      async ({ logPath }) => {
+        const summary = await teardownWorkerPanes(['%1', '%2', '%3'], {
+          leaderPaneId: '%1',
+          hudPaneId: '%2',
+          graceMs: 1,
+        });
 
-      const summary = await teardownWorkerPanes(['%1', '%2', '%3'], {
-        leaderPaneId: '%1',
-        hudPaneId: '%2',
-        graceMs: 1,
-      });
-
-      assert.equal(summary.excluded.leader, 1);
-      assert.equal(summary.excluded.hud, 1);
-      assert.equal(summary.kill.attempted, 1);
-      assert.equal(summary.kill.succeeded, 1);
-      const log = await readFile(logPath, 'utf-8');
-      assert.match(log, /kill-pane -t %3/);
-      assert.doesNotMatch(log, /kill-pane -t %1/);
-      assert.doesNotMatch(log, /kill-pane -t %2/);
-    } finally {
-      if (typeof previousPath === 'string') process.env.PATH = previousPath;
-      else delete process.env.PATH;
-      await rm(fakeBinDir, { recursive: true, force: true });
-    }
+        assert.equal(summary.excluded.leader, 1);
+        assert.equal(summary.excluded.hud, 1);
+        assert.equal(summary.kill.attempted, 1);
+        assert.equal(summary.kill.succeeded, 1);
+        const log = await readFile(logPath, 'utf-8');
+        assert.match(log, /kill-pane -t %3/);
+        assert.doesNotMatch(log, /kill-pane -t %1/);
+        assert.doesNotMatch(log, /kill-pane -t %2/);
+      },
+    );
   });
 
   it('uses pane-id-direct kill semantics without liveness-gated helper calls', async () => {
@@ -1675,14 +1686,9 @@ exit 0
   });
 
   it('continues best-effort when a pane target is missing', async () => {
-    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-tmux-teardown-missing-'));
-    const logPath = join(fakeBinDir, 'tmux.log');
-    const tmuxStubPath = join(fakeBinDir, 'tmux');
-    const previousPath = process.env.PATH;
-    try {
-      await writeFile(
-        tmuxStubPath,
-        `#!/bin/sh
+    await withMockTmuxFixture(
+      'omx-tmux-teardown-missing-',
+      (logPath) => `#!/bin/sh
 set -eu
 printf '%s\\n' "$*" >> "${logPath}"
 if [ "$1" = "kill-pane" ] && [ "\${3:-}" = "%404" ]; then
@@ -1691,21 +1697,15 @@ if [ "$1" = "kill-pane" ] && [ "\${3:-}" = "%404" ]; then
 fi
 exit 0
 `,
-      );
-      await chmod(tmuxStubPath, 0o755);
-      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
-
-      const summary = await teardownWorkerPanes(['%404', '%405'], { graceMs: 1 });
-      assert.equal(summary.kill.attempted, 2);
-      assert.equal(summary.kill.succeeded, 1);
-      assert.equal(summary.kill.failed, 1);
-      const log = await readFile(logPath, 'utf-8');
-      assert.match(log, /kill-pane -t %404/);
-      assert.match(log, /kill-pane -t %405/);
-    } finally {
-      if (typeof previousPath === 'string') process.env.PATH = previousPath;
-      else delete process.env.PATH;
-      await rm(fakeBinDir, { recursive: true, force: true });
-    }
+      async ({ logPath }) => {
+        const summary = await teardownWorkerPanes(['%404', '%405'], { graceMs: 1 });
+        assert.equal(summary.kill.attempted, 2);
+        assert.equal(summary.kill.succeeded, 1);
+        assert.equal(summary.kill.failed, 1);
+        const log = await readFile(logPath, 'utf-8');
+        assert.match(log, /kill-pane -t %404/);
+        assert.match(log, /kill-pane -t %405/);
+      },
+    );
   });
 });
