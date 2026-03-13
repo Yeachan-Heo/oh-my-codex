@@ -53,6 +53,14 @@ interface GitWorktreeEntry {
 
 const BRANCH_IN_USE_PATTERN = /already checked out|already used by worktree|is already checked out/i;
 
+export function isGitRepository(cwd: string): boolean {
+  const result = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+    cwd,
+    encoding: 'utf-8',
+  });
+  return result.status === 0;
+}
+
 function sanitizePathToken(value: string): string {
   const normalized = value
     .toLowerCase()
@@ -169,7 +177,7 @@ function resolveWorktreePath(input: WorktreePlanInput, repoRoot: string): string
 
   const teamName = sanitizePathToken(input.teamName || 'team');
   const workerName = sanitizePathToken(input.workerName || 'worker');
-  return join(parent, bucket, `team-${teamName}-${workerName}`);
+  return join(repoRoot, '.omx', 'team', teamName, 'worktrees', workerName);
 }
 
 function findWorktreeByPath(entries: GitWorktreeEntry[], worktreePath: string): GitWorktreeEntry | null {

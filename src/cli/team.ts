@@ -52,6 +52,10 @@ Usage: omx team [ralph] [N:agent-type] "<task description>"
        omx team api <operation> [--input <json>] [--json]
        omx team api --help
 
+Notes:
+  team workers use dedicated worktrees automatically by default.
+  --worktree is deprecated for omx team and is now only a backward-compatible no-op override.
+
 Examples:
   omx team 3:executor "fix failing tests"
   omx team status my-team
@@ -121,7 +125,7 @@ const TEAM_API_OPERATION_OPTIONAL_FIELDS: Partial<Record<TeamApiOperation, strin
     'assigned_tasks', 'pid', 'pane_id', 'working_dir',
     'worktree_path', 'worktree_branch', 'worktree_detached', 'team_state_root',
   ],
-  'append-event': ['task_id', 'message_id', 'reason'],
+  'append-event': ['task_id', 'message_id', 'reason', 'state', 'prev_state', 'to_worker', 'worker_count', 'source_type', 'metadata'],
   'read-events': ['after_event_id', 'wakeable_only', 'type', 'worker', 'task_id'],
   'await-event': ['after_event_id', 'timeout_ms', 'poll_ms', 'wakeable_only', 'type', 'worker', 'task_id'],
   'write-task-approval': ['required'],
@@ -133,8 +137,8 @@ const TEAM_API_OPERATION_NOTES: Partial<Record<TeamApiOperation, string>> = {
   'transition-task-status': 'Lifecycle flow is claim-safe and typically transitions in_progress -> completed|failed.',
   'cleanup': 'Uses the runtime shutdown contract; use orphan-cleanup only for known orphan recovery.',
   'orphan-cleanup': 'Destructive escape hatch for known orphan recovery. Bypasses shutdown orchestration.',
-  'read-events': 'Events are returned in canonical form; worker_idle log entries normalize to type worker_state_changed with source_type worker_idle. wakeable_only defaults to false; set wakeable_only=true to mirror omx team await semantics.',
-  'await-event': 'Waits for the next matching event and returns status=timeout when no matching event arrives before timeout_ms. wakeable_only defaults to false; set wakeable_only=true to mirror omx team await semantics.',
+  'read-events': 'Events are returned in canonical form; worker_idle log entries normalize to type worker_state_changed with source_type worker_idle. wakeable_only defaults to false; set wakeable_only=true to mirror omx team await semantics (wakeable events now include merge conflicts and per-signal stale alerts).',
+  'await-event': 'Waits for the next matching event and returns status=timeout when no matching event arrives before timeout_ms. wakeable_only defaults to false; set wakeable_only=true to mirror omx team await semantics (wakeable events now include merge conflicts and per-signal stale alerts).',
   'read-idle-state': 'Builds a structured idle summary from the existing monitor snapshot, team summary, and recent events.',
   'read-stall-state': 'Builds a structured stall summary from the existing monitor snapshot, team summary, and recent events.',
 };
@@ -164,6 +168,13 @@ function sampleValueForTeamApiField(field: string): unknown {
     case 'role': return 'executor';
     case 'assigned_tasks': return ['1', '2'];
     case 'type': return 'task_completed';
+    case 'metadata':
+      return {
+        summary: 'worker diff report',
+        worktree_path: '/tmp/team/worktrees/worker-1',
+        diff_path: '/tmp/team/worktrees/worker-1/.omx/diff.md',
+        full_diff_available: true,
+      };
     case 'requested_by': return 'leader-fixed';
     case 'after_event_id': return 'evt-123';
     case 'wakeable_only': return true;
@@ -248,6 +259,11 @@ function parseStatusTailLines(args: string[]): number {
 export interface ParsedTeamStartArgs {
   parsed: ParsedTeamArgs;
   worktreeMode: WorktreeMode;
+}
+
+function resolveDefaultTeamWorktreeMode(mode: WorktreeMode): WorktreeMode {
+  if (mode.enabled) return mode;
+  return { enabled: true, detached: true, name: null };
 }
 
 function parseTeamApiArgs(args: string[]): {
@@ -1712,7 +1728,7 @@ export function parseTeamStartArgs(args: string[]): ParsedTeamStartArgs {
   const parsedWorktree = parseWorktreeMode(args);
   return {
     parsed: parseTeamArgs(parsedWorktree.remainingArgs),
-    worktreeMode: parsedWorktree.mode,
+    worktreeMode: resolveDefaultTeamWorktreeMode(parsedWorktree.mode),
   };
 }
 
@@ -2078,6 +2094,9 @@ async function renderStartSummary(runtime: TeamRuntime, staffingPlan?: FollowupS
   console.log(`tmux target: ${runtime.sessionName}`);
   console.log(`workers: ${runtime.config.worker_count}`);
   console.log(`agent_type: ${runtime.config.agent_type}`);
+  if (runtime.config.workspace_mode) {
+    console.log(`workspace_mode: ${runtime.config.workspace_mode}`);
+  }
   if (staffingPlan) {
     console.log(`available_agent_types: ${staffingPlan.rosterSummary}`);
     console.log(`staffing_plan: ${staffingPlan.staffingSummary}`);
@@ -2102,6 +2121,7 @@ async function renderStartSummary(runtime: TeamRuntime, staffingPlan?: FollowupS
 export async function teamCommand(args: string[], options: TeamCliOptions = {}): Promise<void> {
   const cwd = process.cwd();
   const parsedWorktree = parseWorktreeMode(args);
+  const worktreeMode = resolveDefaultTeamWorktreeMode(parsedWorktree.mode);
   const teamArgs = parsedWorktree.remainingArgs;
   const [subcommandRaw] = teamArgs;
   const subcommand = (subcommandRaw || '').toLowerCase();
@@ -2191,7 +2211,8 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
       return;
     }
     const tailLines = parseStatusTailLines(teamArgs.slice(2));
-    const paneStatus = await readTeamPaneStatus(await readTeamConfig(name, cwd), cwd, snapshot, tailLines);
+    const config = await readTeamConfig(name, cwd);
+    const paneStatus = await readTeamPaneStatus(config, cwd, snapshot, tailLines);
     if (wantsJson) {
       console.log(JSON.stringify({
         ...buildJsonBase(),
@@ -2200,6 +2221,7 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
         status: 'ok',
         tail_lines: tailLines,
         phase: snapshot.phase,
+        workspace_mode: config?.workspace_mode ?? null,
         dead_workers: snapshot.deadWorkers,
         non_reporting_workers: snapshot.nonReportingWorkers,
         workers: {
@@ -2221,6 +2243,9 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
       return;
     }
     console.log(`team=${snapshot.teamName} phase=${snapshot.phase}`);
+    if (config?.workspace_mode) {
+      console.log(`workspace_mode: ${config.workspace_mode}`);
+    }
     console.log(`workers: total=${snapshot.workers.length} dead=${snapshot.deadWorkers.length} non_reporting=${snapshot.nonReportingWorkers.length}`);
     if (snapshot.deadWorkers.length > 0) {
       console.log(`dead_workers: ${snapshot.deadWorkers.join(' ')}`);
@@ -2406,7 +2431,7 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
     executionPlan.workerCount,
     tasks,
     cwd,
-    { worktreeMode: parsedWorktree.mode, ralph: parsed.ralph },
+    { worktreeMode, ralph: parsed.ralph },
   );
 
   await ensureTeamModeState(effectiveParsed, tasks);

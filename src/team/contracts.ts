@@ -38,8 +38,34 @@ export const TEAM_EVENT_TYPES = [
   'ralph_cleanup_summary',
   'approval_decision',
   'team_leader_nudge',
+  'worker_diff_activity',
+  'worker_diff_report',
+  'worker_merge_report',
+  'worker_merge_conflict',
+  'worker_stale_diff',
+  'worker_stale_heartbeat',
+  'worker_stale_stdout',
 ] as const;
 export type TeamEventType = (typeof TEAM_EVENT_TYPES)[number];
+
+export const TEAM_WAKEABLE_EVENT_TYPES: ReadonlySet<TeamEventType> = new Set([
+  'worker_state_changed',
+  'task_completed',
+  'task_failed',
+  'worker_stopped',
+  'message_received',
+  'leader_notification_deferred',
+  'all_workers_idle',
+  'team_leader_nudge',
+  'worker_merge_conflict',
+  'worker_stale_diff',
+  'worker_stale_heartbeat',
+  'worker_stale_stdout',
+]);
+
+export function isWakeableTeamEventType(type: TeamEventType): boolean {
+  return TEAM_WAKEABLE_EVENT_TYPES.has(type);
+}
 
 export const TEAM_TASK_APPROVAL_STATUSES = ['pending', 'approved', 'rejected'] as const;
 export type TeamTaskApprovalStatus = (typeof TEAM_TASK_APPROVAL_STATUSES)[number];

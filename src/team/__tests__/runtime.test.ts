@@ -1271,6 +1271,115 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
+  it('resumeTeam preserves detached worktree metadata for live prompt workers', async () => {
+    const repo = await initRepo();
+    const binDir = join(repo, 'bin');
+    const fakeCodexPath = join(binDir, 'codex');
+    const logDir = join(repo, 'worker-logs');
+    const envLogPath = join(logDir, 'env.json');
+    await mkdir(binDir, { recursive: true });
+    await writeFile(
+      fakeCodexPath,
+      `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const logDir = process.env.OMX_TEST_LOG_DIR;
+fs.mkdirSync(logDir, { recursive: true });
+fs.writeFileSync(path.join(logDir, 'env.json'), JSON.stringify({
+  cwd: process.cwd(),
+  teamStateRoot: process.env.OMX_TEAM_STATE_ROOT || '',
+  worker: process.env.OMX_TEAM_WORKER || '',
+}));
+process.stdin.resume();
+setInterval(() => {}, 1000);
+process.on('SIGTERM', () => process.exit(0));
+`,
+      { mode: 0o755 },
+    );
+
+    const prevPath = process.env.PATH;
+    const prevTmux = process.env.TMUX;
+    const prevLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevLogDir = process.env.OMX_TEST_LOG_DIR;
+
+    process.env.PATH = `${binDir}:${prevPath ?? ''}`;
+    delete process.env.TMUX;
+    process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
+    process.env.OMX_TEAM_WORKER_CLI = 'codex';
+    process.env.OMX_TEST_LOG_DIR = logDir;
+
+    let runtime: TeamRuntime | null = null;
+    try {
+      runtime = await withoutTeamWorkerEnv(() =>
+        startTeam(
+          'team-detached-worktree-resume-metadata',
+          'detached worktree resume metadata',
+          'executor',
+          1,
+          [{ subject: 's', description: 'd', owner: 'worker-1' }],
+          repo,
+          { worktreeMode: { enabled: true, detached: true, name: null } },
+        ));
+
+      const originalWorker = runtime.config.workers[0];
+      const originalWorktreePath = originalWorker?.worktree_path;
+      assert.ok(originalWorktreePath, 'worker worktree path should be persisted before resume');
+      assert.equal(originalWorker?.worktree_created, true);
+
+      const envLog = JSON.parse(await waitForFileText(envLogPath, (content) => content.includes('teamStateRoot'))) as {
+        cwd: string;
+        teamStateRoot: string;
+        worker: string;
+      };
+      assert.equal(envLog.cwd, originalWorktreePath);
+      assert.equal(envLog.teamStateRoot, join(repo, '.omx', 'state'));
+
+      const resumed = await resumeTeam(runtime.teamName, repo);
+      assert.ok(resumed, 'resumeTeam should reuse live prompt workers');
+      assert.equal(resumed?.config.workers[0]?.worktree_path, originalWorktreePath);
+      assert.equal(resumed?.config.workers[0]?.worktree_created, true);
+      assert.equal(resumed?.config.workers[0]?.team_state_root, join(repo, '.omx', 'state'));
+
+      const identityPath = join(
+        repo,
+        '.omx',
+        'state',
+        'team',
+        runtime.teamName,
+        'workers',
+        'worker-1',
+        'identity.json',
+      );
+      const identity = JSON.parse(await readFile(identityPath, 'utf-8')) as {
+        worktree_path?: string;
+        worktree_created?: boolean;
+        team_state_root?: string;
+      };
+      assert.equal(identity.worktree_path, originalWorktreePath);
+      assert.equal(identity.worktree_created, true);
+      assert.equal(identity.team_state_root, join(repo, '.omx', 'state'));
+
+      await shutdownTeam(runtime.teamName, repo, { force: true });
+      runtime = null;
+    } finally {
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, repo, { force: true }).catch(() => {});
+      }
+      if (typeof prevPath === 'string') process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
+      else delete process.env.TMUX;
+      if (typeof prevLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = prevLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevLogDir === 'string') process.env.OMX_TEST_LOG_DIR = prevLogDir;
+      else delete process.env.OMX_TEST_LOG_DIR;
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it('shutdownTeam force-kills prompt workers that ignore SIGTERM', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-prompt-stubborn-'));
     const binDir = join(cwd, 'bin');

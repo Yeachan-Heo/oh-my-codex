@@ -1,18 +1,8 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import type { TeamEvent } from './types.js';
+import { isWakeableTeamEventType } from '../contracts.js';
 import { teamEventLogPath, appendTeamEvent } from '../state.js';
-
-const CANONICAL_WAKE_EVENT_TYPES = new Set<TeamEvent['type']>([
-  'worker_state_changed',
-  'task_completed',
-  'task_failed',
-  'worker_stopped',
-  'message_received',
-  'leader_notification_deferred',
-  'all_workers_idle',
-  'team_leader_nudge',
-]);
 
 interface TeamEventReadOptions {
   afterEventId?: string;
@@ -126,7 +116,7 @@ export async function readTeamEvents(
     }
     if (isDuplicateNormalizedEvent(previous, normalized)) continue;
     previous = normalized;
-    if (opts.wakeableOnly && !CANONICAL_WAKE_EVENT_TYPES.has(normalized.type)) continue;
+    if (opts.wakeableOnly && !isWakeableTeamEventType(normalized.type)) continue;
     if (!matchesEventQuery(normalized, opts)) continue;
     events.push(normalized);
   }

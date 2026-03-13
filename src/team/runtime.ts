@@ -1,8 +1,8 @@
 import { join, resolve } from 'path';
 import { existsSync } from 'fs';
-import { readdir, readFile } from 'fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'fs/promises';
 import { performance } from 'perf_hooks';
-import { spawn, type ChildProcessByStdio } from 'child_process';
+import { spawn, spawnSync, type ChildProcessByStdio } from 'child_process';
 import type { Writable } from 'stream';
 import {
   sanitizeTeamName,
@@ -113,6 +113,7 @@ import { buildRebalanceDecisions } from './rebalance-policy.js';
 import { readModeState, updateModeState } from '../modes/base.js';
 import {
   ensureWorktree,
+  isGitRepository,
   planWorktreeTarget,
   rollbackProvisionedWorktrees,
   type EnsureWorktreeResult,
@@ -285,6 +286,203 @@ function collectProvisionedShutdownWorktrees(config: TeamConfig): EnsureWorktree
   return worktrees;
 }
 
+interface CommandResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+}
+
+interface WorkerShutdownMergeReport {
+  workerName: string;
+  worktreePath: string;
+  reportPath: string;
+  sourceRef: string | null;
+  syntheticCommit: string | null;
+  diffText: string;
+  summaryText: string | null;
+  mergeOutcome: 'merged' | 'conflict' | 'noop' | 'skipped';
+  mergeDetail: string;
+}
+
+function runCommand(command: string, args: string[], cwd: string): CommandResult {
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: 'utf-8',
+  });
+  return {
+    ok: result.status === 0,
+    stdout: (result.stdout || '').trim(),
+    stderr: (result.stderr || '').trim(),
+    exitCode: result.status,
+  };
+}
+
+function runGitCommand(repoRoot: string, args: string[], cwd: string = repoRoot): CommandResult {
+  return runCommand('git', args, cwd);
+}
+
+function getWorktreeDiffText(worktreePath: string): string {
+  const staged = runGitCommand(worktreePath, ['diff', '--cached', '--stat', '--patch'], worktreePath);
+  if (staged.ok && staged.stdout) return staged.stdout;
+
+  const unstaged = runGitCommand(worktreePath, ['diff', '--stat', '--patch'], worktreePath);
+  if (unstaged.ok && unstaged.stdout) return unstaged.stdout;
+
+  const againstHead = runGitCommand(worktreePath, ['diff', 'HEAD', '--stat', '--patch'], worktreePath);
+  if (againstHead.ok && againstHead.stdout) return againstHead.stdout;
+
+  return '';
+}
+
+function summarizeWorktreeDiffWithSparkShell(worktreePath: string): string | null {
+  const shellCommand = `git diff --cached --stat --patch || git diff --stat --patch || git diff HEAD --stat --patch`;
+  const result = runCommand('omx', ['sparkshell', 'sh', '-lc', shellCommand], worktreePath);
+  if (!result.ok || !result.stdout) return null;
+  return result.stdout;
+}
+
+function renderWorktreeMergeReport(report: WorkerShutdownMergeReport): string {
+  const lines = [
+    `# Worker ${report.workerName} shutdown report`,
+    '',
+    `- worktree: ${report.worktreePath}`,
+    `- report_path: ${report.reportPath}`,
+    `- source_ref: ${report.sourceRef ?? 'none'}`,
+    `- synthetic_commit: ${report.syntheticCommit ?? 'none'}`,
+    `- merge_outcome: ${report.mergeOutcome}`,
+    `- merge_detail: ${report.mergeDetail}`,
+    '',
+    '## Summary',
+    report.summaryText ?? 'sparkshell summary unavailable; using raw diff fallback.',
+    '',
+    '## Diff',
+    report.diffText || '(no diff output)',
+    '',
+  ];
+  return lines.join('\n');
+}
+
+async function prepareShutdownMergeReport(
+  worker: WorkerInfo,
+  leaderCwd: string,
+): Promise<WorkerShutdownMergeReport | null> {
+  if (!worker.worktree_repo_root || !worker.worktree_path || !existsSync(worker.worktree_path)) {
+    return null;
+  }
+
+  const worktreePath = resolve(worker.worktree_path);
+  const repoRoot = resolve(worker.worktree_repo_root);
+  const statusBefore = runGitCommand(repoRoot, ['status', '--porcelain'], worktreePath);
+  const hadChanges = statusBefore.ok && statusBefore.stdout.length > 0;
+
+  let syntheticCommit: string | null = null;
+  if (hadChanges) {
+    const addResult = runGitCommand(repoRoot, ['add', '-A'], worktreePath);
+    if (!addResult.ok) {
+      return {
+        workerName: worker.name,
+        worktreePath,
+        reportPath: join(worktreePath, '.omx', 'diff.md'),
+        sourceRef: null,
+        syntheticCommit: null,
+        diffText: getWorktreeDiffText(worktreePath),
+        summaryText: null,
+        mergeOutcome: 'skipped',
+        mergeDetail: addResult.stderr || 'git add -A failed',
+      };
+    }
+    const commitResult = runGitCommand(
+      repoRoot,
+      ['commit', '--no-verify', '-m', `omx(team): checkpoint ${worker.name} shutdown changes`],
+      worktreePath,
+    );
+    if (commitResult.ok) {
+      const revParse = runGitCommand(repoRoot, ['rev-parse', 'HEAD'], worktreePath);
+      syntheticCommit = revParse.ok && revParse.stdout ? revParse.stdout : null;
+    } else if (!/nothing to commit/i.test(commitResult.stderr)) {
+      return {
+        workerName: worker.name,
+        worktreePath,
+        reportPath: join(worktreePath, '.omx', 'diff.md'),
+        sourceRef: null,
+        syntheticCommit: null,
+        diffText: getWorktreeDiffText(worktreePath),
+        summaryText: null,
+        mergeOutcome: 'skipped',
+        mergeDetail: commitResult.stderr || 'git commit failed',
+      };
+    }
+  }
+
+  const sourceRefResult = runGitCommand(repoRoot, ['rev-parse', 'HEAD'], worktreePath);
+  const sourceRef = sourceRefResult.ok && sourceRefResult.stdout ? sourceRefResult.stdout : null;
+  const diffText = getWorktreeDiffText(worktreePath);
+  const summaryText = summarizeWorktreeDiffWithSparkShell(worktreePath);
+  const reportPath = join(worktreePath, '.omx', 'diff.md');
+
+  let mergeOutcome: WorkerShutdownMergeReport['mergeOutcome'] = 'skipped';
+  let mergeDetail = 'worktree merge skipped';
+  if (sourceRef) {
+    const alreadyMerged = runGitCommand(repoRoot, ['merge-base', '--is-ancestor', sourceRef, 'HEAD'], leaderCwd);
+    if (alreadyMerged.ok) {
+      mergeOutcome = 'noop';
+      mergeDetail = 'source already reachable from leader HEAD';
+    } else {
+      const mergeResult = runGitCommand(repoRoot, ['merge', '--no-ff', '--no-edit', sourceRef], leaderCwd);
+      if (mergeResult.ok) {
+        mergeOutcome = 'merged';
+        mergeDetail = mergeResult.stdout || 'merged successfully';
+      } else {
+        mergeOutcome = 'conflict';
+        mergeDetail = mergeResult.stderr || mergeResult.stdout || 'merge failed';
+        runGitCommand(repoRoot, ['merge', '--abort'], leaderCwd);
+      }
+    }
+  }
+
+  const report: WorkerShutdownMergeReport = {
+    workerName: worker.name,
+    worktreePath,
+    reportPath,
+    sourceRef,
+    syntheticCommit,
+    diffText,
+    summaryText,
+    mergeOutcome,
+    mergeDetail,
+  };
+
+  await mkdir(join(worktreePath, '.omx'), { recursive: true });
+  await writeFile(reportPath, renderWorktreeMergeReport(report), 'utf-8');
+  process.stdout.write(`${renderWorktreeMergeReport(report)}\n`);
+  return report;
+}
+
+async function prepareWorkerWorktreeShutdownReports(config: TeamConfig, leaderCwd: string): Promise<void> {
+  for (const worker of config.workers) {
+    if (!worker.worktree_path || !worker.worktree_repo_root) continue;
+    try {
+      await prepareShutdownMergeReport(worker, leaderCwd);
+    } catch (error) {
+      const worktreePath = resolve(worker.worktree_path);
+      const reportPath = join(worktreePath, '.omx', 'diff.md');
+      const fallback = [
+        `# Worker ${worker.name} shutdown report`,
+        '',
+        `- worktree: ${worktreePath}`,
+        `- report_path: ${reportPath}`,
+        '- merge_outcome: skipped',
+        `- merge_detail: ${String(error)}`,
+        '',
+      ].join('\n');
+      await mkdir(join(worktreePath, '.omx'), { recursive: true }).catch(() => {});
+      await writeFile(reportPath, fallback, 'utf-8').catch(() => {});
+      process.stdout.write(`${fallback}\n`);
+    }
+  }
+}
+
 export interface TeamStartOptions {
   worktreeMode?: WorktreeMode;
   /** When true, applies ralph-specific cleanup policy during startup rollback (skip branch deletion). */
@@ -299,6 +497,34 @@ interface ShutdownGateCounts {
   completed: number;
   failed: number;
   allowed: boolean;
+}
+
+function resolveEffectiveTeamWorktreeMode(
+  leaderCwd: string,
+  requestedMode: WorktreeMode | undefined,
+): WorktreeMode {
+  if (!isGitRepository(leaderCwd)) {
+    return { enabled: false };
+  }
+
+  if (requestedMode?.enabled) return requestedMode;
+
+  try {
+    const probe = planWorktreeTarget({
+      cwd: leaderCwd,
+      scope: 'team',
+      mode: { enabled: true, detached: true, name: null },
+      teamName: 'probe',
+      workerName: 'worker-1',
+    });
+    if (probe.enabled) {
+      return { enabled: true, detached: true, name: null };
+    }
+  } catch {
+    // Non-git directories should keep legacy single-workspace behavior.
+  }
+
+  return { enabled: false };
 }
 
 const MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
@@ -733,6 +959,7 @@ export async function startTeam(
 ): Promise<TeamRuntime> {
   const leaderCwd = resolve(cwd);
   await assertNestedTeamAllowed(leaderCwd);
+  const effectiveWorktreeMode = resolveEffectiveTeamWorktreeMode(leaderCwd, options.worktreeMode);
 
   const workerLaunchMode = resolveTeamWorkerLaunchMode(process.env);
   const displayMode = workerLaunchMode === 'interactive' ? 'split_pane' : 'auto';
@@ -748,8 +975,8 @@ export async function startTeam(
   const sanitized = sanitizeTeamName(teamName);
   const teamStateRoot = resolveCanonicalTeamStateRoot(leaderCwd);
   const activeWorktreeMode: 'detached' | 'named' | null =
-    options.worktreeMode?.enabled
-      ? (options.worktreeMode.detached ? 'detached' : 'named')
+    effectiveWorktreeMode.enabled
+      ? (effectiveWorktreeMode.detached ? 'detached' : 'named')
       : null;
   const workspaceMode: 'single' | 'worktree' = activeWorktreeMode ? 'worktree' : 'single';
   const workerWorkspaceByName = new Map<string, {
@@ -771,7 +998,7 @@ export async function startTeam(
       const planned = planWorktreeTarget({
         cwd: leaderCwd,
         scope: 'team',
-        mode: options.worktreeMode!,
+        mode: effectiveWorktreeMode,
         teamName: sanitized,
         workerName,
       });
@@ -1803,6 +2030,8 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       throw new Error(`shutdown_prompt_teardown_failed:${promptTeardownFailures.join(',')}`);
     }
   }
+
+  await prepareWorkerWorktreeShutdownReports(config, cwd);
 
   // 5. Remove team-scoped worker instructions file (no mutation of project AGENTS.md)
   try {

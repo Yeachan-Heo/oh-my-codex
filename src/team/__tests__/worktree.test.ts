@@ -51,6 +51,12 @@ describe('worktree parser', () => {
     assert.deepEqual(parsed.remainingArgs, ['team', '2:executor', 'task']);
   });
 
+  it('keeps team args flag-free so the CLI can apply automatic default worktrees', () => {
+    const parsed = parseWorktreeMode(['ralph', '2:executor', 'task']);
+    assert.deepEqual(parsed.mode, { enabled: false });
+    assert.deepEqual(parsed.remainingArgs, ['ralph', '2:executor', 'task']);
+  });
+
   // Regression tests for issue #203: branch name passed as separate arg must not
   // leak into the Codex shell as input.
   it('parses named branch from --worktree <name> (space-separated)', () => {

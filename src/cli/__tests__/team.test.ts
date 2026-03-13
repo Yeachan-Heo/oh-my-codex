@@ -44,9 +44,9 @@ function withoutTeamTestWorkerEnv<T>(fn: () => T): T {
 }
 
 describe('parseTeamStartArgs', () => {
-  it('parses default team start args without worktree', () => {
+  it('parses default team start args with automatic detached worktrees', () => {
     const result = parseTeamStartArgs(['2:executor', 'build', 'feature']);
-    assert.deepEqual(result.worktreeMode, { enabled: false });
+    assert.deepEqual(result.worktreeMode, { enabled: true, detached: true, name: null });
     assert.equal(result.parsed.workerCount, 2);
     assert.equal(result.parsed.agentType, 'executor');
     assert.equal(result.parsed.task, 'build feature');
@@ -60,6 +60,13 @@ describe('parseTeamStartArgs', () => {
     assert.equal(result.parsed.agentType, 'debugger');
     assert.equal(result.parsed.task, 'fix bug');
     assert.equal(result.parsed.teamName, 'fix-bug');
+  });
+
+  it('keeps explicit --worktree detached mode as a legacy-compatible override', () => {
+    const result = parseTeamStartArgs(['--worktree', '3:debugger', 'fix', 'bug']);
+    assert.deepEqual(result.worktreeMode, { enabled: true, detached: true, name: null });
+    assert.equal(result.parsed.workerCount, 3);
+    assert.equal(result.parsed.agentType, 'debugger');
   });
 
   it('parses named worktree mode with ralph prefix', () => {
@@ -122,8 +129,8 @@ describe('teamCommand api', () => {
       assert.equal(logs.length, 1);
       assert.match(logs[0] ?? '', /Usage: omx team \[ralph\] \[N:agent-type\]/);
       assert.match(logs[0] ?? '', /omx team api <operation>/);
-      assert.match(logs[0] ?? '', /omx team await <team-name>/);
-      assert.match(logs[0] ?? '', /omx team await <team-name>/);
+      assert.match(logs[0] ?? '', /dedicated worktrees automatically by default/);
+      assert.match(logs[0] ?? '', /--worktree is deprecated/);
     } finally {
       console.log = originalLog;
     }
@@ -138,7 +145,8 @@ describe('teamCommand api', () => {
       assert.equal(logs.length, 1);
       assert.match(logs[0] ?? '', /Usage: omx team \[ralph\] \[N:agent-type\]/);
       assert.match(logs[0] ?? '', /omx team api <operation>/);
-      assert.match(logs[0] ?? '', /omx team await <team-name>/);
+      assert.match(logs[0] ?? '', /dedicated worktrees automatically by default/);
+      assert.match(logs[0] ?? '', /--worktree is deprecated/);
     } finally {
       console.log = originalLog;
     }
@@ -1328,6 +1336,67 @@ describe('teamCommand status', () => {
       else delete process.env.OMX_TEAM_LEADER_CWD;
       if (typeof previousTeamWorker === 'string') process.env.OMX_TEAM_WORKER = previousTeamWorker;
       else delete process.env.OMX_TEAM_WORKER;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+
+  it('prints workspace_mode in text status output when present', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-status-workspace-mode-'));
+    const previousCwd = process.cwd();
+    const logs: string[] = [];
+    const originalLog = console.log;
+    try {
+      process.chdir(wd);
+      const config = await initTeamState('workspace-mode-team', 'inspect workspace mode', 'executor', 1, wd);
+      config.workspace_mode = 'worktree';
+      const teamDir = join(wd, '.omx', 'state', 'team', 'workspace-mode-team');
+      const configPath = join(teamDir, 'config.json');
+      const manifestPath = join(teamDir, 'manifest.v2.json');
+      await mkdir(teamDir, { recursive: true });
+      await writeFile(configPath, JSON.stringify(config, null, 2));
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+      manifest.workspace_mode = 'worktree';
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+      console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
+
+      await teamCommand(['status', 'workspace-mode-team']);
+
+      assert.ok(logs.some((line) => /workspace_mode: worktree/.test(line)));
+    } finally {
+      console.log = originalLog;
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('returns workspace_mode in JSON status output when present', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-status-json-workspace-mode-'));
+    const previousCwd = process.cwd();
+    const logs: string[] = [];
+    const originalLog = console.log;
+    try {
+      process.chdir(wd);
+      const config = await initTeamState('workspace-mode-json-team', 'inspect workspace mode', 'executor', 1, wd);
+      config.workspace_mode = 'worktree';
+      const teamDir = join(wd, '.omx', 'state', 'team', 'workspace-mode-json-team');
+      const configPath = join(teamDir, 'config.json');
+      const manifestPath = join(teamDir, 'manifest.v2.json');
+      await mkdir(teamDir, { recursive: true });
+      await writeFile(configPath, JSON.stringify(config, null, 2));
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+      manifest.workspace_mode = 'worktree';
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+      console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
+
+      await teamCommand(['status', 'workspace-mode-json-team', '--json']);
+
+      const payload = JSON.parse(logs[0] ?? '{}') as { workspace_mode?: string | null; status?: string };
+      assert.equal(payload.status, 'ok');
+      assert.equal(payload.workspace_mode, 'worktree');
+    } finally {
+      console.log = originalLog;
+      process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
     }
   });

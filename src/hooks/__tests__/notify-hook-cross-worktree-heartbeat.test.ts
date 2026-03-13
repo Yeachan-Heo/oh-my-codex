@@ -77,6 +77,30 @@ describe('notify-hook cross-worktree heartbeat resolution', () => {
     });
   });
 
+  it('keeps leader-owned heartbeat state when worker cwd uses the team worktree layout', async () => {
+    await withTempDir(async (root) => {
+      const leaderCwd = join(root, 'leader');
+      const teamName = 'cross-team-layout';
+      const workerName = 'worker-1';
+      const workerCwd = join(leaderCwd, '.omx', 'team', teamName, 'worktrees', workerName);
+
+      const leaderWorkerDir = join(leaderCwd, '.omx', 'state', 'team', teamName, 'workers', workerName);
+      await mkdir(leaderWorkerDir, { recursive: true });
+      await mkdir(workerCwd, { recursive: true });
+
+      const result = runWorkerNotify(workerCwd, `${teamName}/${workerName}`, {
+        OMX_TEAM_STATE_ROOT: join(leaderCwd, '.omx', 'state'),
+      });
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      const heartbeatPath = join(leaderWorkerDir, 'heartbeat.json');
+      assert.equal(existsSync(heartbeatPath), true, 'heartbeat should still resolve to leader-owned team state');
+
+      const wrongHeartbeatPath = join(workerCwd, '.omx', 'state', 'team', teamName, 'workers', workerName, 'heartbeat.json');
+      assert.equal(existsSync(wrongHeartbeatPath), false, 'team worktree cwd should not become the authoritative team state root');
+    });
+  });
+
   it('falls back to worker identity/config metadata when OMX_TEAM_STATE_ROOT is absent', async () => {
     await withTempDir(async (root) => {
       const leaderCwd = join(root, 'leader');

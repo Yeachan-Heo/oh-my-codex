@@ -192,6 +192,14 @@ function parseOptionalEventType(value: unknown): TeamEventType | 'worker_idle' |
   return normalized as TeamEventType | 'worker_idle';
 }
 
+function parseOptionalMetadata(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('metadata must be an object when provided');
+  }
+  return { ...(value as Record<string, unknown>) };
+}
+
 function selectRecentEvents(events: TeamEvent[]): TeamEvent[] {
   return events.slice(Math.max(0, events.length - TEAM_STATE_EVENT_WINDOW));
 }
@@ -404,11 +412,22 @@ function resolveTeamWorkingDirectory(teamName: string, preferredCwd: string): st
   const normalizedTeamName = String(teamName || '').trim();
   if (!normalizedTeamName) return preferredCwd;
 
-  const workerContext = parseTeamWorkerEnv(process.env.OMX_TEAM_WORKER);
-  const seeds = typeof preferredCwd === 'string' && preferredCwd.trim() !== ''
-    ? [preferredCwd]
-    : [];
+  const envTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+  if (typeof envTeamStateRoot === 'string' && envTeamStateRoot.trim() !== '') {
+    return stateRootToWorkingDirectory(envTeamStateRoot.trim());
+  }
 
+  const seeds: string[] = [];
+  const normalizedPreferredCwd = typeof preferredCwd === 'string' ? preferredCwd.trim() : '';
+  const candidateSeeds = normalizedPreferredCwd
+    ? [normalizedPreferredCwd]
+    : [process.cwd()];
+  for (const seed of candidateSeeds) {
+    if (typeof seed !== 'string' || seed.trim() === '') continue;
+    if (!seeds.includes(seed)) seeds.push(seed);
+  }
+
+  const workerContext = parseTeamWorkerEnv(process.env.OMX_TEAM_WORKER);
   for (const seed of seeds) {
     let cursor = seed;
     while (cursor) {
@@ -776,6 +795,7 @@ export async function executeTeamApiOperation(
           to_worker: args.to_worker as string | undefined,
           worker_count: typeof args.worker_count === 'number' ? args.worker_count : undefined,
           source_type: args.source_type as string | undefined,
+          metadata: parseOptionalMetadata(args.metadata),
         }, cwd);
         return { ok: true, operation, data: { event } };
       }
