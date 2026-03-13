@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-03-13
+
+### Fixed
+- **Release smoke hydration hotfix** — cherry-picked PR [#806](https://github.com/Yeachan-Heo/oh-my-codex/pull/806)'s packed-install smoke fix onto `main` so hydration assets are localized correctly during release verification. (commit `d86165d`)
+
+### Changed
+- **Release metadata for the superseding patch release** — bumped package/workspace versions to `0.9.1` and added release notes/readiness docs that explicitly preserve the historical record: `v0.9.0` remains red, and `v0.9.1` is the clean superseding release.
+
 ## [0.9.0] - 2026-03-12
 
 55 non-merge commits from `v0.8.15..dev`. Contributors: [@Yeachan-Heo](https://github.com/Yeachan-Heo/oh-my-codex), Bellman, 2233admin, [@seunghwaneom](https://github.com/seunghwaneom), [@hoky1227](https://github.com/hoky1227).

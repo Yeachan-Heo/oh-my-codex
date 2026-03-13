@@ -17,8 +17,8 @@ Operational runtime for [OpenAI Codex CLI](https://github.com/openai/codex).
 ## Featured Guides
 
 - [OpenClaw / Generic Notification Gateway Integration Guide](./docs/openclaw-integration.md)
-- [Spark Initiative release notes (v0.9.0)](./docs/release-notes-0.9.0.md)
-- [Spark Initiative release body (v0.9.0)](./docs/release-body-0.9.0.md)
+- [Spark Initiative hotfix release notes (v0.9.1)](./docs/release-notes-0.9.1.md)
+- [Spark Initiative hotfix release body (v0.9.1)](./docs/release-body-0.9.1.md)
 
 ## Languages
 
@@ -148,6 +148,8 @@ omx --xhigh --madmax
 
 `0.9.0` is the **Spark Initiative** release: OMX now ships a stronger native fast path for read-only repository discovery, shell-native inspection, and cross-platform native distribution.
 
+`0.9.1` is the clean superseding hotfix release for the Spark Initiative line: it carries the packed-install smoke hydration fix that was merged into `dev` after `v0.9.0`, while `v0.9.0` remains historically red.
+
 - **`omx explore` native harness** — qualifying read-only exploration runs through a constrained native Rust helper with explicit allowlists and fallback behavior.
 - **`omx sparkshell`** — a first-class operator surface for fast shell-native inspection, adaptive summaries, and explicit tmux-pane capture.
 - **Cross-platform native release assets** — tagged releases now publish native archives for both `omx-explore-harness` and `omx-sparkshell`, plus `native-release-manifest.json` for hydration and checksum verification.
@@ -156,9 +158,9 @@ omx --xhigh --madmax
 
 Spark Initiative references:
 
-- [Release notes: `v0.9.0`](./docs/release-notes-0.9.0.md)
-- [Release body: `v0.9.0`](./docs/release-body-0.9.0.md)
-- [Release readiness draft: `v0.9.0`](./docs/qa/release-readiness-0.9.0.md)
+- [Release notes: `v0.9.1`](./docs/release-notes-0.9.1.md)
+- [Release body: `v0.9.1`](./docs/release-body-0.9.1.md)
+- [Release readiness draft: `v0.9.1`](./docs/qa/release-readiness-0.9.1.md)
 
 Quick Spark Initiative smoke path:
 
