@@ -91,6 +91,7 @@ oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
 
 Usage:
   omx           Launch Codex CLI (HUD auto-attaches only when already inside tmux)
+  omx exec      Run codex exec non-interactively with OMX AGENTS/overlay injection
   omx setup     Install skills, prompts, MCP servers, and scope-specific AGENTS.md
   omx uninstall Remove OMX configuration and clean up installed artifacts
   omx doctor    Check installation health
@@ -164,12 +165,13 @@ const ALLOWED_SHELLS = new Set([
 ]);
 const WINDOWS_DETACHED_BOOTSTRAP_DELAY_MS = 2500;
 
-type CliCommand = 'launch' | 'setup' | 'agents-init' | 'deepinit' | 'uninstall' | 'doctor' | 'ask' | 'explore' | 'sparkshell' | 'team' | 'session' | 'resume' | 'version' | 'tmux-hook' | 'hooks' | 'hud' | 'status' | 'cancel' | 'help' | 'reasoning' | string;
+type CliCommand = 'launch' | 'exec' | 'setup' | 'agents-init' | 'deepinit' | 'uninstall' | 'doctor' | 'ask' | 'explore' | 'sparkshell' | 'team' | 'session' | 'resume' | 'version' | 'tmux-hook' | 'hooks' | 'hud' | 'status' | 'cancel' | 'help' | 'reasoning' | string;
 
 const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   'ask',
   'agents-init',
   'deepinit',
+  'exec',
   'hooks',
   'hud',
   'ralph',
@@ -259,6 +261,9 @@ export function resolveCliInvocation(args: string[]): ResolvedCliInvocation {
   }
   if (firstArg === 'launch') {
     return { command: 'launch', launchArgs: args.slice(1) };
+  }
+  if (firstArg === 'exec') {
+    return { command: 'exec', launchArgs: args.slice(1) };
   }
   if (firstArg === 'resume') {
     return { command: 'resume', launchArgs: args.slice(1) };
@@ -434,7 +439,7 @@ export function buildHudPaneCleanupTargets(existingPaneIds: string[], createdPan
 
 export async function main(args: string[]): Promise<void> {
   const knownCommands = new Set([
-    'launch', 'setup', 'agents-init', 'deepinit', 'uninstall', 'doctor', 'ask', 'explore', 'sparkshell', 'team', 'ralph', 'session', 'resume', 'version', 'tmux-hook', 'hooks', 'hud', 'status', 'cancel', 'help', '--help', '-h',
+    'launch', 'exec', 'setup', 'agents-init', 'deepinit', 'uninstall', 'doctor', 'ask', 'explore', 'sparkshell', 'team', 'ralph', 'session', 'resume', 'version', 'tmux-hook', 'hooks', 'hud', 'status', 'cancel', 'help', '--help', '-h',
   ]);
   const firstArg = args[0];
   const { command, launchArgs } = resolveCliInvocation(args);
@@ -492,6 +497,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case 'explore':
         await exploreCommand(args.slice(1));
+        break;
+      case 'exec':
+        await execWithOverlay(launchArgs);
         break;
       case 'sparkshell':
         await sparkshellCommand(args.slice(1));
@@ -687,6 +695,68 @@ export async function launchWithHud(args: string[]): Promise<void> {
     runCodex(cwd, normalizedArgs, sessionId, workerSparkModel, codexHomeOverride, notifyTempContractRaw);
   } finally {
     // ── Phase 3: postLaunch ─────────────────────────────────────────────
+    await postLaunch(cwd, sessionId);
+  }
+}
+
+export async function execWithOverlay(args: string[]): Promise<void> {
+  const launchCwd = process.cwd();
+  const parsedWorktree = parseWorktreeMode(args);
+  const notifyTempResult = resolveNotifyTempContract(parsedWorktree.remainingArgs, process.env);
+  const codexHomeOverride = resolveCodexHomeForLaunch(launchCwd, process.env);
+  const normalizedArgs = normalizeCodexLaunchArgs(notifyTempResult.passthroughArgs);
+  let cwd = launchCwd;
+
+  if (parsedWorktree.mode.enabled) {
+    const planned = planWorktreeTarget({
+      cwd: launchCwd,
+      scope: 'launch',
+      mode: parsedWorktree.mode,
+    });
+    const ensured = ensureWorktree(planned);
+    if (ensured.enabled) {
+      cwd = ensured.worktreePath;
+    }
+  }
+
+  const sessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  try {
+    await maybeCheckAndPromptUpdate(cwd);
+  } catch (err) {
+    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+  }
+
+  try {
+    await maybePromptGithubStar();
+  } catch (err) {
+    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+  }
+
+  try {
+    await preLaunch(cwd, sessionId, notifyTempResult.contract);
+  } catch (err) {
+    console.error(`[omx] preLaunch warning: ${err instanceof Error ? err.message : err}`);
+  }
+
+  try {
+    const notifyTempContractRaw = notifyTempResult.contract.active
+      ? serializeNotifyTempContract(notifyTempResult.contract)
+      : null;
+    const codexArgs = injectModelInstructionsBypassArgs(
+      cwd,
+      ['exec', ...normalizedArgs],
+      process.env,
+      sessionModelInstructionsPath(cwd, sessionId),
+    );
+    const codexEnvBase = codexHomeOverride
+      ? { ...process.env, CODEX_HOME: codexHomeOverride }
+      : process.env;
+    const codexEnv = notifyTempContractRaw
+      ? { ...codexEnvBase, [OMX_NOTIFY_TEMP_CONTRACT_ENV]: notifyTempContractRaw }
+      : codexEnvBase;
+    runCodexBlocking(cwd, codexArgs, codexEnv);
+  } finally {
     await postLaunch(cwd, sessionId);
   }
 }

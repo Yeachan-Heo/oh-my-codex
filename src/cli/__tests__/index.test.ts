@@ -338,6 +338,13 @@ describe('resolveCliInvocation', () => {
     });
   });
 
+  it('resolves exec to non-interactive launch passthrough and forwards trailing args', () => {
+    assert.deepEqual(resolveCliInvocation(['exec', '--model', 'gpt-5', 'say hi']), {
+      command: 'exec',
+      launchArgs: ['--model', 'gpt-5', 'say hi'],
+    });
+  });
+
   it('resolves hooks to hooks command', () => {
     assert.deepEqual(resolveCliInvocation(['hooks']), {
       command: 'hooks',
