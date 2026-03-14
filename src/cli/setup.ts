@@ -22,6 +22,7 @@ import {
   codexConfigPath,
   codexPromptsDir,
   userSkillsDir,
+  legacyUserSkillsDir,
   omxStateDir,
   omxPlansDir,
   omxLogsDir,
@@ -50,6 +51,7 @@ interface SetupOptions {
   force?: boolean;
   dryRun?: boolean;
   scope?: SetupScope;
+  skillTarget?: SetupSkillTarget;
   verbose?: boolean;
   agentsOverwritePrompt?: (destinationPath: string) => Promise<boolean>;
   modelUpgradePrompt?: (
@@ -70,6 +72,8 @@ const LEGACY_SCOPE_MIGRATION: Record<string, "project"> = {
 
 export const SETUP_SCOPES = ["user", "project"] as const;
 export type SetupScope = (typeof SETUP_SCOPES)[number];
+export const SETUP_SKILL_TARGETS = ["codex-home", "agents"] as const;
+export type SetupSkillTarget = (typeof SETUP_SKILL_TARGETS)[number];
 
 export interface ScopeDirectories {
   codexConfigFile: string;
@@ -106,6 +110,9 @@ function applyScopePathRewritesToAgentsTemplate(
   content: string,
   scope: SetupScope,
 ): string {
+  if (scope === "user") {
+    return content.replaceAll("~/.agents/skills", "~/.codex/skills");
+  }
   if (scope !== "project") return content;
   return content
     .replaceAll("~/.codex", "./.codex")
@@ -114,11 +121,17 @@ function applyScopePathRewritesToAgentsTemplate(
 
 interface PersistedSetupScope {
   scope: SetupScope;
+  skillTarget?: SetupSkillTarget;
 }
 
 interface ResolvedSetupScope {
   scope: SetupScope;
   source: "cli" | "persisted" | "prompt" | "default";
+}
+
+interface ResolvedSetupSkillTarget {
+  target: SetupSkillTarget;
+  source: "cli" | "persisted" | "default";
 }
 
 const REQUIRED_TEAM_CLI_API_MARKERS = [
@@ -128,6 +141,7 @@ const REQUIRED_TEAM_CLI_API_MARKERS = [
 ] as const;
 
 const DEFAULT_SETUP_SCOPE: SetupScope = "user";
+const DEFAULT_SETUP_SKILL_TARGET: SetupSkillTarget = "codex-home";
 
 const LEGACY_SETUP_MODEL = "gpt-5.3-codex";
 const DEFAULT_SETUP_MODEL = DEFAULT_FRONTIER_MODEL;
@@ -213,14 +227,18 @@ function logCategorySummary(name: string, summary: SetupCategorySummary): void {
 function isSetupScope(value: string): value is SetupScope {
   return SETUP_SCOPES.includes(value as SetupScope);
 }
-
 function getScopeFilePath(projectRoot: string): string {
   return join(projectRoot, ".omx", "setup-scope.json");
+}
+
+function isSetupSkillTarget(value: string): value is SetupSkillTarget {
+  return SETUP_SKILL_TARGETS.includes(value as SetupSkillTarget);
 }
 
 export function resolveScopeDirectories(
   scope: SetupScope,
   projectRoot: string,
+  skillTarget: SetupSkillTarget = DEFAULT_SETUP_SKILL_TARGET,
 ): ScopeDirectories {
   if (scope === "project") {
     const codexHomeDir = join(projectRoot, ".codex");
@@ -237,21 +255,24 @@ export function resolveScopeDirectories(
     codexHomeDir: codexHome(),
     nativeAgentsDir: omxAgentsConfigDir(),
     promptsDir: codexPromptsDir(),
-    skillsDir: userSkillsDir(),
+    skillsDir: skillTarget === "agents" ? legacyUserSkillsDir() : userSkillsDir(),
   };
 }
 
-async function readPersistedSetupScope(
+async function readPersistedSetupPreferences(
   projectRoot: string,
-): Promise<SetupScope | undefined> {
+): Promise<Partial<PersistedSetupScope> | undefined> {
   const scopePath = getScopeFilePath(projectRoot);
   if (!existsSync(scopePath)) return undefined;
   try {
     const raw = await readFile(scopePath, "utf-8");
     const parsed = JSON.parse(raw) as Partial<PersistedSetupScope>;
+    const persisted: Partial<PersistedSetupScope> = {};
     if (parsed && typeof parsed.scope === "string") {
       // Direct match to current scopes
-      if (isSetupScope(parsed.scope)) return parsed.scope;
+      if (isSetupScope(parsed.scope)) {
+        persisted.scope = parsed.scope;
+      }
       // Migrate legacy scope values (project-local → project)
       const migrated = LEGACY_SCOPE_MIGRATION[parsed.scope];
       if (migrated) {
@@ -259,9 +280,13 @@ async function readPersistedSetupScope(
           `[omx] Migrating persisted setup scope "${parsed.scope}" → "${migrated}" ` +
             `(see issue #243: simplified to user/project).`,
         );
-        return migrated;
+        persisted.scope = migrated;
       }
     }
+    if (parsed && typeof parsed.skillTarget === "string" && isSetupSkillTarget(parsed.skillTarget)) {
+      persisted.skillTarget = parsed.skillTarget;
+    }
+    return Object.keys(persisted).length > 0 ? persisted : undefined;
   } catch {
     // ignore invalid persisted scope and fall back to prompt/default
   }
@@ -280,7 +305,7 @@ async function promptForSetupScope(
   });
   try {
     console.log("Select setup scope:");
-    console.log(`  1) user (default) — installs to ~/.codex, ~/.agents`);
+    console.log(`  1) user (default) — installs to ~/.codex (skills default to ~/.codex/skills)`);
     console.log(
       "  2) project — installs to ./.codex, ./.agents (local to project)",
     );
@@ -350,15 +375,33 @@ async function resolveSetupScope(
   if (requestedScope) {
     return { scope: requestedScope, source: "cli" };
   }
-  const persisted = await readPersistedSetupScope(projectRoot);
-  if (persisted) {
-    return { scope: persisted, source: "persisted" };
+  const persisted = await readPersistedSetupPreferences(projectRoot);
+  if (persisted?.scope) {
+    return { scope: persisted.scope, source: "persisted" };
   }
   if (process.stdin.isTTY && process.stdout.isTTY) {
     const scope = await promptForSetupScope(DEFAULT_SETUP_SCOPE);
     return { scope, source: "prompt" };
   }
   return { scope: DEFAULT_SETUP_SCOPE, source: "default" };
+}
+
+async function resolveSetupSkillTarget(
+  projectRoot: string,
+  scope: SetupScope,
+  requestedSkillTarget?: SetupSkillTarget,
+): Promise<ResolvedSetupSkillTarget> {
+  if (requestedSkillTarget) {
+    return { target: requestedSkillTarget, source: "cli" };
+  }
+  if (scope !== "user") {
+    return { target: DEFAULT_SETUP_SKILL_TARGET, source: "default" };
+  }
+  const persisted = await readPersistedSetupPreferences(projectRoot);
+  if (persisted?.skillTarget) {
+    return { target: persisted.skillTarget, source: "persisted" };
+  }
+  return { target: DEFAULT_SETUP_SKILL_TARGET, source: "default" };
 }
 
 function hasGitignoreEntry(content: string, entry: string): boolean {
@@ -405,6 +448,7 @@ async function ensureProjectOmxGitignore(
 async function persistSetupScope(
   projectRoot: string,
   scope: SetupScope,
+  skillTarget: SetupSkillTarget,
   options: Pick<SetupOptions, "dryRun" | "verbose">,
 ): Promise<void> {
   const scopePath = getScopeFilePath(projectRoot);
@@ -413,7 +457,7 @@ async function persistSetupScope(
     return;
   }
   await mkdir(dirname(scopePath), { recursive: true });
-  const payload: PersistedSetupScope = { scope };
+  const payload: PersistedSetupScope = { scope, skillTarget };
   await writeFile(scopePath, JSON.stringify(payload, null, 2) + "\n");
   if (options.verbose) console.log(`  Wrote ${scopePath}`);
 }
@@ -423,15 +467,27 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     force = false,
     dryRun = false,
     scope: requestedScope,
+    skillTarget: requestedSkillTarget,
     verbose = false,
     modelUpgradePrompt,
   } = options;
   const pkgRoot = getPackageRoot();
   const projectRoot = process.cwd();
   const resolvedScope = await resolveSetupScope(projectRoot, requestedScope);
-  const scopeDirs = resolveScopeDirectories(resolvedScope.scope, projectRoot);
+  const resolvedSkillTarget = await resolveSetupSkillTarget(
+    projectRoot,
+    resolvedScope.scope,
+    requestedSkillTarget,
+  );
+  const scopeDirs = resolveScopeDirectories(
+    resolvedScope.scope,
+    projectRoot,
+    resolvedSkillTarget.target,
+  );
   const scopeSourceMessage =
     resolvedScope.source === "persisted" ? " (from .omx/setup-scope.json)" : "";
+  const skillTargetSourceMessage =
+    resolvedSkillTarget.source === "persisted" ? " (from .omx/setup-scope.json)" : "";
   const backupContext = getBackupContext(resolvedScope.scope, projectRoot);
 
   console.log("oh-my-codex setup");
@@ -439,6 +495,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log(
     `Using setup scope: ${resolvedScope.scope}${scopeSourceMessage}\n`,
   );
+  if (resolvedScope.scope === "user") {
+    console.log(
+      `Using user skill target: ${resolvedSkillTarget.target}${skillTargetSourceMessage} (${scopeDirs.skillsDir})\n`,
+    );
+  }
 
   // Step 1: Ensure directories exist
   console.log("[1/8] Creating directories...");
@@ -457,7 +518,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     }
     if (verbose) console.log(`  mkdir ${dir}`);
   }
-  await persistSetupScope(projectRoot, resolvedScope.scope, {
+  await persistSetupScope(projectRoot, resolvedScope.scope, resolvedSkillTarget.target, {
     dryRun,
     verbose,
   });

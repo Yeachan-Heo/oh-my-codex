@@ -8,6 +8,7 @@ import {
   codexConfigPath,
   codexPromptsDir,
   userSkillsDir,
+  legacyUserSkillsDir,
   projectSkillsDir,
   omxStateDir,
   omxProjectMemoryPath,
@@ -86,8 +87,29 @@ describe('codexPromptsDir', () => {
 });
 
 describe('userSkillsDir', () => {
+  let originalCodexHome: string | undefined;
+
+  beforeEach(() => {
+    originalCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = '/tmp/test-codex';
+  });
+
+  afterEach(() => {
+    if (typeof originalCodexHome === 'string') {
+      process.env.CODEX_HOME = originalCodexHome;
+    } else {
+      delete process.env.CODEX_HOME;
+    }
+  });
+
+  it('returns CODEX_HOME/skills', () => {
+    assert.equal(userSkillsDir(), '/tmp/test-codex/skills');
+  });
+});
+
+describe('legacyUserSkillsDir', () => {
   it('returns ~/.agents/skills', () => {
-    assert.equal(userSkillsDir(), join(homedir(), '.agents', 'skills'));
+    assert.equal(legacyUserSkillsDir(), join(homedir(), '.agents', 'skills'));
   });
 });
 

@@ -171,12 +171,16 @@ describe('omx setup scope behavior', () => {
       assert.match(res.stdout, /User scope leaves project AGENTS\.md unchanged\./);
 
       assert.equal(existsSync(join(home, '.codex', 'prompts')), true);
-      assert.equal(existsSync(join(home, '.agents', 'skills')), true);
+      assert.equal(existsSync(join(home, '.codex', 'skills')), true);
+      assert.equal(existsSync(join(home, '.agents', 'skills')), false);
       assert.equal(existsSync(join(home, '.omx', 'agents')), true);
       assert.equal(existsSync(join(home, '.codex', 'AGENTS.md')), true);
       assert.equal(existsSync(join(wd, '.omx', 'setup-scope.json')), true);
       const persistedScope = JSON.parse(await readFile(join(wd, '.omx', 'setup-scope.json'), 'utf-8')) as { scope: string };
       assert.equal(persistedScope.scope, 'user');
+      assert.equal((persistedScope as { skillTarget?: string }).skillTarget, 'codex-home');
+      const agentsMd = await readFile(join(home, '.codex', 'AGENTS.md'), 'utf-8');
+      assert.match(agentsMd, /~\/\.codex\/skills/);
       assert.equal(await readFile(join(wd, 'AGENTS.md'), 'utf-8'), existingAgents);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -188,13 +192,13 @@ describe('omx setup scope behavior', () => {
     try {
       const home = join(wd, 'home');
       await mkdir(join(home, '.codex', 'prompts'), { recursive: true });
-      await mkdir(join(home, '.agents', 'skills', 'sample-skill'), { recursive: true });
+      await mkdir(join(home, '.codex', 'skills', 'sample-skill'), { recursive: true });
       await mkdir(join(home, '.omx', 'agents'), { recursive: true });
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
       await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'user' }));
       await writeFile(join(home, '.codex', 'AGENTS.md'), '# user agents\n');
       await writeFile(join(home, '.codex', 'prompts', 'executor.md'), '# executor\n');
-      await writeFile(join(home, '.agents', 'skills', 'sample-skill', 'SKILL.md'), '# skill\n');
+      await writeFile(join(home, '.codex', 'skills', 'sample-skill', 'SKILL.md'), '# skill\n');
       await writeFile(join(home, '.codex', 'config.toml'), 'omx_enabled = true\n[mcp_servers.omx_state]\ncommand = "node"\n');
 
       const res = runOmx(wd, ['doctor'], { HOME: home, CODEX_HOME: join(home, '.codex') });
@@ -202,6 +206,57 @@ describe('omx setup scope behavior', () => {
       assert.equal(res.status, 0, res.stderr || res.stdout);
       assert.match(res.stdout, /Resolved setup scope: user \(from \.omx\/setup-scope\.json\)/);
       assert.match(res.stdout, /\[OK\] AGENTS\.md: found in .*home\/\.codex\/AGENTS\.md/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('supports explicit legacy user skill target and persists it', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-scope-'));
+    try {
+      const home = join(wd, 'home');
+      await mkdir(home, { recursive: true });
+      const res = runOmx(wd, ['setup', '--scope', 'user', '--skill-target', 'agents'], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.match(res.stdout, /Using user skill target: agents/);
+      assert.equal(existsSync(join(home, '.agents', 'skills', 'omx-setup', 'SKILL.md')), true);
+      assert.equal(existsSync(join(home, '.codex', 'skills')), false);
+      const persisted = JSON.parse(await readFile(join(wd, '.omx', 'setup-scope.json'), 'utf-8')) as {
+        scope: string;
+        skillTarget?: string;
+      };
+      assert.equal(persisted.scope, 'user');
+      assert.equal(persisted.skillTarget, 'agents');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('doctor warns about legacy ~/.agents skills when user scope targets CODEX_HOME', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-doctor-user-scope-'));
+    try {
+      const home = join(wd, 'home');
+      await mkdir(join(home, '.codex', 'prompts'), { recursive: true });
+      await mkdir(join(home, '.codex', 'skills', 'sample-skill'), { recursive: true });
+      await mkdir(join(home, '.agents', 'skills', 'legacy-skill'), { recursive: true });
+      await mkdir(join(home, '.omx', 'agents'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(
+        join(wd, '.omx', 'setup-scope.json'),
+        JSON.stringify({ scope: 'user', skillTarget: 'codex-home' })
+      );
+      await writeFile(join(home, '.codex', 'AGENTS.md'), '# user agents\n');
+      await writeFile(join(home, '.codex', 'prompts', 'executor.md'), '# executor\n');
+      await writeFile(join(home, '.codex', 'skills', 'sample-skill', 'SKILL.md'), '# skill\n');
+      await writeFile(join(home, '.agents', 'skills', 'legacy-skill', 'SKILL.md'), '# legacy skill\n');
+      await writeFile(join(home, '.codex', 'config.toml'), 'omx_enabled = true\n[mcp_servers.omx_state]\ncommand = "node"\n');
+
+      const res = runOmx(wd, ['doctor'], { HOME: home, CODEX_HOME: join(home, '.codex') });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.match(res.stdout, /Resolved user skill target: codex-home/);
+      assert.match(res.stdout, /\[!!\] Legacy Skills: 1 legacy skill directories still live in .*home\/\.agents\/skills/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

@@ -7,7 +7,7 @@ import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import {
   codexHome, codexConfigPath, codexPromptsDir,
-  userSkillsDir, omxStateDir,
+  userSkillsDir, legacyUserSkillsDir, omxStateDir,
 } from '../utils/paths.js';
 import { classifySpawnError, spawnPlatformCommandSync } from '../utils/platform-command.js';
 import { getCatalogExpectations } from './catalog-contract.js';
@@ -29,9 +29,11 @@ interface Check {
 }
 
 type DoctorSetupScope = 'user' | 'project';
+type DoctorSkillTarget = 'codex-home' | 'agents';
 
 interface DoctorScopeResolution {
   scope: DoctorSetupScope;
+  skillTarget: DoctorSkillTarget;
   source: 'persisted' | 'default';
 }
 
@@ -50,29 +52,30 @@ const LEGACY_SCOPE_MIGRATION: Record<string, DoctorSetupScope> = {
 async function resolveDoctorScope(cwd: string): Promise<DoctorScopeResolution> {
   const scopePath = join(cwd, '.omx', 'setup-scope.json');
   if (!existsSync(scopePath)) {
-    return { scope: 'user', source: 'default' };
+    return { scope: 'user', skillTarget: 'codex-home', source: 'default' };
   }
 
   try {
     const raw = await readFile(scopePath, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<{ scope: string }>;
+    const parsed = JSON.parse(raw) as Partial<{ scope: string; skillTarget: string }>;
+    const skillTarget = parsed.skillTarget === 'agents' ? 'agents' : 'codex-home';
     if (typeof parsed.scope === 'string') {
       if (parsed.scope === 'user' || parsed.scope === 'project') {
-        return { scope: parsed.scope, source: 'persisted' };
+        return { scope: parsed.scope, skillTarget, source: 'persisted' };
       }
       const migrated = LEGACY_SCOPE_MIGRATION[parsed.scope];
       if (migrated) {
-        return { scope: migrated, source: 'persisted' };
+        return { scope: migrated, skillTarget, source: 'persisted' };
       }
     }
   } catch {
     // ignore invalid persisted scope and fall back to default
   }
 
-  return { scope: 'user', source: 'default' };
+  return { scope: 'user', skillTarget: 'codex-home', source: 'default' };
 }
 
-function resolveDoctorPaths(cwd: string, scope: DoctorSetupScope): DoctorPaths {
+function resolveDoctorPaths(cwd: string, scope: DoctorSetupScope, skillTarget: DoctorSkillTarget): DoctorPaths {
   if (scope === 'project') {
     const codexHomeDir = join(cwd, '.codex');
     return {
@@ -88,7 +91,7 @@ function resolveDoctorPaths(cwd: string, scope: DoctorSetupScope): DoctorPaths {
     codexHomeDir: codexHome(),
     configPath: codexConfigPath(),
     promptsDir: codexPromptsDir(),
-    skillsDir: userSkillsDir(),
+    skillsDir: skillTarget === 'agents' ? legacyUserSkillsDir() : userSkillsDir(),
     stateDir: omxStateDir(cwd),
   };
 }
@@ -101,7 +104,7 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
   const cwd = process.cwd();
   const scopeResolution = await resolveDoctorScope(cwd);
-  const paths = resolveDoctorPaths(cwd, scopeResolution.scope);
+  const paths = resolveDoctorPaths(cwd, scopeResolution.scope, scopeResolution.skillTarget);
   const scopeSourceMessage = scopeResolution.source === 'persisted'
     ? ' (from .omx/setup-scope.json)'
     : '';
@@ -109,6 +112,9 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
   console.log('oh-my-codex doctor');
   console.log('==================\n');
   console.log(`Resolved setup scope: ${scopeResolution.scope}${scopeSourceMessage}\n`);
+  if (scopeResolution.scope === 'user') {
+    console.log(`Resolved user skill target: ${scopeResolution.skillTarget} (${paths.skillsDir})\n`);
+  }
 
   const checks: Check[] = [];
 
@@ -132,6 +138,9 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
   // Check 6: Skills installed
   checks.push(await checkSkills(paths.skillsDir));
+  if (scopeResolution.scope === 'user' && scopeResolution.skillTarget !== 'agents') {
+    checks.push(await checkLegacySkills(legacyUserSkillsDir()));
+  }
 
   // Check 7: AGENTS.md in project
   checks.push(checkAgentsMd(scopeResolution.scope, paths.codexHomeDir));
@@ -596,6 +605,28 @@ async function checkSkills(dir: string): Promise<Check> {
     return { name: 'Skills', status: 'warn', message: `${skillDirs.length} skills (expected >= ${expectations.skillMin})` };
   } catch {
     return { name: 'Skills', status: 'fail', message: 'cannot read skills directory' };
+  }
+}
+
+async function checkLegacySkills(dir: string): Promise<Check> {
+  if (!existsSync(dir)) {
+    return { name: 'Legacy Skills', status: 'pass', message: 'no legacy ~/.agents/skills directory detected' };
+  }
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const skillDirs = entries.filter((entry) => entry.isDirectory());
+    if (skillDirs.length === 0) {
+      return { name: 'Legacy Skills', status: 'pass', message: 'legacy ~/.agents/skills is empty' };
+    }
+    return {
+      name: 'Legacy Skills',
+      status: 'warn',
+      message:
+        `${skillDirs.length} legacy skill directories still live in ${dir} ` +
+        '(run "omx setup --scope user --force" to migrate, or keep them with "omx setup --scope user --skill-target agents")',
+    };
+  } catch {
+    return { name: 'Legacy Skills', status: 'fail', message: 'cannot read legacy skills directory' };
   }
 }
 

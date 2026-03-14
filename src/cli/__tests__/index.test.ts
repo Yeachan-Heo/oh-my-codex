@@ -24,6 +24,8 @@ import {
   injectModelInstructionsBypassArgs,
   resolveWorkerSparkModel,
   resolveSetupScopeArg,
+  resolveSetupSkillTargetArg,
+  readPersistedSetupPreferences,
   readPersistedSetupScope,
   resolveCodexHomeForLaunch,
   buildDetachedSessionBootstrapSteps,
@@ -423,6 +425,34 @@ describe('resolveSetupScopeArg', () => {
   });
 });
 
+describe('resolveSetupSkillTargetArg', () => {
+  it('returns undefined when skill target is omitted', () => {
+    assert.equal(resolveSetupSkillTargetArg(['--dry-run']), undefined);
+  });
+
+  it('parses --skill-target <value> form', () => {
+    assert.equal(resolveSetupSkillTargetArg(['--skill-target', 'agents']), 'agents');
+  });
+
+  it('parses --skill-target=<value> form', () => {
+    assert.equal(resolveSetupSkillTargetArg(['--skill-target=codex-home']), 'codex-home');
+  });
+
+  it('throws on invalid skill target value', () => {
+    assert.throws(
+      () => resolveSetupSkillTargetArg(['--skill-target', 'workspace']),
+      /Invalid setup skill target: workspace/
+    );
+  });
+
+  it('throws when --skill-target value is missing', () => {
+    assert.throws(
+      () => resolveSetupSkillTargetArg(['--skill-target']),
+      /Missing setup skill target value after --skill-target/
+    );
+  });
+});
+
 describe('project launch scope helpers', () => {
   it('reads persisted setup scope when valid', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-scope-'));
@@ -430,6 +460,23 @@ describe('project launch scope helpers', () => {
       await mkdir(join(wd, '.omx'), { recursive: true });
       await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
       assert.equal(readPersistedSetupScope(wd), 'project');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('reads persisted setup preferences when skill target is present', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-scope-'));
+    try {
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(
+        join(wd, '.omx', 'setup-scope.json'),
+        JSON.stringify({ scope: 'user', skillTarget: 'agents' })
+      );
+      assert.deepEqual(readPersistedSetupPreferences(wd), {
+        scope: 'user',
+        skillTarget: 'agents',
+      });
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

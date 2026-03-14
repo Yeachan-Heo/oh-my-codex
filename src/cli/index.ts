@@ -7,7 +7,7 @@ import { execFileSync, spawn } from 'child_process';
 import { basename, dirname, join } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { constants as osConstants } from 'os';
-import { setup, SETUP_SCOPES, type SetupScope } from './setup.js';
+import { setup, SETUP_SCOPES, SETUP_SKILL_TARGETS, type SetupScope, type SetupSkillTarget } from './setup.js';
 import { uninstall } from './uninstall.js';
 import { version } from './version.js';
 import { tmuxHookCommand } from './tmux-hook.js';
@@ -146,6 +146,9 @@ Options:
   --verbose     Show detailed output
   --scope       Setup scope for "omx setup" only:
                 user | project
+  --skill-target
+                User-scope skills target for "omx setup" only:
+                codex-home | agents
 `;
 
 const REASONING_KEY = 'model_reasoning_effort';
@@ -197,17 +200,31 @@ const LEGACY_SCOPE_MIGRATION_SYNC: Record<string, SetupScope> = {
 };
 
 export function readPersistedSetupScope(cwd: string): SetupScope | undefined {
+  return readPersistedSetupPreferences(cwd)?.scope;
+}
+
+export function readPersistedSetupPreferences(
+  cwd: string,
+): Partial<{ scope: SetupScope; skillTarget: SetupSkillTarget }> | undefined {
   const scopePath = join(cwd, '.omx', 'setup-scope.json');
   if (!existsSync(scopePath)) return undefined;
   try {
-    const parsed = JSON.parse(readFileSync(scopePath, 'utf-8')) as Partial<{ scope: string }>;
+    const parsed = JSON.parse(readFileSync(scopePath, 'utf-8')) as Partial<{ scope: string; skillTarget: string }>;
+    const persisted: Partial<{ scope: SetupScope; skillTarget: SetupSkillTarget }> = {};
     if (typeof parsed.scope === 'string') {
       if (SETUP_SCOPES.includes(parsed.scope as SetupScope)) {
-        return parsed.scope as SetupScope;
+        persisted.scope = parsed.scope as SetupScope;
       }
       const migrated = LEGACY_SCOPE_MIGRATION_SYNC[parsed.scope];
-      if (migrated) return migrated;
+      if (migrated) persisted.scope = migrated;
     }
+    if (
+      typeof parsed.skillTarget === 'string' &&
+      SETUP_SKILL_TARGETS.includes(parsed.skillTarget as SetupSkillTarget)
+    ) {
+      persisted.skillTarget = parsed.skillTarget as SetupSkillTarget;
+    }
+    return Object.keys(persisted).length > 0 ? persisted : undefined;
   } catch (err) {
     process.stderr.write(`[cli/index] operation failed: ${err}\n`);
     // Ignore malformed persisted scope and use defaults.
@@ -246,6 +263,30 @@ export function resolveSetupScopeArg(args: string[]): SetupScope | undefined {
     return value as SetupScope;
   }
   throw new Error(`Invalid setup scope: ${value}. Expected one of: ${SETUP_SCOPES.join(', ')}`);
+}
+
+export function resolveSetupSkillTargetArg(args: string[]): SetupSkillTarget | undefined {
+  let value: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--skill-target') {
+      const next = args[index + 1];
+      if (!next || next.startsWith('-')) {
+        throw new Error(`Missing setup skill target value after --skill-target. Expected one of: ${SETUP_SKILL_TARGETS.join(', ')}`);
+      }
+      value = next;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--skill-target=')) {
+      value = arg.slice('--skill-target='.length);
+    }
+  }
+  if (!value) return undefined;
+  if (SETUP_SKILL_TARGETS.includes(value as SetupSkillTarget)) {
+    return value as SetupSkillTarget;
+  }
+  throw new Error(`Invalid setup skill target: ${value}. Expected one of: ${SETUP_SKILL_TARGETS.join(', ')}`);
 }
 
 export function resolveCliInvocation(args: string[]): ResolvedCliInvocation {
@@ -470,6 +511,7 @@ export async function main(args: string[]): Promise<void> {
           dryRun: options.dryRun,
           verbose: options.verbose,
           scope: resolveSetupScopeArg(args.slice(1)),
+          skillTarget: resolveSetupSkillTargetArg(args.slice(1)),
         });
         break;
       case 'agents-init':

@@ -12,8 +12,8 @@ import {
 } from '../config/generator.js';
 import { getPackageRoot } from '../utils/package.js';
 import { AGENT_DEFINITIONS } from '../agents/definitions.js';
-import { resolveScopeDirectories, type SetupScope } from './setup.js';
-import { readPersistedSetupScope } from './index.js';
+import { resolveScopeDirectories, type SetupScope, type SetupSkillTarget } from './setup.js';
+import { readPersistedSetupPreferences, readPersistedSetupScope } from './index.js';
 import { isOmxGeneratedAgentsMd } from '../utils/agents-md.js';
 
 export interface UninstallOptions {
@@ -327,7 +327,9 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
 
   // Resolve scope (explicit --scope overrides persisted scope)
   const scope = options.scope ?? readPersistedSetupScope(projectRoot) ?? 'user';
-  const scopeDirs = resolveScopeDirectories(scope, projectRoot);
+  const persisted = readPersistedSetupPreferences(projectRoot);
+  const skillTarget: SetupSkillTarget = persisted?.skillTarget ?? 'codex-home';
+  const scopeDirs = resolveScopeDirectories(scope, projectRoot, skillTarget);
 
   console.log('oh-my-codex uninstall');
   console.log('=====================\n');
