@@ -5,7 +5,7 @@ argument-hint: "<idea or vague description>"
 ---
 
 <Purpose>
-Deep Interview implements an Ouroboros-inspired Socratic clarification loop before planning or implementation. It turns vague ideas into explicit specifications by asking targeted questions, scoring ambiguity across weighted dimensions, and gating execution until clarity reaches a configurable threshold.
+Deep Interview is an intent-first Socratic clarification loop before planning or implementation. It turns vague ideas into execution-ready specifications by asking targeted questions about why the user wants a change, how far it should go, what should stay out of scope, and what OMX may decide without confirmation.
 </Purpose>
 
 <Use_When>
@@ -23,9 +23,7 @@ Deep Interview implements an Ouroboros-inspired Socratic clarification loop befo
 </Do_Not_Use_When>
 
 <Why_This_Exists>
-Execution quality is usually bottlenecked by requirement clarity. A single expansion pass often misses hidden assumptions. This workflow applies Socratic pressure + quantitative ambiguity scoring so orchestration modes begin with an explicit, testable spec.
-
-Inspired by Ouroboros (https://github.com/Q00/ouroboros) and adapted for OMX conventions.
+Execution quality is usually bottlenecked by intent clarity, not just missing implementation detail. A single expansion pass often misses why the user wants a change, where the scope should stop, which tradeoffs are unacceptable, and which decisions still require user approval. This workflow applies Socratic pressure + quantitative ambiguity scoring so orchestration modes begin with an explicit, testable, intent-aligned spec.
 </Why_This_Exists>
 
 <Depth_Profiles>
@@ -38,13 +36,17 @@ If no flag is provided, use **Standard**.
 
 <Execution_Policy>
 - Ask ONE question per round (never batch)
-- Target the weakest clarity dimension each round
+- Ask about intent and boundaries before implementation detail
+- Target the weakest clarity dimension each round after applying the stage-priority rules below
 - Gather codebase facts via `explore` before asking user about internals
 - When session guidance enables `USE_OMX_EXPLORE_CMD`, prefer `omx explore` for simple read-only brownfield fact gathering; keep prompts narrow and concrete, and keep ambiguous or non-shell-only investigation on the richer normal path and fall back normally if `omx explore` is unavailable.
 - Always run a preflight context intake before the first interview question
+- Reduce user effort: ask only the highest-leverage unresolved question, and never ask the user for codebase facts that can be discovered directly
+- For brownfield work, prefer evidence-backed confirmation questions such as "I found X in Y. Should this change follow that pattern?"
 - In Codex CLI, prefer `request_user_input` when available; if unavailable, fall back to concise plain-text one-question turns
 - Re-score ambiguity after each answer and show progress transparently
 - Do not hand off to execution while ambiguity remains above threshold unless user explicitly opts to proceed with warning
+- Do not crystallize or hand off while `Non-goals` or `Decision Boundaries` remain unresolved, even if the weighted ambiguity threshold is met
 - Persist mode state for resume safety (`state_write` / `state_read`)
 </Execution_Policy>
 
@@ -57,9 +59,12 @@ If no flag is provided, use **Standard**.
 3. If no snapshot exists, create a minimum context snapshot with:
    - Task statement
    - Desired outcome
+   - Stated solution (what the user asked for)
+   - Probable intent hypothesis (why they likely want it)
    - Known facts/evidence
    - Constraints
    - Unknowns/open questions
+   - Decision-boundary unknowns
    - Likely codebase touchpoints
 4. Save snapshot to `.omx/context/{slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`) and reference it in mode state.
 
@@ -86,6 +91,8 @@ If no flag is provided, use **Standard**.
     "max_rounds": 5,
     "challenge_modes_used": [],
     "codebase_context": null,
+    "current_stage": "intent-first",
+    "current_focus": "intent",
     "context_snapshot_path": ".omx/context/<slug>-<timestamp>.md"
   }
 }
@@ -105,11 +112,20 @@ Use:
 - Brownfield context (if any)
 - Activated challenge mode injection (Phase 3)
 
-Target the lowest-scoring dimension:
-- Goal Clarity
-- Constraint Clarity
-- Success Criteria Clarity
-- Context Clarity (brownfield only)
+Target the lowest-scoring dimension, but respect stage priority:
+- **Stage 1 — Intent-first:** Intent, Outcome, Scope, Non-goals, Decision Boundaries
+- **Stage 2 — Feasibility:** Constraints, Success Criteria
+- **Stage 3 — Brownfield grounding:** Context Clarity (brownfield only)
+
+Detailed dimensions:
+- Intent Clarity — why the user wants this
+- Outcome Clarity — what end state they want
+- Scope Clarity — how far the change should go
+- Constraint Clarity — technical or business limits that must hold
+- Success Criteria Clarity — how completion will be judged
+- Context Clarity — existing codebase understanding (brownfield only)
+
+`Non-goals` and `Decision Boundaries` are mandatory readiness gates. Ask about them early and keep revisiting them until they are explicit.
 
 ### 2b) Ask the question
 Use structured user-input tooling available in the runtime (`AskUserQuestion` / equivalent) and present:
@@ -121,14 +137,19 @@ Round {n} | Target: {weakest_dimension} | Ambiguity: {score}%
 ```
 
 ### 2c) Score ambiguity
-Score each dimension in `[0.0, 1.0]` with justification + gap.
+Score each weighted dimension in `[0.0, 1.0]` with justification + gap.
 
-Greenfield: `ambiguity = 1 - (goal × 0.40 + constraints × 0.30 + criteria × 0.30)`
+Greenfield: `ambiguity = 1 - (intent × 0.30 + outcome × 0.25 + scope × 0.20 + constraints × 0.15 + success × 0.10)`
 
-Brownfield: `ambiguity = 1 - (goal × 0.35 + constraints × 0.25 + criteria × 0.25 + context × 0.15)`
+Brownfield: `ambiguity = 1 - (intent × 0.25 + outcome × 0.20 + scope × 0.20 + constraints × 0.15 + success × 0.10 + context × 0.10)`
+
+Readiness gate:
+- `Non-goals` must be explicit
+- `Decision Boundaries` must be explicit
+- If either gate is unresolved, continue interviewing even when weighted ambiguity is below threshold
 
 ### 2d) Report progress
-Show weighted breakdown table and next focus dimension.
+Show weighted breakdown table, readiness-gate status (`Non-goals`, `Decision Boundaries`), and the next focus dimension.
 
 ### 2e) Persist state
 Append round result and updated scores via `state_write`.
@@ -162,7 +183,12 @@ Spec should include:
 - Metadata (profile, rounds, final ambiguity, threshold, context type)
 - Context snapshot reference/path (for ralplan/team reuse)
 - Clarity breakdown table
-- Goal / Constraints / Non-goals
+- Intent (why the user wants this)
+- Desired Outcome
+- In-Scope
+- Out-of-Scope / Non-goals
+- Decision Boundaries (what OMX may decide without confirmation)
+- Constraints
 - Testable acceptance criteria
 - Assumptions exposed + resolutions
 - Technical context findings
@@ -207,7 +233,8 @@ Present execution options after artifact generation:
 <Final_Checklist>
 - [ ] Preflight context snapshot exists under `.omx/context/{slug}-{timestamp}.md`
 - [ ] Ambiguity score shown each round
-- [ ] Weakest-dimension targeting used
+- [ ] Intent-first stage priority used before implementation detail
+- [ ] Weakest-dimension targeting used within the active stage
 - [ ] Challenge modes triggered at thresholds (when applicable)
 - [ ] Transcript written to `.omx/interviews/{slug}-{timestamp}.md`
 - [ ] Spec written to `.omx/specs/deep-interview-{slug}.md`

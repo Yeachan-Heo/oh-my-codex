@@ -18,14 +18,36 @@ const rootAgents = readFileSync(join(__dirname, '../../../AGENTS.md'), 'utf-8');
 const templateAgents = readFileSync(join(__dirname, '../../../templates/AGENTS.md'), 'utf-8');
 
 describe('deep-interview Ouroboros contract', () => {
-  it('includes Ouroboros framing and ambiguity gate math', () => {
-    assert.match(deepInterviewSkill, /Ouroboros/i);
+  it('includes ambiguity gate math and intent-first scoring', () => {
     assert.match(deepInterviewSkill, /ambiguity/i);
     assert.match(deepInterviewSkill, /threshold/i);
     assert.match(deepInterviewSkill, /Greenfield: `ambiguity =/);
     assert.match(deepInterviewSkill, /Brownfield: `ambiguity =/);
+    assert.match(deepInterviewSkill, /intent × 0\.30/i);
+    assert.match(deepInterviewSkill, /Decision Boundaries/i);
   });
 
+
+  it('adds intent-first concepts and readiness gates', () => {
+    assert.match(deepInterviewSkill, /Intent \(why the user wants this\)/i);
+    assert.match(deepInterviewSkill, /Desired Outcome/i);
+    assert.match(deepInterviewSkill, /Out-of-Scope \/ Non-goals/i);
+    assert.match(deepInterviewSkill, /Decision Boundaries/i);
+    assert.match(deepInterviewSkill, /Reduce user effort/i);
+    assert.match(deepInterviewSkill, /must be explicit/i);
+  });
+
+  it('prioritizes intent-boundary questioning before implementation detail', () => {
+    const intentFirstIndex = deepInterviewSkill.indexOf('Ask about intent and boundaries before implementation detail');
+    const weakDimIndex = deepInterviewSkill.indexOf('Target the lowest-scoring dimension, but respect stage priority');
+    const artifactIndex = deepInterviewSkill.indexOf('Spec should include:');
+
+    assert.notEqual(intentFirstIndex, -1);
+    assert.notEqual(weakDimIndex, -1);
+    assert.notEqual(artifactIndex, -1);
+    assert.ok(intentFirstIndex < artifactIndex);
+    assert.ok(weakDimIndex < artifactIndex);
+  });
   it('includes challenge mode structure', () => {
     assert.match(deepInterviewSkill, /Contrarian/i);
     assert.match(deepInterviewSkill, /Simplifier/i);
