@@ -14,6 +14,8 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { classifyTaskSize, isHeavyMode, type TaskSizeResult, type TaskSizeThresholds } from './task-size-detector.js';
+import { isApprovedExecutionFollowupShortcut, type FollowupMode } from '../team/followup-planner.js';
+import { isPlanningComplete, readPlanningArtifacts } from '../planning/artifacts.js';
 import { KEYWORD_TRIGGER_DEFINITIONS, compareKeywordMatches } from './keyword-registry.js';
 
 export interface KeywordMatch {
@@ -374,9 +376,15 @@ export function isUnderspecifiedForExecution(text: string): boolean {
  *
  * Returns the modified keyword list and gate metadata.
  */
+export interface ApplyRalplanGateOptions {
+  cwd?: string;
+  priorSkill?: string | null;
+}
+
 export function applyRalplanGate(
   keywords: string[],
   text: string,
+  options: ApplyRalplanGateOptions = {},
 ): { keywords: string[]; gateApplied: boolean; gatedKeywords: string[] } {
   if (keywords.length === 0) {
     return { keywords, gateApplied: false, gatedKeywords: [] };
@@ -400,6 +408,23 @@ export function applyRalplanGate(
 
   // Check if prompt is underspecified
   if (!isUnderspecifiedForExecution(text)) {
+    return { keywords, gateApplied: false, gatedKeywords: [] };
+  }
+
+  const planningComplete = isPlanningComplete(readPlanningArtifacts(options.cwd ?? process.cwd()));
+  const shortFollowupBypasses = executionKeywords.filter((keyword) => {
+    const normalizedKeyword = keyword === 'swarm' ? 'team' : keyword;
+    if (normalizedKeyword !== 'team' && normalizedKeyword !== 'ralph') return false;
+    return isApprovedExecutionFollowupShortcut(
+      normalizedKeyword as FollowupMode,
+      text,
+      {
+        planningComplete,
+        priorSkill: options.priorSkill,
+      },
+    );
+  });
+  if (shortFollowupBypasses.length > 0) {
     return { keywords, gateApplied: false, gatedKeywords: [] };
   }
 

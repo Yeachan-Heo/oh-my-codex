@@ -5,6 +5,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   buildFollowupStaffingPlan,
+  isApprovedExecutionFollowupShortcut,
   resolveAvailableAgentTypes,
 } from '../followup-planner.js';
 
@@ -75,5 +76,26 @@ describe('followup-planner', () => {
     assert.equal(plan.launchHints.skillCommand, '$ralph "Investigate auth regression and verify the fix"');
     assert.match(plan.verificationPlan.summary, /persistent execution and verification owner/i);
     assert.equal(plan.verificationPlan.checkpoints.length, 3);
+  });
+
+  it('recognizes short approved team follow-up shortcuts in English and Korean', () => {
+    assert.equal(
+      isApprovedExecutionFollowupShortcut('team', 'team', { planningComplete: true }),
+      true,
+    );
+    assert.equal(
+      isApprovedExecutionFollowupShortcut('team', 'team으로 해줘', { planningComplete: true }),
+      true,
+    );
+  });
+
+  it('rejects short follow-up shortcuts when the prior execution context conflicts', () => {
+    assert.equal(
+      isApprovedExecutionFollowupShortcut('team', 'team', {
+        planningComplete: true,
+        priorSkill: 'autopilot',
+      }),
+      false,
+    );
   });
 });

@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { updateModeState, startMode, readModeState } from '../modes/base.js';
 import { monitorTeam, resumeTeam, shutdownTeam, startTeam, type TeamRuntime, type TeamSnapshot } from '../team/runtime.js';
@@ -7,6 +8,7 @@ import { readTeamEvents, waitForTeamEvent } from '../team/state/events.js';
 import type { TeamEvent, TeamTask, WorkerInfo, WorkerStatus } from '../team/state.js';
 import { parseWorktreeMode, type WorktreeMode } from '../team/worktree.js';
 import { classifyTaskSize } from '../hooks/task-size-detector.js';
+import { readApprovedExecutionLaunchHint } from '../planning/artifacts.js';
 import { routeTaskToRole } from '../team/role-router.js';
 import { allocateTasksToWorkers } from '../team/allocation-policy.js';
 import {
@@ -37,6 +39,85 @@ interface ParsedTeamArgs {
   task: string;
   teamName: string;
   ralph: boolean;
+}
+
+
+interface TeamFollowupContext {
+  task: string;
+  workerCount: number;
+  explicitWorkerCount: boolean;
+  agentType?: string;
+  explicitAgentType?: boolean;
+  ralph: boolean;
+}
+
+function readPersistedTeamFollowupState(cwd: string): {
+  task?: string;
+  task_description?: string;
+  workerCount?: number;
+  agent_count?: number;
+  agentType?: string;
+  agent_types?: string;
+  linkedRalph?: boolean;
+  linked_ralph?: boolean;
+} | null {
+  const path = join(cwd, '.omx', 'state', 'team-state.json');
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8')) as {
+      task?: string;
+      workerCount?: number;
+      agentType?: string;
+      linkedRalph?: boolean;
+      task_description?: string;
+      agent_count?: number;
+      agent_types?: string;
+    };
+  } catch {
+    return null;
+  }
+}
+
+function resolveApprovedTeamFollowupContext(cwd: string, task: string): TeamFollowupContext | null {
+  const normalizedTask = task.trim();
+  if (!normalizedTask) return null;
+
+  const existingTeamState = readPersistedTeamFollowupState(cwd);
+  const shortFollowup = ['team', 'team으로 해줘', 'team으로 해주세요'].includes(normalizedTask);
+  if (!shortFollowup) return null;
+
+  const approvedHint = readApprovedExecutionLaunchHint(cwd, 'team');
+  if (!approvedHint) return null;
+
+  const persistedTask = typeof existingTeamState?.task_description === 'string'
+    ? existingTeamState.task_description
+    : typeof existingTeamState?.task === 'string'
+      ? existingTeamState.task
+      : null;
+  const persistedWorkerCount = typeof existingTeamState?.agent_count === 'number'
+    ? existingTeamState.agent_count
+    : typeof existingTeamState?.workerCount === 'number'
+      ? existingTeamState.workerCount
+      : null;
+  if (persistedTask && persistedWorkerCount && persistedTask.trim() === approvedHint.task.trim()) {
+    return {
+      task: persistedTask,
+      workerCount: persistedWorkerCount,
+      explicitWorkerCount: true,
+      agentType: approvedHint.agentType,
+      explicitAgentType: approvedHint.agentType != null,
+      ralph: existingTeamState?.linked_ralph === true || existingTeamState?.linkedRalph === true || approvedHint.linkedRalph === true,
+    };
+  }
+
+  return {
+    task: approvedHint.task,
+    workerCount: approvedHint.workerCount ?? 3,
+    explicitWorkerCount: approvedHint.workerCount != null,
+    agentType: approvedHint.agentType,
+    explicitAgentType: approvedHint.agentType != null,
+    ralph: approvedHint.linkedRalph === true,
+  };
 }
 
 const MIN_WORKER_COUNT = 1;
@@ -1686,7 +1767,7 @@ function renderTeamPaneStatus(
   }
 }
 
-function parseTeamArgs(args: string[]): ParsedTeamArgs {
+function parseTeamArgs(args: string[], cwd: string = process.cwd()): ParsedTeamArgs {
   const tokens = [...args];
   let ralph = false;
   let workerCount = 3;
@@ -1720,8 +1801,22 @@ function parseTeamArgs(args: string[]): ParsedTeamArgs {
     throw new Error('Usage: omx team [ralph] [N:agent-type] "<task description>"');
   }
 
-  const teamName = sanitizeTeamName(slugifyTask(task));
-  return { workerCount, agentType, explicitAgentType, explicitWorkerCount, task, teamName, ralph };
+  const followupContext = resolveApprovedTeamFollowupContext(cwd, task);
+  const effectiveTask = followupContext?.task ?? task;
+  if (followupContext) {
+    if (!explicitWorkerCount) {
+      workerCount = followupContext.workerCount;
+      explicitWorkerCount = followupContext.explicitWorkerCount;
+    }
+    if (!explicitAgentType && followupContext.agentType) {
+      agentType = followupContext.agentType;
+      explicitAgentType = followupContext.explicitAgentType === true;
+    }
+    ralph = ralph || followupContext.ralph;
+  }
+
+  const teamName = sanitizeTeamName(slugifyTask(effectiveTask));
+  return { workerCount, agentType, explicitAgentType, explicitWorkerCount, task: effectiveTask, teamName, ralph };
 }
 
 export function parseTeamStartArgs(args: string[]): ParsedTeamStartArgs {
@@ -2407,7 +2502,7 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
     return;
   }
 
-  const parsed = parseTeamArgs(teamArgs);
+  const parsed = parseTeamArgs(teamArgs, cwd);
   const executionPlan = buildTeamExecutionPlan(
     parsed.task,
     parsed.workerCount,

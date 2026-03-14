@@ -90,6 +90,77 @@ describe('parseTeamStartArgs', () => {
       new RegExp(`Expected 1-${DEFAULT_MAX_WORKERS}`),
     );
   });
+
+  it('reuses the approved team launch hint for a short English follow-up', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-followup-en-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(wd);
+      await mkdir(join(wd, '.omx', 'plans'), { recursive: true });
+      await writeFile(
+        join(wd, '.omx', 'plans', 'prd-issue-831.md'),
+        '# Approved plan\n\nLaunch via omx team ralph 3:executor "Execute approved issue 831 plan"\n',
+      );
+      await writeFile(join(wd, '.omx', 'plans', 'test-spec-issue-831.md'), '# Test spec\n');
+
+      const result = parseTeamStartArgs(['team']);
+      assert.equal(result.parsed.task, 'Execute approved issue 831 plan');
+      assert.equal(result.parsed.workerCount, 3);
+      assert.equal(result.parsed.agentType, 'executor');
+      assert.equal(result.parsed.explicitWorkerCount, true);
+      assert.equal(result.parsed.ralph, true);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('reuses the approved team launch hint for a short Korean follow-up', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-followup-ko-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(wd);
+      await mkdir(join(wd, '.omx', 'plans'), { recursive: true });
+      await writeFile(
+        join(wd, '.omx', 'plans', 'prd-issue-831.md'),
+        '# Approved plan\n\nLaunch via omx team ralph 3:executor "Execute approved issue 831 plan"\n',
+      );
+      await writeFile(join(wd, '.omx', 'plans', 'test-spec-issue-831.md'), '# Test spec\n');
+
+      const result = parseTeamStartArgs(['team으로', '해줘']);
+      assert.equal(result.parsed.task, 'Execute approved issue 831 plan');
+      assert.equal(result.parsed.workerCount, 3);
+      assert.equal(result.parsed.ralph, true);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves explicit team staffing overrides while reusing the approved plan task', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-followup-override-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(wd);
+      await mkdir(join(wd, '.omx', 'plans'), { recursive: true });
+      await writeFile(
+        join(wd, '.omx', 'plans', 'prd-issue-831.md'),
+        '# Approved plan\n\nLaunch via omx team ralph 3:executor "Execute approved issue 831 plan"\n',
+      );
+      await writeFile(join(wd, '.omx', 'plans', 'test-spec-issue-831.md'), '# Test spec\n');
+
+      const result = parseTeamStartArgs(['2:debugger', 'team']);
+      assert.equal(result.parsed.task, 'Execute approved issue 831 plan');
+      assert.equal(result.parsed.workerCount, 2);
+      assert.equal(result.parsed.agentType, 'debugger');
+      assert.equal(result.parsed.explicitWorkerCount, true);
+      assert.equal(result.parsed.explicitAgentType, true);
+      assert.equal(result.parsed.ralph, true);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('teamCommand shutdown --force parsing', () => {

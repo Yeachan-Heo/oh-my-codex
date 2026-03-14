@@ -503,6 +503,44 @@ describe('isUnderspecifiedForExecution', () => {
 });
 
 describe('applyRalplanGate', () => {
+  it('does not re-enter ralplan for a short approved team follow-up', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-'));
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      await writeFile(
+        join(plansDir, 'prd-issue-831.md'),
+        '# Approved plan\n\nLaunch hint: omx team ralph 3:executor "Execute approved issue 831 plan"\n',
+      );
+      await writeFile(join(plansDir, 'test-spec-issue-831.md'), '# Test spec\n');
+
+      const result = applyRalplanGate(['team'], 'team', { cwd });
+      assert.equal(result.gateApplied, false);
+      assert.deepEqual(result.keywords, ['team']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not re-enter ralplan for a short approved Korean team follow-up', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-ko-'));
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      await writeFile(
+        join(plansDir, 'prd-issue-831.md'),
+        '# Approved plan\n\nLaunch hint: omx team ralph 3:executor "Execute approved issue 831 plan"\n',
+      );
+      await writeFile(join(plansDir, 'test-spec-issue-831.md'), '# Test spec\n');
+
+      const result = applyRalplanGate(['team'], 'team으로 해줘', { cwd });
+      assert.equal(result.gateApplied, false);
+      assert.deepEqual(result.keywords, ['team']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('redirects underspecified execution keywords to ralplan', () => {
     const result = applyRalplanGate(['ralph'], 'ralph fix this');
     assert.equal(result.gateApplied, true);

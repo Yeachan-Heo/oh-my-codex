@@ -43,6 +43,49 @@ export interface BuildFollowupStaffingPlanOptions {
   fallbackRole?: string;
 }
 
+export interface ApprovedExecutionFollowupContext {
+  planningComplete?: boolean;
+  priorSkill?: string | null;
+}
+
+const SHORT_TEAM_FOLLOWUP_PATTERNS: RegExp[] = [
+  /^team$/i,
+  /^team\s+please$/i,
+  /^team(?:으로)?\s+해줘$/i,
+  /^team(?:으로)?\s+해주세요$/i,
+];
+
+const SHORT_RALPH_FOLLOWUP_PATTERNS: RegExp[] = [
+  /^ralph$/i,
+  /^ralph\s+please$/i,
+];
+
+function normalizeFollowupShortcutText(text: string): string {
+  return text.trim().replace(/\s+/g, ' ');
+}
+
+export function isShortTeamFollowupRequest(text: string): boolean {
+  const normalized = normalizeFollowupShortcutText(text);
+  return SHORT_TEAM_FOLLOWUP_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+export function isShortRalphFollowupRequest(text: string): boolean {
+  const normalized = normalizeFollowupShortcutText(text);
+  return SHORT_RALPH_FOLLOWUP_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+export function isApprovedExecutionFollowupShortcut(
+  mode: FollowupMode,
+  text: string,
+  context: ApprovedExecutionFollowupContext = {},
+): boolean {
+  if (context.planningComplete !== true) return false;
+  if (context.priorSkill && context.priorSkill.toLowerCase() !== 'ralplan') return false;
+  return mode === 'team'
+    ? isShortTeamFollowupRequest(text)
+    : isShortRalphFollowupRequest(text);
+}
+
 function defaultPromptDirs(projectRoot: string): string[] {
   return [
     join(projectRoot, 'prompts'),
