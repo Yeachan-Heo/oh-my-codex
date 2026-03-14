@@ -22,6 +22,7 @@ import {
   codexConfigPath,
   codexPromptsDir,
   userSkillsDir,
+  legacyUserSkillsDir,
   omxStateDir,
   omxPlansDir,
   omxLogsDir,
@@ -50,6 +51,7 @@ interface SetupOptions {
   force?: boolean;
   dryRun?: boolean;
   scope?: SetupScope;
+  skillTarget?: 'codex-home' | 'agents';
   verbose?: boolean;
   agentsOverwritePrompt?: (destinationPath: string) => Promise<boolean>;
   modelUpgradePrompt?: (
@@ -107,15 +109,18 @@ function applyScopePathRewritesToAgentsTemplate(
   if (scope !== "project") return content;
   return content
     .replaceAll("~/.codex", "./.codex")
-    .replaceAll("~/.agents", "./.agents");
+    .replaceAll("~/.agents", "./.agents")
+    .replaceAll("./.codex/skills", "./.agents/skills");
 }
 
 interface PersistedSetupScope {
   scope: SetupScope;
+  skillTarget?: 'codex-home' | 'agents';
 }
 
 interface ResolvedSetupScope {
   scope: SetupScope;
+  skillTarget?: 'codex-home' | 'agents';
   source: "cli" | "persisted" | "prompt" | "default";
 }
 
@@ -219,6 +224,7 @@ function getScopeFilePath(projectRoot: string): string {
 export function resolveScopeDirectories(
   scope: SetupScope,
   projectRoot: string,
+  skillTarget?: 'codex-home' | 'agents',
 ): ScopeDirectories {
   if (scope === "project") {
     const codexHomeDir = join(projectRoot, ".codex");
@@ -235,13 +241,13 @@ export function resolveScopeDirectories(
     codexHomeDir: codexHome(),
     nativeAgentsDir: omxAgentsConfigDir(),
     promptsDir: codexPromptsDir(),
-    skillsDir: userSkillsDir(),
+    skillsDir: skillTarget === 'agents' ? legacyUserSkillsDir() : userSkillsDir(),
   };
 }
 
 async function readPersistedSetupScope(
   projectRoot: string,
-): Promise<SetupScope | undefined> {
+): Promise<{ scope: SetupScope; skillTarget?: 'codex-home' | 'agents' } | undefined> {
   const scopePath = getScopeFilePath(projectRoot);
   if (!existsSync(scopePath)) return undefined;
   try {
@@ -249,7 +255,12 @@ async function readPersistedSetupScope(
     const parsed = JSON.parse(raw) as Partial<PersistedSetupScope>;
     if (parsed && typeof parsed.scope === "string") {
       // Direct match to current scopes
-      if (isSetupScope(parsed.scope)) return parsed.scope;
+      if (isSetupScope(parsed.scope)) {
+        return {
+          scope: parsed.scope,
+          skillTarget: parsed.skillTarget,
+        };
+      }
       // Migrate legacy scope values (project-local → project)
       const migrated = LEGACY_SCOPE_MIGRATION[parsed.scope];
       if (migrated) {
@@ -257,7 +268,7 @@ async function readPersistedSetupScope(
           `[omx] Migrating persisted setup scope "${parsed.scope}" → "${migrated}" ` +
             `(see issue #243: simplified to user/project).`,
         );
-        return migrated;
+        return { scope: migrated, skillTarget: parsed.skillTarget };
       }
     }
   } catch {
@@ -278,7 +289,7 @@ async function promptForSetupScope(
   });
   try {
     console.log("Select setup scope:");
-    console.log(`  1) user (default) — installs to ~/.codex, ~/.agents`);
+    console.log(`  1) user (default) — installs to ~/.codex (skills, prompts, config)`);
     console.log(
       "  2) project — installs to ./.codex, ./.agents (local to project)",
     );
@@ -344,13 +355,18 @@ async function promptForAgentsOverwrite(
 async function resolveSetupScope(
   projectRoot: string,
   requestedScope?: SetupScope,
+  requestedSkillTarget?: 'codex-home' | 'agents',
 ): Promise<ResolvedSetupScope> {
   if (requestedScope) {
-    return { scope: requestedScope, source: "cli" };
+    return { scope: requestedScope, skillTarget: requestedSkillTarget, source: "cli" };
   }
   const persisted = await readPersistedSetupScope(projectRoot);
   if (persisted) {
-    return { scope: persisted, source: "persisted" };
+    return {
+      scope: persisted.scope,
+      skillTarget: persisted.skillTarget,
+      source: "persisted",
+    };
   }
   if (process.stdin.isTTY && process.stdout.isTTY) {
     const scope = await promptForSetupScope(DEFAULT_SETUP_SCOPE);
@@ -363,6 +379,7 @@ async function persistSetupScope(
   projectRoot: string,
   scope: SetupScope,
   options: Pick<SetupOptions, "dryRun" | "verbose">,
+  skillTarget?: 'codex-home' | 'agents',
 ): Promise<void> {
   const scopePath = getScopeFilePath(projectRoot);
   if (options.dryRun) {
@@ -371,6 +388,9 @@ async function persistSetupScope(
   }
   await mkdir(dirname(scopePath), { recursive: true });
   const payload: PersistedSetupScope = { scope };
+  if (skillTarget) {
+    payload.skillTarget = skillTarget;
+  }
   await writeFile(scopePath, JSON.stringify(payload, null, 2) + "\n");
   if (options.verbose) console.log(`  Wrote ${scopePath}`);
 }
@@ -380,13 +400,14 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     force = false,
     dryRun = false,
     scope: requestedScope,
+    skillTarget: requestedSkillTarget,
     verbose = false,
     modelUpgradePrompt,
   } = options;
   const pkgRoot = getPackageRoot();
   const projectRoot = process.cwd();
-  const resolvedScope = await resolveSetupScope(projectRoot, requestedScope);
-  const scopeDirs = resolveScopeDirectories(resolvedScope.scope, projectRoot);
+  const resolvedScope = await resolveSetupScope(projectRoot, requestedScope, requestedSkillTarget);
+  const scopeDirs = resolveScopeDirectories(resolvedScope.scope, projectRoot, resolvedScope.skillTarget);
   const scopeSourceMessage =
     resolvedScope.source === "persisted" ? " (from .omx/setup-scope.json)" : "";
 
@@ -416,7 +437,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   await persistSetupScope(projectRoot, resolvedScope.scope, {
     dryRun,
     verbose,
-  });
+  }, resolvedScope.skillTarget);
   console.log("  Done.\n");
 
   const catalogCounts = getCatalogHeadlineCounts();

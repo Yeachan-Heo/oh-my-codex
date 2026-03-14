@@ -7,7 +7,7 @@ import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import {
   codexHome, codexConfigPath, codexPromptsDir,
-  userSkillsDir, omxStateDir,
+  userSkillsDir, legacyUserSkillsDir, omxStateDir,
 } from '../utils/paths.js';
 import { classifySpawnError, spawnPlatformCommandSync } from '../utils/platform-command.js';
 import { getCatalogExpectations } from './catalog-contract.js';
@@ -132,6 +132,12 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
   // Check 6: Skills installed
   checks.push(await checkSkills(paths.skillsDir));
+
+  // Check 6.5: Legacy skills detection (migration warning)
+  const legacyCheck = await checkLegacySkills(paths.skillsDir, scopeResolution.scope);
+  if (legacyCheck) {
+    checks.push(legacyCheck);
+  }
 
   // Check 7: AGENTS.md in project
   checks.push(checkAgentsMd(scopeResolution.scope, paths.codexHomeDir));
@@ -596,6 +602,56 @@ async function checkSkills(dir: string): Promise<Check> {
     return { name: 'Skills', status: 'warn', message: `${skillDirs.length} skills (expected >= ${expectations.skillMin})` };
   } catch {
     return { name: 'Skills', status: 'fail', message: 'cannot read skills directory' };
+  }
+}
+
+async function checkLegacySkills(currentSkillsDir: string, scope: DoctorSetupScope): Promise<Check | null> {
+  // Only check for legacy skills in user scope when not using legacy path
+  if (scope !== 'user' || currentSkillsDir === legacyUserSkillsDir()) {
+    return null;
+  }
+  
+  const legacyDir = legacyUserSkillsDir();
+  if (!existsSync(legacyDir)) {
+    return null;
+  }
+  
+  try {
+    const entries = await readdir(legacyDir, { withFileTypes: true });
+    const legacySkillDirs = entries.filter(e => e.isDirectory());
+    
+    if (legacySkillDirs.length === 0) {
+      return null;
+    }
+    
+    // Check if current location also has skills (duplicate situation)
+    let currentCount = 0;
+    if (existsSync(currentSkillsDir)) {
+      const currentEntries = await readdir(currentSkillsDir, { withFileTypes: true });
+      currentCount = currentEntries.filter(e => e.isDirectory()).length;
+    }
+    
+    const legacyCount = legacySkillDirs.length;
+    
+    if (currentCount > 0) {
+      // Both locations have skills - this is a duplicate/warning situation
+      return {
+        name: 'Legacy Skills',
+        status: 'warn',
+        message: `${legacyCount} skills in legacy ~/.agents/skills (also ${currentCount} in ~/.codex/skills). ` +
+          `Run with --skill-target agents to use legacy, or remove ~/.agents/skills to avoid duplicates.`,
+      };
+    }
+    
+    // Only legacy has skills - informational
+    return {
+      name: 'Legacy Skills',
+      status: 'warn',
+      message: `${legacyCount} skills in legacy ~/.agents/skills. ` +
+        `New default is ~/.codex/skills. Run with --skill-target agents to use legacy path.`,
+    };
+  } catch {
+    return null;
   }
 }
 

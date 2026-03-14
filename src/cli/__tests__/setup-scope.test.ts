@@ -171,7 +171,7 @@ describe('omx setup scope behavior', () => {
       assert.match(res.stdout, /User scope leaves project AGENTS\.md unchanged\./);
 
       assert.equal(existsSync(join(home, '.codex', 'prompts')), true);
-      assert.equal(existsSync(join(home, '.agents', 'skills')), true);
+      assert.equal(existsSync(join(home, '.codex', 'skills')), true);
       assert.equal(existsSync(join(home, '.omx', 'agents')), true);
       assert.equal(existsSync(join(home, '.codex', 'AGENTS.md')), true);
       assert.equal(existsSync(join(wd, '.omx', 'setup-scope.json')), true);
@@ -188,13 +188,13 @@ describe('omx setup scope behavior', () => {
     try {
       const home = join(wd, 'home');
       await mkdir(join(home, '.codex', 'prompts'), { recursive: true });
-      await mkdir(join(home, '.agents', 'skills', 'sample-skill'), { recursive: true });
+      await mkdir(join(home, '.codex', 'skills', 'sample-skill'), { recursive: true });
       await mkdir(join(home, '.omx', 'agents'), { recursive: true });
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
       await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'user' }));
       await writeFile(join(home, '.codex', 'AGENTS.md'), '# user agents\n');
       await writeFile(join(home, '.codex', 'prompts', 'executor.md'), '# executor\n');
-      await writeFile(join(home, '.agents', 'skills', 'sample-skill', 'SKILL.md'), '# skill\n');
+      await writeFile(join(home, '.codex', 'skills', 'sample-skill', 'SKILL.md'), '# skill\n');
       await writeFile(join(home, '.codex', 'config.toml'), 'omx_enabled = true\n[mcp_servers.omx_state]\ncommand = "node"\n');
 
       const res = runOmx(wd, ['doctor'], { HOME: home, CODEX_HOME: join(home, '.codex') });
@@ -263,6 +263,49 @@ describe('omx setup scope behavior', () => {
       assert.match(overwritten, /# oh-my-codex - Intelligent Multi-Agent Orchestration/);
       assert.doesNotMatch(overwritten, /# old custom file/);
       assert.match(res.stdout, /Force mode: enabled additional destructive maintenance/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('--skill-target agents installs skills to ~/.agents/skills', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skill-target-'));
+    try {
+      const home = join(wd, 'home');
+      await mkdir(home, { recursive: true });
+      const res = runOmx(wd, ['setup', '--scope', 'user', '--skill-target', 'agents'], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+
+      // Skills should be in legacy location
+      assert.equal(existsSync(join(home, '.agents', 'skills')), true);
+      assert.equal(existsSync(join(home, '.agents', 'skills', 'omx-setup', 'SKILL.md')), true);
+      // Should NOT be in new location
+      assert.equal(existsSync(join(home, '.codex', 'skills')), false);
+
+      // Persisted scope should include skillTarget
+      const persisted = JSON.parse(await readFile(join(wd, '.omx', 'setup-scope.json'), 'utf-8')) as { scope: string; skillTarget?: string };
+      assert.equal(persisted.scope, 'user');
+      assert.equal(persisted.skillTarget, 'agents');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('defaults to ~/.codex/skills for user scope without --skill-target', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-default-skills-'));
+    try {
+      const home = join(wd, 'home');
+      await mkdir(home, { recursive: true });
+      const res = runOmx(wd, ['setup', '--scope', 'user'], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+
+      // Skills should be in new location
+      assert.equal(existsSync(join(home, '.codex', 'skills')), true);
+      assert.equal(existsSync(join(home, '.codex', 'skills', 'omx-setup', 'SKILL.md')), true);
+      // Should NOT be in legacy location
+      assert.equal(existsSync(join(home, '.agents', 'skills')), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
