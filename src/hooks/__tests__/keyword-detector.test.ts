@@ -85,6 +85,34 @@ describe('keyword detector swarm/team compatibility', () => {
     assert.match(match.keyword.toLowerCase(), /swarm/);
   });
 
+  it('maps ecomode keyword aliases to ecomode skill', () => {
+    const direct = detectPrimaryKeyword('please enable ecomode for this task');
+    assert.ok(direct);
+    assert.equal(direct.skill, 'ecomode');
+
+    const short = detectPrimaryKeyword('eco mode would help here');
+    assert.ok(short);
+    assert.equal(short.skill, 'ecomode');
+
+    const budget = detectPrimaryKeyword('we are on a budget today');
+    assert.ok(budget);
+    assert.equal(budget.skill, 'ecomode');
+  });
+
+  it('maps web-clone keyword aliases to web-clone skill', () => {
+    const direct = detectPrimaryKeyword('please run web-clone on this landing page');
+    assert.ok(direct);
+    assert.equal(direct.skill, 'web-clone');
+
+    const cloneSite = detectPrimaryKeyword('clone site example.com');
+    assert.ok(cloneSite);
+    assert.equal(cloneSite.skill, 'web-clone');
+
+    const copyWebpage = detectPrimaryKeyword('copy webpage https://example.com');
+    assert.ok(copyWebpage);
+    assert.equal(copyWebpage.skill, 'web-clone');
+  });
+
   it('keeps swarm trigger priority aligned with team trigger', () => {
     const teamMatch = detectKeywords('use team agents for this').find((entry) => entry.skill === 'team');
     const swarmMatch = detectKeywords('use swarm for this').find((entry) => entry.skill === 'team');
@@ -190,9 +218,16 @@ describe('keyword registry coverage', () => {
     assert.ok(registryKeywords.has('coordinated team'));
     assert.ok(registryKeywords.has('swarm'));
     assert.ok(registryKeywords.has('coordinated swarm'));
+    assert.ok(registryKeywords.has('ecomode'));
+    assert.ok(registryKeywords.has('eco'));
+    assert.ok(registryKeywords.has('budget'));
     assert.ok(registryKeywords.has('ouroboros'));
     assert.ok(registryKeywords.has("don't assume"));
     assert.ok(registryKeywords.has('interview me'));
+    assert.ok(registryKeywords.has('web-clone'));
+    assert.ok(registryKeywords.has('clone site'));
+    assert.ok(registryKeywords.has('clone website'));
+    assert.ok(registryKeywords.has('copy webpage'));
   });
 });
 

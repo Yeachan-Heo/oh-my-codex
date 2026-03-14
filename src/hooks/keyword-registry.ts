@@ -41,6 +41,10 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: 'coordinated team', skill: 'team', priority: 8, guidance: 'Activate coordinated team mode' },
   { keyword: 'coordinated swarm', skill: 'team', priority: 8, guidance: 'Activate coordinated team mode (swarm is a compatibility alias for team)' },
 
+  { keyword: 'ecomode', skill: 'ecomode', priority: 7, guidance: 'Activate token-efficient mode' },
+  { keyword: 'eco', skill: 'ecomode', priority: 7, guidance: 'Activate token-efficient mode' },
+  { keyword: 'budget', skill: 'ecomode', priority: 7, guidance: 'Activate token-efficient mode' },
+
   { keyword: 'cancel', skill: 'cancel', priority: 5, guidance: 'Cancel active execution modes' },
   { keyword: 'stop', skill: 'cancel', priority: 5, guidance: 'Cancel active execution modes' },
   { keyword: 'abort', skill: 'cancel', priority: 5, guidance: 'Cancel active execution modes' },
@@ -55,6 +59,11 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: 'code-review', skill: 'code-review', priority: 6, guidance: 'Activate code-review workflow' },
   { keyword: 'review code', skill: 'code-review', priority: 6, guidance: 'Activate code-review workflow' },
   { keyword: 'security review', skill: 'security-review', priority: 6, guidance: 'Activate security-review workflow' },
+
+  { keyword: 'web-clone', skill: 'web-clone', priority: 8, guidance: 'Activate website cloning pipeline' },
+  { keyword: 'clone site', skill: 'web-clone', priority: 8, guidance: 'Activate website cloning pipeline' },
+  { keyword: 'clone website', skill: 'web-clone', priority: 8, guidance: 'Activate website cloning pipeline' },
+  { keyword: 'copy webpage', skill: 'web-clone', priority: 8, guidance: 'Activate website cloning pipeline' },
 ] as const;
 
 export function compareKeywordMatches(a: { priority: number; keyword: string }, b: { priority: number; keyword: string }): number {
