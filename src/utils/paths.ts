@@ -23,8 +23,13 @@ export function codexPromptsDir(): string {
   return join(codexHome(), 'prompts');
 }
 
-/** User-level skills directory (~/.agents/skills/) */
+/** User-level skills directory (~/.codex/skills/) */
 export function userSkillsDir(): string {
+  return join(codexHome(), 'skills');
+}
+
+/** Legacy user-level skills directory (~/.agents/skills/) - for backward compatibility */
+export function legacyUserSkillsDir(): string {
   return join(homedir(), '.agents', 'skills');
 }
 

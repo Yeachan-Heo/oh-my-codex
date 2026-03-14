@@ -203,7 +203,7 @@ User / Operator
     -> Codex CLI (execution engine)
     -> AGENTS.md (orchestration brain)
     -> ~/.codex/prompts/*.md (installable active/internal agent prompt catalog)
-    -> ~/.agents/skills/*/SKILL.md (skill catalog)
+    -> ~/.codex/skills/*/SKILL.md (skill catalog)
     -> ~/.codex/config.toml (features, notify, MCP)
     -> .omx/ (runtime state, memory, plans, logs)
 ```
@@ -545,7 +545,7 @@ Notes:
 
 - `.omx/setup-scope.json` (persisted setup scope)
 - Scope-dependent installs:
-  - `user`: `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
+  - `user`: `~/.codex/prompts/`, `~/.codex/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
   - `project`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
 - Launch behavior: if persisted scope is `project`, `omx` launch auto-uses `CODEX_HOME=./.codex` (unless `CODEX_HOME` is already set).
 - Launch instructions merge `~/.codex/AGENTS.md` (or `CODEX_HOME/AGENTS.md` when overridden) with project `./AGENTS.md`, then append the runtime overlay
@@ -592,7 +592,7 @@ omx agents-init . --force
 ## Agents and Skills
 
 - Prompts: `prompts/*.md` (installed to `~/.codex/prompts/` for `user`, `./.codex/prompts/` for `project`)
-- Skills: `skills/*/SKILL.md` (installed to `~/.agents/skills/` for `user`, `./.agents/skills/` for `project`)
+- Skills: `skills/*/SKILL.md` (installed to `~/.codex/skills/` for `user`, `./.agents/skills/` for `project`)
 
 Examples:
 - Agents: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`

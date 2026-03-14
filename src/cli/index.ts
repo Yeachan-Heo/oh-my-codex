@@ -248,6 +248,30 @@ export function resolveSetupScopeArg(args: string[]): SetupScope | undefined {
   throw new Error(`Invalid setup scope: ${value}. Expected one of: ${SETUP_SCOPES.join(', ')}`);
 }
 
+export function resolveSkillTargetArg(args: string[]): 'codex-home' | 'agents' | undefined {
+  let value: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--skill-target') {
+      const next = args[index + 1];
+      if (!next || next.startsWith('-')) {
+        throw new Error(`Missing skill target value after --skill-target. Expected: agents`);
+      }
+      value = next;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--skill-target=')) {
+      value = arg.slice('--skill-target='.length);
+    }
+  }
+  if (!value) return undefined;
+  if (value === 'agents') {
+    return 'agents';
+  }
+  throw new Error(`Invalid skill target: ${value}. Expected: agents`);
+}
+
 export function resolveCliInvocation(args: string[]): ResolvedCliInvocation {
   const firstArg = args[0];
   if (firstArg === '--help' || firstArg === '-h') {
@@ -470,6 +494,7 @@ export async function main(args: string[]): Promise<void> {
           dryRun: options.dryRun,
           verbose: options.verbose,
           scope: resolveSetupScopeArg(args.slice(1)),
+          skillTarget: resolveSkillTargetArg(args.slice(1)),
         });
         break;
       case 'agents-init':

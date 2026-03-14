@@ -42,7 +42,7 @@ Supported setup flags (current implementation):
 - Local project orchestration file is `./AGENTS.md` (project root).
 - If `AGENTS.md` exists and `--force` is not used, interactive TTY runs ask whether to overwrite. Non-interactive runs preserve the file.
 - Scope targets:
-  - `user`: user directories (`~/.codex`, `~/.agents/skills`, `~/.omx/agents`)
+  - `user`: user directories (`~/.codex`, `~/.codex/skills`, `~/.omx/agents`)
   - `project`: local directories (`./.codex`, `./.agents/skills`, `./.omx/agents`)
 - If persisted scope is `project`, `omx` launch automatically uses `CODEX_HOME=./.codex` unless user explicitly overrides `CODEX_HOME`.
 - With `--force`, AGENTS overwrite may still be skipped if an active OMX session is detected (safety guard).

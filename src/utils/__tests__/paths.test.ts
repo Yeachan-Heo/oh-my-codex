@@ -8,6 +8,7 @@ import {
   codexConfigPath,
   codexPromptsDir,
   userSkillsDir,
+  legacyUserSkillsDir,
   projectSkillsDir,
   omxStateDir,
   omxProjectMemoryPath,
@@ -86,8 +87,14 @@ describe('codexPromptsDir', () => {
 });
 
 describe('userSkillsDir', () => {
+  it('returns ~/.codex/skills', () => {
+    assert.equal(userSkillsDir(), join(codexHome(), 'skills'));
+  });
+});
+
+describe('legacyUserSkillsDir', () => {
   it('returns ~/.agents/skills', () => {
-    assert.equal(userSkillsDir(), join(homedir(), '.agents', 'skills'));
+    assert.equal(legacyUserSkillsDir(), join(homedir(), '.agents', 'skills'));
   });
 });
 
