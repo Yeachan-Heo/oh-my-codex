@@ -745,6 +745,32 @@ export function buildMergedConfig(
   return topLines.join("\n") + "\n\n" + body + "\n" + tablesBlock;
 }
 
+/**
+ * Detect and repair duplicate TOML table headers (e.g. [tui]) in config.toml.
+ *
+ * After an omx version upgrade the OLD setup code (still loaded in memory)
+ * may write a config with duplicate [tui] sections.  The Codex CLI TOML
+ * parser rejects duplicates, so we must fix them before the CLI is spawned.
+ *
+ * Returns `true` if a repair was performed.
+ */
+export async function repairConfigIfNeeded(
+  configPath: string,
+  pkgRoot: string,
+  options: MergeOptions = {},
+): Promise<boolean> {
+  if (!existsSync(configPath)) return false;
+
+  const content = await readFile(configPath, "utf-8");
+  const tuiCount = (content.match(/^\s*\[tui\]\s*$/gm) || []).length;
+  if (tuiCount <= 1) return false;
+
+  // Duplicate [tui] detected — run full merge to repair
+  const repaired = buildMergedConfig(content, pkgRoot, options);
+  await writeFile(configPath, repaired);
+  return true;
+}
+
 export async function mergeConfig(
   configPath: string,
   pkgRoot: string,

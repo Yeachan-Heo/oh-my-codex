@@ -64,6 +64,7 @@ import {
 } from '../team/tmux-session.js';
 import { getPackageRoot } from '../utils/package.js';
 import { codexConfigPath } from '../utils/paths.js';
+import { repairConfigIfNeeded } from '../config/generator.js';
 import { HUD_TMUX_HEIGHT_LINES } from '../hud/constants.js';
 import { classifySpawnError, spawnPlatformCommandSync } from '../utils/platform-command.js';
 import { buildHookEvent } from '../hooks/extensibility/events.js';
@@ -728,6 +729,19 @@ export async function launchWithHud(args: string[]): Promise<void> {
     // Non-fatal: star prompt must never block launch
   }
 
+  // ── Phase 0.5: config repair ────────────────────────────────────────────
+  // After an omx version upgrade the OLD setup code (still in memory) may
+  // have written a config.toml with duplicate [tui] sections.  Codex CLI's
+  // TOML parser rejects duplicates, so we repair before spawning the CLI.
+  try {
+    const repaired = await repairConfigIfNeeded(codexConfigPath(), getPackageRoot());
+    if (repaired) {
+      console.log('[omx] Repaired duplicate [tui] section in config.toml.');
+    }
+  } catch {
+    // Non-fatal: repair failure must not block launch
+  }
+
   // ── Phase 1: preLaunch ──────────────────────────────────────────────────
   try {
     await preLaunch(cwd, sessionId, notifyTempResult.contract);
@@ -780,6 +794,15 @@ export async function execWithOverlay(args: string[]): Promise<void> {
     await maybePromptGithubStar();
   } catch (err) {
     process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+  }
+
+  try {
+    const repaired = await repairConfigIfNeeded(codexConfigPath(), getPackageRoot());
+    if (repaired) {
+      console.log('[omx] Repaired duplicate [tui] section in config.toml.');
+    }
+  } catch {
+    // Non-fatal
   }
 
   try {

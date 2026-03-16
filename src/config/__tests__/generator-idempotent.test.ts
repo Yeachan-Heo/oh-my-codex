@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildMergedConfig, mergeConfig } from "../generator.js";
+import { buildMergedConfig, mergeConfig, repairConfigIfNeeded } from "../generator.js";
 
 /** Count occurrences of a pattern in text */
 function count(text: string, pattern: RegExp): number {
@@ -497,6 +497,89 @@ describe("config generator idempotency (#384)", () => {
       assert.doesNotMatch(toml, /^\[agents\."style-reviewer"\]$/m, "merged agent omitted");
       assert.doesNotMatch(toml, /^\[agents\."quality-reviewer"\]$/m, "merged agent omitted");
       assert.doesNotMatch(toml, /^\[agents\."product-manager"\]$/m, "merged product agent omitted");
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("repairs config with duplicate [tui] sections from upgrade", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      // Simulate a broken config left by an older omx setup: an orphaned
+      // [tui] outside the OMX block AND another [tui] inside the block.
+      const broken = [
+        '[mcp_servers.figma]',
+        'url = "https://mcp.figma.com/mcp"',
+        '',
+        '# OMX TUI StatusLine (Codex CLI v0.101.0+)',
+        '[tui]',
+        'status_line = ["git-branch"]',
+        '',
+        '# ============================================================',
+        '# End oh-my-codex',
+        '',
+        '# ============================================================',
+        '# oh-my-codex (OMX) Configuration',
+        '# Managed by omx setup - manual edits preserved on next setup',
+        '# ============================================================',
+        '',
+        '[mcp_servers.omx_state]',
+        'command = "node"',
+        `args = ["${join(wd, "dist/mcp/state-server.js")}"]`,
+        'enabled = true',
+        '',
+        '# OMX TUI StatusLine (Codex CLI v0.101.0+)',
+        '[tui]',
+        'status_line = ["model-with-reasoning", "git-branch"]',
+        '',
+        '# ============================================================',
+        '# End oh-my-codex',
+        '',
+      ].join("\n");
+      await writeFile(configPath, broken);
+
+      // buildMergedConfig should produce a clean config with only one [tui]
+      const toml = buildMergedConfig(broken, wd);
+      assert.equal(count(toml, /^\[tui\]$/gm), 1, "[tui] should appear once");
+      assert.equal(
+        count(toml, /# End oh-my-codex/g),
+        1,
+        "End marker should appear once",
+      );
+      // User MCP server must survive
+      assert.match(toml, /^\[mcp_servers\.figma\]$/m, "user MCP preserved");
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("repairConfigIfNeeded fixes duplicate [tui] and is a no-op when clean", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+
+      // First: create a clean config
+      await mergeConfig(configPath, wd);
+      const clean = await readFile(configPath, "utf-8");
+      assert.equal(count(clean, /^\[tui\]$/gm), 1);
+
+      // repairConfigIfNeeded should be a no-op
+      const wasRepaired = await repairConfigIfNeeded(configPath, wd);
+      assert.equal(wasRepaired, false, "clean config should not need repair");
+
+      // Now break it by appending a second [tui]
+      await writeFile(configPath, clean + "\n[tui]\nstatus_line = [\"git-branch\"]\n");
+      const broken = await readFile(configPath, "utf-8");
+      assert.equal(count(broken, /^\[tui\]$/gm), 2);
+
+      // repairConfigIfNeeded should fix it
+      const didRepair = await repairConfigIfNeeded(configPath, wd);
+      assert.equal(didRepair, true, "broken config should be repaired");
+
+      const repaired = await readFile(configPath, "utf-8");
+      assert.equal(count(repaired, /^\[tui\]$/gm), 1, "[tui] should appear once after repair");
+      assertSingleOmxBlock(repaired);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
