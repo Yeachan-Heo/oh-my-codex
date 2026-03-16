@@ -13,6 +13,7 @@ import {
   buildAutoresearchRunTag,
 } from '../autoresearch/runtime.js';
 import { assertModeStartAllowed } from '../modes/base.js';
+import { CODEX_BYPASS_FLAG, MADMAX_FLAG } from './constants.js';
 
 export const AUTORESEARCH_HELP = `omx autoresearch - Launch OMX autoresearch with thin-supervisor parity semantics
 
@@ -35,9 +36,38 @@ Behavior:
 const AUTORESEARCH_APPEND_INSTRUCTIONS_ENV = 'OMX_AUTORESEARCH_APPEND_INSTRUCTIONS_FILE';
 const AUTORESEARCH_MAX_CONSECUTIVE_NOOPS = 3;
 
+export function normalizeAutoresearchCodexArgs(codexArgs: readonly string[]): string[] {
+  const normalized: string[] = [];
+  let hasBypass = false;
+
+  for (const arg of codexArgs) {
+    if (arg === MADMAX_FLAG) {
+      if (!hasBypass) {
+        normalized.push(CODEX_BYPASS_FLAG);
+        hasBypass = true;
+      }
+      continue;
+    }
+    if (arg === CODEX_BYPASS_FLAG) {
+      if (!hasBypass) {
+        normalized.push(arg);
+        hasBypass = true;
+      }
+      continue;
+    }
+    normalized.push(arg);
+  }
+
+  if (!hasBypass) {
+    normalized.push(CODEX_BYPASS_FLAG);
+  }
+
+  return normalized;
+}
+
 function runAutoresearchTurn(worktreePath: string, instructionsFile: string, codexArgs: string[]): void {
   const prompt = readFileSync(instructionsFile, 'utf-8');
-  const launchArgs = ['exec', ...codexArgs, '-'];
+  const launchArgs = ['exec', ...normalizeAutoresearchCodexArgs(codexArgs), '-'];
   const result = spawnSync('codex', launchArgs, {
     cwd: worktreePath,
     stdio: ['pipe', 'inherit', 'inherit'],

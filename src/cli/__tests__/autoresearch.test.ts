@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { normalizeAutoresearchCodexArgs } from '../autoresearch.js';
 
 function runOmx(
   cwd: string,
@@ -39,6 +40,20 @@ async function initRepo(): Promise<string> {
   execFileSync('git', ['commit', '-m', 'init'], { cwd, stdio: 'ignore' });
   return cwd;
 }
+
+describe('normalizeAutoresearchCodexArgs', () => {
+  it('adds sandbox bypass by default for autoresearch workers', () => {
+    assert.deepEqual(normalizeAutoresearchCodexArgs(['--model', 'gpt-5']), ['--model', 'gpt-5', '--dangerously-bypass-approvals-and-sandbox']);
+  });
+
+  it('deduplicates explicit bypass flags', () => {
+    assert.deepEqual(normalizeAutoresearchCodexArgs(['--dangerously-bypass-approvals-and-sandbox']), ['--dangerously-bypass-approvals-and-sandbox']);
+  });
+
+  it('normalizes --madmax to the canonical bypass flag', () => {
+    assert.deepEqual(normalizeAutoresearchCodexArgs(['--madmax']), ['--dangerously-bypass-approvals-and-sandbox']);
+  });
+});
 
 describe('omx autoresearch', () => {
   it('documents autoresearch in top-level help', async () => {
