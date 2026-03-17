@@ -13,25 +13,28 @@ import {
   buildAutoresearchRunTag,
 } from '../autoresearch/runtime.js';
 import { assertModeStartAllowed } from '../modes/base.js';
-import { guidedAutoresearchSetup, initAutoresearchMission, parseInitArgs, spawnAutoresearchTmux } from "./autoresearch-guided.js";
+import { guidedAutoresearchSetup, initAutoresearchMission, parseInitArgs, runAutoresearchNoviceBridge, spawnAutoresearchTmux } from "./autoresearch-guided.js";
 import { CODEX_BYPASS_FLAG, MADMAX_FLAG } from "./constants.js";
 
 export const AUTORESEARCH_HELP = `omx autoresearch - Launch OMX autoresearch with thin-supervisor parity semantics
 
 Usage:
-  omx autoresearch                                                (guided setup + background launch)
+  omx autoresearch                                                (interactive novice bridge + background launch)
+  omx autoresearch [--topic T] [--evaluator CMD] [--keep-policy P] [--slug S]
   omx autoresearch init [--topic T] [--evaluator CMD] [--keep-policy P] [--slug S]
   omx autoresearch <mission-dir> [codex-args...]
   omx autoresearch --resume <run-id> [codex-args...]
 
 Arguments:
-  (no args)        Interactive guided setup: collects topic, evaluator, policy, and slug,
-                   generates a mission directory, then spawns autoresearch in a background tmux session.
-  init             Non-interactive mission scaffolding via flags (all four flags required).
+  (no args)        Interactive novice bridge: interviews/refines topic, evaluator, policy, and slug,
+                   writes a draft artifact, then launches only after explicit confirmation.
+  --topic/...      Seed the novice bridge with draft values; still requires refinement/confirmation before launch.
+  init             Bare init is an interactive novice-bridge alias on TTYs; init with flags is the expert scaffold path.
   <mission-dir>    Directory inside a git repository containing mission.md and sandbox.md
   <run-id>         Existing autoresearch run id from .omx/logs/autoresearch/<run-id>/manifest.json
 
 Behavior:
+  - novice intake writes a canonical draft artifact under .omx/specs before launch
   - validates mission.md and sandbox.md
   - requires sandbox.md YAML frontmatter with evaluator.command and evaluator.format=json
   - fresh launch creates a run-tagged autoresearch/<slug>/<run-tag> lane
@@ -97,6 +100,7 @@ export interface ParsedAutoresearchArgs {
   codexArgs: string[];
   guided?: boolean;
   initArgs?: string[];
+  seedArgs?: ReturnType<typeof parseInitArgs>;
 }
 
 function resolveRepoRoot(cwd: string): string {
@@ -138,7 +142,8 @@ export function parseAutoresearchArgs(args: readonly string[]): ParsedAutoresear
     return { missionDir: null, runId, codexArgs: values.slice(1) };
   }
   if (first.startsWith('-')) {
-    throw new Error(`mission-dir must be the first positional argument unless using --resume.\n${AUTORESEARCH_HELP}`);
+    const seedArgs = parseInitArgs(values);
+    return { missionDir: null, runId: null, codexArgs: [], guided: true, seedArgs };
   }
   return { missionDir: first, runId: null, codexArgs: values.slice(1) };
 }
@@ -218,8 +223,9 @@ export async function autoresearchCommand(args: string[]): Promise<void> {
         repoRoot,
       });
     } else {
-      // Interactive guided setup
-      result = await guidedAutoresearchSetup(repoRoot);
+      result = parsed.seedArgs
+        ? await runAutoresearchNoviceBridge(repoRoot, parsed.seedArgs)
+        : await guidedAutoresearchSetup(repoRoot);
     }
     spawnAutoresearchTmux(result.missionDir, result.slug);
     return;

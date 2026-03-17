@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { normalizeAutoresearchCodexArgs } from '../autoresearch.js';
+import { normalizeAutoresearchCodexArgs, parseAutoresearchArgs } from '../autoresearch.js';
 
 function runOmx(
   cwd: string,
@@ -75,6 +75,8 @@ describe('omx autoresearch', () => {
       assert.equal(result.status, 0, result.stderr || result.stdout);
       assert.match(result.stdout, /Usage:[\s\S]*omx autoresearch <mission-dir>/i);
       assert.match(result.stdout, /omx autoresearch init/i);
+      assert.match(result.stdout, /--topic\/\.\.\./i);
+      assert.match(result.stdout, /novice bridge/i);
       assert.doesNotMatch(result.stdout, /oh-my-codex \(omx\) - Multi-agent orchestration for Codex CLI/i);
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -102,6 +104,24 @@ describe('omx autoresearch', () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+
+  it('treats top-level topic/evaluator flags as seeded novice-bridge input', () => {
+    const parsed = parseAutoresearchArgs(['--topic', 'Improve docs', '--evaluator', 'node eval.js', '--slug', 'docs-run']);
+    assert.equal(parsed.guided, true);
+    assert.equal(parsed.seedArgs?.topic, 'Improve docs');
+    assert.equal(parsed.seedArgs?.evaluatorCommand, 'node eval.js');
+    assert.equal(parsed.seedArgs?.slug, 'docs-run');
+  });
+
+  it('treats bare init as guided alias and init with flags as expert init args', () => {
+    const bare = parseAutoresearchArgs(['init']);
+    assert.equal(bare.guided, true);
+    assert.deepEqual(bare.initArgs, []);
+
+    const flagged = parseAutoresearchArgs(['init', '--topic', 'Ship feature']);
+    assert.equal(flagged.guided, true);
+    assert.deepEqual(flagged.initArgs, ['--topic', 'Ship feature']);
   });
 
   it('rejects mission directories outside a git repo', async () => {
