@@ -13,28 +13,35 @@ import {
   buildAutoresearchRunTag,
 } from '../autoresearch/runtime.js';
 import { assertModeStartAllowed } from '../modes/base.js';
-import { guidedAutoresearchSetup, initAutoresearchMission, parseInitArgs, runAutoresearchNoviceBridge, spawnAutoresearchTmux } from "./autoresearch-guided.js";
-import { CODEX_BYPASS_FLAG, MADMAX_FLAG } from "./constants.js";
+import {
+  buildAutoresearchDeepInterviewPrompt,
+  initAutoresearchMission,
+  materializeAutoresearchDeepInterviewResult,
+  parseInitArgs,
+  spawnAutoresearchTmux,
+} from './autoresearch-guided.js';
+import { resolveAutoresearchDeepInterviewResult } from './autoresearch-intake.js';
+import { CODEX_BYPASS_FLAG, MADMAX_FLAG } from './constants.js';
 
 export const AUTORESEARCH_HELP = `omx autoresearch - Launch OMX autoresearch with thin-supervisor parity semantics
 
 Usage:
-  omx autoresearch                                                (interactive novice bridge + background launch)
+  omx autoresearch                                                (launch Codex CLI deep-interview intake, then background launch)
   omx autoresearch [--topic T] [--evaluator CMD] [--keep-policy P] [--slug S]
   omx autoresearch init [--topic T] [--evaluator CMD] [--keep-policy P] [--slug S]
   omx autoresearch <mission-dir> [codex-args...]
   omx autoresearch --resume <run-id> [codex-args...]
 
 Arguments:
-  (no args)        Interactive novice bridge: interviews/refines topic, evaluator, policy, and slug,
-                   writes a draft artifact, then launches only after explicit confirmation.
-  --topic/...      Seed the novice bridge with draft values; still requires refinement/confirmation before launch.
-  init             Bare init is an interactive novice-bridge alias on TTYs; init with flags is the expert scaffold path.
+  (no args)        Launch an interactive Codex session that activates deep-interview --autoresearch,
+                   writes .omx/specs artifacts, then launches only after explicit confirmation.
+  --topic/...      Seed the deep-interview intake with draft values; still requires refinement/confirmation before launch.
+  init             Bare init is an interactive deep-interview alias on TTYs; init with flags is the expert scaffold path.
   <mission-dir>    Directory inside a git repository containing mission.md and sandbox.md
   <run-id>         Existing autoresearch run id from .omx/logs/autoresearch/<run-id>/manifest.json
 
 Behavior:
-  - novice intake writes a canonical draft artifact under .omx/specs before launch
+  - deep-interview intake writes canonical artifacts under .omx/specs before launch
   - validates mission.md and sandbox.md
   - requires sandbox.md YAML frontmatter with evaluator.command and evaluator.format=json
   - fresh launch creates a run-tagged autoresearch/<slug>/<run-tag> lane
@@ -44,6 +51,63 @@ Behavior:
 
 const AUTORESEARCH_APPEND_INSTRUCTIONS_ENV = 'OMX_AUTORESEARCH_APPEND_INSTRUCTIONS_FILE';
 const AUTORESEARCH_MAX_CONSECUTIVE_NOOPS = 3;
+
+function buildAutoresearchDeepInterviewAppendix(): string {
+  return [
+    '<autoresearch_deep_interview_mode>',
+    'You are in OMX autoresearch intake mode.',
+    'Run the deep-interview skill in autoresearch mode and clarify the research mission before launch.',
+    'Do not start tmux, do not launch `omx autoresearch`, and do not bypass the user confirmation boundary.',
+    'When the user confirms launch and the evaluator is concrete, persist canonical artifacts under `.omx/specs/` using the contracts in `src/cli/autoresearch-intake.ts`.',
+    '- Required outputs: `deep-interview-autoresearch-{slug}.md`, `autoresearch-{slug}/mission.md`, `autoresearch-{slug}/sandbox.md`, `autoresearch-{slug}/result.json`.',
+    '- If the evaluator is still a placeholder or the user wants to refine further, keep interviewing instead of finalizing launch-ready output.',
+    '</autoresearch_deep_interview_mode>',
+  ].join('\n');
+}
+
+async function writeAutoresearchDeepInterviewAppendixFile(repoRoot: string): Promise<string> {
+  const { mkdir, writeFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const dir = join(repoRoot, '.omx', 'autoresearch');
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, 'deep-interview-session-instructions.md');
+  await writeFile(path, `${buildAutoresearchDeepInterviewAppendix()}\n`, 'utf-8');
+  return path;
+}
+
+async function runGuidedAutoresearchDeepInterview(
+  repoRoot: string,
+  seedArgs?: ReturnType<typeof parseInitArgs>,
+): Promise<Awaited<ReturnType<typeof initAutoresearchMission>>> {
+  const previousInstructionsFile = process.env[AUTORESEARCH_APPEND_INSTRUCTIONS_ENV];
+  const appendixPath = await writeAutoresearchDeepInterviewAppendixFile(repoRoot);
+  const startedAtMs = Date.now();
+  process.env[AUTORESEARCH_APPEND_INSTRUCTIONS_ENV] = appendixPath;
+
+  try {
+    const { launchWithHud } = await import('./index.js');
+    await launchWithHud([buildAutoresearchDeepInterviewPrompt(seedArgs ?? {})]);
+  } finally {
+    if (typeof previousInstructionsFile === 'string') {
+      process.env[AUTORESEARCH_APPEND_INSTRUCTIONS_ENV] = previousInstructionsFile;
+    } else {
+      delete process.env[AUTORESEARCH_APPEND_INSTRUCTIONS_ENV];
+    }
+  }
+
+  const result = await resolveAutoresearchDeepInterviewResult(repoRoot, {
+    newerThanMs: startedAtMs,
+  });
+  if (!result) {
+    throw new Error('autoresearch deep-interview did not produce .omx/specs launch artifacts.');
+  }
+  if (!result.launchReady) {
+    throw new Error(
+      `autoresearch deep-interview exited without a launch-ready result. ${result.blockedReasons.join(' ') || 'Refine the interview result and retry.'}`,
+    );
+  }
+  return materializeAutoresearchDeepInterviewResult(result);
+}
 
 export function normalizeAutoresearchCodexArgs(codexArgs: readonly string[]): string[] {
   const normalized: string[] = [];
@@ -221,11 +285,9 @@ export async function autoresearchCommand(args: string[]): Promise<void> {
         keepPolicy: initOpts.keepPolicy || 'score_improvement',
         slug: initOpts.slug,
         repoRoot,
-      });
+        });
     } else {
-      result = parsed.seedArgs
-        ? await runAutoresearchNoviceBridge(repoRoot, parsed.seedArgs)
-        : await guidedAutoresearchSetup(repoRoot);
+      result = await runGuidedAutoresearchDeepInterview(repoRoot, parsed.seedArgs);
     }
     spawnAutoresearchTmux(result.missionDir, result.slug);
     return;

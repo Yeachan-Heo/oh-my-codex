@@ -6,7 +6,19 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { normalizeAutoresearchCodexArgs, parseAutoresearchArgs } from '../autoresearch.js';
+import { autoresearchCommand, normalizeAutoresearchCodexArgs, parseAutoresearchArgs } from '../autoresearch.js';
+
+function withMockedTty<T>(fn: () => Promise<T>): Promise<T> {
+  const descriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+  Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true });
+  return fn().finally(() => {
+    if (descriptor) {
+      Object.defineProperty(process.stdin, 'isTTY', descriptor);
+    } else {
+      Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false });
+    }
+  });
+}
 
 function runOmx(
   cwd: string,
@@ -76,7 +88,7 @@ describe('omx autoresearch', () => {
       assert.match(result.stdout, /Usage:[\s\S]*omx autoresearch <mission-dir>/i);
       assert.match(result.stdout, /omx autoresearch init/i);
       assert.match(result.stdout, /--topic\/\.\.\./i);
-      assert.match(result.stdout, /novice bridge/i);
+      assert.match(result.stdout, /deep-interview/i);
       assert.doesNotMatch(result.stdout, /oh-my-codex \(omx\) - Multi-agent orchestration for Codex CLI/i);
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -106,7 +118,7 @@ describe('omx autoresearch', () => {
     }
   });
 
-  it('treats top-level topic/evaluator flags as seeded novice-bridge input', () => {
+  it('treats top-level topic/evaluator flags as seeded deep-interview input', () => {
     const parsed = parseAutoresearchArgs(['--topic', 'Improve docs', '--evaluator', 'node eval.js', '--slug', 'docs-run']);
     assert.equal(parsed.guided, true);
     assert.equal(parsed.seedArgs?.topic, 'Improve docs');
@@ -122,6 +134,159 @@ describe('omx autoresearch', () => {
     const flagged = parseAutoresearchArgs(['init', '--topic', 'Ship feature']);
     assert.equal(flagged.guided, true);
     assert.deepEqual(flagged.initArgs, ['--topic', 'Ship feature']);
+  });
+
+  it('launches interactive deep-interview intake, materializes mission files, and then spawns tmux', async () => {
+    const repo = await initRepo();
+    const fakeBin = await mkdtemp(join(tmpdir(), 'omx-autoresearch-deep-interview-bin-'));
+    try {
+      const codexLog = join(repo, 'codex-launch.log');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      await writeFile(
+        fakeCodexPath,
+        `#!/bin/sh
+printf '%s\\n' "$*" >>"${codexLog}"
+mkdir -p "$OMX_TEST_REPO_ROOT/.omx/specs/deep-int"
+mkdir -p "$OMX_TEST_REPO_ROOT/.omx/specs/autoresearch-test-launch"
+cat >"$OMX_TEST_REPO_ROOT/.omx/specs/deep-interview-autoresearch-test-launch.md" <<'EOF'
+# Deep Interview Autoresearch Draft — test-launch
+
+## Mission Draft
+Investigate flaky onboarding behavior
+
+## Evaluator Draft
+node scripts/eval.js
+
+## Keep Policy
+score_improvement
+
+## Session Slug
+test-launch
+
+## Seed Inputs
+- topic: (none)
+- evaluator: (none)
+- keep_policy: (none)
+- slug: (none)
+
+## Launch Readiness
+Launch-ready: yes
+- Evaluator command is concrete and can be compiled into sandbox.md
+
+## Confirmation Bridge
+- refine further
+- launch
+EOF
+cat >"$OMX_TEST_REPO_ROOT/.omx/specs/autoresearch-test-launch/mission.md" <<'EOF'
+# Mission
+
+Investigate flaky onboarding behavior
+EOF
+cat >"$OMX_TEST_REPO_ROOT/.omx/specs/autoresearch-test-launch/sandbox.md" <<'EOF'
+---
+evaluator:
+  command: node scripts/eval.js
+  format: json
+  keep_policy: score_improvement
+---
+EOF
+cat >"$OMX_TEST_REPO_ROOT/.omx/specs/autoresearch-test-launch/result.json" <<'EOF'
+{
+  "kind": "omx.autoresearch.deep-interview/v1",
+  "compileTarget": {
+    "topic": "Investigate flaky onboarding behavior",
+    "evaluatorCommand": "node scripts/eval.js",
+    "keepPolicy": "score_improvement",
+    "slug": "test-launch",
+    "repoRoot": "${repo}"
+  },
+  "draftArtifactPath": "${repo}/.omx/specs/deep-interview-autoresearch-test-launch.md",
+  "missionArtifactPath": "${repo}/.omx/specs/autoresearch-test-launch/mission.md",
+  "sandboxArtifactPath": "${repo}/.omx/specs/autoresearch-test-launch/sandbox.md",
+  "launchReady": true,
+  "blockedReasons": []
+}
+EOF
+`,
+        'utf-8',
+      );
+      execFileSync('chmod', ['+x', fakeCodexPath], { stdio: 'ignore' });
+
+      const fakeTmuxPath = join(fakeBin, 'tmux');
+      await writeFile(
+        fakeTmuxPath,
+        `#!/bin/sh
+case "$1" in
+  -V)
+    printf 'tmux 3.4\\n'
+    exit 0
+    ;;
+  has-session)
+    exit 1
+    ;;
+  new-session)
+    last=""
+    for arg in "$@"; do
+      last="$arg"
+    done
+    case " $* " in
+      *" -P "*)
+        printf '%%1\\n'
+        ;;
+    esac
+    if [ -n "$last" ] && [ "$last" != "$1" ]; then
+      /bin/sh -lc "$last"
+    fi
+    exit 0
+    ;;
+  split-window)
+    printf '%%2\\n'
+    exit 0
+    ;;
+  attach-session|set-option|display-message|set-hook|kill-session|kill-pane)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        'utf-8',
+      );
+      execFileSync('chmod', ['+x', fakeTmuxPath], { stdio: 'ignore' });
+
+      const originalPath = process.env.PATH;
+      const descriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+      const originalCwd = process.cwd();
+      process.env.PATH = `${fakeBin}:${process.env.PATH || ''}`;
+      process.env.OMX_TEST_REPO_ROOT = repo;
+      Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true });
+      process.chdir(repo);
+      try {
+        await autoresearchCommand([]);
+      } finally {
+        process.chdir(originalCwd);
+        if (typeof originalPath === 'string') process.env.PATH = originalPath;
+        else delete process.env.PATH;
+        delete process.env.OMX_TEST_REPO_ROOT;
+        if (descriptor) {
+          Object.defineProperty(process.stdin, 'isTTY', descriptor);
+        } else {
+          Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false });
+        }
+      }
+
+      const codexArgs = await readFile(codexLog, 'utf-8');
+      assert.match(codexArgs, /\$deep-interview --autoresearch/);
+
+      const missionContent = await readFile(join(repo, 'missions', 'test-launch', 'mission.md'), 'utf-8');
+      const sandboxContent = await readFile(join(repo, 'missions', 'test-launch', 'sandbox.md'), 'utf-8');
+      assert.match(missionContent, /Investigate flaky onboarding behavior/);
+      assert.match(sandboxContent, /command: node scripts\/eval\.js/);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+      await rm(fakeBin, { recursive: true, force: true });
+    }
   });
 
   it('rejects mission directories outside a git repo', async () => {

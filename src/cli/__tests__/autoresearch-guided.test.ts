@@ -5,8 +5,20 @@ import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseSandboxContract } from '../../autoresearch/contracts.js';
-import { isLaunchReadyEvaluatorCommand, writeAutoresearchDraftArtifact } from '../autoresearch-intake.js';
-import { initAutoresearchMission, parseInitArgs, checkTmuxAvailable, runAutoresearchNoviceBridge, type AutoresearchQuestionIO } from '../autoresearch-guided.js';
+import {
+  isLaunchReadyEvaluatorCommand,
+  resolveAutoresearchDeepInterviewResult,
+  writeAutoresearchDeepInterviewArtifacts,
+  writeAutoresearchDraftArtifact,
+} from '../autoresearch-intake.js';
+import {
+  buildAutoresearchDeepInterviewPrompt,
+  initAutoresearchMission,
+  parseInitArgs,
+  checkTmuxAvailable,
+  runAutoresearchNoviceBridge,
+  type AutoresearchQuestionIO,
+} from '../autoresearch-guided.js';
 
 async function initRepo(): Promise<string> {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-autoresearch-guided-test-'));
@@ -223,6 +235,54 @@ describe('autoresearch intake draft artifacts', () => {
     assert.equal(isLaunchReadyEvaluatorCommand('node scripts/eval.js'), true);
     assert.equal(isLaunchReadyEvaluatorCommand('bash scripts/eval.sh'), true);
   });
+
+  it('writes launch-consumable mission/sandbox/result artifacts and resolves them back', async () => {
+    const repo = await initRepo();
+    try {
+      const artifacts = await writeAutoresearchDeepInterviewArtifacts({
+        repoRoot: repo,
+        topic: 'Measure onboarding friction',
+        evaluatorCommand: 'node scripts/eval.js',
+        keepPolicy: 'pass_only',
+        slug: 'onboarding-friction',
+        seedInputs: { topic: 'Measure onboarding friction' },
+      });
+
+      assert.match(artifacts.draftArtifactPath, /deep-interview-autoresearch-onboarding-friction\.md$/);
+      assert.match(artifacts.missionArtifactPath, /autoresearch-onboarding-friction\/mission\.md$/);
+      assert.match(artifacts.sandboxArtifactPath, /autoresearch-onboarding-friction\/sandbox\.md$/);
+      assert.match(artifacts.resultPath, /autoresearch-onboarding-friction\/result\.json$/);
+
+      const resolved = await resolveAutoresearchDeepInterviewResult(repo, { slug: 'onboarding-friction' });
+      assert.ok(resolved);
+      assert.equal(resolved?.compileTarget.slug, 'onboarding-friction');
+      assert.equal(resolved?.compileTarget.keepPolicy, 'pass_only');
+      assert.equal(resolved?.launchReady, true);
+      assert.match(resolved?.missionContent || '', /Measure onboarding friction/);
+      assert.match(resolved?.sandboxContent || '', /command: node scripts\/eval\.js/);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('buildAutoresearchDeepInterviewPrompt', () => {
+  it('activates deep-interview --autoresearch and includes seed inputs', () => {
+    const prompt = buildAutoresearchDeepInterviewPrompt({
+      topic: 'Investigate flaky tests',
+      evaluatorCommand: 'node scripts/eval.js',
+      keepPolicy: 'score_improvement',
+      slug: 'flaky-tests',
+    });
+
+    assert.match(prompt, /\$deep-interview --autoresearch/);
+    assert.match(prompt, /deep-interview-autoresearch-\{slug\}\.md/);
+    assert.match(prompt, /autoresearch-\{slug\}\/mission\.md/);
+    assert.match(prompt, /- topic: Investigate flaky tests/);
+    assert.match(prompt, /- evaluator: node scripts\/eval\.js/);
+    assert.match(prompt, /- keep_policy: score_improvement/);
+    assert.match(prompt, /- slug: flaky-tests/);
+  });
 });
 
 describe('runAutoresearchNoviceBridge', () => {
@@ -249,11 +309,13 @@ describe('runAutoresearchNoviceBridge', () => {
       ));
 
       const draftContent = await readFile(join(repo, '.omx', 'specs', 'deep-interview-autoresearch-ux-eval.md'), 'utf-8');
+      const resultContent = await readFile(join(repo, '.omx', 'specs', 'autoresearch-ux-eval', 'result.json'), 'utf-8');
       const missionContent = await readFile(join(result.missionDir, 'mission.md'), 'utf-8');
       const sandboxContent = await readFile(join(result.missionDir, 'sandbox.md'), 'utf-8');
 
       assert.equal(result.slug, 'ux-eval');
       assert.match(draftContent, /Launch-ready: yes/);
+      assert.match(resultContent, /"launchReady": true/);
       assert.match(missionContent, /Improve evaluator UX/);
       assert.match(sandboxContent, /command: node scripts\/eval\.js/);
       assert.match(sandboxContent, /keep_policy: pass_only/);

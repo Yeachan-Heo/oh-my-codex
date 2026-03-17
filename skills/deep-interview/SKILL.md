@@ -1,7 +1,7 @@
 ---
 name: deep-interview
 description: Socratic deep interview with mathematical ambiguity gating before execution
-argument-hint: "<idea or vague description>"
+argument-hint: "[--quick|--standard|--deep] [--autoresearch] <idea or vague description>"
 ---
 
 <Purpose>
@@ -30,8 +30,13 @@ Execution quality is usually bottlenecked by intent clarity, not just missing im
 - **Quick (`--quick`)**: fast pre-PRD pass; target threshold `<= 0.30`; max rounds 5
 - **Standard (`--standard`, default)**: full requirement interview; target threshold `<= 0.20`; max rounds 12
 - **Deep (`--deep`)**: high-rigor exploration; target threshold `<= 0.15`; max rounds 20
+- **Autoresearch (`--autoresearch`)**: same interview rigor as Standard, but specialized for `omx autoresearch` launch readiness and `.omx/specs/` mission/sandbox artifact handoff
 
 If no flag is provided, use **Standard**.
+
+<Mode_Flags>
+- **`--autoresearch`**: switch the interview into autoresearch-intake mode for `omx autoresearch` handoff. In this mode, the interview should converge on a launch-ready research mission, write canonical artifacts under `.omx/specs/`, and preserve the explicit `refine further` vs `launch` boundary for downstream CLI intake.
+</Mode_Flags>
 </Depth_Profiles>
 
 <Execution_Policy>
@@ -196,18 +201,25 @@ Spec should include:
 
 ### Autoresearch specialization
 
-When the clarified task is specifically about `omx autoresearch`, keep the interview domain-specific and emit a canonical artifact that downstream CLI intake can compile into launch-ready mission scaffolding without skipping clarification.
+When the clarified task is specifically about `omx autoresearch`, or the skill is invoked with `--autoresearch`, keep the interview domain-specific and emit launch-consumable artifacts without skipping clarification.
 
 - **Accepted seed inputs:** `topic`, `evaluator`, `keep-policy`, `slug`, existing mission draft text, and prior evaluator examples/templates
 - **Required interview focus:** mission clarity, evaluator readiness, keep policy, slug/session naming, and whether the draft is ready to launch now or should refine further
 - **Canonical artifact path:** `.omx/specs/deep-interview-autoresearch-{slug}.md`
+- **Launch artifact bundle:** `.omx/specs/autoresearch-{slug}/mission.md`, `.omx/specs/autoresearch-{slug}/sandbox.md`, and `.omx/specs/autoresearch-{slug}/result.json`
+- **Launch artifact directory:** `.omx/specs/autoresearch-{slug}/`
 - **Required artifact sections:**
   - `Mission Draft`
   - `Evaluator Draft`
   - `Launch Readiness`
   - `Seed Inputs`
   - `Confirmation Bridge`
+- **Required launch artifacts under `.omx/specs/autoresearch-{slug}/`:**
+  - `mission.md`
+  - `sandbox.md`
+  - `result.json`
 - **Launch-readiness rule:** mark the draft as **not launch-ready** while the evaluator command still contains placeholder markers such as `<...>`, `TODO`, `TBD`, `REPLACE_ME`, `CHANGEME`, or `your-command-here`
+- **Structured result contract:** `result.json` should point to the draft + mission/sandbox artifacts and carry the finalized `topic`, `evaluatorCommand`, `keepPolicy`, `slug`, `launchReady`, and `blockedReasons` fields so `omx autoresearch` can consume it directly
 - **Confirmation bridge:** after artifact generation, offer at least `refine further` and `launch`; do not launch detached tmux until the user explicitly confirms `launch`
 - **Handoff rule:** downstream execution must preserve the clarified mission intent, evaluator expectations, decision boundaries, and launch-readiness status from this artifact rather than bypassing the draft review step
 

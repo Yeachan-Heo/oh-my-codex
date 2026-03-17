@@ -5,7 +5,14 @@ import { mkdir, writeFile } from 'fs/promises';
 import { dirname, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { type AutoresearchKeepPolicy, parseSandboxContract, slugifyMissionName } from '../autoresearch/contracts.js';
-import { type AutoresearchSeedInputs, isLaunchReadyEvaluatorCommand, writeAutoresearchDraftArtifact } from './autoresearch-intake.js';
+import {
+  buildMissionContent,
+  buildSandboxContent,
+  type AutoresearchDeepInterviewResult,
+  type AutoresearchSeedInputs,
+  isLaunchReadyEvaluatorCommand,
+  writeAutoresearchDeepInterviewArtifacts,
+} from './autoresearch-intake.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -30,15 +37,6 @@ export interface AutoresearchQuestionIO {
 
 function shellQuote(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
-}
-
-function buildMissionContent(topic: string): string {
-  return `# Mission\n\n${topic}\n`;
-}
-
-function buildSandboxContent(evaluatorCommand: string, keepPolicy: AutoresearchKeepPolicy): string {
-  const safeCommand = evaluatorCommand.replace(/[\r\n]/g, ' ').trim();
-  return `---\nevaluator:\n  command: ${safeCommand}\n  format: json\n  keep_policy: ${keepPolicy}\n---\n`;
 }
 
 function createQuestionIO(): AutoresearchQuestionIO {
@@ -77,6 +75,41 @@ function ensureLaunchReadyEvaluator(command: string): void {
   if (!isLaunchReadyEvaluatorCommand(command)) {
     throw new Error('Evaluator command is still a placeholder/template. Refine further before launch.');
   }
+}
+
+export function buildAutoresearchDeepInterviewPrompt(
+  seedInputs: AutoresearchSeedInputs = {},
+): string {
+  const seedLines = [
+    `- topic: ${seedInputs.topic?.trim() || '(none)'}`,
+    `- evaluator: ${seedInputs.evaluatorCommand?.trim() || '(none)'}`,
+    `- keep_policy: ${seedInputs.keepPolicy || '(none)'}`,
+    `- slug: ${seedInputs.slug?.trim() || '(none)'}`,
+  ];
+
+  return [
+    '$deep-interview --autoresearch',
+    'Run the deep-interview skill in autoresearch mode for `omx autoresearch`.',
+    'Guide the user through research topic definition, evaluator readiness, keep policy, and slug/session naming.',
+    'Do not launch tmux or run `omx autoresearch` yourself.',
+    'When the user confirms launch and the evaluator is concrete, write/update these canonical artifacts under `.omx/specs/`:',
+    '- `deep-interview-autoresearch-{slug}.md`',
+    '- `autoresearch-{slug}/mission.md`',
+    '- `autoresearch-{slug}/sandbox.md`',
+    '- `autoresearch-{slug}/result.json`',
+    'Use the contract and helper functions in `src/cli/autoresearch-intake.ts` for the artifact shape.',
+    'If the evaluator command still contains placeholders or the user has not confirmed launch, keep refining instead of finalizing launch-ready output.',
+    '',
+    'Seed inputs:',
+    ...seedLines,
+  ].join('\n');
+}
+
+export async function materializeAutoresearchDeepInterviewResult(
+  result: AutoresearchDeepInterviewResult,
+): Promise<InitAutoresearchResult> {
+  ensureLaunchReadyEvaluator(result.compileTarget.evaluatorCommand);
+  return initAutoresearchMission(result.compileTarget);
 }
 
 export async function initAutoresearchMission(opts: InitAutoresearchOptions): Promise<InitAutoresearchResult> {
@@ -179,7 +212,7 @@ export async function runAutoresearchNoviceBridge(
       slug = await promptWithDefault(io, '\nMission slug', slug || slugifyMissionName(topic));
       slug = slugifyMissionName(slug);
 
-      const draft = await writeAutoresearchDraftArtifact({
+      const deepInterview = await writeAutoresearchDeepInterviewArtifacts({
         repoRoot,
         topic,
         evaluatorCommand,
@@ -188,16 +221,15 @@ export async function runAutoresearchNoviceBridge(
         seedInputs,
       });
 
-      console.log(`\nDraft saved: ${draft.path}`);
-      console.log(`Launch readiness: ${draft.launchReady ? 'ready' : draft.blockedReasons.join(' ')}`);
+      console.log(`\nDraft saved: ${deepInterview.draftArtifactPath}`);
+      console.log(`Launch readiness: ${deepInterview.launchReady ? 'ready' : deepInterview.blockedReasons.join(' ')}`);
 
-      const action = await promptAction(io, draft.launchReady);
+      const action = await promptAction(io, deepInterview.launchReady);
       if (action === 'refine') {
         continue;
       }
 
-      ensureLaunchReadyEvaluator(draft.compileTarget.evaluatorCommand);
-      return initAutoresearchMission(draft.compileTarget);
+      return materializeAutoresearchDeepInterviewResult(deepInterview);
     }
   } finally {
     io.close();
