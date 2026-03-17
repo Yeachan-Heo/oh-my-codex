@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -31,7 +31,8 @@ function runOmx(
 }
 
 async function initRepo(): Promise<string> {
-  const cwd = await mkdtemp(join(tmpdir(), 'omx-autoresearch-test-'));
+  const raw = await mkdtemp(join(tmpdir(), 'omx-autoresearch-test-'));
+  const cwd = realpathSync(raw);
   execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.name', 'Test User'], { cwd, stdio: 'ignore' });
@@ -309,10 +310,9 @@ EOF
       assert.equal(state.active, false);
 
       const logsRoot = join(repo, '.omx', 'logs', 'autoresearch');
-      const [runId] = execFileSync('find', [logsRoot, '-mindepth', '1', '-maxdepth', '1', '-type', 'd', '-printf', '%f\n'], { encoding: 'utf-8' })
-        .trim()
-        .split('\n')
-        .filter(Boolean);
+      const [runId] = readdirSync(logsRoot, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => d.name);
       assert.ok(runId);
 
       const manifest = JSON.parse(await readFile(join(logsRoot, runId, 'manifest.json'), 'utf-8')) as {

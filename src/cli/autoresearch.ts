@@ -162,7 +162,7 @@ async function runAutoresearchLoop(
       runAutoresearchTurn(runtime.worktreePath, runtime.instructionsFile, codexArgs);
 
       const contract = await loadAutoresearchMissionContract(missionDir);
-      const manifest = await loadAutoresearchRunManifest(runtime.repoRoot, JSON.parse(execFileSync('cat', [runtime.manifestFile], { encoding: 'utf-8' })).run_id);
+      const manifest = await loadAutoresearchRunManifest(runtime.repoRoot, JSON.parse(readFileSync(runtime.manifestFile, 'utf-8')).run_id);
       const decision = await processAutoresearchCandidate(contract, manifest, runtime.repoRoot);
       if (decision === 'abort' || decision === 'error') {
         return;
