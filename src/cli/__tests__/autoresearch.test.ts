@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { normalizeAutoresearchCodexArgs, parseAutoresearchArgs } from '../autoresearch.js';
@@ -214,8 +214,8 @@ describe('omx autoresearch', () => {
       assert.notEqual(result.status, 0, result.stderr || result.stdout);
       assert.match(`${result.stderr}\n${result.stdout}`, /Cannot start autoresearch: ralph is already active/i);
 
-      const worktreePath = join(repo, '..', `${basename(repo)}.omx-worktrees`, 'autoresearch-missions-demo');
-      assert.equal(existsSync(worktreePath), false, 'expected launch to abort before creating autoresearch worktree');
+      const worktreesRoot = join(repo, '.omx', 'worktrees');
+      assert.equal(existsSync(worktreesRoot), false, 'expected launch to abort before creating autoresearch worktree');
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
@@ -301,7 +301,6 @@ printf '{\\n  "status": "abort",\\n  "candidate_commit": null,\\n  "base_commit"
         fakeCodexPath,
         `#!/bin/sh
 cat >/dev/null
-candidate_file=$(find /tmp -path '*/.omx/logs/autoresearch/*/candidate.json' | head -n 1)
 candidate_file=$(find "$OMX_TEST_REPO_ROOT/.omx/logs/autoresearch" -name candidate.json | head -n 1)
 head_commit=$(git rev-parse HEAD)
 cat >"$candidate_file" <<EOF

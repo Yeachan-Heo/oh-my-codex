@@ -1039,6 +1039,14 @@ describe("buildTmuxSessionName", () => {
     );
     assert.match(name, /^omx-cool-project-launch-detached-/);
   });
+
+  it("includes repo name when cwd is inside .omx/worktrees", () => {
+    const name = buildTmuxSessionName(
+      "/home/user/my-repo/.omx/worktrees/autoresearch-demo",
+      "omx-789-ghi",
+    );
+    assert.match(name, /^omx-my-repo-autoresearch-demo-/);
+  });
 });
 
 describe("team worker launch arg inheritance helpers", () => {

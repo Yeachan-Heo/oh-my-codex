@@ -64,7 +64,7 @@ describe('autoresearch runtime parity extras', () => {
     const repo = await initRepo();
     try {
       const contract = await makeContract(repo);
-      const worktreePath = join(repo, '..', `${repo.split('/').pop()}.omx-worktrees`, 'autoresearch-missions-demo-20260314t020000z');
+      const worktreePath = join(repo, '.omx', 'worktrees', 'autoresearch-missions-demo-20260314t020000z');
       execFileSync('git', ['worktree', 'add', '-b', 'autoresearch/missions-demo/20260314t020000z', worktreePath, 'HEAD'], {
         cwd: repo,
         stdio: 'ignore',
@@ -90,7 +90,7 @@ describe('autoresearch runtime parity extras', () => {
     const repo = await initRepo();
     try {
       const contract = await makeContract(repo);
-      const worktreePathA = join(repo, '..', `${repo.split('/').pop()}.omx-worktrees`, 'autoresearch-missions-demo-20260314t030000z');
+      const worktreePathA = join(repo, '.omx', 'worktrees', 'autoresearch-missions-demo-20260314t030000z');
       execFileSync('git', ['worktree', 'add', '-b', 'autoresearch/missions-demo/20260314t030000z', worktreePathA, 'HEAD'], {
         cwd: repo,
         stdio: 'ignore',
@@ -98,7 +98,7 @@ describe('autoresearch runtime parity extras', () => {
       const worktreeContractA = await materializeAutoresearchMissionToWorktree(contract, worktreePathA);
       const runtimeA = await prepareAutoresearchRuntime(worktreeContractA, repo, worktreePathA, { runTag: '20260314T030000Z' });
 
-      const worktreePathB = join(repo, '..', `${repo.split('/').pop()}.omx-worktrees`, 'autoresearch-missions-demo-20260314t030500z');
+      const worktreePathB = join(repo, '.omx', 'worktrees', 'autoresearch-missions-demo-20260314t030500z');
       execFileSync('git', ['worktree', 'add', '-b', 'autoresearch/missions-demo/20260314t030500z', worktreePathB, 'HEAD'], {
         cwd: repo,
         stdio: 'ignore',
@@ -119,7 +119,7 @@ describe('autoresearch runtime parity extras', () => {
     const repo = await initRepo();
     try {
       const contract = await makeContract(repo);
-      const worktreePath = join(repo, '..', `${repo.split('/').pop()}.omx-worktrees`, 'autoresearch-missions-demo-20260314t040000z');
+      const worktreePath = join(repo, '.omx', 'worktrees', 'autoresearch-missions-demo-20260314t040000z');
       execFileSync('git', ['worktree', 'add', '-b', 'autoresearch/missions-demo/20260314t040000z', worktreePath, 'HEAD'], {
         cwd: repo,
         stdio: 'ignore',
@@ -185,7 +185,7 @@ describe('autoresearch runtime parity extras', () => {
     const repo = await initRepo();
     try {
       const contract = await makeContract(repo);
-      const worktreePath = join(repo, '..', `${repo.split('/').pop()}.omx-worktrees`, 'autoresearch-missions-demo-20260314t050000z');
+      const worktreePath = join(repo, '.omx', 'worktrees', 'autoresearch-missions-demo-20260314t050000z');
       execFileSync('git', ['worktree', 'add', '-b', 'autoresearch/missions-demo/20260314t050000z', worktreePath, 'HEAD'], {
         cwd: repo,
         stdio: 'ignore',
@@ -219,7 +219,7 @@ describe('autoresearch runtime parity extras', () => {
     const repo = await initRepo();
     try {
       const contract = await makeContract(repo);
-      const worktreePath = join(repo, '..', `${repo.split('/').pop()}.omx-worktrees`, 'autoresearch-missions-demo-20260314t060000z');
+      const worktreePath = join(repo, '.omx', 'worktrees', 'autoresearch-missions-demo-20260314t060000z');
       execFileSync('git', ['worktree', 'add', '-b', 'autoresearch/missions-demo/20260314t060000z', worktreePath, 'HEAD'], {
         cwd: repo,
         stdio: 'ignore',
@@ -265,7 +265,7 @@ describe('autoresearch runtime parity extras', () => {
     const repo = await initRepo();
     try {
       const contract = await makeContract(repo);
-      const worktreePath = join(repo, '..', `${repo.split('/').pop()}.omx-worktrees`, 'autoresearch-missions-demo-20260314t070000z');
+      const worktreePath = join(repo, '.omx', 'worktrees', 'autoresearch-missions-demo-20260314t070000z');
       execFileSync('git', ['worktree', 'add', '-b', 'autoresearch/missions-demo/20260314t070000z', worktreePath, 'HEAD'], {
         cwd: repo,
         stdio: 'ignore',
@@ -291,7 +291,7 @@ describe('autoresearch runtime parity extras', () => {
       const failureResults = await readFile(runtime.resultsFile, 'utf-8');
       assert.match(failureResults, /^1\t.+\t\t\terror\tinvalid candidate$/m);
 
-      const secondWorktreePath = join(repo, '..', `${repo.split('/').pop()}.omx-worktrees`, 'autoresearch-missions-demo-20260314t071000z');
+      const secondWorktreePath = join(repo, '.omx', 'worktrees', 'autoresearch-missions-demo-20260314t071000z');
       execFileSync('git', ['worktree', 'add', '-b', 'autoresearch/missions-demo/20260314t071000z', secondWorktreePath, 'HEAD'], {
         cwd: repo,
         stdio: 'ignore',
@@ -314,7 +314,7 @@ describe('autoresearch runtime parity extras', () => {
       assert.equal(failedManifest.status, 'failed');
       assert.match(failedManifest.stop_reason || '', /base_commit/i);
 
-      const thirdWorktreePath = join(repo, '..', `${repo.split('/').pop()}.omx-worktrees`, 'autoresearch-missions-demo-20260314t072000z');
+      const thirdWorktreePath = join(repo, '.omx', 'worktrees', 'autoresearch-missions-demo-20260314t072000z');
       execFileSync('git', ['worktree', 'add', '-b', 'autoresearch/missions-demo/20260314t072000z', thirdWorktreePath, 'HEAD'], {
         cwd: repo,
         stdio: 'ignore',
@@ -337,7 +337,7 @@ describe('autoresearch runtime parity extras', () => {
     const repo = await initRepo();
     try {
       const contract = await makeContract(repo);
-      const worktreePath = join(repo, '..', `${repo.split('/').pop()}.omx-worktrees`, 'autoresearch-missions-demo-20260314t080000z');
+      const worktreePath = join(repo, '.omx', 'worktrees', 'autoresearch-missions-demo-20260314t080000z');
       execFileSync('git', ['worktree', 'add', '-b', 'autoresearch/missions-demo/20260314t080000z', worktreePath, 'HEAD'], {
         cwd: repo,
         stdio: 'ignore',

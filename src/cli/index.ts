@@ -1300,12 +1300,18 @@ function sanitizeTmuxToken(value: string): string {
 }
 
 export function buildTmuxSessionName(cwd: string, sessionId: string): string {
-  const parentDir = basename(dirname(cwd));
+  const parentPath = dirname(cwd);
+  const parentDir = basename(parentPath);
   const dirName = basename(cwd);
-  const dirToken = parentDir.endsWith(".omx-worktrees")
-    ? sanitizeTmuxToken(
-        `${parentDir.slice(0, -".omx-worktrees".length)}-${dirName}`,
-      )
+  const grandparentPath = dirname(parentPath);
+  const grandparentDir = basename(grandparentPath);
+  const repoDir = parentDir.endsWith(".omx-worktrees")
+    ? parentDir.slice(0, -".omx-worktrees".length)
+    : parentDir === "worktrees" && grandparentDir === ".omx"
+      ? basename(dirname(grandparentPath))
+      : null;
+  const dirToken = repoDir
+    ? sanitizeTmuxToken(`${repoDir}-${dirName}`)
     : sanitizeTmuxToken(dirName);
   let branchToken = "detached";
   const branch = tryReadGitValue(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);

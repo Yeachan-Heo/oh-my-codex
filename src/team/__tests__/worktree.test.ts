@@ -104,7 +104,7 @@ describe('worktree planning', () => {
       if (!planned.enabled) return;
 
       assert.equal(planned.branchName, 'autoresearch/demo-mission/20260314t000000z');
-      assert.match(planned.worktreePath.replace(/\\/g, '/'), /\.omx-worktrees\/autoresearch-demo-mission-20260314t000000z$/);
+      assert.match(planned.worktreePath.replace(/\\/g, '/'), /\.omx\/worktrees\/autoresearch-demo-mission-20260314t000000z$/);
     } finally {
       await rm(repo, { recursive: true, force: true });
     }

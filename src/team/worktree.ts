@@ -210,7 +210,7 @@ function resolveWorktreePath(input: WorktreePlanInput, repoRoot: string): string
       throw new Error('autoresearch_worktree_requires_named_mode');
     }
     const runTag = sanitizePathToken(input.worktreeTag || 'run');
-    return join(parent, bucket, `autoresearch-${sanitizePathToken(input.mode.name)}-${runTag}`);
+    return join(repoRoot, '.omx', 'worktrees', `autoresearch-${sanitizePathToken(input.mode.name)}-${runTag}`);
   }
 
   const teamName = sanitizePathToken(input.teamName || 'team');
