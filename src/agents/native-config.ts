@@ -8,6 +8,7 @@ import { mkdir, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { AGENT_DEFINITIONS, AgentDefinition } from './definitions.js';
 import { codexAgentsDir } from '../utils/paths.js';
+import { generateSkillBridgeAgentToml } from './skill-bridge.js';
 
 const POSTURE_OVERLAYS: Record<AgentDefinition['posture'], string> = {
   'frontier-orchestrator': [
@@ -79,7 +80,7 @@ const MODEL_CLASS_OVERLAYS: Record<AgentDefinition['modelClass'], string> = {
 export interface GeneratedNativeAgentConfig {
   name: string;
   description: string;
-  developerInstructions: string;
+  developerInstructions?: string;
   model?: string;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
 }
@@ -125,7 +126,6 @@ function escapeTomlBasicString(s: string): string {
 }
 
 export function generateStandaloneAgentToml(config: GeneratedNativeAgentConfig): string {
-  const escapedInstructions = escapeTomlMultiline(config.developerInstructions);
   const lines = [
     `# oh-my-codex agent: ${config.name}`,
     `name = "${escapeTomlBasicString(config.name)}"`,
@@ -138,14 +138,16 @@ export function generateStandaloneAgentToml(config: GeneratedNativeAgentConfig):
   if (config.reasoningEffort) {
     lines.push(`model_reasoning_effort = "${config.reasoningEffort}"`);
   }
+  if (typeof config.developerInstructions === 'string' && config.developerInstructions.trim().length > 0) {
+    const escapedInstructions = escapeTomlMultiline(config.developerInstructions);
+    lines.push(
+      'developer_instructions = """',
+      escapedInstructions,
+      '"""',
+    );
+  }
 
-  lines.push(
-    'developer_instructions = """',
-    escapedInstructions,
-    '"""',
-    '',
-  );
-
+  lines.push('');
   return lines.join('\n');
 }
 
@@ -167,21 +169,12 @@ export function generateAgentToml(agent: AgentDefinition, promptContent: string)
 export function generateSkillAgentToml(
   name: string,
   description: string,
-  skillContent: string,
+  skillRef: string = name,
 ): string {
-  const instructions = [
-    `You are the oh-my-codex skill agent "${name}".`,
-    `Purpose: ${description}`,
-    '- Follow the embedded OMX skill instructions below as your operating procedure.',
-    '- When parallel execution helps, you may use Codex native subagents for independent subtasks.',
-    '',
-    stripFrontmatter(skillContent),
-  ].join('\n');
-
-  return generateStandaloneAgentToml({
+  return generateSkillBridgeAgentToml({
     name,
     description,
-    developerInstructions: instructions,
+    skillRef,
   });
 }
 

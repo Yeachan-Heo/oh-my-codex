@@ -18,6 +18,11 @@ import {
   writeRalphthonRuntimeState,
   type RalphthonRuntimeState,
 } from './runtime.js';
+import { readSessionState } from '../hooks/session.js';
+import {
+  readSubagentSessionSummary,
+  type SubagentSessionSummary,
+} from '../subagents/tracker.js';
 
 export type RalphthonMarker =
   | { type: 'prd_ready'; raw: string }
@@ -35,6 +40,7 @@ export interface RalphthonOrchestratorDeps {
   injectPrompt: (leaderTarget: string, prompt: string) => Promise<boolean | void>;
   updateModeState?: (patch: Record<string, unknown>) => Promise<void>;
   alert?: (message: string) => Promise<void> | void;
+  readSubagentSummary?: (sessionId: string, now: Date) => Promise<SubagentSessionSummary | null>;
   now?: () => Date;
 }
 
@@ -127,6 +133,36 @@ function markTaskAsStalled(prd: RalphthonPrd, taskId: string, timestamp: string)
   });
 }
 
+function applySubagentSnapshot(
+  runtime: RalphthonRuntimeState,
+  summary: SubagentSessionSummary | null,
+  nowStamp: string,
+): RalphthonRuntimeState {
+  if (!summary) {
+    return {
+      ...runtime,
+      subagentThreadIds: [],
+      activeSubagentThreadIds: [],
+      subagentWaitReason: undefined,
+      subagentLastObservedAt: undefined,
+      subagentSessionId: runtime.subagentSessionId,
+      leaderThreadId: runtime.leaderThreadId,
+    };
+  }
+
+  return {
+    ...runtime,
+    subagentSessionId: summary.sessionId,
+    leaderThreadId: summary.leaderThreadId,
+    subagentThreadIds: summary.allSubagentThreadIds,
+    activeSubagentThreadIds: summary.activeSubagentThreadIds,
+    subagentLastObservedAt: nowStamp,
+    subagentWaitReason: summary.activeSubagentThreadIds.length > 0
+      ? `waiting_for_${summary.activeSubagentThreadIds.length}_subagent_thread${summary.activeSubagentThreadIds.length === 1 ? '' : 's'}`
+      : undefined,
+  };
+}
+
 async function defaultReadPrd(): Promise<RalphthonPrd | null> {
   return readRalphthonPrd(process.cwd());
 }
@@ -156,6 +192,7 @@ export class RalphthonOrchestrator {
       injectPrompt: deps.injectPrompt ?? (async () => true),
       updateModeState: deps.updateModeState,
       alert: deps.alert,
+      readSubagentSummary: deps.readSubagentSummary ?? (async (sessionId: string, now: Date) => readSubagentSessionSummary(process.cwd(), sessionId, { now })),
       now: deps.now ?? (() => new Date()),
     };
   }
@@ -185,6 +222,14 @@ export class RalphthonOrchestrator {
         lastOutputChangeAt: nowStamp,
       };
     }
+
+    const persistedSession = await readSessionState(process.cwd()).catch(() => null);
+    const subagentSessionId = runtime.subagentSessionId?.trim() || persistedSession?.session_id?.trim() || '';
+    const subagentSummary = subagentSessionId
+      ? await this.deps.readSubagentSummary?.(subagentSessionId, now)
+      : null;
+    runtime = applySubagentSnapshot(runtime, subagentSummary ?? null, nowStamp);
+    const hasActiveSubagents = runtime.activeSubagentThreadIds.length > 0;
 
     let prd = await this.deps.readPrd();
     const freshMarkers = parseRalphthonMarkers(changedCapture);
@@ -245,7 +290,7 @@ export class RalphthonOrchestrator {
 
     if (prd) {
       prd = ensureHardeningPhase(prd);
-      if (shouldTerminateHardening(prd)) {
+      if (shouldTerminateHardening(prd) && !hasActiveSubagents) {
         prd = completeRalphthonPrd(prd);
         await this.deps.writePrd(prd);
         await this.deps.writeRuntime({
@@ -271,6 +316,37 @@ export class RalphthonOrchestrator {
     const lastOutputChangeMs = runtime.lastOutputChangeAt ? Date.parse(runtime.lastOutputChangeAt) : 0;
     const pollDue = !lastPollMs || nowMs - lastPollMs >= pollIntervalMs;
     const idleDue = !lastOutputChangeMs || nowMs - lastOutputChangeMs >= idleTimeoutMs;
+
+    const waitingOnSubagents = (runtime.activeSubagentThreadIds?.length ?? 0) > 0;
+    if (waitingOnSubagents) {
+      runtime = {
+        ...runtime,
+        subagentWaitReason: `waiting_for_${runtime.activeSubagentThreadIds.length}_native_subagent_threads`,
+      };
+      await this.deps.writeRuntime({
+        ...runtime,
+        lastPollAt: nowStamp,
+      });
+      if (prd) {
+        await this.deps.writePrd(prd);
+        await this.deps.updateModeState?.({
+          current_phase: prd.phase,
+          active_native_subagent_threads: runtime.activeSubagentThreadIds,
+          native_subagent_waiting: true,
+        });
+      }
+
+      return {
+        markerTypes: freshMarkers.map((marker) => marker.type),
+        completed: false,
+        phase: prd?.phase,
+      };
+    }
+
+    runtime = {
+      ...runtime,
+      subagentWaitReason: undefined,
+    };
 
     let injectedPrompt: string | undefined;
     if (idleDue || pollDue) {
@@ -298,6 +374,7 @@ export class RalphthonOrchestrator {
         );
         const activeTaskStalled = Boolean(
           activeTask
+          && !hasActiveSubagents
           && !activeTaskHadFreshMarker
           && (activeTaskStatus === 'pending' || activeTaskStatus === 'in_progress')
           && !injectionStillFresh(runtime, nowMs, pollIntervalMs, activeTaskId || ''),
@@ -312,7 +389,7 @@ export class RalphthonOrchestrator {
           };
         }
 
-        if (!activeTask || activeTask.task.status === 'done' || activeTask.task.status === 'failed' || activeTaskStalled) {
+        if (!hasActiveSubagents && (!activeTask || activeTask.task.status === 'done' || activeTask.task.status === 'failed' || activeTaskStalled)) {
           const nextTask = nextPendingTask(prd);
           if (nextTask) {
             if (!injectionStillFresh(runtime, nowMs, pollIntervalMs, nextTask.task.id)) {
@@ -355,7 +432,7 @@ export class RalphthonOrchestrator {
     await this.deps.writeRuntime(runtime);
     if (prd) {
       await this.deps.writePrd(prd);
-      await this.deps.updateModeState?.({ current_phase: prd.phase });
+      await this.deps.updateModeState?.({ current_phase: prd.phase, active_native_subagent_threads: runtime.activeSubagentThreadIds ?? [], native_subagent_waiting: false });
     }
 
     return {

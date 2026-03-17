@@ -1251,7 +1251,7 @@ async function refreshNativeAgentConfigs(
         // Keep generating the skill-backed agent even if a locally modified
         // installed skill file no longer has valid frontmatter.
       }
-      const toml = generateSkillAgentToml(skillName, skillDescription, skillContent);
+      const toml = generateSkillAgentToml(skillName, skillDescription, skillName);
       const dst = join(agentsDir, `${skillName}.toml`);
       await syncManagedContent(
         toml,

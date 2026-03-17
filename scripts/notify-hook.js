@@ -124,6 +124,26 @@ async function main() {
     // Non-critical
   }
 
+  // 0.5. Track leader + native subagent thread activity (lead session only)
+  if (!isTeamWorker) {
+    try {
+      const threadId = safeString(payload['thread-id'] || payload.thread_id || '');
+      const turnId = safeString(payload['turn-id'] || payload.turn_id || '');
+      if (payloadSessionId && threadId) {
+        const { recordSubagentTurnForSession } = await import('../dist/subagents/tracker.js');
+        await recordSubagentTurnForSession(cwd, {
+          sessionId: payloadSessionId,
+          threadId,
+          ...(turnId ? { turnId } : {}),
+          timestamp: new Date().toISOString(),
+          mode: safeString(payload.mode || ''),
+        });
+      }
+    } catch {
+      // Non-critical: tracking must never block the hook
+    }
+  }
+
   // 1. Log the turn
   const logEntry = {
     timestamp: new Date().toISOString(),

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -49,6 +49,14 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
       assert.equal(installedNativeAgents.has('information-architect.toml'), false);
       assert.equal(installedNativeAgents.has('product-analyst.toml'), false);
       assert.equal(installedNativeAgents.has('code-simplifier.toml'), true);
+
+      const codeReviewToml = await readFile(join(wd, '.codex', 'agents', 'code-review.toml'), 'utf-8');
+      assert.match(codeReviewToml, /^skill_ref = "code-review"$/m);
+      assert.doesNotMatch(codeReviewToml, /developer_instructions\s*=/);
+
+      const planToml = await readFile(join(wd, '.codex', 'agents', 'plan.toml'), 'utf-8');
+      assert.match(planToml, /^skill_ref = "plan"$/m);
+      assert.doesNotMatch(planToml, /developer_instructions\s*=/);
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });

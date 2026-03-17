@@ -135,6 +135,7 @@ Usage: omx team [ralph] [N:agent-type] "<task description>"
 Notes:
   team workers use dedicated worktrees automatically by default.
   --worktree is deprecated for omx team and is now only a backward-compatible no-op override.
+  use native Codex subagents for small in-session fanout; use omx team for durable tmux/state/worktree coordination.
 
 Examples:
   omx team 3:executor "fix failing tests"

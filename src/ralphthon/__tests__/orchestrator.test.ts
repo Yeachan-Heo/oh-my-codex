@@ -221,6 +221,94 @@ describe('RalphthonOrchestrator', () => {
     assert.match(injected[0] || '', /\[RALPHTHON_HARDENING_WAVE\] wave=1/);
   });
 
+
+  it('waits for active native subagent threads before injecting another task', async () => {
+    let nowMs = Date.parse('2026-03-16T00:00:00.000Z');
+    let prd = createRalphthonPrd({
+      project: 'subagent-wait',
+      stories: [{
+        id: 'S1',
+        title: 'Story 1',
+        status: 'pending',
+        tasks: [{ id: 'T1', desc: 'Implement with helpers', status: 'pending', retries: 0 }],
+      }],
+      config: { pollIntervalSec: 1, idleTimeoutSec: 1 },
+    });
+    let runtime: RalphthonRuntimeState = {
+      ...createRalphthonRuntimeState('%1'),
+      subagentSessionId: 'sess-1',
+    };
+    const injected: string[] = [];
+
+    const orchestrator = new RalphthonOrchestrator({
+      readPrd: async () => prd,
+      writePrd: async (next) => { prd = next; },
+      readRuntime: async () => runtime,
+      writeRuntime: async (next) => { runtime = next; },
+      readSubagentSummary: async () => ({
+        sessionId: 'sess-1',
+        leaderThreadId: 'leader-thread',
+        allThreadIds: ['leader-thread', 'sub-thread-1'],
+        allSubagentThreadIds: ['sub-thread-1'],
+        activeSubagentThreadIds: ['sub-thread-1'],
+        updatedAt: '2026-03-16T00:00:00.000Z',
+      }),
+      capturePane: async () => 'quiet pane',
+      injectPrompt: async (_target, prompt) => { injected.push(prompt); return true; },
+      now: () => new Date(nowMs),
+    });
+
+    const result = await orchestrator.tick();
+
+    assert.equal(result.completed, false);
+    assert.equal(injected.length, 0);
+    assert.deepEqual(runtime.activeSubagentThreadIds, ['sub-thread-1']);
+    assert.equal(runtime.subagentWaitReason, 'waiting_for_1_native_subagent_threads');
+  });
+
+  it('waits for active native subagent threads before completing hardening', async () => {
+    let prd = createRalphthonPrd({
+      project: 'subagent-complete-gate',
+      stories: [],
+      hardening: [],
+    });
+    prd = {
+      ...prd,
+      phase: 'hardening',
+      runtime: {
+        currentHardeningWave: 3,
+        consecutiveHardeningNoIssueWaves: 3,
+      },
+    };
+    let runtime: RalphthonRuntimeState = {
+      ...createRalphthonRuntimeState('%1'),
+      subagentSessionId: 'sess-2',
+    };
+
+    const orchestrator = new RalphthonOrchestrator({
+      readPrd: async () => prd,
+      writePrd: async (next) => { prd = next; },
+      readRuntime: async () => runtime,
+      writeRuntime: async (next) => { runtime = next; },
+      readSubagentSummary: async () => ({
+        sessionId: 'sess-2',
+        leaderThreadId: 'leader-thread',
+        allThreadIds: ['leader-thread', 'sub-thread-1'],
+        allSubagentThreadIds: ['sub-thread-1'],
+        activeSubagentThreadIds: ['sub-thread-1'],
+        updatedAt: '2026-03-16T00:00:00.000Z',
+      }),
+      capturePane: async () => 'idle',
+      injectPrompt: async () => true,
+    });
+
+    const result = await orchestrator.tick();
+
+    assert.equal(result.completed, false);
+    assert.equal(prd.phase, 'hardening');
+    assert.equal(runtime.subagentWaitReason, 'waiting_for_1_native_subagent_threads');
+  });
+
   it('terminates after three hardening waves with no new issues', async () => {
     let prd = createRalphthonPrd({
       project: 'done-done',

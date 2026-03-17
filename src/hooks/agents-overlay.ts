@@ -29,6 +29,7 @@ import { getReadScopedStateDirs, getStateDir, listModeStateFilesWithScopePrefere
 import { generateCodebaseMap } from './codebase-map.js';
 import { SKILL_ACTIVE_STATE_FILE } from './keyword-detector.js';
 import { buildExploreRoutingGuidance } from './explore-routing.js';
+import { buildSkillBridgeResolutionGuidance } from '../agents/skill-bridge.js';
 
 const START_MARKER = '<!-- OMX:RUNTIME:START -->';
 const END_MARKER = '<!-- OMX:RUNTIME:END -->';
@@ -287,7 +288,7 @@ export async function generateOverlay(
   options: GenerateOverlayOptions = {},
 ): Promise<string> {
   const orchestrationMode = options.orchestrationMode ?? 'default';
-  const [activeModes, notepadPriority, projectMemory, codebaseMap, ralphActive, planningArtifacts, teamOverlay, exploreRoutingGuidance] = await Promise.all([
+  const [activeModes, notepadPriority, projectMemory, codebaseMap, ralphActive, planningArtifacts, teamOverlay, exploreRoutingGuidance, skillBridgeGuidance] = await Promise.all([
     readActiveModes(cwd, sessionId),
     readNotepadPriority(cwd),
     readProjectMemorySummary(cwd),
@@ -296,6 +297,7 @@ export async function generateOverlay(
     readRalphPlanningArtifacts(cwd),
     orchestrationMode === 'team' ? readTeamOrchestratorOverlay() : Promise.resolve(''),
     Promise.resolve(buildExploreRoutingGuidance()),
+    buildSkillBridgeResolutionGuidance(cwd),
   ]);
 
   // Build sections with deterministic overflow behavior.
@@ -353,6 +355,14 @@ export async function generateOverlay(
     sections.push({
       key: 'explore_routing',
       text: truncate(exploreRoutingGuidance, 600),
+      optional: true,
+    });
+  }
+
+  if (skillBridgeGuidance) {
+    sections.push({
+      key: 'skill_bridge',
+      text: truncate(skillBridgeGuidance, 900),
       optional: true,
     });
   }

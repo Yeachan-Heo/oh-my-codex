@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { startMode, updateModeState } from '../modes/base.js';
 import { ensureCanonicalRalphArtifacts } from '../ralph/persistence.js';
 import {
@@ -31,6 +33,7 @@ Common patterns:
 
 const VALUE_TAKING_FLAGS = new Set(['--model', '--provider', '--config', '-c', '-i', '--images-dir']);
 const RALPH_OMX_FLAGS = new Set(['--prd']);
+const RALPH_APPEND_ENV = 'OMX_RALPH_APPEND_INSTRUCTIONS_FILE';
 
 export function extractRalphTaskDescription(args: readonly string[]): string {
   const words: string[] = [];
@@ -86,6 +89,28 @@ export function filterRalphCodexArgs(args: readonly string[]): string[] {
   return filtered;
 }
 
+function buildRalphAppendInstructions(task: string): string {
+  return [
+    '<ralph_native_subagents>',
+    'You are in OMX Ralph persistence mode.',
+    `Primary task: ${task}`,
+    'Parallelism guidance:',
+    '- Prefer Codex native subagents for independent parallel subtasks.',
+    '- Treat `.omx/state/subagent-tracking.json` as the native subagent activity ledger for this session.',
+    '- Do not declare the task complete, and do not transition into final verification/completion, while active native subagent threads are still running.',
+    '- Before closing a verification wave, confirm that active native subagent threads have drained.',
+    '</ralph_native_subagents>',
+  ].join('\n');
+}
+
+async function writeRalphAppendInstructionsFile(cwd: string, task: string): Promise<string> {
+  const dir = join(cwd, '.omx', 'ralph');
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, 'session-instructions.md');
+  await writeFile(path, `${buildRalphAppendInstructions(task)}\n`);
+  return path;
+}
+
 export async function ralphCommand(args: string[]): Promise<void> {
   const normalizedArgs = normalizeRalphCliArgs(args);
   const cwd = process.cwd();
@@ -104,6 +129,9 @@ export async function ralphCommand(args: string[]): Promise<void> {
     available_agent_types: availableAgentTypes,
     staffing_summary: staffingPlan.staffingSummary,
     staffing_allocations: staffingPlan.allocations,
+    native_subagents_enabled: true,
+    native_subagent_tracking_path: '.omx/state/subagent-tracking.json',
+    native_subagent_policy: 'Parallel Codex subagents are allowed for independent work, but phase completion must wait for active native subagent threads to finish.',
     ...(artifacts.canonicalPrdPath ? { canonical_prd_path: artifacts.canonicalPrdPath } : {}),
   });
   if (artifacts.migratedPrd) {
@@ -117,5 +145,13 @@ export async function ralphCommand(args: string[]): Promise<void> {
   console.log(`[ralph] staffing_plan: ${staffingPlan.staffingSummary}`);
   const { launchWithHud } = await import('./index.js');
   const codexArgs = filterRalphCodexArgs(normalizedArgs);
-  await launchWithHud(codexArgs);
+  const appendixPath = await writeRalphAppendInstructionsFile(cwd, task);
+  const previousAppendixEnv = process.env[RALPH_APPEND_ENV];
+  process.env[RALPH_APPEND_ENV] = appendixPath;
+  try {
+    await launchWithHud(codexArgs);
+  } finally {
+    if (typeof previousAppendixEnv === 'string') process.env[RALPH_APPEND_ENV] = previousAppendixEnv;
+    else delete process.env[RALPH_APPEND_ENV];
+  }
 }

@@ -21,6 +21,12 @@ export const ralphthonRuntimeStateSchema = z.object({
   lastInjectedTaskId: z.string().trim().min(1).optional(),
   activeTaskId: z.string().trim().min(1).optional(),
   processedMarkers: z.array(z.string().trim().min(1)).default([]),
+  subagentSessionId: z.string().trim().min(1).optional(),
+  leaderThreadId: z.string().trim().min(1).optional(),
+  subagentThreadIds: z.array(z.string().trim().min(1)).default([]),
+  activeSubagentThreadIds: z.array(z.string().trim().min(1)).default([]),
+  subagentLastObservedAt: z.string().trim().min(1).optional(),
+  subagentWaitReason: z.string().trim().min(1).optional(),
 });
 
 export type RalphthonRuntimeState = z.infer<typeof ralphthonRuntimeStateSchema>;
@@ -34,6 +40,8 @@ export function createRalphthonRuntimeState(leaderTarget: string): RalphthonRunt
     schemaVersion: RALPHTHON_RUNTIME_SCHEMA_VERSION,
     leaderTarget: leaderTarget.trim(),
     processedMarkers: [],
+    subagentThreadIds: [],
+    activeSubagentThreadIds: [],
   };
 }
 
@@ -48,6 +56,8 @@ export function parseRalphthonRuntimeState(input: unknown): RalphthonRuntimeStat
     ...parsed,
     lastCaptureText: trimCaptureText(parsed.lastCaptureText),
     processedMarkers: parsed.processedMarkers.slice(-PROCESSED_MARKER_LIMIT),
+    subagentThreadIds: parsed.subagentThreadIds.slice(-PROCESSED_MARKER_LIMIT),
+    activeSubagentThreadIds: parsed.activeSubagentThreadIds.slice(-PROCESSED_MARKER_LIMIT),
   };
 }
 

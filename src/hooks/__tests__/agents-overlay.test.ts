@@ -116,6 +116,27 @@ describe('generateOverlay', () => {
     assert.ok(overlay.includes('Priority Notes'));
   });
 
+  it('includes native skill bridge guidance when lightweight skill_ref agents are installed', async () => {
+    const home = join(tempDir, 'home');
+    const restoreCodexHome = setMockCodexHome(join(home, '.codex'));
+    try {
+      await mkdir(join(home, '.codex', 'agents'), { recursive: true });
+      await mkdir(join(home, '.codex', 'skills', 'plan'), { recursive: true });
+      await writeFile(
+        join(home, '.codex', 'agents', 'plan.toml'),
+        `name = "plan"\ndescription = "Planning bridge"\nskill_ref = "plan"\n`,
+      );
+      await writeFile(join(home, '.codex', 'skills', 'plan', 'SKILL.md'), '# plan\n');
+
+      const overlay = await generateOverlay(tempDir, 'skill-bridge-session');
+      assert.match(overlay, /Native Skill Bridge/);
+      assert.match(overlay, /skill_ref/);
+      assert.match(overlay, /primary Codex skills path/);
+    } finally {
+      restoreCodexHome();
+    }
+  });
+
   it('generates overlay with project memory summary', async () => {
     await writeFile(
       join(tempDir, '.omx', 'project-memory.json'),

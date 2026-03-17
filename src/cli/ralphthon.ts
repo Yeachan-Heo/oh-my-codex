@@ -151,12 +151,16 @@ function buildAppendInstructions(parsed: ParsedRalphthonArgs, prdPath: string): 
     `PRD path: \`${prdPath}\``,
     pollLine,
     maxWavesLine,
+    'Parallelism:',
+    '- Prefer Codex native subagents for independent parallel subtasks inside the leader session.',
+    '- Treat `.omx/state/subagent-tracking.json` as the native subagent activity ledger used by the Ralphthon watchdog.',
+    '- Do not emit task-complete or hardening-complete markers until any active native subagent threads for the current session have finished.',
     'Protocol:',
     '1. When bootstrapping or refreshing the PRD, emit `[RALPHTHON_PRD_READY]` once the PRD exists and is valid JSON.',
     '2. Before starting a task, emit `[RALPHTHON_TASK_START] id=<task-id>`.',
-    '3. On success, update the PRD task status to done and emit `[RALPHTHON_TASK_DONE] id=<task-id>`.',
+    '3. On success, update the PRD task status to done and emit `[RALPHTHON_TASK_DONE] id=<task-id>` only after active native subagent threads for that work are finished.',
     '4. On failure, update the PRD task status/retry info and emit `[RALPHTHON_TASK_FAILED] id=<task-id> reason=<short-kebab-reason>`.',
-    '5. During hardening, add any new hardening tasks into the PRD and emit `[RALPHTHON_HARDENING_GENERATED] wave=<n> count=<k>`.',
+    '5. During hardening, add any new hardening tasks into the PRD and emit `[RALPHTHON_HARDENING_GENERATED] wave=<n> count=<k>` once subagent-assisted checks are complete.',
     '</ralphthon_mode>',
   ].join('\n');
 }

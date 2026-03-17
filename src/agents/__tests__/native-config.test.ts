@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, it } from 'node:test';
 import type { AgentDefinition } from '../definitions.js';
-import { generateAgentToml, installNativeAgentConfigs } from '../native-config.js';
+import { generateAgentToml, generateSkillAgentToml, installNativeAgentConfigs } from '../native-config.js';
 
 describe('agents/native-config', () => {
   it('generates TOML with stripped frontmatter and escaped triple quotes', () => {
@@ -32,6 +32,17 @@ describe('agents/native-config', () => {
 
     const tripleQuoteBlocks = toml.match(/"""/g) || [];
     assert.equal(tripleQuoteBlocks.length, 2, 'only TOML delimiters should remain as raw triple quotes');
+  });
+
+
+  it('generates lightweight skill bridge TOML with skill_ref and no embedded instructions', () => {
+    const toml = generateSkillAgentToml('plan', 'Strategic planning with optional interview workflow');
+
+    assert.match(toml, /# oh-my-codex skill bridge agent: plan/);
+    assert.match(toml, /^name = "plan"$/m);
+    assert.match(toml, /^description = "Strategic planning with optional interview workflow"$/m);
+    assert.match(toml, /^skill_ref = "plan"$/m);
+    assert.doesNotMatch(toml, /developer_instructions\s*=/);
   });
 
   it('installs only agents with prompt files and skips existing files without force', async () => {
