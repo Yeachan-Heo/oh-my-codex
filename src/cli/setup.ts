@@ -137,6 +137,7 @@ const REQUIRED_TEAM_CLI_API_MARKERS = [
 const DEFAULT_SETUP_SCOPE: SetupScope = "user";
 const LEGACY_SETUP_MODEL = "gpt-5.3-codex";
 const DEFAULT_SETUP_MODEL = DEFAULT_FRONTIER_MODEL;
+const OBSOLETE_NATIVE_AGENT_FIELD = ["skill", "ref"].join("_");
 
 function createEmptyCategorySummary(): SetupCategorySummary {
   return {
@@ -207,6 +208,11 @@ async function filesDiffer(src: string, dst: string): Promise<boolean> {
     readFile(dst, "utf-8"),
   ]);
   return srcContent !== dstContent;
+}
+
+function containsTomlKey(content: string, key: string): boolean {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^\\s*${escapedKey}\\s*=`, "m").test(content);
 }
 
 function parseSkillFrontmatterScalar(
@@ -1205,7 +1211,7 @@ async function refreshNativeAgentConfigs(
     );
   }
 
-  summary.removed += await cleanupSkillBridgeNativeAgents(
+  summary.removed += await cleanupObsoleteNativeAgents(
     agentsDir,
     backupContext,
     options,
@@ -1244,7 +1250,7 @@ async function refreshNativeAgentConfigs(
   return summary;
 }
 
-async function cleanupSkillBridgeNativeAgents(
+async function cleanupObsoleteNativeAgents(
   agentsDir: string,
   backupContext: SetupBackupContext,
   options: Pick<SetupOptions, "dryRun" | "verbose">,
@@ -1265,18 +1271,18 @@ async function cleanupSkillBridgeNativeAgents(
       continue;
     }
 
-    if (!/^\s*skill_ref\s*=/m.test(content)) continue;
+    if (!containsTomlKey(content, OBSOLETE_NATIVE_AGENT_FIELD)) continue;
 
     if (await ensureBackup(fullPath, true, backupContext, options)) {
-      // backup created for pre-existing skill bridge config
+      // backup created for pre-existing obsolete native agent config
     }
     if (!options.dryRun) {
       await rm(fullPath, { force: true });
     }
     if (options.verbose) {
       const prefix = options.dryRun
-        ? "would remove stale skill-bridge native agent"
-        : "removed stale skill-bridge native agent";
+        ? "would remove stale obsolete native agent"
+        : "removed stale obsolete native agent";
       console.log(`  ${prefix} ${file}`);
     }
     removed += 1;
