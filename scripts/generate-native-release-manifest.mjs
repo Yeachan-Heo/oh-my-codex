@@ -29,10 +29,10 @@ function parseChecksum(raw) {
 
 function mapTriple(triple) {
   switch (triple) {
-    case 'x86_64-unknown-linux-gnu': return { platform: 'linux', arch: 'x64' };
-    case 'aarch64-unknown-linux-gnu': return { platform: 'linux', arch: 'arm64' };
-    case 'x86_64-unknown-linux-musl': return { platform: 'linux', arch: 'x64' };
-    case 'aarch64-unknown-linux-musl': return { platform: 'linux', arch: 'arm64' };
+    case 'x86_64-unknown-linux-gnu': return { platform: 'linux', arch: 'x64', libc: 'glibc' };
+    case 'aarch64-unknown-linux-gnu': return { platform: 'linux', arch: 'arm64', libc: 'glibc' };
+    case 'x86_64-unknown-linux-musl': return { platform: 'linux', arch: 'x64', libc: 'musl' };
+    case 'aarch64-unknown-linux-musl': return { platform: 'linux', arch: 'arm64', libc: 'musl' };
     case 'x86_64-apple-darwin': return { platform: 'darwin', arch: 'x64' };
     case 'aarch64-apple-darwin': return { platform: 'darwin', arch: 'arm64' };
     case 'x86_64-pc-windows-msvc': return { platform: 'win32', arch: 'x64' };
@@ -73,6 +73,8 @@ for (const artifact of Object.values(plan.artifacts)) {
     version,
     platform: mapped.platform,
     arch: mapped.arch,
+    target: triple,
+    ...(mapped.libc ? { libc: mapped.libc } : {}),
     archive: artifact.name,
     binary: executable.name,
     binary_path: executable.path,
@@ -87,7 +89,14 @@ const manifest = {
   version: plan.announcement_tag.replace(/^v/, ''),
   tag: plan.announcement_tag,
   generated_at: new Date().toISOString(),
-  assets: assets.sort((a, b) => `${a.product}-${a.platform}-${a.arch}`.localeCompare(`${b.product}-${b.platform}-${b.arch}`)),
+  assets: assets.sort((a, b) => {
+    const keyCompare = `${a.product}-${a.platform}-${a.arch}`.localeCompare(`${b.product}-${b.platform}-${b.arch}`);
+    if (keyCompare !== 0) return keyCompare;
+    const libcOrder = { musl: 0, glibc: 1 };
+    const libcCompare = (libcOrder[a.libc] ?? 2) - (libcOrder[b.libc] ?? 2);
+    if (libcCompare !== 0) return libcCompare;
+    return a.archive.localeCompare(b.archive);
+  }),
 };
 for (const product of requireProducts) {
   if (!manifest.assets.some((asset) => asset.product === product)) {

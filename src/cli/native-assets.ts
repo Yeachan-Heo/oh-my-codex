@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, createWriteStream, existsSync } from 'node:fs';
+import { chmodSync, createWriteStream, existsSync, readdirSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, extname, join, resolve } from 'node:path';
@@ -9,12 +9,15 @@ import { spawnPlatformCommandSync } from '../utils/platform-command.js';
 import { getPackageRoot } from '../utils/package.js';
 
 export type NativeProduct = 'omx-explore-harness' | 'omx-sparkshell';
+export type NativeLibc = 'musl' | 'glibc';
 
 export interface NativeReleaseAsset {
   product: NativeProduct;
   version: string;
   platform: NodeJS.Platform;
   arch: string;
+  target?: string;
+  libc?: NativeLibc;
   archive: string;
   binary: string;
   binary_path: string;
@@ -36,6 +39,15 @@ export interface HydrateNativeBinaryOptions {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   arch?: string;
+}
+
+export interface NativeBinaryCandidateOptions {
+  linuxLibcPreference?: readonly NativeLibc[];
+}
+
+export interface ResolveLinuxNativeLibcPreferenceOptions {
+  env?: NodeJS.ProcessEnv;
+  detectedRuntime?: NativeLibc;
 }
 
 const NATIVE_AUTO_FETCH_ENV = 'OMX_NATIVE_AUTO_FETCH';
@@ -109,9 +121,108 @@ export function resolveCachedNativeBinaryPath(
   platform: NodeJS.Platform = process.platform,
   arch: string = process.arch,
   env: NodeJS.ProcessEnv = process.env,
+  libc?: NativeLibc,
 ): string {
   const binary = platform === 'win32' ? `${product}.exe` : product;
-  return join(resolveNativeCacheRoot(env), version, `${platform}-${arch}`, product, binary);
+  const platformKey = libc ? `${platform}-${arch}-${libc}` : `${platform}-${arch}`;
+  return join(resolveNativeCacheRoot(env), version, platformKey, product, binary);
+}
+
+const MUSL_LOADER_DIRS = ['/lib', '/lib64', '/usr/lib', '/usr/local/lib'];
+const MUSL_LOADER_PATTERN = /^ld-musl-.*\.so(?:\.\d+)*$/i;
+
+function inferRuntimeLibcFromText(text: string | undefined): NativeLibc | undefined {
+  const normalized = String(text || '').toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized.includes('musl')) return 'musl';
+  if (normalized.includes('glibc') || normalized.includes('gnu libc')) return 'glibc';
+  return undefined;
+}
+
+export function resolveLinuxNativeLibcPreference(
+  options: ResolveLinuxNativeLibcPreferenceOptions = {},
+): NativeLibc[] {
+  const { env = process.env, detectedRuntime } = options;
+  const runtime = detectedRuntime ?? detectLinuxRuntimeLibc(env);
+  if (runtime === 'musl') return ['musl'];
+  return ['musl', 'glibc'];
+}
+
+function detectLinuxRuntimeLibc(env: NodeJS.ProcessEnv = process.env): NativeLibc | undefined {
+  if (process.platform !== 'linux') return undefined;
+
+  const lddProbe = spawnPlatformCommandSync('ldd', ['--version'], { encoding: 'utf-8' }, process.platform, env);
+  const lddRuntime = inferRuntimeLibcFromText(`${lddProbe.result.stdout || ''}\n${lddProbe.result.stderr || ''}`);
+  if (lddRuntime) return lddRuntime;
+
+  const getconfProbe = spawnPlatformCommandSync('getconf', ['GNU_LIBC_VERSION'], { encoding: 'utf-8' }, process.platform, env);
+  const getconfRuntime = inferRuntimeLibcFromText(`${getconfProbe.result.stdout || ''}\n${getconfProbe.result.stderr || ''}`);
+  if (getconfRuntime) return getconfRuntime;
+
+  for (const directory of MUSL_LOADER_DIRS) {
+    if (!existsSync(directory)) continue;
+    try {
+      if (readdirSync(directory).some((entry) => MUSL_LOADER_PATTERN.test(entry))) {
+        return 'musl';
+      }
+    } catch {
+      // Ignore unreadable loader directories.
+    }
+  }
+
+  return undefined;
+}
+
+export function inferNativeAssetLibc(asset: Pick<NativeReleaseAsset, 'archive' | 'target' | 'libc'>): NativeLibc | undefined {
+  if (asset.libc === 'musl' || asset.libc === 'glibc') return asset.libc;
+  const hint = [asset.target, asset.archive].filter(Boolean).join(' ').toLowerCase();
+  if (hint.includes('musl')) return 'musl';
+  if (hint.includes('linux-gnu') || hint.includes('glibc')) return 'glibc';
+  return undefined;
+}
+
+export function resolveCachedNativeBinaryCandidatePaths(
+  product: NativeProduct,
+  version: string,
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+  env: NodeJS.ProcessEnv = process.env,
+  options: NativeBinaryCandidateOptions = {},
+): string[] {
+  const candidates: string[] = [];
+  if (platform === 'linux') {
+    for (const libc of options.linuxLibcPreference ?? resolveLinuxNativeLibcPreference({ env })) {
+      candidates.push(resolveCachedNativeBinaryPath(product, version, platform, arch, env, libc));
+    }
+  }
+  candidates.push(resolveCachedNativeBinaryPath(product, version, platform, arch, env));
+  return [...new Set(candidates)];
+}
+
+export function resolveNativeReleaseAssetCandidates(
+  manifest: NativeReleaseManifest,
+  product: NativeProduct,
+  version: string,
+  platform: NodeJS.Platform,
+  arch: string,
+  options: NativeBinaryCandidateOptions = {},
+): NativeReleaseAsset[] {
+  const candidates = manifest.assets.filter((asset) => asset.product === product
+    && asset.version === version
+    && asset.platform === platform
+    && asset.arch === arch);
+  if (platform !== 'linux') return candidates;
+
+  const preference = options.linuxLibcPreference ?? resolveLinuxNativeLibcPreference();
+  const preferenceIndex = new Map(preference.map((libc, index) => [libc, index]));
+  return [...candidates].sort((left, right) => {
+    const leftLibc = inferNativeAssetLibc(left);
+    const rightLibc = inferNativeAssetLibc(right);
+    const leftRank = leftLibc ? (preferenceIndex.get(leftLibc) ?? preference.length + 1) : preference.length;
+    const rightRank = rightLibc ? (preferenceIndex.get(rightLibc) ?? preference.length + 1) : preference.length;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    return left.archive.localeCompare(right.archive);
+  });
 }
 
 export function isRepositoryCheckout(packageRoot = getPackageRoot()): boolean {
@@ -137,17 +248,10 @@ function isUnavailableManifestError(error: unknown): boolean {
     || /fetch failed/i.test(error.message);
 }
 
-function findManifestAsset(
-  manifest: NativeReleaseManifest,
-  product: NativeProduct,
-  version: string,
-  platform: NodeJS.Platform,
-  arch: string,
-): NativeReleaseAsset | undefined {
-  return manifest.assets.find((asset) => asset.product === product
-    && asset.version === version
-    && asset.platform === platform
-    && asset.arch === arch);
+function isUnavailableArchiveError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /\[native-assets\] failed to download /i.test(error.message)
+    || /fetch failed/i.test(error.message);
 }
 
 async function downloadFile(url: string, destinationPath: string): Promise<void> {
@@ -229,8 +333,9 @@ export async function hydrateNativeBinary(
   if (!['x64', 'arm64'].includes(arch)) return undefined;
 
   const version = await getPackageVersion(packageRoot);
-  const cachedBinaryPath = resolveCachedNativeBinaryPath(product, version, platform, arch, env);
-  if (existsSync(cachedBinaryPath)) return cachedBinaryPath;
+  for (const cachedBinaryPath of resolveCachedNativeBinaryCandidatePaths(product, version, platform, arch, env)) {
+    if (existsSync(cachedBinaryPath)) return cachedBinaryPath;
+  }
 
   let manifest: NativeReleaseManifest;
   try {
@@ -239,34 +344,57 @@ export async function hydrateNativeBinary(
     if (isUnavailableManifestError(error)) return undefined;
     throw error;
   }
-  const asset = findManifestAsset(manifest, product, version, platform, arch);
-  if (!asset) return undefined;
+  const assets = resolveNativeReleaseAssetCandidates(manifest, product, version, platform, arch, {
+    linuxLibcPreference: platform === 'linux' ? resolveLinuxNativeLibcPreference({ env }) : undefined,
+  });
+  if (assets.length === 0) return undefined;
 
   const tempRoot = await mkdtemp(join(tmpdir(), `${product}-${platform}-${arch}-`));
-  const archivePath = join(tempRoot, asset.archive);
   const extractDir = join(tempRoot, 'extract');
 
   try {
-    await downloadFile(asset.download_url, archivePath);
-    const archiveStat = await stat(archivePath);
-    if (typeof asset.size === 'number' && asset.size > 0 && archiveStat.size !== asset.size) {
-      throw new Error(`[native-assets] downloaded archive size mismatch for ${asset.archive}`);
-    }
-    const digest = await sha256ForFile(archivePath);
-    if (digest !== asset.sha256) {
-      throw new Error(`[native-assets] checksum mismatch for ${asset.archive}`);
-    }
+    for (let index = 0; index < assets.length; index += 1) {
+      const asset = assets[index]!;
+      const archivePath = join(tempRoot, asset.archive);
+      const cachedBinaryPath = resolveCachedNativeBinaryPath(
+        product,
+        version,
+        platform,
+        arch,
+        env,
+        inferNativeAssetLibc(asset),
+      );
+      try {
+        await downloadFile(asset.download_url, archivePath);
+        const archiveStat = await stat(archivePath);
+        if (typeof asset.size === 'number' && asset.size > 0 && archiveStat.size !== asset.size) {
+          throw new Error(`[native-assets] downloaded archive size mismatch for ${asset.archive}`);
+        }
+        const digest = await sha256ForFile(archivePath);
+        if (digest !== asset.sha256) {
+          throw new Error(`[native-assets] checksum mismatch for ${asset.archive}`);
+        }
 
-    await extractArchive(archivePath, extractDir);
-    const extractedBinaryPath = await findExtractedBinaryPath(extractDir, asset.binary_path);
-    if (!extractedBinaryPath) {
-      throw new Error(`[native-assets] extracted archive missing expected binary ${asset.binary_path}`);
-    }
+        await extractArchive(archivePath, extractDir);
+        const extractedBinaryPath = await findExtractedBinaryPath(extractDir, asset.binary_path);
+        if (!extractedBinaryPath) {
+          throw new Error(`[native-assets] extracted archive missing expected binary ${asset.binary_path}`);
+        }
 
-    await mkdir(dirname(cachedBinaryPath), { recursive: true });
-    await copyFile(extractedBinaryPath, cachedBinaryPath);
-    if (platform !== 'win32') chmodSync(cachedBinaryPath, 0o755);
-    return cachedBinaryPath;
+        await mkdir(dirname(cachedBinaryPath), { recursive: true });
+        await copyFile(extractedBinaryPath, cachedBinaryPath);
+        if (platform !== 'win32') chmodSync(cachedBinaryPath, 0o755);
+        return cachedBinaryPath;
+      } catch (error) {
+        if (index < assets.length - 1 && isUnavailableArchiveError(error)) {
+          await rm(archivePath, { force: true });
+          await rm(extractDir, { recursive: true, force: true });
+          continue;
+        }
+        throw error;
+      }
+    }
+    return undefined;
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

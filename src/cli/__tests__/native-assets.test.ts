@@ -8,7 +8,11 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import {
   hydrateNativeBinary,
+  inferNativeAssetLibc,
+  resolveCachedNativeBinaryCandidatePaths,
   resolveCachedNativeBinaryPath,
+  type NativeReleaseManifest,
+  resolveNativeReleaseAssetCandidates,
   resolveNativeReleaseBaseUrl,
 } from '../native-assets.js';
 
@@ -39,6 +43,79 @@ function sha256(buffer: Buffer): string {
 }
 
 describe('native asset helpers', () => {
+  it('infers Linux libc variants from manifest metadata', () => {
+    assert.equal(inferNativeAssetLibc({
+      archive: 'omx-sparkshell-x86_64-unknown-linux-musl.tar.gz',
+      target: 'x86_64-unknown-linux-musl',
+      libc: undefined,
+    }), 'musl');
+    assert.equal(inferNativeAssetLibc({
+      archive: 'omx-sparkshell-x86_64-unknown-linux-gnu.tar.gz',
+      target: 'x86_64-unknown-linux-gnu',
+      libc: undefined,
+    }), 'glibc');
+  });
+
+  it('prefers musl cache paths before glibc and legacy Linux cache paths', () => {
+    assert.deepEqual(
+      resolveCachedNativeBinaryCandidatePaths('omx-sparkshell', '0.8.15', 'linux', 'x64', {
+        OMX_NATIVE_CACHE_DIR: '/tmp/omx-native-cache',
+      }, {
+        linuxLibcPreference: ['musl', 'glibc'],
+      }),
+      [
+        '/tmp/omx-native-cache/0.8.15/linux-x64-musl/omx-sparkshell/omx-sparkshell',
+        '/tmp/omx-native-cache/0.8.15/linux-x64-glibc/omx-sparkshell/omx-sparkshell',
+        '/tmp/omx-native-cache/0.8.15/linux-x64/omx-sparkshell/omx-sparkshell',
+      ],
+    );
+  });
+
+  it('orders manifest assets musl-first for Linux hydration', () => {
+    const manifest: NativeReleaseManifest = {
+      version: '0.8.15',
+      assets: [
+        {
+          product: 'omx-sparkshell',
+          version: '0.8.15',
+          platform: 'linux',
+          arch: 'x64',
+          target: 'x86_64-unknown-linux-gnu',
+          libc: 'glibc',
+          archive: 'omx-sparkshell-x86_64-unknown-linux-gnu.tar.gz',
+          binary: 'omx-sparkshell',
+          binary_path: 'omx-sparkshell',
+          sha256: 'glibc',
+          download_url: 'https://example.invalid/glibc',
+        },
+        {
+          product: 'omx-sparkshell',
+          version: '0.8.15',
+          platform: 'linux',
+          arch: 'x64',
+          target: 'x86_64-unknown-linux-musl',
+          libc: 'musl',
+          archive: 'omx-sparkshell-x86_64-unknown-linux-musl.tar.gz',
+          binary: 'omx-sparkshell',
+          binary_path: 'omx-sparkshell',
+          sha256: 'musl',
+          download_url: 'https://example.invalid/musl',
+        },
+      ],
+    };
+
+    const ordered = resolveNativeReleaseAssetCandidates(manifest, 'omx-sparkshell', '0.8.15', 'linux', 'x64', {
+      linuxLibcPreference: ['musl', 'glibc'],
+    });
+    assert.deepEqual(
+      ordered.map((asset) => asset.archive),
+      [
+        'omx-sparkshell-x86_64-unknown-linux-musl.tar.gz',
+        'omx-sparkshell-x86_64-unknown-linux-gnu.tar.gz',
+      ],
+    );
+  });
+
   it('derives GitHub release base url from package.json repository + version', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-native-base-'));
     try {
@@ -111,7 +188,7 @@ describe('native asset helpers', () => {
 
         assert.equal(hydrated, resolveCachedNativeBinaryPath('omx-sparkshell', '0.8.15', 'linux', 'x64', {
           OMX_NATIVE_CACHE_DIR: cacheDir,
-        }));
+        }, 'musl'));
         assert.equal(await readFile(hydrated!, 'utf-8'), '#!/bin/sh\necho hydrated\n');
       } finally {
         await server.close();
@@ -179,7 +256,7 @@ describe('native asset helpers', () => {
 
         assert.equal(hydrated, resolveCachedNativeBinaryPath('omx-sparkshell', '0.8.15', 'linux', 'x64', {
           OMX_NATIVE_CACHE_DIR: cacheDir,
-        }));
+        }, 'musl'));
         assert.equal(await readFile(hydrated!, 'utf-8'), '#!/bin/sh\necho hydrated-nested\n');
       } finally {
         await server.close();

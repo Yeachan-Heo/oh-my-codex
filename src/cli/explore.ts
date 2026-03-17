@@ -13,7 +13,7 @@ import {
   EXPLORE_BIN_ENV as EXPLORE_BIN_ENV_SHARED,
   hydrateNativeBinary,
   isRepositoryCheckout,
-  resolveCachedNativeBinaryPath,
+  resolveCachedNativeBinaryCandidatePaths,
   getPackageVersion,
 } from './native-assets.js';
 
@@ -305,9 +305,10 @@ export async function resolveExploreHarnessCommandWithHydration(
   }
 
   const version = await getPackageVersion(packageRoot);
-  const cached = resolveCachedNativeBinaryPath('omx-explore-harness', version, process.platform, process.arch, env);
-  if (existsSync(cached)) {
-    return { command: cached, args: [] };
+  for (const cached of resolveCachedNativeBinaryCandidatePaths('omx-explore-harness', version, process.platform, process.arch, env)) {
+    if (existsSync(cached)) {
+      return { command: cached, args: [] };
+    }
   }
 
   const packaged = resolvePackagedExploreHarnessCommand(packageRoot);

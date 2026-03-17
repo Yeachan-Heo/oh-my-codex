@@ -15,7 +15,9 @@ describe('native release workflow', () => {
     assert.match(workflow, /id-token:\s*write/);
     assert.match(workflow, /ubuntu-24\.04/);
     assert.match(workflow, /ubuntu-24\.04-arm/);
+    assert.match(workflow, /x86_64-unknown-linux-gnu/);
     assert.match(workflow, /x86_64-unknown-linux-musl/);
+    assert.match(workflow, /aarch64-unknown-linux-gnu/);
     assert.match(workflow, /aarch64-unknown-linux-musl/);
     assert.match(workflow, /macos-15-intel/);
     assert.match(workflow, /macos-14/);
@@ -43,6 +45,17 @@ describe('native release workflow', () => {
     assert.match(workflow, /needs:\s*\[older-linux-runtime-proof\]/);
     assert.match(workflow, /smoke-packed-install\.mjs --release-assets-dir release-assets/);
     assert.match(workflow, /npm publish --access public --provenance/);
+  });
+
+  it('keeps cargo-dist Linux targets aligned with musl-first plus glibc fallback assets', () => {
+    const distWorkspacePath = join(process.cwd(), 'dist-workspace.toml');
+    assert.equal(existsSync(distWorkspacePath), true, `missing cargo-dist config: ${distWorkspacePath}`);
+
+    const config = readFileSync(distWorkspacePath, 'utf-8');
+    assert.match(config, /aarch64-unknown-linux-gnu/);
+    assert.match(config, /aarch64-unknown-linux-musl/);
+    assert.match(config, /x86_64-unknown-linux-gnu/);
+    assert.match(config, /x86_64-unknown-linux-musl/);
   });
 
   it('retires the old explore-only release workflow', () => {

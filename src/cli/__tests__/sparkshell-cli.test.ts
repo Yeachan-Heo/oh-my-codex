@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import {
   isSparkShellNativeCompatibilityFailure,
   nestedRepoLocalSparkShellBinaryPath,
+  packagedSparkShellBinaryCandidatePaths,
   parseSparkShellFallbackInvocation,
   repoLocalSparkShellBinaryPath,
   resolveSparkShellBinaryPath,
@@ -74,6 +75,44 @@ describe('resolveSparkShellBinaryPath', () => {
       repoLocal,
     );
     assert.notEqual(packaged, repoLocal);
+  });
+
+  it('checks Linux musl packaged paths before glibc and legacy paths', () => {
+    assert.deepEqual(
+      packagedSparkShellBinaryCandidatePaths('/repo', 'linux', 'x64', {}, ['musl', 'glibc']),
+      [
+        '/repo/bin/native/linux-x64-musl/omx-sparkshell',
+        '/repo/bin/native/linux-x64-glibc/omx-sparkshell',
+        '/repo/bin/native/linux-x64/omx-sparkshell',
+      ],
+    );
+  });
+
+  it('tries Linux musl packaged binaries before glibc fallbacks', () => {
+    const packageRoot = '/repo';
+    const seen: string[] = [];
+    const glibcPath = '/repo/bin/native/linux-x64-glibc/omx-sparkshell';
+
+    assert.equal(
+      resolveSparkShellBinaryPath({
+        packageRoot,
+        platform: 'linux',
+        arch: 'x64',
+        linuxLibcPreference: ['musl', 'glibc'],
+        exists: (path) => {
+          seen.push(path);
+          return path === glibcPath;
+        },
+      }),
+      glibcPath,
+    );
+    assert.deepEqual(
+      seen.slice(0, 2),
+      [
+        '/repo/bin/native/linux-x64-musl/omx-sparkshell',
+        '/repo/bin/native/linux-x64-glibc/omx-sparkshell',
+      ],
+    );
   });
 
   it('falls back to nested repo-local native build artifact when present', () => {

@@ -13,7 +13,8 @@ import {
   SPARKSHELL_BIN_ENV as SPARKSHELL_BIN_ENV_SHARED,
   getPackageVersion,
   hydrateNativeBinary,
-  resolveCachedNativeBinaryPath,
+  resolveLinuxNativeLibcPreference,
+  resolveCachedNativeBinaryCandidatePaths,
 } from './native-assets.js';
 
 const OMX_SPARKSHELL_BIN_ENV = SPARKSHELL_BIN_ENV_SHARED;
@@ -32,6 +33,7 @@ export interface ResolveSparkShellBinaryPathOptions {
   packageRoot?: string;
   platform?: NodeJS.Platform;
   arch?: string;
+  linuxLibcPreference?: readonly ('musl' | 'glibc')[];
   exists?: (path: string) => boolean;
 }
 
@@ -58,8 +60,27 @@ export function packagedSparkShellBinaryPath(
   packageRoot = getPackageRoot(),
   platform: NodeJS.Platform = process.platform,
   arch: string = osArch(),
+  libc?: 'musl' | 'glibc',
 ): string {
-  return join(packageRoot, 'bin', 'native', `${platform}-${arch}`, sparkshellBinaryName(platform));
+  const platformKey = libc ? `${platform}-${arch}-${libc}` : `${platform}-${arch}`;
+  return join(packageRoot, 'bin', 'native', platformKey, sparkshellBinaryName(platform));
+}
+
+export function packagedSparkShellBinaryCandidatePaths(
+  packageRoot = getPackageRoot(),
+  platform: NodeJS.Platform = process.platform,
+  arch: string = osArch(),
+  env: NodeJS.ProcessEnv = process.env,
+  linuxLibcPreference?: readonly ('musl' | 'glibc')[],
+): string[] {
+  const candidates: string[] = [];
+  if (platform === 'linux') {
+    for (const libc of linuxLibcPreference ?? resolveLinuxNativeLibcPreference({ env })) {
+      candidates.push(packagedSparkShellBinaryPath(packageRoot, platform, arch, libc));
+    }
+  }
+  candidates.push(packagedSparkShellBinaryPath(packageRoot, platform, arch));
+  return [...new Set(candidates)];
 }
 
 export function repoLocalSparkShellBinaryPath(
@@ -83,6 +104,7 @@ export function resolveSparkShellBinaryPath(options: ResolveSparkShellBinaryPath
     packageRoot = getPackageRoot(),
     platform = process.platform,
     arch = osArch(),
+    linuxLibcPreference,
     exists = existsSync,
   } = options;
 
@@ -91,8 +113,9 @@ export function resolveSparkShellBinaryPath(options: ResolveSparkShellBinaryPath
     return isAbsolute(override) ? override : resolve(cwd, override);
   }
 
-  const packaged = packagedSparkShellBinaryPath(packageRoot, platform, arch);
-  if (exists(packaged)) return packaged;
+  for (const packaged of packagedSparkShellBinaryCandidatePaths(packageRoot, platform, arch, env, linuxLibcPreference)) {
+    if (exists(packaged)) return packaged;
+  }
 
   const repoLocal = repoLocalSparkShellBinaryPath(packageRoot, platform);
   if (exists(repoLocal)) return repoLocal;
@@ -100,8 +123,9 @@ export function resolveSparkShellBinaryPath(options: ResolveSparkShellBinaryPath
   const nestedRepoLocal = nestedRepoLocalSparkShellBinaryPath(packageRoot, platform);
   if (exists(nestedRepoLocal)) return nestedRepoLocal;
 
+  const packagedCandidates = packagedSparkShellBinaryCandidatePaths(packageRoot, platform, arch, env, linuxLibcPreference);
   throw new Error(
-    `[sparkshell] native binary not found. Checked ${packaged}, ${repoLocal}, and ${nestedRepoLocal}. `
+    `[sparkshell] native binary not found. Checked ${packagedCandidates.join(', ')}, ${repoLocal}, and ${nestedRepoLocal}. `
       + `Set ${OMX_SPARKSHELL_BIN_ENV} to override the path.`
   );
 }
@@ -115,6 +139,7 @@ export async function resolveSparkShellBinaryPathWithHydration(
     packageRoot = getPackageRoot(),
     platform = process.platform,
     arch = osArch(),
+    linuxLibcPreference,
     exists = existsSync,
   } = options;
 
@@ -124,11 +149,17 @@ export async function resolveSparkShellBinaryPathWithHydration(
   }
 
   const version = await getPackageVersion(packageRoot);
-  const cached = resolveCachedNativeBinaryPath('omx-sparkshell', version, platform, arch, env);
-  if (exists(cached)) return cached;
+  for (const cached of resolveCachedNativeBinaryCandidatePaths('omx-sparkshell', version, platform, arch, env, {
+    linuxLibcPreference: platform === 'linux'
+      ? (linuxLibcPreference ?? resolveLinuxNativeLibcPreference({ env }))
+      : undefined,
+  })) {
+    if (exists(cached)) return cached;
+  }
 
-  const packaged = packagedSparkShellBinaryPath(packageRoot, platform, arch);
-  if (exists(packaged)) return packaged;
+  for (const packaged of packagedSparkShellBinaryCandidatePaths(packageRoot, platform, arch, env, linuxLibcPreference)) {
+    if (exists(packaged)) return packaged;
+  }
 
   const repoLocal = repoLocalSparkShellBinaryPath(packageRoot, platform);
   if (exists(repoLocal)) return repoLocal;
@@ -140,7 +171,7 @@ export async function resolveSparkShellBinaryPathWithHydration(
   if (hydrated) return hydrated;
 
   throw new Error(
-    `[sparkshell] native binary not found. Checked ${cached}, ${packaged}, ${repoLocal}, and ${nestedRepoLocal}. `
+    `[sparkshell] native binary not found. Checked cached/native candidates under ${packageRoot}, ${repoLocal}, and ${nestedRepoLocal}. `
       + `Reconnect to the network so OMX can fetch the release asset, or set ${OMX_SPARKSHELL_BIN_ENV} to override the path.`
   );
 }
