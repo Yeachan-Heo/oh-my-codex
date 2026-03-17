@@ -65,15 +65,36 @@ function buildWorkerStartEvidenceReminder(teamName, workerName) {
   return `Next: check ${workerName} msg/output, confirm task in omx team status ${teamName}, then reassign/nudge.`;
 }
 
-function buildLeaderActionGuidance(teamName, {
+function classifyLeaderActionState({
   allWorkersIdle = false,
   workerPanesAlive = false,
   taskCounts = {},
+  teamProgressStalled = false,
 } = {}) {
   const pending = Number.isFinite(taskCounts.pending) ? taskCounts.pending : 0;
   const blocked = Number.isFinite(taskCounts.blocked) ? taskCounts.blocked : 0;
   const inProgress = Number.isFinite(taskCounts.in_progress) ? taskCounts.in_progress : 0;
   const tasksComplete = pending === 0 && blocked === 0 && inProgress === 0;
+  const pendingFollowUpTasks = allWorkersIdle && pending > 0 && blocked === 0 && inProgress === 0;
+  const blockedWaitingOnLeader = allWorkersIdle && blocked > 0 && pending === 0 && inProgress === 0;
+  const terminalWaitingOnLeader = allWorkersIdle && tasksComplete && workerPanesAlive;
+  const stalledWaitingOnLeader = blockedWaitingOnLeader || teamProgressStalled;
+
+  if (terminalWaitingOnLeader) return 'done_waiting_on_leader';
+  if (stalledWaitingOnLeader) return 'stuck_waiting_on_leader';
+  if (pendingFollowUpTasks) return 'still_actionable';
+  return 'still_actionable';
+}
+
+function buildLeaderActionGuidance(teamName, {
+  allWorkersIdle = false,
+  workerPanesAlive = false,
+  taskCounts = {},
+  leaderActionState = 'still_actionable',
+} = {}) {
+  const pending = Number.isFinite(taskCounts.pending) ? taskCounts.pending : 0;
+  const blocked = Number.isFinite(taskCounts.blocked) ? taskCounts.blocked : 0;
+  const inProgress = Number.isFinite(taskCounts.in_progress) ? taskCounts.in_progress : 0;
   const pendingFollowUpTasks = allWorkersIdle && pending > 0 && blocked === 0 && inProgress === 0;
 
   if (pendingFollowUpTasks) {
@@ -81,8 +102,11 @@ function buildLeaderActionGuidance(teamName, {
       ? 'Next: assign the next follow-up task to this idle team.'
       : 'Next: launch a new team for the next task set.';
   }
-  if (allWorkersIdle && tasksComplete) {
-    return `Next: omx team shutdown ${teamName}.`;
+  if (leaderActionState === 'done_waiting_on_leader') {
+    return `Next: decide whether to reconcile/merge results or gracefully shut down: omx team shutdown ${teamName}.`;
+  }
+  if (leaderActionState === 'stuck_waiting_on_leader') {
+    return `Next: inspect omx team status ${teamName}, read worker messages, then unblock/reassign, launch another wave, or gracefully shut down: omx team shutdown ${teamName}.`;
   }
   return buildStatusCheckReminder(teamName);
 }
@@ -455,7 +479,7 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     nudgeState.progress_by_team = {};
   }
 
-  const activeTeamNames = new Set();
+  const candidateTeamNames = new Set();
   try {
     const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir);
     const candidateStateDirs = [...new Set([...scopedDirs, stateDir])];
@@ -463,17 +487,17 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       const teamStatePath = join(scopedDir, 'team-state.json');
       if (!existsSync(teamStatePath)) continue;
       const parsed = JSON.parse(await readFile(teamStatePath, 'utf-8'));
-      if (!parsed || parsed.active !== true) continue;
+      if (!parsed) continue;
       const teamName = safeString(parsed.team_name || '').trim();
       if (!teamName) continue;
 
       const phaseSnapshot = await readTeamPhaseSnapshot(stateDir, teamName, nowIso);
       if (phaseSnapshot.terminal) {
         await syncScopedTeamStateFromPhase(teamStatePath, teamName, phaseSnapshot, nowIso);
-        continue;
       }
-
-      activeTeamNames.add(teamName);
+      if (parsed.active === true || phaseSnapshot.terminal) {
+        candidateTeamNames.add(teamName);
+      }
     }
   } catch {
     // Non-critical
@@ -482,7 +506,7 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
   // Use pre-computed staleness (captured before HUD state was updated this turn)
   const leaderStale = typeof preComputedLeaderStale === 'boolean' ? preComputedLeaderStale : false;
 
-  for (const teamName of activeTeamNames) {
+  for (const teamName of candidateTeamNames) {
     let tmuxSession = '';
     let leaderPaneId = '';
     let workers = [];
@@ -526,11 +550,6 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       : [];
     const allWorkersIdle = workerStates.length > 0 && workerStates.every((state) => state === 'idle' || state === 'done');
     const progressSnapshot = await readTeamProgressSnapshot(stateDir, teamName, workerNames);
-    const leaderActionGuidance = buildLeaderActionGuidance(teamName, {
-      allWorkersIdle,
-      workerPanesAlive: paneStatus.alive,
-      taskCounts: progressSnapshot.taskCounts,
-    });
     const prevProgress = nudgeState.progress_by_team[teamName] && typeof nudgeState.progress_by_team[teamName] === 'object'
       ? nudgeState.progress_by_team[teamName]
       : {};
@@ -549,12 +568,25 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       && !allWorkersIdle
       && !progressChanged
       && stalledForMs >= progressStallThresholdMs;
+    const leaderActionState = classifyLeaderActionState({
+      allWorkersIdle,
+      workerPanesAlive: paneStatus.alive,
+      taskCounts: progressSnapshot.taskCounts,
+      teamProgressStalled,
+    });
+    const leaderActionGuidance = buildLeaderActionGuidance(teamName, {
+      allWorkersIdle,
+      workerPanesAlive: paneStatus.alive,
+      taskCounts: progressSnapshot.taskCounts,
+      leaderActionState,
+    });
     nudgeState.progress_by_team[teamName] = {
       signature: progressSnapshot.signature,
       last_progress_at: effectiveProgressAtIso,
       observed_at: nowIso,
       missing_signal_workers: progressSnapshot.missingSignalWorkers,
       work_remaining: progressSnapshot.workRemaining,
+      leader_action_state: leaderActionState,
     };
 
     const prev = nudgeState.last_nudged_by_team[teamName] && typeof nudgeState.last_nudged_by_team[teamName] === 'object'
@@ -582,9 +614,7 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     // Stale-leader follow-up is the only periodic visible nudge path.
     // This keeps the leader pane quieter when the leader is not actually stale.
     const stalePanesNudge = paneStatus.alive && leaderStale;
-    const stalledTeamReason = leaderStale ? 'leader_stale_with_stalled_team' : 'stalled_team_progress';
-    const previousStalledTeamNudge =
-      prevReason === 'leader_stale_with_stalled_team' || prevReason === 'stalled_team_progress';
+    const previousStalledTeamNudge = prevReason === 'stuck_waiting_on_leader';
     const stalledTeamNudge = teamProgressStalled && (dueByTime || !previousStalledTeamNudge);
     const staleFollowupDue = stalePanesNudge && dueByTime;
 
@@ -593,9 +623,18 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     let nudgeReason = '';
     let text = '';
     if (shouldSendAllIdleNudge) {
-      nudgeReason = 'all_workers_idle';
+      nudgeReason = leaderActionState === 'done_waiting_on_leader'
+        ? 'done_waiting_on_leader'
+        : leaderActionState === 'stuck_waiting_on_leader'
+          ? 'stuck_waiting_on_leader'
+          : 'all_workers_idle';
       const N = workerNames.length;
-      text = `[OMX] All ${N} worker${N === 1 ? '' : 's'} idle. ${leaderActionGuidance}`;
+      const waitingText = leaderActionState === 'done_waiting_on_leader'
+        ? ` Team ${teamName} is complete and waiting on leader action.`
+        : leaderActionState === 'stuck_waiting_on_leader'
+          ? ` Team ${teamName} is stuck and waiting on leader action.`
+          : '';
+      text = `[OMX] All ${N} worker${N === 1 ? '' : 's'} idle.${waitingText} ${leaderActionGuidance}`;
     } else if (ackWithoutStartEvidence) {
       nudgeReason = ACK_WITHOUT_START_EVIDENCE_REASON;
       text =
@@ -603,7 +642,7 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
         + `but has no start evidence (status: ${ackWithoutStartEvidence.statusState}). `
         + buildWorkerStartEvidenceReminder(teamName, ackWithoutStartEvidence.worker);
     } else if (stalledTeamNudge) {
-      nudgeReason = stalledTeamReason;
+      nudgeReason = 'stuck_waiting_on_leader';
       const { pending, in_progress, blocked } = progressSnapshot.taskCounts;
       const missingSignals = progressSnapshot.missingSignalWorkers > 0
         ? `; ${progressSnapshot.missingSignalWorkers} signal${progressSnapshot.missingSignalWorkers === 1 ? '' : 's'} missing`
