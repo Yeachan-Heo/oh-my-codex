@@ -15,9 +15,14 @@ describe('native release workflow', () => {
     assert.match(workflow, /id-token:\s*write/);
     assert.match(workflow, /ubuntu-24\.04/);
     assert.match(workflow, /ubuntu-24\.04-arm/);
+    assert.match(workflow, /x86_64-unknown-linux-musl/);
+    assert.match(workflow, /aarch64-unknown-linux-musl/);
     assert.match(workflow, /macos-15-intel/);
     assert.match(workflow, /macos-14/);
     assert.match(workflow, /windows-latest/);
+    assert.match(workflow, /musl-tools/);
+    assert.match(workflow, /CC_x86_64_unknown_linux_musl=musl-gcc/);
+    assert.match(workflow, /CC_aarch64_unknown_linux_musl=musl-gcc/);
     assert.match(workflow, /cargo install cargo-dist/);
     assert.match(workflow, /dist build -a local/);
     assert.match(workflow, /dist plan --output-format=json/);
@@ -30,8 +35,12 @@ describe('native release workflow', () => {
     assert.match(workflow, /Publish Native Assets/);
     assert.match(workflow, /Smoke Verify Native Assets/);
     assert.match(workflow, /Smoke Test Packed Global Install/);
+    assert.match(workflow, /Older Linux Runtime Proof/);
+    assert.match(workflow, /node:20-bullseye/);
+    assert.match(workflow, /docker run --rm/);
+    assert.match(workflow, /smoke-packed-install\.mjs --release-assets-dir \.\/release-assets --require-no-fallback/);
     assert.match(workflow, /Publish npm Package/);
-    assert.match(workflow, /needs:\s*\[smoke-packed-install\]/);
+    assert.match(workflow, /needs:\s*\[older-linux-runtime-proof\]/);
     assert.match(workflow, /smoke-packed-install\.mjs --release-assets-dir release-assets/);
     assert.match(workflow, /npm publish --access public --provenance/);
   });

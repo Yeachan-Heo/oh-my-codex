@@ -340,10 +340,10 @@ Packaging / install notes:
 
 - Published npm packages now include the Rust workspace files for the explore harness (`Cargo.toml`, `Cargo.lock`, `crates/`).
 - npm publishes no longer rely on publisher-platform native binaries.
-- Tagged releases build multi-platform native archives for both `omx-explore-harness` and `omx-sparkshell` via cargo-dist and attach them to the GitHub Release from `.github/workflows/release.yml`.
+- Tagged releases build multi-platform native archives for both `omx-explore-harness` and `omx-sparkshell` via cargo-dist and attach them to the GitHub Release from `.github/workflows/release.yml`, with Linux published from musl-first targets for broader runtime compatibility.
 - Runtime now prefers `OMX_*_BIN` overrides, then a hydrated per-user native cache, then repo-local development artifacts.
 - `omx explore` keeps a source-install `cargo run --manifest-path crates/omx-explore/Cargo.toml -- ...` fallback in repository checkouts; packaged installs rely on release-asset hydration unless `OMX_EXPLORE_BIN` is set.
-- `omx sparkshell` hydrates from release assets when no override or repo-local build output is available.
+- `omx sparkshell` hydrates from release assets when no override or repo-local build output is available; the release gate now proves that hydrated Linux assets still work in an older Dockerized Linux runtime before npm publish.
 - Release assets now include `native-release-manifest.json` with per-target download metadata and SHA-256 checksums.
 - Helpful local commands:
 
@@ -353,6 +353,7 @@ npm run build:explore
 npm run build:explore:release
 npm run test:explore
 node scripts/smoke-packed-install.mjs --release-assets-dir ./release-assets
+# release workflow also reruns the same smoke in node:20-bullseye as an older-Linux-runtime proof gate
 node scripts/check-version-sync.mjs --tag v$(node -p "require('./package.json').version")
 ```
 

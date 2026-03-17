@@ -114,7 +114,7 @@ describe('resolveSparkShellBinaryPath', () => {
 
       const archiveName = process.platform === 'win32'
         ? 'omx-sparkshell-x86_64-pc-windows-msvc.zip'
-        : 'omx-sparkshell-x86_64-unknown-linux-gnu.tar.gz';
+        : 'omx-sparkshell-x86_64-unknown-linux-musl.tar.gz';
       const archivePath = join(assetRoot, archiveName);
       const buildArchive = process.platform === 'win32'
         ? spawnSync('powershell', ['-NoLogo', '-NoProfile', '-Command', `Compress-Archive -Path '${stagedBinary.replace(/'/g, "''")}' -DestinationPath '${archivePath.replace(/'/g, "''")}' -Force`], { encoding: 'utf-8' })

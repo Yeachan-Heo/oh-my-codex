@@ -8,15 +8,20 @@ import { pathToFileURL } from 'node:url';
 
 function usage() {
   return [
-    'Usage: node scripts/smoke-packed-install.mjs [--release-assets-dir <dir>]',
+    'Usage: node scripts/smoke-packed-install.mjs [--release-assets-dir <dir>] [--require-no-fallback]',
     '',
     'Creates an npm tarball, installs it into an isolated prefix, and smoke tests the installed omx CLI.',
     'When --release-assets-dir is provided, native hydration is also exercised using a local HTTP server.',
   ].join('\n');
 }
 
+export function hasSparkShellFallbackBanner(stderr) {
+  return /GLIBC-incompatible native sidecar detected/i.test(String(stderr || ''));
+}
+
 function parseArgs(argv) {
   let releaseAssetsDir;
+  let requireNoFallback = false;
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (token === '--help' || token === '-h') {
@@ -30,9 +35,13 @@ function parseArgs(argv) {
       index += 1;
       continue;
     }
+    if (token === '--require-no-fallback') {
+      requireNoFallback = true;
+      continue;
+    }
     throw new Error(`Unknown argument: ${token}\n${usage()}`);
   }
-  return { releaseAssetsDir };
+  return { releaseAssetsDir, requireNoFallback };
 }
 
 function run(cmd, args, options = {}) {
@@ -153,7 +162,7 @@ export function rewriteManifestDownloadUrls(manifestPath, baseUrl) {
 }
 
 async function main() {
-  const { releaseAssetsDir } = parseArgs(process.argv.slice(2));
+  const { releaseAssetsDir, requireNoFallback } = parseArgs(process.argv.slice(2));
   const repoRoot = process.cwd();
   const tempRoot = mkdtempSync(join(tmpdir(), 'omx-packed-install-'));
   const prefixDir = join(tempRoot, 'prefix');
@@ -192,6 +201,9 @@ async function main() {
       };
 
       const sparkshell = run(omxPath, ['sparkshell', 'node', '--version'], { cwd: repoRoot, env });
+      if (requireNoFallback && hasSparkShellFallbackBanner(sparkshell.stderr)) {
+        throw new Error(`Unexpected sparkshell fallback stderr:\n${sparkshell.stderr}`);
+      }
       if (!/v\d+\./.test(sparkshell.stdout)) {
         throw new Error(`Unexpected sparkshell stdout:\n${sparkshell.stdout}`);
       }

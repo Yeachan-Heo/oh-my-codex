@@ -70,7 +70,7 @@ describe('native asset helpers', () => {
       await writeFile(binaryPath, '#!/bin/sh\necho hydrated\n');
       await chmod(binaryPath, 0o755);
 
-      const archivePath = join(assetRoot, 'omx-sparkshell-x86_64-unknown-linux-gnu.tar.gz');
+      const archivePath = join(assetRoot, 'omx-sparkshell-x86_64-unknown-linux-musl.tar.gz');
       const archive = spawnSync('tar', ['-czf', archivePath, '-C', stagingDir, 'omx-sparkshell'], { encoding: 'utf-8' });
       assert.equal(archive.status, 0, archive.stderr || archive.stdout);
       const archiveBuffer = await readFile(archivePath);
@@ -84,7 +84,7 @@ describe('native asset helpers', () => {
             version: '0.8.15',
             platform: 'linux',
             arch: 'x64',
-            archive: 'omx-sparkshell-x86_64-unknown-linux-gnu.tar.gz',
+            archive: 'omx-sparkshell-x86_64-unknown-linux-musl.tar.gz',
             binary: 'omx-sparkshell',
             binary_path: 'omx-sparkshell',
             sha256: sha256(archiveBuffer),
@@ -132,14 +132,14 @@ describe('native asset helpers', () => {
         repository: { url: 'git+https://github.com/Yeachan-Heo/oh-my-codex.git' },
       }));
 
-      const stagingDir = join(wd, 'staging', 'omx-sparkshell-x86_64-unknown-linux-gnu');
+      const stagingDir = join(wd, 'staging', 'omx-sparkshell-x86_64-unknown-linux-musl');
       await mkdir(stagingDir, { recursive: true });
       const binaryPath = join(stagingDir, 'omx-sparkshell');
       await writeFile(binaryPath, '#!/bin/sh\necho hydrated-nested\n');
       await chmod(binaryPath, 0o755);
 
-      const archivePath = join(assetRoot, 'omx-sparkshell-x86_64-unknown-linux-gnu.tar.gz');
-      const archive = spawnSync('tar', ['-czf', archivePath, '-C', join(wd, 'staging'), 'omx-sparkshell-x86_64-unknown-linux-gnu'], { encoding: 'utf-8' });
+      const archivePath = join(assetRoot, 'omx-sparkshell-x86_64-unknown-linux-musl.tar.gz');
+      const archive = spawnSync('tar', ['-czf', archivePath, '-C', join(wd, 'staging'), 'omx-sparkshell-x86_64-unknown-linux-musl'], { encoding: 'utf-8' });
       assert.equal(archive.status, 0, archive.stderr || archive.stdout);
       const archiveBuffer = await readFile(archivePath);
 
@@ -152,7 +152,7 @@ describe('native asset helpers', () => {
             version: '0.8.15',
             platform: 'linux',
             arch: 'x64',
-            archive: 'omx-sparkshell-x86_64-unknown-linux-gnu.tar.gz',
+            archive: 'omx-sparkshell-x86_64-unknown-linux-musl.tar.gz',
             binary: 'omx-sparkshell',
             binary_path: 'omx-sparkshell',
             sha256: sha256(archiveBuffer),

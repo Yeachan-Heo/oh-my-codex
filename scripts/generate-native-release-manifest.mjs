@@ -31,6 +31,8 @@ function mapTriple(triple) {
   switch (triple) {
     case 'x86_64-unknown-linux-gnu': return { platform: 'linux', arch: 'x64' };
     case 'aarch64-unknown-linux-gnu': return { platform: 'linux', arch: 'arm64' };
+    case 'x86_64-unknown-linux-musl': return { platform: 'linux', arch: 'x64' };
+    case 'aarch64-unknown-linux-musl': return { platform: 'linux', arch: 'arm64' };
     case 'x86_64-apple-darwin': return { platform: 'darwin', arch: 'x64' };
     case 'aarch64-apple-darwin': return { platform: 'darwin', arch: 'arm64' };
     case 'x86_64-pc-windows-msvc': return { platform: 'win32', arch: 'x64' };
