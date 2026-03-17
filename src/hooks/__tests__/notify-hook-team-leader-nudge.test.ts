@@ -1009,9 +1009,9 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /Team stalled-progress: leader stale, no progress 3m/);
-      assert.match(tmuxLog, /Next: check messages; keep orchestrating; if done, gracefully shut down: omx team shutdown stalled-progress/);
+      assert.match(tmuxLog, /Next: inspect omx team status stalled-progress, read worker messages/);
       assert.doesNotMatch(tmuxLog, /keep polling/);
-      assert.match(tmuxLog, /\(p:1 ip:1/);
+      assert.match(tmuxLog, /\[OMX_TMUX_INJECT\]/);
 
       const eventsPath = join(teamDir, 'events', 'events.ndjson');
       const events = (await readFile(eventsPath, 'utf-8')).trim().split('\n').map(line => JSON.parse(line));
@@ -1135,7 +1135,7 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /Team stalled-before-stale: worker panes stalled, no progress 3m/);
-      assert.match(tmuxLog, /Next: check messages; keep orchestrating; if done, gracefully shut down: omx team shutdown stalled-before-stale/);
+      assert.match(tmuxLog, /Next: inspect omx team status stalled-before-stale, read worker messages/);
       assert.doesNotMatch(tmuxLog, /keep polling/);
       assert.doesNotMatch(tmuxLog, /leader stale/);
 
