@@ -17,6 +17,7 @@ import { teamCommand } from "./team.js";
 import { ralphCommand } from "./ralph.js";
 import { ralphthonCommand } from "./ralphthon.js";
 import { askCommand } from "./ask.js";
+import { cleanupCommand } from "./cleanup.js";
 import { exploreCommand } from "./explore.js";
 import { sparkshellCommand } from "./sparkshell.js";
 import { agentsInitCommand } from "./agents-init.js";
@@ -106,6 +107,7 @@ Usage:
   omx setup     Install skills, prompts, MCP servers, and scope-specific AGENTS.md
   omx uninstall Remove OMX configuration and clean up installed artifacts
   omx doctor    Check installation health
+  omx cleanup   Kill orphaned OMX MCP server processes from prior sessions
   omx doctor --team  Check team/swarm runtime health diagnostics
   omx ask       Ask local provider CLI (claude|gemini) and write artifact output
   omx resume    Resume a previous interactive Codex session
@@ -208,6 +210,7 @@ type CliCommand =
   | "deepinit"
   | "uninstall"
   | "doctor"
+  | "cleanup"
   | "ask"
   | "explore"
   | "sparkshell"
@@ -227,6 +230,7 @@ type CliCommand =
 
 const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "ask",
+  "cleanup",
   "autoresearch",
   "agents",
   "agents-init",
@@ -558,6 +562,7 @@ export async function main(args: string[]): Promise<void> {
     "deepinit",
     "uninstall",
     "doctor",
+    "cleanup",
     "ask",
     "autoresearch",
     "explore",
@@ -633,6 +638,9 @@ export async function main(args: string[]): Promise<void> {
       }
       case "ask":
         await askCommand(args.slice(1));
+        break;
+      case "cleanup":
+        await cleanupCommand(args.slice(1));
         break;
       case "autoresearch":
         await autoresearchCommand(args.slice(1));

@@ -267,6 +267,7 @@ omx team ...       # Start/status/resume/shutdown coordinated team workers (defa
 omx setup          # Install prompts/skills/config by scope + project .omx + scope-specific AGENTS.md
 omx agents-init .  # Bootstrap lightweight AGENTS.md files for a repo/subtree
 omx doctor         # Installation/runtime diagnostics
+omx cleanup        # Kill orphaned OMX MCP server processes (--dry-run to inspect)
 omx doctor --team  # Team Mode diagnostics
 omx ask ...        # Ask local provider advisor (claude|gemini), writes .omx/artifacts/*
 omx resume         # Resume a previous interactive Codex session
