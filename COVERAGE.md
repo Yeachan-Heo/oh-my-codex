@@ -69,39 +69,39 @@
 
 | OMC Skill | OMX Status | Mechanism |
 |-----------|-----------|-----------|
-| autopilot | DONE | ~/.agents/skills/autopilot/SKILL.md |
-| ralph | DONE | ~/.agents/skills/ralph/SKILL.md |
-| ultrawork (`ulw` alias) | DONE | ~/.agents/skills/ultrawork/SKILL.md |
-| ecomode | DONE | ~/.agents/skills/ecomode/SKILL.md |
-| plan | DONE | ~/.agents/skills/plan/SKILL.md |
-| ralplan | DONE | ~/.agents/skills/ralplan/SKILL.md |
-| team | DONE | ~/.agents/skills/team/SKILL.md |
+| autopilot | DONE | ~/.codex/skills/autopilot/SKILL.md |
+| ralph | DONE | ~/.codex/skills/ralph/SKILL.md |
+| ultrawork (`ulw` alias) | DONE | ~/.codex/skills/ultrawork/SKILL.md |
+| ecomode | DONE | ~/.codex/skills/ecomode/SKILL.md |
+| plan | DONE | ~/.codex/skills/plan/SKILL.md |
+| ralplan | DONE | ~/.codex/skills/ralplan/SKILL.md |
+| team | DONE | ~/.codex/skills/team/SKILL.md |
 | ~~pipeline~~ | REMOVED (v0.5.0) | — |
-| ultraqa | DONE | ~/.agents/skills/ultraqa/SKILL.md |
+| ultraqa | DONE | ~/.codex/skills/ultraqa/SKILL.md |
 | ~~ultrapilot~~ | REMOVED (v0.5.0) | — |
 | ~~research~~ | REMOVED (post-v0.5.0) | — |
-| code-review | DONE | ~/.agents/skills/code-review/SKILL.md |
-| security-review | DONE | ~/.agents/skills/security-review/SKILL.md |
-| tdd | DONE | ~/.agents/skills/tdd/SKILL.md |
+| code-review | DONE | ~/.codex/skills/code-review/SKILL.md |
+| security-review | DONE | ~/.codex/skills/security-review/SKILL.md |
+| tdd | DONE | ~/.codex/skills/tdd/SKILL.md |
 | deepinit | DONE (lightweight CLI successor) | `omx agents-init [path]` (`omx deepinit [path]` alias) |
-| deepsearch | DONE | ~/.agents/skills/deepsearch/SKILL.md |
-| analyze | DONE | ~/.agents/skills/analyze/SKILL.md |
-| build-fix | DONE | ~/.agents/skills/build-fix/SKILL.md |
-| cancel | DONE | ~/.agents/skills/cancel/SKILL.md |
-| doctor | DONE | ~/.agents/skills/doctor/SKILL.md |
-| help | DONE | ~/.agents/skills/help/SKILL.md |
-| hud | DONE | ~/.agents/skills/hud/SKILL.md |
+| deepsearch | DONE | ~/.codex/skills/deepsearch/SKILL.md |
+| analyze | DONE | ~/.codex/skills/analyze/SKILL.md |
+| build-fix | DONE | ~/.codex/skills/build-fix/SKILL.md |
+| cancel | DONE | ~/.codex/skills/cancel/SKILL.md |
+| doctor | DONE | ~/.codex/skills/doctor/SKILL.md |
+| help | DONE | ~/.codex/skills/help/SKILL.md |
+| hud | DONE | ~/.codex/skills/hud/SKILL.md |
 | ~~learner~~ | REMOVED (v0.5.0) | — |
-| note | DONE | ~/.agents/skills/note/SKILL.md |
-| trace | DONE | ~/.agents/skills/trace/SKILL.md |
-| skill | DONE | ~/.agents/skills/skill/SKILL.md |
-| frontend-ui-ux | DONE | ~/.agents/skills/frontend-ui-ux/SKILL.md |
-| git-master | DONE | ~/.agents/skills/git-master/SKILL.md |
-| review | DONE | ~/.agents/skills/review/SKILL.md |
-| ralph-init | DONE | ~/.agents/skills/ralph-init/SKILL.md |
+| note | DONE | ~/.codex/skills/note/SKILL.md |
+| trace | DONE | ~/.codex/skills/trace/SKILL.md |
+| skill | DONE | ~/.codex/skills/skill/SKILL.md |
+| frontend-ui-ux | DONE | ~/.codex/skills/frontend-ui-ux/SKILL.md |
+| git-master | DONE | ~/.codex/skills/git-master/SKILL.md |
+| review | DONE | ~/.codex/skills/review/SKILL.md |
+| ralph-init | DONE | ~/.codex/skills/ralph-init/SKILL.md |
 | ~~release~~ | REMOVED (v0.5.0) | — |
-| omx-setup | DONE | ~/.agents/skills/omx-setup/SKILL.md |
-| configure-notifications | DONE | ~/.agents/skills/configure-notifications/SKILL.md |
+| omx-setup | DONE | ~/.codex/skills/omx-setup/SKILL.md |
+| configure-notifications | DONE | ~/.codex/skills/configure-notifications/SKILL.md |
 | ~~configure-telegram~~ | MERGED -> configure-notifications | — |
 | ~~configure-discord~~ | MERGED -> configure-notifications | — |
 | ~~configure-slack~~ | MERGED -> configure-notifications | — |
@@ -109,9 +109,9 @@
 | ~~writer-memory~~ | REMOVED (v0.5.0) | — |
 | ~~project-session-manager~~ | REMOVED (v0.5.0) | — |
 | ~~psm~~ | REMOVED (v0.5.0) | — |
-| swarm | DONE | ~/.agents/skills/swarm/SKILL.md |
+| swarm | DONE | ~/.codex/skills/swarm/SKILL.md |
 | ~~learn-about-omx~~ | REMOVED (v0.5.0) | — |
-| worker | DONE | ~/.agents/skills/worker/SKILL.md |
+| worker | DONE | ~/.codex/skills/worker/SKILL.md |
 
 ### Hook Pipeline (6 full + 3 partial out of 9 = ~89%)
 

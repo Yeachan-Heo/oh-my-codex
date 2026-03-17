@@ -38,8 +38,8 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
       assert.equal(installedNativeAgents.has('executor.toml'), true);
       assert.equal(installedNativeAgents.has('team-executor.toml'), true);
       assert.equal(installedNativeAgents.has('code-reviewer.toml'), true);
-      assert.equal(installedNativeAgents.has('code-review.toml'), true);
-      assert.equal(installedNativeAgents.has('plan.toml'), true);
+      assert.equal(installedNativeAgents.has('code-review.toml'), false);
+      assert.equal(installedNativeAgents.has('plan.toml'), false);
       assert.equal(installedNativeAgents.has('style-reviewer.toml'), false);
       assert.equal(installedNativeAgents.has('quality-reviewer.toml'), false);
       assert.equal(installedNativeAgents.has('api-reviewer.toml'), false);
@@ -50,13 +50,9 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
       assert.equal(installedNativeAgents.has('product-analyst.toml'), false);
       assert.equal(installedNativeAgents.has('code-simplifier.toml'), true);
 
-      const codeReviewToml = await readFile(join(wd, '.codex', 'agents', 'code-review.toml'), 'utf-8');
-      assert.match(codeReviewToml, /^skill_ref = "code-review"$/m);
-      assert.doesNotMatch(codeReviewToml, /developer_instructions\s*=/);
-
-      const planToml = await readFile(join(wd, '.codex', 'agents', 'plan.toml'), 'utf-8');
-      assert.match(planToml, /^skill_ref = "plan"$/m);
-      assert.doesNotMatch(planToml, /developer_instructions\s*=/);
+      const codeReviewerToml = await readFile(join(wd, '.codex', 'agents', 'code-reviewer.toml'), 'utf-8');
+      assert.match(codeReviewerToml, /^name = "code-reviewer"$/m);
+      assert.match(codeReviewerToml, /developer_instructions\s*=/);
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });

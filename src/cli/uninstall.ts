@@ -2,19 +2,19 @@
  * omx uninstall - Remove oh-my-codex configuration and installed artifacts
  */
 
-import { readFile, writeFile, readdir, rm } from 'fs/promises';
-import { existsSync } from 'fs';
-import { join, basename } from 'path';
+import { readFile, writeFile, readdir, rm } from "fs/promises";
+import { existsSync } from "fs";
+import { join, basename } from "path";
 import {
   stripExistingOmxBlocks,
   stripOmxTopLevelKeys,
   stripOmxFeatureFlags,
-} from '../config/generator.js';
-import { getPackageRoot } from '../utils/package.js';
-import { AGENT_DEFINITIONS } from '../agents/definitions.js';
-import { resolveScopeDirectories, type SetupScope, type SetupSkillTarget } from './setup.js';
-import { readPersistedSetupPreferences, readPersistedSetupScope } from './index.js';
-import { isOmxGeneratedAgentsMd } from '../utils/agents-md.js';
+} from "../config/generator.js";
+import { getPackageRoot } from "../utils/package.js";
+import { AGENT_DEFINITIONS } from "../agents/definitions.js";
+import { resolveScopeDirectories, type SetupScope } from "./setup.js";
+import { readPersistedSetupScope } from "./index.js";
+import { isOmxGeneratedAgentsMd } from "../utils/agents-md.js";
 
 export interface UninstallOptions {
   dryRun?: boolean;
@@ -38,7 +38,12 @@ interface UninstallSummary {
   cacheDirectoryRemoved: boolean;
 }
 
-const OMX_MCP_SERVERS = ['omx_state', 'omx_memory', 'omx_code_intel', 'omx_trace'];
+const OMX_MCP_SERVERS = [
+  "omx_state",
+  "omx_memory",
+  "omx_code_intel",
+  "omx_trace",
+];
 
 function detectOmxConfigArtifacts(config: string): {
   hasMcpServers: string[];
@@ -48,20 +53,21 @@ function detectOmxConfigArtifacts(config: string): {
   hasFeatureFlags: boolean;
 } {
   const hasMcpServers = OMX_MCP_SERVERS.filter((name) =>
-    new RegExp(`\\[mcp_servers\\.${name}\\]`).test(config)
+    new RegExp(`\\[mcp_servers\\.${name}\\]`).test(config),
   );
 
   const agentNames = Object.keys(AGENT_DEFINITIONS);
   let hasAgentEntries = 0;
   for (const name of agentNames) {
-    const tableKey = name.includes('-') ? `agents."${name}"` : `agents.${name}`;
+    const tableKey = name.includes("-") ? `agents."${name}"` : `agents.${name}`;
     if (config.includes(`[${tableKey}]`)) {
       hasAgentEntries++;
     }
   }
 
-  const hasTuiSection = /^\[tui\]/m.test(config) &&
-    config.includes('oh-my-codex (OMX) Configuration');
+  const hasTuiSection =
+    /^\[tui\]/m.test(config) &&
+    config.includes("oh-my-codex (OMX) Configuration");
 
   const hasTopLevelKeys =
     /^\s*notify\s*=.*node/m.test(config) ||
@@ -72,16 +78,29 @@ function detectOmxConfigArtifacts(config: string): {
     /^\s*multi_agent\s*=\s*true/m.test(config) ||
     /^\s*child_agents_md\s*=\s*true/m.test(config);
 
-  return { hasMcpServers, hasAgentEntries, hasTuiSection, hasTopLevelKeys, hasFeatureFlags };
+  return {
+    hasMcpServers,
+    hasAgentEntries,
+    hasTuiSection,
+    hasTopLevelKeys,
+    hasFeatureFlags,
+  };
 }
 
 async function cleanConfig(
   configPath: string,
-  options: Pick<UninstallOptions, 'dryRun' | 'verbose'>,
-): Promise<Pick<UninstallSummary,
-  'configCleaned' | 'mcpServersRemoved' | 'agentEntriesRemoved' |
-  'tuiSectionRemoved' | 'topLevelKeysRemoved' | 'featureFlagsRemoved'
->> {
+  options: Pick<UninstallOptions, "dryRun" | "verbose">,
+): Promise<
+  Pick<
+    UninstallSummary,
+    | "configCleaned"
+    | "mcpServersRemoved"
+    | "agentEntriesRemoved"
+    | "tuiSectionRemoved"
+    | "topLevelKeysRemoved"
+    | "featureFlagsRemoved"
+  >
+> {
   const result = {
     configCleaned: false,
     mcpServersRemoved: [] as string[],
@@ -92,11 +111,11 @@ async function cleanConfig(
   };
 
   if (!existsSync(configPath)) {
-    if (options.verbose) console.log('  config.toml not found, skipping.');
+    if (options.verbose) console.log("  config.toml not found, skipping.");
     return result;
   }
 
-  const original = await readFile(configPath, 'utf-8');
+  const original = await readFile(configPath, "utf-8");
   const detected = detectOmxConfigArtifacts(original);
 
   result.mcpServersRemoved = detected.hasMcpServers;
@@ -117,7 +136,7 @@ async function cleanConfig(
   config = stripOmxFeatureFlags(config);
 
   // Normalize trailing whitespace
-  config = config.trimEnd() + '\n';
+  config = config.trimEnd() + "\n";
 
   if (config !== original) {
     result.configCleaned = true;
@@ -125,10 +144,12 @@ async function cleanConfig(
       await writeFile(configPath, config);
     }
     if (options.verbose) {
-      console.log(`  ${options.dryRun ? 'Would clean' : 'Cleaned'} ${configPath}`);
+      console.log(
+        `  ${options.dryRun ? "Would clean" : "Cleaned"} ${configPath}`,
+      );
     }
   } else {
-    if (options.verbose) console.log('  No OMX config entries found.');
+    if (options.verbose) console.log("  No OMX config entries found.");
   }
 
   return result;
@@ -137,23 +158,26 @@ async function cleanConfig(
 async function removeInstalledPrompts(
   promptsDir: string,
   pkgRoot: string,
-  options: Pick<UninstallOptions, 'dryRun' | 'verbose'>,
+  options: Pick<UninstallOptions, "dryRun" | "verbose">,
 ): Promise<number> {
-  const srcPromptsDir = join(pkgRoot, 'prompts');
+  const srcPromptsDir = join(pkgRoot, "prompts");
   if (!existsSync(srcPromptsDir) || !existsSync(promptsDir)) return 0;
 
   let removed = 0;
   const sourceFiles = await readdir(srcPromptsDir);
 
   for (const file of sourceFiles) {
-    if (!file.endsWith('.md')) continue;
+    if (!file.endsWith(".md")) continue;
     const installed = join(promptsDir, file);
     if (!existsSync(installed)) continue;
 
     if (!options.dryRun) {
       await rm(installed, { force: true });
     }
-    if (options.verbose) console.log(`  ${options.dryRun ? 'Would remove' : 'Removed'} prompt: ${file}`);
+    if (options.verbose)
+      console.log(
+        `  ${options.dryRun ? "Would remove" : "Removed"} prompt: ${file}`,
+      );
     removed++;
   }
 
@@ -163,9 +187,9 @@ async function removeInstalledPrompts(
 async function removeInstalledSkills(
   skillsDir: string,
   pkgRoot: string,
-  options: Pick<UninstallOptions, 'dryRun' | 'verbose'>,
+  options: Pick<UninstallOptions, "dryRun" | "verbose">,
 ): Promise<number> {
-  const srcSkillsDir = join(pkgRoot, 'skills');
+  const srcSkillsDir = join(pkgRoot, "skills");
   if (!existsSync(srcSkillsDir) || !existsSync(skillsDir)) return 0;
 
   let removed = 0;
@@ -179,7 +203,10 @@ async function removeInstalledSkills(
     if (!options.dryRun) {
       await rm(installed, { recursive: true, force: true });
     }
-    if (options.verbose) console.log(`  ${options.dryRun ? 'Would remove' : 'Removed'} skill: ${entry.name}/`);
+    if (options.verbose)
+      console.log(
+        `  ${options.dryRun ? "Would remove" : "Removed"} skill: ${entry.name}/`,
+      );
     removed++;
   }
 
@@ -188,7 +215,7 @@ async function removeInstalledSkills(
 
 async function removeAgentConfigs(
   agentsDir: string,
-  options: Pick<UninstallOptions, 'dryRun' | 'verbose'>,
+  options: Pick<UninstallOptions, "dryRun" | "verbose">,
 ): Promise<number> {
   if (!existsSync(agentsDir)) return 0;
 
@@ -202,7 +229,10 @@ async function removeAgentConfigs(
     if (!options.dryRun) {
       await rm(configFile, { force: true });
     }
-    if (options.verbose) console.log(`  ${options.dryRun ? 'Would remove' : 'Removed'} agent config: ${name}.toml`);
+    if (options.verbose)
+      console.log(
+        `  ${options.dryRun ? "Would remove" : "Removed"} agent config: ${name}.toml`,
+      );
     removed++;
   }
 
@@ -212,7 +242,7 @@ async function removeAgentConfigs(
       const remaining = await readdir(agentsDir);
       if (remaining.length === 0) {
         await rm(agentsDir, { recursive: true, force: true });
-        if (options.verbose) console.log('  Removed empty agents directory.');
+        if (options.verbose) console.log("  Removed empty agents directory.");
       }
     } catch {
       // Ignore errors when cleaning up empty dir
@@ -224,14 +254,15 @@ async function removeAgentConfigs(
 
 async function removeAgentsMd(
   agentsMdPath: string,
-  options: Pick<UninstallOptions, 'dryRun' | 'verbose'>,
+  options: Pick<UninstallOptions, "dryRun" | "verbose">,
 ): Promise<boolean> {
   if (!existsSync(agentsMdPath)) return false;
 
   try {
-    const content = await readFile(agentsMdPath, 'utf-8');
+    const content = await readFile(agentsMdPath, "utf-8");
     if (!isOmxGeneratedAgentsMd(content)) {
-      if (options.verbose) console.log('  AGENTS.md is not OMX-generated, skipping.');
+      if (options.verbose)
+        console.log("  AGENTS.md is not OMX-generated, skipping.");
       return false;
     }
   } catch {
@@ -241,48 +272,52 @@ async function removeAgentsMd(
   if (!options.dryRun) {
     await rm(agentsMdPath, { force: true });
   }
-  if (options.verbose) console.log(`  ${options.dryRun ? 'Would remove' : 'Removed'} AGENTS.md`);
+  if (options.verbose)
+    console.log(`  ${options.dryRun ? "Would remove" : "Removed"} AGENTS.md`);
   return true;
 }
 
 async function removeCacheDirectory(
   projectRoot: string,
-  options: Pick<UninstallOptions, 'dryRun' | 'verbose'>,
+  options: Pick<UninstallOptions, "dryRun" | "verbose">,
 ): Promise<boolean> {
-  const omxDir = join(projectRoot, '.omx');
+  const omxDir = join(projectRoot, ".omx");
   if (!existsSync(omxDir)) return false;
 
   if (!options.dryRun) {
     await rm(omxDir, { recursive: true, force: true });
   }
-  if (options.verbose) console.log(`  ${options.dryRun ? 'Would remove' : 'Removed'} ${omxDir}`);
+  if (options.verbose)
+    console.log(`  ${options.dryRun ? "Would remove" : "Removed"} ${omxDir}`);
   return true;
 }
 
 function printSummary(summary: UninstallSummary, dryRun: boolean): void {
-  const prefix = dryRun ? '[dry-run] Would remove' : 'Removed';
+  const prefix = dryRun ? "[dry-run] Would remove" : "Removed";
 
-  console.log('\nUninstall summary:');
+  console.log("\nUninstall summary:");
 
   if (summary.configCleaned) {
     console.log(`  ${prefix} OMX configuration block from config.toml`);
     if (summary.mcpServersRemoved.length > 0) {
-      console.log(`    MCP servers: ${summary.mcpServersRemoved.join(', ')}`);
+      console.log(`    MCP servers: ${summary.mcpServersRemoved.join(", ")}`);
     }
     if (summary.agentEntriesRemoved > 0) {
       console.log(`    Agent entries: ${summary.agentEntriesRemoved}`);
     }
     if (summary.tuiSectionRemoved) {
-      console.log('    TUI status line section');
+      console.log("    TUI status line section");
     }
     if (summary.topLevelKeysRemoved) {
-      console.log('    Top-level keys (notify, model_reasoning_effort, developer_instructions)');
+      console.log(
+        "    Top-level keys (notify, model_reasoning_effort, developer_instructions)",
+      );
     }
     if (summary.featureFlagsRemoved) {
-      console.log('    Feature flags (multi_agent, child_agents_md)');
+      console.log("    Feature flags (multi_agent, child_agents_md)");
     }
   } else if (!summary.configCleaned && summary.mcpServersRemoved.length === 0) {
-    console.log('  config.toml: no OMX entries found (or --keep-config used)');
+    console.log("  config.toml: no OMX entries found (or --keep-config used)");
   }
 
   if (summary.promptsRemoved > 0) {
@@ -292,7 +327,9 @@ function printSummary(summary: UninstallSummary, dryRun: boolean): void {
     console.log(`  ${prefix} ${summary.skillsRemoved} skill(s)`);
   }
   if (summary.agentConfigsRemoved > 0) {
-    console.log(`  ${prefix} ${summary.agentConfigsRemoved} native agent config(s)`);
+    console.log(
+      `  ${prefix} ${summary.agentConfigsRemoved} native agent config(s)`,
+    );
   }
   if (summary.agentsMdRemoved) {
     console.log(`  ${prefix} AGENTS.md`);
@@ -310,7 +347,9 @@ function printSummary(summary: UninstallSummary, dryRun: boolean): void {
     (summary.cacheDirectoryRemoved ? 1 : 0);
 
   if (totalActions === 0) {
-    console.log('  Nothing to remove. oh-my-codex does not appear to be installed.');
+    console.log(
+      "  Nothing to remove. oh-my-codex does not appear to be installed.",
+    );
   }
 }
 
@@ -326,15 +365,13 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
   const pkgRoot = getPackageRoot();
 
   // Resolve scope (explicit --scope overrides persisted scope)
-  const scope = options.scope ?? readPersistedSetupScope(projectRoot) ?? 'user';
-  const persisted = readPersistedSetupPreferences(projectRoot);
-  const skillTarget: SetupSkillTarget = persisted?.skillTarget ?? 'codex-home';
-  const scopeDirs = resolveScopeDirectories(scope, projectRoot, skillTarget);
+  const scope = options.scope ?? readPersistedSetupScope(projectRoot) ?? "user";
+  const scopeDirs = resolveScopeDirectories(scope, projectRoot);
 
-  console.log('oh-my-codex uninstall');
-  console.log('=====================\n');
+  console.log("oh-my-codex uninstall");
+  console.log("=====================\n");
   if (dryRun) {
-    console.log('[dry-run mode] No files will be modified.\n');
+    console.log("[dry-run mode] No files will be modified.\n");
   }
   console.log(`Resolved scope: ${scope}\n`);
 
@@ -354,48 +391,78 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
 
   // Step 1: Clean config.toml
   if (keepConfig) {
-    console.log('[1/5] Skipping config.toml cleanup (--keep-config).');
+    console.log("[1/5] Skipping config.toml cleanup (--keep-config).");
   } else {
-    console.log('[1/5] Cleaning config.toml...');
-    const configResult = await cleanConfig(scopeDirs.codexConfigFile, { dryRun, verbose });
+    console.log("[1/5] Cleaning config.toml...");
+    const configResult = await cleanConfig(scopeDirs.codexConfigFile, {
+      dryRun,
+      verbose,
+    });
     Object.assign(summary, configResult);
   }
   console.log();
 
   // Step 2: Remove installed prompts
-  console.log('[2/5] Removing agent prompts...');
-  summary.promptsRemoved = await removeInstalledPrompts(scopeDirs.promptsDir, pkgRoot, { dryRun, verbose });
-  console.log(`  ${dryRun ? 'Would remove' : 'Removed'} ${summary.promptsRemoved} prompt(s).`);
+  console.log("[2/5] Removing agent prompts...");
+  summary.promptsRemoved = await removeInstalledPrompts(
+    scopeDirs.promptsDir,
+    pkgRoot,
+    { dryRun, verbose },
+  );
+  console.log(
+    `  ${dryRun ? "Would remove" : "Removed"} ${summary.promptsRemoved} prompt(s).`,
+  );
   console.log();
 
   // Step 3: Remove native agent configs
-  console.log('[3/5] Removing native agent configs...');
-  summary.agentConfigsRemoved = await removeAgentConfigs(scopeDirs.nativeAgentsDir, { dryRun, verbose });
-  console.log(`  ${dryRun ? 'Would remove' : 'Removed'} ${summary.agentConfigsRemoved} agent config(s).`);
+  console.log("[3/5] Removing native agent configs...");
+  summary.agentConfigsRemoved = await removeAgentConfigs(
+    scopeDirs.nativeAgentsDir,
+    { dryRun, verbose },
+  );
+  console.log(
+    `  ${dryRun ? "Would remove" : "Removed"} ${summary.agentConfigsRemoved} agent config(s).`,
+  );
   console.log();
 
   // Step 4: Remove installed skills
-  console.log('[4/5] Removing skills...');
-  summary.skillsRemoved = await removeInstalledSkills(scopeDirs.skillsDir, pkgRoot, { dryRun, verbose });
-  console.log(`  ${dryRun ? 'Would remove' : 'Removed'} ${summary.skillsRemoved} skill(s).`);
+  console.log("[4/5] Removing skills...");
+  summary.skillsRemoved = await removeInstalledSkills(
+    scopeDirs.skillsDir,
+    pkgRoot,
+    { dryRun, verbose },
+  );
+  console.log(
+    `  ${dryRun ? "Would remove" : "Removed"} ${summary.skillsRemoved} skill(s).`,
+  );
   console.log();
 
   // Step 5: Remove AGENTS.md and optionally .omx/ cache directory
-  console.log('[5/5] Cleaning up...');
-  const agentsMdPath = scope === 'project'
-    ? join(projectRoot, 'AGENTS.md')
-    : join(scopeDirs.codexHomeDir, 'AGENTS.md');
-  summary.agentsMdRemoved = await removeAgentsMd(agentsMdPath, { dryRun, verbose });
+  console.log("[5/5] Cleaning up...");
+  const agentsMdPath =
+    scope === "project"
+      ? join(projectRoot, "AGENTS.md")
+      : join(scopeDirs.codexHomeDir, "AGENTS.md");
+  summary.agentsMdRemoved = await removeAgentsMd(agentsMdPath, {
+    dryRun,
+    verbose,
+  });
   if (purge) {
-    summary.cacheDirectoryRemoved = await removeCacheDirectory(projectRoot, { dryRun, verbose });
+    summary.cacheDirectoryRemoved = await removeCacheDirectory(projectRoot, {
+      dryRun,
+      verbose,
+    });
   } else {
     // Always clean up setup-scope.json and hud-config.json
-    const scopeFile = join(projectRoot, '.omx', 'setup-scope.json');
-    const hudConfig = join(projectRoot, '.omx', 'hud-config.json');
+    const scopeFile = join(projectRoot, ".omx", "setup-scope.json");
+    const hudConfig = join(projectRoot, ".omx", "hud-config.json");
     for (const f of [scopeFile, hudConfig]) {
       if (existsSync(f)) {
         if (!dryRun) await rm(f, { force: true });
-        if (verbose) console.log(`  ${dryRun ? 'Would remove' : 'Removed'} ${basename(f)}`);
+        if (verbose)
+          console.log(
+            `  ${dryRun ? "Would remove" : "Removed"} ${basename(f)}`,
+          );
       }
     }
   }
@@ -404,8 +471,10 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
   printSummary(summary, dryRun);
 
   if (!dryRun) {
-    console.log('\noh-my-codex has been uninstalled. Run "omx setup" to reinstall.');
+    console.log(
+      '\noh-my-codex has been uninstalled. Run "omx setup" to reinstall.',
+    );
   } else {
-    console.log('\nRun without --dry-run to apply changes.');
+    console.log("\nRun without --dry-run to apply changes.");
   }
 }

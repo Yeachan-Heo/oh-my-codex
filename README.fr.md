@@ -53,7 +53,7 @@ User
   -> Codex CLI
     -> AGENTS.md (cerveau d'orchestration)
     -> ~/.codex/prompts/*.md (catalogue de prompts d'agents)
-    -> ~/.agents/skills/*/SKILL.md (catalogue de skills)
+    -> ~/.codex/skills/*/SKILL.md (catalogue de skills)
     -> ~/.codex/config.toml (fonctionnalités, notifications, MCP)
     -> .omx/ (état d'exécution, mémoire, plans, journaux)
 ```
@@ -186,8 +186,8 @@ Notes :
 
 - `.omx/setup-scope.json` (scope de setup persisté)
 - Installations dépendantes du scope :
-  - `user` : `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
-  - `project` : `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
+  - `user` : `~/.codex/prompts/`, `~/.codex/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
+  - `project` : `./.codex/prompts/`, `./.codex/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
 - Comportement au lancement : si le scope persisté est `project`, le lancement `omx` utilise automatiquement `CODEX_HOME=./.codex` (sauf si `CODEX_HOME` est déjà défini).
 - Les instructions de lancement fusionnent `~/.codex/AGENTS.md` (ou `CODEX_HOME/AGENTS.md` s'il est redéfini) avec `./AGENTS.md` du projet, puis ajoutent l'overlay d'exécution.
 - Les fichiers `AGENTS.md` existants ne sont jamais écrasés silencieusement : en TTY interactif, setup demande avant de remplacer ; en non-interactif, le remplacement est ignoré sauf avec `--force` (les vérifications de sécurité de session active s'appliquent toujours).
@@ -204,7 +204,7 @@ Notes :
 ## Agents et Skills
 
 - Prompts : `prompts/*.md` (installés dans `~/.codex/prompts/` pour `user`, `./.codex/prompts/` pour `project`)
-- Skills : `skills/*/SKILL.md` (installés dans `~/.agents/skills/` pour `user`, `./.agents/skills/` pour `project`)
+- Skills : `skills/*/SKILL.md` (installés dans `~/.codex/skills/` pour `user`, `./.codex/skills/` pour `project`)
 
 Exemples :
 - Agents : `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`

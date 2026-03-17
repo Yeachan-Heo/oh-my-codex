@@ -1,21 +1,27 @@
-import type { TeamTask } from './state.js';
-import { mkdir, readFile, rm, stat, writeFile } from 'fs/promises';
-import { dirname, join } from 'path';
-import { getFixLoopInstructions, getVerificationInstructions } from '../verification/verifier.js';
-import { codexHome, listInstalledSkillDirectories } from '../utils/paths.js';
-import { sleep } from '../utils/sleep.js';
+import type { TeamTask } from "./state.js";
+import { mkdir, readFile, rm, stat, writeFile } from "fs/promises";
+import { dirname, join } from "path";
+import {
+  getFixLoopInstructions,
+  getVerificationInstructions,
+} from "../verification/verifier.js";
+import { codexHome, listInstalledSkillDirectories } from "../utils/paths.js";
+import { sleep } from "../utils/sleep.js";
 
-const TEAM_OVERLAY_START = '<!-- OMX:TEAM:WORKER:START -->';
-const TEAM_OVERLAY_END = '<!-- OMX:TEAM:WORKER:END -->';
+const TEAM_OVERLAY_START = "<!-- OMX:TEAM:WORKER:START -->";
+const TEAM_OVERLAY_END = "<!-- OMX:TEAM:WORKER:END -->";
 const SKILL_REFERENCE_PATTERN = /\/skills\/([^/\s`]+)\/SKILL\.md\b/g;
-const AGENTS_LOCK_PATH = ['.omx', 'state', 'agents-md.lock'];
-const LOCK_OWNER_FILE = 'owner.json';
+const AGENTS_LOCK_PATH = [".omx", "state", "agents-md.lock"];
+const LOCK_OWNER_FILE = "owner.json";
 const LOCK_TIMEOUT_MS = 5000;
 const LOCK_POLL_INTERVAL_MS = 100;
 const LOCK_STALE_MS = 30_000;
 
 function buildVerificationSection(taskDescription: string): string {
-  const verification = getVerificationInstructions('standard', taskDescription).trim();
+  const verification = getVerificationInstructions(
+    "standard",
+    taskDescription,
+  ).trim();
   const fixLoop = getFixLoopInstructions().trim();
   return `
 ## Verification Requirements
@@ -43,9 +49,8 @@ You are a team worker in team "${teamName}". Your identity and assigned tasks ar
 ## Protocol
 1. Read your inbox file at the path provided in your first instruction
 2. Load the worker skill instructions from the first path that exists:
-   - \`${'${CODEX_HOME:-~/.codex}'}/skills/worker/SKILL.md\`
-   - \`~/.agents/skills/worker/SKILL.md\`
-   - \`<leader_cwd>/.agents/skills/worker/SKILL.md\`
+   - \`${"${CODEX_HOME:-~/.codex}"}/skills/worker/SKILL.md\`
+   - \`<leader_cwd>/.codex/skills/worker/SKILL.md\`
    - \`<leader_cwd>/skills/worker/SKILL.md\` (repo fallback)
 3. Send an ACK to the lead using CLI interop \`omx team api send-message --json\` (to_worker="leader-fixed") once initialized
 4. Resolve canonical team state root in this order:
@@ -103,13 +108,16 @@ ${TEAM_OVERLAY_END}`;
 /**
  * Apply worker overlay to AGENTS.md. Idempotent -- strips existing overlay first.
  */
-export async function applyWorkerOverlay(agentsMdPath: string, overlay: string): Promise<void> {
+export async function applyWorkerOverlay(
+  agentsMdPath: string,
+  overlay: string,
+): Promise<void> {
   await withAgentsMdLock(agentsMdPath, async () => {
     // Read existing content, strip any existing overlay, append new overlay
     // Uses the START/END markers to find and replace
-    let content = '';
+    let content = "";
     try {
-      content = await readFile(agentsMdPath, 'utf-8');
+      content = await readFile(agentsMdPath, "utf-8");
     } catch {
       // File doesn't exist yet, start empty
     }
@@ -118,7 +126,7 @@ export async function applyWorkerOverlay(agentsMdPath: string, overlay: string):
     content = stripOverlayFromContent(content);
 
     // Append new overlay
-    content = content.trimEnd() + '\n\n' + overlay + '\n';
+    content = content.trimEnd() + "\n\n" + overlay + "\n";
 
     await writeFile(agentsMdPath, content);
   });
@@ -130,7 +138,7 @@ export async function applyWorkerOverlay(agentsMdPath: string, overlay: string):
 export async function stripWorkerOverlay(agentsMdPath: string): Promise<void> {
   await withAgentsMdLock(agentsMdPath, async () => {
     try {
-      const content = await readFile(agentsMdPath, 'utf-8');
+      const content = await readFile(agentsMdPath, "utf-8");
       const stripped = stripOverlayFromContent(content);
       if (stripped !== content) {
         await writeFile(agentsMdPath, stripped);
@@ -147,7 +155,7 @@ function stripOverlayFromContent(content: string): string {
   if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return content;
   const before = content.slice(0, startIdx).trimEnd();
   const after = content.slice(endIdx + TEAM_OVERLAY_END.length).trimStart();
-  return before + (after ? '\n\n' + after : '') + '\n';
+  return before + (after ? "\n\n" + after : "") + "\n";
 }
 
 function dropShadowedSkillReferenceLines(
@@ -156,19 +164,19 @@ function dropShadowedSkillReferenceLines(
 ): string {
   if (shadowedSkillNames.size === 0) return content;
 
-  const lines = content.split('\n');
+  const lines = content.split("\n");
   const keptLines = lines.filter((line) => {
     SKILL_REFERENCE_PATTERN.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = SKILL_REFERENCE_PATTERN.exec(line)) !== null) {
-      if (shadowedSkillNames.has(match[1] || '')) {
+      if (shadowedSkillNames.has(match[1] || "")) {
         return false;
       }
     }
     return true;
   });
 
-  return keptLines.join('\n');
+  return keptLines.join("\n");
 }
 
 /**
@@ -184,16 +192,13 @@ export async function writeTeamWorkerInstructionsFile(
   overlay: string,
 ): Promise<string> {
   const baseParts: string[] = [];
-  const userAgentsPath = join(codexHome(), 'AGENTS.md');
-  const sourcePaths = [
-    userAgentsPath,
-    join(cwd, 'AGENTS.md'),
-  ];
+  const userAgentsPath = join(codexHome(), "AGENTS.md");
+  const sourcePaths = [userAgentsPath, join(cwd, "AGENTS.md")];
   const seenPaths = new Set<string>();
   const installedSkills = await listInstalledSkillDirectories(cwd);
   const projectSkillNames = new Set(
     installedSkills
-      .filter((skill) => skill.scope === 'project')
+      .filter((skill) => skill.scope === "project")
       .map((skill) => skill.name),
   );
 
@@ -201,27 +206,36 @@ export async function writeTeamWorkerInstructionsFile(
     if (seenPaths.has(sourcePath)) continue;
     seenPaths.add(sourcePath);
 
-    let content = '';
+    let content = "";
     try {
-      content = await readFile(sourcePath, 'utf-8');
+      content = await readFile(sourcePath, "utf-8");
     } catch {
       continue;
     }
 
     content = stripOverlayFromContent(content).trim();
     if (sourcePath === userAgentsPath) {
-      content = dropShadowedSkillReferenceLines(content, projectSkillNames).trim();
+      content = dropShadowedSkillReferenceLines(
+        content,
+        projectSkillNames,
+      ).trim();
     }
     if (!content) continue;
     baseParts.push(content);
   }
 
-  const base = baseParts.join('\n\n');
-  const composed = base.trim().length > 0
-    ? `${base}\n\n${overlay}\n`
-    : `${overlay}\n`;
+  const base = baseParts.join("\n\n");
+  const composed =
+    base.trim().length > 0 ? `${base}\n\n${overlay}\n` : `${overlay}\n`;
 
-  const outPath = join(cwd, '.omx', 'state', 'team', teamName, 'worker-agents.md');
+  const outPath = join(
+    cwd,
+    ".omx",
+    "state",
+    "team",
+    teamName,
+    "worker-agents.md",
+  );
   await mkdir(dirname(outPath), { recursive: true });
   await writeFile(outPath, composed);
   return outPath;
@@ -239,7 +253,7 @@ export async function writeWorkerRoleInstructionsFile(
   workerRole: string,
   rolePromptContent: string,
 ): Promise<string> {
-  const base = await readFile(baseInstructionsPath, 'utf-8').catch(() => '');
+  const base = await readFile(baseInstructionsPath, "utf-8").catch(() => "");
   const roleOverlay = `
 <!-- OMX:TEAM:ROLE:START -->
 <team_worker_role>
@@ -249,12 +263,22 @@ ${rolePromptContent.trim()}
 </team_worker_role>
 <!-- OMX:TEAM:ROLE:END -->
 `;
-  const composed = base.trim().length > 0
-    ? `${base.trimEnd()}
+  const composed =
+    base.trim().length > 0
+      ? `${base.trimEnd()}
 
 ${roleOverlay}`
-    : roleOverlay.trimStart();
-  const outPath = join(cwd, '.omx', 'state', 'team', teamName, 'workers', workerName, 'AGENTS.md');
+      : roleOverlay.trimStart();
+  const outPath = join(
+    cwd,
+    ".omx",
+    "state",
+    "team",
+    teamName,
+    "workers",
+    workerName,
+    "AGENTS.md",
+  );
   await mkdir(dirname(outPath), { recursive: true });
   await writeFile(outPath, composed);
   return outPath;
@@ -267,7 +291,14 @@ export async function removeTeamWorkerInstructionsFile(
   teamName: string,
   cwd: string,
 ): Promise<void> {
-  const outPath = join(cwd, '.omx', 'state', 'team', teamName, 'worker-agents.md');
+  const outPath = join(
+    cwd,
+    ".omx",
+    "state",
+    "team",
+    teamName,
+    "worker-agents.md",
+  );
   await rm(outPath, { force: true }).catch(() => {});
 }
 
@@ -275,7 +306,10 @@ function lockPathFor(agentsMdPath: string): string {
   return join(dirname(agentsMdPath), ...AGENTS_LOCK_PATH);
 }
 
-async function acquireAgentsMdLock(agentsMdPath: string, timeoutMs: number = LOCK_TIMEOUT_MS): Promise<void> {
+async function acquireAgentsMdLock(
+  agentsMdPath: string,
+  timeoutMs: number = LOCK_TIMEOUT_MS,
+): Promise<void> {
   const lockPath = lockPathFor(agentsMdPath);
   await mkdir(dirname(lockPath), { recursive: true });
 
@@ -284,11 +318,15 @@ async function acquireAgentsMdLock(agentsMdPath: string, timeoutMs: number = LOC
     try {
       await mkdir(lockPath, { recursive: false });
       const ownerFile = join(lockPath, LOCK_OWNER_FILE);
-      await writeFile(ownerFile, JSON.stringify({ pid: process.pid, ts: Date.now() }), 'utf-8');
+      await writeFile(
+        ownerFile,
+        JSON.stringify({ pid: process.pid, ts: Date.now() }),
+        "utf-8",
+      );
       return;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code && code !== 'EEXIST') throw error;
+      if (code && code !== "EEXIST") throw error;
 
       const stale = await isStaleLock(lockPath);
       if (stale) {
@@ -299,14 +337,17 @@ async function acquireAgentsMdLock(agentsMdPath: string, timeoutMs: number = LOC
     }
   }
 
-  throw new Error('Failed to acquire AGENTS.md lock within timeout');
+  throw new Error("Failed to acquire AGENTS.md lock within timeout");
 }
 
 async function isStaleLock(lockPath: string): Promise<boolean> {
   const ownerFile = join(lockPath, LOCK_OWNER_FILE);
   try {
-    const owner = JSON.parse(await readFile(ownerFile, 'utf-8')) as { pid?: number; ts?: number };
-    if (typeof owner.pid !== 'number') return true;
+    const owner = JSON.parse(await readFile(ownerFile, "utf-8")) as {
+      pid?: number;
+      ts?: number;
+    };
+    if (typeof owner.pid !== "number") return true;
     try {
       process.kill(owner.pid, 0);
     } catch {
@@ -324,10 +365,15 @@ async function isStaleLock(lockPath: string): Promise<boolean> {
 }
 
 async function releaseAgentsMdLock(agentsMdPath: string): Promise<void> {
-  await rm(lockPathFor(agentsMdPath), { recursive: true, force: true }).catch(() => {});
+  await rm(lockPathFor(agentsMdPath), { recursive: true, force: true }).catch(
+    () => {},
+  );
 }
 
-async function withAgentsMdLock<T>(agentsMdPath: string, fn: () => Promise<T>): Promise<T> {
+async function withAgentsMdLock<T>(
+  agentsMdPath: string,
+  fn: () => Promise<T>,
+): Promise<T> {
   await acquireAgentsMdLock(agentsMdPath);
   try {
     return await fn();
@@ -356,22 +402,22 @@ export function generateInitialInbox(
     .map((t) => {
       let entry = `- **Task ${t.id}**: ${t.subject}\n  Description: ${t.description}\n  Status: ${t.status}`;
       if (t.blocked_by && t.blocked_by.length > 0) {
-        entry += `\n  Blocked by: ${t.blocked_by.join(', ')}`;
+        entry += `\n  Blocked by: ${t.blocked_by.join(", ")}`;
       }
       if (t.role) {
         entry += `\n  Role: ${t.role}`;
       }
       return entry;
     })
-    .join('\n');
+    .join("\n");
 
-  const teamStateRoot = options.teamStateRoot || '<team_state_root>';
-  const leaderCwd = options.leaderCwd || '<leader_cwd>';
+  const teamStateRoot = options.teamStateRoot || "<team_state_root>";
+  const leaderCwd = options.leaderCwd || "<leader_cwd>";
   const displayRole = options.workerRole ?? agentType;
 
   const specializationSection = options.rolePromptContent
     ? `\n## Your Specialization\n\nYou are operating as a **${displayRole}** agent. Follow these behavioral guidelines:\n\n${options.rolePromptContent}\n`
-    : '';
+    : "";
 
   return `# Worker Assignment: ${workerName}
 
@@ -386,9 +432,8 @@ ${taskList}
 ## Instructions
 
 1. Load and follow the worker skill from the first existing path:
-   - \`${'${CODEX_HOME:-~/.codex}'}/skills/worker/SKILL.md\`
-   - \`~/.agents/skills/worker/SKILL.md\`
-   - \`${leaderCwd}/.agents/skills/worker/SKILL.md\`
+   - \`${"${CODEX_HOME:-~/.codex}"}/skills/worker/SKILL.md\`
+   - \`${leaderCwd}/.codex/skills/worker/SKILL.md\`
    - \`${leaderCwd}/skills/worker/SKILL.md\` (repo fallback)
 2. Send startup ACK to the lead mailbox BEFORE any task work (run this exact command):
 
@@ -428,7 +473,7 @@ When using \`omx team api send-message\`, ALWAYS include from_worker with YOUR w
 
 Example: omx team api send-message --input "{\"team_name\":\"${teamName}\",\"from_worker\":\"${workerName}\",\"to_worker\":\"leader-fixed\",\"body\":\"ACK: initialized\"}" --json
 
-${buildVerificationSection('each assigned task')}
+${buildVerificationSection("each assigned task")}
 
 ## Scope Rules
 - Only edit files described in your task descriptions
@@ -478,7 +523,10 @@ ${buildVerificationSection(taskDescription)}
 /**
  * Generate inbox content for shutdown.
  */
-export function generateShutdownInbox(teamName: string, workerName: string): string {
+export function generateShutdownInbox(
+  teamName: string,
+  workerName: string,
+): string {
   return `# Shutdown Request
 
 All tasks are complete. Please wrap up any remaining work and respond with a shutdown acknowledgement.
@@ -498,7 +546,7 @@ Type \`exit\` or press Ctrl+C to end your Codex session.
 }
 
 function buildInstructionPath(...parts: string[]): string {
-  return join(...parts).replaceAll('\\', '/');
+  return join(...parts).replaceAll("\\", "/");
 }
 
 /**
@@ -508,10 +556,17 @@ function buildInstructionPath(...parts: string[]): string {
 export function generateTriggerMessage(
   workerName: string,
   teamName: string,
-  teamStateRoot: string = '.omx/state',
+  teamStateRoot: string = ".omx/state",
 ): string {
-  const inboxPath = buildInstructionPath(teamStateRoot, 'team', teamName, 'workers', workerName, 'inbox.md');
-  if (teamStateRoot !== '.omx/state') {
+  const inboxPath = buildInstructionPath(
+    teamStateRoot,
+    "team",
+    teamName,
+    "workers",
+    workerName,
+    "inbox.md",
+  );
+  if (teamStateRoot !== ".omx/state") {
     return `Read ${inboxPath}, work now, report progress, continue assigned work or next feasible task.`;
   }
   return `Read ${inboxPath}, start work now, report concrete progress, then continue assigned work or next feasible task.`;
@@ -525,11 +580,17 @@ export function generateMailboxTriggerMessage(
   workerName: string,
   teamName: string,
   count: number,
-  teamStateRoot: string = '.omx/state',
+  teamStateRoot: string = ".omx/state",
 ): string {
   const n = Number.isFinite(count) ? Math.max(1, Math.floor(count)) : 1;
-  const mailboxPath = buildInstructionPath(teamStateRoot, 'team', teamName, 'mailbox', workerName + '.json');
-  if (teamStateRoot !== '.omx/state') {
+  const mailboxPath = buildInstructionPath(
+    teamStateRoot,
+    "team",
+    teamName,
+    "mailbox",
+    workerName + ".json",
+  );
+  if (teamStateRoot !== ".omx/state") {
     return `${n} new msg(s): read ${mailboxPath}, act, report progress, continue assigned work or next feasible task.`;
   }
   return `You have ${n} new message(s). Read ${mailboxPath}, act now, reply with concrete progress, then continue assigned work or next feasible task.`;
@@ -538,10 +599,16 @@ export function generateMailboxTriggerMessage(
 export function generateLeaderMailboxTriggerMessage(
   teamName: string,
   fromWorker: string,
-  teamStateRoot: string = '.omx/state',
+  teamStateRoot: string = ".omx/state",
 ): string {
-  const mailboxPath = buildInstructionPath(teamStateRoot, 'team', teamName, 'mailbox', 'leader-fixed.json');
-  if (teamStateRoot !== '.omx/state') {
+  const mailboxPath = buildInstructionPath(
+    teamStateRoot,
+    "team",
+    teamName,
+    "mailbox",
+    "leader-fixed.json",
+  );
+  if (teamStateRoot !== ".omx/state") {
     return `Read ${mailboxPath}; new msg from ${fromWorker}. Reply next step.`;
   }
   return `Read ${mailboxPath}; ${fromWorker} sent a new message. Reply with the next concrete step.`;

@@ -83,7 +83,7 @@ function getOmxTopLevelLines(
     "# oh-my-codex top-level settings (must be before any [table])",
     `notify = ["node", "${escapedPath}"]`,
     'model_reasoning_effort = "high"',
-    `developer_instructions = "You have oh-my-codex installed. AGENTS.md is your orchestration brain and the main orchestration surface. Use /prompts:<role> and spawned role prompts for specialized subagent work. Codex native subagents are available via .codex/agents and may be used for independent parallel subtasks within a single session or team pane. If a native agent exposes skill_ref, resolve it from installed skill files under $CODEX_HOME/skills (legacy project/user fallbacks only when needed) instead of expecting embedded skill markdown in the TOML. Use workflow skills via $name when explicitly invoked or clearly routed by AGENTS.md. Treat role prompts as narrower execution surfaces under AGENTS.md authority."`,
+    `developer_instructions = "You have oh-my-codex installed. AGENTS.md is your orchestration brain and the main orchestration surface. Use /prompts:<role> and spawned role prompts for specialized subagent work. Codex native subagents are available via .codex/agents and may be used for independent parallel subtasks within a single session or team pane. Skills are loaded from installed SKILL.md files under .codex/skills, not from native agent TOMLs. Use workflow skills via $name when explicitly invoked or clearly routed by AGENTS.md. Treat role prompts as narrower execution surfaces under AGENTS.md authority."`,
   ];
 
   const existingModel = rootValues.get("model");
@@ -144,8 +144,14 @@ function stripRootLevelKeys(config: string, keys: readonly string[]): string {
 
 function stripOrphanedManagedNotify(config: string): string {
   return config
-    .replace(/^\s*notify\s*=\s*\["node",\s*".*notify-hook\.js"\]\s*$(\n)?/gm, "")
-    .replace(/\n?\s*"node",\s*\n\s*".*notify-hook\.js",\s*\n\s*\]\s*(?=\n|$)/g, "");
+    .replace(
+      /^\s*notify\s*=\s*\["node",\s*".*notify-hook\.js"\]\s*$(\n)?/gm,
+      "",
+    )
+    .replace(
+      /\n?\s*"node",\s*\n\s*".*notify-hook\.js",\s*\n\s*\]\s*(?=\n|$)/g,
+      "",
+    );
 }
 
 /**
@@ -558,7 +564,10 @@ function toMcpServerTableKey(name: string): string {
 }
 
 function configHasMcpServer(config: string, name: string): boolean {
-  const tableName = toMcpServerTableKey(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const tableName = toMcpServerTableKey(name).replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&",
+  );
   return new RegExp(`^\\s*\\[${tableName}\\]\\s*$`, "m").test(config);
 }
 
@@ -568,7 +577,9 @@ function getSharedMcpRegistryBlock(
   existingConfig: string,
 ): string {
   if (servers.length === 0) return "";
-  const deduped = servers.filter((server) => !configHasMcpServer(existingConfig, server.name));
+  const deduped = servers.filter(
+    (server) => !configHasMcpServer(existingConfig, server.name),
+  );
   if (deduped.length === 0) return "";
 
   const lines = [
@@ -579,7 +590,10 @@ function getSharedMcpRegistryBlock(
   if (sourcePath) {
     lines.push(`# Source: ${sourcePath}`);
   }
-  lines.push("# ============================================================", "");
+  lines.push(
+    "# ============================================================",
+    "",
+  );
 
   for (const server of deduped) {
     lines.push(`# Shared MCP Server: ${server.name}`);
@@ -606,10 +620,7 @@ function getSharedMcpRegistryBlock(
  * OMX table-section block (MCP servers, TUI).
  * Contains ONLY [table] sections — no bare keys.
  */
-function getOmxTablesBlock(
-  pkgRoot: string,
-  includeTui = true,
-): string {
+function getOmxTablesBlock(pkgRoot: string, includeTui = true): string {
   const stateServerPath = escapeTomlString(
     join(pkgRoot, "dist", "mcp", "state-server.js"),
   );
@@ -669,12 +680,12 @@ function getOmxTablesBlock(
     "startup_timeout_sec = 5",
     ...(includeTui
       ? [
-        "",
-        "# OMX TUI StatusLine (Codex CLI v0.101.0+)",
-        "[tui]",
-        OMX_TUI_STATUS_LINE,
-        "",
-      ]
+          "",
+          "# OMX TUI StatusLine (Codex CLI v0.101.0+)",
+          "[tui]",
+          OMX_TUI_STATUS_LINE,
+          "",
+        ]
       : []),
     "# ============================================================",
     "# End oh-my-codex",
@@ -728,10 +739,7 @@ export function buildMergedConfig(
     existing,
     options.modelOverride,
   );
-  const tablesBlock = getOmxTablesBlock(
-    pkgRoot,
-    !tuiUpsert.hadExistingTui,
-  );
+  const tablesBlock = getOmxTablesBlock(pkgRoot, !tuiUpsert.hadExistingTui);
   const sharedRegistryBlock = getSharedMcpRegistryBlock(
     options.sharedMcpServers ?? [],
     options.sharedMcpRegistrySource,

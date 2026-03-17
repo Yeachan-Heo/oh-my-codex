@@ -54,7 +54,7 @@ OMX 安裝並串接以下各層：
   -> Codex CLI
     -> AGENTS.md（編排大腦）
     -> ~/.codex/prompts/*.md（代理提示詞目錄）
-    -> ~/.agents/skills/*/SKILL.md（技能目錄）
+    -> ~/.codex/skills/*/SKILL.md（技能目錄）
     -> ~/.codex/config.toml（功能、通知、MCP）
     -> .omx/（執行期狀態、記憶、計畫、日誌）
 ```
@@ -206,8 +206,8 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # 選用：停用自適應 queue->resend 回退
 
 - `.omx/setup-scope.json`（持久化的設定範圍）
 - 依範圍的安裝內容：
-  - `user`：`~/.codex/prompts/`、`~/.agents/skills/`、`~/.codex/config.toml`、`~/.omx/agents/`、`~/.codex/AGENTS.md`
-  - `project`：`./.codex/prompts/`、`./.agents/skills/`、`./.codex/config.toml`、`./.omx/agents/`、`./AGENTS.md`
+  - `user`：`~/.codex/prompts/`、`~/.codex/skills/`、`~/.codex/config.toml`、`~/.omx/agents/`、`~/.codex/AGENTS.md`
+  - `project`：`./.codex/prompts/`、`./.codex/skills/`、`./.codex/config.toml`、`./.omx/agents/`、`./AGENTS.md`
 - 啟動行為：若持久化範圍為 `project`，`omx` 啟動時自動使用 `CODEX_HOME=./.codex`（除非已設定 `CODEX_HOME`）。
 - 啟動指令會合併 `~/.codex/AGENTS.md`（或覆寫後的 `CODEX_HOME/AGENTS.md`）與專案 `./AGENTS.md`，然後再附加執行期 overlay。
 - 現有的 `AGENTS.md` 檔案絕不會被靜默覆寫：互動式 TTY 執行時 setup 會先詢問；非互動執行時若沒有 `--force` 就會跳過替換（仍適用活動會話安全檢查）。
@@ -224,7 +224,7 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # 選用：停用自適應 queue->resend 回退
 ## 代理與技能
 
 - 提示詞：`prompts/*.md`（`user` 安裝至 `~/.codex/prompts/`，`project` 安裝至 `./.codex/prompts/`）
-- 技能：`skills/*/SKILL.md`（`user` 安裝至 `~/.agents/skills/`，`project` 安裝至 `./.agents/skills/`）
+- 技能：`skills/*/SKILL.md`（`user` 安裝至 `~/.codex/skills/`，`project` 安裝至 `./.codex/skills/`）
 
 範例：
 - 代理：`architect`、`planner`、`executor`、`debugger`、`verifier`、`security-reviewer`

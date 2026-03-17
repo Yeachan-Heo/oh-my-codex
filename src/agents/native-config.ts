@@ -3,78 +3,77 @@
  * Writes standalone TOML files under ~/.codex/agents/ or ./.codex/agents/.
  */
 
-import { existsSync } from 'fs';
-import { mkdir, readFile, writeFile } from 'fs/promises';
-import { join } from 'path';
-import { AGENT_DEFINITIONS, AgentDefinition } from './definitions.js';
-import { codexAgentsDir } from '../utils/paths.js';
-import { generateSkillBridgeAgentToml } from './skill-bridge.js';
+import { existsSync } from "fs";
+import { mkdir, readFile, writeFile } from "fs/promises";
+import { join } from "path";
+import { AGENT_DEFINITIONS, AgentDefinition } from "./definitions.js";
+import { codexAgentsDir } from "../utils/paths.js";
 
-const POSTURE_OVERLAYS: Record<AgentDefinition['posture'], string> = {
-  'frontier-orchestrator': [
-    '<posture_overlay>',
-    '',
-    'You are operating in the frontier-orchestrator posture.',
-    '- Prioritize intent classification before implementation.',
-    '- Default to delegation and orchestration when specialists exist.',
-    '- Treat the first decision as a routing problem: research vs planning vs implementation vs verification.',
-    '- Challenge flawed user assumptions concisely before execution when the design is likely to cause avoidable problems.',
-    '- Preserve explicit executor handoff boundaries: do not absorb deep implementation work when a specialized executor is more appropriate.',
-    '',
-    '</posture_overlay>',
-  ].join('\n'),
-  'deep-worker': [
-    '<posture_overlay>',
-    '',
-    'You are operating in the deep-worker posture.',
-    '- Once the task is clearly implementation-oriented, bias toward direct execution and end-to-end completion.',
-    '- Explore first, then implement minimal changes that match existing patterns.',
-    '- Keep verification strict: diagnostics, tests, and build evidence are mandatory before claiming completion.',
-    '- Escalate only after materially different approaches fail or when architecture tradeoffs exceed local implementation scope.',
-    '',
-    '</posture_overlay>',
-  ].join('\n'),
-  'fast-lane': [
-    '<posture_overlay>',
-    '',
-    'You are operating in the fast-lane posture.',
-    '- Optimize for fast triage, search, lightweight synthesis, and narrow routing decisions.',
-    '- Do not start deep implementation unless the task is tightly bounded and obvious.',
-    '- If the task expands beyond quick classification or lightweight execution, escalate to a frontier-orchestrator or deep-worker role.',
-    '- Keep responses concise, scope-aware, and conservative under ambiguity.',
-    '',
-    '</posture_overlay>',
-  ].join('\n'),
+const POSTURE_OVERLAYS: Record<AgentDefinition["posture"], string> = {
+  "frontier-orchestrator": [
+    "<posture_overlay>",
+    "",
+    "You are operating in the frontier-orchestrator posture.",
+    "- Prioritize intent classification before implementation.",
+    "- Default to delegation and orchestration when specialists exist.",
+    "- Treat the first decision as a routing problem: research vs planning vs implementation vs verification.",
+    "- Challenge flawed user assumptions concisely before execution when the design is likely to cause avoidable problems.",
+    "- Preserve explicit executor handoff boundaries: do not absorb deep implementation work when a specialized executor is more appropriate.",
+    "",
+    "</posture_overlay>",
+  ].join("\n"),
+  "deep-worker": [
+    "<posture_overlay>",
+    "",
+    "You are operating in the deep-worker posture.",
+    "- Once the task is clearly implementation-oriented, bias toward direct execution and end-to-end completion.",
+    "- Explore first, then implement minimal changes that match existing patterns.",
+    "- Keep verification strict: diagnostics, tests, and build evidence are mandatory before claiming completion.",
+    "- Escalate only after materially different approaches fail or when architecture tradeoffs exceed local implementation scope.",
+    "",
+    "</posture_overlay>",
+  ].join("\n"),
+  "fast-lane": [
+    "<posture_overlay>",
+    "",
+    "You are operating in the fast-lane posture.",
+    "- Optimize for fast triage, search, lightweight synthesis, and narrow routing decisions.",
+    "- Do not start deep implementation unless the task is tightly bounded and obvious.",
+    "- If the task expands beyond quick classification or lightweight execution, escalate to a frontier-orchestrator or deep-worker role.",
+    "- Keep responses concise, scope-aware, and conservative under ambiguity.",
+    "",
+    "</posture_overlay>",
+  ].join("\n"),
 };
 
-const MODEL_CLASS_OVERLAYS: Record<AgentDefinition['modelClass'], string> = {
+const MODEL_CLASS_OVERLAYS: Record<AgentDefinition["modelClass"], string> = {
   frontier: [
-    '<model_class_guidance>',
-    '',
-    'This role is tuned for frontier-class models.',
-    '- Use the model\'s steerability for coordination, tradeoff reasoning, and precise delegation.',
-    '- Favor clean routing decisions over impulsive implementation.',
-    '',
-    '</model_class_guidance>',
-  ].join('\n'),
+    "<model_class_guidance>",
+    "",
+    "This role is tuned for frontier-class models.",
+    "- Use the model's steerability for coordination, tradeoff reasoning, and precise delegation.",
+    "- Favor clean routing decisions over impulsive implementation.",
+    "",
+    "</model_class_guidance>",
+  ].join("\n"),
   standard: [
-    '<model_class_guidance>',
-    '',
-    'This role is tuned for standard-capability models.',
-    '- Balance autonomy with clear boundaries.',
-    '- Prefer explicit verification and narrow scope control over speculative reasoning.',
-    '',
-    '</model_class_guidance>',
-  ].join('\n'),
+    "<model_class_guidance>",
+    "",
+    "This role is tuned for standard-capability models.",
+    "- Balance autonomy with clear boundaries.",
+    "- Prefer explicit verification and narrow scope control over speculative reasoning.",
+    "",
+    "</model_class_guidance>",
+  ].join("\n"),
   fast: [
-    '<model_class_guidance>',
-    '',
-    'This role is tuned for fast/low-latency models.',
-    '- Prefer quick search, synthesis, and routing over prolonged reasoning.',
-    '- Escalate rather than bluff when deeper work is required.',
-    '',
-    '</model_class_guidance>',
-  ].join('\n'),
+    "<model_class_guidance>",
+    "",
+    "This role is tuned for fast/low-latency models.",
+    "- Prefer quick search, synthesis, and routing over prolonged reasoning.",
+    "- Escalate rather than bluff when deeper work is required.",
+    "",
+    "</model_class_guidance>",
+  ].join("\n"),
 };
 
 export interface GeneratedNativeAgentConfig {
@@ -82,24 +81,27 @@ export interface GeneratedNativeAgentConfig {
   description: string;
   developerInstructions?: string;
   model?: string;
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh";
 }
 
-function buildPromptInstructions(agent: AgentDefinition, promptContent: string): string {
+function buildPromptInstructions(
+  agent: AgentDefinition,
+  promptContent: string,
+): string {
   const instructions = stripFrontmatter(promptContent);
   return [
     instructions,
-    '',
+    "",
     POSTURE_OVERLAYS[agent.posture],
-    '',
+    "",
     MODEL_CLASS_OVERLAYS[agent.modelClass],
-    '',
-    '## OMX Agent Metadata',
+    "",
+    "## OMX Agent Metadata",
     `- role: ${agent.name}`,
     `- posture: ${agent.posture}`,
     `- model_class: ${agent.modelClass}`,
     `- routing_role: ${agent.routingRole}`,
-  ].join('\n');
+  ].join("\n");
 }
 
 /**
@@ -118,14 +120,16 @@ export function stripFrontmatter(content: string): string {
  * TOML """ strings only need to escape sequences of 3+ consecutive quotes.
  */
 function escapeTomlMultiline(s: string): string {
-  return s.replace(/"{3,}/g, (match) => match.split('').join('\\'));
+  return s.replace(/"{3,}/g, (match) => match.split("").join("\\"));
 }
 
 function escapeTomlBasicString(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-export function generateStandaloneAgentToml(config: GeneratedNativeAgentConfig): string {
+export function generateStandaloneAgentToml(
+  config: GeneratedNativeAgentConfig,
+): string {
   const lines = [
     `# oh-my-codex agent: ${config.name}`,
     `name = "${escapeTomlBasicString(config.name)}"`,
@@ -138,23 +142,27 @@ export function generateStandaloneAgentToml(config: GeneratedNativeAgentConfig):
   if (config.reasoningEffort) {
     lines.push(`model_reasoning_effort = "${config.reasoningEffort}"`);
   }
-  if (typeof config.developerInstructions === 'string' && config.developerInstructions.trim().length > 0) {
-    const escapedInstructions = escapeTomlMultiline(config.developerInstructions);
-    lines.push(
-      'developer_instructions = """',
-      escapedInstructions,
-      '"""',
+  if (
+    typeof config.developerInstructions === "string" &&
+    config.developerInstructions.trim().length > 0
+  ) {
+    const escapedInstructions = escapeTomlMultiline(
+      config.developerInstructions,
     );
+    lines.push('developer_instructions = """', escapedInstructions, '"""');
   }
 
-  lines.push('');
-  return lines.join('\n');
+  lines.push("");
+  return lines.join("\n");
 }
 
 /**
  * Generate TOML content for a prompt-backed OMX role agent.
  */
-export function generateAgentToml(agent: AgentDefinition, promptContent: string): string {
+export function generateAgentToml(
+  agent: AgentDefinition,
+  promptContent: string,
+): string {
   return generateStandaloneAgentToml({
     name: agent.name,
     description: agent.description,
@@ -164,27 +172,17 @@ export function generateAgentToml(agent: AgentDefinition, promptContent: string)
 }
 
 /**
- * Generate TOML content for a skill-backed OMX native agent.
- */
-export function generateSkillAgentToml(
-  name: string,
-  description: string,
-  skillRef: string = name,
-): string {
-  return generateSkillBridgeAgentToml({
-    name,
-    description,
-    skillRef,
-  });
-}
-
-/**
  * Install prompt-backed native agent config .toml files to ~/.codex/agents/
  * Returns the number of agent files written.
  */
 export async function installNativeAgentConfigs(
   pkgRoot: string,
-  options: { force?: boolean; dryRun?: boolean; verbose?: boolean; agentsDir?: string } = {},
+  options: {
+    force?: boolean;
+    dryRun?: boolean;
+    verbose?: boolean;
+    agentsDir?: string;
+  } = {},
 ): Promise<number> {
   const {
     force = false,
@@ -200,7 +198,7 @@ export async function installNativeAgentConfigs(
   let count = 0;
 
   for (const [name, agent] of Object.entries(AGENT_DEFINITIONS)) {
-    const promptPath = join(pkgRoot, 'prompts', `${name}.md`);
+    const promptPath = join(pkgRoot, "prompts", `${name}.md`);
     if (!existsSync(promptPath)) {
       if (verbose) console.log(`  skip ${name} (no prompt file)`);
       continue;
@@ -212,7 +210,7 @@ export async function installNativeAgentConfigs(
       continue;
     }
 
-    const promptContent = await readFile(promptPath, 'utf-8');
+    const promptContent = await readFile(promptPath, "utf-8");
     const toml = generateAgentToml(agent, promptContent);
 
     if (!dryRun) {

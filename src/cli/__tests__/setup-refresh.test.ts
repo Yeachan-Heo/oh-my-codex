@@ -53,7 +53,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       await mkdir(join(wd, ".omx", "state"), { recursive: true });
       await runSetupInTempDir(wd, { scope: "project" });
 
-      const skillPath = join(wd, ".agents", "skills", "help", "SKILL.md");
+      const skillPath = join(wd, ".codex", "skills", "help", "SKILL.md");
       await writeFile(skillPath, "# locally modified help\n");
 
       const output = await runSetupWithCapturedLogs(wd, {
@@ -78,7 +78,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       await mkdir(join(wd, ".omx", "state"), { recursive: true });
       await runSetupInTempDir(wd, { scope: "project" });
 
-      const skillPath = join(wd, ".agents", "skills", "help", "SKILL.md");
+      const skillPath = join(wd, ".codex", "skills", "help", "SKILL.md");
       const customized = "# locally modified help\n";
       await writeFile(skillPath, customized);
 

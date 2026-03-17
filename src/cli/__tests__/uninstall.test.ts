@@ -501,28 +501,6 @@ describe('omx uninstall', () => {
     }
   });
 
-  it('removes legacy user-scope skills when persisted skill target is agents', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-uninstall-'));
-    try {
-      const home = join(wd, 'home');
-      const legacySkillsDir = join(home, '.agents', 'skills', 'omx-setup');
-      await mkdir(legacySkillsDir, { recursive: true });
-      await mkdir(join(wd, '.omx'), { recursive: true });
-      await writeFile(
-        join(wd, '.omx', 'setup-scope.json'),
-        JSON.stringify({ scope: 'user', skillTarget: 'agents' })
-      );
-      await writeFile(join(legacySkillsDir, 'SKILL.md'), '# omx-setup\n');
-
-      const res = runOmx(wd, ['uninstall', '--keep-config'], { HOME: home });
-      if (shouldSkipForSpawnPermissions(res.error)) return;
-      assert.equal(res.status, 0, res.stderr || res.stdout);
-      assert.equal(existsSync(join(home, '.agents', 'skills', 'omx-setup')), false);
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
   it('removes setup-scope.json and hud-config.json without --purge', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-uninstall-'));
     try {

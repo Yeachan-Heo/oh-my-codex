@@ -53,7 +53,7 @@ User
   -> Codex CLI
     -> AGENTS.md (Orchestrierungs-Gehirn)
     -> ~/.codex/prompts/*.md (Agenten-Prompt-Katalog)
-    -> ~/.agents/skills/*/SKILL.md (Skill-Katalog)
+    -> ~/.codex/skills/*/SKILL.md (Skill-Katalog)
     -> ~/.codex/config.toml (Features, Benachrichtigungen, MCP)
     -> .omx/ (Laufzeitzustand, Speicher, Pläne, Protokolle)
 ```
@@ -186,8 +186,8 @@ Hinweise:
 
 - `.omx/setup-scope.json` (persistierter Setup-Bereich)
 - Bereichsabhängige Installationen:
-  - `user`: `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
-  - `project`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
+  - `user`: `~/.codex/prompts/`, `~/.codex/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
+  - `project`: `./.codex/prompts/`, `./.codex/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
 - Startverhalten: Wenn der persistierte Bereich `project` ist, verwendet `omx` automatisch `CODEX_HOME=./.codex` (sofern `CODEX_HOME` nicht bereits gesetzt ist).
 - Startanweisungen kombinieren `~/.codex/AGENTS.md` (bzw. `CODEX_HOME/AGENTS.md`, wenn überschrieben) mit dem Projekt-`./AGENTS.md` und hängen anschließend die Runtime-Überlagerung an.
 - Vorhandene `AGENTS.md`-Dateien werden nie stillschweigend überschrieben: Interaktive TTY-Läufe fragen vor dem Ersetzen, nicht-interaktive Läufe überspringen das Ersetzen ohne `--force` (aktive Sitzungs-Sicherheitsprüfungen gelten weiterhin).
@@ -204,7 +204,7 @@ Hinweise:
 ## Agenten und Skills
 
 - Prompts: `prompts/*.md` (installiert nach `~/.codex/prompts/` für `user`, `./.codex/prompts/` für `project`)
-- Skills: `skills/*/SKILL.md` (installiert nach `~/.agents/skills/` für `user`, `./.agents/skills/` für `project`)
+- Skills: `skills/*/SKILL.md` (installiert nach `~/.codex/skills/` für `user`, `./.codex/skills/` für `project`)
 
 Beispiele:
 - Agenten: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`

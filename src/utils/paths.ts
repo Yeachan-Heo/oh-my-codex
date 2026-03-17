@@ -3,53 +3,48 @@
  * Resolves Codex CLI config, skills, prompts, and state directories
  */
 
-import { dirname, join } from 'path';
-import { homedir } from 'os';
-import { fileURLToPath } from 'url';
-import { existsSync } from 'fs';
-import { readdir } from 'fs/promises';
+import { dirname, join } from "path";
+import { homedir } from "os";
+import { fileURLToPath } from "url";
+import { existsSync } from "fs";
+import { readdir } from "fs/promises";
 
 /** Codex CLI home directory (~/.codex/) */
 export function codexHome(): string {
-  return process.env.CODEX_HOME || join(homedir(), '.codex');
+  return process.env.CODEX_HOME || join(homedir(), ".codex");
 }
 
 /** Codex config file path (~/.codex/config.toml) */
 export function codexConfigPath(): string {
-  return join(codexHome(), 'config.toml');
+  return join(codexHome(), "config.toml");
 }
 
 /** Codex prompts directory (~/.codex/prompts/) */
 export function codexPromptsDir(): string {
-  return join(codexHome(), 'prompts');
+  return join(codexHome(), "prompts");
 }
 
 /** Codex native agents directory (~/.codex/agents/) */
 export function codexAgentsDir(codexHomeDir?: string): string {
-  return join(codexHomeDir || codexHome(), 'agents');
+  return join(codexHomeDir || codexHome(), "agents");
 }
 
 /** Project-level Codex native agents directory (.codex/agents/) */
 export function projectCodexAgentsDir(projectRoot?: string): string {
-  return join(projectRoot || process.cwd(), '.codex', 'agents');
+  return join(projectRoot || process.cwd(), ".codex", "agents");
 }
 
 /** User-level skills directory ($CODEX_HOME/skills, defaults to ~/.codex/skills/) */
 export function userSkillsDir(): string {
-  return join(codexHome(), 'skills');
+  return join(codexHome(), "skills");
 }
 
-/** Legacy user-level skills directory (~/.agents/skills/) */
-export function legacyUserSkillsDir(): string {
-  return join(homedir(), '.agents', 'skills');
-}
-
-/** Project-level skills directory (.agents/skills/) */
+/** Project-level skills directory (.codex/skills/) */
 export function projectSkillsDir(projectRoot?: string): string {
-  return join(projectRoot || process.cwd(), '.agents', 'skills');
+  return join(projectRoot || process.cwd(), ".codex", "skills");
 }
 
-export type InstalledSkillScope = 'project' | 'user';
+export type InstalledSkillScope = "project" | "user";
 
 export interface InstalledSkillDirectory {
   name: string;
@@ -71,7 +66,7 @@ async function readInstalledSkillsFromDir(
       path: join(dir, entry.name),
       scope,
     }))
-    .filter((entry) => existsSync(join(entry.path, 'SKILL.md')))
+    .filter((entry) => existsSync(join(entry.path, "SKILL.md")))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -83,8 +78,8 @@ export async function listInstalledSkillDirectories(
   projectRoot?: string,
 ): Promise<InstalledSkillDirectory[]> {
   const orderedDirs: Array<{ dir: string; scope: InstalledSkillScope }> = [
-    { dir: projectSkillsDir(projectRoot), scope: 'project' },
-    { dir: userSkillsDir(), scope: 'user' },
+    { dir: projectSkillsDir(projectRoot), scope: "project" },
+    { dir: userSkillsDir(), scope: "user" },
   ];
 
   const deduped: InstalledSkillDirectory[] = [];
@@ -104,27 +99,27 @@ export async function listInstalledSkillDirectories(
 
 /** oh-my-codex state directory (.omx/state/) */
 export function omxStateDir(projectRoot?: string): string {
-  return join(projectRoot || process.cwd(), '.omx', 'state');
+  return join(projectRoot || process.cwd(), ".omx", "state");
 }
 
 /** oh-my-codex project memory file (.omx/project-memory.json) */
 export function omxProjectMemoryPath(projectRoot?: string): string {
-  return join(projectRoot || process.cwd(), '.omx', 'project-memory.json');
+  return join(projectRoot || process.cwd(), ".omx", "project-memory.json");
 }
 
 /** oh-my-codex notepad file (.omx/notepad.md) */
 export function omxNotepadPath(projectRoot?: string): string {
-  return join(projectRoot || process.cwd(), '.omx', 'notepad.md');
+  return join(projectRoot || process.cwd(), ".omx", "notepad.md");
 }
 
 /** oh-my-codex plans directory (.omx/plans/) */
 export function omxPlansDir(projectRoot?: string): string {
-  return join(projectRoot || process.cwd(), '.omx', 'plans');
+  return join(projectRoot || process.cwd(), ".omx", "plans");
 }
 
 /** oh-my-codex logs directory (.omx/logs/) */
 export function omxLogsDir(projectRoot?: string): string {
-  return join(projectRoot || process.cwd(), '.omx', 'logs');
+  return join(projectRoot || process.cwd(), ".omx", "logs");
 }
 
 /** Get the package root directory (where agents/, skills/, prompts/ live) */
@@ -132,12 +127,12 @@ export function packageRoot(): string {
   try {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = dirname(__filename);
-    const candidate = join(__dirname, '..', '..');
-    if (existsSync(join(candidate, 'package.json'))) {
+    const candidate = join(__dirname, "..", "..");
+    if (existsSync(join(candidate, "package.json"))) {
       return candidate;
     }
-    const candidate2 = join(__dirname, '..');
-    if (existsSync(join(candidate2, 'package.json'))) {
+    const candidate2 = join(__dirname, "..");
+    if (existsSync(join(candidate2, "package.json"))) {
       return candidate2;
     }
   } catch {

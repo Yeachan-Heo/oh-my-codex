@@ -53,7 +53,7 @@ User
   -> Codex CLI
     -> AGENTS.md (orkestrasyon beyni)
     -> ~/.codex/prompts/*.md (ajan prompt kataloğu)
-    -> ~/.agents/skills/*/SKILL.md (skill kataloğu)
+    -> ~/.codex/skills/*/SKILL.md (skill kataloğu)
     -> ~/.codex/config.toml (özellikler, bildirimler, MCP)
     -> .omx/ (çalışma zamanı durumu, bellek, planlar, günlükler)
 ```
@@ -186,8 +186,8 @@ Notlar:
 
 - `.omx/setup-scope.json` (kalıcı kurulum kapsamı)
 - Kapsama bağlı kurulumlar:
-  - `user`: `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
-  - `project`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
+  - `user`: `~/.codex/prompts/`, `~/.codex/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
+  - `project`: `./.codex/prompts/`, `./.codex/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
 - Başlatma davranışı: kalıcı kapsam `project` ise, `omx` başlatma otomatik olarak `CODEX_HOME=./.codex` kullanır (`CODEX_HOME` zaten ayarlanmadıysa).
 - Başlatma talimatları `~/.codex/AGENTS.md` (veya geçersiz kılındıysa `CODEX_HOME/AGENTS.md`) ile proje `./AGENTS.md` dosyasını birleştirir ve ardından çalışma zamanı kaplamasını ekler.
 - Mevcut `AGENTS.md` dosyaları sessizce üzerine yazılmaz: etkileşimli TTY'de setup değiştirmeden önce sorar; etkileşimsiz çalıştırmada ise `--force` yoksa değiştirme atlanır (aktif oturum güvenlik kontrolleri hâlâ geçerlidir).
@@ -204,7 +204,7 @@ Notlar:
 ## Ajanlar ve Skill'ler
 
 - Prompt'lar: `prompts/*.md` (`user` için `~/.codex/prompts/`'a, `project` için `./.codex/prompts/`'a kurulur)
-- Skill'ler: `skills/*/SKILL.md` (`user` için `~/.agents/skills/`'a, `project` için `./.agents/skills/`'a kurulur)
+- Skill'ler: `skills/*/SKILL.md` (`user` için `~/.codex/skills/`'a, `project` için `./.codex/skills/`'a kurulur)
 
 Örnekler:
 - Ajanlar: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`

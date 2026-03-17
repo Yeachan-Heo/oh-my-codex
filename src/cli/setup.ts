@@ -23,16 +23,18 @@ import {
   codexPromptsDir,
   codexAgentsDir,
   userSkillsDir,
-  legacyUserSkillsDir,
   omxStateDir,
   omxPlansDir,
   omxLogsDir,
 } from "../utils/paths.js";
 import { buildMergedConfig, getRootModelName } from "../config/generator.js";
 import {
-  getUnifiedMcpRegistryCandidates, loadUnifiedMcpRegistry, planClaudeCodeMcpSettingsSync, type UnifiedMcpRegistryLoadResult,
+  getUnifiedMcpRegistryCandidates,
+  loadUnifiedMcpRegistry,
+  planClaudeCodeMcpSettingsSync,
+  type UnifiedMcpRegistryLoadResult,
 } from "../config/mcp-registry.js";
-import { generateAgentToml, generateSkillAgentToml } from "../agents/native-config.js";
+import { generateAgentToml } from "../agents/native-config.js";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { getPackageRoot } from "../utils/package.js";
 import { readSessionState, isSessionStale } from "../hooks/session.js";
@@ -52,7 +54,6 @@ interface SetupOptions {
   force?: boolean;
   dryRun?: boolean;
   scope?: SetupScope;
-  skillTarget?: SetupSkillTarget;
   verbose?: boolean;
   agentsOverwritePrompt?: (destinationPath: string) => Promise<boolean>;
   modelUpgradePrompt?: (
@@ -73,8 +74,6 @@ const LEGACY_SCOPE_MIGRATION: Record<string, "project"> = {
 
 export const SETUP_SCOPES = ["user", "project"] as const;
 export type SetupScope = (typeof SETUP_SCOPES)[number];
-export const SETUP_SKILL_TARGETS = ["codex-home", "agents"] as const;
-export type SetupSkillTarget = (typeof SETUP_SKILL_TARGETS)[number];
 
 export interface ScopeDirectories {
   codexConfigFile: string;
@@ -116,28 +115,17 @@ function applyScopePathRewritesToAgentsTemplate(
   content: string,
   scope: SetupScope,
 ): string {
-  if (scope === "user") {
-    return content.replaceAll("~/.agents/skills", "~/.codex/skills");
-  }
   if (scope !== "project") return content;
-  return content
-    .replaceAll("~/.codex", "./.codex")
-    .replaceAll("~/.agents", "./.agents");
+  return content.replaceAll("~/.codex", "./.codex");
 }
 
 interface PersistedSetupScope {
   scope: SetupScope;
-  skillTarget?: SetupSkillTarget;
 }
 
 interface ResolvedSetupScope {
   scope: SetupScope;
   source: "cli" | "persisted" | "prompt" | "default";
-}
-
-interface ResolvedSetupSkillTarget {
-  target: SetupSkillTarget;
-  source: "cli" | "persisted" | "default";
 }
 
 const REQUIRED_TEAM_CLI_API_MARKERS = [
@@ -147,8 +135,6 @@ const REQUIRED_TEAM_CLI_API_MARKERS = [
 ] as const;
 
 const DEFAULT_SETUP_SCOPE: SetupScope = "user";
-const DEFAULT_SETUP_SKILL_TARGET: SetupSkillTarget = "codex-home";
-
 const LEGACY_SETUP_MODEL = "gpt-5.3-codex";
 const DEFAULT_SETUP_MODEL = DEFAULT_FRONTIER_MODEL;
 
@@ -233,13 +219,17 @@ function parseSkillFrontmatterScalar(
     throw new Error(`${filePath} frontmatter "${key}" must not be empty`);
   }
   if (trimmed === "|" || trimmed === ">") {
-    throw new Error(`${filePath} frontmatter "${key}" must be a single-line string`);
+    throw new Error(
+      `${filePath} frontmatter "${key}" must be a single-line string`,
+    );
   }
 
   const quote = trimmed[0];
   if (quote === '"' || quote === "'") {
     if (trimmed.length < 2 || trimmed.at(-1) !== quote) {
-      throw new Error(`${filePath} frontmatter "${key}" has an unterminated quoted string`);
+      throw new Error(
+        `${filePath} frontmatter "${key}" has an unterminated quoted string`,
+      );
     }
     const unquoted = trimmed.slice(1, -1).trim();
     if (!unquoted) {
@@ -259,7 +249,9 @@ export function parseSkillFrontmatter(
   content: string,
   filePath = "SKILL.md",
 ): SkillFrontmatterMetadata {
-  const frontmatterMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  const frontmatterMatch = content.match(
+    /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/,
+  );
   if (!frontmatterMatch) {
     throw new Error(
       `${filePath} must start with YAML frontmatter containing non-empty name and description fields`,
@@ -295,7 +287,9 @@ export function parseSkillFrontmatter(
     throw new Error(`${filePath} is missing a non-empty frontmatter "name"`);
   }
   if (!description) {
-    throw new Error(`${filePath} is missing a non-empty frontmatter "description"`);
+    throw new Error(
+      `${filePath} is missing a non-empty frontmatter "description"`,
+    );
   }
 
   return { name, description };
@@ -320,14 +314,9 @@ function getScopeFilePath(projectRoot: string): string {
   return join(projectRoot, ".omx", "setup-scope.json");
 }
 
-function isSetupSkillTarget(value: string): value is SetupSkillTarget {
-  return SETUP_SKILL_TARGETS.includes(value as SetupSkillTarget);
-}
-
 export function resolveScopeDirectories(
   scope: SetupScope,
   projectRoot: string,
-  skillTarget: SetupSkillTarget = DEFAULT_SETUP_SKILL_TARGET,
 ): ScopeDirectories {
   if (scope === "project") {
     const codexHomeDir = join(projectRoot, ".codex");
@@ -336,7 +325,7 @@ export function resolveScopeDirectories(
       codexHomeDir,
       nativeAgentsDir: join(codexHomeDir, "agents"),
       promptsDir: join(codexHomeDir, "prompts"),
-      skillsDir: join(projectRoot, ".agents", "skills"),
+      skillsDir: join(codexHomeDir, "skills"),
     };
   }
   return {
@@ -344,7 +333,7 @@ export function resolveScopeDirectories(
     codexHomeDir: codexHome(),
     nativeAgentsDir: codexAgentsDir(),
     promptsDir: codexPromptsDir(),
-    skillsDir: skillTarget === "agents" ? legacyUserSkillsDir() : userSkillsDir(),
+    skillsDir: userSkillsDir(),
   };
 }
 
@@ -372,9 +361,6 @@ async function readPersistedSetupPreferences(
         persisted.scope = migrated;
       }
     }
-    if (parsed && typeof parsed.skillTarget === "string" && isSetupSkillTarget(parsed.skillTarget)) {
-      persisted.skillTarget = parsed.skillTarget;
-    }
     return Object.keys(persisted).length > 0 ? persisted : undefined;
   } catch {
     // ignore invalid persisted scope and fall back to prompt/default
@@ -394,10 +380,10 @@ async function promptForSetupScope(
   });
   try {
     console.log("Select setup scope:");
-    console.log(`  1) user (default) — installs to ~/.codex (skills default to ~/.codex/skills)`);
     console.log(
-      "  2) project — installs to ./.codex, ./.agents (local to project)",
+      `  1) user (default) — installs to ~/.codex (skills default to ~/.codex/skills)`,
     );
+    console.log("  2) project — installs to ./.codex (local to project)");
     const answer = (await rl.question("Scope [1-2] (default: 1): "))
       .trim()
       .toLowerCase();
@@ -475,24 +461,6 @@ async function resolveSetupScope(
   return { scope: DEFAULT_SETUP_SCOPE, source: "default" };
 }
 
-async function resolveSetupSkillTarget(
-  projectRoot: string,
-  scope: SetupScope,
-  requestedSkillTarget?: SetupSkillTarget,
-): Promise<ResolvedSetupSkillTarget> {
-  if (requestedSkillTarget) {
-    return { target: requestedSkillTarget, source: "cli" };
-  }
-  if (scope !== "user") {
-    return { target: DEFAULT_SETUP_SKILL_TARGET, source: "default" };
-  }
-  const persisted = await readPersistedSetupPreferences(projectRoot);
-  if (persisted?.skillTarget) {
-    return { target: persisted.skillTarget, source: "persisted" };
-  }
-  return { target: DEFAULT_SETUP_SKILL_TARGET, source: "default" };
-}
-
 function hasGitignoreEntry(content: string, entry: string): boolean {
   return content
     .split(/\r?\n/)
@@ -507,7 +475,9 @@ async function ensureProjectOmxGitignore(
 ): Promise<"created" | "updated" | "unchanged"> {
   const gitignorePath = join(projectRoot, ".gitignore");
   const destinationExists = existsSync(gitignorePath);
-  const existing = destinationExists ? await readFile(gitignorePath, "utf-8") : "";
+  const existing = destinationExists
+    ? await readFile(gitignorePath, "utf-8")
+    : "";
 
   if (hasGitignoreEntry(existing, PROJECT_OMX_GITIGNORE_ENTRY)) {
     return "unchanged";
@@ -517,7 +487,9 @@ async function ensureProjectOmxGitignore(
     ? `${existing}${existing.endsWith("\n") || existing.length === 0 ? "" : "\n"}${PROJECT_OMX_GITIGNORE_ENTRY}\n`
     : `${PROJECT_OMX_GITIGNORE_ENTRY}\n`;
 
-  if (await ensureBackup(gitignorePath, destinationExists, backupContext, options)) {
+  if (
+    await ensureBackup(gitignorePath, destinationExists, backupContext, options)
+  ) {
     // backup created when refreshing a pre-existing .gitignore
   }
 
@@ -537,7 +509,6 @@ async function ensureProjectOmxGitignore(
 async function persistSetupScope(
   projectRoot: string,
   scope: SetupScope,
-  skillTarget: SetupSkillTarget,
   options: Pick<SetupOptions, "dryRun" | "verbose">,
 ): Promise<void> {
   const scopePath = getScopeFilePath(projectRoot);
@@ -546,7 +517,7 @@ async function persistSetupScope(
     return;
   }
   await mkdir(dirname(scopePath), { recursive: true });
-  const payload: PersistedSetupScope = { scope, skillTarget };
+  const payload: PersistedSetupScope = { scope };
   await writeFile(scopePath, JSON.stringify(payload, null, 2) + "\n");
   if (options.verbose) console.log(`  Wrote ${scopePath}`);
 }
@@ -556,27 +527,15 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     force = false,
     dryRun = false,
     scope: requestedScope,
-    skillTarget: requestedSkillTarget,
     verbose = false,
     modelUpgradePrompt,
   } = options;
   const pkgRoot = getPackageRoot();
   const projectRoot = process.cwd();
   const resolvedScope = await resolveSetupScope(projectRoot, requestedScope);
-  const resolvedSkillTarget = await resolveSetupSkillTarget(
-    projectRoot,
-    resolvedScope.scope,
-    requestedSkillTarget,
-  );
-  const scopeDirs = resolveScopeDirectories(
-    resolvedScope.scope,
-    projectRoot,
-    resolvedSkillTarget.target,
-  );
+  const scopeDirs = resolveScopeDirectories(resolvedScope.scope, projectRoot);
   const scopeSourceMessage =
     resolvedScope.source === "persisted" ? " (from .omx/setup-scope.json)" : "";
-  const skillTargetSourceMessage =
-    resolvedSkillTarget.source === "persisted" ? " (from .omx/setup-scope.json)" : "";
   const backupContext = getBackupContext(resolvedScope.scope, projectRoot);
 
   console.log("oh-my-codex setup");
@@ -584,11 +543,6 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log(
     `Using setup scope: ${resolvedScope.scope}${scopeSourceMessage}\n`,
   );
-  if (resolvedScope.scope === "user") {
-    console.log(
-      `Using user skill target: ${resolvedSkillTarget.target}${skillTargetSourceMessage} (${scopeDirs.skillsDir})\n`,
-    );
-  }
 
   // Step 1: Ensure directories exist
   console.log("[1/8] Creating directories...");
@@ -607,7 +561,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     }
     if (verbose) console.log(`  mkdir ${dir}`);
   }
-  await persistSetupScope(projectRoot, resolvedScope.scope, resolvedSkillTarget.target, {
+  await persistSetupScope(projectRoot, resolvedScope.scope, {
     dryRun,
     verbose,
   });
@@ -697,7 +651,6 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   {
     summary.nativeAgents = await refreshNativeAgentConfigs(
       pkgRoot,
-      scopeDirs.skillsDir,
       scopeDirs.nativeAgentsDir,
       backupContext,
       {
@@ -804,12 +757,16 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
           existing,
           modelTableContext,
         );
-        canApplyManagedModelRefresh =
-          managedRefreshContent !== existing;
+        canApplyManagedModelRefresh = managedRefreshContent !== existing;
       }
     }
 
-    if (resolvedScope.scope === "project" && sessionIsActive && agentsMdExists && changed) {
+    if (
+      resolvedScope.scope === "project" &&
+      sessionIsActive &&
+      agentsMdExists &&
+      changed
+    ) {
       summary.agentsMd.skipped += 1;
       console.log(
         "  WARNING: Active omx session detected (pid " +
@@ -919,8 +876,12 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   );
   console.log("  3. Skills are available via /skills or implicit matching");
   console.log("  4. The AGENTS.md orchestration brain is loaded automatically");
-  console.log("  5. Native agent defaults configured in config.toml [agents] and TOML files written to .codex/agents/");
-  console.log('  6. "omx explore" and "omx sparkshell" can hydrate native release binaries on first use; source installs still allow repo-local fallbacks and OMX_EXPLORE_BIN / OMX_SPARKSHELL_BIN overrides');
+  console.log(
+    "  5. Native agent defaults configured in config.toml [agents] and TOML files written to .codex/agents/",
+  );
+  console.log(
+    '  6. "omx explore" and "omx sparkshell" can hydrate native release binaries on first use; source installs still allow repo-local fallbacks and OMX_EXPLORE_BIN / OMX_SPARKSHELL_BIN overrides',
+  );
   if (isGitHubCliConfigured()) {
     console.log("\nSupport the project: gh repo star Yeachan-Heo/oh-my-codex");
   }
@@ -928,7 +889,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 
 function isLegacySkillPromptShim(content: string): boolean {
   const marker =
-    /Read and follow the full skill instructions at\s+~\/\.agents\/skills\/[^/\s]+\/SKILL\.md/i;
+    /Read and follow the full skill instructions at\s+.*\/skills\/[^/\s]+\/SKILL\.md/i;
   return marker.test(content);
 }
 
@@ -1134,7 +1095,7 @@ async function installPrompts(
   );
 
   for (const file of files) {
-    if (!file.endsWith('.md')) continue;
+    if (!file.endsWith(".md")) continue;
     const promptName = file.slice(0, -3);
     staleCandidatePromptNames.add(promptName);
 
@@ -1142,7 +1103,7 @@ async function installPrompts(
     if (agentStatusByName && !isInstallableStatus(status)) {
       summary.skipped += 1;
       if (options.verbose) {
-        const label = status ?? 'unlisted';
+        const label = status ?? "unlisted";
         console.log(`  skipped ${file} (status: ${label})`);
       }
       continue;
@@ -1165,11 +1126,12 @@ async function installPrompts(
   if (options.force && manifest && existsSync(dstDir)) {
     const installedFiles = await readdir(dstDir);
     for (const file of installedFiles) {
-      if (!file.endsWith('.md')) continue;
+      if (!file.endsWith(".md")) continue;
       const promptName = file.slice(0, -3);
       const status = agentStatusByName?.get(promptName);
       if (isInstallableStatus(status)) continue;
-      if (!staleCandidatePromptNames.has(promptName) && status === undefined) continue;
+      if (!staleCandidatePromptNames.has(promptName) && status === undefined)
+        continue;
 
       const stalePromptPath = join(dstDir, file);
       if (!existsSync(stalePromptPath)) continue;
@@ -1179,8 +1141,10 @@ async function installPrompts(
       }
       summary.removed += 1;
       if (options.verbose) {
-        const prefix = options.dryRun ? 'would remove stale prompt' : 'removed stale prompt';
-        const label = status ?? 'unlisted';
+        const prefix = options.dryRun
+          ? "would remove stale prompt"
+          : "removed stale prompt";
+        const label = status ?? "unlisted";
         console.log(`  ${prefix} ${file} (status: ${label})`);
       }
     }
@@ -1191,7 +1155,6 @@ async function installPrompts(
 
 async function refreshNativeAgentConfigs(
   pkgRoot: string,
-  skillsDir: string,
   agentsDir: string,
   backupContext: SetupBackupContext,
   options: Pick<SetupOptions, "dryRun" | "verbose" | "force">,
@@ -1206,18 +1169,11 @@ async function refreshNativeAgentConfigs(
   const agentStatusByName = manifest
     ? new Map(manifest.agents.map((agent) => [agent.name, agent.status]))
     : null;
-  const skillStatusByName = manifest
-    ? new Map(manifest.skills.map((skill) => [skill.name, skill.status]))
-    : null;
   const isInstallableStatus = (status: string | undefined): boolean =>
     status === "active" || status === "internal";
   const staleCandidateNativeAgentNames = new Set(
-    [
-      ...(manifest?.agents.map((agent) => agent.name) ?? []),
-      ...(manifest?.skills.map((skill) => skill.name) ?? []),
-    ],
+    manifest?.agents.map((agent) => agent.name) ?? [],
   );
-  const reservedNativeAgentNames = new Set(["default", "worker", "explorer"]);
 
   for (const [name, agent] of Object.entries(AGENT_DEFINITIONS)) {
     staleCandidateNativeAgentNames.add(name);
@@ -1249,68 +1205,24 @@ async function refreshNativeAgentConfigs(
     );
   }
 
-  if (existsSync(skillsDir)) {
-    const installedSkills = await readdir(skillsDir, { withFileTypes: true });
-    for (const entry of installedSkills) {
-      if (!entry.isDirectory()) continue;
-
-      const skillName = entry.name;
-      staleCandidateNativeAgentNames.add(skillName);
-      if (reservedNativeAgentNames.has(skillName)) {
-        summary.skipped += 1;
-        if (options.verbose) {
-          console.log(`  skipped native agent ${skillName}.toml (reserved built-in agent name)`);
-        }
-        continue;
-      }
-
-      const status = skillStatusByName?.get(skillName);
-      if (skillStatusByName && !isInstallableStatus(status)) {
-        summary.skipped += 1;
-        if (options.verbose) {
-          const label = status ?? "unlisted";
-          console.log(`  skipped native skill agent ${skillName}.toml (status: ${label})`);
-        }
-        continue;
-      }
-
-      const skillMdPath = join(skillsDir, skillName, "SKILL.md");
-      if (!existsSync(skillMdPath)) continue;
-
-      const skillContent = await readFile(skillMdPath, "utf-8");
-      let skillDescription = `OMX skill agent for ${skillName}`;
-      try {
-        skillDescription = parseSkillFrontmatter(skillContent, skillMdPath).description;
-      } catch {
-        // Keep generating the skill-backed agent even if a locally modified
-        // installed skill file no longer has valid frontmatter.
-      }
-      const toml = generateSkillAgentToml(skillName, skillDescription, skillName);
-      const dst = join(agentsDir, `${skillName}.toml`);
-      await syncManagedContent(
-        toml,
-        dst,
-        summary,
-        backupContext,
-        options,
-        `native skill agent ${skillName}.toml`,
-      );
-    }
-  }
+  summary.removed += await cleanupSkillBridgeNativeAgents(
+    agentsDir,
+    backupContext,
+    options,
+  );
 
   if (options.force && manifest && existsSync(agentsDir)) {
     const installedFiles = await readdir(agentsDir);
     for (const file of installedFiles) {
-      if (!file.endsWith('.toml')) continue;
+      if (!file.endsWith(".toml")) continue;
       const agentName = file.slice(0, -5);
       const agentStatus = agentStatusByName?.get(agentName);
-      const skillStatus = skillStatusByName?.get(agentName);
-      if (isInstallableStatus(agentStatus) || isInstallableStatus(skillStatus)) continue;
+      if (isInstallableStatus(agentStatus)) continue;
       if (
         !staleCandidateNativeAgentNames.has(agentName) &&
-        agentStatus === undefined &&
-        skillStatus === undefined
-      ) continue;
+        agentStatus === undefined
+      )
+        continue;
 
       const staleAgentPath = join(agentsDir, file);
       if (!existsSync(staleAgentPath)) continue;
@@ -1320,14 +1232,57 @@ async function refreshNativeAgentConfigs(
       }
       summary.removed += 1;
       if (options.verbose) {
-        const prefix = options.dryRun ? 'would remove stale native agent' : 'removed stale native agent';
-        const label = agentStatus ?? skillStatus ?? 'unlisted';
+        const prefix = options.dryRun
+          ? "would remove stale native agent"
+          : "removed stale native agent";
+        const label = agentStatus ?? "unlisted";
         console.log(`  ${prefix} ${file} (status: ${label})`);
       }
     }
   }
 
   return summary;
+}
+
+async function cleanupSkillBridgeNativeAgents(
+  agentsDir: string,
+  backupContext: SetupBackupContext,
+  options: Pick<SetupOptions, "dryRun" | "verbose">,
+): Promise<number> {
+  if (!existsSync(agentsDir)) return 0;
+
+  const installedFiles = await readdir(agentsDir);
+  let removed = 0;
+
+  for (const file of installedFiles) {
+    if (!file.endsWith(".toml")) continue;
+
+    const fullPath = join(agentsDir, file);
+    let content = "";
+    try {
+      content = await readFile(fullPath, "utf-8");
+    } catch {
+      continue;
+    }
+
+    if (!/^\s*skill_ref\s*=/m.test(content)) continue;
+
+    if (await ensureBackup(fullPath, true, backupContext, options)) {
+      // backup created for pre-existing skill bridge config
+    }
+    if (!options.dryRun) {
+      await rm(fullPath, { force: true });
+    }
+    if (options.verbose) {
+      const prefix = options.dryRun
+        ? "would remove stale skill-bridge native agent"
+        : "removed stale skill-bridge native agent";
+      console.log(`  ${prefix} ${file}`);
+    }
+    removed += 1;
+  }
+
+  return removed;
 }
 
 export async function installSkills(

@@ -15,19 +15,19 @@ Meta-skill for managing oh-my-codex skills via CLI-like commands.
 Show all local skills organized by scope.
 
 **Behavior:**
-1. Scan user skills at `~/.agents/skills/`
-2. Scan project skills at `.agents/skills/`
+1. Scan user skills at `~/.codex/skills/`
+2. Scan project skills at `.codex/skills/`
 3. Parse YAML frontmatter for metadata
 4. Display in organized table format:
 
 ```
-USER SKILLS (~/.agents/skills/):
+USER SKILLS (~/.codex/skills/):
 | Name              | Triggers           | Quality | Usage | Scope |
 |-------------------|--------------------|---------|-------|-------|
 | error-handler     | fix, error         | 95%     | 42    | user  |
 | api-builder       | api, endpoint      | 88%     | 23    | user  |
 
-PROJECT SKILLS (.agents/skills/):
+PROJECT SKILLS (.codex/skills/):
 | Name              | Triggers           | Quality | Usage | Scope   |
 |-------------------|--------------------|---------|-------|---------|
 | test-runner       | test, run          | 92%     | 15    | project |
@@ -51,8 +51,8 @@ Interactive wizard for creating a new skill.
 4. **Ask for argument hint** (optional)
    - Example: "<file> [options]"
 5. **Ask for scope:**
-   - `user` → `~/.agents/skills/<name>/SKILL.md`
-   - `project` → `.agents/skills/<name>/SKILL.md`
+   - `user` → `~/.codex/skills/<name>/SKILL.md`
+   - `project` → `.codex/skills/<name>/SKILL.md`
 6. **Create skill file** with template:
 
 ```yaml
@@ -105,7 +105,7 @@ Triggers (comma-separated): log, logger, logging
 Argument hint (optional): <level> [message]
 Scope (user/project): user
 
-✓ Created skill at ~/.agents/skills/custom-logger/SKILL.md
+✓ Created skill at ~/.codex/skills/custom-logger/SKILL.md
 → Edit with: /skill edit custom-logger
 ```
 
@@ -117,13 +117,13 @@ Remove a skill by name.
 
 **Behavior:**
 1. **Search for skill** in both scopes:
-   - `~/.agents/skills/<name>/SKILL.md`
-   - `.agents/skills/<name>/SKILL.md`
+   - `~/.codex/skills/<name>/SKILL.md`
+   - `.codex/skills/<name>/SKILL.md`
 2. **If found:**
    - Display skill info (name, description, scope)
    - **Ask for confirmation:** "Delete '<name>' skill from <scope>? (yes/no)"
 3. **If confirmed:**
-   - Delete entire skill directory (e.g., `~/.agents/skills/<name>/`)
+   - Delete entire skill directory (e.g., `~/.codex/skills/<name>/`)
    - Report: "✓ Removed skill '<name>' from <scope>"
 4. **If not found:**
    - Report: "✗ Skill '<name>' not found in user or project scope"
@@ -135,7 +135,7 @@ Remove a skill by name.
 User: /skill remove old-logger
 Assistant: Found skill 'old-logger' in user scope:
   Description: Legacy logging utility
-  Scope: user (~/.agents/skills/)
+  Scope: user (~/.codex/skills/)
 
 Delete 'old-logger' skill? (yes/no)
 
@@ -251,13 +251,13 @@ Show detailed information about a skill.
 
 ```
 Skill: custom-logger
-Scope: user (~/.agents/skills/custom-logger/)
+Scope: user (~/.codex/skills/custom-logger/)
 Description: Enhanced logging with structured output
 Triggers: log, logger, logging
 Argument Hint: <level> [message]
 Quality: 95% (if available)
 Usage Count: 42 times (if available)
-File Path: /home/user/.agents/skills/custom-logger/SKILL.md
+File Path: /home/user/.codex/skills/custom-logger/SKILL.md
 
 --- FULL CONTENT ---
 [entire markdown content]
@@ -272,7 +272,7 @@ Assistant: Skill: custom-logger
 Scope: user
 Description: Enhanced logging with structured output
 Triggers: log, logger, logging
-File: ~/.agents/skills/custom-logger/SKILL.md
+File: ~/.codex/skills/custom-logger/SKILL.md
 
 --- CONTENT ---
 # Custom Logger Skill
@@ -290,8 +290,8 @@ Sync skills between user and project scopes.
 
 **Behavior:**
 1. **Scan both scopes:**
-   - User skills: `~/.agents/skills/`
-   - Project skills: `.agents/skills/`
+   - User skills: `~/.codex/skills/`
+   - Project skills: `.codex/skills/`
 2. **Compare and categorize:**
    - User-only skills (not in project)
    - Project-only skills (not in user)
@@ -339,7 +339,7 @@ Assistant: Found 5 user-only skills and 2 project-only skills.
 
 Copy 'error-handler' from user to project? (yes/no/skip)
 User: yes
-Assistant: ✓ Copied 'error-handler' to .agents/skills/
+Assistant: ✓ Copied 'error-handler' to .codex/skills/
 
 Copy 'api-builder' from user to project? (yes/no/skip)
 User: skip
@@ -360,7 +360,7 @@ First, check if skill directories exist and create them if needed:
 
 ```bash
 # Check and create user-level skills directory
-USER_SKILLS_DIR="$HOME/.agents/skills"
+USER_SKILLS_DIR="$HOME/.codex/skills"
 if [ -d "$USER_SKILLS_DIR" ]; then
   echo "User skills directory exists: $USER_SKILLS_DIR"
 else
@@ -369,7 +369,7 @@ else
 fi
 
 # Check and create project-level skills directory
-PROJECT_SKILLS_DIR=".agents/skills"
+PROJECT_SKILLS_DIR=".codex/skills"
 if [ -d "$PROJECT_SKILLS_DIR" ]; then
   echo "Project skills directory exists: $PROJECT_SKILLS_DIR"
 else
@@ -384,15 +384,15 @@ Scan both directories and show a comprehensive inventory:
 
 ```bash
 # Scan user-level skills
-echo "=== USER-LEVEL SKILLS (~/.agents/skills/) ==="
-if [ -d "$HOME/.agents/skills" ]; then
-  USER_COUNT=$(find "$HOME/.agents/skills" -name "*.md" 2>/dev/null | wc -l)
+echo "=== USER-LEVEL SKILLS (~/.codex/skills/) ==="
+if [ -d "$HOME/.codex/skills" ]; then
+  USER_COUNT=$(find "$HOME/.codex/skills" -name "*.md" 2>/dev/null | wc -l)
   echo "Total skills: $USER_COUNT"
 
   if [ $USER_COUNT -gt 0 ]; then
     echo ""
     echo "Skills found:"
-    find "$HOME/.agents/skills" -name "*.md" -type f -exec sh -c '
+    find "$HOME/.codex/skills" -name "*.md" -type f -exec sh -c '
       FILE="$1"
       NAME=$(grep -m1 "^name:" "$FILE" 2>/dev/null | sed "s/name: //")
       DESC=$(grep -m1 "^description:" "$FILE" 2>/dev/null | sed "s/description: //")
@@ -408,15 +408,15 @@ else
 fi
 
 echo ""
-echo "=== PROJECT-LEVEL SKILLS (.agents/skills/) ==="
-if [ -d ".agents/skills" ]; then
-  PROJECT_COUNT=$(find ".agents/skills" -name "*.md" 2>/dev/null | wc -l)
+echo "=== PROJECT-LEVEL SKILLS (.codex/skills/) ==="
+if [ -d ".codex/skills" ]; then
+  PROJECT_COUNT=$(find ".codex/skills" -name "*.md" 2>/dev/null | wc -l)
   echo "Total skills: $PROJECT_COUNT"
 
   if [ $PROJECT_COUNT -gt 0 ]; then
     echo ""
     echo "Skills found:"
-    find ".agents/skills" -name "*.md" -type f -exec sh -c '
+    find ".codex/skills" -name "*.md" -type f -exec sh -c '
       FILE="$1"
       NAME=$(grep -m1 "^name:" "$FILE" 2>/dev/null | sed "s/name: //")
       DESC=$(grep -m1 "^description:" "$FILE" 2>/dev/null | sed "s/description: //")
@@ -467,8 +467,8 @@ Ask user to provide either:
 - **Paste content**: Paste skill markdown content directly
 
 Then ask for scope:
-- **User-level** (~/.agents/skills/) - Available across all projects
-- **Project-level** (.agents/skills/) - Only for this project
+- **User-level** (~/.codex/skills/) - Available across all projects
+- **Project-level** (.codex/skills/) - Only for this project
 
 Validate the skill format and save to the chosen location.
 
@@ -715,7 +715,7 @@ When invoked without arguments, run the full guided wizard.
 
 **Automatic Application**: Codex detects triggers and applies skills automatically - no need to remember or search for solutions.
 
-**Version Control**: Project-level skills (.agents/skills/) are committed with your code, so the whole team benefits.
+**Version Control**: Project-level skills (.codex/skills/) are committed with your code, so the whole team benefits.
 
 **Evolving Knowledge**: Skills improve over time as you discover better approaches and refine triggers.
 
@@ -760,8 +760,8 @@ Good skills are:
 > /skill list
 
 Checking skill directories...
-✓ User skills directory exists: ~/.agents/skills/
-✓ Project skills directory exists: .agents/skills/
+✓ User skills directory exists: ~/.codex/skills/
+✓ Project skills directory exists: .codex/skills/
 
 Scanning for skills...
 

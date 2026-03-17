@@ -54,7 +54,7 @@ User
   -> Codex CLI
     -> AGENTS.md (오케스트레이션 브레인)
     -> ~/.codex/prompts/*.md (에이전트 프롬프트 카탈로그)
-    -> ~/.agents/skills/*/SKILL.md (스킬 카탈로그)
+    -> ~/.codex/skills/*/SKILL.md (스킬 카탈로그)
     -> ~/.codex/config.toml (기능, 알림, MCP)
     -> .omx/ (런타임 상태, 메모리, 계획, 로그)
 ```
@@ -187,8 +187,8 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # 선택: 적응형 queue->resend 폴백 비활
 
 - `.omx/setup-scope.json` (저장된 설정 범위)
 - 범위에 따른 설치:
-  - `user`: `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
-  - `project`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
+  - `user`: `~/.codex/prompts/`, `~/.codex/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
+  - `project`: `./.codex/prompts/`, `./.codex/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
 - 시작 동작: 저장된 범위가 `project`이면, `omx` 시작 시 자동으로 `CODEX_HOME=./.codex`를 사용합니다 (`CODEX_HOME`이 이미 설정되지 않은 경우).
 - 시작 지침은 `~/.codex/AGENTS.md`(또는 `CODEX_HOME/AGENTS.md`)와 프로젝트 `./AGENTS.md`를 병합한 뒤 런타임 오버레이를 추가해 사용합니다.
 - 기존 `AGENTS.md`는 자동으로 덮어쓰지 않습니다. 대화형 TTY 실행에서는 덮어쓸지 확인하고, 비대화형 실행에서는 `--force`가 없으면 건너뜁니다 (활성 세션 안전 검사는 여전히 적용됩니다).
@@ -205,7 +205,7 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # 선택: 적응형 queue->resend 폴백 비활
 ## 에이전트와 스킬
 
 - 프롬프트: `prompts/*.md` (`user`는 `~/.codex/prompts/`에, `project`는 `./.codex/prompts/`에 설치)
-- 스킬: `skills/*/SKILL.md` (`user`는 `~/.agents/skills/`에, `project`는 `./.agents/skills/`에 설치)
+- 스킬: `skills/*/SKILL.md` (`user`는 `~/.codex/skills/`에, `project`는 `./.codex/skills/`에 설치)
 
 예시:
 - 에이전트: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`

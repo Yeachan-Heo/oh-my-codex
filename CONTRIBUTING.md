@@ -52,7 +52,7 @@ unset OMX_TEAM_WORKER OMX_TEAM_STATE_ROOT OMX_TEAM_LEADER_CWD OMX_TEAM_WORKER_CL
 
 - `src/` -- TypeScript source (CLI, config, agents, MCP servers, hooks, modes, team, verification)
 - `prompts/` -- 30 agent prompt markdown files (installed to `~/.codex/prompts/`)
-- `skills/` -- 39 skill directories with `SKILL.md` (installed to `~/.agents/skills/`)
+- `skills/` -- 39 skill directories with `SKILL.md` (installed to `~/.codex/skills/`)
 - `templates/` -- `AGENTS.md` orchestration brain template
 
 ### Adding a new agent prompt
@@ -70,7 +70,7 @@ That document defines the GPT-5.4 behavior contract contributors should preserve
 ### Adding a new skill
 
 1. Create `skills/my-skill/SKILL.md` with the skill workflow
-2. Run `omx setup --force` to install it to `~/.agents/skills/`
+2. Run `omx setup --force` to install it to `~/.codex/skills/`
 3. Use `$my-skill` in Codex CLI
 
 ## Workflow

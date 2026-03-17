@@ -3,8 +3,6 @@ oh-my-codex doctor
 
 Resolved setup scope: user
 
-Resolved user skill target: codex-home (<CODEX_HOME>/skills)
-
   [CODEX_CLI_STATUS]
   [OK] Node.js: <NODE_VERSION>
   [EXPLORE_HARNESS_STATUS]
@@ -12,7 +10,6 @@ Resolved user skill target: codex-home (<CODEX_HOME>/skills)
   [!!] Config: config.toml exists but no OMX entries yet (expected before first setup; run "omx setup --force" once)
   [!!] Prompts: prompts directory not found
   [!!] Skills: skills directory not found
-  [OK] Legacy Skills: no legacy ~/.agents/skills directory detected
   [!!] AGENTS.md: not found in <CODEX_HOME>/AGENTS.md (run omx setup --scope user)
   [!!] State dir: <REPO_STATE_DIR> (not created yet)
   [!!] MCP Servers: 1 servers but no OMX servers yet (expected before first setup; run "omx setup --force" once)

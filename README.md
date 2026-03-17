@@ -204,7 +204,7 @@ User / Operator
     -> Codex CLI (execution engine)
     -> AGENTS.md (orchestration brain)
     -> ~/.codex/prompts/*.md (installable active/internal agent prompt catalog)
-    -> ~/.agents/skills/*/SKILL.md (skill catalog)
+    -> ~/.codex/skills/*/SKILL.md (skill catalog)
     -> ~/.codex/config.toml (features, notify, MCP)
     -> .omx/ (runtime state, memory, plans, logs)
 ```
@@ -573,8 +573,8 @@ Notes:
 
 - `.omx/setup-scope.json` (persisted setup scope)
 - Scope-dependent installs:
-  - `user`: `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
-  - `project`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
+  - `user`: `~/.codex/prompts/`, `~/.codex/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
+  - `project`: `./.codex/prompts/`, `./.codex/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
 - Launch behavior: if persisted scope is `project`, `omx` launch auto-uses `CODEX_HOME=./.codex` (unless `CODEX_HOME` is already set).
 - Launch instructions merge `~/.codex/AGENTS.md` (or `CODEX_HOME/AGENTS.md` when overridden) with project `./AGENTS.md`, then append the runtime overlay
 - Managed OMX artifacts refresh by default in both interactive and non-interactive runs: prompts, skills, native agent configs, and the managed OMX portion of `config.toml`
@@ -604,7 +604,7 @@ Notes:
 Use `omx agents-init [path]` when you only want a narrow AGENTS.md bootstrap helper instead of full OMX setup.
 
 - creates or refreshes `AGENTS.md` in the target directory plus its immediate child directories
-- skips generated/vendor/tooling directories such as `.git`, `.omx`, `.codex`, `.agents`, `node_modules`, `dist`, and `build`
+- skips generated/vendor/tooling directories such as `.git`, `.omx`, `.codex`, `node_modules`, `dist`, and `build`
 - preserves the `<!-- OMX:AGENTS-MANUAL:* -->` section on refresh
 - skips unmanaged existing `AGENTS.md` files unless you pass `--force`
 - does **not** install prompts, skills, config, or replace planning/execution workflows such as `team`, `ralph`, or `ralplan`
@@ -620,7 +620,7 @@ omx agents-init . --force
 ## Agents and Skills
 
 - Prompts: `prompts/*.md` (installed to `~/.codex/prompts/` for `user`, `./.codex/prompts/` for `project`)
-- Skills: `skills/*/SKILL.md` (installed to `~/.agents/skills/` for `user`, `./.agents/skills/` for `project`)
+- Skills: `skills/*/SKILL.md` (installed to `~/.codex/skills/` for `user`, `./.codex/skills/` for `project`)
 
 Examples:
 - Agents: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
