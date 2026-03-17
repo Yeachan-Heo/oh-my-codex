@@ -107,7 +107,7 @@ Usage:
   omx setup     Install skills, prompts, MCP servers, and scope-specific AGENTS.md
   omx uninstall Remove OMX configuration and clean up installed artifacts
   omx doctor    Check installation health
-  omx cleanup   Kill orphaned OMX MCP server processes from prior sessions
+  omx cleanup   Kill orphaned OMX MCP server processes and remove stale OMX /tmp directories
   omx doctor --team  Check team/swarm runtime health diagnostics
   omx ask       Ask local provider CLI (claude|gemini) and write artifact output
   omx resume    Resume a previous interactive Codex session

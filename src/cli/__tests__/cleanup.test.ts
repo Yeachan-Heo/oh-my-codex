@@ -1,7 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  cleanupCommand,
   cleanupOmxMcpProcesses,
+  cleanupStaleTmpDirectories,
   findCleanupCandidates,
   type ProcessEntry,
 } from '../cleanup.js';
@@ -120,5 +122,124 @@ describe('cleanupOmxMcpProcesses', () => {
     ]);
     assert.match(lines.join('\n'), /Escalating to SIGKILL for 1 process/);
     assert.match(lines.join('\n'), /Killed 2 orphaned OMX MCP server process\(es\) \(1 required SIGKILL\)\./);
+  });
+});
+
+describe('cleanupStaleTmpDirectories', () => {
+  const tmpEntries = [
+    { name: 'omx-stale-a', isDirectory: () => true },
+    { name: 'omc-stale-b', isDirectory: () => true },
+    { name: 'oh-my-codex-fresh', isDirectory: () => true },
+    { name: 'oh-my-codex-file', isDirectory: () => false },
+    { name: 'other-stale', isDirectory: () => true },
+  ];
+
+  it('supports dry-run and reports stale matching directories older than one hour', async () => {
+    const lines: string[] = [];
+    const removedPaths: string[] = [];
+    const now = 10 * 60 * 60 * 1000;
+
+    const removedCount = await cleanupStaleTmpDirectories(['--dry-run'], {
+      tmpRoot: '/tmp',
+      listTmpEntries: async () => tmpEntries,
+      statPath: async (path) => ({
+        mtimeMs:
+          path === '/tmp/oh-my-codex-fresh'
+            ? now - 30 * 60 * 1000
+            : now - 2 * 60 * 60 * 1000,
+      }),
+      removePath: async (path) => {
+        removedPaths.push(path);
+      },
+      now: () => now,
+      writeLine: (line) => lines.push(line),
+    });
+
+    assert.equal(removedCount, 0);
+    assert.deepEqual(removedPaths, []);
+    assert.match(
+      lines.join('\n'),
+      /Dry run: would remove 2 stale OMX \/tmp directories:/,
+    );
+    assert.match(lines.join('\n'), /\/tmp\/omc-stale-b/);
+    assert.match(lines.join('\n'), /\/tmp\/omx-stale-a/);
+    assert.doesNotMatch(lines.join('\n'), /oh-my-codex-fresh/);
+    assert.doesNotMatch(lines.join('\n'), /other-stale/);
+  });
+
+  it('removes only stale matching directories and returns the removed count', async () => {
+    const lines: string[] = [];
+    const removedPaths: string[] = [];
+    const now = 10 * 60 * 60 * 1000;
+
+    const removedCount = await cleanupStaleTmpDirectories([], {
+      tmpRoot: '/tmp',
+      listTmpEntries: async () => tmpEntries,
+      statPath: async (path) => ({
+        mtimeMs:
+          path === '/tmp/oh-my-codex-fresh'
+            ? now - 30 * 60 * 1000
+            : now - 2 * 60 * 60 * 1000,
+      }),
+      removePath: async (path) => {
+        removedPaths.push(path);
+      },
+      now: () => now,
+      writeLine: (line) => lines.push(line),
+    });
+
+    assert.equal(removedCount, 2);
+    assert.deepEqual(removedPaths, ['/tmp/omc-stale-b', '/tmp/omx-stale-a']);
+    assert.match(lines.join('\n'), /Removed stale \/tmp directory: \/tmp\/omc-stale-b/);
+    assert.match(lines.join('\n'), /Removed stale \/tmp directory: \/tmp\/omx-stale-a/);
+    assert.match(lines.join('\n'), /Removed 2 stale OMX \/tmp directories\./);
+  });
+});
+
+describe('cleanupCommand', () => {
+  it('runs tmp cleanup after orphaned MCP cleanup', async () => {
+    const calls: string[] = [];
+
+    await cleanupCommand(['--dry-run'], {
+      cleanupProcesses: async () => {
+        calls.push('processes');
+        return {
+          dryRun: true,
+          candidates: [],
+          terminatedCount: 0,
+          forceKilledCount: 0,
+          failedPids: [],
+        };
+      },
+      cleanupTmpDirectories: async () => {
+        calls.push('tmp');
+        return 0;
+      },
+    });
+
+    assert.deepEqual(calls, ['processes', 'tmp']);
+  });
+
+  it('skips tmp cleanup when showing help', async () => {
+    const calls: string[] = [];
+
+    await cleanupCommand(['--help'], {
+      cleanupProcesses: async () => {
+        calls.push('processes');
+        return {
+          dryRun: true,
+          candidates: [],
+          terminatedCount: 0,
+          forceKilledCount: 0,
+          failedPids: [],
+        };
+      },
+      cleanupTmpDirectories: async () => {
+        calls.push('tmp');
+        return 0;
+      },
+    });
+
+    assert.deepEqual(calls, ['processes']);
   });
 });
