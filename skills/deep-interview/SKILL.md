@@ -194,6 +194,23 @@ Spec should include:
 - Technical context findings
 - Full or condensed transcript
 
+### Autoresearch specialization
+
+When the clarified task is specifically about `omx autoresearch`, keep the interview domain-specific and emit a canonical artifact that downstream CLI intake can compile into launch-ready mission scaffolding without skipping clarification.
+
+- **Accepted seed inputs:** `topic`, `evaluator`, `keep-policy`, `slug`, existing mission draft text, and prior evaluator examples/templates
+- **Required interview focus:** mission clarity, evaluator readiness, keep policy, slug/session naming, and whether the draft is ready to launch now or should refine further
+- **Canonical artifact path:** `.omx/specs/deep-interview-autoresearch-{slug}.md`
+- **Required artifact sections:**
+  - `Mission Draft`
+  - `Evaluator Draft`
+  - `Launch Readiness`
+  - `Seed Inputs`
+  - `Confirmation Bridge`
+- **Launch-readiness rule:** mark the draft as **not launch-ready** while the evaluator command still contains placeholder markers such as `<...>`, `TODO`, `TBD`, `REPLACE_ME`, `CHANGEME`, or `your-command-here`
+- **Confirmation bridge:** after artifact generation, offer at least `refine further` and `launch`; do not launch detached tmux until the user explicitly confirms `launch`
+- **Handoff rule:** downstream execution must preserve the clarified mission intent, evaluator expectations, decision boundaries, and launch-readiness status from this artifact rather than bypassing the draft review step
+
 ## Phase 5: Execution Bridge
 
 Present execution options after artifact generation using explicit handoff contracts. Treat the deep-interview spec as the current requirements source of truth and preserve intent, non-goals, decision boundaries, acceptance criteria, and any residual-risk warnings across the handoff.
