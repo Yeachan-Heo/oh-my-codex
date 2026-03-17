@@ -1,10 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setup } from '../setup.js';
+import { addGeneratedAgentsMarker } from '../../utils/agents-md.js';
+import { resolveAgentsModelTableContext, upsertAgentsModelTable } from '../../utils/agents-model-table.js';
 
 function setMockTty(value: boolean): () => void {
   Object.defineProperty(process.stdin, 'isTTY', {
@@ -127,6 +129,53 @@ describe('omx setup AGENTS refresh behavior', () => {
       assert.equal(timestamps.length, 1);
       const backupContent = await readFile(join(backupsRoot, timestamps[0], 'AGENTS.md'), 'utf-8');
       assert.equal(backupContent, existing);
+    } finally {
+      restoreHome();
+      restoreTty();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshes the managed model table in non-interactive runs without requiring --force', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agents-'));
+    const restoreTty = setMockTty(false);
+    const home = join(wd, 'home');
+    const restoreHome = setMockHome(home);
+    const template = readFileSync(join(process.cwd(), 'templates', 'AGENTS.md'), 'utf-8');
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      const existing = upsertAgentsModelTable(
+        addGeneratedAgentsMarker(template),
+        {
+          frontierModel: 'legacy-frontier',
+          sparkModel: 'legacy-spark',
+          subagentDefaultModel: 'legacy-frontier',
+        },
+      );
+      await writeFile(join(wd, 'AGENTS.md'), existing);
+
+      const output = await runSetupWithCapturedLogs(wd, {
+        scope: 'project',
+      });
+
+      const agentsContent = await readFile(join(wd, 'AGENTS.md'), 'utf-8');
+      const expectedContext = resolveAgentsModelTableContext(
+        await readFile(join(wd, '.codex', 'config.toml'), 'utf-8'),
+        { codexHomeOverride: join(wd, '.codex') },
+      );
+
+      assert.match(output, /Refreshed AGENTS\.md model capability table in project root\./);
+      assert.doesNotMatch(output, /Skipped AGENTS\.md overwrite/);
+      assert.match(
+        agentsContent,
+        new RegExp(`\\| Frontier \\(leader\\) \\| \`${expectedContext.frontierModel}\` \\| high \\|`),
+      );
+      assert.match(
+        agentsContent,
+        new RegExp(`\\| Spark \\(explorer\\/fast\\) \\| \`${expectedContext.sparkModel}\` \\| low \\|`),
+      );
+      assert.doesNotMatch(agentsContent, /legacy-frontier/);
+      assert.doesNotMatch(agentsContent, /legacy-spark/);
     } finally {
       restoreHome();
       restoreTty();

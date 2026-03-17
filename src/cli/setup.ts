@@ -43,6 +43,10 @@ import {
   addGeneratedAgentsMarker,
   isOmxGeneratedAgentsMd,
 } from "../utils/agents-md.js";
+import {
+  resolveAgentsModelTableContext,
+  upsertAgentsModelTable,
+} from "../utils/agents-model-table.js";
 
 interface SetupOptions {
   force?: boolean;
@@ -733,7 +737,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   for (const warning of sharedMcpRegistry.warnings) {
     console.log(`  warning: ${warning}`);
   }
-  await updateManagedConfig(
+  const resolvedConfig = await updateManagedConfig(
     scopeDirs.codexConfigFile,
     pkgRoot,
     sharedMcpRegistry,
@@ -780,13 +784,29 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 
   if (existsSync(agentsMdSrc)) {
     const content = await readFile(agentsMdSrc, "utf-8");
-    const rewritten = addGeneratedAgentsMarker(
-      applyScopePathRewritesToAgentsTemplate(content, resolvedScope.scope),
+    const modelTableContext = resolveAgentsModelTableContext(resolvedConfig, {
+      codexHomeOverride: scopeDirs.codexHomeDir,
+    });
+    const rewritten = upsertAgentsModelTable(
+      addGeneratedAgentsMarker(
+        applyScopePathRewritesToAgentsTemplate(content, resolvedScope.scope),
+      ),
+      modelTableContext,
     );
     let changed = true;
+    let canApplyManagedModelRefresh = false;
+    let managedRefreshContent = "";
     if (agentsMdExists) {
       const existing = await readFile(agentsMdDst, "utf-8");
       changed = existing !== rewritten;
+      if (isOmxGeneratedAgentsMd(existing)) {
+        managedRefreshContent = upsertAgentsModelTable(
+          existing,
+          modelTableContext,
+        );
+        canApplyManagedModelRefresh =
+          managedRefreshContent !== existing;
+      }
     }
 
     if (resolvedScope.scope === "project" && sessionIsActive && agentsMdExists && changed) {
@@ -800,6 +820,20 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
         "  Skipping AGENTS.md overwrite to avoid corrupting runtime overlay.",
       );
       console.log("  Stop the active session first, then re-run setup.");
+    } else if (canApplyManagedModelRefresh) {
+      await syncManagedContent(
+        managedRefreshContent,
+        agentsMdDst,
+        summary.agentsMd,
+        backupContext,
+        { dryRun, verbose },
+        `AGENTS model table ${agentsMdDst}`,
+      );
+      console.log(
+        resolvedScope.scope === "project"
+          ? "  Refreshed AGENTS.md model capability table in project root."
+          : `  Refreshed AGENTS.md model capability table in ${scopeDirs.codexHomeDir}.`,
+      );
     } else {
       const result = await syncManagedAgentsContent(
         rewritten,
@@ -1406,7 +1440,7 @@ async function updateManagedConfig(
   summary: SetupCategorySummary,
   backupContext: SetupBackupContext,
   options: Pick<SetupOptions, "dryRun" | "verbose" | "modelUpgradePrompt">,
-): Promise<void> {
+): Promise<string> {
   const existing = existsSync(configPath)
     ? await readFile(configPath, "utf-8")
     : "";
@@ -1437,7 +1471,7 @@ async function updateManagedConfig(
 
   if (!changed) {
     summary.unchanged += 1;
-    return;
+    return finalConfig;
   }
 
   if (
@@ -1472,6 +1506,7 @@ async function updateManagedConfig(
       `  ${options.dryRun ? "would update" : "updated"} config ${configPath}`,
     );
   }
+  return finalConfig;
 }
 
 function getClaudeCodeSettingsPath(homeDir = homedir()): string {
