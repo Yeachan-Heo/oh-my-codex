@@ -614,9 +614,7 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     // Stale-leader follow-up is the only periodic visible nudge path.
     // This keeps the leader pane quieter when the leader is not actually stale.
     const stalePanesNudge = paneStatus.alive && leaderStale;
-    const stalledTeamReason = leaderStale ? 'leader_stale_with_stalled_team' : 'stalled_team_progress';
-    const previousStalledTeamNudge =
-      prevReason === 'leader_stale_with_stalled_team' || prevReason === 'stalled_team_progress';
+    const previousStalledTeamNudge = prevReason === 'stuck_waiting_on_leader';
     const stalledTeamNudge = teamProgressStalled && (dueByTime || !previousStalledTeamNudge);
     const staleFollowupDue = stalePanesNudge && dueByTime;
 
