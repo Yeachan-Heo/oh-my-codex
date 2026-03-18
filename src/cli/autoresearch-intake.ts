@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { type AutoresearchKeepPolicy, parseSandboxContract, slugifyMissionName } from '../autoresearch/contracts.js';
 
 export interface AutoresearchSeedInputs {
@@ -312,6 +312,14 @@ function parseDraftArtifactContent(content: string, repoRoot: string, draftArtif
   };
 }
 
+function inferRepoRootFromResultPath(resultPath: string): string {
+  return dirname(dirname(dirname(dirname(resultPath))));
+}
+
+function isUsableAbsolutePath(path: string | undefined): path is string {
+  return typeof path === 'string' && path.startsWith('/') && !path.includes('${');
+}
+
 async function readPersistedResult(resultPath: string): Promise<AutoresearchDeepInterviewResult> {
   const raw = await readFile(resultPath, 'utf-8');
   const parsed = JSON.parse(raw) as Partial<PersistedAutoresearchDeepInterviewResultV1>;
@@ -322,10 +330,22 @@ async function readPersistedResult(resultPath: string): Promise<AutoresearchDeep
     throw new Error(`Missing compileTarget in ${resultPath}`);
   }
 
-  const compileTarget = parsed.compileTarget as AutoresearchDraftCompileTarget;
-  const draftArtifactPath = typeof parsed.draftArtifactPath === 'string' ? parsed.draftArtifactPath : buildDraftArtifactPath(compileTarget.repoRoot, compileTarget.slug);
-  const missionArtifactPath = typeof parsed.missionArtifactPath === 'string' ? parsed.missionArtifactPath : join(buildArtifactDir(compileTarget.repoRoot, compileTarget.slug), 'mission.md');
-  const sandboxArtifactPath = typeof parsed.sandboxArtifactPath === 'string' ? parsed.sandboxArtifactPath : join(buildArtifactDir(compileTarget.repoRoot, compileTarget.slug), 'sandbox.md');
+  const parsedCompileTarget = parsed.compileTarget as AutoresearchDraftCompileTarget;
+  const inferredRepoRoot = inferRepoRootFromResultPath(resultPath);
+  const repoRoot = isUsableAbsolutePath(parsedCompileTarget.repoRoot) ? parsedCompileTarget.repoRoot : inferredRepoRoot;
+  const compileTarget: AutoresearchDraftCompileTarget = {
+    ...parsedCompileTarget,
+    repoRoot,
+  };
+  const draftArtifactPath = isUsableAbsolutePath(parsed.draftArtifactPath)
+    ? parsed.draftArtifactPath
+    : buildDraftArtifactPath(repoRoot, compileTarget.slug);
+  const missionArtifactPath = isUsableAbsolutePath(parsed.missionArtifactPath)
+    ? parsed.missionArtifactPath
+    : join(buildArtifactDir(repoRoot, compileTarget.slug), 'mission.md');
+  const sandboxArtifactPath = isUsableAbsolutePath(parsed.sandboxArtifactPath)
+    ? parsed.sandboxArtifactPath
+    : join(buildArtifactDir(repoRoot, compileTarget.slug), 'sandbox.md');
   const missionContent = await readFile(missionArtifactPath, 'utf-8');
   const sandboxContent = await readFile(sandboxArtifactPath, 'utf-8');
   parseSandboxContract(sandboxContent);
