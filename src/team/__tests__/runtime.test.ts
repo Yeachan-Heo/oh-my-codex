@@ -1190,6 +1190,9 @@ process.on('SIGTERM', () => process.exit(0));
       const workerPath = runtime.config.workers[0]?.worktree_path;
       assert.ok(workerPath, 'detached worker should have a worktree path');
       assert.notEqual(workerPath, repo);
+      const workerAgents = await readFile(join(workerPath as string, 'AGENTS.md'), 'utf-8');
+      assert.match(workerAgents, /Team Worker Runtime Instructions/);
+      assert.match(workerAgents, /team-detached-worktree-paths/);
 
       const startupLog = await waitForFileText(
         stdinLogPath,
@@ -1212,6 +1215,9 @@ process.on('SIGTERM', () => process.exit(0));
       assert.equal(envLog.cwd, workerPath);
       assert.equal(envLog.teamStateRoot, join(repo, '.omx', 'state'));
       assert.equal(envLog.worker, 'team-detached-worktree-paths/worker-1');
+      const rootAgents = await readFile(join(workerPath, 'AGENTS.md'), 'utf-8');
+      assert.match(rootAgents, /Team Worker Runtime Instructions/);
+      assert.match(rootAgents, /Inbox path: .*team-detached-worktree-paths\/workers\/worker-1\/inbox\.md/);
 
       await sendWorkerMessage(runtime.teamName, 'leader-fixed', 'worker-1', 'follow-up', repo);
       const mailboxLog = await waitForFileText(
@@ -1287,6 +1293,7 @@ process.on('SIGTERM', () => process.exit(0));
       assert.ok(worktreePath, 'worker worktree path should be persisted');
       assert.equal(runtime.config.workers[0]?.worktree_created, true);
       assert.equal(existsSync(worktreePath as string), true);
+      assert.equal(existsSync(join(worktreePath as string, 'AGENTS.md')), true);
 
       await shutdownTeam(runtime.teamName, repo);
       runtime = null;

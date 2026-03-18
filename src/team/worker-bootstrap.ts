@@ -1,6 +1,8 @@
 import type { TeamTask } from "./state.js";
+import { existsSync } from "fs";
 import { mkdir, readFile, rm, stat, writeFile } from "fs/promises";
 import { dirname, join } from "path";
+import { execFileSync } from "child_process";
 import {
   getFixLoopInstructions,
   getVerificationInstructions,
@@ -16,6 +18,239 @@ const LOCK_OWNER_FILE = "owner.json";
 const LOCK_TIMEOUT_MS = 5000;
 const LOCK_POLL_INTERVAL_MS = 100;
 const LOCK_STALE_MS = 30_000;
+
+interface WorkerRootAgentsOptions {
+  teamName: string;
+  workerName: string;
+  workerRole: string;
+  rolePromptContent: string;
+  teamStateRoot: string;
+  leaderCwd: string;
+  worktreePath: string;
+}
+
+interface WorkerRootAgentsBackup {
+  existed: boolean;
+  tracked: boolean;
+  previousContent?: string;
+  skipWorktreeApplied?: boolean;
+}
+
+function buildWorkerRootAgentsBackupPath(
+  teamStateRoot: string,
+  teamName: string,
+  workerName: string,
+): string {
+  return join(
+    teamStateRoot,
+    "team",
+    teamName,
+    "workers",
+    workerName,
+    "root-agents-backup.json",
+  );
+}
+
+export function generateWorkerRootAgentsContent(
+  options: WorkerRootAgentsOptions,
+): string {
+  return `# Team Worker Runtime Instructions
+
+This file is generated for a live OMX team worker run and is disposable.
+
+## Worker Identity
+- Team: ${options.teamName}
+- Worker: ${options.workerName}
+- Role: ${options.workerRole}
+- Leader cwd: ${options.leaderCwd}
+- Worktree root: ${options.worktreePath}
+- Team state root: ${options.teamStateRoot}
+- Inbox path: ${options.teamStateRoot}/team/${options.teamName}/workers/${options.workerName}/inbox.md
+- Mailbox path: ${options.teamStateRoot}/team/${options.teamName}/mailbox/${options.workerName}.json
+- Leader mailbox path: ${options.teamStateRoot}/team/${options.teamName}/mailbox/leader-fixed.json
+- Task directory: ${options.teamStateRoot}/team/${options.teamName}/tasks
+- Worker status path: ${options.teamStateRoot}/team/${options.teamName}/workers/${options.workerName}/status.json
+- Worker identity path: ${options.teamStateRoot}/team/${options.teamName}/workers/${options.workerName}/identity.json
+
+## Protocol
+1. Read your inbox at \`${options.teamStateRoot}/team/${options.teamName}/workers/${options.workerName}/inbox.md\`.
+2. Load the worker skill from the first existing path:
+   - \`${"${CODEX_HOME:-~/.codex}"}/skills/worker/SKILL.md\`
+   - \`${options.leaderCwd}/.codex/skills/worker/SKILL.md\`
+   - \`${options.leaderCwd}/skills/worker/SKILL.md\`
+3. Send startup ACK before task work:
+
+   \`omx team api send-message --input "{\"team_name\":\"${options.teamName}\",\"from_worker\":\"${options.workerName}\",\"to_worker\":\"leader-fixed\",\"body\":\"ACK: ${options.workerName} initialized\"}" --json\`
+
+4. Resolve canonical team state root in this order: \`OMX_TEAM_STATE_ROOT\` env -> worker identity \`team_state_root\` -> config/manifest \`team_state_root\` -> local cwd fallback.
+5. Read task files from \`${options.teamStateRoot}/team/${options.teamName}/tasks/task-<id>.json\` using bare \`task_id\` values in APIs.
+6. Use claim-safe lifecycle APIs only:
+   - \`omx team api claim-task --json\`
+   - \`omx team api transition-task-status --json\`
+   - \`omx team api release-task-claim --json\` only for rollback to pending
+7. Use mailbox delivery flow:
+   - \`omx team api mailbox-list --input "{\"team_name\":\"${options.teamName}\",\"worker\":\"${options.workerName}\"}" --json\`
+   - \`omx team api mailbox-mark-delivered --input "{\"team_name\":\"${options.teamName}\",\"worker\":\"${options.workerName}\",\"message_id\":\"<MESSAGE_ID>\"}" --json\`
+8. Preserve leader steering via inbox/mailbox nudges; task payload stays in inbox/task JSON, not this file.
+9. Do not pass \`workingDirectory\` to legacy team_* MCP tools; use \`omx team api\` CLI interop.
+
+## Message Protocol
+- Always include \`from_worker: "${options.workerName}"\`
+- Send leader messages to \`to_worker: "leader-fixed"\`
+
+## Scope Rules
+- Follow task-specific edit scope from inbox/task JSON only.
+- If blocked on a shared file, update status with a blocked reason and report upward.
+
+<!-- OMX:TEAM:ROLE:START -->
+<team_worker_role>
+You are operating as the **${options.workerRole}** role for this team run. Apply the following role-local guidance.
+
+${options.rolePromptContent.trim()}
+</team_worker_role>
+<!-- OMX:TEAM:ROLE:END -->
+`;
+}
+
+function tryReadGitValue(cwd: string, args: string[]): string | null {
+  try {
+    const value = execFileSync("git", args, {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+function isTracked(worktreePath: string, fileName: string): boolean {
+  try {
+    execFileSync("git", ["ls-files", "--error-unmatch", fileName], {
+      cwd: worktreePath,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureGitInfoExcludePattern(
+  worktreePath: string,
+  pattern: string,
+): Promise<void> {
+  const excludePath = tryReadGitValue(worktreePath, [
+    "rev-parse",
+    "--git-path",
+    "info/exclude",
+  ]);
+  if (!excludePath) return;
+  const existing = existsSync(excludePath)
+    ? await readFile(excludePath, "utf-8")
+    : "";
+  const lines = new Set(existing.split(/\r?\n/).filter(Boolean));
+  if (lines.has(pattern)) return;
+  const next = `${existing}${existing.endsWith("\n") || existing.length === 0 ? "" : "\n"}${pattern}\n`;
+  await mkdir(dirname(excludePath), { recursive: true });
+  await writeFile(excludePath, next, "utf-8");
+}
+
+export async function writeWorkerWorktreeRootAgentsFile(
+  options: WorkerRootAgentsOptions,
+): Promise<string> {
+  const agentsPath = join(options.worktreePath, "AGENTS.md");
+  const tracked = isTracked(options.worktreePath, "AGENTS.md");
+  const existed = existsSync(agentsPath);
+  const previousContent = existed
+    ? await readFile(agentsPath, "utf-8")
+    : undefined;
+  let skipWorktreeApplied = false;
+
+  if (tracked) {
+    try {
+      execFileSync("git", ["update-index", "--skip-worktree", "AGENTS.md"], {
+        cwd: options.worktreePath,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      skipWorktreeApplied = true;
+    } catch {
+      skipWorktreeApplied = false;
+    }
+  } else {
+    await ensureGitInfoExcludePattern(options.worktreePath, "AGENTS.md");
+  }
+
+  const backup: WorkerRootAgentsBackup = {
+    existed,
+    tracked,
+    previousContent,
+    skipWorktreeApplied,
+  };
+  const backupPath = buildWorkerRootAgentsBackupPath(
+    options.teamStateRoot,
+    options.teamName,
+    options.workerName,
+  );
+  await mkdir(dirname(backupPath), { recursive: true });
+  await writeFile(backupPath, JSON.stringify(backup, null, 2), "utf-8");
+  await writeFile(
+    agentsPath,
+    generateWorkerRootAgentsContent(options),
+    "utf-8",
+  );
+  return agentsPath;
+}
+
+export async function removeWorkerWorktreeRootAgentsFile(
+  teamName: string,
+  workerName: string,
+  teamStateRoot: string,
+  worktreePath: string,
+): Promise<void> {
+  const agentsPath = join(worktreePath, "AGENTS.md");
+  const backupPath = buildWorkerRootAgentsBackupPath(
+    teamStateRoot,
+    teamName,
+    workerName,
+  );
+  let backup: WorkerRootAgentsBackup | null = null;
+
+  try {
+    backup = JSON.parse(
+      await readFile(backupPath, "utf-8"),
+    ) as WorkerRootAgentsBackup;
+  } catch {
+    backup = null;
+  }
+
+  if (!backup) {
+    return;
+  }
+
+  if (backup.tracked && backup.skipWorktreeApplied) {
+    try {
+      execFileSync("git", ["update-index", "--no-skip-worktree", "AGENTS.md"], {
+        cwd: worktreePath,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      // Best-effort cleanup only.
+    }
+  }
+
+  if (backup.existed) {
+    await writeFile(agentsPath, backup.previousContent ?? "", "utf-8");
+  } else {
+    await rm(agentsPath, { force: true }).catch(() => {});
+  }
+
+  await rm(backupPath, { force: true }).catch(() => {});
+}
 
 function buildVerificationSection(taskDescription: string): string {
   const verification = getVerificationInstructions(
@@ -396,6 +631,7 @@ export function generateInitialInbox(
     leaderCwd?: string;
     workerRole?: string;
     rolePromptContent?: string;
+    worktreeRootAgentsCanonical?: boolean;
   } = {},
 ): string {
   const taskList = tasks
@@ -415,9 +651,11 @@ export function generateInitialInbox(
   const leaderCwd = options.leaderCwd || "<leader_cwd>";
   const displayRole = options.workerRole ?? agentType;
 
-  const specializationSection = options.rolePromptContent
-    ? `\n## Your Specialization\n\nYou are operating as a **${displayRole}** agent. Follow these behavioral guidelines:\n\n${options.rolePromptContent}\n`
-    : "";
+  const specializationSection = options.worktreeRootAgentsCanonical === true
+    ? ""
+    : options.rolePromptContent
+      ? `\n## Your Specialization\n\nYou are operating as a **${displayRole}** agent. Follow these behavioral guidelines:\n\n${options.rolePromptContent}\n`
+      : "";
 
   return `# Worker Assignment: ${workerName}
 

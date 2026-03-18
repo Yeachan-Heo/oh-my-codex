@@ -85,6 +85,8 @@ import {
   generateWorkerOverlay,
   writeTeamWorkerInstructionsFile,
   removeTeamWorkerInstructionsFile,
+  writeWorkerWorktreeRootAgentsFile,
+  removeWorkerWorktreeRootAgentsFile,
   generateInitialInbox,
   generateTaskAssignmentInbox,
   generateShutdownInbox,
@@ -1433,9 +1435,11 @@ export async function startTeam(
       }, leaderCwd);
     }
 
-    // 5. Write team-scoped worker instructions file (no mutation of project AGENTS.md)
-    workerInstructionsPath = await writeTeamWorkerInstructionsFile(sanitized, leaderCwd, overlay);
-    setTeamModelInstructionsFile(sanitized, workerInstructionsPath);
+    // 5. Write team-scoped worker instructions file only for single-workspace mode.
+    if (workspaceMode !== 'worktree') {
+      workerInstructionsPath = await writeTeamWorkerInstructionsFile(sanitized, leaderCwd, overlay);
+      setTeamModelInstructionsFile(sanitized, workerInstructionsPath);
+    }
 
     const allTasks = await listTasks(sanitized, leaderCwd);
     const workerBootstrapPlans = [] as Array<{
@@ -1470,14 +1474,27 @@ export async function startTeam(
         : agentType;
       const rolePromptContent = await loadRolePrompt(workerRole, join(leaderCwd, '.codex', 'prompts'))
         ?? await loadRolePrompt(workerRole, codexPromptsDir());
-      const instructionsFilePath = rolePromptContent
-        ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, workerInstructionsPath, workerRole, rolePromptContent)
-        : workerInstructionsPath;
+      const workerWorktreePath = workerWorkspace.worktreePath ?? undefined;
+      const fallbackInstructionsPath = workerInstructionsPath ?? join(leaderCwd, 'AGENTS.md');
+      const instructionsFilePath = workerWorktreePath
+        ? await writeWorkerWorktreeRootAgentsFile({
+          teamName: sanitized,
+          workerName,
+          workerRole,
+          rolePromptContent: rolePromptContent ?? "",
+          teamStateRoot,
+          leaderCwd,
+          worktreePath: workerWorktreePath,
+        })
+        : rolePromptContent
+          ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, fallbackInstructionsPath, workerRole, rolePromptContent)
+          : fallbackInstructionsPath;
       const inbox = generateInitialInbox(workerName, sanitized, agentType, workerTasks, {
         teamStateRoot,
         leaderCwd,
         workerRole,
         rolePromptContent: rolePromptContent ?? undefined,
+        worktreeRootAgentsCanonical: Boolean(workerWorkspace.worktreePath),
       });
       const trigger = generateTriggerMessage(
         workerName,
@@ -1768,6 +1785,21 @@ export async function startTeam(
       }
     }
 
+    if (config) {
+      for (const worker of config.workers) {
+        if (!worker.worktree_path || !worker.team_state_root) continue;
+        try {
+          await removeWorkerWorktreeRootAgentsFile(
+            sanitized,
+            worker.name,
+            worker.team_state_root,
+            worker.worktree_path,
+          );
+        } catch (cleanupError) {
+          rollbackErrors.push(`removeWorkerWorktreeRootAgentsFile(${worker.name}): ${String(cleanupError)}`);
+        }
+      }
+    }
     if (workerInstructionsPath) {
       try {
         await removeTeamWorkerInstructionsFile(sanitized, leaderCwd);
@@ -2399,7 +2431,20 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
 
   await prepareWorkerWorktreeShutdownReports(config, cwd);
 
-  // 5. Remove team-scoped worker instructions file (no mutation of project AGENTS.md)
+  // 5. Remove worker worktree-root instructions and team-scoped fallback instructions.
+  for (const worker of config.workers) {
+    if (!worker.worktree_path || !worker.team_state_root) continue;
+    try {
+      await removeWorkerWorktreeRootAgentsFile(
+        sanitized,
+        worker.name,
+        worker.team_state_root,
+        worker.worktree_path,
+      );
+    } catch (err) {
+      process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
+    }
+  }
   try {
     await removeTeamWorkerInstructionsFile(sanitized, cwd);
   } catch (err) {

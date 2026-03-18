@@ -7,8 +7,11 @@ import {
   generateWorkerOverlay,
   applyWorkerOverlay,
   stripWorkerOverlay,
+  generateWorkerRootAgentsContent,
   writeTeamWorkerInstructionsFile,
   writeWorkerRoleInstructionsFile,
+  writeWorkerWorktreeRootAgentsFile,
+  removeWorkerWorktreeRootAgentsFile,
   removeTeamWorkerInstructionsFile,
   generateInitialInbox,
   generateTaskAssignmentInbox,
@@ -623,6 +626,65 @@ describe("worker bootstrap", () => {
     }
   });
 
+
+  it("generateWorkerRootAgentsContent includes hardcoded paths and role prompt without base AGENTS", () => {
+    const content = generateWorkerRootAgentsContent({
+      teamName: "root-team",
+      workerName: "worker-3",
+      workerRole: "writer",
+      rolePromptContent: "<identity>You are Writer.</identity>",
+      teamStateRoot: "/tmp/state",
+      leaderCwd: "/repo",
+      worktreePath: "/repo/.omx/team/root-team/worktrees/worker-3",
+    });
+
+    assert.match(content, /Worker: worker-3/);
+    assert.match(content, /Inbox path: \/tmp\/state\/team\/root-team\/workers\/worker-3\/inbox\.md/);
+    assert.match(content, /mailbox\/worker-3\.json/);
+    assert.match(content, /<identity>You are Writer\.<\/identity>/);
+    assert.doesNotMatch(content, /# Project Instructions/);
+    assert.doesNotMatch(content, /# User Instructions/);
+  });
+
+  it("writeWorkerWorktreeRootAgentsFile writes disposable root AGENTS and removeWorkerWorktreeRootAgentsFile restores tracked file", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-worker-root-agents-"));
+    try {
+      await writeFile(join(cwd, "AGENTS.md"), "# Base project agents\n", "utf8");
+      const prevCwd = process.cwd();
+      process.chdir(cwd);
+      try {
+        const { execFileSync } = await import("child_process");
+        execFileSync("git", ["init", "-q"], { cwd });
+        execFileSync("git", ["config", "user.email", "test@example.com"], { cwd });
+        execFileSync("git", ["config", "user.name", "Test User"], { cwd });
+        execFileSync("git", ["add", "AGENTS.md"], { cwd });
+        execFileSync("git", ["commit", "-q", "-m", "init"], { cwd });
+
+        const teamStateRoot = join(cwd, ".omx", "state");
+        const outPath = await writeWorkerWorktreeRootAgentsFile({
+          teamName: "tracked-team",
+          workerName: "worker-1",
+          workerRole: "writer",
+          rolePromptContent: "<identity>You are Writer.</identity>",
+          teamStateRoot,
+          leaderCwd: cwd,
+          worktreePath: cwd,
+        });
+
+        const content = await readFile(outPath, "utf8");
+        assert.match(content, /Team Worker Runtime Instructions/);
+        assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd, encoding: "utf8" }).trim(), "");
+
+        await removeWorkerWorktreeRootAgentsFile("tracked-team", "worker-1", teamStateRoot, cwd);
+        assert.equal(await readFile(join(cwd, "AGENTS.md"), "utf8"), "# Base project agents\n");
+      } finally {
+        process.chdir(prevCwd);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("writeWorkerRoleInstructionsFile layers role prompt on top of team worker instructions", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-worker-bootstrap-"));
     try {
@@ -649,6 +711,82 @@ describe("worker bootstrap", () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+
+  it("generateWorkerRootAgentsContent hardcodes runtime paths and role prompt without inherited AGENTS", () => {
+    const content = generateWorkerRootAgentsContent({
+      teamName: "root-team",
+      workerName: "worker-2",
+      workerRole: "writer",
+      rolePromptContent: "<identity>You are Writer.</identity>",
+      teamStateRoot: "/tmp/project/.omx/state",
+      leaderCwd: "/tmp/project",
+      worktreePath: "/tmp/project/.omx/team/root-team/worktrees/worker-2",
+    });
+
+    assert.match(content, /# Team Worker Runtime Instructions/);
+    assert.match(content, /Inbox path: \/tmp\/project\/.omx\/state\/team\/root-team\/workers\/worker-2\/inbox\.md/);
+    assert.match(content, /Mailbox path: \/tmp\/project\/.omx\/state\/team\/root-team\/mailbox\/worker-2\.json/);
+    assert.match(content, /Leader mailbox path: \/tmp\/project\/.omx\/state\/team\/root-team\/mailbox\/leader-fixed\.json/);
+    assert.match(content, /You are operating as the \*\*writer\*\* role/);
+    assert.match(content, /<identity>You are Writer\.<\/identity>/);
+    assert.doesNotMatch(content, /# Project Instructions/);
+    assert.doesNotMatch(content, /# User Instructions/);
+  });
+
+  it("writeWorkerWorktreeRootAgentsFile writes disposable root AGENTS and remove restores tracked content", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-worker-root-agents-"));
+    const worktree = join(cwd, "worktree");
+    try {
+      await mkdir(join(cwd, ".omx", "state", "team", "restore-team", "workers", "worker-1"), { recursive: true });
+      await mkdir(worktree, { recursive: true });
+      await writeFile(join(worktree, "AGENTS.md"), "# Base tracked AGENTS\n", "utf8");
+
+      const outPath = await writeWorkerWorktreeRootAgentsFile({
+        teamName: "restore-team",
+        workerName: "worker-1",
+        workerRole: "writer",
+        rolePromptContent: "<identity>Writer role prompt</identity>",
+        teamStateRoot: join(cwd, ".omx", "state"),
+        leaderCwd: cwd,
+        worktreePath: worktree,
+      });
+
+      const generated = await readFile(outPath, "utf8");
+      assert.match(generated, /Team Worker Runtime Instructions/);
+      assert.match(generated, /Writer role prompt/);
+
+      await removeWorkerWorktreeRootAgentsFile("restore-team", "worker-1", join(cwd, ".omx", "state"), worktree);
+      const restored = await readFile(join(worktree, "AGENTS.md"), "utf8");
+      assert.equal(restored, "# Base tracked AGENTS\n");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("generateInitialInbox omits duplicated specialization when root AGENTS is canonical", () => {
+    const tasks: TeamTask[] = [{
+      id: "1",
+      subject: "Task",
+      description: "Do task",
+      status: "pending",
+      created_at: new Date().toISOString(),
+    }];
+
+    const inbox = generateInitialInbox(
+      "worker-1",
+      "team-root-canonical",
+      "writer",
+      tasks,
+      {
+        workerRole: "writer",
+        rolePromptContent: "<identity>You are Writer.</identity>",
+        worktreeRootAgentsCanonical: true,
+      },
+    );
+
+    assert.doesNotMatch(inbox, /## Your Specialization/);
+    assert.match(inbox, /\*\*Role:\*\* writer/);
   });
 
   it("writeTeamWorkerInstructionsFile works without project AGENTS.md", async () => {
