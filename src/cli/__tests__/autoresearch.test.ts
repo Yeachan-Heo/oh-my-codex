@@ -400,6 +400,7 @@ esac
       const result = runOmx(repo, ['autoresearch', '--topic', 'Investigate flaky onboarding behavior', '--evaluator', 'node scripts/eval.js', '--slug', 'test-launch'], {
         PATH: `${fakeBin}:${process.env.PATH || ''}`,
         OMX_TEST_REPO_ROOT: repo,
+        TMUX: '/tmp/fake-tmux,12345,0',
         TMUX_PANE: '%42',
       });
       assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -510,6 +511,7 @@ esac
       const result = runOmx(repo, ['autoresearch', 'run', missionDir, '--model', 'gpt-5'], {
         PATH: `${fakeBin}:${process.env.PATH || ''}`,
         OMX_TEST_REPO_ROOT: repo,
+        TMUX: '/tmp/fake-tmux,12345,0',
         TMUX_PANE: '%9',
       });
       assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -603,6 +605,7 @@ esac
       const result = runOmx(repo, ['autoresearch', 'run', missionDir], {
         PATH: `${fakeBin}:${process.env.PATH || ''}`,
         OMX_TEST_REPO_ROOT: repo,
+        TMUX: '/tmp/fake-tmux,12345,0',
         TMUX_PANE: '%9',
       });
       assert.equal(result.status, 0, result.stderr || result.stdout);
