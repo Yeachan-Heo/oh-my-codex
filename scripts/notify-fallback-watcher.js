@@ -56,6 +56,8 @@ async function waitForPidExit(pid, timeoutMs = 3000, stepMs = 50) {
 const cwd = resolve(argValue('--cwd', process.cwd()));
 const notifyScript = resolve(argValue('--notify-script', join(cwd, 'scripts', 'notify-hook.js')));
 const runOnce = process.argv.includes('--once');
+const authorityOnly = process.argv.includes('--authority-only');
+const authorityEnabled = authorityOnly || safeString(process.env.OMX_HUD_AUTHORITY || '').trim() === '1';
 // Keep fallback control-plane ticks comfortably below the default dispatch
 // ack budget so leaderless team dispatch + stale-alert recovery do not feel
 // laggy between native notify-hook turns.
@@ -83,6 +85,7 @@ const logPath = join(logsDir, `notify-fallback-${new Date().toISOString().split(
 const RALPH_CONTINUE_TEXT = 'Ralph loop active continue';
 const RALPH_CONTINUE_CADENCE_MS = 60_000;
 const RALPH_TERMINAL_PHASES = new Set(['complete', 'failed', 'cancelled']);
+const HUD_AUTHORITY_REASON = 'hud_authority_required';
 
 const fileState = new Map();
 const seenTurnKeys = new Set();
@@ -244,6 +247,11 @@ async function runRalphContinueSteerTick() {
     pane_current_command: '',
   };
 
+  if (!authorityEnabled) {
+    lastRalphContinueSteer.last_reason = HUD_AUTHORITY_REASON;
+    return;
+  }
+
   if (!activeRalph.active) return;
 
   const lastSentMs = Date.parse(lastRalphContinueSteer.last_sent_at);
@@ -382,19 +390,19 @@ async function writeState(extra = {}) {
     tracked_files: fileState.size,
     seen_turns: seenTurnKeys.size,
     dispatch_drain: {
-      enabled: true,
+      enabled: authorityEnabled,
       max_per_tick: dispatchTickMax,
       run_count: dispatchDrainRuns,
       ...lastDispatchDrain,
     },
     leader_nudge: {
-      enabled: true,
+      enabled: authorityEnabled,
       run_count: leaderNudgeRuns,
       ...lastLeaderNudge,
     },
     ralph_continue_steer: {
       ...lastRalphContinueSteer,
-      enabled: true,
+      enabled: authorityEnabled,
       cadence_ms: RALPH_CONTINUE_CADENCE_MS,
       message: RALPH_CONTINUE_TEXT,
     },
@@ -616,6 +624,26 @@ async function runLeaderNudgeTick() {
   const leaderOnly = safeString(process.env.OMX_TEAM_WORKER || '').trim() === '';
   const staleThresholdMs = resolveLeaderStalenessThresholdMs();
 
+  if (!authorityEnabled) {
+    leaderNudgeRuns += 1;
+    lastLeaderNudge = {
+      enabled: false,
+      leader_only: leaderOnly,
+      stale_threshold_ms: staleThresholdMs,
+      precomputed_leader_stale: null,
+      last_tick_at: startedIso,
+      last_error: HUD_AUTHORITY_REASON,
+    };
+    await eventLog({
+      type: 'leader_nudge_tick',
+      leader_only: leaderOnly,
+      run_count: leaderNudgeRuns,
+      reason: HUD_AUTHORITY_REASON,
+      stale_threshold_ms: staleThresholdMs,
+    });
+    return;
+  }
+
   if (!leaderOnly) {
     leaderNudgeRuns += 1;
     lastLeaderNudge = {
@@ -679,6 +707,24 @@ async function runLeaderNudgeTick() {
 
 async function runDispatchDrainTick() {
   const startedIso = new Date().toISOString();
+  if (!authorityEnabled) {
+    dispatchDrainRuns += 1;
+    lastDispatchDrain = {
+      leader_only: safeString(process.env.OMX_TEAM_WORKER || '').trim() === '',
+      last_tick_at: startedIso,
+      last_result: { processed: 0, reason: HUD_AUTHORITY_REASON },
+      last_error: null,
+    };
+    await eventLog({
+      type: 'dispatch_drain_tick',
+      leader_only: lastDispatchDrain.leader_only,
+      dispatch_max_per_tick: dispatchTickMax,
+      run_count: dispatchDrainRuns,
+      processed: 0,
+      reason: HUD_AUTHORITY_REASON,
+    });
+    return;
+  }
   try {
     const result = await drainPendingTeamDispatch({ cwd, stateDir, logsDir, maxPerTick: dispatchTickMax });
     dispatchDrainRuns += 1;
@@ -721,8 +767,10 @@ async function pumpTeamControlPlaneTick() {
 
 
 async function runWatcherCycle() {
-  await ensureTrackedFiles();
-  await pollFiles();
+  if (!authorityOnly) {
+    await ensureTrackedFiles();
+    await pollFiles();
+  }
   await pumpTeamControlPlaneTick();
   await runRalphWatcherBehaviorTick();
   await writeState();
@@ -758,6 +806,8 @@ async function main() {
     notify_script: notifyScript,
     poll_ms: pollMs,
     once: runOnce,
+    authority_only: authorityOnly,
+    authority_enabled: authorityEnabled,
     parent_pid: parentPid,
     pid_file: runOnce ? null : pidFilePath,
     max_lifetime_ms: maxLifetimeMs,

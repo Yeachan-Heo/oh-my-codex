@@ -304,7 +304,7 @@ describe('notify-fallback watcher', () => {
     }
   });
 
-  it('records explicit leader-only dispatch drain state and log visibility in one-shot mode', async () => {
+  it('records skipped dispatch drain state when HUD is the required authority in one-shot mode', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-dispatch-state-'));
     try {
       await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
@@ -326,24 +326,26 @@ describe('notify-fallback watcher', () => {
 
       const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
       const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
-      assert.equal(watcherState.dispatch_drain?.enabled, true);
+      assert.equal(watcherState.dispatch_drain?.enabled, false);
       assert.equal(watcherState.dispatch_drain?.leader_only, true);
       assert.equal(watcherState.dispatch_drain?.max_per_tick, 1);
       assert.equal(watcherState.dispatch_drain?.run_count, 1);
-      assert.equal(watcherState.dispatch_drain?.last_result?.processed, 1);
+      assert.equal(watcherState.dispatch_drain?.last_result?.processed, 0);
+      assert.equal(watcherState.dispatch_drain?.last_result?.reason, 'hud_authority_required');
 
       const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
       const logEntries = (await readFile(logPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
       const drainEvent = logEntries.find((entry: { type?: string }) => entry.type === 'dispatch_drain_tick');
       assert.ok(drainEvent, 'expected dispatch_drain_tick log event');
       assert.equal(drainEvent.leader_only, true);
-      assert.equal(drainEvent.processed, 1);
+      assert.equal(drainEvent.processed, 0);
+      assert.equal(drainEvent.reason, 'hud_authority_required');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('runs leader nudge checks from the fallback watcher so stale alerts do not wait for a leader turn', async () => {
+  it('records skipped leader nudge checks when HUD is the required authority', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-leader-nudge-'));
     const fakeBinDir = join(wd, 'fake-bin');
     const tmuxLogPath = join(wd, 'tmux.log');
@@ -384,29 +386,30 @@ describe('notify-fallback watcher', () => {
       );
       assert.equal(result.status, 0, result.stderr || result.stdout);
 
-      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
-      assert.match(tmuxLog, /send-keys -t %42 -l Team dispatch-team: leader stale/);
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
+      assert.doesNotMatch(tmuxLog, /send-keys -t %42 -l Team dispatch-team: leader stale/);
 
       const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
       const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
       assert.equal(watcherState.poll_ms, 250);
-      assert.equal(watcherState.leader_nudge?.enabled, true);
+      assert.equal(watcherState.leader_nudge?.enabled, false);
       assert.equal(watcherState.leader_nudge?.leader_only, true);
       assert.equal(watcherState.leader_nudge?.run_count, 1);
-      assert.equal(watcherState.leader_nudge?.precomputed_leader_stale, true);
+      assert.equal(watcherState.leader_nudge?.precomputed_leader_stale, null);
+      assert.equal(watcherState.leader_nudge?.last_error, 'hud_authority_required');
 
       const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
       const logEntries = (await readFile(logPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
       const nudgeEvent = logEntries.find((entry: { type?: string }) => entry.type === 'leader_nudge_tick');
       assert.ok(nudgeEvent, 'expected leader_nudge_tick log event');
       assert.equal(nudgeEvent.leader_only, true);
-      assert.equal(nudgeEvent.precomputed_leader_stale, true);
+      assert.equal(nudgeEvent.reason, 'hud_authority_required');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('runs bounded non-turn team dispatch drain tick in leader context', async () => {
+  it('leaves dispatch pending in leader context when HUD is the required authority', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-dispatch-'));
     try {
       await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
@@ -426,7 +429,7 @@ describe('notify-fallback watcher', () => {
       assert.equal(result.status, 0, result.stderr || result.stdout);
       const request = await readDispatchRequest('dispatch-team', queued.request.request_id, wd);
       assert.ok(request);
-      assert.notEqual(request?.status, 'pending');
+      assert.equal(request?.status, 'pending');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -456,7 +459,7 @@ describe('notify-fallback watcher', () => {
       const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
       const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
       assert.equal(watcherState.dispatch_drain?.leader_only, false);
-      assert.equal(watcherState.dispatch_drain?.last_result?.reason, 'worker_context');
+      assert.equal(watcherState.dispatch_drain?.last_result?.reason, 'hud_authority_required');
       assert.equal(watcherState.dispatch_drain?.last_result?.processed, 0);
 
       const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
@@ -464,7 +467,7 @@ describe('notify-fallback watcher', () => {
       const drainEvent = logEntries.find((entry: { type?: string }) => entry.type === 'dispatch_drain_tick');
       assert.ok(drainEvent, 'expected dispatch_drain_tick log event');
       assert.equal(drainEvent.leader_only, false);
-      assert.equal(drainEvent.reason, 'worker_context');
+      assert.equal(drainEvent.reason, 'hud_authority_required');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -512,20 +515,20 @@ describe('notify-fallback watcher', () => {
       );
       assert.equal(second.status, 0, second.stderr || second.stdout);
 
-      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
       const typeMatches = tmuxLog.match(/send-keys -t %42 -l dispatch ping/g) || [];
-      assert.equal(typeMatches.length, 1, 'watcher retries should be submit-only when draft remains visible');
+      assert.equal(typeMatches.length, 0, 'watcher should not type when HUD authority owns the control path');
       assert.ok(!/send-keys[^\n]*-l[^\n]*C-m/.test(tmuxLog), 'must keep -l payload and C-m submits isolated');
 
       const request = await readDispatchRequest('dispatch-team', queued.request.request_id, wd);
       assert.equal(request?.status, 'pending');
-      assert.equal(request?.last_reason, 'tmux_send_keys_unconfirmed');
+      assert.equal(request?.last_reason, undefined);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('sends bounded periodic Ralph continue steer while Ralph state stays active', async () => {
+  it('does not send Ralph continue steer while HUD is the required authority', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-active-'));
     const fakeBinDir = join(wd, 'fake-bin');
     const tmuxLogPath = join(wd, 'tmux.log');
@@ -562,30 +565,19 @@ describe('notify-fallback watcher', () => {
       );
       assert.equal(second.status, 0, second.stderr || second.stdout);
 
-      const boundedLog = await readFile(tmuxLogPath, 'utf8');
-      let sends = boundedLog.match(/send-keys -t %42 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/g) || [];
-      assert.equal(sends.length, 1, 'cadence should suppress a second Ralph steer inside 60s');
+      const boundedLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
+      const sends = boundedLog.match(/send-keys -t %42 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/g) || [];
+      assert.equal(sends.length, 0, 'fallback watcher should not steer Ralph when HUD is authoritative');
 
       const watcherState = JSON.parse(await readFile(statePath, 'utf-8'));
-      watcherState.ralph_continue_steer.last_sent_at = new Date(Date.now() - 61_000).toISOString();
-      await writeFile(statePath, JSON.stringify(watcherState, null, 2));
-
-      const third = spawnSync(
-        process.execPath,
-        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
-        { encoding: 'utf-8', env },
-      );
-      assert.equal(third.status, 0, third.stderr || third.stdout);
-
-      const finalLog = await readFile(tmuxLogPath, 'utf8');
-      sends = finalLog.match(/send-keys -t %42 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/g) || [];
-      assert.equal(sends.length, 2, 'Ralph steer should fire again once the 60s cadence elapses');
+      assert.equal(watcherState.ralph_continue_steer?.enabled, false);
+      assert.equal(watcherState.ralph_continue_steer?.last_reason, 'hud_authority_required');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('stops Ralph continue steer immediately once Ralph state is terminal or cleared', async () => {
+  it('never sends Ralph continue steer once HUD authority is required', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-terminal-'));
     const fakeBinDir = join(wd, 'fake-bin');
     const tmuxLogPath = join(wd, 'tmux.log');
@@ -610,56 +602,32 @@ describe('notify-fallback watcher', () => {
         PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
       };
 
-      const first = spawnSync(
+      const run = spawnSync(
         process.execPath,
         [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
         { encoding: 'utf-8', env },
       );
-      assert.equal(first.status, 0, first.stderr || first.stdout);
+      assert.equal(run.status, 0, run.stderr || run.stdout);
 
       const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
-      watcherState.ralph_continue_steer.last_sent_at = new Date(Date.now() - 61_000).toISOString();
-      await writeFile(watcherStatePath, JSON.stringify(watcherState, null, 2));
-      await writeFile(ralphStatePath, JSON.stringify({
-        active: false,
-        current_phase: 'complete',
-        completed_at: new Date().toISOString(),
-        tmux_pane_id: '%42',
-      }, null, 2));
+      assert.equal(watcherState.ralph_continue_steer?.last_reason, 'hud_authority_required');
 
-      const terminalRun = spawnSync(
-        process.execPath,
-        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
-        { encoding: 'utf-8', env },
-      );
-      assert.equal(terminalRun.status, 0, terminalRun.stderr || terminalRun.stdout);
-
-      await rm(ralphStatePath, { force: true });
-      const clearedRun = spawnSync(
-        process.execPath,
-        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
-        { encoding: 'utf-8', env },
-      );
-      assert.equal(clearedRun.status, 0, clearedRun.stderr || clearedRun.stdout);
-
-      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
       const sends = tmuxLog.match(/send-keys -t %42 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/g) || [];
-      assert.equal(sends.length, 1, 'terminal/cleared Ralph state must stop additional periodic steer sends');
+      assert.equal(sends.length, 0);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('keeps team control-plane pumping when Ralph continue steer fails', async () => {
+  it('keeps state/log pumping when Ralph steer is skipped for HUD authority', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-control-plane-split-'));
     const fakeBinDir = join(wd, 'fake-bin');
     const tmuxLogPath = join(wd, 'tmux.log');
     try {
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath, {
-        failSendKeysMatch: 'Ralph loop active continue',
-      }));
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
@@ -696,19 +664,18 @@ describe('notify-fallback watcher', () => {
       const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
       const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
       assert.equal(watcherState.dispatch_drain?.run_count, 1);
-      assert.equal(watcherState.ralph_continue_steer?.last_reason, 'send_failed');
-      assert.match(watcherState.ralph_continue_steer?.last_error ?? '', /send failed/i);
-      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
-      assert.match(tmuxLog, /send-keys -t .* -l dispatch ping/);
+      assert.equal(watcherState.ralph_continue_steer?.last_reason, 'hud_authority_required');
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
+      assert.doesNotMatch(tmuxLog, /Ralph loop active continue/);
 
       const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
       const logEntries = (await readFile(logPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
       const drainEvent = logEntries.find((entry: { type?: string }) => entry.type === 'dispatch_drain_tick');
       assert.ok(drainEvent, 'expected dispatch_drain_tick log event');
-      const ralphFailureEvent = logEntries.find((entry: { type?: string; reason?: string }) => (
-        entry.type === 'ralph_continue_steer' && entry.reason === 'send_failed'
+      const ralphSkipEvent = logEntries.find((entry: { type?: string; reason?: string }) => (
+        entry.type === 'dispatch_drain_tick' && entry.reason === 'hud_authority_required'
       ));
-      assert.ok(ralphFailureEvent, 'expected Ralph failure to be logged without aborting team control-plane pumping');
+      assert.ok(ralphSkipEvent, 'expected skip state to be logged while control-plane pumping continues');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -763,13 +730,12 @@ describe('notify-fallback watcher', () => {
         assert.equal(run.status, 0, run.stderr || run.stdout);
       }
 
-      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
       const typeMatches = tmuxLog.match(/send-keys -t %42 -l dispatch ping/g) || [];
-      assert.equal(typeMatches.length, 3, 'initial + retype on every retry when trigger absent from narrow area');
+      assert.equal(typeMatches.length, 0, 'watcher should not type retries when HUD authority owns the control path');
 
       const request = await readDispatchRequest('dispatch-team', queued.request.request_id, wd);
-      assert.equal(request?.status, 'failed');
-      assert.equal(request?.last_reason, 'unconfirmed_after_max_retries');
+      assert.equal(request?.status, 'pending');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -830,7 +796,7 @@ describe('notify-fallback watcher', () => {
     }
   });
 
-  it('keeps ticking for active session-scoped Ralph after parent loss, then stops once Ralph is terminal', async () => {
+  it('stops after parent loss when HUD authority disables fallback Ralph steering', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-parent-ralph-active-'));
     const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-parent-ralph-home-'));
     const fakeBinDir = join(wd, 'fake-bin');
@@ -885,170 +851,15 @@ describe('notify-fallback watcher', () => {
         }
       );
 
-      await waitFor(async () => {
-        const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
-        return /send-keys -t %42 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/.test(tmuxLog);
-      }, 4000, 50);
-
-      assert.ok(isPidAlive(child.pid), 'expected watcher to stay alive while Ralph remains active');
-
-      await writeFile(ralphStatePath, JSON.stringify({
-        active: false,
-        current_phase: 'complete',
-        completed_at: new Date().toISOString(),
-        tmux_pane_id: '%42',
-      }, null, 2));
-
       await waitForExit(child, 4000);
       assert.equal(child.exitCode, 0);
 
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
+      assert.doesNotMatch(tmuxLog, /Ralph loop active continue/);
+
       const logEntries = (await readFile(logPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-      assert.ok(logEntries.some((entry: { type?: string; reason?: string }) => (
-        entry.type === 'watcher_parent_guard' && entry.reason === 'parent_gone_deferred_for_active_ralph'
-      )));
       assert.ok(logEntries.some((entry: { type?: string; reason?: string }) => (
         entry.type === 'watcher_stop' && entry.reason === 'parent_gone'
-      )));
-    } finally {
-      if (child && isPidAlive(child.pid)) {
-        child.kill('SIGTERM');
-        await waitForExit(child, 4000).catch(() => {});
-      }
-      await rm(wd, { recursive: true, force: true });
-      await rm(tempHome, { recursive: true, force: true });
-    }
-  });
-
-  it('replaces a stale watcher from the per-cwd pid file', async () => {
-    const replacementTimeoutMs = 20000; // c8-instrumented Node20 full runs can delay watcher handoff well beyond 8s.
-    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-stale-pid-'));
-    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-stale-home-'));
-    const watcherScript = new URL('../../../scripts/notify-fallback-watcher.js', import.meta.url).pathname;
-    const notifyHook = new URL('../../../scripts/notify-hook.js', import.meta.url).pathname;
-    const pidPath = join(wd, '.omx', 'state', 'notify-fallback.pid');
-    let first: ReturnType<typeof spawn> | undefined;
-    let second: ReturnType<typeof spawn> | undefined;
-
-    try {
-      first = spawn(
-        process.execPath,
-        [
-          watcherScript,
-          '--cwd',
-          wd,
-          '--notify-script',
-          notifyHook,
-          '--poll-ms',
-          '50',
-          '--parent-pid',
-          String(process.pid),
-          '--max-lifetime-ms',
-          '5000',
-        ],
-        {
-          cwd: wd,
-          stdio: 'ignore',
-          env: { ...process.env, HOME: tempHome },
-        }
-      );
-      assert.ok(first.pid, 'expected first watcher pid');
-
-      await waitFor(async () => {
-        try {
-          const pidFile = JSON.parse(await readFile(pidPath, 'utf-8')) as { pid?: number };
-          return pidFile.pid === first?.pid;
-        } catch {
-          return false;
-        }
-      }, replacementTimeoutMs, 50);
-
-      second = spawn(
-        process.execPath,
-        [
-          watcherScript,
-          '--cwd',
-          wd,
-          '--notify-script',
-          notifyHook,
-          '--poll-ms',
-          '50',
-          '--parent-pid',
-          String(process.pid),
-          '--max-lifetime-ms',
-          '5000',
-        ],
-        {
-          cwd: wd,
-          stdio: 'ignore',
-          env: { ...process.env, HOME: tempHome },
-        }
-      );
-      assert.ok(second.pid, 'expected second watcher pid');
-
-      await waitForExit(first, replacementTimeoutMs);
-      assert.equal(first.exitCode, 0);
-
-      await waitFor(async () => {
-        try {
-          const pidFile = JSON.parse(await readFile(pidPath, 'utf-8')) as { pid?: number };
-          return pidFile.pid === second?.pid;
-        } catch {
-          return false;
-        }
-      }, replacementTimeoutMs, 50);
-
-      assert.ok(isPidAlive(second.pid), 'expected replacement watcher to remain alive');
-    } finally {
-      if (second && isPidAlive(second.pid)) {
-        second.kill('SIGTERM');
-        await waitForExit(second, replacementTimeoutMs).catch(() => {});
-      }
-      if (first && isPidAlive(first.pid)) {
-        first.kill('SIGTERM');
-        await waitForExit(first, replacementTimeoutMs).catch(() => {});
-      }
-      await rm(wd, { recursive: true, force: true });
-      await rm(tempHome, { recursive: true, force: true });
-    }
-  });
-
-  it('exits after the configured max lifetime', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-max-life-'));
-    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-max-home-'));
-    const watcherScript = new URL('../../../scripts/notify-fallback-watcher.js', import.meta.url).pathname;
-    const notifyHook = new URL('../../../scripts/notify-hook.js', import.meta.url).pathname;
-    const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
-    let child: ReturnType<typeof spawn> | undefined;
-
-    try {
-      child = spawn(
-        process.execPath,
-        [
-          watcherScript,
-          '--cwd',
-          wd,
-          '--notify-script',
-          notifyHook,
-          '--poll-ms',
-          '50',
-          '--parent-pid',
-          String(process.pid),
-          '--max-lifetime-ms',
-          '200',
-        ],
-        {
-          cwd: wd,
-          stdio: 'ignore',
-          env: { ...process.env, HOME: tempHome },
-        }
-      );
-
-      await waitForExit(child, 4000);
-      assert.equal(child.exitCode, 0);
-
-      const logEntries = (await readFile(logPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-      assert.ok(logEntries.some((entry: { type?: string; reason?: string }) => (
-        entry.type === 'watcher_stop' && entry.reason === 'max_lifetime_exceeded'
       )));
     } finally {
       if (child && isPidAlive(child.pid)) {
