@@ -1549,6 +1549,8 @@ export async function startTeam(
       config.hud_pane_id = createdSession.hudPaneId;
       config.resize_hook_name = createdSession.resizeHookName;
       config.resize_hook_target = createdSession.resizeHookTarget;
+      config.last_layout_window_width = (createdSession as typeof createdSession & { lastLayoutWindowWidth?: number | null }).lastLayoutWindowWidth ?? null;
+      config.last_layout_window_height = (createdSession as typeof createdSession & { lastLayoutWindowHeight?: number | null }).lastLayoutWindowHeight ?? null;
       for (let i = 0; i < createdSession.workerPaneIds.length; i++) {
         workerPaneIds[i] = createdSession.workerPaneIds[i];
       }
@@ -1558,6 +1560,8 @@ export async function startTeam(
       config.hud_pane_id = null;
       config.resize_hook_name = null;
       config.resize_hook_target = null;
+      config.last_layout_window_width = null;
+      config.last_layout_window_height = null;
       for (let i = 1; i <= workerCount; i++) {
         const startup = workerStartups[i - 1] || {};
         const workerName = `worker-${i}`;
@@ -2349,6 +2353,8 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     }
     config.resize_hook_name = null;
     config.resize_hook_target = null;
+    config.last_layout_window_width = null;
+    config.last_layout_window_height = null;
     await saveTeamConfig(config, cwd);
     if (resizeHookWarning) {
       console.warn(`[team shutdown] ${sanitized}: ${resizeHookWarning}; continuing teardown`);
