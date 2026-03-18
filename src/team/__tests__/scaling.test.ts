@@ -410,8 +410,7 @@ exit 0
 
       await mkdir(join(cwd, '.codex', 'prompts'), { recursive: true });
       await writeFile(join(cwd, '.codex', 'prompts', 'writer.md'), '<identity>You are Writer.</identity>');
-      await writeFile(join(cwd, 'AGENTS.md'), '# Root project instructions
-');
+      await writeFile(join(cwd, 'AGENTS.md'), '# Root project instructions\n');
       await initTeamState('rollback-worktree', 'task', 'executor', 1, cwd, undefined, process.env, {
         workspace_mode: 'worktree',
         leader_cwd: cwd,
@@ -492,8 +491,7 @@ exit 0
 
       await mkdir(join(cwd, '.codex', 'prompts'), { recursive: true });
       await writeFile(join(cwd, '.codex', 'prompts', 'writer.md'), '<identity>You are Writer.</identity>');
-      await writeFile(join(cwd, 'AGENTS.md'), '# Root project instructions
-');
+      await writeFile(join(cwd, 'AGENTS.md'), '# Root project instructions\n');
       await initTeamState('canonical-root', 'task', 'executor', 1, cwd, undefined, process.env, {
         workspace_mode: 'worktree',
         leader_cwd: cwd,
@@ -721,16 +719,14 @@ describe('scaleDown worktree AGENTS cleanup', () => {
 
       const worktree = join(cwd, '.omx', 'team', 'scale-down-worktree', 'worktrees', 'worker-2');
       await mkdir(worktree, { recursive: true });
-      await writeFile(join(worktree, 'AGENTS.md'), '# Tracked root instructions
-', 'utf8');
+      await writeFile(join(worktree, 'AGENTS.md'), '# Tracked root instructions\n', 'utf8');
       await mkdir(join(cwd, '.git', 'worktrees', 'worker-2', 'omx'), { recursive: true });
       await writeFile(
         join(cwd, '.git', 'worktrees', 'worker-2', 'omx', 'root-agents-backup.json'),
         JSON.stringify({ existed: false, tracked: false }, null, 2),
         'utf8',
       );
-      await writeFile(join(worktree, 'AGENTS.md'), '# Generated runtime instructions
-', 'utf8');
+      await writeFile(join(worktree, 'AGENTS.md'), '# Generated runtime instructions\n', 'utf8');
 
       const config = await readTeamConfig('scale-down-worktree', cwd);
       assert.ok(config);
