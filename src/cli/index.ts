@@ -1355,6 +1355,11 @@ export function buildDetachedSessionBootstrapSteps(
   notifyTempContractRaw?: string | null,
   nativeWindows = false,
 ): DetachedSessionTmuxStep[] {
+  const detachedLeaderCmd = nativeWindows
+    ? "powershell.exe"
+    : `/bin/sh -lc ${quoteShellArg(
+        `${codexCmd}; status=$?; tmux kill-session -t ${quoteShellArg(sessionName)} >/dev/null 2>&1 || true; exit $status`,
+      )}`;
   const newSessionArgs: string[] = [
     "new-session",
     "-d",
@@ -1372,7 +1377,7 @@ export function buildDetachedSessionBootstrapSteps(
     ...(notifyTempContractRaw
       ? ["-e", `${OMX_NOTIFY_TEMP_CONTRACT_ENV}=${notifyTempContractRaw}`]
       : []),
-    nativeWindows ? "powershell.exe" : codexCmd,
+    detachedLeaderCmd,
   ];
   const splitCaptureArgs: string[] = [
     "split-window",
