@@ -293,12 +293,38 @@ function resolveHudHeightLines(heightLines: number): number {
   return normalized > 0 ? normalized : HUD_TMUX_TEAM_HEIGHT_LINES;
 }
 
+function resolveTeamMainPaneWidth(width: number): number | null {
+  if (!Number.isFinite(width)) return null;
+  const normalized = Math.floor(width);
+  if (normalized < 40) return null;
+  return Math.floor(normalized / 2);
+}
+
 function buildHudResizeCommand(hudPaneId: string, heightLines: number = HUD_TMUX_TEAM_HEIGHT_LINES): string {
   return `resize-pane -t ${buildHudPaneTarget(hudPaneId)} -y ${resolveHudHeightLines(heightLines)}`;
 }
 
 function buildBestEffortShellCommand(command: string): string {
   return `${command} >/dev/null 2>&1 || true`;
+}
+
+function buildTeamLayoutReconcileCommand(
+  teamTarget: string,
+  hudPaneId: string,
+  heightLines: number = HUD_TMUX_TEAM_HEIGHT_LINES,
+): string {
+  const quotedTeamTarget = shellQuoteSingle(teamTarget);
+  const hudResize = buildBestEffortShellCommand(`tmux ${buildHudResizeCommand(hudPaneId, heightLines)}`);
+  return [
+    `tmux select-layout -t ${teamTarget} main-vertical >/dev/null 2>&1 || true`,
+    `width=$(tmux display-message -p -t ${quotedTeamTarget} '#{window_width}' 2>/dev/null || printf '')`,
+    `if [ -n "$width" ] && [ "$width" -ge 40 ] 2>/dev/null; then`,
+    `  main_width=$(( width / 2 ))`,
+    `  tmux set-window-option -t ${teamTarget} main-pane-width "$main_width" >/dev/null 2>&1 || true`,
+    `  tmux select-layout -t ${teamTarget} main-vertical >/dev/null 2>&1 || true`,
+    'fi',
+    hudResize,
+  ].join('; ');
 }
 
 /** Upper bound for tmux hook indices (signed 32-bit max). */
