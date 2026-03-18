@@ -351,6 +351,47 @@ async function appendAutoresearchResultsRow(
   );
 }
 
+async function recordAutoresearchIteration(
+  manifest: AutoresearchRunManifest,
+  entry: {
+    status: AutoresearchDecisionStatus;
+    decisionReason: string;
+    description: string;
+    candidateStatus: AutoresearchCandidateArtifact['status'];
+    baseCommit: string;
+    candidateCommit: string | null;
+    keptCommit?: string;
+    evaluator?: AutoresearchEvaluationRecord | null;
+    notes: string[];
+    createdAt?: string;
+  },
+): Promise<void> {
+  const commit = readGitShortHead(manifest.worktree_path);
+  await appendAutoresearchResultsRow(manifest.results_file, {
+    iteration: manifest.iteration,
+    commit,
+    pass: entry.evaluator?.pass,
+    score: entry.evaluator?.score,
+    status: entry.status,
+    description: entry.description,
+  });
+  await appendAutoresearchLedgerEntry(manifest.ledger_file, {
+    iteration: manifest.iteration,
+    kind: 'iteration',
+    decision: entry.status,
+    decision_reason: entry.decisionReason,
+    candidate_status: entry.candidateStatus,
+    base_commit: entry.baseCommit,
+    candidate_commit: entry.candidateCommit,
+    kept_commit: entry.keptCommit ?? manifest.last_kept_commit,
+    keep_policy: manifest.keep_policy,
+    evaluator: entry.evaluator ?? null,
+    created_at: entry.createdAt ?? nowIso(),
+    notes: entry.notes,
+    description: entry.description,
+  });
+}
+
 async function appendAutoresearchLedgerEntry(ledgerFile: string, entry: AutoresearchLedgerEntry): Promise<void> {
   const parsed = existsSync(ledgerFile)
     ? await readJsonFile<{
@@ -1109,6 +1150,57 @@ async function failAutoresearchIteration(
   return 'error';
 }
 
+async function recordNonEvaluatedCandidateStatus(
+  contract: AutoresearchMissionContract,
+  manifest: AutoresearchRunManifest,
+  projectRoot: string,
+  candidate: AutoresearchCandidateArtifact,
+): Promise<Extract<AutoresearchDecisionStatus, 'abort' | 'interrupted' | 'noop' | 'error'>> {
+  const sharedEntry = {
+    description: candidate.description,
+    candidateStatus: candidate.status,
+    baseCommit: candidate.base_commit,
+    candidateCommit: candidate.candidate_commit,
+    notes: candidate.notes,
+  };
+
+  if (candidate.status === 'abort') {
+    await recordAutoresearchIteration(manifest, {
+      status: 'abort',
+      decisionReason: 'candidate requested abort',
+      ...sharedEntry,
+    });
+    await finalizeRun(manifest, projectRoot, { status: 'stopped', stopReason: 'candidate abort' });
+    return 'abort';
+  }
+
+  if (candidate.status === 'interrupted') {
+    try {
+      assertResetSafeWorktree(manifest.worktree_path);
+    } catch {
+      await finalizeRun(manifest, projectRoot, { status: 'failed', stopReason: 'interrupted dirty worktree requires operator intervention' });
+      return 'error';
+    }
+    await recordAutoresearchIteration(manifest, {
+      status: 'interrupted',
+      decisionReason: 'candidate session interrupted cleanly',
+      ...sharedEntry,
+    });
+    await writeRunManifest(manifest);
+    await writeInstructionsFile(contract, manifest);
+    return 'interrupted';
+  }
+
+  await recordAutoresearchIteration(manifest, {
+    status: 'noop',
+    decisionReason: 'candidate reported noop',
+    ...sharedEntry,
+  });
+  await writeRunManifest(manifest);
+  await writeInstructionsFile(contract, manifest);
+  return 'noop';
+}
+
 export async function processAutoresearchCandidate(
   contract: AutoresearchMissionContract,
   manifest: AutoresearchRunManifest,
@@ -1133,90 +1225,8 @@ export async function processAutoresearchCandidate(
   candidate = validation.candidate;
   manifest.latest_candidate_commit = candidate.candidate_commit;
 
-  if (candidate.status === 'abort') {
-    await appendAutoresearchResultsRow(manifest.results_file, {
-      iteration: manifest.iteration,
-      commit: readGitShortHead(manifest.worktree_path),
-      status: 'abort',
-      description: candidate.description,
-    });
-    await appendAutoresearchLedgerEntry(manifest.ledger_file, {
-      iteration: manifest.iteration,
-      kind: 'iteration',
-      decision: 'abort',
-      decision_reason: 'candidate requested abort',
-      candidate_status: candidate.status,
-      base_commit: candidate.base_commit,
-      candidate_commit: candidate.candidate_commit,
-      kept_commit: manifest.last_kept_commit,
-      keep_policy: manifest.keep_policy,
-      evaluator: null,
-      created_at: nowIso(),
-      notes: candidate.notes,
-      description: candidate.description,
-    });
-    await finalizeRun(manifest, projectRoot, { status: 'stopped', stopReason: 'candidate abort' });
-    return 'abort';
-  }
-
-  if (candidate.status === 'interrupted') {
-    try {
-      assertResetSafeWorktree(manifest.worktree_path);
-    } catch {
-      await finalizeRun(manifest, projectRoot, { status: 'failed', stopReason: 'interrupted dirty worktree requires operator intervention' });
-      return 'error';
-    }
-    await appendAutoresearchResultsRow(manifest.results_file, {
-      iteration: manifest.iteration,
-      commit: readGitShortHead(manifest.worktree_path),
-      status: 'interrupted',
-      description: candidate.description,
-    });
-    await appendAutoresearchLedgerEntry(manifest.ledger_file, {
-      iteration: manifest.iteration,
-      kind: 'iteration',
-      decision: 'interrupted',
-      decision_reason: 'candidate session interrupted cleanly',
-      candidate_status: candidate.status,
-      base_commit: candidate.base_commit,
-      candidate_commit: candidate.candidate_commit,
-      kept_commit: manifest.last_kept_commit,
-      keep_policy: manifest.keep_policy,
-      evaluator: null,
-      created_at: nowIso(),
-      notes: candidate.notes,
-      description: candidate.description,
-    });
-    await writeRunManifest(manifest);
-    await writeInstructionsFile(contract, manifest);
-    return 'interrupted';
-  }
-
-  if (candidate.status === 'noop') {
-    await appendAutoresearchResultsRow(manifest.results_file, {
-      iteration: manifest.iteration,
-      commit: readGitShortHead(manifest.worktree_path),
-      status: 'noop',
-      description: candidate.description,
-    });
-    await appendAutoresearchLedgerEntry(manifest.ledger_file, {
-      iteration: manifest.iteration,
-      kind: 'iteration',
-      decision: 'noop',
-      decision_reason: 'candidate reported noop',
-      candidate_status: candidate.status,
-      base_commit: candidate.base_commit,
-      candidate_commit: candidate.candidate_commit,
-      kept_commit: manifest.last_kept_commit,
-      keep_policy: manifest.keep_policy,
-      evaluator: null,
-      created_at: nowIso(),
-      notes: candidate.notes,
-      description: candidate.description,
-    });
-    await writeRunManifest(manifest);
-    await writeInstructionsFile(contract, manifest);
-    return 'noop';
+  if (candidate.status !== 'candidate') {
+    return recordNonEvaluatedCandidateStatus(contract, manifest, projectRoot, candidate);
   }
 
   const evaluation = await runAutoresearchEvaluator(contract, manifest.worktree_path);
@@ -1229,28 +1239,15 @@ export async function processAutoresearchCandidate(
     resetToLastKeptCommit(manifest);
   }
 
-  await appendAutoresearchResultsRow(manifest.results_file, {
-    iteration: manifest.iteration,
-    commit: decision.keep ? readGitShortHead(manifest.worktree_path) : readGitShortHead(manifest.worktree_path),
-    pass: evaluation.pass,
-    score: evaluation.score,
+  await recordAutoresearchIteration(manifest, {
     status: decision.decision,
+    decisionReason: decision.decisionReason,
     description: candidate.description,
-  });
-  await appendAutoresearchLedgerEntry(manifest.ledger_file, {
-    iteration: manifest.iteration,
-    kind: 'iteration',
-    decision: decision.decision,
-    decision_reason: decision.decisionReason,
-    candidate_status: candidate.status,
-    base_commit: candidate.base_commit,
-    candidate_commit: candidate.candidate_commit,
-    kept_commit: manifest.last_kept_commit,
-    keep_policy: manifest.keep_policy,
+    candidateStatus: candidate.status,
+    baseCommit: candidate.base_commit,
+    candidateCommit: candidate.candidate_commit,
     evaluator: evaluation,
-    created_at: nowIso(),
     notes: [...candidate.notes, ...decision.notes],
-    description: candidate.description,
   });
   await writeRunManifest(manifest);
   await writeInstructionsFile(contract, manifest);

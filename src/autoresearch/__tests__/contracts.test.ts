@@ -64,6 +64,18 @@ describe('autoresearch contracts', () => {
     );
   });
 
+  it('normalizes evaluator keep_policy casing and surrounding whitespace', () => {
+    const parsed = parseSandboxContract(`---
+evaluator:
+  command: node scripts/eval.js
+  format: json
+  keep_policy: "  SCORE_IMPROVEMENT  "
+---
+Stay in bounds.
+`);
+    assert.equal(parsed.evaluator.keep_policy, 'score_improvement');
+  });
+
   it('parses optional evaluator keep_policy', () => {
     const parsed = parseSandboxContract(`---
 evaluator:
@@ -110,6 +122,41 @@ Stay in bounds.
       () => parseEvaluatorResult('{"pass":true,"score":"high"}'),
       /score must be numeric/i,
     );
+  });
+
+  it('rejects mission directories outside a git repository', async () => {
+    const missionDir = await mkdtemp(join(tmpdir(), 'omx-autoresearch-not-git-'));
+    try {
+      await writeFile(join(missionDir, 'mission.md'), '# Mission\nShip it\n', 'utf-8');
+      await writeFile(
+        join(missionDir, 'sandbox.md'),
+        `---\nevaluator:\n  command: node scripts/eval.js\n  format: json\n---\nStay in bounds.\n`,
+        'utf-8',
+      );
+
+      await assert.rejects(
+        () => loadAutoresearchMissionContract(missionDir),
+        /not a git repository|mission-dir must be inside a git repository/i,
+      );
+    } finally {
+      await rm(missionDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects mission directories missing sandbox.md', async () => {
+    const repo = await initRepo();
+    try {
+      const missionDir = join(repo, 'missions', 'demo');
+      await mkdir(missionDir, { recursive: true });
+      await writeFile(join(missionDir, 'mission.md'), '# Mission\nShip it\n', 'utf-8');
+
+      await assert.rejects(
+        () => loadAutoresearchMissionContract(missionDir),
+        /sandbox\.md is required inside mission-dir/i,
+      );
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
   });
 
   it('loads mission contract from in-repo mission directory', async () => {

@@ -34,6 +34,13 @@ export interface AutoresearchMissionContract {
   missionSlug: string;
 }
 
+const MISSION_DIR_GIT_ERROR = 'mission-dir must be inside a git repository.';
+const SANDBOX_FRONTMATTER_ERROR = 'sandbox.md must start with YAML frontmatter containing evaluator.command and evaluator.format=json.';
+const EVALUATOR_BLOCK_ERROR = 'sandbox.md frontmatter must define an evaluator block.';
+const EVALUATOR_COMMAND_ERROR = 'sandbox.md frontmatter evaluator.command is required.';
+const EVALUATOR_FORMAT_REQUIRED_ERROR = 'sandbox.md frontmatter evaluator.format is required and must be json in autoresearch v1.';
+const EVALUATOR_FORMAT_JSON_ERROR = 'sandbox.md frontmatter evaluator.format must be json in autoresearch v1.';
+
 function contractError(message: string): Error {
   return new Error(message);
 }
@@ -52,7 +59,7 @@ function readGit(repoPath: string, args: string[]): string {
       : err.stderr instanceof Buffer
         ? err.stderr.toString('utf-8').trim()
         : '';
-    throw contractError(stderr || 'mission-dir must be inside a git repository.');
+    throw contractError(stderr || MISSION_DIR_GIT_ERROR);
   }
 }
 
@@ -68,13 +75,13 @@ export function slugifyMissionName(value: string): string {
 function ensurePathInside(parentPath: string, childPath: string): void {
   const rel = relative(parentPath, childPath);
   if (rel === '' || (!rel.startsWith('..') && rel !== '..')) return;
-  throw contractError('mission-dir must be inside a git repository.');
+  throw contractError(MISSION_DIR_GIT_ERROR);
 }
 
 function extractFrontmatter(content: string): { frontmatter: string; body: string } {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!match) {
-    throw contractError('sandbox.md must start with YAML frontmatter containing evaluator.command and evaluator.format=json.');
+    throw contractError(SANDBOX_FRONTMATTER_ERROR);
   }
   return {
     frontmatter: match[1] || '',
@@ -142,7 +149,7 @@ export function parseSandboxContract(content: string): ParsedSandboxContract {
   const evaluatorRaw = parsedFrontmatter.evaluator;
 
   if (!evaluatorRaw || typeof evaluatorRaw !== 'object' || Array.isArray(evaluatorRaw)) {
-    throw contractError('sandbox.md frontmatter must define an evaluator block.');
+    throw contractError(EVALUATOR_BLOCK_ERROR);
   }
 
   const evaluator = evaluatorRaw as { command?: unknown; format?: unknown; keep_policy?: unknown };
@@ -155,13 +162,13 @@ export function parseSandboxContract(content: string): ParsedSandboxContract {
   const keepPolicy = parseKeepPolicy(evaluator.keep_policy);
 
   if (!command) {
-    throw contractError('sandbox.md frontmatter evaluator.command is required.');
+    throw contractError(EVALUATOR_COMMAND_ERROR);
   }
   if (!format) {
-    throw contractError('sandbox.md frontmatter evaluator.format is required and must be json in autoresearch v1.');
+    throw contractError(EVALUATOR_FORMAT_REQUIRED_ERROR);
   }
   if (format !== 'json') {
-    throw contractError('sandbox.md frontmatter evaluator.format must be json in autoresearch v1.');
+    throw contractError(EVALUATOR_FORMAT_JSON_ERROR);
   }
 
   return {
@@ -195,9 +202,10 @@ export function parseEvaluatorResult(raw: string): AutoresearchEvaluatorResult {
     throw contractError('Evaluator output score must be numeric when provided.');
   }
 
-  return result.score === undefined
-    ? { pass: result.pass }
-    : { pass: result.pass, score: result.score };
+  return {
+    pass: result.pass,
+    ...(result.score === undefined ? {} : { score: result.score }),
+  };
 }
 
 export async function loadAutoresearchMissionContract(missionDirArg: string): Promise<AutoresearchMissionContract> {
