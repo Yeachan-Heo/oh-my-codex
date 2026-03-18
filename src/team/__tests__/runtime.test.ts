@@ -3311,7 +3311,7 @@ esac
     }
   });
 
-  it('sendWorkerMessage hook-preferred path injects leader mailbox read guidance when leader pane exists', async () => {
+  it('sendWorkerMessage hook-preferred path persists leader mailbox guidance when leader pane exists', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-leader-inject-'));
     try {
       await withMockTmuxFixture(
@@ -3345,15 +3345,17 @@ esac
 
           await sendWorkerMessage('team-leader-inject', 'worker-1', 'leader-fixed', 'hello leader', cwd);
 
-          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-          assert.match(tmuxLog, /send-keys -t %55 -l -- Read \.omx\/state\/team\/team-leader-inject\/mailbox\/leader-fixed\.json; worker-1 sent a new message\. Reply with the next concrete step\./);
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
+          assert.doesNotMatch(tmuxLog, /send-keys -t %55/, 'team runtime should not directly inject into leader pane');
 
           const mailbox = await listMailboxMessages('team-leader-inject', 'leader-fixed', cwd);
           assert.ok(mailbox.some((m: { notified_at?: string }) => typeof m.notified_at === 'string' && m.notified_at.length > 0));
+          assert.match(mailbox[0]?.body ?? '', /Read \.omx\/state\/team\/team-leader-inject\/mailbox\/leader-fixed\.json/);
 
           const requests = await listDispatchRequests('team-leader-inject', cwd, { kind: 'mailbox', to_worker: 'leader-fixed' });
           const latest = requests[requests.length - 1];
           assert.equal(latest?.status, 'notified');
+          assert.equal(latest?.last_reason, 'fallback_confirmed:leader_mailbox_notified');
         },
       );
     } finally {
@@ -3361,7 +3363,7 @@ esac
     }
   });
 
-  it('sendWorkerMessage hook-preferred path for leader waits for receipt then falls back to direct notify', async () => {
+  it('sendWorkerMessage hook-preferred path for leader waits for receipt then falls back to mailbox persistence', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-leader-hook-'));
     try {
       await initTeamState('team-leader-hook', 'leader hook fallback test', 'executor', 1, cwd);

@@ -17,7 +17,6 @@ import {
   dismissTrustPromptIfPresent,
   sleepFractionalSeconds,
   sendToWorker,
-  sendToLeaderPane,
   sendToWorkerStdin,
   isWorkerAlive,
   getWorkerPanePid,
@@ -3047,19 +3046,9 @@ async function finalizeHookPreferredMailboxDispatch(params: {
 }
 
 async function notifyLeaderAsync(config: TeamConfig, message: string, cwd: string): Promise<DispatchOutcome> {
-  // Primary: inject directly into the leader pane via tmux send-keys.
-  // This is the fallback path when hook-based dispatch timed out, so the
-  // leader needs a direct tmux notification to wake up. Fixes #437.
-  if (config.leader_pane_id && isTmuxAvailable()) {
-    try {
-      await sendToLeaderPane(config.leader_pane_id, message);
-      return { ok: true, transport: 'tmux_send_keys', reason: 'leader_pane_notified' };
-    } catch (err) {
-      process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
-      // Fall through to mailbox
-    }
-  }
-  // Fallback: write to leader mailbox (leader picks up on next hook cycle)
+  // Canonical leader delivery is durable mailbox persistence plus HUD-owned
+  // authority processing. Team runtime must not directly inject into the
+  // leader pane from this fallback path.
   const { notifyLeaderMailboxAsync } = await import('./tmux-session.js');
   const persisted = await notifyLeaderMailboxAsync(config.name, 'system', message, cwd);
   if (!persisted) {
