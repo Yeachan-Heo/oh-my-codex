@@ -373,6 +373,176 @@ describe('scaleUp', () => {
     }
   });
 
+
+  it('removes generated worktree-root AGENTS when scale-up rolls back', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-rollback-worktree-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-rollback-worktree-bin-'));
+    const tmuxStubPath = join(fakeBinDir, 'tmux');
+    const previousPath = process.env.PATH;
+
+    try {
+      await writeFile(
+        tmuxStubPath,
+        `#!/bin/sh
+set -eu
+case "${1:-}" in
+  -V)
+    echo "tmux 3.2a"
+    ;;
+  split-window)
+    echo "%31"
+    ;;
+  list-panes)
+    echo "42424"
+    ;;
+  send-keys)
+    exit 1
+    ;;
+  capture-pane)
+    echo ""
+    ;;
+esac
+exit 0
+`,
+      );
+      await chmod(tmuxStubPath, 0o755);
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      await mkdir(join(cwd, '.codex', 'prompts'), { recursive: true });
+      await writeFile(join(cwd, '.codex', 'prompts', 'writer.md'), '<identity>You are Writer.</identity>');
+      await writeFile(join(cwd, 'AGENTS.md'), '# Root project instructions
+');
+      await initTeamState('rollback-worktree', 'task', 'executor', 1, cwd, undefined, process.env, {
+        workspace_mode: 'worktree',
+        leader_cwd: cwd,
+        team_state_root: join(cwd, '.omx', 'state'),
+      });
+
+      const config = await readTeamConfig('rollback-worktree', cwd);
+      assert.ok(config);
+      if (!config) return;
+      config.tmux_session = 'omx-team-rollback-worktree';
+      config.leader_pane_id = '%11';
+      config.workers[0]!.pane_id = '%21';
+      config.workers[0]!.worktree_path = join(cwd, '.omx', 'team', 'rollback-worktree', 'worktrees', 'worker-1');
+      await saveTeamConfig(config, cwd);
+
+      const manifestPath = join(cwd, '.omx', 'state', 'team', 'rollback-worktree', 'manifest.v2.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as { policy?: Record<string, unknown> };
+      manifest.policy = {
+        ...(manifest.policy ?? {}),
+        dispatch_mode: 'transport_direct',
+      };
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const result = await scaleUp(
+        'rollback-worktree',
+        1,
+        'executor',
+        [{ subject: 'write docs', description: 'write docs', owner: 'worker-2', role: 'writer' }],
+        cwd,
+        { OMX_TEAM_SCALING_ENABLED: '1', OMX_TEAM_SKIP_READY_WAIT: '1' },
+      );
+      assert.equal(result.ok, false);
+      if (result.ok) return;
+      assert.match(result.error, /scale_up_dispatch_failed:worker-2/);
+
+      const workerRootAgents = join(cwd, '.omx', 'team', 'rollback-worktree', 'worktrees', 'worker-2', 'AGENTS.md');
+      assert.equal(existsSync(workerRootAgents), false);
+      const backupPath = join(cwd, '.git', 'worktrees', 'worker-2', 'omx', 'root-agents-backup.json');
+      assert.equal(existsSync(backupPath), false);
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses canonical root AGENTS bootstrap for scaled worktree workers', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-canonical-root-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-canonical-root-bin-'));
+    const tmuxStubPath = join(fakeBinDir, 'tmux');
+    const previousPath = process.env.PATH;
+
+    try {
+      await writeFile(
+        tmuxStubPath,
+        `#!/bin/sh
+set -eu
+case "${1:-}" in
+  -V)
+    echo "tmux 3.2a"
+    ;;
+  split-window)
+    echo "%31"
+    ;;
+  list-panes)
+    echo "42424"
+    ;;
+  capture-pane)
+    echo ""
+    ;;
+esac
+exit 0
+`,
+      );
+      await chmod(tmuxStubPath, 0o755);
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      await mkdir(join(cwd, '.codex', 'prompts'), { recursive: true });
+      await writeFile(join(cwd, '.codex', 'prompts', 'writer.md'), '<identity>You are Writer.</identity>');
+      await writeFile(join(cwd, 'AGENTS.md'), '# Root project instructions
+');
+      await initTeamState('canonical-root', 'task', 'executor', 1, cwd, undefined, process.env, {
+        workspace_mode: 'worktree',
+        leader_cwd: cwd,
+        team_state_root: join(cwd, '.omx', 'state'),
+      });
+
+      const config = await readTeamConfig('canonical-root', cwd);
+      assert.ok(config);
+      if (!config) return;
+      config.tmux_session = 'omx-team-canonical-root';
+      config.leader_pane_id = '%11';
+      config.workers[0]!.pane_id = '%21';
+      config.workers[0]!.worktree_path = join(cwd, '.omx', 'team', 'canonical-root', 'worktrees', 'worker-1');
+      await saveTeamConfig(config, cwd);
+
+      const manifestPath = join(cwd, '.omx', 'state', 'team', 'canonical-root', 'manifest.v2.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as { policy?: Record<string, unknown> };
+      manifest.policy = {
+        ...(manifest.policy ?? {}),
+        dispatch_mode: 'transport_direct',
+      };
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const result = await scaleUp(
+        'canonical-root',
+        1,
+        'executor',
+        [{ subject: 'write docs', description: 'write docs', owner: 'worker-2', role: 'writer' }],
+        cwd,
+        { OMX_TEAM_SCALING_ENABLED: '1', OMX_TEAM_SKIP_READY_WAIT: '1' },
+      );
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+
+      const inbox = await readFile(join(cwd, '.omx', 'state', 'team', 'canonical-root', 'workers', 'worker-2', 'inbox.md'), 'utf-8');
+      assert.doesNotMatch(inbox, /## Your Specialization/);
+      assert.match(inbox, /\*\*Role:\*\* writer/);
+
+      const rootAgents = await readFile(join(cwd, '.omx', 'team', 'canonical-root', 'worktrees', 'worker-2', 'AGENTS.md'), 'utf-8');
+      assert.match(rootAgents, /You are operating as the \*\*writer\*\* role/);
+      assert.match(rootAgents, /<identity>You are Writer\.<\/identity>/);
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
   it('preserves leader/HUD layout by avoiding tiled relayout during scale-up', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-layout-'));
     const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-layout-bin-'));
@@ -532,6 +702,53 @@ describe('scaleDown', () => {
       if (!result.ok) {
         assert.match(result.error, /Not enough idle workers/);
       }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe('scaleDown worktree AGENTS cleanup', () => {
+  it('removes generated worktree-root AGENTS during scale-down', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-down-worktree-agents-'));
+    try {
+      await initTeamState('scale-down-worktree', 'task', 'executor', 2, cwd, undefined, process.env, {
+        workspace_mode: 'worktree',
+        leader_cwd: cwd,
+        team_state_root: join(cwd, '.omx', 'state'),
+      });
+
+      const worktree = join(cwd, '.omx', 'team', 'scale-down-worktree', 'worktrees', 'worker-2');
+      await mkdir(worktree, { recursive: true });
+      await writeFile(join(worktree, 'AGENTS.md'), '# Tracked root instructions
+', 'utf8');
+      await mkdir(join(cwd, '.git', 'worktrees', 'worker-2', 'omx'), { recursive: true });
+      await writeFile(
+        join(cwd, '.git', 'worktrees', 'worker-2', 'omx', 'root-agents-backup.json'),
+        JSON.stringify({ existed: false, tracked: false }, null, 2),
+        'utf8',
+      );
+      await writeFile(join(worktree, 'AGENTS.md'), '# Generated runtime instructions
+', 'utf8');
+
+      const config = await readTeamConfig('scale-down-worktree', cwd);
+      assert.ok(config);
+      if (!config) return;
+      config.workers[1]!.worktree_path = worktree;
+      await saveTeamConfig(config, cwd);
+
+      const result = await scaleDown(
+        'scale-down-worktree',
+        cwd,
+        { workerNames: ['worker-2'], force: true },
+        { OMX_TEAM_SCALING_ENABLED: '1' },
+      );
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+
+      assert.equal(existsSync(join(worktree, 'AGENTS.md')), false);
+      assert.equal(existsSync(join(cwd, '.git', 'worktrees', 'worker-2', 'omx', 'root-agents-backup.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
