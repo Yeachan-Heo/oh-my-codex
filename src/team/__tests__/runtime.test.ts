@@ -1108,8 +1108,8 @@ exit 0
           assert.equal(tmuxLog.match(standaloneHudSplitRe)?.length ?? 0, 1);
           assert.equal(tmuxLog.match(/set-hook -t leader:0 client-resized\[\d+\]/g)?.length ?? 0, 2);
           assert.equal(tmuxLog.match(/set-hook -t leader:0 client-attached\[\d+\]/g)?.length ?? 0, 2);
-          assert.equal(tmuxLog.match(/run-shell -b sleep \d+; tmux resize-pane -t %3 -y \d+ >/g)?.length ?? 0, 3);
-          assert.equal(tmuxLog.match(/run-shell tmux resize-pane -t %3 -y \d+ >/g)?.length ?? 0, 3);
+          assert.ok((tmuxLog.match(/run-shell -b sleep \d+; tmux select-layout -t leader:0 main-vertical >/g)?.length ?? 0) >= 2);
+          assert.ok((tmuxLog.match(/run-shell tmux select-layout -t leader:0 main-vertical >/g)?.length ?? 0) >= 2);
           assert.ok((tmuxLog.match(/select-layout -t leader:0 main-vertical/g)?.length ?? 0) >= 2);
           assert.match(tmuxLog, /kill-pane -t %3/);
         },

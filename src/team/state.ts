@@ -83,10 +83,6 @@ export interface TeamConfig {
   resize_hook_name: string | null;
   /** Registered HUD resize hook target in "<session>:<window>" form. */
   resize_hook_target: string | null;
-  /** Last known team window width used by layout reconciliation, or null when unknown. */
-  last_layout_window_width: number | null;
-  /** Last known team window height used by layout reconciliation, or null when unknown. */
-  last_layout_window_height: number | null;
   /** Monotonic counter for worker index assignment during scaling. */
   next_worker_index?: number;
 }
@@ -242,8 +238,6 @@ export interface TeamManifestV2 {
   hud_pane_id: string | null;
   resize_hook_name: string | null;
   resize_hook_target: string | null;
-  last_layout_window_width: number | null;
-  last_layout_window_height: number | null;
   /** Monotonic counter for worker index assignment during scaling. */
   next_worker_index?: number;
 }
@@ -668,8 +662,6 @@ function isTeamManifestV2(value: unknown): value is TeamManifestV2 {
   if (!(typeof v.hud_pane_id === 'string' || v.hud_pane_id === null)) return false;
   if (!(typeof v.resize_hook_name === 'string' || v.resize_hook_name === null)) return false;
   if (!(typeof v.resize_hook_target === 'string' || v.resize_hook_target === null)) return false;
-  if (!(typeof v.last_layout_window_width === 'number' || v.last_layout_window_width === null || typeof v.last_layout_window_width === 'undefined')) return false;
-  if (!(typeof v.last_layout_window_height === 'number' || v.last_layout_window_height === null || typeof v.last_layout_window_height === 'undefined')) return false;
   if (!v.leader || typeof v.leader !== 'object') return false;
   if (!v.policy || typeof v.policy !== 'object') return false;
   if (!v.permissions_snapshot || typeof v.permissions_snapshot !== 'object') return false;
@@ -775,8 +767,6 @@ export async function initTeamState(
     hud_pane_id: null,
     resize_hook_name: null,
     resize_hook_target: null,
-    last_layout_window_width: null,
-    last_layout_window_height: null,
     next_worker_index: workerCount + 1,
   };
 
@@ -818,8 +808,6 @@ export async function initTeamState(
       hud_pane_id: null,
       resize_hook_name: null,
       resize_hook_target: null,
-      last_layout_window_width: null,
-      last_layout_window_height: null,
       next_worker_index: workerCount + 1,
     },
     cwd
@@ -850,8 +838,6 @@ async function writeConfig(cfg: TeamConfig, cwd: string): Promise<void> {
       hud_pane_id: normalized.hud_pane_id,
       resize_hook_name: normalized.resize_hook_name,
       resize_hook_target: normalized.resize_hook_target,
-      last_layout_window_width: normalized.last_layout_window_width,
-      last_layout_window_height: normalized.last_layout_window_height,
       next_worker_index: normalized.next_worker_index ?? existing.next_worker_index,
     };
     await writeTeamManifestV2(merged, cwd);
@@ -883,8 +869,6 @@ function teamConfigFromManifest(manifest: TeamManifestV2): TeamConfig {
     hud_pane_id: manifest.hud_pane_id,
     resize_hook_name: manifest.resize_hook_name,
     resize_hook_target: manifest.resize_hook_target,
-    last_layout_window_width: manifest.last_layout_window_width ?? null,
-    last_layout_window_height: manifest.last_layout_window_height ?? null,
     next_worker_index: manifest.next_worker_index,
   };
 }
@@ -898,8 +882,6 @@ function normalizeTeamConfig(config: TeamConfig): TeamConfig {
     hud_pane_id: config.hud_pane_id ?? null,
     resize_hook_name: config.resize_hook_name ?? null,
     resize_hook_target: config.resize_hook_target ?? null,
-    last_layout_window_width: typeof config.last_layout_window_width === 'number' ? config.last_layout_window_width : null,
-    last_layout_window_height: typeof config.last_layout_window_height === 'number' ? config.last_layout_window_height : null,
     worker_launch_mode: workerLaunchMode,
   };
 }
@@ -936,8 +918,6 @@ function teamManifestFromConfig(config: TeamConfig): TeamManifestV2 {
     hud_pane_id: normalized.hud_pane_id,
     resize_hook_name: normalized.resize_hook_name,
     resize_hook_target: normalized.resize_hook_target,
-    last_layout_window_width: normalized.last_layout_window_width,
-    last_layout_window_height: normalized.last_layout_window_height,
     next_worker_index: normalized.next_worker_index,
   };
 }

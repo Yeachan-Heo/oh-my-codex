@@ -164,6 +164,17 @@ describe('HUD resize hook command builders', () => {
     assert.equal(args[4], `run-shell -b 'tmux resize-pane -t %1 -y ${HUD_TMUX_TEAM_HEIGHT_LINES} >/dev/null 2>&1 || true'`);
   });
 
+  it('buildRegisterResizeHookArgs can emit full team reconcile without topology-changing commands', () => {
+    const args = buildRegisterResizeHookArgs('my-session:0', 'omx_resize_team_session_0_1', '%1', HUD_TMUX_TEAM_HEIGHT_LINES, 'my-session:0');
+    assert.equal(args[0], 'set-hook');
+    assert.match(args[4] ?? '', /select-layout -t my-session:0 main-vertical/);
+    assert.match(args[4] ?? '', /display-message -p -t/);
+    assert.match(args[4] ?? '', /#\{window_width\}/);
+    assert.match(args[4] ?? '', /set-window-option -t my-session:0 main-pane-width/);
+    assert.match(args[4] ?? '', new RegExp(`resize-pane -t %1 -y ${HUD_TMUX_TEAM_HEIGHT_LINES}`));
+    assert.doesNotMatch(args[4] ?? '', /split-window|kill-pane|kill-session|select-layout -t .* tiled/);
+  });
+
   it('buildUnregisterResizeHookArgs removes the exact numeric hook slot', () => {
     const registered = buildRegisterResizeHookArgs('my-session:0', 'omx_resize_team_session_0_1', '%1');
     const unregistered = buildUnregisterResizeHookArgs('my-session:0', 'omx_resize_team_session_0_1');
@@ -185,6 +196,15 @@ describe('HUD resize hook command builders', () => {
       args[4] ?? '',
       /^run-shell -b 'tmux resize-pane -t %1 -y \d+ >\/dev\/null 2>&1 \|\| true; tmux set-hook -u -t my-session:0 client-attached\[\d+\]'$/,
     );
+  });
+
+  it('buildRegisterClientAttachedReconcileArgs uses one-shot full team reconcile when team target is provided', () => {
+    const args = buildRegisterClientAttachedReconcileArgs('my-session:0', 'omx_attached_team_session_0_1', '%1', HUD_TMUX_TEAM_HEIGHT_LINES, 'my-session:0');
+    assert.equal(args[0], 'set-hook');
+    assert.match(args[4] ?? '', /select-layout -t my-session:0 main-vertical/);
+    assert.match(args[4] ?? '', /set-window-option -t my-session:0 main-pane-width/);
+    assert.match(args[4] ?? '', /tmux set-hook -u -t my-session:0 client-attached\[\d+\]'/);
+    assert.doesNotMatch(args[4] ?? '', /split-window|kill-pane|kill-session|select-layout -t .* tiled/);
   });
 
   it('buildUnregisterClientAttachedReconcileArgs removes the exact numeric client-attached slot', () => {
@@ -230,6 +250,13 @@ describe('HUD resize hook command builders', () => {
     );
   });
 
+  it('buildScheduleDelayedHudResizeArgs can schedule full team reconcile', () => {
+    const args = buildScheduleDelayedHudResizeArgs('%1', undefined, HUD_TMUX_TEAM_HEIGHT_LINES, 'my-session:0');
+    assert.match(args[2] ?? '', /^sleep \d+; tmux select-layout -t my-session:0 main-vertical/);
+    assert.match(args[2] ?? '', /set-window-option -t my-session:0 main-pane-width/);
+    assert.doesNotMatch(args[2] ?? '', /split-window|kill-pane|kill-session|select-layout -t .* tiled/);
+  });
+
   it('buildReconcileHudResizeArgs executes a best-effort quiet resize command', () => {
     const args = buildReconcileHudResizeArgs('%7');
     assert.equal(args.join(' ').includes('split-window'), false);
@@ -237,6 +264,17 @@ describe('HUD resize hook command builders', () => {
       args,
       ['run-shell', `tmux resize-pane -t %7 -y ${HUD_TMUX_TEAM_HEIGHT_LINES} >/dev/null 2>&1 || true`],
     );
+  });
+
+  it('buildReconcileHudResizeArgs emits full team reconcile when team target is provided', () => {
+    const args = buildReconcileHudResizeArgs('%7', HUD_TMUX_TEAM_HEIGHT_LINES, 'my-session:0');
+    assert.match(args[1] ?? '', /select-layout -t my-session:0 main-vertical/);
+    assert.match(args[1] ?? '', /display-message -p -t/);
+    assert.match(args[1] ?? '', /my-session:0/);
+    assert.match(args[1] ?? '', /#\{window_width\}/);
+    assert.match(args[1] ?? '', /set-window-option -t my-session:0 main-pane-width/);
+    assert.match(args[1] ?? '', new RegExp(`resize-pane -t %7 -y ${HUD_TMUX_TEAM_HEIGHT_LINES}`));
+    assert.doesNotMatch(args[1] ?? '', /split-window|kill-pane|kill-session|select-layout -t .* tiled/);
   });
 });
 
