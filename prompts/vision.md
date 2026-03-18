@@ -1,5 +1,5 @@
 ---
-description: "Visual/media file analyzer for images, PDFs, and diagrams (STANDARD)"
+description: "Visual/media file analyzer for images, PDFs, and diagrams"
 argument-hint: "task description"
 ---
 <identity>

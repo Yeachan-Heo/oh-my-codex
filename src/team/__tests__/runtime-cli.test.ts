@@ -74,8 +74,10 @@ describe('runtime-cli helpers', () => {
     assert.equal(liveBehavior.fixingWithNoWorkers, false);
   });
 
-  it('falls back to forced shutdown when graceful shutdown is blocked', async () => {
+  it('gracefully shuts down only when the leader explicitly requests shutdown', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-cli-shutdown-'));
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    delete process.env.OMX_TEAM_STATE_ROOT;
     try {
       await initTeamState('shutdown-fallback', 'task', 'executor', 1, cwd);
       await createTask('shutdown-fallback', {
@@ -92,6 +94,37 @@ describe('runtime-cli helpers', () => {
 
       assert.equal(existsSync(teamRoot), false);
     } finally {
+      if (typeof previousTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not auto-shutdown merely because monitorTeam reaches complete', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-cli-complete-'));
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    delete process.env.OMX_TEAM_STATE_ROOT;
+    try {
+      await initTeamState('runtime-cli-complete', 'task', 'executor', 1, cwd);
+      await createTask('runtime-cli-complete', {
+        subject: 'done task',
+        description: 'already complete',
+        status: 'completed',
+        owner: 'worker-1',
+      }, cwd);
+
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'runtime-cli-complete');
+      assert.equal(existsSync(teamRoot), true);
+
+      const runtimeCli = await loadRuntimeCliModule();
+      const snapshot = await (await import('../runtime.js')).monitorTeam('runtime-cli-complete', cwd);
+      assert.equal(snapshot?.phase, 'complete');
+
+      assert.equal(existsSync(teamRoot), true);
+      assert.equal(typeof runtimeCli.shutdownWithForceFallback, 'function');
+    } finally {
+      if (typeof previousTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
       await rm(cwd, { recursive: true, force: true });
     }
   });

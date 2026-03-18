@@ -4,6 +4,35 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-03-18
+
+46 commits across 21 PRs from `v0.10.2..dev`. Contributors: [@Yeachan-Heo](https://github.com/Yeachan-Heo), [@lifrary](https://github.com/lifrary) (SEUNGWOO LEE).
+
+### Added
+- **Lore commit protocol in AGENTS.md template** — executor prompt and AGENTS.md template now include a Lore commit protocol for structured commit metadata. (PR [#916](https://github.com/Yeachan-Heo/oh-my-codex/pull/916))
+- **AGENTS.md model capability table auto-generated during setup** — `omx setup` now generates a model capability table in AGENTS.md for quick reference. (PR [#894](https://github.com/Yeachan-Heo/oh-my-codex/pull/894))
+- **Native skill_ref bridges and subagent tracking** — skill references can now bridge to native subagents with lifecycle tracking. (PR [#892](https://github.com/Yeachan-Heo/oh-my-codex/pull/892))
+- **Codex native subagent integration phase 1** — first-pass integration of Codex CLI native subagent spawning and coordination. (PR [#886](https://github.com/Yeachan-Heo/oh-my-codex/pull/886))
+- **AGENTS autonomy directive** — AGENTS.md now includes an explicit autonomy directive for self-directed agent operation. (PR [#883](https://github.com/Yeachan-Heo/oh-my-codex/pull/883))
+- **Autoresearch novice deep-interview intake bridge** — autoresearch can now route novice users through the deep-interview intake flow before launching autonomous research. (PR [#906](https://github.com/Yeachan-Heo/oh-my-codex/pull/906))
+- **`omx cleanup` for orphaned MCP servers** — new cleanup command detects and removes orphaned MCP server processes. (PR [#901](https://github.com/Yeachan-Heo/oh-my-codex/pull/901), closes [#900](https://github.com/Yeachan-Heo/oh-my-codex/issues/900))
+- **Stale `/tmp` cleanup in `omx cleanup`** — cleanup now also removes stale temporary files from `/tmp`. (PR [#912](https://github.com/Yeachan-Heo/oh-my-codex/pull/912), closes [#908](https://github.com/Yeachan-Heo/oh-my-codex/issues/908))
+- **Autoresearch showcase hub** — added showcase index, runner script, and completed demos for adaptive sorting, latent subspace discovery, noisy bayesopt, and kaggle-style ML missions. (PRs [#884](https://github.com/Yeachan-Heo/oh-my-codex/pull/884))
+
+### Changed
+- **Autoresearch contracts and runtime deslopped** — cleaned up autoresearch contract interfaces and runtime for clarity and consistency. (PR [#918](https://github.com/Yeachan-Heo/oh-my-codex/pull/918))
+
+### Fixed
+- **Packed-install smoke deps bootstrapped in worktrees** — worktree-based CI now correctly bootstraps smoke test dependencies for packed installs. (PR [#919](https://github.com/Yeachan-Heo/oh-my-codex/pull/919), closes [#917](https://github.com/Yeachan-Heo/oh-my-codex/issues/917))
+- **Deep-interview launch for autoresearch intake** — autoresearch intake now correctly uses the deep-interview launch path. (PR [#915](https://github.com/Yeachan-Heo/oh-my-codex/pull/915), closes [#911](https://github.com/Yeachan-Heo/oh-my-codex/issues/911))
+- **musl Linux assets preferred before glibc** — native asset resolution now prefers musl-linked Linux binaries over glibc for broader compatibility. (PRs [#914](https://github.com/Yeachan-Heo/oh-my-codex/pull/914), [#907](https://github.com/Yeachan-Heo/oh-my-codex/pull/907))
+- **Autoresearch worktree paths use project-local `.omx/`** — worktrees are now created under `.omx/worktrees/` instead of global paths. (PR [#913](https://github.com/Yeachan-Heo/oh-my-codex/pull/913))
+- **Stale obsolete native agents cleaned up** — removed leftover native agent files that were no longer in use. (PR [#899](https://github.com/Yeachan-Heo/oh-my-codex/pull/899))
+- **Skill agent generation stopped** — setup no longer generates agent files for skills, reducing file bloat. (PR [#897](https://github.com/Yeachan-Heo/oh-my-codex/pull/897))
+- **`__dirname` ESM error in autoresearch guided flow** — resolved CommonJS `__dirname` reference in ESM context. (PR [#903](https://github.com/Yeachan-Heo/oh-my-codex/pull/903))
+- **macOS test compatibility for autoresearch** — replaced `execFileSync('cat')` with `readFileSync` and fixed BSD `find` incompatibilities. (PR [#891](https://github.com/Yeachan-Heo/oh-my-codex/pull/891) — @lifrary)
+- **High-severity transitive vulnerabilities patched** — updated transitive dependencies to resolve high-severity CVEs and added dependabot config. (PR [#889](https://github.com/Yeachan-Heo/oh-my-codex/pull/889), closes [#888](https://github.com/Yeachan-Heo/oh-my-codex/issues/888))
+
 ## [0.10.2] - 2026-03-16
 
 3 PRs landed after the `0.10.1` release tag and before this `0.10.2` release-prep commit: all 3 are targeted fixes. The `0.10.1` tag landed at `2026-03-16 06:57 UTC`; the last shipped merge (`#878`) landed at `2026-03-16 08:43 UTC`, for a turnaround of about 1 hour 46 minutes before release prep closed the patch.
@@ -156,7 +185,6 @@ Generated from the latest merged `dev` runtime/model-default work and validated 
 - **Team runtime hardening across startup/worktree/idle-launch-arg paths** — includes the merged fixes from PRs [#696](https://github.com/Yeachan-Heo/oh-my-codex/pull/696), [#697](https://github.com/Yeachan-Heo/oh-my-codex/pull/697), [#700](https://github.com/Yeachan-Heo/oh-my-codex/pull/700), [#707](https://github.com/Yeachan-Heo/oh-my-codex/pull/707), [#708](https://github.com/Yeachan-Heo/oh-my-codex/pull/708), and [#711](https://github.com/Yeachan-Heo/oh-my-codex/pull/711).
 - **Release gate stability for setup refresh tests** — setup AGENTS overwrite coverage now stays non-interactive under test so the release gate no longer hangs on a model-upgrade prompt.
 
-
 ## [0.8.10] - 2026-03-09
 
 5 non-merge commits from `v0.8.9..dev`. Contributors: [@Yeachan-Heo](https://github.com/Yeachan-Heo), [@HaD0Yun](https://github.com/HaD0Yun).
@@ -279,7 +307,6 @@ Generated from the Gemini worker hotfix on `dev`, plus release-validation harden
 
 ### CI / Test
 - Hardened the notify-fallback watcher streaming test to wait for watcher readiness before asserting EOF-tail behavior during full-suite runs.
-
 
 ## [0.8.2] - 2026-03-06
 

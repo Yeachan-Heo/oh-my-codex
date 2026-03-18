@@ -211,12 +211,12 @@ describe('runtime', () => {
     }
   });
 
-  it('resolveWorkerLaunchArgsFromEnv does not inject low-complexity default for standard agent types', () => {
+  it('resolveWorkerLaunchArgsFromEnv injects the standard default model for standard agent types', () => {
     const args = resolveWorkerLaunchArgsFromEnv(
       { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
       'executor',
     );
-    assert.deepEqual(args, ['--no-alt-screen']);
+    assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-5.4-mini']);
   });
 
   it('resolveWorkerLaunchArgsFromEnv treats *-low aliases as low complexity', () => {
@@ -282,8 +282,8 @@ describe('runtime', () => {
         'high',
         'codex',
       );
-      assert.deepEqual(lowArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="low"']);
-      assert.deepEqual(highArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="high"']);
+      assert.deepEqual(lowArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="low"', '--model', 'gpt-5.4-mini']);
+      assert.deepEqual(highArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="high"', '--model', 'gpt-5.4-mini']);
     } finally {
       console.log = originalLog;
     }
@@ -404,7 +404,7 @@ describe('runtime', () => {
         'low',
         'gemini',
       );
-      assert.deepEqual(codexArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="high"']);
+      assert.deepEqual(codexArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="high"', '--model', 'gpt-5.4-mini']);
       assert.deepEqual(claudeArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="low"', '--model', 'claude-3-7-sonnet']);
       assert.deepEqual(geminiArgs, ['-c', 'model_reasoning_effort="low"', '--model', 'gemini-2.0-pro']);
     } finally {
@@ -919,8 +919,10 @@ process.on('SIGTERM', () => process.exit(0));
       const worker2Joined = worker2Args!.join(' ');
       assert.match(worker1Joined, /model_reasoning_effort="medium"/);
       assert.match(worker1Joined, /model_instructions_file=.*worker-1\/AGENTS\.md/);
-      assert.match(worker2Joined, /model_reasoning_effort="low"/);
+      assert.match(worker1Joined, /--model gpt-5\.4/);
+      assert.match(worker2Joined, /model_reasoning_effort="high"/);
       assert.match(worker2Joined, /model_instructions_file=.*worker-2\/AGENTS\.md/);
+      assert.match(worker2Joined, /--model gpt-5\.4-mini/);
 
       await shutdownTeam(runtime.teamName, cwd, { force: true });
       runtime = null;
@@ -3346,7 +3348,7 @@ esac
     }
   });
 
-  it('sendWorkerMessage hook-preferred path injects leader mailbox read guidance when leader pane exists', async () => {
+  it('sendWorkerMessage hook-preferred path persists leader mailbox guidance when leader pane exists', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-leader-inject-'));
     try {
       await withMockTmuxFixture(
@@ -3380,15 +3382,17 @@ esac
 
           await sendWorkerMessage('team-leader-inject', 'worker-1', 'leader-fixed', 'hello leader', cwd);
 
-          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-          assert.match(tmuxLog, /send-keys -t %55 -l -- Read \.omx\/state\/team\/team-leader-inject\/mailbox\/leader-fixed\.json; worker-1 sent a new message\. Reply with the next concrete step\./);
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
+          assert.doesNotMatch(tmuxLog, /send-keys -t %55/, 'team runtime should not directly inject into leader pane');
 
           const mailbox = await listMailboxMessages('team-leader-inject', 'leader-fixed', cwd);
           assert.ok(mailbox.some((m: { notified_at?: string }) => typeof m.notified_at === 'string' && m.notified_at.length > 0));
+          assert.equal(mailbox[0]?.body, 'hello leader');
 
           const requests = await listDispatchRequests('team-leader-inject', cwd, { kind: 'mailbox', to_worker: 'leader-fixed' });
           const latest = requests[requests.length - 1];
           assert.equal(latest?.status, 'notified');
+          assert.equal(latest?.last_reason, 'fallback_confirmed:leader_mailbox_notified');
         },
       );
     } finally {
@@ -3396,7 +3400,7 @@ esac
     }
   });
 
-  it('sendWorkerMessage hook-preferred path for leader waits for receipt then falls back to direct notify', async () => {
+  it('sendWorkerMessage hook-preferred path for leader waits for receipt then falls back to mailbox persistence', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-leader-hook-'));
     try {
       await initTeamState('team-leader-hook', 'leader hook fallback test', 'executor', 1, cwd);

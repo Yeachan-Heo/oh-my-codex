@@ -7,6 +7,7 @@
  * {
  *   "env": {
  *     "OMX_DEFAULT_FRONTIER_MODEL": "your-frontier-model",
+ *     "OMX_DEFAULT_STANDARD_MODEL": "your-standard-model",
  *     "OMX_DEFAULT_SPARK_MODEL": "your-spark-model"
  *   },
  *   "models": {
@@ -36,6 +37,7 @@ interface OmxConfigFile {
 }
 
 export const OMX_DEFAULT_FRONTIER_MODEL_ENV = 'OMX_DEFAULT_FRONTIER_MODEL';
+export const OMX_DEFAULT_STANDARD_MODEL_ENV = 'OMX_DEFAULT_STANDARD_MODEL';
 export const OMX_DEFAULT_SPARK_MODEL_ENV = 'OMX_DEFAULT_SPARK_MODEL';
 export const OMX_SPARK_MODEL_ENV = 'OMX_SPARK_MODEL';
 
@@ -61,6 +63,7 @@ function readModelsBlock(codexHomeOverride?: string): ModelsConfig | null {
 }
 
 export const DEFAULT_FRONTIER_MODEL = 'gpt-5.4';
+export const DEFAULT_STANDARD_MODEL = 'gpt-5.4-mini';
 export const DEFAULT_SPARK_MODEL = 'gpt-5.3-codex-spark';
 
 function normalizeConfiguredValue(value: unknown): string | undefined {
@@ -109,6 +112,14 @@ export function getEnvConfiguredMainDefaultModel(
     ?? readConfigEnvValue(OMX_DEFAULT_FRONTIER_MODEL_ENV, codexHomeOverride);
 }
 
+export function getEnvConfiguredStandardDefaultModel(
+  env: NodeJS.ProcessEnv = process.env,
+  codexHomeOverride?: string,
+): string | undefined {
+  return normalizeConfiguredValue(env[OMX_DEFAULT_STANDARD_MODEL_ENV])
+    ?? readConfigEnvValue(OMX_DEFAULT_STANDARD_MODEL_ENV, codexHomeOverride);
+}
+
 export function getEnvConfiguredSparkDefaultModel(
   env: NodeJS.ProcessEnv = process.env,
   codexHomeOverride?: string,
@@ -126,6 +137,15 @@ export function getEnvConfiguredSparkDefaultModel(
 export function getMainDefaultModel(codexHomeOverride?: string): string {
   return getEnvConfiguredMainDefaultModel(process.env, codexHomeOverride)
     ?? DEFAULT_FRONTIER_MODEL;
+}
+
+/**
+ * Get the envvar-backed standard/default subagent model.
+ * Resolution: OMX_DEFAULT_STANDARD_MODEL > DEFAULT_STANDARD_MODEL
+ */
+export function getStandardDefaultModel(codexHomeOverride?: string): string {
+  return getEnvConfiguredStandardDefaultModel(process.env, codexHomeOverride)
+    ?? DEFAULT_STANDARD_MODEL;
 }
 
 /**

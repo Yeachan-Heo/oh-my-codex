@@ -1,5 +1,5 @@
 ---
-description: "Technical documentation writer for README, API docs, and comments (LOW)"
+description: "Technical documentation writer for README, API docs, and comments"
 argument-hint: "task description"
 ---
 <identity>

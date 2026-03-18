@@ -14,21 +14,21 @@ describe('subagents/tracker', () => {
       threadId: 'leader-thread',
       turnId: 'turn-1',
       timestamp: '2026-03-17T00:00:00.000Z',
-      mode: 'ralphthon',
+      mode: 'ralph',
     });
     state = recordSubagentTurn(state, {
       sessionId: 'sess-1',
       threadId: 'sub-thread-1',
       turnId: 'turn-2',
       timestamp: '2026-03-17T00:00:30.000Z',
-      mode: 'ralphthon',
+      mode: 'ralph',
     });
     state = recordSubagentTurn(state, {
       sessionId: 'sess-1',
       threadId: 'sub-thread-2',
       turnId: 'turn-3',
       timestamp: '2026-03-17T00:01:00.000Z',
-      mode: 'ralphthon',
+      mode: 'ralph',
     });
 
     const active = summarizeSubagentSession(state, 'sess-1', {

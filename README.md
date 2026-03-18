@@ -112,6 +112,7 @@ omx team 3:executor "ship the scoped task with verification"
 OMX treats default model selection as a small explicit contract:
 
 - `OMX_DEFAULT_FRONTIER_MODEL` — canonical frontier/default leader model
+- `OMX_DEFAULT_STANDARD_MODEL` — canonical standard subagent model
 - `OMX_DEFAULT_SPARK_MODEL` — canonical spark / low-complexity worker model
 
 If upstream defaults change, update the single canonical source instead of scattering model literals across prompts/docs/runtime.
@@ -122,6 +123,7 @@ For local-model setups, you can persist overrides in `~/.codex/.omx-config.json`
 {
   "env": {
     "OMX_DEFAULT_FRONTIER_MODEL": "your-frontier-model",
+    "OMX_DEFAULT_STANDARD_MODEL": "your-standard-model",
     "OMX_DEFAULT_SPARK_MODEL": "your-spark-model"
   }
 }
@@ -133,7 +135,7 @@ Resolution order:
 2. `.omx-config.json` `env` overrides
 3. OMX built-in canonical defaults
 
-The same config-driven env overrides are forwarded when OMX launches native helpers such as `omx sparkshell`, so local-model routing stays consistent.
+The same config-driven env overrides are forwarded when OMX launches native helpers such as `omx sparkshell`, so local-model routing stays consistent. By default OMX ships a three-lane split: frontier roles on `gpt-5.4`, standard subagents on `gpt-5.4-mini`, and spark/fast roles on `gpt-5.3-codex-spark`.
 
 Recommended trusted-environment launch profile:
 

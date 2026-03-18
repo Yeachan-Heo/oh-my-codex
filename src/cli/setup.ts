@@ -1199,7 +1199,9 @@ async function refreshNativeAgentConfigs(
     }
 
     const promptContent = await readFile(promptPath, "utf-8");
-    const toml = generateAgentToml(agent, promptContent);
+    const toml = generateAgentToml(agent, promptContent, {
+      codexHomeOverride: join(agentsDir, ".."),
+    });
     const dst = join(agentsDir, `${name}.toml`);
     await syncManagedContent(
       toml,

@@ -5,10 +5,13 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   DEFAULT_FRONTIER_MODEL,
+  DEFAULT_STANDARD_MODEL,
   DEFAULT_SPARK_MODEL,
+  getEnvConfiguredStandardDefaultModel,
   getMainDefaultModel,
   getModelForMode,
   getSparkDefaultModel,
+  getStandardDefaultModel,
   getTeamLowComplexityModel,
   readConfiguredEnvOverrides,
 } from '../models.js';
@@ -17,6 +20,7 @@ describe('getModelForMode', () => {
   let tempDir: string;
   let originalCodexHome: string | undefined;
   let originalDefaultFrontierModel: string | undefined;
+  let originalDefaultStandardModel: string | undefined;
   let originalDefaultSparkModel: string | undefined;
   let originalSparkModel: string | undefined;
 
@@ -24,10 +28,12 @@ describe('getModelForMode', () => {
     tempDir = await mkdtemp(join(tmpdir(), 'omx-models-'));
     originalCodexHome = process.env.CODEX_HOME;
     originalDefaultFrontierModel = process.env.OMX_DEFAULT_FRONTIER_MODEL;
+    originalDefaultStandardModel = process.env.OMX_DEFAULT_STANDARD_MODEL;
     originalDefaultSparkModel = process.env.OMX_DEFAULT_SPARK_MODEL;
     originalSparkModel = process.env.OMX_SPARK_MODEL;
     process.env.CODEX_HOME = tempDir;
     delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
+    delete process.env.OMX_DEFAULT_STANDARD_MODEL;
     delete process.env.OMX_DEFAULT_SPARK_MODEL;
     delete process.env.OMX_SPARK_MODEL;
   });
@@ -42,6 +48,11 @@ describe('getModelForMode', () => {
       process.env.OMX_DEFAULT_FRONTIER_MODEL = originalDefaultFrontierModel;
     } else {
       delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
+    }
+    if (typeof originalDefaultStandardModel === 'string') {
+      process.env.OMX_DEFAULT_STANDARD_MODEL = originalDefaultStandardModel;
+    } else {
+      delete process.env.OMX_DEFAULT_STANDARD_MODEL;
     }
     if (typeof originalDefaultSparkModel === 'string') {
       process.env.OMX_DEFAULT_SPARK_MODEL = originalDefaultSparkModel;
@@ -123,6 +134,18 @@ describe('getModelForMode', () => {
     assert.equal(getModelForMode('team'), 'frontier-local');
   });
 
+  it('uses OMX_DEFAULT_STANDARD_MODEL when configured in shell env', () => {
+    process.env.OMX_DEFAULT_STANDARD_MODEL = 'gpt-5.4-mini-tuned';
+    assert.equal(getEnvConfiguredStandardDefaultModel(), 'gpt-5.4-mini-tuned');
+    assert.equal(getStandardDefaultModel(), 'gpt-5.4-mini-tuned');
+  });
+
+  it('uses .omx-config.json env.OMX_DEFAULT_STANDARD_MODEL when shell env is absent', async () => {
+    await writeConfig({ env: { OMX_DEFAULT_STANDARD_MODEL: 'standard-local' } });
+    assert.equal(getEnvConfiguredStandardDefaultModel(), 'standard-local');
+    assert.equal(getStandardDefaultModel(), 'standard-local');
+  });
+
   it('prefers shell OMX_DEFAULT_FRONTIER_MODEL over .omx-config.json env override', async () => {
     process.env.OMX_DEFAULT_FRONTIER_MODEL = 'frontier-shell';
     await writeConfig({ env: { OMX_DEFAULT_FRONTIER_MODEL: 'frontier-local' } });
@@ -175,12 +198,14 @@ describe('getModelForMode', () => {
     await writeConfig({
       env: {
         OMX_DEFAULT_FRONTIER_MODEL: ' frontier-local ',
+        OMX_DEFAULT_STANDARD_MODEL: ' standard-local ',
         OMX_DEFAULT_SPARK_MODEL: ' spark-local ',
         EMPTY: '   ',
       },
     });
     assert.deepEqual(readConfiguredEnvOverrides(), {
       OMX_DEFAULT_FRONTIER_MODEL: 'frontier-local',
+      OMX_DEFAULT_STANDARD_MODEL: 'standard-local',
       OMX_DEFAULT_SPARK_MODEL: 'spark-local',
     });
   });
@@ -193,6 +218,7 @@ describe('getModelForMode', () => {
 
   it('returns canonical spark fallback when not configured', async () => {
     await writeConfig({ models: { team: 'gpt-4.1' } });
+    assert.equal(getStandardDefaultModel(), DEFAULT_STANDARD_MODEL);
     assert.equal(getSparkDefaultModel(), DEFAULT_SPARK_MODEL);
     assert.equal(getTeamLowComplexityModel(), DEFAULT_SPARK_MODEL);
   });

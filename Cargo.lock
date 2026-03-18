@@ -4,8 +4,8 @@ version = 4
 
 [[package]]
 name = "omx-explore-harness"
-version = "0.10.2"
+version = "0.10.5"
 
 [[package]]
 name = "omx-sparkshell"
-version = "0.10.2"
+version = "0.10.5"

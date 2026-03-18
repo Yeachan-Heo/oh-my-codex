@@ -297,13 +297,36 @@ function buildStallState(
   const latestAllWorkersIdleEvent = findLatestEventByType(recentEvents, ['all_workers_idle']);
   const latestLeaderNudgeEvent = findLatestEventByType(recentEvents, ['team_leader_nudge']);
   const latestDeferredEvent = findLatestEventByType(recentEvents, ['leader_notification_deferred']);
-  const pendingTaskCount = (summary?.tasks.pending ?? 0) + (summary?.tasks.blocked ?? 0) + (summary?.tasks.in_progress ?? 0);
+  const pendingCount = summary?.tasks.pending ?? 0;
+  const blockedCount = summary?.tasks.blocked ?? 0;
+  const inProgressCount = summary?.tasks.in_progress ?? 0;
+  const pendingTaskCount = pendingCount + blockedCount + inProgressCount;
+  const liveWorkers = workerNames.filter(
+    (workerName) => summary?.workers.find((worker) => worker.name === workerName)?.alive !== false,
+  );
+  const latestLeaderReason = typeof latestLeaderNudgeEvent?.reason === 'string' ? latestLeaderNudgeEvent.reason : '';
+  const terminalLeaderDecisionPending =
+    pendingTaskCount === 0
+    && idleState.all_workers_idle === true
+    && liveWorkers.length > 0;
+  const stuckLeaderDecisionPending =
+    (blockedCount > 0 && pendingCount === 0 && inProgressCount === 0 && idleState.all_workers_idle === true)
+    || latestLeaderReason === 'stuck_waiting_on_leader';
+  const leaderDecisionState = terminalLeaderDecisionPending
+    ? 'done_waiting_on_leader'
+    : stuckLeaderDecisionPending
+      ? 'stuck_waiting_on_leader'
+      : 'still_actionable';
   const leaderStale = pendingTaskCount > 0 && idleState.all_workers_idle === true && (
     latestLeaderNudgeEvent !== null
     || latestDeferredEvent !== null
     || latestAllWorkersIdleEvent !== null
   );
-  const teamStalled = stalledWorkers.length > 0 || leaderStale || (deadWorkers.length > 0 && pendingTaskCount > 0);
+  const leaderAttentionPending = leaderDecisionState !== 'still_actionable' || leaderStale;
+  const teamStalled =
+    stalledWorkers.length > 0
+    || leaderAttentionPending
+    || (deadWorkers.length > 0 && pendingTaskCount > 0);
   const reasons: string[] = [];
 
   if (stalledWorkers.length > 0) {
@@ -311,6 +334,9 @@ function buildStallState(
   }
   if (deadWorkers.length > 0 && pendingTaskCount > 0) {
     reasons.push(`dead_workers_with_pending_work:${deadWorkers.join(',')}`);
+  }
+  if (leaderDecisionState !== 'still_actionable') {
+    reasons.push(`leader_decision_pending:${leaderDecisionState}`);
   }
   if (leaderStale) {
     const leaderSignal = latestLeaderNudgeEvent ?? latestDeferredEvent ?? latestAllWorkersIdleEvent;
@@ -321,8 +347,11 @@ function buildStallState(
     team_name: teamName,
     team_stalled: teamStalled,
     leader_stale: leaderStale,
+    leader_attention_pending: leaderAttentionPending,
+    leader_decision_state: leaderDecisionState,
     stalled_workers: stalledWorkers,
     dead_workers: deadWorkers,
+    live_workers: liveWorkers,
     pending_task_count: pendingTaskCount,
     all_workers_idle: idleState.all_workers_idle,
     idle_workers: idleState.idle_workers,

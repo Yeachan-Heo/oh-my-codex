@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   collectInheritableTeamWorkerArgs,
   isLowComplexityAgentType,
+  resolveAgentDefaultModel,
   resolveAgentReasoningEffort,
   resolveTeamWorkerLaunchArgs,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
@@ -97,7 +98,7 @@ describe('team model contract', () => {
 
   it('detects low-complexity agent types', () => {
     assert.equal(isLowComplexityAgentType('explore'), true);
-    assert.equal(isLowComplexityAgentType('writer'), true);
+    assert.equal(isLowComplexityAgentType('writer'), false);
     assert.equal(isLowComplexityAgentType('style-reviewer'), true);
     assert.equal(isLowComplexityAgentType('executor'), false);
     assert.equal(isLowComplexityAgentType('executor-low'), true);
@@ -105,9 +106,17 @@ describe('team model contract', () => {
 
   it('maps worker roles to default reasoning effort tiers', () => {
     assert.equal(resolveAgentReasoningEffort('explore'), 'low');
-    assert.equal(resolveAgentReasoningEffort('executor'), 'medium');
+    assert.equal(resolveAgentReasoningEffort('executor'), 'high');
     assert.equal(resolveAgentReasoningEffort('architect'), 'high');
     assert.equal(resolveAgentReasoningEffort('does-not-exist'), undefined);
+  });
+
+  it('maps worker roles to explicit default model lanes', () => {
+    assert.equal(resolveAgentDefaultModel('explore'), expectedLowComplexityModel());
+    assert.equal(resolveAgentDefaultModel('writer'), 'gpt-5.4-mini');
+    assert.equal(resolveAgentDefaultModel('executor'), 'gpt-5.4-mini');
+    assert.equal(resolveAgentDefaultModel('architect'), 'gpt-5.4');
+    assert.equal(resolveAgentDefaultModel('does-not-exist'), undefined);
   });
 });
 

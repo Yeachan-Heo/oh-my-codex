@@ -78,6 +78,15 @@ Complex tasks often fail silently: partial implementations get declared "done", 
    - Standard changes: STANDARD tier (architect role)
    - >20 files or security/architectural changes: THOROUGH tier (architect role)
    - Ralph floor: always at least STANDARD, even for small changes
+7.5 **Mandatory Deslop Pass**:
+   - After Step 7 passes, run `oh-my-codex:ai-slop-cleaner` on **all files changed during the Ralph session**.
+   - Scope the cleaner to **changed files only**; do not widen the pass beyond Ralph-owned edits.
+   - Run the cleaner in **standard mode** (not `--review`).
+   - If the prompt contains `--no-deslop`, skip Step 7.5 entirely and proceed with the most recent successful verification evidence.
+7.6 **Regression Re-verification**:
+   - After the deslop pass, re-run all tests/build/lint and read the output to confirm they still pass.
+   - If post-deslop regression fails, roll back cleaner changes or fix and retry. Then rerun Step 7.5 and Step 7.6 until the regression is green.
+   - Do not proceed to completion until post-deslop regression is green (unless `--no-deslop` explicitly skipped the deslop pass).
 8. **On approval**: Run `/cancel` to cleanly exit and clean up all state files
 9. **On rejection**: Fix the issues raised, then re-verify at the same tier
 </Steps>
@@ -170,6 +179,8 @@ Why bad: These are independent tasks that should run in parallel, not sequential
 - [ ] Fresh build output shows success
 - [ ] lsp_diagnostics shows 0 errors on affected files
 - [ ] Architect verification passed (STANDARD tier minimum)
+- [ ] ai-slop-cleaner pass completed on changed files (or --no-deslop specified)
+- [ ] Post-deslop regression tests pass
 - [ ] `/cancel` run for clean state cleanup
 </Final_Checklist>
 
@@ -180,6 +191,10 @@ When the user provides the `--prd` flag, initialize a Product Requirements Docum
 
 ### Detecting PRD Mode
 Check if `{{PROMPT}}` contains `--prd` or `--PRD`.
+
+### Detecting `--no-deslop`
+Check if `{{PROMPT}}` contains `--no-deslop`.
+If `--no-deslop` is present, skip the deslop pass entirely after Step 7 and continue using the latest successful pre-deslop verification evidence.
 
 ### Visual Reference Flags (Optional)
 Ralph execution supports visual reference flags for screenshot tasks:

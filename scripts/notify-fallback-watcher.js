@@ -2,7 +2,7 @@
 
 import { existsSync } from 'fs';
 import { appendFile, mkdir, readFile, readdir, stat, unlink, writeFile } from 'fs/promises';
-import { spawn, spawnSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
 import { drainPendingTeamDispatch } from './notify-hook/team-dispatch.js';
@@ -14,9 +14,6 @@ import {
   resolveLeaderStalenessThresholdMs,
 } from './notify-hook/team-leader-nudge.js';
 import { DEFAULT_MARKER } from './tmux-hook-engine.js';
-import { RalphthonOrchestrator } from '../dist/ralphthon/orchestrator.js';
-import { readRalphthonPrd, writeRalphthonPrd } from '../dist/ralphthon/prd.js';
-import { createRalphthonRuntimeState, readRalphthonRuntimeState, writeRalphthonRuntimeState } from '../dist/ralphthon/runtime.js';
 
 function argValue(name, fallback = '') {
   const idx = process.argv.indexOf(name);
@@ -59,6 +56,8 @@ async function waitForPidExit(pid, timeoutMs = 3000, stepMs = 50) {
 const cwd = resolve(argValue('--cwd', process.cwd()));
 const notifyScript = resolve(argValue('--notify-script', join(cwd, 'scripts', 'notify-hook.js')));
 const runOnce = process.argv.includes('--once');
+const authorityOnly = process.argv.includes('--authority-only');
+const authorityEnabled = authorityOnly || safeString(process.env.OMX_HUD_AUTHORITY || '').trim() === '1';
 // Keep fallback control-plane ticks comfortably below the default dispatch
 // ack budget so leaderless team dispatch + stale-alert recovery do not feel
 // laggy between native notify-hook turns.
@@ -86,8 +85,7 @@ const logPath = join(logsDir, `notify-fallback-${new Date().toISOString().split(
 const RALPH_CONTINUE_TEXT = 'Ralph loop active continue';
 const RALPH_CONTINUE_CADENCE_MS = 60_000;
 const RALPH_TERMINAL_PHASES = new Set(['complete', 'failed', 'cancelled']);
-const RALPHTHON_WATCHDOG_RESTART_LIMIT = 3;
-const RALPHTHON_WATCHDOG_RESTART_WINDOW_MS = 5 * 60 * 1000;
+const HUD_AUTHORITY_REASON = 'hud_authority_required';
 
 const fileState = new Map();
 const seenTurnKeys = new Set();
@@ -129,18 +127,6 @@ let lastParentGuard = {
   state_path: '',
   current_phase: '',
 };
-let lastRalphthonWatchdog = {
-  active: false,
-  restart_count: 0,
-  restart_window_started_at: '',
-  last_tick_at: null,
-  last_error: null,
-  last_result: null,
-};
-let ralphthonRestartWindowStartedAt = 0;
-let ralphthonRestartCount = 0;
-let ralphthonOrchestrator = null;
-
 function eventLog(event) {
   return appendFile(logPath, `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`).catch(() => {});
 }
@@ -177,20 +163,6 @@ async function loadPersistedWatcherState() {
     .then((content) => JSON.parse(content))
     .catch(() => null);
   lastRalphContinueSteer = normalizeRalphContinueSteerState(persisted?.ralph_continue_steer);
-  if (persisted?.ralphthon_watchdog && typeof persisted.ralphthon_watchdog === 'object') {
-    lastRalphthonWatchdog = {
-      ...lastRalphthonWatchdog,
-      ...persisted.ralphthon_watchdog,
-    };
-    const persistedRestartCount = Number(persisted.ralphthon_watchdog.restart_count);
-    if (Number.isFinite(persistedRestartCount) && persistedRestartCount >= 0) {
-      ralphthonRestartCount = Math.floor(persistedRestartCount);
-    }
-    const persistedWindowStart = Date.parse(safeString(persisted.ralphthon_watchdog.restart_window_started_at));
-    if (Number.isFinite(persistedWindowStart) && persistedWindowStart > 0) {
-      ralphthonRestartWindowStartedAt = persistedWindowStart;
-    }
-  }
 }
 
 async function resolveActiveModeState(mode) {
@@ -242,10 +214,6 @@ async function resolveActiveRalphState() {
   return resolveActiveModeState('ralph');
 }
 
-async function resolveActiveRalphthonState() {
-  return resolveActiveModeState('ralphthon');
-}
-
 async function emitRalphContinueSteer(paneId, message) {
   const markedText = `${message} ${DEFAULT_MARKER}`;
   await new Promise((resolve) => {
@@ -264,34 +232,6 @@ async function emitRalphContinueSteer(paneId, message) {
   }
 }
 
-function resolveSessionLeaderPaneId(sessionName) {
-  const normalized = safeString(sessionName).trim();
-  if (!normalized) return '';
-  const listed = spawnSync('tmux', ['list-panes', '-t', normalized, '-F', '#{pane_id}\t#{pane_start_command}\t#{pane_current_command}'], { encoding: 'utf-8' });
-  if (listed.status !== 0) return '';
-  const lines = safeString(listed.stdout).split('\n').map((line) => line.trim()).filter(Boolean);
-  for (const line of lines) {
-    const [paneId = '', startCommand = '', currentCommand = ''] = line.split('\t');
-    if (!paneId.startsWith('%')) continue;
-    const combined = `${startCommand} ${currentCommand}`.toLowerCase();
-    if (/\bomx(?:\.js)?\b/.test(combined) && /\bhud\b/.test(combined) && /--watch\b/.test(combined)) continue;
-    return paneId;
-  }
-  return '';
-}
-
-function resolveRalphthonPaneTarget(activeRalphthon) {
-  const state = activeRalphthon?.state && typeof activeRalphthon.state === 'object' ? activeRalphthon.state : {};
-  const leaderPaneId = safeString(state.leader_pane_id).trim();
-  if (leaderPaneId.startsWith('%')) return leaderPaneId;
-  const tmuxPaneId = safeString(state.tmux_pane_id).trim();
-  if (tmuxPaneId.startsWith('%')) return tmuxPaneId;
-  const sessionName = safeString(state.tmux_session).trim();
-  const sessionPane = resolveSessionLeaderPaneId(sessionName);
-  if (sessionPane) return sessionPane;
-  return '';
-}
-
 async function runRalphContinueSteerTick() {
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
@@ -306,6 +246,11 @@ async function runRalphContinueSteerTick() {
     state_path: activeRalph.path,
     pane_current_command: '',
   };
+
+  if (!authorityEnabled) {
+    lastRalphContinueSteer.last_reason = HUD_AUTHORITY_REASON;
+    return;
+  }
 
   if (!activeRalph.active) return;
 
@@ -445,24 +390,21 @@ async function writeState(extra = {}) {
     tracked_files: fileState.size,
     seen_turns: seenTurnKeys.size,
     dispatch_drain: {
-      enabled: true,
+      enabled: authorityEnabled,
       max_per_tick: dispatchTickMax,
       run_count: dispatchDrainRuns,
       ...lastDispatchDrain,
     },
     leader_nudge: {
-      enabled: true,
+      enabled: authorityEnabled,
       run_count: leaderNudgeRuns,
       ...lastLeaderNudge,
     },
     ralph_continue_steer: {
       ...lastRalphContinueSteer,
-      enabled: true,
+      enabled: authorityEnabled,
       cadence_ms: RALPH_CONTINUE_CADENCE_MS,
       message: RALPH_CONTINUE_TEXT,
-    },
-    ralphthon_watchdog: {
-      ...lastRalphthonWatchdog,
     },
     ...extra,
   };
@@ -491,13 +433,11 @@ async function enforceLifecycleGuards() {
   if (runOnce) return false;
   if (parentIsGone()) {
     const activeRalph = await resolveActiveRalphState();
-    const activeRalphthon = await resolveActiveRalphthonState();
-    const activeMode = activeRalph.active ? activeRalph : activeRalphthon;
-    if (activeMode.active) {
-      const currentPhase = safeString(activeMode.state?.current_phase);
+    if (activeRalph.active && authorityEnabled) {
+      const currentPhase = safeString(activeRalph.state?.current_phase);
       const nextParentGuard = {
         reason: 'parent_gone_deferred_for_active_ralph',
-        state_path: activeMode.path,
+        state_path: activeRalph.path,
         current_phase: currentPhase,
       };
       if (
@@ -684,6 +624,26 @@ async function runLeaderNudgeTick() {
   const leaderOnly = safeString(process.env.OMX_TEAM_WORKER || '').trim() === '';
   const staleThresholdMs = resolveLeaderStalenessThresholdMs();
 
+  if (!authorityEnabled) {
+    leaderNudgeRuns += 1;
+    lastLeaderNudge = {
+      enabled: false,
+      leader_only: leaderOnly,
+      stale_threshold_ms: staleThresholdMs,
+      precomputed_leader_stale: null,
+      last_tick_at: startedIso,
+      last_error: HUD_AUTHORITY_REASON,
+    };
+    await eventLog({
+      type: 'leader_nudge_tick',
+      leader_only: leaderOnly,
+      run_count: leaderNudgeRuns,
+      reason: HUD_AUTHORITY_REASON,
+      stale_threshold_ms: staleThresholdMs,
+    });
+    return;
+  }
+
   if (!leaderOnly) {
     leaderNudgeRuns += 1;
     lastLeaderNudge = {
@@ -747,6 +707,24 @@ async function runLeaderNudgeTick() {
 
 async function runDispatchDrainTick() {
   const startedIso = new Date().toISOString();
+  if (!authorityEnabled) {
+    dispatchDrainRuns += 1;
+    lastDispatchDrain = {
+      leader_only: safeString(process.env.OMX_TEAM_WORKER || '').trim() === '',
+      last_tick_at: startedIso,
+      last_result: { processed: 0, reason: HUD_AUTHORITY_REASON },
+      last_error: null,
+    };
+    await eventLog({
+      type: 'dispatch_drain_tick',
+      leader_only: lastDispatchDrain.leader_only,
+      dispatch_max_per_tick: dispatchTickMax,
+      run_count: dispatchDrainRuns,
+      processed: 0,
+      reason: HUD_AUTHORITY_REASON,
+    });
+    return;
+  }
   try {
     const result = await drainPendingTeamDispatch({ cwd, stateDir, logsDir, maxPerTick: dispatchTickMax });
     dispatchDrainRuns += 1;
@@ -788,215 +766,13 @@ async function pumpTeamControlPlaneTick() {
 }
 
 
-async function updateRalphthonModePatch(patch) {
-  try {
-    const sessionPath = join(stateDir, 'session.json');
-    let stateFile = join(stateDir, 'ralphthon-state.json');
-    try {
-      const session = JSON.parse(await readFile(sessionPath, 'utf-8'));
-      const sessionId = safeString(session?.session_id).trim();
-      if (sessionId) {
-        const scoped = join(stateDir, 'sessions', sessionId, 'ralphthon-state.json');
-        if (existsSync(scoped)) stateFile = scoped;
-      }
-    } catch {}
-
-    if (!existsSync(stateFile)) return;
-    const parsed = JSON.parse(await readFile(stateFile, 'utf-8'));
-    const next = { ...parsed, ...patch };
-    await writeFile(stateFile, `${JSON.stringify(next, null, 2)}\n`);
-  } catch {}
-}
-
-async function readActiveSessionId() {
-  try {
-    const session = JSON.parse(await readFile(join(stateDir, 'session.json'), 'utf-8'));
-    const sessionId = safeString(session?.session_id).trim();
-    return sessionId || 'ralphthon-watchdog';
-  } catch {
-    return 'ralphthon-watchdog';
-  }
-}
-
-async function notifyRalphthonWatchdogFailure(message) {
-  const sessionId = await readActiveSessionId();
-  try {
-    const { notifyLifecycle } = await import('../dist/notifications/index.js');
-    const result = await notifyLifecycle('session-stop', {
-      sessionId,
-      projectPath: cwd,
-      projectName: cwd.split('/').filter(Boolean).at(-1) || 'unknown',
-      activeMode: 'ralphthon',
-      reason: 'ralphthon_watchdog_restart_limit_reached',
-      tmuxTail: message,
-      contextSummary: message,
-    });
-    await eventLog({
-      type: 'ralphthon_alert_notification',
-      status: result ? 'delivered' : 'skipped',
-      session_id: sessionId,
-      message,
-    });
-  } catch (error) {
-    await eventLog({
-      type: 'ralphthon_alert_notification',
-      status: 'failed',
-      session_id: sessionId,
-      message,
-      error: error instanceof Error ? error.message : safeString(error),
-    });
-  }
-}
-
-function shouldRestartRalphthonWatchdog(nowMs) {
-  if (!ralphthonRestartWindowStartedAt || (nowMs - ralphthonRestartWindowStartedAt) > RALPHTHON_WATCHDOG_RESTART_WINDOW_MS) {
-    ralphthonRestartWindowStartedAt = nowMs;
-    ralphthonRestartCount = 0;
-  }
-  return ralphthonRestartCount < RALPHTHON_WATCHDOG_RESTART_LIMIT;
-}
-
-async function runRalphthonWatchdogTick() {
-  const now = Date.now();
-  const nowIso = new Date(now).toISOString();
-  const activeRalphthon = await resolveActiveRalphthonState();
-  const paneTarget = resolveRalphthonPaneTarget(activeRalphthon) || await resolveNudgePaneTarget(stateDir);
-  let runtime = await readRalphthonRuntimeState(cwd).catch(() => null);
-
-  if (!activeRalphthon.active) {
-    lastRalphthonWatchdog = {
-      ...lastRalphthonWatchdog,
-      active: false,
-      last_tick_at: nowIso,
-      last_result: 'inactive',
-      last_error: null,
-      state_path: activeRalphthon.path,
-      runtime_path: runtime ? join(cwd, '.omx', 'ralphthon', 'runtime.json') : '',
-    };
-    return;
-  }
-  if (!runtime) {
-    runtime = createRalphthonRuntimeState(paneTarget);
-  }
-  if (!paneTarget) {
-    lastRalphthonWatchdog = {
-      ...lastRalphthonWatchdog,
-      active: true,
-      last_tick_at: nowIso,
-      last_result: 'pane_missing',
-      last_error: null,
-      state_path: activeRalphthon.path,
-      runtime_path: join(cwd, '.omx', 'ralphthon', 'runtime.json'),
-      pane_id: '',
-    };
-    await writeRalphthonRuntimeState(cwd, runtime).catch(() => {});
-    return;
-  }
-  if (safeString(runtime.leaderTarget).trim() !== paneTarget) {
-    runtime = { ...runtime, leaderTarget: paneTarget };
-    await writeRalphthonRuntimeState(cwd, runtime).catch(() => {});
-  }
-
-  if (!ralphthonOrchestrator) {
-    ralphthonOrchestrator = new RalphthonOrchestrator({
-      readPrd: async () => readRalphthonPrd(cwd),
-      writePrd: async (prd) => { await writeRalphthonPrd(cwd, prd); },
-      readRuntime: async () => readRalphthonRuntimeState(cwd),
-      writeRuntime: async (next) => { await writeRalphthonRuntimeState(cwd, next); },
-      capturePane: async (leaderTarget) => {
-        const result = spawnSync('tmux', ['capture-pane', '-t', leaderTarget, '-p', '-S', '-120'], { encoding: 'utf-8' });
-        return result.status === 0 ? safeString(result.stdout) : '';
-      },
-      injectPrompt: async (leaderTarget, prompt) => {
-        const paneGuard = await checkPaneReadyForTeamSendKeys(leaderTarget);
-        if (!paneGuard.ok) {
-          await eventLog({
-            type: 'ralphthon_injection_skipped',
-            pane_id: leaderTarget,
-            reason: paneGuard.reason || 'pane_guard_blocked',
-            pane_current_command: paneGuard.paneCurrentCommand || null,
-          });
-          return false;
-        }
-        const marked = `${prompt} ${DEFAULT_MARKER}`;
-        const send = spawnSync('tmux', ['send-keys', '-t', leaderTarget, '-l', marked], { encoding: 'utf-8' });
-        if (send.status !== 0) throw new Error((send.stderr || send.stdout || '').trim() || 'tmux send-keys failed');
-        spawnSync('tmux', ['send-keys', '-t', leaderTarget, 'C-m'], { encoding: 'utf-8' });
-        spawnSync('tmux', ['send-keys', '-t', leaderTarget, 'C-m'], { encoding: 'utf-8' });
-        return true;
-      },
-      updateModeState: updateRalphthonModePatch,
-      alert: async (message) => { await eventLog({ type: 'ralphthon_alert', message }); },
-    });
-  }
-
-  try {
-    const result = await ralphthonOrchestrator.tick();
-    lastRalphthonWatchdog = {
-      ...lastRalphthonWatchdog,
-      active: true,
-      last_tick_at: nowIso,
-      last_result: result,
-      last_error: null,
-      state_path: activeRalphthon.path,
-      runtime_path: join(cwd, '.omx', 'ralphthon', 'runtime.json'),
-      pane_id: paneTarget,
-      restart_count: ralphthonRestartCount,
-      restart_window_started_at: ralphthonRestartWindowStartedAt ? new Date(ralphthonRestartWindowStartedAt).toISOString() : '',
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : safeString(error);
-    if (shouldRestartRalphthonWatchdog(now)) {
-      ralphthonRestartCount += 1;
-      ralphthonOrchestrator = null;
-      lastRalphthonWatchdog = {
-        ...lastRalphthonWatchdog,
-        active: true,
-        last_tick_at: nowIso,
-        last_result: 'restart_scheduled',
-        last_error: message,
-        state_path: activeRalphthon.path,
-        runtime_path: join(cwd, '.omx', 'ralphthon', 'runtime.json'),
-        pane_id: paneTarget,
-        restart_count: ralphthonRestartCount,
-        restart_window_started_at: new Date(ralphthonRestartWindowStartedAt).toISOString(),
-      };
-      await eventLog({ type: 'ralphthon_watchdog_restart', restart_count: ralphthonRestartCount, error: message });
-      return;
-    }
-    lastRalphthonWatchdog = {
-      ...lastRalphthonWatchdog,
-      active: false,
-      last_tick_at: nowIso,
-      last_result: 'restart_limit_reached',
-      last_error: message,
-      state_path: activeRalphthon.path,
-      runtime_path: join(cwd, '.omx', 'ralphthon', 'runtime.json'),
-      pane_id: paneTarget,
-      restart_count: ralphthonRestartCount,
-      restart_window_started_at: ralphthonRestartWindowStartedAt ? new Date(ralphthonRestartWindowStartedAt).toISOString() : '',
-    };
-    await updateRalphthonModePatch({
-      active: false,
-      current_phase: 'failed',
-      completed_at: nowIso,
-      error: message || 'ralphthon_watchdog_restart_limit_reached',
-      stop_reason: 'ralphthon_watchdog_restart_limit_reached',
-    });
-    await eventLog({ type: 'ralphthon_watchdog_failed', restart_count: ralphthonRestartCount, error: message });
-    const notifyLine = `[ralphthon] watchdog failed permanently after ${ralphthonRestartCount} restarts: ${message || 'unknown error'}`;
-    process.stderr.write(`${notifyLine}\n`);
-    await eventLog({ type: 'ralphthon_alert', message: notifyLine, user_visible: true });
-    await notifyRalphthonWatchdogFailure(notifyLine);
-  }
-}
-
 async function runWatcherCycle() {
-  await ensureTrackedFiles();
-  await pollFiles();
+  if (!authorityOnly) {
+    await ensureTrackedFiles();
+    await pollFiles();
+  }
   await pumpTeamControlPlaneTick();
   await runRalphWatcherBehaviorTick();
-  await runRalphthonWatchdogTick();
   await writeState();
 }
 
@@ -1030,6 +806,8 @@ async function main() {
     notify_script: notifyScript,
     poll_ms: pollMs,
     once: runOnce,
+    authority_only: authorityOnly,
+    authority_enabled: authorityEnabled,
     parent_pid: parentPid,
     pid_file: runOnce ? null : pidFilePath,
     max_lifetime_ms: maxLifetimeMs,
@@ -1051,36 +829,10 @@ async function main() {
 
 main().catch(async (err) => {
   await mkdir(dirname(logPath), { recursive: true }).catch(() => {});
-  const restartCount = Math.max(0, asNumber(process.env.OMX_RALPHTHON_WATCHDOG_PROC_RESTART_COUNT || '0', 0));
-  const activeRalphthon = await resolveActiveRalphthonState().catch(() => ({ active: false, path: '', state: null }));
   await eventLog({
     type: 'watcher_error',
     reason: 'fatal',
     error: err instanceof Error ? err.message : safeString(err),
-    ralphthon_active: activeRalphthon.active === true,
-    restart_count: restartCount,
   });
-  if (!runOnce && activeRalphthon.active === true && restartCount < RALPHTHON_WATCHDOG_RESTART_LIMIT) {
-    const child = spawn(
-      process.execPath,
-      [process.argv[1], ...process.argv.slice(2)],
-      {
-        cwd,
-        detached: true,
-        stdio: 'ignore',
-        env: {
-          ...process.env,
-          OMX_RALPHTHON_WATCHDOG_PROC_RESTART_COUNT: String(restartCount + 1),
-        },
-      },
-    );
-    child.unref();
-    await eventLog({
-      type: 'watcher_restart_spawned',
-      reason: 'fatal_recovery',
-      restart_count: restartCount + 1,
-      spawned_pid: child.pid ?? null,
-    });
-  }
   process.exit(1);
 });

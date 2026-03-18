@@ -1,5 +1,10 @@
 import { getAgent } from '../agents/definitions.js';
-import { DEFAULT_SPARK_MODEL, getSparkDefaultModel } from '../config/models.js';
+import {
+  DEFAULT_SPARK_MODEL,
+  getMainDefaultModel,
+  getSparkDefaultModel,
+  getStandardDefaultModel,
+} from '../config/models.js';
 
 const MADMAX_FLAG = '--madmax';
 const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
@@ -11,7 +16,6 @@ const LOW_COMPLEXITY_AGENT_TYPES = new Set([
   'explore',
   'explorer',
   'style-reviewer',
-  'writer',
 ]);
 
 // Canonical default only; effective low-complexity resolution flows through resolveTeamLowComplexityDefaultModel().
@@ -162,6 +166,27 @@ export function resolveTeamWorkerLaunchArgs(options: ResolveTeamWorkerLaunchArgs
 export function resolveAgentReasoningEffort(agentType?: string): TeamReasoningEffort | undefined {
   if (typeof agentType !== 'string' || agentType.trim() === '') return undefined;
   return normalizeOptionalReasoning(getAgent(agentType)?.reasoningEffort);
+}
+
+export function resolveAgentDefaultModel(
+  agentType?: string,
+  codexHomeOverride?: string,
+): string | undefined {
+  if (typeof agentType !== 'string' || agentType.trim() === '') return undefined;
+  const normalized = agentType.trim().toLowerCase();
+  if (normalized === '') return undefined;
+  if (normalized.endsWith('-low')) return resolveTeamLowComplexityDefaultModel(codexHomeOverride);
+
+  switch (getAgent(normalized)?.modelClass) {
+    case 'fast':
+      return resolveTeamLowComplexityDefaultModel(codexHomeOverride);
+    case 'frontier':
+      return getMainDefaultModel(codexHomeOverride);
+    case 'standard':
+      return getStandardDefaultModel(codexHomeOverride);
+    default:
+      return undefined;
+  }
 }
 
 export function isLowComplexityAgentType(agentType?: string): boolean {

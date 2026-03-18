@@ -23,7 +23,7 @@ export interface ModeState {
   [key: string]: unknown;
 }
 
-export type ModeName = 'autopilot' | 'autoresearch' | 'ralph' | 'ralphthon' | 'ultrawork' | 'team' | 'ultraqa' | 'ralplan';
+export type ModeName = 'autopilot' | 'autoresearch' | 'ralph' | 'ultrawork' | 'team' | 'ultraqa' | 'ralplan';
 
 /** @deprecated These mode names were removed in v4.6. Use the canonical modes instead. */
 export type DeprecatedModeName = 'ultrapilot' | 'pipeline' | 'ecomode';
@@ -44,7 +44,7 @@ export function getDeprecationWarning(mode: string): string | null {
   return `[DEPRECATED] Mode "${mode}" is deprecated. ${warning}`;
 }
 
-const EXCLUSIVE_MODES: ModeName[] = ['autopilot', 'autoresearch', 'ralph', 'ralphthon', 'ultrawork'];
+const EXCLUSIVE_MODES: ModeName[] = ['autopilot', 'autoresearch', 'ralph', 'ultrawork'];
 
 function normalizeRalphModeStateOrThrow(state: ModeState): ModeState {
   const originalPhase = state.current_phase;

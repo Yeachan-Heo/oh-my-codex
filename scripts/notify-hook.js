@@ -36,8 +36,6 @@ import {
   pruneRecentTurns,
   readdir,
 } from './notify-hook/state-io.js';
-import { isLeaderStale, resolveLeaderStalenessThresholdMs, maybeNudgeTeamLeader } from './notify-hook/team-leader-nudge.js';
-import { drainPendingTeamDispatch } from './notify-hook/team-dispatch.js';
 import { syncLinkedRalphOnTeamTerminal } from './notify-hook/linked-sync.js';
 import { handleTmuxInjection } from './notify-hook/tmux-injection.js';
 import { maybeAutoNudge, resolveNudgePaneTarget } from './notify-hook/auto-nudge.js';
@@ -285,17 +283,6 @@ async function main() {
     }
   }
 
-  // 3.5. Pre-compute leader staleness BEFORE updating HUD state (used by nudge in step 6)
-  let preComputedLeaderStale = false;
-  if (!isTeamWorker) {
-    try {
-      const stalenessMs = resolveLeaderStalenessThresholdMs();
-      preComputedLeaderStale = await isLeaderStale(stateDir, stalenessMs, Date.now());
-    } catch {
-      // Non-critical
-    }
-  }
-
   // 4. Write HUD state summary for `omx hud` (lead session only)
   if (!isTeamWorker) {
     const hudStatePath = join(stateDir, 'hud-state.json');
@@ -354,23 +341,8 @@ async function main() {
     }
   }
 
-  // 5.5. Opportunistic team dispatch drain (leader session only).
-  if (!isTeamWorker) {
-    try {
-      await drainPendingTeamDispatch({ cwd, stateDir, logsDir, maxPerTick: 5 });
-    } catch {
-      // Non-critical
-    }
-  }
-
-  // 6. Team leader nudge (lead session only): remind the leader to check teammate/mailbox state.
-  if (!isTeamWorker) {
-    try {
-      await maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputedLeaderStale });
-    } catch {
-      // Non-critical
-    }
-  }
+  // 5.5. Leader-side dispatch drain + leader nudge authority moved to HUD watch.
+  // Notify-hook remains producer-only for turn/state/event updates in Slice 2.
 
   // 7. Dispatch native turn-complete hook event (best effort, post-dedupe)
   try {

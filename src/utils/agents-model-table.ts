@@ -2,10 +2,13 @@ import { AGENT_DEFINITIONS, type AgentDefinition } from '../agents/definitions.j
 import { getRootModelName } from '../config/generator.js';
 import {
   DEFAULT_FRONTIER_MODEL,
+  DEFAULT_STANDARD_MODEL,
   DEFAULT_SPARK_MODEL,
   getEnvConfiguredSparkDefaultModel,
   getEnvConfiguredMainDefaultModel,
+  getEnvConfiguredStandardDefaultModel,
   getSparkDefaultModel,
+  getStandardDefaultModel,
 } from '../config/models.js';
 
 export const OMX_MODELS_START_MARKER = '<!-- OMX:MODELS:START -->';
@@ -71,11 +74,15 @@ export function resolveAgentsModelTableContext(
     getEnvConfiguredSparkDefaultModel(env, codexHomeOverride) ??
     getSparkDefaultModel(codexHomeOverride) ??
     DEFAULT_SPARK_MODEL;
+  const subagentDefaultModel =
+    getEnvConfiguredStandardDefaultModel(env, codexHomeOverride) ??
+    getStandardDefaultModel(codexHomeOverride) ??
+    DEFAULT_STANDARD_MODEL;
 
   return {
     frontierModel,
     sparkModel,
-    subagentDefaultModel: frontierModel,
+    subagentDefaultModel,
   };
 }
 
@@ -97,10 +104,10 @@ export function buildAgentsModelTable(
       'Fast triage, explore, lightweight synthesis, and low-latency routing.',
     ),
     buildTableRow(
-      'Subagent default',
+      'Standard (subagent default)',
       context.subagentDefaultModel,
-      'medium',
-      'Balanced default for standard-capability executors and specialists unless a role is explicitly frontier or fast-lane.',
+      'high',
+      'Default standard-capability model for installable executors and specialists unless a role is explicitly frontier or spark.',
     ),
     ...Object.values(definitions).map((agent) =>
       buildTableRow(

@@ -386,7 +386,7 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
   }
 
   const N = workers.length;
-  const nextAction = `Next: run omx team status ${teamName}, check unread worker messages, then assign the next concrete task or shut the team down.`;
+  const nextAction = `Next: run omx team status ${teamName}, read unread worker messages, then decide whether to assign the next concrete task, reconcile results, or shut the team down.`;
   const message = `[OMX] All ${N} worker${N === 1 ? '' : 's'} idle. ${nextAction} ${DEFAULT_MARKER}`;
   const tmuxTarget = leaderPaneId;
   const paneGuard = await checkPaneReadyForTeamSendKeys(tmuxTarget);

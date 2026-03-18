@@ -711,7 +711,7 @@ exit 0
       assert.ok(existsSync(tmuxLogPath), 'tmux should have been called');
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /\[OMX\] All 1 worker idle/, 'single worker uses singular form');
-      assert.match(tmuxLog, /Next: run omx team status solo-team, check unread worker messages, then assign the next concrete task or shut the team down/, 'all-workers-idle notification should include a next action');
+      assert.match(tmuxLog, /Next: run omx team status solo-team, read unread worker messages, then decide whether to assign the next concrete task, reconcile results, or shut the team down/, 'all-workers-idle notification should include a next action');
       assert.doesNotMatch(tmuxLog, /All 1 workers idle/, 'should not use plural for single worker');
     });
   });

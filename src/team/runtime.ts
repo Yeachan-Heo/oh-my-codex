@@ -17,7 +17,6 @@ import {
   dismissTrustPromptIfPresent,
   sleepFractionalSeconds,
   sendToWorker,
-  sendToLeaderPane,
   sendToWorkerStdin,
   isWorkerAlive,
   getWorkerPanePid,
@@ -99,12 +98,11 @@ import { loadRolePrompt } from './role-router.js';
 import { codexPromptsDir } from '../utils/paths.js';
 import { type TeamPhase, type TerminalPhase } from './orchestrator.js';
 import {
-  isLowComplexityAgentType,
   resolveTeamWorkerLaunchArgs,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
-  resolveTeamLowComplexityDefaultModel,
   parseTeamWorkerLaunchArgs,
   splitWorkerLaunchArgs,
+  resolveAgentDefaultModel,
   resolveAgentReasoningEffort,
   type TeamReasoningEffort,
 } from './model-contract.js';
@@ -1235,9 +1233,7 @@ export function resolveWorkerLaunchArgsFromEnv(
   const inheritedArgs = (typeof inheritedLeaderModel === 'string' && inheritedLeaderModel.trim() !== '')
     ? ['--model', inheritedLeaderModel.trim()]
     : [];
-  const fallbackModel = isLowComplexityAgentType(agentType)
-    ? resolveTeamLowComplexityDefaultModel(env.CODEX_HOME)
-    : undefined;
+  const fallbackModel = resolveAgentDefaultModel(agentType, env.CODEX_HOME);
 
   // Detect if an explicit reasoning override exists before resolving (for log source labelling)
   const preEnvArgs = splitWorkerLaunchArgs(env.OMX_TEAM_WORKER_LAUNCH_ARGS);
@@ -1391,9 +1387,7 @@ export async function startTeam(
   let config: TeamConfig | null = null;
   const sharedWorkerLaunchArgs = resolveTeamWorkerLaunchArgs({
     existingRaw: process.env.OMX_TEAM_WORKER_LAUNCH_ARGS,
-    fallbackModel: isLowComplexityAgentType(agentType)
-      ? resolveTeamLowComplexityDefaultModel(process.env.CODEX_HOME)
-      : undefined,
+    fallbackModel: resolveAgentDefaultModel(agentType, process.env.CODEX_HOME),
   });
   const workerCliPlan = resolveTeamWorkerCliPlan(workerCount, sharedWorkerLaunchArgs, process.env);
   const workerReadyTimeoutMs = resolveWorkerReadyTimeoutMs(process.env);
@@ -1413,6 +1407,7 @@ export async function startTeam(
         leader_cwd: leaderCwd,
         team_state_root: teamStateRoot,
         workspace_mode: workspaceMode,
+        worktree_mode: effectiveWorktreeMode,
       },
       options.ralph === true ? 'linked_ralph' : 'default',
     );
@@ -1422,6 +1417,7 @@ export async function startTeam(
     config.leader_cwd = leaderCwd;
     config.team_state_root = teamStateRoot;
     config.workspace_mode = workspaceMode;
+    config.worktree_mode = effectiveWorktreeMode;
 
     // 4. Create tasks
     for (const t of tasks) {
@@ -1504,7 +1500,7 @@ export async function startTeam(
       const preferredReasoning = resolveAgentReasoningEffort(workerRole) ?? resolveAgentReasoningEffort(agentType);
       const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(
         process.env,
-        agentType,
+        workerRole,
         undefined,
         preferredReasoning,
         workerCliPlan[i - 1],
@@ -3090,19 +3086,9 @@ async function finalizeHookPreferredMailboxDispatch(params: {
 }
 
 async function notifyLeaderAsync(config: TeamConfig, message: string, cwd: string): Promise<DispatchOutcome> {
-  // Primary: inject directly into the leader pane via tmux send-keys.
-  // This is the fallback path when hook-based dispatch timed out, so the
-  // leader needs a direct tmux notification to wake up. Fixes #437.
-  if (config.leader_pane_id && isTmuxAvailable()) {
-    try {
-      await sendToLeaderPane(config.leader_pane_id, message);
-      return { ok: true, transport: 'tmux_send_keys', reason: 'leader_pane_notified' };
-    } catch (err) {
-      process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
-      // Fall through to mailbox
-    }
-  }
-  // Fallback: write to leader mailbox (leader picks up on next hook cycle)
+  // Canonical leader delivery is durable mailbox persistence plus HUD-owned
+  // authority processing. Team runtime must not directly inject into the
+  // leader pane from this fallback path.
   const { notifyLeaderMailboxAsync } = await import('./tmux-session.js');
   const persisted = await notifyLeaderMailboxAsync(config.name, 'system', message, cwd);
   if (!persisted) {

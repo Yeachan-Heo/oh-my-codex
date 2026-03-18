@@ -3,10 +3,18 @@
  * Writes standalone TOML files under ~/.codex/agents/ or ./.codex/agents/.
  */
 
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { AGENT_DEFINITIONS, AgentDefinition } from "./definitions.js";
+import {
+  DEFAULT_FRONTIER_MODEL,
+  getEnvConfiguredStandardDefaultModel,
+  getMainDefaultModel,
+  getSparkDefaultModel,
+  getStandardDefaultModel,
+} from "../config/models.js";
+import { getRootModelName } from "../config/generator.js";
 import { codexAgentsDir } from "../utils/paths.js";
 
 const POSTURE_OVERLAYS: Record<AgentDefinition["posture"], string> = {
@@ -82,6 +90,60 @@ export interface GeneratedNativeAgentConfig {
   developerInstructions?: string;
   model?: string;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh";
+}
+
+interface AgentModelResolutionOptions {
+  codexHomeOverride?: string;
+  configTomlContent?: string;
+  env?: NodeJS.ProcessEnv;
+}
+
+function readConfigTomlContent(
+  codexHomeOverride?: string,
+  provided?: string,
+): string {
+  if (typeof provided === "string") return provided;
+  const configPath = join(codexHomeOverride ?? process.env.CODEX_HOME ?? "", "config.toml");
+  if (codexHomeOverride && existsSync(configPath)) {
+    return readFileSync(configPath, "utf-8");
+  }
+  return "";
+}
+
+function resolveFrontierModel(options: AgentModelResolutionOptions): string {
+  const configTomlContent = readConfigTomlContent(
+    options.codexHomeOverride,
+    options.configTomlContent,
+  );
+  return getRootModelName(configTomlContent)
+    ?? getMainDefaultModel(options.codexHomeOverride);
+}
+
+function resolveStandardModel(options: AgentModelResolutionOptions): string {
+  const frontierModel = resolveFrontierModel(options);
+  const explicitStandardModel = getEnvConfiguredStandardDefaultModel(
+    options.env ?? process.env,
+    options.codexHomeOverride,
+  );
+
+  if (explicitStandardModel) return explicitStandardModel;
+  if (frontierModel !== DEFAULT_FRONTIER_MODEL) return frontierModel;
+  return getStandardDefaultModel(options.codexHomeOverride);
+}
+
+function resolveAgentModel(
+  agent: AgentDefinition,
+  options: AgentModelResolutionOptions = {},
+): string {
+  switch (agent.modelClass) {
+    case "frontier":
+      return resolveFrontierModel(options);
+    case "fast":
+      return getSparkDefaultModel(options.codexHomeOverride);
+    case "standard":
+    default:
+      return resolveStandardModel(options);
+  }
 }
 
 function buildPromptInstructions(
@@ -162,11 +224,13 @@ export function generateStandaloneAgentToml(
 export function generateAgentToml(
   agent: AgentDefinition,
   promptContent: string,
+  options: AgentModelResolutionOptions = {},
 ): string {
   return generateStandaloneAgentToml({
     name: agent.name,
     description: agent.description,
     developerInstructions: buildPromptInstructions(agent, promptContent),
+    model: resolveAgentModel(agent, options),
     reasoningEffort: agent.reasoningEffort,
   });
 }
@@ -190,6 +254,7 @@ export async function installNativeAgentConfigs(
     verbose = false,
     agentsDir = codexAgentsDir(),
   } = options;
+  const codexHomeOverride = join(agentsDir, "..");
 
   if (!dryRun) {
     await mkdir(agentsDir, { recursive: true });
@@ -211,7 +276,7 @@ export async function installNativeAgentConfigs(
     }
 
     const promptContent = await readFile(promptPath, "utf-8");
-    const toml = generateAgentToml(agent, promptContent);
+    const toml = generateAgentToml(agent, promptContent, { codexHomeOverride });
 
     if (!dryRun) {
       await writeFile(dst, toml);

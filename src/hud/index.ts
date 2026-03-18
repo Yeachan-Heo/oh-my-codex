@@ -15,6 +15,7 @@ import { renderHud } from './render.js';
 import type { HudFlags, HudPreset, HudRenderContext, ResolvedHudConfig } from './types.js';
 import { HUD_TMUX_HEIGHT_LINES } from './constants.js';
 import { sleep } from '../utils/sleep.js';
+import { runHudAuthorityTick } from './authority.js';
 
 export const HUD_USAGE = [
   'Usage:',
@@ -60,6 +61,7 @@ interface RunWatchModeDependencies {
   readAllStateFn: (cwd: string, config?: ResolvedHudConfig) => Promise<HudRenderContext>;
   readHudConfigFn: (cwd: string) => Promise<ResolvedHudConfig>;
   renderHudFn: (ctx: HudRenderContext, preset: HudPreset) => string;
+  runAuthorityTickFn: (options: { cwd: string }) => Promise<void>;
   writeStdout: (text: string) => void;
   writeStderr: (text: string) => void;
   registerSigint: (handler: () => void) => void;
@@ -83,6 +85,9 @@ export async function runWatchMode(
     readAllStateFn: deps.readAllStateFn ?? readAllState,
     readHudConfigFn: deps.readHudConfigFn ?? readHudConfig,
     renderHudFn: deps.renderHudFn ?? renderHud,
+    runAuthorityTickFn: deps.runAuthorityTickFn ?? (async ({ cwd: authorityCwd }) => {
+      await runHudAuthorityTick({ cwd: authorityCwd });
+    }),
     writeStdout: deps.writeStdout ?? ((text: string) => process.stdout.write(text)),
     writeStderr: deps.writeStderr ?? ((text: string) => process.stderr.write(text)),
     registerSigint: deps.registerSigint ?? ((handler: () => void) => process.on('SIGINT', handler)),
@@ -135,6 +140,7 @@ export async function runWatchMode(
       const preset = flags.preset ?? config.preset;
       const line = dependencies.renderHudFn(ctx, preset);
       dependencies.writeStdout(line + '\x1b[K\n\x1b[J');
+      await dependencies.runAuthorityTickFn({ cwd });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       dependencies.writeStderr(`HUD watch render failed: ${message}\n`);
@@ -223,42 +229,7 @@ export async function hudCommand(args: string[]): Promise<void> {
     return;
   }
 
-  // Watch mode: overwrite in-place (no flicker)
-  let firstRender = true;
-  const render = async () => {
-    if (firstRender) {
-      process.stdout.write('\x1b[2J\x1b[H'); // Clear screen on first render only
-      firstRender = false;
-    } else {
-      process.stdout.write('\x1b[H'); // Move cursor to top-left (no clear)
-    }
-    const config = await readHudConfig(cwd);
-    const ctx = await readAllState(cwd, config);
-    const preset = flags.preset ?? config.preset;
-    const line = renderHud(ctx, preset);
-    process.stdout.write(line + '\x1b[K\n\x1b[J'); // Write line, clear rest of line + below
-  };
-
-  process.stdout.write('\x1b[?25l'); // Hide cursor
-  const abortController = new AbortController();
-  const onSigint = () => {
-    abortController.abort();
-  };
-
-  process.on('SIGINT', onSigint);
-  try {
-    await render();
-    await watchRenderLoop(render, {
-      intervalMs: 1000,
-      signal: abortController.signal,
-      onError: (error) => {
-        console.warn('[omx] warning: hud watch render failed', error);
-      },
-    });
-  } finally {
-    process.off('SIGINT', onSigint);
-    process.stdout.write('\x1b[?25h\x1b[2J\x1b[H'); // Show cursor + clear
-  }
+  await runWatchMode(cwd, flags);
 }
 
 /** Shell-escape a string using single-quote wrapping (POSIX-safe). */

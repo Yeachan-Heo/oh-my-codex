@@ -364,7 +364,6 @@ describe("commandOwnsLocalHelp", () => {
       "hooks",
       "hud",
       "ralph",
-      "ralphthon",
       "resume",
       "session",
       "sparkshell",
@@ -411,13 +410,6 @@ describe("resolveCliInvocation", () => {
   it("resolves autoresearch to autoresearch command", () => {
     assert.deepEqual(resolveCliInvocation(["autoresearch", "missions/demo"]), {
       command: "autoresearch",
-      launchArgs: [],
-    });
-  });
-
-  it("resolves ralphthon to ralphthon command", () => {
-    assert.deepEqual(resolveCliInvocation(["ralphthon", "--resume"]), {
-      command: "ralphthon",
       launchArgs: [],
     });
   });
@@ -659,12 +651,39 @@ describe("resolveCodexLaunchPolicy", () => {
     );
   });
 
+  it("uses tmux-aware launch path when already inside tmux on native Windows", () => {
+    assert.equal(
+      resolveCodexLaunchPolicy(
+        { TMUX: "psmux-session" },
+        "win32",
+        true,
+        true,
+      ),
+      "inside-tmux",
+    );
+  });
+
   it("uses detached tmux on non-macOS hosts when outside tmux and tmux is available", () => {
     assert.equal(resolveCodexLaunchPolicy({}, "linux", true), "detached-tmux");
   });
 
+  it("launches directly on native Windows even when tmux is available", () => {
+    assert.equal(resolveCodexLaunchPolicy({}, "win32", true, true), "direct");
+  });
+
+  it("does not force direct launch for MSYS or Git Bash on win32", () => {
+    assert.equal(
+      resolveCodexLaunchPolicy({ MSYSTEM: "MINGW64" }, "win32", true, false),
+      "detached-tmux",
+    );
+  });
+
   it("launches directly when tmux is unavailable outside tmux", () => {
     assert.equal(resolveCodexLaunchPolicy({}, "linux", false), "direct");
+  });
+
+  it("launches directly on native Windows when tmux is unavailable", () => {
+    assert.equal(resolveCodexLaunchPolicy({}, "win32", false, true), "direct");
   });
 });
 
@@ -802,6 +821,24 @@ describe("detached tmux new-session sequencing", () => {
     assert.equal(steps[0]?.args.at(-1), "powershell.exe");
     assert.equal(steps[1]?.name, "split-and-capture-hud-pane");
     assert.equal(steps[1]?.args.at(-1), hudCmd);
+  });
+
+  it("buildDetachedSessionBootstrapSteps kills detached tmux session on exit and interrupt", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-demo",
+      "/tmp/project",
+      "'codex' '--model' 'gpt-5'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      null,
+    );
+    const leaderCmd = steps[0]?.args.at(-1);
+    assert.equal(typeof leaderCmd, "string");
+    assert.match(leaderCmd!, /^\/bin\/sh -lc '/);
+    assert.match(leaderCmd!, /trap '/);
+    assert.match(leaderCmd!, /0 INT TERM HUP/);
+    assert.match(leaderCmd!, /tmux kill-session -t/);
+    assert.match(leaderCmd!, /"omx-demo"/);
+    assert.match(leaderCmd!, /exit \$status/);
   });
 
   it("buildDetachedSessionFinalizeSteps keeps schedule after split-capture and before attach", () => {

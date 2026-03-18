@@ -18,18 +18,23 @@ import {
   initAutoresearchMission,
   materializeAutoresearchDeepInterviewResult,
   parseInitArgs,
-  spawnAutoresearchTmux,
 } from './autoresearch-guided.js';
-import { resolveAutoresearchDeepInterviewResult } from './autoresearch-intake.js';
+import {
+  listAutoresearchDeepInterviewDraftPaths,
+  listAutoresearchDeepInterviewResultPaths,
+  resolveAutoresearchDeepInterviewResult,
+} from './autoresearch-intake.js';
 import { CODEX_BYPASS_FLAG, MADMAX_FLAG } from './constants.js';
+import { restoreStandaloneHudPane, enableMouseScrolling } from '../team/tmux-session.js';
 
 export const AUTORESEARCH_HELP = `omx autoresearch - Launch OMX autoresearch with thin-supervisor parity semantics
 
 Usage:
-  omx autoresearch                                                (launch Codex CLI deep-interview intake, then background launch)
+  omx autoresearch                                                (human entrypoint: launch Codex CLI deep-interview intake, then execute)
   omx autoresearch [--topic T] [--evaluator CMD] [--keep-policy P] [--slug S]
   omx autoresearch init [--topic T] [--evaluator CMD] [--keep-policy P] [--slug S]
-  omx autoresearch <mission-dir> [codex-args...]
+  omx autoresearch run <mission-dir> [codex-args...]              (agent/explicit execution entrypoint)
+  omx autoresearch <mission-dir> [codex-args...]                  (compatibility alias for run)
   omx autoresearch --resume <run-id> [codex-args...]
 
 Arguments:
@@ -37,6 +42,7 @@ Arguments:
                    writes .omx/specs artifacts, then launches only after explicit confirmation.
   --topic/...      Seed the deep-interview intake with draft values; still requires refinement/confirmation before launch.
   init             Bare init is an interactive deep-interview alias on TTYs; init with flags is the expert scaffold path.
+  run              Execute a crystallized autoresearch mission, preferring tmux split-pane launch when available.
   <mission-dir>    Directory inside a git repository containing mission.md and sandbox.md
   <run-id>         Existing autoresearch run id from .omx/logs/autoresearch/<run-id>/manifest.json
 
@@ -46,6 +52,7 @@ Behavior:
   - requires sandbox.md YAML frontmatter with evaluator.command and evaluator.format=json
   - fresh launch creates a run-tagged autoresearch/<slug>/<run-tag> lane
   - supervisor records baseline, candidate, keep/discard/reset, and results artifacts under .omx/logs/autoresearch/
+  - run prefers interview|autoresearch split-pane launch inside tmux, with foreground fallback on failure
   - --resume loads the authoritative per-run manifest and continues from the last kept commit
 `;
 
@@ -81,7 +88,8 @@ async function runGuidedAutoresearchDeepInterview(
 ): Promise<Awaited<ReturnType<typeof initAutoresearchMission>>> {
   const previousInstructionsFile = process.env[AUTORESEARCH_APPEND_INSTRUCTIONS_ENV];
   const appendixPath = await writeAutoresearchDeepInterviewAppendixFile(repoRoot);
-  const startedAtMs = Date.now();
+  const existingResultPaths = new Set(await listAutoresearchDeepInterviewResultPaths(repoRoot));
+  const existingDraftPaths = new Set(await listAutoresearchDeepInterviewDraftPaths(repoRoot));
   process.env[AUTORESEARCH_APPEND_INSTRUCTIONS_ENV] = appendixPath;
 
   try {
@@ -96,7 +104,8 @@ async function runGuidedAutoresearchDeepInterview(
   }
 
   const result = await resolveAutoresearchDeepInterviewResult(repoRoot, {
-    newerThanMs: startedAtMs,
+    excludeResultPaths: existingResultPaths,
+    excludeDraftPaths: existingDraftPaths,
   });
   if (!result) {
     throw new Error('autoresearch deep-interview did not produce .omx/specs launch artifacts.');
@@ -165,6 +174,7 @@ export interface ParsedAutoresearchArgs {
   guided?: boolean;
   initArgs?: string[];
   seedArgs?: ReturnType<typeof parseInitArgs>;
+  runSubcommand?: boolean;
 }
 
 function resolveRepoRoot(cwd: string): string {
@@ -178,12 +188,12 @@ function resolveRepoRoot(cwd: string): string {
 export function parseAutoresearchArgs(args: readonly string[]): ParsedAutoresearchArgs {
   const values = [...args];
   if (values.length === 0) {
-    // TTY guard: preserve error for non-interactive callers (CI, scripts, piped stdin)
     if (!process.stdin.isTTY) {
       throw new Error(`mission-dir is required.\n${AUTORESEARCH_HELP}`);
     }
     return { missionDir: null, runId: null, codexArgs: [], guided: true };
   }
+
   const first = values[0];
   if (first === 'init') {
     return { missionDir: null, runId: null, codexArgs: [], guided: true, initArgs: values.slice(1) };
@@ -204,6 +214,13 @@ export function parseAutoresearchArgs(args: readonly string[]): ParsedAutoresear
       throw new Error(`--resume requires <run-id>.\n${AUTORESEARCH_HELP}`);
     }
     return { missionDir: null, runId, codexArgs: values.slice(1) };
+  }
+  if (first === 'run') {
+    const missionDir = values[1]?.trim();
+    if (!missionDir) {
+      throw new Error(`run requires <mission-dir>.\n${AUTORESEARCH_HELP}`);
+    }
+    return { missionDir, runId: null, codexArgs: values.slice(2), runSubcommand: true };
   }
   if (first.startsWith('-')) {
     const seedArgs = parseInitArgs(values);
@@ -259,50 +276,83 @@ async function runAutoresearchLoop(
   }
 }
 
-export async function autoresearchCommand(args: string[]): Promise<void> {
-  const parsed = parseAutoresearchArgs(args);
-  if (parsed.missionDir === '--help') {
-    console.log(AUTORESEARCH_HELP);
-    return;
+function checkTmuxAvailable(): boolean {
+  const result = spawnSync('tmux', ['-V'], { stdio: 'pipe' });
+  return result.status === 0;
+}
+
+function tmuxDisplay(target: string, format: string): string | null {
+  const result = spawnSync('tmux', ['display-message', '-p', '-t', target, format], { encoding: 'utf-8' });
+  if (result.error || result.status !== 0) return null;
+  const value = (result.stdout || '').trim();
+  return value || null;
+}
+
+function listHudWatchPaneIdsInCurrentWindow(currentPaneId?: string): string[] {
+  if (!currentPaneId) return [];
+  const result = spawnSync(
+    'tmux',
+    ['list-panes', '-t', currentPaneId, '-F', '#{pane_id}\t#{pane_current_command}\t#{pane_start_command}'],
+    { encoding: 'utf-8' },
+  );
+  if (result.error || result.status !== 0) return [];
+  return (result.stdout || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.split('\t'))
+    .filter((parts) => parts.length >= 3)
+    .map(([paneId = '', currentCommand = '', startCommand = '']) => ({ paneId, currentCommand, startCommand }))
+    .filter((pane) => pane.paneId.startsWith('%'))
+    .filter((pane) => pane.paneId !== currentPaneId)
+    .filter((pane) => /\bomx\b.*\bhud\b.*--watch/i.test(pane.startCommand || ''))
+    .map((pane) => pane.paneId);
+}
+
+function launchAutoresearchInSplitPane(args: {
+  currentPaneId: string;
+  repoRoot: string;
+  missionDir: string;
+  codexArgs: string[];
+}): boolean {
+  if (!checkTmuxAvailable()) return false;
+
+  const paneId = tmuxDisplay(args.currentPaneId, '#{pane_id}');
+  if (!paneId) return false;
+  const sessionName = tmuxDisplay(paneId, '#S');
+  const currentCwd = tmuxDisplay(paneId, '#{pane_current_path}') || args.repoRoot;
+  const existingHudPaneIds = listHudWatchPaneIdsInCurrentWindow(paneId);
+
+  const omxPath = process.argv[1];
+  if (!omxPath) return false;
+  // Re-enter through the bare compatibility alias so the new pane executes immediately
+  // instead of recursively taking the split-pane branch again.
+  const launchArgs = ['autoresearch', args.missionDir, ...args.codexArgs];
+  const command = [process.execPath, omxPath, ...launchArgs]
+    .map((part) => `'${part.replace(/'/g, `'\\''`)}'`)
+    .join(' ');
+
+  const split = spawnSync(
+    'tmux',
+    ['split-window', '-h', '-t', paneId, '-d', '-P', '-F', '#{pane_id}', '-c', currentCwd, command],
+    { encoding: 'utf-8' },
+  );
+  if (split.error || split.status !== 0) {
+    return false;
   }
 
-  if (parsed.guided) {
-    const repoRoot = resolveRepoRoot(process.cwd());
-    let result;
-    if (parsed.initArgs && parsed.initArgs.length > 0) {
-      // Non-interactive init with flags
-      const initOpts = parseInitArgs(parsed.initArgs);
-      if (!initOpts.topic || !initOpts.evaluatorCommand || !initOpts.slug) {
-        throw new Error(
-          'init requires --topic, --evaluator, and --slug flags.\n' +
-          'Optional: --keep-policy (default: score_improvement)\n\n' +
-          `${AUTORESEARCH_HELP}`,
-        );
-      }
-      result = await initAutoresearchMission({
-        topic: initOpts.topic,
-        evaluatorCommand: initOpts.evaluatorCommand,
-        keepPolicy: initOpts.keepPolicy || 'score_improvement',
-        slug: initOpts.slug,
-        repoRoot,
-        });
-    } else {
-      result = await runGuidedAutoresearchDeepInterview(repoRoot, parsed.seedArgs);
-    }
-    spawnAutoresearchTmux(result.missionDir, result.slug);
-    return;
+  if (sessionName && process.env.OMX_MOUSE !== '0') {
+    enableMouseScrolling(sessionName);
   }
-
-  if (parsed.runId) {
-    const repoRoot = resolveRepoRoot(process.cwd());
-    await assertModeStartAllowed('autoresearch', repoRoot);
-    const manifest = await loadAutoresearchRunManifest(repoRoot, parsed.runId);
-    const runtime = await resumeAutoresearchRuntime(repoRoot, parsed.runId);
-    await runAutoresearchLoop(parsed.codexArgs, runtime, manifest.mission_dir);
-    return;
+  if (existingHudPaneIds.length === 0) {
+    restoreStandaloneHudPane(paneId, currentCwd);
   }
+  console.log(`Autoresearch launched in split pane next to interview pane.`);
+  return true;
+}
 
-  const contract = await loadAutoresearchMissionContract(parsed.missionDir as string);
+async function executeAutoresearchMissionRun(missionDir: string, codexArgs: string[]): Promise<void> {
+  const contract = await loadAutoresearchMissionContract(missionDir);
   await assertModeStartAllowed('autoresearch', contract.repoRoot);
   const runTag = buildAutoresearchRunTag();
   const plan = planWorktreeTarget({
@@ -318,5 +368,74 @@ export async function autoresearchCommand(args: string[]): Promise<void> {
 
   const worktreeContract = await materializeAutoresearchMissionToWorktree(contract, ensured.worktreePath);
   const runtime = await prepareAutoresearchRuntime(worktreeContract, contract.repoRoot, ensured.worktreePath, { runTag });
-  await runAutoresearchLoop(parsed.codexArgs, runtime, worktreeContract.missionDir);
+  await runAutoresearchLoop(codexArgs, runtime, worktreeContract.missionDir);
+}
+
+export async function autoresearchCommand(args: string[]): Promise<void> {
+  const parsed = parseAutoresearchArgs(args);
+  if (parsed.missionDir === '--help') {
+    console.log(AUTORESEARCH_HELP);
+    return;
+  }
+
+  if (parsed.guided) {
+    const repoRoot = resolveRepoRoot(process.cwd());
+    let result;
+    if (parsed.initArgs && parsed.initArgs.length > 0) {
+      const initOpts = parseInitArgs(parsed.initArgs);
+      if (!initOpts.topic || !initOpts.evaluatorCommand || !initOpts.slug) {
+        throw new Error(
+          'init requires --topic, --evaluator, and --slug flags.\n'
+          + 'Optional: --keep-policy (default: score_improvement)\n\n'
+          + `${AUTORESEARCH_HELP}`,
+        );
+      }
+      result = await initAutoresearchMission({
+        topic: initOpts.topic,
+        evaluatorCommand: initOpts.evaluatorCommand,
+        keepPolicy: initOpts.keepPolicy || 'score_improvement',
+        slug: initOpts.slug,
+        repoRoot,
+      });
+    } else {
+      result = await runGuidedAutoresearchDeepInterview(repoRoot, parsed.seedArgs);
+    }
+
+    const currentPaneId = process.env.TMUX_PANE?.trim();
+    if (currentPaneId && launchAutoresearchInSplitPane({
+      currentPaneId,
+      repoRoot,
+      missionDir: result.missionDir,
+      codexArgs: [],
+    })) {
+      return;
+    }
+
+    await executeAutoresearchMissionRun(result.missionDir, []);
+    return;
+  }
+
+  if (parsed.runId) {
+    const repoRoot = resolveRepoRoot(process.cwd());
+    await assertModeStartAllowed('autoresearch', repoRoot);
+    const manifest = await loadAutoresearchRunManifest(repoRoot, parsed.runId);
+    const runtime = await resumeAutoresearchRuntime(repoRoot, parsed.runId);
+    await runAutoresearchLoop(parsed.codexArgs, runtime, manifest.mission_dir);
+    return;
+  }
+
+  if (parsed.runSubcommand) {
+    const repoRoot = resolveRepoRoot(process.cwd());
+    const currentPaneId = process.env.TMUX_PANE?.trim();
+    if (currentPaneId && launchAutoresearchInSplitPane({
+      currentPaneId,
+      repoRoot,
+      missionDir: parsed.missionDir as string,
+      codexArgs: parsed.codexArgs,
+    })) {
+      return;
+    }
+  }
+
+  await executeAutoresearchMissionRun(parsed.missionDir as string, parsed.codexArgs);
 }

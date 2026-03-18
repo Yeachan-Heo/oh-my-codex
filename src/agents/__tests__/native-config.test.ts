@@ -3,12 +3,26 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import type { AgentDefinition } from "../definitions.js";
 import {
   generateAgentToml,
   installNativeAgentConfigs,
 } from "../native-config.js";
+
+const originalStandardModel = process.env.OMX_DEFAULT_STANDARD_MODEL;
+
+beforeEach(() => {
+  process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.4-mini";
+});
+
+afterEach(() => {
+  if (typeof originalStandardModel === "string") {
+    process.env.OMX_DEFAULT_STANDARD_MODEL = originalStandardModel;
+  } else {
+    delete process.env.OMX_DEFAULT_STANDARD_MODEL;
+  }
+});
 
 describe("agents/native-config", () => {
   it("generates TOML with stripped frontmatter and escaped triple quotes", () => {
@@ -27,6 +41,7 @@ describe("agents/native-config", () => {
     const toml = generateAgentToml(agent, prompt);
 
     assert.match(toml, /# oh-my-codex agent: executor/);
+    assert.match(toml, /model = "gpt-5\.4-mini"/);
     assert.match(toml, /model_reasoning_effort = "medium"/);
     assert.ok(!toml.includes("title: demo"));
     assert.ok(toml.includes("Instruction line"));
@@ -61,13 +76,40 @@ describe("agents/native-config", () => {
         join(outDir, "executor.toml"),
         "utf8",
       );
-      assert.match(executorToml, /model_reasoning_effort = "medium"/);
+      assert.match(executorToml, /model = "gpt-5\.4-mini"/);
+      assert.match(executorToml, /model_reasoning_effort = "high"/);
 
       const skipped = await installNativeAgentConfigs(root, {
         agentsDir: outDir,
       });
       assert.equal(skipped, 0);
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a custom active root model for standard agents when no OMX standard override is set", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-native-config-root-model-"));
+    const codexHome = join(root, ".codex");
+    const promptsDir = join(root, "prompts");
+    const outDir = join(codexHome, "agents");
+    const previousCodexHome = process.env.CODEX_HOME;
+
+    try {
+      delete process.env.OMX_DEFAULT_STANDARD_MODEL;
+      process.env.CODEX_HOME = codexHome;
+      await mkdir(promptsDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await writeFile(join(codexHome, "config.toml"), 'model = "claude-opus-4"\n');
+      await writeFile(join(promptsDir, "executor.md"), "executor prompt");
+
+      await installNativeAgentConfigs(root, { agentsDir: outDir });
+      const executorToml = await readFile(join(outDir, "executor.toml"), "utf8");
+      assert.match(executorToml, /model = "claude-opus-4"/);
+    } finally {
+      if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
+      else delete process.env.CODEX_HOME;
+      process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.4-mini";
       await rm(root, { recursive: true, force: true });
     }
   });
