@@ -775,6 +775,8 @@ export async function initTeamState(
     hud_pane_id: null,
     resize_hook_name: null,
     resize_hook_target: null,
+    last_layout_window_width: null,
+    last_layout_window_height: null,
     next_worker_index: workerCount + 1,
   };
 
@@ -896,6 +898,8 @@ function normalizeTeamConfig(config: TeamConfig): TeamConfig {
     hud_pane_id: config.hud_pane_id ?? null,
     resize_hook_name: config.resize_hook_name ?? null,
     resize_hook_target: config.resize_hook_target ?? null,
+    last_layout_window_width: typeof config.last_layout_window_width === 'number' ? config.last_layout_window_width : null,
+    last_layout_window_height: typeof config.last_layout_window_height === 'number' ? config.last_layout_window_height : null,
     worker_launch_mode: workerLaunchMode,
   };
 }
