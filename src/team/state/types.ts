@@ -20,6 +20,8 @@ export interface TeamConfig {
   hud_pane_id: string | null;
   resize_hook_name: string | null;
   resize_hook_target: string | null;
+  last_layout_window_width: number | null;
+  last_layout_window_height: number | null;
   next_worker_index?: number;
 }
 
@@ -174,6 +176,8 @@ export interface TeamManifestV2 {
   hud_pane_id: string | null;
   resize_hook_name: string | null;
   resize_hook_target: string | null;
+  last_layout_window_width: number | null;
+  last_layout_window_height: number | null;
   next_worker_index?: number;
 }
 
