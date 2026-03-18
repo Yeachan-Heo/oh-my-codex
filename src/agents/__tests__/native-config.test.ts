@@ -9,6 +9,7 @@ import {
   generateAgentToml,
   installNativeAgentConfigs,
 } from "../native-config.js";
+import { resolveAgentModelContext } from "../model-routing.js";
 
 describe("agents/native-config", () => {
   it("generates TOML with stripped frontmatter and escaped triple quotes", () => {
@@ -18,15 +19,19 @@ describe("agents/native-config", () => {
       reasoningEffort: "medium",
       posture: "deep-worker",
       modelClass: "standard",
+      preferredModelTier: "mini",
       routingRole: "executor",
       tools: "execution",
       category: "build",
     };
 
     const prompt = `---\ntitle: demo\n---\n\nInstruction line\n\"\"\"danger\"\"\"`;
-    const toml = generateAgentToml(agent, prompt);
+    const toml = generateAgentToml(agent, prompt, {
+      modelContext: resolveAgentModelContext('model = "gpt-5.4"\n'),
+    });
 
     assert.match(toml, /# oh-my-codex agent: executor/);
+    assert.match(toml, /model = "gpt-5-mini"/);
     assert.match(toml, /model_reasoning_effort = "medium"/);
     assert.ok(!toml.includes("title: demo"));
     assert.ok(toml.includes("Instruction line"));
@@ -61,12 +66,39 @@ describe("agents/native-config", () => {
         join(outDir, "executor.toml"),
         "utf8",
       );
+      assert.match(executorToml, /model = "gpt-5-mini"/);
       assert.match(executorToml, /model_reasoning_effort = "medium"/);
 
       const skipped = await installNativeAgentConfigs(root, {
         agentsDir: outDir,
       });
       assert.equal(skipped, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses sibling config.toml to resolve explicit frontier models during install", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-native-config-"));
+    const promptsDir = join(root, "prompts");
+    const outDir = join(root, "agents-out");
+
+    try {
+      await mkdir(promptsDir, { recursive: true });
+      await writeFile(join(root, "config.toml"), 'model = "frontier-custom"\n');
+      await writeFile(join(promptsDir, "architect.md"), "architect prompt");
+
+      const created = await installNativeAgentConfigs(root, {
+        agentsDir: outDir,
+      });
+      assert.equal(created, 1);
+
+      const architectToml = await readFile(
+        join(outDir, "architect.toml"),
+        "utf8",
+      );
+      assert.match(architectToml, /model = "frontier-custom"/);
+      assert.match(architectToml, /model_reasoning_effort = "high"/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

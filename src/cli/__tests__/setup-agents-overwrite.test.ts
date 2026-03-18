@@ -148,6 +148,7 @@ describe('omx setup AGENTS refresh behavior', () => {
         addGeneratedAgentsMarker(template),
         {
           frontierModel: 'legacy-frontier',
+          miniModel: 'legacy-mini',
           sparkModel: 'legacy-spark',
           subagentDefaultModel: 'legacy-frontier',
         },
@@ -172,9 +173,14 @@ describe('omx setup AGENTS refresh behavior', () => {
       );
       assert.match(
         agentsContent,
+        new RegExp(`\\| Mini \\(mid-weight execution\\) \\| \`${expectedContext.miniModel}\` \\| medium \\|`),
+      );
+      assert.match(
+        agentsContent,
         new RegExp(`\\| Spark \\(explorer\\/fast\\) \\| \`${expectedContext.sparkModel}\` \\| low \\|`),
       );
       assert.doesNotMatch(agentsContent, /legacy-frontier/);
+      assert.doesNotMatch(agentsContent, /legacy-mini/);
       assert.doesNotMatch(agentsContent, /legacy-spark/);
     } finally {
       restoreHome();

@@ -45,6 +45,7 @@ describe('agents model table', () => {
 
     assert.deepEqual(context, {
       frontierModel: 'frontier-config',
+      miniModel: 'gpt-5-mini',
       sparkModel: 'spark-env',
       subagentDefaultModel: 'frontier-config',
     });
@@ -53,20 +54,23 @@ describe('agents model table', () => {
   it('builds table rows for summary roles and posture/modelClass-driven agent recommendations', () => {
     const table = buildAgentsModelTable({
       frontierModel: 'gpt-frontier',
+      miniModel: 'gpt-mini',
       sparkModel: 'gpt-spark',
       subagentDefaultModel: 'gpt-standard',
     });
 
     assert.match(table, /\| Frontier \(leader\) \| `gpt-frontier` \| high \|/);
+    assert.match(table, /\| Mini \(mid-weight execution\) \| `gpt-mini` \| medium \|/);
     assert.match(table, /\| Spark \(explorer\/fast\) \| `gpt-spark` \| low \|/);
-    assert.match(table, /\| `explore` \| `gpt-spark` \| low \| Fast codebase search and file\/symbol mapping \(fast-lane, fast\) \|/);
-    assert.match(table, /\| `architect` \| `gpt-frontier` \| high \| System design, boundaries, interfaces, long-horizon tradeoffs \(frontier-orchestrator, frontier\) \|/);
-    assert.match(table, /\| `executor` \| `gpt-standard` \| medium \| Code implementation, refactoring, feature work \(deep-worker, standard\) \|/);
+    assert.match(table, /\| `explore` \| `gpt-spark` \| low \| Fast codebase search and file\/symbol mapping \(fast-lane, fast, tier=spark\) \|/);
+    assert.match(table, /\| `architect` \| `gpt-frontier` \| high \| System design, boundaries, interfaces, long-horizon tradeoffs \(frontier-orchestrator, frontier, tier=frontier\) \|/);
+    assert.match(table, /\| `executor` \| `gpt-mini` \| medium \| Code implementation, refactoring, feature work \(deep-worker, standard, tier=mini\) \|/);
   });
 
   it('replaces existing marker-bounded content and inserts the block after team_model_resolution when missing', () => {
     const context = {
       frontierModel: 'gpt-frontier',
+      miniModel: 'gpt-mini',
       sparkModel: 'gpt-spark',
       subagentDefaultModel: 'gpt-frontier',
     };

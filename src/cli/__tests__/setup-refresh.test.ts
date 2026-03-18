@@ -175,11 +175,17 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       });
 
       const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      const architectToml = await readFile(
+        join(wd, ".codex", "agents", "architect.toml"),
+        "utf-8",
+      );
       assert.equal(promptCalls, 1);
       assert.match(config, /^model = "gpt-5\.4"$/m);
       assert.doesNotMatch(config, /^model = "gpt-5\.3-codex"$/m);
       assert.match(config, /^model_context_window = 1000000$/m);
       assert.match(config, /^model_auto_compact_token_limit = 900000$/m);
+      assert.match(architectToml, /^model = "gpt-5\.4"$/m);
+      assert.doesNotMatch(architectToml, /^model = "gpt-5\.3-codex"$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -227,6 +233,34 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       assert.doesNotMatch(config, /^model = "gpt-5\.4"$/m);
       assert.doesNotMatch(config, /^model_context_window = 1000000$/m);
       assert.doesNotMatch(config, /^model_auto_compact_token_limit = 900000$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("regenerates native agents with explicit resolver-backed model fields", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+
+      await runSetupInTempDir(wd, { scope: "project" });
+
+      const architectToml = await readFile(
+        join(wd, ".codex", "agents", "architect.toml"),
+        "utf-8",
+      );
+      const executorToml = await readFile(
+        join(wd, ".codex", "agents", "executor.toml"),
+        "utf-8",
+      );
+      const exploreToml = await readFile(
+        join(wd, ".codex", "agents", "explore.toml"),
+        "utf-8",
+      );
+
+      assert.match(architectToml, /^model = "gpt-5\.4"$/m);
+      assert.match(executorToml, /^model = "gpt-5-mini"$/m);
+      assert.match(exploreToml, /^model = "gpt-5\.3-codex-spark"$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

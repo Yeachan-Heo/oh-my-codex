@@ -1,23 +1,16 @@
 import { AGENT_DEFINITIONS, type AgentDefinition } from '../agents/definitions.js';
-import { getRootModelName } from '../config/generator.js';
 import {
-  DEFAULT_FRONTIER_MODEL,
-  DEFAULT_SPARK_MODEL,
-  getEnvConfiguredSparkDefaultModel,
-  getEnvConfiguredMainDefaultModel,
-  getSparkDefaultModel,
-} from '../config/models.js';
+  resolveAgentModel,
+  resolveAgentModelContext,
+  type AgentModelResolutionContext,
+} from '../agents/model-routing.js';
 
 export const OMX_MODELS_START_MARKER = '<!-- OMX:MODELS:START -->';
 export const OMX_MODELS_END_MARKER = '<!-- OMX:MODELS:END -->';
 
 const TEAM_MODEL_RESOLUTION_END = '</team_model_resolution>';
 
-export interface AgentsModelTableContext {
-  frontierModel: string;
-  sparkModel: string;
-  subagentDefaultModel: string;
-}
+export interface AgentsModelTableContext extends AgentModelResolutionContext {}
 
 function escapeTableCell(value: string): string {
   return value.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
@@ -31,19 +24,11 @@ function getAgentRecommendedModel(
   agent: AgentDefinition,
   context: AgentsModelTableContext,
 ): string {
-  switch (agent.modelClass) {
-    case 'fast':
-      return context.sparkModel;
-    case 'frontier':
-      return context.frontierModel;
-    case 'standard':
-    default:
-      return context.subagentDefaultModel;
-  }
+  return resolveAgentModel(agent, context);
 }
 
 function getAgentUseCase(agent: AgentDefinition): string {
-  return `${agent.description} (${agent.posture}, ${agent.modelClass})`;
+  return `${agent.description} (${agent.posture}, ${agent.modelClass}, tier=${agent.preferredModelTier})`;
 }
 
 function buildTableRow(
@@ -62,21 +47,7 @@ export function resolveAgentsModelTableContext(
     env?: NodeJS.ProcessEnv;
   } = {},
 ): AgentsModelTableContext {
-  const { codexHomeOverride, env = process.env } = options;
-  const frontierModel =
-    getRootModelName(configTomlContent) ??
-    getEnvConfiguredMainDefaultModel(env, codexHomeOverride) ??
-    DEFAULT_FRONTIER_MODEL;
-  const sparkModel =
-    getEnvConfiguredSparkDefaultModel(env, codexHomeOverride) ??
-    getSparkDefaultModel(codexHomeOverride) ??
-    DEFAULT_SPARK_MODEL;
-
-  return {
-    frontierModel,
-    sparkModel,
-    subagentDefaultModel: frontierModel,
-  };
+  return resolveAgentModelContext(configTomlContent, options);
 }
 
 export function buildAgentsModelTable(
@@ -91,6 +62,12 @@ export function buildAgentsModelTable(
       'Primary leader/orchestrator for planning, coordination, and frontier-class reasoning.',
     ),
     buildTableRow(
+      'Mini (mid-weight execution)',
+      context.miniModel,
+      'medium',
+      'Explicit role-split lane for mid-weight execution and specialist roles.',
+    ),
+    buildTableRow(
       'Spark (explorer/fast)',
       context.sparkModel,
       'low',
@@ -100,7 +77,7 @@ export function buildAgentsModelTable(
       'Subagent default',
       context.subagentDefaultModel,
       'medium',
-      'Balanced default for standard-capability executors and specialists unless a role is explicitly frontier or fast-lane.',
+      'Legacy/default routing for roles that are not explicitly assigned to frontier, mini, or spark tiers.',
     ),
     ...Object.values(definitions).map((agent) =>
       buildTableRow(

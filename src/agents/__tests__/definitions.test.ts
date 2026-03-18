@@ -25,6 +25,7 @@ describe('agents/definitions', () => {
       assert.ok(agent.reasoningEffort.length > 0);
       assert.ok(agent.posture.length > 0);
       assert.ok(agent.modelClass.length > 0);
+      assert.ok(agent.preferredModelTier.length > 0);
       assert.ok(agent.routingRole.length > 0);
     }
   });

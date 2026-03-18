@@ -5,9 +5,14 @@
 
 import { existsSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
-import { join } from "path";
+import { dirname, join } from "path";
 import { AGENT_DEFINITIONS, AgentDefinition } from "./definitions.js";
 import { codexAgentsDir } from "../utils/paths.js";
+import {
+  resolveAgentModel,
+  resolveAgentModelContext,
+  type AgentModelResolutionContext,
+} from "./model-routing.js";
 
 const POSTURE_OVERLAYS: Record<AgentDefinition["posture"], string> = {
   "frontier-orchestrator": [
@@ -82,6 +87,17 @@ export interface GeneratedNativeAgentConfig {
   developerInstructions?: string;
   model?: string;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh";
+}
+
+export interface GenerateAgentTomlOptions {
+  modelContext?: AgentModelResolutionContext;
+}
+
+interface ResolveNativeAgentModelContextOptions extends GenerateAgentTomlOptions {
+  agentsDir: string;
+  codexHomeOverride?: string;
+  configTomlContent?: string;
+  env?: NodeJS.ProcessEnv;
 }
 
 function buildPromptInstructions(
@@ -162,11 +178,15 @@ export function generateStandaloneAgentToml(
 export function generateAgentToml(
   agent: AgentDefinition,
   promptContent: string,
+  options: GenerateAgentTomlOptions = {},
 ): string {
+  const modelContext =
+    options.modelContext ?? resolveAgentModelContext("", { env: process.env });
   return generateStandaloneAgentToml({
     name: agent.name,
     description: agent.description,
     developerInstructions: buildPromptInstructions(agent, promptContent),
+    model: resolveAgentModel(agent, modelContext),
     reasoningEffort: agent.reasoningEffort,
   });
 }
@@ -182,6 +202,10 @@ export async function installNativeAgentConfigs(
     dryRun?: boolean;
     verbose?: boolean;
     agentsDir?: string;
+    modelContext?: AgentModelResolutionContext;
+    codexHomeOverride?: string;
+    configTomlContent?: string;
+    env?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<number> {
   const {
@@ -189,6 +213,10 @@ export async function installNativeAgentConfigs(
     dryRun = false,
     verbose = false,
     agentsDir = codexAgentsDir(),
+    modelContext,
+    codexHomeOverride,
+    configTomlContent,
+    env = process.env,
   } = options;
 
   if (!dryRun) {
@@ -196,6 +224,13 @@ export async function installNativeAgentConfigs(
   }
 
   let count = 0;
+  const resolvedModelContext = await resolveNativeAgentModelContext({
+    agentsDir,
+    modelContext,
+    codexHomeOverride,
+    configTomlContent,
+    env,
+  });
 
   for (const [name, agent] of Object.entries(AGENT_DEFINITIONS)) {
     const promptPath = join(pkgRoot, "prompts", `${name}.md`);
@@ -211,7 +246,9 @@ export async function installNativeAgentConfigs(
     }
 
     const promptContent = await readFile(promptPath, "utf-8");
-    const toml = generateAgentToml(agent, promptContent);
+    const toml = generateAgentToml(agent, promptContent, {
+      modelContext: resolvedModelContext,
+    });
 
     if (!dryRun) {
       await writeFile(dst, toml);
@@ -221,4 +258,27 @@ export async function installNativeAgentConfigs(
   }
 
   return count;
+}
+
+async function resolveNativeAgentModelContext(
+  options: ResolveNativeAgentModelContextOptions,
+): Promise<AgentModelResolutionContext> {
+  if (options.modelContext) return options.modelContext;
+
+  const codexHomeOverride = options.codexHomeOverride ?? dirname(options.agentsDir);
+  const configTomlContent =
+    typeof options.configTomlContent === "string"
+      ? options.configTomlContent
+      : await readSiblingConfigToml(options.agentsDir);
+
+  return resolveAgentModelContext(configTomlContent, {
+    codexHomeOverride,
+    env: options.env,
+  });
+}
+
+async function readSiblingConfigToml(agentsDir: string): Promise<string> {
+  const configPath = join(dirname(agentsDir), "config.toml");
+  if (!existsSync(configPath)) return "";
+  return readFile(configPath, "utf-8");
 }

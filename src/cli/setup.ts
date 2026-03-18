@@ -652,6 +652,10 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     }
   }
 
+  const nativeAgentsConfigInput = existsSync(scopeDirs.codexConfigFile)
+    ? await readFile(scopeDirs.codexConfigFile, "utf-8")
+    : "";
+
   // Step 4: Install native agent configs
   console.log("[4/8] Installing native agent configs...");
   {
@@ -663,6 +667,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
         force,
         dryRun,
         verbose,
+        configTomlContent: nativeAgentsConfigInput,
       },
     );
     console.log(
@@ -710,6 +715,22 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
       summary.config,
       backupContext,
       { dryRun, verbose },
+    );
+  }
+  if (resolvedConfig !== nativeAgentsConfigInput) {
+    summary.nativeAgents = await refreshNativeAgentConfigs(
+      pkgRoot,
+      scopeDirs.nativeAgentsDir,
+      backupContext,
+      {
+        force,
+        dryRun,
+        verbose,
+        configTomlContent: resolvedConfig,
+      },
+    );
+    console.log(
+      `  Native agent refresh re-synced after config update (${scopeDirs.nativeAgentsDir}).\n`,
     );
   }
   console.log(`  Config refresh complete (${scopeDirs.codexConfigFile}).\n`);
@@ -1163,9 +1184,20 @@ async function refreshNativeAgentConfigs(
   pkgRoot: string,
   agentsDir: string,
   backupContext: SetupBackupContext,
-  options: Pick<SetupOptions, "dryRun" | "verbose" | "force">,
+  options: Pick<SetupOptions, "dryRun" | "verbose" | "force"> & {
+    configTomlContent?: string;
+  },
 ): Promise<SetupCategorySummary> {
   const summary = createEmptyCategorySummary();
+  const configTomlContent =
+    typeof options.configTomlContent === "string"
+      ? options.configTomlContent
+      : existsSync(join(dirname(agentsDir), "config.toml"))
+        ? await readFile(join(dirname(agentsDir), "config.toml"), "utf-8")
+        : "";
+  const modelContext = resolveAgentsModelTableContext(configTomlContent, {
+    codexHomeOverride: dirname(agentsDir),
+  });
 
   if (!options.dryRun) {
     await mkdir(agentsDir, { recursive: true });
@@ -1199,7 +1231,7 @@ async function refreshNativeAgentConfigs(
     }
 
     const promptContent = await readFile(promptPath, "utf-8");
-    const toml = generateAgentToml(agent, promptContent);
+    const toml = generateAgentToml(agent, promptContent, { modelContext });
     const dst = join(agentsDir, `${name}.toml`);
     await syncManagedContent(
       toml,

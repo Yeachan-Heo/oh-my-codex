@@ -61,6 +61,7 @@ function readModelsBlock(codexHomeOverride?: string): ModelsConfig | null {
 }
 
 export const DEFAULT_FRONTIER_MODEL = 'gpt-5.4';
+export const DEFAULT_MINI_MODEL = 'gpt-5-mini';
 export const DEFAULT_SPARK_MODEL = 'gpt-5.3-codex-spark';
 
 function normalizeConfiguredValue(value: unknown): string | undefined {
