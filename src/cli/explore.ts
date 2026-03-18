@@ -62,6 +62,13 @@ export interface ExploreSparkShellRoute {
   reason: 'shell-native' | 'long-output';
 }
 
+export interface ExecuteExplorePromptResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  backend: 'sparkshell' | 'harness';
+}
+
 function tokenizeExploreShellCommand(commandText: string): string[] | undefined {
   const trimmed = commandText.trim();
   if (!trimmed || SHELL_ROUTE_DISALLOWED_PATTERN.test(trimmed) || trimmed.includes('\\')) return undefined;
@@ -134,9 +141,13 @@ export function resolveExploreSparkShellRoute(prompt: string): ExploreSparkShell
   return undefined;
 }
 
-async function runExploreViaSparkShell(route: ExploreSparkShellRoute, env: NodeJS.ProcessEnv = process.env): Promise<void> {
-  const binaryPath = await resolveSparkShellBinaryPathWithHydration({ cwd: process.cwd(), env });
-  const result = runSparkShellBinary(binaryPath, route.argv, { cwd: process.cwd(), env });
+async function runExploreViaSparkShell(
+  route: ExploreSparkShellRoute,
+  cwd = process.cwd(),
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ExecuteExplorePromptResult> {
+  const binaryPath = await resolveSparkShellBinaryPathWithHydration({ cwd, env });
+  const result = runSparkShellBinary(binaryPath, route.argv, { cwd, env });
 
   if (result.error) {
     const errno = result.error as NodeJS.ErrnoException;
@@ -147,12 +158,12 @@ async function runExploreViaSparkShell(route: ExploreSparkShellRoute, env: NodeJ
     throw new Error('[explore] sparkshell backend is incompatible with this Linux runtime (missing GLIBC symbols)');
   }
 
-  if (result.stdout && result.stdout.length > 0) process.stdout.write(result.stdout);
-  if (result.stderr && result.stderr.length > 0) process.stderr.write(result.stderr);
-
-  if (result.status !== 0) {
-    process.exitCode = result.status ?? 1;
-  }
+  return {
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+    exitCode: result.status ?? 1,
+    backend: 'sparkshell',
+  };
 }
 
 export function packagedExploreHarnessBinaryName(platform: NodeJS.Platform = process.platform): string {
@@ -351,33 +362,21 @@ export async function loadExplorePrompt(parsed: ParsedExploreArgs): Promise<stri
   return trimmed;
 }
 
-export async function exploreCommand(args: string[]): Promise<void> {
-  const parsed = parseExploreArgs(args);
-  const prompt = await loadExplorePrompt(parsed);
-  const sparkShellRoute = resolveExploreSparkShellRoute(prompt);
-  if (sparkShellRoute) {
-    try {
-      await runExploreViaSparkShell(sparkShellRoute, process.env);
-      return;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`[omx explore] sparkshell backend unavailable (${message}). Falling back to the explore harness.\n`);
-    }
-  }
-
+async function executeExplorePromptViaHarness(
+  prompt: string,
+  cwd = process.cwd(),
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ExecuteExplorePromptResult> {
   const packageRoot = getPackageRoot();
-  const harness = await resolveExploreHarnessCommandWithHydration(packageRoot, process.env);
-  const harnessArgs = [...harness.args, ...buildExploreHarnessArgs(prompt, process.cwd(), process.env, packageRoot)];
+  const harness = await resolveExploreHarnessCommandWithHydration(packageRoot, env);
+  const harnessArgs = [...harness.args, ...buildExploreHarnessArgs(prompt, cwd, env, packageRoot)];
 
   const { result } = spawnPlatformCommandSync(harness.command, harnessArgs, {
-    cwd: process.cwd(),
-    env: process.env,
+    cwd,
+    env,
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-
-  if (result.stdout && result.stdout.length > 0) process.stdout.write(result.stdout);
-  if (result.stderr && result.stderr.length > 0) process.stderr.write(result.stderr);
 
   if (result.error) {
     const errno = result.error as NodeJS.ErrnoException;
@@ -387,7 +386,43 @@ export async function exploreCommand(args: string[]): Promise<void> {
     throw new Error(`[explore] failed to launch harness: ${result.error.message}`);
   }
 
-  if (result.status !== 0) {
-    process.exitCode = result.status ?? 1;
+  return {
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+    exitCode: result.status ?? 1,
+    backend: 'harness',
+  };
+}
+
+export async function executeExplorePrompt(
+  prompt: string,
+  cwd = process.cwd(),
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ExecuteExplorePromptResult> {
+  const sparkShellRoute = resolveExploreSparkShellRoute(prompt);
+  if (sparkShellRoute) {
+    try {
+      return await runExploreViaSparkShell(sparkShellRoute, cwd, env);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const fallback = await executeExplorePromptViaHarness(prompt, cwd, env);
+      return {
+        ...fallback,
+        stderr: `[omx explore] sparkshell backend unavailable (${message}). Falling back to the explore harness.\n${fallback.stderr}`,
+      };
+    }
+  }
+
+  return executeExplorePromptViaHarness(prompt, cwd, env);
+}
+
+export async function exploreCommand(args: string[]): Promise<void> {
+  const parsed = parseExploreArgs(args);
+  const prompt = await loadExplorePrompt(parsed);
+  const result = await executeExplorePrompt(prompt, process.cwd(), process.env);
+  if (result.stdout.length > 0) process.stdout.write(result.stdout);
+  if (result.stderr.length > 0) process.stderr.write(result.stderr);
+  if (result.exitCode !== 0) {
+    process.exitCode = result.exitCode;
   }
 }

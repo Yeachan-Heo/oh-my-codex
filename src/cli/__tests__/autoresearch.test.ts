@@ -6,19 +6,15 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { autoresearchCommand, normalizeAutoresearchCodexArgs, parseAutoresearchArgs } from '../autoresearch.js';
-
-function withMockedTty<T>(fn: () => Promise<T>): Promise<T> {
-  const descriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
-  Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true });
-  return fn().finally(() => {
-    if (descriptor) {
-      Object.defineProperty(process.stdin, 'isTTY', descriptor);
-    } else {
-      Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false });
-    }
-  });
-}
+import { normalizeAutoresearchCodexArgs, parseAutoresearchArgs } from '../autoresearch.js';
+import {
+  buildSidecarRefreshSnapshot,
+  initializeAutoresearchSparkPrepassSnapshot,
+  readAutoresearchSparkPrepassSnapshot,
+  runAutoresearchSparkPrepass,
+  shouldSparkSidecarRefresh,
+  type AutoresearchSparkPrepassSnapshot,
+} from '../../autoresearch/spark-prepass.js';
 
 function runOmx(
   cwd: string,
@@ -54,6 +50,16 @@ async function initRepo(): Promise<string> {
   return cwd;
 }
 
+function findAutoresearchRunId(repo: string): string {
+  const logsRoot = join(repo, '.omx', 'logs', 'autoresearch');
+  const [runId] = execFileSync('find', [logsRoot, '-mindepth', '1', '-maxdepth', '1', '-type', 'd', '-printf', '%f\n'], { encoding: 'utf-8' })
+    .trim()
+    .split('\n')
+    .filter(Boolean);
+  assert.ok(runId);
+  return runId;
+}
+
 describe('normalizeAutoresearchCodexArgs', () => {
   it('adds sandbox bypass by default for autoresearch workers', () => {
     assert.deepEqual(normalizeAutoresearchCodexArgs(['--model', 'gpt-5']), ['--model', 'gpt-5', '--dangerously-bypass-approvals-and-sandbox']);
@@ -65,6 +71,70 @@ describe('normalizeAutoresearchCodexArgs', () => {
 
   it('normalizes --madmax to the canonical bypass flag', () => {
     assert.deepEqual(normalizeAutoresearchCodexArgs(['--madmax']), ['--dangerously-bypass-approvals-and-sandbox']);
+  });
+});
+
+describe('parseAutoresearchArgs', () => {
+  it('treats --spark-prepass before mission-dir as a supervisor flag', () => {
+    assert.deepEqual(parseAutoresearchArgs(['--spark-prepass', 'missions/demo', '--model', 'gpt-5']), {
+      missionDir: 'missions/demo',
+      runId: null,
+      codexArgs: ['--model', 'gpt-5'],
+      sparkPrepass: true,
+      sparkSidecar: false,
+    });
+  });
+
+  it('leaves --spark-prepass after mission-dir inside codex args', () => {
+    assert.deepEqual(parseAutoresearchArgs(['missions/demo', '--spark-prepass', '--model', 'gpt-5']), {
+      missionDir: 'missions/demo',
+      runId: null,
+      codexArgs: ['--spark-prepass', '--model', 'gpt-5'],
+      sparkPrepass: false,
+      sparkSidecar: false,
+    });
+  });
+});
+
+describe('parseAutoresearchArgs --spark-sidecar', () => {
+  it('treats --spark-sidecar before mission-dir as a supervisor flag that implies --spark-prepass', () => {
+    assert.deepEqual(parseAutoresearchArgs(['--spark-sidecar', 'missions/demo', '--model', 'gpt-5']), {
+      missionDir: 'missions/demo',
+      runId: null,
+      codexArgs: ['--model', 'gpt-5'],
+      sparkPrepass: true,
+      sparkSidecar: true,
+    });
+  });
+
+  it('supports both --spark-prepass and --spark-sidecar together', () => {
+    assert.deepEqual(parseAutoresearchArgs(['--spark-prepass', '--spark-sidecar', 'missions/demo']), {
+      missionDir: 'missions/demo',
+      runId: null,
+      codexArgs: [],
+      sparkPrepass: true,
+      sparkSidecar: true,
+    });
+  });
+
+  it('leaves --spark-sidecar after mission-dir inside codex args', () => {
+    assert.deepEqual(parseAutoresearchArgs(['missions/demo', '--spark-sidecar']), {
+      missionDir: 'missions/demo',
+      runId: null,
+      codexArgs: ['--spark-sidecar'],
+      sparkPrepass: false,
+      sparkSidecar: false,
+    });
+  });
+
+  it('supports --spark-sidecar with --resume', () => {
+    assert.deepEqual(parseAutoresearchArgs(['--spark-sidecar', '--resume', 'run-123']), {
+      missionDir: null,
+      runId: 'run-123',
+      codexArgs: [],
+      sparkPrepass: true,
+      sparkSidecar: true,
+    });
   });
 });
 
@@ -85,7 +155,8 @@ describe('omx autoresearch', () => {
     try {
       const result = runOmx(cwd, ['autoresearch', '--help']);
       assert.equal(result.status, 0, result.stderr || result.stdout);
-      assert.match(result.stdout, /Usage:[\s\S]*omx autoresearch run <mission-dir>/i);
+      assert.match(result.stdout, /Usage:[\s\S]*omx autoresearch \[--spark-prepass\] \[--spark-sidecar\] run <mission-dir>/i);
+      assert.match(result.stdout, /--spark-sidecar/i);
       assert.match(result.stdout, /omx autoresearch init/i);
       assert.match(result.stdout, /--topic\/\.\.\./i);
       assert.match(result.stdout, /deep-interview/i);
@@ -102,6 +173,7 @@ describe('omx autoresearch', () => {
       const result = runOmx(cwd, ['autoresearch', '--help']);
       assert.equal(result.status, 0, result.stderr || result.stdout);
       assert.match(result.stdout, /--resume <run-id>/i);
+      assert.match(result.stdout, /--spark-prepass/i);
       assert.match(result.stdout, /run-tagged/i);
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -776,6 +848,161 @@ printf '{\\n  "status": "abort",\\n  "candidate_commit": null,\\n  "base_commit"
     }
   });
 
+  it('runs an optional spark prepass once and injects the fact packet into bootstrap instructions', async () => {
+    const repo = await initRepo();
+    const fakeBin = await mkdtemp(join(tmpdir(), 'omx-autoresearch-prepass-bin-'));
+    try {
+      const missionDir = join(repo, 'missions', 'demo');
+      const promptCapture = join(fakeBin, 'codex-prompt.md');
+      const exploreCapture = join(fakeBin, 'explore-args.txt');
+      await mkdir(missionDir, { recursive: true });
+      await mkdir(join(repo, 'scripts'), { recursive: true });
+      await writeFile(join(missionDir, 'mission.md'), '# Mission\nUse cheap discovery before the main worker turn.\n', 'utf-8');
+      await writeFile(
+        join(missionDir, 'sandbox.md'),
+        '---\nevaluator:\n  command: node scripts/eval.js\n  format: json\n  keep_policy: pass_only\n---\nStay inside the mission boundary.\n',
+        'utf-8',
+      );
+      await writeFile(join(repo, 'scripts', 'eval.js'), "process.stdout.write(JSON.stringify({ pass: true }));\n", 'utf-8');
+      execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'add spark prepass mission'], { cwd: repo, stdio: 'ignore' });
+
+      const fakeCodexPath = join(fakeBin, 'codex');
+      await writeFile(
+        fakeCodexPath,
+        `#!/bin/sh
+cat >"$OMX_TEST_PROMPT_CAPTURE"
+candidate_file=$(find "$OMX_TEST_REPO_ROOT/.omx/logs/autoresearch" -name candidate.json | head -n 1)
+head_commit=$(git rev-parse HEAD)
+cat >"$candidate_file" <<EOF
+{
+  "status": "abort",
+  "candidate_commit": null,
+  "base_commit": "$head_commit",
+  "description": "stop after spark prepass coverage",
+  "notes": ["fake codex exec"],
+  "created_at": "2026-03-17T00:00:00.000Z"
+}
+EOF
+`,
+        'utf-8',
+      );
+      execFileSync('chmod', ['+x', fakeCodexPath], { stdio: 'ignore' });
+
+      const fakeExplorePath = join(fakeBin, 'explore-harness');
+      await writeFile(
+        fakeExplorePath,
+        `#!/bin/sh
+printf '%s\n' "$@" > "$OMX_TEST_EXPLORE_CAPTURE"
+cat <<'EOF'
+## Relevant files
+- src/cli/autoresearch.ts — supervisor loop and flag parsing
+
+## Key facts
+- one Codex candidate-producing turn still owns candidate.json
+
+## Evidence
+- src/autoresearch/runtime.ts rewrites bootstrap instructions between iterations
+
+## Next reads
+- src/cli/explore.ts
+EOF
+`,
+        'utf-8',
+      );
+      execFileSync('chmod', ['+x', fakeExplorePath], { stdio: 'ignore' });
+
+      const result = runOmx(
+        repo,
+        ['autoresearch', '--spark-prepass', missionDir, '--dangerously-bypass-approvals-and-sandbox'],
+        {
+          PATH: `${fakeBin}:${process.env.PATH || ''}`,
+          OMX_EXPLORE_BIN: fakeExplorePath,
+          OMX_TEST_REPO_ROOT: repo,
+          OMX_TEST_PROMPT_CAPTURE: promptCapture,
+          OMX_TEST_EXPLORE_CAPTURE: exploreCapture,
+        },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(await readFile(promptCapture, 'utf-8'), /Spark prepass fact packet/);
+      assert.match(await readFile(promptCapture, 'utf-8'), /src\/cli\/autoresearch\.ts/);
+      assert.match(await readFile(exploreCapture, 'utf-8'), /--prompt/);
+
+      const runId = findAutoresearchRunId(repo);
+      const instructions = await readFile(join(repo, '.omx', 'logs', 'autoresearch', runId, 'bootstrap-instructions.md'), 'utf-8');
+      assert.match(instructions, /Spark prepass fact packet/);
+      assert.match(instructions, /one Codex candidate-producing turn still owns candidate\.json/);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+      await rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back cleanly when the spark prepass fails and still launches the main codex turn', async () => {
+    const repo = await initRepo();
+    const fakeBin = await mkdtemp(join(tmpdir(), 'omx-autoresearch-prepass-fallback-bin-'));
+    try {
+      const missionDir = join(repo, 'missions', 'demo');
+      const promptCapture = join(fakeBin, 'codex-prompt.md');
+      await mkdir(missionDir, { recursive: true });
+      await mkdir(join(repo, 'scripts'), { recursive: true });
+      await writeFile(join(missionDir, 'mission.md'), '# Mission\nContinue even when spark discovery fails.\n', 'utf-8');
+      await writeFile(
+        join(missionDir, 'sandbox.md'),
+        '---\nevaluator:\n  command: node scripts/eval.js\n  format: json\n  keep_policy: pass_only\n---\nStay inside the mission boundary.\n',
+        'utf-8',
+      );
+      await writeFile(join(repo, 'scripts', 'eval.js'), "process.stdout.write(JSON.stringify({ pass: true }));\n", 'utf-8');
+      execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'add spark prepass fallback mission'], { cwd: repo, stdio: 'ignore' });
+
+      const fakeCodexPath = join(fakeBin, 'codex');
+      await writeFile(
+        fakeCodexPath,
+        `#!/bin/sh
+cat >"$OMX_TEST_PROMPT_CAPTURE"
+candidate_file=$(find "$OMX_TEST_REPO_ROOT/.omx/logs/autoresearch" -name candidate.json | head -n 1)
+head_commit=$(git rev-parse HEAD)
+cat >"$candidate_file" <<EOF
+{
+  "status": "abort",
+  "candidate_commit": null,
+  "base_commit": "$head_commit",
+  "description": "continue after prepass failure",
+  "notes": ["fake codex exec"],
+  "created_at": "2026-03-17T00:00:00.000Z"
+}
+EOF
+`,
+        'utf-8',
+      );
+      execFileSync('chmod', ['+x', fakeCodexPath], { stdio: 'ignore' });
+
+      const result = runOmx(
+        repo,
+        ['autoresearch', '--spark-prepass', missionDir, '--dangerously-bypass-approvals-and-sandbox'],
+        {
+          PATH: `${fakeBin}:${process.env.PATH || ''}`,
+          OMX_EXPLORE_BIN: join(fakeBin, 'missing-explore-harness'),
+          OMX_TEST_REPO_ROOT: repo,
+          OMX_TEST_PROMPT_CAPTURE: promptCapture,
+        },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stderr, /spark prepass unavailable/i);
+      assert.doesNotMatch(await readFile(promptCapture, 'utf-8'), /Spark prepass fact packet/);
+
+      const runId = findAutoresearchRunId(repo);
+      const instructions = await readFile(join(repo, '.omx', 'logs', 'autoresearch', runId, 'bootstrap-instructions.md'), 'utf-8');
+      assert.doesNotMatch(instructions, /Spark prepass fact packet/);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+      await rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+
   it('stops after repeated noop turns', async () => {
     const repo = await initRepo();
     const fakeBin = await mkdtemp(join(tmpdir(), 'omx-autoresearch-noop-bin-'));
@@ -829,10 +1056,7 @@ EOF
       assert.equal(state.active, false);
 
       const logsRoot = join(repo, '.omx', 'logs', 'autoresearch');
-      const [runId] = readdirSync(logsRoot, { withFileTypes: true })
-        .filter(d => d.isDirectory())
-        .map(d => d.name);
-      assert.ok(runId);
+      const runId = findAutoresearchRunId(repo);
 
       const manifest = JSON.parse(await readFile(join(logsRoot, runId, 'manifest.json'), 'utf-8')) as {
         status: string;
@@ -854,6 +1078,195 @@ EOF
     } finally {
       await rm(repo, { recursive: true, force: true });
       await rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('shouldSparkSidecarRefresh', () => {
+  const baseSnapshot: AutoresearchSparkPrepassSnapshot = {
+    enabled: true,
+    status: 'available',
+    note: 'test',
+    updated_at: '2026-03-17T00:00:00.000Z',
+    packet_characters: 100,
+    sidecar_enabled: true,
+    last_refresh_iteration: 0,
+    refresh_count: 0,
+    last_refresh_reason: 'initial',
+  };
+
+  it('returns false when snapshot is null', () => {
+    assert.equal(shouldSparkSidecarRefresh(null, 2, 5), false);
+  });
+
+  it('returns false when sidecar is not enabled', () => {
+    assert.equal(shouldSparkSidecarRefresh({ ...baseSnapshot, sidecar_enabled: false }, 2, 5), false);
+  });
+
+  it('returns false when trailing noops are below trigger threshold', () => {
+    assert.equal(shouldSparkSidecarRefresh(baseSnapshot, 1, 5), false);
+  });
+
+  it('returns true when trailing noops meet trigger and cooldown is satisfied', () => {
+    assert.equal(shouldSparkSidecarRefresh(baseSnapshot, 2, 5), true);
+  });
+
+  it('returns false when cooldown period has not elapsed', () => {
+    assert.equal(shouldSparkSidecarRefresh({ ...baseSnapshot, last_refresh_iteration: 4 }, 2, 5), false);
+  });
+
+  it('returns true when cooldown period has elapsed', () => {
+    assert.equal(shouldSparkSidecarRefresh({ ...baseSnapshot, last_refresh_iteration: 2 }, 2, 5), true);
+  });
+});
+
+describe('buildSidecarRefreshSnapshot', () => {
+  const baseSnapshot: AutoresearchSparkPrepassSnapshot = {
+    enabled: true,
+    status: 'available',
+    note: 'test',
+    updated_at: '2026-03-17T00:00:00.000Z',
+    packet_characters: 100,
+    sidecar_enabled: true,
+    last_refresh_iteration: 0,
+    refresh_count: 1,
+    last_refresh_reason: 'initial',
+  };
+
+  it('increments refresh_count and records iteration and reason', () => {
+    const result = buildSidecarRefreshSnapshot(baseSnapshot, 5, '2 consecutive noops');
+    assert.deepEqual(result, {
+      sidecar_enabled: true,
+      last_refresh_iteration: 5,
+      refresh_count: 2,
+      last_refresh_reason: '2 consecutive noops',
+    });
+  });
+
+  it('handles missing refresh_count gracefully', () => {
+    const { refresh_count: _, ...withoutCount } = baseSnapshot;
+    const result = buildSidecarRefreshSnapshot(withoutCount as AutoresearchSparkPrepassSnapshot, 3, 'test');
+    assert.equal(result.refresh_count, 1);
+  });
+});
+
+
+describe('runAutoresearchSparkPrepass sidecar state preservation', () => {
+  const contract = {
+    missionContent: `# Mission
+Inspect files only.
+`,
+    sandboxContent: `---
+---
+Read-only sandbox.
+`,
+    sandbox: { body: 'Read-only sandbox.' },
+  } as any;
+
+  it('preserves sidecar metadata after a successful bootstrap prepass', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-sidecar-prepass-success-'));
+    const statusFile = join(cwd, 'spark-prepass-status.json');
+    const packetFile = join(cwd, 'spark-prepass-fact-packet.md');
+    try {
+      await initializeAutoresearchSparkPrepassSnapshot(
+        true,
+        statusFile,
+        packetFile,
+        () => '2026-03-17T00:00:00.000Z',
+        true,
+      );
+
+      const result = await runAutoresearchSparkPrepass(
+        contract,
+        {
+          cwd,
+          iteration: 1,
+          lastKeptCommit: 'abc123',
+          statusFile,
+          packetFile,
+        },
+        {
+          now: () => '2026-03-17T00:01:00.000Z',
+          executeExplore: async () => ({
+            stdout: `## Likely relevant files
+- src/cli/autoresearch.ts
+
+## Key matches
+- --spark-sidecar flag
+
+## Evidence snippets
+- supervisor loop counts noop streaks
+
+## Next files to inspect
+- src/autoresearch/runtime.ts
+`,
+            stderr: '',
+            exitCode: 0,
+            backend: 'sparkshell',
+          }),
+        },
+      );
+
+      assert.equal(result.snapshot?.status, 'available');
+      assert.equal(result.snapshot?.sidecar_enabled, true);
+      assert.equal(result.snapshot?.refresh_count, 0);
+      assert.equal(result.snapshot?.last_refresh_iteration, 0);
+      assert.equal(result.snapshot?.last_refresh_reason, 'initial');
+
+      const persisted = await readAutoresearchSparkPrepassSnapshot(statusFile, packetFile);
+      assert.equal(persisted.snapshot?.sidecar_enabled, true);
+      assert.equal(persisted.snapshot?.refresh_count, 0);
+      assert.equal(persisted.snapshot?.last_refresh_iteration, 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves sidecar metadata after a fallback prepass result', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-sidecar-prepass-fallback-'));
+    const statusFile = join(cwd, 'spark-prepass-status.json');
+    const packetFile = join(cwd, 'spark-prepass-fact-packet.md');
+    try {
+      await initializeAutoresearchSparkPrepassSnapshot(
+        true,
+        statusFile,
+        packetFile,
+        () => '2026-03-17T00:00:00.000Z',
+        true,
+      );
+
+      const result = await runAutoresearchSparkPrepass(
+        contract,
+        {
+          cwd,
+          iteration: 1,
+          lastKeptCommit: 'abc123',
+          statusFile,
+          packetFile,
+        },
+        {
+          now: () => '2026-03-17T00:02:00.000Z',
+          executeExplore: async () => ({
+            stdout: '',
+            stderr: 'explore backend failed',
+            exitCode: 1,
+            backend: 'harness',
+          }),
+        },
+      );
+
+      assert.equal(result.snapshot?.status, 'fallback');
+      assert.equal(result.snapshot?.sidecar_enabled, true);
+      assert.equal(result.snapshot?.refresh_count, 0);
+      assert.equal(result.snapshot?.last_refresh_iteration, 0);
+      assert.equal(result.snapshot?.last_refresh_reason, 'initial');
+
+      const persisted = await readAutoresearchSparkPrepassSnapshot(statusFile, packetFile);
+      assert.equal(persisted.snapshot?.status, 'fallback');
+      assert.equal(persisted.snapshot?.sidecar_enabled, true);
+      assert.equal(persisted.snapshot?.refresh_count, 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
     }
   });
 });

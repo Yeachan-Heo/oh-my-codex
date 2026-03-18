@@ -1,7 +1,10 @@
 import { execFileSync, spawnSync } from 'child_process';
 import { readFileSync } from 'fs';
 import { ensureWorktree, planWorktreeTarget } from '../team/worktree.js';
-import { loadAutoresearchMissionContract } from '../autoresearch/contracts.js';
+import {
+  loadAutoresearchMissionContract,
+  type AutoresearchMissionContract,
+} from '../autoresearch/contracts.js';
 import {
   countTrailingAutoresearchNoops,
   finalizeAutoresearchRunState,
@@ -9,9 +12,18 @@ import {
   materializeAutoresearchMissionToWorktree,
   prepareAutoresearchRuntime,
   processAutoresearchCandidate,
+  refreshAutoresearchInstructions,
   resumeAutoresearchRuntime,
   buildAutoresearchRunTag,
+  type AutoresearchRunManifest,
 } from '../autoresearch/runtime.js';
+import {
+  buildSidecarRefreshSnapshot,
+  readAutoresearchSparkPrepassSnapshot,
+  runAutoresearchSparkPrepass,
+  shouldSparkSidecarRefresh,
+  writeAutoresearchSparkPrepassSnapshot,
+} from '../autoresearch/spark-prepass.js';
 import { assertModeStartAllowed } from '../modes/base.js';
 import {
   buildAutoresearchDeepInterviewPrompt,
@@ -33,9 +45,9 @@ Usage:
   omx autoresearch                                                (human entrypoint: launch Codex CLI deep-interview intake, then execute)
   omx autoresearch [--topic T] [--evaluator CMD] [--keep-policy P] [--slug S]
   omx autoresearch init [--topic T] [--evaluator CMD] [--keep-policy P] [--slug S]
-  omx autoresearch run <mission-dir> [codex-args...]              (agent/explicit execution entrypoint)
-  omx autoresearch <mission-dir> [codex-args...]                  (compatibility alias for run)
-  omx autoresearch --resume <run-id> [codex-args...]
+  omx autoresearch [--spark-prepass] [--spark-sidecar] run <mission-dir> [codex-args...]    (agent/explicit execution entrypoint)
+  omx autoresearch [--spark-prepass] [--spark-sidecar] <mission-dir> [codex-args...]        (compatibility alias for run)
+  omx autoresearch [--spark-prepass] [--spark-sidecar] --resume <run-id> [codex-args...]
 
 Arguments:
   (no args)        Launch an interactive Codex session that activates deep-interview --autoresearch,
@@ -53,11 +65,15 @@ Behavior:
   - fresh launch creates a run-tagged autoresearch/<slug>/<run-tag> lane
   - supervisor records baseline, candidate, keep/discard/reset, and results artifacts under .omx/logs/autoresearch/
   - run prefers interview|autoresearch split-pane launch inside tmux, with foreground fallback on failure
+  - --spark-prepass runs a bounded read-only omx explore prepass once per run and injects the fact packet into bootstrap instructions
+  - --spark-sidecar implies --spark-prepass plus conditional refresh after 2 consecutive noop iterations (3-iteration cooldown between refreshes)
   - --resume loads the authoritative per-run manifest and continues from the last kept commit
 `;
 
 const AUTORESEARCH_APPEND_INSTRUCTIONS_ENV = 'OMX_AUTORESEARCH_APPEND_INSTRUCTIONS_FILE';
 const AUTORESEARCH_MAX_CONSECUTIVE_NOOPS = 3;
+const AUTORESEARCH_SPARK_PREPASS_FLAG = '--spark-prepass';
+const AUTORESEARCH_SPARK_SIDECAR_FLAG = '--spark-sidecar';
 
 function buildAutoresearchDeepInterviewAppendix(): string {
   return [
@@ -171,6 +187,8 @@ export interface ParsedAutoresearchArgs {
   missionDir: string | null;
   runId: string | null;
   codexArgs: string[];
+  sparkPrepass: boolean;
+  sparkSidecar: boolean;
   guided?: boolean;
   initArgs?: string[];
   seedArgs?: ReturnType<typeof parseInitArgs>;
@@ -187,46 +205,144 @@ function resolveRepoRoot(cwd: string): string {
 
 export function parseAutoresearchArgs(args: readonly string[]): ParsedAutoresearchArgs {
   const values = [...args];
+  let sparkPrepass = false;
+  let sparkSidecar = false;
+  while (values[0] === AUTORESEARCH_SPARK_PREPASS_FLAG || values[0] === AUTORESEARCH_SPARK_SIDECAR_FLAG) {
+    if (values[0] === AUTORESEARCH_SPARK_PREPASS_FLAG) sparkPrepass = true;
+    if (values[0] === AUTORESEARCH_SPARK_SIDECAR_FLAG) sparkSidecar = true;
+    values.shift();
+  }
+  if (sparkSidecar) sparkPrepass = true;
   if (values.length === 0) {
     if (!process.stdin.isTTY) {
       throw new Error(`mission-dir is required.\n${AUTORESEARCH_HELP}`);
     }
-    return { missionDir: null, runId: null, codexArgs: [], guided: true };
+    return { missionDir: null, runId: null, codexArgs: [], sparkPrepass, sparkSidecar, guided: true };
   }
 
   const first = values[0];
   if (first === 'init') {
-    return { missionDir: null, runId: null, codexArgs: [], guided: true, initArgs: values.slice(1) };
+    return { missionDir: null, runId: null, codexArgs: [], sparkPrepass, sparkSidecar, guided: true, initArgs: values.slice(1) };
   }
   if (first === '--help' || first === '-h' || first === 'help') {
-    return { missionDir: '--help', runId: null, codexArgs: [] };
+    return { missionDir: '--help', runId: null, codexArgs: [], sparkPrepass, sparkSidecar };
   }
   if (first === '--resume') {
     const runId = values[1]?.trim();
     if (!runId) {
       throw new Error(`--resume requires <run-id>.\n${AUTORESEARCH_HELP}`);
     }
-    return { missionDir: null, runId, codexArgs: values.slice(2) };
+    return { missionDir: null, runId, codexArgs: values.slice(2), sparkPrepass, sparkSidecar };
   }
   if (first.startsWith('--resume=')) {
     const runId = first.slice('--resume='.length).trim();
     if (!runId) {
       throw new Error(`--resume requires <run-id>.\n${AUTORESEARCH_HELP}`);
     }
-    return { missionDir: null, runId, codexArgs: values.slice(1) };
+    return { missionDir: null, runId, codexArgs: values.slice(1), sparkPrepass, sparkSidecar };
   }
   if (first === 'run') {
     const missionDir = values[1]?.trim();
     if (!missionDir) {
       throw new Error(`run requires <mission-dir>.\n${AUTORESEARCH_HELP}`);
     }
-    return { missionDir, runId: null, codexArgs: values.slice(2), runSubcommand: true };
+    return { missionDir, runId: null, codexArgs: values.slice(2), sparkPrepass, sparkSidecar, runSubcommand: true };
   }
   if (first.startsWith('-')) {
     const seedArgs = parseInitArgs(values);
-    return { missionDir: null, runId: null, codexArgs: [], guided: true, seedArgs };
+    return { missionDir: null, runId: null, codexArgs: [], sparkPrepass, sparkSidecar, guided: true, seedArgs };
   }
-  return { missionDir: first, runId: null, codexArgs: values.slice(1) };
+  return { missionDir: first, runId: null, codexArgs: values.slice(1), sparkPrepass, sparkSidecar };
+}
+
+async function maybeRunAutoresearchSparkPrepass(
+  enabled: boolean,
+  contract: AutoresearchMissionContract,
+  runtime: {
+    instructionsFile: string;
+    repoRoot: string;
+    runId: string;
+    worktreePath: string;
+    sparkPrepassEnabled?: boolean;
+    sparkPrepassStatusFile?: string | null;
+    sparkPrepassPacketFile?: string | null;
+  },
+): Promise<void> {
+  const shouldRun = runtime.sparkPrepassEnabled === true || enabled;
+  if (!shouldRun || !runtime.sparkPrepassStatusFile || !runtime.sparkPrepassPacketFile) {
+    return;
+  }
+
+  const existing = await readAutoresearchSparkPrepassSnapshot(
+    runtime.sparkPrepassStatusFile,
+    runtime.sparkPrepassPacketFile,
+  );
+  if (existing.snapshot?.status && existing.snapshot.status !== 'pending') {
+    const manifest = await loadAutoresearchRunManifest(runtime.repoRoot, runtime.runId);
+    await refreshAutoresearchInstructions(contract, manifest);
+    return;
+  }
+
+  const manifest = await loadAutoresearchRunManifest(runtime.repoRoot, runtime.runId);
+  const prepassResult = await runAutoresearchSparkPrepass(contract, {
+    cwd: runtime.worktreePath,
+    iteration: manifest.iteration + 1,
+    lastKeptCommit: manifest.last_kept_commit,
+    env: process.env,
+    statusFile: runtime.sparkPrepassStatusFile,
+    packetFile: runtime.sparkPrepassPacketFile,
+  });
+  if (prepassResult.snapshot?.status === 'fallback') {
+    process.stderr.write(`[autoresearch] ${prepassResult.snapshot.note}\n`);
+  }
+  await refreshAutoresearchInstructions(contract, manifest);
+}
+
+async function maybeRunSparkSidecarRefresh(
+  contract: AutoresearchMissionContract,
+  manifest: AutoresearchRunManifest,
+  runtime: {
+    worktreePath: string;
+    repoRoot: string;
+    sparkPrepassStatusFile?: string | null;
+    sparkPrepassPacketFile?: string | null;
+  },
+  trailingNoops: number,
+): Promise<void> {
+  const statusFile = runtime.sparkPrepassStatusFile ?? manifest.spark_prepass_status_file;
+  const packetFile = runtime.sparkPrepassPacketFile ?? manifest.spark_prepass_packet_file;
+  if (!statusFile || !packetFile) return;
+
+  const existing = await readAutoresearchSparkPrepassSnapshot(statusFile, packetFile);
+  if (!shouldSparkSidecarRefresh(existing.snapshot, trailingNoops, manifest.iteration)) {
+    return;
+  }
+
+  process.stderr.write(`[autoresearch] spark sidecar refresh triggered (${trailingNoops} consecutive noops at iteration ${manifest.iteration})\n`);
+
+  const prepassResult = await runAutoresearchSparkPrepass(contract, {
+    cwd: runtime.worktreePath,
+    iteration: manifest.iteration + 1,
+    lastKeptCommit: manifest.last_kept_commit,
+    env: process.env,
+    statusFile,
+    packetFile,
+  });
+
+  if (prepassResult.snapshot) {
+    const updatedSnapshot = {
+      ...prepassResult.snapshot,
+      ...buildSidecarRefreshSnapshot(
+        existing.snapshot || prepassResult.snapshot,
+        manifest.iteration,
+        `${trailingNoops} consecutive noops`,
+      ),
+    };
+    await writeAutoresearchSparkPrepassSnapshot(statusFile, packetFile, updatedSnapshot, prepassResult.packet);
+  }
+
+  const freshManifest = await loadAutoresearchRunManifest(runtime.repoRoot, manifest.run_id);
+  await refreshAutoresearchInstructions(contract, freshManifest);
 }
 
 async function runAutoresearchLoop(
@@ -236,6 +352,9 @@ async function runAutoresearchLoop(
     manifestFile: string;
     repoRoot: string;
     worktreePath: string;
+    sparkSidecarEnabled?: boolean;
+    sparkPrepassStatusFile?: string | null;
+    sparkPrepassPacketFile?: string | null;
   },
   missionDir: string,
 ): Promise<void> {
@@ -262,6 +381,9 @@ async function runAutoresearchLoop(
             stopReason: `repeated noop limit reached (${AUTORESEARCH_MAX_CONSECUTIVE_NOOPS})`,
           });
           return;
+        }
+        if (runtime.sparkSidecarEnabled) {
+          await maybeRunSparkSidecarRefresh(contract, manifest, runtime, trailingNoops);
         }
       }
       process.env[AUTORESEARCH_APPEND_INSTRUCTIONS_ENV] = runtime.instructionsFile;
@@ -314,6 +436,8 @@ function launchAutoresearchInSplitPane(args: {
   repoRoot: string;
   missionDir: string;
   codexArgs: string[];
+  sparkPrepass?: boolean;
+  sparkSidecar?: boolean;
 }): boolean {
   if (!checkTmuxAvailable()) return false;
 
@@ -327,7 +451,11 @@ function launchAutoresearchInSplitPane(args: {
   if (!omxPath) return false;
   // Re-enter through the bare compatibility alias so the new pane executes immediately
   // instead of recursively taking the split-pane branch again.
-  const launchArgs = ['autoresearch', args.missionDir, ...args.codexArgs];
+  const supervisorFlags = [
+    ...(args.sparkPrepass ? [AUTORESEARCH_SPARK_PREPASS_FLAG] : []),
+    ...(args.sparkSidecar ? [AUTORESEARCH_SPARK_SIDECAR_FLAG] : []),
+  ];
+  const launchArgs = ['autoresearch', ...supervisorFlags, args.missionDir, ...args.codexArgs];
   const command = [process.execPath, omxPath, ...launchArgs]
     .map((part) => `'${part.replace(/'/g, `'\\''`)}'`)
     .join(' ');
@@ -351,7 +479,11 @@ function launchAutoresearchInSplitPane(args: {
   return true;
 }
 
-async function executeAutoresearchMissionRun(missionDir: string, codexArgs: string[]): Promise<void> {
+async function executeAutoresearchMissionRun(
+  missionDir: string,
+  codexArgs: string[],
+  options: { sparkPrepass?: boolean; sparkSidecar?: boolean } = {},
+): Promise<void> {
   const contract = await loadAutoresearchMissionContract(missionDir);
   await assertModeStartAllowed('autoresearch', contract.repoRoot);
   const runTag = buildAutoresearchRunTag();
@@ -367,7 +499,13 @@ async function executeAutoresearchMissionRun(missionDir: string, codexArgs: stri
   }
 
   const worktreeContract = await materializeAutoresearchMissionToWorktree(contract, ensured.worktreePath);
-  const runtime = await prepareAutoresearchRuntime(worktreeContract, contract.repoRoot, ensured.worktreePath, { runTag });
+  const sparkPrepass = options.sparkPrepass === true || options.sparkSidecar === true;
+  const runtime = await prepareAutoresearchRuntime(worktreeContract, contract.repoRoot, ensured.worktreePath, {
+    runTag,
+    sparkPrepassEnabled: sparkPrepass,
+    sparkSidecarEnabled: options.sparkSidecar === true,
+  });
+  await maybeRunAutoresearchSparkPrepass(sparkPrepass, worktreeContract, runtime);
   await runAutoresearchLoop(codexArgs, runtime, worktreeContract.missionDir);
 }
 
@@ -379,6 +517,10 @@ export async function autoresearchCommand(args: string[]): Promise<void> {
   }
 
   if (parsed.guided) {
+    if (parsed.sparkPrepass || parsed.sparkSidecar) {
+      throw new Error(`--spark-prepass and --spark-sidecar are supported only for direct <mission-dir> or --resume launches.\n${AUTORESEARCH_HELP}`);
+    }
+
     const repoRoot = resolveRepoRoot(process.cwd());
     let result;
     if (parsed.initArgs && parsed.initArgs.length > 0) {
@@ -420,7 +562,13 @@ export async function autoresearchCommand(args: string[]): Promise<void> {
     await assertModeStartAllowed('autoresearch', repoRoot);
     const manifest = await loadAutoresearchRunManifest(repoRoot, parsed.runId);
     const runtime = await resumeAutoresearchRuntime(repoRoot, parsed.runId);
-    await runAutoresearchLoop(parsed.codexArgs, runtime, manifest.mission_dir);
+    const contract = await loadAutoresearchMissionContract(manifest.mission_dir);
+    await maybeRunAutoresearchSparkPrepass(parsed.sparkPrepass, contract, runtime);
+    await runAutoresearchLoop(
+      parsed.codexArgs,
+      { ...runtime, sparkSidecarEnabled: parsed.sparkSidecar },
+      manifest.mission_dir,
+    );
     return;
   }
 
@@ -432,10 +580,15 @@ export async function autoresearchCommand(args: string[]): Promise<void> {
       repoRoot,
       missionDir: parsed.missionDir as string,
       codexArgs: parsed.codexArgs,
+      sparkPrepass: parsed.sparkPrepass,
+      sparkSidecar: parsed.sparkSidecar,
     })) {
       return;
     }
   }
 
-  await executeAutoresearchMissionRun(parsed.missionDir as string, parsed.codexArgs);
+  await executeAutoresearchMissionRun(parsed.missionDir as string, parsed.codexArgs, {
+    sparkPrepass: parsed.sparkPrepass,
+    sparkSidecar: parsed.sparkSidecar,
+  });
 }

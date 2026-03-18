@@ -4,6 +4,11 @@ import { mkdir, readFile, symlink, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import { cancelMode, readModeState, startMode, updateModeState } from '../modes/base.js';
 import {
+  initializeAutoresearchSparkPrepassSnapshot,
+  readAutoresearchSparkPrepassSnapshot,
+  type AutoresearchSparkPrepassSnapshot,
+} from './spark-prepass.js';
+import {
   parseEvaluatorResult,
   type AutoresearchKeepPolicy,
   type AutoresearchMissionContract,
@@ -24,6 +29,10 @@ export interface PreparedAutoresearchRuntime {
   resultsFile: string;
   stateFile: string;
   candidateFile: string;
+  sparkPrepassEnabled: boolean;
+  sparkPrepassStatusFile: string | null;
+  sparkPrepassPacketFile: string | null;
+  sparkSidecarEnabled: boolean;
   repoRoot: string;
   worktreePath: string;
   taskDescription: string;
@@ -87,6 +96,9 @@ export interface AutoresearchRunManifest {
   ledger_file: string;
   latest_evaluator_file: string;
   candidate_file: string;
+  spark_prepass_enabled: boolean;
+  spark_prepass_status_file: string | null;
+  spark_prepass_packet_file: string | null;
   evaluator: AutoresearchMissionContract['sandbox']['evaluator'];
   keep_policy: AutoresearchKeepPolicy;
   status: AutoresearchRunStatus;
@@ -130,6 +142,8 @@ interface AutoresearchInstructionLedgerSummary {
 
 const AUTORESEARCH_RESULTS_HEADER = 'iteration\tcommit\tpass\tscore\tstatus\tdescription\n';
 const AUTORESEARCH_WORKTREE_EXCLUDES = ['results.tsv', 'run.log', 'node_modules', '.omx/'];
+const AUTORESEARCH_SPARK_PREPASS_STATUS_FILE = 'spark-prepass-status.json';
+const AUTORESEARCH_SPARK_PREPASS_PACKET_FILE = 'spark-prepass-fact-packet.md';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -640,6 +654,10 @@ export function buildAutoresearchInstructions(
     keepPolicy: AutoresearchKeepPolicy;
     previousIterationOutcome?: string | null;
     recentLedgerSummary?: AutoresearchInstructionLedgerSummary[];
+    sparkPrepass?: {
+      snapshot: AutoresearchSparkPrepassSnapshot | null;
+      packet: string | null;
+    } | null;
   },
 ): string {
   return [
@@ -668,9 +686,23 @@ export function buildAutoresearchInstructions(
       previous_iteration_outcome: context.previousIterationOutcome ?? 'none yet',
       recent_ledger_summary: context.recentLedgerSummary ?? [],
       keep_policy: context.keepPolicy,
+      spark_fact_packet_enabled: Boolean(context.sparkPrepass?.packet),
     }, null, 2),
     '```',
-    '',
+    ...(context.sparkPrepass?.snapshot?.enabled
+      ? [
+        '',
+        'Spark prepass status:',
+        '```json',
+        JSON.stringify(context.sparkPrepass.snapshot, null, 2),
+        '```',
+        ...(context.sparkPrepass.packet ? [
+          '',
+          'Spark prepass fact packet (read-only discovery generated before the main Codex turn; re-check critical facts in-repo before relying on them):',
+          context.sparkPrepass.packet,
+        ] : []),
+      ]
+      : []),
     'Operate as a thin autoresearch experiment worker for exactly one experiment cycle.',
     'Do not loop forever inside this session. Make at most one candidate commit, then write the candidate artifact JSON and exit.',
     '',
@@ -707,6 +739,14 @@ export function buildAutoresearchInstructions(
     trimContent(contract.sandbox.body || contract.sandboxContent),
     '```',
   ].join('\n');
+}
+
+export function autoresearchSparkPrepassPacketPath(instructionsFile: string): string {
+  return join(dirname(instructionsFile), AUTORESEARCH_SPARK_PREPASS_PACKET_FILE);
+}
+
+export function autoresearchSparkPrepassStatusPath(instructionsFile: string): string {
+  return join(dirname(instructionsFile), AUTORESEARCH_SPARK_PREPASS_STATUS_FILE);
 }
 
 export async function materializeAutoresearchMissionToWorktree(
@@ -757,6 +797,12 @@ async function writeRunManifest(manifest: AutoresearchRunManifest): Promise<void
 
 async function writeInstructionsFile(contract: AutoresearchMissionContract, manifest: AutoresearchRunManifest): Promise<void> {
   const instructionContext = await buildAutoresearchInstructionContext(manifest);
+  const sparkPrepass = manifest.spark_prepass_enabled
+    ? await readAutoresearchSparkPrepassSnapshot(
+      manifest.spark_prepass_status_file,
+      manifest.spark_prepass_packet_file,
+    )
+    : null;
   await writeFile(
     manifest.instructions_file,
     `${buildAutoresearchInstructions(contract, {
@@ -770,9 +816,17 @@ async function writeInstructionsFile(contract: AutoresearchMissionContract, mani
       keepPolicy: manifest.keep_policy,
       previousIterationOutcome: instructionContext.previousIterationOutcome,
       recentLedgerSummary: instructionContext.recentLedgerSummary,
+      sparkPrepass,
     })}\n`,
     'utf-8',
   );
+}
+
+export async function refreshAutoresearchInstructions(
+  contract: AutoresearchMissionContract,
+  manifest: AutoresearchRunManifest,
+): Promise<void> {
+  await writeInstructionsFile(contract, manifest);
 }
 
 async function seedBaseline(
@@ -814,7 +868,7 @@ export async function prepareAutoresearchRuntime(
   contract: AutoresearchMissionContract,
   projectRoot: string,
   worktreePath: string,
-  options: { runTag?: string } = {},
+  options: { runTag?: string; sparkPrepassEnabled?: boolean; sparkSidecarEnabled?: boolean } = {},
 ): Promise<PreparedAutoresearchRuntime> {
   await assertAutoresearchLockAvailable(projectRoot);
   await ensureRuntimeExcludes(worktreePath);
@@ -832,6 +886,10 @@ export async function prepareAutoresearchRuntime(
   const ledgerFile = join(runDir, 'iteration-ledger.json');
   const latestEvaluatorFile = join(runDir, 'latest-evaluator-result.json');
   const candidateFile = join(runDir, 'candidate.json');
+  const sparkSidecarEnabled = options.sparkSidecarEnabled === true;
+  const sparkPrepassEnabled = options.sparkPrepassEnabled === true || sparkSidecarEnabled;
+  const sparkPrepassStatusFile = sparkPrepassEnabled ? autoresearchSparkPrepassStatusPath(instructionsFile) : null;
+  const sparkPrepassPacketFile = sparkPrepassEnabled ? autoresearchSparkPrepassPacketPath(instructionsFile) : null;
   const resultsFile = join(worktreePath, 'results.tsv');
   const taskDescription = `autoresearch ${contract.missionRelativeDir} (${runId})`;
   const keepPolicy = contract.sandbox.evaluator.keep_policy ?? 'score_improvement';
@@ -868,6 +926,9 @@ export async function prepareAutoresearchRuntime(
     ledger_file: ledgerFile,
     latest_evaluator_file: latestEvaluatorFile,
     candidate_file: candidateFile,
+    spark_prepass_enabled: sparkPrepassEnabled,
+    spark_prepass_status_file: sparkPrepassStatusFile,
+    spark_prepass_packet_file: sparkPrepassPacketFile,
     evaluator: contract.sandbox.evaluator,
     keep_policy: keepPolicy,
     status: 'running',
@@ -878,6 +939,13 @@ export async function prepareAutoresearchRuntime(
     completed_at: null,
   };
 
+  await initializeAutoresearchSparkPrepassSnapshot(
+    sparkPrepassEnabled,
+    sparkPrepassStatusFile,
+    sparkPrepassPacketFile,
+    undefined,
+    sparkSidecarEnabled,
+  );
   await writeInstructionsFile(contract, manifest);
   await writeRunManifest(manifest);
   await writeJsonFile(ledgerFile, {
@@ -943,6 +1011,10 @@ export async function prepareAutoresearchRuntime(
     resultsFile,
     stateFile,
     candidateFile,
+    sparkPrepassEnabled,
+    sparkPrepassStatusFile,
+    sparkPrepassPacketFile,
+    sparkSidecarEnabled,
     repoRoot: projectRoot,
     worktreePath,
     taskDescription,
@@ -996,6 +1068,10 @@ export async function resumeAutoresearchRuntime(projectRoot: string, runId: stri
     resultsFile: manifest.results_file,
     stateFile: activeRunStateFile(projectRoot),
     candidateFile: manifest.candidate_file,
+    sparkPrepassEnabled: manifest.spark_prepass_enabled,
+    sparkPrepassStatusFile: manifest.spark_prepass_status_file,
+    sparkPrepassPacketFile: manifest.spark_prepass_packet_file,
+    sparkSidecarEnabled: false,
     repoRoot: manifest.repo_root,
     worktreePath: manifest.worktree_path,
     taskDescription: `autoresearch resume ${runId}`,
