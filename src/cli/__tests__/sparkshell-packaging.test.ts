@@ -58,7 +58,7 @@ describe('sparkshell packaging scaffold', () => {
       assert.equal(buildResult.status, 0, buildResult.stderr || buildResult.stdout);
       assert.equal(existsSync(packagedBinaryPath), true, `expected staged binary at ${packagedBinaryRelativePath}`);
 
-      const packed = spawnSync('npm', ['pack', '--dry-run', '--json'], {
+      const packed = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
         cwd: process.cwd(),
         encoding: 'utf-8',
       });
