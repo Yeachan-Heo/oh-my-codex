@@ -96,7 +96,7 @@ jobs:
     needs: [build-native]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: release-artifacts
       - name: Setup Node
@@ -150,7 +150,7 @@ jobs:
     needs: [publish-native-assets]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: native-release-assets
           path: release-assets
@@ -168,7 +168,7 @@ jobs:
     needs: [smoke-verify-native]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: native-release-assets
           path: release-assets
@@ -186,7 +186,7 @@ jobs:
     needs: [smoke-packed-install]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: native-release-assets
           path: release-assets
