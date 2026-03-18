@@ -397,7 +397,7 @@ esac
       );
       execFileSync('chmod', ['+x', fakeTmuxPath], { stdio: 'ignore' });
 
-      const result = runOmx(repo, ['autoresearch', 'run', missionDir], {
+      const result = runOmx(repo, ['autoresearch', 'run', missionDir, '--model', 'gpt-5'], {
         PATH: `${fakeBin}:${process.env.PATH || ''}`,
         OMX_TEST_REPO_ROOT: repo,
         TMUX_PANE: '%9',
@@ -406,6 +406,7 @@ esac
 
       const tmuxOutput = await readFile(tmuxLog, 'utf-8');
       assert.match(tmuxOutput, /split-window -h -t %9 -d -P -F #\{pane_id\} -c/);
+      assert.match(tmuxOutput, /autoresearch '\/tmp\/[^']+' '--model' 'gpt-5'/);
       assert.doesNotMatch(tmuxOutput, /kill-pane -t %9/);
     } finally {
       await rm(repo, { recursive: true, force: true });
