@@ -4,6 +4,7 @@ import { mkdtemp, rm, readFile, writeFile, mkdir, chmod } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { existsSync, readFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import {
   initTeamState,
   createTask,
@@ -15,6 +16,14 @@ import {
   withScalingLock,
 } from '../state.js';
 import { isScalingEnabled, scaleUp, scaleDown } from '../scaling.js';
+
+async function initCommittedGitRepo(cwd: string): Promise<void> {
+  execFileSync('git', ['init'], { cwd, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.name', 'OMX Test'], { cwd, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.email', 'omx@example.com'], { cwd, stdio: 'pipe' });
+  execFileSync('git', ['add', '.'], { cwd, stdio: 'pipe' });
+  execFileSync('git', ['commit', '-m', 'init'], { cwd, stdio: 'pipe' });
+}
 
 // ── isScalingEnabled ──────────────────────────────────────────────────────────
 
@@ -385,7 +394,7 @@ describe('scaleUp', () => {
         tmuxStubPath,
         `#!/bin/sh
 set -eu
-case "${1:-}" in
+	case "\${1:-}" in
   -V)
     echo "tmux 3.2a"
     ;;
@@ -411,6 +420,7 @@ exit 0
       await mkdir(join(cwd, '.codex', 'prompts'), { recursive: true });
       await writeFile(join(cwd, '.codex', 'prompts', 'writer.md'), '<identity>You are Writer.</identity>');
       await writeFile(join(cwd, 'AGENTS.md'), '# Root project instructions\n');
+      await initCommittedGitRepo(cwd);
       await initTeamState('rollback-worktree', 'task', 'executor', 1, cwd, undefined, process.env, {
         workspace_mode: 'worktree',
         leader_cwd: cwd,
@@ -423,7 +433,6 @@ exit 0
       config.tmux_session = 'omx-team-rollback-worktree';
       config.leader_pane_id = '%11';
       config.workers[0]!.pane_id = '%21';
-      config.workers[0]!.worktree_path = join(cwd, '.omx', 'team', 'rollback-worktree', 'worktrees', 'worker-1');
       await saveTeamConfig(config, cwd);
 
       const manifestPath = join(cwd, '.omx', 'state', 'team', 'rollback-worktree', 'manifest.v2.json');
@@ -469,7 +478,7 @@ exit 0
         tmuxStubPath,
         `#!/bin/sh
 set -eu
-case "${1:-}" in
+	case "\${1:-}" in
   -V)
     echo "tmux 3.2a"
     ;;
@@ -492,6 +501,7 @@ exit 0
       await mkdir(join(cwd, '.codex', 'prompts'), { recursive: true });
       await writeFile(join(cwd, '.codex', 'prompts', 'writer.md'), '<identity>You are Writer.</identity>');
       await writeFile(join(cwd, 'AGENTS.md'), '# Root project instructions\n');
+      await initCommittedGitRepo(cwd);
       await initTeamState('canonical-root', 'task', 'executor', 1, cwd, undefined, process.env, {
         workspace_mode: 'worktree',
         leader_cwd: cwd,
@@ -504,7 +514,6 @@ exit 0
       config.tmux_session = 'omx-team-canonical-root';
       config.leader_pane_id = '%11';
       config.workers[0]!.pane_id = '%21';
-      config.workers[0]!.worktree_path = join(cwd, '.omx', 'team', 'canonical-root', 'worktrees', 'worker-1');
       await saveTeamConfig(config, cwd);
 
       const manifestPath = join(cwd, '.omx', 'state', 'team', 'canonical-root', 'manifest.v2.json');
