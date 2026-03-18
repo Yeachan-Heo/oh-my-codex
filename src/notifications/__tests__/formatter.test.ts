@@ -157,14 +157,50 @@ describe('parseTmuxTail', () => {
     assert.ok(result.includes('more output'));
   });
 
-  it('caps output at 10 meaningful lines', () => {
+  it('caps output at 10 meaningful blocks', () => {
     const lines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
     const result = parseTmuxTail(lines.join('\n'));
     const resultLines = result.split('\n');
     assert.strictEqual(resultLines.length, 10);
-    // Should keep the last 10 lines
+    // Should keep the last 10 single-line blocks
     assert.strictEqual(resultLines[0], 'line 11');
     assert.strictEqual(resultLines[9], 'line 20');
+  });
+
+  it('keeps wrapped Korean continuation lines in the same block', () => {
+    const raw = [
+      'block 9: previous context',
+      'block 10: 2. 아예 ~/.codex/.omx-config.json에서 조절 가능하',
+      '  게 로컬 패치하기',
+    ].join('\n');
+
+    const result = parseTmuxTail(raw);
+    assert.ok(result.includes('block 10: 2. 아예 ~/.codex/.omx-config.json에서 조절 가능하'));
+    assert.ok(result.includes('  게 로컬 패치하기'));
+    assert.ok(
+      result.indexOf('block 10: 2. 아예 ~/.codex/.omx-config.json에서 조절 가능하') <
+        result.indexOf('  게 로컬 패치하기'),
+    );
+  });
+
+  it('drops older blocks before truncating inside a wrapped block', () => {
+    const makeBlock = (label: string) =>
+      [
+        `${label}: ${'가'.repeat(420)}`,
+        `  ${'나'.repeat(120)}`,
+      ].join('\n');
+
+    const raw = [
+      makeBlock('block 1'),
+      makeBlock('block 2'),
+      makeBlock('block 3'),
+    ].join('\n');
+
+    const result = parseTmuxTail(raw);
+    assert.ok(!result.includes('block 1:'));
+    assert.ok(result.includes('block 2:'));
+    assert.ok(result.includes('block 3:'));
+    assert.ok(result.includes(`  ${'나'.repeat(120)}`));
   });
 
   it('returns empty string when all lines are filtered out', () => {
@@ -235,6 +271,13 @@ describe('parseTmuxTail', () => {
     const raw = '!@#$%^&*()  \nNormal line with words';
     const result = parseTmuxTail(raw);
     assert.ok(!result.includes('!@#$%^&*()'));
+    assert.ok(result.includes('Normal line with words'));
+  });
+
+  it('keeps long Korean lines under the Unicode-aware density check', () => {
+    const raw = '로컬 패치하기를 계속 진행합니다\nNormal line with words';
+    const result = parseTmuxTail(raw);
+    assert.ok(result.includes('로컬 패치하기를 계속 진행합니다'));
     assert.ok(result.includes('Normal line with words'));
   });
 

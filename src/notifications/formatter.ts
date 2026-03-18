@@ -32,8 +32,14 @@ const BARE_PROMPT_RE = /^[❯>$%#]+$/;
 /** Minimum ratio of alphanumeric characters for a line to be "meaningful" */
 const MIN_ALNUM_RATIO = 0.15;
 
-/** Maximum number of meaningful lines to include in a notification */
-const MAX_TAIL_LINES = 10;
+/** Unicode-aware letters/numbers for density checks across non-Latin scripts */
+const UNICODE_ALNUM_RE = /[\p{L}\p{N}]/gu;
+
+/** Maximum number of meaningful output blocks to include in a notification */
+const MAX_TAIL_BLOCKS = 10;
+
+/** Maximum recent-output character budget before older blocks are dropped */
+const MAX_TAIL_CHARS = 1200;
 
 /**
  * Parse raw tmux pane output into clean, human-readable text suitable for
@@ -46,11 +52,12 @@ const MAX_TAIL_LINES = 10;
  * - Removes OMX HUD status lines
  * - Removes bypass-permissions indicator lines
  * - Removes bare shell prompt lines
- * - Drops lines with < 15% alphanumeric density (for lines >= 8 chars)
- * - Caps at the last 10 meaningful (non-empty) lines
+ * - Drops lines with < 15% Unicode letter/number density (for lines >= 8 chars)
+ * - Groups indented continuation lines into the previous logical block
+ * - Keeps the most recent 10 logical blocks within a 1200-character budget
  */
 export function parseTmuxTail(raw: string): string {
-  const meaningful: string[] = [];
+  const blocks: string[][] = [];
 
   for (const line of raw.split("\n")) {
     const stripped = line.replace(ANSI_RE, "");
@@ -64,14 +71,38 @@ export function parseTmuxTail(raw: string): string {
     if (BYPASS_PERM_RE.test(trimmed)) continue;
     if (BARE_PROMPT_RE.test(trimmed)) continue;
 
-    // Alphanumeric density check: drop lines mostly composed of special characters
-    const alnumCount = (trimmed.match(/[a-zA-Z0-9]/g) || []).length;
+    // Unicode-aware density check: drop lines mostly composed of special characters
+    const alnumCount = (trimmed.match(UNICODE_ALNUM_RE) || []).length;
     if (trimmed.length >= 8 && alnumCount / trimmed.length < MIN_ALNUM_RATIO) continue;
 
-    meaningful.push(stripped.trimEnd());
+    const cleanedLine = stripped.trimEnd();
+    const isContinuationLine = /^[\t ]+/.test(cleanedLine);
+
+    if (isContinuationLine && blocks.length > 0) {
+      blocks[blocks.length - 1].push(cleanedLine);
+      continue;
+    }
+
+    blocks.push([cleanedLine]);
   }
 
-  return meaningful.slice(-MAX_TAIL_LINES).join("\n");
+  const blockTexts = blocks.map((block) => block.join("\n"));
+  const recentBlocks: string[] = [];
+  let totalChars = 0;
+
+  for (let index = blockTexts.length - 1; index >= 0; index -= 1) {
+    if (recentBlocks.length >= MAX_TAIL_BLOCKS) break;
+
+    const block = blockTexts[index];
+    const nextTotalChars = totalChars + block.length + (recentBlocks.length > 0 ? 1 : 0);
+
+    if (recentBlocks.length > 0 && nextTotalChars > MAX_TAIL_CHARS) break;
+
+    recentBlocks.unshift(block);
+    totalChars = nextTotalChars;
+  }
+
+  return recentBlocks.join("\n");
 }
 
 function formatDuration(ms?: number): string {
