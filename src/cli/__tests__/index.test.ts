@@ -665,6 +665,7 @@ describe("resolveCodexLaunchPolicy", () => {
         { TMUX: "psmux-session" },
         "win32",
         true,
+        true,
       ),
       "inside-tmux",
     );
@@ -675,7 +676,14 @@ describe("resolveCodexLaunchPolicy", () => {
   });
 
   it("launches directly on native Windows even when tmux is available", () => {
-    assert.equal(resolveCodexLaunchPolicy({}, "win32", true), "direct");
+    assert.equal(resolveCodexLaunchPolicy({}, "win32", true, true), "direct");
+  });
+
+  it("does not force direct launch for MSYS or Git Bash on win32", () => {
+    assert.equal(
+      resolveCodexLaunchPolicy({ MSYSTEM: "MINGW64" }, "win32", true, false),
+      "detached-tmux",
+    );
   });
 
   it("launches directly when tmux is unavailable outside tmux", () => {
@@ -683,7 +691,7 @@ describe("resolveCodexLaunchPolicy", () => {
   });
 
   it("launches directly on native Windows when tmux is unavailable", () => {
-    assert.equal(resolveCodexLaunchPolicy({}, "win32", false), "direct");
+    assert.equal(resolveCodexLaunchPolicy({}, "win32", false, true), "direct");
   });
 });
 

@@ -370,9 +370,10 @@ export function resolveCodexLaunchPolicy(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
   tmuxAvailable: boolean = isTmuxAvailable(),
+  nativeWindows: boolean = isNativeWindows(),
 ): CodexLaunchPolicy {
   if (env.TMUX) return "inside-tmux";
-  if (platform === "win32") return "direct";
+  if (nativeWindows) return "direct";
   return tmuxAvailable ? "detached-tmux" : "direct";
 }
 
@@ -1704,7 +1705,12 @@ function runCodex(
     ? { ...codexEnv, [OMX_NOTIFY_TEMP_CONTRACT_ENV]: notifyTempContractRaw }
     : codexEnv;
 
-  const launchPolicy = resolveCodexLaunchPolicy(process.env);
+  const launchPolicy = resolveCodexLaunchPolicy(
+    process.env,
+    process.platform,
+    undefined,
+    nativeWindows,
+  );
 
   if (isCodexVersionRequest(launchArgs)) {
     runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
