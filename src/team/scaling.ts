@@ -200,7 +200,10 @@ export async function scaleUp(
     const addedWorkers: WorkerInfo[] = [];
     const createdTaskIds: string[] = [];
 
-    const rollbackScaleUp = async (error: string, paneId?: string): Promise<ScaleError> => {
+    const rollbackScaleUp = async (
+      error: string,
+      context: { paneId?: string; workerName?: string; worktreePath?: string } = {},
+    ): Promise<ScaleError> => {
       for (const w of addedWorkers) {
         const idx = config.workers.findIndex((worker) => worker.name === w.name);
         if (idx >= 0) {
@@ -216,9 +219,22 @@ export async function scaleUp(
         }
       }
 
-      if (paneId) {
+      if (
+        context.workerName &&
+        context.worktreePath &&
+        !addedWorkers.some((worker) => worker.name === context.workerName)
+      ) {
+        await removeWorkerWorktreeRootAgentsFile(
+          sanitized,
+          context.workerName,
+          teamStateRoot,
+          context.worktreePath,
+        ).catch(() => {});
+      }
+
+      if (context.paneId) {
         try {
-          execFileSync('tmux', ['kill-pane', '-t', paneId], { stdio: 'pipe' });
+          execFileSync('tmux', ['kill-pane', '-t', context.paneId], { stdio: 'pipe' });
         } catch {}
       }
 
@@ -330,12 +346,19 @@ export async function scaleUp(
       ], { encoding: 'utf-8' });
 
       if (result.status !== 0) {
-        return await rollbackScaleUp(`Failed to create tmux pane for ${workerName}: ${(result.stderr || '').trim()}`);
+        return await rollbackScaleUp(
+          `Failed to create tmux pane for ${workerName}: ${(result.stderr || '').trim()}`,
+          { workerName, worktreePath: workerWorkspace?.worktreePath },
+        );
       }
 
       const paneId = (result.stdout || '').trim().split('\n')[0]?.trim();
       if (!paneId || !paneId.startsWith('%')) {
-        return await rollbackScaleUp(`Failed to capture pane ID for ${workerName}`);
+        return await rollbackScaleUp(`Failed to capture pane ID for ${workerName}`, {
+          paneId,
+          workerName,
+          worktreePath: workerWorkspace?.worktreePath,
+        });
       }
 
       // Intentionally avoid forcing `select-layout tiled` here.
@@ -502,7 +525,11 @@ export async function scaleUp(
         }
       }
       if (!outcome.ok) {
-        return await rollbackScaleUp(`scale_up_dispatch_failed:${workerName}:${outcome.reason}`, paneId);
+        return await rollbackScaleUp(`scale_up_dispatch_failed:${workerName}:${outcome.reason}`, {
+          paneId,
+          workerName,
+          worktreePath: workerWorkspace?.worktreePath,
+        });
       }
 
       addedWorkers.push(workerInfo);

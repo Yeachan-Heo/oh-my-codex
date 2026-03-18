@@ -17,6 +17,8 @@ import {
 } from '../state.js';
 import { isScalingEnabled, scaleUp, scaleDown } from '../scaling.js';
 
+delete process.env.OMX_TEAM_STATE_ROOT;
+
 async function initCommittedGitRepo(cwd: string): Promise<void> {
   execFileSync('git', ['init'], { cwd, stdio: 'pipe' });
   execFileSync('git', ['config', 'user.name', 'OMX Test'], { cwd, stdio: 'pipe' });
