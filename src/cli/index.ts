@@ -360,7 +360,7 @@ export type CodexLaunchPolicy = "inside-tmux" | "detached-tmux" | "direct";
 
 export function resolveCodexLaunchPolicy(
   env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
+  _platform: NodeJS.Platform = process.platform,
   tmuxAvailable: boolean = isTmuxAvailable(),
   nativeWindows: boolean = isNativeWindows(),
 ): CodexLaunchPolicy {
