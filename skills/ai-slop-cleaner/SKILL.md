@@ -22,6 +22,12 @@ Use this skill when:
 - Keep using inspection, tests, diagnostics, and verification until the cleanup is grounded.
 - Proceed automatically through clear, reversible cleanup steps; ask only when a choice materially changes scope or behavior.
 
+## Scoped File Lists and Ralph Workflow
+
+- This skill can accept a **file list scope** instead of a whole feature area.
+- When the caller provides a changed-files list (for example, Ralph session-owned edits), keep the cleanup strictly bounded to those files.
+- In the **Ralph workflow**, the mandatory deslop pass should run this skill on Ralph's changed files only, in standard mode unless the caller explicitly requests otherwise.
+
 ## Procedure
 
 1. **Lock behavior with regression tests first**
@@ -32,6 +38,7 @@ Use this skill when:
 2. **Create a cleanup plan before code**
    - List the specific smells to remove
    - Bound the pass to the requested files/scope
+   - If a file list scope is provided, keep the pass restricted to that changed-files list
    - Order fixes from safest/highest-signal to riskiest
    - Do not start coding until the cleanup plan is explicit
 

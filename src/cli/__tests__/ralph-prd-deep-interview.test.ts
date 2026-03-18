@@ -13,4 +13,9 @@ describe('ralph PRD mode deep interview gate', () => {
     assert.match(ralphSkill, /\$deep-interview\s+--quick/i);
     assert.match(ralphSkill, /\.omx\/interviews\/\{slug\}-\{timestamp\}\.md/);
   });
+
+  it('documents --no-deslop as a PRD-mode opt-out for the final deslop pass', () => {
+    assert.match(ralphSkill, /--no-deslop/);
+    assert.match(ralphSkill, /skip the deslop pass/i);
+  });
 });

@@ -54,5 +54,8 @@ describe('anti-slop workflow surfaces', () => {
     assert.match(skill, /Pass 4: Test reinforcement/i);
     assert.match(skill, /quality gates/i);
     assert.match(skill, /remaining risks/i);
+    assert.match(skill, /file list scope/i);
+    assert.match(skill, /changed files/i);
+    assert.match(skill, /Ralph workflow/i);
   });
 });
