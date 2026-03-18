@@ -458,7 +458,7 @@ exit 0
       assert.match(result.error, /scale_up_dispatch_failed:worker-2/);
 
       const workerRootAgents = join(cwd, '.omx', 'team', 'rollback-worktree', 'worktrees', 'worker-2', 'AGENTS.md');
-      assert.equal(existsSync(workerRootAgents), false);
+      assert.equal(await readFile(workerRootAgents, 'utf-8'), '# Root project instructions\n');
       const backupPath = join(cwd, '.git', 'worktrees', 'worker-2', 'omx', 'root-agents-backup.json');
       assert.equal(existsSync(backupPath), false);
     } finally {
@@ -731,10 +731,10 @@ describe('scaleDown worktree AGENTS cleanup', () => {
       const worktree = join(cwd, '.omx', 'team', 'scale-down-worktree', 'worktrees', 'worker-2');
       await mkdir(worktree, { recursive: true });
       await writeFile(join(worktree, 'AGENTS.md'), '# Tracked root instructions\n', 'utf8');
-      await mkdir(join(cwd, '.git', 'worktrees', 'worker-2', 'omx'), { recursive: true });
+      await mkdir(join(cwd, '.omx', 'state', 'team', 'scale-down-worktree', 'workers', 'worker-2'), { recursive: true });
       await writeFile(
-        join(cwd, '.git', 'worktrees', 'worker-2', 'omx', 'root-agents-backup.json'),
-        JSON.stringify({ existed: false, tracked: false }, null, 2),
+        join(cwd, '.omx', 'state', 'team', 'scale-down-worktree', 'workers', 'worker-2', 'root-agents-backup.json'),
+        JSON.stringify({ existed: true, tracked: false, previousContent: '# Tracked root instructions\n' }, null, 2),
         'utf8',
       );
       await writeFile(join(worktree, 'AGENTS.md'), '# Generated runtime instructions\n', 'utf8');
@@ -754,8 +754,8 @@ describe('scaleDown worktree AGENTS cleanup', () => {
       assert.equal(result.ok, true);
       if (!result.ok) return;
 
-      assert.equal(existsSync(join(worktree, 'AGENTS.md')), false);
-      assert.equal(existsSync(join(cwd, '.git', 'worktrees', 'worker-2', 'omx', 'root-agents-backup.json')), false);
+      assert.equal(await readFile(join(worktree, 'AGENTS.md'), 'utf-8'), '# Tracked root instructions\n');
+      assert.equal(existsSync(join(cwd, '.omx', 'state', 'team', 'scale-down-worktree', 'workers', 'worker-2', 'root-agents-backup.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
