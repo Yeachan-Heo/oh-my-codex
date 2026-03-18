@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm, readFile, writeFile, mkdir, chmod } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -13,8 +14,20 @@ import {
   readWorkerStatus,
   writeWorkerStatus,
   withScalingLock,
+  DEFAULT_MAX_WORKERS,
 } from '../state.js';
 import { isScalingEnabled, scaleUp, scaleDown } from '../scaling.js';
+
+async function initRepo(): Promise<string> {
+  const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-worktree-repo-'));
+  execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd, stdio: 'ignore' });
+  await writeFile(join(cwd, 'README.md'), 'hello\n', 'utf-8');
+  execFileSync('git', ['add', 'README.md'], { cwd, stdio: 'ignore' });
+  execFileSync('git', ['commit', '-m', 'init'], { cwd, stdio: 'ignore' });
+  return cwd;
+}
 
 // ── isScalingEnabled ──────────────────────────────────────────────────────────
 
@@ -443,6 +456,210 @@ exit 0
       if (typeof previousPath === 'string') process.env.PATH = previousPath;
       else delete process.env.PATH;
       await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('provisions detached worktrees for scaled-up workers from persisted team worktree mode', async () => {
+    const repo = await initRepo();
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-detached-bin-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const tmuxStubPath = join(fakeBinDir, 'tmux');
+    const previousPath = process.env.PATH;
+
+    try {
+      await writeFile(
+        tmuxStubPath,
+        [
+          '#!/bin/sh',
+          'set -eu',
+          `printf '%s\n' "$*" >> "${tmuxLogPath}"`,
+          'case "${1:-}" in',
+          '  -V)',
+          '    echo "tmux 3.2a"',
+          '    ;;',
+          '  split-window)',
+          '    echo "%41"',
+          '    ;;',
+          '  list-panes)',
+          '    echo "45454"',
+          '    ;;',
+          '  capture-pane)',
+          '    echo ""',
+          '    ;;',
+          'esac',
+          'exit 0',
+          '',
+        ].join('\n'),
+      );
+      await chmod(tmuxStubPath, 0o755);
+      await writeFile(tmuxLogPath, '');
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      const teamName = 'scale-up-detached-worktree';
+      await mkdir(join(repo, '.omx', 'state', 'team', teamName), { recursive: true });
+      await writeFile(join(repo, '.omx', 'state', 'team', teamName, 'worker-agents.md'), '# Base worker instructions\n');
+      await initTeamState(
+        teamName,
+        'task',
+        'executor',
+        1,
+        repo,
+        DEFAULT_MAX_WORKERS,
+        process.env,
+        {
+          leader_cwd: repo,
+          team_state_root: join(repo, '.omx', 'state'),
+          workspace_mode: 'worktree',
+          worktree_mode: { enabled: true, detached: true, name: null },
+        },
+      );
+
+      const config = await readTeamConfig(teamName, repo);
+      assert.ok(config);
+      if (!config) return;
+      config.tmux_session = `omx-team-${teamName}`;
+      config.leader_pane_id = '%11';
+      config.workers[0]!.pane_id = '%21';
+      await saveTeamConfig(config, repo);
+
+      const manifestPath = join(repo, '.omx', 'state', 'team', teamName, 'manifest.v2.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as { policy?: Record<string, unknown> };
+      manifest.policy = {
+        ...(manifest.policy ?? {}),
+        dispatch_mode: 'transport_direct',
+      };
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const result = await scaleUp(
+        teamName,
+        1,
+        'executor',
+        [],
+        repo,
+        { OMX_TEAM_SCALING_ENABLED: '1', OMX_TEAM_SKIP_READY_WAIT: '1' },
+      );
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+
+      const updated = await readTeamConfig(teamName, repo);
+      const worker = updated?.workers.find((entry) => entry.name === 'worker-2');
+      assert.deepEqual(updated?.worktree_mode, { enabled: true, detached: true, name: null });
+      assert.ok(worker?.worktree_path, 'scaled worker should have detached worktree path');
+      assert.equal(worker?.working_dir, worker?.worktree_path);
+      assert.equal(worker?.worktree_detached, true);
+      assert.equal(worker?.worktree_created, true);
+      assert.equal(existsSync(worker?.worktree_path as string), true);
+      assert.throws(
+        () => execFileSync('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd: worker?.worktree_path, stdio: 'pipe' }),
+      );
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(repo, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('provisions named worktrees for scaled-up workers from persisted team worktree mode', async () => {
+    const repo = await initRepo();
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-named-bin-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const tmuxStubPath = join(fakeBinDir, 'tmux');
+    const previousPath = process.env.PATH;
+
+    try {
+      await writeFile(
+        tmuxStubPath,
+        [
+          '#!/bin/sh',
+          'set -eu',
+          `printf '%s\n' "$*" >> "${tmuxLogPath}"`,
+          'case "${1:-}" in',
+          '  -V)',
+          '    echo "tmux 3.2a"',
+          '    ;;',
+          '  split-window)',
+          '    echo "%42"',
+          '    ;;',
+          '  list-panes)',
+          '    echo "46464"',
+          '    ;;',
+          '  capture-pane)',
+          '    echo ""',
+          '    ;;',
+          'esac',
+          'exit 0',
+          '',
+        ].join('\n'),
+      );
+      await chmod(tmuxStubPath, 0o755);
+      await writeFile(tmuxLogPath, '');
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      const teamName = 'scale-up-named-worktree';
+      const branchBase = 'feature/team-scale';
+      await mkdir(join(repo, '.omx', 'state', 'team', teamName), { recursive: true });
+      await writeFile(join(repo, '.omx', 'state', 'team', teamName, 'worker-agents.md'), '# Base worker instructions\n');
+      await initTeamState(
+        teamName,
+        'task',
+        'executor',
+        1,
+        repo,
+        DEFAULT_MAX_WORKERS,
+        process.env,
+        {
+          leader_cwd: repo,
+          team_state_root: join(repo, '.omx', 'state'),
+          workspace_mode: 'worktree',
+          worktree_mode: { enabled: true, detached: false, name: branchBase },
+        },
+      );
+
+      const config = await readTeamConfig(teamName, repo);
+      assert.ok(config);
+      if (!config) return;
+      config.tmux_session = `omx-team-${teamName}`;
+      config.leader_pane_id = '%11';
+      config.workers[0]!.pane_id = '%21';
+      await saveTeamConfig(config, repo);
+
+      const manifestPath = join(repo, '.omx', 'state', 'team', teamName, 'manifest.v2.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as { policy?: Record<string, unknown> };
+      manifest.policy = {
+        ...(manifest.policy ?? {}),
+        dispatch_mode: 'transport_direct',
+      };
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const result = await scaleUp(
+        teamName,
+        1,
+        'executor',
+        [],
+        repo,
+        { OMX_TEAM_SCALING_ENABLED: '1', OMX_TEAM_SKIP_READY_WAIT: '1' },
+      );
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+
+      const updated = await readTeamConfig(teamName, repo);
+      const worker = updated?.workers.find((entry) => entry.name === 'worker-2');
+      assert.deepEqual(updated?.worktree_mode, { enabled: true, detached: false, name: branchBase });
+      assert.equal(worker?.worktree_branch, `${branchBase}/worker-2`);
+      assert.equal(worker?.working_dir, worker?.worktree_path);
+      assert.equal(worker?.worktree_detached, false);
+      assert.equal(worker?.worktree_created, true);
+      assert.equal(existsSync(worker?.worktree_path as string), true);
+      assert.equal(
+        execFileSync('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd: worker?.worktree_path, encoding: 'utf-8' }).trim(),
+        `${branchBase}/worker-2`,
+      );
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(repo, { recursive: true, force: true });
       await rm(fakeBinDir, { recursive: true, force: true });
     }
   });

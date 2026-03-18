@@ -1,5 +1,6 @@
 import type { TeamPhase, TerminalPhase } from '../orchestrator.js';
 import type { TeamTaskStatus, TeamEventType } from '../contracts.js';
+import type { WorktreeMode } from '../worktree.js';
 
 export interface TeamConfig {
   name: string;
@@ -16,6 +17,7 @@ export interface TeamConfig {
   leader_cwd?: string;
   team_state_root?: string;
   workspace_mode?: 'single' | 'worktree';
+  worktree_mode?: WorktreeMode;
   leader_pane_id: string | null;
   hud_pane_id: string | null;
   resize_hook_name: string | null;
@@ -170,6 +172,7 @@ export interface TeamManifestV2 {
   leader_cwd?: string;
   team_state_root?: string;
   workspace_mode?: 'single' | 'worktree';
+  worktree_mode?: WorktreeMode;
   leader_pane_id: string | null;
   hud_pane_id: string | null;
   resize_hook_name: string | null;
@@ -181,6 +184,7 @@ export interface TeamWorkspaceMetadata {
   leader_cwd?: string;
   team_state_root?: string;
   workspace_mode?: 'single' | 'worktree';
+  worktree_mode?: WorktreeMode;
 }
 
 export interface TeamEvent {

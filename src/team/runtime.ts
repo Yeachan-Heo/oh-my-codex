@@ -1411,6 +1411,7 @@ export async function startTeam(
         leader_cwd: leaderCwd,
         team_state_root: teamStateRoot,
         workspace_mode: workspaceMode,
+        worktree_mode: effectiveWorktreeMode,
       },
       options.ralph === true ? 'linked_ralph' : 'default',
     );
@@ -1420,6 +1421,7 @@ export async function startTeam(
     config.leader_cwd = leaderCwd;
     config.team_state_root = teamStateRoot;
     config.workspace_mode = workspaceMode;
+    config.worktree_mode = effectiveWorktreeMode;
 
     // 4. Create tasks
     for (const t of tasks) {

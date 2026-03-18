@@ -291,17 +291,20 @@ describe('team state', () => {
           leader_cwd: '/tmp/leader',
           team_state_root: '/tmp/leader/.omx/state',
           workspace_mode: 'worktree',
+          worktree_mode: { enabled: true, detached: false, name: 'feature/team-meta' },
         },
       );
       assert.equal(cfg.leader_cwd, '/tmp/leader');
       assert.equal(cfg.team_state_root, '/tmp/leader/.omx/state');
       assert.equal(cfg.workspace_mode, 'worktree');
+      assert.deepEqual(cfg.worktree_mode, { enabled: true, detached: false, name: 'feature/team-meta' });
 
       const manifest = await readTeamManifestV2('team-meta', cwd);
       assert.ok(manifest);
       assert.equal(manifest?.leader_cwd, '/tmp/leader');
       assert.equal(manifest?.team_state_root, '/tmp/leader/.omx/state');
       assert.equal(manifest?.workspace_mode, 'worktree');
+      assert.deepEqual(manifest?.worktree_mode, { enabled: true, detached: false, name: 'feature/team-meta' });
       assert.equal(manifest?.lifecycle_profile, 'default');
       assert.equal(manifest?.leader_pane_id, null);
       assert.equal(manifest?.hud_pane_id, null);
