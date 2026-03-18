@@ -19,7 +19,11 @@ import {
   materializeAutoresearchDeepInterviewResult,
   parseInitArgs,
 } from './autoresearch-guided.js';
-import { resolveAutoresearchDeepInterviewResult } from './autoresearch-intake.js';
+import {
+  listAutoresearchDeepInterviewDraftPaths,
+  listAutoresearchDeepInterviewResultPaths,
+  resolveAutoresearchDeepInterviewResult,
+} from './autoresearch-intake.js';
 import { CODEX_BYPASS_FLAG, MADMAX_FLAG } from './constants.js';
 import { restoreStandaloneHudPane, enableMouseScrolling } from '../team/tmux-session.js';
 
@@ -84,7 +88,8 @@ async function runGuidedAutoresearchDeepInterview(
 ): Promise<Awaited<ReturnType<typeof initAutoresearchMission>>> {
   const previousInstructionsFile = process.env[AUTORESEARCH_APPEND_INSTRUCTIONS_ENV];
   const appendixPath = await writeAutoresearchDeepInterviewAppendixFile(repoRoot);
-  const startedAtMs = Date.now();
+  const existingResultPaths = new Set(await listAutoresearchDeepInterviewResultPaths(repoRoot));
+  const existingDraftPaths = new Set(await listAutoresearchDeepInterviewDraftPaths(repoRoot));
   process.env[AUTORESEARCH_APPEND_INSTRUCTIONS_ENV] = appendixPath;
 
   try {
@@ -99,7 +104,8 @@ async function runGuidedAutoresearchDeepInterview(
   }
 
   const result = await resolveAutoresearchDeepInterviewResult(repoRoot, {
-    newerThanMs: startedAtMs,
+    excludeResultPaths: existingResultPaths,
+    excludeDraftPaths: existingDraftPaths,
   });
   if (!result) {
     throw new Error('autoresearch deep-interview did not produce .omx/specs launch artifacts.');

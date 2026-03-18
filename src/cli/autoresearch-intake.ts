@@ -365,7 +365,7 @@ async function readPersistedResult(resultPath: string): Promise<AutoresearchDeep
   };
 }
 
-async function listMarkdownDraftPaths(repoRoot: string): Promise<string[]> {
+export async function listAutoresearchDeepInterviewDraftPaths(repoRoot: string): Promise<string[]> {
   const specsDir = join(repoRoot, '.omx', 'specs');
   if (!existsSync(specsDir)) return [];
   const entries = await readdir(specsDir, { withFileTypes: true });
@@ -410,6 +410,7 @@ export async function resolveAutoresearchDeepInterviewResult(
     slug?: string;
     newerThanMs?: number;
     excludeResultPaths?: ReadonlySet<string>;
+    excludeDraftPaths?: ReadonlySet<string>;
   } = {},
 ): Promise<AutoresearchDeepInterviewResult | null> {
   const slug = options.slug?.trim() ? slugifyMissionName(options.slug) : null;
@@ -445,7 +446,11 @@ export async function resolveAutoresearchDeepInterviewResult(
     return readPersistedResult(newestResultPath);
   }
 
-  const draftPaths = await filterRecentPaths(await listMarkdownDraftPaths(repoRoot), options.newerThanMs);
+  const draftPaths = await filterRecentPaths(
+    await listAutoresearchDeepInterviewDraftPaths(repoRoot),
+    options.newerThanMs,
+    options.excludeDraftPaths,
+  );
   const draftEntries = await Promise.all(draftPaths.map(async (path) => ({ path, metadata: await stat(path) })));
   const newestDraftPath = draftEntries.sort((left, right) => right.metadata.mtimeMs - left.metadata.mtimeMs)[0]?.path;
   if (!newestDraftPath) {

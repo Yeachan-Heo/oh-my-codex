@@ -149,6 +149,116 @@ describe('omx autoresearch', () => {
     assert.deepEqual(bareParsed.codexArgs, ['--model', 'gpt-5']);
   });
 
+
+  it('resolves guided deep-interview artifacts by seeded slug even when file mtimes predate launch timestamp', async () => {
+    const repo = await initRepo();
+    const fakeBin = await mkdtemp(join(tmpdir(), 'omx-autoresearch-deep-interview-mtime-bin-'));
+    try {
+      const fakeCodexPath = join(fakeBin, 'codex');
+      await writeFile(
+        fakeCodexPath,
+        `#!/bin/sh
+if [ "$1" = "exec" ]; then
+  candidate_file=$(find "$OMX_TEST_REPO_ROOT/.omx/logs/autoresearch" -name candidate.json | head -n 1)
+  head_commit=$(git rev-parse HEAD)
+  cat >"$candidate_file" <<'EOF'
+{
+  "status": "abort",
+  "candidate_commit": null,
+  "base_commit": "HEAD_PLACEHOLDER",
+  "description": "stop after guided handoff",
+  "notes": ["fake codex exec"],
+  "created_at": "2026-03-18T00:00:00.000Z"
+}
+EOF
+  perl -0pi -e "s/HEAD_PLACEHOLDER/$head_commit/g" "$candidate_file"
+  exit 0
+fi
+mkdir -p "$OMX_TEST_REPO_ROOT/.omx/specs/autoresearch-test-launch"
+cat >"$OMX_TEST_REPO_ROOT/.omx/specs/deep-interview-autoresearch-test-launch.md" <<'EOF'
+# Deep Interview Autoresearch Draft — test-launch
+
+## Mission Draft
+Investigate flaky onboarding behavior
+
+## Evaluator Draft
+node scripts/eval.js
+
+## Keep Policy
+score_improvement
+
+## Session Slug
+test-launch
+
+## Seed Inputs
+- topic: (none)
+- evaluator: (none)
+- keep_policy: (none)
+- slug: (none)
+
+## Launch Readiness
+Launch-ready: yes
+- Evaluator command is concrete and can be compiled into sandbox.md
+
+## Confirmation Bridge
+- refine further
+- launch
+EOF
+cat >"$OMX_TEST_REPO_ROOT/.omx/specs/autoresearch-test-launch/mission.md" <<'EOF'
+# Mission
+
+Investigate flaky onboarding behavior
+EOF
+cat >"$OMX_TEST_REPO_ROOT/.omx/specs/autoresearch-test-launch/sandbox.md" <<'EOF'
+---
+evaluator:
+  command: node scripts/eval.js
+  format: json
+  keep_policy: score_improvement
+---
+EOF
+cat >"$OMX_TEST_REPO_ROOT/.omx/specs/autoresearch-test-launch/result.json" <<'EOF'
+{
+  "kind": "omx.autoresearch.deep-interview/v1",
+  "compileTarget": {
+    "topic": "Investigate flaky onboarding behavior",
+    "evaluatorCommand": "node scripts/eval.js",
+    "keepPolicy": "score_improvement",
+    "slug": "test-launch",
+    "repoRoot": "${repo}"
+  },
+  "draftArtifactPath": "${repo}/.omx/specs/deep-interview-autoresearch-test-launch.md",
+  "missionArtifactPath": "${repo}/.omx/specs/autoresearch-test-launch/mission.md",
+  "sandboxArtifactPath": "${repo}/.omx/specs/autoresearch-test-launch/sandbox.md",
+  "launchReady": true,
+  "blockedReasons": []
+}
+EOF
+touch -t 202603180000 "$OMX_TEST_REPO_ROOT/.omx/specs/deep-interview-autoresearch-test-launch.md"
+touch -t 202603180000 "$OMX_TEST_REPO_ROOT/.omx/specs/autoresearch-test-launch/mission.md"
+touch -t 202603180000 "$OMX_TEST_REPO_ROOT/.omx/specs/autoresearch-test-launch/sandbox.md"
+touch -t 202603180000 "$OMX_TEST_REPO_ROOT/.omx/specs/autoresearch-test-launch/result.json"
+`,
+        'utf-8',
+      );
+      execFileSync('chmod', ['+x', fakeCodexPath], { stdio: 'ignore' });
+
+      const result = runOmx(repo, ['autoresearch', '--topic', 'Investigate flaky onboarding behavior', '--evaluator', 'node scripts/eval.js', '--slug', 'test-launch'], {
+        PATH: `${fakeBin}:${process.env.PATH || ''}`,
+        OMX_TEST_REPO_ROOT: repo,
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+
+      const missionContent = await readFile(join(repo, 'missions', 'test-launch', 'mission.md'), 'utf-8');
+      const sandboxContent = await readFile(join(repo, 'missions', 'test-launch', 'sandbox.md'), 'utf-8');
+      assert.match(missionContent, /Investigate flaky onboarding behavior/);
+      assert.match(sandboxContent, /command: node scripts\/eval\.js/);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+      await rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+
   it('launches interactive deep-interview intake, materializes mission files, and then prefers split-pane handoff', async () => {
     const repo = await initRepo();
     const fakeBin = await mkdtemp(join(tmpdir(), 'omx-autoresearch-deep-interview-bin-'));
