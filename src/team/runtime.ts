@@ -1722,6 +1722,8 @@ export async function startTeam(
       if (config) {
         config.resize_hook_name = null;
         config.resize_hook_target = null;
+        config.last_layout_window_width = null;
+        config.last_layout_window_height = null;
         try {
           await saveTeamConfig(config, leaderCwd);
         } catch (cleanupError) {
