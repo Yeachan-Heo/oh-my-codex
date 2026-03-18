@@ -1,10 +1,26 @@
 import { createServer } from 'node:http';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+
+const REQUIRED_NODE_MODULE_MARKERS = [
+  join('typescript', 'package.json'),
+  join('@iarna', 'toml', 'package.json'),
+  join('@modelcontextprotocol', 'sdk', 'package.json'),
+  join('zod', 'package.json'),
+];
 
 function usage() {
   return [
@@ -13,6 +29,110 @@ function usage() {
     'Creates an npm tarball, installs it into an isolated prefix, and smoke tests the installed omx CLI.',
     'When --release-assets-dir is provided, native hydration is also exercised using a local HTTP server.',
   ].join('\n');
+}
+
+function hasNodeModulesPath(nodeModulesPath) {
+  try {
+    lstatSync(nodeModulesPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function hasUsableNodeModules(repoRoot) {
+  return REQUIRED_NODE_MODULE_MARKERS.every((marker) => existsSync(join(repoRoot, 'node_modules', marker)));
+}
+
+export function resolveGitCommonDir(cwd, gitRunner = spawnSync) {
+  const result = gitRunner('git', ['rev-parse', '--git-common-dir'], {
+    cwd,
+    encoding: 'utf-8',
+  });
+  if (result.status !== 0) {
+    return null;
+  }
+  const value = (result.stdout || '').trim();
+  if (!value) {
+    return null;
+  }
+  return resolve(cwd, value);
+}
+
+export function resolveReusableNodeModulesSource(repoRoot, gitRunner = spawnSync) {
+  const commonDir = resolveGitCommonDir(repoRoot, gitRunner);
+  if (!commonDir || basename(commonDir) !== '.git') {
+    return null;
+  }
+
+  const primaryRepoRoot = dirname(commonDir);
+  if (resolve(primaryRepoRoot) === resolve(repoRoot)) {
+    return null;
+  }
+
+  if (!hasUsableNodeModules(primaryRepoRoot)) {
+    return null;
+  }
+
+  return join(primaryRepoRoot, 'node_modules');
+}
+
+function formatCommandFailure(cmd, args, result) {
+  return [
+    `Command failed: ${cmd} ${args.join(' ')}`,
+    result.stdout?.trim() ? `stdout:\n${result.stdout.trim()}` : '',
+    result.stderr?.trim() ? `stderr:\n${result.stderr.trim()}` : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+export function ensureRepoDependencies(repoRoot, options = {}) {
+  const {
+    gitRunner = spawnSync,
+    install = (cwd) => {
+      const result = spawnSync('npm', ['ci'], {
+        cwd,
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      });
+      if (result.status !== 0) {
+        throw new Error(formatCommandFailure('npm', ['ci'], result));
+      }
+    },
+    remove = rmSync,
+    symlink = symlinkSync,
+    log = () => {},
+    platformName = process.platform,
+  } = options;
+
+  if (hasUsableNodeModules(repoRoot)) {
+    return {
+      strategy: 'existing',
+      nodeModulesPath: join(repoRoot, 'node_modules'),
+    };
+  }
+
+  const targetNodeModules = join(repoRoot, 'node_modules');
+  if (hasNodeModulesPath(targetNodeModules)) {
+    remove(targetNodeModules, { recursive: true, force: true });
+  }
+
+  const reusableNodeModules = resolveReusableNodeModulesSource(repoRoot, gitRunner);
+  if (reusableNodeModules) {
+    symlink(reusableNodeModules, targetNodeModules, platformName === 'win32' ? 'junction' : 'dir');
+    log(`[smoke:packed-install] Reusing node_modules from ${reusableNodeModules}`);
+    return {
+      strategy: 'symlink',
+      nodeModulesPath: targetNodeModules,
+      sourceNodeModulesPath: reusableNodeModules,
+    };
+  }
+
+  log('[smoke:packed-install] Installing repo dependencies with npm ci');
+  install(repoRoot);
+  return {
+    strategy: 'installed',
+    nodeModulesPath: targetNodeModules,
+  };
 }
 
 export function hasSparkShellFallbackBanner(stderr) {
@@ -51,11 +171,7 @@ function run(cmd, args, options = {}) {
     ...options,
   });
   if (result.status !== 0) {
-    throw new Error([
-      `Command failed: ${cmd} ${args.join(' ')}`,
-      result.stdout?.trim() ? `stdout:\n${result.stdout.trim()}` : '',
-      result.stderr?.trim() ? `stderr:\n${result.stderr.trim()}` : '',
-    ].filter(Boolean).join('\n\n'));
+    throw new Error(formatCommandFailure(cmd, args, result));
   }
   return result;
 }
@@ -175,6 +291,10 @@ async function main() {
   let server;
   let tarballPath;
   try {
+    ensureRepoDependencies(repoRoot, {
+      log: (message) => console.log(message),
+    });
+
     const pack = run('npm', ['pack', '--json'], { cwd: repoRoot });
     const packOutput = JSON.parse(pack.stdout.slice(pack.stdout.indexOf('[')));
     const tarballName = packOutput[0]?.filename;
