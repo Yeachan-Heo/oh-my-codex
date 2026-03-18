@@ -678,6 +678,14 @@ describe("resolveCodexLaunchPolicy", () => {
     );
   });
 
+  it("launches directly when stdin is not a tty outside tmux", () => {
+    assert.equal(resolveCodexLaunchPolicy({}, "linux", true, false, false, true), "direct");
+  });
+
+  it("launches directly when stdout is not a tty outside tmux", () => {
+    assert.equal(resolveCodexLaunchPolicy({}, "linux", true, false, true, false), "direct");
+  });
+
   it("launches directly when tmux is unavailable outside tmux", () => {
     assert.equal(resolveCodexLaunchPolicy({}, "linux", false), "direct");
   });
