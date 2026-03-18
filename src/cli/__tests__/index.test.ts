@@ -804,7 +804,7 @@ describe("detached tmux new-session sequencing", () => {
     assert.equal(steps[1]?.args.at(-1), hudCmd);
   });
 
-  it("buildDetachedSessionBootstrapSteps kills detached tmux session when leader exits", () => {
+  it("buildDetachedSessionBootstrapSteps kills detached tmux session on exit and interrupt", () => {
     const steps = buildDetachedSessionBootstrapSteps(
       "omx-demo",
       "/tmp/project",
@@ -815,9 +815,11 @@ describe("detached tmux new-session sequencing", () => {
     const leaderCmd = steps[0]?.args.at(-1);
     assert.equal(typeof leaderCmd, "string");
     assert.match(leaderCmd!, /^\/bin\/sh -lc '/);
+    assert.match(leaderCmd!, /trap '/);
+    assert.match(leaderCmd!, /0 INT TERM HUP/);
     assert.match(leaderCmd!, /tmux kill-session -t/);
-    assert.match(leaderCmd!, /omx-demo/);
-    assert.match(leaderCmd!, /exit \$status'/);
+    assert.match(leaderCmd!, /"omx-demo"/);
+    assert.match(leaderCmd!, /exit \$status/);
   });
 
   it("buildDetachedSessionFinalizeSteps keeps schedule after split-capture and before attach", () => {

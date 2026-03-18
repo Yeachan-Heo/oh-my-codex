@@ -1344,6 +1344,24 @@ function detectDetachedSessionWindowIndex(sessionName: string): string | null {
   }
 }
 
+function escapeShellDoubleQuotedValue(value: string): string {
+  return value.replace(/["\\$`]/g, "\\$&");
+}
+
+function buildDetachedSessionLeaderCommand(
+  sessionName: string,
+  codexCmd: string,
+): string {
+  const cleanupTrap = [
+    "status=$?;",
+    "trap - 0 INT TERM HUP;",
+    `tmux kill-session -t "${escapeShellDoubleQuotedValue(sessionName)}" >/dev/null 2>&1 || true;`,
+    "exit $status;",
+  ].join(" ");
+  const wrapped = [`trap '${cleanupTrap}' 0 INT TERM HUP;`, codexCmd].join(" ");
+  return `/bin/sh -lc ${quoteShellArg(wrapped)}`;
+}
+
 export function buildDetachedSessionBootstrapSteps(
   sessionName: string,
   cwd: string,
@@ -1356,9 +1374,7 @@ export function buildDetachedSessionBootstrapSteps(
 ): DetachedSessionTmuxStep[] {
   const detachedLeaderCmd = nativeWindows
     ? "powershell.exe"
-    : `/bin/sh -lc ${quoteShellArg(
-        `${codexCmd}; status=$?; tmux kill-session -t ${quoteShellArg(sessionName)} >/dev/null 2>&1 || true; exit $status`,
-      )}`;
+    : buildDetachedSessionLeaderCommand(sessionName, codexCmd);
   const newSessionArgs: string[] = [
     "new-session",
     "-d",
