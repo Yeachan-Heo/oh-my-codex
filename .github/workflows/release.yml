@@ -82,7 +82,7 @@ jobs:
         shell: bash
         run: dist build -a local --target "${{ matrix.target }}" --output-format=json > dist-build-${{ matrix.target }}.json
       - name: Upload target release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.target }}
           path: |
@@ -122,7 +122,7 @@ jobs:
             --release-base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" \
             --require-products "omx-explore-harness,omx-sparkshell"
       - name: Upload release asset bundle for follow-up jobs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native-release-assets
           path: release-assets/*
