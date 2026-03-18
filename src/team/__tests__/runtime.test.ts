@@ -49,6 +49,12 @@ async function initRepo(): Promise<string> {
   return cwd;
 }
 
+async function addWorktree(repo: string, branchName: string, pathPrefix: string): Promise<string> {
+  const worktreePath = await mkdtemp(join(tmpdir(), pathPrefix));
+  execFileSync('git', ['worktree', 'add', '-b', branchName, worktreePath, 'HEAD'], { cwd: repo, stdio: 'ignore' });
+  return worktreePath;
+}
+
 
 function expectedLowComplexityModel(codexHomeOverride?: string): string {
   return resolveTeamLowComplexityDefaultModel(codexHomeOverride);
@@ -1812,9 +1818,9 @@ process.on('SIGTERM', () => {
 
   it('monitorTeam persists integration ledger and cherry-picks unseen worker HEADs once', async () => {
     const repo = await initRepo();
+    let workerPath = '';
     try {
-      execFileSync('git', ['worktree', 'add', '-b', 'worker-1-branch', '../worker-1-wt', 'HEAD'], { cwd: repo, stdio: 'ignore' });
-      const workerPath = join(repo, '..', 'worker-1-wt');
+      workerPath = await addWorktree(repo, 'worker-1-branch', 'omx-runtime-worker-1-wt-');
       await writeFile(join(workerPath, 'worker.txt'), 'from worker\n', 'utf-8');
       execFileSync('git', ['add', 'worker.txt'], { cwd: workerPath, stdio: 'ignore' });
       execFileSync('git', ['commit', '-m', 'worker change'], { cwd: workerPath, stdio: 'ignore' });
@@ -1865,16 +1871,18 @@ process.on('SIGTERM', () => {
       const leaderMailbox = await listMailboxMessages('team-integration-ledger', 'leader-fixed', repo);
       assert.equal(leaderMailbox.some((message) => /INTEGRATED:/.test(message.body)), true);
     } finally {
-      await rm(join(repo, '..', 'worker-1-wt'), { recursive: true, force: true });
+      if (workerPath) {
+        await rm(workerPath, { recursive: true, force: true });
+      }
       await rm(repo, { recursive: true, force: true });
     }
   });
 
   it('monitorTeam auto-commits dirty worker worktree before integration', async () => {
     const repo = await initRepo();
+    let workerPath = '';
     try {
-      execFileSync('git', ['worktree', 'add', '-b', 'wk1-ac-branch', '../wk1-auto-commit', 'HEAD'], { cwd: repo, stdio: 'ignore' });
-      const workerPath = join(repo, '..', 'wk1-auto-commit');
+      workerPath = await addWorktree(repo, 'wk1-ac-branch', 'omx-runtime-wk1-auto-commit-');
 
       // Add uncommitted file (dirty worktree — no git commit)
       await writeFile(join(workerPath, 'dirty.txt'), 'uncommitted content\n', 'utf-8');
@@ -1909,16 +1917,18 @@ process.on('SIGTERM', () => {
       const snapshot = await readMonitorSnapshot('team-auto-commit', repo);
       assert.ok(snapshot?.integrationByWorker?.['worker-1']?.last_integrated_head, 'auto-committed changes should be integrated');
     } finally {
-      await rm(join(repo, '..', 'wk1-auto-commit'), { recursive: true, force: true });
+      if (workerPath) {
+        await rm(workerPath, { recursive: true, force: true });
+      }
       await rm(repo, { recursive: true, force: true });
     }
   });
 
   it('monitorTeam uses merge for worker cleanly ahead of leader (hybrid merge path)', async () => {
     const repo = await initRepo();
+    let workerPath = '';
     try {
-      execFileSync('git', ['worktree', 'add', '-b', 'wk1-merge-branch', '../wk1-merge-clean', 'HEAD'], { cwd: repo, stdio: 'ignore' });
-      const workerPath = join(repo, '..', 'wk1-merge-clean');
+      workerPath = await addWorktree(repo, 'wk1-merge-branch', 'omx-runtime-wk1-merge-clean-');
 
       // Commit only in worker (worker is cleanly ahead of leader)
       await writeFile(join(workerPath, 'feature.txt'), 'new feature\n', 'utf-8');
@@ -1956,16 +1966,18 @@ process.on('SIGTERM', () => {
       const parentCount = commitObj.split('\n').filter((l: string) => l.startsWith('parent ')).length;
       assert.equal(parentCount, 2, 'merge commit should have 2 parents');
     } finally {
-      await rm(join(repo, '..', 'wk1-merge-clean'), { recursive: true, force: true });
+      if (workerPath) {
+        await rm(workerPath, { recursive: true, force: true });
+      }
       await rm(repo, { recursive: true, force: true });
     }
   });
 
   it('monitorTeam uses cherry-pick for diverged worker (hybrid cherry-pick path)', async () => {
     const repo = await initRepo();
+    let workerPath = '';
     try {
-      execFileSync('git', ['worktree', 'add', '-b', 'wk1-div-branch', '../wk1-diverged', 'HEAD'], { cwd: repo, stdio: 'ignore' });
-      const workerPath = join(repo, '..', 'wk1-diverged');
+      workerPath = await addWorktree(repo, 'wk1-div-branch', 'omx-runtime-wk1-diverged-');
 
       // Commit in worker
       await writeFile(join(workerPath, 'worker-file.txt'), 'worker content\n', 'utf-8');
@@ -2008,18 +2020,20 @@ process.on('SIGTERM', () => {
       const snapshot = await readMonitorSnapshot('team-diverged', repo);
       assert.ok(snapshot?.integrationByWorker?.['worker-1']?.last_integrated_head);
     } finally {
-      await rm(join(repo, '..', 'wk1-diverged'), { recursive: true, force: true });
+      if (workerPath) {
+        await rm(workerPath, { recursive: true, force: true });
+      }
       await rm(repo, { recursive: true, force: true });
     }
   });
 
   it('monitorTeam rebases idle workers after integration lands on leader (cross-worker rebase)', async () => {
     const repo = await initRepo();
+    let worker1Path = '';
+    let worker2Path = '';
     try {
-      execFileSync('git', ['worktree', 'add', '-b', 'wk1-xr-branch', '../wk1-cross-rebase', 'HEAD'], { cwd: repo, stdio: 'ignore' });
-      execFileSync('git', ['worktree', 'add', '-b', 'wk2-xr-branch', '../wk2-cross-rebase', 'HEAD'], { cwd: repo, stdio: 'ignore' });
-      const worker1Path = join(repo, '..', 'wk1-cross-rebase');
-      const worker2Path = join(repo, '..', 'wk2-cross-rebase');
+      worker1Path = await addWorktree(repo, 'wk1-xr-branch', 'omx-runtime-wk1-cross-rebase-');
+      worker2Path = await addWorktree(repo, 'wk2-xr-branch', 'omx-runtime-wk2-cross-rebase-');
 
       // Worker-1 commits a change
       await writeFile(join(worker1Path, 'w1.txt'), 'from worker 1\n', 'utf-8');
@@ -2074,17 +2088,21 @@ process.on('SIGTERM', () => {
       const mergeBase = execFileSync('git', ['merge-base', newLeaderHead, 'wk2-xr-branch'], { cwd: repo, encoding: 'utf-8' }).trim();
       assert.equal(mergeBase, newLeaderHead, 'worker-2 should be rebased onto new leader HEAD');
     } finally {
-      await rm(join(repo, '..', 'wk1-cross-rebase'), { recursive: true, force: true });
-      await rm(join(repo, '..', 'wk2-cross-rebase'), { recursive: true, force: true });
+      if (worker1Path) {
+        await rm(worker1Path, { recursive: true, force: true });
+      }
+      if (worker2Path) {
+        await rm(worker2Path, { recursive: true, force: true });
+      }
       await rm(repo, { recursive: true, force: true });
     }
   });
 
   it('monitorTeam auto-resolves conflicts with -X theirs (worker wins on leader)', async () => {
     const repo = await initRepo();
+    let workerPath = '';
     try {
-      execFileSync('git', ['worktree', 'add', '-b', 'wk1-cr-branch', '../wk1-conflict-resolve', 'HEAD'], { cwd: repo, stdio: 'ignore' });
-      const workerPath = join(repo, '..', 'wk1-conflict-resolve');
+      workerPath = await addWorktree(repo, 'wk1-cr-branch', 'omx-runtime-wk1-conflict-resolve-');
 
       // Worker edits README.md (same file, different content → conflict)
       await writeFile(join(workerPath, 'README.md'), 'worker version\n', 'utf-8');
@@ -2127,18 +2145,20 @@ process.on('SIGTERM', () => {
       // so the integration report is only written when -X theirs itself fails (e.g. binary conflicts).
       // The key assertion above is that worker content wins on leader.
     } finally {
-      await rm(join(repo, '..', 'wk1-conflict-resolve'), { recursive: true, force: true });
+      if (workerPath) {
+        await rm(workerPath, { recursive: true, force: true });
+      }
       await rm(repo, { recursive: true, force: true });
     }
   });
 
   it('monitorTeam skips rebase for workers with "working" status (idle-only gating)', async () => {
     const repo = await initRepo();
+    let worker1Path = '';
+    let worker2Path = '';
     try {
-      execFileSync('git', ['worktree', 'add', '-b', 'wk1-gate-branch', '../wk1-rebase-gate', 'HEAD'], { cwd: repo, stdio: 'ignore' });
-      execFileSync('git', ['worktree', 'add', '-b', 'wk2-gate-branch', '../wk2-rebase-gate', 'HEAD'], { cwd: repo, stdio: 'ignore' });
-      const worker1Path = join(repo, '..', 'wk1-rebase-gate');
-      const worker2Path = join(repo, '..', 'wk2-rebase-gate');
+      worker1Path = await addWorktree(repo, 'wk1-gate-branch', 'omx-runtime-wk1-rebase-gate-');
+      worker2Path = await addWorktree(repo, 'wk2-gate-branch', 'omx-runtime-wk2-rebase-gate-');
 
       // Worker-1 commits a change
       await writeFile(join(worker1Path, 'w1.txt'), 'from worker 1\n', 'utf-8');
@@ -2182,24 +2202,28 @@ process.on('SIGTERM', () => {
       const worker2HeadAfter = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: worker2Path, encoding: 'utf-8' }).trim();
       assert.equal(worker2HeadAfter, worker2HeadBefore, 'worker-2 should NOT be rebased when status is "working"');
     } finally {
-      await rm(join(repo, '..', 'wk1-rebase-gate'), { recursive: true, force: true });
-      await rm(join(repo, '..', 'wk2-rebase-gate'), { recursive: true, force: true });
+      if (worker1Path) {
+        await rm(worker1Path, { recursive: true, force: true });
+      }
+      if (worker2Path) {
+        await rm(worker2Path, { recursive: true, force: true });
+      }
       await rm(repo, { recursive: true, force: true });
     }
   });
 
   it('monitorTeam aborts failed rebase and leaves worktree in clean state', async () => {
     const repo = await initRepo();
+    let worker1Path = '';
+    let worker2Path = '';
     try {
       // Add a file that will be subject to rename/rename conflict
       await writeFile(join(repo, 'original.txt'), 'original content\n', 'utf-8');
       execFileSync('git', ['add', 'original.txt'], { cwd: repo, stdio: 'ignore' });
       execFileSync('git', ['commit', '-m', 'add original.txt'], { cwd: repo, stdio: 'ignore' });
 
-      execFileSync('git', ['worktree', 'add', '-b', 'wk1-rf-branch', '../wk1-rebase-fail', 'HEAD'], { cwd: repo, stdio: 'ignore' });
-      execFileSync('git', ['worktree', 'add', '-b', 'wk2-rf-branch', '../wk2-rebase-fail', 'HEAD'], { cwd: repo, stdio: 'ignore' });
-      const worker1Path = join(repo, '..', 'wk1-rebase-fail');
-      const worker2Path = join(repo, '..', 'wk2-rebase-fail');
+      worker1Path = await addWorktree(repo, 'wk1-rf-branch', 'omx-runtime-wk1-rebase-fail-');
+      worker2Path = await addWorktree(repo, 'wk2-rf-branch', 'omx-runtime-wk2-rebase-fail-');
 
       // Worker-1 renames original.txt → renamed-by-w1.txt (will be integrated to leader)
       execFileSync('git', ['mv', 'original.txt', 'renamed-by-w1.txt'], { cwd: worker1Path, stdio: 'ignore' });
@@ -2257,8 +2281,12 @@ process.on('SIGTERM', () => {
       const report = await readFile(reportPath, 'utf-8');
       assert.match(report, /rebase/, 'report should mention the rebase operation');
     } finally {
-      await rm(join(repo, '..', 'wk1-rebase-fail'), { recursive: true, force: true });
-      await rm(join(repo, '..', 'wk2-rebase-fail'), { recursive: true, force: true });
+      if (worker1Path) {
+        await rm(worker1Path, { recursive: true, force: true });
+      }
+      if (worker2Path) {
+        await rm(worker2Path, { recursive: true, force: true });
+      }
       await rm(repo, { recursive: true, force: true });
     }
   });
