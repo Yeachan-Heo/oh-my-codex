@@ -433,7 +433,7 @@ async function enforceLifecycleGuards() {
   if (runOnce) return false;
   if (parentIsGone()) {
     const activeRalph = await resolveActiveRalphState();
-    if (activeRalph.active) {
+    if (activeRalph.active && authorityEnabled) {
       const currentPhase = safeString(activeRalph.state?.current_phase);
       const nextParentGuard = {
         reason: 'parent_gone_deferred_for_active_ralph',
