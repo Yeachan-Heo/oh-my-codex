@@ -3350,7 +3350,7 @@ esac
 
           const mailbox = await listMailboxMessages('team-leader-inject', 'leader-fixed', cwd);
           assert.ok(mailbox.some((m: { notified_at?: string }) => typeof m.notified_at === 'string' && m.notified_at.length > 0));
-          assert.match(mailbox[0]?.body ?? '', /Read \.omx\/state\/team\/team-leader-inject\/mailbox\/leader-fixed\.json/);
+          assert.equal(mailbox[0]?.body, 'hello leader');
 
           const requests = await listDispatchRequests('team-leader-inject', cwd, { kind: 'mailbox', to_worker: 'leader-fixed' });
           const latest = requests[requests.length - 1];
