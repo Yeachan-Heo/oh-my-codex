@@ -40,15 +40,23 @@ function buildWorkerRootAgentsBackupPath(
   teamStateRoot: string,
   teamName: string,
   workerName: string,
+  worktreePath: string,
 ): string {
-  return join(
-    teamStateRoot,
-    "team",
-    teamName,
-    "workers",
-    workerName,
-    "root-agents-backup.json",
-  );
+  const gitPath = tryReadGitValue(worktreePath, [
+    "rev-parse",
+    "--git-path",
+    "omx/root-agents-backup.json",
+  ]);
+  return gitPath
+    ? gitPath
+    : join(
+        teamStateRoot,
+        "team",
+        teamName,
+        "workers",
+        workerName,
+        "root-agents-backup.json",
+      );
 }
 
 export function generateWorkerRootAgentsContent(
@@ -194,6 +202,7 @@ export async function writeWorkerWorktreeRootAgentsFile(
     options.teamStateRoot,
     options.teamName,
     options.workerName,
+    options.worktreePath,
   );
   await mkdir(dirname(backupPath), { recursive: true });
   await writeFile(backupPath, JSON.stringify(backup, null, 2), "utf-8");
@@ -216,6 +225,7 @@ export async function removeWorkerWorktreeRootAgentsFile(
     teamStateRoot,
     teamName,
     workerName,
+    worktreePath,
   );
   let backup: WorkerRootAgentsBackup | null = null;
 

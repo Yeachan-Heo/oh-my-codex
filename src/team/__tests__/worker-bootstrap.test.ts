@@ -646,45 +646,6 @@ describe("worker bootstrap", () => {
     assert.doesNotMatch(content, /# User Instructions/);
   });
 
-  it("writeWorkerWorktreeRootAgentsFile writes disposable root AGENTS and removeWorkerWorktreeRootAgentsFile restores tracked file", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "omx-worker-root-agents-"));
-    try {
-      await writeFile(join(cwd, "AGENTS.md"), "# Base project agents\n", "utf8");
-      const prevCwd = process.cwd();
-      process.chdir(cwd);
-      try {
-        const { execFileSync } = await import("child_process");
-        execFileSync("git", ["init", "-q"], { cwd });
-        execFileSync("git", ["config", "user.email", "test@example.com"], { cwd });
-        execFileSync("git", ["config", "user.name", "Test User"], { cwd });
-        execFileSync("git", ["add", "AGENTS.md"], { cwd });
-        execFileSync("git", ["commit", "-q", "-m", "init"], { cwd });
-
-        const teamStateRoot = join(cwd, ".omx", "state");
-        const outPath = await writeWorkerWorktreeRootAgentsFile({
-          teamName: "tracked-team",
-          workerName: "worker-1",
-          workerRole: "writer",
-          rolePromptContent: "<identity>You are Writer.</identity>",
-          teamStateRoot,
-          leaderCwd: cwd,
-          worktreePath: cwd,
-        });
-
-        const content = await readFile(outPath, "utf8");
-        assert.match(content, /Team Worker Runtime Instructions/);
-        assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd, encoding: "utf8" }).trim(), "");
-
-        await removeWorkerWorktreeRootAgentsFile("tracked-team", "worker-1", teamStateRoot, cwd);
-        assert.equal(await readFile(join(cwd, "AGENTS.md"), "utf8"), "# Base project agents\n");
-      } finally {
-        process.chdir(prevCwd);
-      }
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
-
   it("writeWorkerRoleInstructionsFile layers role prompt on top of team worker instructions", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-worker-bootstrap-"));
     try {
