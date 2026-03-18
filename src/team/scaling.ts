@@ -53,6 +53,7 @@ import {
   generateTriggerMessage,
   writeWorkerRoleInstructionsFile,
   writeWorkerWorktreeRootAgentsFile,
+  removeWorkerWorktreeRootAgentsFile,
 } from './worker-bootstrap.js';
 import { loadRolePrompt } from './role-router.js';
 import { codexPromptsDir } from '../utils/paths.js';
@@ -210,6 +211,9 @@ export async function scaleUp(
             execFileSync('tmux', ['kill-pane', '-t', w.pane_id], { stdio: 'pipe' });
           }
         } catch {}
+        if (w.worktree_path) {
+          await removeWorkerWorktreeRootAgentsFile(sanitized, w.name, teamStateRoot, w.worktree_path).catch(() => {});
+        }
       }
 
       if (paneId) {
@@ -377,6 +381,7 @@ export async function scaleUp(
         leaderCwd,
         workerRole,
         rolePromptContent: rolePromptContent ?? undefined,
+        worktreeRootAgentsCanonical: Boolean(workerWorkspace?.worktreePath),
       });
 
       const trigger = generateTriggerMessage(
@@ -650,6 +655,9 @@ export async function scaleDown(
     });
 
     for (const w of targetWorkers) {
+      if (w.worktree_path) {
+        await removeWorkerWorktreeRootAgentsFile(sanitized, w.name, w.team_state_root ?? config.team_state_root ?? resolveCanonicalTeamStateRoot(leaderCwd), w.worktree_path).catch(() => {});
+      }
       removedNames.push(w.name);
     }
 
