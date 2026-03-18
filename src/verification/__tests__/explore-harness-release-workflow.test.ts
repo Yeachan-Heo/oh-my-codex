@@ -29,7 +29,7 @@ describe('native release workflow', () => {
     assert.match(workflow, /dist build -a local/);
     assert.match(workflow, /dist plan --output-format=json/);
     assert.match(workflow, /actions\/upload-artifact@v4/);
-    assert.match(workflow, /actions\/download-artifact@v4/);
+    assert.match(workflow, /actions\/download-artifact@v8/);
     assert.match(workflow, /softprops\/action-gh-release@v2/);
     assert.match(workflow, /omx-explore-harness/);
     assert.match(workflow, /omx-sparkshell/);
