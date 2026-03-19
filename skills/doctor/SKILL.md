@@ -7,189 +7,119 @@ description: Diagnose and fix oh-my-codex installation issues
 
 Note: All `~/.codex/...` paths in this guide respect `CODEX_HOME` when that environment variable is set.
 
-## Task: Run Installation Diagnostics
+## Task: Run OMX Health Diagnostics
 
-You are the OMX Doctor - diagnose and fix installation issues.
+You are the OMX Doctor — validate the current installation using the **built-in `omx doctor` surfaces first**, then recommend the lightest fix that matches the reported issue.
 
-### Step 1: Check Plugin Version
+## Primary workflow
 
-```bash
-# Get installed version
-INSTALLED=$(ls ~/.codex/plugins/cache/omc/oh-my-codex/ 2>/dev/null | sort -V | tail -1)
-echo "Installed: $INSTALLED"
-
-# Get latest from npm
-LATEST=$(npm view oh-my-codex version 2>/dev/null)
-echo "Latest: $LATEST"
-```
-
-**Diagnosis**:
-- If no version installed: CRITICAL - plugin not installed
-- If INSTALLED != LATEST: WARN - outdated plugin
-- If multiple versions exist: WARN - stale cache
-
-### Step 2: Check Hook Configuration (config.toml + legacy settings.json)
-
-Check `~/.codex/config.toml` first (current Codex config), then check legacy `~/.codex/settings.json` only if it exists.
-
-Look for hook entries pointing to removed scripts like:
-- `bash $HOME/.codex/hooks/keyword-detector.sh`
-- `bash $HOME/.codex/hooks/persistent-mode.sh`
-- `bash $HOME/.codex/hooks/session-start.sh`
-
-**Diagnosis**:
-- If found: CRITICAL - legacy hooks causing duplicates
-
-### Step 3: Check for Legacy Bash Hook Scripts
+### Step 1: Run the standard health check
 
 ```bash
-ls -la ~/.codex/hooks/*.sh 2>/dev/null
+omx doctor
 ```
 
-**Diagnosis**:
-- If `keyword-detector.sh`, `persistent-mode.sh`, `session-start.sh`, or `stop-continuation.sh` exist: WARN - legacy scripts (can cause confusion)
+This is the source of truth for current OMX installation health.
 
-### Step 4: Check AGENTS.md
+### Step 2: Optional team-runtime check
+
+If the user asks about team/swarm runtime health, also run:
 
 ```bash
-# Check if AGENTS.md exists
-ls -la ~/.codex/AGENTS.md 2>/dev/null
-
-# Check for OMX marker
-grep -q "oh-my-codex Multi-Agent System" ~/.codex/AGENTS.md 2>/dev/null && echo "Has OMX config" || echo "Missing OMX config"
+omx doctor --team
 ```
 
-**Diagnosis**:
-- If missing: CRITICAL - AGENTS.md not configured
-- If missing OMX marker: WARN - outdated AGENTS.md
+### Step 3: Interpret the result
 
-### Step 5: Check for Stale Plugin Cache
+Current `omx doctor` checks include:
+- Codex CLI installed
+- Node.js available
+- Explore harness readiness
+- Codex home exists
+- `config.toml` contains OMX entries
+- prompts installed
+- skills installed
+- `AGENTS.md` present
+- `.omx/state` present
+- MCP servers configured
 
-```bash
-# Count versions in cache
-ls ~/.codex/plugins/cache/omc/oh-my-codex/ 2>/dev/null | wc -l
-```
+### Step 4: Recommend the matching fix
 
-**Diagnosis**:
-- If > 1 version: WARN - multiple cached versions (cleanup recommended)
+Use the narrowest fix that matches the warning/failure:
 
-### Step 6: Check for Legacy Curl-Installed Content
+- **Prompts / skills / AGENTS / config drift**
+  ```bash
+  omx setup --force
+  ```
+- **Wrong installation scope**
+  ```bash
+  omx setup --scope user --force
+  # or
+  omx setup --scope project --force
+  ```
+- **Explore harness warning** (`cargo` missing or no packaged native binary)
+  - install Rust / `cargo`, or
+  - set `OMX_EXPLORE_BIN`, or
+  - accept that only `omx explore` native acceleration is degraded while core OMX remains healthy
+- **Codex config missing OMX entries**
+  ```bash
+  omx setup --force
+  ```
+- **MCP issues after reinstall/update**
+  ```bash
+  omx setup --force
+  omx doctor
+  ```
 
-Check for legacy agents, commands, and skills installed via curl (before plugin system):
+## Scope + current install locations
 
-```bash
-# Check for legacy agents directory
-ls -la ~/.codex/agents/ 2>/dev/null
+Current OMX installs to these active locations:
 
-# Check for legacy commands directory
-ls -la ~/.codex/commands/ 2>/dev/null
+- **User scope**
+  - prompts: `~/.codex/prompts/`
+  - skills: `~/.codex/skills/`
+  - native agents: `~/.codex/agents/`
+  - config: `~/.codex/config.toml`
+  - AGENTS: `~/.codex/AGENTS.md`
+- **Project scope**
+  - prompts: `./.codex/prompts/`
+  - skills: `./.codex/skills/`
+  - native agents: `./.codex/agents/`
+  - config: `./.codex/config.toml`
+  - AGENTS: `./AGENTS.md`
 
-# Check for legacy skills directory
-ls -la ~/.codex/skills/ 2>/dev/null
-```
+## Report format
 
-**Diagnosis**:
-- If `~/.codex/agents/` exists with oh-my-codex-related files: WARN - legacy agents (now provided by plugin)
-- If `~/.codex/commands/` exists with oh-my-codex-related files: WARN - legacy commands (now provided by plugin)
-- If `~/.codex/skills/` exists with oh-my-codex-related files: WARN - legacy skills (now provided by plugin)
+After running diagnostics, output:
 
-Look for files like:
-- `architect.md`, `researcher.md`, `explore.md`, `executor.md`, etc. in agents/
-- `ultrawork.md`, `deepsearch.md`, etc. in commands/
-- Any oh-my-codex-related `.md` files in skills/
-
----
-
-## Report Format
-
-After running all checks, output a report:
-
-```
+```markdown
 ## OMX Doctor Report
 
 ### Summary
-[HEALTHY / ISSUES FOUND]
+[HEALTHY / WARNINGS / FAILURES]
 
 ### Checks
-
 | Check | Status | Details |
 |-------|--------|---------|
-| Plugin Version | OK/WARN/CRITICAL | ... |
-| Hook Config (config.toml / legacy settings.json) | OK/CRITICAL | ... |
-| Legacy Scripts (~/.codex/hooks/) | OK/WARN | ... |
-| AGENTS.md | OK/WARN/CRITICAL | ... |
-| Plugin Cache | OK/WARN | ... |
-| Legacy Agents (~/.codex/agents/) | OK/WARN | ... |
-| Legacy Commands (~/.codex/commands/) | OK/WARN | ... |
-| Legacy Skills (~/.codex/skills/) | OK/WARN | ... |
-
-### Issues Found
-1. [Issue description]
-2. [Issue description]
+| Codex CLI | OK/WARN/FAIL | ... |
+| Node.js | OK/WARN/FAIL | ... |
+| Explore Harness | OK/WARN | ... |
+| Codex Home | OK/WARN/FAIL | ... |
+| Config | OK/WARN/FAIL | ... |
+| Prompts | OK/WARN/FAIL | ... |
+| Skills | OK/WARN/FAIL | ... |
+| AGENTS.md | OK/WARN/FAIL | ... |
+| State Dir | OK/WARN/FAIL | ... |
+| MCP Servers | OK/WARN/FAIL | ... |
 
 ### Recommended Fixes
-[List fixes based on issues]
+1. ...
+2. ...
 ```
 
----
+## Important guardrails
 
-## Auto-Fix (if user confirms)
-
-If issues found, ask user: "Would you like me to fix these issues automatically?"
-
-If yes, apply fixes:
-
-### Fix: Legacy Hooks in legacy settings.json
-If `~/.codex/settings.json` exists, remove the legacy `"hooks"` section (keep other settings intact).
-
-### Fix: Legacy Bash Scripts
-```bash
-rm -f ~/.codex/hooks/keyword-detector.sh
-rm -f ~/.codex/hooks/persistent-mode.sh
-rm -f ~/.codex/hooks/session-start.sh
-rm -f ~/.codex/hooks/stop-continuation.sh
-```
-
-### Fix: Outdated Plugin
-```bash
-rm -rf ~/.codex/plugins/cache/omc/oh-my-codex
-echo "Plugin cache cleared. Restart Codex CLI to fetch latest version."
-```
-
-### Fix: Stale Cache (multiple versions)
-```bash
-# Keep only latest version
-cd ~/.codex/plugins/cache/omc/oh-my-codex/
-ls | sort -V | head -n -1 | xargs rm -rf
-```
-
-### Fix: Missing/Outdated AGENTS.md
-Fetch latest from GitHub and write to `~/.codex/AGENTS.md`:
-```
-WebFetch(url: "https://raw.githubusercontent.com/Yeachan-Heo/oh-my-codex/main/docs/AGENTS.md", prompt: "Return the complete raw markdown content exactly as-is")
-```
-
-### Fix: Legacy Curl-Installed Content
-
-Remove legacy agents, commands, and skills directories (now provided by plugin):
-
-```bash
-# Backup first (optional - ask user)
-# mv ~/.codex/agents ~/.codex/agents.bak
-# mv ~/.codex/commands ~/.codex/commands.bak
-# mv ~/.codex/skills ~/.codex/skills.bak
-
-# Or remove directly
-rm -rf ~/.codex/agents
-rm -rf ~/.codex/commands
-rm -rf ~/.codex/skills
-```
-
-**Note**: Only remove if these contain oh-my-codex-related files. If user has custom agents/commands/skills, warn them and ask before removing.
-
----
-
-## Post-Fix
-
-After applying fixes, inform user:
-> Fixes applied. **Restart Codex CLI** for changes to take effect.
+- Do **not** describe `~/.codex/skills/` or `~/.codex/agents/` as legacy; they are the active current install locations.
+- Prefer `omx doctor` / `omx setup --force` over stale manual cleanup recipes.
+- Only recommend destructive cleanup when you have concrete evidence of stale or conflicting files.
+- After fixes, rerun `omx doctor` and report the new status.

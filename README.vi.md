@@ -187,8 +187,8 @@ Lưu ý:
 
 - `.omx/setup-scope.json` (phạm vi cài đặt được lưu trữ)
 - Cài đặt phụ thuộc phạm vi:
-  - `user`: `~/.codex/prompts/`, `~/.codex/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
-  - `project`: `./.codex/prompts/`, `./.codex/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
+  - `user`: `~/.codex/prompts/`, `~/.codex/skills/`, `~/.codex/config.toml`, `~/.codex/agents/`, `~/.codex/AGENTS.md`
+  - `project`: `./.codex/prompts/`, `./.codex/skills/`, `./.codex/config.toml`, `./.codex/agents/`, `./AGENTS.md`
 - Hành vi khởi chạy: nếu phạm vi được lưu trữ là `project`, khởi chạy `omx` tự động sử dụng `CODEX_HOME=./.codex` (trừ khi `CODEX_HOME` đã được đặt).
 - Hướng dẫn khởi chạy sẽ kết hợp `~/.codex/AGENTS.md` (hoặc `CODEX_HOME/AGENTS.md` nếu đã ghi đè) với `./AGENTS.md` của dự án, rồi thêm lớp phủ runtime.
 - Các tệp `AGENTS.md` hiện có sẽ không bao giờ bị ghi đè âm thầm: ở TTY tương tác, setup hỏi trước khi thay thế; ở chế độ không tương tác, việc thay thế sẽ bị bỏ qua trừ khi dùng `--force` (kiểm tra an toàn phiên hoạt động vẫn áp dụng).

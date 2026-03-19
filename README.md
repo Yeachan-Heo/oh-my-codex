@@ -241,7 +241,7 @@ If you only need the TypeScript output, `npm run build` still runs just `tsc`.
 node bin/omx.js setup
 ```
 
-3. Inspect generated native agent configs in `~/.omx/agents/` and confirm they now include:
+3. Inspect generated native agent configs in `~/.codex/agents/` and confirm they now include:
    - `## OMX Posture Overlay`
    - `## Model-Class Guidance`
    - `## OMX Agent Metadata`
@@ -575,8 +575,8 @@ Notes:
 
 - `.omx/setup-scope.json` (persisted setup scope)
 - Scope-dependent installs:
-  - `user`: `~/.codex/prompts/`, `~/.codex/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
-  - `project`: `./.codex/prompts/`, `./.codex/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
+  - `user`: `~/.codex/prompts/`, `~/.codex/skills/`, `~/.codex/config.toml`, `~/.codex/agents/`, `~/.codex/AGENTS.md`
+  - `project`: `./.codex/prompts/`, `./.codex/skills/`, `./.codex/config.toml`, `./.codex/agents/`, `./AGENTS.md`
 - Launch behavior: if persisted scope is `project`, `omx` launch auto-uses `CODEX_HOME=./.codex` (unless `CODEX_HOME` is already set).
 - Launch instructions merge `~/.codex/AGENTS.md` (or `CODEX_HOME/AGENTS.md` when overridden) with project `./AGENTS.md`, then append the runtime overlay
 - Managed OMX artifacts refresh by default in both interactive and non-interactive runs: prompts, skills, native agent configs, and the managed OMX portion of `config.toml`
