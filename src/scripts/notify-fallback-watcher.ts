@@ -541,10 +541,6 @@ async function runRalphWatcherBehaviorTick(): Promise<void> {
   }
 }
 
-async function readPidFilePid(path: string): Promise<number | null> {
-  return (await readPidFileRecord(path))?.pid ?? null;
-}
-
 async function registerPidFile(): Promise<void> {
   if (runOnce) return;
   await mkdir(dirname(pidFilePath), { recursive: true }).catch(() => {});
