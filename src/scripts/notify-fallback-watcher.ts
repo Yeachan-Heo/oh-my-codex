@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync } from 'fs';
-import { appendFile, mkdir, readFile, readdir, stat, unlink, writeFile } from 'fs/promises';
+import { appendFile, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'fs/promises';
 import { spawnSync } from 'child_process';
 import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
@@ -85,8 +85,12 @@ const stateDir = join(omxDir, 'state');
 const statePath = join(stateDir, 'notify-fallback-state.json');
 const pidFilePath = resolve(argValue('--pid-file', join(stateDir, 'notify-fallback.pid')));
 const logPath = join(logsDir, `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+const ralphSteerTimestampPath = join(stateDir, 'ralph-last-steer-at');
+const ralphSteerLockPath = join(stateDir, 'ralph-continue-steer.lock');
+const watcherOwnerToken = `${process.pid}-${startedAt}-${Math.random().toString(36).slice(2, 10)}`;
 const RALPH_CONTINUE_TEXT = 'Ralph loop active continue';
 const RALPH_CONTINUE_CADENCE_MS = 60_000;
+const RALPH_STEER_LOCK_STALE_MS = 30_000;
 const RALPH_TERMINAL_PHASES = new Set(['complete', 'failed', 'cancelled']);
 
 interface WatcherFileMeta {
@@ -110,6 +114,23 @@ interface RalphContinueSteerState {
   pane_id: string;
   pane_current_command: string;
   current_phase: string;
+  shared_timestamp_path: string;
+  shared_last_sent_at: string;
+  singleton_lock_path: string;
+}
+
+interface PidFileRecord {
+  pid: number;
+  parent_pid?: number;
+  cwd?: string;
+  started_at?: string;
+  max_lifetime_ms?: number;
+  owner_token?: string;
+}
+
+interface RalphSteerLockRecord {
+  pid: number;
+  acquired_at: string;
 }
 
 interface DispatchDrainState {
@@ -169,6 +190,9 @@ let lastRalphContinueSteer: RalphContinueSteerState = {
   pane_id: '',
   pane_current_command: '',
   current_phase: '',
+  shared_timestamp_path: ralphSteerTimestampPath,
+  shared_last_sent_at: '',
+  singleton_lock_path: ralphSteerLockPath,
 };
 let lastParentGuard: ParentGuardState = {
   reason: '',
@@ -195,6 +219,9 @@ function normalizeRalphContinueSteerState(raw: Record<string, unknown> | null | 
     pane_id: safeString(raw.pane_id),
     pane_current_command: safeString(raw.pane_current_command),
     current_phase: safeString(raw.current_phase),
+    shared_timestamp_path: safeString(raw.shared_timestamp_path) || ralphSteerTimestampPath,
+    shared_last_sent_at: safeString(raw.shared_last_sent_at),
+    singleton_lock_path: safeString(raw.singleton_lock_path) || ralphSteerLockPath,
   };
 }
 
@@ -288,6 +315,125 @@ async function emitRalphContinueSteer(paneId: string, message: string): Promise<
   }
 }
 
+async function readRalphSteerTimestamp(): Promise<string> {
+  return readFile(ralphSteerTimestampPath, 'utf-8')
+    .then((content) => safeString(content).trim())
+    .catch(() => '');
+}
+
+async function writeRalphSteerTimestamp(nowIso: string): Promise<void> {
+  await mkdir(dirname(ralphSteerTimestampPath), { recursive: true }).catch(() => {});
+  const tempPath = `${ralphSteerTimestampPath}.${process.pid}.tmp`;
+  await writeFile(tempPath, `${nowIso}\n`, 'utf-8');
+  await rename(tempPath, ralphSteerTimestampPath);
+}
+
+async function readRalphSteerLock(path: string): Promise<RalphSteerLockRecord | null> {
+  const raw = await readFile(path, 'utf-8').catch(() => '');
+  if (!raw.trim()) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const pid = Math.trunc(asNumber(parsed.pid as string | number | undefined, 0));
+    const acquiredAt = safeString(parsed.acquired_at).trim();
+    if (!pid || !acquiredAt) return null;
+    return { pid, acquired_at: acquiredAt };
+  } catch {
+    return null;
+  }
+}
+
+async function withRalphSteerLock<T>(task: () => Promise<T>): Promise<T | null> {
+  await mkdir(dirname(ralphSteerLockPath), { recursive: true }).catch(() => {});
+
+  while (true) {
+    let handle;
+    try {
+      handle = await open(ralphSteerLockPath, 'wx');
+      const payload: RalphSteerLockRecord = {
+        pid: process.pid,
+        acquired_at: new Date().toISOString(),
+      };
+      await handle.writeFile(JSON.stringify(payload, null, 2));
+      break;
+    } catch (error) {
+      const code = error !== null && typeof error === 'object' ? (error as NodeJS.ErrnoException).code : '';
+      if (code !== 'EEXIST') throw error;
+      const existing = await readRalphSteerLock(ralphSteerLockPath);
+      const lockAgeMs = parseIsoMillis(existing?.acquired_at) ?? 0;
+      const stale = !existing || !isPidAlive(existing.pid) || (lockAgeMs > 0 && Date.now() - lockAgeMs > RALPH_STEER_LOCK_STALE_MS);
+      if (stale) {
+        await unlink(ralphSteerLockPath).catch(() => {});
+        continue;
+      }
+      lastRalphContinueSteer.last_reason = 'global_lock_busy';
+      return null;
+    } finally {
+      await handle?.close().catch(() => {});
+    }
+  }
+
+  try {
+    return await task();
+  } finally {
+    const existing = await readRalphSteerLock(ralphSteerLockPath);
+    if (existing?.pid === process.pid) {
+      await unlink(ralphSteerLockPath).catch(() => {});
+    }
+  }
+}
+
+function shouldSkipRalphContinue(now: number, candidateIso: string, startupIso: string): { skip: boolean; reason: string; anchorMs: number; anchorIso: string } {
+  const sharedMs = parseIsoMillis(candidateIso);
+  const localMs = parseIsoMillis(lastRalphContinueSteer.last_sent_at);
+  const startupAnchorIso = lastRalphContinueSteer.cooldown_anchor_at || startupIso;
+  const startupAnchorMs = parseIsoMillis(startupAnchorIso);
+  const startupCooldown = sharedMs === null && localMs === null;
+  const anchorMs = sharedMs ?? localMs ?? startupAnchorMs ?? startedAt;
+  const anchorIso = sharedMs !== null
+    ? candidateIso
+    : (localMs !== null ? lastRalphContinueSteer.last_sent_at : startupAnchorIso);
+  return {
+    skip: now - anchorMs < RALPH_CONTINUE_CADENCE_MS,
+    reason: startupCooldown ? 'startup_cooldown' : (sharedMs !== null ? 'global_cooldown' : 'cooldown'),
+    anchorMs,
+    anchorIso,
+  };
+}
+
+async function readPidFileRecord(path: string): Promise<PidFileRecord | null> {
+  const raw = await readFile(path, 'utf-8').catch(() => '');
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    const pid = Math.trunc(asNumber(parsed.pid as string | number | undefined, 0));
+    if (pid <= 0) return null;
+    return {
+      pid,
+      parent_pid: Math.trunc(asNumber(parsed.parent_pid as string | number | undefined, 0)) || undefined,
+      cwd: safeString(parsed.cwd) || undefined,
+      started_at: safeString(parsed.started_at) || undefined,
+      max_lifetime_ms: asNumber(parsed.max_lifetime_ms as string | number | undefined, 0) || undefined,
+      owner_token: safeString(parsed.owner_token) || undefined,
+    };
+  } catch {
+    const pid = Number.parseInt(trimmed, 10);
+    return Number.isFinite(pid) && pid > 0 ? { pid } : null;
+  }
+}
+
+async function writePidFileRecord(): Promise<void> {
+  const nextRecord: PidFileRecord = {
+    pid: process.pid,
+    parent_pid: parentPid,
+    cwd,
+    started_at: new Date(startedAt).toISOString(),
+    max_lifetime_ms: maxLifetimeMs,
+    owner_token: watcherOwnerToken,
+  };
+  await writeFile(pidFilePath, JSON.stringify(nextRecord, null, 2)).catch(() => {});
+}
+
 async function runRalphContinueSteerTick(): Promise<void> {
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
@@ -302,49 +448,76 @@ async function runRalphContinueSteerTick(): Promise<void> {
     last_error: null,
     state_path: activeRalph.path,
     pane_current_command: '',
+    shared_timestamp_path: ralphSteerTimestampPath,
+    singleton_lock_path: ralphSteerLockPath,
   };
 
   if (!activeRalph.active) return;
 
-  const lastSentMs = parseIsoMillis(lastRalphContinueSteer.last_sent_at);
-  const startupAnchorMs = parseIsoMillis(lastRalphContinueSteer.cooldown_anchor_at);
-  if (lastSentMs === null && startupAnchorMs === null) {
+  if (parseIsoMillis(lastRalphContinueSteer.last_sent_at) === null && parseIsoMillis(lastRalphContinueSteer.cooldown_anchor_at) === null) {
     lastRalphContinueSteer.cooldown_anchor_at = startupIso;
   }
-  const cooldownAnchorMs = lastSentMs ?? startupAnchorMs ?? startedAt;
-  if (now - cooldownAnchorMs < RALPH_CONTINUE_CADENCE_MS) {
-    lastRalphContinueSteer.last_reason = lastSentMs === null ? 'startup_cooldown' : 'cooldown';
+
+  const sharedBeforeLock = await readRalphSteerTimestamp();
+  lastRalphContinueSteer.shared_last_sent_at = sharedBeforeLock;
+  const initialCooldown = shouldSkipRalphContinue(now, sharedBeforeLock, startupIso);
+  if (initialCooldown.skip) {
+    lastRalphContinueSteer.last_reason = initialCooldown.reason;
+    if (!sharedBeforeLock && initialCooldown.reason === 'startup_cooldown') {
+      lastRalphContinueSteer.cooldown_anchor_at = initialCooldown.anchorIso;
+    }
     return;
   }
 
-  const paneId = safeString(activeRalph.state?.tmux_pane_id).trim() || await resolveNudgePaneTarget(stateDir);
-  if (!paneId) {
-    lastRalphContinueSteer.last_reason = 'pane_missing';
-    lastRalphContinueSteer.pane_id = '';
-    return;
-  }
+  const outcome = await withRalphSteerLock(async () => {
+    const sharedLastSentAt = await readRalphSteerTimestamp();
+    lastRalphContinueSteer.shared_last_sent_at = sharedLastSentAt;
+    const cooldown = shouldSkipRalphContinue(Date.now(), sharedLastSentAt, startupIso);
+    if (cooldown.skip) {
+      lastRalphContinueSteer.last_reason = cooldown.reason;
+      if (!sharedLastSentAt && cooldown.reason === 'startup_cooldown') {
+        lastRalphContinueSteer.cooldown_anchor_at = cooldown.anchorIso;
+      }
+      return { sent: false, skipped: true };
+    }
 
-  const paneGuard = await checkPaneReadyForTeamSendKeys(paneId);
-  lastRalphContinueSteer.pane_id = paneId;
-  lastRalphContinueSteer.pane_current_command = paneGuard.paneCurrentCommand || '';
-  if (!paneGuard.ok) {
-    lastRalphContinueSteer.last_reason = paneGuard.reason || 'pane_guard_blocked';
-    return;
-  }
+    const paneId = safeString(activeRalph.state?.tmux_pane_id).trim() || await resolveNudgePaneTarget(stateDir);
+    if (!paneId) {
+      lastRalphContinueSteer.last_reason = 'pane_missing';
+      lastRalphContinueSteer.pane_id = '';
+      return { sent: false, skipped: true };
+    }
 
-  await emitRalphContinueSteer(paneId, RALPH_CONTINUE_TEXT);
-  lastRalphContinueSteer.last_sent_at = nowIso;
-  lastRalphContinueSteer.cooldown_anchor_at = nowIso;
-  lastRalphContinueSteer.last_reason = 'sent';
-  await eventLog({
-    type: 'ralph_continue_steer',
-    reason: 'sent',
-    pane_id: paneId,
-    state_path: activeRalph.path,
-    current_phase: safeString(activeRalph.state?.current_phase) || null,
-    cadence_ms: RALPH_CONTINUE_CADENCE_MS,
-    message: RALPH_CONTINUE_TEXT,
+    const paneGuard = await checkPaneReadyForTeamSendKeys(paneId);
+    lastRalphContinueSteer.pane_id = paneId;
+    lastRalphContinueSteer.pane_current_command = paneGuard.paneCurrentCommand || '';
+    if (!paneGuard.ok) {
+      lastRalphContinueSteer.last_reason = paneGuard.reason || 'pane_guard_blocked';
+      return { sent: false, skipped: true };
+    }
+
+    await emitRalphContinueSteer(paneId, RALPH_CONTINUE_TEXT);
+    await writeRalphSteerTimestamp(nowIso);
+    lastRalphContinueSteer.last_sent_at = nowIso;
+    lastRalphContinueSteer.shared_last_sent_at = nowIso;
+    lastRalphContinueSteer.cooldown_anchor_at = nowIso;
+    lastRalphContinueSteer.last_reason = 'sent';
+    await eventLog({
+      type: 'ralph_continue_steer',
+      reason: 'sent',
+      pane_id: paneId,
+      state_path: activeRalph.path,
+      current_phase: safeString(activeRalph.state?.current_phase) || null,
+      cadence_ms: RALPH_CONTINUE_CADENCE_MS,
+      message: RALPH_CONTINUE_TEXT,
+      shared_timestamp_path: ralphSteerTimestampPath,
+    });
+    return { sent: true, skipped: false };
   });
+
+  if (outcome === null) {
+    lastRalphContinueSteer.shared_last_sent_at = await readRalphSteerTimestamp();
+  }
 }
 
 async function runRalphWatcherBehaviorTick(): Promise<void> {
@@ -369,23 +542,15 @@ async function runRalphWatcherBehaviorTick(): Promise<void> {
 }
 
 async function readPidFilePid(path: string): Promise<number | null> {
-  const raw = await readFile(path, 'utf-8');
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  try {
-    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    return Number.isFinite(parsed.pid) && (parsed.pid as number) > 0 ? parsed.pid as number : null;
-  } catch {
-    const pid = Number.parseInt(trimmed, 10);
-    return Number.isFinite(pid) && pid > 0 ? pid : null;
-  }
+  return (await readPidFileRecord(path))?.pid ?? null;
 }
 
 async function registerPidFile(): Promise<void> {
   if (runOnce) return;
   await mkdir(dirname(pidFilePath), { recursive: true }).catch(() => {});
 
-  const existingPid = await readPidFilePid(pidFilePath).catch(() => null);
+  const existingRecord = await readPidFileRecord(pidFilePath).catch(() => null);
+  const existingPid = existingRecord?.pid ?? null;
   if (existingPid && existingPid !== process.pid && isPidAlive(existingPid)) {
     try {
       process.kill(existingPid, 'SIGTERM');
@@ -412,19 +577,14 @@ async function registerPidFile(): Promise<void> {
     }
   }
 
-  await writeFile(pidFilePath, JSON.stringify({
-    pid: process.pid,
-    parent_pid: parentPid,
-    cwd,
-    started_at: new Date(startedAt).toISOString(),
-    max_lifetime_ms: maxLifetimeMs,
-  }, null, 2)).catch(() => {});
+  await writePidFileRecord();
 }
 
 async function removePidFileIfOwned(): Promise<void> {
   if (runOnce) return;
-  const existingPid = await readPidFilePid(pidFilePath).catch(() => null);
-  if (existingPid !== process.pid) return;
+  const existingRecord = await readPidFileRecord(pidFilePath).catch(() => null);
+  if (existingRecord?.pid !== process.pid) return;
+  if (existingRecord.owner_token && existingRecord.owner_token !== watcherOwnerToken) return;
   await unlink(pidFilePath).catch(() => {});
 }
 
