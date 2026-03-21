@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.11.6] - 2026-03-21
+
+Patch release for Ralph continue-steer restart throttling.
+
+### Fixed
+- **Ralph continue-steer restart throttling** — fallback watcher cooldown anchors now survive restarts and malformed persisted timestamps, preventing repeated continue-steer injection spam after Ralph resumes. (PR [#998](https://github.com/Yeachan-Heo/oh-my-codex/pull/998), closes [#996](https://github.com/Yeachan-Heo/oh-my-codex/issues/996))
+
 ## [0.11.5] - 2026-03-21
 
 Hotfix release for stale leader nudge false-positives and README onboarding clarity.
