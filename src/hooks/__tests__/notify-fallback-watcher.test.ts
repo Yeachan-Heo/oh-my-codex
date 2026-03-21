@@ -542,17 +542,23 @@ describe('notify-fallback watcher', () => {
   it('sends bounded periodic Ralph continue steer while Ralph state stays active', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-active-'));
     const fakeBinDir = join(wd, 'fake-bin');
+    const stateDir = join(wd, '.omx', 'state');
     const tmuxLogPath = join(wd, 'tmux.log');
-    const statePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
+    const statePath = join(stateDir, 'notify-fallback-state.json');
     try {
-      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
-      await writeFile(join(wd, '.omx', 'state', 'ralph-state.json'), JSON.stringify({
+      await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+      }, null, 2));
+      await writeFile(statePath, JSON.stringify({
+        ralph_continue_steer: {
+          last_sent_at: new Date(Date.now() - 61_000).toISOString(),
+        },
       }, null, 2));
 
       const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
@@ -568,6 +574,18 @@ describe('notify-fallback watcher', () => {
         { encoding: 'utf-8', env },
       );
       assert.equal(first.status, 0, first.stderr || first.stdout);
+
+      const persistedAfterFirst = JSON.parse(await readFile(statePath, 'utf-8'));
+      assert.match(
+        persistedAfterFirst.ralph_continue_steer?.last_sent_at ?? '',
+        /^\d{4}-\d{2}-\d{2}T/,
+        'successful steer should persist a round-trippable ISO last_sent_at',
+      );
+      assert.equal(
+        persistedAfterFirst.ralph_continue_steer?.cooldown_anchor_at,
+        persistedAfterFirst.ralph_continue_steer?.last_sent_at,
+        'successful steer should advance the fallback cooldown anchor to the real send time',
+      );
 
       const second = spawnSync(
         process.execPath,
@@ -599,6 +617,123 @@ describe('notify-fallback watcher', () => {
     }
   });
 
+  it('waits a full cadence from startup when persisted Ralph steer state is empty', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-startup-cooldown-'));
+    const fakeBinDir = join(wd, 'fake-bin');
+    const stateDir = join(wd, '.omx', 'state');
+    const tmuxLogPath = join(wd, 'tmux.log');
+    const statePath = join(stateDir, 'notify-fallback-state.json');
+    try {
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+      await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'executing',
+        tmux_pane_id: '%42',
+      }, null, 2));
+      await writeFile(statePath, JSON.stringify({
+        ralph_continue_steer: {
+          last_sent_at: '',
+        },
+      }, null, 2));
+
+      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+      const env = {
+        ...buildCleanNotifyEnv(),
+        PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+      };
+
+      const first = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
+        { encoding: 'utf-8', env },
+      );
+      assert.equal(first.status, 0, first.stderr || first.stdout);
+
+      const second = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
+        { encoding: 'utf-8', env },
+      );
+      assert.equal(second.status, 0, second.stderr || second.stdout);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
+      const sends = tmuxLog.match(/send-keys -t %42 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/g) || [];
+      assert.equal(sends.length, 0, 'empty startup state should wait one cadence period before the first Ralph steer');
+
+      const watcherState = JSON.parse(await readFile(statePath, 'utf-8'));
+      assert.equal(watcherState.ralph_continue_steer?.last_reason, 'startup_cooldown');
+      assert.equal(watcherState.ralph_continue_steer?.last_sent_at, '');
+      assert.match(
+        watcherState.ralph_continue_steer?.cooldown_anchor_at ?? '',
+        /^\d{4}-\d{2}-\d{2}T/,
+        'startup cooldown should persist an anchor so restarts stay throttled',
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to an aged persisted cooldown anchor when last_sent_at is invalid', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-invalid-last-sent-'));
+    const fakeBinDir = join(wd, 'fake-bin');
+    const stateDir = join(wd, '.omx', 'state');
+    const tmuxLogPath = join(wd, 'tmux.log');
+    const statePath = join(stateDir, 'notify-fallback-state.json');
+    try {
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+      await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'executing',
+        tmux_pane_id: '%42',
+      }, null, 2));
+      await writeFile(statePath, JSON.stringify({
+        ralph_continue_steer: {
+          last_sent_at: 'not-a-date',
+          cooldown_anchor_at: new Date(Date.now() - 61_000).toISOString(),
+        },
+      }, null, 2));
+
+      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+      const env = {
+        ...buildCleanNotifyEnv(),
+        PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+      };
+
+      const run = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
+        { encoding: 'utf-8', env },
+      );
+      assert.equal(run.status, 0, run.stderr || run.stdout);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
+      const sends = tmuxLog.match(/send-keys -t %42 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/g) || [];
+      assert.equal(sends.length, 1, 'invalid last_sent_at should fall back to the persisted cooldown anchor once 60s have elapsed');
+
+      const watcherState = JSON.parse(await readFile(statePath, 'utf-8'));
+      assert.match(
+        watcherState.ralph_continue_steer?.last_sent_at ?? '',
+        /^\d{4}-\d{2}-\d{2}T/,
+        'successful fallback send should replace the invalid last_sent_at with a valid ISO timestamp',
+      );
+      assert.equal(
+        watcherState.ralph_continue_steer?.cooldown_anchor_at,
+        watcherState.ralph_continue_steer?.last_sent_at,
+        'fallback send should also refresh the persisted cooldown anchor',
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('stops Ralph continue steer immediately once Ralph state is terminal or cleared', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-terminal-'));
     const fakeBinDir = join(wd, 'fake-bin');
@@ -615,6 +750,11 @@ describe('notify-fallback watcher', () => {
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+      }, null, 2));
+      await writeFile(watcherStatePath, JSON.stringify({
+        ralph_continue_steer: {
+          last_sent_at: new Date(Date.now() - 61_000).toISOString(),
+        },
       }, null, 2));
 
       const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
@@ -687,6 +827,11 @@ describe('notify-fallback watcher', () => {
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+      }, null, 2));
+      await writeFile(join(wd, '.omx', 'state', 'notify-fallback-state.json'), JSON.stringify({
+        ralph_continue_steer: {
+          last_sent_at: new Date(Date.now() - 61_000).toISOString(),
+        },
       }, null, 2));
 
       const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
@@ -865,6 +1010,11 @@ describe('notify-fallback watcher', () => {
         active: true,
         current_phase: 'executing',
         tmux_pane_id: '%42',
+      }, null, 2));
+      await writeFile(join(stateDir, 'notify-fallback-state.json'), JSON.stringify({
+        ralph_continue_steer: {
+          last_sent_at: new Date(Date.now() - 61_000).toISOString(),
+        },
       }, null, 2));
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);

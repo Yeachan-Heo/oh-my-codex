@@ -30,6 +30,11 @@ function safeString(v: unknown): string {
   return typeof v === 'string' ? v : '';
 }
 
+function parseIsoMillis(value: string | null | undefined): number | null {
+  const parsed = Date.parse(safeString(value).trim());
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function isPidAlive(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
   try {
@@ -98,6 +103,7 @@ interface RalphContinueSteerState {
   active: boolean;
   last_state_check_at: string | null;
   last_sent_at: string;
+  cooldown_anchor_at: string;
   last_reason: string;
   last_error: string | null;
   state_path: string;
@@ -156,6 +162,7 @@ let lastRalphContinueSteer: RalphContinueSteerState = {
   active: false,
   last_state_check_at: null,
   last_sent_at: '',
+  cooldown_anchor_at: '',
   last_reason: 'init',
   last_error: null,
   state_path: '',
@@ -181,6 +188,7 @@ function normalizeRalphContinueSteerState(raw: Record<string, unknown> | null | 
     active: raw.active === true,
     last_state_check_at: safeString(raw.last_state_check_at) || null,
     last_sent_at: safeString(raw.last_sent_at),
+    cooldown_anchor_at: safeString(raw.cooldown_anchor_at),
     last_reason: safeString(raw.last_reason) || 'init',
     last_error: safeString(raw.last_error) || null,
     state_path: safeString(raw.state_path),
@@ -283,6 +291,7 @@ async function emitRalphContinueSteer(paneId: string, message: string): Promise<
 async function runRalphContinueSteerTick(): Promise<void> {
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
+  const startupIso = new Date(startedAt).toISOString();
   const activeRalph = await resolveActiveRalphState();
   lastRalphContinueSteer = {
     ...lastRalphContinueSteer,
@@ -297,9 +306,14 @@ async function runRalphContinueSteerTick(): Promise<void> {
 
   if (!activeRalph.active) return;
 
-  const lastSentMs = Date.parse(lastRalphContinueSteer.last_sent_at);
-  if (Number.isFinite(lastSentMs) && now - lastSentMs < RALPH_CONTINUE_CADENCE_MS) {
-    lastRalphContinueSteer.last_reason = 'cooldown';
+  const lastSentMs = parseIsoMillis(lastRalphContinueSteer.last_sent_at);
+  const startupAnchorMs = parseIsoMillis(lastRalphContinueSteer.cooldown_anchor_at);
+  if (lastSentMs === null && startupAnchorMs === null) {
+    lastRalphContinueSteer.cooldown_anchor_at = startupIso;
+  }
+  const cooldownAnchorMs = lastSentMs ?? startupAnchorMs ?? startedAt;
+  if (now - cooldownAnchorMs < RALPH_CONTINUE_CADENCE_MS) {
+    lastRalphContinueSteer.last_reason = lastSentMs === null ? 'startup_cooldown' : 'cooldown';
     return;
   }
 
@@ -320,6 +334,7 @@ async function runRalphContinueSteerTick(): Promise<void> {
 
   await emitRalphContinueSteer(paneId, RALPH_CONTINUE_TEXT);
   lastRalphContinueSteer.last_sent_at = nowIso;
+  lastRalphContinueSteer.cooldown_anchor_at = nowIso;
   lastRalphContinueSteer.last_reason = 'sent';
   await eventLog({
     type: 'ralph_continue_steer',
