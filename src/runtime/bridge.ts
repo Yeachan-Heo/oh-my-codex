@@ -108,6 +108,27 @@ export interface MailboxRecord {
 
 let schemaValidated = false;
 
+export interface RuntimeBinaryDiscoveryOptions {
+  debugPath?: string;
+  releasePath?: string;
+  fallbackBinary?: string;
+  exists?: (path: string) => boolean;
+}
+
+export function resolveRuntimeBinaryPath(options: RuntimeBinaryDiscoveryOptions = {}): string {
+  const exists = options.exists ?? existsSync;
+  const envOverride = process.env.OMX_RUNTIME_BINARY?.trim();
+  if (envOverride) return envOverride;
+
+  const workspaceDebug = options.debugPath ?? resolve(__bridge_dirname, '../../target/debug/omx-runtime');
+  if (exists(workspaceDebug)) return workspaceDebug;
+
+  const workspaceRelease = options.releasePath ?? resolve(__bridge_dirname, '../../target/release/omx-runtime');
+  if (exists(workspaceRelease)) return workspaceRelease;
+
+  return options.fallbackBinary ?? 'omx-runtime';
+}
+
 export class RuntimeBridge {
   private binaryPath: string;
   private stateDir: string | undefined;
@@ -116,7 +137,7 @@ export class RuntimeBridge {
   constructor(options: { stateDir?: string; binaryPath?: string } = {}) {
     this.enabled = process.env.OMX_RUNTIME_BRIDGE !== '0';
     this.stateDir = options.stateDir;
-    this.binaryPath = options.binaryPath ?? this.discoverBinary();
+    this.binaryPath = options.binaryPath ?? resolveRuntimeBinaryPath();
   }
 
   /** Whether the bridge is enabled (OMX_RUNTIME_BRIDGE != '0'). */
@@ -194,18 +215,6 @@ export class RuntimeBridge {
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
-
-  private discoverBinary(): string {
-    // Check workspace-local build first (crates/ layout)
-    const workspaceDebug = resolve(__bridge_dirname, '../../target/debug/omx-runtime');
-    if (existsSync(workspaceDebug)) return workspaceDebug;
-
-    const workspaceRelease = resolve(__bridge_dirname, '../../target/release/omx-runtime');
-    if (existsSync(workspaceRelease)) return workspaceRelease;
-
-    // Fall back to PATH
-    return 'omx-runtime';
-  }
 
   private validateSchemaOnce(): void {
     if (schemaValidated) return;

@@ -5,6 +5,7 @@ import { execFileSync } from 'child_process';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'node:url';
 import { safeString } from './utils.js';
+import { resolveRuntimeBinaryPath } from '../../runtime/bridge.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -26,7 +27,7 @@ import {
 function runtimeExec(command) {
   if (process.env.OMX_RUNTIME_BRIDGE === '0') return;
   try {
-    const binaryPath = resolve(__dirname, '../../target/debug/omx-runtime');
+    const binaryPath = resolveRuntimeBinaryPath();
     execFileSync(binaryPath, ['exec', JSON.stringify(command)], {
       timeout: 5000,
       stdio: ['pipe', 'pipe', 'pipe'],

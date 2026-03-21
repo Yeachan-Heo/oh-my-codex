@@ -242,6 +242,65 @@ describe('notify-hook team dispatch consumer', () => {
     }
   });
 
+  it('invokes omx-runtime exec via shared bridge fallback', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
+    const fakeBinDir = join(cwd, 'fake-bin');
+    const runtimeLogPath = join(cwd, 'runtime.log');
+    const previousPath = process.env.PATH;
+    const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;
+    try {
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(
+        join(fakeBinDir, 'omx-runtime'),
+        `#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "${runtimeLogPath}"
+if [[ "\${1:-}" == "schema" ]]; then
+  printf '{"schema_version":1,"commands":["acquire-authority","renew-authority","queue-dispatch","mark-notified","mark-delivered","mark-failed","request-replay","capture-snapshot"],"events":[],"transport":"tmux"}\n'
+  exit 0
+fi
+if [[ "\${1:-}" == "exec" ]]; then
+  printf '{"event":"DispatchNotified","request_id":"runtime-fallback","channel":"tmux"}\n'
+  exit 0
+fi
+exit 1
+`,
+      );
+      await chmod(join(fakeBinDir, 'omx-runtime'), 0o755);
+      process.env.PATH = `${fakeBinDir}:${previousPath || ''}`;
+      process.env.OMX_RUNTIME_BINARY = join(fakeBinDir, 'omx-runtime');
+
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      const queued = await enqueueDispatchRequest('alpha', {
+        kind: 'inbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        pane_id: '%42',
+        trigger_message: 'ping',
+      }, cwd);
+
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const mod = await import(pathToFileURL(modulePath).href);
+      await mod.drainPendingTeamDispatch({
+        cwd,
+        maxPerTick: 5,
+        injector: async () => ({ ok: true, reason: 'injected_for_test' }),
+      });
+
+      const runtimeLog = await readFile(runtimeLogPath, 'utf8');
+      assert.match(runtimeLog, /^exec \{"command":"MarkNotified"/m);
+
+      const request = await readDispatchRequest('alpha', queued.request.request_id, cwd);
+      assert.equal(request?.status, 'notified');
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      if (typeof previousRuntimeBinary === 'string') process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
+      else delete process.env.OMX_RUNTIME_BINARY;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('leader-fixed dispatch uses pane target only when leader_pane_id exists', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
     const fakeBinDir = join(cwd, 'fake-bin');
