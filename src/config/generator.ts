@@ -48,7 +48,7 @@ const SHARED_MCP_REGISTRY_END_MARKER =
 const OMX_AGENTS_MAX_THREADS = 6;
 const OMX_AGENTS_MAX_DEPTH = 2;
 const OMX_TUI_STATUS_LINE =
-  'status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit"]';
+  'status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"]';
 
 function unwrapTomlString(value: string | undefined): string | undefined {
   return value?.match(/^"(.*)"$/)?.[1];
