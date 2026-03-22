@@ -349,7 +349,7 @@ describe("config generator idempotency (#384)", () => {
       assert.match(toml, /^theme = "night"$/m, "user tui key preserved");
       assert.match(
         toml,
-        /^status_line = \["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit"\]$/m,
+        /^status_line = \["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"\]$/m,
         "status_line updated in-place",
       );
     } finally {
