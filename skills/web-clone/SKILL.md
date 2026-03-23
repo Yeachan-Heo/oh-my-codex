@@ -1,6 +1,6 @@
 ---
 name: web-clone
-description: URL-driven website cloning with visual + functional verification
+description: "Clone a live website from its URL into working code by extracting DOM structure, computed styles, and interactions via Playwright, then iteratively verifying visual (score ≥ 85) and functional fidelity. Use when you have a target URL and want a replicated single-page clone — triggered by 'web-clone', 'clone site', 'clone website', or 'copy webpage'."
 ---
 
 <Purpose>

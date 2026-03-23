@@ -1,7 +1,7 @@
 ---
 name: deep-interview
-description: Socratic deep interview with mathematical ambiguity gating before execution
-argument-hint: "[--quick|--standard|--deep] [--autoresearch] <idea or vague description>"
+description: "Run a Socratic, ambiguity-gated requirements interview to turn a vague idea into an execution-ready spec before planning or implementation. Use when a request is broad or underspecified, or when a user says 'deep interview', 'interview me', 'ask me everything', 'don't assume', or 'ouroboros'. Produces a scored spec artifact handed off to ralplan, autopilot, ralph, or team. Supports --quick (5 rounds), --standard (default, 12 rounds), --deep (20 rounds), and --autoresearch flags."
+argument-hint: "[--quick|--standard|--deep] [--autoresearch] idea or vague description"
 ---
 
 <Purpose>

@@ -1,6 +1,6 @@
 ---
 name: security-review
-description: Run a comprehensive security review on code
+description: "Audit code for OWASP Top 10 vulnerabilities, hardcoded secrets, injection flaws, and CVEs with a severity-ranked report (CRITICAL/HIGH/MEDIUM/LOW). Use when adding authentication, API endpoints, user input handling, or before deploying to production — triggered by 'security review', 'security audit', 'check for vulnerabilities', or 'pen test'."
 ---
 
 # Security Review Skill

@@ -1,6 +1,6 @@
 ---
 name: ralph-init
-description: Initialize a PRD (Product Requirements Document) for structured ralph-loop execution
+description: "Creates a structured PRD (Product Requirements Document) at .omx/plans/ via interactive interview, giving ralph a concrete definition-of-done before execution starts. Use when you want ralph to iterate against explicit acceptance criteria rather than a vague task — say 'ralph-init', 'create a PRD', or 'write requirements before we start'."
 ---
 
 # Ralph Init

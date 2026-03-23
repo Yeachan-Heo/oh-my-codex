@@ -1,6 +1,6 @@
 ---
 name: ai-slop-cleaner
-description: Run an anti-slop cleanup/refactor/deslop workflow
+description: "Remove AI-generated slop from code — duplication, dead code, needless abstractions, and boundary violations — using a regression-tests-first, smell-by-smell cleanup workflow. Use when code works but feels bloated, noisy, or over-abstracted, or when a user says 'cleanup', 'refactor', 'deslop', or 'this code is a mess'. Keeps behavior locked and diffs minimal."
 ---
 
 # AI Slop Cleaner Skill

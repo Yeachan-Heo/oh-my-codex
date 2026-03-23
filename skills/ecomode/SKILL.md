@@ -1,6 +1,6 @@
 ---
 name: ecomode
-description: Token-efficient model routing modifier
+description: "Token-efficient model routing modifier that downgrades agent tiers to save costs. Use when you want to reduce token spend on a task — say 'eco', 'ecomode', or 'budget mode' to activate. Combines with ralph, ultrawork, and autopilot (e.g. 'eco ralph fix the tests')."
 ---
 
 # Ecomode Skill

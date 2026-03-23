@@ -1,6 +1,6 @@
 ---
 name: worker
-description: Team worker protocol (ACK, mailbox, task lifecycle) for tmux-based OMX teams
+description: "Execute the OMX team worker protocol: send startup ACK, read inbox, claim tasks, do work, and report completion via omx team api CLI interop. Use only inside an active omx team tmux pane where OMX_TEAM_WORKER is set — not a general-purpose role. Triggered automatically by the team runtime on worker pane startup."
 ---
 
 # Worker Skill

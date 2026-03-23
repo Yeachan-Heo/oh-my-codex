@@ -1,6 +1,6 @@
 ---
 name: frontend-ui-ux
-description: Designer-developer for UI/UX work
+description: "Routes UI/UX and frontend design tasks to the designer agent or Gemini MCP. Use when building components, fixing responsive layouts, improving accessibility, or ensuring design system consistency — say 'design this', 'fix the UI', or 'make it responsive'."
 ---
 
 # Frontend UI/UX Command

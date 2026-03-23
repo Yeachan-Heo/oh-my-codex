@@ -1,6 +1,6 @@
 ---
 name: analyze
-description: Deep analysis and investigation
+description: "Run deep investigation of architecture, bugs, performance issues, or dependencies and return structured findings with file:line evidence. Use when a user says 'analyze', 'investigate', 'why does', 'what's causing', or needs root cause analysis before making changes. Routes to architect agent or Codex MCP for thorough cross-file reasoning."
 ---
 
 <Purpose>

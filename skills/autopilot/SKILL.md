@@ -1,6 +1,6 @@
 ---
 name: autopilot
-description: Full autonomous execution from idea to working code
+description: "Autonomously execute the full lifecycle from a product idea to working, verified code: expansion, planning, parallel implementation, QA cycling, and multi-perspective validation. Use when a user says 'autopilot', 'build me', 'create me', 'full auto', or 'I want a/an...' and wants hands-off end-to-end execution. Not for single focused fixes — use ralph or executor for those."
 ---
 
 <Purpose>

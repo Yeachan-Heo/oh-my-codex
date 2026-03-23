@@ -1,6 +1,6 @@
 ---
 name: deepsearch
-description: Thorough codebase search
+description: "Perform a thorough, multi-pass codebase search for a query, pattern, or concept — covering exact matches, related terms, import/export chains, and usage patterns across the codebase. Use when a user needs to find all locations of a symbol, understand how a concept is used, or trace a dependency chain. Returns primary locations, related files, usage patterns, and key insights with file:line citations."
 ---
 
 # Deep Search Mode

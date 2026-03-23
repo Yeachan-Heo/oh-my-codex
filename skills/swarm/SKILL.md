@@ -1,6 +1,6 @@
 ---
 name: swarm
-description: N coordinated agents on shared task list (compatibility facade over team)
+description: "Launch N coordinated agents on a shared task list using the team pipeline. Use when you want parallel multi-agent execution and prefer the 'swarm' invocation style — compatibility alias for /team, triggered by 'swarm', 'coordinated swarm', or '/swarm N:agent-type'."
 ---
 
 # Swarm (Compatibility Facade)

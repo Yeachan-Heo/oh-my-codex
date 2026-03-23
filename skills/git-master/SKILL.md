@@ -1,6 +1,6 @@
 ---
 name: git-master
-description: Git expert for atomic commits, rebasing, and history management
+description: "Delegates git operations to the git-master specialist agent. Use when you need atomic conventional commits, interactive rebasing, branch cleanup, or history rewriting — say 'git master', 'clean up my commits', 'squash and rebase', or 'fix my git history'."
 ---
 
 # Git Master Command

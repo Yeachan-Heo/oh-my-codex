@@ -1,6 +1,6 @@
 ---
 name: ralph
-description: Self-referential loop until task completion with architect verification
+description: "Persistence loop that keeps working on a task until fully complete and architect-verified, using ultrawork parallel execution under the hood. Use when you need guaranteed completion with retry and sign-off — say 'ralph', 'don't stop', 'must complete', 'finish this', or 'keep going until done'."
 ---
 
 [RALPH + ULTRAWORK - ITERATION {{ITERATION}}/{{MAX}}]

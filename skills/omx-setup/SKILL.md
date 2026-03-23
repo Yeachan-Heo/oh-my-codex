@@ -1,6 +1,6 @@
 ---
 name: omx-setup
-description: Setup and configure oh-my-codex using current CLI behavior
+description: "Installs and configures oh-my-codex for the current project and user-level directories by running 'omx setup'. Use when setting up OMX for the first time, refreshing a broken installation, or switching install scope between user and project — triggers on 'omx setup', 'install omx', or 'configure oh-my-codex'."
 ---
 
 # OMX Setup

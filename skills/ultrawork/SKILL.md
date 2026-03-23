@@ -1,6 +1,6 @@
 ---
 name: ultrawork
-description: Parallel execution engine for high-throughput task completion
+description: "Fire multiple independent agents simultaneously with smart model-tier routing (LOW/STANDARD/THOROUGH) to complete parallel tasks faster. Use when you have multiple independent tasks that don't need guaranteed persistence or verification loops — triggered by 'ultrawork', 'ulw', 'parallel', or 'run these in parallel'. Use ralph instead when you need persistence; use autopilot for a full autonomous pipeline."
 ---
 
 <Purpose>

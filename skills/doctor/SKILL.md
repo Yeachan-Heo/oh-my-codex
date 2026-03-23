@@ -1,6 +1,6 @@
 ---
 name: doctor
-description: Diagnose and fix oh-my-codex installation issues
+description: "Diagnose and optionally auto-fix oh-my-codex (OMX) installation issues: plugin version, hook configuration, legacy bash scripts, AGENTS.md status, stale plugin cache, and curl-installed legacy content. Use when OMX is misbehaving, after an upgrade, or when a user says 'run doctor', 'omx doctor', or 'check my installation'. Outputs a structured HEALTHY/ISSUES FOUND report with per-check status and recommended fixes."
 ---
 
 # Doctor Skill

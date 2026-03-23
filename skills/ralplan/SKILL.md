@@ -1,6 +1,6 @@
 ---
 name: ralplan
-description: Alias for $plan --consensus
+description: "Runs Planner → Architect → Critic consensus planning loop (RALPLAN-DR) to produce a scope-locked plan before execution. Use when an execution request is too vague for ralph to start safely — say 'ralplan', 'consensus plan', or let the ralplan-first gate redirect underspecified ralph/autopilot requests automatically."
 ---
 
 # Ralplan (Consensus Planning Alias)

@@ -1,6 +1,6 @@
 ---
 name: note
-description: Save notes to notepad.md for compaction resilience
+description: "Saves and retrieves session context in .omx/notepad.md so important facts survive conversation compaction. Use when you want to persist a finding, set a priority fact (always loaded on session start), or store permanent team/deployment notes — say '/note my-finding', '/note --priority', or '/note --show'."
 ---
 
 # Note Skill

@@ -1,6 +1,6 @@
 ---
 name: configure-notifications
-description: Configure OMX notifications - unified entry point for all platforms
+description: "Set up and configure OMX notification integrations (Discord, Telegram, Slack, custom webhooks, and CLI commands) by writing to ~/.codex/.omx-config.json. Use when a user says 'configure notifications', 'setup discord', 'telegram bot', 'slack webhook', or 'notification settings'. Unified entry point — replaces all standalone configure-discord/telegram/slack skills."
 triggers:
   - "configure notifications"
   - "setup notifications"

@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Run a comprehensive code review
+description: "Conduct a thorough code review covering security (OWASP Top 10), code quality, performance, and maintainability, with severity-rated findings (CRITICAL/HIGH/MEDIUM/LOW) and file:line locations. Use when a user says 'review this code', 'code review', or before merging a PR or after a major feature. Delegates to code-reviewer agent (THOROUGH tier) and cross-validates security-sensitive changes with Codex."
 ---
 
 # Code Review Skill

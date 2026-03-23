@@ -1,6 +1,6 @@
 ---
 name: team
-description: N coordinated agents on shared task list using tmux-based orchestration
+description: "Orchestrate N durable tmux-based worker agents (Codex or Claude CLI) on a shared task list with mailbox coordination, worktree support, and full lifecycle control. Use for long-running parallel execution that must survive beyond one reasoning burst — triggered by 'team', 'coordinated team', 'omx team', or '/team N:agent-type'."
 ---
 
 # Team Skill

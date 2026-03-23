@@ -1,6 +1,6 @@
 ---
 name: help
-description: Guide on using oh-my-codex plugin
+description: "Displays the oh-my-codex (OMX) feature guide and analyzes your usage patterns to give personalized recommendations. Use when you want to learn available commands, discover magic keywords like 'ralph' or 'ulw', troubleshoot setup, or get tips on reducing token spend."
 ---
 
 # How OMX Works

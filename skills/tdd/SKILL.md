@@ -1,6 +1,6 @@
 ---
 name: tdd
-description: Test-Driven Development enforcement skill - write tests first, always
+description: "Enforce strict Red-Green-Refactor TDD cycles: write a failing test first, implement only enough code to pass it, then refactor. Use when starting a new feature, fixing a bug with test coverage, or enforcing test-first discipline — triggered by 'tdd', 'test first', 'write tests before code', or 'red green refactor'."
 ---
 
 # TDD Mode
