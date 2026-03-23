@@ -14,11 +14,13 @@ import {
 } from './notify-hook/auto-nudge.js';
 import { checkPaneReadyForTeamSendKeys } from './notify-hook/team-tmux-guard.js';
 import {
+  checkWorkerPanesAlive,
   isLeaderStale,
   maybeNudgeTeamLeader,
   resolveLeaderStalenessThresholdMs,
 } from './notify-hook/team-leader-nudge.js';
 import { DEFAULT_MARKER } from './tmux-hook-engine.js';
+import { isTerminalPhase } from './notify-hook/utils.js';
 
 function argValue(name: string, fallback = ''): string {
   const idx = process.argv.indexOf(name);
@@ -158,6 +160,17 @@ interface ParentGuardState {
   reason: string;
   state_path: string;
   current_phase: string;
+  team_name?: string;
+  pane_count?: number;
+}
+
+interface ActiveTeamResult {
+  active: boolean;
+  reason: string;
+  path: string;
+  state: Record<string, unknown> | null;
+  team_name: string;
+  pane_count: number;
 }
 
 interface FallbackAutoNudgeState {
@@ -346,6 +359,79 @@ async function resolveActiveModeState(mode: string): Promise<ActiveModeResult> {
 
 async function resolveActiveRalphState(): Promise<ActiveModeResult> {
   return resolveActiveModeState('ralph');
+}
+
+async function resolveActiveTeamState(): Promise<ActiveTeamResult> {
+  const candidateDirs: string[] = [];
+  const sessionPath = join(stateDir, 'session.json');
+  try {
+    const session = JSON.parse(await readFile(sessionPath, 'utf-8')) as Record<string, unknown>;
+    const sessionId = safeString(session?.session_id).trim();
+    if (sessionId) {
+      candidateDirs.push(join(stateDir, 'sessions', sessionId));
+    }
+  } catch {
+    // No active session file; fall back to root state only.
+  }
+  if (!candidateDirs.includes(stateDir)) candidateDirs.push(stateDir);
+
+  for (const dir of candidateDirs) {
+    const path = join(dir, 'team-state.json');
+    if (!existsSync(path)) continue;
+    const parsed = await readFile(path, 'utf-8')
+      .then((content) => JSON.parse(content) as Record<string, unknown>)
+      .catch(() => null);
+    if (!parsed || typeof parsed !== 'object' || parsed.active !== true) continue;
+
+    const teamName = safeString(parsed.team_name).trim();
+    if (!teamName) continue;
+
+    const teamConfigDir = join(stateDir, 'team', teamName);
+    const phasePath = join(teamConfigDir, 'phase.json');
+    const phaseState = existsSync(phasePath)
+      ? await readFile(phasePath, 'utf-8')
+        .then((content) => JSON.parse(content) as Record<string, unknown>)
+        .catch(() => null)
+      : null;
+    const phase = safeString(phaseState?.current_phase).trim();
+    if (phase && isTerminalPhase(phase)) continue;
+
+    const manifestPath = join(teamConfigDir, 'manifest.v2.json');
+    const configPath = join(teamConfigDir, 'config.json');
+    const teamConfigPath = existsSync(manifestPath) ? manifestPath : configPath;
+    const teamConfig = existsSync(teamConfigPath)
+      ? await readFile(teamConfigPath, 'utf-8')
+        .then((content) => JSON.parse(content) as Record<string, unknown>)
+        .catch(() => null)
+      : null;
+    const tmuxSession = safeString(teamConfig?.tmux_session).trim();
+    if (!tmuxSession) continue;
+
+    const workers = Array.isArray(teamConfig?.workers) ? teamConfig.workers as Array<Record<string, unknown>> : [];
+    const workerPaneIds: string[] = workers
+      .map((worker) => safeString(worker?.pane_id).trim())
+      .filter(Boolean);
+    const paneStatus = await checkWorkerPanesAlive(tmuxSession, workerPaneIds as any);
+    if (!paneStatus.alive) continue;
+
+    return {
+      active: true,
+      reason: 'active',
+      path,
+      state: parsed,
+      team_name: teamName,
+      pane_count: paneStatus.paneCount,
+    };
+  }
+
+  return {
+    active: false,
+    reason: 'cleared',
+    path: '',
+    state: null,
+    team_name: '',
+    pane_count: 0,
+  };
 }
 
 async function emitRalphContinueSteer(paneId: string, message: string): Promise<void> {
@@ -825,6 +911,8 @@ async function enforceLifecycleGuards(): Promise<boolean> {
         lastParentGuard.reason !== nextParentGuard.reason
         || lastParentGuard.state_path !== nextParentGuard.state_path
         || lastParentGuard.current_phase !== nextParentGuard.current_phase
+        || lastParentGuard.team_name !== nextParentGuard.team_name
+        || lastParentGuard.pane_count !== nextParentGuard.pane_count
       ) {
         await eventLog({
           type: 'watcher_parent_guard',
@@ -836,6 +924,37 @@ async function enforceLifecycleGuards(): Promise<boolean> {
       }
       return false;
     }
+
+    const activeTeam = await resolveActiveTeamState();
+    if (activeTeam.active) {
+      const currentPhase = safeString(activeTeam.state?.current_phase);
+      const nextParentGuard: ParentGuardState = {
+        reason: 'parent_gone_deferred_for_active_team',
+        state_path: activeTeam.path,
+        current_phase: currentPhase,
+        team_name: activeTeam.team_name,
+        pane_count: activeTeam.pane_count,
+      };
+      if (
+        lastParentGuard.reason !== nextParentGuard.reason
+        || lastParentGuard.state_path !== nextParentGuard.state_path
+        || lastParentGuard.current_phase !== nextParentGuard.current_phase
+        || lastParentGuard.team_name !== nextParentGuard.team_name
+        || lastParentGuard.pane_count !== nextParentGuard.pane_count
+      ) {
+        await eventLog({
+          type: 'watcher_parent_guard',
+          reason: nextParentGuard.reason,
+          state_path: nextParentGuard.state_path,
+          current_phase: currentPhase || null,
+          team_name: activeTeam.team_name,
+          pane_count: activeTeam.pane_count,
+        });
+        lastParentGuard = nextParentGuard;
+      }
+      return false;
+    }
+
     lastParentGuard = { reason: '', state_path: '', current_phase: '' };
     await requestShutdown('parent_gone');
     return true;
