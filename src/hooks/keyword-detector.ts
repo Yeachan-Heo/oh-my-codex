@@ -145,6 +145,8 @@ function extractExplicitSkillInvocations(text: string): KeywordMatch[] {
   const results: KeywordMatch[] = [];
   const regex = /(?:^|[^\w])\$([a-z][a-z0-9-]*)\b/gi;
   let match: RegExpExecArray | null;
+  let captureStarted = false;
+  let lastMatchEnd = -1;
 
   while ((match = regex.exec(text)) !== null) {
     const token = (match[1] ?? '').toLowerCase();
@@ -153,6 +155,16 @@ function extractExplicitSkillInvocations(text: string): KeywordMatch[] {
     const normalizedSkill = token === 'swarm' ? 'team' : token;
     const registryEntry = KEYWORD_TRIGGER_DEFINITIONS.find((entry) => entry.skill.toLowerCase() === normalizedSkill);
     if (!registryEntry) continue;
+
+    const matchStart = match.index + match[0].lastIndexOf('$');
+    if (captureStarted) {
+      const between = text.slice(lastMatchEnd, matchStart);
+      if (!/^\s*$/.test(between)) break;
+    }
+
+    captureStarted = true;
+    lastMatchEnd = matchStart + token.length + 1;
+
     if (results.some((item) => item.skill === normalizedSkill)) continue;
 
     results.push({
@@ -180,6 +192,9 @@ export function detectKeywords(text: string): KeywordMatch[] {
   const explicit = extractExplicitSkillInvocations(text);
   if (hasExplicitPromptsInvocation(text) && explicit.length === 0) {
     return [];
+  }
+  if (explicit.length > 0) {
+    return explicit;
   }
 
   const implicit: KeywordMatch[] = [];
