@@ -1,6 +1,6 @@
 ---
 name: cancel
-description: Cancel any active OMX mode (autopilot, ralph, ultrawork, ecomode, ultraqa, swarm, ultrapilot, pipeline, team)
+description: "Intelligently detect and cancel any active OMX mode (autopilot, ralph, ultrawork, ecomode, ultraqa, swarm, ultrapilot, pipeline, team) with proper state cleanup and dependency-ordered teardown. Use when a user says 'cancel', 'stop', 'abort', 'cancelomc', or 'stopomc', or when an OMX workflow needs a clean exit. Use --force to clear all sessions and legacy state. Autopilot state is preserved for resume."
 ---
 
 # Cancel Skill

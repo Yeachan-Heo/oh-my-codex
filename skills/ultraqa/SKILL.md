@@ -1,6 +1,6 @@
 ---
 name: ultraqa
-description: QA cycling workflow - test, verify, fix, repeat until goal met
+description: "Run an autonomous QA cycling loop (qa-tester → architect diagnosis → executor fix → repeat) until tests pass, build succeeds, lint clears, or a custom goal is met — up to 5 cycles with early-exit on repeated failures. Use when you want hands-off quality enforcement — triggered by 'ultraqa', '/ultraqa --tests', '/ultraqa --build', '/ultraqa --lint', or '/ultraqa --typecheck'."
 ---
 
 # UltraQA Skill

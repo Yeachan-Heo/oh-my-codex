@@ -1,6 +1,6 @@
 ---
 name: trace
-description: Show agent flow trace timeline and summary
+description: "Display a chronological event timeline and aggregate stats for the current session: hook fires, skill activations, agent delegations, keyword detections, mode transitions, and tool performance bottlenecks. Use when debugging slow or unexpected agent behavior — triggered by 'trace', 'show trace', 'agent timeline', or 'what happened'."
 ---
 
 # Agent Flow Trace

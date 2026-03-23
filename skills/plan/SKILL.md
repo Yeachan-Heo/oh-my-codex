@@ -1,6 +1,6 @@
 ---
 name: plan
-description: Strategic planning with optional interview workflow
+description: "Creates comprehensive, actionable work plans through adaptive interview or direct mode, with optional Planner/Architect/Critic consensus (RALPLAN-DR). Use when a task is broad or vague and needs scoping before code is written — say 'plan this', 'plan the feature', 'let's plan', or use '--consensus' for multi-perspective deliberation."
 ---
 
 <Purpose>

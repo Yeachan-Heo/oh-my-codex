@@ -1,6 +1,6 @@
 ---
 name: "hud"
-description: "Show or configure the OMX HUD (two-layer statusline)"
+description: "Shows or configures the OMX two-layer HUD: Codex built-in statusline (model, git branch, context) plus OMX orchestration overlay (ralph iterations, ultrawork, team workers, pipeline phase). Use when you want to monitor active workflow state, check turn counts, or switch display presets (minimal/focused/full)."
 role: "display"
 scope: ".omx/**"
 ---

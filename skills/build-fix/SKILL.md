@@ -1,6 +1,6 @@
 ---
 name: build-fix
-description: Fix build and TypeScript errors with minimal changes
+description: "Fix build and compilation errors (TypeScript, tsc, mypy, cargo check, etc.) with the smallest possible diff — no refactoring, no architectural changes, only what's needed to make the build pass. Use when a user says 'fix the build', 'build is broken', 'type errors', or the type checker reports failures. Verifies each fix does not introduce new errors."
 ---
 
 # Build Fix Skill

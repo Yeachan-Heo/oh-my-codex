@@ -1,7 +1,7 @@
 ---
 name: skill
-description: Manage local skills - list, add, remove, search, edit, setup wizard
-argument-hint: "<command> [args]"
+description: "Create, list, search, edit, remove, and sync oh-my-codex skills across user and project scopes. Use when you want to manage your skill library — triggered by 'skill list', 'skill add', 'skill remove', 'skill edit', 'skill search', 'skill sync', or 'skill setup'."
+argument-hint: "command [args]"
 ---
 
 # Skill Management CLI

@@ -1,6 +1,6 @@
 ---
 name: pipeline
-description: Configurable pipeline orchestrator for sequencing stages
+description: "Configurable multi-stage pipeline orchestrator that sequences RALPLAN → team-exec → ralph-verify with state persistence and resume support. Use when you need a structured, resumable execution pipeline with explicit stage transitions and HUD visibility — distinct from autopilot in that stages are configurable and individually skippable."
 ---
 
 # Pipeline Skill

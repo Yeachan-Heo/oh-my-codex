@@ -1,6 +1,6 @@
 ---
 name: ask-claude
-description: Ask Claude via local CLI and capture a reusable artifact
+description: "Send a question or task to the locally installed Claude CLI and save the response as a reusable markdown artifact. Use when you want a second opinion, focused review, or external advisory answer from Claude without MCP routing. Requires local Claude CLI installed. Saves output to .omx/artifacts/ with slug-timestamp naming."
 ---
 
 # Ask Claude (Local CLI)

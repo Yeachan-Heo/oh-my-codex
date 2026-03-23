@@ -1,6 +1,6 @@
 ---
 name: review
-description: Reviewer-only pass for /plan --review and cleanup artifact review
+description: "Run a critic-only verdict pass on an existing plan or cleanup artifact. Use when you have a plan file ready and need an independent reviewer (not the author) to issue APPROVED, REVISE, or REJECT — triggered by 'review plan', 'critic pass', 'approve plan', or 'review cleanup'."
 ---
 
 # Review (Reviewer-Only Pass)

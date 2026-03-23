@@ -1,6 +1,6 @@
 ---
 name: ask-gemini
-description: Ask Gemini via local CLI and capture a reusable artifact
+description: "Send a question or task to the locally installed Gemini CLI and save the response as a reusable markdown artifact. Use when you want an external second opinion, design feedback, or brainstorming from Gemini without MCP routing. Requires local Gemini CLI installed. Saves output to .omx/artifacts/ with slug-timestamp naming."
 ---
 
 # Ask Gemini (Local CLI)

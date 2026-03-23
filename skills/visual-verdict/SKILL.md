@@ -1,6 +1,6 @@
 ---
 name: visual-verdict
-description: Structured visual QA verdict for screenshot-to-reference comparisons
+description: "Compare a generated UI screenshot against reference images and return a strict JSON verdict (score 0–100, pass/revise/fail, concrete differences, actionable suggestions) to drive the next edit iteration. Use when checking visual fidelity of layout, spacing, typography, or component styling — triggered by 'visual verdict', 'compare screenshots', 'does this match the design', or 'visual QA'."
 ---
 
 <Purpose>
