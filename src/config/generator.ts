@@ -18,6 +18,7 @@ import { DEFAULT_FRONTIER_MODEL } from "./models.js";
 import type { UnifiedMcpRegistryServer } from "./mcp-registry.js";
 
 interface MergeOptions {
+  includeTuiSection?: boolean;
   modelOverride?: string;
   sharedMcpServers?: UnifiedMcpRegistryServer[];
   sharedMcpRegistrySource?: string;
@@ -620,7 +621,10 @@ function getSharedMcpRegistryBlock(
  * OMX table-section block (MCP servers, TUI).
  * Contains ONLY [table] sections — no bare keys.
  */
-function getOmxTablesBlock(pkgRoot: string, includeTui = true): string {
+function getOmxTablesBlock(
+  pkgRoot: string,
+  includeTuiSection = true,
+): string {
   const stateServerPath = escapeTomlString(
     join(pkgRoot, "dist", "mcp", "state-server.js"),
   );
@@ -637,7 +641,7 @@ function getOmxTablesBlock(pkgRoot: string, includeTui = true): string {
     join(pkgRoot, "dist", "mcp", "team-server.js"),
   );
 
-  return [
+  const lines = [
     "",
     "# ============================================================",
     "# oh-my-codex (OMX) Configuration",
@@ -678,19 +682,25 @@ function getOmxTablesBlock(pkgRoot: string, includeTui = true): string {
     `args = ["${teamServerPath}"]`,
     "enabled = true",
     "startup_timeout_sec = 5",
-    ...(includeTui
-      ? [
-          "",
-          "# OMX TUI StatusLine (Codex CLI v0.101.0+)",
-          "[tui]",
-          OMX_TUI_STATUS_LINE,
-          "",
-        ]
-      : []),
+  ];
+
+  if (includeTuiSection) {
+    lines.push(
+      "",
+      "# OMX TUI StatusLine (Codex CLI v0.101.0+)",
+      "[tui]",
+      OMX_TUI_STATUS_LINE,
+    );
+  }
+
+  lines.push(
+    "",
     "# ============================================================",
     "# End oh-my-codex",
     "",
-  ].join("\n");
+  );
+
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -731,7 +741,10 @@ export function buildMergedConfig(
   existing = stripOrphanedOmxSections(existing);
   existing = upsertFeatureFlags(existing);
   existing = upsertAgentsSettings(existing);
-  const tuiUpsert = upsertTuiStatusLine(existing);
+  const includeTuiSection = options.includeTuiSection ?? true;
+  const tuiUpsert = includeTuiSection
+    ? upsertTuiStatusLine(existing)
+    : { cleaned: existing, hadExistingTui: false };
   existing = tuiUpsert.cleaned;
 
   const topLines = getOmxTopLevelLines(
@@ -739,7 +752,10 @@ export function buildMergedConfig(
     existing,
     options.modelOverride,
   );
-  const tablesBlock = getOmxTablesBlock(pkgRoot, !tuiUpsert.hadExistingTui);
+  const tablesBlock = getOmxTablesBlock(
+    pkgRoot,
+    includeTuiSection && !tuiUpsert.hadExistingTui,
+  );
   const sharedRegistryBlock = getSharedMcpRegistryBlock(
     options.sharedMcpServers ?? [],
     options.sharedMcpRegistrySource,

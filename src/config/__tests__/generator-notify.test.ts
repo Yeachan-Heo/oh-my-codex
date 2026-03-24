@@ -361,4 +361,34 @@ describe('config generator', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('skips [tui] section when includeTuiSection is false', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
+    try {
+      const configPath = join(wd, 'config.toml');
+      await mergeConfig(configPath, wd, { includeTuiSection: false });
+      const toml = await readFile(configPath, 'utf-8');
+
+      assert.doesNotMatch(toml, /^\[tui\]$/m);
+      assert.doesNotMatch(toml, /^status_line = \[/m);
+      assert.match(toml, /^\[mcp_servers\.omx_state\]$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('removes prior OMX [tui] section when rerun with includeTuiSection false', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
+    try {
+      const configPath = join(wd, 'config.toml');
+      await mergeConfig(configPath, wd);
+      await mergeConfig(configPath, wd, { includeTuiSection: false });
+      const toml = await readFile(configPath, 'utf-8');
+
+      assert.doesNotMatch(toml, /^\[tui\]$/m);
+      assert.doesNotMatch(toml, /^status_line = \[/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
