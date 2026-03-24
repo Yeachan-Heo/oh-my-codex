@@ -55,11 +55,19 @@ describe('withTempTmuxSession', () => {
         false,
         'fixture session must not be visible on the maintainer default tmux server',
       );
-      if (ambientTmuxPane) {
-        assert.notEqual(fixture.leaderPaneId, ambientTmuxPane);
-      }
       if (ambientTmux) {
-        assert.notEqual(fixture.env.TMUX, ambientTmux);
+        assert.notEqual(
+          fixture.env.TMUX,
+          ambientTmux,
+          'synthetic fixture must use a different tmux socket/env tuple than the ambient session',
+        );
+      }
+      if (ambientTmuxPane) {
+        assert.equal(
+          fixture.leaderPaneId.startsWith('%'),
+          true,
+          'fixture should still expose a pane id even when pane ids are recycled across tmux servers',
+        );
       }
     });
 

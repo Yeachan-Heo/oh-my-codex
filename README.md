@@ -110,6 +110,12 @@ Most users should think of OMX as **better prompting + better workflow + better 
 | `$ralph "..."` | persistent sequential execution |
 | `$team "..."` | coordinated parallel execution when the task is big enough |
 
+Use `$deep-interview` when the request is still vague, the boundaries are unclear, or you want OMX to keep pressing on intent, non-goals, and decision boundaries before it hands work off to `$plan`, `$ralph`, `$team`, or `$autopilot`.
+
+Typical cases:
+- vague greenfield ideas that still need sharper intent and scope
+- brownfield changes where OMX should inspect the repo first, then ask cited confirmation questions
+- requests where you want a one-question-at-a-time clarification loop instead of immediate planning or implementation
 ## Advanced / operator surfaces
 
 These are useful, but they are not the main onboarding path.

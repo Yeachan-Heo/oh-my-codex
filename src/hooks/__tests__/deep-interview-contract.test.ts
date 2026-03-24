@@ -1,10 +1,32 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+function readProjectAgents(startDir: string): string {
+	let currentDir = startDir;
+
+	while (true) {
+		const candidate = join(currentDir, "AGENTS.md");
+		if (existsSync(candidate)) {
+			const content = readFileSync(candidate, "utf-8");
+			if (!/Team Worker Runtime Instructions/i.test(content)) {
+				return content;
+			}
+		}
+
+		const parentDir = dirname(currentDir);
+		if (parentDir === currentDir) {
+			break;
+		}
+		currentDir = parentDir;
+	}
+
+	return readFileSync(join(startDir, "AGENTS.md"), "utf-8");
+}
 
 const deepInterviewSkill = readFileSync(
 	join(__dirname, "../../../skills/deep-interview/SKILL.md"),
@@ -14,7 +36,7 @@ const autopilotSkill = readFileSync(
 	join(__dirname, "../../../skills/autopilot/SKILL.md"),
 	"utf-8",
 );
-const rootAgents = readFileSync(join(__dirname, "../../../AGENTS.md"), "utf-8");
+const rootAgents = readProjectAgents(join(__dirname, "../../.."));
 const templateAgents = readFileSync(
 	join(__dirname, "../../../templates/AGENTS.md"),
 	"utf-8",
@@ -37,6 +59,7 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /Decision Boundaries/i);
 		assert.match(deepInterviewSkill, /Reduce user effort/i);
 		assert.match(deepInterviewSkill, /must be explicit/i);
+		assert.match(deepInterviewSkill, /pressure pass/i);
 	});
 
 	it("prioritizes intent-boundary questioning before implementation detail", () => {
@@ -58,6 +81,52 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /Contrarian/i);
 		assert.match(deepInterviewSkill, /Simplifier/i);
 		assert.match(deepInterviewSkill, /Ontologist/i);
+	});
+
+	it("strengthens questioning pressure on all four analysis axes", () => {
+		assert.match(
+			deepInterviewSkill,
+			/Treat every answer as a claim to pressure-test before moving on/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/demand evidence or examples, expose a hidden assumption, force a tradeoff or boundary, or reframe root cause vs symptom/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/Do not rotate to a new clarity dimension just for coverage/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/Prefer staying on the same thread for multiple rounds when it has the highest leverage/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/Do not offer early exit before the first explicit assumption probe and one persistent follow-up have happened/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/Round 4\+: allow explicit early exit with risk warning/i,
+		);
+	});
+
+	it("moves challenge modes and preserved evidence discipline earlier", () => {
+		assert.match(
+			deepInterviewSkill,
+			/Contrarian.*round 2\+.*untested assumption/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/Simplifier.*round 4\+.*scope expands faster than outcome clarity/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/Ontologist.*round 5\+.*ambiguity > 0\.25.*describing symptoms/i,
+		);
+		assert.match(
+			deepInterviewSkill,
+			/Brownfield evidence vs inference notes/i,
+		);
 	});
 
 	it("includes contract-style execution bridge and no-direct-implementation guard", () => {

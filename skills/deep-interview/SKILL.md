@@ -43,6 +43,9 @@ If no flag is provided, use **Standard**.
 - Ask ONE question per round (never batch)
 - Ask about intent and boundaries before implementation detail
 - Target the weakest clarity dimension each round after applying the stage-priority rules below
+- Treat every answer as a claim to pressure-test before moving on: the next question should usually demand evidence or examples, expose a hidden assumption, force a tradeoff or boundary, or reframe root cause vs symptom
+- Do not rotate to a new clarity dimension just for coverage when the current answer is still vague; stay on the same thread until one layer deeper, one assumption clearer, or one boundary tighter
+- Before crystallizing, complete at least one explicit pressure pass that revisits an earlier answer with a deeper, assumption-focused, or tradeoff-focused follow-up
 - Gather codebase facts via `explore` before asking user about internals
 - When session guidance enables `USE_OMX_EXPLORE_CMD`, prefer `omx explore` for simple read-only brownfield fact gathering; keep prompts narrow and concrete, and keep ambiguous or non-shell-only investigation on the richer normal path and fall back normally if `omx explore` is unavailable.
 - Always run a preflight context intake before the first interview question
@@ -52,6 +55,7 @@ If no flag is provided, use **Standard**.
 - Re-score ambiguity after each answer and show progress transparently
 - Do not hand off to execution while ambiguity remains above threshold unless user explicitly opts to proceed with warning
 - Do not crystallize or hand off while `Non-goals` or `Decision Boundaries` remain unresolved, even if the weighted ambiguity threshold is met
+- Treat early exit as a safety valve, not the default success path
 - Persist mode state for resume safety (`state_write` / `state_read`)
 </Execution_Policy>
 
@@ -107,7 +111,7 @@ If no flag is provided, use **Standard**.
 
 ## Phase 2: Socratic Interview Loop
 
-Repeat until ambiguity `<= threshold`, user exits with warning, or max rounds reached.
+Repeat until ambiguity `<= threshold`, the pressure pass is complete, the readiness gates are explicit, the user exits with warning, or max rounds are reached.
 
 ### 2a) Generate next question
 Use:
@@ -121,6 +125,14 @@ Target the lowest-scoring dimension, but respect stage priority:
 - **Stage 1 — Intent-first:** Intent, Outcome, Scope, Non-goals, Decision Boundaries
 - **Stage 2 — Feasibility:** Constraints, Success Criteria
 - **Stage 3 — Brownfield grounding:** Context Clarity (brownfield only)
+
+Follow-up pressure ladder after each answer:
+1. Ask for a concrete example, counterexample, or evidence signal behind the latest claim
+2. Probe the hidden assumption, dependency, or belief that makes the claim true
+3. Force a boundary or tradeoff: what would you explicitly not do, defer, or reject?
+4. If the answer still describes symptoms, reframe toward essence / root cause before moving on
+
+Prefer staying on the same thread for multiple rounds when it has the highest leverage. Breadth without pressure is not progress.
 
 Detailed dimensions:
 - Intent Clarity — why the user wants this
@@ -151,7 +163,8 @@ Brownfield: `ambiguity = 1 - (intent × 0.25 + outcome × 0.20 + scope × 0.20 +
 Readiness gate:
 - `Non-goals` must be explicit
 - `Decision Boundaries` must be explicit
-- If either gate is unresolved, continue interviewing even when weighted ambiguity is below threshold
+- A pressure pass must be complete: at least one earlier answer has been revisited with an evidence, assumption, or tradeoff follow-up
+- If either gate is unresolved, or the pressure pass is incomplete, continue interviewing even when weighted ambiguity is below threshold
 
 ### 2d) Report progress
 Show weighted breakdown table, readiness-gate status (`Non-goals`, `Decision Boundaries`), and the next focus dimension.
@@ -160,17 +173,18 @@ Show weighted breakdown table, readiness-gate status (`Non-goals`, `Decision Bou
 Append round result and updated scores via `state_write`.
 
 ### 2f) Round controls
-- Round 3+: allow explicit early exit with risk warning
+- Do not offer early exit before the first explicit assumption probe and one persistent follow-up have happened
+- Round 4+: allow explicit early exit with risk warning
 - Soft warning at profile midpoint (e.g., round 3/6/10 depending on profile)
 - Hard cap at profile `max_rounds`
 
 ## Phase 3: Challenge Modes (assumption stress tests)
 
-Use each mode once when applicable:
+Use each mode once when applicable. These are normal escalation tools, not rare rescue moves:
 
-- **Contrarian** (round 4+): challenge core assumptions
-- **Simplifier** (round 6+): probe minimal viable scope
-- **Ontologist** (round 8+ and ambiguity > 0.30): ask for essence-level reframing
+- **Contrarian** (round 2+ or immediately when an answer rests on an untested assumption): challenge core assumptions
+- **Simplifier** (round 4+ or when scope expands faster than outcome clarity): probe minimal viable scope
+- **Ontologist** (round 5+ and ambiguity > 0.25, or when the user keeps describing symptoms): ask for essence-level reframing
 
 Track used modes in state to prevent repetition.
 
@@ -196,6 +210,8 @@ Spec should include:
 - Constraints
 - Testable acceptance criteria
 - Assumptions exposed + resolutions
+- Pressure-pass findings (which answer was revisited, and what changed)
+- Brownfield evidence vs inference notes for any repository-grounded confirmation questions
 - Technical context findings
 - Full or condensed transcript
 
@@ -299,9 +315,12 @@ Present execution options after artifact generation using explicit handoff contr
 - [ ] Ambiguity score shown each round
 - [ ] Intent-first stage priority used before implementation detail
 - [ ] Weakest-dimension targeting used within the active stage
+- [ ] At least one explicit assumption probe happened before crystallization
+- [ ] At least one persistent follow-up / pressure pass deepened a prior answer
 - [ ] Challenge modes triggered at thresholds (when applicable)
 - [ ] Transcript written to `.omx/interviews/{slug}-{timestamp}.md`
 - [ ] Spec written to `.omx/specs/deep-interview-{slug}.md`
+- [ ] Brownfield questions use evidence-backed confirmation when applicable
 - [ ] Handoff options provided (`$ralplan`, `$autopilot`, `$ralph`, `$team`)
 - [ ] No direct implementation performed in this mode
 </Final_Checklist>
