@@ -22,6 +22,7 @@ export interface TeamConfig {
   hud_pane_id: string | null;
   resize_hook_name: string | null;
   resize_hook_target: string | null;
+  restore_standalone_hud_on_shutdown?: boolean;
   next_worker_index?: number;
 }
 
@@ -177,6 +178,7 @@ export interface TeamManifestV2 {
   hud_pane_id: string | null;
   resize_hook_name: string | null;
   resize_hook_target: string | null;
+  restore_standalone_hud_on_shutdown?: boolean;
   next_worker_index?: number;
 }
 

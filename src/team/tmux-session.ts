@@ -1,7 +1,8 @@
 import { spawnSync, execFile } from 'child_process';
 import { promisify } from 'util';
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'fs';
+import { join, dirname } from 'path';
+import { homedir } from 'os';
 import {
   CODEX_BYPASS_FLAG,
   MADMAX_FLAG,
@@ -35,6 +36,8 @@ export interface TeamSession {
   resizeHookName: string | null;
   /** Registered tmux resize hook target in "<session>:<window>" form, or null. */
   resizeHookTarget: string | null;
+  /** Whether this window had a standalone HUD before team startup and should restore it on shutdown. */
+  restoreStandaloneHudOnShutdown: boolean;
 }
 
 const INJECTION_MARKER = '[OMX_TMUX_INJECT]';
@@ -425,8 +428,117 @@ function buildWorkerLaunchSpec(shellPath: string | undefined): WorkerLaunchSpec 
   return buildShellLaunchSpec('/bin/sh', null);
 }
 
+const CODEX_TMP_TRUST_CLEANUP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 function escapeTomlString(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function unescapeTomlString(value: string): string {
+  return value.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+}
+
+function escapeRegExpLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function codexConfigPath(): string {
+  return join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'config.toml');
+}
+
+function isTmpLikeProjectPath(value: string): boolean {
+  return value.startsWith('/tmp/') || value.startsWith('/private/tmp/');
+}
+
+function isTmpOmxWorkerProjectPath(value: string): boolean {
+  return isTmpLikeProjectPath(value)
+    && value.includes('/.omx/team/')
+    && /\/worktrees\/worker-\d+\/?$/.test(value);
+}
+
+function shouldCleanupCodexProjectTrust(projectPath: string, activeProjectPath: string, nowMs: number = Date.now()): boolean {
+  if (!isTmpOmxWorkerProjectPath(projectPath)) return false;
+  if (projectPath === activeProjectPath) return false;
+
+  try {
+    const stats = statSync(projectPath);
+    const ageMs = Math.max(0, nowMs - stats.mtimeMs);
+    return !Number.isFinite(stats.mtimeMs) || ageMs > CODEX_TMP_TRUST_CLEANUP_MAX_AGE_MS;
+  } catch {
+    return true;
+  }
+}
+
+function pruneStaleCodexProjectTrustSections(configText: string, activeProjectPath: string): string {
+  const sectionHeaderPattern = /^\[[^\n]+\]\s*$/gm;
+  const projectHeaderPattern = /^\[projects\."((?:\\.|[^"])*)"\]$/;
+  const headers = Array.from(configText.matchAll(sectionHeaderPattern));
+  if (headers.length === 0) return configText;
+
+  let next = '';
+  let cursor = 0;
+  let removed = false;
+
+  for (let i = 0; i < headers.length; i++) {
+    const headerMatch = headers[i]!;
+    const start = headerMatch.index ?? 0;
+    const end = i + 1 < headers.length ? (headers[i + 1]!.index ?? configText.length) : configText.length;
+    next += configText.slice(cursor, start);
+    const rawSection = configText.slice(start, end);
+    const projectMatch = String(headerMatch[0] || '').match(projectHeaderPattern);
+    if (!projectMatch) {
+      next += rawSection;
+      cursor = end;
+      continue;
+    }
+    const projectPath = unescapeTomlString(projectMatch[1] || '');
+    if (shouldCleanupCodexProjectTrust(projectPath, activeProjectPath)) {
+      removed = true;
+      cursor = end;
+      continue;
+    }
+    next += rawSection;
+    cursor = end;
+  }
+
+  next += configText.slice(cursor);
+  return removed ? next.replace(/\n{3,}/g, '\n\n') : configText;
+}
+
+function ensureCodexProjectTrusted(projectPath: string): void {
+  if (typeof projectPath !== 'string' || projectPath.trim() === '') return;
+  const normalizedPath = projectPath.trim();
+  const configPath = codexConfigPath();
+  const configDir = dirname(configPath);
+  const header = `[projects."${escapeTomlString(normalizedPath)}"]`;
+  const trustLine = 'trust_level = "trusted"';
+
+  try {
+    mkdirSync(configDir, { recursive: true });
+    const current = existsSync(configPath) ? readFileSync(configPath, 'utf-8') : '';
+    const cleaned = pruneStaleCodexProjectTrustSections(current, normalizedPath);
+    const sectionPattern = new RegExp(`(^|\\n)${escapeRegExpLiteral(header)}\\n([\\s\\S]*?)(?=\\n\\[[^\\n]+\\]|$)`);
+    let next = cleaned;
+
+    if (sectionPattern.test(cleaned)) {
+      next = cleaned.replace(sectionPattern, (match, prefix, sectionBody) => {
+        const body = String(sectionBody || '');
+        const updatedBody = /^trust_level\s*=\s*".*"$/m.test(body)
+          ? body.replace(/^trust_level\s*=\s*".*"$/m, trustLine)
+          : `${trustLine}\n${body}`;
+        return `${prefix}${header}\n${updatedBody}`;
+      });
+    } else {
+      const suffix = cleaned.trimEnd() === '' ? '' : '\n\n';
+      next = `${cleaned.trimEnd()}${suffix}${header}\n${trustLine}\n`;
+    }
+
+    if (next !== current) {
+      writeFileSync(configPath, next);
+    }
+  } catch {
+    // Best-effort trust seeding only; worker launch should still proceed.
+  }
 }
 
 function isModelInstructionsOverride(value: string): boolean {
@@ -811,6 +923,9 @@ export function createTeamSession(
       const tmuxWorkerCwd = translatePathForMsys(workerCwd);
       const workerEnv = startup.env || {};
       const launchArgsForWorker = startup.launchArgs || workerLaunchArgs;
+      if (workerCliPlan[i - 1] === 'codex') {
+        ensureCodexProjectTrusted(workerCwd);
+      }
       const cmd = buildWorkerStartupCommand(
         safeTeamName,
         i,
@@ -938,6 +1053,7 @@ export function createTeamSession(
       hudPaneId,
       resizeHookName,
       resizeHookTarget,
+      restoreStandaloneHudOnShutdown: initialHudPaneIds.length > 0,
     };
   } catch (error) {
     if (registeredClientAttachedHook) {

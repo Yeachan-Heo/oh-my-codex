@@ -100,6 +100,23 @@ async function withMockTmuxFixture<T>(
   }
 }
 
+async function withFakeCliBinary<T>(name: string, run: () => Promise<T>): Promise<T> {
+  const fakeBinDir = await mkdtemp(join(tmpdir(), `omx-${name}-bin-`));
+  const binaryPath = join(fakeBinDir, name);
+  const previousPath = process.env.PATH;
+
+  try {
+    await writeFile(binaryPath, '#!/bin/sh\nexit 0\n');
+    await chmod(binaryPath, 0o755);
+    process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+    return await run();
+  } finally {
+    if (typeof previousPath === 'string') process.env.PATH = previousPath;
+    else delete process.env.PATH;
+    await rm(fakeBinDir, { recursive: true, force: true });
+  }
+}
+
 describe('sanitizeTeamName', () => {
   it('lowercases and strips invalid chars', () => {
     assert.equal(sanitizeTeamName('My Team!'), 'my-team');
@@ -1303,6 +1320,151 @@ esac
     withEmptyPath(() => {
       assert.equal(waitForWorkerReady('omx-team-x', 1, 1), false);
     });
+  });
+});
+
+describe('createTeamSession trust seeding and HUD restore metadata', () => {
+  it('seeds trust for the active Codex worker cwd and prunes stale temp worker entries', async () => {
+    const previousTmux = process.env.TMUX;
+    const previousTmuxPane = process.env.TMUX_PANE;
+    const previousCodexHome = process.env.CODEX_HOME;
+    const root = await mkdtemp(join(tmpdir(), 'omx-tmux-trust-seed-'));
+    const tmpBase = fs.existsSync('/private/tmp') ? '/private/tmp' : '/tmp';
+    const activeWorkerRoot = await mkdtemp(join(tmpBase, 'omx-active-worker-'));
+    const staleWorkerRoot = await mkdtemp(join(tmpBase, 'omx-stale-worker-'));
+    const leaderCwd = join(root, 'leader');
+    const activeWorkerCwd = join(activeWorkerRoot, '.omx', 'team', 'trust-seed', 'worktrees', 'worker-1');
+    const staleWorkerCwd = join(staleWorkerRoot, '.omx', 'team', 'stale-seed', 'worktrees', 'worker-1');
+    const codexHome = join(root, 'codex-home');
+    try {
+      await fs.promises.mkdir(leaderCwd, { recursive: true });
+      await fs.promises.mkdir(activeWorkerCwd, { recursive: true });
+      await fs.promises.mkdir(codexHome, { recursive: true });
+      const configPath = join(codexHome, 'config.toml');
+      await writeFile(
+        configPath,
+        `[projects."${staleWorkerCwd}"]\ntrust_level = "trusted"\n`,
+      );
+
+      process.env.TMUX = 'leader-session,stub,0';
+      process.env.TMUX_PANE = '%1';
+      process.env.CODEX_HOME = codexHome;
+
+      await withFakeCliBinary('codex', async () => {
+        await withMockTmuxFixture(
+          'omx-tmux-trust-seed-bin-',
+          (logPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${logPath}"
+case "$1" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  display-message)
+    case "$*" in
+      *"#{window_width}"*) echo "120" ;;
+      *) echo "leader:0 %1" ;;
+    esac
+    exit 0
+    ;;
+  list-panes)
+    printf "%%1\\tnode\\t'codex'\\n"
+    exit 0
+    ;;
+  split-window)
+    case "$*" in
+      *" -h "*) echo "%2" ;;
+      *) echo "%3" ;;
+    esac
+    exit 0
+    ;;
+  set-hook|run-shell|select-layout|set-window-option|select-pane|send-keys|kill-pane)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+          async () => {
+            const session = createTeamSession('trust-seed-team', 1, leaderCwd, [], [{ cwd: activeWorkerCwd, workerCli: 'codex' }]);
+            assert.equal(session.restoreStandaloneHudOnShutdown, false);
+          },
+        );
+      });
+
+      const configText = await readFile(configPath, 'utf8');
+      assert.match(configText, new RegExp(escapeRegExp(`[projects."${activeWorkerCwd}"]`)));
+      assert.doesNotMatch(configText, new RegExp(escapeRegExp(staleWorkerCwd)));
+    } finally {
+      if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
+      else delete process.env.TMUX;
+      if (typeof previousTmuxPane === 'string') process.env.TMUX_PANE = previousTmuxPane;
+      else delete process.env.TMUX_PANE;
+      if (typeof previousCodexHome === 'string') process.env.CODEX_HOME = previousCodexHome;
+      else delete process.env.CODEX_HOME;
+      await rm(root, { recursive: true, force: true });
+      await rm(activeWorkerRoot, { recursive: true, force: true });
+      await rm(staleWorkerRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('tracks whether the current window started with a standalone HUD pane', async () => {
+    const previousTmux = process.env.TMUX;
+    const previousTmuxPane = process.env.TMUX_PANE;
+    try {
+      process.env.TMUX = 'leader-session,stub,0';
+      process.env.TMUX_PANE = '%1';
+      await withFakeCliBinary('codex', async () => {
+        await withMockTmuxFixture(
+          'omx-tmux-hud-presence-bin-',
+          (logPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${logPath}"
+case "$1" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  display-message)
+    case "$*" in
+      *"#{window_width}"*) echo "120" ;;
+      *) echo "leader:0 %1" ;;
+    esac
+    exit 0
+    ;;
+  list-panes)
+    printf "%%1\\tnode\\t'codex'\\n%%9\\tnode\\tomx hud --watch\\n"
+    exit 0
+    ;;
+  split-window)
+    case "$*" in
+      *" -h "*) echo "%2" ;;
+      *) echo "%3" ;;
+    esac
+    exit 0
+    ;;
+  set-hook|run-shell|select-layout|set-window-option|select-pane|send-keys|kill-pane)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+          async () => {
+            const session = createTeamSession('hud-restore-team', 1, process.cwd(), [], [{ workerCli: 'codex' }]);
+            assert.equal(session.restoreStandaloneHudOnShutdown, true);
+          },
+        );
+      });
+    } finally {
+      if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
+      else delete process.env.TMUX;
+      if (typeof previousTmuxPane === 'string') process.env.TMUX_PANE = previousTmuxPane;
+      else delete process.env.TMUX_PANE;
+    }
   });
 });
 

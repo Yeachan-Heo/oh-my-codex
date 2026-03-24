@@ -90,6 +90,7 @@ describe('team state', () => {
       assert.equal(diskCfg.hud_pane_id, null);
       assert.equal(diskCfg.resize_hook_name, null);
       assert.equal(diskCfg.resize_hook_target, null);
+      assert.equal(diskCfg.restore_standalone_hud_on_shutdown, false);
       assert.equal(typeof diskCfg.next_task_id, 'number');
       assert.ok(Array.isArray(diskCfg.workers));
       assert.equal(diskCfg.workers.length, 2);
@@ -118,6 +119,27 @@ describe('team state', () => {
       const manifest = await readTeamManifestV2('team-linked', cwd);
       assert.equal(readCfg?.lifecycle_profile, 'default');
       assert.equal(manifest?.lifecycle_profile, 'default');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('readTeamManifestV2 tolerates manifests that predate restore_standalone_hud_on_shutdown', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-manifest-legacy-hud-'));
+    try {
+      await initTeamState('team-legacy-hud', 't', 'executor', 1, cwd);
+      const manifestPath = join(cwd, '.omx', 'state', 'team', 'team-legacy-hud', 'manifest.v2.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+      delete manifest.restore_standalone_hud_on_shutdown;
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const loadedManifest = await readTeamManifestV2('team-legacy-hud', cwd);
+      assert.ok(loadedManifest);
+      assert.equal(loadedManifest?.restore_standalone_hud_on_shutdown, undefined);
+
+      const loadedConfig = await readTeamConfig('team-legacy-hud', cwd);
+      assert.ok(loadedConfig);
+      assert.equal(loadedConfig?.restore_standalone_hud_on_shutdown, false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -372,6 +394,7 @@ exit 1
       assert.equal(manifest?.hud_pane_id, null);
       assert.equal(manifest?.resize_hook_name, null);
       assert.equal(manifest?.resize_hook_target, null);
+      assert.equal(manifest?.restore_standalone_hud_on_shutdown, false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

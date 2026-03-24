@@ -1510,6 +1510,7 @@ export async function startTeam(
       config.hud_pane_id = createdSession.hudPaneId;
       config.resize_hook_name = createdSession.resizeHookName;
       config.resize_hook_target = createdSession.resizeHookTarget;
+      config.restore_standalone_hud_on_shutdown = createdSession.restoreStandaloneHudOnShutdown === true;
       for (let i = 0; i < createdSession.workerPaneIds.length; i++) {
         workerPaneIds[i] = createdSession.workerPaneIds[i];
       }
@@ -1519,6 +1520,7 @@ export async function startTeam(
       config.hud_pane_id = null;
       config.resize_hook_name = null;
       config.resize_hook_target = null;
+      config.restore_standalone_hud_on_shutdown = false;
       for (let i = 1; i <= workerCount; i++) {
         const startup = workerStartups[i - 1] || {};
         const workerName = `worker-${i}`;
@@ -2320,7 +2322,7 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     });
     if (hudPaneId) {
       await killWorkerByPaneIdAsync(hudPaneId, leaderPaneId ?? undefined);
-      if (sessionName.includes(':')) {
+      if (sessionName.includes(':') && config.restore_standalone_hud_on_shutdown === true) {
         const restoredHudPaneId = restoreStandaloneHudPane(leaderPaneId, cwd);
         if (!restoredHudPaneId) {
           console.warn(`[team shutdown] ${sanitized}: failed to restore standalone HUD pane`);
