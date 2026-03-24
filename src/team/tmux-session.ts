@@ -521,7 +521,7 @@ function ensureCodexProjectTrusted(projectPath: string): void {
     let next = cleaned;
 
     if (sectionPattern.test(cleaned)) {
-      next = cleaned.replace(sectionPattern, (match, prefix, sectionBody) => {
+      next = cleaned.replace(sectionPattern, (_match, prefix, sectionBody) => {
         const body = String(sectionBody || '');
         const updatedBody = /^trust_level\s*=\s*".*"$/m.test(body)
           ? body.replace(/^trust_level\s*=\s*".*"$/m, trustLine)
