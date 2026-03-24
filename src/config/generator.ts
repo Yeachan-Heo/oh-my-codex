@@ -19,6 +19,7 @@ import { omxAgentsConfigDir } from "../utils/paths.js";
 
 interface MergeOptions {
   agentsConfigDir?: string;
+  includeTuiSection?: boolean;
   modelOverride?: string;
   verbose?: boolean;
 }
@@ -423,7 +424,11 @@ function getAgentEntries(agentsConfigDir: string): string[] {
  * OMX table-section block (MCP servers, TUI).
  * Contains ONLY [table] sections — no bare keys.
  */
-function getOmxTablesBlock(pkgRoot: string, agentsConfigDir: string): string {
+function getOmxTablesBlock(
+  pkgRoot: string,
+  agentsConfigDir: string,
+  includeTuiSection = true,
+): string {
   const stateServerPath = escapeTomlString(
     join(pkgRoot, "dist", "mcp", "state-server.js"),
   );
@@ -440,7 +445,7 @@ function getOmxTablesBlock(pkgRoot: string, agentsConfigDir: string): string {
     join(pkgRoot, "dist", "mcp", "team-server.js"),
   );
 
-  return [
+  const lines = [
     "",
     "# ============================================================",
     "# oh-my-codex (OMX) Configuration",
@@ -482,15 +487,25 @@ function getOmxTablesBlock(pkgRoot: string, agentsConfigDir: string): string {
     "enabled = true",
     "startup_timeout_sec = 5",
     ...getAgentEntries(agentsConfigDir),
-    "",
-    "# OMX TUI StatusLine (Codex CLI v0.101.0+)",
-    "[tui]",
-    'status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit"]',
+  ];
+
+  if (includeTuiSection) {
+    lines.push(
+      "",
+      "# OMX TUI StatusLine (Codex CLI v0.101.0+)",
+      "[tui]",
+      'status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit"]',
+    );
+  }
+
+  lines.push(
     "",
     "# ============================================================",
     "# End oh-my-codex",
     "",
-  ].join("\n");
+  );
+
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -534,6 +549,7 @@ export function buildMergedConfig(
   const tablesBlock = getOmxTablesBlock(
     pkgRoot,
     options.agentsConfigDir || omxAgentsConfigDir(),
+    options.includeTuiSection ?? true,
   );
 
   return topLines.join("\n") + "\n\n" + existing.trimEnd() + "\n" + tablesBlock;

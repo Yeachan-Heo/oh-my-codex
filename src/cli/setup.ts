@@ -47,6 +47,14 @@ interface SetupOptions {
   ) => Promise<boolean>;
 }
 
+const CODEX_TUI_REMOVED_VERSION = [0, 107, 0] as const;
+
+interface CodexVersionDetection {
+  includeTuiSection: boolean;
+  version?: string;
+  reason: "detected" | "unavailable" | "unparseable";
+}
+
 /**
  * Legacy scope values that may appear in persisted setup-scope.json files.
  * Both 'project-local' (renamed) and old 'project' (minimal, removed) are
@@ -117,6 +125,55 @@ const DEFAULT_SETUP_SCOPE: SetupScope = "user";
 
 const LEGACY_SETUP_MODEL = "gpt-5.3-codex";
 const DEFAULT_SETUP_MODEL = "gpt-5.4";
+
+export function parseCodexVersion(output: string): string | undefined {
+  const match = output.match(/(?:^|\s|\b)v?(\d+)\.(\d+)\.(\d+)(?=\b|\s|$)/i);
+  if (!match) return undefined;
+  return `${Number(match[1])}.${Number(match[2])}.${Number(match[3])}`;
+}
+
+function parseSemverTriplet(
+  version: string,
+): [number, number, number] | undefined {
+  const match = version.match(/^(\d+)\.(\d+)\.(\d+)$/);
+  if (!match) return undefined;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function compareSemverTriplet(
+  left: readonly [number, number, number],
+  right: readonly [number, number, number],
+): number {
+  if (left[0] !== right[0]) return left[0] - right[0];
+  if (left[1] !== right[1]) return left[1] - right[1];
+  return left[2] - right[2];
+}
+
+export function shouldIncludeTuiSection(version: string): boolean {
+  const parsed = parseSemverTriplet(version);
+  if (!parsed) return true;
+  return compareSemverTriplet(parsed, CODEX_TUI_REMOVED_VERSION) < 0;
+}
+
+function detectCodexVersion(): CodexVersionDetection {
+  const result = spawnSync("codex", ["--version"], { encoding: "utf-8" });
+  if (result.status !== 0) {
+    return { includeTuiSection: true, reason: "unavailable" };
+  }
+
+  const versionText = parseCodexVersion(
+    `${result.stdout || ""}\n${result.stderr || ""}`,
+  );
+  if (!versionText) {
+    return { includeTuiSection: true, reason: "unparseable" };
+  }
+
+  return {
+    includeTuiSection: shouldIncludeTuiSection(versionText),
+    version: versionText,
+    reason: "detected",
+  };
+}
 
 function createEmptyCategorySummary(): SetupCategorySummary {
   return {
@@ -353,6 +410,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   const scopeDirs = resolveScopeDirectories(resolvedScope.scope, projectRoot);
   const scopeSourceMessage =
     resolvedScope.source === "persisted" ? " (from .omx/setup-scope.json)" : "";
+  const codexVersion = detectCodexVersion();
 
   console.log("oh-my-codex setup");
   console.log("=================\n");
@@ -472,7 +530,12 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     scopeDirs.nativeAgentsDir,
     summary.config,
     backupContext,
-    { dryRun, verbose, modelUpgradePrompt },
+    {
+      dryRun,
+      verbose,
+      modelUpgradePrompt,
+      includeTuiSection: codexVersion.includeTuiSection,
+    },
   );
   console.log(`  Config refresh complete (${scopeDirs.codexConfigFile}).\n`);
 
@@ -564,7 +627,25 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   } else {
     console.log("  HUD config already exists (use --force to overwrite).");
   }
-  console.log("  StatusLine configured in config.toml via [tui] section.");
+  if (codexVersion.includeTuiSection) {
+    if (codexVersion.reason === "detected" && codexVersion.version) {
+      console.log(
+        `  StatusLine configured in config.toml via [tui] section (codex ${codexVersion.version}).`,
+      );
+    } else if (codexVersion.reason === "unavailable") {
+      console.log(
+        "  StatusLine configured in config.toml via [tui] section (codex version unavailable; compatibility mode).",
+      );
+    } else {
+      console.log(
+        "  StatusLine configured in config.toml via [tui] section (codex version unparseable; compatibility mode).",
+      );
+    }
+  } else {
+    console.log(
+      `  StatusLine [tui] skipped (detected codex ${codexVersion.version} >= 0.107.0).`,
+    );
+  }
   console.log();
 
   console.log("Setup refresh summary:");
@@ -959,7 +1040,10 @@ async function updateManagedConfig(
   agentsConfigDir: string,
   summary: SetupCategorySummary,
   backupContext: SetupBackupContext,
-  options: Pick<SetupOptions, "dryRun" | "verbose" | "modelUpgradePrompt">,
+  options: Pick<
+    SetupOptions,
+    "dryRun" | "verbose" | "modelUpgradePrompt"
+  > & { includeTuiSection: boolean },
 ): Promise<void> {
   const existing = existsSync(configPath)
     ? await readFile(configPath, "utf-8")
@@ -983,6 +1067,7 @@ async function updateManagedConfig(
 
   const finalConfig = buildMergedConfig(existing, pkgRoot, {
     agentsConfigDir,
+    includeTuiSection: options.includeTuiSection,
     modelOverride,
     verbose: options.verbose,
   });
