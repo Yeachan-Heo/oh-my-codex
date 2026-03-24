@@ -49,8 +49,10 @@ import {
   resolveAgentsModelTableContext,
   upsertAgentsModelTable,
 } from "../utils/agents-model-table.js";
+import { spawnPlatformCommandSync } from "../utils/platform-command.js";
 
 interface SetupOptions {
+  codexVersionProbe?: () => string | null;
   force?: boolean;
   dryRun?: boolean;
   scope?: SetupScope;
@@ -104,6 +106,11 @@ interface SetupBackupContext {
   baseRoot: string;
 }
 
+interface ManagedConfigResult {
+  finalConfig: string;
+  omxManagesTui: boolean;
+}
+
 export interface SkillFrontmatterMetadata {
   name: string;
   description: string;
@@ -138,6 +145,7 @@ const DEFAULT_SETUP_SCOPE: SetupScope = "user";
 const LEGACY_SETUP_MODEL = "gpt-5.3-codex";
 const DEFAULT_SETUP_MODEL = DEFAULT_FRONTIER_MODEL;
 const OBSOLETE_NATIVE_AGENT_FIELD = ["skill", "ref"].join("_");
+const TUI_OWNED_BY_CODEX_VERSION = [0, 107, 0] as const;
 
 function createEmptyCategorySummary(): SetupCategorySummary {
   return {
@@ -425,6 +433,38 @@ async function promptForModelUpgrade(
   }
 }
 
+function parseSemverTriplet(version: string): [number, number, number] | null {
+  const match = version.match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function semverGte(
+  version: [number, number, number],
+  minimum: readonly [number, number, number],
+): boolean {
+  if (version[0] !== minimum[0]) return version[0] > minimum[0];
+  if (version[1] !== minimum[1]) return version[1] > minimum[1];
+  return version[2] >= minimum[2];
+}
+
+function probeInstalledCodexVersion(): string | null {
+  const { result } = spawnPlatformCommandSync("codex", ["--version"], {
+    encoding: "utf-8",
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  if (result.error || result.status !== 0) return null;
+  const stdout = (result.stdout || "").trim();
+  return stdout === "" ? null : stdout;
+}
+
+function shouldOmxManageTuiFromCodexVersion(versionOutput: string | null): boolean {
+  if (!versionOutput) return true;
+  const parsed = parseSemverTriplet(versionOutput);
+  if (!parsed) return true;
+  return !semverGte(parsed, TUI_OWNED_BY_CODEX_VERSION);
+}
+
 async function promptForAgentsOverwrite(
   destinationPath: string,
 ): Promise<boolean> {
@@ -696,14 +736,15 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   for (const warning of sharedMcpRegistry.warnings) {
     console.log(`  warning: ${warning}`);
   }
-  const resolvedConfig = await updateManagedConfig(
+  const managedConfig = await updateManagedConfig(
     scopeDirs.codexConfigFile,
     pkgRoot,
     sharedMcpRegistry,
     summary.config,
     backupContext,
-    { dryRun, verbose, modelUpgradePrompt },
+    { codexVersionProbe: options.codexVersionProbe, dryRun, verbose, modelUpgradePrompt },
   );
+  const resolvedConfig = managedConfig.finalConfig;
   if (resolvedScope.scope === "user") {
     await syncClaudeCodeMcpSettings(
       sharedMcpRegistry,
@@ -856,7 +897,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   } else {
     console.log("  HUD config already exists (use --force to overwrite).");
   }
-  console.log("  StatusLine configured in config.toml via [tui] section.");
+  if (managedConfig.omxManagesTui) {
+    console.log("  StatusLine configured in config.toml via [tui] section.");
+  } else {
+    console.log("  Codex CLI >= 0.107.0 manages [tui]; OMX left that section untouched.");
+  }
   console.log();
 
   console.log("Setup refresh summary:");
@@ -1402,13 +1447,19 @@ async function updateManagedConfig(
   sharedMcpRegistry: UnifiedMcpRegistryLoadResult,
   summary: SetupCategorySummary,
   backupContext: SetupBackupContext,
-  options: Pick<SetupOptions, "dryRun" | "verbose" | "modelUpgradePrompt">,
-): Promise<string> {
+  options: Pick<
+    SetupOptions,
+    "codexVersionProbe" | "dryRun" | "verbose" | "modelUpgradePrompt"
+  >,
+): Promise<ManagedConfigResult> {
   const existing = existsSync(configPath)
     ? await readFile(configPath, "utf-8")
     : "";
   const currentModel = getRootModelName(existing);
   let modelOverride: string | undefined;
+  const codexVersion =
+    options.codexVersionProbe?.() ?? probeInstalledCodexVersion();
+  const omxManagesTui = shouldOmxManageTuiFromCodexVersion(codexVersion);
 
   if (currentModel === LEGACY_SETUP_MODEL) {
     const shouldPrompt =
@@ -1425,6 +1476,7 @@ async function updateManagedConfig(
   }
 
   const finalConfig = buildMergedConfig(existing, pkgRoot, {
+    includeTui: omxManagesTui,
     modelOverride,
     sharedMcpServers: sharedMcpRegistry.servers,
     sharedMcpRegistrySource: sharedMcpRegistry.sourcePath,
@@ -1434,7 +1486,7 @@ async function updateManagedConfig(
 
   if (!changed) {
     summary.unchanged += 1;
-    return finalConfig;
+    return { finalConfig, omxManagesTui };
   }
 
   if (
@@ -1469,7 +1521,7 @@ async function updateManagedConfig(
       `  ${options.dryRun ? "would update" : "updated"} config ${configPath}`,
     );
   }
-  return finalConfig;
+  return { finalConfig, omxManagesTui };
 }
 
 function getClaudeCodeSettingsPath(homeDir = homedir()): string {

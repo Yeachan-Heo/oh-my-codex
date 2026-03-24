@@ -357,6 +357,15 @@ describe("config generator idempotency (#384)", () => {
     }
   });
 
+  it("skips emitting an OMX [tui] table when includeTui is disabled", () => {
+    const toml = buildMergedConfig("", "/tmp/omx", {
+      includeTui: false,
+    });
+
+    assert.doesNotMatch(toml, /^\[tui\]$/m);
+    assert.match(toml, /^\[mcp_servers\.omx_state\]$/m);
+  });
+
   it("replaces an existing OMX notify entry without leaving orphan fragments behind", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {

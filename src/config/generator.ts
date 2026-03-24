@@ -18,6 +18,7 @@ import { DEFAULT_FRONTIER_MODEL } from "./models.js";
 import type { UnifiedMcpRegistryServer } from "./mcp-registry.js";
 
 interface MergeOptions {
+  includeTui?: boolean;
   modelOverride?: string;
   sharedMcpServers?: UnifiedMcpRegistryServer[];
   sharedMcpRegistrySource?: string;
@@ -713,6 +714,7 @@ export function buildMergedConfig(
   options: MergeOptions = {},
 ): string {
   let existing = existingConfig;
+  const includeTui = options.includeTui !== false;
 
   if (existing.includes("oh-my-codex (OMX) Configuration")) {
     const stripped = stripExistingOmxBlocks(existing);
@@ -731,7 +733,9 @@ export function buildMergedConfig(
   existing = stripOrphanedOmxSections(existing);
   existing = upsertFeatureFlags(existing);
   existing = upsertAgentsSettings(existing);
-  const tuiUpsert = upsertTuiStatusLine(existing);
+  const tuiUpsert = includeTui
+    ? upsertTuiStatusLine(existing)
+    : { cleaned: existing, hadExistingTui: false };
   existing = tuiUpsert.cleaned;
 
   const topLines = getOmxTopLevelLines(
@@ -739,7 +743,10 @@ export function buildMergedConfig(
     existing,
     options.modelOverride,
   );
-  const tablesBlock = getOmxTablesBlock(pkgRoot, !tuiUpsert.hadExistingTui);
+  const tablesBlock = getOmxTablesBlock(
+    pkgRoot,
+    includeTui && !tuiUpsert.hadExistingTui,
+  );
   const sharedRegistryBlock = getSharedMcpRegistryBlock(
     options.sharedMcpServers ?? [],
     options.sharedMcpRegistrySource,

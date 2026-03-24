@@ -232,6 +232,52 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     }
   });
 
+  it("skips OMX-managed [tui] writes for Codex CLI >= 0.107.0 and preserves an existing [tui] table", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+      await mkdir(join(wd, ".codex"), { recursive: true });
+      await writeFile(
+        join(wd, ".codex", "config.toml"),
+        ['model = "gpt-5.4"', "", "[tui]", 'theme = "night"', 'status_line = ["git-branch"]', ""].join("\n"),
+      );
+
+      const output = await runSetupWithCapturedLogs(wd, {
+        scope: "project",
+        codexVersionProbe: () => "codex-cli 0.107.0",
+      });
+
+      const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      assert.equal(config.match(/^\[tui\]$/gm)?.length ?? 0, 1);
+      assert.match(config, /^theme = "night"$/m);
+      assert.match(config, /^status_line = \["git-branch"\]$/m);
+      assert.match(
+        output,
+        /Codex CLI >= 0\.107\.0 manages \[tui\]; OMX left that section untouched\./,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps OMX-managed [tui] writes for older Codex CLI versions", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+
+      const output = await runSetupWithCapturedLogs(wd, {
+        scope: "project",
+        codexVersionProbe: () => "codex-cli 0.106.0",
+      });
+
+      const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      assert.match(config, /^\[tui\]$/m);
+      assert.match(output, /StatusLine configured in config\.toml via \[tui\] section\./);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("syncs shared MCP registry entries into config.toml during setup", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     try {
