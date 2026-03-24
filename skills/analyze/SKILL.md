@@ -31,6 +31,12 @@ Examples:
 - User wants a quick file lookup — use explore agent instead
 - User asks a simple factual question answerable from one file — just read and answer
 
+## Workflow posture
+
+- Default to concise, evidence-dense progress and completion reporting unless the user or risk level requires more detail.
+- Treat newer user task updates as local overrides for the active workflow branch while preserving earlier non-conflicting instructions.
+- If the user says `continue`, resume from the highest-value unresolved hypothesis, gap, or discriminating probe instead of restarting the investigation.
+
 ## Core investigation contract
 
 Always preserve these distinctions:
