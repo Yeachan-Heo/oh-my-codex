@@ -492,15 +492,6 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
     const deepInterviewLockActive = isDeepInterviewAutoApprovalLocked(skillState) && !releaseReason;
     if (deepInterviewLockActive && isBlockedAutoApprovalInput(config.response, skillState.input_lock?.blocked_inputs)) {
       const blockedMessage = skillState.input_lock?.message || DEEP_INTERVIEW_INPUT_LOCK_MESSAGE;
-      const blockedSend = await sendPaneInput({
-        paneTarget: paneId,
-        prompt: `${blockedMessage} ${DEFAULT_MARKER}`,
-        submitKeyPresses: 2,
-        submitDelayMs: 100,
-      });
-      if (!blockedSend.ok) {
-        throw new Error(blockedSend.error || blockedSend.reason);
-      }
       await logTmuxHookEvent(logsDir, {
         timestamp: new Date().toISOString(),
         type: 'auto_nudge_blocked',
@@ -509,6 +500,7 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
         source,
         blocked_by: 'deep-interview-lock',
         message: blockedMessage,
+        suppressed: true,
       }).catch(() => {});
       return;
     }
