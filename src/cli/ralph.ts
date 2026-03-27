@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { startMode, updateModeState } from '../modes/base.js';
+import { readApprovedExecutionLaunchHint, type ApprovedExecutionLaunchHint } from '../planning/artifacts.js';
 import { ensureCanonicalRalphArtifacts } from '../ralph/persistence.js';
 import {
   buildFollowupStaffingPlan,
@@ -36,7 +37,7 @@ const VALUE_TAKING_FLAGS = new Set(['--model', '--provider', '--config', '-c', '
 const RALPH_OMX_FLAGS = new Set(['--prd', '--no-deslop']);
 const RALPH_APPEND_ENV = 'OMX_RALPH_APPEND_INSTRUCTIONS_FILE';
 
-export function extractRalphTaskDescription(args: readonly string[]): string {
+export function extractRalphTaskDescription(args: readonly string[], fallbackTask?: string): string {
   const words: string[] = [];
   let i = 0;
   while (i < args.length) {
@@ -51,7 +52,23 @@ export function extractRalphTaskDescription(args: readonly string[]): string {
     words.push(token);
     i++;
   }
-  return words.join(' ') || 'ralph-cli-launch';
+  return words.join(' ') || fallbackTask || 'ralph-cli-launch';
+}
+
+function buildRalphApprovedContextLines(approvedHint: ApprovedExecutionLaunchHint | null): string[] {
+  if (!approvedHint) return [];
+  const lines = [
+    'Approved planning handoff context:',
+    `- approved plan: ${approvedHint.sourcePath}`,
+  ];
+  if (approvedHint.testSpecPaths.length > 0) {
+    lines.push(`- test specs: ${approvedHint.testSpecPaths.join(', ')}`);
+  }
+  if (approvedHint.deepInterviewSpecPaths.length > 0) {
+    lines.push(`- deep-interview specs: ${approvedHint.deepInterviewSpecPaths.join(', ')}`);
+    lines.push('- Carry forward the approved deep-interview requirements and constraints during Ralph execution and final verification.');
+  }
+  return lines;
 }
 
 export function normalizeRalphCliArgs(args: readonly string[]): string[] {
@@ -105,7 +122,7 @@ export function buildRalphChangedFilesSeedContents(): string {
 
 export function buildRalphAppendInstructions(
   task: string,
-  options: { changedFilesPath: string; noDeslop: boolean },
+  options: { changedFilesPath: string; noDeslop: boolean; approvedHint?: ApprovedExecutionLaunchHint | null },
 ): string {
   return [
     '<ralph_native_subagents>',
@@ -116,6 +133,7 @@ export function buildRalphAppendInstructions(
     '- Treat `.omx/state/subagent-tracking.json` as the native subagent activity ledger for this session.',
     '- Do not declare the task complete, and do not transition into final verification/completion, while active native subagent threads are still running.',
     '- Before closing a verification wave, confirm that active native subagent threads have drained.',
+    ...buildRalphApprovedContextLines(options.approvedHint ?? null),
     'Final deslop guidance:',
     options.noDeslop
       ? '- `--no-deslop` is active for this Ralph run, so skip the mandatory ai-slop-cleaner final pass and use the latest successful pre-deslop verification evidence.'
@@ -133,7 +151,7 @@ export function buildRalphAppendInstructions(
 async function writeRalphSessionFiles(
   cwd: string,
   task: string,
-  options: { noDeslop: boolean },
+  options: { noDeslop: boolean; approvedHint?: ApprovedExecutionLaunchHint | null },
 ): Promise<RalphSessionFiles> {
   const dir = join(cwd, '.omx', 'ralph');
   await mkdir(dir, { recursive: true });
@@ -142,7 +160,7 @@ async function writeRalphSessionFiles(
   await writeFile(changedFilesPath, `${buildRalphChangedFilesSeedContents()}\n`);
   await writeFile(
     instructionsPath,
-    `${buildRalphAppendInstructions(task, { changedFilesPath: '.omx/ralph/changed-files.txt', noDeslop: options.noDeslop })}\n`,
+    `${buildRalphAppendInstructions(task, { changedFilesPath: '.omx/ralph/changed-files.txt', noDeslop: options.noDeslop, approvedHint: options.approvedHint ?? null })}\n`,
   );
   return { instructionsPath, changedFilesPath: '.omx/ralph/changed-files.txt' };
 }
@@ -155,12 +173,14 @@ export async function ralphCommand(args: string[]): Promise<void> {
     return;
   }
   const artifacts = await ensureCanonicalRalphArtifacts(cwd);
-  const task = extractRalphTaskDescription(normalizedArgs);
+  const approvedHint = readApprovedExecutionLaunchHint(cwd, 'ralph');
+  const explicitTask = extractRalphTaskDescription(normalizedArgs);
+  const task = explicitTask === 'ralph-cli-launch' ? approvedHint?.task ?? explicitTask : explicitTask;
   const noDeslop = normalizedArgs.some((arg) => arg.toLowerCase() === '--no-deslop');
   const availableAgentTypes = await resolveAvailableAgentTypes(cwd);
   const staffingPlan = buildFollowupStaffingPlan('ralph', task, availableAgentTypes);
   await startMode('ralph', task, 50);
-  const sessionFiles = await writeRalphSessionFiles(cwd, task, { noDeslop });
+  const sessionFiles = await writeRalphSessionFiles(cwd, task, { noDeslop, approvedHint });
   await updateModeState('ralph', {
     current_phase: 'starting',
     canonical_progress_path: artifacts.canonicalProgressPath,
@@ -174,6 +194,9 @@ export async function ralphCommand(args: string[]): Promise<void> {
     deslop_opt_out: noDeslop,
     deslop_changed_files_path: sessionFiles.changedFilesPath,
     deslop_scope: 'changed-files-only',
+    approved_plan_path: approvedHint?.sourcePath,
+    approved_test_spec_paths: approvedHint?.testSpecPaths ?? [],
+    approved_deep_interview_spec_paths: approvedHint?.deepInterviewSpecPaths ?? [],
     ...(artifacts.canonicalPrdPath ? { canonical_prd_path: artifacts.canonicalPrdPath } : {}),
   });
   if (artifacts.migratedPrd) {
@@ -186,7 +209,10 @@ export async function ralphCommand(args: string[]): Promise<void> {
   console.log(`[ralph] available_agent_types: ${staffingPlan.rosterSummary}`);
   console.log(`[ralph] staffing_plan: ${staffingPlan.staffingSummary}`);
   const { launchWithHud } = await import('./index.js');
-  const codexArgs = filterRalphCodexArgs(normalizedArgs);
+  const codexArgsBase = filterRalphCodexArgs(normalizedArgs);
+  const codexArgs = explicitTask === 'ralph-cli-launch' && approvedHint?.task
+    ? [...codexArgsBase, approvedHint.task]
+    : codexArgsBase;
   const appendixPath = sessionFiles.instructionsPath;
   const previousAppendixEnv = process.env[RALPH_APPEND_ENV];
   process.env[RALPH_APPEND_ENV] = appendixPath;

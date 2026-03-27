@@ -31,6 +31,7 @@ $ralplan --interactive "task description"
 - Default to concise, evidence-dense progress and completion reporting unless the user or risk level requires more detail.
 - Treat newer user task updates as local overrides for the active workflow branch while preserving earlier non-conflicting constraints.
 - If correctness depends on additional inspection, retrieval, execution, or verification, keep using the relevant tools until the consensus-planning flow is grounded.
+- Right-size implementation steps and PRD story counts to the actual scope; do not default to exactly five steps when the task is clearly smaller or larger.
 - Continue through clear, low-risk, reversible next steps automatically; ask only when the next step is materially branching, destructive, or preference-dependent.
 
 This skill invokes the Plan skill in consensus mode:

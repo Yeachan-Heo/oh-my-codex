@@ -229,6 +229,14 @@ describe('User feedback step between Planner and Architect/Critic (plan/SKILL.md
   });
 });
 
+
+
+  it('should require adaptive step sizing instead of a fixed five-step template', () => {
+    assert.match(planSkill, /adaptive step count|right-sized to task scope/i);
+    assert.match(planSkill, /do not default to exactly five steps|not a fixed five-step template/i);
+    assert.match(ralplanSkill, /do not default to exactly five steps/i);
+  });
+
 describe('RALPLAN-DR in ralplan/SKILL.md', () => {
   it('should contain RALPLAN-DR structured deliberation description', () => {
     assert.ok(

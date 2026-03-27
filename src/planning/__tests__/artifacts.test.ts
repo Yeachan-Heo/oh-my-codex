@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isPlanningComplete, readPlanningArtifacts } from '../artifacts.js';
+import { isPlanningComplete, readApprovedExecutionLaunchHint, readPlanningArtifacts } from '../artifacts.js';
 
 let tempDir: string;
 
@@ -31,6 +31,50 @@ describe('planning artifacts', () => {
     assert.equal(isPlanningComplete(artifacts), false);
     assert.equal(artifacts.prdPaths.length, 1);
     assert.equal(artifacts.testSpecPaths.length, 0);
+  });
+
+
+
+  it('includes approved Ralph launch context with test and deep-interview artifacts', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const specsDir = join(tempDir, '.omx', 'specs');
+    await mkdir(plansDir, { recursive: true });
+    await mkdir(specsDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-issue-1072.md'),
+      '# PRD\n\nLaunch via omx ralph "Execute approved issue 1072 plan"\n',
+    );
+    await writeFile(join(plansDir, 'test-spec-issue-1072.md'), '# Test Spec\n');
+    await writeFile(join(specsDir, 'deep-interview-issue-1072.md'), '# Deep Interview Spec\n');
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
+    assert.ok(hint);
+    assert.equal(hint?.task, 'Execute approved issue 1072 plan');
+    assert.equal(hint?.sourcePath, join(plansDir, 'prd-issue-1072.md'));
+    assert.deepEqual(hint?.testSpecPaths, [join(plansDir, 'test-spec-issue-1072.md')]);
+    assert.deepEqual(hint?.deepInterviewSpecPaths, [join(specsDir, 'deep-interview-issue-1072.md')]);
+  });
+
+
+
+  it('binds approved handoff context to the selected PRD slug in multi-plan repos', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const specsDir = join(tempDir, '.omx', 'specs');
+    await mkdir(plansDir, { recursive: true });
+    await mkdir(specsDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-alpha.md'), '# Alpha\n\nLaunch via omx ralph "Execute alpha"\n');
+    await writeFile(join(plansDir, 'test-spec-alpha.md'), '# Alpha Test Spec\n');
+    await writeFile(join(specsDir, 'deep-interview-alpha.md'), '# Alpha Deep Interview\n');
+    await writeFile(join(plansDir, 'prd-zeta.md'), '# Zeta\n\nLaunch via omx ralph "Execute zeta"\n');
+    await writeFile(join(plansDir, 'test-spec-zeta.md'), '# Zeta Test Spec\n');
+    await writeFile(join(specsDir, 'deep-interview-zeta.md'), '# Zeta Deep Interview\n');
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
+    assert.ok(hint);
+    assert.equal(hint?.task, 'Execute zeta');
+    assert.equal(hint?.sourcePath, join(plansDir, 'prd-zeta.md'));
+    assert.deepEqual(hint?.testSpecPaths, [join(plansDir, 'test-spec-zeta.md')]);
+    assert.deepEqual(hint?.deepInterviewSpecPaths, [join(specsDir, 'deep-interview-zeta.md')]);
   });
 
   it('surfaces deep-interview specs for downstream traceability', async () => {

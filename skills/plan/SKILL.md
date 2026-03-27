@@ -32,6 +32,7 @@ Jumping into code without understanding requirements leads to rework, scope cree
 - Gather codebase facts via `explore` agent before asking the user about them
 - When session guidance enables `USE_OMX_EXPLORE_CMD`, prefer `omx explore` for simple read-only repository lookups during planning; keep prompts narrow and concrete, and keep prompt-heavy or ambiguous planning work on the richer normal path and fall back normally if `omx explore` is unavailable.
 - Plans must meet quality standards: 80%+ claims cite file/line, 90%+ criteria are testable
+- Implementation step count must be right-sized to task scope; avoid defaulting to exactly five steps when the work is clearly smaller or larger
 - Consensus mode outputs the final plan by default; add `--interactive` to enable execution handoff
 - Consensus mode uses RALPLAN-DR short mode by default; switch to deliberate mode with `--deliberate` or when the request explicitly signals high risk (auth/security, data migration, destructive/irreversible changes, production incident, compliance/PII, public API breakage)
 - Default to concise, evidence-dense progress and completion reporting unless the user or risk level requires more detail
@@ -124,6 +125,7 @@ Every plan includes:
 - Requirements Summary
 - Acceptance Criteria (testable)
 - Implementation Steps (with file references)
+- Adaptive step count sized to the actual scope (not a fixed five-step template)
 - Risks and Mitigations
 - Verification Steps
 - For consensus/ralplan: **RALPLAN-DR summary** (Principles, Decision Drivers, Options)

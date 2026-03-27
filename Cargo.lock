@@ -63,6 +63,9 @@ dependencies = [
 [[package]]
 name = "omx-sparkshell"
 version = "0.11.9"
+dependencies = [
+ "omx-mux",
+]
 
 [[package]]
 name = "proc-macro2"
