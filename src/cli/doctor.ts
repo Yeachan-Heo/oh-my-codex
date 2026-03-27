@@ -6,13 +6,8 @@ import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import {
-  codexHome,
-  codexConfigPath,
-  codexPromptsDir,
-  userSkillsDir,
-  projectSkillsDir,
-  omxStateDir,
-  detectLegacySkillRootOverlap,
+  codexHome, codexConfigPath, codexPromptsDir,
+  userSkillsDir, projectSkillsDir, omxStateDir, detectLegacySkillRootOverlap,
 } from '../utils/paths.js';
 import { classifySpawnError, spawnPlatformCommandSync } from '../utils/platform-command.js';
 import { getCatalogExpectations } from './catalog-contract.js';
@@ -268,205 +263,331 @@ async function collectTeamDoctorIssues(cwd: string): Promise<TeamDoctorIssue[]> 
         const raw = await readFile(manifestPath, 'utf-8');
         const parsed = JSON.parse(raw) as { tmux_session?: string };
         if (typeof parsed.tmux_session === 'string' && parsed.tmux_session.trim() !== '') {
-          tmuxSession = parsed.tmux_session.trim();
+          tmuxSession = parsed.tmux_session;
         }
       } catch {
-        // ignore manifest read/parse failures and fall back to config/default
+        // ignore malformed manifest
       }
     } else if (existsSync(configPath)) {
       try {
         const raw = await readFile(configPath, 'utf-8');
         const parsed = JSON.parse(raw) as { tmux_session?: string };
         if (typeof parsed.tmux_session === 'string' && parsed.tmux_session.trim() !== '') {
-          tmuxSession = parsed.tmux_session.trim();
+          tmuxSession = parsed.tmux_session;
         }
       } catch {
-        // ignore config read/parse failures and fall back to default
+        // ignore malformed config
       }
     }
+
     knownTeamSessions.add(tmuxSession);
 
-    const workersDir = join(teamDir, 'workers');
-    const workerDirs = existsSync(workersDir)
-      ? (await readdir(workersDir, { withFileTypes: true })).filter(entry => entry.isDirectory())
-      : [];
-
-    if (!tmuxUnavailable && !tmuxSessions?.has(tmuxSession) && workerDirs.length > 0) {
+    // resume_blocker: only meaningful if tmux is available to query
+    if (!tmuxUnavailable && !tmuxSessions.has(tmuxSession)) {
       issues.push({
         code: 'resume_blocker',
-        message: `team "${teamName}" has ${workerDirs.length} worker state director${workerDirs.length === 1 ? 'y' : 'ies'} but tmux session "${tmuxSession}" is missing`,
+        message: `${teamName} references missing tmux session ${tmuxSession}`,
         severity: 'fail',
       });
     }
 
-    const shutdownPath = join(teamDir, 'shutdown.json');
-    if (existsSync(shutdownPath)) {
-      try {
-        const raw = await readFile(shutdownPath, 'utf-8');
-        const parsed = JSON.parse(raw) as { requested_at?: number; completed_at?: number };
-        if (parsed.requested_at && !parsed.completed_at && nowMs - parsed.requested_at > shutdownThresholdMs) {
-          issues.push({
-            code: 'slow_shutdown',
-            message: `team "${teamName}" has been shutting down for > ${shutdownThresholdMs / 1000}s`,
-            severity: 'warn',
-          });
-        }
-      } catch {
-        // ignore malformed shutdown metadata
-      }
-    }
+    // delayed_status_lag + slow_shutdown checks
+    const workersRoot = join(teamDir, 'workers');
+    if (!existsSync(workersRoot)) continue;
+    const workers = await readdir(workersRoot, { withFileTypes: true });
+    for (const worker of workers) {
+      if (!worker.isDirectory()) continue;
+      const workerDir = join(workersRoot, worker.name);
+      const statusPath = join(workerDir, 'status.json');
+      const heartbeatPath = join(workerDir, 'heartbeat.json');
+      const shutdownReqPath = join(workerDir, 'shutdown-request.json');
+      const shutdownAckPath = join(workerDir, 'shutdown-ack.json');
 
-    const teamStatusPath = join(teamDir, 'status.json');
-    if (existsSync(teamStatusPath)) {
-      try {
-        const raw = await readFile(teamStatusPath, 'utf-8');
-        const parsed = JSON.parse(raw) as { updated_at?: number };
-        if (parsed.updated_at && nowMs - parsed.updated_at > lagThresholdMs) {
-          issues.push({
-            code: 'delayed_status_lag',
-            message: `team "${teamName}" status stale for > ${lagThresholdMs / 1000}s`,
-            severity: 'warn',
-          });
+      if (existsSync(statusPath) && existsSync(heartbeatPath)) {
+        try {
+          const [statusRaw, hbRaw] = await Promise.all([
+            readFile(statusPath, 'utf-8'),
+            readFile(heartbeatPath, 'utf-8'),
+          ]);
+          const status = JSON.parse(statusRaw) as { state?: string };
+          const hb = JSON.parse(hbRaw) as { last_turn_at?: string };
+          const lastTurnMs = hb.last_turn_at ? Date.parse(hb.last_turn_at) : NaN;
+          if (status.state === 'working' && Number.isFinite(lastTurnMs) && nowMs - lastTurnMs > lagThresholdMs) {
+            issues.push({
+              code: 'delayed_status_lag',
+              message: `${teamName}/${worker.name} working with stale heartbeat`,
+              severity: 'fail',
+            });
+          }
+        } catch {
+          // ignore malformed files
         }
-      } catch {
-        // ignore malformed status metadata
       }
-    }
 
-    const leaderStateRoot = join(teamDir, 'leader');
-    const staleLeader = await isLeaderRuntimeStale(leaderStateRoot, leaderStaleThresholdMs, nowMs).catch(() => false);
-    if (staleLeader) {
-      issues.push({
-        code: 'stale_leader',
-        message: `team "${teamName}" leader activity stale for > ${leaderStaleThresholdMs / 1000}s`,
-        severity: 'fail',
-      });
+      if (existsSync(shutdownReqPath) && !existsSync(shutdownAckPath)) {
+        try {
+          const reqRaw = await readFile(shutdownReqPath, 'utf-8');
+          const req = JSON.parse(reqRaw) as { requested_at?: string };
+          const reqMs = req.requested_at ? Date.parse(req.requested_at) : NaN;
+          if (Number.isFinite(reqMs) && nowMs - reqMs > shutdownThresholdMs) {
+            issues.push({
+              code: 'slow_shutdown',
+              message: `${teamName}/${worker.name} has stale shutdown request without ack`,
+              severity: 'fail',
+            });
+          }
+        } catch {
+          // ignore malformed files
+        }
+      }
     }
   }
 
-  if (!tmuxUnavailable && tmuxSessions) {
+  // stale_leader: team has active workers but leader has no recent activity
+  const hudStatePath = join(stateDir, 'hud-state.json');
+  const leaderActivityPath = join(stateDir, 'leader-runtime-activity.json');
+  if ((existsSync(hudStatePath) || existsSync(leaderActivityPath)) && teamDirs.length > 0) {
+    try {
+      const leaderIsStale = await isLeaderRuntimeStale(stateDir, leaderStaleThresholdMs, nowMs);
+
+      if (leaderIsStale && !tmuxUnavailable) {
+        // Check if any team tmux session has live worker panes
+        for (const teamName of teamDirs) {
+          const session = knownTeamSessions.has(`omx-team-${teamName}`)
+            ? `omx-team-${teamName}`
+            : [...knownTeamSessions].find(s => s.includes(teamName));
+          if (!session || !tmuxSessions.has(session)) continue;
+          issues.push({
+            code: 'stale_leader',
+            message: `${teamName} has active tmux session but leader has no recent activity`,
+            severity: 'fail',
+          });
+        }
+      }
+    } catch {
+      // ignore malformed HUD state
+    }
+  }
+
+  // orphan_tmux_session: session exists but no matching team state
+  if (!tmuxUnavailable) {
     for (const session of tmuxSessions) {
-      if (session.startsWith('omx-team-') && !knownTeamSessions.has(session)) {
+      if (!knownTeamSessions.has(session)) {
         issues.push({
           code: 'orphan_tmux_session',
-          message: `tmux session "${session}" exists without matching team state`,
+          message: `${session} exists without matching team state (possibly external project)`,
           severity: 'warn',
         });
       }
     }
   }
 
-  return issues;
+  return dedupeIssues(issues);
+}
+
+function dedupeIssues(issues: TeamDoctorIssue[]): TeamDoctorIssue[] {
+  const seen = new Set<string>();
+  const out: TeamDoctorIssue[] = [];
+  for (const issue of issues) {
+    const key = `${issue.code}:${issue.message}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(issue);
+  }
+  return out;
 }
 
 function listTeamTmuxSessions(): Set<string> | null {
-  const { result } = spawnPlatformCommandSync('tmux', ['list-sessions', '-F', '#S'], {
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  if (result.error) {
-    const classified = classifySpawnError(result.error as NodeJS.ErrnoException | undefined);
-    if (classified === 'missing') return null;
-    return new Set();
+  const { result: res } = spawnPlatformCommandSync('tmux', ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf-8' });
+  if (res.error) {
+    // tmux binary unavailable or not executable.
+    return null;
   }
-  if (result.status !== 0) {
-    return new Set();
+
+  if (res.status !== 0) {
+    const stderr = (res.stderr || '').toLowerCase();
+    // tmux installed but no server/session is running.
+    if (stderr.includes('no server running') || stderr.includes('failed to connect to server')) {
+      return new Set();
+    }
+    return null;
   }
-  const stdout = typeof result.stdout === 'string' ? result.stdout : '';
-  return new Set(stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean));
+
+  const sessions = (res.stdout || '')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter((s) => s.startsWith('omx-team-'));
+  return new Set(sessions);
 }
 
 function checkCodexCli(): Check {
   const { result } = spawnPlatformCommandSync('codex', ['--version'], {
     encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
-
   if (result.error) {
-    const classified = classifySpawnError(result.error as NodeJS.ErrnoException | undefined);
-    if (classified === 'missing') {
+    const code = (result.error as NodeJS.ErrnoException).code;
+    const kind = classifySpawnError(result.error as NodeJS.ErrnoException);
+    if (kind === 'missing') {
+      return { name: 'Codex CLI', status: 'fail', message: 'not found - install from https://github.com/openai/codex' };
+    }
+    if (kind === 'blocked') {
       return {
         name: 'Codex CLI',
         status: 'fail',
-        message: 'not found in PATH',
+        message: `found but could not be executed in this environment (${code || 'blocked'})`,
       };
     }
     return {
       name: 'Codex CLI',
-      status: 'warn',
-      message: `version probe unavailable (${classified ?? 'error'})`,
+      status: 'fail',
+      message: `probe failed - ${result.error.message}`,
     };
   }
-
-  if (result.status !== 0) {
-    const stderr = typeof result.stderr === 'string' ? result.stderr.trim() : '';
-    return {
-      name: 'Codex CLI',
-      status: 'warn',
-      message: stderr ? `installed but version probe failed: ${stderr}` : 'installed but version probe failed',
-    };
+  if (result.status === 0) {
+    const version = (result.stdout || '').trim();
+    return { name: 'Codex CLI', status: 'pass', message: `installed (${version})` };
   }
-
-  const stdout = typeof result.stdout === 'string' ? result.stdout.trim() : '';
+  const stderr = (result.stderr || '').trim();
   return {
     name: 'Codex CLI',
-    status: 'pass',
-    message: `installed (${stdout || 'version unknown'})`,
+    status: 'fail',
+    message: stderr !== '' ? `probe failed - ${stderr}` : `probe failed with exit ${result.status}`,
   };
 }
 
 function checkNodeVersion(): Check {
-  const version = process.version;
-  const major = parseInt(version.slice(1).split('.')[0], 10);
+  const major = parseInt(process.versions.node.split('.')[0] ?? '0', 10);
+  if (isNaN(major)) {
+    return { name: 'Node.js', status: 'fail', message: `v${process.versions.node} (unable to parse major version)` };
+  }
   if (major >= 20) {
-    return { name: 'Node.js', status: 'pass', message: version };
+    return { name: 'Node.js', status: 'pass', message: `v${process.versions.node}` };
   }
-  if (major >= 18) {
-    return { name: 'Node.js', status: 'warn', message: `${version} (18+ required; 20+ recommended)` };
-  }
-  return { name: 'Node.js', status: 'fail', message: `${version} (18+ required)` };
+  return { name: 'Node.js', status: 'fail', message: `v${process.versions.node} (need >= 20)` };
 }
 
-function checkDirectory(name: string, dir: string): Check {
-  if (existsSync(dir)) {
-    if (name === 'State dir') {
-      return { name, status: 'pass', message: dir };
+function checkExploreHarness(): Check {
+  const packageRoot = getPackageRoot();
+  const manifestPath = join(packageRoot, 'crates', 'omx-explore', 'Cargo.toml');
+  if (!existsSync(manifestPath)) {
+    return {
+      name: 'Explore Harness',
+      status: 'warn',
+      message: 'Rust harness sources not found in this install (omx explore unavailable until packaged or OMX_EXPLORE_BIN is set)',
+    };
+  }
+
+  const override = process.env[EXPLORE_BIN_ENV]?.trim();
+  if (override) {
+    const resolved = join(packageRoot, override);
+    if (existsSync(override) || existsSync(resolved)) {
+      return {
+        name: 'Explore Harness',
+        status: 'pass',
+        message: `${EXPLORE_BIN_ENV} configured (${override})`,
+      };
     }
-    return { name, status: 'pass', message: dir };
+    return {
+      name: 'Explore Harness',
+      status: 'warn',
+      message: `OMX_EXPLORE_BIN is set but path was not found (${override})`,
+    };
   }
-  if (name === 'State dir') {
-    return { name, status: 'warn', message: `${dir} (not created yet)` };
+
+  const packaged = resolvePackagedExploreHarnessCommand(packageRoot);
+  if (packaged) {
+    return {
+      name: 'Explore Harness',
+      status: 'pass',
+      message: `ready (packaged native binary: ${packaged.command})`,
+    };
   }
-  return { name, status: 'fail', message: `${dir} not found` };
+
+  const { result } = spawnPlatformCommandSync('cargo', ['--version'], {
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  if (result.error) {
+    const kind = classifySpawnError(result.error as NodeJS.ErrnoException);
+    if (kind === 'missing') {
+      return {
+        name: 'Explore Harness',
+        status: 'warn',
+        message: `Rust harness sources are packaged, but no compatible packaged prebuilt or cargo was found (install Rust or set ${EXPLORE_BIN_ENV} for omx explore)`,
+      };
+    }
+    return {
+      name: 'Explore Harness',
+      status: 'warn',
+      message: `Rust harness sources are packaged, but cargo probe failed (${result.error.message})`,
+    };
+  }
+
+  if (result.status === 0) {
+    const version = (result.stdout || '').trim();
+    return {
+      name: 'Explore Harness',
+      status: 'pass',
+      message: `ready (${version || 'cargo available'})`,
+    };
+  }
+
+  return {
+    name: 'Explore Harness',
+    status: 'warn',
+    message: `Rust harness sources are packaged, but cargo probe failed with exit ${result.status} (install Rust or set ${EXPLORE_BIN_ENV})`,
+  };
+}
+
+function checkDirectory(name: string, path: string): Check {
+  if (existsSync(path)) {
+    return { name, status: 'pass', message: path };
+  }
+  return { name, status: 'warn', message: `${path} (not created yet)` };
+}
+
+function validateToml(content: string): string | null {
+  try {
+    parseToml(content);
+    return null;
+  } catch (error) {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    return 'unknown TOML parse error';
+  }
 }
 
 async function checkConfig(configPath: string): Promise<Check> {
   if (!existsSync(configPath)) {
     return { name: 'Config', status: 'warn', message: 'config.toml not found' };
   }
+
   try {
     const content = await readFile(configPath, 'utf-8');
-    try {
-      parseToml(content);
-    } catch (error) {
-      const message = String((error as Error)?.message || '');
-      if (/already exists|Can't redefine existing key|Duplicate/i.test(message)) {
-        return {
-          name: 'Config',
-          status: 'fail',
-          message: 'invalid config.toml (possible duplicate TOML table such as [tui])',
-        };
-      }
+    const tomlError = validateToml(content);
+
+    if (tomlError) {
+      const hint =
+        tomlError.includes("Can't redefine existing key") ||
+        tomlError.includes('duplicate') ||
+        tomlError.includes('[tui]')
+          ? 'possible duplicate TOML table such as [tui]'
+          : 'invalid TOML syntax';
+
       return {
         name: 'Config',
         status: 'fail',
-        message: 'invalid config.toml',
+        message: `invalid config.toml (${hint})`,
       };
     }
-    const hasOmx = content.includes('oh-my-codex') || content.includes('omx_state') || content.includes('omx_memory');
+
+    const hasOmx = content.includes('omx_') || content.includes('oh-my-codex');
     if (hasOmx) {
       return { name: 'Config', status: 'pass', message: 'config.toml has OMX entries' };
     }
+
     return {
       name: 'Config',
       status: 'warn',
@@ -477,69 +598,30 @@ async function checkConfig(configPath: string): Promise<Check> {
   }
 }
 
-function checkExploreHarness(): Check {
-  const packaged = resolvePackagedExploreHarnessCommand();
-  if (packaged) {
-    return {
-      name: 'Explore Harness',
-      status: 'pass',
-      message: `ready (packaged native binary: ${packaged.command})`,
-    };
-  }
-
-  const envOverride = process.env[EXPLORE_BIN_ENV]?.trim();
-  if (envOverride) {
-    return {
-      name: 'Explore Harness',
-      status: 'pass',
-      message: `ready (${EXPLORE_BIN_ENV}=${envOverride})`,
-    };
-  }
-
-  const packageRoot = getPackageRoot();
-  const harnessSource = join(packageRoot, 'crates', 'omx-explore-harness', 'Cargo.toml');
-  const hasSource = existsSync(harnessSource);
-  const cargo = spawnPlatformCommandSync('cargo', ['--version'], {
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  if (cargo.result.error || cargo.result.status !== 0) {
-    if (hasSource) {
-      return {
-        name: 'Explore Harness',
-        status: 'warn',
-        message: 'Rust harness sources are packaged, but no compatible packaged prebuilt or cargo was found (install Rust or set OMX_EXPLORE_BIN for omx explore)',
-      };
-    }
-    return {
-      name: 'Explore Harness',
-      status: 'warn',
-      message: `not ready (no packaged binary, ${EXPLORE_BIN_ENV}, or cargo toolchain)` ,
-    };
-  }
-
-  const cargoVersion = typeof cargo.result.stdout === 'string' ? cargo.result.stdout.trim() : 'cargo available';
-  return {
-    name: 'Explore Harness',
-    status: 'pass',
-    message: `ready (${cargoVersion})`,
-  };
-}
 
 async function checkExploreRouting(configPath: string): Promise<Check> {
+  const envValue = process.env[OMX_EXPLORE_CMD_ENV];
+  if (typeof envValue === 'string' && !isExploreCommandRoutingEnabled(process.env)) {
+    return {
+      name: 'Explore routing',
+      status: 'warn',
+      message:
+        'disabled by environment override; enable with USE_OMX_EXPLORE_CMD=1 (or remove the explicit opt-out)',
+    };
+  }
+
   if (!existsSync(configPath)) {
     return {
       name: 'Explore routing',
       status: 'pass',
-      message: 'enabled by default',
+      message: 'enabled by default (config.toml not found yet)',
     };
   }
 
   try {
     const content = await readFile(configPath, 'utf-8');
     const parsed = parseToml(content) as { env?: Record<string, unknown> };
-    const configuredValue = parsed?.env?.[OMX_EXPLORE_CMD_ENV];
+    const configuredValue = parsed?.env?.USE_OMX_EXPLORE_CMD;
 
     if (
       typeof configuredValue === 'string' &&
@@ -586,23 +668,6 @@ async function checkPrompts(dir: string): Promise<Check> {
   }
 }
 
-async function checkSkills(dir: string): Promise<Check> {
-  const expectations = getCatalogExpectations();
-  if (!existsSync(dir)) {
-    return { name: 'Skills', status: 'warn', message: 'skills directory not found' };
-  }
-  try {
-    const entries = await readdir(dir, { withFileTypes: true });
-    const skillDirs = entries.filter(e => e.isDirectory());
-    if (skillDirs.length >= expectations.skillMin) {
-      return { name: 'Skills', status: 'pass', message: `${skillDirs.length} skills installed` };
-    }
-    return { name: 'Skills', status: 'warn', message: `${skillDirs.length} skills (expected >= ${expectations.skillMin})` };
-  } catch {
-    return { name: 'Skills', status: 'fail', message: 'cannot read skills directory' };
-  }
-}
-
 async function checkLegacySkillRootOverlap(): Promise<Check> {
   const overlap = await detectLegacySkillRootOverlap();
   if (!overlap.legacyExists) {
@@ -631,6 +696,23 @@ async function checkLegacySkillRootOverlap(): Promise<Check> {
     message:
       `${overlap.overlappingSkillNames.length} overlapping skill names between ${overlap.canonicalDir} and ${overlap.legacyDir}${mismatchMessage}; Codex Enable/Disable Skills may show duplicates until ~/.agents/skills is cleaned up`,
   };
+}
+
+async function checkSkills(dir: string): Promise<Check> {
+  const expectations = getCatalogExpectations();
+  if (!existsSync(dir)) {
+    return { name: 'Skills', status: 'warn', message: 'skills directory not found' };
+  }
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const skillDirs = entries.filter(e => e.isDirectory());
+    if (skillDirs.length >= expectations.skillMin) {
+      return { name: 'Skills', status: 'pass', message: `${skillDirs.length} skills installed` };
+    }
+    return { name: 'Skills', status: 'warn', message: `${skillDirs.length} skills (expected >= ${expectations.skillMin})` };
+  } catch {
+    return { name: 'Skills', status: 'fail', message: 'cannot read skills directory' };
+  }
 }
 
 function checkAgentsMd(scope: DoctorSetupScope, codexHomeDir: string): Check {
