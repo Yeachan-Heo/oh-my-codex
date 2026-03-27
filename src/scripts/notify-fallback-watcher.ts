@@ -8,7 +8,6 @@ import { homedir } from 'os';
 import { drainPendingTeamDispatch } from './notify-hook/team-dispatch.js';
 import {
   maybeAutoNudge,
-  resolveNudgePaneTarget,
   isDeepInterviewStateActive,
   resolveAutoNudgeSignature,
 } from './notify-hook/auto-nudge.js';
@@ -519,6 +518,35 @@ async function withRalphSteerLock<T>(task: () => Promise<T>): Promise<T | null> 
   }
 }
 
+interface RalphProgressGateResult {
+  allow: boolean;
+  reason: string;
+  progress_at: string;
+}
+
+async function readRalphProgressGate(now: number): Promise<RalphProgressGateResult> {
+  const hudState = await readJsonObject(join(stateDir, 'hud-state.json'));
+  if (!hudState || typeof hudState !== 'object') {
+    return { allow: false, reason: 'progress_missing', progress_at: '' };
+  }
+
+  const progressAt = safeString(hudState.last_progress_at).trim();
+  if (!progressAt) {
+    return { allow: false, reason: 'progress_missing', progress_at: '' };
+  }
+
+  const progressMs = parseIsoMillis(progressAt);
+  if (progressMs === null) {
+    return { allow: false, reason: 'progress_invalid', progress_at: progressAt };
+  }
+
+  if (now - progressMs < RALPH_CONTINUE_CADENCE_MS) {
+    return { allow: false, reason: 'progress_fresh', progress_at: progressAt };
+  }
+
+  return { allow: true, reason: 'progress_stale', progress_at: progressAt };
+}
+
 function shouldSkipRalphContinue(now: number, candidateIso: string, startupIso: string): { skip: boolean; reason: string; anchorMs: number; anchorIso: string } {
   const sharedMs = parseIsoMillis(candidateIso);
   const localMs = parseIsoMillis(lastRalphContinueSteer.last_sent_at);
@@ -618,7 +646,13 @@ async function runRalphContinueSteerTick(): Promise<void> {
       return { sent: false, skipped: true };
     }
 
-    const paneId = safeString(activeRalph.state?.tmux_pane_id).trim() || await resolveNudgePaneTarget(stateDir);
+    const progressGate = await readRalphProgressGate(Date.now());
+    if (!progressGate.allow) {
+      lastRalphContinueSteer.last_reason = progressGate.reason;
+      return { sent: false, skipped: true };
+    }
+
+    const paneId = safeString(activeRalph.state?.tmux_pane_id).trim();
     if (!paneId) {
       lastRalphContinueSteer.last_reason = 'pane_missing';
       lastRalphContinueSteer.pane_id = '';
