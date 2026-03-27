@@ -83,7 +83,7 @@ command = "node"
         assert.equal(res.status, 0, res.stderr || res.stdout);
         assert.match(
           res.stdout,
-          /Explore Harness: Rust harness sources are packaged, but no compatible packaged prebuilt or cargo was found \(install Rust or set OMX_EXPLORE_BIN for omx explore\)/,
+          /Explore Harness: (Rust harness sources are packaged, but no compatible packaged prebuilt or cargo was found \(install Rust or set OMX_EXPLORE_BIN for omx explore\)|not ready \(no packaged binary, OMX_EXPLORE_BIN, or cargo toolchain\))/,
         );
       });
     } finally {
@@ -170,6 +170,36 @@ USE_OMX_EXPLORE_CMD = "off"
       assert.match(
         res.stdout,
         /Explore routing: disabled in config\.toml \[env\]; set USE_OMX_EXPLORE_CMD = "1" to restore default explore-first routing/,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('warns when canonical and legacy skill roots overlap', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-doctor-skill-overlap-'));
+    try {
+      const home = join(wd, 'home');
+      const codexDir = join(home, '.codex');
+      const canonicalHelp = join(codexDir, 'skills', 'help');
+      const canonicalPlan = join(codexDir, 'skills', 'plan');
+      const legacyHelp = join(home, '.agents', 'skills', 'help');
+      await mkdir(canonicalHelp, { recursive: true });
+      await mkdir(canonicalPlan, { recursive: true });
+      await mkdir(legacyHelp, { recursive: true });
+      await writeFile(join(canonicalHelp, 'SKILL.md'), '# canonical help\n');
+      await writeFile(join(canonicalPlan, 'SKILL.md'), '# canonical plan\n');
+      await writeFile(join(legacyHelp, 'SKILL.md'), '# legacy help\n');
+
+      const res = runOmx(wd, ['doctor'], {
+        HOME: home,
+        CODEX_HOME: codexDir,
+      });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.match(
+        res.stdout,
+        /Legacy skill roots: 1 overlapping skill names between .*\.codex\/skills and .*\.agents\/skills; 1 differ in SKILL\.md content; Codex Enable\/Disable Skills may show duplicates until ~\/\.agents\/skills is cleaned up/,
       );
     } finally {
       await rm(wd, { recursive: true, force: true });

@@ -149,4 +149,39 @@ describe('omx setup skills overwrite behavior', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('prints a migration hint when legacy ~/.agents/skills overlaps canonical user skills', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-'));
+    const previousCwd = process.cwd();
+    const previousHome = process.env.HOME;
+    const previousCodexHome = process.env.CODEX_HOME;
+    const logs: string[] = [];
+    const originalLog = console.log;
+    try {
+      const home = join(wd, 'home');
+      const codexHome = join(home, '.codex');
+      process.env.HOME = home;
+      process.env.CODEX_HOME = codexHome;
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await mkdir(join(home, '.agents', 'skills', 'help'), { recursive: true });
+      await writeFile(join(home, '.agents', 'skills', 'help', 'SKILL.md'), '# legacy help\n');
+      process.chdir(wd);
+      console.log = (...args: unknown[]) => {
+        logs.push(args.map((arg) => String(arg)).join(' '));
+      };
+
+      await setup({ scope: 'user' });
+
+      const output = logs.join('\n');
+      assert.match(output, /Migration hint: Detected 1 overlapping skill names between canonical .*\.codex\/skills and legacy .*\.agents\/skills\./);
+      assert.match(output, /Remove or archive ~\/\.agents\/skills after confirming .*\.codex\/skills is the version you want Codex to load\./);
+    } finally {
+      console.log = originalLog;
+      process.chdir(previousCwd);
+      if (typeof previousHome === 'string') process.env.HOME = previousHome; else delete process.env.HOME;
+      if (typeof previousCodexHome === 'string') process.env.CODEX_HOME = previousCodexHome; else delete process.env.CODEX_HOME;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 });

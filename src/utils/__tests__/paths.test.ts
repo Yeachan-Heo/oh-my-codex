@@ -10,7 +10,9 @@ import {
   codexPromptsDir,
   userSkillsDir,
   projectSkillsDir,
+  legacyUserSkillsDir,
   listInstalledSkillDirectories,
+  detectLegacySkillRootOverlap,
   omxStateDir,
   omxProjectMemoryPath,
   omxNotepadPath,
@@ -118,6 +120,27 @@ describe("projectSkillsDir", () => {
   });
 });
 
+describe("legacyUserSkillsDir", () => {
+  let originalHome: string | undefined;
+
+  beforeEach(() => {
+    originalHome = process.env.HOME;
+    process.env.HOME = "/tmp/test-home";
+  });
+
+  afterEach(() => {
+    if (typeof originalHome === "string") {
+      process.env.HOME = originalHome;
+    } else {
+      delete process.env.HOME;
+    }
+  });
+
+  it("returns ~/.agents/skills under HOME", () => {
+    assert.equal(legacyUserSkillsDir(), "/tmp/test-home/.agents/skills");
+  });
+});
+
 describe("listInstalledSkillDirectories", () => {
   let originalCodexHome: string | undefined;
 
@@ -176,6 +199,41 @@ describe("listInstalledSkillDirectories", () => {
     } finally {
       await rm(projectRoot, { recursive: true, force: true });
       await rm(codexHomeRoot, { recursive: true, force: true });
+    }
+  });
+  it("detects overlapping legacy and canonical user skill roots including content mismatches", async () => {
+    const homeRoot = await mkdtemp(join(tmpdir(), "omx-paths-home-"));
+    const codexHomeRoot = join(homeRoot, ".codex");
+    const legacyRoot = join(homeRoot, ".agents", "skills");
+    process.env.HOME = homeRoot;
+    process.env.CODEX_HOME = codexHomeRoot;
+
+    try {
+      const canonicalHelpDir = join(codexHomeRoot, "skills", "help");
+      const canonicalPlanDir = join(codexHomeRoot, "skills", "plan");
+      const legacyHelpDir = join(legacyRoot, "help");
+      const legacyOnlyDir = join(legacyRoot, "legacy-only");
+
+      await mkdir(canonicalHelpDir, { recursive: true });
+      await mkdir(canonicalPlanDir, { recursive: true });
+      await mkdir(legacyHelpDir, { recursive: true });
+      await mkdir(legacyOnlyDir, { recursive: true });
+
+      await writeFile(join(canonicalHelpDir, "SKILL.md"), "# canonical help\n");
+      await writeFile(join(canonicalPlanDir, "SKILL.md"), "# canonical plan\n");
+      await writeFile(join(legacyHelpDir, "SKILL.md"), "# legacy help\n");
+      await writeFile(join(legacyOnlyDir, "SKILL.md"), "# legacy only\n");
+
+      const overlap = await detectLegacySkillRootOverlap();
+
+      assert.equal(overlap.canonicalExists, true);
+      assert.equal(overlap.legacyExists, true);
+      assert.equal(overlap.canonicalSkillCount, 2);
+      assert.equal(overlap.legacySkillCount, 2);
+      assert.deepEqual(overlap.overlappingSkillNames, ["help"]);
+      assert.deepEqual(overlap.mismatchedSkillNames, ["help"]);
+    } finally {
+      await rm(homeRoot, { recursive: true, force: true });
     }
   });
 });

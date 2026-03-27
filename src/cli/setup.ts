@@ -24,6 +24,7 @@ import {
   codexAgentsDir,
   userSkillsDir,
   omxStateDir,
+  detectLegacySkillRootOverlap,
   omxPlansDir,
   omxLogsDir,
 } from "../utils/paths.js";
@@ -109,6 +110,11 @@ interface SetupBackupContext {
 interface ManagedConfigResult {
   finalConfig: string;
   omxManagesTui: boolean;
+}
+
+interface LegacySkillOverlapNotice {
+  shouldWarn: boolean;
+  message: string;
 }
 
 export interface SkillFrontmatterMetadata {
@@ -312,6 +318,36 @@ export function parseSkillFrontmatter(
 export async function validateSkillFile(skillMdPath: string): Promise<void> {
   const content = await readFile(skillMdPath, "utf-8");
   parseSkillFrontmatter(content, skillMdPath);
+}
+
+async function buildLegacySkillOverlapNotice(
+  scope: SetupScope,
+): Promise<LegacySkillOverlapNotice> {
+  if (scope !== "user") {
+    return { shouldWarn: false, message: "" };
+  }
+
+  const overlap = await detectLegacySkillRootOverlap();
+  if (!overlap.legacyExists) {
+    return { shouldWarn: false, message: "" };
+  }
+
+  if (overlap.overlappingSkillNames.length === 0) {
+    return {
+      shouldWarn: true,
+      message:
+        `Legacy ~/.agents/skills still exists (${overlap.legacySkillCount} skills) alongside canonical ${overlap.canonicalDir}. Codex may still discover both roots; archive or remove ~/.agents/skills if Enable/Disable Skills shows duplicates.`,
+    };
+  }
+
+  const mismatchSuffix = overlap.mismatchedSkillNames.length > 0
+    ? ` ${overlap.mismatchedSkillNames.length} overlapping skills have different SKILL.md content.`
+    : "";
+  return {
+    shouldWarn: true,
+    message:
+      `Detected ${overlap.overlappingSkillNames.length} overlapping skill names between canonical ${overlap.canonicalDir} and legacy ${overlap.legacyDir}.${mismatchSuffix} Remove or archive ~/.agents/skills after confirming ${overlap.canonicalDir} is the version you want Codex to load.`,
+  };
 }
 
 function logCategorySummary(name: string, summary: SetupCategorySummary): void {
@@ -911,6 +947,12 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   logCategorySummary("agents_md", summary.agentsMd);
   logCategorySummary("config", summary.config);
   console.log();
+
+  const legacySkillOverlapNotice = await buildLegacySkillOverlapNotice(resolvedScope.scope);
+  if (legacySkillOverlapNotice.shouldWarn) {
+    console.log(`Migration hint: ${legacySkillOverlapNotice.message}`);
+    console.log();
+  }
 
   if (force) {
     console.log(

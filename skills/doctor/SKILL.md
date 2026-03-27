@@ -75,7 +75,7 @@ ls ~/.codex/plugins/cache/omc/oh-my-codex/ 2>/dev/null | wc -l
 
 ### Step 6: Check for Legacy Curl-Installed Content
 
-Check for legacy agents, commands, and skills installed via curl (before plugin system):
+Check for legacy agents, commands, and historical legacy skill roots from older installs/migrations:
 
 ```bash
 # Check for legacy agents directory
@@ -84,14 +84,18 @@ ls -la ~/.codex/agents/ 2>/dev/null
 # Check for legacy commands directory
 ls -la ~/.codex/commands/ 2>/dev/null
 
-# Check for legacy skills directory
-ls -la ~/.codex/skills/ 2>/dev/null
+# Check canonical current skills directory
+ls -la ${CODEX_HOME:-~/.codex}/skills/ 2>/dev/null
+
+# Check historical legacy skill directory
+ls -la ~/.agents/skills/ 2>/dev/null
 ```
 
 **Diagnosis**:
 - If `~/.codex/agents/` exists with oh-my-codex-related files: WARN - legacy agents (now provided by plugin)
 - If `~/.codex/commands/` exists with oh-my-codex-related files: WARN - legacy commands (now provided by plugin)
-- If `~/.codex/skills/` exists with oh-my-codex-related files: WARN - legacy skills (now provided by plugin)
+- If `${CODEX_HOME:-~/.codex}/skills/` exists with OMX skills: OK - canonical current user skill root
+- If `~/.agents/skills/` exists: WARN - historical legacy skill root that can overlap with `${CODEX_HOME:-~/.codex}/skills/` and cause duplicate Enable/Disable Skills entries
 
 Look for files like:
 - `architect.md`, `researcher.md`, `explore.md`, `executor.md`, etc. in agents/
@@ -121,7 +125,8 @@ After running all checks, output a report:
 | Plugin Cache | OK/WARN | ... |
 | Legacy Agents (~/.codex/agents/) | OK/WARN | ... |
 | Legacy Commands (~/.codex/commands/) | OK/WARN | ... |
-| Legacy Skills (~/.codex/skills/) | OK/WARN | ... |
+| Skills (${CODEX_HOME:-~/.codex}/skills) | OK/WARN | ... |
+| Legacy Skill Root (~/.agents/skills) | OK/WARN | ... |
 
 ### Issues Found
 1. [Issue description]
@@ -171,18 +176,18 @@ WebFetch(url: "https://raw.githubusercontent.com/Yeachan-Heo/oh-my-codex/main/do
 
 ### Fix: Legacy Curl-Installed Content
 
-Remove legacy agents, commands, and skills directories (now provided by plugin):
+Remove legacy agents/commands plus the historical `~/.agents/skills` tree if it overlaps with the canonical `${CODEX_HOME:-~/.codex}/skills` install:
 
 ```bash
 # Backup first (optional - ask user)
 # mv ~/.codex/agents ~/.codex/agents.bak
 # mv ~/.codex/commands ~/.codex/commands.bak
-# mv ~/.codex/skills ~/.codex/skills.bak
+# mv ~/.agents/skills ~/.agents/skills.bak
 
 # Or remove directly
 rm -rf ~/.codex/agents
 rm -rf ~/.codex/commands
-rm -rf ~/.codex/skills
+rm -rf ~/.agents/skills
 ```
 
 **Note**: Only remove if these contain oh-my-codex-related files. If user has custom agents/commands/skills, warn them and ask before removing.
