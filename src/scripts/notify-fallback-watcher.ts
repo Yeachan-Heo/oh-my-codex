@@ -8,7 +8,6 @@ import { homedir } from 'os';
 import { drainPendingTeamDispatch } from './notify-hook/team-dispatch.js';
 import {
   maybeAutoNudge,
-  resolveNudgePaneTarget,
   isDeepInterviewStateActive,
   resolveAutoNudgeSignature,
 } from './notify-hook/auto-nudge.js';
@@ -97,6 +96,7 @@ const ralphSteerLockPath = join(stateDir, 'ralph-continue-steer.lock');
 const watcherOwnerToken = `${process.pid}-${startedAt}-${Math.random().toString(36).slice(2, 10)}`;
 const RALPH_CONTINUE_TEXT = 'Ralph loop active continue';
 const RALPH_CONTINUE_CADENCE_MS = 60_000;
+const RALPH_CONTINUE_STALE_MS = RALPH_CONTINUE_CADENCE_MS;
 const RALPH_STEER_LOCK_STALE_MS = 30_000;
 const RALPH_TERMINAL_PHASES = new Set(['complete', 'failed', 'cancelled']);
 
@@ -111,9 +111,13 @@ interface RalphContinueSteerState {
   enabled: boolean;
   cadence_ms: number;
   message: string;
+  stale_threshold_ms: number;
   active: boolean;
   last_state_check_at: string | null;
   last_sent_at: string;
+  last_turn_at: string;
+  last_turn_count: number | null;
+  last_turn_age_ms: number | null;
   cooldown_anchor_at: string;
   last_reason: string;
   last_error: string | null;
@@ -211,9 +215,13 @@ let lastRalphContinueSteer: RalphContinueSteerState = {
   enabled: true,
   cadence_ms: RALPH_CONTINUE_CADENCE_MS,
   message: RALPH_CONTINUE_TEXT,
+  stale_threshold_ms: RALPH_CONTINUE_STALE_MS,
   active: false,
   last_state_check_at: null,
   last_sent_at: '',
+  last_turn_at: '',
+  last_turn_count: null,
+  last_turn_age_ms: null,
   cooldown_anchor_at: '',
   last_reason: 'init',
   last_error: null,
@@ -256,9 +264,15 @@ function normalizeRalphContinueSteerState(raw: Record<string, unknown> | null | 
     enabled: raw.enabled !== false,
     cadence_ms: Number.isFinite(raw.cadence_ms) && (raw.cadence_ms as number) > 0 ? raw.cadence_ms as number : RALPH_CONTINUE_CADENCE_MS,
     message: safeString(raw.message) || RALPH_CONTINUE_TEXT,
+    stale_threshold_ms: Number.isFinite(raw.stale_threshold_ms) && (raw.stale_threshold_ms as number) > 0
+      ? raw.stale_threshold_ms as number
+      : RALPH_CONTINUE_STALE_MS,
     active: raw.active === true,
     last_state_check_at: safeString(raw.last_state_check_at) || null,
     last_sent_at: safeString(raw.last_sent_at),
+    last_turn_at: safeString(raw.last_turn_at),
+    last_turn_count: Number.isFinite(raw.last_turn_count) ? raw.last_turn_count as number : null,
+    last_turn_age_ms: Number.isFinite(raw.last_turn_age_ms) ? raw.last_turn_age_ms as number : null,
     cooldown_anchor_at: safeString(raw.cooldown_anchor_at),
     last_reason: safeString(raw.last_reason) || 'init',
     last_error: safeString(raw.last_error) || null,
@@ -359,6 +373,48 @@ async function resolveActiveModeState(mode: string): Promise<ActiveModeResult> {
 
 async function resolveActiveRalphState(): Promise<ActiveModeResult> {
   return resolveActiveModeState('ralph');
+}
+
+async function resolveRalphContinueProgressSignal(now: number): Promise<{
+  ok: boolean;
+  reason: string;
+  lastTurnAt: string;
+  turnCount: number | null;
+  ageMs: number | null;
+}> {
+  const hudState = await readJsonObject(join(stateDir, 'hud-state.json'));
+  const lastTurnAt = safeString(hudState?.last_turn_at).trim();
+  const turnCount = Number.isFinite(hudState?.turn_count) ? hudState?.turn_count as number : null;
+  const lastTurnMs = parseIsoMillis(lastTurnAt);
+
+  if (!lastTurnAt || lastTurnMs === null || turnCount === null || turnCount < 1) {
+    return {
+      ok: false,
+      reason: 'progress_signal_missing',
+      lastTurnAt,
+      turnCount,
+      ageMs: null,
+    };
+  }
+
+  const ageMs = Math.max(0, now - lastTurnMs);
+  if (ageMs < RALPH_CONTINUE_STALE_MS) {
+    return {
+      ok: false,
+      reason: 'recent_turn_activity',
+      lastTurnAt,
+      turnCount,
+      ageMs,
+    };
+  }
+
+  return {
+    ok: true,
+    reason: 'stale_turn_activity',
+    lastTurnAt,
+    turnCount,
+    ageMs,
+  };
 }
 
 async function resolveActiveTeamState(): Promise<ActiveTeamResult> {
@@ -576,20 +632,34 @@ async function runRalphContinueSteerTick(): Promise<void> {
   const nowIso = new Date(now).toISOString();
   const startupIso = new Date(startedAt).toISOString();
   const activeRalph = await resolveActiveRalphState();
+  const progressSignal = activeRalph.active
+    ? await resolveRalphContinueProgressSignal(now)
+    : {
+      ok: false,
+      reason: activeRalph.reason,
+      lastTurnAt: '',
+      turnCount: null,
+      ageMs: null,
+    };
   lastRalphContinueSteer = {
     ...lastRalphContinueSteer,
     active: activeRalph.active,
     current_phase: safeString(activeRalph.state?.current_phase),
     last_state_check_at: nowIso,
-    last_reason: activeRalph.reason,
+    last_reason: progressSignal.reason,
     last_error: null,
     state_path: activeRalph.path,
     pane_current_command: '',
+    stale_threshold_ms: RALPH_CONTINUE_STALE_MS,
+    last_turn_at: progressSignal.lastTurnAt,
+    last_turn_count: progressSignal.turnCount,
+    last_turn_age_ms: progressSignal.ageMs,
     shared_timestamp_path: ralphSteerTimestampPath,
     singleton_lock_path: ralphSteerLockPath,
   };
 
   if (!activeRalph.active) return;
+  if (!progressSignal.ok) return;
 
   if (parseIsoMillis(lastRalphContinueSteer.last_sent_at) === null && parseIsoMillis(lastRalphContinueSteer.cooldown_anchor_at) === null) {
     lastRalphContinueSteer.cooldown_anchor_at = startupIso;
@@ -618,7 +688,7 @@ async function runRalphContinueSteerTick(): Promise<void> {
       return { sent: false, skipped: true };
     }
 
-    const paneId = safeString(activeRalph.state?.tmux_pane_id).trim() || await resolveNudgePaneTarget(stateDir);
+    const paneId = safeString(activeRalph.state?.tmux_pane_id).trim();
     if (!paneId) {
       lastRalphContinueSteer.last_reason = 'pane_missing';
       lastRalphContinueSteer.pane_id = '';
@@ -756,6 +826,7 @@ async function writeState(extra: Record<string, unknown> = {}): Promise<void> {
       enabled: true,
       cadence_ms: RALPH_CONTINUE_CADENCE_MS,
       message: RALPH_CONTINUE_TEXT,
+      stale_threshold_ms: RALPH_CONTINUE_STALE_MS,
     },
     fallback_auto_nudge: {
       ...lastFallbackAutoNudge,
