@@ -21,6 +21,7 @@ import {
 } from './notify-hook/team-leader-nudge.js';
 import { DEFAULT_MARKER } from './tmux-hook-engine.js';
 import { isTerminalPhase } from './notify-hook/utils.js';
+import { isSessionStale, readSessionState } from '../hooks/session.js';
 
 function argValue(name: string, fallback = ''): string {
   const idx = process.argv.indexOf(name);
@@ -314,19 +315,28 @@ interface ActiveModeResult {
 
 async function resolveActiveModeState(mode: string): Promise<ActiveModeResult> {
   const candidateDirs: string[] = [];
-  const sessionPath = join(stateDir, 'session.json');
-  try {
-    const session = JSON.parse(await readFile(sessionPath, 'utf-8')) as Record<string, unknown>;
-    const sessionId = safeString(session?.session_id).trim();
-    if (sessionId) {
-      candidateDirs.push(join(stateDir, 'sessions', sessionId));
+  let currentSessionId = '';
+  let currentSessionIsLive = false;
+  const session = await readSessionState(cwd);
+  if (session?.session_id) {
+    currentSessionId = safeString(session.session_id).trim();
+    currentSessionIsLive = !isSessionStale(session);
+    if (currentSessionId && currentSessionIsLive) {
+      candidateDirs.push(join(stateDir, 'sessions', currentSessionId));
     }
-  } catch {
-    // No active session file; fall back to root state only.
   }
   if (!candidateDirs.includes(stateDir)) candidateDirs.push(stateDir);
 
   for (const dir of candidateDirs) {
+    if (mode === 'ralph' && dir === stateDir && currentSessionId) {
+      return {
+        active: false,
+        reason: currentSessionIsLive ? 'blocked_by_current_session' : 'stale_current_session',
+        path: '',
+        state: null,
+      };
+    }
+
     const path = join(dir, `${mode}-state.json`);
     if (!existsSync(path)) continue;
     const parsed = await readFile(path, 'utf-8')
