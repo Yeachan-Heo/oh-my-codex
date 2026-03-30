@@ -19,3 +19,14 @@ bin/native/
 bin/omx-explore-harness
 bin/omx-explore-harness.exe
 bin/omx-explore-harness.meta.json
+
+# Local runtime bridge artifacts (generated)
+authority.json
+backlog.json
+dispatch.json
+engine.lock
+events.json
+mailbox.json
+readiness.json
+replay.json
+snapshot.json
