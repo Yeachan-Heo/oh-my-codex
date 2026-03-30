@@ -41,8 +41,11 @@ describe('sparkshell packaging scaffold', () => {
 
     const buildScriptPath = join(process.cwd(), 'dist', 'scripts', 'build-sparkshell.js');
     const testScriptPath = join(process.cwd(), 'dist', 'scripts', 'test-sparkshell.js');
+    const testScriptSource = readFileSync(testScriptPath, 'utf-8');
     assert.equal(existsSync(buildScriptPath), true, 'expected build sparkshell helper script to exist');
     assert.equal(existsSync(testScriptPath), true, 'expected test sparkshell helper script to exist');
+    assert.match(testScriptSource, /'crates', 'omx-sparkshell', 'Cargo\.toml'/);
+    assert.doesNotMatch(testScriptSource, /'native', 'omx-sparkshell', 'Cargo\.toml'/);
 
     try {
       rmSync(packagedBinaryPath, { force: true });
