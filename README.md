@@ -18,7 +18,7 @@ OMX is a workflow layer for [OpenAI Codex CLI](https://github.com/openai/codex).
 
 It keeps Codex as the execution engine and makes it easier to:
 - start a stronger Codex session by default
-- reuse good prompts with `/prompts:*`
+- reuse good role/task invocations with `$name` keywords
 - invoke workflows with skills like `$plan`, `$ralph`, and `$team`
 - keep project guidance, plans, logs, and state in `.omx/`
 
@@ -35,7 +35,7 @@ omx --madmax --high
 Then work normally inside Codex:
 
 ```text
-/prompts:architect "analyze the authentication flow"
+$architect "analyze the authentication flow"
 $plan "ship this feature cleanly"
 ```
 
@@ -45,7 +45,7 @@ Start OMX strongly, do the work in Codex, and let the agent pull in `$team` or o
 ## What OMX is for
 
 Use OMX if you already like Codex and want a better day-to-day runtime around it:
-- reusable role prompts such as `/prompts:architect` and `/prompts:executor`
+- reusable role/task invocations such as `$architect` and `$executor`
 - reusable workflows such as `$plan`, `$ralph`, `$team`, and `$deep-interview`
 - project guidance through scoped `AGENTS.md`
 - durable state under `.omx/` for plans, logs, memory, and mode tracking
@@ -70,10 +70,10 @@ Launch OMX the recommended way:
 omx --madmax --high
 ```
 
-Then try one prompt and one skill:
+Then try one role keyword and one workflow skill:
 
 ```text
-/prompts:architect "analyze the authentication flow"
+$architect "analyze the authentication flow"
 $plan "map the safest implementation path"
 ```
 
@@ -85,17 +85,17 @@ OMX does **not** replace Codex.
 
 It adds a better working layer around it:
 - **Codex** does the actual agent work
-- **OMX prompts** make useful roles reusable
+- **OMX role keywords** make useful roles reusable
 - **OMX skills** make common workflows reusable
 - **`.omx/`** stores plans, logs, memory, and runtime state
 
-Most users should think of OMX as **better prompting + better workflow + better runtime**, not as a command surface to operate manually all day.
+Most users should think of OMX as **better task routing + better workflow + better runtime**, not as a command surface to operate manually all day.
 
 ## Start here if you are new
 
 1. Run `omx setup`
 2. Launch with `omx --madmax --high`
-3. Ask for analysis with `/prompts:architect "..."`
+3. Ask for analysis with `$architect "..."`
 4. Ask for planning with `$plan "..."`
 5. Let the agent decide when `$ralph`, `$team`, or another workflow is worth using
 
@@ -103,8 +103,8 @@ Most users should think of OMX as **better prompting + better workflow + better 
 
 | Surface | Use it for |
 | --- | --- |
-| `/prompts:architect "..."` | analysis, boundaries, tradeoffs |
-| `/prompts:executor "..."` | focused implementation work |
+| `$architect "..."` | analysis, boundaries, tradeoffs |
+| `$executor "..."` | focused implementation work |
 | `/skills` | browsing installed skills |
 | `$plan "..."` | planning before implementation |
 | `$ralph "..."` | persistent sequential execution |

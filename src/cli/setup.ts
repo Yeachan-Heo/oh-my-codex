@@ -965,9 +965,9 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log("\nNext steps:");
   console.log("  1. Start Codex CLI in your project directory");
   console.log(
-    "  2. Use /prompts:architect, /prompts:executor, /prompts:planner as slash commands",
+    "  2. Use role/workflow keywords like $architect, $executor, and $plan in Codex",
   );
-  console.log("  3. Skills are available via /skills or implicit matching");
+  console.log("  3. Browse skills with /skills; AGENTS keyword routing can also activate them implicitly");
   console.log("  4. The AGENTS.md orchestration brain is loaded automatically");
   console.log(
     "  5. Native agent defaults configured in config.toml [agents] and TOML files written to .codex/agents/",

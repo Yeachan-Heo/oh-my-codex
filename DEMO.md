@@ -78,7 +78,7 @@ oh-my-codex doctor
 Results: 9 passed, 0 warnings, 0 failed
 ```
 
-## Demo 1: Agent Slash Commands
+## Demo 1: Agent/Skill Keywords
 
 Start Codex CLI in any project directory:
 
@@ -86,22 +86,22 @@ Start Codex CLI in any project directory:
 omx
 ```
 
-Then use agent slash commands:
+Then use role and workflow keywords:
 
 ```
-> /prompts:architect "analyze the authentication module"
+> $architect "analyze the authentication module"
 ```
 
 **Expected:** The architect agent analyzes code with file:line references, root cause diagnosis, and trade-off analysis.
 
 ```
-> /prompts:security-reviewer "review the API endpoints"
+> $security-reviewer "review the API endpoints"
 ```
 
 **Expected:** OWASP Top 10 analysis with severity-prioritized findings and remediation code examples.
 
 ```
-> /prompts:explore "find all database query patterns"
+> $explore "find all database query patterns"
 ```
 
 **Expected:** Structural codebase search with file listings and pattern summaries.

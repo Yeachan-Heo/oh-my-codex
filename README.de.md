@@ -30,8 +30,8 @@ Siehe auch die [Release Notes zu v0.9.0](./docs/release-notes-0.9.0.md) und den 
 Innerhalb von Codex:
 
 ```text
-/prompts:architect "analyze current auth boundaries"
-/prompts:executor "implement input validation in login"
+$architect "analyze current auth boundaries"
+$executor "implement input validation in login"
 $plan "ship OAuth callback safely"
 $team 3:executor "fix all TypeScript errors"
 ```

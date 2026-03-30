@@ -31,8 +31,8 @@ Spark Initiative는 OMX의 네이티브 탐색/검사 경로를 강화한 릴리
 Codex 내부에서:
 
 ```text
-/prompts:architect "analyze current auth boundaries"
-/prompts:executor "implement input validation in login"
+$architect "analyze current auth boundaries"
+$executor "implement input validation in login"
 $plan "ship OAuth callback safely"
 $team 3:executor "fix all TypeScript errors"
 ```

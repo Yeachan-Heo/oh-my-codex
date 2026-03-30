@@ -89,8 +89,7 @@ Rules:
 </child_agent_protocol>
 
 <invocation_conventions>
-- `/prompts:name` — invoke a role prompt
-- `$name` — invoke a workflow skill
+- `$name` — invoke a workflow skill or role keyword
 - `/skills` — browse available skills
 </invocation_conventions>
 
@@ -114,7 +113,7 @@ Key roles:
 - `executor` — implementation and refactoring
 - `verifier` — completion evidence and validation
 
-Specialists remain available through `/prompts:*` when the task clearly benefits from them.
+Specialists remain available through skill/keyword routing when the task clearly benefits from them.
 </agent_catalog>
 
 ---
@@ -149,7 +148,7 @@ Detection rules:
 - Keywords are case-insensitive and match anywhere in the user message.
 - Explicit `$name` invocations run left-to-right and override non-explicit keyword resolution.
 - If multiple non-explicit keywords match, use the most specific match.
-- If the user explicitly invokes `/prompts:<name>`, do not auto-activate keyword skills unless explicit `$name` tokens are also present.
+- If the user explicitly invokes `$name`, run those explicit invocations left-to-right before considering non-explicit keyword routing.
 - The rest of the user message becomes the task description.
 
 Ralph / Ralplan execution gate:

@@ -29,41 +29,41 @@
 
 ## Detailed Feature Mapping
 
-### Agent Definitions (29/29 = 100%)
+### Agent Definitions / Role Catalog (29/29 = 100%)
 
 | OMC Agent | OMX Status | Mechanism |
 |-----------|-----------|-----------|
-| analyst | DONE | ~/.codex/prompts/analyst.md |
-| api-reviewer | DONE | ~/.codex/prompts/api-reviewer.md |
-| architect | DONE | ~/.codex/prompts/architect.md |
-| build-fixer | DONE | ~/.codex/prompts/build-fixer.md |
-| code-reviewer | DONE | ~/.codex/prompts/code-reviewer.md |
-| code-simplifier | DONE | ~/.codex/prompts/code-simplifier.md |
-| critic | DONE | ~/.codex/prompts/critic.md |
-| debugger | DONE | ~/.codex/prompts/debugger.md |
-| dependency-expert | DONE | ~/.codex/prompts/dependency-expert.md |
-| designer | DONE | ~/.codex/prompts/designer.md |
-| executor | DONE | ~/.codex/prompts/executor.md |
-| explore | DONE | ~/.codex/prompts/explore.md |
-| git-master | DONE | ~/.codex/prompts/git-master.md |
-| information-architect | DONE | ~/.codex/prompts/information-architect.md |
-| performance-reviewer | DONE | ~/.codex/prompts/performance-reviewer.md |
-| planner | DONE | ~/.codex/prompts/planner.md |
-| product-analyst | DONE | ~/.codex/prompts/product-analyst.md |
-| product-manager | DONE | ~/.codex/prompts/product-manager.md |
-| qa-tester | DONE | ~/.codex/prompts/qa-tester.md |
-| quality-reviewer | DONE | ~/.codex/prompts/quality-reviewer.md |
-| quality-strategist | DONE | ~/.codex/prompts/quality-strategist.md |
-| researcher | DONE | ~/.codex/prompts/researcher.md |
+| analyst | DONE | prompts/analyst.md |
+| api-reviewer | DONE | prompts/api-reviewer.md |
+| architect | DONE | prompts/architect.md |
+| build-fixer | DONE | prompts/build-fixer.md |
+| code-reviewer | DONE | prompts/code-reviewer.md |
+| code-simplifier | DONE | prompts/code-simplifier.md |
+| critic | DONE | prompts/critic.md |
+| debugger | DONE | prompts/debugger.md |
+| dependency-expert | DONE | prompts/dependency-expert.md |
+| designer | DONE | prompts/designer.md |
+| executor | DONE | prompts/executor.md |
+| explore | DONE | prompts/explore.md |
+| git-master | DONE | prompts/git-master.md |
+| information-architect | DONE | prompts/information-architect.md |
+| performance-reviewer | DONE | prompts/performance-reviewer.md |
+| planner | DONE | prompts/planner.md |
+| product-analyst | DONE | prompts/product-analyst.md |
+| product-manager | DONE | prompts/product-manager.md |
+| qa-tester | DONE | prompts/qa-tester.md |
+| quality-reviewer | DONE | prompts/quality-reviewer.md |
+| quality-strategist | DONE | prompts/quality-strategist.md |
+| researcher | DONE | prompts/researcher.md |
 | ~~deep-executor~~ | REMOVED (v0.5.0) | Routes to executor |
 | ~~scientist~~ | REMOVED (v0.5.0) | — |
-| security-reviewer | DONE | ~/.codex/prompts/security-reviewer.md |
-| style-reviewer | DONE | ~/.codex/prompts/style-reviewer.md |
-| test-engineer | DONE | ~/.codex/prompts/test-engineer.md |
-| ux-researcher | DONE | ~/.codex/prompts/ux-researcher.md |
-| verifier | DONE | ~/.codex/prompts/verifier.md |
-| vision | DONE | ~/.codex/prompts/vision.md |
-| writer | DONE | ~/.codex/prompts/writer.md |
+| security-reviewer | DONE | prompts/security-reviewer.md |
+| style-reviewer | DONE | prompts/style-reviewer.md |
+| test-engineer | DONE | prompts/test-engineer.md |
+| ux-researcher | DONE | prompts/ux-researcher.md |
+| verifier | DONE | prompts/verifier.md |
+| vision | DONE | prompts/vision.md |
+| writer | DONE | prompts/writer.md |
 
 ### Skills (30/30 = 100%)
 
