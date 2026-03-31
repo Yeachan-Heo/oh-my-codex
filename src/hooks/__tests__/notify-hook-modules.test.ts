@@ -265,7 +265,7 @@ describe('notify-hook/auto-nudge – normalizeAutoNudgeConfig', () => {
     assert.deepEqual(cfg.patterns, DEFAULT_STALL_PATTERNS);
     assert.equal(cfg.response, 'yes, proceed');
     assert.equal(cfg.delaySec, 3);
-    assert.equal(cfg.maxNudgesPerSession, Infinity);
+    assert.equal(cfg.ttlMs, 30_000);
   });
 
   it('respects enabled=false', async () => {

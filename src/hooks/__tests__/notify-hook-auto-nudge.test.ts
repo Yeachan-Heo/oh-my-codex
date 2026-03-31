@@ -672,7 +672,7 @@ exit 0
     });
   });
 
-  it('respects maxNudgesPerSession limit', async () => {
+  it('deduplicates semantic proceed-style variants on the same turn', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
       const stateDir = join(omxDir, 'state');
@@ -687,27 +687,89 @@ exit 0
       await mkdir(fakeBinDir, { recursive: true });
 
       await writeJson(join(codexHome, '.omx-config.json'), {
-        autoNudge: { enabled: true, delaySec: 0, stallMs: 0, maxNudgesPerSession: 2 },
-      });
-
-      // Pre-seed nudge state at the limit
-      await writeJson(join(stateDir, 'auto-nudge-state.json'), {
-        nudgeCount: 2,
-        lastNudgeAt: new Date().toISOString(),
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0, ttlMs: 0 },
       });
 
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
-      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'Shall I continue with the next step?',
+      const sharedTurnId = 'semantic-dedup-turn';
+      const first = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'turn-id': sharedTurnId,
+        'last-assistant-message': 'If you want, I can keep going from here.',
       });
-      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+      assert.equal(first.status, 0, `first hook failed: ${first.stderr || first.stdout}`);
 
-      if (existsSync(tmuxLogPath)) {
-        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-        assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l/, 'should NOT nudge past max');
-      }
+      const second = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'turn-id': sharedTurnId,
+        'last-assistant-message': 'Shall I proceed from here?',
+      });
+      assert.equal(second.status, 0, `second hook failed: ${second.stderr || second.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.equal((tmuxLog.match(/send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/g) || []).length, 1);
+
+      const nudgeState = JSON.parse(await readFile(join(stateDir, 'auto-nudge-state.json'), 'utf-8'));
+      assert.equal(nudgeState.nudgeCount, 1);
+      assert.match(nudgeState.lastSignature, /^hud:1\|.*\|stall:proceed_intent$/);
+    });
+  });
+
+  it('applies TTL suppression between similar nudges and allows a later retry after TTL', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0, ttlMs: 5000 },
+      });
+
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const first = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'turn-id': 'cooldown-turn-1',
+        'last-assistant-message': 'Would you like me to continue with the implementation?',
+      });
+      assert.equal(first.status, 0, `first hook failed: ${first.stderr || first.stdout}`);
+
+      const second = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'turn-id': 'cooldown-turn-2',
+        'last-assistant-message': 'I can also move forward with the implementation.',
+      });
+      assert.equal(second.status, 0, `second hook failed: ${second.stderr || second.stdout}`);
+
+      let tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.equal((tmuxLog.match(/send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/g) || []).length, 1);
+
+      const nudgeStatePath = join(stateDir, 'auto-nudge-state.json');
+      const nudgeStateBeforeThird = JSON.parse(await readFile(nudgeStatePath, 'utf-8'));
+      await writeJson(nudgeStatePath, {
+        ...nudgeStateBeforeThird,
+        lastNudgeAt: '2026-03-01T00:00:00.000Z',
+      });
+
+      const third = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'turn-id': 'cooldown-turn-3',
+        'last-assistant-message': 'Do you want me to proceed with the focused tests?',
+      });
+      assert.equal(third.status, 0, `third hook failed: ${third.stderr || third.stdout}`);
+
+      tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.equal((tmuxLog.match(/send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/g) || []).length, 2);
+
+      const nudgeState = JSON.parse(await readFile(nudgeStatePath, 'utf-8'));
+      assert.equal(nudgeState.nudgeCount, 2);
+      assert.equal(nudgeState.lastSemanticSignature, 'stall:proceed_intent');
     });
   });
 

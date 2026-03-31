@@ -23,6 +23,7 @@ const DEEP_INTERVIEW_ABORT_PATTERNS = ['aborted', 'cancelled', 'canceled'];
 const DEEP_INTERVIEW_ABORT_INPUTS = new Set(['abort', 'cancel', 'stop']);
 const DEEP_INTERVIEW_BLOCKED_APPROVAL_PREFIXES = new Set(['next i should']);
 const SKILL_PHASES = new Set(['planning', 'executing', 'reviewing', 'completing']);
+const DEFAULT_AUTO_NUDGE_TTL_MS = 30_000;
 
 function normalizeSkillPhase(phase) {
   const normalized = safeString(phase).toLowerCase().trim();
@@ -177,11 +178,11 @@ export async function isDeepInterviewStateActive(stateDir) {
 }
 
 export async function resolveAutoNudgeSignature(stateDir, payload, lastMessage = '') {
-  const normalizedMessage = safeString(lastMessage).trim();
+  const normalizedMessage = normalizeAutoNudgeSignatureText(lastMessage);
   const hudState = await readJsonIfExists(join(stateDir, 'hud-state.json'), null);
   const hudTurnAt = safeString(hudState?.last_turn_at).trim();
   const hudTurnCount = Number.isFinite(hudState?.turn_count) ? hudState.turn_count : null;
-  const hudMessage = safeString(hudState?.last_agent_output || hudState?.last_agent_message || '').trim();
+  const hudMessage = normalizeAutoNudgeSignatureText(hudState?.last_agent_output || hudState?.last_agent_message || '');
 
   if (normalizedMessage && hudTurnAt && hudTurnCount !== null && hudMessage === normalizedMessage) {
     return `hud:${hudTurnCount}|${hudTurnAt}|${normalizedMessage}`;
@@ -238,6 +239,35 @@ export const DEFAULT_STALL_PATTERNS = [
   'i\'ll continue from',
 ];
 
+const SEMANTIC_STALL_PROMPT_PATTERNS = [
+  /\bif you want\b/g,
+  /\bwould you like\b/g,
+  /\bshall i\b/g,
+  /\bshould i\b/g,
+  /\bdo you want(?: me)? to\b/g,
+  /\bwant me to\b/g,
+  /\blet me know(?: if)?\b/g,
+  /\bjust let me know\b/g,
+  /\bi can also\b/g,
+  /\bi could also\b/g,
+  /\bnext i can\b/g,
+  /\bcontinue (?:with|on)\b/g,
+  /\bpick up with\b/g,
+  /\bnext steps?\b/g,
+  /\bready to proceed\b/g,
+  /\bi'?m ready to\b/g,
+  /\bkeep going\b/g,
+  /\bwhenever you\b/g,
+  /\bsay (?:go|yes)\b/g,
+  /\btype continue\b/g,
+  /\band i'?ll (?:continue|proceed)\b/g,
+  /\bkeep (?:driving|pushing)\b/g,
+  /\bmove forward\b/g,
+  /\bdrive forward\b/g,
+  /\bproceed from here\b/g,
+  /\bi'?ll continue from\b/g,
+];
+
 function normalizeStallDetectionText(text) {
   return safeString(text)
     .replace(/\r\n?/g, '\n')
@@ -246,6 +276,29 @@ function normalizeStallDetectionText(text) {
     .join('\n')
     .toLowerCase()
     .replace(/[’‘`]/g, '\'');
+}
+
+export function normalizeAutoNudgeSignatureText(text) {
+  const normalized = normalizeStallDetectionText(text)
+    .replace(/[^\w\s']/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) return '';
+
+  if (detectStallPattern(normalized, DEFAULT_STALL_PATTERNS)) {
+    let semantic = normalized;
+    for (const pattern of SEMANTIC_STALL_PROMPT_PATTERNS) {
+      semantic = semantic.replace(pattern, ' proceed_intent ');
+    }
+    semantic = semantic
+      .replace(/\b(?:please|just|simply|the|a|an|this|that|these|those|for|from|here|there|now|then|when|you|me|i|can|could|will|would|should|shall|to|with|on|if|also|know)\b/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return semantic.includes('proceed_intent') ? 'stall:proceed_intent' : `stall:${semantic || 'detected'}`;
+  }
+
+  return normalized;
 }
 
 function summarizePaneCaptureForLog(captured, maxLines = 6) {
@@ -266,7 +319,7 @@ export function normalizeAutoNudgeConfig(raw) {
       response: 'yes, proceed',
       delaySec: 3,
       stallMs: 5000,
-      maxNudgesPerSession: Infinity,
+      ttlMs: DEFAULT_AUTO_NUDGE_TTL_MS,
     };
   }
   return {
@@ -283,9 +336,11 @@ export function normalizeAutoNudgeConfig(raw) {
     stallMs: typeof raw.stallMs === 'number' && raw.stallMs >= 0 && raw.stallMs <= 60_000
       ? raw.stallMs
       : 5000,
-    maxNudgesPerSession: typeof raw.maxNudgesPerSession === 'number' && raw.maxNudgesPerSession > 0
-      ? raw.maxNudgesPerSession
-      : Infinity,
+    ttlMs: typeof raw.ttlMs === 'number' && raw.ttlMs >= 0 && raw.ttlMs <= 10 * 60_000
+      ? raw.ttlMs
+      : (typeof raw.cooldownMs === 'number' && raw.cooldownMs >= 0 && raw.cooldownMs <= 10 * 60_000
+        ? raw.cooldownMs
+        : DEFAULT_AUTO_NUDGE_TTL_MS),
   };
 }
 
@@ -436,18 +491,16 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
     const nudgeStatePath = join(stateDir, 'auto-nudge-state.json');
     let nudgeState = await readJsonIfExists(nudgeStatePath, null);
     if (!nudgeState || typeof nudgeState !== 'object') {
-      nudgeState = { nudgeCount: 0, lastNudgeAt: '', lastSignature: '' };
+      nudgeState = { nudgeCount: 0, lastNudgeAt: '', lastSignature: '', lastSemanticSignature: '' };
     }
-    const nudgeCount = asNumber(nudgeState.nudgeCount) ?? 0;
-    if (Number.isFinite(config.maxNudgesPerSession) && nudgeCount >= config.maxNudgesPerSession) return;
-
     const paneId = await resolveNudgePaneTarget(stateDir, cwd);
 
     let detected = detectStallPattern(lastMessage, config.patterns);
     let source = 'payload';
+    let captured = '';
 
     if (!detected && paneId) {
-      const captured = await capturePane(paneId);
+      captured = await capturePane(paneId);
       detected = detectStallPattern(captured, config.patterns);
       source = 'capture-pane';
     }
@@ -455,8 +508,29 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
     if (skillState?.phase === 'completing' && !detected) return;
     if (!detected || !paneId) return;
 
-    const signature = await resolveAutoNudgeSignature(stateDir, payload, lastMessage);
-    if (signature && safeString(nudgeState.lastSignature) === signature) return;
+    const signatureSourceText = source === 'capture-pane' ? captured : lastMessage;
+    const signature = await resolveAutoNudgeSignature(stateDir, payload, signatureSourceText);
+    const semanticSignature = normalizeAutoNudgeSignatureText(signatureSourceText);
+
+    const lastNudgeAtMs = Date.parse(safeString(nudgeState.lastNudgeAt));
+    if (
+      semanticSignature
+      && safeString(nudgeState.lastSemanticSignature) === semanticSignature
+      && config.ttlMs > 0
+      && Number.isFinite(lastNudgeAtMs)
+      && (Date.now() - lastNudgeAtMs) < config.ttlMs
+    ) {
+      await logTmuxHookEvent(logsDir, {
+        timestamp: new Date().toISOString(),
+        type: 'auto_nudge_skipped',
+        reason: 'ttl_active',
+        source,
+        ttl_ms: config.ttlMs,
+        signature,
+        semantic_signature: semanticSignature,
+      }).catch(() => {});
+      return;
+    }
 
     const sourceName = safeString(payload?.source || '');
     const isFallbackWatcherSource = sourceName === 'notify-fallback-watcher-stall';
@@ -521,9 +595,10 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
         throw new Error(sendResult.error || sendResult.reason);
       }
 
-      nudgeState.nudgeCount = nudgeCount + 1;
+      nudgeState.nudgeCount = (asNumber(nudgeState.nudgeCount) ?? 0) + 1;
       nudgeState.lastNudgeAt = nowIso;
       nudgeState.lastSignature = signature;
+      nudgeState.lastSemanticSignature = semanticSignature;
       nudgeState.pendingSignature = '';
       nudgeState.pendingSince = '';
       await writeFile(nudgeStatePath, JSON.stringify(nudgeState, null, 2)).catch(() => {});

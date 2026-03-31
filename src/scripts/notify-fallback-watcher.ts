@@ -9,6 +9,8 @@ import { drainPendingTeamDispatch } from './notify-hook/team-dispatch.js';
 import {
   maybeAutoNudge,
   isDeepInterviewStateActive,
+  loadAutoNudgeConfig,
+  normalizeAutoNudgeSignatureText,
   resolveAutoNudgeSignature,
 } from './notify-hook/auto-nudge.js';
 import { checkPaneReadyForTeamSendKeys } from './notify-hook/team-tmux-guard.js';
@@ -876,14 +878,18 @@ async function runFallbackAutoNudgeTick(): Promise<void> {
     'input-messages': ['[notify-fallback] synthesized from stalled hud-state'],
     'last-assistant-message': lastMessage,
   }, lastMessage);
-  if (lastFallbackAutoNudge.last_nudged_signature === signature) {
-    lastFallbackAutoNudge.last_reason = 'duplicate_stall_signature';
-    return;
-  }
-
   const persistedAutoNudgeState = await readAutoNudgeState();
-  if (safeString(persistedAutoNudgeState?.lastSignature) === signature) {
-    lastFallbackAutoNudge.last_reason = 'already_nudged_for_signature';
+  const autoNudgeConfig = await loadAutoNudgeConfig();
+  const semanticSignature = normalizeAutoNudgeSignatureText(lastMessage);
+  const lastNudgeAtMs = parseIsoMillis(safeString(persistedAutoNudgeState?.lastNudgeAt));
+  if (
+    semanticSignature
+    && safeString(persistedAutoNudgeState?.lastSemanticSignature) === semanticSignature
+    && autoNudgeConfig.ttlMs > 0
+    && lastNudgeAtMs !== null
+    && (now - lastNudgeAtMs) < autoNudgeConfig.ttlMs
+  ) {
+    lastFallbackAutoNudge.last_reason = 'ttl_active';
     lastFallbackAutoNudge.last_nudged_signature = signature;
     return;
   }

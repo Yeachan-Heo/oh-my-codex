@@ -648,7 +648,7 @@ describe('notify-fallback watcher', () => {
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
       await writeFile(join(codexHome, '.omx-config.json'), JSON.stringify({
-        autoNudge: { enabled: true, delaySec: 0 },
+        autoNudge: { enabled: true, delaySec: 0, ttlMs: 30_000 },
       }, null, 2));
       await writeFile(join(wd, '.omx', 'state', 'hud-state.json'), JSON.stringify({
         last_turn_at: new Date(Date.now() - 6_000).toISOString(),
@@ -763,7 +763,8 @@ describe('notify-fallback watcher', () => {
       await writeFile(join(wd, '.omx', 'state', 'auto-nudge-state.json'), JSON.stringify({
         nudgeCount: 1,
         lastNudgeAt: new Date().toISOString(),
-        lastSignature: `hud:7|${lastTurnAt}|${lastMessage}`,
+        lastSignature: `hud:7|${lastTurnAt}|stall:proceed_intent`,
+        lastSemanticSignature: 'stall:proceed_intent',
       }, null, 2));
 
       const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
@@ -789,7 +790,7 @@ describe('notify-fallback watcher', () => {
 
       const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
       const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
-      assert.equal(watcherState.fallback_auto_nudge?.last_reason, 'already_nudged_for_signature');
+      assert.equal(watcherState.fallback_auto_nudge?.last_reason, 'ttl_active');
       assert.equal(watcherState.fallback_auto_nudge?.last_turn_count, 7);
     } finally {
       await rm(wd, { recursive: true, force: true });
