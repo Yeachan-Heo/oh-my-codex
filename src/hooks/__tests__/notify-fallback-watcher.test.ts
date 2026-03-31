@@ -763,7 +763,7 @@ describe('notify-fallback watcher', () => {
       await writeFile(join(wd, '.omx', 'state', 'auto-nudge-state.json'), JSON.stringify({
         nudgeCount: 1,
         lastNudgeAt: new Date().toISOString(),
-        lastSignature: `hud:7|${lastTurnAt}|${lastMessage}`,
+        lastSignature: `hud:7|${lastTurnAt}|stall:proceed_intent`,
       }, null, 2));
 
       const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
