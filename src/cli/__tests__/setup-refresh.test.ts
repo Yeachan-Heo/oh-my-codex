@@ -61,7 +61,6 @@ describe("omx setup refresh summary and dry-run behavior", () => {
         verbose: true,
       });
       assert.match(output, /Setup refresh summary:/);
-      assert.match(output, /prompts: updated=/);
       assert.match(output, /skills: updated=/);
       assert.match(output, /native_agents: updated=/);
       assert.match(output, /agents_md: updated=/);
@@ -129,9 +128,9 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       await mkdir(join(wd, ".omx", "state"), { recursive: true });
       await runSetupInTempDir(wd, { scope: "project" });
 
-      const promptPath = join(wd, ".codex", "prompts", "executor.md");
-      const oldPrompt = "# local prompt\n";
-      await writeFile(promptPath, oldPrompt);
+      const skillPath = join(wd, ".codex", "skills", "help", "SKILL.md");
+      const oldSkill = "# local skill\n";
+      await writeFile(skillPath, oldSkill);
 
       await runSetupInTempDir(wd, { scope: "project" });
 
@@ -143,11 +142,12 @@ describe("omx setup refresh summary and dry-run behavior", () => {
         backupsRoot,
         timestamps.sort().at(-1)!,
         ".codex",
-        "prompts",
-        "executor.md",
+        "skills",
+        "help",
+        "SKILL.md",
       );
       assert.equal(existsSync(latestBackup), true);
-      assert.equal(await readFile(latestBackup, "utf-8"), oldPrompt);
+      assert.equal(await readFile(latestBackup, "utf-8"), oldSkill);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

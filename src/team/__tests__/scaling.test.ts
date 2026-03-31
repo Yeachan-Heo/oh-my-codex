@@ -338,8 +338,8 @@ describe('scaleUp', () => {
       await writeFile(tmuxLogPath, '');
       process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
 
-      await mkdir(join(cwd, '.codex', 'prompts'), { recursive: true });
-      await writeFile(join(cwd, '.codex', 'prompts', 'writer.md'), '<identity>You are Writer.</identity>');
+      await mkdir(join(cwd, '.codex', 'skills', 'writer'), { recursive: true });
+      await writeFile(join(cwd, '.codex', 'skills', 'writer', 'SKILL.md'), '<identity>You are Writer.</identity>');
       await mkdir(join(cwd, '.omx', 'state', 'team', 'scale-up-role'), { recursive: true });
       await writeFile(join(cwd, '.omx', 'state', 'team', 'scale-up-role', 'worker-agents.md'), '# Base worker instructions\n');
 
@@ -431,8 +431,8 @@ exit 0
       await chmod(tmuxStubPath, 0o755);
       process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
 
-      await mkdir(join(cwd, '.codex', 'prompts'), { recursive: true });
-      await writeFile(join(cwd, '.codex', 'prompts', 'writer.md'), '<identity>You are Writer.</identity>');
+      await mkdir(join(cwd, '.codex', 'skills', 'writer'), { recursive: true });
+      await writeFile(join(cwd, '.codex', 'skills', 'writer', 'SKILL.md'), '<identity>You are Writer.</identity>');
       await writeFile(join(cwd, 'AGENTS.md'), '# Root project instructions\n');
       await initCommittedGitRepo(cwd);
       await initTeamState('rollback-worktree', 'task', 'executor', 1, cwd, undefined, process.env, {
@@ -512,8 +512,8 @@ exit 0
       await chmod(tmuxStubPath, 0o755);
       process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
 
-      await mkdir(join(cwd, '.codex', 'prompts'), { recursive: true });
-      await writeFile(join(cwd, '.codex', 'prompts', 'writer.md'), '<identity>You are Writer.</identity>');
+      await mkdir(join(cwd, '.codex', 'skills', 'writer'), { recursive: true });
+      await writeFile(join(cwd, '.codex', 'skills', 'writer', 'SKILL.md'), '<identity>You are Writer.</identity>');
       await writeFile(join(cwd, 'AGENTS.md'), '# Root project instructions\n');
       await initCommittedGitRepo(cwd);
       await initTeamState('canonical-root', 'task', 'executor', 1, cwd, undefined, process.env, {
@@ -601,8 +601,8 @@ exit 0
       await chmod(tmuxStubPath, 0o755);
       process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
 
-      await mkdir(join(cwd, '.codex', 'prompts'), { recursive: true });
-      await writeFile(join(cwd, '.codex', 'prompts', 'test-engineer.md'), '<identity>Test Engineer</identity>');
+      await mkdir(join(cwd, '.codex', 'skills', 'test-engineer'), { recursive: true });
+      await writeFile(join(cwd, '.codex', 'skills', 'test-engineer', 'SKILL.md'), '<identity>Test Engineer</identity>');
       await mkdir(join(cwd, '.omx', 'state', 'team', 'frontier-role'), { recursive: true });
       await writeFile(join(cwd, '.omx', 'state', 'team', 'frontier-role', 'worker-agents.md'), '# Base worker instructions\n');
 
@@ -684,8 +684,8 @@ exit 0
       await chmod(tmuxStubPath, 0o755);
       process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
 
-      await mkdir(join(cwd, '.codex', 'prompts'), { recursive: true });
-      await writeFile(join(cwd, '.codex', 'prompts', 'writer.md'), '<identity>You are Writer.</identity>');
+      await mkdir(join(cwd, '.codex', 'skills', 'writer'), { recursive: true });
+      await writeFile(join(cwd, '.codex', 'skills', 'writer', 'SKILL.md'), '<identity>You are Writer.</identity>');
       await writeFile(join(cwd, 'AGENTS.md'), '# Root project instructions\n');
       await initCommittedGitRepo(cwd);
       await initTeamState('mini-tuned-root', 'task', 'executor', 1, cwd, undefined, process.env, {
