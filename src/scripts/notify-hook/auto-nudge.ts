@@ -23,8 +23,7 @@ const DEEP_INTERVIEW_ABORT_PATTERNS = ['aborted', 'cancelled', 'canceled'];
 const DEEP_INTERVIEW_ABORT_INPUTS = new Set(['abort', 'cancel', 'stop']);
 const DEEP_INTERVIEW_BLOCKED_APPROVAL_PREFIXES = new Set(['next i should']);
 const SKILL_PHASES = new Set(['planning', 'executing', 'reviewing', 'completing']);
-const DEFAULT_MAX_NUDGES_PER_SESSION = 12;
-const DEFAULT_AUTO_NUDGE_COOLDOWN_MS = 30_000;
+const DEFAULT_AUTO_NUDGE_TTL_MS = 30_000;
 
 function normalizeSkillPhase(phase) {
   const normalized = safeString(phase).toLowerCase().trim();
@@ -320,8 +319,7 @@ export function normalizeAutoNudgeConfig(raw) {
       response: 'yes, proceed',
       delaySec: 3,
       stallMs: 5000,
-      cooldownMs: DEFAULT_AUTO_NUDGE_COOLDOWN_MS,
-      maxNudgesPerSession: DEFAULT_MAX_NUDGES_PER_SESSION,
+      ttlMs: DEFAULT_AUTO_NUDGE_TTL_MS,
     };
   }
   return {
@@ -338,12 +336,11 @@ export function normalizeAutoNudgeConfig(raw) {
     stallMs: typeof raw.stallMs === 'number' && raw.stallMs >= 0 && raw.stallMs <= 60_000
       ? raw.stallMs
       : 5000,
-    cooldownMs: typeof raw.cooldownMs === 'number' && raw.cooldownMs >= 0 && raw.cooldownMs <= 10 * 60_000
-      ? raw.cooldownMs
-      : DEFAULT_AUTO_NUDGE_COOLDOWN_MS,
-    maxNudgesPerSession: typeof raw.maxNudgesPerSession === 'number' && raw.maxNudgesPerSession > 0
-      ? raw.maxNudgesPerSession
-      : DEFAULT_MAX_NUDGES_PER_SESSION,
+    ttlMs: typeof raw.ttlMs === 'number' && raw.ttlMs >= 0 && raw.ttlMs <= 10 * 60_000
+      ? raw.ttlMs
+      : (typeof raw.cooldownMs === 'number' && raw.cooldownMs >= 0 && raw.cooldownMs <= 10 * 60_000
+        ? raw.cooldownMs
+        : DEFAULT_AUTO_NUDGE_TTL_MS),
   };
 }
 
@@ -494,18 +491,16 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
     const nudgeStatePath = join(stateDir, 'auto-nudge-state.json');
     let nudgeState = await readJsonIfExists(nudgeStatePath, null);
     if (!nudgeState || typeof nudgeState !== 'object') {
-      nudgeState = { nudgeCount: 0, lastNudgeAt: '', lastSignature: '' };
+      nudgeState = { nudgeCount: 0, lastNudgeAt: '', lastSignature: '', lastSemanticSignature: '' };
     }
-    const nudgeCount = asNumber(nudgeState.nudgeCount) ?? 0;
-    if (Number.isFinite(config.maxNudgesPerSession) && nudgeCount >= config.maxNudgesPerSession) return;
-
     const paneId = await resolveNudgePaneTarget(stateDir, cwd);
 
     let detected = detectStallPattern(lastMessage, config.patterns);
     let source = 'payload';
+    let captured = '';
 
     if (!detected && paneId) {
-      const captured = await capturePane(paneId);
+      captured = await capturePane(paneId);
       detected = detectStallPattern(captured, config.patterns);
       source = 'capture-pane';
     }
@@ -513,22 +508,26 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
     if (skillState?.phase === 'completing' && !detected) return;
     if (!detected || !paneId) return;
 
-    const signature = await resolveAutoNudgeSignature(stateDir, payload, lastMessage);
-    if (signature && safeString(nudgeState.lastSignature) === signature) return;
+    const signatureSourceText = source === 'capture-pane' ? captured : lastMessage;
+    const signature = await resolveAutoNudgeSignature(stateDir, payload, signatureSourceText);
+    const semanticSignature = normalizeAutoNudgeSignatureText(signatureSourceText);
 
     const lastNudgeAtMs = Date.parse(safeString(nudgeState.lastNudgeAt));
     if (
-      config.cooldownMs > 0
+      semanticSignature
+      && safeString(nudgeState.lastSemanticSignature) === semanticSignature
+      && config.ttlMs > 0
       && Number.isFinite(lastNudgeAtMs)
-      && (Date.now() - lastNudgeAtMs) < config.cooldownMs
+      && (Date.now() - lastNudgeAtMs) < config.ttlMs
     ) {
       await logTmuxHookEvent(logsDir, {
         timestamp: new Date().toISOString(),
         type: 'auto_nudge_skipped',
-        reason: 'cooldown_active',
+        reason: 'ttl_active',
         source,
-        cooldown_ms: config.cooldownMs,
+        ttl_ms: config.ttlMs,
         signature,
+        semantic_signature: semanticSignature,
       }).catch(() => {});
       return;
     }
@@ -596,9 +595,10 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
         throw new Error(sendResult.error || sendResult.reason);
       }
 
-      nudgeState.nudgeCount = nudgeCount + 1;
+      nudgeState.nudgeCount = (asNumber(nudgeState.nudgeCount) ?? 0) + 1;
       nudgeState.lastNudgeAt = nowIso;
       nudgeState.lastSignature = signature;
+      nudgeState.lastSemanticSignature = semanticSignature;
       nudgeState.pendingSignature = '';
       nudgeState.pendingSince = '';
       await writeFile(nudgeStatePath, JSON.stringify(nudgeState, null, 2)).catch(() => {});

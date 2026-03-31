@@ -672,83 +672,6 @@ exit 0
     });
   });
 
-  it('respects maxNudgesPerSession limit', async () => {
-    await withTempWorkingDir(async (cwd) => {
-      const omxDir = join(cwd, '.omx');
-      const stateDir = join(omxDir, 'state');
-      const logsDir = join(omxDir, 'logs');
-      const codexHome = join(cwd, 'codex-home');
-      const fakeBinDir = join(cwd, 'fake-bin');
-      const tmuxLogPath = join(cwd, 'tmux.log');
-
-      await mkdir(logsDir, { recursive: true });
-      await mkdir(stateDir, { recursive: true });
-      await mkdir(codexHome, { recursive: true });
-      await mkdir(fakeBinDir, { recursive: true });
-
-      await writeJson(join(codexHome, '.omx-config.json'), {
-        autoNudge: { enabled: true, delaySec: 0, stallMs: 0, maxNudgesPerSession: 2 },
-      });
-
-      // Pre-seed nudge state at the limit
-      await writeJson(join(stateDir, 'auto-nudge-state.json'), {
-        nudgeCount: 2,
-        lastNudgeAt: new Date().toISOString(),
-      });
-
-      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
-      await chmod(join(fakeBinDir, 'tmux'), 0o755);
-
-      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'Shall I continue with the next step?',
-      });
-      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
-
-      if (existsSync(tmuxLogPath)) {
-        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-        assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l/, 'should NOT nudge past max');
-      }
-    });
-  });
-
-  it('uses the default finite maxNudgesPerSession cap when config omits it', async () => {
-    await withTempWorkingDir(async (cwd) => {
-      const omxDir = join(cwd, '.omx');
-      const stateDir = join(omxDir, 'state');
-      const logsDir = join(omxDir, 'logs');
-      const codexHome = join(cwd, 'codex-home');
-      const fakeBinDir = join(cwd, 'fake-bin');
-      const tmuxLogPath = join(cwd, 'tmux.log');
-
-      await mkdir(logsDir, { recursive: true });
-      await mkdir(stateDir, { recursive: true });
-      await mkdir(codexHome, { recursive: true });
-      await mkdir(fakeBinDir, { recursive: true });
-
-      await writeJson(join(codexHome, '.omx-config.json'), {
-        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
-      });
-
-      await writeJson(join(stateDir, 'auto-nudge-state.json'), {
-        nudgeCount: 12,
-        lastNudgeAt: '2026-03-01T00:00:00.000Z',
-      });
-
-      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
-      await chmod(join(fakeBinDir, 'tmux'), 0o755);
-
-      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'Shall I continue with the next step?',
-      });
-      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
-
-      if (existsSync(tmuxLogPath)) {
-        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-        assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l/, 'default finite cap should block the 13th nudge');
-      }
-    });
-  });
-
   it('deduplicates semantic proceed-style variants on the same turn', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
@@ -764,7 +687,7 @@ exit 0
       await mkdir(fakeBinDir, { recursive: true });
 
       await writeJson(join(codexHome, '.omx-config.json'), {
-        autoNudge: { enabled: true, delaySec: 0, stallMs: 0, cooldownMs: 0 },
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0, ttlMs: 0 },
       });
 
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
@@ -792,7 +715,7 @@ exit 0
     });
   });
 
-  it('applies cooldown between nudges and allows a later distinct stalled turn', async () => {
+  it('applies TTL suppression between similar nudges and allows a later retry after TTL', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
       const stateDir = join(omxDir, 'state');
@@ -807,7 +730,7 @@ exit 0
       await mkdir(fakeBinDir, { recursive: true });
 
       await writeJson(join(codexHome, '.omx-config.json'), {
-        autoNudge: { enabled: true, delaySec: 0, stallMs: 0, cooldownMs: 5000 },
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0, ttlMs: 5000 },
       });
 
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
@@ -846,6 +769,7 @@ exit 0
 
       const nudgeState = JSON.parse(await readFile(nudgeStatePath, 'utf-8'));
       assert.equal(nudgeState.nudgeCount, 2);
+      assert.equal(nudgeState.lastSemanticSignature, 'stall:proceed_intent');
     });
   });
 
