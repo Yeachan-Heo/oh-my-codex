@@ -17,14 +17,14 @@ const SAFE_ROLE_PATTERN = /^[a-z][a-z0-9-]*$/;
 
 /**
  * Load behavioral prompt content for a given agent role.
- * Returns null if the prompt file does not exist or the role name is invalid.
+ * Returns null if the skill file does not exist or the role name is invalid.
  */
 export async function loadRolePrompt(
   role: string,
-  promptsDir: string,
+  skillsDir: string,
 ): Promise<string | null> {
   if (!SAFE_ROLE_PATTERN.test(role)) return null;
-  const filePath = join(promptsDir, `${role}.md`);
+  const filePath = join(skillsDir, role, 'SKILL.md');
   try {
     const content = await readFile(filePath, 'utf-8');
     return content.trim() || null;
@@ -34,24 +34,27 @@ export async function loadRolePrompt(
 }
 
 /**
- * Check whether a role has a corresponding prompt file.
+ * Check whether a role has a corresponding skill file.
  */
-export function isKnownRole(role: string, promptsDir: string): boolean {
+export function isKnownRole(role: string, skillsDir: string): boolean {
   if (!SAFE_ROLE_PATTERN.test(role)) return false;
-  return existsSync(join(promptsDir, `${role}.md`));
+  return existsSync(join(skillsDir, role, 'SKILL.md'));
 }
 
 /**
- * List all available roles by scanning the prompts directory.
- * Returns role names (filename without .md extension).
+ * List all available roles by scanning the skills directory.
+ * Returns role names (subdirectory names that contain SKILL.md).
  */
-export async function listAvailableRoles(promptsDir: string): Promise<string[]> {
+export async function listAvailableRoles(skillsDir: string): Promise<string[]> {
   try {
-    const files = await readdir(promptsDir);
-    return files
-      .filter(f => f.endsWith('.md'))
-      .map(f => f.slice(0, -3))
-      .sort();
+    const entries = await readdir(skillsDir, { withFileTypes: true });
+    const roles: string[] = [];
+    for (const entry of entries) {
+      if (entry.isDirectory() && existsSync(join(skillsDir, entry.name, 'SKILL.md'))) {
+        roles.push(entry.name);
+      }
+    }
+    return roles.sort();
   } catch {
     return [];
   }

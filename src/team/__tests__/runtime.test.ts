@@ -843,12 +843,13 @@ process.on('SIGTERM', () => process.exit(0));
     const binDir = join(cwd, 'bin');
     const fakeCodexPath = join(binDir, 'codex');
     const captureDir = join(cwd, 'captures');
-    const promptsDir = join(cwd, '.codex', 'prompts');
+    const skillsDir = join(cwd, '.codex', 'skills');
     await mkdir(binDir, { recursive: true });
     await mkdir(captureDir, { recursive: true });
-    await mkdir(promptsDir, { recursive: true });
-    await writeFile(join(promptsDir, 'test-engineer.md'), '<identity>Test Engineer</identity>');
-    await writeFile(join(promptsDir, 'writer.md'), '<identity>You are Writer.</identity>');
+    await mkdir(join(skillsDir, 'test-engineer'), { recursive: true });
+    await writeFile(join(skillsDir, 'test-engineer', 'SKILL.md'), '<identity>Test Engineer</identity>');
+    await mkdir(join(skillsDir, 'writer'), { recursive: true });
+    await writeFile(join(skillsDir, 'writer', 'SKILL.md'), '<identity>You are Writer.</identity>');
     await writeFile(
       fakeCodexPath,
       `#!/usr/bin/env node
@@ -963,11 +964,11 @@ process.on('SIGTERM', () => process.exit(0));
     const binDir = join(cwd, 'bin');
     const fakeCodexPath = join(binDir, 'codex');
     const captureDir = join(cwd, 'captures');
-    const promptsDir = join(cwd, '.codex', 'prompts');
+    const skillsDir = join(cwd, '.codex', 'skills');
     await mkdir(binDir, { recursive: true });
     await mkdir(captureDir, { recursive: true });
-    await mkdir(promptsDir, { recursive: true });
-    await writeFile(join(promptsDir, 'writer.md'), '<identity>You are Writer.</identity>');
+    await mkdir(join(skillsDir, 'writer'), { recursive: true });
+    await writeFile(join(skillsDir, 'writer', 'SKILL.md'), '<identity>You are Writer.</identity>');
     await writeFile(
       fakeCodexPath,
       `#!/usr/bin/env node

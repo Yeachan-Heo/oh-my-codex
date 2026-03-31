@@ -232,6 +232,166 @@
       "category": "utility",
       "status": "internal",
       "internalRequired": true
+    },
+    {
+      "name": "analyst",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "api-reviewer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "architect",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "build-fixer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "code-reviewer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "code-simplifier",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "critic",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "debugger",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "dependency-expert",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "designer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "executor",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "explore",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "explore-harness",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "information-architect",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "performance-reviewer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "planner",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "product-analyst",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "product-manager",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "qa-tester",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "quality-reviewer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "quality-strategist",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "researcher",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "security-reviewer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "sisyphus-lite",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "style-reviewer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "team-executor",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "team-orchestrator",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "test-engineer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "ux-researcher",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "verifier",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "vision",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "writer",
+      "category": "agent-role",
+      "status": "internal"
     }
   ],
   "agents": [

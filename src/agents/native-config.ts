@@ -334,9 +334,9 @@ export async function installNativeAgentConfigs(
   let count = 0;
 
   for (const [name, agent] of Object.entries(AGENT_DEFINITIONS)) {
-    const promptPath = join(pkgRoot, "prompts", `${name}.md`);
+    const promptPath = join(pkgRoot, "skills", name, "SKILL.md");
     if (!existsSync(promptPath)) {
-      if (verbose) console.log(`  skip ${name} (no prompt file)`);
+      if (verbose) console.log(`  skip ${name} (no skill file)`);
       continue;
     }
 

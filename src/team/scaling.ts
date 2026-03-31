@@ -58,7 +58,7 @@ import {
 } from './worker-bootstrap.js';
 import { loadRolePrompt } from './role-router.js';
 import { composeRoleInstructionsForRole } from '../agents/native-config.js';
-import { codexPromptsDir } from '../utils/paths.js';
+import { userSkillsDir } from '../utils/paths.js';
 import {
   parseTeamWorkerLaunchArgs,
   resolveTeamWorkerLaunchArgs,
@@ -347,8 +347,8 @@ export async function scaleUp(
       const workerCwd = workerWorkspace ? workerWorkspace.worktreePath : leaderCwd;
 
       // Build startup command and create tmux pane
-      const rawRolePromptContent = await loadRolePrompt(workerRole, join(leaderCwd, '.codex', 'prompts'))
-        ?? await loadRolePrompt(workerRole, codexPromptsDir());
+      const rawRolePromptContent = await loadRolePrompt(workerRole, join(leaderCwd, '.codex', 'skills'))
+        ?? await loadRolePrompt(workerRole, userSkillsDir());
       const preferredReasoning = resolveAgentReasoningEffort(workerRole) ?? resolveAgentReasoningEffort(agentType);
       const workerLaunchArgs = resolveWorkerLaunchArgsForScaling(env, workerRole, preferredReasoning);
       const resolvedWorkerModel = parseTeamWorkerLaunchArgs(workerLaunchArgs).modelOverride ?? undefined;

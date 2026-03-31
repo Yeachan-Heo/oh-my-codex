@@ -95,7 +95,7 @@ import {
 } from './worker-bootstrap.js';
 import { loadRolePrompt } from './role-router.js';
 import { composeRoleInstructionsForRole } from '../agents/native-config.js';
-import { codexPromptsDir } from '../utils/paths.js';
+import { userSkillsDir } from '../utils/paths.js';
 import { type TeamPhase, type TerminalPhase } from './orchestrator.js';
 import {
   resolveTeamWorkerLaunchArgs,
@@ -1412,8 +1412,8 @@ export async function startTeam(
       const workerRole = taskRoles.length > 0 && uniqueTaskRoles.size === 1
         ? taskRoles[0]
         : agentType;
-      const rawRolePromptContent = await loadRolePrompt(workerRole, join(leaderCwd, '.codex', 'prompts'))
-        ?? await loadRolePrompt(workerRole, codexPromptsDir());
+      const rawRolePromptContent = await loadRolePrompt(workerRole, join(leaderCwd, '.codex', 'skills'))
+        ?? await loadRolePrompt(workerRole, userSkillsDir());
       const preferredReasoning = resolveAgentReasoningEffort(workerRole) ?? resolveAgentReasoningEffort(agentType);
       const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(
         process.env,

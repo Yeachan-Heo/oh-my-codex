@@ -4,7 +4,7 @@ import { readFile, readdir } from 'fs/promises';
 import { isAbsolute, join } from 'path';
 import { constants as osConstants } from 'os';
 import { getPackageRoot } from '../utils/package.js';
-import { codexPromptsDir } from '../utils/paths.js';
+import { userSkillsDir } from '../utils/paths.js';
 
 export const ASK_USAGE = [
   'Usage: omx ask <claude|gemini> <question or task>',
@@ -33,10 +33,10 @@ function askUsageError(reason: string): Error {
   return new Error(`${reason}\n${ASK_USAGE}`);
 }
 
-function resolveAskPromptsDir(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+function resolveAskSkillsDir(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
   const codexHomeOverride = env.CODEX_HOME?.trim();
   if (codexHomeOverride) {
-    return join(codexHomeOverride, 'prompts');
+    return join(codexHomeOverride, 'skills');
   }
 
   try {
@@ -44,40 +44,40 @@ function resolveAskPromptsDir(cwd: string, env: NodeJS.ProcessEnv = process.env)
     if (existsSync(scopePath)) {
       const parsed = JSON.parse(readFileSync(scopePath, 'utf-8')) as Partial<{ scope: string }>;
       if (parsed.scope === 'project' || parsed.scope === 'project-local') {
-        return join(cwd, '.codex', 'prompts');
+        return join(cwd, '.codex', 'skills');
       }
     }
   } catch {
-    // Ignore malformed persisted scope and fall back to user prompts.
+    // Ignore malformed persisted scope and fall back to user skills.
   }
 
-  return codexPromptsDir();
+  return userSkillsDir();
 }
 
 async function resolveAgentPromptContent(
   role: string,
-  promptsDir: string,
+  skillsDir: string,
 ): Promise<string> {
   const normalizedRole = role.trim().toLowerCase();
   if (!SAFE_ROLE_PATTERN.test(normalizedRole)) {
     throw new Error(`[ask] invalid --agent-prompt role "${role}". Expected lowercase role names like "executor" or "test-engineer".`);
   }
 
-  if (!existsSync(promptsDir)) {
-    throw new Error(`[ask] prompts directory not found: ${promptsDir}. Run "omx setup" to install prompts.`);
+  if (!existsSync(skillsDir)) {
+    throw new Error(`[ask] skills directory not found: ${skillsDir}. Run "omx setup" to install skills.`);
   }
 
-  const promptPath = join(promptsDir, `${normalizedRole}.md`);
+  const promptPath = join(skillsDir, normalizedRole, 'SKILL.md');
   if (!existsSync(promptPath)) {
-    const files = await readdir(promptsDir).catch(() => [] as string[]);
-    const availableRoles = files
-      .filter((file) => file.endsWith('.md'))
-      .map((file) => file.slice(0, -3))
+    const entries = await readdir(skillsDir, { withFileTypes: true }).catch(() => [] as import('fs').Dirent[]);
+    const availableRoles = entries
+      .filter((entry) => entry.isDirectory() && existsSync(join(skillsDir, entry.name, 'SKILL.md')))
+      .map((entry) => entry.name)
       .sort();
     const availableSuffix = availableRoles.length > 0
       ? ` Available roles: ${availableRoles.join(', ')}.`
       : '';
-    throw new Error(`[ask] --agent-prompt role "${normalizedRole}" not found in ${promptsDir}.${availableSuffix}`);
+    throw new Error(`[ask] --agent-prompt role "${normalizedRole}" not found in ${skillsDir}.${availableSuffix}`);
   }
 
   const content = (await readFile(promptPath, 'utf-8')).trim();
@@ -175,7 +175,7 @@ export async function askCommand(args: string[]): Promise<void> {
   const parsed = parseAskArgs(args);
   const packageRoot = getPackageRoot();
   const advisorScriptPath = resolveAskAdvisorScriptPath(packageRoot);
-  const promptsDir = resolveAskPromptsDir(process.cwd(), process.env);
+  const skillsDir = resolveAskSkillsDir(process.cwd(), process.env);
 
   if (!existsSync(advisorScriptPath)) {
     throw new Error(`[ask] advisor script not found: ${advisorScriptPath}`);
@@ -183,7 +183,7 @@ export async function askCommand(args: string[]): Promise<void> {
 
   let finalPrompt = parsed.prompt;
   if (parsed.agentPromptRole) {
-    const agentPromptContent = await resolveAgentPromptContent(parsed.agentPromptRole, promptsDir);
+    const agentPromptContent = await resolveAgentPromptContent(parsed.agentPromptRole, skillsDir);
     finalPrompt = `${agentPromptContent}\n\n${parsed.prompt}`;
   }
 

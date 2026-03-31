@@ -20,7 +20,6 @@ import { homedir } from "os";
 import {
   codexHome,
   codexConfigPath,
-  codexPromptsDir,
   codexAgentsDir,
   userSkillsDir,
   omxStateDir,
@@ -82,7 +81,6 @@ export interface ScopeDirectories {
   codexConfigFile: string;
   codexHomeDir: string;
   nativeAgentsDir: string;
-  promptsDir: string;
   skillsDir: string;
 }
 
@@ -95,7 +93,6 @@ interface SetupCategorySummary {
 }
 
 interface SetupRunSummary {
-  prompts: SetupCategorySummary;
   skills: SetupCategorySummary;
   nativeAgents: SetupCategorySummary;
   agentsMd: SetupCategorySummary;
@@ -165,7 +162,6 @@ function createEmptyCategorySummary(): SetupCategorySummary {
 
 function createEmptyRunSummary(): SetupRunSummary {
   return {
-    prompts: createEmptyCategorySummary(),
     skills: createEmptyCategorySummary(),
     nativeAgents: createEmptyCategorySummary(),
     agentsMd: createEmptyCategorySummary(),
@@ -374,7 +370,6 @@ export function resolveScopeDirectories(
       codexConfigFile: join(codexHomeDir, "config.toml"),
       codexHomeDir,
       nativeAgentsDir: join(codexHomeDir, "agents"),
-      promptsDir: join(codexHomeDir, "prompts"),
       skillsDir: join(codexHomeDir, "skills"),
     };
   }
@@ -382,7 +377,6 @@ export function resolveScopeDirectories(
     codexConfigFile: codexConfigPath(),
     codexHomeDir: codexHome(),
     nativeAgentsDir: codexAgentsDir(),
-    promptsDir: codexPromptsDir(),
     skillsDir: userSkillsDir(),
   };
 }
@@ -627,10 +621,9 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   );
 
   // Step 1: Ensure directories exist
-  console.log("[1/8] Creating directories...");
+  console.log("[1/7] Creating directories...");
   const dirs = [
     scopeDirs.codexHomeDir,
-    scopeDirs.promptsDir,
     scopeDirs.skillsDir,
     scopeDirs.nativeAgentsDir,
     omxStateDir(projectRoot),
@@ -669,48 +662,8 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   const catalogCounts = getCatalogHeadlineCounts();
   const summary = createEmptyRunSummary();
 
-  // Step 2: Install agent prompts
-  console.log("[2/8] Installing agent prompts...");
-  {
-    const promptsSrc = join(pkgRoot, "prompts");
-    const promptsDst = scopeDirs.promptsDir;
-    summary.prompts = await installPrompts(
-      promptsSrc,
-      promptsDst,
-      backupContext,
-      { force, dryRun, verbose },
-    );
-    const cleanedLegacyPromptShims = await cleanupLegacySkillPromptShims(
-      promptsSrc,
-      promptsDst,
-      {
-        dryRun,
-        verbose,
-      },
-    );
-    summary.prompts.removed += cleanedLegacyPromptShims;
-    if (cleanedLegacyPromptShims > 0) {
-      if (dryRun) {
-        console.log(
-          `  Would remove ${cleanedLegacyPromptShims} legacy skill prompt shim file(s).`,
-        );
-      } else {
-        console.log(
-          `  Removed ${cleanedLegacyPromptShims} legacy skill prompt shim file(s).`,
-        );
-      }
-    }
-    if (catalogCounts) {
-      console.log(
-        `  Prompt refresh complete (catalog baseline: ${catalogCounts.prompts}).\n`,
-      );
-    } else {
-      console.log("  Prompt refresh complete.\n");
-    }
-  }
-
-  // Step 3: Install skills
-  console.log("[3/8] Installing skills...");
+  // Step 2: Install skills
+  console.log("[2/7] Installing skills...");
   {
     const skillsSrc = join(pkgRoot, "skills");
     const skillsDst = scopeDirs.skillsDir;
@@ -728,8 +681,8 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     }
   }
 
-  // Step 4: Install native agent configs
-  console.log("[4/8] Installing native agent configs...");
+  // Step 3: Install native agent configs
+  console.log("[3/7] Installing native agent configs...");
   {
     summary.nativeAgents = await refreshNativeAgentConfigs(
       pkgRoot,
@@ -746,8 +699,8 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     );
   }
 
-  // Step 5: Update config.toml
-  console.log("[5/8] Updating config.toml...");
+  // Step 4: Update config.toml
+  console.log("[4/7] Updating config.toml...");
   const registryCandidates = getUnifiedMcpRegistryCandidates();
   const defaultRegistryCandidates = registryCandidates.slice(0, 1);
   const sharedMcpRegistry = await loadUnifiedMcpRegistry({
@@ -791,8 +744,8 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   }
   console.log(`  Config refresh complete (${scopeDirs.codexConfigFile}).\n`);
 
-  // Step 5.5: Verify team CLI interop surface is available.
-  console.log("[5.5/8] Verifying Team CLI API interop...");
+  // Step 4.5: Verify team CLI interop surface is available.
+  console.log("[4.5/7] Verifying Team CLI API interop...");
   const teamToolsCheck = await verifyTeamCliApiInterop(pkgRoot);
   if (teamToolsCheck.ok) {
     console.log("  omx team api command detected (CLI-first interop ready)");
@@ -802,8 +755,8 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   }
   console.log();
 
-  // Step 6: Generate AGENTS.md
-  console.log("[6/8] Generating AGENTS.md...");
+  // Step 5: Generate AGENTS.md
+  console.log("[5/7] Generating AGENTS.md...");
   const agentsMdSrc = join(pkgRoot, "templates", "AGENTS.md");
   const agentsMdDst =
     resolvedScope.scope === "project"
@@ -915,13 +868,13 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   }
   console.log();
 
-  // Step 7: Set up notify hook
-  console.log("[7/8] Configuring notification hook...");
+  // Step 6: Set up notify hook
+  console.log("[6/7] Configuring notification hook...");
   await setupNotifyHook(pkgRoot, { dryRun, verbose });
   console.log("  Done.\n");
 
-  // Step 8: Configure HUD
-  console.log("[8/8] Configuring HUD...");
+  // Step 7: Configure HUD
+  console.log("[7/7] Configuring HUD...");
   const hudConfigPath = join(projectRoot, ".omx", "hud-config.json");
   if (force || !existsSync(hudConfigPath)) {
     if (!dryRun) {
@@ -941,7 +894,6 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log();
 
   console.log("Setup refresh summary:");
-  logCategorySummary("prompts", summary.prompts);
   logCategorySummary("skills", summary.skills);
   logCategorySummary("native_agents", summary.nativeAgents);
   logCategorySummary("agents_md", summary.agentsMd);
@@ -978,50 +930,6 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   if (isGitHubCliConfigured()) {
     console.log("\nSupport the project: gh repo star Yeachan-Heo/oh-my-codex");
   }
-}
-
-function isLegacySkillPromptShim(content: string): boolean {
-  const marker =
-    /Read and follow the full skill instructions at\s+.*\/skills\/[^/\s]+\/SKILL\.md/i;
-  return marker.test(content);
-}
-
-async function cleanupLegacySkillPromptShims(
-  promptsSrcDir: string,
-  promptsDstDir: string,
-  options: Pick<SetupOptions, "dryRun" | "verbose">,
-): Promise<number> {
-  if (!existsSync(promptsSrcDir) || !existsSync(promptsDstDir)) return 0;
-
-  const sourceFiles = new Set(
-    (await readdir(promptsSrcDir)).filter((name) => name.endsWith(".md")),
-  );
-
-  const installedFiles = await readdir(promptsDstDir);
-  let removed = 0;
-
-  for (const file of installedFiles) {
-    if (!file.endsWith(".md")) continue;
-    if (sourceFiles.has(file)) continue;
-
-    const fullPath = join(promptsDstDir, file);
-    let content = "";
-    try {
-      content = await readFile(fullPath, "utf-8");
-    } catch {
-      continue;
-    }
-
-    if (!isLegacySkillPromptShim(content)) continue;
-
-    if (!options.dryRun) {
-      await rm(fullPath, { force: true });
-    }
-    if (options.verbose) console.log(`  removed legacy prompt shim ${file}`);
-    removed++;
-  }
-
-  return removed;
 }
 
 function isGitHubCliConfigured(): boolean {
@@ -1164,86 +1072,6 @@ async function syncManagedAgentsContent(
     );
   }
   return "updated";
-}
-
-async function installPrompts(
-  srcDir: string,
-  dstDir: string,
-  backupContext: SetupBackupContext,
-  options: SetupOptions,
-): Promise<SetupCategorySummary> {
-  const summary = createEmptyCategorySummary();
-  if (!existsSync(srcDir)) return summary;
-
-  const manifest = tryReadCatalogManifest();
-  const agentStatusByName = manifest
-    ? new Map(manifest.agents.map((agent) => [agent.name, agent.status]))
-    : null;
-  const isInstallableStatus = (status: string | undefined): boolean =>
-    status === "active" || status === "internal";
-
-  const files = await readdir(srcDir);
-  const staleCandidatePromptNames = new Set(
-    manifest?.agents.map((agent) => agent.name) ?? [],
-  );
-
-  for (const file of files) {
-    if (!file.endsWith(".md")) continue;
-    const promptName = file.slice(0, -3);
-    staleCandidatePromptNames.add(promptName);
-
-    const status = agentStatusByName?.get(promptName);
-    if (agentStatusByName && !isInstallableStatus(status)) {
-      summary.skipped += 1;
-      if (options.verbose) {
-        const label = status ?? "unlisted";
-        console.log(`  skipped ${file} (status: ${label})`);
-      }
-      continue;
-    }
-
-    const src = join(srcDir, file);
-    const dst = join(dstDir, file);
-    const srcStat = await stat(src);
-    if (!srcStat.isFile()) continue;
-    await syncManagedFileFromDisk(
-      src,
-      dst,
-      summary,
-      backupContext,
-      options,
-      `prompt ${file}`,
-    );
-  }
-
-  if (options.force && manifest && existsSync(dstDir)) {
-    const installedFiles = await readdir(dstDir);
-    for (const file of installedFiles) {
-      if (!file.endsWith(".md")) continue;
-      const promptName = file.slice(0, -3);
-      const status = agentStatusByName?.get(promptName);
-      if (isInstallableStatus(status)) continue;
-      if (!staleCandidatePromptNames.has(promptName) && status === undefined)
-        continue;
-
-      const stalePromptPath = join(dstDir, file);
-      if (!existsSync(stalePromptPath)) continue;
-
-      if (!options.dryRun) {
-        await rm(stalePromptPath, { force: true });
-      }
-      summary.removed += 1;
-      if (options.verbose) {
-        const prefix = options.dryRun
-          ? "would remove stale prompt"
-          : "removed stale prompt";
-        const label = status ?? "unlisted";
-        console.log(`  ${prefix} ${file} (status: ${label})`);
-      }
-    }
-  }
-
-  return summary;
 }
 
 async function refreshNativeAgentConfigs(

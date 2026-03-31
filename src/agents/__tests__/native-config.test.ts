@@ -88,13 +88,14 @@ describe("agents/native-config", () => {
 
   it("installs only agents with prompt files and skips existing files without force", async () => {
     const root = await mkdtemp(join(tmpdir(), "omx-native-config-"));
-    const promptsDir = join(root, "prompts");
+    const skillsDir = join(root, "skills");
     const outDir = join(root, "agents-out");
 
     try {
-      await mkdir(promptsDir, { recursive: true });
-      await writeFile(join(promptsDir, "executor.md"), "executor prompt");
-      await writeFile(join(promptsDir, "planner.md"), "planner prompt");
+      await mkdir(join(skillsDir, "executor"), { recursive: true });
+      await writeFile(join(skillsDir, "executor", "SKILL.md"), "executor prompt");
+      await mkdir(join(skillsDir, "planner"), { recursive: true });
+      await writeFile(join(skillsDir, "planner", "SKILL.md"), "planner prompt");
 
       const created = await installNativeAgentConfigs(root, {
         agentsDir: outDir,
@@ -122,17 +123,17 @@ describe("agents/native-config", () => {
   it("keeps standard agents off a custom gpt-5.2 root model", async () => {
     const root = await mkdtemp(join(tmpdir(), "omx-native-config-root-model-"));
     const codexHome = join(root, ".codex");
-    const promptsDir = join(root, "prompts");
+    const skillsDir = join(root, "skills");
     const outDir = join(codexHome, "agents");
     const previousCodexHome = process.env.CODEX_HOME;
 
     try {
       delete process.env.OMX_DEFAULT_STANDARD_MODEL;
       process.env.CODEX_HOME = codexHome;
-      await mkdir(promptsDir, { recursive: true });
+      await mkdir(join(skillsDir, "debugger"), { recursive: true });
       await mkdir(codexHome, { recursive: true });
       await writeFile(join(codexHome, "config.toml"), 'model = "gpt-5.2"\n');
-      await writeFile(join(promptsDir, "debugger.md"), "debugger prompt");
+      await writeFile(join(skillsDir, "debugger", "SKILL.md"), "debugger prompt");
 
       await installNativeAgentConfigs(root, { agentsDir: outDir });
       const debuggerToml = await readFile(join(outDir, "debugger.toml"), "utf8");
@@ -149,17 +150,17 @@ describe("agents/native-config", () => {
   it("keeps executor on the frontier lane so an explicit gpt-5.2 root model still applies there", async () => {
     const root = await mkdtemp(join(tmpdir(), "omx-native-config-executor-model-"));
     const codexHome = join(root, ".codex");
-    const promptsDir = join(root, "prompts");
+    const skillsDir = join(root, "skills");
     const outDir = join(codexHome, "agents");
     const previousCodexHome = process.env.CODEX_HOME;
 
     try {
       delete process.env.OMX_DEFAULT_STANDARD_MODEL;
       process.env.CODEX_HOME = codexHome;
-      await mkdir(promptsDir, { recursive: true });
+      await mkdir(join(skillsDir, "executor"), { recursive: true });
       await mkdir(codexHome, { recursive: true });
       await writeFile(join(codexHome, "config.toml"), 'model = "gpt-5.2"\n');
-      await writeFile(join(promptsDir, "executor.md"), "executor prompt");
+      await writeFile(join(skillsDir, "executor", "SKILL.md"), "executor prompt");
 
       await installNativeAgentConfigs(root, { agentsDir: outDir });
       const executorToml = await readFile(join(outDir, "executor.toml"), "utf8");

@@ -7,7 +7,6 @@ import { mkdtemp, mkdir, rm, writeFile } from "fs/promises";
 import {
   codexHome,
   codexConfigPath,
-  codexPromptsDir,
   userSkillsDir,
   projectSkillsDir,
   legacyUserSkillsDir,
@@ -65,27 +64,6 @@ describe("codexConfigPath", () => {
 
   it("returns config.toml under codex home", () => {
     assert.equal(codexConfigPath(), "/tmp/test-codex/config.toml");
-  });
-});
-
-describe("codexPromptsDir", () => {
-  let originalCodexHome: string | undefined;
-
-  beforeEach(() => {
-    originalCodexHome = process.env.CODEX_HOME;
-    process.env.CODEX_HOME = "/tmp/test-codex";
-  });
-
-  afterEach(() => {
-    if (typeof originalCodexHome === "string") {
-      process.env.CODEX_HOME = originalCodexHome;
-    } else {
-      delete process.env.CODEX_HOME;
-    }
-  });
-
-  it("returns prompts/ under codex home", () => {
-    assert.equal(codexPromptsDir(), "/tmp/test-codex/prompts");
   });
 });
 

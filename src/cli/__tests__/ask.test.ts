@@ -223,12 +223,12 @@ describe('omx ask', () => {
     try {
       const fakeBin = join(wd, 'bin');
       const codexHome = join(wd, '.codex-home');
-      const promptsDir = join(codexHome, 'prompts');
+      const skillsDir = join(codexHome, 'skills');
       await mkdir(fakeBin, { recursive: true });
-      await mkdir(promptsDir, { recursive: true });
+      await mkdir(join(skillsDir, 'executor'), { recursive: true });
 
       await writeFile(
-        join(promptsDir, 'executor.md'),
+        join(skillsDir, 'executor', 'SKILL.md'),
         'You are Executor.\nFollow strict verification rules.',
       );
 
@@ -258,14 +258,14 @@ describe('omx ask', () => {
     }
   });
 
-  it('fails clearly when --agent-prompt role is missing from prompts directory', async () => {
+  it('fails clearly when --agent-prompt role is missing from skills directory', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-ask-agent-prompt-missing-'));
     try {
       const fakeBin = join(wd, 'bin');
       const codexHome = join(wd, '.codex-home');
-      const promptsDir = join(codexHome, 'prompts');
+      const skillsDir = join(codexHome, 'skills');
       await mkdir(fakeBin, { recursive: true });
-      await mkdir(promptsDir, { recursive: true });
+      await mkdir(skillsDir, { recursive: true });
 
       await writeFile(
         join(fakeBin, 'gemini'),

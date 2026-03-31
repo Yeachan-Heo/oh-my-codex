@@ -6,7 +6,7 @@ import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import {
-  codexHome, codexConfigPath, codexPromptsDir,
+  codexHome, codexConfigPath,
   userSkillsDir, projectSkillsDir, omxStateDir, detectLegacySkillRootOverlap,
 } from '../utils/paths.js';
 import { classifySpawnError, spawnPlatformCommandSync } from '../utils/platform-command.js';
@@ -41,7 +41,6 @@ interface DoctorScopeResolution {
 interface DoctorPaths {
   codexHomeDir: string;
   configPath: string;
-  promptsDir: string;
   skillsDir: string;
   stateDir: string;
 }
@@ -81,7 +80,6 @@ function resolveDoctorPaths(cwd: string, scope: DoctorSetupScope): DoctorPaths {
     return {
       codexHomeDir,
       configPath: join(codexHomeDir, 'config.toml'),
-      promptsDir: join(codexHomeDir, 'prompts'),
       skillsDir: projectSkillsDir(cwd),
       stateDir: omxStateDir(cwd),
     };
@@ -90,7 +88,6 @@ function resolveDoctorPaths(cwd: string, scope: DoctorSetupScope): DoctorPaths {
   return {
     codexHomeDir: codexHome(),
     configPath: codexConfigPath(),
-    promptsDir: codexPromptsDir(),
     skillsDir: userSkillsDir(),
     stateDir: omxStateDir(cwd),
   };
@@ -133,10 +130,7 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
   // Check 4.5: Explore routing default
   checks.push(await checkExploreRouting(paths.configPath));
 
-  // Check 5: Prompts installed
-  checks.push(await checkPrompts(paths.promptsDir));
-
-  // Check 6: Skills installed
+  // Check 5: Skills installed
   checks.push(await checkSkills(paths.skillsDir));
 
   // Check 6.5: Legacy/current skill-root overlap
@@ -648,23 +642,6 @@ async function checkExploreRouting(configPath: string): Promise<Check> {
       status: 'fail',
       message: 'cannot read config.toml for explore routing check',
     };
-  }
-}
-
-async function checkPrompts(dir: string): Promise<Check> {
-  const expectations = getCatalogExpectations();
-  if (!existsSync(dir)) {
-    return { name: 'Prompts', status: 'warn', message: 'prompts directory not found' };
-  }
-  try {
-    const files = await readdir(dir);
-    const mdFiles = files.filter(f => f.endsWith('.md'));
-    if (mdFiles.length >= expectations.promptMin) {
-      return { name: 'Prompts', status: 'pass', message: `${mdFiles.length} agent prompts installed` };
-    }
-    return { name: 'Prompts', status: 'warn', message: `${mdFiles.length} prompts (expected >= ${expectations.promptMin})` };
-  } catch {
-    return { name: 'Prompts', status: 'fail', message: 'cannot read prompts directory' };
   }
 }
 

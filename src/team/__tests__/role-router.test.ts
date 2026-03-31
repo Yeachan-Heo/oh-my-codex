@@ -17,7 +17,8 @@ describe('role-router', () => {
     it('returns prompt content for an existing role', async () => {
       const dir = await mkdtemp(join(tmpdir(), 'omx-role-router-'));
       try {
-        await writeFile(join(dir, 'executor.md'), '# Executor\n\nYou are an executor agent.');
+        await mkdir(join(dir, 'executor'), { recursive: true });
+        await writeFile(join(dir, 'executor', 'SKILL.md'), '# Executor\n\nYou are an executor agent.');
         const content = await loadRolePrompt('executor', dir);
         assert.ok(content);
         assert.match(content, /executor agent/i);
@@ -39,7 +40,8 @@ describe('role-router', () => {
     it('returns null for an empty prompt file', async () => {
       const dir = await mkdtemp(join(tmpdir(), 'omx-role-router-'));
       try {
-        await writeFile(join(dir, 'empty.md'), '   \n  ');
+        await mkdir(join(dir, 'empty'), { recursive: true });
+        await writeFile(join(dir, 'empty', 'SKILL.md'), '   \n  ');
         const content = await loadRolePrompt('empty', dir);
         assert.equal(content, null);
       } finally {
@@ -52,7 +54,8 @@ describe('role-router', () => {
     it('returns true when prompt file exists', async () => {
       const dir = await mkdtemp(join(tmpdir(), 'omx-role-router-'));
       try {
-        await writeFile(join(dir, 'designer.md'), '# Designer');
+        await mkdir(join(dir, 'designer'), { recursive: true });
+        await writeFile(join(dir, 'designer', 'SKILL.md'), '# Designer');
         assert.equal(isKnownRole('designer', dir), true);
       } finally {
         await rm(dir, { recursive: true, force: true });
@@ -73,9 +76,12 @@ describe('role-router', () => {
     it('lists all roles from prompt files', async () => {
       const dir = await mkdtemp(join(tmpdir(), 'omx-role-router-'));
       try {
-        await writeFile(join(dir, 'executor.md'), '# Executor');
-        await writeFile(join(dir, 'designer.md'), '# Designer');
-        await writeFile(join(dir, 'test-engineer.md'), '# Test Engineer');
+        await mkdir(join(dir, 'executor'), { recursive: true });
+        await writeFile(join(dir, 'executor', 'SKILL.md'), '# Executor');
+        await mkdir(join(dir, 'designer'), { recursive: true });
+        await writeFile(join(dir, 'designer', 'SKILL.md'), '# Designer');
+        await mkdir(join(dir, 'test-engineer'), { recursive: true });
+        await writeFile(join(dir, 'test-engineer', 'SKILL.md'), '# Test Engineer');
         await writeFile(join(dir, 'README.txt'), 'not a prompt');
         const roles = await listAvailableRoles(dir);
         assert.deepEqual(roles, ['designer', 'executor', 'test-engineer']);
@@ -204,7 +210,8 @@ describe('role-router', () => {
     it('loadRolePrompt rejects uppercase role names', async () => {
       const dir = await mkdtemp(join(tmpdir(), 'omx-role-router-'));
       try {
-        await writeFile(join(dir, 'Executor.md'), '# Executor');
+        await mkdir(join(dir, 'Executor'), { recursive: true });
+        await writeFile(join(dir, 'Executor', 'SKILL.md'), '# Executor');
         const content = await loadRolePrompt('Executor', dir);
         assert.equal(content, null);
       } finally {
@@ -225,7 +232,8 @@ describe('role-router', () => {
     it('loadRolePrompt accepts valid hyphenated role names', async () => {
       const dir = await mkdtemp(join(tmpdir(), 'omx-role-router-'));
       try {
-        await writeFile(join(dir, 'test-engineer.md'), '# Test Engineer');
+        await mkdir(join(dir, 'test-engineer'), { recursive: true });
+        await writeFile(join(dir, 'test-engineer', 'SKILL.md'), '# Test Engineer');
         const content = await loadRolePrompt('test-engineer', dir);
         assert.ok(content);
         assert.match(content, /Test Engineer/);

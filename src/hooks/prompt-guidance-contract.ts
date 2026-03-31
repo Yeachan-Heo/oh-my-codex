@@ -60,15 +60,15 @@ export const ROOT_TEMPLATE_CONTRACTS: GuidanceSurfaceContract[] = [
 ];
 
 export const CORE_ROLE_CONTRACTS: GuidanceSurfaceContract[] = [
-  { id: 'executor', path: 'prompts/executor.md', requiredPatterns: CORE_ROLE_PATTERNS.executor },
-  { id: 'planner', path: 'prompts/planner.md', requiredPatterns: CORE_ROLE_PATTERNS.planner },
-  { id: 'verifier', path: 'prompts/verifier.md', requiredPatterns: CORE_ROLE_PATTERNS.verifier },
+  { id: 'executor', path: 'skills/executor/SKILL.md', requiredPatterns: CORE_ROLE_PATTERNS.executor },
+  { id: 'planner', path: 'skills/planner/SKILL.md', requiredPatterns: CORE_ROLE_PATTERNS.planner },
+  { id: 'verifier', path: 'skills/verifier/SKILL.md', requiredPatterns: CORE_ROLE_PATTERNS.verifier },
 ];
 
 export const SCENARIO_ROLE_CONTRACTS: GuidanceSurfaceContract[] = [
   {
     id: 'executor-scenarios',
-    path: 'prompts/executor.md',
+    path: 'skills/executor/SKILL.md',
     requiredPatterns: [
       rx('user says `continue`'),
       rx('make a PR targeting dev'),
@@ -78,7 +78,7 @@ export const SCENARIO_ROLE_CONTRACTS: GuidanceSurfaceContract[] = [
   },
   {
     id: 'planner-scenarios',
-    path: 'prompts/planner.md',
+    path: 'skills/planner/SKILL.md',
     requiredPatterns: [
       rx('user says `continue`'),
       rx('user says `make a PR`'),
@@ -88,7 +88,7 @@ export const SCENARIO_ROLE_CONTRACTS: GuidanceSurfaceContract[] = [
   },
   {
     id: 'verifier-scenarios',
-    path: 'prompts/verifier.md',
+    path: 'skills/verifier/SKILL.md',
     requiredPatterns: [
       rx('user says `merge if CI green`'),
       rx('confirm they are green'),
@@ -110,7 +110,7 @@ export const WAVE_TWO_CONTRACTS: GuidanceSurfaceContract[] = [
   'explore',
 ].map((name) => ({
   id: name,
-  path: `prompts/${name}.md`,
+  path: `skills/${name}/SKILL.md`,
   requiredPatterns: WAVE_TWO_PATTERNS,
 }));
 
@@ -133,14 +133,14 @@ export const CATALOG_CONTRACTS: GuidanceSurfaceContract[] = [
   'writer',
 ].map((name) => ({
   id: name,
-  path: `prompts/${name}.md`,
+  path: `skills/${name}/SKILL.md`,
   requiredPatterns: CATALOG_PATTERNS,
 }));
 
 export const LEGACY_PROMPT_CONTRACTS: GuidanceSurfaceContract[] = [
   {
     id: 'code-simplifier',
-    path: 'prompts/code-simplifier.md',
+    path: 'skills/code-simplifier/SKILL.md',
     requiredPatterns: [
       rx('local overrides for the active simplification scope'),
       rx('simplification result is grounded'),
@@ -152,7 +152,7 @@ export const LEGACY_PROMPT_CONTRACTS: GuidanceSurfaceContract[] = [
 export const SPECIALIZED_PROMPT_CONTRACTS: GuidanceSurfaceContract[] = [
   {
     id: 'sisyphus-lite',
-    path: 'prompts/sisyphus-lite.md',
+    path: 'skills/sisyphus-lite/SKILL.md',
     requiredPatterns: [
       rx('compact, information-dense outputs'),
       rx('Treat newer user instructions as local overrides'),

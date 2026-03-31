@@ -32,7 +32,6 @@ interface UninstallSummary {
   tuiSectionRemoved: boolean;
   topLevelKeysRemoved: boolean;
   featureFlagsRemoved: boolean;
-  promptsRemoved: number;
   skillsRemoved: number;
   agentConfigsRemoved: number;
   agentsMdRemoved: boolean;
@@ -160,35 +159,6 @@ async function cleanConfig(
   }
 
   return result;
-}
-
-async function removeInstalledPrompts(
-  promptsDir: string,
-  pkgRoot: string,
-  options: Pick<UninstallOptions, "dryRun" | "verbose">,
-): Promise<number> {
-  const srcPromptsDir = join(pkgRoot, "prompts");
-  if (!existsSync(srcPromptsDir) || !existsSync(promptsDir)) return 0;
-
-  let removed = 0;
-  const sourceFiles = await readdir(srcPromptsDir);
-
-  for (const file of sourceFiles) {
-    if (!file.endsWith(".md")) continue;
-    const installed = join(promptsDir, file);
-    if (!existsSync(installed)) continue;
-
-    if (!options.dryRun) {
-      await rm(installed, { force: true });
-    }
-    if (options.verbose)
-      console.log(
-        `  ${options.dryRun ? "Would remove" : "Removed"} prompt: ${file}`,
-      );
-    removed++;
-  }
-
-  return removed;
 }
 
 async function removeInstalledSkills(
@@ -327,9 +297,6 @@ function printSummary(summary: UninstallSummary, dryRun: boolean): void {
     console.log("  config.toml: no OMX entries found (or --keep-config used)");
   }
 
-  if (summary.promptsRemoved > 0) {
-    console.log(`  ${prefix} ${summary.promptsRemoved} agent prompt(s)`);
-  }
   if (summary.skillsRemoved > 0) {
     console.log(`  ${prefix} ${summary.skillsRemoved} skill(s)`);
   }
@@ -347,7 +314,6 @@ function printSummary(summary: UninstallSummary, dryRun: boolean): void {
 
   const totalActions =
     (summary.configCleaned ? 1 : 0) +
-    summary.promptsRemoved +
     summary.skillsRemoved +
     summary.agentConfigsRemoved +
     (summary.agentsMdRemoved ? 1 : 0) +
@@ -389,7 +355,6 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
     tuiSectionRemoved: false,
     topLevelKeysRemoved: false,
     featureFlagsRemoved: false,
-    promptsRemoved: 0,
     skillsRemoved: 0,
     agentConfigsRemoved: 0,
     agentsMdRemoved: false,
@@ -398,9 +363,9 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
 
   // Step 1: Clean config.toml
   if (keepConfig) {
-    console.log("[1/5] Skipping config.toml cleanup (--keep-config).");
+    console.log("[1/4] Skipping config.toml cleanup (--keep-config).");
   } else {
-    console.log("[1/5] Cleaning config.toml...");
+    console.log("[1/4] Cleaning config.toml...");
     const configResult = await cleanConfig(scopeDirs.codexConfigFile, {
       dryRun,
       verbose,
@@ -409,20 +374,8 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
   }
   console.log();
 
-  // Step 2: Remove installed prompts
-  console.log("[2/5] Removing agent prompts...");
-  summary.promptsRemoved = await removeInstalledPrompts(
-    scopeDirs.promptsDir,
-    pkgRoot,
-    { dryRun, verbose },
-  );
-  console.log(
-    `  ${dryRun ? "Would remove" : "Removed"} ${summary.promptsRemoved} prompt(s).`,
-  );
-  console.log();
-
-  // Step 3: Remove native agent configs
-  console.log("[3/5] Removing native agent configs...");
+  // Step 2: Remove native agent configs
+  console.log("[2/4] Removing native agent configs...");
   summary.agentConfigsRemoved = await removeAgentConfigs(
     scopeDirs.nativeAgentsDir,
     { dryRun, verbose },
@@ -432,8 +385,8 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
   );
   console.log();
 
-  // Step 4: Remove installed skills
-  console.log("[4/5] Removing skills...");
+  // Step 3: Remove installed skills
+  console.log("[3/4] Removing skills...");
   summary.skillsRemoved = await removeInstalledSkills(
     scopeDirs.skillsDir,
     pkgRoot,
@@ -444,8 +397,8 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
   );
   console.log();
 
-  // Step 5: Remove AGENTS.md and optionally .omx/ cache directory
-  console.log("[5/5] Cleaning up...");
+  // Step 4: Remove AGENTS.md and optionally .omx/ cache directory
+  console.log("[4/4] Cleaning up...");
   const agentsMdPath =
     scope === "project"
       ? join(projectRoot, "AGENTS.md")

@@ -6,240 +6,181 @@
       "name": "autopilot",
       "category": "execution",
       "status": "active",
-      "core": true,
-      "internalRequired": false
+      "core": true
     },
     {
       "name": "ralph",
       "category": "execution",
       "status": "active",
-      "core": true,
-      "internalRequired": false
+      "core": true
     },
     {
       "name": "ultrawork",
       "category": "execution",
       "status": "active",
-      "core": true,
-      "internalRequired": false
+      "core": true
     },
     {
       "name": "team",
       "category": "execution",
       "status": "active",
-      "core": true,
-      "internalRequired": false
+      "core": true
     },
     {
       "name": "ecomode",
       "category": "execution",
       "status": "merged",
-      "canonical": "ultrawork",
-      "core": false,
-      "internalRequired": false
+      "canonical": "ultrawork"
     },
     {
       "name": "ultraqa",
       "category": "execution",
       "status": "merged",
-      "canonical": "ralph",
-      "core": false,
-      "internalRequired": false
+      "canonical": "ralph"
     },
     {
       "name": "swarm",
       "category": "execution",
       "status": "alias",
-      "canonical": "team",
-      "core": false,
-      "internalRequired": false
+      "canonical": "team"
     },
     {
       "name": "plan",
       "category": "planning",
-      "status": "active",
-      "core": false,
-      "internalRequired": false
+      "status": "active"
     },
     {
       "name": "ralplan",
       "category": "planning",
       "status": "active",
-      "canonical": "plan",
       "core": true,
-      "internalRequired": false
+      "canonical": "plan"
     },
     {
       "name": "deep-interview",
       "category": "planning",
-      "status": "active",
-      "core": false,
-      "internalRequired": false
+      "status": "active"
     },
     {
       "name": "analyze",
       "category": "shortcut",
       "status": "alias",
-      "canonical": "debugger",
-      "core": false,
-      "internalRequired": false
+      "canonical": "debugger"
     },
     {
       "name": "deepsearch",
       "category": "shortcut",
       "status": "alias",
-      "canonical": "explore",
-      "core": false,
-      "internalRequired": false
+      "canonical": "explore"
     },
     {
       "name": "tdd",
       "category": "shortcut",
       "status": "alias",
-      "canonical": "test-engineer",
-      "core": false,
-      "internalRequired": false
+      "canonical": "test-engineer"
     },
     {
       "name": "build-fix",
       "category": "shortcut",
       "status": "alias",
-      "canonical": "build-fixer",
-      "core": false,
-      "internalRequired": false
+      "canonical": "build-fixer"
     },
     {
       "name": "ai-slop-cleaner",
       "category": "shortcut",
-      "status": "active",
-      "core": false,
-      "internalRequired": false
+      "status": "active"
     },
     {
       "name": "code-review",
       "category": "shortcut",
       "status": "active",
-      "canonical": "code-reviewer",
-      "core": false,
-      "internalRequired": false
+      "canonical": "code-reviewer"
     },
     {
       "name": "security-review",
       "category": "shortcut",
       "status": "active",
-      "canonical": "security-reviewer",
-      "core": false,
-      "internalRequired": false
+      "canonical": "security-reviewer"
     },
     {
       "name": "visual-verdict",
       "category": "shortcut",
       "status": "active",
-      "canonical": "vision",
-      "core": false,
-      "internalRequired": false
+      "canonical": "vision"
     },
     {
       "name": "web-clone",
       "category": "shortcut",
       "status": "active",
-      "canonical": "vision",
-      "core": false,
-      "internalRequired": false
+      "canonical": "vision"
     },
     {
       "name": "frontend-ui-ux",
       "category": "shortcut",
       "status": "alias",
-      "canonical": "designer",
-      "core": false,
-      "internalRequired": false
+      "canonical": "designer"
     },
     {
       "name": "git-master",
       "category": "shortcut",
       "status": "alias",
-      "canonical": "git-master",
-      "core": false,
-      "internalRequired": false
+      "canonical": "git-master"
     },
     {
       "name": "review",
       "category": "shortcut",
       "status": "alias",
-      "canonical": "plan --review",
-      "core": false,
-      "internalRequired": false
+      "canonical": "plan --review"
     },
     {
       "name": "ask-claude",
       "category": "shortcut",
-      "status": "active",
-      "core": false,
-      "internalRequired": false
+      "status": "active"
     },
     {
       "name": "ask-gemini",
       "category": "shortcut",
-      "status": "active",
-      "core": false,
-      "internalRequired": false
+      "status": "active"
     },
     {
       "name": "cancel",
       "category": "utility",
-      "status": "active",
-      "core": false,
-      "internalRequired": false
+      "status": "active"
     },
     {
       "name": "doctor",
       "category": "utility",
-      "status": "active",
-      "core": false,
-      "internalRequired": false
+      "status": "active"
     },
     {
       "name": "help",
       "category": "utility",
-      "status": "active",
-      "core": false,
-      "internalRequired": false
+      "status": "active"
     },
     {
       "name": "note",
       "category": "utility",
-      "status": "active",
-      "core": false,
-      "internalRequired": false
+      "status": "active"
     },
     {
       "name": "trace",
       "category": "utility",
-      "status": "active",
-      "core": false,
-      "internalRequired": false
+      "status": "active"
     },
     {
       "name": "skill",
       "category": "utility",
-      "status": "active",
-      "core": false,
-      "internalRequired": false
+      "status": "active"
     },
     {
       "name": "hud",
       "category": "utility",
-      "status": "active",
-      "core": false,
-      "internalRequired": false
+      "status": "active"
     },
     {
       "name": "omx-setup",
       "category": "utility",
-      "status": "active",
-      "core": false,
-      "internalRequired": false
+      "status": "active"
     },
     {
       "name": "configure-notifications",
@@ -284,16 +225,173 @@
       "name": "ralph-init",
       "category": "utility",
       "status": "merged",
-      "canonical": "plan",
-      "core": false,
-      "internalRequired": false
+      "canonical": "plan"
     },
     {
       "name": "worker",
       "category": "utility",
       "status": "internal",
-      "core": false,
       "internalRequired": true
+    },
+    {
+      "name": "analyst",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "api-reviewer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "architect",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "build-fixer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "code-reviewer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "code-simplifier",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "critic",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "debugger",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "dependency-expert",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "designer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "executor",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "explore",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "explore-harness",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "information-architect",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "performance-reviewer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "planner",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "product-analyst",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "product-manager",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "qa-tester",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "quality-reviewer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "quality-strategist",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "researcher",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "security-reviewer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "sisyphus-lite",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "style-reviewer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "team-executor",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "team-orchestrator",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "test-engineer",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "ux-researcher",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "verifier",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "vision",
+      "category": "agent-role",
+      "status": "internal"
+    },
+    {
+      "name": "writer",
+      "category": "agent-role",
+      "status": "internal"
     }
   ],
   "agents": [

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -13,9 +13,12 @@ describe('followup-planner', () => {
   it('resolves available agent types from explicit prompt directories', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'omx-followup-roster-'));
     try {
-      await writeFile(join(dir, 'executor.md'), '# Executor');
-      await writeFile(join(dir, 'architect.md'), '# Architect');
-      await writeFile(join(dir, 'test-engineer.md'), '# Test Engineer');
+      await mkdir(join(dir, 'executor'), { recursive: true });
+      await writeFile(join(dir, 'executor', 'SKILL.md'), '# Executor');
+      await mkdir(join(dir, 'architect'), { recursive: true });
+      await writeFile(join(dir, 'architect', 'SKILL.md'), '# Architect');
+      await mkdir(join(dir, 'test-engineer'), { recursive: true });
+      await writeFile(join(dir, 'test-engineer', 'SKILL.md'), '# Test Engineer');
 
       const roles = await resolveAvailableAgentTypes(process.cwd(), { promptDirs: [dir] });
       assert.deepEqual(roles, ['architect', 'executor', 'test-engineer']);
@@ -28,8 +31,10 @@ describe('followup-planner', () => {
   it('includes team-executor when the prompt is available', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'omx-followup-roster-'));
     try {
-      await writeFile(join(dir, 'executor.md'), '# Executor');
-      await writeFile(join(dir, 'team-executor.md'), '# Team Executor');
+      await mkdir(join(dir, 'executor'), { recursive: true });
+      await writeFile(join(dir, 'executor', 'SKILL.md'), '# Executor');
+      await mkdir(join(dir, 'team-executor'), { recursive: true });
+      await writeFile(join(dir, 'team-executor', 'SKILL.md'), '# Team Executor');
 
       const roles = await resolveAvailableAgentTypes(process.cwd(), { promptDirs: [dir] });
       assert.deepEqual(roles, ['executor', 'team-executor']);

@@ -30,13 +30,13 @@ const ralplanSkill = readFileSync(
   join(__dirname, '../../../skills/ralplan/SKILL.md'), 'utf-8'
 );
 const plannerPrompt = readFileSync(
-  join(__dirname, '../../../prompts/planner.md'), 'utf-8'
+  join(__dirname, '../../../skills/planner/SKILL.md'), 'utf-8'
 );
 const architectPrompt = readFileSync(
-  join(__dirname, '../../../prompts/architect.md'), 'utf-8'
+  join(__dirname, '../../../skills/architect/SKILL.md'), 'utf-8'
 );
 const criticPrompt = readFileSync(
-  join(__dirname, '../../../prompts/critic.md'), 'utf-8'
+  join(__dirname, '../../../skills/critic/SKILL.md'), 'utf-8'
 );
 
 /**

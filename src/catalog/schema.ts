@@ -1,4 +1,4 @@
-export type CatalogSkillCategory = 'execution' | 'planning' | 'shortcut' | 'utility';
+export type CatalogSkillCategory = 'execution' | 'planning' | 'shortcut' | 'utility' | 'agent-role';
 export type CatalogAgentCategory = 'build' | 'review' | 'domain' | 'product' | 'coordination';
 export type CatalogEntryStatus = 'active' | 'alias' | 'merged' | 'deprecated' | 'internal';
 
@@ -25,7 +25,7 @@ export interface CatalogManifest {
   agents: CatalogAgentEntry[];
 }
 
-const SKILL_CATEGORIES = new Set<CatalogSkillCategory>(['execution', 'planning', 'shortcut', 'utility']);
+const SKILL_CATEGORIES = new Set<CatalogSkillCategory>(['execution', 'planning', 'shortcut', 'utility', 'agent-role']);
 const AGENT_CATEGORIES = new Set<CatalogAgentCategory>(['build', 'review', 'domain', 'product', 'coordination']);
 const ENTRY_STATUSES = new Set<CatalogEntryStatus>(['active', 'alias', 'merged', 'deprecated', 'internal']);
 const REQUIRED_CORE_SKILLS = new Set(['ralplan', 'team', 'ralph', 'ultrawork', 'autopilot']);
