@@ -5,6 +5,7 @@
  */
 
 import { readFile, writeFile } from 'fs/promises';
+import { readFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join, resolve as resolvePath } from 'path';
 import { homedir } from 'os';
@@ -443,6 +444,42 @@ function resolveInvocationSessionId(payload) {
   ).trim();
 }
 
+function readParentPid(pid) {
+  if (!Number.isInteger(pid) || pid <= 1) return null;
+  try {
+    if (process.platform === 'linux') {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
+      const commandEnd = stat.lastIndexOf(')');
+      if (commandEnd === -1) return null;
+      const remainder = stat.slice(commandEnd + 1).trim();
+      const fields = remainder.split(/\s+/);
+      if (fields.length === 0) return null;
+      const ppid = Number(fields[1]);
+      return Number.isFinite(ppid) && ppid > 0 ? ppid : null;
+    }
+    const raw = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], {
+      encoding: 'utf-8',
+      timeout: 2000,
+    }).trim();
+    const ppid = Number(raw);
+    return Number.isFinite(ppid) && ppid > 0 ? ppid : null;
+  } catch {
+    return null;
+  }
+}
+
+function processHasAncestorPid(targetPid, currentPid = process.pid) {
+  if (!Number.isInteger(targetPid) || targetPid <= 1) return false;
+  let pid = Number.isInteger(currentPid) && currentPid > 1 ? currentPid : process.pid;
+  for (let depth = 0; depth < 64 && pid > 1; depth += 1) {
+    if (pid === targetPid) return true;
+    const parent = readParentPid(pid);
+    if (!parent || parent === pid) break;
+    pid = parent;
+  }
+  return false;
+}
+
 async function isManagedOmxSessionForAutoNudge(cwd, payload) {
   if (safeString(process.env.OMX_TEAM_WORKER || '').trim() !== '') return true;
 
@@ -454,7 +491,8 @@ async function isManagedOmxSessionForAutoNudge(cwd, payload) {
     if (!sessionState) return false;
     if (resolvePath(safeString(sessionState.cwd || cwd)) !== resolvePath(cwd)) return false;
     if (safeString(sessionState.session_id).trim() !== invocationSessionId) return false;
-    return !isSessionStale(sessionState);
+    if (isSessionStale(sessionState)) return false;
+    return processHasAncestorPid(sessionState.pid);
   } catch {
     return false;
   }

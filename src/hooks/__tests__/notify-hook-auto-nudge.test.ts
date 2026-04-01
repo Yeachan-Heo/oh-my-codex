@@ -246,6 +246,54 @@ describe('notify-hook auto-nudge', () => {
     });
   });
 
+  it('does not auto-nudge plain tmux Codex sessions that only inherit OMX session env', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+      });
+
+      const sleeper = spawnSync('bash', ['-lc', 'sleep 5 >/dev/null 2>&1 & echo $!'], { encoding: 'utf8' });
+      assert.equal(sleeper.status, 0, sleeper.stderr || sleeper.stdout);
+      const sleeperPid = Number((sleeper.stdout || '').trim());
+      assert.ok(Number.isFinite(sleeperPid) && sleeperPid > 1, 'expected helper pid');
+
+      await writeJson(join(stateDir, 'session.json'), {
+        session_id: 'sess-managed',
+        started_at: new Date().toISOString(),
+        cwd,
+        pid: sleeperPid,
+        platform: process.platform,
+      });
+
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'session-id': 'sess-managed',
+        'last-assistant-message': 'I analyzed the code. If you want me to make these changes, let me know.',
+      }, {
+        OMX_SESSION_ID: 'sess-managed',
+        OMX_TEST_UNMANAGED_SESSION: '1',
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
+      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+    });
+  });
+
   it('does not auto-nudge plain tmux Codex sessions that are not OMX-managed', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
