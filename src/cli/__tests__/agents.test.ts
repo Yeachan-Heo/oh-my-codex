@@ -109,7 +109,7 @@ describe('omx agents', () => {
       const editorScript = join(wd, 'editor.sh');
       await writeFile(
         editorScript,
-        '#!/usr/bin/env bash\nprintf \'\\nmodel = "gpt-5.4"\\n\' >> \"$1\"\n',
+        '#!/usr/bin/env bash\nprintf \'\\nmodel = "gpt-5.4"\\n\' >> "$1"\n',
       );
       await chmod(editorScript, 0o755);
 
@@ -131,6 +131,36 @@ describe('omx agents', () => {
 
       assert.equal(removeResult.status, 0, removeResult.stderr || removeResult.stdout);
       assert.equal(existsSync(agentPath), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails with clear guidance when remove runs in non-interactive mode without --force', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-agents-cli-'));
+    const home = join(wd, 'home');
+    try {
+      const projectAgentsDir = join(wd, '.codex', 'agents');
+      await mkdir(projectAgentsDir, { recursive: true });
+      await mkdir(home, { recursive: true });
+      const agentPath = join(projectAgentsDir, 'non-interactive.toml');
+      await writeFile(
+        agentPath,
+        'name = "non-interactive"\ndescription = "Remove me"\ndeveloper_instructions = """noop"""\n',
+      );
+
+      const result = runOmx(wd, ['agents', 'remove', 'non-interactive', '--scope', 'project'], {
+        HOME: home,
+        CODEX_HOME: join(home, '.codex'),
+      });
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      assert.notEqual(result.status, 0, 'expected non-zero exit for non-interactive remove');
+      assert.equal(existsSync(agentPath), true, 'agent file should remain when remove aborts');
+      assert.match(
+        result.stderr,
+        /remove requires an interactive terminal; rerun with --force in non-interactive environments/i,
+      );
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

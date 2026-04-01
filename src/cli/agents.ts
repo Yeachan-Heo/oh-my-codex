@@ -193,7 +193,6 @@ function resolveExistingAgentPath(
 }
 
 async function confirmRemove(path: string): Promise<boolean> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     const answer = (await rl.question(`Delete native agent ${path}? [y/N]: `)).trim().toLowerCase();
@@ -201,6 +200,12 @@ async function confirmRemove(path: string): Promise<boolean> {
   } finally {
     rl.close();
   }
+}
+
+function ensureInteractiveRemove(force: boolean): void {
+  if (force) return;
+  if (process.stdin.isTTY && process.stdout.isTTY) return;
+  throw new Error('remove requires an interactive terminal; rerun with --force in non-interactive environments');
 }
 
 async function editNativeAgent(
@@ -224,11 +229,12 @@ async function removeNativeAgent(
   name: string,
   options: { cwd?: string; scope?: AgentScope; force?: boolean } = {},
 ): Promise<string> {
+  ensureInteractiveRemove(Boolean(options.force));
   const path = resolveExistingAgentPath(name, options);
   if (!options.force) {
     const confirmed = await confirmRemove(path);
     if (!confirmed) {
-      throw new Error('remove aborted (pass --force to skip confirmation)');
+      throw new Error('remove aborted by user (pass --force to skip confirmation)');
     }
   }
   await rm(path, { force: true });
