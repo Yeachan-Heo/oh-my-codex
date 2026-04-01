@@ -48,6 +48,7 @@ declare module '*tmux-hook-engine.js' {
   export function normalizeTmuxCapture(value: unknown): string;
   export function paneIsBootstrapping(lines: string[] | string): boolean;
   export function paneLooksReady(captured: string): boolean;
+  export function paneShowsCodexViewport(captured: string): boolean;
   export function paneHasActiveTask(captured: string): boolean;
   export function buildPaneInModeArgv(paneTarget: string): string[];
   export function buildPaneCurrentCommandArgv(paneTarget: string): string[];
