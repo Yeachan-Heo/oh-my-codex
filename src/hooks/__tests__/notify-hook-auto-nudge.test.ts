@@ -773,6 +773,62 @@ exit 0
     });
   });
 
+  it('does not resend the exact same stalled turn after TTL expiry', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+      const lastTurnAt = '2026-03-01T00:00:00.000Z';
+      const lastMessage = 'If you want, I can keep going from here.';
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0, ttlMs: 5000 },
+      });
+      await writeJson(join(stateDir, 'hud-state.json'), {
+        last_turn_at: lastTurnAt,
+        turn_count: 1,
+        last_agent_output: lastMessage,
+      });
+
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const first = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'turn-id': 'stalled-turn-1',
+        'last-assistant-message': lastMessage,
+      });
+      assert.equal(first.status, 0, `first hook failed: ${first.stderr || first.stdout}`);
+
+      const nudgeStatePath = join(stateDir, 'auto-nudge-state.json');
+      const firstState = JSON.parse(await readFile(nudgeStatePath, 'utf-8'));
+      await writeJson(nudgeStatePath, {
+        ...firstState,
+        lastNudgeAt: '2026-03-01T00:00:10.000Z',
+      });
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'turn-id': 'stalled-turn-1',
+        'last-assistant-message': lastMessage,
+      });
+      assert.equal(result.status, 0, `second hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
+      assert.equal((tmuxLog.match(/send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/g) || []).length, 1);
+
+      const nudgeState = JSON.parse(await readFile(nudgeStatePath, 'utf-8'));
+      assert.equal(nudgeState.nudgeCount, 1);
+      assert.equal(nudgeState.lastSignature, firstState.lastSignature);
+    });
+  });
+
   it('uses custom response from config', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');

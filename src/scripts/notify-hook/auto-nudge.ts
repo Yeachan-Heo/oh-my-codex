@@ -512,6 +512,18 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
     const signature = await resolveAutoNudgeSignature(stateDir, payload, signatureSourceText);
     const semanticSignature = normalizeAutoNudgeSignatureText(signatureSourceText);
 
+    if (signature && safeString(nudgeState.lastSignature) === signature) {
+      await logTmuxHookEvent(logsDir, {
+        timestamp: new Date().toISOString(),
+        type: 'auto_nudge_skipped',
+        reason: 'already_nudged_for_signature',
+        source,
+        signature,
+        semantic_signature: semanticSignature,
+      }).catch(() => {});
+      return;
+    }
+
     const lastNudgeAtMs = Date.parse(safeString(nudgeState.lastNudgeAt));
     if (
       semanticSignature

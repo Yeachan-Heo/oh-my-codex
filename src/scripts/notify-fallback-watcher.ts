@@ -881,6 +881,11 @@ async function runFallbackAutoNudgeTick(): Promise<void> {
   const persistedAutoNudgeState = await readAutoNudgeState();
   const autoNudgeConfig = await loadAutoNudgeConfig();
   const semanticSignature = normalizeAutoNudgeSignatureText(lastMessage);
+  if (signature && safeString(persistedAutoNudgeState?.lastSignature) === signature) {
+    lastFallbackAutoNudge.last_reason = 'already_nudged_for_signature';
+    lastFallbackAutoNudge.last_nudged_signature = signature;
+    return;
+  }
   const lastNudgeAtMs = parseIsoMillis(safeString(persistedAutoNudgeState?.lastNudgeAt));
   if (
     semanticSignature
