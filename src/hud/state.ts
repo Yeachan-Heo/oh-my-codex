@@ -6,13 +6,14 @@
 
 import { readFile } from 'fs/promises';
 import { readFileSync } from 'fs';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { join, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { omxStateDir } from '../utils/paths.js';
 import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
 import type { RuntimeSnapshot } from '../runtime/bridge.js';
 import { getReadScopedStatePaths } from '../mcp/state-paths.js';
+import { tryReadGitValueFromFiles } from '../utils/git-filesystem.js';
 import type {
   RalphStateForHud,
   UltraworkStateForHud,
@@ -176,12 +177,16 @@ export function readVersion(): string | null {
 export type GitRunner = (cwd: string, args: string[]) => string | null;
 
 function runGit(cwd: string, args: string[]): string | null {
+  const fromFiles = tryReadGitValueFromFiles(cwd, args);
+  if (fromFiles !== null) return fromFiles;
+
   try {
-    return execSync(`git ${args.join(' ')}`, {
+    return execFileSync('git', args, {
       cwd,
       encoding: 'utf-8',
       timeout: 2000,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     }).trim() || null;
   } catch {
     return null;

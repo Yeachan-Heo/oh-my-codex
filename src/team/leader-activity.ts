@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { omxStateDir } from '../utils/paths.js';
+import { tryReadGitBranchActivityMsFromFiles } from '../utils/git-filesystem.js';
 
 interface LeaderRuntimeActivityDoc {
   last_activity_at?: string;
@@ -47,6 +48,7 @@ function tryReadGitValue(cwd: string, args: string[]): string | null {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 2000,
+      windowsHide: true,
     }).trim();
     return value || null;
   } catch {
@@ -69,6 +71,9 @@ function stateDirToProjectRoot(stateDir: string): string {
 
 async function readLeaderBranchGitActivityMs(stateDir: string): Promise<number> {
   const cwd = stateDirToProjectRoot(stateDir);
+  const fromFiles = tryReadGitBranchActivityMsFromFiles(cwd);
+  if (Number.isFinite(fromFiles)) return fromFiles;
+
   const gitDir = tryReadGitValue(cwd, ['rev-parse', '--git-dir']);
   if (!gitDir) return Number.NaN;
 
