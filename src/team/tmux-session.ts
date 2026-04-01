@@ -15,6 +15,7 @@ import {
   normalizeTmuxCapture as sharedNormalizeTmuxCapture,
   paneHasActiveTask as sharedPaneHasActiveTask,
   paneIsBootstrapping as sharedPaneIsBootstrapping,
+  paneShowsCodexViewport as sharedPaneShowsCodexViewport,
   paneLooksReady as sharedPaneLooksReady,
 } from '../scripts/tmux-hook-engine.js';
 import { sleep, sleepSync } from '../utils/sleep.js';
@@ -1235,7 +1236,15 @@ export function waitForWorkerReady(
       blockedByTrustPrompt = true;
       return false;
     }
-    return paneLooksReady(result.stdout);
+    if (paneLooksReady(result.stdout)) return true;
+    // Keep startup safety checks anchored to the visible pane. Only if the
+    // visible slice already proves a live Codex viewport do we consult recent
+    // scrollback for the prompt/helper text that may have slipped below the fold.
+    if (!sharedPaneShowsCodexViewport(result.stdout)) return false;
+
+    const scrollbackResult = runTmux(sharedBuildCapturePaneArgv(target, 80));
+    if (!scrollbackResult.ok) return false;
+    return paneLooksReady(scrollbackResult.stdout);
   };
 
   let delayMs = initialBackoffMs;

@@ -8,6 +8,7 @@ import {
   pickActiveMode,
   paneHasActiveTask,
   paneIsBootstrapping,
+  paneShowsCodexViewport,
   paneLooksReady,
   evaluateInjectionGuards,
   buildSendKeysArgv,
@@ -342,6 +343,40 @@ describe('paneLooksReady', () => {
 
   it('accepts issue-only prompts without a glyph', () => {
     assert.equal(paneLooksReady('IND-123 only...'), true);
+  });
+
+  it('keeps viewport-only Codex captures non-ready when the prompt is below the fold', () => {
+    assert.equal(paneLooksReady(`╭────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.118.0)                 │
+│                                            │
+│ model:     gpt-5.4 high   /model to change │
+│ directory: /tmp/demo                       │
+╰────────────────────────────────────────────╯
+
+⚠ MCP startup incomplete (failed: hf request)`), false);
+  });
+});
+
+describe('paneShowsCodexViewport', () => {
+  it('detects a live Codex viewport without requiring the prompt to remain visible', () => {
+    assert.equal(paneShowsCodexViewport(`╭────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.118.0)                 │
+│                                            │
+│ model:     gpt-5.4 high   /model to change │
+│ directory: /tmp/demo                       │
+╰────────────────────────────────────────────╯
+
+⚠ MCP startup incomplete (failed: hf request)`), true);
+  });
+
+  it('rejects status-only and bootstrapping captures', () => {
+    assert.equal(paneShowsCodexViewport('gpt-5 50% left'), false);
+    assert.equal(paneShowsCodexViewport(`╭────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.118.0)                 │
+│                                            │
+│ model: loading                             │
+│ directory: /tmp/demo                       │
+╰────────────────────────────────────────────╯`), false);
   });
 });
 

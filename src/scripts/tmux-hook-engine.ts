@@ -297,6 +297,17 @@ export function paneLooksReady(captured: any): boolean {
   return lines.some((line) => /^\s*(?:[›>❯]\s*)?[A-Z][A-Z0-9]+-\d+\s+only(?:\s*(?:…|\.{3}))?\s*$/iu.test(line));
 }
 
+export function paneShowsCodexViewport(captured: any): boolean {
+  const lines = normalizePaneLines(captured);
+  if (lines.length === 0) return false;
+  if (paneIsBootstrapping(lines)) return false;
+
+  const hasCodexBanner = lines.some((line) => /\bOpenAI Codex\b/i.test(line));
+  if (!hasCodexBanner) return false;
+
+  return lines.some((line) => /(?:^|\s)(?:model|directory):/i.test(line));
+}
+
 export function paneHasActiveTask(captured: any): boolean {
   const tail = normalizePaneLines(captured).map((line) => line.trim()).slice(-40);
   if (tail.some((line) => /\b\d+\s+background terminal running\b/i.test(line))) return true;
