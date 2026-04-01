@@ -4,6 +4,8 @@ import {
   getMainDefaultModel,
   getSparkDefaultModel,
   getStandardDefaultModel,
+  getGeminiDefaultModel,
+  getQwenDefaultModel,
 } from '../config/models.js';
 
 const MADMAX_FLAG = '--madmax';
@@ -200,4 +202,22 @@ export function isLowComplexityAgentType(agentType?: string): boolean {
 
 export function resolveTeamLowComplexityDefaultModel(codexHomeOverride?: string): string {
   return getSparkDefaultModel(codexHomeOverride);
+}
+
+/**
+ * Resolve a provider-specific default model when a team worker uses a non-Codex CLI.
+ * Returns the env-configured default for the given provider, or undefined if not set.
+ */
+export function resolveProviderDefaultModel(
+  provider: string,
+  codexHomeOverride?: string,
+): string | undefined {
+  switch (provider) {
+    case 'gemini':
+      return getGeminiDefaultModel(process.env, codexHomeOverride);
+    case 'qwen':
+      return getQwenDefaultModel(process.env, codexHomeOverride);
+    default:
+      return undefined;
+  }
 }

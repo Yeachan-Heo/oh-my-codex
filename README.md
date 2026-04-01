@@ -164,6 +164,29 @@ omx sparkshell --tmux-pane %12 --tail-lines 400
 | Windows | `winget install psmux` |
 | Windows (WSL2) | `sudo apt install tmux` |
 
+### External provider support
+
+OMX supports routing work to external CLI providers in both `omx ask` and team mode:
+
+| Provider | CLI binary | Team mode | Ask routing | Default model env var |
+| --- | --- | --- | --- | --- |
+| Codex (default) | `codex` | yes | no | `OMX_DEFAULT_FRONTIER_MODEL` |
+| Claude | `claude` | yes | `omx ask claude "..."` | - |
+| Gemini | `gemini` | yes | `omx ask gemini "..."` | `OMX_DEFAULT_GEMINI_MODEL` |
+| Qwen | `qwen` | yes | `omx ask qwen "..."` | `OMX_DEFAULT_QWEN_MODEL` |
+
+Set per-worker providers in team mode with:
+
+```bash
+# All workers use one provider
+OMX_TEAM_WORKER_CLI=gemini omx team 2:executor "task"
+
+# Mixed team: per-worker CLI assignment
+OMX_TEAM_WORKER_CLI_MAP=codex,qwen,claude,gemini omx team 4:executor "task"
+```
+
+All non-Codex providers (Claude, Gemini, Qwen) use direct Enter-only submit in team mode. Codex may use queue-first Tab on busy panes depending on strategy.
+
 ## Known issues
 
 ### Intel Mac: high `syspolicyd` / `trustd` CPU during startup

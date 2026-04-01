@@ -1142,7 +1142,7 @@ function spawnPromptWorker(
   workerCwd: string,
   launchArgs: string[],
   workerEnv: Record<string, string>,
-  workerCli: 'codex' | 'claude' | 'gemini',
+  workerCli: 'codex' | 'claude' | 'gemini' | 'qwen',
   initialPrompt?: string,
 ): ChildProcessByStdio<Writable, null, null> {
   const processSpec = buildWorkerProcessLaunchSpec(
@@ -1204,6 +1204,8 @@ export function resolveWorkerLaunchArgsFromEnv(
     console.log('[omx:team] worker startup resolution: model=claude source=local-settings');
   } else if (effectiveWorkerCli === 'gemini') {
     console.log('[omx:team] worker startup resolution: model=gemini source=local-settings');
+  } else if (effectiveWorkerCli === 'qwen') {
+    console.log('[omx:team] worker startup resolution: model=qwen source=local-settings');
   } else {
     console.log(`[omx:team] worker startup resolution: model=${resolvedModel} thinking_level=${thinkingLevel} source=${source}`);
   }
@@ -1214,7 +1216,7 @@ export function resolveWorkerLaunchArgsFromEnv(
 function resolveEffectiveWorkerCliForStartupLog(
   resolvedLaunchArgs: string[],
   env: NodeJS.ProcessEnv,
-): 'codex' | 'claude' | 'gemini' {
+): 'codex' | 'claude' | 'gemini' | 'qwen' {
   const rawCliMap = String(env.OMX_TEAM_WORKER_CLI_MAP ?? '').trim();
   if (rawCliMap !== '') {
     const entries = rawCliMap
@@ -1226,13 +1228,14 @@ function resolveEffectiveWorkerCliForStartupLog(
         ...env,
         OMX_TEAM_WORKER_CLI: 'auto',
       });
-      const resolvedMap = entries.map((entry): 'codex' | 'claude' | 'gemini' | null => {
+      const resolvedMap = entries.map((entry): 'codex' | 'claude' | 'gemini' | 'qwen' | null => {
         if (entry === 'auto') return autoCli;
-        if (entry === 'codex' || entry === 'claude' || entry === 'gemini') return entry;
+        if (entry === 'codex' || entry === 'claude' || entry === 'gemini' || entry === 'qwen') return entry;
         return null;
       });
       if (resolvedMap.every((entry) => entry === 'claude')) return 'claude';
       if (resolvedMap.every((entry) => entry === 'gemini')) return 'gemini';
+      if (resolvedMap.every((entry) => entry === 'qwen')) return 'qwen';
       if (resolvedMap.some((entry) => entry === 'codex')) return 'codex';
     }
   }
@@ -1453,7 +1456,7 @@ export async function startTeam(
         sanitized,
         resolveInstructionStateRoot(workerWorkspace.worktreePath),
       );
-      const initialPrompt = workerCliPlan[i - 1] === 'gemini' ? trigger : undefined;
+      const initialPrompt = (workerCliPlan[i - 1] === 'gemini' || workerCliPlan[i - 1] === 'qwen') ? trigger : undefined;
       if (initialPrompt) {
         await writeWorkerInbox(sanitized, workerName, inbox, leaderCwd);
       }

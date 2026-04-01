@@ -88,6 +88,20 @@ describe('parseAskArgs', () => {
     });
   });
 
+  it('parses qwen provider with positional prompt', () => {
+    assert.deepEqual(parseAskArgs(['qwen', 'explain', 'this']), {
+      provider: 'qwen',
+      prompt: 'explain this',
+    });
+  });
+
+  it('parses qwen provider with --prompt form', () => {
+    assert.deepEqual(parseAskArgs(['qwen', '--prompt', 'design', 'review']), {
+      provider: 'qwen',
+      prompt: 'design review',
+    });
+  });
+
   it('throws for invalid provider', () => {
     assert.throws(() => parseAskArgs(['openai', 'hello']), /Invalid provider/);
   });
@@ -111,6 +125,7 @@ describe('omx ask', () => {
       assert.equal(res.status, 1, res.stderr || res.stdout);
       assert.match(res.stderr, /claude --print/);
       assert.match(res.stderr, /gemini --prompt/);
+      assert.match(res.stderr, /qwen --prompt/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

@@ -22,7 +22,7 @@ interface CliInput {
   pollIntervalMs?: number;
 }
 
-type TeamWorkerProvider = 'codex' | 'claude' | 'gemini';
+type TeamWorkerProvider = 'codex' | 'claude' | 'gemini' | 'qwen';
 
 interface TaskResult {
   taskId: string;
@@ -119,9 +119,9 @@ function collectTaskResults(stateRoot: string, teamName: string): TaskResult[] {
 
 export function normalizeAgentTypes(raw: string[], workerCount: number): TeamWorkerProvider[] {
   const providers = raw.map((entry) => String(entry || '').trim().toLowerCase());
-  const invalid = providers.filter((entry) => entry !== 'codex' && entry !== 'claude' && entry !== 'gemini');
+  const invalid = providers.filter((entry) => entry !== 'codex' && entry !== 'claude' && entry !== 'gemini' && entry !== 'qwen');
   if (invalid.length > 0) {
-    throw new Error(`Invalid agentTypes entries: ${invalid.join(', ')}. Expected codex|claude|gemini.`);
+    throw new Error(`Invalid agentTypes entries: ${invalid.join(', ')}. Expected codex|claude|gemini|qwen.`);
   }
   if (providers.length !== 1 && providers.length !== workerCount) {
     throw new Error(`agentTypes length must be 1 or ${workerCount}; received ${providers.length}.`);
