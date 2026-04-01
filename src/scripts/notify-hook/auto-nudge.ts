@@ -432,13 +432,28 @@ async function resolveCodexPaneFromAnchor(anchorPane) {
   return '';
 }
 
-async function isManagedOmxSessionForAutoNudge(cwd) {
+function resolveInvocationSessionId(payload) {
+  return safeString(
+    payload?.session_id
+    || payload?.['session-id']
+    || process.env.OMX_SESSION_ID
+    || process.env.CODEX_SESSION_ID
+    || process.env.SESSION_ID
+    || '',
+  ).trim();
+}
+
+async function isManagedOmxSessionForAutoNudge(cwd, payload) {
   if (safeString(process.env.OMX_TEAM_WORKER || '').trim() !== '') return true;
+
+  const invocationSessionId = resolveInvocationSessionId(payload);
+  if (!invocationSessionId) return false;
 
   try {
     const sessionState = await readSessionState(cwd);
     if (!sessionState) return false;
     if (resolvePath(safeString(sessionState.cwd || cwd)) !== resolvePath(cwd)) return false;
+    if (safeString(sessionState.session_id).trim() !== invocationSessionId) return false;
     return !isSessionStale(sessionState);
   } catch {
     return false;
@@ -487,7 +502,7 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
   const config = await loadAutoNudgeConfig();
   if (!config.enabled) return;
 
-  const managedSession = await isManagedOmxSessionForAutoNudge(cwd);
+  const managedSession = await isManagedOmxSessionForAutoNudge(cwd, payload);
   if (!managedSession) {
     await logTmuxHookEvent(logsDir, {
       timestamp: new Date().toISOString(),

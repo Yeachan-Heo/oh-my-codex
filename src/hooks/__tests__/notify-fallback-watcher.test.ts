@@ -650,6 +650,7 @@ describe('notify-fallback watcher', () => {
       await writeFile(join(codexHome, '.omx-config.json'), JSON.stringify({
         autoNudge: { enabled: true, delaySec: 0, ttlMs: 30_000 },
       }, null, 2));
+      await writeSessionStart(wd, 'sess-managed-fallback');
       await writeFile(join(wd, '.omx', 'state', 'hud-state.json'), JSON.stringify({
         last_turn_at: new Date(Date.now() - 6_000).toISOString(),
         turn_count: 7,
@@ -666,6 +667,7 @@ describe('notify-fallback watcher', () => {
           env: buildCleanNotifyEnv({
             PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
             CODEX_HOME: codexHome,
+            OMX_SESSION_ID: 'sess-managed-fallback',
             TMUX: '1',
             TMUX_PANE: '%42',
             OMX_NOTIFY_FALLBACK_AUTO_NUDGE_STALL_MS: '5000',
