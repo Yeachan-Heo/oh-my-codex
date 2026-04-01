@@ -5,6 +5,7 @@ import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { buildTmuxSessionName } from '../../cli/index.js';
 
 const NOTIFY_HOOK_SCRIPT = new URL('../../../dist/scripts/notify-hook.js', import.meta.url);
 const DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS = ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead', 'next i should'];
@@ -106,7 +107,7 @@ if [[ "\$cmd" == "display-message" ]]; then
     exit 0
   fi
   if [[ "\$format" == "#S" ]]; then
-    echo "devsess"
+    echo "${'${OMX_TEST_TMUX_SESSION_NAME:-devsess}'}"
     exit 0
   fi
   exit 0
@@ -275,6 +276,8 @@ describe('notify-hook auto-nudge', () => {
         cwd,
         pid: sleeperPid,
         platform: process.platform,
+        pid_start_ticks: readLinuxStartTicks(sleeperPid),
+        pid_cmdline: readLinuxCmdline(sleeperPid),
       });
 
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
@@ -323,6 +326,44 @@ describe('notify-hook auto-nudge', () => {
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
+      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+    });
+  });
+
+  it('does not auto-nudge when payload session-id disagrees with the managed tmux session identity', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+      const managedSessionName = buildTmuxSessionName(cwd, 'sess-managed');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+      });
+
+      await writeManagedSessionState(stateDir, cwd);
+
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'session-id': 'sess-other',
+        'last-assistant-message': 'I analyzed the code. If you want me to make these changes, let me know.',
+      }, {
+        OMX_SESSION_ID: 'sess-managed',
+        OMX_TEST_TMUX_SESSION_NAME: managedSessionName,
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/);
     });
   });

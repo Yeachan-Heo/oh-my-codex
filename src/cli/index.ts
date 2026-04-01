@@ -1383,6 +1383,7 @@ export function buildDetachedSessionBootstrapSteps(
   codexHomeOverride?: string,
   notifyTempContractRaw?: string | null,
   nativeWindows = false,
+  sessionId?: string,
 ): DetachedSessionTmuxStep[] {
   const detachedLeaderCmd = nativeWindows
     ? "powershell.exe"
@@ -1400,6 +1401,7 @@ export function buildDetachedSessionBootstrapSteps(
     ...(workerLaunchArgs
       ? ["-e", `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`]
       : []),
+    ...(sessionId ? ["-e", `OMX_SESSION_ID=${sessionId}`] : []),
     ...(codexHomeOverride ? ["-e", `CODEX_HOME=${codexHomeOverride}`] : []),
     ...(notifyTempContractRaw
       ? ["-e", `${OMX_NOTIFY_TEMP_CONTRACT_ENV}=${notifyTempContractRaw}`]
@@ -1812,6 +1814,7 @@ function runCodex(
         codexHomeOverride,
         notifyTempContractRaw,
         nativeWindows,
+        sessionId,
       );
       for (const step of bootstrapSteps) {
         const output = execFileSync("tmux", step.args, {

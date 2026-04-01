@@ -7,7 +7,7 @@
 import { readFile, writeFile } from 'fs/promises';
 import { readFileSync } from 'fs';
 import { execFileSync } from 'child_process';
-import { join, resolve as resolvePath } from 'path';
+import { basename, dirname, join, resolve as resolvePath } from 'path';
 import { homedir } from 'os';
 import { asNumber, safeString } from './utils.js';
 import { readJsonIfExists, getScopedStateDirsForCurrentSession, readdir } from './state-io.js';
@@ -444,6 +444,59 @@ function resolveInvocationSessionId(payload) {
   ).trim();
 }
 
+
+function sanitizeTmuxToken(value) {
+  const cleaned = safeString(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return cleaned || 'unknown';
+}
+
+function buildExpectedManagedTmuxSessionName(cwd, sessionId) {
+  const parentPath = dirname(cwd);
+  const parentDir = basename(parentPath);
+  const dirName = basename(cwd);
+  const grandparentPath = dirname(parentPath);
+  const grandparentDir = basename(grandparentPath);
+  const repoDir = parentDir.endsWith('.omx-worktrees')
+    ? parentDir.slice(0, -'.omx-worktrees'.length)
+    : parentDir === 'worktrees' && grandparentDir === '.omx'
+      ? basename(dirname(grandparentPath))
+      : null;
+  const dirToken = repoDir
+    ? sanitizeTmuxToken(`${repoDir}-${dirName}`)
+    : sanitizeTmuxToken(dirName);
+  let branchToken = 'detached';
+  try {
+    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+    }).trim();
+    if (branch) branchToken = sanitizeTmuxToken(branch);
+  } catch {
+    // best effort only
+  }
+  const sessionToken = sanitizeTmuxToken(safeString(sessionId).replace(/^omx-/, ''));
+  const name = `omx-${dirToken}-${branchToken}-${sessionToken}`;
+  return name.length > 120 ? name.slice(0, 120) : name;
+}
+
+function readCurrentTmuxSessionName() {
+  if (!process.env.TMUX) return '';
+  try {
+    return execFileSync('tmux', ['display-message', '-p', '#S'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+    }).trim();
+  } catch {
+    return '';
+  }
+}
+
 function readParentPid(pid) {
   if (!Number.isInteger(pid) || pid <= 1) return null;
   try {
@@ -492,6 +545,13 @@ async function isManagedOmxSessionForAutoNudge(cwd, payload) {
     if (resolvePath(safeString(sessionState.cwd || cwd)) !== resolvePath(cwd)) return false;
     if (safeString(sessionState.session_id).trim() !== invocationSessionId) return false;
     if (isSessionStale(sessionState)) return false;
+
+    const currentTmuxSession = readCurrentTmuxSessionName();
+    if (currentTmuxSession) {
+      const expectedTmuxSession = buildExpectedManagedTmuxSessionName(cwd, invocationSessionId);
+      if (currentTmuxSession === expectedTmuxSession) return true;
+    }
+
     return processHasAncestorPid(sessionState.pid);
   } catch {
     return false;
