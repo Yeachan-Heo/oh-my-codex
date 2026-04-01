@@ -2,6 +2,7 @@ import { spawnSync, execFile } from 'child_process';
 import { promisify } from 'util';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { resolveProviderDefaultModel } from './model-contract.js';
 import {
   CODEX_BYPASS_FLAG,
   MADMAX_FLAG,
@@ -559,19 +560,21 @@ export function translateWorkerLaunchArgsForCli(workerCli: TeamWorkerCli, args: 
   if (workerCli === 'gemini') {
     const model = extractModelOverride(args);
     const geminiModel = model && /gemini/i.test(model) ? model : null;
+    const effectiveGeminiModel = geminiModel ?? resolveProviderDefaultModel('gemini') ?? null;
     const translatedArgs = [GEMINI_APPROVAL_MODE_FLAG, GEMINI_APPROVAL_MODE_YOLO];
     const trimmedPrompt = initialPrompt?.trim();
     if (trimmedPrompt) translatedArgs.push(GEMINI_PROMPT_INTERACTIVE_FLAG, trimmedPrompt);
-    if (geminiModel) translatedArgs.push(MODEL_FLAG, geminiModel);
+    if (effectiveGeminiModel) translatedArgs.push(MODEL_FLAG, effectiveGeminiModel);
     return translatedArgs;
   }
   if (workerCli === 'qwen') {
     const model = extractModelOverride(args);
     const qwenModel = model && /qwen/i.test(model) ? model : null;
+    const effectiveModel = qwenModel ?? resolveProviderDefaultModel('qwen') ?? null;
     const translatedArgs = [QWEN_SANDBOX_MODE_FLAG, QWEN_SANDBOX_MODE_NONE];
     const trimmedPrompt = initialPrompt?.trim();
     if (trimmedPrompt) translatedArgs.push(QWEN_PROMPT_FLAG, trimmedPrompt);
-    if (qwenModel) translatedArgs.push(MODEL_FLAG, qwenModel);
+    if (effectiveModel) translatedArgs.push(MODEL_FLAG, effectiveModel);
     return translatedArgs;
   }
 
