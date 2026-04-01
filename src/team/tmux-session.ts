@@ -51,10 +51,13 @@ const CLAUDE_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
 const GEMINI_PROMPT_INTERACTIVE_FLAG = '-i';
 const GEMINI_APPROVAL_MODE_FLAG = '--approval-mode';
 const GEMINI_APPROVAL_MODE_YOLO = 'yolo';
+const GROK_PROMPT_FLAG = '-p';
+const GROK_APPROVAL_MODE_FLAG = '--approval-mode';
+const GROK_APPROVAL_MODE_YOLO = 'yolo';
 const OMX_LEADER_NODE_PATH_ENV = 'OMX_LEADER_NODE_PATH';
 const OMX_LEADER_CLI_PATH_ENV = 'OMX_LEADER_CLI_PATH';
 
-export type TeamWorkerCli = 'codex' | 'claude' | 'gemini';
+export type TeamWorkerCli = 'codex' | 'claude' | 'gemini' | 'grok';
 type TeamWorkerCliMode = 'auto' | TeamWorkerCli;
 export type TeamWorkerLaunchMode = 'interactive' | 'prompt';
 
@@ -456,8 +459,8 @@ function hasModelInstructionsOverride(args: string[]): boolean {
 function normalizeTeamWorkerCliMode(raw: string | undefined, sourceEnv: string = OMX_TEAM_WORKER_CLI_ENV): TeamWorkerCliMode {
   const normalized = String(raw ?? 'auto').trim().toLowerCase();
   if (normalized === '' || normalized === 'auto') return 'auto';
-  if (normalized === 'codex' || normalized === 'claude' || normalized === 'gemini') return normalized;
-  throw new Error(`Invalid ${sourceEnv} value "${raw}". Expected: auto, codex, claude, gemini`);
+  if (normalized === 'codex' || normalized === 'claude' || normalized === 'gemini' || normalized === 'grok') return normalized;
+  throw new Error(`Invalid ${sourceEnv} value "${raw}". Expected: auto, codex, claude, gemini, grok`);
 }
 
 export function resolveTeamWorkerLaunchMode(
@@ -499,6 +502,7 @@ function resolveTeamWorkerCliFromLaunchArgs(launchArgs: string[] = []): TeamWork
   const model = extractModelOverride(launchArgs);
   if (model && /claude/i.test(model)) return 'claude';
   if (model && /gemini/i.test(model)) return 'gemini';
+  if (model && /grok/i.test(model)) return 'grok';
   return 'codex';
 }
 
@@ -527,7 +531,7 @@ export function resolveTeamWorkerCliPlan(
   if (entries.length === 0 || entries.every((part) => part.length === 0)) {
     throw new Error(
       `Invalid ${OMX_TEAM_WORKER_CLI_MAP_ENV} value "${env[OMX_TEAM_WORKER_CLI_MAP_ENV]}". `
-        + `Expected comma-separated values: auto|codex|claude|gemini.`,
+        + `Expected comma-separated values: auto|codex|claude|gemini|grok.`,
     );
   }
   if (entries.some((part) => part.length === 0)) {
@@ -559,6 +563,15 @@ export function translateWorkerLaunchArgsForCli(workerCli: TeamWorkerCli, args: 
     const trimmedPrompt = initialPrompt?.trim();
     if (trimmedPrompt) translatedArgs.push(GEMINI_PROMPT_INTERACTIVE_FLAG, trimmedPrompt);
     if (geminiModel) translatedArgs.push(MODEL_FLAG, geminiModel);
+    return translatedArgs;
+  }
+  if (workerCli === 'grok') {
+    const model = extractModelOverride(args);
+    const grokModel = model && /grok/i.test(model) ? model : null;
+    const translatedArgs = [GROK_APPROVAL_MODE_FLAG, GROK_APPROVAL_MODE_YOLO];
+    const trimmedPrompt = initialPrompt?.trim();
+    if (trimmedPrompt) translatedArgs.push(GROK_PROMPT_FLAG, trimmedPrompt);
+    if (grokModel) translatedArgs.push(MODEL_FLAG, grokModel);
     return translatedArgs;
   }
 
@@ -603,7 +616,7 @@ export function assertTeamWorkerCliBinaryAvailable(
   if (existsImpl(workerCli)) return;
   throw new Error(
     `Selected team worker CLI "${workerCli}" is not available on PATH. `
-      + `Install "${workerCli}" or set ${OMX_TEAM_WORKER_CLI_ENV}=codex|claude|gemini.`,
+      + `Install "${workerCli}" or set ${OMX_TEAM_WORKER_CLI_ENV}=codex|claude|gemini|grok.`,
   );
 }
 

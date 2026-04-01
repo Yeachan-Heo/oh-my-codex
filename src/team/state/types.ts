@@ -29,7 +29,7 @@ export interface WorkerInfo {
   name: string;
   index: number;
   role: string;
-  worker_cli?: 'codex' | 'claude' | 'gemini';
+  worker_cli?: 'codex' | 'claude' | 'gemini' | 'grok';
   assigned_tasks: string[];
   pid?: number;
   pane_id?: string;

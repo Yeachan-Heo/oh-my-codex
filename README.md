@@ -131,6 +131,24 @@ omx team resume <team-name>
 omx team shutdown <team-name>
 ```
 
+### Multi-provider support and failover
+
+OMX supports multiple AI providers: **Codex**, **Claude**, **Gemini**, and **Grok**. Workers can be assigned to different providers for mixed-team execution.
+
+```bash
+# Ask any provider directly
+omx ask grok "explain this architecture"
+omx ask claude "review this implementation"
+
+# Mixed-provider team
+OMX_TEAM_WORKER_CLI_MAP=codex,claude,grok omx team 3:executor "ship the feature"
+
+# Check provider status
+omx providers
+```
+
+**Auto-failover:** When a provider hits rate limits, OMX automatically switches to the next available provider. Configure via `OMX_FAILOVER_ENABLED`, `OMX_FAILOVER_ORDER`, or `.omx-config.json`.
+
 ### Setup, doctor, and HUD
 
 These are operator/support surfaces:

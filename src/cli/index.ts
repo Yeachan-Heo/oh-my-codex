@@ -16,6 +16,7 @@ import { hudCommand } from "../hud/index.js";
 import { teamCommand } from "./team.js";
 import { ralphCommand } from "./ralph.js";
 import { askCommand } from "./ask.js";
+import { providersCommand } from "./providers.js";
 import { cleanupCommand } from "./cleanup.js";
 import { exploreCommand } from "./explore.js";
 import { sparkshellCommand } from "./sparkshell.js";
@@ -645,6 +646,9 @@ export async function main(args: string[]): Promise<void> {
       }
       case "ask":
         await askCommand(args.slice(1));
+        break;
+      case "providers":
+        await providersCommand(args.slice(1));
         break;
       case "cleanup":
         await cleanupCommand(args.slice(1));

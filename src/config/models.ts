@@ -65,6 +65,22 @@ function readModelsBlock(codexHomeOverride?: string): ModelsConfig | null {
 export const DEFAULT_FRONTIER_MODEL = 'gpt-5.4';
 export const DEFAULT_STANDARD_MODEL = 'gpt-5.4-mini';
 export const DEFAULT_SPARK_MODEL = 'gpt-5.3-codex-spark';
+export const OMX_DEFAULT_GROK_MODEL = 'grok-3';
+
+/**
+ * Get the default model for Grok provider.
+ * Resolution: OMX_DEFAULT_GROK_MODEL env > config file > built-in default
+ */
+export function getGrokDefaultModel(
+  env: NodeJS.ProcessEnv = process.env,
+  codexHomeOverride?: string,
+): string {
+  const envValue = normalizeConfiguredValue(env.OMX_DEFAULT_GROK_MODEL);
+  if (envValue) return envValue;
+  const configValue = readConfigEnvValue('OMX_DEFAULT_GROK_MODEL', codexHomeOverride);
+  if (configValue) return configValue;
+  return OMX_DEFAULT_GROK_MODEL;
+}
 
 function normalizeConfiguredValue(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;

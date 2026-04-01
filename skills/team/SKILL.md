@@ -59,22 +59,60 @@ requiring a separate linked Ralph launch up front.
 - **Escalation:** start a separate `omx ralph ...` / `$ralph ...` only when a later manual follow-up still needs a persistent single-owner fix/verification loop.
 - **Deprecation:** `omx team ralph ...` has been removed. Use plain `omx team ...` for team execution or run `omx ralph ...` separately when you explicitly want a later Ralph loop.
 
-### Claude teammates (v0.6.0+)
+### Multi-provider teammates (v0.6.0+)
 
-Important: `N:agent-type` (for example `2:executor`) selects the **worker role prompt**, not the worker CLI (`codex` vs `claude`).
+Important: `N:agent-type` (for example `2:executor`) selects the **worker role prompt**, not the worker CLI (`codex` vs `claude` vs `gemini` vs `grok`).
 
-To launch Claude teammates, use the team worker CLI env vars:
+To launch multi-provider teammates, use the team worker CLI env vars:
 
 ```bash
 # Force all teammates to Claude CLI
 OMX_TEAM_WORKER_CLI=claude omx team 2:executor "update docs and report"
 
-# Mixed team (worker 1 = Codex, worker 2 = Claude)
-OMX_TEAM_WORKER_CLI_MAP=codex,claude omx team 2:executor "split doc/code tasks"
+# Force all teammates to Grok CLI
+OMX_TEAM_WORKER_CLI=grok omx team 2:executor "analyze and summarize"
 
-# Auto mode: Claude is selected when worker launch args/model contains 'claude'
+# Mixed team (worker 1 = Codex, worker 2 = Claude, worker 3 = Grok)
+OMX_TEAM_WORKER_CLI_MAP=codex,claude,grok omx team 3:executor "split tasks across providers"
+
+# Auto mode: provider is selected based on model name in launch args
 OMX_TEAM_WORKER_CLI=auto OMX_TEAM_WORKER_LAUNCH_ARGS="--model claude-..." omx team 2:executor "run mixed validation"
 ```
+
+Supported providers: `codex`, `claude`, `gemini`, `grok`
+
+### Auto-failover (v0.12.0+)
+
+When a team worker hits a rate limit or quota exhaustion, the failover system automatically detects the error and switches the worker to the next available provider. Configure failover via environment variables:
+
+```bash
+# Enable failover (enabled by default)
+OMX_FAILOVER_ENABLED=1
+
+# Set failover priority order
+OMX_FAILOVER_ORDER=codex,claude,gemini,grok
+
+# Cooldown period after rate limit (default: 60000ms)
+OMX_FAILOVER_COOLDOWN_MS=60000
+
+# Max retry attempts (default: 3)
+OMX_FAILOVER_MAX_RETRIES=3
+```
+
+Or configure via `.omx-config.json`:
+
+```json
+{
+  "failover": {
+    "enabled": true,
+    "order": ["codex", "claude", "gemini", "qwen", "grok"],
+    "cooldownMs": 60000,
+    "maxRetries": 3
+  }
+}
+```
+
+Use `omx providers` to check provider status and availability.
 
 ## Preconditions
 
