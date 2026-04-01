@@ -481,6 +481,47 @@ describe('executeTeamApiOperation: list-tasks', () => {
     }
   });
 
+
+  it('resolves team working directory from manifest metadata over worker identity/config fallbacks', async () => {
+    const teamName = 'list-tsk-meta';
+    const cwdA = await mkdtemp(join(tmpdir(), 'omx-interop-meta-a-'));
+    const cwdB = await mkdtemp(join(tmpdir(), 'omx-interop-meta-b-'));
+    const prevTeamWorker = process.env.OMX_TEAM_WORKER;
+    const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    delete process.env.OMX_TEAM_STATE_ROOT;
+    process.env.OMX_TEAM_WORKER = `${teamName}/worker-1`;
+
+    try {
+      await initTeamState(teamName, 'metadata precedence', 'executor', 2, cwdA);
+      await initTeamState(teamName, 'metadata precedence', 'executor', 2, cwdB);
+      await createTask(teamName, { subject: 'From manifest root', description: 'B lane', status: 'pending' }, cwdB);
+
+      const teamRootA = join(cwdA, '.omx', 'state', 'team', teamName);
+      const configPath = join(teamRootA, 'config.json');
+      const manifestPath = join(teamRootA, 'manifest.v2.json');
+
+      const config = JSON.parse(await readFile(configPath, 'utf-8')) as Record<string, unknown>;
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as Record<string, unknown>;
+
+      config.team_state_root = join(cwdA, '.omx', 'state');
+      manifest.team_state_root = join(cwdB, '.omx', 'state');
+
+      await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+
+      const result = await executeTeamApiOperation('list-tasks', { team_name: teamName }, cwdA);
+      assert.equal(result.ok, true);
+      if (!result.ok) throw new Error('expected list-tasks to succeed');
+      assert.equal(result.data.count, 1);
+    } finally {
+      if (typeof prevTeamWorker === 'string') process.env.OMX_TEAM_WORKER = prevTeamWorker;
+      else delete process.env.OMX_TEAM_WORKER;
+      if (typeof prevTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(cwdA, { recursive: true, force: true });
+      await rm(cwdB, { recursive: true, force: true });
+    }
+  });
   it('returns error when team_name missing', async () => {
     const result = await executeTeamApiOperation('list-tasks', {}, '/tmp');
     assert.equal(result.ok, false);

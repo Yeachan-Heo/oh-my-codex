@@ -391,14 +391,7 @@ function teamStateExists(teamName: string, candidateCwd: string): boolean {
   return existsSync(join(teamRoot, 'config.json')) || existsSync(join(teamRoot, 'tasks')) || existsSync(teamRoot);
 }
 
-function parseTeamWorkerEnv(raw: string | undefined): { teamName: string; workerName: string } | null {
-  if (typeof raw !== 'string' || raw.trim() === '') return null;
-  const match = /^([a-z0-9][a-z0-9-]{0,29})\/(worker-\d+)$/.exec(raw.trim());
-  if (!match) return null;
-  return { teamName: match[1], workerName: match[2] };
-}
-
-function readTeamStateRootFromFile(path: string): string | null {
+function readTeamStateRootFromManifest(path: string): string | null {
   if (!existsSync(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as { team_state_root?: unknown };
@@ -415,26 +408,14 @@ function stateRootToWorkingDirectory(stateRoot: string): string {
   return dirname(dirname(absolute));
 }
 
-function resolveTeamWorkingDirectoryFromMetadata(
-  teamName: string,
-  candidateCwd: string,
-  workerContext: { teamName: string; workerName: string } | null,
-): string | null {
+function resolveTeamWorkingDirectoryFromMetadata(teamName: string, candidateCwd: string): string | null {
   const teamRoot = join(candidateCwd, '.omx', 'state', 'team', teamName);
   if (!existsSync(teamRoot)) return null;
 
-  if (workerContext?.teamName === teamName) {
-    const workerRoot = readTeamStateRootFromFile(join(teamRoot, 'workers', workerContext.workerName, 'identity.json'));
-    if (workerRoot) return stateRootToWorkingDirectory(workerRoot);
-  }
+  const fromManifest = readTeamStateRootFromManifest(join(teamRoot, 'manifest.v2.json'));
+  if (!fromManifest) return null;
 
-  const fromManifest = readTeamStateRootFromFile(join(teamRoot, 'manifest.v2.json'));
-  if (fromManifest) return stateRootToWorkingDirectory(fromManifest);
-
-  const fromConfig = readTeamStateRootFromFile(join(teamRoot, 'config.json'));
-  if (fromConfig) return stateRootToWorkingDirectory(fromConfig);
-
-  return null;
+  return stateRootToWorkingDirectory(fromManifest);
 }
 
 function resolveTeamWorkingDirectory(teamName: string, preferredCwd: string): string {
@@ -451,12 +432,11 @@ function resolveTeamWorkingDirectory(teamName: string, preferredCwd: string): st
     if (!seeds.includes(seed)) seeds.push(seed);
   }
 
-  const workerContext = parseTeamWorkerEnv(process.env.OMX_TEAM_WORKER);
   for (const seed of seeds) {
     let cursor = seed;
     while (cursor) {
       if (teamStateExists(normalizedTeamName, cursor)) {
-        return resolveTeamWorkingDirectoryFromMetadata(normalizedTeamName, cursor, workerContext) ?? cursor;
+        return resolveTeamWorkingDirectoryFromMetadata(normalizedTeamName, cursor) ?? cursor;
       }
       const parent = dirname(cursor);
       if (!parent || parent === cursor) break;
