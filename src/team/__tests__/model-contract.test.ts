@@ -8,6 +8,7 @@ import {
   resolveTeamWorkerLaunchArgs,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
   resolveTeamLowComplexityDefaultModel,
+  resolveProviderDefaultModel,
 } from '../model-contract.js';
 
 function expectedLowComplexityModel(): string {
@@ -160,5 +161,63 @@ describe('resolveTeamWorkerLaunchArgs - teammate reasoning allocation', () => {
     });
     const joined = result.join(' ');
     assert.ok(!joined.includes('model_reasoning_effort'), `Expected no reasoning in: ${joined}`);
+  });
+
+  describe('resolveProviderDefaultModel', () => {
+    it('returns undefined for gemini when OMX_DEFAULT_GEMINI_MODEL is not set', () => {
+      const saved = process.env.OMX_DEFAULT_GEMINI_MODEL;
+      delete process.env.OMX_DEFAULT_GEMINI_MODEL;
+      try {
+        assert.equal(resolveProviderDefaultModel('gemini'), undefined);
+      } finally {
+        if (saved !== undefined) process.env.OMX_DEFAULT_GEMINI_MODEL = saved;
+      }
+    });
+
+    it('returns env value for gemini when OMX_DEFAULT_GEMINI_MODEL is set', () => {
+      const saved = process.env.OMX_DEFAULT_GEMINI_MODEL;
+      process.env.OMX_DEFAULT_GEMINI_MODEL = 'gemini-2.5-pro';
+      try {
+        assert.equal(resolveProviderDefaultModel('gemini'), 'gemini-2.5-pro');
+      } finally {
+        if (saved !== undefined) {
+          process.env.OMX_DEFAULT_GEMINI_MODEL = saved;
+        } else {
+          delete process.env.OMX_DEFAULT_GEMINI_MODEL;
+        }
+      }
+    });
+
+    it('returns undefined for qwen when OMX_DEFAULT_QWEN_MODEL is not set', () => {
+      const saved = process.env.OMX_DEFAULT_QWEN_MODEL;
+      delete process.env.OMX_DEFAULT_QWEN_MODEL;
+      try {
+        assert.equal(resolveProviderDefaultModel('qwen'), undefined);
+      } finally {
+        if (saved !== undefined) process.env.OMX_DEFAULT_QWEN_MODEL = saved;
+      }
+    });
+
+    it('returns env value for qwen when OMX_DEFAULT_QWEN_MODEL is set', () => {
+      const saved = process.env.OMX_DEFAULT_QWEN_MODEL;
+      process.env.OMX_DEFAULT_QWEN_MODEL = 'qwen3-coder';
+      try {
+        assert.equal(resolveProviderDefaultModel('qwen'), 'qwen3-coder');
+      } finally {
+        if (saved !== undefined) {
+          process.env.OMX_DEFAULT_QWEN_MODEL = saved;
+        } else {
+          delete process.env.OMX_DEFAULT_QWEN_MODEL;
+        }
+      }
+    });
+
+    it('returns undefined for codex provider (no provider-specific override)', () => {
+      assert.equal(resolveProviderDefaultModel('codex'), undefined);
+    });
+
+    it('returns undefined for claude provider (no provider-specific override)', () => {
+      assert.equal(resolveProviderDefaultModel('claude'), undefined);
+    });
   });
 });

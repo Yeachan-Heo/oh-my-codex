@@ -7,14 +7,16 @@ import { spawnSync } from 'child_process';
 const PROVIDER_BINARIES: Record<string, string> = {
   claude: 'claude',
   gemini: 'gemini',
+  qwen: 'qwen',
 };
 const ASK_ORIGINAL_TASK_ENV = 'OMX_ASK_ORIGINAL_TASK';
 
 function usage(): void {
-  console.error('Usage: omx ask <claude|gemini> "<prompt>"');
-  console.error('Legacy direct usage: node scripts/run-provider-advisor.js <claude|gemini> <prompt...>');
+  console.error('Usage: omx ask <claude|gemini|qwen> "<prompt>"');
+  console.error('Legacy direct usage: node scripts/run-provider-advisor.js <claude|gemini|qwen> <prompt...>');
   console.error('                 or: node scripts/run-provider-advisor.js claude --print "<prompt>"');
   console.error('                 or: node scripts/run-provider-advisor.js gemini --prompt "<prompt>"');
+  console.error('                 or: node scripts/run-provider-advisor.js qwen --prompt "<prompt>"');
 }
 
 function slugify(value: string): string {

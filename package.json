@@ -21,6 +21,7 @@
     "doctor": "node dist/cli/omx.js doctor",
     "ask:claude": "./src/scripts/ask-claude.sh",
     "ask:gemini": "./src/scripts/ask-gemini.sh",
+    "ask:qwen": "./src/scripts/ask-qwen.sh",
     "test:explore": "cargo test -p omx-explore-harness && node --test dist/cli/__tests__/explore.test.js dist/hooks/__tests__/explore-routing.test.js dist/hooks/__tests__/explore-sparkshell-guidance-contract.test.js",
     "test:team:cross-rebase-smoke": "npm run build && node --test dist/team/__tests__/cross-rebase-smoke.test.js",
     "test:node": "node --test $(find dist -name '*.test.js')",

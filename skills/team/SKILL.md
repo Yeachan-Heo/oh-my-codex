@@ -76,6 +76,47 @@ OMX_TEAM_WORKER_CLI_MAP=codex,claude omx team 2:executor "split doc/code tasks"
 OMX_TEAM_WORKER_CLI=auto OMX_TEAM_WORKER_LAUNCH_ARGS="--model claude-..." omx team 2:executor "run mixed validation"
 ```
 
+### Gemini teammates (v0.7.0+)
+
+Gemini workers use the same env-var mechanism as Claude teammates. The CLI binary is `gemini`.
+
+```bash
+# Force all teammates to Gemini CLI
+OMX_TEAM_WORKER_CLI=gemini omx team 2:executor "validate docs and tests"
+
+# Mixed team (worker 1 = Codex, worker 2 = Gemini)
+OMX_TEAM_WORKER_CLI_MAP=codex,gemini omx team 2:executor "split code/docs tasks"
+
+# Three-provider mix
+OMX_TEAM_WORKER_CLI_MAP=codex,gemini,claude omx team 3:executor "parallel validation"
+```
+
+Trigger submit strategy for Gemini workers:
+- Gemini uses direct Enter-only (`C-m`) rounds, the same strategy as Claude.
+- Gemini does **not** use queue-first `Tab` (that is Codex-specific and strategy-dependent).
+
+Default model override: set `OMX_DEFAULT_GEMINI_MODEL` to control the default model used when launching Gemini workers without an explicit `--model` flag.
+
+### Qwen teammates (v0.7.0+)
+
+Qwen workers follow the same pattern. The CLI binary is `qwen`.
+
+```bash
+# Force all teammates to Qwen CLI
+OMX_TEAM_WORKER_CLI=qwen omx team 2:executor "review and fix lint issues"
+
+# Mixed team (worker 1 = Codex, worker 2 = Qwen)
+OMX_TEAM_WORKER_CLI_MAP=codex,qwen omx team 2:executor "parallel implementation"
+
+# Qwen + Claude mix
+OMX_TEAM_WORKER_CLI_MAP=qwen,claude omx team 2:executor "cross-provider validation"
+```
+
+Trigger submit strategy for Qwen workers:
+- Qwen uses direct Enter-only (`C-m`) rounds, the same strategy as Claude and Gemini.
+
+Default model override: set `OMX_DEFAULT_QWEN_MODEL` to control the default model used when launching Qwen workers without an explicit `--model` flag.
+
 ## Preconditions
 
 Before running `$team`, confirm:
@@ -152,7 +193,7 @@ When `$team` is used as a follow-up mode from ralplan, carry forward the approve
 Important:
 
 - Leader remains in existing pane
-- Worker panes are independent full Codex/Claude CLI sessions
+- Worker panes are independent full Codex/Claude/Gemini/Qwen CLI sessions
 - Workers may run in separate git worktrees (`omx team --worktree[=<name>]`) while sharing one team state root
 - Worker ACKs go to `mailbox/leader-fixed.json`
 - Notify hook updates worker heartbeat and nudges leader during active team mode
@@ -164,6 +205,8 @@ Important:
 - Trigger submit differs by CLI:
   - Codex may use queue-first `Tab` on busy panes (strategy-dependent).
   - Claude always uses direct Enter-only (`C-m`) rounds (never queue-first `Tab`).
+  - Gemini uses direct Enter-only (`C-m`) rounds, same as Claude.
+  - Qwen uses direct Enter-only (`C-m`) rounds, same as Claude.
 
 ### Team worker model + thinking resolution (current contract)
 
@@ -344,14 +387,14 @@ Useful runtime env vars:
 - `OMX_TEAM_WORKER_LAUNCH_ARGS`
   - Extra args passed to worker launch command
 - `OMX_TEAM_WORKER_CLI`
-  - Worker CLI selector: `auto|codex|claude` (default: `auto`)
-  - `auto` chooses `claude` when worker `--model` contains `claude`, otherwise `codex`
-  - In `claude` mode, workers launch with exactly one `--dangerously-skip-permissions`
+  - Worker CLI selector: `auto|codex|claude|gemini|qwen` (default: `auto`)
+  - `auto` chooses `claude` when worker `--model` contains `claude`, `gemini` when it contains `gemini`, `qwen` when it contains `qwen`, otherwise `codex`
+  - In `claude`/`gemini`/`qwen` mode, workers launch with exactly one `--dangerously-skip-permissions`
     and ignore explicit model/config/effort launch overrides (uses default `settings.json`)
 - `OMX_TEAM_WORKER_CLI_MAP`
-  - Per-worker CLI selector (comma-separated `auto|codex|claude`)
+  - Per-worker CLI selector (comma-separated `auto|codex|claude|gemini|qwen`)
   - Length must be `1` (broadcast) or exactly the team worker count
-  - Example: `OMX_TEAM_WORKER_CLI_MAP=codex,codex,claude,claude`
+  - Example: `OMX_TEAM_WORKER_CLI_MAP=codex,gemini,claude,qwen`
   - When present, overrides `OMX_TEAM_WORKER_CLI`
 - `OMX_TEAM_AUTO_INTERRUPT_RETRY`
   - Trigger submit fallback (default: enabled)
