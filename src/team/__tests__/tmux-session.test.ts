@@ -1146,14 +1146,14 @@ describe('team worker CLI helpers', () => {
     );
   });
 
-  it('translateWorkerLaunchArgsForCli emits qwen sandbox-mode and adds -p when initial prompt is provided', () => {
+  it('translateWorkerLaunchArgsForCli emits qwen sandbox-mode and adds -i when initial prompt is provided', () => {
     assert.deepEqual(
       translateWorkerLaunchArgsForCli('qwen', ['--model', 'qwen-2.5-coder', '--json']),
       ['--sandbox-mode', 'none', '--model', 'qwen-2.5-coder'],
     );
     assert.deepEqual(
       translateWorkerLaunchArgsForCli('qwen', ['--model', 'qwen-2.5-coder', '--json'], 'Read worker inbox'),
-      ['--sandbox-mode', 'none', '-p', 'Read worker inbox', '--model', 'qwen-2.5-coder'],
+      ['--sandbox-mode', 'none', '-i', 'Read worker inbox', '--model', 'qwen-2.5-coder'],
     );
     assert.deepEqual(
       translateWorkerLaunchArgsForCli('qwen', ['--json']),
@@ -1161,14 +1161,14 @@ describe('team worker CLI helpers', () => {
     );
     assert.deepEqual(
       translateWorkerLaunchArgsForCli('qwen', ['--json'], 'Read worker inbox'),
-      ['--sandbox-mode', 'none', '-p', 'Read worker inbox'],
+      ['--sandbox-mode', 'none', '-i', 'Read worker inbox'],
     );
   });
 
   it('translateWorkerLaunchArgsForCli omits non-qwen default models for qwen workers', () => {
     assert.deepEqual(
       translateWorkerLaunchArgsForCli('qwen', ['--model', 'gpt-5.3-codex-spark'], 'Read worker inbox'),
-      ['--sandbox-mode', 'none', '-p', 'Read worker inbox'],
+      ['--sandbox-mode', 'none', '-i', 'Read worker inbox'],
     );
   });
 

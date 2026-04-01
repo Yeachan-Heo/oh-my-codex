@@ -52,7 +52,7 @@ const CLAUDE_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
 const GEMINI_PROMPT_INTERACTIVE_FLAG = '-i';
 const GEMINI_APPROVAL_MODE_FLAG = '--approval-mode';
 const GEMINI_APPROVAL_MODE_YOLO = 'yolo';
-const QWEN_PROMPT_FLAG = '-p';
+const QWEN_PROMPT_INTERACTIVE_FLAG = '-i';
 const QWEN_SANDBOX_MODE_FLAG = '--sandbox-mode';
 const QWEN_SANDBOX_MODE_NONE = 'none';
 const OMX_LEADER_NODE_PATH_ENV = 'OMX_LEADER_NODE_PATH';
@@ -573,7 +573,7 @@ export function translateWorkerLaunchArgsForCli(workerCli: TeamWorkerCli, args: 
     const effectiveModel = qwenModel ?? resolveProviderDefaultModel('qwen') ?? null;
     const translatedArgs = [QWEN_SANDBOX_MODE_FLAG, QWEN_SANDBOX_MODE_NONE];
     const trimmedPrompt = initialPrompt?.trim();
-    if (trimmedPrompt) translatedArgs.push(QWEN_PROMPT_FLAG, trimmedPrompt);
+    if (trimmedPrompt) translatedArgs.push(QWEN_PROMPT_INTERACTIVE_FLAG, trimmedPrompt);
     if (effectiveModel) translatedArgs.push(MODEL_FLAG, effectiveModel);
     return translatedArgs;
   }
