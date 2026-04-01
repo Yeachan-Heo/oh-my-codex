@@ -1386,6 +1386,55 @@ esac
     );
   });
 
+  it('waitForWorkerReady falls back to scrollback when the visible Codex viewport hides the prompt', async () => {
+    await withMockTmuxFixture(
+      'omx-tmux-worker-ready-tail-fallback-',
+      (logPath) => `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${logPath}"
+case "$1" in
+  capture-pane)
+    if [ "$#" -ge 6 ] && [ "\${5:-}" = "-S" ] && [ "\${6:-}" = "-80" ]; then
+      cat <<'EOF'
+╭────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.118.0)                 │
+│                                            │
+│ model:     gpt-5.4 high   /model to change │
+│ directory: ~/Workspace/demo                │
+╰────────────────────────────────────────────╯
+
+⚠ MCP startup incomplete (failed: hf-mcp-server, stripe, vercel)
+
+› Explain this codebase
+EOF
+    else
+      cat <<'EOF'
+╭────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.118.0)                 │
+│                                            │
+│ model:     gpt-5.4 high   /model to change │
+│ directory: ~/Workspace/demo                │
+╰────────────────────────────────────────────╯
+
+⚠ MCP startup incomplete (failed: hf-mcp-server, stripe, vercel)
+EOF
+    fi
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+      async ({ logPath }) => {
+        assert.equal(waitForWorkerReady('omx-team-x', 1, 1_000), true);
+        const log = await readFile(logPath, 'utf-8');
+        assert.match(log, /capture-pane -t omx-team-x:1 -p/);
+        assert.match(log, /capture-pane -t omx-team-x:1 -p -S -80/);
+      },
+    );
+  });
+
   it('waitForWorkerReady auto-accepts the Claude bypass prompt', async () => {
     await withMockTmuxFixture(
       'omx-tmux-claude-bypass-ready-',

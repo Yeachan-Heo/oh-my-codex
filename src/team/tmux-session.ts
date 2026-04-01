@@ -1235,7 +1235,21 @@ export function waitForWorkerReady(
       blockedByTrustPrompt = true;
       return false;
     }
-    return paneLooksReady(result.stdout);
+    if (paneLooksReady(result.stdout)) return true;
+
+    // A small worker pane can show the Codex welcome box plus MCP startup
+    // warnings while the actual prompt sits just below the visible viewport.
+    // Fall back to a short scrollback capture only when the visible pane
+    // already looks like a live Codex screen rather than a bootstrap screen.
+    const normalizedVisible = normalizeTmuxCapture(result.stdout);
+    const looksLikeCodexViewport = /\bOpenAI Codex\b/i.test(normalizedVisible)
+      || /\bMCP startup incomplete\b/i.test(normalizedVisible)
+      || /\bmodel:\s+.*\/model to change\b/i.test(normalizedVisible);
+    if (!looksLikeCodexViewport) return false;
+
+    const tailResult = runTmux(sharedBuildCapturePaneArgv(target, 80));
+    if (!tailResult.ok) return false;
+    return paneLooksReady(tailResult.stdout);
   };
 
   let delayMs = initialBackoffMs;
