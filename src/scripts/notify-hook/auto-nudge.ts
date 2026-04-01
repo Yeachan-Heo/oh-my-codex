@@ -6,7 +6,7 @@
 
 import { readFile, writeFile } from 'fs/promises';
 import { execFileSync } from 'child_process';
-import { join } from 'path';
+import { join, resolve as resolvePath } from 'path';
 import { homedir } from 'os';
 import { asNumber, safeString } from './utils.js';
 import { readJsonIfExists, getScopedStateDirsForCurrentSession, readdir } from './state-io.js';
@@ -14,6 +14,7 @@ import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
 import { evaluatePaneInjectionReadiness, mapPaneInjectionReadinessReason, sendPaneInput } from './team-tmux-guard.js';
 import { buildCapturePaneArgv, DEFAULT_MARKER } from '../tmux-hook-engine.js';
+import { readSessionState, isSessionStale } from '../../hooks/session.js';
 
 export const SKILL_ACTIVE_STATE_FILE = 'skill-active-state.json';
 export const DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS = ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead', 'next i should'];
@@ -431,6 +432,19 @@ async function resolveCodexPaneFromAnchor(anchorPane) {
   return '';
 }
 
+async function isManagedOmxSessionForAutoNudge(cwd) {
+  if (safeString(process.env.OMX_TEAM_WORKER || '').trim() !== '') return true;
+
+  try {
+    const sessionState = await readSessionState(cwd);
+    if (!sessionState) return false;
+    if (resolvePath(safeString(sessionState.cwd || cwd)) !== resolvePath(cwd)) return false;
+    return !isSessionStale(sessionState);
+  } catch {
+    return false;
+  }
+}
+
 export async function resolveNudgePaneTarget(stateDir: any, cwd = '') {
   // Use canonical codex pane resolver — validates pane is running an agent, not a shell
   const { resolveCodexPane } = await import('../tmux-hook-engine.js');
@@ -472,6 +486,16 @@ export async function resolveNudgePaneTarget(stateDir: any, cwd = '') {
 export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
   const config = await loadAutoNudgeConfig();
   if (!config.enabled) return;
+
+  const managedSession = await isManagedOmxSessionForAutoNudge(cwd);
+  if (!managedSession) {
+    await logTmuxHookEvent(logsDir, {
+      timestamp: new Date().toISOString(),
+      type: 'auto_nudge_skipped',
+      reason: 'unmanaged_session',
+    }).catch(() => {});
+    return;
+  }
 
   const lastMessage = safeString(payload['last-assistant-message'] || payload.last_assistant_message || '');
   const latestUserInput = latestUserInputFromPayload(payload);

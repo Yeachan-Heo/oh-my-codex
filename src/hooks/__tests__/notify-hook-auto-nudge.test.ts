@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -21,6 +21,43 @@ async function withTempWorkingDir(run: (cwd: string) => Promise<void>): Promise<
 
 async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, JSON.stringify(value, null, 2));
+}
+
+function readLinuxStartTicks(pid: number): number | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
+    const commandEnd = stat.lastIndexOf(')');
+    if (commandEnd === -1) return null;
+    const remainder = stat.slice(commandEnd + 1).trim();
+    const fields = remainder.split(/\s+/);
+    if (fields.length <= 19) return null;
+    const startTicks = Number(fields[19]);
+    return Number.isFinite(startTicks) ? startTicks : null;
+  } catch {
+    return null;
+  }
+}
+
+function readLinuxCmdline(pid: number): string | null {
+  try {
+    const raw = readFileSync(`/proc/${pid}/cmdline`);
+    const text = raw.toString('utf-8').replace(/\0+/g, ' ').trim();
+    return text.length > 0 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeManagedSessionState(stateDir: string, cwd: string): Promise<void> {
+  await writeJson(join(stateDir, 'session.json'), {
+    session_id: 'sess-managed',
+    started_at: new Date().toISOString(),
+    cwd,
+    pid: process.pid,
+    platform: process.platform,
+    pid_start_ticks: readLinuxStartTicks(process.pid),
+    pid_cmdline: readLinuxCmdline(process.pid),
+  });
 }
 
 function escapeRegex(value: string): string {
@@ -89,6 +126,20 @@ function runNotifyHook(
   payloadOverrides: Record<string, unknown> = {},
   extraEnv: Record<string, string> = {},
 ): ReturnType<typeof spawnSync> {
+  if (extraEnv.OMX_TEST_UNMANAGED_SESSION !== '1' && !extraEnv.OMX_TEAM_WORKER) {
+    const sessionPath = join(cwd, '.omx', 'state', 'session.json');
+    const sessionState = {
+      session_id: 'sess-managed',
+      started_at: new Date().toISOString(),
+      cwd,
+      pid: process.pid,
+      platform: process.platform,
+      pid_start_ticks: readLinuxStartTicks(process.pid),
+      pid_cmdline: readLinuxCmdline(process.pid),
+    };
+    writeFileSync(sessionPath, JSON.stringify(sessionState, null, 2));
+  }
+
   const payload = {
     cwd,
     type: 'agent-turn-complete',
@@ -139,6 +190,8 @@ describe('notify-hook auto-nudge', () => {
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
+      await writeManagedSessionState(stateDir, cwd);
+
       const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
         'last-assistant-message': 'I analyzed the code. If you want me to make these changes, let me know.',
       });
@@ -172,6 +225,7 @@ describe('notify-hook auto-nudge', () => {
       await writeJson(join(codexHome, '.omx-config.json'), {
         autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
       });
+      await writeManagedSessionState(stateDir, cwd);
 
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
@@ -187,6 +241,39 @@ describe('notify-hook auto-nudge', () => {
       // Codex CLI needs C-m sent twice with a delay for reliable submission
       const cmMatches = tmuxLog.match(/send-keys -t %99 C-m/g);
       assert.ok(cmMatches && cmMatches.length >= 2, `should send C-m twice, got ${cmMatches?.length ?? 0}`);
+    });
+  });
+
+  it('does not auto-nudge plain tmux Codex sessions that are not OMX-managed', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+      });
+
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'I analyzed the code. If you want me to make these changes, let me know.',
+      }, {
+        OMX_TEST_UNMANAGED_SESSION: '1',
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
+      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/);
     });
   });
 
@@ -208,6 +295,7 @@ describe('notify-hook auto-nudge', () => {
       await writeJson(join(codexHome, '.omx-config.json'), {
         autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
       });
+      await writeManagedSessionState(stateDir, cwd);
 
       // capture-pane will return content with a stall pattern
       await writeFile(captureFile, 'Here are the results.\nWould you like me to continue with the implementation?\n› ');
@@ -245,6 +333,7 @@ describe('notify-hook auto-nudge', () => {
       await writeJson(join(codexHome, '.omx-config.json'), {
         autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
       });
+      await writeManagedSessionState(stateDir, cwd);
 
       await writeJson(join(stateDir, 'ralph-state.json'), {
         active: true,
