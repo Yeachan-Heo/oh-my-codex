@@ -5,7 +5,7 @@
  */
 
 import { readFile } from 'fs/promises';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync, statSync } from 'fs';
 import { execSync } from 'child_process';
 import { join, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
@@ -175,7 +175,85 @@ export function readVersion(): string | null {
 
 export type GitRunner = (cwd: string, args: string[]) => string | null;
 
+/**
+ * Find the .git directory by walking up from `startCwd`.
+ * Returns the path to the `.git` directory, or null if not found.
+ */
+function findGitDir(startCwd: string): string | null {
+  let dir = startCwd;
+  for (;;) {
+    const candidate = join(dir, '.git');
+    try {
+      if (statSync(candidate).isDirectory()) return candidate;
+    } catch { /* not found, walk up */ }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/**
+ * Read a file inside the .git directory. Returns trimmed content or null.
+ */
+function readGitFile(gitDir: string, ...parts: string[]): string | null {
+  try {
+    return readFileSync(join(gitDir, ...parts), 'utf-8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * On Windows, read common git queries directly from .git/ files to avoid
+ * spawning console windows (conhost.exe flicker).  Falls back to execSync
+ * for non-Windows platforms or unrecognised arguments.
+ *
+ * See: https://github.com/Yeachan-Heo/oh-my-codex/issues/1100
+ */
 function runGit(cwd: string, args: string[]): string | null {
+  if (process.platform === 'win32') {
+    try {
+      const gitDir = findGitDir(cwd);
+      if (gitDir) {
+        const cmd = args.join(' ');
+
+        if (cmd === 'rev-parse --abbrev-ref HEAD') {
+          const head = readGitFile(gitDir, 'HEAD');
+          if (head?.startsWith('ref: refs/heads/'))
+            return head.slice('ref: refs/heads/'.length);
+          return head; // detached HEAD — raw SHA
+        }
+
+        if (cmd.startsWith('remote get-url ')) {
+          const remoteName = args[2];
+          const config = readGitFile(gitDir, 'config');
+          if (config) {
+            const re = new RegExp(
+              `\\[remote "${remoteName}"\\][\\s\\S]*?url\\s*=\\s*(.+)`,
+              'm',
+            );
+            const m = config.match(re);
+            if (m) return m[1].trim();
+          }
+          return null;
+        }
+
+        if (cmd === 'remote') {
+          const config = readGitFile(gitDir, 'config');
+          if (config) {
+            const matches = [...config.matchAll(/\[remote "([^"]+)"\]/g)];
+            if (matches.length > 0) return matches.map((m) => m[1]).join('\n');
+          }
+          return null;
+        }
+
+        if (cmd === 'rev-parse --show-toplevel') {
+          return dirname(gitDir);
+        }
+      }
+    } catch { /* fall through to execSync */ }
+  }
+
   try {
     return execSync(`git ${args.join(' ')}`, {
       cwd,
