@@ -1085,6 +1085,7 @@ describe('team worker CLI helpers', () => {
     assert.equal(resolveTeamWorkerCli(['--model', 'claude-3-7-sonnet'], {}), 'claude');
     assert.equal(resolveTeamWorkerCli(['--model=claude-sonnet-4-6'], {}), 'claude');
     assert.equal(resolveTeamWorkerCli(['--model', 'gemini-2.0-pro'], {}), 'gemini');
+    assert.equal(resolveTeamWorkerCli(['--model', 'qwen-2.5-coder'], {}), 'qwen');
     assert.equal(resolveTeamWorkerCli(['--model', 'gpt-5'], {}), 'codex');
     assert.equal(resolveTeamWorkerCli([], {}), 'codex');
   });
@@ -1093,9 +1094,18 @@ describe('team worker CLI helpers', () => {
     assert.equal(resolveTeamWorkerCli([], { OMX_TEAM_WORKER_CLI: 'gemini' }), 'gemini');
   });
 
+  it('resolveTeamWorkerCli accepts explicit qwen override', () => {
+    assert.equal(resolveTeamWorkerCli([], { OMX_TEAM_WORKER_CLI: 'qwen' }), 'qwen');
+  });
+
   it('resolveTeamWorkerCliPlan accepts gemini in CLI map', () => {
     const plan = resolveTeamWorkerCliPlan(3, [], { OMX_TEAM_WORKER_CLI_MAP: 'codex,gemini,claude' });
     assert.deepEqual(plan, ['codex', 'gemini', 'claude']);
+  });
+
+  it('resolveTeamWorkerCliPlan accepts qwen in CLI map', () => {
+    const plan = resolveTeamWorkerCliPlan(3, [], { OMX_TEAM_WORKER_CLI_MAP: 'codex,qwen,claude' });
+    assert.deepEqual(plan, ['codex', 'qwen', 'claude']);
   });
 
   it('translateWorkerLaunchArgsForCli preserves args for codex', () => {
@@ -1136,6 +1146,32 @@ describe('team worker CLI helpers', () => {
     );
   });
 
+  it('translateWorkerLaunchArgsForCli emits qwen sandbox-mode and adds -p when initial prompt is provided', () => {
+    assert.deepEqual(
+      translateWorkerLaunchArgsForCli('qwen', ['--model', 'qwen-2.5-coder', '--json']),
+      ['--sandbox-mode', 'none', '--model', 'qwen-2.5-coder'],
+    );
+    assert.deepEqual(
+      translateWorkerLaunchArgsForCli('qwen', ['--model', 'qwen-2.5-coder', '--json'], 'Read worker inbox'),
+      ['--sandbox-mode', 'none', '-p', 'Read worker inbox', '--model', 'qwen-2.5-coder'],
+    );
+    assert.deepEqual(
+      translateWorkerLaunchArgsForCli('qwen', ['--json']),
+      ['--sandbox-mode', 'none'],
+    );
+    assert.deepEqual(
+      translateWorkerLaunchArgsForCli('qwen', ['--json'], 'Read worker inbox'),
+      ['--sandbox-mode', 'none', '-p', 'Read worker inbox'],
+    );
+  });
+
+  it('translateWorkerLaunchArgsForCli omits non-qwen default models for qwen workers', () => {
+    assert.deepEqual(
+      translateWorkerLaunchArgsForCli('qwen', ['--model', 'gpt-5.3-codex-spark'], 'Read worker inbox'),
+      ['--sandbox-mode', 'none', '-p', 'Read worker inbox'],
+    );
+  });
+
   it('assertTeamWorkerCliBinaryAvailable throws clear error when binary missing', () => {
     assert.throws(
       () => assertTeamWorkerCliBinaryAvailable('claude', () => false),
@@ -1150,6 +1186,15 @@ describe('team worker CLI helpers', () => {
       { OMX_TEAM_WORKER_CLI_MAP: 'codex,codex,gemini,claude' },
     );
     assert.deepEqual(plan, ['codex', 'codex', 'gemini', 'claude']);
+  });
+
+  it('resolveTeamWorkerCliPlan supports mixed per-worker CLI map with qwen', () => {
+    const plan = resolveTeamWorkerCliPlan(
+      5,
+      [],
+      { OMX_TEAM_WORKER_CLI_MAP: 'codex,codex,gemini,claude,qwen' },
+    );
+    assert.deepEqual(plan, ['codex', 'codex', 'gemini', 'claude', 'qwen']);
   });
 
   it('resolveTeamWorkerCliPlan accepts single-value map and expands to all workers', () => {

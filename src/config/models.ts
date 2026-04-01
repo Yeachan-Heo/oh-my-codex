@@ -40,6 +40,8 @@ export const OMX_DEFAULT_FRONTIER_MODEL_ENV = 'OMX_DEFAULT_FRONTIER_MODEL';
 export const OMX_DEFAULT_STANDARD_MODEL_ENV = 'OMX_DEFAULT_STANDARD_MODEL';
 export const OMX_DEFAULT_SPARK_MODEL_ENV = 'OMX_DEFAULT_SPARK_MODEL';
 export const OMX_SPARK_MODEL_ENV = 'OMX_SPARK_MODEL';
+export const OMX_DEFAULT_GEMINI_MODEL_ENV = 'OMX_DEFAULT_GEMINI_MODEL';
+export const OMX_DEFAULT_QWEN_MODEL_ENV = 'OMX_DEFAULT_QWEN_MODEL';
 
 function readOmxConfigFile(codexHomeOverride?: string): OmxConfigFile | null {
   const configPath = join(codexHomeOverride || codexHome(), '.omx-config.json');
@@ -185,4 +187,28 @@ export function getSparkDefaultModel(codexHomeOverride?: string): string {
  */
 export function getTeamLowComplexityModel(codexHomeOverride?: string): string {
   return readTeamLowComplexityOverride(codexHomeOverride) ?? getSparkDefaultModel(codexHomeOverride);
+}
+
+/**
+ * Get the envvar-backed default Gemini model.
+ * Resolution: OMX_DEFAULT_GEMINI_MODEL env > config env > undefined
+ */
+export function getGeminiDefaultModel(
+  env: NodeJS.ProcessEnv = process.env,
+  codexHomeOverride?: string,
+): string | undefined {
+  return normalizeConfiguredValue(env[OMX_DEFAULT_GEMINI_MODEL_ENV])
+    ?? readConfigEnvValue(OMX_DEFAULT_GEMINI_MODEL_ENV, codexHomeOverride);
+}
+
+/**
+ * Get the envvar-backed default Qwen model.
+ * Resolution: OMX_DEFAULT_QWEN_MODEL env > config env > undefined
+ */
+export function getQwenDefaultModel(
+  env: NodeJS.ProcessEnv = process.env,
+  codexHomeOverride?: string,
+): string | undefined {
+  return normalizeConfiguredValue(env[OMX_DEFAULT_QWEN_MODEL_ENV])
+    ?? readConfigEnvValue(OMX_DEFAULT_QWEN_MODEL_ENV, codexHomeOverride);
 }

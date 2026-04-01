@@ -23,9 +23,17 @@ describe('runtime-cli helpers', () => {
       runtimeCli.normalizeAgentTypes(['gemini'], 3),
       ['gemini'],
     );
+    assert.deepEqual(
+      runtimeCli.normalizeAgentTypes(['qwen', 'codex'], 2),
+      ['qwen', 'codex'],
+    );
+    assert.deepEqual(
+      runtimeCli.normalizeAgentTypes(['qwen'], 2),
+      ['qwen'],
+    );
     assert.throws(
       () => runtimeCli.normalizeAgentTypes(['codex', 'invalid'], 2),
-      /Expected codex\\|claude\\|gemini/,
+      /Expected codex\\|claude\\|gemini\\|qwen/,
     );
   });
 

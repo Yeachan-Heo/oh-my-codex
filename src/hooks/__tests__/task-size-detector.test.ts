@@ -390,6 +390,9 @@ describe('task-size-detector', () => {
       assert.equal(isHeavyMode('codex'), false);
     });
 
+    // 'gemini' is a provider/CLI name, not an execution mode -- it is correctly
+    // classified as non-heavy because heavy mode detection applies to workflow
+    // modes (ralph, team, autopilot, etc.), not to provider identifiers.
     it('returns false for gemini', () => {
       assert.equal(isHeavyMode('gemini'), false);
     });
@@ -408,6 +411,9 @@ describe('task-size-detector', () => {
     });
 
     it('does not contain lightweight modes', () => {
+      // 'codex' and 'gemini' are provider names, not execution modes -- they
+      // correctly stay outside HEAVY_MODE_KEYWORDS alongside actual lightweight
+      // modes like 'plan' and 'analyze'.
       const lightweight = ['cancel', 'plan', 'tdd', 'ultrathink', 'deepsearch', 'analyze', 'codex', 'gemini'];
       for (const mode of lightweight) {
         assert.ok(!HEAVY_MODE_KEYWORDS.has(mode), `Expected HEAVY_MODE_KEYWORDS NOT to contain "${mode}"`);
