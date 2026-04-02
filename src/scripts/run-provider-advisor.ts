@@ -8,13 +8,17 @@ const PROVIDER_BINARIES: Record<string, string> = {
   claude: 'claude',
   gemini: 'gemini',
 };
+
+const MINIMAX_BASE_URL = process.env.MINIMAX_BASE_URL ?? 'https://api.minimax.io/v1';
+const MINIMAX_DEFAULT_MODEL = 'MiniMax-M2.7';
 const ASK_ORIGINAL_TASK_ENV = 'OMX_ASK_ORIGINAL_TASK';
 
 function usage(): void {
-  console.error('Usage: omx ask <claude|gemini> "<prompt>"');
-  console.error('Legacy direct usage: node scripts/run-provider-advisor.js <claude|gemini> <prompt...>');
+  console.error('Usage: omx ask <claude|gemini|minimax> "<prompt>"');
+  console.error('Legacy direct usage: node scripts/run-provider-advisor.js <claude|gemini|minimax> <prompt...>');
   console.error('                 or: node scripts/run-provider-advisor.js claude --print "<prompt>"');
   console.error('                 or: node scripts/run-provider-advisor.js gemini --prompt "<prompt>"');
+  console.error('                 or: node scripts/run-provider-advisor.js minimax --prompt "<prompt>"');
 }
 
 function slugify(value: string): string {
@@ -29,11 +33,13 @@ function timestampToken(date = new Date()): string {
   return date.toISOString().replace(/[:.]/g, '-');
 }
 
+const VALID_PROVIDERS = new Set([...Object.keys(PROVIDER_BINARIES), 'minimax']);
+
 function parseArgs(argv: string[]): { provider: string; prompt: string } {
   const [providerRaw, ...rest] = argv;
   const provider = (providerRaw || '').toLowerCase();
 
-  if (!provider || !(provider in PROVIDER_BINARIES)) {
+  if (!provider || !VALID_PROVIDERS.has(provider)) {
     usage();
     process.exit(1);
   }
@@ -144,8 +150,78 @@ async function writeArtifact({ provider, originalTask, finalPrompt, rawOutput, e
   return artifactPath;
 }
 
+async function callMinimaxApi(prompt: string): Promise<{ rawOutput: string; exitCode: number }> {
+  const apiKey = process.env.MINIMAX_API_KEY;
+  if (!apiKey) {
+    console.error('[ask-minimax] MINIMAX_API_KEY environment variable is not set.');
+    console.error('[ask-minimax] Get your key at https://platform.minimaxi.com and set MINIMAX_API_KEY.');
+    process.exit(1);
+  }
+
+  const model = process.env.MINIMAX_MODEL ?? MINIMAX_DEFAULT_MODEL;
+  const url = `${MINIMAX_BASE_URL}/chat/completions`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.7,
+      }),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { rawOutput: `[network error] ${msg}`, exitCode: 1 };
+  }
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    return { rawOutput: `[HTTP ${response.status}] ${body}`, exitCode: 1 };
+  }
+
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    return { rawOutput: '[error] Failed to parse MiniMax API response as JSON.', exitCode: 1 };
+  }
+
+  type ApiResponse = { choices?: Array<{ message?: { content?: string } }> };
+  const typed = data as ApiResponse;
+  const content = typed?.choices?.[0]?.message?.content ?? '';
+  // Strip <think>...</think> blocks from reasoning output
+  const stripped = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+  return { rawOutput: stripped, exitCode: 0 };
+}
+
 async function main(): Promise<void> {
   const { provider, prompt } = parseArgs(process.argv.slice(2));
+
+  if (provider === 'minimax') {
+    const { rawOutput, exitCode } = await callMinimaxApi(prompt);
+
+    const artifactPath = await writeArtifact({
+      provider,
+      originalTask: process.env[ASK_ORIGINAL_TASK_ENV] ?? prompt,
+      finalPrompt: prompt,
+      rawOutput,
+      exitCode,
+    });
+
+    console.log(artifactPath);
+
+    if (exitCode !== 0) {
+      process.exit(exitCode);
+    }
+    return;
+  }
+
   const binary = PROVIDER_BINARIES[provider];
 
   ensureBinary(binary);

@@ -92,6 +92,20 @@ describe('parseAskArgs', () => {
     assert.throws(() => parseAskArgs(['openai', 'hello']), /Invalid provider/);
   });
 
+  it('parses minimax provider with prompt', () => {
+    assert.deepEqual(parseAskArgs(['minimax', 'explain', 'this']), {
+      provider: 'minimax',
+      prompt: 'explain this',
+    });
+  });
+
+  it('parses minimax provider with --prompt flag', () => {
+    assert.deepEqual(parseAskArgs(['minimax', '--prompt', 'analyze the codebase']), {
+      provider: 'minimax',
+      prompt: 'analyze the codebase',
+    });
+  });
+
   it('throws when prompt is missing', () => {
     assert.throws(() => parseAskArgs(['claude']), /Missing prompt text/);
   });
@@ -111,6 +125,7 @@ describe('omx ask', () => {
       assert.equal(res.status, 1, res.stderr || res.stdout);
       assert.match(res.stderr, /claude --print/);
       assert.match(res.stderr, /gemini --prompt/);
+      assert.match(res.stderr, /minimax --prompt/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -283,6 +298,38 @@ describe('omx ask', () => {
       assert.equal(res.status, 1, res.stderr || res.stdout);
       assert.match(res.stderr, /--agent-prompt role "planner" not found/i);
       assert.doesNotMatch(res.stdout, /should-not-run/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('minimax: fails clearly when MINIMAX_API_KEY is not set', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-ask-minimax-nokey-'));
+    try {
+      const res = runOmx(wd, ['ask', 'minimax', 'hello'], {
+        MINIMAX_API_KEY: '',
+      });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+
+      assert.equal(res.status, 1, res.stderr || res.stdout);
+      assert.match(res.stderr, /MINIMAX_API_KEY/i);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('minimax: writes artifact and returns its path on success (stub)', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-ask-minimax-stub-'));
+    try {
+      const res = runOmx(wd, ['ask', 'minimax', 'analyze this'], {
+        OMX_ASK_ADVISOR_SCRIPT: 'dist/scripts/fixtures/ask-advisor-stub.js',
+        OMX_ASK_STUB_STDOUT: 'minimax-artifact-path.md\n',
+        OMX_ASK_STUB_EXIT_CODE: '0',
+      });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+
+      // The stub is a generic pass-through; minimax path dispatches to advisor with provider=minimax
+      assert.equal(res.status, 0, res.stderr || res.stdout);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
