@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { join } from "path";
 import { homedir, tmpdir } from "os";
 import { existsSync } from "fs";
-import { mkdtemp, mkdir, rm, writeFile } from "fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "fs/promises";
 import {
   codexHome,
   codexConfigPath,
@@ -23,9 +23,11 @@ import {
 
 describe("codexHome", () => {
   let originalCodexHome: string | undefined;
+  let originalUserProfile: string | undefined;
 
   beforeEach(() => {
     originalCodexHome = process.env.CODEX_HOME;
+    originalUserProfile = process.env.USERPROFILE;
   });
 
   afterEach(() => {
@@ -33,6 +35,12 @@ describe("codexHome", () => {
       process.env.CODEX_HOME = originalCodexHome;
     } else {
       delete process.env.CODEX_HOME;
+    }
+
+    if (typeof originalUserProfile === "string") {
+      process.env.USERPROFILE = originalUserProfile;
+    } else {
+      delete process.env.USERPROFILE;
     }
   });
 
@@ -49,9 +57,11 @@ describe("codexHome", () => {
 
 describe("codexConfigPath", () => {
   let originalCodexHome: string | undefined;
+  let originalUserProfile: string | undefined;
 
   beforeEach(() => {
     originalCodexHome = process.env.CODEX_HOME;
+    originalUserProfile = process.env.USERPROFILE;
     process.env.CODEX_HOME = "/tmp/test-codex";
   });
 
@@ -61,18 +71,26 @@ describe("codexConfigPath", () => {
     } else {
       delete process.env.CODEX_HOME;
     }
+
+    if (typeof originalUserProfile === "string") {
+      process.env.USERPROFILE = originalUserProfile;
+    } else {
+      delete process.env.USERPROFILE;
+    }
   });
 
   it("returns config.toml under codex home", () => {
-    assert.equal(codexConfigPath(), "/tmp/test-codex/config.toml");
+    assert.equal(codexConfigPath(), join("/tmp/test-codex", "config.toml"));
   });
 });
 
 describe("codexPromptsDir", () => {
   let originalCodexHome: string | undefined;
+  let originalUserProfile: string | undefined;
 
   beforeEach(() => {
     originalCodexHome = process.env.CODEX_HOME;
+    originalUserProfile = process.env.USERPROFILE;
     process.env.CODEX_HOME = "/tmp/test-codex";
   });
 
@@ -82,18 +100,26 @@ describe("codexPromptsDir", () => {
     } else {
       delete process.env.CODEX_HOME;
     }
+
+    if (typeof originalUserProfile === "string") {
+      process.env.USERPROFILE = originalUserProfile;
+    } else {
+      delete process.env.USERPROFILE;
+    }
   });
 
   it("returns prompts/ under codex home", () => {
-    assert.equal(codexPromptsDir(), "/tmp/test-codex/prompts");
+    assert.equal(codexPromptsDir(), join("/tmp/test-codex", "prompts"));
   });
 });
 
 describe("userSkillsDir", () => {
   let originalCodexHome: string | undefined;
+  let originalUserProfile: string | undefined;
 
   beforeEach(() => {
     originalCodexHome = process.env.CODEX_HOME;
+    originalUserProfile = process.env.USERPROFILE;
     process.env.CODEX_HOME = "/tmp/test-codex";
   });
 
@@ -103,16 +129,22 @@ describe("userSkillsDir", () => {
     } else {
       delete process.env.CODEX_HOME;
     }
+
+    if (typeof originalUserProfile === "string") {
+      process.env.USERPROFILE = originalUserProfile;
+    } else {
+      delete process.env.USERPROFILE;
+    }
   });
 
   it("returns CODEX_HOME/skills", () => {
-    assert.equal(userSkillsDir(), "/tmp/test-codex/skills");
+    assert.equal(userSkillsDir(), join("/tmp/test-codex", "skills"));
   });
 });
 
 describe("projectSkillsDir", () => {
   it("uses provided projectRoot", () => {
-    assert.equal(projectSkillsDir("/my/project"), "/my/project/.codex/skills");
+    assert.equal(projectSkillsDir("/my/project"), join("/my/project", ".codex", "skills"));
   });
 
   it("defaults to cwd when no projectRoot given", () => {
@@ -122,10 +154,13 @@ describe("projectSkillsDir", () => {
 
 describe("legacyUserSkillsDir", () => {
   let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
 
   beforeEach(() => {
     originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
     process.env.HOME = "/tmp/test-home";
+    process.env.USERPROFILE = "/tmp/test-home";
   });
 
   afterEach(() => {
@@ -134,18 +169,28 @@ describe("legacyUserSkillsDir", () => {
     } else {
       delete process.env.HOME;
     }
+
+    if (typeof originalUserProfile === "string") {
+      process.env.USERPROFILE = originalUserProfile;
+    } else {
+      delete process.env.USERPROFILE;
+    }
   });
 
   it("returns ~/.agents/skills under HOME", () => {
-    assert.equal(legacyUserSkillsDir(), "/tmp/test-home/.agents/skills");
+    assert.equal(legacyUserSkillsDir(), join("/tmp/test-home", ".agents", "skills"));
   });
 });
 
 describe("listInstalledSkillDirectories", () => {
   let originalCodexHome: string | undefined;
+  let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
 
   beforeEach(() => {
     originalCodexHome = process.env.CODEX_HOME;
+    originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
   });
 
   afterEach(() => {
@@ -153,6 +198,18 @@ describe("listInstalledSkillDirectories", () => {
       process.env.CODEX_HOME = originalCodexHome;
     } else {
       delete process.env.CODEX_HOME;
+    }
+
+    if (typeof originalHome === "string") {
+      process.env.HOME = originalHome;
+    } else {
+      delete process.env.HOME;
+    }
+
+    if (typeof originalUserProfile === "string") {
+      process.env.USERPROFILE = originalUserProfile;
+    } else {
+      delete process.env.USERPROFILE;
     }
   });
 
@@ -206,6 +263,7 @@ describe("listInstalledSkillDirectories", () => {
     const codexHomeRoot = join(homeRoot, ".codex");
     const legacyRoot = join(homeRoot, ".agents", "skills");
     process.env.HOME = homeRoot;
+    process.env.USERPROFILE = homeRoot;
     process.env.CODEX_HOME = codexHomeRoot;
 
     try {
@@ -232,6 +290,42 @@ describe("listInstalledSkillDirectories", () => {
       assert.equal(overlap.legacySkillCount, 2);
       assert.deepEqual(overlap.overlappingSkillNames, ["help"]);
       assert.deepEqual(overlap.mismatchedSkillNames, ["help"]);
+      assert.equal(overlap.sameResolvedTarget, false);
+    } finally {
+      await rm(homeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a legacy link to canonical skills as the same resolved target", async () => {
+    const homeRoot = await mkdtemp(join(tmpdir(), "omx-paths-linked-home-"));
+    const codexHomeRoot = join(homeRoot, ".codex");
+    const canonicalSkillsRoot = join(codexHomeRoot, "skills");
+    const legacyParent = join(homeRoot, ".agents");
+    const legacyRoot = join(legacyParent, "skills");
+    process.env.HOME = homeRoot;
+    process.env.USERPROFILE = homeRoot;
+    process.env.CODEX_HOME = codexHomeRoot;
+
+    try {
+      const canonicalHelpDir = join(canonicalSkillsRoot, "help");
+      await mkdir(canonicalHelpDir, { recursive: true });
+      await mkdir(legacyParent, { recursive: true });
+      await writeFile(join(canonicalHelpDir, "SKILL.md"), "# canonical help\n");
+      await symlink(
+        canonicalSkillsRoot,
+        legacyRoot,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+
+      const overlap = await detectLegacySkillRootOverlap();
+
+      assert.equal(overlap.canonicalExists, true);
+      assert.equal(overlap.legacyExists, true);
+      assert.equal(overlap.canonicalSkillCount, 1);
+      assert.equal(overlap.legacySkillCount, 1);
+      assert.equal(overlap.sameResolvedTarget, true);
+      assert.deepEqual(overlap.overlappingSkillNames, ["help"]);
+      assert.deepEqual(overlap.mismatchedSkillNames, []);
     } finally {
       await rm(homeRoot, { recursive: true, force: true });
     }
@@ -240,7 +334,7 @@ describe("listInstalledSkillDirectories", () => {
 
 describe("omxStateDir", () => {
   it("uses provided projectRoot", () => {
-    assert.equal(omxStateDir("/my/project"), "/my/project/.omx/state");
+    assert.equal(omxStateDir("/my/project"), join("/my/project", ".omx", "state"));
   });
 
   it("defaults to cwd when no projectRoot given", () => {
@@ -252,7 +346,7 @@ describe("omxProjectMemoryPath", () => {
   it("uses provided projectRoot", () => {
     assert.equal(
       omxProjectMemoryPath("/my/project"),
-      "/my/project/.omx/project-memory.json",
+      join("/my/project", ".omx", "project-memory.json"),
     );
   });
 
@@ -266,7 +360,7 @@ describe("omxProjectMemoryPath", () => {
 
 describe("omxNotepadPath", () => {
   it("uses provided projectRoot", () => {
-    assert.equal(omxNotepadPath("/my/project"), "/my/project/.omx/notepad.md");
+    assert.equal(omxNotepadPath("/my/project"), join("/my/project", ".omx", "notepad.md"));
   });
 
   it("defaults to cwd when no projectRoot given", () => {
@@ -276,7 +370,7 @@ describe("omxNotepadPath", () => {
 
 describe("omxPlansDir", () => {
   it("uses provided projectRoot", () => {
-    assert.equal(omxPlansDir("/my/project"), "/my/project/.omx/plans");
+    assert.equal(omxPlansDir("/my/project"), join("/my/project", ".omx", "plans"));
   });
 
   it("defaults to cwd when no projectRoot given", () => {
@@ -286,7 +380,7 @@ describe("omxPlansDir", () => {
 
 describe("omxLogsDir", () => {
   it("uses provided projectRoot", () => {
-    assert.equal(omxLogsDir("/my/project"), "/my/project/.omx/logs");
+    assert.equal(omxLogsDir("/my/project"), join("/my/project", ".omx", "logs"));
   });
 
   it("defaults to cwd when no projectRoot given", () => {

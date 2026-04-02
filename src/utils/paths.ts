@@ -5,7 +5,7 @@
 
 import { createHash } from "crypto";
 import { existsSync } from "fs";
-import { readdir, readFile } from "fs/promises";
+import { readdir, readFile, realpath } from "fs/promises";
 import { dirname, join } from "path";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
@@ -63,6 +63,9 @@ export interface SkillRootOverlapReport {
   legacyDir: string;
   canonicalExists: boolean;
   legacyExists: boolean;
+  canonicalResolvedDir: string | null;
+  legacyResolvedDir: string | null;
+  sameResolvedTarget: boolean;
   canonicalSkillCount: number;
   legacySkillCount: number;
   overlappingSkillNames: string[];
@@ -118,9 +121,13 @@ export async function detectLegacySkillRootOverlap(
   canonicalDir = userSkillsDir(),
   legacyDir = legacyUserSkillsDir(),
 ): Promise<SkillRootOverlapReport> {
-  const [canonicalSkills, legacySkills] = await Promise.all([
+  const canonicalExists = existsSync(canonicalDir);
+  const legacyExists = existsSync(legacyDir);
+  const [canonicalSkills, legacySkills, canonicalResolvedDir, legacyResolvedDir] = await Promise.all([
     readInstalledSkillsFromDir(canonicalDir, "user"),
     readInstalledSkillsFromDir(legacyDir, "user"),
+    canonicalExists ? realpath(canonicalDir).catch(() => null) : Promise.resolve(null),
+    legacyExists ? realpath(legacyDir).catch(() => null) : Promise.resolve(null),
   ]);
 
   const canonicalHashes = await hashSkillDirectory(canonicalSkills);
@@ -133,12 +140,19 @@ export async function detectLegacySkillRootOverlap(
   const mismatchedSkillNames = overlappingSkillNames.filter(
     (name) => canonicalHashes.get(name) !== legacyHashes.get(name),
   );
+  const sameResolvedTarget =
+    canonicalResolvedDir !== null &&
+    legacyResolvedDir !== null &&
+    canonicalResolvedDir === legacyResolvedDir;
 
   return {
     canonicalDir,
     legacyDir,
-    canonicalExists: existsSync(canonicalDir),
-    legacyExists: existsSync(legacyDir),
+    canonicalExists,
+    legacyExists,
+    canonicalResolvedDir,
+    legacyResolvedDir,
+    sameResolvedTarget,
     canonicalSkillCount: canonicalSkills.length,
     legacySkillCount: legacySkills.length,
     overlappingSkillNames,
