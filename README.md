@@ -206,6 +206,7 @@ If this happens, try:
 - [Italiano](./README.it.md)
 - [Ελληνικά](./README.el.md)
 - [Polski](./README.pl.md)
+- [Українська](./README.uk.md)
 
 ## Contributors
 
