@@ -1,4 +1,4 @@
-import { existsSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from 'child_process';
 import { delimiter, extname, join, resolve } from 'path';
 
@@ -80,7 +80,12 @@ function resolveWindowsCommandPath(
   }
 
   for (const candidate of candidates) {
-    if (existsImpl(candidate)) return candidate;
+    if (!existsImpl(candidate)) continue;
+    try {
+      if (!statSync(candidate).isDirectory()) return candidate;
+    } catch {
+      continue;
+    }
   }
 
   return null;

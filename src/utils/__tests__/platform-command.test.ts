@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -86,6 +86,40 @@ describe('buildPlatformCommandSpec', () => {
       await rm(fakeBin, { recursive: true, force: true });
     }
   });
+
+  it('skips directory PATH matches when resolving the PowerShell host for .ps1 shims', async () => {
+    const fakeRoot = await mkdtemp(join(tmpdir(), 'omx-platform-powershell-host-'));
+    try {
+      const fakeBin = join(fakeRoot, 'npm-bin');
+      const fakeSystem32 = join(fakeRoot, 'System32');
+      const fakeDirectoryMatch = join(fakeSystem32, 'powershell');
+      const fakePowerShellHostDir = join(fakeRoot, 'WindowsPowerShell', 'v1.0');
+      const ps1Path = join(fakeBin, 'codex.ps1');
+      const powershellExe = join(fakePowerShellHostDir, 'powershell.exe');
+
+      await mkdir(fakeBin, { recursive: true });
+      await mkdir(fakeDirectoryMatch, { recursive: true });
+      await mkdir(fakePowerShellHostDir, { recursive: true });
+      await writeFile(ps1Path, '');
+      await writeFile(powershellExe, '');
+
+      const spec = buildPlatformCommandSpec(
+        'codex',
+        ['--version'],
+        'win32',
+        {
+          PATH: [fakeBin, fakeSystem32, fakePowerShellHostDir].join(';'),
+          PATHEXT: '.EXE;.CMD;.PS1',
+        },
+      );
+
+      assert.equal(spec.command, powershellExe);
+      assert.deepEqual(spec.args.slice(0, 5), ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File']);
+      assert.equal(spec.args[5], ps1Path);
+    } finally {
+      await rm(fakeRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('resolveCommandPathForPlatform', () => {
@@ -107,6 +141,34 @@ describe('resolveCommandPathForPlatform', () => {
       );
     } finally {
       await rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores directory PATH matches on Windows', async () => {
+    const fakeRoot = await mkdtemp(join(tmpdir(), 'omx-platform-directory-match-'));
+    try {
+      const fakeSystem32 = join(fakeRoot, 'System32');
+      const fakeDirectoryMatch = join(fakeSystem32, 'powershell');
+      const fakePowerShellHostDir = join(fakeRoot, 'WindowsPowerShell', 'v1.0');
+      const powershellExe = join(fakePowerShellHostDir, 'powershell.exe');
+
+      await mkdir(fakeDirectoryMatch, { recursive: true });
+      await mkdir(fakePowerShellHostDir, { recursive: true });
+      await writeFile(powershellExe, '');
+
+      assert.equal(
+        resolveCommandPathForPlatform(
+          'powershell',
+          'win32',
+          {
+            PATH: [fakeSystem32, fakePowerShellHostDir].join(';'),
+            PATHEXT: '.EXE;.CMD;.PS1',
+          },
+        ),
+        powershellExe,
+      );
+    } finally {
+      await rm(fakeRoot, { recursive: true, force: true });
     }
   });
 
@@ -163,7 +225,7 @@ describe('spawnPlatformCommandSync', () => {
       const calls: Array<{
         command: string;
         args: readonly string[];
-        options?: { windowsVerbatimArguments?: boolean };
+        options?: { windowsVerbatimArguments?: boolean; windowsHide?: boolean };
       }> = [];
 
       const probed = spawnPlatformCommandSync(
@@ -195,6 +257,7 @@ describe('spawnPlatformCommandSync', () => {
       assert.equal(calls[0]?.command, 'C:\\Windows\\System32\\cmd.exe');
       assert.match((calls[0]?.args[3] || ''), /codex\.cmd/i);
       assert.equal(calls[0]?.options?.windowsVerbatimArguments, true);
+      assert.equal(calls[0]?.options?.windowsHide, true);
     } finally {
       await rm(fakeBin, { recursive: true, force: true });
     }
@@ -208,7 +271,7 @@ describe('spawnPlatformCommandSync', () => {
       const calls: Array<{
         command: string;
         args: readonly string[];
-        options?: { windowsVerbatimArguments?: boolean };
+        options?: { windowsVerbatimArguments?: boolean; windowsHide?: boolean };
       }> = [];
 
       spawnPlatformCommandSync(
@@ -237,8 +300,62 @@ describe('spawnPlatformCommandSync', () => {
       assert.equal(calls.length, 1);
       assert.equal(calls[0]?.command, exePath);
       assert.equal(calls[0]?.options?.windowsVerbatimArguments, undefined);
+      assert.equal(calls[0]?.options?.windowsHide, true);
     } finally {
       await rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('passes a real PowerShell executable when launching Windows ps1 shims', async () => {
+    const fakeRoot = await mkdtemp(join(tmpdir(), 'omx-platform-spawn-ps1-'));
+    try {
+      const fakeBin = join(fakeRoot, 'npm-bin');
+      const fakeSystem32 = join(fakeRoot, 'System32');
+      const fakeDirectoryMatch = join(fakeSystem32, 'powershell');
+      const fakePowerShellHostDir = join(fakeRoot, 'WindowsPowerShell', 'v1.0');
+      const ps1Path = join(fakeBin, 'codex.ps1');
+      const powershellExe = join(fakePowerShellHostDir, 'powershell.exe');
+      const calls: Array<{
+        command: string;
+        args: readonly string[];
+      }> = [];
+
+      await mkdir(fakeBin, { recursive: true });
+      await mkdir(fakeDirectoryMatch, { recursive: true });
+      await mkdir(fakePowerShellHostDir, { recursive: true });
+      await writeFile(ps1Path, '');
+      await writeFile(powershellExe, '');
+
+      const probed = spawnPlatformCommandSync(
+        'codex',
+        ['--version'],
+        { encoding: 'utf-8' },
+        'win32',
+        {
+          PATH: [fakeBin, fakeSystem32, fakePowerShellHostDir].join(';'),
+          PATHEXT: '.EXE;.CMD;.PS1',
+        },
+        undefined,
+        (((command: string, args: readonly string[]) => {
+          calls.push({ command, args });
+          return {
+            status: 0,
+            stdout: 'ok',
+            stderr: '',
+            pid: 1,
+            output: [],
+            signal: null,
+          };
+        }) as unknown) as typeof import('child_process').spawnSync,
+      );
+
+      assert.equal(probed.spec.command, powershellExe);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0]?.command, powershellExe);
+      assert.deepEqual(calls[0]?.args.slice(0, 5), ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File']);
+      assert.equal(calls[0]?.args[5], ps1Path);
+    } finally {
+      await rm(fakeRoot, { recursive: true, force: true });
     }
   });
 
