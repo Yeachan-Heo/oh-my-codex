@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -16,10 +16,14 @@ function runOmx(
   const testDir = dirname(fileURLToPath(import.meta.url));
   const repoRoot = join(testDir, '..', '..', '..');
   const omxBin = join(repoRoot, 'dist', 'cli', 'omx.js');
+  const mergedEnv = { ...process.env, ...envOverrides };
+  if (typeof envOverrides.HOME === 'string' && typeof envOverrides.USERPROFILE !== 'string') {
+    mergedEnv.USERPROFILE = envOverrides.HOME;
+  }
   const r = spawnSync(process.execPath, [omxBin, ...argv], {
     cwd,
     encoding: 'utf-8',
-    env: { ...process.env, ...envOverrides },
+    env: mergedEnv,
   });
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '', error: r.error?.message };
 }
@@ -199,8 +203,41 @@ USE_OMX_EXPLORE_CMD = "off"
       assert.equal(res.status, 0, res.stderr || res.stdout);
       assert.match(
         res.stdout,
-        /Legacy skill roots: 1 overlapping skill names between .*\.codex\/skills and .*\.agents\/skills; 1 differ in SKILL\.md content; Codex Enable\/Disable Skills may show duplicates until ~\/\.agents\/skills is cleaned up/,
+        /Legacy skill roots: 1 overlapping skill names between .*\.codex[\\/]+skills and .*\.agents[\\/]+skills; 1 differ in SKILL\.md content; Codex Enable\/Disable Skills may show duplicates until ~\/\.agents\/skills is cleaned up/,
       );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('passes when legacy skill root is a link to the canonical skills directory', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-doctor-skill-link-'));
+    try {
+      const home = join(wd, 'home');
+      const codexDir = join(home, '.codex');
+      const canonicalSkillsRoot = join(codexDir, 'skills');
+      const canonicalHelp = join(canonicalSkillsRoot, 'help');
+      const legacyRoot = join(home, '.agents', 'skills');
+      await mkdir(canonicalHelp, { recursive: true });
+      await mkdir(join(home, '.agents'), { recursive: true });
+      await writeFile(join(canonicalHelp, 'SKILL.md'), '# canonical help\n');
+      await symlink(
+        canonicalSkillsRoot,
+        legacyRoot,
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+
+      const res = runOmx(wd, ['doctor'], {
+        HOME: home,
+        CODEX_HOME: codexDir,
+      });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.match(
+        res.stdout,
+        /Legacy skill roots: ~\/\.agents\/skills links to canonical .*\.codex[\\/]+skills; treating both paths as one shared skill root/,
+      );
+      assert.doesNotMatch(res.stdout, /\[!!\] Legacy skill roots:/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
