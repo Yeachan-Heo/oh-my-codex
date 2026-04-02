@@ -69,6 +69,12 @@ import {
 } from "../team/tmux-session.js";
 import { getPackageRoot } from "../utils/package.js";
 import { codexConfigPath } from "../utils/paths.js";
+import {
+  PROVIDERS,
+  isProviderName,
+  setActiveProvider,
+  type ProviderName,
+} from "../providers/index.js";
 import { repairConfigIfNeeded } from "../config/generator.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../hud/constants.js";
 import {
@@ -168,6 +174,8 @@ Options:
   --keep-config Skip config.toml cleanup during uninstall
   --purge       Remove .omx/ cache directory during uninstall
   --verbose     Show detailed output
+  --provider    Target AI coding tool (default: codex):
+                codex | claude | cursor
   --scope       Setup scope for "omx setup" only:
                 user | project
   --skill-target
@@ -560,7 +568,58 @@ export function buildHudPaneCleanupTargets(
   return [...targets];
 }
 
+export function resolveProviderArg(args: string[]): ProviderName | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--provider") {
+      const next = args[i + 1];
+      if (!next || next.startsWith("-")) {
+        throw new Error(
+          `Missing provider value after --provider. Expected one of: ${PROVIDERS.join(", ")}`,
+        );
+      }
+      if (!isProviderName(next)) {
+        throw new Error(
+          `Invalid provider: ${next}. Expected one of: ${PROVIDERS.join(", ")}`,
+        );
+      }
+      return next;
+    }
+    if (arg.startsWith("--provider=")) {
+      const value = arg.slice("--provider=".length);
+      if (!isProviderName(value)) {
+        throw new Error(
+          `Invalid provider: ${value}. Expected one of: ${PROVIDERS.join(", ")}`,
+        );
+      }
+      return value;
+    }
+  }
+  return undefined;
+}
+
+/** Strip --provider and its value from args so downstream parsers don't choke. */
+function stripProviderArg(args: string[]): string[] {
+  const result: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--provider") {
+      i++; // skip value
+      continue;
+    }
+    if (args[i].startsWith("--provider=")) continue;
+    result.push(args[i]);
+  }
+  return result;
+}
+
 export async function main(args: string[]): Promise<void> {
+  // Resolve and activate the target provider before anything else
+  const providerArg = resolveProviderArg(args);
+  if (providerArg) {
+    setActiveProvider(providerArg);
+  }
+  args = stripProviderArg(args);
+
   const knownCommands = new Set([
     "launch",
     "exec",

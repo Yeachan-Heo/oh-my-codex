@@ -28,6 +28,10 @@ import {
   omxPlansDir,
   omxLogsDir,
 } from "../utils/paths.js";
+import {
+  getActiveProvider,
+  getProviderConfig,
+} from "../providers/index.js";
 import { buildMergedConfig, getRootModelName } from "../config/generator.js";
 import {
   getUnifiedMcpRegistryCandidates,
@@ -129,7 +133,8 @@ function applyScopePathRewritesToAgentsTemplate(
   scope: SetupScope,
 ): string {
   if (scope !== "project") return content;
-  return content.replaceAll("~/.codex", "./.codex");
+  const providerDir = getProviderConfig().projectDirName;
+  return content.replaceAll(`~/${providerDir}`, `./${providerDir}`);
 }
 
 interface PersistedSetupScope {
@@ -429,11 +434,13 @@ async function promptForSetupScope(
     output: process.stdout,
   });
   try {
+    const providerCfg = getProviderConfig();
+    const providerDir = providerCfg.projectDirName;
     console.log("Select setup scope:");
     console.log(
-      `  1) user (default) — installs to ~/.codex (skills default to ~/.codex/skills)`,
+      `  1) user (default) — installs to ~/${providerDir} (skills default to ~/${providerDir}/skills)`,
     );
-    console.log("  2) project — installs to ./.codex (local to project)");
+    console.log(`  2) project — installs to ./${providerDir} (local to project)`);
     const answer = (await rl.question("Scope [1-2] (default: 1): "))
       .trim()
       .toLowerCase();
@@ -620,8 +627,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     resolvedScope.source === "persisted" ? " (from .omx/setup-scope.json)" : "";
   const backupContext = getBackupContext(resolvedScope.scope, projectRoot);
 
+  const activeProvider = getActiveProvider();
+  const providerLabel = getProviderConfig().displayName;
   console.log("oh-my-codex setup");
   console.log("=================\n");
+  console.log(`Provider: ${providerLabel} (${activeProvider})`);
   console.log(
     `Using setup scope: ${resolvedScope.scope}${scopeSourceMessage}\n`,
   );

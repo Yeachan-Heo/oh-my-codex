@@ -14,10 +14,10 @@
 **Website:** https://yeachan-heo.github.io/oh-my-codex-website/  
 **Docs:** [Getting Started](./docs/getting-started.html) · [Agents](./docs/agents.html) · [Skills](./docs/skills.html) · [Integrations](./docs/integrations.html) · [Demo](./DEMO.md) · [OpenClaw guide](./docs/openclaw-integration.md)
 
-OMX is a workflow layer for [OpenAI Codex CLI](https://github.com/openai/codex).
+OMX is a workflow layer for AI coding tools.
 
-It keeps Codex as the execution engine and makes it easier to:
-- start a stronger Codex session by default
+It supports multiple providers — **OpenAI Codex CLI**, **Claude Code**, and **Cursor** — and makes it easier to:
+- start a stronger coding session by default
 - reuse good role/task invocations with `$name` keywords
 - invoke workflows with skills like `$plan`, `$ralph`, and `$team`
 - keep project guidance, plans, logs, and state in `.omx/`
@@ -42,9 +42,35 @@ $plan "ship this feature cleanly"
 That is the main path.
 Start OMX strongly, do the work in Codex, and let the agent pull in `$team` or other workflows only when the task actually needs them.
 
+### Using with Claude Code or Cursor
+
+Use the `--provider` flag to target a different AI coding tool:
+
+```bash
+# Claude Code
+omx setup --provider claude
+omx --provider claude
+
+# Cursor
+omx setup --provider cursor
+```
+
+You can also set it via environment variable:
+
+```bash
+export OMX_PROVIDER=claude
+omx setup
+```
+
+| Provider | Home dir | Config format | Prompt injection |
+| --- | --- | --- | --- |
+| `codex` (default) | `~/.codex/` | `config.toml` | `developer_instructions` key |
+| `claude` | `~/.claude/` | `settings.json` | `CLAUDE.md` file |
+| `cursor` | `~/.cursor/` | `settings.json` | `.cursorrules` file |
+
 ## What OMX is for
 
-Use OMX if you already like Codex and want a better day-to-day runtime around it:
+Use OMX if you already like Codex, Claude Code, or Cursor and want a better day-to-day runtime around it:
 - reusable role/task invocations such as `$architect` and `$executor`
 - reusable workflows such as `$plan`, `$ralph`, `$team`, and `$deep-interview`
 - project guidance through scoped `AGENTS.md`
@@ -57,8 +83,11 @@ If you want plain Codex with no extra workflow layer, you probably do not need O
 ### Requirements
 
 - Node.js 20+
-- Codex CLI installed: `npm install -g @openai/codex`
-- Codex auth configured
+- At least one supported provider CLI installed:
+  - Codex CLI: `npm install -g @openai/codex`
+  - Claude Code: `npm install -g @anthropic-ai/claude-code`
+  - Cursor: install from [cursor.com](https://cursor.com)
+- Provider auth configured
 - `tmux` on macOS/Linux if you later want the durable team runtime
 - `psmux` on native Windows if you later want Windows team mode
 

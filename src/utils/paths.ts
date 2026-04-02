@@ -1,6 +1,11 @@
 /**
  * Path utilities for oh-my-codex
- * Resolves Codex CLI config, skills, prompts, and state directories
+ * Resolves provider CLI config, skills, prompts, and state directories.
+ *
+ * All provider-specific paths now delegate to the provider abstraction
+ * (src/providers/index.ts).  The original function names are kept for
+ * backward compatibility so that existing call-sites continue to work
+ * without modification.
  */
 
 import { createHash } from "crypto";
@@ -9,40 +14,61 @@ import { readdir, readFile } from "fs/promises";
 import { dirname, join } from "path";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
+import {
+  providerHome,
+  providerConfigPath,
+  providerPromptsDir,
+  providerSkillsDir,
+  providerAgentsDir,
+  projectProviderDir,
+} from "../providers/index.js";
 
-/** Codex CLI home directory (~/.codex/) */
+/** Provider CLI home directory (provider-aware; defaults to ~/.codex/) */
 export function codexHome(): string {
-  return process.env.CODEX_HOME || join(homedir(), ".codex");
+  return process.env.CODEX_HOME || providerHome();
 }
 
-/** Codex config file path (~/.codex/config.toml) */
+/** Provider config file path (provider-aware) */
 export function codexConfigPath(): string {
-  return join(codexHome(), "config.toml");
+  if (process.env.CODEX_HOME) {
+    return join(process.env.CODEX_HOME, "config.toml");
+  }
+  return providerConfigPath();
 }
 
-/** Codex prompts directory (~/.codex/prompts/) */
+/** Provider prompts directory (provider-aware) */
 export function codexPromptsDir(): string {
-  return join(codexHome(), "prompts");
+  if (process.env.CODEX_HOME) {
+    return join(process.env.CODEX_HOME, "prompts");
+  }
+  return providerPromptsDir();
 }
 
-/** Codex native agents directory (~/.codex/agents/) */
+/** Provider native agents directory (provider-aware) */
 export function codexAgentsDir(codexHomeDir?: string): string {
-  return join(codexHomeDir || codexHome(), "agents");
+  if (codexHomeDir) return join(codexHomeDir, "agents");
+  if (process.env.CODEX_HOME) {
+    return join(process.env.CODEX_HOME, "agents");
+  }
+  return providerAgentsDir();
 }
 
-/** Project-level Codex native agents directory (.codex/agents/) */
+/** Project-level native agents directory (provider-aware) */
 export function projectCodexAgentsDir(projectRoot?: string): string {
-  return join(projectRoot || process.cwd(), ".codex", "agents");
+  return join(projectProviderDir(undefined, projectRoot), "agents");
 }
 
-/** User-level skills directory ($CODEX_HOME/skills, defaults to ~/.codex/skills/) */
+/** User-level skills directory (provider-aware) */
 export function userSkillsDir(): string {
-  return join(codexHome(), "skills");
+  if (process.env.CODEX_HOME) {
+    return join(process.env.CODEX_HOME, "skills");
+  }
+  return providerSkillsDir();
 }
 
-/** Project-level skills directory (.codex/skills/) */
+/** Project-level skills directory (provider-aware) */
 export function projectSkillsDir(projectRoot?: string): string {
-  return join(projectRoot || process.cwd(), ".codex", "skills");
+  return join(projectProviderDir(undefined, projectRoot), "skills");
 }
 
 /** Historical legacy user-level skills directory (~/.agents/skills/) */
