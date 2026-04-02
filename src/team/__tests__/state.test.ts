@@ -57,6 +57,164 @@ afterEach(() => {
   else delete process.env.OMX_TEAM_STATE_ROOT;
 });
 
+async function writeCompatRuntimeFixture(runtimePath: string, runtimeLogPath: string): Promise<void> {
+  await writeFile(
+    runtimePath,
+    `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+
+const argv = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(runtimeLogPath)}, argv.join(' ') + '\\n');
+
+function argValue(prefix) {
+  const entry = argv.find((value) => value.startsWith(prefix));
+  return entry ? entry.slice(prefix.length) : null;
+}
+
+function stateDir() {
+  return argValue('--state-dir=') || process.cwd();
+}
+
+function ensureDir(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+}
+
+function readJson(file, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJson(file, value) {
+  ensureDir(path.dirname(file));
+  fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\\n');
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+if (argv[0] === 'schema') {
+  process.stdout.write(JSON.stringify({
+    schema_version: 1,
+    commands: [
+      'acquire-authority',
+      'renew-authority',
+      'queue-dispatch',
+      'mark-notified',
+      'mark-delivered',
+      'mark-failed',
+      'request-replay',
+      'capture-snapshot',
+    ],
+    events: [],
+    transport: 'tmux',
+  }) + '\\n');
+  process.exit(0);
+}
+
+if (argv[0] !== 'exec') process.exit(1);
+
+const command = JSON.parse(argv[1] || '{}');
+const dir = stateDir();
+const dispatchPath = path.join(dir, 'dispatch.json');
+const mailboxPath = path.join(dir, 'mailbox.json');
+const dispatch = readJson(dispatchPath, { records: [] });
+const mailbox = readJson(mailboxPath, { records: [] });
+const timestamp = nowIso();
+
+switch (command.command) {
+  case 'QueueDispatch': {
+    dispatch.records.push({
+      request_id: command.request_id,
+      target: command.target,
+      status: 'pending',
+      created_at: timestamp,
+      notified_at: null,
+      delivered_at: null,
+      failed_at: null,
+      reason: null,
+      metadata: command.metadata ?? null,
+    });
+    writeJson(dispatchPath, dispatch);
+    process.stdout.write(JSON.stringify({ event: 'DispatchQueued', request_id: command.request_id, target: command.target, metadata: command.metadata ?? null }) + '\\n');
+    process.exit(0);
+  }
+  case 'MarkNotified': {
+    const record = dispatch.records.find((entry) => entry.request_id === command.request_id);
+    if (record) {
+      record.status = 'notified';
+      record.notified_at = timestamp;
+      record.reason = command.channel;
+      writeJson(dispatchPath, dispatch);
+    }
+    process.stdout.write(JSON.stringify({ event: 'DispatchNotified', request_id: command.request_id, channel: command.channel }) + '\\n');
+    process.exit(0);
+  }
+  case 'MarkDelivered': {
+    const record = dispatch.records.find((entry) => entry.request_id === command.request_id);
+    if (record) {
+      record.status = 'delivered';
+      record.delivered_at = timestamp;
+      writeJson(dispatchPath, dispatch);
+    }
+    process.stdout.write(JSON.stringify({ event: 'DispatchDelivered', request_id: command.request_id }) + '\\n');
+    process.exit(0);
+  }
+  case 'MarkFailed': {
+    const record = dispatch.records.find((entry) => entry.request_id === command.request_id);
+    if (record) {
+      record.status = 'failed';
+      record.failed_at = timestamp;
+      record.reason = command.reason;
+      writeJson(dispatchPath, dispatch);
+    }
+    process.stdout.write(JSON.stringify({ event: 'DispatchFailed', request_id: command.request_id, reason: command.reason }) + '\\n');
+    process.exit(0);
+  }
+  case 'CreateMailboxMessage': {
+    mailbox.records.push({
+      message_id: command.message_id,
+      from_worker: command.from_worker,
+      to_worker: command.to_worker,
+      body: command.body,
+      created_at: timestamp,
+      notified_at: null,
+      delivered_at: null,
+    });
+    writeJson(mailboxPath, mailbox);
+    process.stdout.write(JSON.stringify({ event: 'MailboxMessageCreated', message_id: command.message_id, from_worker: command.from_worker, to_worker: command.to_worker }) + '\\n');
+    process.exit(0);
+  }
+  case 'MarkMailboxNotified': {
+    const record = mailbox.records.find((entry) => entry.message_id === command.message_id);
+    if (record) {
+      record.notified_at = timestamp;
+      writeJson(mailboxPath, mailbox);
+    }
+    process.stdout.write(JSON.stringify({ event: 'MailboxNotified', message_id: command.message_id }) + '\\n');
+    process.exit(0);
+  }
+  case 'MarkMailboxDelivered': {
+    const record = mailbox.records.find((entry) => entry.message_id === command.message_id);
+    if (record) {
+      record.delivered_at = timestamp;
+      writeJson(mailboxPath, mailbox);
+    }
+    process.stdout.write(JSON.stringify({ event: 'MailboxDelivered', message_id: command.message_id }) + '\\n');
+    process.exit(0);
+  }
+  default:
+    process.exit(1);
+}
+`,
+  );
+  await chmod(runtimePath, 0o755);
+}
+
 describe('team state', () => {
   it('initTeamState creates correct directory structure and config.json', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-state-'));
@@ -284,6 +442,51 @@ exit 1
       assert.equal(listed.length, 1);
       assert.equal(listed[0]?.message_id, 'msg-1');
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers bridge-authored dispatch records without mutating the legacy requests file', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-dispatch-bridge-authority-'));
+    const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;
+    try {
+      await initTeamState('team-dispatch-bridge-authority', 't', 'executor', 1, cwd);
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const runtimeLogPath = join(cwd, 'runtime.log');
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeCompatRuntimeFixture(join(fakeBinDir, 'omx-runtime'), runtimeLogPath);
+      process.env.OMX_RUNTIME_BINARY = join(fakeBinDir, 'omx-runtime');
+
+      const legacyPath = join(cwd, '.omx', 'state', 'team', 'team-dispatch-bridge-authority', 'dispatch', 'requests.json');
+      const before = await readFile(legacyPath, 'utf8');
+      assert.equal(JSON.parse(before).length, 0);
+
+      const queued = await enqueueDispatchRequest(
+        'team-dispatch-bridge-authority',
+        {
+          kind: 'mailbox',
+          to_worker: 'worker-1',
+          message_id: 'bridge-msg-1',
+          trigger_message: 'check mailbox',
+        },
+        cwd,
+      );
+
+      const requests = await listDispatchRequests('team-dispatch-bridge-authority', cwd);
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0]?.request_id, queued.request.request_id);
+      assert.equal(requests[0]?.message_id, 'bridge-msg-1');
+
+      await markDispatchRequestNotified('team-dispatch-bridge-authority', queued.request.request_id, {}, cwd);
+      await markDispatchRequestDelivered('team-dispatch-bridge-authority', queued.request.request_id, {}, cwd);
+      const delivered = await readDispatchRequest('team-dispatch-bridge-authority', queued.request.request_id, cwd);
+      assert.equal(delivered?.status, 'delivered');
+
+      const after = await readFile(legacyPath, 'utf8');
+      assert.deepEqual(JSON.parse(after), [], 'bridge-success path should not rewrite legacy dispatch requests.json');
+    } finally {
+      if (typeof previousRuntimeBinary === 'string') process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
+      else delete process.env.OMX_RUNTIME_BINARY;
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -992,6 +1195,42 @@ exit 1
       const parsed = JSON.parse(mailboxDisk) as { messages: Array<{ delivered_at?: string }> };
       assert.ok(parsed.messages.some((m) => typeof m.delivered_at === 'string'));
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers bridge-authored mailbox records without mutating the legacy mailbox file', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-mailbox-bridge-authority-'));
+    const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;
+    try {
+      await initTeamState('team-mailbox-bridge-authority', 't', 'executor', 2, cwd);
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const runtimeLogPath = join(cwd, 'runtime.log');
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeCompatRuntimeFixture(join(fakeBinDir, 'omx-runtime'), runtimeLogPath);
+      process.env.OMX_RUNTIME_BINARY = join(fakeBinDir, 'omx-runtime');
+
+      const legacyPath = join(cwd, '.omx', 'state', 'team', 'team-mailbox-bridge-authority', 'mailbox', 'worker-2.json');
+      assert.equal(existsSync(legacyPath), false);
+
+      const message = await sendDirectMessage('team-mailbox-bridge-authority', 'worker-1', 'worker-2', 'hello', cwd);
+      assert.equal(message.to_worker, 'worker-2');
+      await markMessageNotified('team-mailbox-bridge-authority', 'worker-2', message.message_id, cwd);
+      await markMessageDelivered('team-mailbox-bridge-authority', 'worker-2', message.message_id, cwd);
+
+      const messages = await listMailboxMessages('team-mailbox-bridge-authority', 'worker-2', cwd);
+      assert.equal(messages.length, 1);
+      assert.equal(messages[0]?.message_id, message.message_id);
+      assert.equal(typeof messages[0]?.notified_at, 'string');
+      assert.equal(typeof messages[0]?.delivered_at, 'string');
+
+      if (existsSync(legacyPath)) {
+        const after = JSON.parse(await readFile(legacyPath, 'utf8')) as { messages: unknown[] };
+        assert.equal(after.messages.length, 0, 'bridge-success path should not rewrite legacy mailbox JSON');
+      }
+    } finally {
+      if (typeof previousRuntimeBinary === 'string') process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
+      else delete process.env.OMX_RUNTIME_BINARY;
       await rm(cwd, { recursive: true, force: true });
     }
   });

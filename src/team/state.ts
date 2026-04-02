@@ -18,6 +18,7 @@ import {
   markMessageDelivered as markMessageDeliveredImpl,
   markMessageNotified as markMessageNotifiedImpl,
   listMailboxMessages as listMailboxMessagesImpl,
+  normalizeBridgeMailboxMessage,
 } from './state/mailbox.js';
 import {
   enqueueDispatchRequest as enqueueDispatchRequestImpl,
@@ -26,6 +27,7 @@ import {
   transitionDispatchRequest as transitionDispatchRequestImpl,
   markDispatchRequestNotified as markDispatchRequestNotifiedImpl,
   markDispatchRequestDelivered as markDispatchRequestDeliveredImpl,
+  normalizeBridgeDispatchRecord,
   normalizeDispatchRequest as normalizeDispatchRequestImpl,
 } from './state/dispatch.js';
 import {
@@ -49,6 +51,7 @@ import {
   withTaskClaimLock as withTaskClaimLockImpl,
   withMailboxLock as withMailboxLockImpl,
 } from './state/locks.js';
+import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir } from '../runtime/bridge.js';
 import {
   TEAM_NAME_SAFE_PATTERN,
   WORKER_NAME_SAFE_PATTERN,
@@ -1365,6 +1368,21 @@ export async function appendTeamEvent(teamName: string, event: Omit<TeamEvent, '
 }
 
 async function readMailbox(teamName: string, workerName: string, cwd: string): Promise<TeamMailbox> {
+  if (isBridgeEnabled()) {
+    try {
+      const bridge = getDefaultBridge(resolveBridgeStateDir(cwd));
+      const compat = bridge.readCompatFile<{ records?: unknown[] }>('mailbox.json');
+      if (compat) {
+        const messages = bridge.readMailboxRecords()
+          .filter((record) => record.to_worker === workerName)
+          .map((record) => normalizeBridgeMailboxMessage(record));
+        return { worker: workerName, messages };
+      }
+    } catch {
+      // fall through to legacy file fallback
+    }
+  }
+
   const p = mailboxPath(teamName, workerName, cwd);
   try {
     if (!existsSync(p)) return { worker: workerName, messages: [] };
@@ -1385,6 +1403,21 @@ async function writeMailbox(teamName: string, mailbox: TeamMailbox, cwd: string)
 }
 
 async function readDispatchRequests(teamName: string, cwd: string): Promise<TeamDispatchRequest[]> {
+  if (isBridgeEnabled()) {
+    try {
+      const bridge = getDefaultBridge(resolveBridgeStateDir(cwd));
+      const compat = bridge.readCompatFile<{ records?: unknown[] }>('dispatch.json');
+      if (compat) {
+        const nowIso = new Date().toISOString();
+        return bridge.readDispatchRecords()
+          .map((record) => normalizeBridgeDispatchRecord(teamName, record, nowIso))
+          .filter((record): record is TeamDispatchRequest => record !== null);
+      }
+    } catch {
+      // fall through to legacy file fallback
+    }
+  }
+
   const path = dispatchRequestsPath(teamName, cwd);
   try {
     if (!existsSync(path)) return [];

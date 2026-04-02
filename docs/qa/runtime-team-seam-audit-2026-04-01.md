@@ -9,18 +9,20 @@ This note records the remaining high-value runtime seam gaps after the Rust thin
 
 ## Summary
 
-The team/runtime stack is no longer missing a Rust contract surface. The remaining risk is narrower:
+The team/runtime stack is no longer missing a Rust contract surface. As of the
+issue #1108 seam-hardening pass, the dispatch/mailbox dual-write gap is closed;
+the remaining risk is narrower:
 
-1. **Rust runtime ↔ TS team state is still dual-written in cutover paths**
-2. **Team metadata resolution still falls back across multiple files**
-3. **The declared Rust semantic-owner model is ahead of some TS canonical writers**
-4. **Compatibility readers still carry legacy/current precedence logic**
+1. **Team metadata resolution still falls back across multiple files**
+2. **Compatibility readers still carry legacy/current precedence logic**
 
 These are follow-up seam-hardening gaps, not evidence that the Rust runtime direction was wrong.
 
 ## Remaining seam gaps
 
 ### 1. Rust runtime ↔ TS team state dual-write
+
+Status: **resolved by issue #1108**
 
 Evidence:
 
@@ -29,14 +31,14 @@ Evidence:
 
 Current state:
 
-- Rust bridge writes are attempted first
-- bridge failures are explicitly non-fatal
-- TS file writes remain canonical during cutover
+- Rust bridge / compat files are now the canonical dispatch and mailbox surface
+- legacy TS dispatch/mailbox files remain fallback-only for degraded lanes where the bridge is disabled, unavailable, or unreadable
+- watcher/runtime paths were narrowed so bridge-owned success paths no longer semantically dual-write legacy mailbox/dispatch state
 
 Risk:
 
-- state divergence between Rust-authored compatibility output and TS-owned team files
-- harder debugging when status, delivery, or mailbox transitions disagree
+- residual regressions are now more likely to come from incorrect fallback activation than from active dual-write divergence
+- future refactors could accidentally widen fallback behavior unless tests/docs keep the canonical-owner rule explicit
 
 Desired end state:
 
@@ -66,6 +68,8 @@ Desired end state:
 
 ### 3. Runtime ownership contract vs. cutover reality
 
+Status: **resolved by issue #1108 for dispatch/mailbox ownership**
+
 Evidence:
 
 - `src/runtime/bridge.ts:2-6`
@@ -74,13 +78,13 @@ Evidence:
 
 Current state:
 
-- the bridge contract says semantic mutations route through Rust
-- the team cutover paths still treat TS files as canonical in some flows
+- the bridge contract and the team dispatch/mailbox write paths now agree on Rust ownership
+- remaining ownership work is outside dispatch/mailbox and focuses on broader metadata/fallback simplification
 
 Risk:
 
-- contributor confusion about which layer is allowed to establish semantic truth
-- longer-lived dual-write migration pressure
+- contributors may still misread broader metadata/fallback layers as ownership layers if the docs are not kept precise
+- future compatibility work could accidentally reintroduce JS canonical writes without contract/test coverage
 
 Desired end state:
 
@@ -111,10 +115,8 @@ Desired end state:
 
 ## Recommended follow-up order
 
-1. Remove semantic dual-write from dispatch transitions
-2. Remove semantic dual-write from mailbox transitions
-3. Collapse team state-root / working-directory resolution to one canonical metadata source
-4. Reduce compatibility fallback layers after the write path is single-owner
+1. Collapse team state-root / working-directory resolution to one canonical metadata source
+2. Reduce compatibility fallback layers after the write path is single-owner
 
 ## Out of scope
 

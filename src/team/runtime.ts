@@ -107,7 +107,6 @@ import {
   type TeamReasoningEffort,
 } from './model-contract.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
-import { isBridgeEnabled, getDefaultBridge } from '../runtime/bridge.js';
 import { inferPhaseTargetFromTaskCounts, reconcilePhaseStateForMonitor } from './phase-controller.js';
 import { getTeamTmuxSessions } from '../notifications/tmux.js';
 import { hasStructuredVerificationEvidence } from '../verification/verifier.js';
@@ -2694,22 +2693,6 @@ async function dispatchCriticalInboxInstruction(params: {
     requireWorkerStartupEvidence,
   } = params;
 
-  // --- Rust runtime bridge: dual-write dispatch mutations ---
-  if (isBridgeEnabled()) {
-    try {
-      const bridge = getDefaultBridge(cwd);
-      const bridgeRequestId = `dispatch-${workerName}-${Date.now()}`;
-      bridge.execCommand({
-        command: 'QueueDispatch',
-        request_id: bridgeRequestId,
-        target: workerName,
-        metadata: { kind: 'inbox', inbox_correlation_key: inboxCorrelationKey },
-      });
-    } catch (_bridgeErr) {
-      // Bridge failure is non-fatal — fall through to existing JS logic
-    }
-  }
-
   if (config.worker_launch_mode === 'prompt') {
     return await queueInboxInstruction({
       teamName,
@@ -2790,9 +2773,6 @@ async function dispatchCriticalInboxInstruction(params: {
   if (receipt?.status === 'failed') {
     const fallback = await notifyWorkerOutcome(config, workerIndex, triggerMessage, paneId);
     if (fallback.ok) {
-      if (isBridgeEnabled()) {
-        try { getDefaultBridge(cwd).execCommand({ command: 'MarkNotified', request_id: queued.request_id, channel: `fallback_confirmed_after_failed_receipt:${fallback.reason}` }); } catch (_) { /* non-fatal */ }
-      }
       await markDispatchRequestNotified(
         teamName,
         queued.request_id,
@@ -2805,9 +2785,6 @@ async function dispatchCriticalInboxInstruction(params: {
         reason: `fallback_confirmed_after_failed_receipt:${fallback.reason}`,
         request_id: queued.request_id,
       };
-    }
-    if (isBridgeEnabled()) {
-      try { getDefaultBridge(cwd).execCommand({ command: 'MarkFailed', request_id: queued.request_id, reason: `fallback_attempted_but_unconfirmed:${fallback.reason}` }); } catch (_) { /* non-fatal */ }
     }
     await transitionDispatchRequest(
       teamName,
@@ -2833,9 +2810,6 @@ async function dispatchCriticalInboxInstruction(params: {
     ? `${startupFallbackLabel}_fallback_failed:${fallback.reason}`
     : `fallback_attempted_but_unconfirmed:${fallback.reason}`;
   if (fallback.ok) {
-    if (isBridgeEnabled()) {
-      try { getDefaultBridge(cwd).execCommand({ command: 'MarkNotified', request_id: queued.request_id, channel: `fallback_confirmed:${fallback.reason}` }); } catch (_) { /* non-fatal */ }
-    }
     const marked = await markDispatchRequestNotified(
       teamName,
       queued.request_id,
@@ -2843,9 +2817,6 @@ async function dispatchCriticalInboxInstruction(params: {
       cwd,
     );
     if (!marked) {
-      if (isBridgeEnabled()) {
-        try { getDefaultBridge(cwd).execCommand({ command: 'MarkFailed', request_id: queued.request_id, reason: `fallback_confirmed_after_failed_receipt:${fallback.reason}` }); } catch (_) { /* non-fatal */ }
-      }
       await transitionDispatchRequest(
         teamName,
         queued.request_id,
@@ -2867,9 +2838,6 @@ async function dispatchCriticalInboxInstruction(params: {
 
   const current = await readDispatchRequest(teamName, queued.request_id, cwd);
   if (current && current.status !== 'failed') {
-    if (isBridgeEnabled()) {
-      try { getDefaultBridge(cwd).execCommand({ command: 'MarkFailed', request_id: queued.request_id, reason: fallbackFailureReason }); } catch (_) { /* non-fatal */ }
-    }
     await transitionDispatchRequest(
       teamName,
       queued.request_id,
@@ -3084,20 +3052,6 @@ async function deliverPendingMailboxMessages(
         1,
         resolveInstructionStateRoot(workerInfo.worktree_path),
       );
-      // --- Rust runtime bridge: dual-write mailbox dispatch ---
-      if (isBridgeEnabled()) {
-        try {
-          const bridge = getDefaultBridge(cwd);
-          bridge.execCommand({
-            command: 'QueueDispatch',
-            request_id: `mailbox-${msg.message_id}-${Date.now()}`,
-            target: worker.name,
-            metadata: { kind: 'mailbox', message_id: msg.message_id },
-          });
-        } catch (_bridgeErr) {
-          // Bridge failure is non-fatal — fall through to existing JS logic
-        }
-      }
       const transportPreference = config.worker_launch_mode === 'prompt'
         ? 'prompt_stdin'
         : (dispatchPolicy.dispatch_mode === 'transport_direct' ? 'transport_direct' : 'hook_preferred_with_fallback');
@@ -3135,10 +3089,6 @@ async function deliverPendingMailboxMessages(
         const direct = await notifyWorkerOutcome(config, workerInfo.index, triggerMessage, workerInfo.pane_id);
         outcome = { ...direct, request_id: queued.request.request_id, message_id: msg.message_id };
         if (outcome.ok) {
-          if (isBridgeEnabled()) {
-            try { getDefaultBridge(cwd).execCommand({ command: 'MarkNotified', request_id: queued.request.request_id, channel: `direct:${outcome.reason}` }); } catch (_) { /* non-fatal */ }
-            try { getDefaultBridge(cwd).execCommand({ command: 'MarkMailboxNotified', message_id: msg.message_id }); } catch (_) { /* non-fatal */ }
-          }
           await markMessageNotified(teamName, worker.name, msg.message_id, cwd).catch(() => false);
           await markDispatchRequestNotified(
             teamName,
@@ -3174,23 +3124,6 @@ export async function sendWorkerMessage(
   if (!config) throw new Error(`Team ${sanitized} not found`);
   const manifest = await readTeamManifestV2(sanitized, cwd);
   const dispatchPolicy = resolveDispatchPolicy(manifest?.policy, config.worker_launch_mode);
-
-  // --- Rust runtime bridge: dual-write mailbox message creation ---
-  if (isBridgeEnabled()) {
-    try {
-      const bridge = getDefaultBridge(cwd);
-      const bridgeMessageId = `msg-${fromWorker}-${toWorker}-${Date.now()}`;
-      bridge.execCommand({
-        command: 'CreateMailboxMessage',
-        message_id: bridgeMessageId,
-        from_worker: fromWorker,
-        to_worker: toWorker,
-        body,
-      });
-    } catch (_bridgeErr) {
-      // Bridge failure is non-fatal — fall through to existing JS logic
-    }
-  }
 
   if (toWorker === 'leader-fixed') {
     const leaderTriggerMessage = generateLeaderMailboxTriggerMessage(sanitized, fromWorker);
@@ -3318,25 +3251,6 @@ export async function broadcastWorkerMessage(
   const transportPreference = config.worker_launch_mode === 'prompt'
     ? 'prompt_stdin'
     : (dispatchPolicy.dispatch_mode === 'transport_direct' ? 'transport_direct' : 'hook_preferred_with_fallback');
-
-  // --- Rust runtime bridge: dual-write broadcast mailbox messages ---
-  if (isBridgeEnabled()) {
-    try {
-      const bridge = getDefaultBridge(cwd);
-      for (const w of config.workers) {
-        const bridgeMessageId = `bcast-${fromWorker}-${w.name}-${Date.now()}`;
-        bridge.execCommand({
-          command: 'CreateMailboxMessage',
-          message_id: bridgeMessageId,
-          from_worker: fromWorker,
-          to_worker: w.name,
-          body,
-        });
-      }
-    } catch (_bridgeErr) {
-      // Bridge failure is non-fatal — fall through to existing JS logic
-    }
-  }
 
   const outcomes = await queueBroadcastMailboxMessage({
     teamName: sanitized,

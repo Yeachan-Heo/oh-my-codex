@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { initTeamState } from '../../team/state.js';
+import { enqueueDispatchRequest, initTeamState, listDispatchRequests, listMailboxMessages, sendDirectMessage } from '../../team/state.js';
 import { readTeamState } from '../../hud/state.js';
 
 function repoRoot(): string {
@@ -42,6 +42,60 @@ async function withTempTeamStateRoot<T>(
     if (previousRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
     else process.env.OMX_TEAM_STATE_ROOT = previousRoot;
   }
+}
+
+async function writeCompatRuntimeFixture(runtimePath: string): Promise<void> {
+  await writeFile(
+    runtimePath,
+    `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const argv = process.argv.slice(2);
+function argValue(prefix) {
+  const entry = argv.find((value) => value.startsWith(prefix));
+  return entry ? entry.slice(prefix.length) : null;
+}
+function stateDir() {
+  return argValue('--state-dir=') || process.cwd();
+}
+function readJson(file, fallback) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
+}
+function writeJson(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\\n');
+}
+function nowIso() { return new Date().toISOString(); }
+if (argv[0] === 'schema') {
+  process.stdout.write(JSON.stringify({ schema_version: 1, commands: ['acquire-authority','renew-authority','queue-dispatch','mark-notified','mark-delivered','mark-failed','request-replay','capture-snapshot'], events: [], transport: 'tmux' }) + '\\n');
+  process.exit(0);
+}
+if (argv[0] !== 'exec') process.exit(1);
+const command = JSON.parse(argv[1] || '{}');
+const dir = stateDir();
+const dispatchPath = path.join(dir, 'dispatch.json');
+const mailboxPath = path.join(dir, 'mailbox.json');
+const dispatch = readJson(dispatchPath, { records: [] });
+const mailbox = readJson(mailboxPath, { records: [] });
+const timestamp = nowIso();
+switch (command.command) {
+  case 'QueueDispatch':
+    dispatch.records.push({ request_id: command.request_id, target: command.target, status: 'pending', created_at: timestamp, notified_at: null, delivered_at: null, failed_at: null, reason: null, metadata: command.metadata ?? null });
+    writeJson(dispatchPath, dispatch);
+    process.stdout.write(JSON.stringify({ event: 'DispatchQueued', request_id: command.request_id, target: command.target }) + '\\n');
+    process.exit(0);
+  case 'CreateMailboxMessage':
+    mailbox.records.push({ message_id: command.message_id, from_worker: command.from_worker, to_worker: command.to_worker, body: command.body, created_at: timestamp, notified_at: null, delivered_at: null });
+    writeJson(mailboxPath, mailbox);
+    process.stdout.write(JSON.stringify({ event: 'MailboxMessageCreated', message_id: command.message_id, from_worker: command.from_worker, to_worker: command.to_worker }) + '\\n');
+    process.exit(0);
+  default:
+    process.stdout.write(JSON.stringify({ event: 'ok' }) + '\\n');
+    process.exit(0);
+}
+`,
+  );
+  await chmod(runtimePath, 0o755);
 }
 
 describe('rust runtime legacy-reader compatibility', () => {
@@ -165,6 +219,50 @@ describe('rust runtime legacy-reader compatibility', () => {
       assert.equal(state?.current_phase, 'executing');
       assert.equal(state?.agent_count, 3);
     } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers bridge-authored dispatch/mailbox compatibility views over stale legacy files', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-rust-compat-bridge-'));
+    const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;
+    try {
+      const teamStateRoot = join(wd, '.omx', 'state');
+      await withTempTeamStateRoot(teamStateRoot, async () => {
+        await initTeamState('rust-compat-bridge', 'compatibility lane', 'executor', 2, wd);
+        const fakeBin = join(wd, 'bin');
+        await mkdir(fakeBin, { recursive: true });
+        const runtimePath = join(fakeBin, 'omx-runtime');
+        await writeCompatRuntimeFixture(runtimePath);
+        process.env.OMX_RUNTIME_BINARY = runtimePath;
+
+        const teamDir = join(teamStateRoot, 'team', 'rust-compat-bridge');
+        await writeFile(
+          join(teamDir, 'dispatch', 'requests.json'),
+          JSON.stringify([{ request_id: 'legacy-only', kind: 'mailbox', team_name: 'rust-compat-bridge', to_worker: 'worker-2', trigger_message: 'legacy', status: 'pending', attempt_count: 0, created_at: '2026-04-01T00:00:00.000Z', updated_at: '2026-04-01T00:00:00.000Z', message_id: 'legacy-msg' }], null, 2),
+        );
+        await writeFile(
+          join(teamDir, 'mailbox', 'worker-2.json'),
+          JSON.stringify({ worker: 'worker-2', messages: [{ message_id: 'legacy-msg', from_worker: 'worker-1', to_worker: 'worker-2', body: 'legacy body', created_at: '2026-04-01T00:00:00.000Z' }] }, null, 2),
+        );
+
+        const queued = await enqueueDispatchRequest(
+          'rust-compat-bridge',
+          { kind: 'mailbox', to_worker: 'worker-2', message_id: 'bridge-msg', trigger_message: 'bridge trigger' },
+          wd,
+        );
+        const message = await sendDirectMessage('rust-compat-bridge', 'worker-1', 'worker-2', 'bridge body', wd);
+        const dispatch = await listDispatchRequests('rust-compat-bridge', wd);
+        const mailbox = await listMailboxMessages('rust-compat-bridge', 'worker-2', wd);
+
+        assert.equal(dispatch.some((entry) => entry.request_id === queued.request.request_id), true);
+        assert.equal(dispatch.some((entry) => entry.request_id === 'legacy-only'), false, 'bridge compat view should win over stale legacy dispatch file');
+        assert.equal(mailbox.some((entry) => entry.message_id === message.message_id), true);
+        assert.equal(mailbox.some((entry) => entry.message_id === 'legacy-msg'), false, 'bridge compat view should win over stale legacy mailbox file');
+      });
+    } finally {
+      if (typeof previousRuntimeBinary === 'string') process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
+      else delete process.env.OMX_RUNTIME_BINARY;
       await rm(wd, { recursive: true, force: true });
     }
   });

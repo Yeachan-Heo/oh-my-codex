@@ -7,6 +7,7 @@ Rust core is the single semantic owner for:
 - authority
 - lifecycle/session state
 - dispatch/backlog
+- mailbox delivery state
 - replay/recovery
 - readiness/diagnostics
 - canonical mux operations
@@ -42,6 +43,7 @@ The `RuntimeEngine` (in `crates/omx-runtime-core/src/engine.rs`) writes the foll
 | `readiness.json` | `write_compatibility_view()` | `ReadinessSnapshot` (`ready`, `reasons`) for TS readers |
 | `replay.json` | `write_compatibility_view()` | `ReplaySnapshot` state for TS readers |
 | `dispatch.json` | `write_compatibility_view()` | Full `DispatchLog` (array of `DispatchRecord` entries) for team status readers |
+| `mailbox.json` | `write_compatibility_view()` | Full `MailboxLog` (array of `MailboxRecord` entries) for team/message readers |
 
 All files are written atomically to the configured `state_dir`. TS readers must treat these files as read-only; the Rust engine is the sole writer.
 
@@ -52,7 +54,9 @@ All files are written atomically to the configured `state_dir`. TS readers must 
 2. Legacy tmux typing is delivery only; it does not establish semantic truth.
 3. If Rust-authored compatibility files and legacy JS defaults disagree, the
    Rust-authored file wins.
-4. Unknown delivery failures are surfaced as adapter failures, not as semantic
+4. JS file writes remain fallback-only for lanes where the bridge is disabled or
+   unavailable; they are not canonical when the Rust bridge succeeds.
+5. Unknown delivery failures are surfaced as adapter failures, not as semantic
    owner changes.
 
 ## Consumer matrix

@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { getDefaultBridge, isBridgeEnabled } from '../../runtime/bridge.js';
+import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir, type MailboxRecord, type RuntimeCommand } from '../../runtime/bridge.js';
 
 export interface TeamMailboxMessage {
   message_id: string;
@@ -36,6 +36,28 @@ interface MailboxDeps {
   readTeamConfig: (teamName: string, cwd: string) => Promise<{ workers: Array<{ name: string }> } | null>;
 }
 
+function executeBridgeCommand(cwd: string, command: RuntimeCommand): boolean {
+  if (!isBridgeEnabled()) return false;
+  try {
+    getDefaultBridge(resolveBridgeStateDir(cwd)).execCommand(command);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function normalizeBridgeMailboxMessage(record: MailboxRecord): TeamMailboxMessage {
+  return {
+    message_id: record.message_id,
+    from_worker: record.from_worker,
+    to_worker: record.to_worker,
+    body: record.body,
+    created_at: record.created_at,
+    notified_at: record.notified_at ?? undefined,
+    delivered_at: record.delivered_at ?? undefined,
+  };
+}
+
 export async function sendDirectMessage(
   fromWorker: string,
   toWorker: string,
@@ -58,10 +80,21 @@ export async function sendDirectMessage(
       return;
     }
 
-    // Dual-write: Rust bridge (non-fatal) + TS file (canonical during cutover)
     const msgId = randomUUID();
-    if (isBridgeEnabled()) {
-      try { getDefaultBridge(deps.cwd).execCommand({ command: 'CreateMailboxMessage', message_id: msgId, from_worker: fromWorker, to_worker: toWorker, body }); } catch {}
+    if (executeBridgeCommand(deps.cwd, {
+      command: 'CreateMailboxMessage',
+      message_id: msgId,
+      from_worker: fromWorker,
+      to_worker: toWorker,
+      body,
+    })) {
+      const bridgeMailbox = await deps.readMailbox(deps.teamName, toWorker, deps.cwd);
+      const bridgeMessage = bridgeMailbox.messages.find((candidate) => candidate.message_id === msgId);
+      if (bridgeMessage) {
+        msg = bridgeMessage;
+        created = true;
+        return;
+      }
     }
 
     msg = {
@@ -112,8 +145,9 @@ export async function markMessageDelivered(
   messageId: string,
   deps: MailboxDeps,
 ): Promise<boolean> {
-  if (isBridgeEnabled()) {
-    try { getDefaultBridge(deps.cwd).execCommand({ command: 'MarkMailboxDelivered', message_id: messageId }); } catch {}
+  if (executeBridgeCommand(deps.cwd, { command: 'MarkMailboxDelivered', message_id: messageId })) {
+    const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
+    if (mailbox.messages.some((message) => message.message_id === messageId)) return true;
   }
   return await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {
     const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
@@ -132,8 +166,9 @@ export async function markMessageNotified(
   messageId: string,
   deps: MailboxDeps,
 ): Promise<boolean> {
-  if (isBridgeEnabled()) {
-    try { getDefaultBridge(deps.cwd).execCommand({ command: 'MarkMailboxNotified', message_id: messageId }); } catch {}
+  if (executeBridgeCommand(deps.cwd, { command: 'MarkMailboxNotified', message_id: messageId })) {
+    const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
+    if (mailbox.messages.some((message) => message.message_id === messageId)) return true;
   }
   return await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {
     const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);

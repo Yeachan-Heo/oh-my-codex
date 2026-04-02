@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { omxStateDir } from '../utils/paths.js';
 
 const __bridge_dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -127,6 +128,14 @@ export function resolveRuntimeBinaryPath(options: RuntimeBinaryDiscoveryOptions 
   if (exists(workspaceRelease)) return workspaceRelease;
 
   return options.fallbackBinary ?? 'omx-runtime';
+}
+
+export function resolveBridgeStateDir(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = env.OMX_TEAM_STATE_ROOT;
+  if (typeof explicit === 'string' && explicit.trim() !== '') {
+    return resolve(cwd, explicit.trim());
+  }
+  return omxStateDir(cwd);
 }
 
 export class RuntimeBridge {
@@ -267,6 +276,9 @@ export class RuntimeBridge {
 let _defaultBridge: RuntimeBridge | undefined;
 
 export function getDefaultBridge(stateDir?: string): RuntimeBridge {
+  if (stateDir) {
+    return new RuntimeBridge({ stateDir });
+  }
   if (!_defaultBridge) {
     _defaultBridge = new RuntimeBridge({ stateDir });
   }
