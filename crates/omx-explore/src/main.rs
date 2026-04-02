@@ -1,5 +1,5 @@
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{
     canonicalize, create_dir_all, read_to_string, remove_dir_all, remove_file, write, File,
 };
@@ -243,6 +243,14 @@ struct CodexLaunch {
 
 fn resolve_codex_launch() -> CodexLaunch {
     let codex_binary = resolve_codex_binary();
+    if let Some(launch) = resolve_windows_npm_codex_launch(
+        Path::new(&codex_binary),
+        env::var_os("PATH").as_deref(),
+        env::var_os("PATHEXT").as_deref(),
+        cfg!(windows),
+    ) {
+        return launch;
+    }
     codex_launch_for_binary(&codex_binary).unwrap_or_else(|| CodexLaunch {
         program: codex_binary,
         leading_args: Vec::new(),
@@ -276,6 +284,40 @@ fn codex_launch_for_binary(codex_binary: &str) -> Option<CodexLaunch> {
     Some(CodexLaunch {
         program,
         leading_args,
+    })
+}
+
+fn resolve_windows_npm_codex_launch(
+    codex_binary: &Path,
+    path: Option<&OsStr>,
+    pathext: Option<&OsStr>,
+    is_windows: bool,
+) -> Option<CodexLaunch> {
+    if !is_windows {
+        return None;
+    }
+    let file_name = codex_binary.file_name()?.to_str()?;
+    if !["codex", "codex.cmd", "codex.ps1"]
+        .iter()
+        .any(|candidate| file_name.eq_ignore_ascii_case(candidate))
+    {
+        return None;
+    }
+    let path = path?;
+    let script_path = codex_binary
+        .parent()?
+        .join("node_modules")
+        .join("@openai")
+        .join("codex")
+        .join("bin")
+        .join("codex.js");
+    if !script_path.exists() {
+        return None;
+    }
+    let node = resolve_host_command_for_env("node", path, pathext, true)?;
+    Some(CodexLaunch {
+        program: node.display().to_string(),
+        leading_args: vec![script_path.display().to_string()],
     })
 }
 
@@ -378,10 +420,11 @@ fn prepare_allowlist_environment() -> Result<AllowlistEnvironment, String> {
     let self_exe = env::current_exe().map_err(|err| {
         format!("failed to resolve current executable for allowlist wrappers: {err}")
     })?;
-    let bash_path = resolve_host_command("bash")
-        .ok_or_else(|| "failed to locate host bash for allowlist wrapper".to_string())?;
-    let sh_path = resolve_host_command("sh")
-        .ok_or_else(|| "failed to locate host sh for allowlist wrapper".to_string())?;
+    let (bash_path, sh_path) = resolve_allowlist_shell_paths(
+        env::var_os("PATH").as_deref(),
+        env::var_os("PATHEXT").as_deref(),
+        cfg!(windows),
+    )?;
 
     for command in ALLOWED_DIRECT_COMMANDS {
         let wrapper_path = bin_dir.join(command);
@@ -474,13 +517,145 @@ fn resolve_host_command(command: &str) -> Option<PathBuf> {
     }
 
     let path = env::var_os("PATH")?;
-    for entry in env::split_paths(&path) {
-        let resolved = entry.join(command);
-        if resolved.exists() {
+    resolve_host_command_for_env(
+        command,
+        &path,
+        env::var_os("PATHEXT").as_deref(),
+        cfg!(windows),
+    )
+}
+
+fn resolve_allowlist_shell_paths(
+    path: Option<&OsStr>,
+    pathext: Option<&OsStr>,
+    is_windows: bool,
+) -> Result<(PathBuf, PathBuf), String> {
+    let path = path.ok_or_else(|| "failed to read PATH for allowlist wrappers".to_string())?;
+    let bash_path = resolve_host_command_for_env("bash", path, pathext, is_windows)
+        .ok_or_else(|| "failed to locate host bash for allowlist wrapper".to_string())?;
+    let sh_path = resolve_host_command_for_env("sh", path, pathext, is_windows)
+        .or_else(|| {
+            if is_windows {
+                Some(bash_path.clone())
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| "failed to locate host sh for allowlist wrapper".to_string())?;
+    Ok((bash_path, sh_path))
+}
+
+fn resolve_host_command_for_env(
+    command: &str,
+    path: &OsStr,
+    pathext: Option<&OsStr>,
+    is_windows: bool,
+) -> Option<PathBuf> {
+    if let Some(resolved) = resolve_host_command_on_path(command, path, pathext, is_windows) {
+        return Some(resolved);
+    }
+    if is_windows {
+        return resolve_host_command_via_windows_git(command, path, pathext);
+    }
+    None
+}
+
+fn resolve_host_command_on_path(
+    command: &str,
+    path: &OsStr,
+    pathext: Option<&OsStr>,
+    is_windows: bool,
+) -> Option<PathBuf> {
+    for entry in env::split_paths(path) {
+        if let Some(resolved) = resolve_host_command_in_dir(&entry, command, pathext, is_windows) {
             return Some(resolved);
         }
     }
     None
+}
+
+fn resolve_host_command_in_dir(
+    dir: &Path,
+    command: &str,
+    pathext: Option<&OsStr>,
+    is_windows: bool,
+) -> Option<PathBuf> {
+    if is_windows && Path::new(command).extension().is_none() {
+        for ext in windows_path_extensions(pathext) {
+            let resolved = dir.join(format!("{command}{ext}"));
+            if resolved.exists() {
+                return Some(resolved);
+            }
+        }
+    }
+    let resolved = dir.join(command);
+    if resolved.exists() {
+        return Some(resolved);
+    }
+    None
+}
+
+fn resolve_host_command_via_windows_git(
+    command: &str,
+    path: &OsStr,
+    pathext: Option<&OsStr>,
+) -> Option<PathBuf> {
+    if command.eq_ignore_ascii_case("git") {
+        return None;
+    }
+    let git_path = resolve_host_command_on_path("git", path, pathext, true)?;
+    let git_dir = git_path.parent()?;
+    let install_root = if path_file_name_eq(git_dir, "cmd") || path_file_name_eq(git_dir, "bin") {
+        git_dir.parent().unwrap_or(git_dir)
+    } else {
+        git_dir
+    };
+    let candidate_dirs = [
+        install_root.join("bin"),
+        install_root.join("usr").join("bin"),
+        install_root.join("cmd"),
+        install_root.to_path_buf(),
+    ];
+    for dir in candidate_dirs {
+        if let Some(resolved) = resolve_host_command_in_dir(&dir, command, pathext, true) {
+            return Some(resolved);
+        }
+    }
+    None
+}
+
+fn path_file_name_eq(path: &Path, expected: &str) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.eq_ignore_ascii_case(expected))
+        .unwrap_or(false)
+}
+
+fn windows_path_extensions(pathext: Option<&OsStr>) -> Vec<String> {
+    let from_env = pathext
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut extensions: Vec<String> = from_env
+        .split(';')
+        .map(str::trim)
+        .filter(|ext| !ext.is_empty())
+        .map(|ext| {
+            if ext.starts_with('.') {
+                ext.to_string()
+            } else {
+                format!(".{ext}")
+            }
+        })
+        .collect();
+    if extensions.is_empty() {
+        extensions = vec![
+            ".COM".to_string(),
+            ".EXE".to_string(),
+            ".BAT".to_string(),
+            ".CMD".to_string(),
+        ];
+    }
+    extensions
 }
 
 fn shell_quote(value: &str) -> String {
@@ -881,6 +1056,108 @@ mod tests {
         }
 
         assert_eq!(resolved, fake_codex.display().to_string());
+    }
+
+    #[test]
+    fn resolve_host_command_in_path_honors_windows_pathext() {
+        let root = temp_allowlist_dir().expect("temp root");
+        let bin_dir = root.path.join("bin");
+        create_dir_all(&bin_dir).expect("create bin");
+        let shim = bin_dir.join("bash");
+        let bash = bin_dir.join("bash.EXE");
+        write(&shim, b"fake").expect("write fake shim");
+        write(&bash, b"fake").expect("write fake bash");
+
+        let resolved = resolve_host_command_for_env(
+            "bash",
+            bin_dir.as_os_str(),
+            Some(OsStr::new(".EXE;.CMD")),
+            true,
+        )
+        .expect("resolve bash");
+
+        assert_eq!(resolved, bash);
+    }
+
+    #[test]
+    fn resolve_allowlist_shell_paths_uses_bash_for_sh_on_windows() {
+        let root = temp_allowlist_dir().expect("temp root");
+        let bin_dir = root.path.join("bin");
+        create_dir_all(&bin_dir).expect("create bin");
+        let bash = bin_dir.join("bash.EXE");
+        write(&bash, b"fake").expect("write fake bash");
+
+        let (resolved_bash, resolved_sh) = resolve_allowlist_shell_paths(
+            Some(bin_dir.as_os_str()),
+            Some(OsStr::new(".EXE;.CMD")),
+            true,
+        )
+        .expect("resolve shells");
+
+        assert_eq!(resolved_bash, bash);
+        assert_eq!(resolved_sh, bash);
+    }
+
+    #[test]
+    fn resolve_windows_npm_codex_launch_prefers_absolute_node_and_js_entrypoint() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let bin_dir = root.path.join("bin");
+        let npm_dir = root.path.join("npm");
+        create_dir_all(&bin_dir).expect("create bin");
+        create_dir_all(
+            npm_dir
+                .join("node_modules")
+                .join("@openai")
+                .join("codex")
+                .join("bin"),
+        )
+        .expect("create codex js dir");
+        let node = bin_dir.join("node.EXE");
+        let codex = npm_dir.join("codex");
+        let js = npm_dir
+            .join("node_modules")
+            .join("@openai")
+            .join("codex")
+            .join("bin")
+            .join("codex.js");
+        write(&node, b"fake").expect("write fake node");
+        write(&codex, b"fake").expect("write fake codex shim");
+        write(&js, b"fake").expect("write fake codex js");
+
+        let launch = resolve_windows_npm_codex_launch(
+            &codex,
+            Some(bin_dir.as_os_str()),
+            Some(OsStr::new(".EXE;.CMD")),
+            true,
+        )
+        .expect("resolve codex launch");
+
+        assert_eq!(launch.program, node.display().to_string());
+        assert_eq!(launch.leading_args, vec![js.display().to_string()]);
+    }
+
+    #[test]
+    fn resolve_host_command_for_env_falls_back_to_git_install_layout_on_windows() {
+        let root = temp_allowlist_dir().expect("temp root");
+        let git_cmd_dir = root.path.join("Git").join("cmd");
+        let git_usr_bin_dir = root.path.join("Git").join("usr").join("bin");
+        create_dir_all(&git_cmd_dir).expect("create git cmd");
+        create_dir_all(&git_usr_bin_dir).expect("create git usr bin");
+        let git = git_cmd_dir.join("git.EXE");
+        let grep = git_usr_bin_dir.join("grep.EXE");
+        write(&git, b"fake").expect("write fake git");
+        write(&grep, b"fake").expect("write fake grep");
+
+        let resolved = resolve_host_command_for_env(
+            "grep",
+            git_cmd_dir.as_os_str(),
+            Some(OsStr::new(".EXE;.CMD")),
+            true,
+        )
+        .expect("resolve grep");
+
+        assert_eq!(resolved, grep);
     }
 
     #[test]
