@@ -1,7 +1,7 @@
 import { spawnSync, execFile } from 'child_process';
 import { promisify } from 'util';
 import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { isAbsolute, join, resolve } from 'path';
 import {
   CODEX_BYPASS_FLAG,
   MADMAX_FLAG,
@@ -674,6 +674,12 @@ export function buildWorkerProcessLaunchSpec(
   const effectiveCliLaunchArgs = workerCli === 'codex' && !cliLaunchArgs.includes(CODEX_BYPASS_FLAG)
     ? [...cliLaunchArgs, CODEX_BYPASS_FLAG]
     : cliLaunchArgs;
+  const workerCodexHomeOverride = typeof effectiveEnv.CODEX_HOME === 'string'
+    ? effectiveEnv.CODEX_HOME.trim()
+    : undefined;
+  const providerLookupCodexHome = workerCodexHomeOverride
+    ? (isAbsolute(workerCodexHomeOverride) ? workerCodexHomeOverride : resolve(cwd, workerCodexHomeOverride))
+    : undefined;
 
   const resolvedCliPath = resolveAbsoluteBinaryPath(workerCli);
   const workerEnv: Record<string, string> = {
@@ -683,7 +689,7 @@ export function buildWorkerProcessLaunchSpec(
     ...(workerCli === 'codex'
       ? readActiveProviderEnvOverrides(
           effectiveEnv,
-          typeof effectiveEnv.CODEX_HOME === 'string' ? effectiveEnv.CODEX_HOME : undefined,
+          providerLookupCodexHome,
         )
       : {}),
   };

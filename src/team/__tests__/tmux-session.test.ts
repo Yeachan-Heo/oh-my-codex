@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { PassThrough } from 'node:stream';
-import { mkdtemp, readFile, rm, writeFile, chmod } from 'fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -1433,6 +1433,78 @@ describe('team worker launch mode helpers', () => {
       else delete process.env.WORKER_PROVIDER_API_KEY;
       await rm(leaderCodexHome, { recursive: true, force: true });
       await rm(workerCodexHome, { recursive: true, force: true });
+    }
+  });
+
+  it('buildWorkerProcessLaunchSpec resolves relative worker CODEX_HOME against the worker cwd', async () => {
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const prevCodexHome = process.env.CODEX_HOME;
+    const prevLeaderProviderEnv = process.env.LEADER_PROVIDER_API_KEY;
+    const prevWorkerProviderEnv = process.env.WORKER_PROVIDER_API_KEY;
+    const originalCwd = process.cwd();
+    const leaderCwd = await mkdtemp(join(tmpdir(), 'omx-team-provider-relative-leader-'));
+    const workerCwd = await mkdtemp(join(tmpdir(), 'omx-team-provider-relative-worker-'));
+    const leaderCodexHome = join(leaderCwd, '.codex');
+    const workerCodexHome = join(workerCwd, '.codex');
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    process.env.CODEX_HOME = leaderCodexHome;
+    process.env.LEADER_PROVIDER_API_KEY = 'leader-secret';
+    process.env.WORKER_PROVIDER_API_KEY = 'worker-secret';
+
+    try {
+      await mkdir(leaderCodexHome, { recursive: true });
+      await mkdir(workerCodexHome, { recursive: true });
+
+      await writeFile(join(leaderCodexHome, 'config.toml'), [
+        'model_provider = "leader_provider"',
+        '',
+        '[model_providers.leader_provider]',
+        'name = "leader_provider"',
+        'base_url = "http://localhost:3000/v1"',
+        'wire_api = "responses"',
+        'requires_openai_auth = true',
+        'env_key = "LEADER_PROVIDER_API_KEY"',
+        '',
+      ].join('\n'));
+
+      await writeFile(join(workerCodexHome, 'config.toml'), [
+        'model_provider = "worker_provider"',
+        '',
+        '[model_providers.worker_provider]',
+        'name = "worker_provider"',
+        'base_url = "http://localhost:4000/v1"',
+        'wire_api = "responses"',
+        'requires_openai_auth = true',
+        'env_key = "WORKER_PROVIDER_API_KEY"',
+        '',
+      ].join('\n'));
+
+      process.chdir(leaderCwd);
+
+      const spec = buildWorkerProcessLaunchSpec(
+        'zeta-team',
+        1,
+        [],
+        workerCwd,
+        { CODEX_HOME: '.codex' },
+        'codex',
+      );
+
+      assert.equal(spec.env.CODEX_HOME, '.codex');
+      assert.equal(spec.env.WORKER_PROVIDER_API_KEY, 'worker-secret');
+      assert.equal(spec.env.LEADER_PROVIDER_API_KEY, undefined);
+    } finally {
+      process.chdir(originalCwd);
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof prevCodexHome === 'string') process.env.CODEX_HOME = prevCodexHome;
+      else delete process.env.CODEX_HOME;
+      if (typeof prevLeaderProviderEnv === 'string') process.env.LEADER_PROVIDER_API_KEY = prevLeaderProviderEnv;
+      else delete process.env.LEADER_PROVIDER_API_KEY;
+      if (typeof prevWorkerProviderEnv === 'string') process.env.WORKER_PROVIDER_API_KEY = prevWorkerProviderEnv;
+      else delete process.env.WORKER_PROVIDER_API_KEY;
+      await rm(leaderCwd, { recursive: true, force: true });
+      await rm(workerCwd, { recursive: true, force: true });
     }
   });
 });
