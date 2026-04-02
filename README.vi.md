@@ -31,10 +31,10 @@ Xem thêm tại [ghi chú phát hành v0.9.0](./docs/release-notes-0.9.0.md) và
 Trong Codex:
 
 ```text
-/prompts:architect "analyze current auth boundaries"
-/prompts:executor "implement input validation in login"
-$plan "ship OAuth callback safely"
-$team 3:executor "fix all TypeScript errors"
+$deep-interview "clarify the auth change"
+$ralplan "approve the auth plan and review tradeoffs"
+$ralph "carry the approved plan to completion"
+$team 3:executor "execute the approved plan in parallel"
 ```
 
 Từ terminal:
@@ -49,7 +49,7 @@ omx team shutdown <team-name>
 
 1. `$deep-interview` — khi phạm vi hoặc ranh giới vẫn chưa rõ.
 2. `$ralplan` — để biến phạm vi đã làm rõ thành kế hoạch kiến trúc và triển khai đã được chốt.
-3. `$team` — khi kế hoạch đã duyệt đủ lớn để đáng dùng thực thi song song có phối hợp.
+3. `$team` hoặc `$ralph` — dùng `$team` cho thực thi song song có phối hợp, hoặc `$ralph` cho vòng lặp bền bỉ để hoàn tất/xác minh với một chủ sở hữu duy nhất.
 
 ## Mô hình cốt lõi
 
@@ -162,7 +162,7 @@ Quy tắc quan trọng: không tắt khi các tác vụ vẫn đang ở trạng 
 ### Team shutdown policy
 
 Use `omx team shutdown <team-name>` after the team reaches a terminal state.
-Team cleanup now follows one standalone path; there is no separate `omx team ralph ...` shutdown policy anymore.
+Team cleanup now follows one standalone path; legacy linked-Ralph shutdown handling is no longer a separate public workflow.
 
 Chọn Worker CLI cho worker của đội:
 
@@ -206,7 +206,7 @@ Lưu ý:
 
 Ví dụ:
 - Tác nhân: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
-- Skill: `autopilot`, `plan`, `team`, `ralph`, `ultrawork`, `cancel`
+- Skill: `deep-interview`, `ralplan`, `team`, `ralph`, `plan`, `cancel`
 
 ## Cấu trúc dự án
 

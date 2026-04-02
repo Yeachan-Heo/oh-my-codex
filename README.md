@@ -18,8 +18,8 @@ OMX is a workflow layer for [OpenAI Codex CLI](https://github.com/openai/codex).
 
 It keeps Codex as the execution engine and makes it easier to:
 - start a stronger Codex session by default
-- reuse good role/task invocations with `$name` keywords
-- invoke workflows with skills like `$plan`, `$ralph`, and `$team`
+- run one consistent workflow from clarification to completion
+- invoke the canonical skills with `$deep-interview`, `$ralplan`, `$team`, and `$ralph`
 - keep project guidance, plans, logs, and state in `.omx/`
 
 ## Recommended default flow
@@ -35,18 +35,20 @@ omx --madmax --high
 Then work normally inside Codex:
 
 ```text
-$architect "analyze the authentication flow"
-$plan "ship this feature cleanly"
+$deep-interview "clarify the authentication change"
+$ralplan "approve the auth plan and review tradeoffs"
+$ralph "carry the approved plan to completion"
+$team 3:executor "execute the approved plan in parallel"
 ```
 
 That is the main path.
-Start OMX strongly, do the work in Codex, and let the agent pull in `$team` or other workflows only when the task actually needs them.
+Start OMX strongly, clarify first when needed, approve the plan, then choose `$team` for coordinated parallel execution or `$ralph` for the persistent completion loop.
 
 ## What OMX is for
 
 Use OMX if you already like Codex and want a better day-to-day runtime around it:
-- reusable role/task invocations such as `$architect` and `$executor`
-- reusable workflows such as `$plan`, `$ralph`, `$team`, and `$deep-interview`
+- a standard workflow built around `$deep-interview`, `$ralplan`, `$team`, and `$ralph`
+- specialist roles and supporting skills when the task needs them
 - project guidance through scoped `AGENTS.md`
 - durable state under `.omx/` for plans, logs, memory, and mode tracking
 
@@ -70,14 +72,16 @@ Launch OMX the recommended way:
 omx --madmax --high
 ```
 
-Then try one role keyword and one workflow skill:
+Then try the canonical workflow:
 
 ```text
-$architect "analyze the authentication flow"
-$plan "map the safest implementation path"
+$deep-interview "clarify the authentication change"
+$ralplan "approve the safest implementation path"
+$ralph "carry the approved plan to completion"
+$team 3:executor "execute the approved plan in parallel"
 ```
 
-If the task grows, the agent can escalate to heavier workflows such as `$ralph` for persistent execution or `$team` for coordinated parallel work.
+Use `$team` when the approved plan needs coordinated parallel work, or `$ralph` when one persistent owner should keep pushing to completion.
 
 ## A simple mental model
 
@@ -95,26 +99,25 @@ Most users should think of OMX as **better task routing + better workflow + bett
 
 1. Run `omx setup`
 2. Launch with `omx --madmax --high`
-3. Ask for analysis with `$architect "..."`
-4. Ask for planning with `$plan "..."`
-5. Let the agent decide when `$ralph`, `$team`, or another workflow is worth using
+3. Use `$deep-interview "..."` when the request or boundaries are still unclear
+4. Use `$ralplan "..."` to approve the plan and review tradeoffs
+5. Choose `$team` for coordinated parallel execution or `$ralph` for persistent completion loops
 
 ## Recommended workflow
 
 1. `$deep-interview` — clarify scope when the request or boundaries are still vague.
 2. `$ralplan` — turn that clarified scope into an approved architecture and implementation plan.
-3. `$team` — use the approved plan for coordinated parallel execution when the work is big enough.
+3. `$team` or `$ralph` — use `$team` for coordinated parallel execution, or `$ralph` when you want a persistent completion loop with one owner.
 
 ## Common in-session surfaces
 
 | Surface | Use it for |
 | --- | --- |
-| `$architect "..."` | analysis, boundaries, tradeoffs |
-| `$executor "..."` | focused implementation work |
-| `/skills` | browsing installed skills |
-| `$plan "..."` | planning before implementation |
-| `$ralph "..."` | persistent sequential execution |
-| `$team "..."` | coordinated parallel execution when the task is big enough |
+| `$deep-interview "..."` | clarifying intent, boundaries, and non-goals |
+| `$ralplan "..."` | approving the implementation plan and tradeoffs |
+| `$ralph "..."` | persistent completion and verification loops |
+| `$team "..."` | coordinated parallel execution when the work is big enough |
+| `/skills` | browsing installed skills and supporting helpers |
 
 ## Advanced / operator surfaces
 

@@ -31,10 +31,10 @@ Spark Initiative는 OMX의 네이티브 탐색/검사 경로를 강화한 릴리
 Codex 내부에서:
 
 ```text
-$architect "analyze current auth boundaries"
-$executor "implement input validation in login"
-$plan "ship OAuth callback safely"
-$team 3:executor "fix all TypeScript errors"
+$deep-interview "clarify the auth change"
+$ralplan "approve the auth plan and review tradeoffs"
+$ralph "carry the approved plan to completion"
+$team 3:executor "execute the approved plan in parallel"
 ```
 
 터미널에서:
@@ -49,7 +49,7 @@ omx team shutdown <team-name>
 
 1. `$deep-interview` — 범위나 경계가 아직 모호할 때 먼저 명확히 합니다.
 2. `$ralplan` — 정리된 범위를 승인 가능한 아키텍처 및 구현 계획으로 바꿉니다.
-3. `$team` — 승인된 계획이 충분히 커서 조정된 병렬 실행이 유리할 때 사용합니다.
+3. `$team` 또는 `$ralph` — 승인된 계획을 병렬로 조율해 실행하려면 `$team`, 한 명의 책임자가 끝까지 밀고 검증하려면 `$ralph`를 사용합니다.
 
 ## 핵심 모델
 
@@ -162,7 +162,7 @@ omx team shutdown <team-name>
 ### Team shutdown policy
 
 Use `omx team shutdown <team-name>` after the team reaches a terminal state.
-Team cleanup now follows one standalone path; there is no separate `omx team ralph ...` shutdown policy anymore.
+Team cleanup now follows one standalone path; legacy linked-Ralph shutdown handling is no longer a separate public workflow.
 
 팀 워커를 위한 Worker CLI 선택:
 
@@ -206,7 +206,7 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # 선택: 적응형 queue->resend 폴백 비활
 
 예시:
 - 에이전트: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
-- 스킬: `autopilot`, `plan`, `team`, `ralph`, `ultrawork`, `cancel`
+- 스킬: `deep-interview`, `ralplan`, `team`, `ralph`, `plan`, `cancel`
 
 ## 프로젝트 구조
 

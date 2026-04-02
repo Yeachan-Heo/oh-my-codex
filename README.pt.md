@@ -30,10 +30,10 @@ Veja também as [notas de release da v0.9.0](./docs/release-notes-0.9.0.md) e o 
 Dentro do Codex:
 
 ```text
-/prompts:architect "analyze current auth boundaries"
-/prompts:executor "implement input validation in login"
-$plan "ship OAuth callback safely"
-$team 3:executor "fix all TypeScript errors"
+$deep-interview "clarify the auth change"
+$ralplan "approve the auth plan and review tradeoffs"
+$ralph "carry the approved plan to completion"
+$team 3:executor "execute the approved plan in parallel"
 ```
 
 Do terminal:
@@ -48,7 +48,7 @@ omx team shutdown <team-name>
 
 1. `$deep-interview` — quando escopo ou limites ainda não estão claros.
 2. `$ralplan` — para transformar esse escopo esclarecido em um plano aprovado de arquitetura e implementação.
-3. `$team` — quando o plano aprovado já é grande o bastante para execução paralela coordenada.
+3. `$team` ou `$ralph` — use `$team` para execução paralela coordenada, ou `$ralph` para um loop persistente de conclusão/verificação com um único responsável.
 
 ## Modelo central
 
@@ -161,7 +161,7 @@ Regra importante: não encerre enquanto tarefas estiverem em estado `in_progress
 ### Team shutdown policy
 
 Use `omx team shutdown <team-name>` after the team reaches a terminal state.
-Team cleanup now follows one standalone path; there is no separate `omx team ralph ...` shutdown policy anymore.
+Team cleanup now follows one standalone path; legacy linked-Ralph shutdown handling is no longer a separate public workflow.
 
 Seleção de Worker CLI para workers da equipe:
 
@@ -205,7 +205,7 @@ Notas:
 
 Exemplos:
 - Agentes: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
-- Skills: `autopilot`, `plan`, `team`, `ralph`, `ultrawork`, `cancel`
+- Skills: `deep-interview`, `ralplan`, `team`, `ralph`, `plan`, `cancel`
 
 ## Estrutura do projeto
 

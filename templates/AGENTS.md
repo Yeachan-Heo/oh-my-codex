@@ -130,7 +130,8 @@ Default posture: work directly.
 Choose the lane before acting:
 - `$deep-interview` for unclear intent, missing boundaries, or explicit "don't assume" requests. This mode clarifies and hands off; it does not implement.
 - `$ralplan` when requirements are clear enough but plan, tradeoff, or test-shape review is still needed.
-- `$team` when execution splits into parallel lanes, shared blockers, or ongoing coordination.
+- `$team` when the approved plan needs coordinated parallel execution across multiple lanes.
+- `$ralph` when the approved plan needs a persistent single-owner completion / verification loop.
 - **Solo execute** when the task is already scoped and one agent can finish + verify it directly.
 
 Delegate only when it materially improves quality, speed, or safety. Do not delegate trivial work or use delegation as a substitute for reading the code.
@@ -163,9 +164,9 @@ Rules:
 </child_agent_protocol>
 
 <invocation_conventions>
-- `/prompts:name` — invoke a role prompt
 - `$name` — invoke a workflow skill
 - `/skills` — browse available skills
+- `/prompts:name` — advanced specialist role surface when the task already needs a specific agent
 </invocation_conventions>
 
 <model_routing>
@@ -188,7 +189,7 @@ Key roles:
 - `executor` — implementation and refactoring
 - `verifier` — completion evidence and validation
 
-Specialists remain available through `/prompts:*` when the task clearly benefits from them.
+Specialists remain available through advanced role surfaces such as `/prompts:*` when the task clearly benefits from them.
 </agent_catalog>
 
 ---
@@ -297,7 +298,8 @@ Verification loop: identify what proves the claim, run the verification, read th
 Mode selection:
 - Use `$deep-interview` first when the request is broad, intent/boundaries are unclear, or the user says not to assume.
 - Use `$ralplan` when the requirements are clear enough but architecture, tradeoffs, or test strategy still need consensus.
-- Use `$team` when execution has multiple independent lanes, shared blockers, or durable coordination needs.
+- Use `$team` when the approved plan has multiple independent lanes, shared blockers, or durable coordination needs.
+- Use `$ralph` when the approved plan should stay in a persistent completion / verification loop with one owner.
 - Otherwise execute directly in solo mode.
 - Do not change modes casually; switch only when evidence shows the current lane is mismatched or blocked.
 
@@ -336,7 +338,7 @@ Parallelization:
 - If correctness depends on retrieval, diagnostics, tests, or other tools, continue using them until the task is grounded and verified.
 
 Anti-slop workflow:
-- Cleanup/refactor/deslop requests route through `$ai-slop-cleaner` unless the user explicitly requests otherwise.
+- Cleanup/refactor/deslop work still follows the same `$deep-interview` -> `$ralplan` -> `$team`/`$ralph` path; use `$ai-slop-cleaner` as a bounded helper inside the chosen execution lane, not as a competing top-level workflow.
 - Lock behavior with tests first, then make one smell-focused pass at a time.
 - Prefer deletion, reuse, and boundary repair over new layers.
 - Keep writer/reviewer pass separation for cleanup plans and approvals.

@@ -20,19 +20,20 @@
 
     <main class="container">
       <h1>Agent Catalog</h1>
-      <p class="muted">Organized by lane with routing tier and usage examples.</p>
+      <p class="muted">Specialist agent reference for advanced use inside the standard workflow.</p>
+      <p>Start with <code>$deep-interview</code>, then <code>$ralplan</code>, then execute with <code>$team</code> or <code>$ralph</code>. Use the catalog below when you already know you need a specialist lane.</p>
 
       <h2>Build & Analysis</h2>
       <table>
         <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
         <tbody>
-          <tr><td>/prompts:explore</td><td>low</td><td>Codebase discovery and symbol mapping.</td><td><code>/prompts:explore "map auth flow"</code></td></tr>
-          <tr><td>/prompts:analyst</td><td>high</td><td>Clarifies requirements and acceptance criteria.</td><td><code>/prompts:analyst "define scope"</code></td></tr>
-          <tr><td>/prompts:planner</td><td>high</td><td>Builds execution plans and sequencing.</td><td><code>/prompts:planner "plan migration"</code></td></tr>
-          <tr><td>/prompts:architect</td><td>high</td><td>System boundaries and architecture design.</td><td><code>/prompts:architect "review service boundaries"</code></td></tr>
-          <tr><td>/prompts:debugger</td><td>medium</td><td>Root-cause and regression diagnosis.</td><td><code>/prompts:debugger "investigate flaky test"</code></td></tr>
-          <tr><td>/prompts:executor</td><td>medium</td><td>Implementation and refactoring work.</td><td><code>/prompts:executor "add validation"</code></td></tr>
-          <tr><td>/prompts:verifier</td><td>medium</td><td>Evidence-backed completion checks.</td><td><code>/prompts:verifier "verify release readiness"</code></td></tr>
+          <tr><td>explore</td><td>low</td><td>Codebase discovery and symbol mapping.</td><td><code>explore "map auth flow"</code></td></tr>
+          <tr><td>analyst</td><td>high</td><td>Clarifies requirements and acceptance criteria.</td><td><code>analyst "define scope"</code></td></tr>
+          <tr><td>planner</td><td>high</td><td>Builds execution plans and sequencing.</td><td><code>planner "plan migration"</code></td></tr>
+          <tr><td>architect</td><td>high</td><td>System boundaries and architecture design.</td><td><code>architect "review service boundaries"</code></td></tr>
+          <tr><td>debugger</td><td>medium</td><td>Root-cause and regression diagnosis.</td><td><code>debugger "investigate flaky test"</code></td></tr>
+          <tr><td>executor</td><td>medium</td><td>Implementation and refactoring work.</td><td><code>executor "add validation"</code></td></tr>
+          <tr><td>verifier</td><td>medium</td><td>Evidence-backed completion checks.</td><td><code>verifier "verify release readiness"</code></td></tr>
         </tbody>
       </table>
 
@@ -40,12 +41,12 @@
       <table>
         <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
         <tbody>
-          <tr><td>/prompts:style-reviewer</td><td>low</td><td>Formatting and naming conventions.</td><td><code>/prompts:style-reviewer "check style"</code></td></tr>
-          <tr><td>/prompts:quality-reviewer</td><td>medium</td><td>Logic and maintainability defects.</td><td><code>/prompts:quality-reviewer "review PR"</code></td></tr>
-          <tr><td>/prompts:api-reviewer</td><td>medium</td><td>API contracts and compatibility.</td><td><code>/prompts:api-reviewer "audit API changes"</code></td></tr>
-          <tr><td>/prompts:security-reviewer</td><td>medium</td><td>Security boundaries and vulnerabilities.</td><td><code>/prompts:security-reviewer "security audit"</code></td></tr>
-          <tr><td>/prompts:performance-reviewer</td><td>medium</td><td>Performance and complexity bottlenecks.</td><td><code>/prompts:performance-reviewer "profile hotspots"</code></td></tr>
-          <tr><td>/prompts:code-reviewer</td><td>high</td><td>Comprehensive multi-axis code review.</td><td><code>/prompts:code-reviewer "comprehensive review"</code></td></tr>
+          <tr><td>style-reviewer</td><td>low</td><td>Formatting and naming conventions.</td><td><code>style-reviewer "check style"</code></td></tr>
+          <tr><td>quality-reviewer</td><td>medium</td><td>Logic and maintainability defects.</td><td><code>quality-reviewer "review PR"</code></td></tr>
+          <tr><td>api-reviewer</td><td>medium</td><td>API contracts and compatibility.</td><td><code>api-reviewer "audit API changes"</code></td></tr>
+          <tr><td>security-reviewer</td><td>medium</td><td>Security boundaries and vulnerabilities.</td><td><code>security-reviewer "security audit"</code></td></tr>
+          <tr><td>performance-reviewer</td><td>medium</td><td>Performance and complexity bottlenecks.</td><td><code>performance-reviewer "profile hotspots"</code></td></tr>
+          <tr><td>code-reviewer</td><td>high</td><td>Comprehensive multi-axis code review.</td><td><code>code-reviewer "comprehensive review"</code></td></tr>
         </tbody>
       </table>
 
@@ -53,16 +54,16 @@
       <table>
         <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
         <tbody>
-          <tr><td>/prompts:dependency-expert</td><td>medium</td><td>External SDK/API/package evaluation.</td><td><code>/prompts:dependency-expert "compare SDK options"</code></td></tr>
-          <tr><td>/prompts:test-engineer</td><td>medium</td><td>Test strategy and coverage improvements.</td><td><code>/prompts:test-engineer "write test plan"</code></td></tr>
-          <tr><td>/prompts:quality-strategist</td><td>medium</td><td>Release quality and risk strategy.</td><td><code>/prompts:quality-strategist "assess release risk"</code></td></tr>
-          <tr><td>/prompts:build-fixer</td><td>medium</td><td>Build/toolchain/type issue resolution.</td><td><code>/prompts:build-fixer "fix CI failures"</code></td></tr>
-          <tr><td>/prompts:designer</td><td>medium</td><td>UI/UX architecture and interaction design.</td><td><code>/prompts:designer "improve onboarding UX"</code></td></tr>
-          <tr><td>/prompts:writer</td><td>low</td><td>Documentation and user guidance.</td><td><code>/prompts:writer "draft migration guide"</code></td></tr>
-          <tr><td>/prompts:qa-tester</td><td>medium</td><td>Interactive runtime QA validation.</td><td><code>/prompts:qa-tester "run manual QA pass"</code></td></tr>
-          <tr><td>/prompts:git-master</td><td>medium</td><td>Commit strategy and history hygiene.</td><td><code>/prompts:git-master "prepare clean commit plan"</code></td></tr>
-          <tr><td>/prompts:code-simplifier (internal)</td><td>high</td><td>Post-stop code simplification and cleanup automation.</td><td><code>/prompts:code-simplifier "simplify touched files"</code></td></tr>
-          <tr><td>/prompts:researcher</td><td>medium</td><td>Reference and external documentation research.</td><td><code>/prompts:researcher "collect official API docs"</code></td></tr>
+          <tr><td>dependency-expert</td><td>medium</td><td>External SDK/API/package evaluation.</td><td><code>dependency-expert "compare SDK options"</code></td></tr>
+          <tr><td>test-engineer</td><td>medium</td><td>Test strategy and coverage improvements.</td><td><code>test-engineer "write test plan"</code></td></tr>
+          <tr><td>quality-strategist</td><td>medium</td><td>Release quality and risk strategy.</td><td><code>quality-strategist "assess release risk"</code></td></tr>
+          <tr><td>build-fixer</td><td>medium</td><td>Build/toolchain/type issue resolution.</td><td><code>build-fixer "fix CI failures"</code></td></tr>
+          <tr><td>designer</td><td>medium</td><td>UI/UX architecture and interaction design.</td><td><code>designer "improve onboarding UX"</code></td></tr>
+          <tr><td>writer</td><td>low</td><td>Documentation and user guidance.</td><td><code>writer "draft migration guide"</code></td></tr>
+          <tr><td>qa-tester</td><td>medium</td><td>Interactive runtime QA validation.</td><td><code>qa-tester "run manual QA pass"</code></td></tr>
+          <tr><td>git-master</td><td>medium</td><td>Commit strategy and history hygiene.</td><td><code>git-master "prepare clean commit plan"</code></td></tr>
+          <tr><td>code-simplifier (internal)</td><td>high</td><td>Post-stop code simplification and cleanup automation.</td><td><code>code-simplifier "simplify touched files"</code></td></tr>
+          <tr><td>researcher</td><td>medium</td><td>Reference and external documentation research.</td><td><code>researcher "collect official API docs"</code></td></tr>
         </tbody>
       </table>
 
@@ -70,10 +71,10 @@
       <table>
         <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
         <tbody>
-          <tr><td>/prompts:product-manager</td><td>medium</td><td>Problem framing and PRD definition.</td><td><code>/prompts:product-manager "define user outcomes"</code></td></tr>
-          <tr><td>/prompts:ux-researcher</td><td>medium</td><td>Usability and accessibility audits.</td><td><code>/prompts:ux-researcher "run heuristic audit"</code></td></tr>
-          <tr><td>/prompts:information-architect</td><td>medium</td><td>Navigation, taxonomy, and structure.</td><td><code>/prompts:information-architect "improve docs IA"</code></td></tr>
-          <tr><td>/prompts:product-analyst</td><td>medium</td><td>Metrics, funnels, and experiments.</td><td><code>/prompts:product-analyst "analyze onboarding funnel"</code></td></tr>
+          <tr><td>product-manager</td><td>medium</td><td>Problem framing and PRD definition.</td><td><code>product-manager "define user outcomes"</code></td></tr>
+          <tr><td>ux-researcher</td><td>medium</td><td>Usability and accessibility audits.</td><td><code>ux-researcher "run heuristic audit"</code></td></tr>
+          <tr><td>information-architect</td><td>medium</td><td>Navigation, taxonomy, and structure.</td><td><code>information-architect "improve docs IA"</code></td></tr>
+          <tr><td>product-analyst</td><td>medium</td><td>Metrics, funnels, and experiments.</td><td><code>product-analyst "analyze onboarding funnel"</code></td></tr>
         </tbody>
       </table>
 
@@ -81,8 +82,8 @@
       <table>
         <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
         <tbody>
-          <tr><td>/prompts:critic</td><td>high</td><td>Critical challenge for plans and designs.</td><td><code>/prompts:critic "challenge this plan"</code></td></tr>
-          <tr><td>/prompts:vision</td><td>medium</td><td>Image/screenshot and diagram analysis.</td><td><code>/prompts:vision "review this screenshot"</code></td></tr>
+          <tr><td>critic</td><td>high</td><td>Critical challenge for plans and designs.</td><td><code>critic "challenge this plan"</code></td></tr>
+          <tr><td>vision</td><td>medium</td><td>Image/screenshot and diagram analysis.</td><td><code>vision "review this screenshot"</code></td></tr>
         </tbody>
       </table>
     </main>

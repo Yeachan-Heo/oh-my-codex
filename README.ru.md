@@ -30,10 +30,10 @@ Spark Initiative — это релиз, усиливающий нативный 
 Внутри Codex:
 
 ```text
-/prompts:architect "analyze current auth boundaries"
-/prompts:executor "implement input validation in login"
-$plan "ship OAuth callback safely"
-$team 3:executor "fix all TypeScript errors"
+$deep-interview "clarify the auth change"
+$ralplan "approve the auth plan and review tradeoffs"
+$ralph "carry the approved plan to completion"
+$team 3:executor "execute the approved plan in parallel"
 ```
 
 Из терминала:
@@ -48,7 +48,7 @@ omx team shutdown <team-name>
 
 1. `$deep-interview` — когда объём задачи или границы ещё не прояснены.
 2. `$ralplan` — чтобы превратить уточнённый объём в согласованный план архитектуры и реализации.
-3. `$team` — когда утверждённый план уже достаточно велик для скоординированного параллельного исполнения.
+3. `$team` или `$ralph` — используйте `$team` для координированного параллельного выполнения, а `$ralph` — для настойчивого цикла доведения до конца и проверки с одним ответственным.
 
 ## Базовая модель
 
@@ -161,7 +161,7 @@ omx team shutdown <team-name>
 ### Team shutdown policy
 
 Use `omx team shutdown <team-name>` after the team reaches a terminal state.
-Team cleanup now follows one standalone path; there is no separate `omx team ralph ...` shutdown policy anymore.
+Team cleanup now follows one standalone path; legacy linked-Ralph shutdown handling is no longer a separate public workflow.
 
 Выбор Worker CLI для рабочих команды:
 
@@ -205,7 +205,7 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # опционально: отключить а
 
 Примеры:
 - Агенты: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
-- Навыки: `autopilot`, `plan`, `team`, `ralph`, `ultrawork`, `cancel`
+- Навыки: `deep-interview`, `ralplan`, `team`, `ralph`, `plan`, `cancel`
 
 ## Структура проекта
 

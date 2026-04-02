@@ -22,22 +22,30 @@
       <h1>Skills Reference</h1>
       <p class="muted">All skills with category grouping and <code>$name</code> usage syntax.</p>
 
+      <h2>Canonical Workflow</h2>
+      <ol>
+        <li><code>$deep-interview</code> - clarify intent, boundaries, and non-goals when the task is still fuzzy.</li>
+        <li><code>$ralplan</code> - approve the plan and tradeoffs before execution.</li>
+        <li><code>$team</code> or <code>$ralph</code> - choose <code>$team</code> for coordinated parallel execution, or <code>$ralph</code> for a persistent completion loop.</li>
+      </ol>
+
       <h2>Execution Modes</h2>
       <ul>
-        <li><code>$autopilot</code> - full autonomous execution</li>
+        <li><code>$team</code> - coordinated multi-agent execution for the approved plan</li>
         <li><code>$ralph</code> - persistence loop until completion</li>
+        <li><code>$autopilot</code> - full autonomous execution when you intentionally skip the standard workflow</li>
         <li><code>$ultrawork</code> - max parallel execution</li>
         <li><code>$visual-verdict</code> - structured visual QA loop for screenshot/reference matching</li>
-        <li><code>$team</code> - coordinated multi-agent pipeline</li>
         <li><code>$ecomode</code> - token-efficient model routing</li>
         <li><code>$ultraqa</code> - test/verify/fix loop</li>
         <li><code>$swarm</code> - team compatibility facade</li>
       </ul>
 
-      <h2>Planning</h2>
+      <h2>Planning & Clarification</h2>
       <ul>
-        <li><code>$plan</code> - strategic planning workflow</li>
+        <li><code>$deep-interview</code> - requirements clarification before planning or execution</li>
         <li><code>$ralplan</code> - planner/architect/critic consensus planning</li>
+        <li><code>$plan</code> - supporting strategic planning when you are not using the canonical path</li>
       </ul>
 
       <h2>Agent Shortcuts</h2>
@@ -63,10 +71,10 @@
       </ul>
 
       <h2>Usage Examples</h2>
-      <pre><code>$autopilot "build a release checklist"
-$team 3:executor "fix all TypeScript errors"
-$plan "plan migration from v1 to v2"
-$visual-verdict "compare generated screenshot against refs"
+      <pre><code>$deep-interview "clarify the auth change"
+$ralplan "approve the auth plan and review tradeoffs"
+$ralph "carry the approved plan to completion"
+$team 3:executor "execute the approved plan in parallel"
 $code-review "review current branch"
 $doctor</code></pre>
 

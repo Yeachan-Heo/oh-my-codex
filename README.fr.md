@@ -30,10 +30,10 @@ Voir aussi les [notes de version v0.9.0](./docs/release-notes-0.9.0.md) et le [c
 Dans Codex :
 
 ```text
-/prompts:architect "analyze current auth boundaries"
-/prompts:executor "implement input validation in login"
-$plan "ship OAuth callback safely"
-$team 3:executor "fix all TypeScript errors"
+$deep-interview "clarify the auth change"
+$ralplan "approve the auth plan and review tradeoffs"
+$ralph "carry the approved plan to completion"
+$team 3:executor "execute the approved plan in parallel"
 ```
 
 Depuis le terminal :
@@ -48,7 +48,7 @@ omx team shutdown <team-name>
 
 1. `$deep-interview` — quand le périmètre ou les limites restent flous.
 2. `$ralplan` — pour transformer ce périmètre clarifié en plan validé d’architecture et d’implémentation.
-3. `$team` — quand le plan validé est assez large pour une exécution parallèle coordonnée.
+3. `$team` ou `$ralph` — utilisez `$team` pour une exécution parallèle coordonnée, ou `$ralph` pour une boucle persistante de finalisation/vérification avec un seul responsable.
 
 ## Modèle de base
 
@@ -161,7 +161,7 @@ Règle importante : n'arrêtez pas tant que des tâches sont encore `in_progress
 ### Team shutdown policy
 
 Use `omx team shutdown <team-name>` after the team reaches a terminal state.
-Team cleanup now follows one standalone path; there is no separate `omx team ralph ...` shutdown policy anymore.
+Team cleanup now follows one standalone path; legacy linked-Ralph shutdown handling is no longer a separate public workflow.
 
 Sélection du CLI worker pour les workers d'équipe :
 
