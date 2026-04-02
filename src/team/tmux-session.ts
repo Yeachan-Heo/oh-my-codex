@@ -17,6 +17,7 @@ import {
   paneIsBootstrapping as sharedPaneIsBootstrapping,
   paneLooksReady as sharedPaneLooksReady,
 } from '../scripts/tmux-hook-engine.js';
+import { readActiveProviderEnvOverrides } from '../config/models.js';
 import { sleep, sleepSync } from '../utils/sleep.js';
 import { classifySpawnError, resolveCommandPathForPlatform, spawnPlatformCommandSync } from '../utils/platform-command.js';
 
@@ -679,6 +680,7 @@ export function buildWorkerProcessLaunchSpec(
     OMX_TEAM_WORKER: `${teamName}/worker-${workerIndex}`,
     [OMX_LEADER_NODE_PATH_ENV]: resolveLeaderNodePath(),
     [OMX_LEADER_CLI_PATH_ENV]: resolvedCliPath,
+    ...readActiveProviderEnvOverrides(effectiveEnv),
   };
   for (const [key, value] of Object.entries(extraEnv)) {
     if (typeof value !== 'string' || value.trim() === '') continue;

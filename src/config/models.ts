@@ -19,9 +19,10 @@
  * Resolution: mode-specific > "default" key > OMX_DEFAULT_FRONTIER_MODEL > DEFAULT_FRONTIER_MODEL
  */
 
+import { parse as parseToml } from '@iarna/toml';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import { codexHome } from '../utils/paths.js';
+import { codexConfigPath, codexHome } from '../utils/paths.js';
 
 export interface ModelsConfig {
   [mode: string]: string | undefined;
@@ -36,6 +37,11 @@ interface OmxConfigFile {
   models?: ModelsConfig;
 }
 
+interface CodexConfigFile {
+  model_provider?: unknown;
+  model_providers?: Record<string, unknown>;
+}
+
 export const OMX_DEFAULT_FRONTIER_MODEL_ENV = 'OMX_DEFAULT_FRONTIER_MODEL';
 export const OMX_DEFAULT_STANDARD_MODEL_ENV = 'OMX_DEFAULT_STANDARD_MODEL';
 export const OMX_DEFAULT_SPARK_MODEL_ENV = 'OMX_DEFAULT_SPARK_MODEL';
@@ -48,6 +54,20 @@ function readOmxConfigFile(codexHomeOverride?: string): OmxConfigFile | null {
     const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
     return raw as OmxConfigFile;
+  } catch {
+    return null;
+  }
+}
+
+function readCodexConfigFile(codexHomeOverride?: string): CodexConfigFile | null {
+  const configPath = codexHomeOverride
+    ? join(codexHomeOverride, 'config.toml')
+    : codexConfigPath();
+  if (!existsSync(configPath)) return null;
+  try {
+    const raw = parseToml(readFileSync(configPath, 'utf-8'));
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    return raw as CodexConfigFile;
   } catch {
     return null;
   }
@@ -102,6 +122,33 @@ export function readConfiguredEnvOverrides(codexHomeOverride?: string): NodeJS.P
     if (normalized) resolved[key] = normalized;
   }
   return resolved;
+}
+
+export function readActiveProviderEnvOverrides(
+  env: NodeJS.ProcessEnv = process.env,
+  codexHomeOverride?: string,
+): NodeJS.ProcessEnv {
+  const config = readCodexConfigFile(codexHomeOverride);
+  if (!config) return {};
+
+  const activeProvider = normalizeConfiguredValue(config.model_provider);
+  if (!activeProvider) return {};
+
+  const providers = config.model_providers;
+  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) {
+    return {};
+  }
+
+  const providerConfig = providers[activeProvider];
+  if (!providerConfig || typeof providerConfig !== 'object' || Array.isArray(providerConfig)) {
+    return {};
+  }
+
+  const envKey = normalizeConfiguredValue((providerConfig as Record<string, unknown>).env_key);
+  if (!envKey) return {};
+
+  const envValue = normalizeConfiguredValue(env[envKey]);
+  return envValue ? { [envKey]: envValue } : {};
 }
 
 export function getEnvConfiguredMainDefaultModel(
