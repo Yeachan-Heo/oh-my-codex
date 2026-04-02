@@ -1,5 +1,5 @@
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{
     canonicalize, create_dir_all, read_to_string, remove_dir_all, remove_file, write, File,
 };
@@ -270,6 +270,29 @@ fn resolve_codex_binary() -> String {
 }
 
 fn codex_launch_for_binary(codex_binary: &str) -> Option<CodexLaunch> {
+    if cfg!(windows) {
+        let path = Path::new(codex_binary);
+        let file_name = path.file_name()?.to_str()?;
+        if ["codex", "codex.cmd", "codex.ps1"]
+            .iter()
+            .any(|candidate| file_name.eq_ignore_ascii_case(candidate))
+        {
+            let entrypoint = path
+                .parent()?
+                .join("node_modules")
+                .join("@openai")
+                .join("codex")
+                .join("bin")
+                .join("codex.js");
+            if entrypoint.exists() {
+                let node = resolve_host_command("node")?;
+                return Some(CodexLaunch {
+                    program: node.display().to_string(),
+                    leading_args: vec![entrypoint.display().to_string()],
+                });
+            }
+        }
+    }
     let interpreter = read_shebang_interpreter(Path::new(codex_binary))?;
     let (program, mut leading_args) = resolve_shebang_launch(&interpreter)?;
     leading_args.push(codex_binary.to_string());
@@ -381,6 +404,13 @@ fn prepare_allowlist_environment() -> Result<AllowlistEnvironment, String> {
     let bash_path = resolve_host_command("bash")
         .ok_or_else(|| "failed to locate host bash for allowlist wrapper".to_string())?;
     let sh_path = resolve_host_command("sh")
+        .or_else(|| {
+            if cfg!(windows) {
+                Some(bash_path.clone())
+            } else {
+                None
+            }
+        })
         .ok_or_else(|| "failed to locate host sh for allowlist wrapper".to_string())?;
 
     for command in ALLOWED_DIRECT_COMMANDS {
@@ -474,13 +504,129 @@ fn resolve_host_command(command: &str) -> Option<PathBuf> {
     }
 
     let path = env::var_os("PATH")?;
-    for entry in env::split_paths(&path) {
-        let resolved = entry.join(command);
-        if resolved.exists() {
+    if let Some(resolved) = resolve_host_command_on_path(
+        command,
+        &path,
+        env::var_os("PATHEXT").as_deref(),
+        cfg!(windows),
+    ) {
+        return Some(resolved);
+    }
+    if cfg!(windows) {
+        return resolve_host_command_via_windows_git(
+            command,
+            &path,
+            env::var_os("PATHEXT").as_deref(),
+        );
+    }
+    None
+}
+
+fn resolve_host_command_on_path(
+    command: &str,
+    path: &OsStr,
+    pathext: Option<&OsStr>,
+    is_windows: bool,
+) -> Option<PathBuf> {
+    for entry in env::split_paths(path) {
+        if let Some(resolved) = resolve_host_command_in_dir(&entry, command, pathext, is_windows) {
             return Some(resolved);
         }
     }
     None
+}
+
+fn resolve_host_command_in_dir(
+    dir: &Path,
+    command: &str,
+    pathext: Option<&OsStr>,
+    is_windows: bool,
+) -> Option<PathBuf> {
+    if is_windows && Path::new(command).extension().is_none() {
+        for ext in windows_path_extensions(pathext) {
+            let resolved = dir.join(format!("{command}{ext}"));
+            if resolved.exists() {
+                return Some(resolved);
+            }
+        }
+    }
+    let resolved = dir.join(command);
+    if resolved.exists() {
+        return Some(resolved);
+    }
+    None
+}
+
+fn resolve_host_command_via_windows_git(
+    command: &str,
+    path: &OsStr,
+    pathext: Option<&OsStr>,
+) -> Option<PathBuf> {
+    if command.eq_ignore_ascii_case("git") {
+        return None;
+    }
+    let git_path = resolve_host_command_on_path("git", path, pathext, true)?;
+    let git_dir = git_path.parent()?;
+    let install_root = if path_file_name_eq(git_dir, "cmd") || path_file_name_eq(git_dir, "bin") {
+        git_dir.parent().unwrap_or(git_dir)
+    } else {
+        git_dir
+    };
+    for dir in [
+        install_root.join("bin"),
+        install_root.join("usr").join("bin"),
+        install_root.join("cmd"),
+        install_root.to_path_buf(),
+    ] {
+        if let Some(resolved) = resolve_host_command_in_dir(&dir, command, pathext, true) {
+            return Some(resolved);
+        }
+    }
+    None
+}
+
+fn path_file_name_eq(path: &Path, expected: &str) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.eq_ignore_ascii_case(expected))
+        .unwrap_or(false)
+}
+
+fn windows_path_extensions(pathext: Option<&OsStr>) -> Vec<String> {
+    let raw = pathext
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut extensions: Vec<String> = raw
+        .split(';')
+        .map(str::trim)
+        .filter(|ext| !ext.is_empty())
+        .map(|ext| {
+            if ext.starts_with('.') {
+                ext.to_string()
+            } else {
+                format!(".{ext}")
+            }
+        })
+        .collect();
+    if extensions.is_empty() {
+        extensions = vec![
+            ".COM".to_string(),
+            ".EXE".to_string(),
+            ".BAT".to_string(),
+            ".CMD".to_string(),
+            ".PS1".to_string(),
+        ];
+    }
+    let mut deduped = Vec::new();
+    for ext in extensions {
+        if !deduped
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(&ext))
+        {
+            deduped.push(ext);
+        }
+    }
+    deduped
 }
 
 fn shell_quote(value: &str) -> String {
@@ -884,16 +1030,184 @@ mod tests {
     }
 
     #[test]
-    fn codex_launch_for_env_node_shebang_uses_host_node_absolute_path() {
+    fn resolve_host_command_prefers_windows_pathext_candidates() {
+        let _guard = env_lock();
         let root = temp_allowlist_dir().expect("temp root");
+        let bin_dir = root.path.join("bin");
+        create_dir_all(&bin_dir).expect("create bin");
+        write(bin_dir.join("codex"), b"fake").expect("write fake shim");
+        let codex_cmd = bin_dir.join("codex.CMD");
+        write(&codex_cmd, b"fake").expect("write fake cmd shim");
+
+        let original_path = env::var_os("PATH");
+        let original_pathext = env::var_os("PATHEXT");
+        unsafe {
+            env::set_var("PATH", &bin_dir);
+            env::set_var("PATHEXT", ".CMD;.EXE");
+        }
+
+        let resolved = resolve_host_command("codex").expect("resolve codex");
+
+        match original_path {
+            Some(value) => unsafe { env::set_var("PATH", value) },
+            None => unsafe { env::remove_var("PATH") },
+        }
+        match original_pathext {
+            Some(value) => unsafe { env::set_var("PATHEXT", value) },
+            None => unsafe { env::remove_var("PATHEXT") },
+        }
+
+        assert_eq!(resolved, codex_cmd);
+    }
+
+    #[test]
+    fn prepare_allowlist_environment_uses_bash_for_sh_on_windows() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let bin_dir = root.path.join("bin");
+        create_dir_all(&bin_dir).expect("create bin");
+        for command in [
+            "bash", "rg", "grep", "ls", "find", "wc", "cat", "head", "tail", "pwd", "printf",
+        ] {
+            write(bin_dir.join(format!("{command}.EXE")), b"fake").expect("write fake command");
+        }
+
+        let original_path = env::var_os("PATH");
+        let original_pathext = env::var_os("PATHEXT");
+        unsafe {
+            env::set_var("PATH", &bin_dir);
+            env::set_var("PATHEXT", ".EXE");
+        }
+
+        let allowlist = prepare_allowlist_environment().expect("allowlist environment");
+
+        match original_path {
+            Some(value) => unsafe { env::set_var("PATH", value) },
+            None => unsafe { env::remove_var("PATH") },
+        }
+        match original_pathext {
+            Some(value) => unsafe { env::set_var("PATHEXT", value) },
+            None => unsafe { env::remove_var("PATHEXT") },
+        }
+
+        assert!(allowlist.bin_dir.join("sh").exists());
+    }
+
+    #[test]
+    fn resolve_host_command_falls_back_to_git_windows_layout() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let git_cmd_dir = root.path.join("Git").join("cmd");
+        let git_usr_bin_dir = root.path.join("Git").join("usr").join("bin");
+        create_dir_all(&git_cmd_dir).expect("create git cmd");
+        create_dir_all(&git_usr_bin_dir).expect("create git usr bin");
+        write(git_cmd_dir.join("git.EXE"), b"fake").expect("write fake git");
+        let grep = git_usr_bin_dir.join("grep.EXE");
+        write(&grep, b"fake").expect("write fake grep");
+
+        let original_path = env::var_os("PATH");
+        let original_pathext = env::var_os("PATHEXT");
+        unsafe {
+            env::set_var("PATH", &git_cmd_dir);
+            env::set_var("PATHEXT", ".EXE");
+        }
+
+        let resolved = resolve_host_command("grep").expect("resolve grep");
+
+        match original_path {
+            Some(value) => unsafe { env::set_var("PATH", value) },
+            None => unsafe { env::remove_var("PATH") },
+        }
+        match original_pathext {
+            Some(value) => unsafe { env::set_var("PATHEXT", value) },
+            None => unsafe { env::remove_var("PATHEXT") },
+        }
+
+        assert_eq!(resolved, grep);
+    }
+
+    #[test]
+    fn codex_launch_for_env_node_shebang_uses_host_node_absolute_path() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let bin_dir = root.path.join("bin");
+        create_dir_all(&bin_dir).expect("create bin");
+        let node = bin_dir.join("node.EXE");
+        write(&node, b"fake").expect("write fake node");
         let script_path = root.path.join("codex-script");
         write(&script_path, b"#!/usr/bin/env node\nconsole.log(\"ok\");\n").expect("write script");
 
+        let original_path = env::var_os("PATH");
+        let original_pathext = env::var_os("PATHEXT");
+        unsafe {
+            env::set_var("PATH", &bin_dir);
+            env::set_var("PATHEXT", ".EXE");
+        }
+
         let launch = codex_launch_for_binary(script_path.to_str().expect("script path"))
             .expect("launch config");
-        let expected_node = resolve_host_command("node").expect("host node path");
-        assert_eq!(launch.program, expected_node.display().to_string());
+
+        match original_path {
+            Some(value) => unsafe { env::set_var("PATH", value) },
+            None => unsafe { env::remove_var("PATH") },
+        }
+        match original_pathext {
+            Some(value) => unsafe { env::set_var("PATHEXT", value) },
+            None => unsafe { env::remove_var("PATHEXT") },
+        }
+
+        assert_eq!(launch.program, node.display().to_string());
         assert_eq!(launch.leading_args, vec![script_path.display().to_string()]);
+    }
+
+    #[test]
+    fn codex_launch_for_windows_npm_shim_uses_node_entrypoint() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let bin_dir = root.path.join("bin");
+        let npm_dir = root.path.join("npm");
+        create_dir_all(&bin_dir).expect("create bin");
+        create_dir_all(
+            npm_dir
+                .join("node_modules")
+                .join("@openai")
+                .join("codex")
+                .join("bin"),
+        )
+        .expect("create codex js dir");
+        let node = bin_dir.join("node.EXE");
+        write(&node, b"fake").expect("write fake node");
+        let script_path = npm_dir.join("codex.CMD");
+        write(&script_path, b"fake").expect("write cmd shim");
+        let entrypoint = npm_dir
+            .join("node_modules")
+            .join("@openai")
+            .join("codex")
+            .join("bin")
+            .join("codex.js");
+        write(&entrypoint, b"fake").expect("write codex entrypoint");
+
+        let original_path = env::var_os("PATH");
+        let original_pathext = env::var_os("PATHEXT");
+        unsafe {
+            env::set_var("PATH", &bin_dir);
+            env::set_var("PATHEXT", ".CMD;.EXE");
+        }
+
+        let launch = codex_launch_for_binary(script_path.to_str().expect("script path"))
+            .expect("launch config");
+
+        match original_path {
+            Some(value) => unsafe { env::set_var("PATH", value) },
+            None => unsafe { env::remove_var("PATH") },
+        }
+        match original_pathext {
+            Some(value) => unsafe { env::set_var("PATHEXT", value) },
+            None => unsafe { env::remove_var("PATHEXT") },
+        }
+
+        assert_eq!(launch.program, node.display().to_string());
+        assert_eq!(launch.leading_args, vec![entrypoint.display().to_string()]);
     }
 
     #[cfg(unix)]
