@@ -680,7 +680,12 @@ export function buildWorkerProcessLaunchSpec(
     OMX_TEAM_WORKER: `${teamName}/worker-${workerIndex}`,
     [OMX_LEADER_NODE_PATH_ENV]: resolveLeaderNodePath(),
     [OMX_LEADER_CLI_PATH_ENV]: resolvedCliPath,
-    ...(workerCli === 'codex' ? readActiveProviderEnvOverrides(effectiveEnv) : {}),
+    ...(workerCli === 'codex'
+      ? readActiveProviderEnvOverrides(
+          effectiveEnv,
+          typeof effectiveEnv.CODEX_HOME === 'string' ? effectiveEnv.CODEX_HOME : undefined,
+        )
+      : {}),
   };
   for (const [key, value] of Object.entries(extraEnv)) {
     if (typeof value !== 'string' || value.trim() === '') continue;
