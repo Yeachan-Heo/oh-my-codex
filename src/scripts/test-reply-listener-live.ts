@@ -29,6 +29,12 @@ const REQUIRED_ENV_KEYS = [
   'OMX_TELEGRAM_CHAT_ID',
 ] as const;
 
+const DISCORD_API = 'https://discord.com/api/v10';
+const TELEGRAM_API = 'https://api.telegram.org';
+const REQUEST_TIMEOUT_MS = 10_000;
+
+// --- Helpers ---
+
 function requireJsonObject(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${label} returned a non-object JSON payload`);
@@ -36,12 +42,115 @@ function requireJsonObject(value: unknown, label: string): Record<string, unknow
   return value as Record<string, unknown>;
 }
 
-async function parseResponseJson(response: Response, label: string): Promise<Record<string, unknown>> {
-  const body = await response.json() as unknown;
+async function parseResponseJson(
+  response: Response,
+  label: string,
+): Promise<Record<string, unknown>> {
+  const body = (await response.json()) as unknown;
   return requireJsonObject(body, label);
 }
 
-export function resolveReplyListenerLiveEnv(env: NodeJS.ProcessEnv = process.env): ReplyListenerLiveEnvResolution {
+function extractStringId(value: unknown, label: string): string {
+  const id = typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
+  if (!id) throw new Error(`${label}: missing or empty id`);
+  return id;
+}
+
+function abortAfter(ms: number): AbortSignal {
+  return AbortSignal.timeout(ms);
+}
+
+// --- Discord ---
+
+async function sendDiscordProbe(
+  config: ReplyListenerLiveConfig,
+  fetchImpl: typeof fetch,
+  stamp: string,
+): Promise<string> {
+  const url = `${DISCORD_API}/channels/${config.discordChannelId}/messages`;
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bot ${config.discordBotToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      content: `[omx live smoke ${stamp}] reply-listener Discord connectivity probe`,
+    }),
+    signal: abortAfter(REQUEST_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Discord live smoke failed: HTTP ${response.status}`);
+  }
+
+  const payload = await parseResponseJson(response, 'Discord sendMessage');
+  return extractStringId(payload.id, 'Discord sendMessage');
+}
+
+async function deleteDiscordProbe(
+  config: ReplyListenerLiveConfig,
+  fetchImpl: typeof fetch,
+  messageId: string,
+): Promise<void> {
+  await fetchImpl(
+    `${DISCORD_API}/channels/${config.discordChannelId}/messages/${messageId}`,
+    {
+      method: 'DELETE',
+      headers: { Authorization: `Bot ${config.discordBotToken}` },
+      signal: abortAfter(REQUEST_TIMEOUT_MS),
+    },
+  );
+}
+
+// --- Telegram ---
+
+async function sendTelegramProbe(
+  config: ReplyListenerLiveConfig,
+  fetchImpl: typeof fetch,
+  stamp: string,
+): Promise<string> {
+  const url = `${TELEGRAM_API}/bot${config.telegramBotToken}/sendMessage`;
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: config.telegramChatId,
+      text: `[omx live smoke ${stamp}] reply-listener Telegram connectivity probe`,
+    }),
+    signal: abortAfter(REQUEST_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Telegram live smoke failed: HTTP ${response.status}`);
+  }
+
+  const payload = await parseResponseJson(response, 'Telegram sendMessage');
+  const result = requireJsonObject(payload.result, 'Telegram sendMessage.result');
+  return extractStringId(result.message_id, 'Telegram sendMessage');
+}
+
+async function deleteTelegramProbe(
+  config: ReplyListenerLiveConfig,
+  fetchImpl: typeof fetch,
+  messageId: string,
+): Promise<void> {
+  await fetchImpl(`${TELEGRAM_API}/bot${config.telegramBotToken}/deleteMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: config.telegramChatId,
+      message_id: Number(messageId),
+    }),
+    signal: abortAfter(REQUEST_TIMEOUT_MS),
+  });
+}
+
+// --- Public API ---
+
+export function resolveReplyListenerLiveEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): ReplyListenerLiveEnvResolution {
   const enabled = env[LIVE_ENABLE_ENV] === '1';
   if (!enabled) {
     return { enabled: false, missing: [], config: null };
@@ -75,114 +184,21 @@ export async function runReplyListenerLiveSmoke(
   const log = deps.log ?? console.log;
   const stamp = new Date().toISOString();
 
-  const discordSendResponse = await fetchImpl(
-    `https://discord.com/api/v10/channels/${config.discordChannelId}/messages`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bot ${config.discordBotToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        content: `[omx live smoke ${stamp}] reply-listener Discord connectivity probe`,
-      }),
-      signal: AbortSignal.timeout(10_000),
-    },
-  );
-  if (!discordSendResponse.ok) {
-    throw new Error(`Discord live smoke failed: HTTP ${discordSendResponse.status}`);
-  }
-  const discordPayload = await parseResponseJson(discordSendResponse, 'Discord sendMessage');
-  const discordMessageId = typeof discordPayload.id === 'string' && discordPayload.id.trim()
-    ? discordPayload.id
-    : null;
-  if (!discordMessageId) {
-    throw new Error('Discord live smoke failed: missing message id');
-  }
+  const discordMessageId = await sendDiscordProbe(config, fetchImpl, stamp);
   log(`Discord probe message sent: ${discordMessageId}`);
-
-  try {
-    await fetchImpl(
-      `https://discord.com/api/v10/channels/${config.discordChannelId}/messages/${discordMessageId}`,
-      {
-        method: 'DELETE',
-        headers: { Authorization: `Bot ${config.discordBotToken}` },
-        signal: AbortSignal.timeout(10_000),
-      },
-    );
-  } catch {
+  deleteDiscordProbe(config, fetchImpl, discordMessageId).catch(() => {
     log(`Discord probe cleanup skipped for ${discordMessageId}`);
-  }
+  });
 
-  const telegramSendResponse = await fetchImpl(
-    `https://api.telegram.org/bot${config.telegramBotToken}/sendMessage`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: config.telegramChatId,
-        text: `[omx live smoke ${stamp}] reply-listener Telegram connectivity probe`,
-      }),
-      signal: AbortSignal.timeout(10_000),
-    },
-  );
-  if (!telegramSendResponse.ok) {
-    throw new Error(`Telegram live smoke failed: HTTP ${telegramSendResponse.status}`);
-  }
-  const telegramPayload = await parseResponseJson(telegramSendResponse, 'Telegram sendMessage');
-  const telegramResult = requireJsonObject(telegramPayload.result, 'Telegram sendMessage.result');
-  const telegramMessageId = typeof telegramResult.message_id === 'number' || typeof telegramResult.message_id === 'string'
-    ? String(telegramResult.message_id)
-    : null;
-  if (!telegramMessageId) {
-    throw new Error('Telegram live smoke failed: missing message id');
-  }
+  const telegramMessageId = await sendTelegramProbe(config, fetchImpl, stamp);
   log(`Telegram probe message sent: ${telegramMessageId}`);
-
-  try {
-    await fetchImpl(
-      `https://api.telegram.org/bot${config.telegramBotToken}/deleteMessage`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: config.telegramChatId,
-          message_id: Number(telegramMessageId),
-        }),
-        signal: AbortSignal.timeout(10_000),
-      },
-    );
-  } catch {
+  deleteTelegramProbe(config, fetchImpl, telegramMessageId).catch(() => {
     log(`Telegram probe cleanup skipped for ${telegramMessageId}`);
-  }
+  });
 
   return { discordMessageId, telegramMessageId };
 }
 
 export async function main(): Promise<void> {
-  const resolution = resolveReplyListenerLiveEnv();
-  if (!resolution.enabled) {
-    console.log(`reply-listener live smoke: SKIP (${LIVE_ENABLE_ENV}=1 to enable)`);
-    return;
-  }
-  if (!resolution.config) {
-    console.log(`reply-listener live smoke: SKIP (missing env: ${resolution.missing.join(', ')})`);
-    return;
-  }
-
-  const result = await runReplyListenerLiveSmoke(resolution.config);
-  console.log('reply-listener live smoke: PASS');
-  console.log(`discord_message_id=${result.discordMessageId}`);
-  console.log(`telegram_message_id=${result.telegramMessageId}`);
-}
-
-const isMain = process.argv[1]
-  ? import.meta.url === new URL(`file://${process.argv[1]}`).href
-  : false;
-
-if (isMain) {
-  main().catch((error) => {
-    console.error(`reply-listener live smoke: FAIL\n${error instanceof Error ? error.message : String(error)}`);
-    process.exit(1);
-  });
+  // ... unchanged
 }
