@@ -2420,16 +2420,10 @@ async function startNotifyFallbackWatcher(
   cwd: string,
   options: { codexHomeOverride?: string; enableAuthority?: boolean; sessionId?: string } = {},
 ): Promise<void> {
-  if (!shouldStartNotifyFallbackWatcher(process.env, process.platform)) return;
-
   const { mkdir, writeFile, readFile } = await import("fs/promises");
   const pidPath = notifyFallbackPidPath(cwd);
-  const pkgRoot = getPackageRoot();
-  const watcherScript = resolveNotifyFallbackWatcherScript(pkgRoot);
-  const notifyScript = resolveNotifyHookScript(pkgRoot);
-  if (!existsSync(watcherScript) || !existsSync(notifyScript)) return;
 
-  // Stop stale watcher from a previous run.
+  // Stop stale watcher from a previous run, even when watcher startup is gated.
   if (existsSync(pidPath)) {
     try {
       const prevPid = parseWatcherPidFile(await readFile(pidPath, "utf-8"));
@@ -2448,6 +2442,13 @@ async function startNotifyFallbackWatcher(
       }
     }
   }
+
+  if (!shouldStartNotifyFallbackWatcher(process.env, process.platform)) return;
+
+  const pkgRoot = getPackageRoot();
+  const watcherScript = resolveNotifyFallbackWatcherScript(pkgRoot);
+  const notifyScript = resolveNotifyHookScript(pkgRoot);
+  if (!existsSync(watcherScript) || !existsSync(notifyScript)) return;
 
   await mkdir(join(cwd, ".omx", "state"), { recursive: true }).catch(
     (error: unknown) => {
