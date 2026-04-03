@@ -198,6 +198,7 @@ Jeśli to widzisz:
 - [Deutsch](./README.de.md)
 - [Français](./README.fr.md)
 - [Italiano](./README.it.md)
+- [Ελληνικά](./README.el.md)
 - [Polski](./README.pl.md)
 - [Українська](./README.uk.md)
 
