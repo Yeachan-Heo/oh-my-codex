@@ -38,6 +38,16 @@ async function writeModeState(cwd: string, mode: string, state: unknown): Promis
   await writeFile(join(stateDir, mode + '-state.json'), JSON.stringify(state));
 }
 
+async function withWindowsPlatform(run: () => Promise<void> | void): Promise<void> {
+  const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  try {
+    await run();
+  } finally {
+    if (descriptor) Object.defineProperty(process, 'platform', descriptor);
+  }
+}
+
 describe('readGitBranch', () => {
   it('returns null in a non-git directory without printing git fatal noise', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-state-'));
@@ -62,6 +72,25 @@ describe('readGitBranch', () => {
     }
 
     assert.equal(stderrChunks.join('').includes('not a git repository'), false);
+  });
+});
+
+describe('readGitBranch Windows worktree fast path', () => {
+  it('reads branch from a worktree .git file without shelling out', async () => {
+    await withTempRepo('omx-hud-worktree-gitfile-', async (cwd) => {
+      const worktree = join(cwd, 'repo', 'worktree');
+      const gitDir = join(cwd, 'repo', '.git', 'worktrees', 'worktree');
+      await mkdir(worktree, { recursive: true });
+      await mkdir(gitDir, { recursive: true });
+      await writeFile(join(worktree, '.git'), `gitdir: ../.git/worktrees/worktree\n`);
+      await writeFile(join(gitDir, 'HEAD'), 'ref: refs/heads/feature/worktree-fast-path\n');
+      await writeFile(join(gitDir, 'config'), '[remote "origin"]\n  url = https://github.com/acme/oh-my-codex.git\n');
+
+      await withWindowsPlatform(async () => {
+        assert.equal(readGitBranch(worktree), 'feature/worktree-fast-path');
+        assert.equal(buildGitBranchLabel(worktree), 'oh-my-codex/feature/worktree-fast-path');
+      });
+    });
   });
 });
 

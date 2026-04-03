@@ -5,9 +5,9 @@
  */
 
 import { readFile } from 'fs/promises';
-import { readFileSync, statSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { execSync } from 'child_process';
-import { join, dirname, basename } from 'path';
+import { join, dirname, basename, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { omxStateDir } from '../utils/paths.js';
 import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
@@ -176,16 +176,36 @@ export function readVersion(): string | null {
 export type GitRunner = (cwd: string, args: string[]) => string | null;
 
 /**
+ * Resolve a `.git` candidate path to the actual git dir.
+ * Supports both normal repos (`.git/`) and worktrees/submodules (`.git` file with `gitdir: ...`).
+ */
+function resolveGitDir(candidate: string): string | null {
+  try {
+    if (statSync(candidate).isDirectory()) return candidate;
+  } catch {
+    return null;
+  }
+
+  try {
+    const content = readFileSync(candidate, 'utf-8').trim();
+    const match = content.match(/^gitdir:\s*(.+)$/i);
+    if (!match) return null;
+    const resolved = match[1] ? resolve(dirname(candidate), match[1].trim()) : null;
+    return resolved && existsSync(resolved) ? resolved : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Find the .git directory by walking up from `startCwd`.
- * Returns the path to the `.git` directory, or null if not found.
+ * Returns the path to the actual git directory, or null if not found.
  */
 function findGitDir(startCwd: string): string | null {
   let dir = startCwd;
   for (;;) {
-    const candidate = join(dir, '.git');
-    try {
-      if (statSync(candidate).isDirectory()) return candidate;
-    } catch { /* not found, walk up */ }
+    const gitDir = resolveGitDir(join(dir, '.git'));
+    if (gitDir) return gitDir;
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
