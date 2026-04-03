@@ -5,11 +5,12 @@
  */
 
 import { readFile } from 'fs/promises';
-import { readFileSync, statSync } from 'fs';
+import { readFileSync } from 'fs';
 import { execSync } from 'child_process';
 import { join, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { omxStateDir } from '../utils/paths.js';
+import { findGitLayout, readGitLayoutFile } from '../utils/git-layout.js';
 import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
 import type { RuntimeSnapshot } from '../runtime/bridge.js';
 import { getReadScopedStatePaths } from '../mcp/state-paths.js';
@@ -176,34 +177,6 @@ export function readVersion(): string | null {
 export type GitRunner = (cwd: string, args: string[]) => string | null;
 
 /**
- * Find the .git directory by walking up from `startCwd`.
- * Returns the path to the `.git` directory, or null if not found.
- */
-function findGitDir(startCwd: string): string | null {
-  let dir = startCwd;
-  for (;;) {
-    const candidate = join(dir, '.git');
-    try {
-      if (statSync(candidate).isDirectory()) return candidate;
-    } catch { /* not found, walk up */ }
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
-
-/**
- * Read a file inside the .git directory. Returns trimmed content or null.
- */
-function readGitFile(gitDir: string, ...parts: string[]): string | null {
-  try {
-    return readFileSync(join(gitDir, ...parts), 'utf-8').trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * On Windows, read common git queries directly from .git/ files to avoid
  * spawning console windows (conhost.exe flicker).  Falls back to execSync
  * for non-Windows platforms or unrecognised arguments.
@@ -213,12 +186,12 @@ function readGitFile(gitDir: string, ...parts: string[]): string | null {
 function runGit(cwd: string, args: string[]): string | null {
   if (process.platform === 'win32') {
     try {
-      const gitDir = findGitDir(cwd);
-      if (gitDir) {
+      const gitLayout = findGitLayout(cwd);
+      if (gitLayout) {
         const cmd = args.join(' ');
 
         if (cmd === 'rev-parse --abbrev-ref HEAD') {
-          const head = readGitFile(gitDir, 'HEAD');
+          const head = readGitLayoutFile(gitLayout.gitDir, 'HEAD');
           if (head?.startsWith('ref: refs/heads/'))
             return head.slice('ref: refs/heads/'.length);
           return head; // detached HEAD — raw SHA
@@ -226,7 +199,8 @@ function runGit(cwd: string, args: string[]): string | null {
 
         if (cmd.startsWith('remote get-url ')) {
           const remoteName = args[2];
-          const config = readGitFile(gitDir, 'config');
+          const config = readGitLayoutFile(gitLayout.gitDir, 'config')
+            ?? readGitLayoutFile(gitLayout.commonDir, 'config');
           if (config) {
             const re = new RegExp(
               `\\[remote "${remoteName}"\\][\\s\\S]*?url\\s*=\\s*(.+)`,
@@ -239,7 +213,8 @@ function runGit(cwd: string, args: string[]): string | null {
         }
 
         if (cmd === 'remote') {
-          const config = readGitFile(gitDir, 'config');
+          const config = readGitLayoutFile(gitLayout.gitDir, 'config')
+            ?? readGitLayoutFile(gitLayout.commonDir, 'config');
           if (config) {
             const matches = [...config.matchAll(/\[remote "([^"]+)"\]/g)];
             if (matches.length > 0) return matches.map((m) => m[1]).join('\n');
@@ -248,7 +223,7 @@ function runGit(cwd: string, args: string[]): string | null {
         }
 
         if (cmd === 'rev-parse --show-toplevel') {
-          return dirname(gitDir);
+          return gitLayout.worktreeRoot;
         }
       }
     } catch { /* fall through to execSync */ }

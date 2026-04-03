@@ -1,14 +1,40 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   isLeaderRuntimeStale,
   readLatestLeaderActivityMsFromStateDir,
   recordLeaderRuntimeActivity,
 } from '../leader-activity.js';
+
+async function withWindowsPlatform(run: () => Promise<void> | void): Promise<void> {
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  try {
+    await run();
+  } finally {
+    if (originalPlatform) {
+      Object.defineProperty(process, 'platform', originalPlatform);
+    }
+  }
+}
+
+async function createWorktreePointerFixture(cwd: string): Promise<{ gitDir: string }> {
+  const gitDir = join(cwd, '.git-admin', 'worktrees', 'feature');
+  const commonDir = join(cwd, '.git-admin');
+  await mkdir(join(gitDir, 'logs', 'refs', 'heads'), { recursive: true });
+  await mkdir(commonDir, { recursive: true });
+  await writeFile(join(cwd, '.git'), `gitdir: ${relative(cwd, gitDir)}\n`);
+  await writeFile(join(gitDir, 'HEAD'), 'ref: refs/heads/worktree-branch\n');
+  await writeFile(join(gitDir, 'commondir'), '../..\n');
+  await writeFile(join(gitDir, 'logs', 'HEAD'), 'old\n');
+  await writeFile(join(gitDir, 'logs', 'refs', 'heads', 'worktree-branch'), 'new\n');
+  await writeFile(join(commonDir, 'config'), '');
+  return { gitDir };
+}
 
 describe('leader runtime activity', () => {
   it('records team status activity with shared leader activity metadata', async () => {
@@ -130,6 +156,34 @@ describe('leader runtime activity', () => {
       }).trim()) * 1000;
 
       assert.equal(await isLeaderRuntimeStale(stateDir, 30_000, headMs + 5_000), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('treats worktree .git file pointers as recent branch activity on Windows', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-leader-activity-worktree-'));
+    try {
+      const { gitDir } = await createWorktreePointerFixture(cwd);
+      const stateDir = join(cwd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'hud-state.json'), JSON.stringify({
+        last_turn_at: '2026-03-21T04:00:00.000Z',
+      }));
+      await writeFile(join(stateDir, 'leader-runtime-activity.json'), JSON.stringify({
+        last_activity_at: '2026-03-21T04:00:00.000Z',
+        last_source: 'team_status',
+      }));
+
+      const recentMs = Date.parse('2026-03-21T04:10:00.000Z');
+      const recentDate = new Date(recentMs);
+      await utimes(join(gitDir, 'HEAD'), recentDate, recentDate);
+      await utimes(join(gitDir, 'logs', 'HEAD'), recentDate, recentDate);
+      await utimes(join(gitDir, 'logs', 'refs', 'heads', 'worktree-branch'), recentDate, recentDate);
+
+      await withWindowsPlatform(async () => {
+        assert.equal(await isLeaderRuntimeStale(stateDir, 30_000, recentMs + 5_000), false);
+      });
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
