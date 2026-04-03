@@ -123,6 +123,7 @@ export interface SkillFrontmatterMetadata {
 }
 
 const PROJECT_OMX_GITIGNORE_ENTRY = ".omx/";
+const PROJECT_CODEX_GITIGNORE_ENTRY = ".codex/";
 
 function applyScopePathRewritesToAgentsTemplate(
   content: string,
@@ -550,7 +551,7 @@ function hasGitignoreEntry(content: string, entry: string): boolean {
     .some((line) => line === entry);
 }
 
-async function ensureProjectOmxGitignore(
+async function ensureProjectGitignoreEntries(
   projectRoot: string,
   backupContext: SetupBackupContext,
   options: Pick<SetupOptions, "dryRun" | "verbose">,
@@ -561,13 +562,23 @@ async function ensureProjectOmxGitignore(
     ? await readFile(gitignorePath, "utf-8")
     : "";
 
-  if (hasGitignoreEntry(existing, PROJECT_OMX_GITIGNORE_ENTRY)) {
+  const hasOmx = hasGitignoreEntry(existing, PROJECT_OMX_GITIGNORE_ENTRY);
+  const hasCodex = hasGitignoreEntry(existing, PROJECT_CODEX_GITIGNORE_ENTRY);
+
+  if (hasOmx && hasCodex) {
     return "unchanged";
   }
 
+  // Build additions: always include both .omx/ and .codex/ for completeness
+  const additions: string[] = [];
+  if (!hasOmx) additions.push(PROJECT_OMX_GITIGNORE_ENTRY);
+  if (!hasCodex) additions.push(PROJECT_CODEX_GITIGNORE_ENTRY);
+
+  const additionsBlock = additions.join("") + (additions.length > 0 ? "\n" : "");
+
   const nextContent = destinationExists
-    ? `${existing}${existing.endsWith("\n") || existing.length === 0 ? "" : "\n"}${PROJECT_OMX_GITIGNORE_ENTRY}\n`
-    : `${PROJECT_OMX_GITIGNORE_ENTRY}\n`;
+    ? `${existing}${existing.endsWith("\n") || existing.length === 0 ? "" : "\n"}${additionsBlock}`
+    : `${additionsBlock}`;
 
   if (
     await ensureBackup(gitignorePath, destinationExists, backupContext, options)
@@ -580,8 +591,9 @@ async function ensureProjectOmxGitignore(
   }
 
   if (options.verbose) {
+    const entries = additions.join(", ").replace(/\/$, /, "/ and .").replace(/\/$/, "/");
     console.log(
-      `  ${options.dryRun ? "would update" : destinationExists ? "updated" : "created"} .gitignore (${PROJECT_OMX_GITIGNORE_ENTRY})`,
+      `  ${options.dryRun ? "would update" : destinationExists ? "updated" : "created"} .gitignore (${entries})`,
     );
   }
 
@@ -650,18 +662,18 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log("  Done.\n");
 
   if (resolvedScope.scope === "project") {
-    const gitignoreResult = await ensureProjectOmxGitignore(
+    const gitignoreResult = await ensureProjectGitignoreEntries(
       projectRoot,
       backupContext,
       { dryRun, verbose },
     );
     if (gitignoreResult === "created") {
       console.log(
-        "  Created .gitignore with .omx/ so local OMX runtime state stays out of source control.\n",
+        "  Created .gitignore with .omx/ and .codex/ so local OMX/Codex state stays out of source control.\n",
       );
     } else if (gitignoreResult === "updated") {
       console.log(
-        "  Added .omx/ to .gitignore so local OMX runtime state stays out of source control.\n",
+        "  Added .omx/ and .codex/ to .gitignore so local OMX/Codex state stays out of source control.\n",
       );
     }
   }
