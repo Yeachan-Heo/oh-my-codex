@@ -2281,6 +2281,17 @@ function hookDerivedWatcherPidPath(cwd: string): string {
   return join(cwd, ".omx", "state", "hook-derived-watcher.pid");
 }
 
+export function shouldStartNotifyFallbackWatcher(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (env.OMX_NOTIFY_FALLBACK === "0") return false;
+  // Disable fallback watcher startup on win32 to avoid helper-driven
+  // console popups/focus churn in Windows + Git Bash/MSYS environments.
+  if (platform === "win32") return false;
+  return true;
+}
+
 export function shouldDetachBackgroundHelper(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
@@ -2409,7 +2420,7 @@ async function startNotifyFallbackWatcher(
   cwd: string,
   options: { codexHomeOverride?: string; enableAuthority?: boolean; sessionId?: string } = {},
 ): Promise<void> {
-  if (process.env.OMX_NOTIFY_FALLBACK === "0") return;
+  if (!shouldStartNotifyFallbackWatcher(process.env, process.platform)) return;
 
   const { mkdir, writeFile, readFile } = await import("fs/promises");
   const pidPath = notifyFallbackPidPath(cwd);

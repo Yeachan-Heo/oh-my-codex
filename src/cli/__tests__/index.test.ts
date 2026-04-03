@@ -37,6 +37,7 @@ import {
   cleanupLaunchOrphanedMcpProcesses,
   resolveBackgroundHelperLaunchMode,
   shouldDetachBackgroundHelper,
+  shouldStartNotifyFallbackWatcher,
   resolveNotifyFallbackWatcherScript,
   resolveHookDerivedWatcherScript,
   resolveNotifyHookScript,
@@ -332,6 +333,23 @@ describe("watcher script path resolution", () => {
       resolveNotifyHookScript("/pkg"),
       "/pkg/dist/scripts/notify-hook.js",
     );
+  });
+});
+
+describe("shouldStartNotifyFallbackWatcher", () => {
+  it("returns false when explicitly disabled by env", () => {
+    assert.equal(
+      shouldStartNotifyFallbackWatcher({ OMX_NOTIFY_FALLBACK: "0" }, "linux"),
+      false,
+    );
+  });
+
+  it("returns false on win32 to avoid detached helper focus churn", () => {
+    assert.equal(shouldStartNotifyFallbackWatcher({}, "win32"), false);
+  });
+
+  it("returns true on non-win32 when not disabled", () => {
+    assert.equal(shouldStartNotifyFallbackWatcher({}, "linux"), true);
   });
 });
 
