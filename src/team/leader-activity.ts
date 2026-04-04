@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, posix, resolve, win32 } from 'node:path';
 import { omxStateDir } from '../utils/paths.js';
 import { findGitLayout, readGitLayoutFile } from '../utils/git-layout.js';
 
@@ -41,6 +41,12 @@ function parseEpochSecondsMs(value: string): number {
   return Number.isFinite(seconds) ? seconds * 1000 : Number.NaN;
 }
 
+function resolveGitOutputPath(cwd: string, gitPath: string | null): string | null {
+  if (!gitPath) return null;
+  if (posix.isAbsolute(gitPath) || win32.isAbsolute(gitPath)) return gitPath;
+  return resolve(cwd, gitPath);
+}
+
 /**
  * On Windows, read git info from .git/ files directly to avoid spawning
  * console windows (conhost.exe flicker on every poll cycle).
@@ -69,7 +75,7 @@ function tryReadGitValue(cwd: string, args: string[]): string | null {
 
         if (cmd.startsWith('rev-parse --git-path logs/refs/heads/')) {
           const branch = args[args.length - 1].replace('logs/', '');
-          return join(gitLayout.gitDir, 'logs', branch);
+          return join(gitLayout.commonDir, 'logs', branch);
         }
 
         if (cmd === 'show -s --format=%ct HEAD') {
@@ -127,8 +133,8 @@ async function readLeaderBranchGitActivityMs(stateDir: string): Promise<number> 
   const headCommitEpoch = tryReadGitValue(cwd, ['show', '-s', '--format=%ct', 'HEAD']);
 
   const [headLogMs, branchLogMs] = await Promise.all([
-    statMsIfExists(headLogPath ? join(cwd, headLogPath) : null),
-    statMsIfExists(branchLogPath ? join(cwd, branchLogPath) : null),
+    statMsIfExists(resolveGitOutputPath(cwd, headLogPath)),
+    statMsIfExists(resolveGitOutputPath(cwd, branchLogPath)),
   ]);
   const headCommitMs = headCommitEpoch ? parseEpochSecondsMs(headCommitEpoch) : Number.NaN;
 
