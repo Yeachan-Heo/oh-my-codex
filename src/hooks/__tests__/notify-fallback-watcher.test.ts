@@ -2773,6 +2773,92 @@ exit 0
     }
   });
 
+  it('backs off idle polling and resets to the base cadence after fresh rollout activity', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-idle-backoff-'));
+    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-idle-backoff-home-'));
+    const sid = randomUUID();
+    const sessionDir = todaySessionDir(tempHome);
+    const rolloutPath = join(sessionDir, `rollout-test-fallback-idle-backoff-${sid}.jsonl`);
+    const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+    const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+    const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
+    const turnLogPath = join(wd, '.omx', 'logs', `turns-${new Date().toISOString().split('T')[0]}.jsonl`);
+    let child: ReturnType<typeof spawn> | undefined;
+
+    try {
+      await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(rolloutPath, `${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        type: 'session_meta',
+        payload: { id: `thread-${sid}`, cwd: wd },
+      })}
+`);
+
+      child = spawn(
+        process.execPath,
+        [
+          watcherScript,
+          '--cwd',
+          wd,
+          '--notify-script',
+          notifyHook,
+          '--poll-ms',
+          '50',
+          '--idle-max-poll-ms',
+          '200',
+          '--parent-pid',
+          String(process.pid),
+          '--max-lifetime-ms',
+          '5000',
+        ],
+        {
+          cwd: wd,
+          stdio: 'ignore',
+          env: buildCleanNotifyEnv({ HOME: tempHome, OMX_NOTIFY_FALLBACK_IDLE_MAX_POLL_MS: '200' }),
+        }
+      );
+
+      await waitFor(async () => {
+        try {
+          const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+          return watcherState.adaptive_poll?.current_ms === 200 && watcherState.adaptive_poll?.idle_streak >= 2;
+        } catch {
+          return false;
+        }
+      }, 4000, 50);
+
+      const freshTurnId = `turn-fresh-${sid}`;
+      await appendLine(rolloutPath, {
+        timestamp: new Date().toISOString(),
+        type: 'event_msg',
+        payload: {
+          type: 'task_complete',
+          turn_id: freshTurnId,
+          last_agent_message: 'fresh message after idle backoff',
+        },
+      });
+
+      await waitFor(async () => {
+        const turnLines = await readLines(turnLogPath);
+        if (!turnLines.some((line) => line.includes(freshTurnId))) return false;
+        const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+        return watcherState.adaptive_poll?.current_ms === 50
+          && watcherState.adaptive_poll?.idle_streak === 0
+          && watcherState.adaptive_poll?.last_activity_reason === 'rollout_event';
+      }, 4000, 50);
+    } finally {
+      if (child && isPidAlive(child.pid)) {
+        child.kill('SIGTERM');
+        await waitForExit(child, 4000).catch(() => {});
+      }
+      await rm(wd, { recursive: true, force: true });
+      await rm(tempHome, { recursive: true, force: true });
+      await rm(rolloutPath, { force: true });
+    }
+  });
+
   it('exits after the configured max lifetime', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-max-life-'));
     const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-max-home-'));
