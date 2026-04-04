@@ -1188,8 +1188,9 @@ export async function createTask(
     if (!cfg) throw new Error(`Team ${teamName} not found`);
 
     let nextNumeric = normalizeNextTaskId(cfg.next_task_id);
-    if (!hasValidNextTaskId(cfg.next_task_id)) {
-      nextNumeric = await computeNextTaskIdFromDisk(teamName, cwd);
+    const nextNumericFromDisk = await computeNextTaskIdFromDisk(teamName, cwd);
+    if (!hasValidNextTaskId(cfg.next_task_id) || nextNumericFromDisk > nextNumeric) {
+      nextNumeric = nextNumericFromDisk;
     }
     const nextId = String(nextNumeric);
 

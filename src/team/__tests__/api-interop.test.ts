@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -40,14 +40,75 @@ async function setupTeam(name: string): Promise<{ cwd: string; cleanup: () => Pr
   };
 }
 
+async function withMailboxCompatHoleRuntime<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
+  const fakeBin = join(cwd, 'runtime-bin');
+  const runtimePath = join(fakeBin, 'omx-runtime');
+  const previousPath = process.env.PATH;
+  const previousBinary = process.env.OMX_RUNTIME_BINARY;
+  const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+
+  await mkdir(fakeBin, { recursive: true });
+  await writeFile(
+    runtimePath,
+    `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const argv = process.argv.slice(2);
+function argValue(prefix) {
+  const entry = argv.find((value) => value.startsWith(prefix));
+  return entry ? entry.slice(prefix.length) : null;
+}
+function stateDir() {
+  return argValue('--state-dir=') || process.cwd();
+}
+function readJson(file, fallback) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
+}
+function writeJson(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\\n');
+}
+if (argv[0] === 'schema') {
+  process.stdout.write(JSON.stringify({ schema_version: 1, commands: [], events: [], transport: 'tmux' }) + '\\n');
+  process.exit(0);
+}
+if (argv[0] !== 'exec') process.exit(1);
+const command = JSON.parse(argv[1] || '{}');
+const dir = stateDir();
+if (command.command === 'CreateMailboxMessage') {
+  writeJson(path.join(dir, 'mailbox.json'), readJson(path.join(dir, 'mailbox.json'), { records: [] }));
+  process.stdout.write(JSON.stringify({ event: 'MailboxMessageCreated', message_id: command.message_id, from_worker: command.from_worker, to_worker: command.to_worker }) + '\\n');
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({ event: 'ok' }) + '\\n');
+`,
+    'utf8',
+  );
+  await chmod(runtimePath, 0o755);
+  process.env.PATH = `${fakeBin}:${previousPath || ''}`;
+  process.env.OMX_RUNTIME_BINARY = runtimePath;
+  process.env.OMX_RUNTIME_BRIDGE = '1';
+  try {
+    return await fn();
+  } finally {
+    if (typeof previousPath === 'string') process.env.PATH = previousPath;
+    else delete process.env.PATH;
+    if (typeof previousBinary === 'string') process.env.OMX_RUNTIME_BINARY = previousBinary;
+    else delete process.env.OMX_RUNTIME_BINARY;
+    if (typeof previousBridge === 'string') process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+    else delete process.env.OMX_RUNTIME_BRIDGE;
+  }
+
+}
+
 async function readTeamDeliveryLog(cwd: string): Promise<Array<Record<string, unknown>>> {
   const path = join(cwd, '.omx', 'logs', `team-delivery-${new Date().toISOString().slice(0, 10)}.jsonl`);
   const raw = await readFile(path, 'utf-8').catch(() => '');
   return raw
     .split('\n')
-    .map((line) => line.trim())
+    .map((line: string) => line.trim())
     .filter(Boolean)
-    .map((line) => JSON.parse(line) as Record<string, unknown>);
+    .map((line: string) => JSON.parse(line) as Record<string, unknown>);
 }
 
 // ─── resolveTeamApiOperation ──────────────────────────────────────────────
@@ -290,6 +351,47 @@ describe('executeTeamApiOperation: send-message', () => {
       else delete process.env.OMX_TEAM_STATE_ROOT;
       await rm(repoCwd, { recursive: true, force: true });
       await rm(workerCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('returns the persisted mailbox message when bridge compat omits the mailbox row under an explicit shared state root', async () => {
+    const teamName = 'msg-team-shared-root';
+    const root = await mkdtemp(join(tmpdir(), 'omx-interop-shared-root-'));
+    const leaderCwd = join(root, 'leader');
+    const workerCwd = join(root, 'worker-worktree');
+    const sharedStateRoot = join(root, 'shared-state');
+    const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+
+    try {
+      await mkdir(leaderCwd, { recursive: true });
+      await mkdir(workerCwd, { recursive: true });
+      process.env.OMX_TEAM_STATE_ROOT = sharedStateRoot;
+      await initTeamState(teamName, 'shared state root mailbox fallback', 'executor', 2, leaderCwd);
+
+      await withMailboxCompatHoleRuntime(root, async () => {
+        const result = await executeTeamApiOperation('send-message', {
+          team_name: teamName,
+          from_worker: 'worker-1',
+          to_worker: 'leader-fixed',
+          body: 'shared-root hello',
+        }, workerCwd);
+
+        assert.equal(result.ok, true);
+        if (!result.ok) throw new Error('expected send-message call to succeed');
+
+        const message = result.data.message as Record<string, unknown>;
+        assert.equal(message.body, 'shared-root hello');
+        assert.equal(message.to_worker, 'leader-fixed');
+
+        const mailbox = JSON.parse(
+          await readFile(join(sharedStateRoot, 'team', teamName, 'mailbox', 'leader-fixed.json'), 'utf8'),
+        ) as { messages?: Array<Record<string, unknown>> };
+        assert.equal(mailbox.messages?.length, 1);
+      });
+    } finally {
+      if (typeof prevTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(root, { recursive: true, force: true });
     }
   });
 

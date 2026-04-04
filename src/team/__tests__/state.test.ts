@@ -1464,6 +1464,38 @@ exit 1
     }
   });
 
+  it('createTask does not overwrite existing tasks when manifest/config next_task_id lags disk', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-state-'));
+    try {
+      await initTeamState('team-stale-next-id', 't', 'executor', 1, cwd);
+
+      const first = await createTask('team-stale-next-id', { subject: 'first', description: 'd', status: 'pending' }, cwd);
+      assert.equal(first.id, '1');
+
+      const teamRoot = join(cwd, '.omx', 'state', 'team', 'team-stale-next-id');
+      const configPath = join(teamRoot, 'config.json');
+      const manifestPath = join(teamRoot, 'manifest.v2.json');
+
+      const config = JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+      config.next_task_id = 1;
+      await writeAtomic(configPath, JSON.stringify(config, null, 2));
+
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+      manifest.next_task_id = 1;
+      await writeAtomic(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const second = await createTask('team-stale-next-id', { subject: 'second', description: 'd', status: 'pending' }, cwd);
+      assert.equal(second.id, '2');
+
+      const firstTask = JSON.parse(await readFile(join(teamRoot, 'tasks', 'task-1.json'), 'utf8')) as { subject?: string };
+      const secondTask = JSON.parse(await readFile(join(teamRoot, 'tasks', 'task-2.json'), 'utf8')) as { subject?: string };
+      assert.equal(firstTask.subject, 'first');
+      assert.equal(secondTask.subject, 'second');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('listTasks returns sorted by ID', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-state-'));
     try {
