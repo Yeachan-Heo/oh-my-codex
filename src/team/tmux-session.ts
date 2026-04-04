@@ -307,6 +307,13 @@ function buildHudResizeArgs(
   return ['resize-pane', '-t', buildHudPaneTarget(hudPaneId), '-y', String(resolveHudHeightLines(heightLines))];
 }
 
+function isNativeWindowsRunShell(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === 'win32' && !isWsl2() && !isMsysOrGitBash(env, platform);
+}
+
 function buildNestedTmuxShellCommand(command: string): string {
   if (process.platform !== 'win32') {
     return `tmux ${command}`;
@@ -317,11 +324,25 @@ function buildNestedTmuxShellCommand(command: string): string {
     return `tmux ${command}`;
   }
 
-  return `${shellQuoteSingle(resolvedTmuxPath.replace(/\\/g, '/'))} ${command}`;
+  const resolved = shellQuoteSingle(resolvedTmuxPath.replace(/\\/g, '/'));
+  if (isNativeWindowsRunShell()) {
+    return `& ${resolved} ${command}`;
+  }
+  return `${resolved} ${command}`;
 }
 
 function buildBestEffortShellCommand(command: string): string {
+  if (isNativeWindowsRunShell()) {
+    return `${command} > $null 2>&1`;
+  }
   return `${command} >/dev/null 2>&1 || true`;
+}
+
+function buildSleepShellCommand(delaySeconds: number): string {
+  if (isNativeWindowsRunShell()) {
+    return `Start-Sleep -Seconds ${delaySeconds}`;
+  }
+  return `sleep ${delaySeconds}`;
 }
 
 /** Upper bound for tmux hook indices (signed 32-bit max). */
@@ -402,7 +423,11 @@ export function buildScheduleDelayedHudResizeArgs(
   heightLines: number = HUD_TMUX_TEAM_HEIGHT_LINES,
 ): string[] {
   const delay = Number.isFinite(delaySeconds) && delaySeconds > 0 ? delaySeconds : HUD_RESIZE_RECONCILE_DELAY_SECONDS;
-  return ['run-shell', '-b', `sleep ${delay}; ${buildBestEffortShellCommand(buildNestedTmuxShellCommand(buildHudResizeCommand(hudPaneId, heightLines)))}`];
+  return [
+    'run-shell',
+    '-b',
+    `${buildSleepShellCommand(delay)}; ${buildBestEffortShellCommand(buildNestedTmuxShellCommand(buildHudResizeCommand(hudPaneId, heightLines)))}`,
+  ];
 }
 
 export function buildReconcileHudResizeArgs(
