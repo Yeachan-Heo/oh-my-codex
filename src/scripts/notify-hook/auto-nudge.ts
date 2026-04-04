@@ -72,18 +72,12 @@ function buildBlockedAutoApprovalMatcher(blockedInputs) {
 export function isBlockedAutoApprovalInput(text, blockedInputs = DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS) {
   const normalized = normalizeBlockedAutoApprovalInput(text);
   if (!normalized) return false;
-  const normalizedBlockedInputs = blockedInputs.map((entry) => normalizeBlockedAutoApprovalInput(entry)).filter(Boolean);
-  if (normalizedBlockedInputs.includes(normalized)) return true;
-
-  const blockedPrefixes = normalizedBlockedInputs.filter((entry) => DEEP_INTERVIEW_BLOCKED_APPROVAL_PREFIXES.has(entry));
-  if (blockedPrefixes.some((prefix) => normalized.startsWith(`${prefix} `))) return true;
+  const { exactMatches, prefixedMatches, blockedTokenSet } = buildBlockedAutoApprovalMatcher(blockedInputs);
+  if (exactMatches.has(normalized)) return true;
+  if (prefixedMatches.some((prefix) => normalized.startsWith(`${prefix} `))) return true;
 
   const tokens = normalized.split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return false;
-
-  const blockedTokenSet = new Set(
-    normalizedBlockedInputs.flatMap((entry) => entry.split(/\s+/).filter(Boolean)),
-  );
   return tokens.every((token) => blockedTokenSet.has(token));
 }
 
