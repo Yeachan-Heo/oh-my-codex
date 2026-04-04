@@ -4,7 +4,7 @@
  */
 
 import { execFileSync, spawn } from "child_process";
-import { basename, dirname, join } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { existsSync, readFileSync } from "fs";
 import { constants as osConstants } from "os";
 import { setup, SETUP_SCOPES, type SetupScope } from "./setup.js";
@@ -179,6 +179,161 @@ const REASONING_KEY = "model_reasoning_effort";
 const MODEL_INSTRUCTIONS_FILE_KEY = "model_instructions_file";
 const TEAM_WORKER_LAUNCH_ARGS_ENV = "OMX_TEAM_WORKER_LAUNCH_ARGS";
 const TEAM_INHERIT_LEADER_FLAGS_ENV = "OMX_TEAM_INHERIT_LEADER_FLAGS";
+const STRICT_MEMORY_MODE_ENV = "OMX_STRICT_MEMORY_MODE";
+const STRICT_MEMORY_REFRESH_ON_EXIT_ENV = "OMX_STRICT_MEMORY_REFRESH_ON_EXIT";
+const EXTERNAL_MEMORY_ROOT_ENV = "OMX_EXTERNAL_MEMORY_ROOT";
+const EXTERNAL_MEMORY_REFRESH_SCRIPT_ENV = "OMX_EXTERNAL_MEMORY_REFRESH_SCRIPT";
+const EXTERNAL_MEMORY_REFRESH_PYTHON_ENV = "OMX_EXTERNAL_MEMORY_REFRESH_PYTHON";
+const TEAM_WORKER_ENV = "OMX_TEAM_WORKER";
+
+export interface FormalMemoryRefreshPlan {
+  enabled: boolean;
+  strictMode: boolean;
+  reason:
+    | "strict_mode_disabled"
+    | "refresh_on_exit_disabled"
+    | "team_worker_process"
+    | "refresh_script_unavailable"
+    | "enabled";
+  scriptPath?: string;
+  command?: string;
+  args?: string[];
+  childEnv?: NodeJS.ProcessEnv;
+}
+
+export interface FormalMemoryRefreshScheduleResult {
+  scheduled: boolean;
+  reason: string;
+  plan: FormalMemoryRefreshPlan;
+}
+
+type FormalMemoryRefreshSpawn = (
+  command: string,
+  args: readonly string[],
+  options: {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    detached: boolean;
+    stdio: "ignore";
+  },
+) => {
+  unref?: () => void;
+};
+
+function parseOptionalBooleanEnv(value: string | undefined): boolean | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return undefined;
+}
+
+export function resolveFormalMemoryRefreshScript(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const explicit = env[EXTERNAL_MEMORY_REFRESH_SCRIPT_ENV]?.trim();
+  if (explicit) return explicit;
+
+  const memoryRoot = env[EXTERNAL_MEMORY_ROOT_ENV]?.trim();
+  if (!memoryRoot) return null;
+
+  const candidate = join(dirname(resolve(memoryRoot)), "scripts", "refresh_memory.py");
+  return existsSync(candidate) ? candidate : null;
+}
+
+export function resolveFormalMemoryRefreshPlan(
+  cwd: string,
+  sessionId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): FormalMemoryRefreshPlan {
+  const strictMode = parseOptionalBooleanEnv(env[STRICT_MEMORY_MODE_ENV]) === true;
+  if (!strictMode) {
+    return {
+      enabled: false,
+      strictMode,
+      reason: "strict_mode_disabled",
+    };
+  }
+
+  if (parseOptionalBooleanEnv(env[STRICT_MEMORY_REFRESH_ON_EXIT_ENV]) !== true) {
+    return {
+      enabled: false,
+      strictMode,
+      reason: "refresh_on_exit_disabled",
+    };
+  }
+
+  if (typeof env[TEAM_WORKER_ENV] === "string" && env[TEAM_WORKER_ENV].trim() !== "") {
+    return {
+      enabled: false,
+      strictMode,
+      reason: "team_worker_process",
+    };
+  }
+
+  const scriptPath = resolveFormalMemoryRefreshScript(env);
+  if (!scriptPath) {
+    return {
+      enabled: false,
+      strictMode,
+      reason: "refresh_script_unavailable",
+    };
+  }
+
+  const command = env[EXTERNAL_MEMORY_REFRESH_PYTHON_ENV]?.trim() || "python3";
+  return {
+    enabled: true,
+    strictMode,
+    reason: "enabled",
+    scriptPath,
+    command,
+    args: [scriptPath, "--workspace-root", cwd],
+    childEnv: {
+      ...process.env,
+      ...env,
+      OMX_EXTERNAL_MEMORY_REFRESH_SOURCE: "omx-postlaunch",
+      OMX_EXTERNAL_MEMORY_REFRESH_SESSION_ID: sessionId,
+    },
+  };
+}
+
+export function scheduleFormalMemoryRefreshOnExit(
+  cwd: string,
+  sessionId: string,
+  env: NodeJS.ProcessEnv = process.env,
+  spawnImpl: FormalMemoryRefreshSpawn = spawn,
+): FormalMemoryRefreshScheduleResult {
+  const plan = resolveFormalMemoryRefreshPlan(cwd, sessionId, env);
+  if (!plan.enabled || !plan.command || !plan.args || !plan.childEnv) {
+    return {
+      scheduled: false,
+      reason: plan.reason,
+      plan,
+    };
+  }
+
+  try {
+    const child = spawnImpl(plan.command, plan.args, {
+      cwd,
+      env: plan.childEnv,
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref?.();
+    return {
+      scheduled: true,
+      reason: "scheduled",
+      plan,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      scheduled: false,
+      reason: `spawn_failed:${message}`,
+      plan,
+    };
+  }
+}
 const OMX_BYPASS_DEFAULT_SYSTEM_PROMPT_ENV = "OMX_BYPASS_DEFAULT_SYSTEM_PROMPT";
 const OMX_MODEL_INSTRUCTIONS_FILE_ENV = "OMX_MODEL_INSTRUCTIONS_FILE";
 const OMX_RALPH_APPEND_INSTRUCTIONS_FILE_ENV =
@@ -2154,6 +2309,21 @@ async function postLaunch(
   } catch (err) {
     console.error(
       `[omx] postLaunch: mode cleanup failed: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+
+  // 3.5 Trigger external formal-memory refresh on exit (strict mode opt-in, best effort).
+  try {
+    const refresh = scheduleFormalMemoryRefreshOnExit(cwd, sessionId);
+    if (!refresh.scheduled && (
+      refresh.reason === "refresh_script_unavailable"
+      || refresh.reason.startsWith("spawn_failed:")
+    )) {
+      console.warn(`[omx] postLaunch: external formal-memory refresh skipped: ${refresh.reason}`);
+    }
+  } catch (err) {
+    console.error(
+      `[omx] postLaunch: external formal-memory refresh failed: ${err instanceof Error ? err.message : err}`,
     );
   }
 
