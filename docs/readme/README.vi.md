@@ -11,8 +11,8 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 [![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/PUwSMR9XNk)
 
-**Website:** https://yeachan-heo.github.io/oh-my-codex-website/
-**Tài liệu:** [Bắt đầu](./docs/getting-started.html) · [Agent](./docs/agents.html) · [Skill](./docs/skills.html) · [Tích hợp](./docs/integrations.html) · [Demo](./DEMO.md) · [Hướng dẫn OpenClaw](./docs/openclaw-integration.md)
+**Website:** https://yeachan-heo.github.io/oh-my-codex-website/  
+**Tài liệu:** [Bắt đầu](../getting-started.html) · [Agent](../agents.html) · [Skill](../skills.html) · [Tích hợp](../integrations.html) · [Demo](../../DEMO.md) · [Hướng dẫn OpenClaw](../openclaw-integration.md)
 
 OMX là lớp workflow mở rộng cho [OpenAI Codex CLI](https://github.com/openai/codex).
 
@@ -180,18 +180,18 @@ Nếu gặp tình trạng này, thử:
 
 ## Tài liệu
 
-- [Bắt đầu](./docs/getting-started.html)
-- [Hướng dẫn demo](./DEMO.md)
-- [Danh mục agent](./docs/agents.html)
-- [Tham chiếu skill](./docs/skills.html)
-- [Tích hợp](./docs/integrations.html)
-- [Hướng dẫn OpenClaw / notification gateway](./docs/openclaw-integration.md)
-- [Đóng góp](./CONTRIBUTING.md)
-- [Nhật ký thay đổi](./CHANGELOG.md)
+- [Bắt đầu](../getting-started.html)
+- [Hướng dẫn demo](../../DEMO.md)
+- [Danh mục agent](../agents.html)
+- [Tham chiếu skill](../skills.html)
+- [Tích hợp](../integrations.html)
+- [Hướng dẫn OpenClaw / notification gateway](../openclaw-integration.md)
+- [Đóng góp](../../CONTRIBUTING.md)
+- [Nhật ký thay đổi](../../CHANGELOG.md)
 
 ## Ngôn ngữ
 
-- [English](./README.md)
+- [English](../../README.md)
 - [한국어](./README.ko.md)
 - [日本語](./README.ja.md)
 - [简体中文](./README.zh.md)

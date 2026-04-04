@@ -12,7 +12,7 @@
 [![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/PUwSMR9XNk)
 
 **Strona:** https://yeachan-heo.github.io/oh-my-codex-website/
-**Dokumentacja:** [Pierwsze kroki](./docs/getting-started.html) · [Agenty](./docs/agents.html) · [Skille](./docs/skills.html) · [Integracje](./docs/integrations.html) · [Demo](./DEMO.md) · [Przewodnik po OpenClaw](./docs/openclaw-integration.md)
+**Dokumentacja:** [Pierwsze kroki](../getting-started.html) · [Agenty](../agents.html) · [Skille](../skills.html) · [Integracje](../integrations.html) · [Demo](../../DEMO.md) · [Przewodnik po OpenClaw](../openclaw-integration.md)
 
 OMX to nakładka na [OpenAI Codex CLI](https://github.com/openai/codex).
 
@@ -174,18 +174,18 @@ Jeśli to widzisz:
 
 ## Dokumentacja
 
-- [Pierwsze kroki](./docs/getting-started.html)
-- [Przewodnik po demo](./DEMO.md)
-- [Katalog agentów](./docs/agents.html)
-- [Dokumentacja skilli](./docs/skills.html)
-- [Integracje](./docs/integrations.html)
-- [Przewodnik po OpenClaw / bramce powiadomień](./docs/openclaw-integration.md)
-- [Współtworzenie](./CONTRIBUTING.md)
-- [Dziennik zmian](./CHANGELOG.md)
+- [Pierwsze kroki](../getting-started.html)
+- [Przewodnik po demo](../../DEMO.md)
+- [Katalog agentów](../agents.html)
+- [Dokumentacja skilli](../skills.html)
+- [Integracje](../integrations.html)
+- [Przewodnik po OpenClaw / bramce powiadomień](../openclaw-integration.md)
+- [Współtworzenie](../../CONTRIBUTING.md)
+- [Dziennik zmian](../../CHANGELOG.md)
 
 ## Języki
 
-- [English](./README.md)
+- [English](../../README.md)
 - [한국어](./README.ko.md)
 - [日本語](./README.ja.md)
 - [简体中文](./README.zh.md)

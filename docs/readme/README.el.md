@@ -12,7 +12,7 @@
 [![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/PUwSMR9XNk)
 
 **Ιστοσελίδα:** https://yeachan-heo.github.io/oh-my-codex-website/  
-**Τεκμηρίωση:** [Ξεκινώντας](./docs/getting-started.html) · [Agents](./docs/agents.html) · [Skills](./docs/skills.html) · [Ενσωματώσεις](./docs/integrations.html) · [Demo](./DEMO.md) · [Οδηγός OpenClaw](./docs/openclaw-integration.md)
+**Τεκμηρίωση:** [Ξεκινώντας](../getting-started.html) · [Agents](../agents.html) · [Skills](../skills.html) · [Ενσωματώσεις](../integrations.html) · [Demo](../../DEMO.md) · [Οδηγός OpenClaw](../openclaw-integration.md)
 
 Το OMX είναι ένα workflow layer για το [OpenAI Codex CLI](https://github.com/openai/codex).
 
@@ -181,18 +181,18 @@ omx sparkshell --tmux-pane %12 --tail-lines 400
 
 ## Τεκμηρίωση
 
-- [Ξεκινώντας](./docs/getting-started.html)
-- [Οδηγός Demo](./DEMO.md)
-- [Κατάλογος Agents](./docs/agents.html)
-- [Αναφορά Skills](./docs/skills.html)
-- [Ενσωματώσεις](./docs/integrations.html)
-- [Οδηγός OpenClaw / notification gateway](./docs/openclaw-integration.md)
-- [Συνεισφορά](./CONTRIBUTING.md)
-- [Αρχείο αλλαγών](./CHANGELOG.md)
+- [Ξεκινώντας](../getting-started.html)
+- [Οδηγός Demo](../../DEMO.md)
+- [Κατάλογος Agents](../agents.html)
+- [Αναφορά Skills](../skills.html)
+- [Ενσωματώσεις](../integrations.html)
+- [Οδηγός OpenClaw / notification gateway](../openclaw-integration.md)
+- [Συνεισφορά](../../CONTRIBUTING.md)
+- [Αρχείο αλλαγών](../../CHANGELOG.md)
 
 ## Γλώσσες
 
-- [English](./README.md)
+- [English](../../README.md)
 - [한국어](./README.ko.md)
 - [日本語](./README.ja.md)
 - [简体中文](./README.zh.md)
