@@ -174,6 +174,15 @@ interface ParentGuardState {
   pane_count?: number;
 }
 
+interface AuthorityBackoffState {
+  active: boolean;
+  reason: string;
+  primary_pid: number | null;
+  primary_last_tick_at: string;
+  freshness_ms: number | null;
+  threshold_ms: number | null;
+}
+
 interface ActiveTeamResult {
   active: boolean;
   reason: string;
@@ -239,6 +248,14 @@ let lastParentGuard: ParentGuardState = {
   reason: '',
   state_path: '',
   current_phase: '',
+};
+let lastAuthorityBackoff: AuthorityBackoffState = {
+  active: false,
+  reason: '',
+  primary_pid: null,
+  primary_last_tick_at: '',
+  freshness_ms: null,
+  threshold_ms: null,
 };
 const AUTO_NUDGE_STALL_MS = Math.max(
   pollMs,
@@ -625,6 +642,108 @@ async function readPidFileRecord(path: string): Promise<PidFileRecord | null> {
   }
 }
 
+function createAuthorityBackoffState(
+  reason: string,
+  overrides: Partial<AuthorityBackoffState> = {},
+): AuthorityBackoffState {
+  return {
+    active: false,
+    reason,
+    primary_pid: null,
+    primary_last_tick_at: '',
+    freshness_ms: null,
+    threshold_ms: null,
+    ...overrides,
+  };
+}
+
+function latestWatcherTickIso(state: Record<string, unknown> | null): string {
+  if (!state || typeof state !== 'object') return '';
+  const candidates = [
+    safeString((state.dispatch_drain as Record<string, unknown> | undefined)?.last_tick_at),
+    safeString((state.leader_nudge as Record<string, unknown> | undefined)?.last_tick_at),
+    safeString((state.fallback_auto_nudge as Record<string, unknown> | undefined)?.last_tick_at),
+    safeString((state.ralph_continue_steer as Record<string, unknown> | undefined)?.last_state_check_at),
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  let latestIso = '';
+  let latestMs = -1;
+  for (const candidate of candidates) {
+    const parsed = parseIsoMillis(candidate);
+    if (parsed === null || parsed <= latestMs) continue;
+    latestMs = parsed;
+    latestIso = candidate;
+  }
+  return latestIso;
+}
+
+async function resolveAuthorityPrimaryWatcherHealth(now = Date.now()): Promise<AuthorityBackoffState> {
+  if (!authorityOnly) return createAuthorityBackoffState('not_authority');
+
+  const existingRecord = await readPidFileRecord(pidFilePath).catch(() => null);
+  if (!existingRecord) return createAuthorityBackoffState('pid_missing');
+  if (existingRecord.cwd && resolve(existingRecord.cwd) !== cwd) return createAuthorityBackoffState('cwd_mismatch');
+  if (!isPidAlive(existingRecord.pid)) {
+    return createAuthorityBackoffState('pid_stale', {
+      primary_pid: existingRecord.pid,
+    });
+  }
+
+  const persistedState = await readJsonObject(statePath);
+  if (!persistedState) {
+    return createAuthorityBackoffState('state_missing', {
+      primary_pid: existingRecord.pid,
+    });
+  }
+
+  const persistedPid = Math.trunc(asNumber(persistedState.pid as string | number | undefined, 0));
+  if (persistedPid > 0 && persistedPid !== existingRecord.pid) {
+    return createAuthorityBackoffState('state_pid_mismatch', {
+      primary_pid: existingRecord.pid,
+    });
+  }
+
+  const lastTickAt = latestWatcherTickIso(persistedState);
+  if (!lastTickAt) {
+    return createAuthorityBackoffState('tick_missing', {
+      primary_pid: existingRecord.pid,
+    });
+  }
+
+  const lastTickMs = parseIsoMillis(lastTickAt);
+  const primaryPollMs = Math.max(50, asNumber(persistedState.poll_ms as string | number | undefined, 250));
+  const thresholdMs = Math.max(1_000, primaryPollMs * 4);
+  if (lastTickMs === null) {
+    return createAuthorityBackoffState('tick_invalid', {
+      primary_pid: existingRecord.pid,
+      primary_last_tick_at: lastTickAt,
+      threshold_ms: thresholdMs,
+    });
+  }
+
+  const freshnessMs = now - lastTickMs;
+  if (freshnessMs > thresholdMs) {
+    return {
+      active: false,
+      reason: 'tick_stale',
+      primary_pid: existingRecord.pid,
+      primary_last_tick_at: lastTickAt,
+      freshness_ms: freshnessMs,
+      threshold_ms: thresholdMs,
+    };
+  }
+
+  return {
+    active: true,
+    reason: 'primary_watcher_healthy',
+    primary_pid: existingRecord.pid,
+    primary_last_tick_at: lastTickAt,
+    freshness_ms: freshnessMs,
+    threshold_ms: thresholdMs,
+  };
+}
+
 async function writePidFileRecord(): Promise<void> {
   const nextRecord: PidFileRecord = {
     pid: process.pid,
@@ -837,6 +956,7 @@ async function writeState(extra: Record<string, unknown> = {}): Promise<void> {
       enabled: true,
       stall_ms: AUTO_NUDGE_STALL_MS,
     },
+    authority_backoff: lastAuthorityBackoff,
     ...extra,
   };
   await writeFile(statePath, JSON.stringify(state, null, 2)).catch(() => {});
@@ -1338,6 +1458,34 @@ async function pumpTeamControlPlaneTick(): Promise<void> {
 
 
 async function runWatcherCycle(): Promise<void> {
+  if (authorityOnly) {
+    const authorityBackoff = await resolveAuthorityPrimaryWatcherHealth();
+    lastAuthorityBackoff = authorityBackoff;
+    if (authorityBackoff.active) {
+      lastDispatchDrain = {
+        ...lastDispatchDrain,
+        last_tick_at: null,
+        last_result: { processed: 0, reason: authorityBackoff.reason },
+        last_error: null,
+      };
+      lastLeaderNudge = {
+        ...lastLeaderNudge,
+        last_tick_at: null,
+        last_error: authorityBackoff.reason,
+      };
+      lastFallbackAutoNudge = {
+        ...lastFallbackAutoNudge,
+        last_tick_at: null,
+        last_reason: authorityBackoff.reason,
+        last_error: null,
+      };
+      await writeState();
+      return;
+    }
+  } else {
+    lastAuthorityBackoff = createAuthorityBackoffState('');
+  }
+
   if (!authorityOnly) {
     await ensureTrackedFiles();
     await pollFiles();

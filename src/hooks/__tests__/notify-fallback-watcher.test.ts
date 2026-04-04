@@ -543,6 +543,78 @@ describe('notify-fallback watcher', () => {
     }
   });
 
+  it('backs off authority-only nudge ticks when the primary watcher is healthy', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-authority-backed-off-'));
+    const fakeBinDir = join(wd, 'fake-bin');
+    const tmuxLogPath = join(wd, 'tmux.log');
+    const codexHome = join(wd, 'codex-home');
+    try {
+      await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+      await writeFile(join(codexHome, '.omx-config.json'), JSON.stringify({
+        autoNudge: { enabled: true, delaySec: 0, ttlMs: 30_000 },
+      }, null, 2));
+      await writeSessionStart(wd, 'sess-managed-fallback');
+      await writeFile(join(wd, '.omx', 'state', 'hud-state.json'), JSON.stringify({
+        last_turn_at: new Date(Date.now() - 6_000).toISOString(),
+        turn_count: 7,
+        last_agent_output: 'If you want, I can keep going from here.',
+      }, null, 2));
+      await writeFile(join(wd, '.omx', 'state', 'notify-fallback.pid'), JSON.stringify({
+        pid: process.pid,
+        cwd: wd,
+        started_at: new Date().toISOString(),
+      }, null, 2));
+      await writeFile(join(wd, '.omx', 'state', 'notify-fallback-state.json'), JSON.stringify({
+        pid: process.pid,
+        cwd: wd,
+        authority_only: false,
+        poll_ms: 250,
+        dispatch_drain: { last_tick_at: new Date().toISOString() },
+      }, null, 2));
+
+      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+      const result = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--authority-only', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
+        {
+          encoding: 'utf-8',
+          env: buildCleanNotifyEnv({
+            PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+            CODEX_HOME: codexHome,
+            OMX_SESSION_ID: 'sess-managed-fallback',
+            TMUX: '1',
+            TMUX_PANE: '%42',
+            OMX_NOTIFY_FALLBACK_AUTO_NUDGE_STALL_MS: '5000',
+          }),
+        },
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
+      assert.doesNotMatch(tmuxLog, /send-keys -t %42 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+
+      const watcherState = JSON.parse(await readFile(join(wd, '.omx', 'state', 'notify-fallback-state.json'), 'utf-8'));
+      assert.equal(watcherState.pid, process.pid, 'authority backoff should preserve the primary watcher state owner');
+      assert.equal(watcherState.authority_only, false, 'authority backoff should not overwrite primary watcher ownership');
+      assert.equal(watcherState.authority_backoff?.active, true);
+      assert.equal(watcherState.authority_backoff?.reason, 'primary_watcher_healthy');
+      assert.equal(watcherState.authority_backoff?.primary_pid, process.pid);
+      assert.match(watcherState.dispatch_drain?.last_tick_at ?? '', /^\\d{4}-\\d{2}-\\d{2}T/);
+
+      const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+      const logContent = await readFile(logPath, 'utf-8').catch(() => '');
+      assert.equal(logContent.trim(), '');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 
   it('disables fallback watcher nudges when deep-interview state is active', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-deep-interview-suppressed-'));
