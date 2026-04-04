@@ -14,6 +14,18 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setup } from "../setup.js";
 
+const EXPECTED_PROJECT_GITIGNORE = [
+  ".omx/",
+  ".codex/*",
+  "!.codex/agents/",
+  "!.codex/agents/**",
+  "!.codex/skills/",
+  "!.codex/skills/**",
+  ".codex/skills/.system/**",
+  "!.codex/prompts/",
+  "!.codex/prompts/**",
+].join("\n") + "\n";
+
 async function runSetupWithCapturedLogs(
   cwd: string,
   options: Parameters<typeof setup>[0],
@@ -96,7 +108,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     }
   });
 
-  it("creates .gitignore with .omx/ and .codex/ entries during project-scoped setup", async () => {
+  it("creates .gitignore with OMX project ignore rules during project-scoped setup", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     try {
       await runSetupInTempDir(wd, { scope: "project" });
@@ -104,14 +116,14 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       assert.equal(existsSync(join(wd, ".omx", "state")), true);
       assert.equal(
         await readFile(join(wd, ".gitignore"), "utf-8"),
-        ".omx/\n.codex/\n",
+        EXPECTED_PROJECT_GITIGNORE,
       );
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it("appends missing .omx/ and .codex/ entries to an existing project .gitignore without duplicating them", async () => {
+  it("appends missing OMX project ignore rules to an existing project .gitignore without duplicating them", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     try {
       await writeFile(join(wd, ".gitignore"), "node_modules/\n");
@@ -120,30 +132,64 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       await runSetupInTempDir(wd, { scope: "project" });
 
       const gitignore = await readFile(join(wd, ".gitignore"), "utf-8");
-      assert.equal(gitignore, "node_modules/\n.omx/\n.codex/\n");
+      assert.equal(gitignore, `node_modules/\n${EXPECTED_PROJECT_GITIGNORE}`);
       assert.equal(gitignore.match(/^\.omx\/$/gm)?.length ?? 0, 1);
-      assert.equal(gitignore.match(/^\.codex\/$/gm)?.length ?? 0, 1);
+      assert.equal(gitignore.match(/^\.codex\/\*$/gm)?.length ?? 0, 1);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it("keeps repo-local .codex ignored in a fresh git repo after project-scoped setup", async () => {
+  it("ignores project-local config while keeping .codex agents, skills, and prompts trackable", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     try {
       const initResult = spawnSync("git", ["init", "-q"], { cwd: wd });
       assert.equal(initResult.status, 0);
 
       await runSetupInTempDir(wd, { scope: "project" });
+      await mkdir(join(wd, ".codex", "skills", ".system"), { recursive: true });
+      await writeFile(join(wd, ".codex", "agents", "local.toml"), "# local\n");
+      await writeFile(join(wd, ".codex", "prompts", "local.md"), "# local\n");
+      await writeFile(
+        join(wd, ".codex", "skills", ".system", "cache.json"),
+        "{}\n",
+      );
 
       const status = spawnSync(
         "git",
-        ["status", "--short", "--ignored", ".codex", ".gitignore", "AGENTS.md"],
+        [
+          "status",
+          "--short",
+          "--ignored",
+          ".codex/config.toml",
+          ".codex/agents/local.toml",
+          ".codex/prompts/local.md",
+          ".codex/skills/help/SKILL.md",
+          ".codex/skills/.system/cache.json",
+        ],
         { cwd: wd, encoding: "utf-8" },
       );
       assert.equal(status.status, 0);
-      assert.match(status.stdout, /^!! \.codex\/$/m);
-      assert.doesNotMatch(status.stdout, /^\?\? \.codex\/$/m);
+      assert.match(status.stdout, /^!! \.codex\/config\.toml$/m);
+      assert.match(status.stdout, /^\?\? \.codex\/agents\/local\.toml$/m);
+      assert.match(status.stdout, /^\?\? \.codex\/prompts\/local\.md$/m);
+      assert.match(status.stdout, /^\?\? \.codex\/skills\/help\/SKILL\.md$/m);
+      assert.match(status.stdout, /^!! \.codex\/skills\/\.system\/cache\.json$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces legacy .codex/ ignores so the project allowlist can take effect", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await writeFile(join(wd, ".gitignore"), ".omx/\n.codex/\n");
+
+      await runSetupInTempDir(wd, { scope: "project" });
+
+      const gitignore = await readFile(join(wd, ".gitignore"), "utf-8");
+      assert.equal(gitignore, EXPECTED_PROJECT_GITIGNORE);
+      assert.equal(gitignore.match(/^\.codex\/$/gm)?.length ?? 0, 0);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

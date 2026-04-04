@@ -123,7 +123,18 @@ export interface SkillFrontmatterMetadata {
   description: string;
 }
 
-const PROJECT_GITIGNORE_ENTRIES = [".omx/", ".codex/"] as const;
+const PROJECT_GITIGNORE_ENTRIES = [
+  ".omx/",
+  ".codex/*",
+  "!.codex/agents/",
+  "!.codex/agents/**",
+  "!.codex/skills/",
+  "!.codex/skills/**",
+  ".codex/skills/.system/**",
+  "!.codex/prompts/",
+  "!.codex/prompts/**",
+] as const;
+const LEGACY_PROJECT_GITIGNORE_ENTRIES = [".codex/"] as const;
 
 function applyScopePathRewritesToAgentsTemplate(
   content: string,
@@ -551,6 +562,21 @@ function hasGitignoreEntry(content: string, entry: string): boolean {
     .some((line) => line === entry);
 }
 
+function stripLegacyGitignoreEntries(
+  content: string,
+  legacyEntries: readonly string[],
+): { content: string; removed: boolean } {
+  const legacyEntrySet = new Set(legacyEntries);
+  const lines = content.split(/\r?\n/);
+  const filteredLines = lines.filter((line) => !legacyEntrySet.has(line.trim()));
+  const removed = filteredLines.length !== lines.length;
+
+  return {
+    content: filteredLines.join("\n").replace(/\n+$/, "\n"),
+    removed,
+  };
+}
+
 async function ensureProjectGitignore(
   projectRoot: string,
   backupContext: SetupBackupContext,
@@ -561,17 +587,21 @@ async function ensureProjectGitignore(
   const existing = destinationExists
     ? await readFile(gitignorePath, "utf-8")
     : "";
-
-  const missingEntries = PROJECT_GITIGNORE_ENTRIES.filter(
-    (entry) => !hasGitignoreEntry(existing, entry),
+  const normalized = stripLegacyGitignoreEntries(
+    existing,
+    LEGACY_PROJECT_GITIGNORE_ENTRIES,
   );
 
-  if (missingEntries.length === 0) {
+  const missingEntries = PROJECT_GITIGNORE_ENTRIES.filter(
+    (entry) => !hasGitignoreEntry(normalized.content, entry),
+  );
+
+  if (missingEntries.length === 0 && !normalized.removed) {
     return "unchanged";
   }
 
   const nextContent = destinationExists
-    ? `${existing}${existing.endsWith("\n") || existing.length === 0 ? "" : "\n"}${missingEntries.join("\n")}\n`
+    ? `${normalized.content}${normalized.content.endsWith("\n") || normalized.content.length === 0 ? "" : "\n"}${missingEntries.join("\n")}${missingEntries.length > 0 ? "\n" : ""}`
     : `${PROJECT_GITIGNORE_ENTRIES.join("\n")}\n`;
 
   if (
@@ -585,8 +615,14 @@ async function ensureProjectGitignore(
   }
 
   if (options.verbose) {
+    const changedDetails = [
+      normalized.removed ? "removed legacy .codex/" : "",
+      missingEntries.length > 0 ? missingEntries.join(", ") : "",
+    ]
+      .filter(Boolean)
+      .join("; ");
     console.log(
-      `  ${options.dryRun ? "would update" : destinationExists ? "updated" : "created"} .gitignore (${missingEntries.join(", ")})`,
+      `  ${options.dryRun ? "would update" : destinationExists ? "updated" : "created"} .gitignore${changedDetails ? ` (${changedDetails})` : ""}`,
     );
   }
 
@@ -662,11 +698,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     );
     if (gitignoreResult === "created") {
       console.log(
-        "  Created .gitignore with .omx/ and .codex/ so local OMX runtime/config state stays out of source control.\n",
+        "  Created .gitignore with OMX project ignore rules so local runtime state stays out of source control while .codex agents, skills, and prompts remain trackable.\n",
       );
     } else if (gitignoreResult === "updated") {
       console.log(
-        "  Added .omx/ and/or .codex/ to .gitignore so local OMX runtime/config state stays out of source control.\n",
+        "  Updated .gitignore with OMX project ignore rules so local runtime state stays out of source control while .codex agents, skills, and prompts remain trackable.\n",
       );
     }
   }
