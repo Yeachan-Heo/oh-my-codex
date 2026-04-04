@@ -1,11 +1,11 @@
 ---
 name: note
-description: Save notes to notepad.md for compaction resilience
+description: Save run-local notes to notepad.md for compaction resilience
 ---
 
 # Note Skill
 
-Save important context to `.omx/notepad.md` that survives conversation compaction.
+Save run-local context to `.omx/notepad.md` so important breadcrumbs survive conversation compaction without becoming a second long-term memory source.
 
 ## Usage
 
@@ -24,6 +24,7 @@ Save important context to `.omx/notepad.md` that survives conversation compactio
 - **Always** injected on session start
 - Use for critical facts: "Project uses pnpm", "API in src/api/client.ts"
 - Keep it SHORT - this eats into your context budget
+- Treat this as hot context, not the formal long-term memory authority
 
 ### Working Memory
 - Timestamped session notes
@@ -32,8 +33,9 @@ Save important context to `.omx/notepad.md` that survives conversation compactio
 
 ### MANUAL
 - Never auto-pruned
-- User-controlled permanent notes
-- Good for: team contacts, deployment info
+- User-controlled sticky run-local notes
+- Good for: team contacts, deployment info that should stay handy during this workspace/session flow
+- If something should become durable shared knowledge, promote it through the external memory pipeline instead of treating MANUAL as the authority source
 
 ## Examples
 
@@ -60,3 +62,4 @@ Notepad content is automatically loaded on session start:
 - Working Memory: Loaded if recent entries exist
 
 This helps survive conversation compaction without losing critical context.
+Notepad remains run-local scratch/hot context; it is not a replacement for formal long-term memory.

@@ -365,8 +365,8 @@ Do not cancel while recoverable work remains.
 <state_management>
 OMX persists runtime state under `.omx/`:
 - `.omx/state/` — mode state
-- `.omx/notepad.md` — session notes
-- `.omx/project-memory.json` — cross-session memory
+- `.omx/notepad.md` — run-local session scratch and hot context
+- `.omx/project-memory.json` — local compatibility cache, not the formal memory authority
 - `.omx/plans/` — plans
 - `.omx/logs/` — logs
 

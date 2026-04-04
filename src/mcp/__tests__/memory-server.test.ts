@@ -37,4 +37,13 @@ describe('mcp/memory-server module contract', () => {
     assert.doesNotMatch(src, /new StdioServerTransport\(\)/);
     assert.doesNotMatch(src, /server\.connect\(transport\)\.catch\(console\.error\);/);
   });
+
+  it('describes local compatibility semantics for project memory and notepad', async () => {
+    const src = await readFile(join(process.cwd(), 'src/mcp/memory-server.ts'), 'utf8');
+
+    assert.match(src, /local project-memory compatibility tools and run-local notepad tools/i);
+    assert.match(src, /strict formal-memory mode, project-memory writes are rejected or downgraded/i);
+    assert.match(src, /formal workspace memory summary; otherwise it reads the local compatibility cache/i);
+    assert.match(src, /run-local notepad content/i);
+  });
 });

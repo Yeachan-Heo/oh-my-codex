@@ -1,7 +1,8 @@
 /**
  * OMX Project Memory & Notepad MCP Server
- * Provides persistent project memory and session notepad tools
+ * Provides local project-memory compatibility tools and run-local notepad tools.
  * Storage: .omx/project-memory.json, .omx/notepad.md
+ * In strict formal-memory mode, project-memory writes are rejected or downgraded.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -43,7 +44,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // Project Memory tools
     {
       name: 'project_memory_read',
-      description: 'Read project memory. Can read full memory or a specific section.',
+      description: 'Read the project memory view. In strict mode this resolves to the formal workspace memory summary; otherwise it reads the local compatibility cache.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -54,7 +55,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'project_memory_write',
-      description: 'Write/update project memory. Can replace entirely or merge.',
+      description: 'Write/update the local project-memory compatibility cache. In strict mode this is rejected.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -67,7 +68,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'project_memory_add_note',
-      description: 'Add a categorized note to project memory.',
+      description: 'Add a categorized note to the local project-memory compatibility cache. In strict mode this downgrades to a local intake artifact.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -80,7 +81,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'project_memory_add_directive',
-      description: 'Add a persistent directive to project memory.',
+      description: 'Add a directive to the local project-memory compatibility cache. In strict mode this downgrades to a local intake artifact.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -95,7 +96,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // Notepad tools
     {
       name: 'notepad_read',
-      description: 'Read notepad content. Can read full or a specific section (priority, working, manual).',
+      description: 'Read run-local notepad content. Can read full or a specific section (priority, working, manual).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -106,7 +107,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'notepad_write_priority',
-      description: 'Write to Priority Context section. Replaces existing. Keep under 500 chars.',
+      description: 'Write to the run-local Priority Context section. Replaces existing. Keep under 500 chars.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -118,7 +119,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'notepad_write_working',
-      description: 'Add timestamped entry to Working Memory section.',
+      description: 'Add a run-local timestamped entry to Working Memory.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -130,7 +131,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'notepad_write_manual',
-      description: 'Add entry to Manual section. Never auto-pruned.',
+      description: 'Add a run-local sticky entry to Manual. Never auto-pruned automatically.',
       inputSchema: {
         type: 'object',
         properties: {

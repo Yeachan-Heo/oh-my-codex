@@ -277,8 +277,9 @@ function getCompactionInstructions(): string {
   return [
     "Before context compaction, preserve critical state:",
     "1. Write progress checkpoint via state_write MCP tool",
-    "2. Save key decisions to notepad via notepad_write_working",
-    "3. If context is >80% full, proactively checkpoint state",
+    "2. Save run-local breadcrumbs to notepad via notepad_write_working",
+    "3. Treat notepad and local project memory as scratch/compatibility state, not the formal memory authority",
+    "4. If context is >80% full, proactively checkpoint state",
   ].join("\n");
 }
 
