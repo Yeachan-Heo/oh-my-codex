@@ -25,6 +25,11 @@ import {
   packageRoot,
 } from "../utils/paths.js";
 import {
+  buildFormalProjectMemorySummary,
+  readFormalMemoryContext,
+  resolveStrictMemoryConfig,
+} from "../integration/formal-memory.js";
+import {
   isPlanningComplete,
   readPlanningArtifacts,
 } from "../planning/artifacts.js";
@@ -250,6 +255,12 @@ async function readNotepadPriority(cwd: string): Promise<string> {
 }
 
 async function readProjectMemorySummary(cwd: string): Promise<string> {
+  const strictConfig = resolveStrictMemoryConfig();
+  if (strictConfig.strictMode) {
+    const context = await readFormalMemoryContext(cwd);
+    return buildFormalProjectMemorySummary(context);
+  }
+
   const memPath = omxProjectMemoryPath(cwd);
   if (!existsSync(memPath)) return "";
 
@@ -277,8 +288,8 @@ function getCompactionInstructions(): string {
   return [
     "Before context compaction, preserve critical state:",
     "1. Write progress checkpoint via state_write MCP tool",
-    "2. Save key decisions to notepad via notepad_write_working",
-    "3. If context is >80% full, proactively checkpoint state",
+    "2. Save run-local decisions to notepad via notepad_write_working",
+    "3. Promote durable memory only through the external refresh pipeline",
   ].join("\n");
 }
 

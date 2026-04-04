@@ -42,6 +42,77 @@ function setMockCodexHome(codexHomePath: string): () => void {
   };
 }
 
+function setEnv(name: string, value?: string): () => void {
+  const previous = process.env[name];
+  if (typeof value === "string") process.env[name] = value;
+  else delete process.env[name];
+  return () => {
+    if (typeof previous === "string") process.env[name] = previous;
+    else delete process.env[name];
+  };
+}
+
+async function createFormalMemoryFixture(workspaceRoot: string): Promise<string> {
+  const memoryRoot = await mkdtemp(join(tmpdir(), "omx-overlay-memory-"));
+  const workspaceKey = "workspace-123";
+  const memoryHome = join(memoryRoot, "workspaces", workspaceKey);
+
+  await mkdir(join(memoryRoot, "workspaces"), { recursive: true });
+  await writeFile(
+    join(memoryRoot, "workspaces", "index.json"),
+    JSON.stringify(
+      {
+        version: 1,
+        workspaces: {
+          [workspaceRoot.toLowerCase()]: {
+            key: workspaceKey,
+            path: workspaceRoot,
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  await mkdir(join(memoryHome, "instructions", "repo"), { recursive: true });
+  await mkdir(join(memoryHome, "memories"), { recursive: true });
+  await mkdir(join(memoryHome, "runtime"), { recursive: true });
+  await writeFile(
+    join(memoryHome, "instructions", "repo", "GUIDE.md"),
+    "# Repo Guide\nUse formal repo guidance.\n",
+  );
+  await writeFile(
+    join(memoryHome, "memories", "MEMORY.md"),
+    "# Workspace Memory\nFormal durable truth.\n",
+  );
+  await writeFile(
+    join(memoryHome, "runtime", "active_context.md"),
+    "# Active Context\nCurrent task context from formal memory.\n",
+  );
+
+  return memoryRoot;
+}
+
+async function createSharedGuideOnlyMemoryFixture(): Promise<string> {
+  const memoryRoot = await mkdtemp(join(tmpdir(), "omx-overlay-shared-memory-"));
+  await mkdir(join(memoryRoot, "instructions", "company"), { recursive: true });
+  await mkdir(join(memoryRoot, "instructions", "user"), { recursive: true });
+  await mkdir(join(memoryRoot, "instructions", "local"), { recursive: true });
+  await writeFile(
+    join(memoryRoot, "instructions", "company", "GUIDE.md"),
+    "# Company Guide\nShared company guidance.\n",
+  );
+  await writeFile(
+    join(memoryRoot, "instructions", "user", "GUIDE.md"),
+    "# User Guide\nShared user guidance.\n",
+  );
+  await writeFile(
+    join(memoryRoot, "instructions", "local", "GUIDE.md"),
+    "# Local Guide\nShared local guidance.\n",
+  );
+  return memoryRoot;
+}
+
 describe("generateOverlay", () => {
   let tempDir: string;
   before(async () => {
@@ -163,6 +234,48 @@ describe("generateOverlay", () => {
     assert.ok(overlay.includes("TypeScript + Node.js"));
     assert.ok(overlay.includes("Always use strict TypeScript"));
     assert.ok(!overlay.includes("Low priority thing"));
+  });
+
+  it("prefers formal memory summary over local project-memory.json in strict mode", async () => {
+    const memoryRoot = await createFormalMemoryFixture(tempDir);
+    const restoreStrict = setEnv("OMX_STRICT_MEMORY_MODE", "1");
+    const restoreMemoryRoot = setEnv("OMX_EXTERNAL_MEMORY_ROOT", memoryRoot);
+    try {
+      await writeFile(
+        join(tempDir, ".omx", "project-memory.json"),
+        JSON.stringify({
+          techStack: "Legacy local summary",
+          directives: [{ directive: "Local directive", priority: "high" }],
+        }),
+      );
+
+      const overlay = await generateOverlay(tempDir, "strict-project-memory");
+      assert.match(overlay, /Current task context from formal memory/);
+      assert.match(overlay, /Formal durable truth/);
+      assert.match(overlay, /Use formal repo guidance/);
+      assert.doesNotMatch(overlay, /Legacy local summary/);
+      assert.doesNotMatch(overlay, /Local directive/);
+    } finally {
+      restoreStrict();
+      restoreMemoryRoot();
+      await rm(memoryRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to shared formal guides when strict mode has no registered workspace", async () => {
+    const memoryRoot = await createSharedGuideOnlyMemoryFixture();
+    const restoreStrict = setEnv("OMX_STRICT_MEMORY_MODE", "1");
+    const restoreMemoryRoot = setEnv("OMX_EXTERNAL_MEMORY_ROOT", memoryRoot);
+    try {
+      const overlay = await generateOverlay(tempDir, "strict-shared-guides");
+      assert.match(overlay, /Shared company guidance/);
+      assert.match(overlay, /Shared user guidance/);
+      assert.match(overlay, /Shared local guidance/);
+    } finally {
+      restoreStrict();
+      restoreMemoryRoot();
+      await rm(memoryRoot, { recursive: true, force: true });
+    }
   });
 
   it("enforces size cap (overlay <= 3500 chars)", async () => {

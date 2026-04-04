@@ -15,6 +15,12 @@ import { existsSync } from 'fs';
 import { parseNotepadPruneDaysOld } from './memory-validation.js';
 import { autoStartStdioMcpServer } from './bootstrap.js';
 import { resolveWorkingDirectoryForState } from './state-paths.js';
+import {
+  appendMemoryIntakeEntry,
+  buildFormalProjectMemoryView,
+  readFormalMemoryContext,
+  resolveStrictMemoryConfig,
+} from '../integration/formal-memory.js';
 
 function getMemoryPath(wd: string): string {
   return join(wd, '.omx', 'project-memory.json');
@@ -43,7 +49,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // Project Memory tools
     {
       name: 'project_memory_read',
-      description: 'Read project memory. Can read full memory or a specific section.',
+      description:
+        'Read project memory. In strict mode this returns a formal workspace memory summary instead of local .omx/project-memory.json.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -54,7 +61,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'project_memory_write',
-      description: 'Write/update project memory. Can replace entirely or merge.',
+      description:
+        'Write/update local project memory. In strict mode this is denied so durable updates must flow through the external memory pipeline.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -67,7 +75,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'project_memory_add_note',
-      description: 'Add a categorized note to project memory.',
+      description:
+        'Add a categorized note to project memory. In strict mode this downgrades into a run-local intake artifact.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -80,7 +89,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'project_memory_add_directive',
-      description: 'Add a persistent directive to project memory.',
+      description:
+        'Add a persistent directive to project memory. In strict mode this downgrades into a run-local intake artifact.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -164,22 +174,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-  const a = (args || {}) as Record<string, unknown>;
+export async function handleMemoryToolCall(
+  name: string,
+  a: Record<string, unknown> = {},
+  env: Record<string, string | undefined> = process.env,
+) {
   let wd: string;
   try {
     wd = resolveWorkingDirectoryForState(a.workingDirectory as string | undefined);
   } catch (error) {
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ error: (error as Error).message }) }],
-      isError: true,
-    };
+    return errorText({ error: (error as Error).message });
   }
+  const strictConfig = resolveStrictMemoryConfig(env);
 
   switch (name) {
     // === Project Memory ===
     case 'project_memory_read': {
+      if (strictConfig.strictMode) {
+        const context = await readFormalMemoryContext(wd, env);
+        return text(buildFormalProjectMemoryView(context, a.section as string | undefined));
+      }
       const memPath = getMemoryPath(wd);
       if (!existsSync(memPath)) {
         return text({ exists: false });
@@ -198,6 +212,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     case 'project_memory_write': {
+      if (strictConfig.strictMode) {
+        return errorText({
+          error:
+            'Strict integration mode forbids direct project_memory_write. Use the formal memory pipeline or a run-local intake artifact instead.',
+          decision: 'deny',
+        });
+      }
       const memPath = getMemoryPath(wd);
       await mkdir(join(wd, '.omx'), { recursive: true });
       const merge = a.merge as boolean;
@@ -218,6 +239,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     case 'project_memory_add_note': {
+      if (strictConfig.strictMode) {
+        const intake = await appendMemoryIntakeEntry({
+          cwd: wd,
+          kind: 'note',
+          content: String(a.content as string),
+          metadata: {
+            category: a.category as string,
+          },
+          source: 'project_memory_add_note',
+        });
+        return text({
+          success: true,
+          decision: 'downgrade',
+          downgradedTo: 'memory-intake-queue',
+          intake,
+        });
+      }
       const memPath = getMemoryPath(wd);
       await mkdir(join(wd, '.omx'), { recursive: true });
       let data: ProjectMemory = {};
@@ -239,6 +277,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     case 'project_memory_add_directive': {
+      if (strictConfig.strictMode) {
+        const intake = await appendMemoryIntakeEntry({
+          cwd: wd,
+          kind: 'directive',
+          content: String(a.directive as string),
+          metadata: {
+            priority: (a.priority as string) || 'normal',
+            context: a.context as string | undefined,
+          },
+          source: 'project_memory_add_directive',
+        });
+        return text({
+          success: true,
+          decision: 'downgrade',
+          downgradedTo: 'memory-intake-queue',
+          intake,
+        });
+      }
       const memPath = getMemoryPath(wd);
       await mkdir(join(wd, '.omx'), { recursive: true });
       let data: ProjectMemory = {};
@@ -412,10 +468,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     default:
       return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };
   }
+}
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params;
+  return handleMemoryToolCall(name, (args || {}) as Record<string, unknown>);
 });
 
 function text(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+}
+
+function errorText(data: unknown) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }], isError: true };
 }
 
 function extractSection(content: string, section: string): string {
