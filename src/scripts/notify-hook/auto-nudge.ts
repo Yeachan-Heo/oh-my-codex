@@ -596,17 +596,24 @@ export async function resolveNudgePaneTarget(stateDir: any, cwd = '') {
   return resolveCodexPaneByCwdFallback(cwd);
 }
 
+let lastAutoNudgeSkipReason = '';
+
 export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
   const config = await loadAutoNudgeConfig();
   if (!config.enabled) return;
 
   const managedSession = await isManagedOmxSessionForAutoNudge(cwd, payload);
   if (!managedSession) {
-    await logTmuxHookEvent(logsDir, {
-      timestamp: new Date().toISOString(),
-      type: 'auto_nudge_skipped',
-      reason: 'unmanaged_session',
-    }).catch(() => {});
+    // Deduplicate consecutive identical skip logs to avoid log bloat.
+    // The first occurrence and any reason change are still logged.
+    if (lastAutoNudgeSkipReason !== 'unmanaged_session') {
+      lastAutoNudgeSkipReason = 'unmanaged_session';
+      await logTmuxHookEvent(logsDir, {
+        timestamp: new Date().toISOString(),
+        type: 'auto_nudge_skipped',
+        reason: 'unmanaged_session',
+      }).catch(() => {});
+    }
     return;
   }
 

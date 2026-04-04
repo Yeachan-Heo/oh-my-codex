@@ -194,6 +194,9 @@ let stopping = false;
 let shutdownPromise: Promise<void> | null = null;
 const dispatchTickMax = Math.max(1, asNumber(argValue('--dispatch-max-per-tick', '5'), 5));
 let dispatchDrainRuns = 0;
+let idleTickCount = 0;
+const IDLE_BACKOFF_THRESHOLD = 20;
+const MAX_POLL_MS = 5000;
 let lastDispatchDrain: DispatchDrainState = {
   leader_only: safeString(process.env.OMX_TEAM_WORKER || '').trim() === '',
   last_tick_at: null,
@@ -1205,13 +1208,8 @@ async function runLeaderNudgeTick(): Promise<void> {
       last_tick_at: startedIso,
       last_error: 'worker_context',
     };
-    await eventLog({
-      type: 'leader_nudge_tick',
-      leader_only: false,
-      run_count: leaderNudgeRuns,
-      reason: 'worker_context',
-      stale_threshold_ms: staleThresholdMs,
-    });
+    // Skip logging for worker-context no-ops to avoid log bloat during idle polling.
+    // The in-memory state is still updated for writeState().
     return;
   }
 
@@ -1229,14 +1227,17 @@ async function runLeaderNudgeTick(): Promise<void> {
       last_tick_at: startedIso,
       last_error: null,
     };
-    await eventLog({
-      type: 'leader_nudge_tick',
-      leader_only: true,
-      run_count: leaderNudgeRuns,
-      stale_threshold_ms: staleThresholdMs,
-      precomputed_leader_stale: preComputedLeaderStale,
-      reason: preComputedLeaderStale ? 'leader_nudge_checked' : 'leader_nudge_skipped_not_stale',
-    });
+    // Only log when leader is actually stale – skip no-op ticks to avoid log bloat.
+    if (preComputedLeaderStale) {
+      await eventLog({
+        type: 'leader_nudge_tick',
+        leader_only: true,
+        run_count: leaderNudgeRuns,
+        stale_threshold_ms: staleThresholdMs,
+        precomputed_leader_stale: preComputedLeaderStale,
+        reason: 'leader_nudge_checked',
+      });
+    }
   } catch (err) {
     leaderNudgeRuns += 1;
     lastLeaderNudge = {
@@ -1269,13 +1270,19 @@ async function runDispatchDrainTick(): Promise<void> {
       last_result: result,
       last_error: null,
     };
-    await eventLog({
-      type: 'dispatch_drain_tick',
-      leader_only: lastDispatchDrain.leader_only,
-      dispatch_max_per_tick: dispatchTickMax,
-      run_count: dispatchDrainRuns,
-      ...(result && typeof result === 'object' ? result as Record<string, unknown> : {}),
-    });
+    // Skip logging when the tick performed no useful work to avoid log bloat
+    // during idle polling. Errors and actual dispatches are still logged.
+    const isNoOp = result && typeof result === 'object'
+      && !(result as any).processed && !(result as any).skipped && !(result as any).failed;
+    if (!isNoOp) {
+      await eventLog({
+        type: 'dispatch_drain_tick',
+        leader_only: lastDispatchDrain.leader_only,
+        dispatch_max_per_tick: dispatchTickMax,
+        run_count: dispatchDrainRuns,
+        ...(result && typeof result === 'object' ? result as Record<string, unknown> : {}),
+      });
+    }
   } catch (err) {
     dispatchDrainRuns += 1;
     lastDispatchDrain = {
@@ -1318,11 +1325,29 @@ async function runWatcherCycle(): Promise<void> {
 async function tick(): Promise<void> {
   if (stopping) return;
   if (await enforceLifecycleGuards()) return;
+  const prevDrainRuns = dispatchDrainRuns;
   await runWatcherCycle();
   if (await enforceLifecycleGuards()) return;
+
+  // Adaptive backoff: if consecutive ticks produce no useful work,
+  // gradually increase the poll interval to reduce CPU and I/O waste.
+  const drainDidWork = dispatchDrainRuns > prevDrainRuns
+    && lastDispatchDrain.last_result
+    && typeof lastDispatchDrain.last_result === 'object'
+    && ((lastDispatchDrain.last_result as any).processed > 0
+      || (lastDispatchDrain.last_result as any).skipped > 0
+      || (lastDispatchDrain.last_result as any).failed > 0);
+  if (drainDidWork) {
+    idleTickCount = 0;
+  } else {
+    idleTickCount += 1;
+  }
+  const effectivePollMs = idleTickCount >= IDLE_BACKOFF_THRESHOLD
+    ? Math.min(pollMs * Math.ceil(idleTickCount / IDLE_BACKOFF_THRESHOLD), MAX_POLL_MS)
+    : pollMs;
   setTimeout(() => {
     void tick();
-  }, pollMs);
+  }, effectivePollMs);
 }
 
 function shutdown(signal: string): void {
