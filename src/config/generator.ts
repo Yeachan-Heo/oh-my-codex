@@ -52,6 +52,8 @@ const OMX_EXPLORE_ROUTING_DEFAULT = '1';
 const OMX_EXPLORE_CMD_ENV = 'USE_OMX_EXPLORE_CMD';
 const OMX_TUI_STATUS_LINE =
   'status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"]';
+const LEGACY_OMX_TEAM_RUN_TABLE_PATTERN =
+  /^\s*\[mcp_servers\.(?:"omx_team_run"|omx_team_run)\]\s*$/m;
 
 function unwrapTomlString(value: string | undefined): string | undefined {
   return value?.match(/^"(.*)"$/)?.[1];
@@ -841,11 +843,13 @@ export function buildMergedConfig(
 }
 
 /**
- * Detect and repair duplicate TOML table headers (e.g. [tui]) in config.toml.
+ * Detect and repair upgrade-era managed config incompatibilities in config.toml.
  *
  * After an omx version upgrade the OLD setup code (still loaded in memory)
- * may write a config with duplicate [tui] sections.  The Codex CLI TOML
- * parser rejects duplicates, so we must fix them before the CLI is spawned.
+ * may leave a config with duplicate [tui] sections or the retired
+ * [mcp_servers.omx_team_run] table. Codex rejects duplicate tables and newer
+ * OMX builds no longer ship the team MCP entrypoint, so we repair both before
+ * the CLI is spawned.
  *
  * Returns `true` if a repair was performed.
  */
@@ -858,10 +862,12 @@ export async function repairConfigIfNeeded(
 
   const content = await readFile(configPath, "utf-8");
   const tuiCount = (content.match(/^\s*\[tui\]\s*$/gm) || []).length;
-  if (tuiCount <= 1) return false;
+  const hasLegacyTeamRunTable = LEGACY_OMX_TEAM_RUN_TABLE_PATTERN.test(content);
+  if (tuiCount <= 1 && !hasLegacyTeamRunTable) return false;
 
-  // Duplicate [tui] detected — run full merge to repair
+  // Managed config compatibility issue detected — run full merge to repair
   const repaired = buildMergedConfig(content, pkgRoot, options);
+  if (repaired === content) return false;
   await writeFile(configPath, repaired);
   return true;
 }

@@ -595,7 +595,7 @@ describe("config generator idempotency (#384)", () => {
     }
   });
 
-  it("removes legacy omx_team_run tables during upgrade repair", async () => {
+  it("mergeConfig removes legacy omx_team_run tables during setup upgrade", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
       const configPath = join(wd, "config.toml");
@@ -625,6 +625,41 @@ describe("config generator idempotency (#384)", () => {
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, "utf-8");
 
+      assertSingleOmxBlock(toml);
+      assert.doesNotMatch(toml, /^\[mcp_servers\.omx_team_run\]$/m);
+      assert.doesNotMatch(toml, /team-server\.js/);
+      assert.match(toml, /^\[user\.before\]$/m);
+      assert.match(toml, /^name = "kept-before"$/m);
+      assert.match(toml, /^\[user\.after\]$/m);
+      assert.match(toml, /^name = "kept-after"$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("repairConfigIfNeeded removes legacy omx_team_run tables during launch repair", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      const legacy = [
+        '[user.before]',
+        'name = "kept-before"',
+        "",
+        '[mcp_servers.omx_team_run]',
+        'command = "node"',
+        'args = ["/tmp/team-server.js"]',
+        'enabled = true',
+        "",
+        '[user.after]',
+        'name = "kept-after"',
+        "",
+      ].join("\n");
+      await writeFile(configPath, legacy);
+
+      const didRepair = await repairConfigIfNeeded(configPath, wd);
+      assert.equal(didRepair, true, "legacy team-run config should be repaired");
+
+      const toml = await readFile(configPath, "utf-8");
       assertSingleOmxBlock(toml);
       assert.doesNotMatch(toml, /^\[mcp_servers\.omx_team_run\]$/m);
       assert.doesNotMatch(toml, /team-server\.js/);
