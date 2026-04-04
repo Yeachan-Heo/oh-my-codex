@@ -5,7 +5,14 @@ import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { initTeamState, createTask, readTeamConfig, saveTeamConfig } from '../state.js';
+import {
+  initTeamState,
+  createTask,
+  readTeamConfig,
+  saveTeamConfig,
+  writeTeamVerification,
+  type TeamVerificationState,
+} from '../state.js';
 
 async function loadRuntimeCliModule() {
   process.env.OMX_RUNTIME_CLI_DISABLE_AUTO_START = '1';
@@ -24,6 +31,20 @@ async function createRefreshFixture(): Promise<{
   await mkdir(join(root, 'scripts'), { recursive: true });
   await writeFile(scriptPath, '#!/usr/bin/env python3\n', 'utf-8');
   return { root, memoryRoot, scriptPath };
+}
+
+function buildVerificationState(
+  overrides: Partial<TeamVerificationState> = {},
+): TeamVerificationState {
+  return {
+    status: 'verified',
+    phase: 'complete',
+    completed_code_task_ids: ['task-1'],
+    verified_task_ids: ['task-1'],
+    pending_task_ids: [],
+    updated_at: new Date().toISOString(),
+    ...overrides,
+  };
 }
 
 describe('runtime-cli helpers', () => {
@@ -154,19 +175,48 @@ describe('runtime-cli helpers', () => {
 
   it('keeps team-complete refresh disabled until strict mode and explicit team gate are enabled', async () => {
     const runtimeCli = await loadRuntimeCliModule();
+    const verificationState = buildVerificationState();
 
-    const disabledStrict = runtimeCli.scheduleFormalMemoryRefreshOnTeamComplete('/repo', 'alpha', {});
+    const disabledStrict = runtimeCli.scheduleFormalMemoryRefreshOnTeamComplete('/repo', 'alpha', {}, undefined, verificationState);
     assert.equal(disabledStrict.scheduled, false);
     assert.equal(disabledStrict.reason, 'strict_mode_disabled');
 
     const disabledGate = runtimeCli.scheduleFormalMemoryRefreshOnTeamComplete('/repo', 'alpha', {
       OMX_STRICT_MEMORY_MODE: '1',
-    });
+    }, undefined, verificationState);
     assert.equal(disabledGate.scheduled, false);
     assert.equal(disabledGate.reason, 'team_completion_refresh_disabled');
   });
 
-  it('schedules detached formal-memory refresh for completed leader teams', async () => {
+  it('blocks team-complete refresh until verification evidence is marked complete and verified', async () => {
+    const runtimeCli = await loadRuntimeCliModule();
+    const fixture = await createRefreshFixture();
+    try {
+      const baseEnv = {
+        OMX_STRICT_MEMORY_MODE: '1',
+        OMX_STRICT_MEMORY_REFRESH_ON_TEAM_COMPLETE: '1',
+        OMX_EXTERNAL_MEMORY_ROOT: fixture.memoryRoot,
+      };
+
+      const missing = runtimeCli.scheduleFormalMemoryRefreshOnTeamComplete('/repo', 'team-alpha', baseEnv);
+      assert.equal(missing.scheduled, false);
+      assert.equal(missing.reason, 'team_verification_state_missing');
+
+      const pending = runtimeCli.scheduleFormalMemoryRefreshOnTeamComplete(
+        '/repo',
+        'team-alpha',
+        baseEnv,
+        undefined,
+        buildVerificationState({ status: 'pending', phase: 'team-verify', pending_task_ids: ['task-1'] }),
+      );
+      assert.equal(pending.scheduled, false);
+      assert.equal(pending.reason, 'team_verification_phase_incomplete');
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('schedules detached formal-memory refresh for completed leader teams with verified evidence', async () => {
     const runtimeCli = await loadRuntimeCliModule();
     const fixture = await createRefreshFixture();
     try {
@@ -206,6 +256,7 @@ describe('runtime-cli helpers', () => {
             },
           };
         }) as never,
+        buildVerificationState(),
       );
 
       assert.equal(result.scheduled, true);
@@ -229,10 +280,50 @@ describe('runtime-cli helpers', () => {
         OMX_STRICT_MEMORY_REFRESH_ON_TEAM_COMPLETE: '1',
         OMX_EXTERNAL_MEMORY_ROOT: fixture.memoryRoot,
         OMX_TEAM_WORKER: 'team-worker/worker-1',
-      });
+      }, undefined, buildVerificationState());
       assert.equal(result.scheduled, false);
       assert.equal(result.reason, 'team_worker_process');
     } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('can pre-read verified team state before shutdown cleanup and still schedule refresh', async () => {
+    const runtimeCli = await loadRuntimeCliModule();
+    const fixture = await createRefreshFixture();
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-cli-verify-state-'));
+    try {
+      await initTeamState('verified-refresh', 'task', 'executor', 1, cwd);
+      await writeTeamVerification('verified-refresh', buildVerificationState({
+        completed_code_task_ids: ['task-42'],
+        verified_task_ids: ['task-42'],
+      }), cwd);
+
+      let capturedCommand: string | undefined;
+      const verificationState = buildVerificationState({
+        completed_code_task_ids: ['task-42'],
+        verified_task_ids: ['task-42'],
+      });
+
+      const result = runtimeCli.scheduleFormalMemoryRefreshOnTeamComplete(
+        cwd,
+        'verified-refresh',
+        {
+          OMX_STRICT_MEMORY_MODE: '1',
+          OMX_STRICT_MEMORY_REFRESH_ON_TEAM_COMPLETE: '1',
+          OMX_EXTERNAL_MEMORY_ROOT: fixture.memoryRoot,
+        },
+        ((command: string) => {
+          capturedCommand = command;
+          return { unref() {} };
+        }) as never,
+        verificationState,
+      );
+
+      assert.equal(result.scheduled, true);
+      assert.equal(capturedCommand, 'python3');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
       await rm(fixture.root, { recursive: true, force: true });
     }
   });

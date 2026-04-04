@@ -43,6 +43,7 @@ export type {
   TeamMonitorSnapshotState,
   TeamWorkerIntegrationState,
   TeamPhaseState,
+  TeamVerificationState,
 } from './state.js';
 
 // === Constants ===
@@ -109,6 +110,8 @@ export { readMonitorSnapshot as teamReadMonitorSnapshot } from './state.js';
 export { writeMonitorSnapshot as teamWriteMonitorSnapshot } from './state.js';
 export { readTeamPhase as teamReadPhase } from './state.js';
 export { writeTeamPhase as teamWritePhase } from './state.js';
+export { readTeamVerification as teamReadVerification } from './state.js';
+export { writeTeamVerification as teamWriteVerification } from './state.js';
 
 // === Worker status write ===
 export { writeWorkerStatus as teamWriteWorkerStatus } from './state.js';

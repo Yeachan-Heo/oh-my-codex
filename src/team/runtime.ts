@@ -61,6 +61,7 @@ import {
   teamWriteMonitorSnapshot as writeMonitorSnapshot,
   teamReadPhase as readTeamPhaseState,
   teamWritePhase as writeTeamPhaseState,
+  teamWriteVerification as writeTeamVerificationState,
   type TeamConfig,
   type WorkerInfo,
   type WorkerHeartbeat,
@@ -68,6 +69,7 @@ import {
   type TeamTask,
   type TeamMonitorSnapshotState,
   type TeamPhaseState,
+  type TeamVerificationState,
   type TeamWorkerIntegrationState,
   type TeamGovernance,
   type TeamPolicy,
@@ -1942,6 +1944,23 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
   const phaseState: TeamPhaseState = reconcilePhaseStateForMonitor(persistedPhase, targetPhase);
   await writeTeamPhaseState(sanitized, phaseState, cwd);
   const phase: TeamPhase | TerminalPhase = phaseState.current_phase;
+  const completedCodeTasks = taskView.filter(
+    (task) => task.status === 'completed' && task.requires_code_change === true,
+  );
+  const verifiedCodeTasks = completedCodeTasks.filter((task) => hasStructuredVerificationEvidence(task.result));
+  const verificationState: TeamVerificationState = {
+    status: phase === 'failed'
+      ? 'failed'
+      : allTasksTerminal && verificationPendingTasks.length === 0
+        ? 'verified'
+        : 'pending',
+    phase,
+    completed_code_task_ids: completedCodeTasks.map((task) => task.id),
+    verified_task_ids: verifiedCodeTasks.map((task) => task.id),
+    pending_task_ids: verificationPendingTasks.map((task) => task.id),
+    updated_at: new Date().toISOString(),
+  };
+  await writeTeamVerificationState(sanitized, verificationState, cwd);
   await syncRootTeamModeStateOnTerminalPhase(sanitized, phase, cwd);
 
   if (deadWorkerStall) {

@@ -790,6 +790,18 @@ export async function initTeamState(
     },
     cwd
   );
+  await writeTeamVerification(
+    teamName,
+    {
+      status: 'pending',
+      phase: 'team-exec',
+      completed_code_task_ids: [],
+      verified_task_ids: [],
+      pending_task_ids: [],
+      updated_at: new Date().toISOString(),
+    },
+    cwd,
+  );
   await writeTeamManifestV2(
     {
       schema_version: 2,
@@ -1747,12 +1759,25 @@ export interface TeamPhaseState {
   updated_at: string;
 }
 
+export interface TeamVerificationState {
+  status: 'pending' | 'verified' | 'failed';
+  phase: TeamPhase | TerminalPhase;
+  completed_code_task_ids: string[];
+  verified_task_ids: string[];
+  pending_task_ids: string[];
+  updated_at: string;
+}
+
 function teamPhasePath(teamName: string, cwd: string): string {
   return join(teamDir(teamName, cwd), 'phase.json');
 }
 
 function monitorSnapshotPath(teamName: string, cwd: string): string {
   return join(teamDir(teamName, cwd), 'monitor-snapshot.json');
+}
+
+function verificationStatePath(teamName: string, cwd: string): string {
+  return join(teamDir(teamName, cwd), 'verification-state.json');
 }
 
 export async function readMonitorSnapshot(
@@ -1768,6 +1793,50 @@ export async function writeMonitorSnapshot(
   cwd: string,
 ): Promise<void> {
   await writeMonitorSnapshotImpl(teamName, snapshot, cwd, monitorSnapshotPath, writeAtomic);
+}
+
+export async function readTeamVerification(
+  teamName: string,
+  cwd: string,
+): Promise<TeamVerificationState | null> {
+  try {
+    const raw = await readFile(verificationStatePath(teamName, cwd), 'utf-8');
+    const parsed = JSON.parse(raw) as TeamVerificationState;
+    if (parsed.status !== 'pending' && parsed.status !== 'verified' && parsed.status !== 'failed') {
+      return null;
+    }
+    if (
+      parsed.phase !== 'team-exec'
+      && parsed.phase !== 'team-verify'
+      && parsed.phase !== 'team-fix'
+      && parsed.phase !== 'complete'
+      && parsed.phase !== 'failed'
+    ) {
+      return null;
+    }
+    return {
+      status: parsed.status,
+      phase: parsed.phase,
+      completed_code_task_ids: Array.isArray(parsed.completed_code_task_ids) ? parsed.completed_code_task_ids : [],
+      verified_task_ids: Array.isArray(parsed.verified_task_ids) ? parsed.verified_task_ids : [],
+      pending_task_ids: Array.isArray(parsed.pending_task_ids) ? parsed.pending_task_ids : [],
+      updated_at: typeof parsed.updated_at === 'string' ? parsed.updated_at : new Date().toISOString(),
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    return null;
+  }
+}
+
+export async function writeTeamVerification(
+  teamName: string,
+  verificationState: TeamVerificationState,
+  cwd: string,
+): Promise<void> {
+  await writeAtomic(
+    verificationStatePath(teamName, cwd),
+    JSON.stringify(verificationState, null, 2),
+  );
 }
 
 export async function readTeamPhase(

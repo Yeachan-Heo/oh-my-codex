@@ -10,6 +10,7 @@ import { readdirSync, readFileSync } from 'fs';
 import { writeFile, rename } from 'fs/promises';
 import { join } from 'path';
 import {
+  resolveFormalMemoryRefreshPlan,
   scheduleFormalMemoryRefresh,
   STRICT_MEMORY_REFRESH_ON_TEAM_COMPLETE_ENV,
   type FormalMemoryRefreshScheduleResult,
@@ -17,7 +18,11 @@ import {
 } from '../integration/formal-memory-refresh.js';
 import { startTeam, monitorTeam, shutdownTeam } from './runtime.js';
 import type { TeamRuntime } from './runtime.js';
-import { teamReadConfig as readTeamConfig } from './team-ops.js';
+import {
+  teamReadConfig as readTeamConfig,
+  teamReadVerification as readTeamVerificationState,
+  type TeamVerificationState,
+} from './team-ops.js';
 
 interface CliInput {
   teamName: string;
@@ -88,18 +93,58 @@ export async function shutdownWithForceFallback(teamName: string, cwd: string): 
   }
 }
 
+export function evaluateTeamVerificationRefreshGate(
+  verificationState: TeamVerificationState | null | undefined,
+): { allowed: boolean; reason: string } {
+  if (!verificationState) {
+    return { allowed: false, reason: 'team_verification_state_missing' };
+  }
+  if (verificationState.phase !== 'complete') {
+    return { allowed: false, reason: 'team_verification_phase_incomplete' };
+  }
+  if (verificationState.status === 'verified') {
+    return { allowed: true, reason: 'team_verification_verified' };
+  }
+  return {
+    allowed: false,
+    reason: verificationState.status === 'failed'
+      ? 'team_verification_failed'
+      : 'team_verification_pending',
+  };
+}
+
 export function scheduleFormalMemoryRefreshOnTeamComplete(
   cwd: string,
   teamName: string,
   env: NodeJS.ProcessEnv = process.env,
   spawnImpl?: FormalMemoryRefreshSpawn,
+  verificationState?: TeamVerificationState | null,
 ): FormalMemoryRefreshScheduleResult {
-  return scheduleFormalMemoryRefresh({
+  const refreshTarget = {
     cwd,
     source: 'omx-team-runtime-complete',
     teamName,
     enableEnvKeys: [STRICT_MEMORY_REFRESH_ON_TEAM_COMPLETE_ENV],
     disabledReason: 'team_completion_refresh_disabled',
+  } as const;
+  const plan = resolveFormalMemoryRefreshPlan(refreshTarget, env);
+  if (!plan.enabled) {
+    return {
+      scheduled: false,
+      reason: plan.reason,
+      plan,
+    };
+  }
+  const gate = evaluateTeamVerificationRefreshGate(verificationState);
+  if (!gate.allowed) {
+    return {
+      scheduled: false,
+      reason: gate.reason,
+      plan,
+    };
+  }
+  return scheduleFormalMemoryRefresh({
+    ...refreshTarget,
   }, env, spawnImpl);
 }
 
@@ -201,9 +246,13 @@ async function main(): Promise<void> {
   async function doShutdown(status: 'completed' | 'failed'): Promise<void> {
     pollActive = false;
     finalStatus = status;
+    const teamCwd = runtime?.cwd ?? cwd;
 
     // 1. Collect task results
     const taskResults = collectTaskResults(stateRoot, teamName);
+    const verificationState = status === 'completed'
+      ? await readTeamVerificationState(teamName, teamCwd)
+      : null;
 
     // 2. Shutdown team
     if (runtime) {
@@ -221,9 +270,16 @@ async function main(): Promise<void> {
 
     if (status === 'completed') {
       try {
-        const refresh = scheduleFormalMemoryRefreshOnTeamComplete(runtime?.cwd ?? cwd, teamName);
+        const refresh = scheduleFormalMemoryRefreshOnTeamComplete(
+          teamCwd,
+          teamName,
+          process.env,
+          undefined,
+          verificationState,
+        );
         if (!refresh.scheduled && (
           refresh.reason === 'refresh_script_unavailable'
+          || refresh.reason.startsWith('team_verification_')
           || refresh.reason.startsWith('spawn_failed:')
         )) {
           process.stderr.write(

@@ -18,6 +18,7 @@ import {
   writeAtomic,
   readTask,
   readMonitorSnapshot,
+  readTeamVerification,
   claimTask,
   transitionTaskStatus,
   writeWorkerStatus,
@@ -1793,6 +1794,10 @@ process.on('SIGTERM', () => {
         first?.recommendations.some((r) => r.includes(`task-${task.id}`) && r.includes('Verification evidence missing')),
         true,
       );
+      const firstVerification = await readTeamVerification('team-verify-gate', cwd);
+      assert.equal(firstVerification?.status, 'pending');
+      assert.equal(firstVerification?.phase, 'team-verify');
+      assert.deepEqual(firstVerification?.pending_task_ids, [task.id]);
 
       const taskPath = join(cwd, '.omx', 'state', 'team', 'team-verify-gate', 'tasks', `task-${task.id}.json`);
       const fromDisk = JSON.parse(await readFile(taskPath, 'utf-8')) as Record<string, unknown>;
@@ -1807,6 +1812,11 @@ process.on('SIGTERM', () => {
       const second = await monitorTeam('team-verify-gate', cwd);
       assert.ok(second);
       assert.equal(second?.phase, 'complete');
+      const secondVerification = await readTeamVerification('team-verify-gate', cwd);
+      assert.equal(secondVerification?.status, 'verified');
+      assert.equal(secondVerification?.phase, 'complete');
+      assert.deepEqual(secondVerification?.verified_task_ids, [task.id]);
+      assert.deepEqual(secondVerification?.pending_task_ids, []);
     } finally {
       if (typeof prevTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
       else delete process.env.OMX_TEAM_STATE_ROOT;
