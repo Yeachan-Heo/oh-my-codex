@@ -201,7 +201,13 @@ describe('HUD resize hook command builders', () => {
     assert.equal(args[1], '-t');
     assert.equal(args[2], 'my-session:0');
     assert.match(args[3] ?? '', /^client-resized\[\d+\]$/);
-    assert.equal(args[4], `run-shell -b '${expectedQuietResizeCommand('%1')}'`);
+    if (usesNativeWindowsRunShell()) {
+      assert.match(args[4] ?? '', /^run-shell -b '/);
+      assert.match(args[4] ?? '', /resize-pane -t %1 -y \d+/);
+      assert.match(args[4] ?? '', /> \$null 2>&1'/);
+    } else {
+      assert.equal(args[4], `run-shell -b '${expectedQuietResizeCommand('%1')}'`);
+    }
   });
 
   it('buildUnregisterResizeHookArgs removes the exact numeric hook slot', () => {
@@ -221,10 +227,17 @@ describe('HUD resize hook command builders', () => {
     assert.equal(args[1], '-t');
     assert.equal(args[2], 'my-session:0');
     assert.match(args[3] ?? '', /^client-attached\[\d+\]$/);
-    assert.equal(
-      args[4],
-      `run-shell -b '${expectedQuietResizeCommand('%1')}; tmux set-hook -u -t my-session:0 ${args[3]}'`,
-    );
+    if (usesNativeWindowsRunShell()) {
+      assert.match(args[4] ?? '', /^run-shell -b '/);
+      assert.match(args[4] ?? '', /resize-pane -t %1 -y \d+/);
+      assert.match(args[4] ?? '', /> \$null 2>&1;/);
+      assert.match(args[4] ?? '', new RegExp(`set-hook -u -t my-session:0 ${escapeRegExp(args[3] ?? '')}`));
+    } else {
+      assert.equal(
+        args[4],
+        `run-shell -b '${expectedQuietResizeCommand('%1')}; tmux set-hook -u -t my-session:0 ${args[3]}'`,
+      );
+    }
   });
 
   it('buildUnregisterClientAttachedReconcileArgs removes the exact numeric client-attached slot', () => {
@@ -267,19 +280,28 @@ describe('HUD resize hook command builders', () => {
     const delayCommand = usesNativeWindowsRunShell()
       ? `Start-Sleep -Seconds ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}`
       : `sleep ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}`;
-    assert.deepEqual(
-      buildScheduleDelayedHudResizeArgs('%1'),
-      ['run-shell', '-b', `${delayCommand}; ${expectedQuietResizeCommand('%1')}`],
-    );
+    const args = buildScheduleDelayedHudResizeArgs('%1');
+    assert.equal(args[0], 'run-shell');
+    assert.equal(args[1], '-b');
+    if (usesNativeWindowsRunShell()) {
+      assert.match(args[2] ?? '', new RegExp(`^${escapeRegExp(delayCommand)}; `));
+      assert.match(args[2] ?? '', /resize-pane -t %1 -y \d+/);
+      assert.match(args[2] ?? '', /> \$null 2>&1$/);
+    } else {
+      assert.deepEqual(args, ['run-shell', '-b', `${delayCommand}; ${expectedQuietResizeCommand('%1')}`]);
+    }
   });
 
   it('buildReconcileHudResizeArgs executes a best-effort quiet resize command', () => {
     const args = buildReconcileHudResizeArgs('%7');
     assert.equal(args.join(' ').includes('split-window'), false);
-    assert.deepEqual(
-      args,
-      ['run-shell', expectedQuietResizeCommand('%7')],
-    );
+    if (usesNativeWindowsRunShell()) {
+      assert.equal(args[0], 'run-shell');
+      assert.match(args[1] ?? '', /resize-pane -t %7 -y \d+/);
+      assert.match(args[1] ?? '', /> \$null 2>&1$/);
+    } else {
+      assert.deepEqual(args, ['run-shell', expectedQuietResizeCommand('%7')]);
+    }
   });
 
   it('resolves the tmux executable for win32 hook shell snippets', async () => {
@@ -289,6 +311,7 @@ describe('HUD resize hook command builders', () => {
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
     try {
       const tmuxPath = join(fakeBin, 'tmux.exe');
+      const normalizedTmuxPath = tmuxPath.replace(/\\/g, '/');
       await writeFile(tmuxPath, '');
       process.env.PATH = fakeBin;
       process.env.PATHEXT = '.EXE';
@@ -298,11 +321,11 @@ describe('HUD resize hook command builders', () => {
       const delayedArgs = buildScheduleDelayedHudResizeArgs('%1');
       const reconcileArgs = buildReconcileHudResizeArgs('%1');
 
-      assert.match(resizeArgs[4] ?? '', new RegExp(escapeRegExp(tmuxPath)));
+      assert.match(resizeArgs[4] ?? '', new RegExp(escapeRegExp(normalizedTmuxPath)));
       assert.doesNotMatch(resizeArgs[4] ?? '', /^run-shell -b 'tmux resize-pane/);
-      assert.match(delayedArgs[2] ?? '', new RegExp(escapeRegExp(tmuxPath)));
+      assert.match(delayedArgs[2] ?? '', new RegExp(escapeRegExp(normalizedTmuxPath)));
       assert.doesNotMatch(delayedArgs[2] ?? '', /sleep \d+; tmux resize-pane/);
-      assert.match(reconcileArgs[1] ?? '', new RegExp(escapeRegExp(tmuxPath)));
+      assert.match(reconcileArgs[1] ?? '', new RegExp(escapeRegExp(normalizedTmuxPath)));
       assert.doesNotMatch(reconcileArgs[1] ?? '', /^tmux resize-pane/);
     } finally {
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
@@ -321,13 +344,14 @@ describe('HUD resize hook command builders', () => {
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
     try {
       const tmuxPath = join(fakeBin, 'tmux.exe');
+      const normalizedTmuxPath = tmuxPath.replace(/\\/g, '/');
       await writeFile(tmuxPath, '');
       process.env.PATH = fakeBin;
       process.env.PATHEXT = '.EXE';
       Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
 
       const args = buildRegisterClientAttachedReconcileArgs('my-session:0', 'omx_attached_team_session_0_1', '%1');
-      const matches = (args[4] ?? '').match(new RegExp(escapeRegExp(tmuxPath), 'g')) || [];
+      const matches = (args[4] ?? '').match(new RegExp(escapeRegExp(normalizedTmuxPath), 'g')) || [];
       assert.equal(matches.length, 2, 'client-attached hook should resolve tmux for both resize and unregister commands');
       assert.doesNotMatch(args[4] ?? '', /; tmux set-hook -u -t my-session:0 client-attached/);
     } finally {
