@@ -108,6 +108,15 @@ const VIEWPORT_SCROLLBACK_READY_CAPTURE = `${VIEWPORT_WITHOUT_VISIBLE_PROMPT_CAP
 
 › support lane on multi-image attach`;
 
+function usesNativeWindowsRunShell(): boolean {
+  return process.platform === 'win32' && !isWsl2() && !isMsysOrGitBash();
+}
+
+function expectedQuietResizeCommand(paneId: string, heightLines: number = HUD_TMUX_TEAM_HEIGHT_LINES): string {
+  const base = `tmux resize-pane -t ${paneId} -y ${heightLines}`;
+  return usesNativeWindowsRunShell() ? `${base} > $null 2>&1` : `${base} >/dev/null 2>&1 || true`;
+}
+
 async function withMockTmuxFixture<T>(
   dirPrefix: string,
   tmuxScript: (tmuxLogPath: string) => string,
@@ -192,7 +201,7 @@ describe('HUD resize hook command builders', () => {
     assert.equal(args[1], '-t');
     assert.equal(args[2], 'my-session:0');
     assert.match(args[3] ?? '', /^client-resized\[\d+\]$/);
-    assert.equal(args[4], `run-shell -b 'tmux resize-pane -t %1 -y ${HUD_TMUX_TEAM_HEIGHT_LINES} >/dev/null 2>&1 || true'`);
+    assert.equal(args[4], `run-shell -b '${expectedQuietResizeCommand('%1')}'`);
   });
 
   it('buildUnregisterResizeHookArgs removes the exact numeric hook slot', () => {
@@ -212,9 +221,9 @@ describe('HUD resize hook command builders', () => {
     assert.equal(args[1], '-t');
     assert.equal(args[2], 'my-session:0');
     assert.match(args[3] ?? '', /^client-attached\[\d+\]$/);
-    assert.match(
-      args[4] ?? '',
-      /^run-shell -b 'tmux resize-pane -t %1 -y \d+ >\/dev\/null 2>&1 \|\| true; tmux set-hook -u -t my-session:0 client-attached\[\d+\]'$/,
+    assert.equal(
+      args[4],
+      `run-shell -b '${expectedQuietResizeCommand('%1')}; tmux set-hook -u -t my-session:0 ${args[3]}'`,
     );
   });
 
@@ -255,9 +264,12 @@ describe('HUD resize hook command builders', () => {
   });
 
   it('buildScheduleDelayedHudResizeArgs schedules tmux-side delayed reconcile', () => {
+    const delayCommand = usesNativeWindowsRunShell()
+      ? `Start-Sleep -Seconds ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}`
+      : `sleep ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}`;
     assert.deepEqual(
       buildScheduleDelayedHudResizeArgs('%1'),
-      ['run-shell', '-b', `sleep ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}; tmux resize-pane -t %1 -y ${HUD_TMUX_TEAM_HEIGHT_LINES} >/dev/null 2>&1 || true`],
+      ['run-shell', '-b', `${delayCommand}; ${expectedQuietResizeCommand('%1')}`],
     );
   });
 
@@ -266,7 +278,7 @@ describe('HUD resize hook command builders', () => {
     assert.equal(args.join(' ').includes('split-window'), false);
     assert.deepEqual(
       args,
-      ['run-shell', `tmux resize-pane -t %7 -y ${HUD_TMUX_TEAM_HEIGHT_LINES} >/dev/null 2>&1 || true`],
+      ['run-shell', expectedQuietResizeCommand('%7')],
     );
   });
 
