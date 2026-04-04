@@ -11,6 +11,7 @@ import {
   readDeepInterviewState,
   readAutoresearchState,
   readUltraqaState,
+  resolveGitMetadataForTesting,
 } from '../state.js';
 
 function gitRunnerFromMap(map: Record<string, string | Error>) {
@@ -65,6 +66,46 @@ describe('readGitBranch', () => {
   });
 });
 
+describe('resolveGitMetadataForTesting', () => {
+  it('resolves standard .git directories as repo top-level', async () => {
+    await withTempRepo('omx-hud-gitdir-', async (cwd) => {
+      await mkdir(join(cwd, '.git'), { recursive: true });
+
+      assert.deepEqual(resolveGitMetadataForTesting(cwd), {
+        gitDir: join(cwd, '.git'),
+        topLevel: cwd,
+      });
+    });
+  });
+
+  it('resolves git worktree .git files and preserves repo top-level', async () => {
+    await withTempRepo('omx-hud-worktree-', async (cwd) => {
+      const actualGitDir = join(cwd, '..', 'main-repo', '.git', 'worktrees', 'feature-x');
+      await mkdir(actualGitDir, { recursive: true });
+      await writeFile(join(cwd, '.git'), 'gitdir: ../main-repo/.git/worktrees/feature-x\n');
+
+      assert.deepEqual(resolveGitMetadataForTesting(cwd), {
+        gitDir: actualGitDir,
+        topLevel: cwd,
+      });
+    });
+  });
+
+  it('supports nested cwd inside a worktree checkout', async () => {
+    await withTempRepo('omx-hud-worktree-nested-', async (cwd) => {
+      const actualGitDir = join(cwd, '..', 'main-repo', '.git', 'worktrees', 'feature-y');
+      const nested = join(cwd, 'packages', 'hud');
+      await mkdir(actualGitDir, { recursive: true });
+      await mkdir(nested, { recursive: true });
+      await writeFile(join(cwd, '.git'), 'gitdir: ../main-repo/.git/worktrees/feature-y\n');
+
+      assert.deepEqual(resolveGitMetadataForTesting(nested), {
+        gitDir: actualGitDir,
+        topLevel: cwd,
+      });
+    });
+  });
+});
 describe('buildGitBranchLabel', () => {
   it('keeps the branch when origin lookup fails', () => {
     const gitRunner = gitRunnerFromMap({

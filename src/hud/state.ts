@@ -7,7 +7,7 @@
 import { readFile } from 'fs/promises';
 import { readFileSync, statSync } from 'fs';
 import { execSync } from 'child_process';
-import { join, dirname, basename } from 'path';
+import { join, dirname, basename, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { omxStateDir } from '../utils/paths.js';
 import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
@@ -175,17 +175,45 @@ export function readVersion(): string | null {
 
 export type GitRunner = (cwd: string, args: string[]) => string | null;
 
+interface GitMetadata {
+  gitDir: string;
+  topLevel: string;
+}
+
+function resolveGitMetadataFromCandidate(dir: string): GitMetadata | null {
+  const candidate = join(dir, '.git');
+
+  try {
+    if (statSync(candidate).isDirectory()) {
+      return { gitDir: candidate, topLevel: dir };
+    }
+  } catch {
+    return null;
+  }
+
+  try {
+    const content = readFileSync(candidate, 'utf-8').trim();
+    const match = content.match(/^gitdir:\s*(.+)$/im);
+    if (!match) return null;
+
+    return {
+      gitDir: resolve(dir, match[1].trim()),
+      topLevel: dir,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Find the .git directory by walking up from `startCwd`.
- * Returns the path to the `.git` directory, or null if not found.
+ * Find git metadata by walking up from `startCwd`.
+ * Supports both `.git/` directories and git worktree `.git` files.
  */
-function findGitDir(startCwd: string): string | null {
+function findGitMetadata(startCwd: string): GitMetadata | null {
   let dir = startCwd;
   for (;;) {
-    const candidate = join(dir, '.git');
-    try {
-      if (statSync(candidate).isDirectory()) return candidate;
-    } catch { /* not found, walk up */ }
+    const metadata = resolveGitMetadataFromCandidate(dir);
+    if (metadata) return metadata;
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -213,8 +241,9 @@ function readGitFile(gitDir: string, ...parts: string[]): string | null {
 function runGit(cwd: string, args: string[]): string | null {
   if (process.platform === 'win32') {
     try {
-      const gitDir = findGitDir(cwd);
-      if (gitDir) {
+      const gitMetadata = findGitMetadata(cwd);
+      if (gitMetadata) {
+        const { gitDir, topLevel } = gitMetadata;
         const cmd = args.join(' ');
 
         if (cmd === 'rev-parse --abbrev-ref HEAD') {
@@ -248,7 +277,7 @@ function runGit(cwd: string, args: string[]): string | null {
         }
 
         if (cmd === 'rev-parse --show-toplevel') {
-          return dirname(gitDir);
+          return topLevel;
         }
       }
     } catch { /* fall through to execSync */ }
@@ -340,6 +369,10 @@ export function buildGitBranchLabel(
 
   const repoLabel = resolveRepoLabel(cwd, config, gitRunner);
   return repoLabel ? `${repoLabel}/${branch}` : branch;
+}
+
+export function resolveGitMetadataForTesting(startCwd: string): GitMetadata | null {
+  return findGitMetadata(startCwd);
 }
 
 /** Read all state files and build the full render context */
