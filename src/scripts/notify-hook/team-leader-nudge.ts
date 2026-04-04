@@ -13,6 +13,7 @@ import { logTmuxHookEvent } from './log.js';
 import { evaluatePaneInjectionReadiness, sendPaneInput } from './team-tmux-guard.js';
 import { DEFAULT_MARKER } from '../tmux-hook-engine.js';
 import { isLeaderRuntimeStale } from '../../team/leader-activity.js';
+import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
 const LEADER_PANE_MISSING_NO_INJECTION_REASON = 'leader_pane_missing_no_injection';
 const LEADER_PANE_SHELL_NO_INJECTION_REASON = 'leader_pane_shell_no_injection';
 const LEADER_NOTIFICATION_DEFERRED_TYPE = 'leader_notification_deferred';
@@ -516,6 +517,7 @@ export async function maybeNudgeTeamLeader({
   logsDir,
   preComputedLeaderStale,
   allowFreshMailboxNudges = true,
+  source = 'notify_hook',
 }) {
   const intervalMs = resolveLeaderNudgeIntervalMs();
   const idleCooldownMs = resolveLeaderAllIdleNudgeCooldownMs();
@@ -767,6 +769,15 @@ export async function maybeNudgeTeamLeader({
           source_type: 'leader_nudge',
         });
       } catch { /* ignore */ }
+      await appendTeamDeliveryLog(logsDir, {
+        event: 'nudge_triggered',
+        source,
+        team: teamName,
+        to_worker: 'leader-fixed',
+        transport: 'none',
+        result: 'deferred',
+        reason: LEADER_PANE_MISSING_NO_INJECTION_REASON,
+      }).catch(() => {});
       continue;
     }
 
@@ -808,6 +819,15 @@ export async function maybeNudgeTeamLeader({
           source_type: 'leader_nudge',
         });
       } catch { /* ignore */ }
+      await appendTeamDeliveryLog(logsDir, {
+        event: 'nudge_triggered',
+        source,
+        team: teamName,
+        to_worker: 'leader-fixed',
+        transport: 'none',
+        result: 'deferred',
+        reason: deferredReason,
+      }).catch(() => {});
       continue;
     }
 
@@ -842,6 +862,15 @@ export async function maybeNudgeTeamLeader({
           missing_signal_workers: progressSnapshot.missingSignalWorkers,
         });
       } catch { /* ignore */ }
+      await appendTeamDeliveryLog(logsDir, {
+        event: 'nudge_triggered',
+        source,
+        team: teamName,
+        to_worker: 'leader-fixed',
+        transport: 'send-keys',
+        result: 'sent',
+        reason: nudgeReason,
+      }).catch(() => {});
     } catch (err) {
       try {
         await logTmuxHookEvent(logsDir, {
@@ -853,6 +882,16 @@ export async function maybeNudgeTeamLeader({
           error: safeString(err && err.message ? err.message : err),
         });
       } catch { /* ignore */ }
+      await appendTeamDeliveryLog(logsDir, {
+        event: 'nudge_triggered',
+        source,
+        team: teamName,
+        to_worker: 'leader-fixed',
+        transport: 'send-keys',
+        result: 'failed',
+        reason: nudgeReason,
+        error: safeString(err && err.message ? err.message : err),
+      }).catch(() => {});
     }
   }
 

@@ -1239,6 +1239,7 @@ async function runLeaderNudgeTick(): Promise<void> {
       logsDir,
       preComputedLeaderStale,
       allowFreshMailboxNudges: false,
+      source: 'notify_fallback_watcher',
     });
     leaderNudgeRuns += 1;
     lastLeaderNudge = {

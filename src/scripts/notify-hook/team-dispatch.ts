@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'node:url';
 import { safeString } from './utils.js';
 import { resolveBridgeStateDir, resolveRuntimeBinaryPath } from '../../runtime/bridge.js';
+import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -505,6 +506,13 @@ async function appendDispatchLog(logsDir, event) {
   await appendFile(path, `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`).catch(() => {});
 }
 
+async function appendDeliveryTelemetry(logsDir, event) {
+  await appendTeamDeliveryLog(logsDir, {
+    source: 'notify-hook.team-dispatch',
+    ...event,
+  }).catch(() => {});
+}
+
 export async function drainPendingTeamDispatch({
   cwd,
   stateDir = resolveBridgeStateDir(cwd),
@@ -582,6 +590,16 @@ export async function drainPendingTeamDispatch({
               leader_pane_id: safeString(config?.leader_pane_id).trim() || null,
               tmux_injection_attempted: false,
             });
+            await appendDeliveryTelemetry(logsDir, {
+              event: 'dispatch_result',
+              team: teamName,
+              request_id: request.request_id,
+              message_id: request.message_id || null,
+              to_worker: request.to_worker,
+              transport: 'send-keys',
+              result: 'deferred',
+              reason: LEADER_PANE_MISSING_DEFERRED_REASON,
+            });
             // On the legacy fallback lane, requests.json still carries the queue
             // state for this deferred request; this event stays a progress
             // artifact for hook/watcher readers.
@@ -652,6 +670,16 @@ export async function drainPendingTeamDispatch({
               attempt: request.attempt_count,
               reason: result.reason,
             });
+            await appendDeliveryTelemetry(logsDir, {
+              event: 'dispatch_result',
+              team: teamName,
+              request_id: request.request_id,
+              message_id: request.message_id || null,
+              to_worker: request.to_worker,
+              transport: 'send-keys',
+              result: 'retry',
+              reason: result.reason,
+            });
             await emitOperationalHookEvent(cwd, 'retry-needed', {
               team: teamName,
               worker: request.to_worker,
@@ -677,6 +705,16 @@ export async function drainPendingTeamDispatch({
               request_id: request.request_id,
               worker: request.to_worker,
               message_id: request.message_id || null,
+              reason: request.last_reason,
+            });
+            await appendDeliveryTelemetry(logsDir, {
+              event: 'dispatch_result',
+              team: teamName,
+              request_id: request.request_id,
+              message_id: request.message_id || null,
+              to_worker: request.to_worker,
+              transport: 'send-keys',
+              result: 'failed',
               reason: request.last_reason,
             });
             await emitOperationalHookEvent(cwd, 'failed', {
@@ -711,6 +749,16 @@ export async function drainPendingTeamDispatch({
             message_id: request.message_id || null,
             reason: result.reason,
           });
+          await appendDeliveryTelemetry(logsDir, {
+            event: 'dispatch_result',
+            team: teamName,
+            request_id: request.request_id,
+            message_id: request.message_id || null,
+            to_worker: request.to_worker,
+            transport: 'send-keys',
+            result: 'notified',
+            reason: result.reason,
+          });
         } else {
           request.status = 'failed';
           request.failed_at = nowIso;
@@ -725,6 +773,16 @@ export async function drainPendingTeamDispatch({
             request_id: request.request_id,
             worker: request.to_worker,
             message_id: request.message_id || null,
+            reason: result.reason,
+          });
+          await appendDeliveryTelemetry(logsDir, {
+            event: 'dispatch_result',
+            team: teamName,
+            request_id: request.request_id,
+            message_id: request.message_id || null,
+            to_worker: request.to_worker,
+            transport: 'send-keys',
+            result: 'failed',
             reason: result.reason,
           });
           await emitOperationalHookEvent(cwd, result.reason === LEADER_PANE_MISSING_DEFERRED_REASON ? 'handoff-needed' : 'failed', {

@@ -22,6 +22,16 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, JSON.stringify(value, null, 2));
 }
 
+async function readTeamDeliveryLog(cwd: string): Promise<Array<Record<string, unknown>>> {
+  const path = join(cwd, '.omx', 'logs', `team-delivery-${new Date().toISOString().slice(0, 10)}.jsonl`);
+  const raw = await readFile(path, 'utf-8').catch(() => '');
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
 function buildFakeTmux(tmuxLogPath: string): string {
   return `#!/usr/bin/env bash
 set -eu
@@ -668,6 +678,15 @@ describe('notify-hook team leader nudge', () => {
       assert.doesNotMatch(tmuxLog, /-t devsess:0/);
       assert.match(tmuxLog, /Team alpha:/);
       assert.match(tmuxLog, /\[OMX_TMUX_INJECT\]/, 'should include injection marker');
+
+      const deliveryLog = await readTeamDeliveryLog(cwd);
+      assert.ok(deliveryLog.some((entry) =>
+        entry.event === 'nudge_triggered'
+        && entry.source === 'notify_hook'
+        && entry.team === teamName
+        && entry.to_worker === 'leader-fixed'
+        && entry.transport === 'send-keys'
+        && entry.result === 'sent'));
     });
   });
 

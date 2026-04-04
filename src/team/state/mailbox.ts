@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir, type MailboxRecord, type RuntimeCommand } from '../../runtime/bridge.js';
+import { appendTeamDeliveryLogForCwd } from '../delivery-log.js';
 
 export interface TeamMailboxMessage {
   message_id: string;
@@ -67,6 +68,7 @@ export async function sendDirectMessage(
 ): Promise<TeamMailboxMessage> {
   let created = false;
   let msg: TeamMailboxMessage | null = null;
+  let creationTransport: 'bridge' | 'legacy-json' = 'legacy-json';
 
   await deps.withMailboxLock(deps.teamName, toWorker, deps.cwd, async () => {
     const mailbox = await deps.readMailbox(deps.teamName, toWorker, deps.cwd);
@@ -106,6 +108,7 @@ export async function sendDirectMessage(
       const bridgeMailbox = await deps.readMailbox(deps.teamName, toWorker, deps.cwd);
       const bridgeMessage = bridgeMailbox.messages.find((candidate) => candidate.message_id === msgId);
       if (bridgeMessage) {
+        creationTransport = 'bridge';
         msg = {
           ...bridgeMessage,
           body: bridgeMessage.body || body,
@@ -149,6 +152,16 @@ export async function sendDirectMessage(
       { type: 'message_received', worker: toWorker, task_id: undefined, message_id: persistedMessage.message_id, reason: undefined },
       deps.cwd,
     );
+    await appendTeamDeliveryLogForCwd(deps.cwd, {
+      event: 'mailbox_created',
+      source: 'team.state.mailbox',
+      team: deps.teamName,
+      message_id: persistedMessage.message_id,
+      from_worker: fromWorker,
+      to_worker: toWorker,
+      transport: creationTransport,
+      result: 'created',
+    });
   }
   return persistedMessage;
 }
@@ -175,7 +188,7 @@ export async function markMessageDelivered(
   deps: MailboxDeps,
 ): Promise<boolean> {
   if (executeBridgeCommand(deps.cwd, { command: 'MarkMailboxDelivered', message_id: messageId })) {
-    return await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {
+    const updated = await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {
       const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
       const msg = mailbox.messages.find((message) => message.message_id === messageId);
       if (!msg) return false;
@@ -187,8 +200,20 @@ export async function markMessageDelivered(
       }
       return true;
     });
+    if (updated) {
+      await appendTeamDeliveryLogForCwd(deps.cwd, {
+        event: 'delivered',
+        source: 'team.state.mailbox',
+        team: deps.teamName,
+        message_id: messageId,
+        to_worker: workerName,
+        transport: 'bridge',
+        result: 'updated',
+      });
+    }
+    return updated;
   }
-  return await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {
+  const updated = await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {
     const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
     const msg = mailbox.messages.find((m) => m.message_id === messageId);
     if (!msg) return false;
@@ -198,6 +223,18 @@ export async function markMessageDelivered(
     }
     return true;
   });
+  if (updated) {
+    await appendTeamDeliveryLogForCwd(deps.cwd, {
+      event: 'delivered',
+      source: 'team.state.mailbox',
+      team: deps.teamName,
+      message_id: messageId,
+      to_worker: workerName,
+      transport: 'legacy-json',
+      result: 'updated',
+    });
+  }
+  return updated;
 }
 
 export async function markMessageNotified(

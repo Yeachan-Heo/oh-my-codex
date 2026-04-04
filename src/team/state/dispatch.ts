@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir, type DispatchRecord, type RuntimeCommand } from '../../runtime/bridge.js';
+import { appendTeamDeliveryLogForCwd } from '../delivery-log.js';
 
 export type TeamDispatchRequestKind = 'inbox' | 'mailbox' | 'nudge';
 export type TeamDispatchRequestStatus = 'pending' | 'notified' | 'delivered' | 'failed';
@@ -211,7 +212,7 @@ export async function enqueueDispatchRequest(
   }
   deps.validateWorkerName(requestInput.to_worker);
 
-  return await deps.withDispatchLock(deps.teamName, deps.cwd, async () => {
+  const queued = await deps.withDispatchLock(deps.teamName, deps.cwd, async () => {
     const requests = await deps.readDispatchRequests(deps.teamName, deps.cwd);
     const existing = requests.find((req) => equivalentPendingDispatch(req, requestInput));
     if (existing) return { request: existing, deduped: true };
@@ -238,13 +239,30 @@ export async function enqueueDispatchRequest(
       metadata: buildDispatchMetadata(deps.teamName, requestInput),
     })) {
       const bridgeRequest = await readDispatchRequest(request.request_id, deps);
-      if (bridgeRequest) return { request: bridgeRequest, deduped: false };
+      if (bridgeRequest) {
+        return { request: bridgeRequest, deduped: false, queuedTransport: 'bridge' as const };
+      }
     }
 
     requests.push(request);
     await deps.writeDispatchRequests(deps.teamName, requests, deps.cwd);
-    return { request, deduped: false };
+    return { request, deduped: false, queuedTransport: 'legacy-json' as const };
   });
+  if (!queued.deduped) {
+    await appendTeamDeliveryLogForCwd(deps.cwd, {
+      event: 'dispatch_attempted',
+      source: 'team.state.dispatch',
+      team: deps.teamName,
+      request_id: queued.request.request_id,
+      message_id: queued.request.message_id,
+      to_worker: queued.request.to_worker,
+      dispatch_kind: queued.request.kind,
+      transport: queued.request.transport_preference,
+      result: 'queued',
+      storage: queued.queuedTransport,
+    });
+  }
+  return { request: queued.request, deduped: queued.deduped };
 }
 
 export async function listDispatchRequests(

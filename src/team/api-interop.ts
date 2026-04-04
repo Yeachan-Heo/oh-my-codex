@@ -14,6 +14,7 @@ import {
 } from './contracts.js';
 import { readTeamEvents, waitForTeamEvent } from './state/events.js';
 import { queueDirectMailboxMessage } from './mcp-comm.js';
+import { appendTeamDeliveryLogForCwd } from './delivery-log.js';
 import { generateLeaderMailboxTriggerMessage, generateMailboxTriggerMessage } from './worker-bootstrap.js';
 import {
   teamBroadcast as broadcastMessage,
@@ -630,6 +631,16 @@ export async function executeTeamApiOperation(
         }
         const updated = await markMessageDelivered(teamName, worker, messageId, cwd);
         const dispatch = await markLatestMailboxDispatchDelivered(teamName, worker, messageId, cwd);
+        await appendTeamDeliveryLogForCwd(cwd, {
+          event: 'mark_delivered',
+          source: 'team.api-interop',
+          team: teamName,
+          message_id: messageId,
+          to_worker: worker,
+          request_id: dispatch.matched_request_id,
+          result: updated ? 'updated' : 'missing',
+          dispatch_updated: dispatch.dispatch_updated,
+        });
         return {
           ok: true,
           operation,

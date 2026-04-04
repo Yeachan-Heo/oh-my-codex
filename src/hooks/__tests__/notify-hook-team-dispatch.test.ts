@@ -92,6 +92,16 @@ exit 0
 `;
 }
 
+async function readTeamDeliveryLog(cwd: string): Promise<Array<Record<string, unknown>>> {
+  const path = join(cwd, '.omx', 'logs', `team-delivery-${new Date().toISOString().slice(0, 10)}.jsonl`);
+  const raw = await readFile(path, 'utf-8').catch(() => '');
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
 async function writeCompatRuntimeFixture(runtimePath: string): Promise<void> {
   await writeFile(
     runtimePath,
@@ -293,6 +303,14 @@ describe('notify-hook team dispatch consumer', () => {
       assert.ok(deferredLog.tmux_session.length > 0);
       assert.equal(deferredLog.leader_pane_id, null);
       assert.equal(deferredLog.tmux_injection_attempted, false);
+
+      const deliveryLog = await readTeamDeliveryLog(cwd);
+      assert.ok(deliveryLog.some((entry) =>
+        entry.event === 'dispatch_result'
+        && entry.source === 'notify-hook.team-dispatch'
+        && entry.request_id === queued.request.request_id
+        && entry.result === 'deferred'
+        && entry.reason === 'leader_pane_missing_deferred'));
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -326,6 +344,14 @@ describe('notify-hook team dispatch consumer', () => {
       const deferredLogs = dispatchLogs.filter((entry: { type?: string; request_id?: string }) =>
         entry.type === 'dispatch_deferred' && entry.request_id === queued.request.request_id);
       assert.equal(deferredLogs.length, 1, 'should only log one dispatch_deferred artifact per missing-pane request until state changes');
+
+      const deliveryLog = await readTeamDeliveryLog(cwd);
+      const deferredDeliveryLogs = deliveryLog.filter((entry) =>
+        entry.event === 'dispatch_result'
+        && entry.source === 'notify-hook.team-dispatch'
+        && entry.request_id === queued.request.request_id
+        && entry.result === 'deferred');
+      assert.equal(deferredDeliveryLogs.length, 1, 'should only log one deferred team-delivery artifact per missing-pane request until state changes');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

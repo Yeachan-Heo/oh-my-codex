@@ -33,6 +33,15 @@ async function readLines(path: string): Promise<string[]> {
   return content.split('\n').map(s => s.trim()).filter(Boolean);
 }
 
+async function readJsonLines(path: string): Promise<Array<Record<string, unknown>>> {
+  const content = await readFile(path, 'utf-8').catch(() => '');
+  return content
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
 async function sleep(ms: number): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -721,6 +730,14 @@ describe('notify-fallback watcher', () => {
       assert.ok(nudgeEvent, 'expected leader_nudge_tick log event');
       assert.equal(nudgeEvent.leader_only, true);
       assert.equal(nudgeEvent.precomputed_leader_stale, true);
+
+      const deliveryLogPath = join(wd, '.omx', 'logs', `team-delivery-${new Date().toISOString().slice(0, 10)}.jsonl`);
+      const deliveryEntries = await readJsonLines(deliveryLogPath);
+      assert.ok(deliveryEntries.some((entry) =>
+        entry.event === 'nudge_triggered'
+        && entry.source === 'notify_fallback_watcher'
+        && entry.transport === 'send-keys'
+        && entry.result === 'sent'));
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

@@ -59,6 +59,17 @@ async function addWorktree(repo: string, branchName: string, pathPrefix: string)
 function expectedLowComplexityModel(codexHomeOverride?: string): string {
   return resolveTeamLowComplexityDefaultModel(codexHomeOverride);
 }
+
+async function readTeamDeliveryLog(cwd: string): Promise<Array<Record<string, unknown>>> {
+  const path = join(cwd, '.omx', 'logs', `team-delivery-${new Date().toISOString().slice(0, 10)}.jsonl`);
+  const raw = await readFile(path, 'utf-8').catch(() => '');
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
 function withEmptyPath<T>(fn: () => T): T {
   const prev = process.env.PATH;
   process.env.PATH = '';
@@ -3591,6 +3602,17 @@ esac
           const latest = requests[requests.length - 1];
           assert.equal(latest?.status, 'notified');
           assert.equal(latest?.last_reason, 'fallback_confirmed:leader_mailbox_notified');
+
+          const deliveryLog = await readTeamDeliveryLog(cwd);
+          const runtimeEntries = deliveryLog.filter((entry) =>
+            entry.event === 'dispatch_result'
+            && entry.source === 'team.runtime'
+            && entry.to_worker === 'leader-fixed'
+            && entry.transport === 'mailbox'
+            && entry.result === 'confirmed'
+            && typeof entry.reason === 'string'
+            && String(entry.reason).includes('leader_mailbox_notified'));
+          assert.equal(runtimeEntries.length, 1, 'leader hook-preferred confirmation should emit exactly one runtime dispatch_result entry');
         },
       );
     } finally {
@@ -3620,6 +3642,15 @@ esac
         r.status === 'pending' && r.to_worker === 'leader-fixed');
       assert.ok(pending, 'expected a pending leader-fixed dispatch request');
       assert.equal(pending?.last_reason, 'leader_pane_missing_deferred');
+
+      const deliveryLog = await readTeamDeliveryLog(cwd);
+      const runtimeEntries = deliveryLog.filter((entry) =>
+        entry.event === 'dispatch_result'
+        && entry.source === 'team.runtime'
+        && entry.to_worker === 'leader-fixed'
+        && entry.transport === 'mailbox'
+        && entry.reason === 'leader_pane_missing_mailbox_persisted');
+      assert.equal(runtimeEntries.length, 1, 'leader missing-pane fallback should emit exactly one runtime dispatch_result entry');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

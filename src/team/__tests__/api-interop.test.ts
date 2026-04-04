@@ -40,6 +40,16 @@ async function setupTeam(name: string): Promise<{ cwd: string; cleanup: () => Pr
   };
 }
 
+async function readTeamDeliveryLog(cwd: string): Promise<Array<Record<string, unknown>>> {
+  const path = join(cwd, '.omx', 'logs', `team-delivery-${new Date().toISOString().slice(0, 10)}.jsonl`);
+  const raw = await readFile(path, 'utf-8').catch(() => '');
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
 // ─── resolveTeamApiOperation ──────────────────────────────────────────────
 
 describe('resolveTeamApiOperation', () => {
@@ -189,6 +199,18 @@ describe('executeTeamApiOperation: send-message', () => {
       const mailboxRequest = parsedRequests.find((request) => request.message_id === messageId);
       assert.ok(mailboxRequest, 'send-message should enqueue a mailbox dispatch request');
       assert.equal(mailboxRequest?.to_worker, 'worker-2');
+
+      const deliveryLog = await readTeamDeliveryLog(cwd);
+      assert.ok(deliveryLog.some((entry) =>
+        entry.event === 'mailbox_created'
+        && entry.message_id === messageId
+        && entry.from_worker === 'worker-1'
+        && entry.to_worker === 'worker-2'));
+      assert.ok(deliveryLog.some((entry) =>
+        entry.event === 'dispatch_attempted'
+        && entry.request_id === mailboxRequest?.request_id
+        && entry.message_id === messageId
+        && entry.to_worker === 'worker-2'));
     } finally {
       await cleanup();
     }
@@ -252,6 +274,17 @@ describe('executeTeamApiOperation: send-message', () => {
         message.from_worker === 'worker-1' && message.to_worker === 'leader-fixed',
       );
       assert.equal(workerMessages.length, 1, 'deduped leader sends should not append duplicate worker mailbox rows');
+
+      const deliveryLog = [
+        ...(await readTeamDeliveryLog(repoCwd)),
+        ...(await readTeamDeliveryLog(workerCwd)),
+      ];
+      const createdEvents = deliveryLog.filter((entry) =>
+        entry.event === 'mailbox_created'
+        && entry.from_worker === 'worker-1'
+        && entry.to_worker === 'leader-fixed'
+        && entry.message_id === firstMessage.message_id);
+      assert.equal(createdEvents.length, 1, 'deduped leader sends should only emit one mailbox_created event');
     } finally {
       if (typeof prevTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
       else delete process.env.OMX_TEAM_STATE_ROOT;
@@ -378,6 +411,17 @@ describe('executeTeamApiOperation: mailbox-mark-delivered', () => {
 
       const updatedDispatch = await readDispatchRequest('mark-dlv', dispatch.request.request_id, cwd);
       assert.equal(updatedDispatch?.status, 'delivered');
+
+      const deliveryLog = await readTeamDeliveryLog(cwd);
+      assert.ok(deliveryLog.some((entry) =>
+        entry.event === 'delivered'
+        && entry.message_id === msgId
+        && entry.to_worker === 'worker-2'));
+      assert.ok(deliveryLog.some((entry) =>
+        entry.event === 'mark_delivered'
+        && entry.message_id === msgId
+        && entry.request_id === dispatch.request.request_id
+        && entry.dispatch_updated === true));
     } finally {
       await cleanup();
     }
