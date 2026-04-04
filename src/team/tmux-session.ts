@@ -613,6 +613,10 @@ function resolveAbsoluteBinaryPath(binary: string): string {
  */
 let _leaderPaths: { node: string; } | null = null;
 function resolveLeaderNodePath(): string {
+  const envOverride = process.env[OMX_LEADER_NODE_PATH_ENV];
+  if (typeof envOverride === 'string' && envOverride.trim() !== '') {
+    return envOverride.trim();
+  }
   if (!_leaderPaths) {
     _leaderPaths = { node: resolveAbsoluteBinaryPath('node') };
   }
@@ -1014,7 +1018,7 @@ export function restoreStandaloneHudPane(
   const omxEntry = process.argv[1];
   if (!omxEntry || omxEntry.trim() === '') return null;
 
-  const hudCmd = `node ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
+  const hudCmd = `${shellQuoteSingle(translatePathForMsys(resolveLeaderNodePath()))} ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
   const hudCwd = translatePathForMsys(cwd);
   const hudResult = runTmux([
     'split-window',

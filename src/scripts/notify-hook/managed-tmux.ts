@@ -34,6 +34,7 @@ export function buildExpectedManagedTmuxSessionName(cwd: string, sessionId: stri
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 2000,
+      windowsHide: true,
     }).trim();
     if (branch) branchToken = sanitizeTmuxToken(branch);
   } catch {
@@ -244,7 +245,7 @@ async function readManagedPaneCommandState(paneTarget: string): Promise<{ curren
 }
 
 function paneLooksLikeManagedAgent({ currentCommand, startCommand }: { currentCommand: string; startCommand: string }): boolean {
-  if (/omx.*hud.*--watch/i.test(startCommand)) return false;
+  if (/\bomx\b.*\bhud\b.*--watch/i.test(startCommand)) return false;
   if (startCommand.includes('codex')) return true;
   return currentCommand === 'codex' || currentCommand === 'node' || currentCommand === 'npx';
 }

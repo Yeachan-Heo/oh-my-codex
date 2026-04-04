@@ -1931,6 +1931,7 @@ esac
 
   it('restores standalone HUD panes with direct resize on native Windows', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-standalone-win32-hud-'));
+    const prevLeaderNodePath = process.env.OMX_LEADER_NODE_PATH;
     const prevMsystem = process.env.MSYSTEM;
     const prevOstype = process.env.OSTYPE;
     const prevWsl = process.env.WSL_DISTRO_NAME;
@@ -1964,12 +1965,14 @@ esac
           delete process.env.OSTYPE;
           delete process.env.WSL_DISTRO_NAME;
           delete process.env.WSL_INTEROP;
+          process.env.OMX_LEADER_NODE_PATH = 'C:\\Program Files\\nodejs\\node.exe';
           Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
 
           const paneId = restoreStandaloneHudPane('%11', cwd);
           assert.equal(paneId, '%44');
 
           const tmuxLog = await readFile(logPath, 'utf-8');
+          assert.match(tmuxLog, /'C:\\Program Files\\nodejs\\node\.exe'/);
           assert.match(tmuxLog, new RegExp(`resize-pane -t %44 -y ${HUD_TMUX_TEAM_HEIGHT_LINES}`));
           assert.match(tmuxLog, /select-pane -t %11/);
           assert.doesNotMatch(tmuxLog, /run-shell -b sleep \d+; tmux resize-pane -t %44 -y \d+ >/);
@@ -1979,6 +1982,8 @@ esac
       );
     } finally {
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      if (typeof prevLeaderNodePath === 'string') process.env.OMX_LEADER_NODE_PATH = prevLeaderNodePath;
+      else delete process.env.OMX_LEADER_NODE_PATH;
       if (typeof prevMsystem === 'string') process.env.MSYSTEM = prevMsystem;
       else delete process.env.MSYSTEM;
       if (typeof prevOstype === 'string') process.env.OSTYPE = prevOstype;
