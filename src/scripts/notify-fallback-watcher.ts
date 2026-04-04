@@ -962,6 +962,15 @@ async function writeState(extra: Record<string, unknown> = {}): Promise<void> {
   await writeFile(statePath, JSON.stringify(state, null, 2)).catch(() => {});
 }
 
+async function writeAuthorityBackoffState(): Promise<void> {
+  await mkdir(stateDir, { recursive: true }).catch(() => {});
+  const existing = await readJsonObject(statePath);
+  const state = existing && typeof existing === 'object'
+    ? { ...existing, authority_backoff: lastAuthorityBackoff }
+    : { authority_backoff: lastAuthorityBackoff };
+  await writeFile(statePath, JSON.stringify(state, null, 2)).catch(() => {});
+}
+
 async function readJsonObject(path: string): Promise<Record<string, unknown> | null> {
   return readFile(path, 'utf-8')
     .then((content) => JSON.parse(content) as Record<string, unknown>)
@@ -1462,24 +1471,7 @@ async function runWatcherCycle(): Promise<void> {
     const authorityBackoff = await resolveAuthorityPrimaryWatcherHealth();
     lastAuthorityBackoff = authorityBackoff;
     if (authorityBackoff.active) {
-      lastDispatchDrain = {
-        ...lastDispatchDrain,
-        last_tick_at: null,
-        last_result: { processed: 0, reason: authorityBackoff.reason },
-        last_error: null,
-      };
-      lastLeaderNudge = {
-        ...lastLeaderNudge,
-        last_tick_at: null,
-        last_error: authorityBackoff.reason,
-      };
-      lastFallbackAutoNudge = {
-        ...lastFallbackAutoNudge,
-        last_tick_at: null,
-        last_reason: authorityBackoff.reason,
-        last_error: null,
-      };
-      await writeState();
+      await writeAuthorityBackoffState();
       return;
     }
   } else {

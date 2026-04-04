@@ -605,7 +605,7 @@ describe('notify-fallback watcher', () => {
       assert.equal(watcherState.authority_backoff?.active, true);
       assert.equal(watcherState.authority_backoff?.reason, 'primary_watcher_healthy');
       assert.equal(watcherState.authority_backoff?.primary_pid, process.pid);
-      assert.match(watcherState.dispatch_drain?.last_tick_at ?? '', /^\\d{4}-\\d{2}-\\d{2}T/);
+      assert.match(watcherState.dispatch_drain?.last_tick_at ?? '', /^\d{4}-\d{2}-\d{2}T/);
 
       const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
       const logContent = await readFile(logPath, 'utf-8').catch(() => '');
