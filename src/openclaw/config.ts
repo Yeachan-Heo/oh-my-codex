@@ -56,8 +56,8 @@ function normalizeFromCustomAliases(notifications: Record<string, unknown>): Ope
   const webhookAlias = asRecord(notifications.custom_webhook_command);
   const cliAlias = asRecord(notifications.custom_cli_command);
 
-  const webhookEnabled = webhookAlias?.enabled === true && typeof webhookAlias.url === "string";
-  const cliEnabled = cliAlias?.enabled === true && typeof cliAlias.command === "string";
+  const webhookEnabled = webhookAlias?.enabled !== false && typeof webhookAlias?.url === "string";
+  const cliEnabled = cliAlias?.enabled !== false && typeof cliAlias?.command === "string";
 
   if (!webhookEnabled && !cliEnabled) return null;
 

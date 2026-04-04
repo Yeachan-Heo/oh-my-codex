@@ -235,6 +235,33 @@ describe("getOpenClawConfig generic alias normalization", () => {
     assert.equal(result!.hooks["session-end"]?.gateway, "custom-webhook");
   });
 
+  it("treats custom transport aliases as enabled when enabled is omitted", async () => {
+    const omxConfigPath = join(tmpDir, ".codex", ".omx-config.json");
+    mkdirSync(join(tmpDir, ".codex"), { recursive: true });
+    writeFileSync(omxConfigPath, JSON.stringify({
+      notifications: {
+        enabled: true,
+        custom_webhook_command: {
+          url: "https://example.com/hook",
+          events: ["session-end"],
+        },
+        custom_cli_command: {
+          command: "echo omx",
+          events: ["ask-user-question"],
+        },
+      },
+    }));
+
+    const { getOpenClawConfig, resetOpenClawConfigCache } = await import("../config.js");
+    resetOpenClawConfigCache();
+    const result = getOpenClawConfig();
+    assert.ok(result !== null);
+    assert.ok(result!.gateways["custom-webhook"]);
+    assert.ok(result!.gateways["custom-cli"]);
+    assert.equal(result!.hooks["session-end"]?.gateway, "custom-webhook");
+    assert.equal(result!.hooks["ask-user-question"]?.gateway, "custom-cli");
+  });
+
   it("explicit notifications.openclaw wins over generic aliases", async () => {
     const omxConfigPath = join(tmpDir, ".codex", ".omx-config.json");
     mkdirSync(join(tmpDir, ".codex"), { recursive: true });
