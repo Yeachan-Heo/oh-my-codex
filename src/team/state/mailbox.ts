@@ -175,8 +175,18 @@ export async function markMessageDelivered(
   deps: MailboxDeps,
 ): Promise<boolean> {
   if (executeBridgeCommand(deps.cwd, { command: 'MarkMailboxDelivered', message_id: messageId })) {
-    const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
-    if (mailbox.messages.some((message) => message.message_id === messageId)) return true;
+    return await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {
+      const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
+      const msg = mailbox.messages.find((message) => message.message_id === messageId);
+      if (!msg) return false;
+      if (!msg.delivered_at) {
+        msg.delivered_at = new Date().toISOString();
+        await deps.writeMailbox(deps.teamName, mailbox, deps.cwd);
+      } else {
+        await deps.writeMailbox(deps.teamName, mailbox, deps.cwd);
+      }
+      return true;
+    });
   }
   return await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {
     const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
@@ -196,8 +206,14 @@ export async function markMessageNotified(
   deps: MailboxDeps,
 ): Promise<boolean> {
   if (executeBridgeCommand(deps.cwd, { command: 'MarkMailboxNotified', message_id: messageId })) {
-    const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
-    if (mailbox.messages.some((message) => message.message_id === messageId)) return true;
+    return await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {
+      const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
+      const msg = mailbox.messages.find((message) => message.message_id === messageId);
+      if (!msg) return false;
+      msg.notified_at = new Date().toISOString();
+      await deps.writeMailbox(deps.teamName, mailbox, deps.cwd);
+      return true;
+    });
   }
   return await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {
     const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);

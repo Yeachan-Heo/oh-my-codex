@@ -70,7 +70,7 @@ async function readBridgeDispatchRequests(stateDir, teamName) {
         transport_preference: safeString(metadata.transport_preference).trim() || 'hook_preferred_with_fallback',
         fallback_allowed: typeof metadata.fallback_allowed === 'boolean' ? metadata.fallback_allowed : true,
         status: safeString(record.status).trim() || 'pending',
-        attempt_count: 0,
+        attempt_count: Number.isFinite(metadata.attempt_count) ? Number(metadata.attempt_count) : 0,
         created_at: safeString(record.created_at).trim() || new Date().toISOString(),
         updated_at:
           safeString(record.delivered_at).trim()
@@ -246,6 +246,43 @@ async function withMailboxLock(teamDirPath, workerName, fn) {
 
 function resolveLeaderPaneId(config) {
   return safeString(config?.leader_pane_id).trim();
+}
+
+function serializeDispatchRequestRecord(request) {
+  return {
+    request_id: safeString(request.request_id).trim(),
+    target: safeString(request.to_worker).trim(),
+    status: safeString(request.status).trim() || 'pending',
+    created_at: safeString(request.created_at).trim() || new Date().toISOString(),
+    notified_at: safeString(request.notified_at).trim() || null,
+    delivered_at: safeString(request.delivered_at).trim() || null,
+    failed_at: safeString(request.failed_at).trim() || null,
+    reason: safeString(request.last_reason).trim() || null,
+    metadata: {
+      kind: safeString(request.kind).trim() || 'inbox',
+      team_name: safeString(request.team_name).trim(),
+      worker_index: Number.isFinite(request.worker_index) ? Number(request.worker_index) : undefined,
+      pane_id: safeString(request.pane_id).trim() || undefined,
+      trigger_message: safeString(request.trigger_message).trim(),
+      message_id: safeString(request.message_id).trim() || undefined,
+      inbox_correlation_key: safeString(request.inbox_correlation_key).trim() || undefined,
+      transport_preference: safeString(request.transport_preference).trim() || 'hook_preferred_with_fallback',
+      fallback_allowed: typeof request.fallback_allowed === 'boolean' ? request.fallback_allowed : true,
+      attempt_count: Number.isFinite(request.attempt_count) ? Number(request.attempt_count) : 0,
+    },
+  };
+}
+
+async function writeBridgeDispatchCompat(stateDir, teamName, requests) {
+  const compatPath = join(stateDir, 'dispatch.json');
+  const current = await readJson(compatPath, { records: [] });
+  const existing = Array.isArray(current?.records) ? current.records : [];
+  const otherTeams = existing.filter((record) => {
+    const metadata = record?.metadata && typeof record.metadata === 'object' ? record.metadata : {};
+    return safeString(metadata.team_name).trim() !== teamName;
+  });
+  const records = [...otherTeams, ...requests.map(serializeDispatchRequestRecord)];
+  await writeJsonAtomic(compatPath, { records });
 }
 
 
@@ -709,8 +746,9 @@ export async function drainPendingTeamDispatch({
         await writeJsonAtomic(issueCooldownStatePath(teamDirPath), issueCooldownState);
         triggerCooldownState.by_trigger = triggerCooldownByKey;
         await writeJsonAtomic(triggerCooldownStatePath(teamDirPath), triggerCooldownState);
-        if (usingLegacyRequests) {
-          await writeJsonAtomic(requestsPath, requests);
+        await writeJsonAtomic(requestsPath, requests);
+        if (!usingLegacyRequests) {
+          await writeBridgeDispatchCompat(stateDir, teamName, requests);
         }
       }
     });

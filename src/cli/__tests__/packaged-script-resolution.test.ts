@@ -18,8 +18,9 @@ describe('packaged script resolution contract', () => {
 
   it('resolves watcher and notify entrypoints from dist/scripts', () => {
     const cliIndex = readFileSync(join(process.cwd(), 'src', 'cli', 'index.ts'), 'utf-8');
-    assert.match(cliIndex, /dist",\s*"scripts",\s*"notify-fallback-watcher\.js"/);
-    assert.match(cliIndex, /dist",\s*"scripts",\s*"hook-derived-watcher\.js"/);
-    assert.match(cliIndex, /dist",\s*"scripts",\s*"notify-hook\.js"/);
+    assert.match(cliIndex, /function resolveDistScript\(pkgRoot: string,\s*scriptName: string\): string \{\s*return join\(pkgRoot,\s*"dist",\s*"scripts",\s*scriptName\);/s);
+    assert.match(cliIndex, /resolveNotifyFallbackWatcherScript[\s\S]*resolveDistScript\(pkgRoot,\s*"notify-fallback-watcher\.js"\)/);
+    assert.match(cliIndex, /resolveHookDerivedWatcherScript[\s\S]*resolveDistScript\(pkgRoot,\s*"hook-derived-watcher\.js"\)/);
+    assert.match(cliIndex, /resolveNotifyHookScript[\s\S]*resolveDistScript\(pkgRoot,\s*"notify-hook\.js"\)/);
   });
 });

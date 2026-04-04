@@ -51,7 +51,7 @@ import {
   withTaskClaimLock as withTaskClaimLockImpl,
   withMailboxLock as withMailboxLockImpl,
 } from './state/locks.js';
-import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir } from '../runtime/bridge.js';
+import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir, type DispatchRecord } from '../runtime/bridge.js';
 import {
   TEAM_NAME_SAFE_PATTERN,
   WORKER_NAME_SAFE_PATTERN,
@@ -1453,7 +1453,52 @@ async function readDispatchRequests(teamName: string, cwd: string): Promise<Team
 
 async function writeDispatchRequests(teamName: string, requests: TeamDispatchRequest[], cwd: string): Promise<void> {
   await writeAtomic(dispatchRequestsPath(teamName, cwd), JSON.stringify(requests, null, 2));
+  await writeBridgeDispatchCompat(teamName, requests, cwd);
 }
+
+function serializeDispatchRequestToBridgeRecord(request: TeamDispatchRequest): DispatchRecord {
+  return {
+    request_id: request.request_id,
+    target: request.to_worker,
+    status: request.status,
+    created_at: request.created_at,
+    notified_at: request.notified_at ?? null,
+    delivered_at: request.delivered_at ?? null,
+    failed_at: request.failed_at ?? null,
+    reason: request.last_reason ?? null,
+    metadata: {
+      kind: request.kind,
+      team_name: request.team_name,
+      worker_index: request.worker_index,
+      pane_id: request.pane_id,
+      trigger_message: request.trigger_message,
+      message_id: request.message_id,
+      inbox_correlation_key: request.inbox_correlation_key,
+      transport_preference: request.transport_preference,
+      fallback_allowed: request.fallback_allowed,
+      attempt_count: request.attempt_count,
+    },
+  };
+}
+
+async function writeBridgeDispatchCompat(teamName: string, requests: TeamDispatchRequest[], cwd: string): Promise<void> {
+  if (!isBridgeEnabled()) return;
+  const stateDir = resolveBridgeStateDir(cwd);
+  const path = join(stateDir, 'dispatch.json');
+  const existing = getDefaultBridge(stateDir).readCompatFile<{ records?: DispatchRecord[] }>('dispatch.json');
+  const otherRecords = Array.isArray(existing?.records)
+    ? existing.records.filter((record) => {
+      const metadata = record?.metadata && typeof record.metadata === 'object'
+        ? record.metadata as Record<string, unknown>
+        : {};
+      const metadataTeam = typeof metadata.team_name === 'string' ? metadata.team_name.trim() : '';
+      return metadataTeam !== teamName;
+    })
+    : [];
+  const records = [...otherRecords, ...requests.map(serializeDispatchRequestToBridgeRecord)];
+  await writeAtomic(path, JSON.stringify({ records }, null, 2));
+}
+
 
 export function resolveDispatchLockTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   return resolveDispatchLockTimeoutMsImpl(env);

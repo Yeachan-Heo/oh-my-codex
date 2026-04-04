@@ -378,6 +378,12 @@ describe('notify-hook/auto-nudge – blocked deep-interview auto approvals', () 
     assert.equal(isBlockedAutoApprovalInput('Maybe next I should update the focused tests.'), false);
   });
 
+  it('normalizes custom blocked inputs before exact and prefix matching', async () => {
+    const { isBlockedAutoApprovalInput } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(isBlockedAutoApprovalInput('GO ahead!!!', [' go ahead ']), true);
+    assert.equal(isBlockedAutoApprovalInput('Next I should update the focused tests.', [' Next I Should ']), true);
+  });
+
   it('does not block unrelated responses', async () => {
     const { isBlockedAutoApprovalInput } = await loadModule('notify-hook/auto-nudge.js');
     assert.equal(isBlockedAutoApprovalInput('deep interview is active; auto-approval shortcuts are blocked until the interview finishes.'), false);

@@ -487,6 +487,53 @@ describe('notify-fallback watcher', () => {
     }
   });
 
+  it('suppresses authority-only control-plane ticks when only skill-active-state carries the deep-interview input lock', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-authority-skill-lock-'));
+    try {
+      await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'state', 'skill-active-state.json'), JSON.stringify({
+        version: 1,
+        active: true,
+        skill: 'deep-interview',
+        keyword: 'deep interview',
+        phase: 'planning',
+        activated_at: '2026-02-25T00:00:00.000Z',
+        updated_at: '2026-02-25T00:00:00.000Z',
+        source: 'keyword-detector',
+        input_lock: {
+          active: true,
+          scope: 'deep-interview-auto-approval',
+          acquired_at: '2026-02-25T00:00:00.000Z',
+          blocked_inputs: ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead', 'next i should'],
+          message: 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.',
+        },
+      }, null, 2));
+
+      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+      const result = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--authority-only', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
+        { encoding: 'utf-8', env: buildCleanNotifyEnv() },
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+
+      const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
+      const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+      assert.equal(watcherState.authority_only, true);
+      assert.equal(watcherState.dispatch_drain?.run_count, 1);
+      assert.equal(watcherState.leader_nudge?.run_count, 0);
+      assert.equal(watcherState.fallback_auto_nudge?.last_reason, 'init');
+
+      const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+      const logContent = await readFile(logPath, 'utf-8').catch(() => '');
+      assert.equal(logContent.trim(), '');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 
   it('disables fallback watcher nudges when deep-interview state is active', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-deep-interview-suppressed-'));
@@ -1266,7 +1313,9 @@ exit 0
 
   it('runs bounded non-turn team dispatch drain tick in leader context', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-dispatch-'));
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
     try {
+      process.env.OMX_RUNTIME_BRIDGE = '0';
       await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
       const queued = await enqueueDispatchRequest('dispatch-team', {
         kind: 'inbox',
@@ -1286,13 +1335,17 @@ exit 0
       assert.ok(request);
       assert.notEqual(request?.status, 'pending');
     } finally {
+      if (typeof previousRuntimeBridge === 'string') process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+      else delete process.env.OMX_RUNTIME_BRIDGE;
       await rm(wd, { recursive: true, force: true });
     }
   });
 
   it('skips dispatch drain in worker context (leader-only guard)', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-dispatch-worker-'));
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
     try {
+      process.env.OMX_RUNTIME_BRIDGE = '0';
       await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
       const queued = await enqueueDispatchRequest('dispatch-team', {
         kind: 'inbox',
@@ -1322,6 +1375,8 @@ exit 0
       const drainEvent = logEntries.find((entry: { type?: string }) => entry.type === 'dispatch_drain_tick');
       assert.equal(drainEvent, undefined);
     } finally {
+      if (typeof previousRuntimeBridge === 'string') process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+      else delete process.env.OMX_RUNTIME_BRIDGE;
       await rm(wd, { recursive: true, force: true });
     }
   });
@@ -1331,11 +1386,13 @@ exit 0
     const fakeBinDir = join(wd, 'fake-bin');
     const tmuxLogPath = join(wd, 'tmux.log');
     const captureFile = join(wd, 'capture.txt');
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
     try {
+      process.env.OMX_RUNTIME_BRIDGE = '0';
       await mkdir(fakeBinDir, { recursive: true });
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
-      await writeFile(captureFile, 'dispatch ping');
+      await writeFile(captureFile, '... ping ...');
 
       await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
       const queued = await enqueueDispatchRequest('dispatch-team', {
@@ -1343,7 +1400,7 @@ exit 0
         to_worker: 'worker-1',
         worker_index: 1,
         pane_id: '%42',
-        trigger_message: 'dispatch ping',
+        trigger_message: 'ping',
       }, wd);
 
       const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
@@ -1369,14 +1426,19 @@ exit 0
       assert.equal(second.status, 0, second.stderr || second.stdout);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf8');
-      const typeMatches = tmuxLog.match(/send-keys -t %42 -l dispatch ping/g) || [];
-      assert.equal(typeMatches.length, 1, 'watcher retries should be submit-only when draft remains visible');
+      const typeMatches = tmuxLog.match(/send-keys -t %42 -l ping/g) || [];
+      assert.equal(typeMatches.length, 1, 'fresh attempt should type once; retries with draft should be submit-only');
+      const cmMatches = tmuxLog.match(/send-keys -t %42 C-m/g) || [];
+      assert.ok(cmMatches.length > 0, 'submit should use C-m');
       assert.ok(!/send-keys[^\n]*-l[^\n]*C-m/.test(tmuxLog), 'must keep -l payload and C-m submits isolated');
 
       const request = await readDispatchRequest('dispatch-team', queued.request.request_id, wd);
       assert.equal(request?.status, 'pending');
+      assert.equal(request?.attempt_count, 2);
       assert.equal(request?.last_reason, 'tmux_send_keys_unconfirmed');
     } finally {
+      if (typeof previousRuntimeBridge === 'string') process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+      else delete process.env.OMX_RUNTIME_BRIDGE;
       await rm(wd, { recursive: true, force: true });
     }
   });
@@ -1947,7 +2009,9 @@ exit 0
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-control-plane-split-'));
     const fakeBinDir = join(wd, 'fake-bin');
     const tmuxLogPath = join(wd, 'tmux.log');
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
     try {
+      process.env.OMX_RUNTIME_BRIDGE = '0';
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath, {
@@ -2010,6 +2074,8 @@ exit 0
       ));
       assert.ok(ralphFailureEvent, 'expected Ralph failure to be logged without aborting team control-plane pumping');
     } finally {
+      if (typeof previousRuntimeBridge === 'string') process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+      else delete process.env.OMX_RUNTIME_BRIDGE;
       await rm(wd, { recursive: true, force: true });
     }
   });
@@ -2020,7 +2086,9 @@ exit 0
     const tmuxLogPath = join(wd, 'tmux.log');
     const captureSeqFile = join(wd, 'capture-seq.txt');
     const captureCounterFile = join(wd, 'capture-seq.idx');
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
     try {
+      process.env.OMX_RUNTIME_BRIDGE = '0';
       await mkdir(fakeBinDir, { recursive: true });
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
@@ -2029,11 +2097,11 @@ exit 0
       // (no trigger) so the request is retyped on every retry.
       await writeFile(captureSeqFile, [
         // Run 1 (attempt 0): 1 shared preflight + 3 verify rounds × 2 captures = 7
-        'ready', 'dispatch ping', 'dispatch ping', 'dispatch ping', 'dispatch ping', 'dispatch ping', 'dispatch ping',
+        'ready', 'ping', 'ping', 'ping', 'ping', 'ping', 'ping',
         // Run 2 (attempt 1): 1 shared preflight + 1 pre-capture + 3 verify rounds × 2 captures = 8
-        'ready', 'ready', 'dispatch ping', 'dispatch ping', 'dispatch ping', 'dispatch ping', 'dispatch ping', 'dispatch ping',
+        'ready', 'ready', 'ping', 'ping', 'ping', 'ping', 'ping', 'ping',
         // Run 3 (attempt 2): 1 shared preflight + 1 pre-capture + 3 verify rounds × 2 captures = 8
-        'ready', 'ready', 'dispatch ping', 'dispatch ping', 'dispatch ping', 'dispatch ping', 'dispatch ping', 'dispatch ping',
+        'ready', 'ready', 'ping', 'ping', 'ping', 'ping', 'ping', 'ping',
       ].join('\n'));
 
       await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
@@ -2042,7 +2110,7 @@ exit 0
         to_worker: 'worker-1',
         worker_index: 1,
         pane_id: '%42',
-        trigger_message: 'dispatch ping',
+        trigger_message: 'ping',
       }, wd);
 
       const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
@@ -2064,13 +2132,15 @@ exit 0
       }
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf8');
-      const typeMatches = tmuxLog.match(/send-keys -t %42 -l dispatch ping/g) || [];
-      assert.equal(typeMatches.length, 3, 'initial + retype on every retry when trigger absent from narrow area');
+      const typeMatches = tmuxLog.match(/send-keys -t %42 -l ping/g) || [];
+      assert.equal(typeMatches.length, 3, 'should retype on every retry when trigger not in narrow capture (fresh + 2 retries)');
 
       const request = await readDispatchRequest('dispatch-team', queued.request.request_id, wd);
       assert.equal(request?.status, 'failed');
       assert.equal(request?.last_reason, 'unconfirmed_after_max_retries');
     } finally {
+      if (typeof previousRuntimeBridge === 'string') process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+      else delete process.env.OMX_RUNTIME_BRIDGE;
       await rm(wd, { recursive: true, force: true });
     }
   });

@@ -103,15 +103,19 @@ import {
 } from "../notifications/temp-contract.js";
 
 export function resolveNotifyFallbackWatcherScript(pkgRoot = getPackageRoot()): string {
-  return join(pkgRoot, "dist", "scripts", "notify-fallback-watcher.js");
+  return resolveDistScript(pkgRoot, "notify-fallback-watcher.js");
 }
 
 export function resolveHookDerivedWatcherScript(pkgRoot = getPackageRoot()): string {
-  return join(pkgRoot, "dist", "scripts", "hook-derived-watcher.js");
+  return resolveDistScript(pkgRoot, "hook-derived-watcher.js");
 }
 
 export function resolveNotifyHookScript(pkgRoot = getPackageRoot()): string {
-  return join(pkgRoot, "dist", "scripts", "notify-hook.js");
+  return resolveDistScript(pkgRoot, "notify-hook.js");
+}
+
+function resolveDistScript(pkgRoot: string, scriptName: string): string {
+  return join(pkgRoot, "dist", "scripts", scriptName);
 }
 
 const HELP = `

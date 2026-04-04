@@ -41,6 +41,11 @@ function safeString(v: unknown): string {
   return typeof v === 'string' ? v : '';
 }
 
+function parsePositivePid(value: unknown): number | null {
+  const pid = Math.trunc(asNumber(value as string | number | undefined, 0));
+  return pid > 0 ? pid : null;
+}
+
 function parseIsoMillis(value: string | null | undefined): number | null {
   const parsed = Date.parse(safeString(value).trim());
   return Number.isFinite(parsed) ? parsed : null;
@@ -502,9 +507,9 @@ async function readRalphSteerLock(path: string): Promise<RalphSteerLockRecord | 
   if (!raw.trim()) return null;
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const pid = Math.trunc(asNumber(parsed.pid as string | number | undefined, 0));
+    const pid = parsePositivePid(parsed.pid);
     const acquiredAt = safeString(parsed.acquired_at).trim();
-    if (!pid || !acquiredAt) return null;
+    if (pid === null || !acquiredAt) return null;
     return { pid, acquired_at: acquiredAt };
   } catch {
     return null;
@@ -604,19 +609,19 @@ async function readPidFileRecord(path: string): Promise<PidFileRecord | null> {
   if (!trimmed) return null;
   try {
     const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    const pid = Math.trunc(asNumber(parsed.pid as string | number | undefined, 0));
-    if (pid <= 0) return null;
+    const pid = parsePositivePid(parsed.pid);
+    if (pid === null) return null;
     return {
       pid,
-      parent_pid: Math.trunc(asNumber(parsed.parent_pid as string | number | undefined, 0)) || undefined,
+      parent_pid: parsePositivePid(parsed.parent_pid) ?? undefined,
       cwd: safeString(parsed.cwd) || undefined,
       started_at: safeString(parsed.started_at) || undefined,
       max_lifetime_ms: asNumber(parsed.max_lifetime_ms as string | number | undefined, 0) || undefined,
       owner_token: safeString(parsed.owner_token) || undefined,
     };
   } catch {
-    const pid = Number.parseInt(trimmed, 10);
-    return Number.isFinite(pid) && pid > 0 ? { pid } : null;
+    const pid = parsePositivePid(trimmed);
+    return pid === null ? null : { pid };
   }
 }
 
@@ -1315,13 +1320,17 @@ async function runDispatchDrainTick(): Promise<void> {
   }
 }
 
-async function pumpTeamControlPlaneTick(): Promise<void> {
-  await runDispatchDrainTick();
+async function shouldSuppressInteractiveFallbackTicks(): Promise<boolean> {
   const [deepInterviewStateActive, deepInterviewInputLockActive] = await Promise.all([
     isDeepInterviewStateActive(stateDir),
     isDeepInterviewInputLockActive(stateDir),
   ]);
-  if (deepInterviewStateActive || deepInterviewInputLockActive) return;
+  return deepInterviewStateActive || deepInterviewInputLockActive;
+}
+
+async function pumpTeamControlPlaneTick(): Promise<void> {
+  await runDispatchDrainTick();
+  if (await shouldSuppressInteractiveFallbackTicks()) return;
   await runLeaderNudgeTick();
   await runFallbackAutoNudgeTick();
 }
@@ -1333,11 +1342,7 @@ async function runWatcherCycle(): Promise<void> {
     await pollFiles();
   }
   await pumpTeamControlPlaneTick();
-  const [deepInterviewStateActive, deepInterviewInputLockActive] = await Promise.all([
-    isDeepInterviewStateActive(stateDir),
-    isDeepInterviewInputLockActive(stateDir),
-  ]);
-  if (!authorityOnly && !deepInterviewStateActive && !deepInterviewInputLockActive) {
+  if (!authorityOnly && !(await shouldSuppressInteractiveFallbackTicks())) {
     await runRalphWatcherBehaviorTick();
   }
   await writeState();

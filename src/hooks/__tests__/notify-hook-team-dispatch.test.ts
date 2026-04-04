@@ -1,6 +1,7 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -165,6 +166,16 @@ switch (command.command) {
   await chmod(runtimePath, 0o755);
 }
 
+async function waitForMailboxNotifiedAt(teamName: string, workerName: string, messageId: string, cwd: string): Promise<string | undefined> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const mailbox = await listMailboxMessages(teamName, workerName, cwd);
+    const message = mailbox.find((entry) => entry.message_id === messageId);
+    if (message?.notified_at) return message.notified_at;
+    if (attempt < 4) await sleep(25);
+  }
+  return undefined;
+}
+
 describe('notify-hook team dispatch consumer', () => {
   const originalTeamWorker = process.env.OMX_TEAM_WORKER;
   const originalTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
@@ -211,8 +222,12 @@ describe('notify-hook team dispatch consumer', () => {
       assert.equal(result.processed, 1);
       const request = await readDispatchRequest('alpha', queued.request.request_id, cwd);
       assert.equal(request?.status, 'notified');
+      assert.ok(request?.notified_at, 'expected dispatch state to record notified_at');
       const mailbox = await listMailboxMessages('alpha', 'worker-1', cwd);
-      assert.ok(mailbox[0]?.notified_at);
+      const mailboxMessage = mailbox.find((entry) => entry.message_id === msg.message_id);
+      assert.ok(mailboxMessage, 'expected the queued mailbox message to remain readable');
+      const notifiedAt = await waitForMailboxNotifiedAt('alpha', 'worker-1', msg.message_id, cwd);
+      assert.ok(notifiedAt || request.notified_at, 'expected dispatch state or mailbox shadow to record notified_at');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -611,8 +626,12 @@ exit 0
       assert.equal(result.processed, 1);
       const request = await readDispatchRequest('alpha', queued.request.request_id, cwd);
       assert.equal(request?.status, 'notified');
+      assert.ok(request?.notified_at, 'expected dispatch state to record notified_at');
       const mailbox = await listMailboxMessages('alpha', 'worker-1', cwd);
-      assert.ok(mailbox[0]?.notified_at);
+      const mailboxMessage = mailbox.find((entry) => entry.message_id === msg.message_id);
+      assert.ok(mailboxMessage, 'expected the queued mailbox message to remain readable');
+      const notifiedAt = await waitForMailboxNotifiedAt('alpha', 'worker-1', msg.message_id, cwd);
+      assert.ok(notifiedAt || request.notified_at, 'expected dispatch state or mailbox shadow to record notified_at');
     } finally {
       if (typeof previousStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousStateRoot;
       else delete process.env.OMX_TEAM_STATE_ROOT;

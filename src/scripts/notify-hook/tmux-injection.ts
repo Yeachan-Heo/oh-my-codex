@@ -17,7 +17,7 @@ import {
 } from './state-io.js';
 import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
-import { resolveManagedSessionContext, verifyManagedPaneTarget } from './managed-tmux.js';
+import { resolveManagedCurrentPane, resolveManagedSessionContext, verifyManagedPaneTarget } from './managed-tmux.js';
 import { evaluatePaneInjectionReadiness, mapPaneInjectionReadinessReason, sendPaneInput } from './team-tmux-guard.js';
 import {
   normalizeTmuxHookConfig,
@@ -94,6 +94,25 @@ async function resolveCanonicalPaneFromPaneTarget(paneTarget: any, expectedCwd: 
   const healedPaneId = await resolveSessionToPane(sessionName);
   if (!healedPaneId) return { paneTarget: null, reason: 'target_is_hud_pane' };
   return finalizeResolvedPane(healedPaneId, 'healed_hud_pane_target', expectedCwd);
+}
+
+async function resolvePreferredModePane(stateDir: string, allowedModes: string[]): Promise<{ mode: string; state: any; pane: string } | null> {
+  const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir).catch(() => [stateDir]);
+  const dirs = [...scopedDirs];
+  if (!dirs.map((dir) => resolvePath(dir)).includes(resolvePath(stateDir))) {
+    dirs.push(stateDir);
+  }
+  for (const dir of dirs) {
+    for (const mode of allowedModes || []) {
+      const path = join(dir, `${mode}-state.json`);
+      const parsed = await readJsonIfExists(path, null);
+      const pane = safeString(parsed?.tmux_pane_id || '').trim();
+      if (parsed?.active && pane) {
+        return { mode, state: parsed, pane };
+      }
+    }
+  }
+  return null;
 }
 
 export async function resolveSessionToPane(sessionName: any): Promise<string | null> {
@@ -274,9 +293,10 @@ export async function handleTmuxInjection({
     // Non-fatal
   }
 
-  const mode = pickActiveMode(activeModes, config.allowed_modes);
-  const modeState = mode ? (activeModeStates[mode] || {}) : {};
-  const modePane = safeString(modeState.tmux_pane_id || '');
+  const preferredModePane = await resolvePreferredModePane(stateDir, config.allowed_modes).catch(() => null);
+  const mode = preferredModePane?.mode || pickActiveMode(activeModes, config.allowed_modes);
+  const modeState = preferredModePane?.state || (mode ? (activeModeStates[mode] || {}) : {});
+  const modePane = preferredModePane?.pane || safeString(modeState.tmux_pane_id || '');
   const preGuard = evaluateInjectionGuards({
     config,
     mode,
@@ -319,7 +339,19 @@ export async function handleTmuxInjection({
     turnId,
     timestamp: nowIso,
   }), sourceText);
-  const resolution = await resolvePaneTarget(config.target, cwd, modePane, cwd, payload);
+  const preferredPaneTarget = modePane || await resolveManagedCurrentPane(cwd, payload, { allowTeamWorker: false });
+  let resolution = preferredModePane
+    ? await resolveCanonicalPaneFromPaneTarget(preferredModePane.pane, cwd).then((resolved) => (
+      resolved.paneTarget
+        ? { ...resolved, reason: 'fallback_mode_state_pane', source: 'mode_state', healTarget: true }
+        : resolved
+    ))
+    : preferredPaneTarget
+      ? await resolvePaneTarget({ type: 'pane', value: preferredPaneTarget }, cwd, '', cwd, payload)
+      : await resolvePaneTarget(config.target, cwd, modePane, cwd, payload);
+  if (!resolution.paneTarget && preferredPaneTarget) {
+    resolution = await resolvePaneTarget(config.target, cwd, modePane, cwd, payload);
+  }
   if (!resolution.paneTarget) {
     state.last_reason = resolution.reason;
     state.last_event_at = nowIso;

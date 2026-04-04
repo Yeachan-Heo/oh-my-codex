@@ -4,6 +4,29 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.11.13] - 2026-04-04
+
+Patch release for team/runtime delivery integrity, busy-leader nudge handling, release hygiene fixes, and Windows/worktree reliability follow-through after `0.11.12`.
+
+### Fixed
+- **Leader + mailbox delivery integrity** — team leader mailbox delivery stays reliable across runtime/CLI seams, false team-coordination signals are suppressed during runtime handoff, and busy Codex leader panes can now receive queued nudges instead of silently deferring them. (PRs [#1217](https://github.com/Yeachan-Heo/oh-my-codex/pull/1217), [#1223](https://github.com/Yeachan-Heo/oh-my-codex/pull/1223), [#1224](https://github.com/Yeachan-Heo/oh-my-codex/pull/1224))
+- **Windows / tmux worktree supervision** — leader activity polling, HUD targeting, and Windows worktree/session handling stay stable across detached launches and worktree checkouts. (PRs [#1212](https://github.com/Yeachan-Heo/oh-my-codex/pull/1212), [#1213](https://github.com/Yeachan-Heo/oh-my-codex/pull/1213), [#1191](https://github.com/Yeachan-Heo/oh-my-codex/pull/1191))
+- **Workflow hygiene around deep-interview + uninstall paths** — fallback nudges honor active deep-interview input locks, uninstall warns cleanly about legacy skills, and shutdown cleanup reaps detached worker descendants more reliably. (PRs [#1203](https://github.com/Yeachan-Heo/oh-my-codex/pull/1203), [#1193](https://github.com/Yeachan-Heo/oh-my-codex/pull/1193), [#1204](https://github.com/Yeachan-Heo/oh-my-codex/pull/1204))
+
+### Changed
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, release notes, and release body are aligned to `0.11.13`.
+- **Release branch repair** — the accidental placeholder corruption in `src/hooks/__tests__/notify-fallback-watcher.test.ts` is restored before the patch cut so the release branch builds cleanly again.
+
+### Verified
+- `cargo test -p omx-runtime-core`
+- `npm run build`
+- `npm run lint`
+- `node --test dist/hooks/__tests__/notify-fallback-watcher.test.js`
+- `node --test dist/cli/__tests__/version-sync-contract.test.js`
+- `npm test`
+- `npm run smoke:packed-install`
+- `git diff --check origin/main...HEAD`
+
 ## [0.11.12] - 2026-04-02
 
 Patch release for Windows flicker reductions, team/runtime seam cleanup, safer auto-nudge hygiene, cross-platform Node test execution, and workflow-doc alignment after `0.11.11`.

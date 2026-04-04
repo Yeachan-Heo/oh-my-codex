@@ -189,7 +189,7 @@ export function normalizeBridgeDispatchRecord(
           ? metadata.fallback_allowed
           : undefined,
       status: record.status,
-      attempt_count: 0,
+      attempt_count: typeof metadata.attempt_count === 'number' ? metadata.attempt_count : 0,
       created_at: record.created_at,
       updated_at: record.delivered_at ?? record.failed_at ?? record.notified_at ?? record.created_at ?? nowIso,
       notified_at: record.notified_at ?? undefined,
