@@ -3,7 +3,7 @@
  * Reads JSON config from stdin, runs startTeam/monitorTeam/shutdownTeam,
  * writes structured JSON result to stdout.
  *
- * Spawned by omx_run_team_start in state-server.ts.
+ * Spawned by OMX team orchestration entrypoints when a background team run starts.
  */
 
 import { readdirSync, readFileSync } from 'fs';
@@ -260,7 +260,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Persist pane IDs so MCP server can clean up explicitly via omx_run_team_cleanup.
+  // Persist pane IDs when a background launcher provides an OMX job ID.
   const jobId = process.env.OMX_JOB_ID;
   try {
     const livePanes = await loadLivePaneState(teamName, cwd);

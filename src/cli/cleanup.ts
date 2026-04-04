@@ -16,7 +16,7 @@ const HELP = [
 const PROCESS_EXIT_POLL_MS = 100;
 const SIGTERM_GRACE_MS = 5_000;
 const STALE_TMP_MAX_AGE_MS = 60 * 60 * 1000;
-const OMX_MCP_SERVER_PATTERN = /(?:^|[\\/])dist[\\/]mcp[\\/](?:state|memory|code-intel|trace|team)-server\.(?:[cm]?js|ts)\b/i;
+const OMX_MCP_SERVER_PATTERN = /(?:^|[\\/])dist[\\/]mcp[\\/](?:state|memory|code-intel|trace)-server\.(?:[cm]?js|ts)\b/i;
 const CODEX_PROCESS_PATTERN = /(?:^|[\\/\s])codex(?:\.js)?(?:\s|$)|@openai[\\/]codex/i;
 const OMX_LAUNCH_PROCESS_PATTERN = /(?:^|[\\/\s])omx(?:\.js)?(?:\s|$)|(?:^|[\\/])(?:bin|dist[\\/]cli)[\\/]omx\.js(?:\s|$)|oh-my-codex[\\/]dist[\\/]cli[\\/]omx\.js/i;
 const OMX_TMP_DIRECTORY_PATTERN = /^(omc|omx|oh-my-codex)-/;
@@ -82,7 +82,7 @@ function formatPlural(count: number, singular: string, plural = `${singular}s`):
 
 export function isOmxMcpProcess(command: string): boolean {
   const normalized = normalizeCommand(command);
-  return normalized.includes('oh-my-codex/dist/mcp') || OMX_MCP_SERVER_PATTERN.test(normalized);
+  return OMX_MCP_SERVER_PATTERN.test(normalized);
 }
 
 export function parsePsOutput(output: string): ProcessEntry[] {

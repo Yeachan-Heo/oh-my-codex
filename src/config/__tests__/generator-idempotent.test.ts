@@ -14,7 +14,7 @@ function count(text: string, pattern: RegExp): number {
   return (text.match(pattern) ?? []).length;
 }
 
-/** Assert the OMX block appears exactly once */
+/** Assert the current OMX block appears exactly once */
 function assertSingleOmxBlock(toml: string): void {
   assert.equal(
     count(toml, /# oh-my-codex \(OMX\) Configuration/g),
@@ -46,6 +46,16 @@ function assertSingleOmxBlock(toml: string): void {
     1,
     "[mcp_servers.omx_trace] should appear once",
   );
+  assert.equal(
+    count(toml, /^\[mcp_servers\.omx_team_run\]$/gm),
+    0,
+    "[mcp_servers.omx_team_run] should not be emitted",
+  );
+  assert.doesNotMatch(
+    toml,
+    /dist\/mcp\/team-server\.js/,
+    "team-server path should not be emitted",
+  );
   assert.equal(count(toml, /^\[tui\]$/gm), 1, "[tui] should appear once");
   assert.equal(
     count(toml, /^\[features\]$/gm),
@@ -76,7 +86,7 @@ function assertSingleOmxBlock(toml: string): void {
 }
 
 describe("config generator idempotency (#384)", () => {
-  it("first run creates config with all OMX sections", async () => {
+  it("first run creates config with all current OMX sections", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
       const configPath = join(wd, "config.toml");
@@ -580,6 +590,48 @@ describe("config generator idempotency (#384)", () => {
       );
       // User MCP server must survive
       assert.match(toml, /^\[mcp_servers\.figma\]$/m, "user MCP preserved");
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("removes legacy omx_team_run tables during upgrade repair", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      const legacy = [
+        '[user.before]',
+        'name = "kept-before"',
+        "",
+        '# ============================================================',
+        '# oh-my-codex (OMX) Configuration',
+        '# Managed by omx setup - manual edits preserved on next setup',
+        '# ============================================================',
+        "",
+        '[mcp_servers.omx_team_run]',
+        'command = "node"',
+        'args = ["/tmp/team-server.js"]',
+        'enabled = true',
+        "",
+        '# ============================================================',
+        '# End oh-my-codex',
+        "",
+        '[user.after]',
+        'name = "kept-after"',
+        "",
+      ].join("\n");
+      await writeFile(configPath, legacy);
+
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, "utf-8");
+
+      assertSingleOmxBlock(toml);
+      assert.doesNotMatch(toml, /^\[mcp_servers\.omx_team_run\]$/m);
+      assert.doesNotMatch(toml, /team-server\.js/);
+      assert.match(toml, /^\[user\.before\]$/m);
+      assert.match(toml, /^name = "kept-before"$/m);
+      assert.match(toml, /^\[user\.after\]$/m);
+      assert.match(toml, /^name = "kept-after"$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

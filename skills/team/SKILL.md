@@ -469,48 +469,30 @@ Do not claim success without file/pane evidence.
 Do not claim clean completion if shutdown occurred with `in_progress>0`.
 Use `omx sparkshell --tmux-pane ...` as an explicit opt-in operator aid for pane inspection and summaries; keep raw `tmux capture-pane` evidence available for manual intervention and proof.
 
-## MCP Job Lifecycle Tools
+## Programmatic Team Orchestration
 
-For programmatic or agent-driven team spawning (as opposed to interactive CLI use), OMX exposes four MCP tools via the `team-server`:
+Use the `omx team ...` CLI as the supported team-launch surface. For automation, drive the same CLI flow from scripts or supervising agents rather than relying on a separate MCP runner.
 
-| Tool | Description |
-|------|-------------|
-| `omx_run_team_start` | Spawn tmux CLI workers in the background; returns a `jobId` immediately |
-| `omx_run_team_status` | Non-blocking status check for a running job |
-| `omx_run_team_wait` | Block until the job completes, with automatic idle-pane nudging |
-| `omx_run_team_cleanup` | Kill worker tmux panes for a job (early stop only) |
+### Supported current surfaces
 
-### CLI vs MCP Tools
+- **`omx team ...` CLI** — Primary method for interactive or automated team orchestration. Use this when you want direct tmux-pane visibility or a scriptable launch path.
+- **Team state files** — Inspect `.omx/state/team/<team>/` when you need status, task, or mailbox evidence after launch.
 
-- **`omx team ...` CLI** — Primary method for interactive team orchestration. Use this when you are operating inside a live tmux session and want direct pane visibility.
-- **`omx_run_team_*` MCP tools** — For programmatic or agent-driven team spawning (analogous to OMC's `omc_run_team_*` tools). Use these when an agent needs to launch workers, poll status, and collect results without manual intervention.
+### Cleanup distinction
 
-### Naming Distinction
-
-Two cleanup tools exist and must not be confused:
+Two cleanup paths exist and must not be confused:
 
 - `team_cleanup` (**state-server**): Deletes team state **files** on disk (`.omx/state/team/<team>/`). Use after a team run is fully complete.
-- `omx_run_team_cleanup` (**team-server**): Kills tmux worker **panes** for a job. Use only when stopping workers early; otherwise `omx_run_team_wait` handles natural termination.
+- tmux/session cleanup: Use the documented `omx team` shutdown / cleanup flow when you need to stop worker panes or clean up an interrupted run.
 
-### Basic Usage Example
+### Automation example
 
 ```
-1. omx_run_team_start({
-     teamName: "fix-bugs",
-     agentTypes: ["codex"],
-     tasks: [{ subject: "Fix bug", description: "..." }],
-     cwd: "/path/to/project"
-   })
-   → Returns { jobId: "omx-abc123" }
-
-2. omx_run_team_wait({ job_id: "omx-abc123", timeout_ms: 300000 })
-   → Blocks until done, auto-nudges idle panes
-
-3. omx_run_team_cleanup({ job_id: "omx-abc123" })
-   → Only needed if stopping workers early
+1. omx team 1:executor "fix bugs"
+2. omx team status <team-name>
+3. omx team shutdown <team-name>
+4. Clean up the finished team state for <team-name>
 ```
-
-`omx_run_team_status` can be called between steps 1 and 2 for a non-blocking poll if you need to interleave other work while workers run.
 
 ## Limitations
 

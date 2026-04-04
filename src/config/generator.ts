@@ -721,9 +721,6 @@ function getOmxTablesBlock(pkgRoot: string, includeTui = true): string {
   const traceServerPath = escapeTomlString(
     join(pkgRoot, "dist", "mcp", "trace-server.js"),
   );
-  const teamServerPath = escapeTomlString(
-    join(pkgRoot, "dist", "mcp", "team-server.js"),
-  );
 
   return [
     "",
@@ -757,13 +754,6 @@ function getOmxTablesBlock(pkgRoot: string, includeTui = true): string {
     "[mcp_servers.omx_trace]",
     'command = "node"',
     `args = ["${traceServerPath}"]`,
-    "enabled = true",
-    "startup_timeout_sec = 5",
-    "",
-    "# OMX Team MCP Server (team job lifecycle: start, status, wait, cleanup)",
-    "[mcp_servers.omx_team_run]",
-    'command = "node"',
-    `args = ["${teamServerPath}"]`,
     "enabled = true",
     "startup_timeout_sec = 5",
     ...(includeTui

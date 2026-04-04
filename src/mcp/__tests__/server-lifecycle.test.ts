@@ -14,11 +14,6 @@ const IDLE_ENTRYPOINTS = [
   { server: 'memory', file: 'memory-server.js' },
   { server: 'code_intel', file: 'code-intel-server.js' },
   { server: 'trace', file: 'trace-server.js' },
-  {
-    server: 'team',
-    file: 'team-server.js',
-    caveat: 'idle teardown only; request-time child-job semantics remain intentionally out of scope',
-  },
 ] as const;
 
 type EntryPoint = (typeof IDLE_ENTRYPOINTS)[number];

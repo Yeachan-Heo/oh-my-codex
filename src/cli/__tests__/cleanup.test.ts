@@ -6,6 +6,7 @@ import {
   cleanupStaleTmpDirectories,
   findCleanupCandidates,
   findLaunchSafeCleanupCandidates,
+  isOmxMcpProcess,
   type ProcessEntry,
 } from '../cleanup.js';
 
@@ -26,11 +27,6 @@ const CURRENT_SESSION_PROCESSES: ProcessEntry[] = [
     pid: 810,
     ppid: 42,
     command: 'node /tmp/worktree/dist/mcp/trace-server.js',
-  },
-  {
-    pid: 811,
-    ppid: 810,
-    command: 'node /tmp/worktree/dist/mcp/team-server.js',
   },
   {
     pid: 820,
@@ -60,6 +56,10 @@ const CURRENT_SESSION_PROCESSES: ProcessEntry[] = [
 ];
 
 describe('findCleanupCandidates', () => {
+  it('does not treat legacy team-server entrypoints as active OMX MCP processes', () => {
+    assert.equal(isOmxMcpProcess('node /tmp/worktree/dist/mcp/team-server.js'), false);
+  });
+
   it('selects orphaned OMX MCP processes while preserving the current session tree', () => {
     assert.deepEqual(
       findCleanupCandidates(CURRENT_SESSION_PROCESSES, 701),
@@ -74,12 +74,6 @@ describe('findCleanupCandidates', () => {
           pid: 810,
           ppid: 42,
           command: 'node /tmp/worktree/dist/mcp/trace-server.js',
-          reason: 'outside-current-session',
-        },
-        {
-          pid: 811,
-          ppid: 810,
-          command: 'node /tmp/worktree/dist/mcp/team-server.js',
           reason: 'outside-current-session',
         },
         {
@@ -112,12 +106,6 @@ describe('findCleanupCandidates', () => {
           pid: 810,
           ppid: 42,
           command: 'node /tmp/worktree/dist/mcp/trace-server.js',
-          reason: 'outside-current-session',
-        },
-        {
-          pid: 811,
-          ppid: 810,
-          command: 'node /tmp/worktree/dist/mcp/team-server.js',
           reason: 'outside-current-session',
         },
       ],
@@ -158,9 +146,9 @@ describe('cleanupOmxMcpProcesses', () => {
     });
 
     assert.equal(result.dryRun, true);
-    assert.equal(result.candidates.length, 5);
+    assert.equal(result.candidates.length, 4);
     assert.equal(signalCount, 0);
-    assert.match(lines.join('\n'), /Dry run: would terminate 5 orphaned OMX MCP server process/);
+    assert.match(lines.join('\n'), /Dry run: would terminate 4 orphaned OMX MCP server process/);
     assert.match(lines.join('\n'), /PID 800/);
     assert.match(lines.join('\n'), /PID 810/);
   });
@@ -174,7 +162,7 @@ describe('cleanupOmxMcpProcesses', () => {
     const result = await cleanupOmxMcpProcesses([], {
       currentPid: 701,
       listProcesses: () => [
-        ...CURRENT_SESSION_PROCESSES.filter((processEntry) => processEntry.pid !== 811 && processEntry.pid !== 821 && processEntry.pid !== 831),
+        ...CURRENT_SESSION_PROCESSES.filter((processEntry) => processEntry.pid !== 821 && processEntry.pid !== 831),
       ],
       isPidAlive: (pid) => alive.has(pid),
       sendSignal: (pid, signal) => {
@@ -216,7 +204,7 @@ describe('cleanupOmxMcpProcesses', () => {
       writeLine: (line) => lines.push(line),
     });
 
-    assert.equal(result.terminatedCount, 3);
+    assert.equal(result.terminatedCount, 2);
     assert.deepEqual(result.candidates, [
       {
         pid: 800,
@@ -230,19 +218,12 @@ describe('cleanupOmxMcpProcesses', () => {
         command: 'node /tmp/worktree/dist/mcp/trace-server.js',
         reason: 'outside-current-session',
       },
-      {
-        pid: 811,
-        ppid: 810,
-        command: 'node /tmp/worktree/dist/mcp/team-server.js',
-        reason: 'outside-current-session',
-      },
     ]);
     assert.deepEqual(signals, [
       { pid: 800, signal: 'SIGTERM' },
       { pid: 810, signal: 'SIGTERM' },
-      { pid: 811, signal: 'SIGTERM' },
     ]);
-    assert.match(lines.join('\n'), /Found 3 orphaned OMX MCP server process/);
+    assert.match(lines.join('\n'), /Found 2 orphaned OMX MCP server process/);
     assert.doesNotMatch(lines.join('\n'), /PID 821/);
     assert.doesNotMatch(lines.join('\n'), /PID 831/);
   });
