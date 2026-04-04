@@ -1781,7 +1781,7 @@ export interface TeamWorkerIntegrationState {
   last_integrated_head?: string;
   last_leader_head?: string;
   last_rebased_leader_head?: string;
-  status?: 'idle' | 'integrated' | 'cherry_pick_conflict' | 'rebase_conflict';
+  status?: 'idle' | 'integrated' | 'integration_failed' | 'cherry_pick_conflict' | 'rebase_conflict';
   conflict_commit?: string;
   conflict_files?: string[];
   updated_at?: string;

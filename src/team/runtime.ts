@@ -328,7 +328,7 @@ function listConflictFiles(repoRoot: string, cwd: string): string[] {
 
 async function appendIntegrationEvent(
   teamName: string,
-  type: 'worker_cherry_pick_detected' | 'worker_cherry_pick_applied' | 'worker_cherry_pick_conflict' | 'worker_rebase_applied' | 'worker_rebase_conflict' | 'worker_auto_commit' | 'worker_merge_applied' | 'worker_merge_conflict' | 'worker_cross_rebase_applied' | 'worker_cross_rebase_conflict' | 'worker_cross_rebase_skipped',
+  type: 'worker_cherry_pick_detected' | 'worker_cherry_pick_applied' | 'worker_cherry_pick_conflict' | 'worker_rebase_applied' | 'worker_rebase_conflict' | 'worker_auto_commit' | 'worker_merge_applied' | 'worker_merge_conflict' | 'worker_integration_failed' | 'worker_cross_rebase_applied' | 'worker_cross_rebase_conflict' | 'worker_cross_rebase_skipped',
   worker: WorkerInfo,
   metadata: Record<string, unknown>,
   cwd: string,
@@ -349,6 +349,56 @@ async function sendIntegrationMessageToLeader(
   cwd: string,
 ): Promise<void> {
   await sendWorkerMessage(teamName, worker.name, 'leader-fixed', body, cwd).catch(() => {});
+}
+
+function leaderHeadAdvanced(before: string, after: string | null): after is string {
+  return typeof after === 'string' && after.length > 0 && after !== before;
+}
+
+async function recordIntegrationFailure(
+  teamName: string,
+  worker: WorkerInfo,
+  state: TeamWorkerIntegrationState,
+  details: {
+    operation: 'merge' | 'cherry-pick';
+    sourceCommit: string;
+    leaderHeadBefore: string;
+    leaderHeadAfter: string | null;
+    worktreePath: string;
+    strategy: '-X theirs';
+  },
+  cwd: string,
+): Promise<void> {
+  const leaderHeadAfter = details.leaderHeadAfter ?? details.leaderHeadBefore;
+  const sourceShort = details.sourceCommit.slice(0, 12);
+  const leaderShort = details.leaderHeadBefore.slice(0, 12);
+  state.last_leader_head = leaderHeadAfter;
+  state.status = 'integration_failed';
+  state.conflict_commit = details.sourceCommit;
+  state.conflict_files = undefined;
+  state.updated_at = new Date().toISOString();
+  await appendIntegrationEvent(teamName, 'worker_integration_failed', worker, {
+    worker_name: worker.name,
+    operation: details.operation,
+    source_commit: details.sourceCommit,
+    leader_head_before: details.leaderHeadBefore,
+    leader_head_after: leaderHeadAfter,
+    worktree_path: details.worktreePath,
+    summary: `${details.operation} for ${worker.name} reported success but leader HEAD did not advance`,
+  }, cwd);
+  appendIntegrationReport(teamName, {
+    workerName: worker.name,
+    operation: details.operation,
+    strategy: details.strategy,
+    files: [],
+    detail: `${details.operation} reported success for ${sourceShort}, but leader HEAD did not advance from ${leaderShort}; not marking worker as integrated.`,
+  }, cwd);
+  await sendIntegrationMessageToLeader(
+    teamName,
+    worker,
+    `INTEGRATION FAILED: ${details.operation} for ${worker.name} reported success, but leader HEAD stayed at ${leaderShort}. Not emitting INTEGRATED; retry or inspect leader branch state before continuing.`,
+    cwd,
+  );
 }
 
 function autoCommitDirtyWorktree(
@@ -476,8 +526,16 @@ async function integrateWorkerCommitsIntoLeader(params: {
       if (merge.ok) {
         const newLeaderHead = resolveLeaderHead(repoRoot, cwd) ?? leaderHead;
         const workerIntegrated = leaderContainsCommit(repoRoot, cwd, workerHead);
-        const leaderAdvanced = newLeaderHead !== leaderHead;
-        if (workerIntegrated && leaderAdvanced) {
+        if (!leaderHeadAdvanced(leaderHead, newLeaderHead)) {
+          await recordIntegrationFailure(teamName, worker, state, {
+            operation: 'merge',
+            sourceCommit: workerHead,
+            leaderHeadBefore: leaderHead,
+            leaderHeadAfter: newLeaderHead,
+            worktreePath,
+            strategy: '-X theirs',
+          }, cwd);
+        } else if (workerIntegrated) {
           state.last_integrated_head = workerHead;
           state.last_leader_head = newLeaderHead;
           state.status = 'integrated';
@@ -612,6 +670,19 @@ async function integrateWorkerCommitsIntoLeader(params: {
         }
 
         const newLeaderHead = resolveLeaderHead(repoRoot, cwd) ?? leaderHead;
+        if (!leaderHeadAdvanced(leaderHead, newLeaderHead)) {
+          await recordIntegrationFailure(teamName, worker, state, {
+            operation: 'cherry-pick',
+            sourceCommit: commit,
+            leaderHeadBefore: leaderHead,
+            leaderHeadAfter: newLeaderHead,
+            worktreePath,
+            strategy: '-X theirs',
+          }, cwd);
+          allPicked = false;
+          break;
+        }
+
         state.last_integrated_head = commit;
         state.last_leader_head = newLeaderHead;
         state.status = 'integrated';

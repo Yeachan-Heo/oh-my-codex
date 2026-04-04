@@ -2218,6 +2218,77 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
+  it('monitorTeam does not emit INTEGRATED when merge reports success but leader HEAD never advances', async () => {
+    const repo = await initRepo();
+    let workerPath = '';
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-runtime-fake-git-'));
+    const previousPath = process.env.PATH;
+    const previousFakeMode = process.env.OMX_FAKE_GIT_SUCCESS_NOOP;
+    try {
+      workerPath = await addWorktree(repo, 'wk1-merge-noadvance-branch', 'omx-runtime-wk1-merge-noadvance-');
+      await writeFile(join(workerPath, 'feature.txt'), 'new feature\n', 'utf-8');
+      execFileSync('git', ['add', 'feature.txt'], { cwd: workerPath, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'worker feature'], { cwd: workerPath, stdio: 'ignore' });
+
+      await initTeamState('team-merge-noadvance', 'merge no advance test', 'executor', 1, repo);
+      const cfg = await readTeamConfig('team-merge-noadvance', repo);
+      assert.ok(cfg);
+      if (!cfg) throw new Error('missing config');
+      cfg.leader_pane_id = '';
+      cfg.workers[0] = {
+        ...cfg.workers[0],
+        assigned_tasks: ['1'],
+        worktree_repo_root: repo,
+        worktree_path: workerPath,
+        worktree_branch: 'wk1-merge-noadvance-branch',
+        worktree_detached: false,
+        worktree_created: false,
+      };
+      await saveTeamConfig(cfg, repo);
+
+      const realGit = execFileSync('bash', ['-lc', 'command -v git'], { encoding: 'utf-8' }).trim();
+      await writeFile(
+        join(fakeBinDir, 'git'),
+        `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${OMX_FAKE_GIT_SUCCESS_NOOP:-}" == "merge" && "\${1:-}" == "merge" ]]; then
+  exit 0
+fi
+exec "${realGit}" "$@"
+`,
+        { mode: 0o755 },
+      );
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+      process.env.OMX_FAKE_GIT_SUCCESS_NOOP = 'merge';
+
+      const leaderHeadBefore = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim();
+      await monitorTeam('team-merge-noadvance', repo);
+      const leaderHeadAfter = execFileSync(realGit, ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim();
+      assert.equal(leaderHeadAfter, leaderHeadBefore, 'leader HEAD should stay unchanged in regression setup');
+
+      const snapshot = await readMonitorSnapshot('team-merge-noadvance', repo);
+      assert.equal(snapshot?.integrationByWorker?.['worker-1']?.status, 'integration_failed');
+      assert.equal(snapshot?.integrationByWorker?.['worker-1']?.last_integrated_head, undefined);
+
+      const leaderMailbox = await listMailboxMessages('team-merge-noadvance', 'leader-fixed', repo);
+      assert.equal(leaderMailbox.some((message) => /INTEGRATED:/.test(message.body)), false);
+      assert.equal(leaderMailbox.some((message) => /INTEGRATION FAILED:/.test(message.body)), true);
+
+      const events = await readTeamEvents('team-merge-noadvance', repo, { wakeableOnly: false });
+      assert.equal(events.some((event) => event.type === 'worker_integration_failed'), true);
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      if (typeof previousFakeMode === 'string') process.env.OMX_FAKE_GIT_SUCCESS_NOOP = previousFakeMode;
+      else delete process.env.OMX_FAKE_GIT_SUCCESS_NOOP;
+      await rm(fakeBinDir, { recursive: true, force: true });
+      if (workerPath) {
+        await rm(workerPath, { recursive: true, force: true });
+      }
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it('monitorTeam uses cherry-pick for diverged worker (hybrid cherry-pick path)', async () => {
     const repo = await initRepo();
     let workerPath = '';
