@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import type { ClientRequestArgs, IncomingMessage } from 'node:http';
@@ -195,8 +195,33 @@ describe('sanitizeReplyInput', () => {
 });
 
 describe('isReplyListenerProcess', () => {
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+
+  afterEach(() => {
+    if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+  });
+
   it('returns false for the current process (test runner has no daemon marker)', () => {
     assert.equal(isReplyListenerProcess(process.pid), false);
+  });
+
+  it('returns false on native Windows instead of shelling out to ps', (_, done) => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    const child = spawn(
+      process.execPath,
+      ['-e', 'const pollLoop = () => {}; setInterval(pollLoop, 60000);'],
+      { stdio: 'ignore' },
+    );
+    child.once('spawn', () => {
+      const pid = child.pid!;
+      const result = isReplyListenerProcess(pid);
+      child.kill();
+      assert.equal(result, false);
+      done();
+    });
+    child.once('error', (err) => {
+      done(err);
+    });
   });
 
   it('returns true for a process whose command line contains the daemon marker', (_, done) => {

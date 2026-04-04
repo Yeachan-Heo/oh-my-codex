@@ -13,12 +13,18 @@ import {
 
 describe('getCurrentTmuxSession', () => {
   const originalTmux = process.env.TMUX;
+  const originalPidFallback = process.env.OMX_TMUX_PID_FALLBACK;
 
   afterEach(() => {
     if (originalTmux !== undefined) {
       process.env.TMUX = originalTmux;
     } else {
       delete process.env.TMUX;
+    }
+    if (originalPidFallback !== undefined) {
+      process.env.OMX_TMUX_PID_FALLBACK = originalPidFallback;
+    } else {
+      delete process.env.OMX_TMUX_PID_FALLBACK;
     }
   });
 
@@ -27,11 +33,24 @@ describe('getCurrentTmuxSession', () => {
     const value = getCurrentTmuxSession();
     assert.ok(value === null || typeof value === 'string');
   });
+
+  it('skips ps-based pid fallback on native Windows', () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    delete process.env.TMUX;
+    process.env.OMX_TMUX_PID_FALLBACK = '1';
+    try {
+      assert.equal(getCurrentTmuxSession(), null);
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+    }
+  });
 });
 
 describe('getCurrentTmuxPaneId', () => {
   const originalTmux = process.env.TMUX;
   const originalPane = process.env.TMUX_PANE;
+  const originalPidFallback = process.env.OMX_TMUX_PID_FALLBACK;
 
   afterEach(() => {
     if (originalTmux !== undefined) {
@@ -43,6 +62,11 @@ describe('getCurrentTmuxPaneId', () => {
       process.env.TMUX_PANE = originalPane;
     } else {
       delete process.env.TMUX_PANE;
+    }
+    if (originalPidFallback !== undefined) {
+      process.env.OMX_TMUX_PID_FALLBACK = originalPidFallback;
+    } else {
+      delete process.env.OMX_TMUX_PID_FALLBACK;
     }
   });
 
@@ -71,6 +95,19 @@ describe('getCurrentTmuxPaneId', () => {
     // Falls back to tmux command, which may or may not work
     const result = getCurrentTmuxPaneId();
     assert.ok(result === null || /^%\d+$/.test(result));
+  });
+
+  it('skips ps-based pid fallback on native Windows', () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    delete process.env.TMUX;
+    delete process.env.TMUX_PANE;
+    process.env.OMX_TMUX_PID_FALLBACK = '1';
+    try {
+      assert.equal(getCurrentTmuxPaneId(), null);
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+    }
   });
 });
 

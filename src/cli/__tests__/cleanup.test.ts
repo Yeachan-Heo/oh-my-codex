@@ -7,6 +7,7 @@ import {
   findCleanupCandidates,
   findLaunchSafeCleanupCandidates,
   isOmxMcpProcess,
+  listOmxProcesses,
   type ProcessEntry,
 } from '../cleanup.js';
 
@@ -128,6 +129,18 @@ describe('findCleanupCandidates', () => {
         reason: 'outside-current-session',
       },
     ]);
+  });
+});
+
+describe('listOmxProcesses', () => {
+  it('returns no processes on native Windows without shelling out to ps', () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      assert.deepEqual(listOmxProcesses(), []);
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+    }
   });
 });
 

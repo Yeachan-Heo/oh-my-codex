@@ -277,6 +277,7 @@ export function isReplyListenerProcess(pid: number): boolean {
       const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf-8');
       return cmdline.includes(DAEMON_IDENTITY_MARKER);
     }
+    if (process.platform === 'win32') return false;
     // macOS and other POSIX systems
     const result = spawnSync('ps', ['-p', String(pid), '-o', 'args='], {
       encoding: 'utf-8',

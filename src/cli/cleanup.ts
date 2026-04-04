@@ -105,10 +105,11 @@ export function parsePsOutput(output: string): ProcessEntry[] {
 }
 
 export function listOmxProcesses(): ProcessEntry[] {
+  if (process.platform === 'win32') return [];
   const output = execFileSync('ps', ['axww', '-o', 'pid=,ppid=,command='], {
     encoding: 'utf-8',
-      windowsHide: true,
-    });
+    windowsHide: true,
+  });
   return parsePsOutput(output);
 }
 

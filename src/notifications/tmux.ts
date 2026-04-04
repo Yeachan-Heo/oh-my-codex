@@ -55,6 +55,7 @@ export function getCurrentTmuxSession(): string | null {
  * is a child of a tmux pane process.
  */
 function detectTmuxSessionByPid(): string | null {
+  if (process.platform === 'win32') return null;
   try {
     // Get all tmux pane PIDs with their session names
     const output = execSync(
@@ -209,6 +210,7 @@ export function getCurrentTmuxPaneId(): string | null {
  * Detect tmux pane ID by walking the process tree.
  */
 function detectTmuxPaneByPid(): string | null {
+  if (process.platform === 'win32') return null;
   try {
     const output = execSync(
       "tmux list-panes -a -F '#{pane_pid} #{pane_id}'",

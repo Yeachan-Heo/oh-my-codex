@@ -72,6 +72,7 @@ function readCurrentTmuxSessionName(): string {
 function readParentPid(pid: number): number | null {
   if (!Number.isInteger(pid) || pid <= 1) return null;
   try {
+    if (process.platform === 'win32') return null;
     if (process.platform === 'linux') {
       const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
       const commandEnd = stat.lastIndexOf(')');
