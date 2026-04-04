@@ -18,6 +18,15 @@ export function safeString(value: any, fallback = ''): string {
   return String(value);
 }
 
+export function resolveExternalCommandTimeoutMs(defaultMs: number): number {
+  const parsed = asNumber(
+    safeString(process.env.OMX_NOTIFY_HOOK_COMMAND_TIMEOUT_MS || process.env.OMX_TMUX_TIMEOUT_MS || ''),
+  );
+  if (parsed === null) return defaultMs;
+  const normalized = Math.max(250, Math.floor(parsed));
+  return Math.min(60_000, Math.max(defaultMs, normalized));
+}
+
 export function clampPct(value: any): number | null {
   if (!Number.isFinite(value)) return null;
   if (value < 0) return 0;

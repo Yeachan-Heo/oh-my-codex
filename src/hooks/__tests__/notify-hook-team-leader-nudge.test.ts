@@ -66,6 +66,46 @@ exit 0
 `;
 }
 
+function buildIsolatedNotifyEnv(
+  cwd: string,
+  fakeBinDir: string,
+  extraEnv: Record<string, string> = {},
+): NodeJS.ProcessEnv {
+  const basePath = process.platform === 'win32'
+    ? (process.env.PATH || '')
+    : '/usr/bin:/bin:/usr/sbin:/sbin';
+  return {
+    PATH: `${fakeBinDir}:${basePath}`,
+    TMPDIR: process.env.TMPDIR || '',
+    TMP: process.env.TMP || '',
+    TEMP: process.env.TEMP || '',
+    LANG: process.env.LANG || 'en_US.UTF-8',
+    LC_ALL: process.env.LC_ALL || '',
+    HOME: join(cwd, '.test-home'),
+    CODEX_HOME: '',
+    OMX_SESSION_ID: '',
+    OMX_TEAM_LEADER_NUDGE_MS: '10000',
+    OMX_TEAM_LEADER_STALE_MS: '10000',
+    OMX_NOTIFY_HOOK_COMMAND_TIMEOUT_MS: '6000',
+    OMX_TEAM_LEADER_ALL_IDLE_COOLDOWN_MS: '',
+    OMX_TEAM_PROGRESS_STALL_MS: '',
+    OMX_TEAM_WORKER_TURN_STALL_MS: '',
+    OMX_TEAM_WORKER: '',
+    OMX_TEAM_STATE_ROOT: '',
+    OMX_TEAM_LEADER_CWD: '',
+    OMX_MODEL_INSTRUCTIONS_FILE: '',
+    OMX_TEST_CAPTURE_FILE: '',
+    OMX_TEST_CAPTURE_SEQUENCE_FILE: '',
+    OMX_TEST_CAPTURE_COUNTER_FILE: '',
+    OMX_TEAM_DISPATCH_ISSUE_COOLDOWN_MS: '',
+    OMX_RUNTIME_BINARY: '',
+    USE_OMX_EXPLORE_CMD: '',
+    TMUX: '',
+    TMUX_PANE: '',
+    ...extraEnv,
+  };
+}
+
 function runNotifyHook(
   cwd: string,
   fakeBinDir: string,
@@ -82,19 +122,7 @@ function runNotifyHook(
 
   return spawnSync(process.execPath, [NOTIFY_HOOK_SCRIPT.pathname, JSON.stringify(payload)], {
     encoding: 'utf8',
-    env: {
-      ...process.env,
-      PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
-      OMX_TEAM_LEADER_NUDGE_MS: '10000',
-      OMX_TEAM_LEADER_STALE_MS: '10000',
-      OMX_TEAM_WORKER: '',
-      OMX_TEAM_STATE_ROOT: '',
-      OMX_TEAM_LEADER_CWD: '',
-      OMX_MODEL_INSTRUCTIONS_FILE: '',
-      TMUX: '',
-      TMUX_PANE: '',
-      ...extraEnv,
-    },
+    env: buildIsolatedNotifyEnv(cwd, fakeBinDir, extraEnv),
   });
 }
 

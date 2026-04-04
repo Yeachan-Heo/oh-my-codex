@@ -9,7 +9,7 @@ import { readFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { basename, dirname, join, resolve as resolvePath } from 'path';
 import { homedir } from 'os';
-import { asNumber, safeString } from './utils.js';
+import { asNumber, resolveExternalCommandTimeoutMs, safeString } from './utils.js';
 import { readJsonIfExists, getScopedStateDirsForCurrentSession, readdir } from './state-io.js';
 import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
@@ -378,11 +378,12 @@ export async function capturePane(paneId, lines = 10) {
 function resolveCodexPaneByCwdFallback(cwd) {
   const normalizedCwd = safeString(cwd).trim();
   if (!normalizedCwd) return '';
+  const tmuxTimeoutMs = resolveExternalCommandTimeoutMs(2000);
 
   try {
     const panes = execFileSync('tmux', [
       'list-panes', '-a', '-F', '#{pane_id}	#{pane_current_path}	#{pane_current_command}	#{pane_start_command}',
-    ], { encoding: 'utf-8', timeout: 2000, windowsHide: true })
+    ], { encoding: 'utf-8', timeout: tmuxTimeoutMs, windowsHide: true })
       .trim()
       .split('\n')
       .filter(Boolean);
@@ -486,11 +487,12 @@ function buildExpectedManagedTmuxSessionName(cwd, sessionId) {
 
 function readCurrentTmuxSessionName() {
   if (!process.env.TMUX) return '';
+  const tmuxTimeoutMs = resolveExternalCommandTimeoutMs(2000);
   try {
     return execFileSync('tmux', ['display-message', '-p', '#S'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 2000,
+      timeout: tmuxTimeoutMs,
     }).trim();
   } catch {
     return '';

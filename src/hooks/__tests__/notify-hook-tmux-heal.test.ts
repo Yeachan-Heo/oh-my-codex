@@ -24,6 +24,46 @@ async function readJson<T>(path: string): Promise<T> {
   return JSON.parse(await readFile(path, 'utf-8')) as T;
 }
 
+function buildNotifyHookEnv(
+  cwd: string,
+  fakeBinDir: string,
+  extraEnv: Record<string, string> = {},
+): NodeJS.ProcessEnv {
+  const basePath = process.platform === 'win32'
+    ? (process.env.PATH || '')
+    : '/usr/bin:/bin:/usr/sbin:/sbin';
+  return {
+    PATH: `${fakeBinDir}:${basePath}`,
+    TMPDIR: process.env.TMPDIR || '',
+    TMP: process.env.TMP || '',
+    TEMP: process.env.TEMP || '',
+    LANG: process.env.LANG || 'en_US.UTF-8',
+    LC_ALL: process.env.LC_ALL || '',
+    HOME: join(cwd, '.test-home'),
+    CODEX_HOME: '',
+    OMX_SESSION_ID: '',
+    OMX_TEAM_WORKER: '',
+    OMX_TEAM_STATE_ROOT: '',
+    OMX_TEAM_LEADER_CWD: '',
+    OMX_MODEL_INSTRUCTIONS_FILE: '',
+    OMX_NOTIFY_HOOK_COMMAND_TIMEOUT_MS: '6000',
+    OMX_TEAM_LEADER_NUDGE_MS: '',
+    OMX_TEAM_LEADER_STALE_MS: '',
+    OMX_TEAM_LEADER_ALL_IDLE_COOLDOWN_MS: '',
+    OMX_TEAM_PROGRESS_STALL_MS: '',
+    OMX_TEAM_WORKER_TURN_STALL_MS: '',
+    OMX_TEST_CAPTURE_FILE: '',
+    OMX_TEST_CAPTURE_SEQUENCE_FILE: '',
+    OMX_TEST_CAPTURE_COUNTER_FILE: '',
+    OMX_TEAM_DISPATCH_ISSUE_COOLDOWN_MS: '',
+    OMX_RUNTIME_BINARY: '',
+    USE_OMX_EXPLORE_CMD: '',
+    TMUX: '',
+    TMUX_PANE: '',
+    ...extraEnv,
+  };
+}
+
 describe('notify-hook tmux target healing', () => {
   it('falls back to global mode state when scoped session has no allowed active mode', async () => {
     await withTempWorkingDir(async (cwd) => {
@@ -106,11 +146,7 @@ exit 1
 
       const result = spawnSync(process.execPath, [NOTIFY_HOOK_SCRIPT.pathname, JSON.stringify(payload)], {
         encoding: 'utf8',
-        env: {
-          ...process.env,
-          PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
-          OMX_TEAM_WORKER: '',
-        },
+        env: buildNotifyHookEnv(cwd, fakeBinDir),
       });
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
@@ -230,12 +266,7 @@ exit 1
 
       const result = spawnSync(process.execPath, [NOTIFY_HOOK_SCRIPT.pathname, JSON.stringify(payload)], {
         encoding: 'utf8',
-        env: {
-          ...process.env,
-          PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
-          OMX_TEAM_WORKER: '',
-          TMUX_PANE: '%42',
-        },
+        env: buildNotifyHookEnv(cwd, fakeBinDir, { TMUX_PANE: '%42' }),
       });
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
@@ -359,12 +390,7 @@ exit 1
 
       const result = spawnSync(process.execPath, [NOTIFY_HOOK_SCRIPT.pathname, JSON.stringify(payload)], {
         encoding: 'utf8',
-        env: {
-          ...process.env,
-          PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
-          OMX_TEAM_WORKER: '',
-          TMUX_PANE: '%42',
-        },
+        env: buildNotifyHookEnv(cwd, fakeBinDir, { TMUX_PANE: '%42' }),
       });
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
@@ -475,11 +501,7 @@ exit 1
 
       const result = spawnSync(process.execPath, [NOTIFY_HOOK_SCRIPT.pathname, JSON.stringify(payload)], {
         encoding: 'utf8',
-        env: {
-          ...process.env,
-          PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
-          OMX_TEAM_WORKER: '',
-        },
+        env: buildNotifyHookEnv(cwd, fakeBinDir),
       });
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
@@ -587,12 +609,7 @@ exit 1
 
       const result = spawnSync(process.execPath, [NOTIFY_HOOK_SCRIPT.pathname, JSON.stringify(payload)], {
         encoding: 'utf8',
-        env: {
-          ...process.env,
-          PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
-          OMX_TEAM_WORKER: '',
-          TMUX_PANE: '%99',
-        },
+        env: buildNotifyHookEnv(cwd, fakeBinDir, { TMUX_PANE: '%99' }),
       });
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
@@ -693,11 +710,7 @@ exit 1
 
       const result = spawnSync(process.execPath, [NOTIFY_HOOK_SCRIPT.pathname, JSON.stringify(payload)], {
         encoding: 'utf8',
-        env: {
-          ...process.env,
-          PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
-          OMX_TEAM_WORKER: '',
-        },
+        env: buildNotifyHookEnv(cwd, fakeBinDir),
       });
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
@@ -812,11 +825,7 @@ exit 1
 
       const result = spawnSync(process.execPath, [NOTIFY_HOOK_SCRIPT.pathname, JSON.stringify(payload)], {
         encoding: 'utf8',
-        env: {
-          ...process.env,
-          PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
-          OMX_TEAM_WORKER: '',
-        },
+        env: buildNotifyHookEnv(cwd, fakeBinDir),
       });
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
@@ -918,11 +927,7 @@ exit 1
 
       const result = spawnSync(process.execPath, [NOTIFY_HOOK_SCRIPT.pathname, JSON.stringify(payload)], {
         encoding: 'utf8',
-        env: {
-          ...process.env,
-          PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
-          OMX_TEAM_WORKER: '',
-        },
+        env: buildNotifyHookEnv(cwd, fakeBinDir),
       });
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 

@@ -3,9 +3,11 @@
  */
 
 import { spawn } from 'child_process';
+import { resolveExternalCommandTimeoutMs } from './utils.js';
 
 export function runProcess(command: string, args: string[], timeoutMs = 3000): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
+    const effectiveTimeoutMs = resolveExternalCommandTimeoutMs(timeoutMs);
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
@@ -15,8 +17,8 @@ export function runProcess(command: string, args: string[], timeoutMs = 3000): P
       if (finished) return;
       finished = true;
       child.kill('SIGTERM');
-      reject(new Error(`timeout after ${timeoutMs}ms`));
-    }, timeoutMs);
+      reject(new Error(`timeout after ${effectiveTimeoutMs}ms`));
+    }, effectiveTimeoutMs);
 
     child.stdout.on('data', (chunk: any) => {
       stdout += chunk.toString();

@@ -306,11 +306,13 @@ exit 1
     const fakeBinDir = join(cwd, 'fake-bin');
     const tmuxLogPath = join(cwd, 'tmux.log');
     const prevPath = process.env.PATH;
+    const prevNotifyHookTimeout = process.env.OMX_NOTIFY_HOOK_COMMAND_TIMEOUT_MS;
     try {
       await mkdir(fakeBinDir, { recursive: true });
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
       process.env.PATH = `${fakeBinDir}:${prevPath || ''}`;
+      process.env.OMX_NOTIFY_HOOK_COMMAND_TIMEOUT_MS = '6000';
 
       await initTeamState('alpha', 'task', 'executor', 1, cwd);
       const cfg = await readTeamConfig('alpha', cwd);
@@ -339,6 +341,8 @@ exit 1
     } finally {
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
+      if (typeof prevNotifyHookTimeout === 'string') process.env.OMX_NOTIFY_HOOK_COMMAND_TIMEOUT_MS = prevNotifyHookTimeout;
+      else delete process.env.OMX_NOTIFY_HOOK_COMMAND_TIMEOUT_MS;
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -349,6 +353,7 @@ exit 1
     const tmuxLogPath = join(cwd, 'tmux.log');
     const prevPath = process.env.PATH;
     const prevTmuxPane = process.env.TMUX_PANE;
+    const prevNotifyHookTimeout = process.env.OMX_NOTIFY_HOOK_COMMAND_TIMEOUT_MS;
     try {
       await mkdir(fakeBinDir, { recursive: true });
       const fakeTmux = `#!/usr/bin/env bash
@@ -426,6 +431,7 @@ exit 0
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
       process.env.PATH = `${fakeBinDir}:${prevPath || ''}`;
       process.env.TMUX_PANE = '%42';
+      process.env.OMX_NOTIFY_HOOK_COMMAND_TIMEOUT_MS = '6000';
 
       await initTeamState('alpha', 'task', 'executor', 1, cwd);
       const cfg = await readTeamConfig('alpha', cwd);
@@ -455,6 +461,8 @@ exit 0
       else delete process.env.PATH;
       if (typeof prevTmuxPane === 'string') process.env.TMUX_PANE = prevTmuxPane;
       else delete process.env.TMUX_PANE;
+      if (typeof prevNotifyHookTimeout === 'string') process.env.OMX_NOTIFY_HOOK_COMMAND_TIMEOUT_MS = prevNotifyHookTimeout;
+      else delete process.env.OMX_NOTIFY_HOOK_COMMAND_TIMEOUT_MS;
       await rm(cwd, { recursive: true, force: true });
     }
   });

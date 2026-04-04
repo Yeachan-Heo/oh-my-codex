@@ -153,12 +153,39 @@ exit 0
 function buildCleanNotifyEnv(
   overrides: Record<string, string> = {},
 ): NodeJS.ProcessEnv {
+  const isolatedHome = join(tmpdir(), `omx-fallback-home-${randomUUID()}`);
+  const basePath = process.platform === 'win32'
+    ? (process.env.PATH || '')
+    : '/usr/bin:/bin:/usr/sbin:/sbin';
   return {
-    ...process.env,
+    PATH: basePath,
+    TMPDIR: process.env.TMPDIR || '',
+    TMP: process.env.TMP || '',
+    TEMP: process.env.TEMP || '',
+    LANG: process.env.LANG || 'en_US.UTF-8',
+    LC_ALL: process.env.LC_ALL || '',
+    HOME: isolatedHome,
+    CODEX_HOME: '',
+    OMX_SESSION_ID: '',
     OMX_TEAM_WORKER: '',
     OMX_TEAM_STATE_ROOT: '',
     OMX_TEAM_LEADER_CWD: '',
     OMX_MODEL_INSTRUCTIONS_FILE: '',
+    OMX_NOTIFY_HOOK_COMMAND_TIMEOUT_MS: '6000',
+    OMX_TEST_CAPTURE_FILE: '',
+    OMX_TEST_CAPTURE_SEQUENCE_FILE: '',
+    OMX_TEST_CAPTURE_COUNTER_FILE: '',
+    OMX_TEAM_DISPATCH_ISSUE_COOLDOWN_MS: '',
+    OMX_TEAM_LEADER_NUDGE_MS: '',
+    OMX_TEAM_LEADER_STALE_MS: '',
+    OMX_TEAM_LEADER_ALL_IDLE_COOLDOWN_MS: '',
+    OMX_TEAM_PROGRESS_STALL_MS: '',
+    OMX_TEAM_WORKER_TURN_STALL_MS: '',
+    OMX_TEAM_WORKER_IDLE_NOTIFY: '',
+    OMX_TEAM_WORKER_IDLE_COOLDOWN_MS: '',
+    OMX_TEAM_ALL_IDLE_COOLDOWN_MS: '',
+    OMX_RUNTIME_BINARY: '',
+    USE_OMX_EXPLORE_CMD: '',
     TMUX: '',
     TMUX_PANE: '',
     ...overrides,
