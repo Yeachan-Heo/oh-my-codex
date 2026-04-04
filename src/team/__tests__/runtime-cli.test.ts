@@ -1,14 +1,29 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'fs/promises';
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
+import { join } from 'path';
+
 import { initTeamState, createTask, readTeamConfig, saveTeamConfig } from '../state.js';
 
 async function loadRuntimeCliModule() {
   process.env.OMX_RUNTIME_CLI_DISABLE_AUTO_START = '1';
   return await import('../runtime-cli.js');
+}
+
+async function createRefreshFixture(): Promise<{
+  root: string;
+  memoryRoot: string;
+  scriptPath: string;
+}> {
+  const root = await mkdtemp(join(tmpdir(), 'omx-runtime-cli-refresh-'));
+  const memoryRoot = join(root, 'memory');
+  const scriptPath = join(root, 'scripts', 'refresh_memory.py');
+  await mkdir(memoryRoot, { recursive: true });
+  await mkdir(join(root, 'scripts'), { recursive: true });
+  await writeFile(scriptPath, '#!/usr/bin/env python3\n', 'utf-8');
+  return { root, memoryRoot, scriptPath };
 }
 
 describe('runtime-cli helpers', () => {
@@ -74,6 +89,14 @@ describe('runtime-cli helpers', () => {
     assert.equal(liveBehavior.fixingWithNoWorkers, false);
   });
 
+  it('does not treat leader pane as a worker pane for dead-worker detection', async () => {
+    const runtimeCli = await loadRuntimeCliModule();
+
+    const result = runtimeCli.detectDeadWorkerFailure(1, 1, true, 'team-exec');
+    assert.equal(result.deadWorkerFailure, true);
+    assert.equal(result.fixingWithNoWorkers, false);
+  });
+
   it('gracefully shuts down only when the leader explicitly requests shutdown', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-cli-shutdown-'));
     const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
@@ -128,13 +151,89 @@ describe('runtime-cli helpers', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
-});
 
-
-  it('does not treat leader pane as a worker pane for dead-worker detection', async () => {
+  it('keeps team-complete refresh disabled until strict mode and explicit team gate are enabled', async () => {
     const runtimeCli = await loadRuntimeCliModule();
 
-    const result = runtimeCli.detectDeadWorkerFailure(1, 1, true, 'team-exec');
-    assert.equal(result.deadWorkerFailure, true);
-    assert.equal(result.fixingWithNoWorkers, false);
+    const disabledStrict = runtimeCli.scheduleFormalMemoryRefreshOnTeamComplete('/repo', 'alpha', {});
+    assert.equal(disabledStrict.scheduled, false);
+    assert.equal(disabledStrict.reason, 'strict_mode_disabled');
+
+    const disabledGate = runtimeCli.scheduleFormalMemoryRefreshOnTeamComplete('/repo', 'alpha', {
+      OMX_STRICT_MEMORY_MODE: '1',
+    });
+    assert.equal(disabledGate.scheduled, false);
+    assert.equal(disabledGate.reason, 'team_completion_refresh_disabled');
   });
+
+  it('schedules detached formal-memory refresh for completed leader teams', async () => {
+    const runtimeCli = await loadRuntimeCliModule();
+    const fixture = await createRefreshFixture();
+    try {
+      let captured:
+        | {
+            command: string;
+            args: readonly string[];
+            options: {
+              cwd: string;
+              env: NodeJS.ProcessEnv;
+              detached: boolean;
+              stdio: 'ignore';
+            };
+          }
+        | undefined;
+      let unrefCalled = false;
+
+      const result = runtimeCli.scheduleFormalMemoryRefreshOnTeamComplete(
+        '/repo',
+        'team-alpha',
+        {
+          OMX_STRICT_MEMORY_MODE: '1',
+          OMX_STRICT_MEMORY_REFRESH_ON_TEAM_COMPLETE: '1',
+          OMX_EXTERNAL_MEMORY_ROOT: fixture.memoryRoot,
+          OMX_EXTERNAL_MEMORY_REFRESH_PYTHON: 'python3.12',
+        },
+        ((command: string, args: readonly string[], options: {
+          cwd: string;
+          env: NodeJS.ProcessEnv;
+          detached: boolean;
+          stdio: 'ignore';
+        }) => {
+          captured = { command, args, options };
+          return {
+            unref() {
+              unrefCalled = true;
+            },
+          };
+        }) as never,
+      );
+
+      assert.equal(result.scheduled, true);
+      assert.equal(captured?.command, 'python3.12');
+      assert.deepEqual(captured?.args, [fixture.scriptPath, '--workspace-root', '/repo']);
+      assert.equal(captured?.options.env.OMX_EXTERNAL_MEMORY_REFRESH_SOURCE, 'omx-team-runtime-complete');
+      assert.equal(captured?.options.env.OMX_EXTERNAL_MEMORY_REFRESH_TEAM_NAME, 'team-alpha');
+      assert.equal(captured?.options.detached, true);
+      assert.equal(unrefCalled, true);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('skips team-complete refresh when the process is marked as a team worker', async () => {
+    const runtimeCli = await loadRuntimeCliModule();
+    const fixture = await createRefreshFixture();
+    try {
+      const result = runtimeCli.scheduleFormalMemoryRefreshOnTeamComplete('/repo', 'team-worker', {
+        OMX_STRICT_MEMORY_MODE: '1',
+        OMX_STRICT_MEMORY_REFRESH_ON_TEAM_COMPLETE: '1',
+        OMX_EXTERNAL_MEMORY_ROOT: fixture.memoryRoot,
+        OMX_TEAM_WORKER: 'team-worker/worker-1',
+      });
+      assert.equal(result.scheduled, false);
+      assert.equal(result.reason, 'team_worker_process');
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+});

@@ -9,6 +9,12 @@
 import { readdirSync, readFileSync } from 'fs';
 import { writeFile, rename } from 'fs/promises';
 import { join } from 'path';
+import {
+  scheduleFormalMemoryRefresh,
+  STRICT_MEMORY_REFRESH_ON_TEAM_COMPLETE_ENV,
+  type FormalMemoryRefreshScheduleResult,
+  type FormalMemoryRefreshSpawn,
+} from '../integration/formal-memory-refresh.js';
 import { startTeam, monitorTeam, shutdownTeam } from './runtime.js';
 import type { TeamRuntime } from './runtime.js';
 import { teamReadConfig as readTeamConfig } from './team-ops.js';
@@ -80,6 +86,21 @@ export async function shutdownWithForceFallback(teamName: string, cwd: string): 
     }
     await shutdownTeam(teamName, cwd, { force: true });
   }
+}
+
+export function scheduleFormalMemoryRefreshOnTeamComplete(
+  cwd: string,
+  teamName: string,
+  env: NodeJS.ProcessEnv = process.env,
+  spawnImpl?: FormalMemoryRefreshSpawn,
+): FormalMemoryRefreshScheduleResult {
+  return scheduleFormalMemoryRefresh({
+    cwd,
+    source: 'omx-team-runtime-complete',
+    teamName,
+    enableEnvKeys: [STRICT_MEMORY_REFRESH_ON_TEAM_COMPLETE_ENV],
+    disabledReason: 'team_completion_refresh_disabled',
+  }, env, spawnImpl);
 }
 
 export function detectDeadWorkerFailure(
@@ -195,6 +216,22 @@ async function main(): Promise<void> {
         }
       } catch (err) {
         process.stderr.write(`[runtime-cli] shutdownTeam error: ${err}\n`);
+      }
+    }
+
+    if (status === 'completed') {
+      try {
+        const refresh = scheduleFormalMemoryRefreshOnTeamComplete(runtime?.cwd ?? cwd, teamName);
+        if (!refresh.scheduled && (
+          refresh.reason === 'refresh_script_unavailable'
+          || refresh.reason.startsWith('spawn_failed:')
+        )) {
+          process.stderr.write(
+            `[runtime-cli] strict formal-memory refresh skipped: ${refresh.reason}\n`,
+          );
+        }
+      } catch (err) {
+        process.stderr.write(`[runtime-cli] strict formal-memory refresh error: ${err}\n`);
       }
     }
 
