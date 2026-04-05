@@ -1,0 +1,19 @@
+[package]
+name = "omx-team"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Team orchestration: leader/worker hierarchy, phases, scaling"
+
+[dependencies]
+omx-types = { path = "../omx-types" }
+omx-mux = { path = "../omx-mux" }
+omx-state = { path = "../omx-state" }
+omx-hooks = { path = "../omx-hooks" }
+omx-config = { path = "../omx-config" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
