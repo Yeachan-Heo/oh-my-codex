@@ -1,20 +1,56 @@
 [workspace]
 members = [
-  "crates/omx-explore",
+  # Foundation layer
+  "crates/omx-types",
+  "crates/omx-config",
   "crates/omx-mux",
+  # Runtime layer
   "crates/omx-runtime-core",
   "crates/omx-runtime",
+  "crates/omx-state",
+  "crates/omx-hooks",
+  # Service layer
+  "crates/omx-mcp-state",
+  "crates/omx-mcp-memory",
+  "crates/omx-mcp-code-intel",
+  "crates/omx-mcp-trace",
+  "crates/omx-mcp-team",
+  "crates/omx-team",
   "crates/omx-sparkshell",
+  "crates/omx-explore",
+  # Presentation layer
+  "crates/omx-hud",
+  "crates/omx-setup",
+  "crates/omx-cli",
+  # Notification hooks
+  "crates/omx-notify-discord",
+  "crates/omx-notify-slack",
+  "crates/omx-notify-telegram",
 ]
 resolver = "2"
 
 [workspace.package]
-
 version = "0.11.13"
 
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/Yeachan-Heo/oh-my-codex"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+thiserror = "2"
+tracing = "0.1"
+clap = { version = "4", features = ["derive"] }
+fs2 = "0.4"
+rmcp = { version = "0.1", features = ["server", "transport-io"] }
+schemars = "0.8"
+ratatui = "0.29"
+crossterm = "0.28"
+toml = "0.8"
+reqwest = { version = "0.12", features = ["json"] }
+insta = "1"
 
 # The profile that 'dist' will build with
 [profile.dist]
