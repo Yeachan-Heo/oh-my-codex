@@ -1,0 +1,17 @@
+[package]
+name = "omx-state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "File-based state I/O with atomic writes and locking for OMX"
+
+[dependencies]
+omx-types = { path = "../omx-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+fs2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
