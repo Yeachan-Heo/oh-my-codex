@@ -109,15 +109,16 @@ describe('omx setup AGENTS refresh behavior', () => {
     const existing = '# old agents file\n';
     try {
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
-      await writeFile(join(wd, 'AGENTS.md'), existing);
+      await mkdir(join(wd, '.codex'), { recursive: true });
+      await writeFile(join(wd, '.codex', 'AGENTS.md'), existing);
 
       const output = await runSetupWithCapturedLogs(wd, {
         scope: 'project',
         agentsOverwritePrompt: async () => true,
       });
 
-      const agentsContent = await readFile(join(wd, 'AGENTS.md'), 'utf-8');
-      assert.match(output, /Generated AGENTS\.md in project root\./);
+      const agentsContent = await readFile(join(wd, '.codex', 'AGENTS.md'), 'utf-8');
+      assert.match(output, /Generated AGENTS\.md in project \.codex\./);
       assert.match(output, /agents_md: updated=1, unchanged=0, backed_up=1, skipped=0, removed=0/);
       assert.match(agentsContent, /^<!-- AUTONOMY DIRECTIVE — DO NOT REMOVE -->/);
       assert.match(agentsContent, /# oh-my-codex - Intelligent Multi-Agent Orchestration/);
@@ -158,13 +159,13 @@ describe('omx setup AGENTS refresh behavior', () => {
         scope: 'project',
       });
 
-      const agentsContent = await readFile(join(wd, 'AGENTS.md'), 'utf-8');
+      const agentsContent = await readFile(join(wd, '.codex', 'AGENTS.md'), 'utf-8');
       const expectedContext = resolveAgentsModelTableContext(
         await readFile(join(wd, '.codex', 'config.toml'), 'utf-8'),
         { codexHomeOverride: join(wd, '.codex') },
       );
 
-      assert.match(output, /Refreshed AGENTS\.md model capability table in project root\./);
+      assert.match(output, /Refreshed AGENTS\.md model capability table in project \.codex\./);
       assert.doesNotMatch(output, /Skipped AGENTS\.md overwrite/);
       assert.match(
         agentsContent,
@@ -195,7 +196,8 @@ describe('omx setup AGENTS refresh behavior', () => {
     const existing = '# keep this agents file\n';
     try {
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
-      await writeFile(join(wd, 'AGENTS.md'), existing);
+      await mkdir(join(wd, '.codex'), { recursive: true });
+      await writeFile(join(wd, '.codex', 'AGENTS.md'), existing);
 
       const output = await runSetupWithCapturedLogs(wd, {
         scope: 'project',
@@ -204,7 +206,7 @@ describe('omx setup AGENTS refresh behavior', () => {
 
       assert.match(output, /Skipped AGENTS\.md overwrite/);
       assert.match(output, /agents_md: updated=0, unchanged=0, backed_up=0, skipped=1, removed=0/);
-      assert.equal(await readFile(join(wd, 'AGENTS.md'), 'utf-8'), existing);
+      assert.equal(await readFile(join(wd, '.codex', 'AGENTS.md'), 'utf-8'), existing);
       assert.equal(existsSync(join(wd, '.omx', 'backups', 'setup')), false);
     } finally {
       restoreHome();
@@ -222,7 +224,8 @@ describe('omx setup AGENTS refresh behavior', () => {
     try {
       const pidStartTicks = await readCurrentLinuxStartTicks();
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
-      await writeFile(join(wd, 'AGENTS.md'), existing);
+      await mkdir(join(wd, '.codex'), { recursive: true });
+      await writeFile(join(wd, '.codex', 'AGENTS.md'), existing);
       await writeFile(
         join(wd, '.omx', 'state', 'session.json'),
         JSON.stringify({
@@ -242,7 +245,7 @@ describe('omx setup AGENTS refresh behavior', () => {
       assert.match(output, /Skipping AGENTS\.md overwrite to avoid corrupting runtime overlay\./);
       assert.match(output, /Stop the active session first, then re-run setup\./);
       assert.match(output, /agents_md: updated=0, unchanged=0, backed_up=0, skipped=1, removed=0/);
-      assert.equal(await readFile(join(wd, 'AGENTS.md'), 'utf-8'), existing);
+      assert.equal(await readFile(join(wd, '.codex', 'AGENTS.md'), 'utf-8'), existing);
       assert.equal(existsSync(join(wd, '.omx', 'backups', 'setup')), false);
     } finally {
       restoreHome();
