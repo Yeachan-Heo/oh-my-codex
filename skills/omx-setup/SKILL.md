@@ -33,14 +33,14 @@ Supported setup flags (current implementation):
 2. Create directories and persist effective scope
 3. Install prompts, native agent configs, skills, and merge config.toml (scope determines target directories)
 4. Verify Team CLI API interop markers exist in built `dist/cli/team.js`
-5. Generate project-root `./AGENTS.md` from `templates/AGENTS.md` (or skip when existing and no force)
+5. Generate scope-specific `AGENTS.md` from `templates/AGENTS.md` (`./.codex/AGENTS.md` for project scope, `${CODEX_HOME:-~/.codex}/AGENTS.md` for user scope)
 6. Configure notify hook references and write `./.omx/hud-config.json`
 
 ## Important behavior notes
 
 - `omx setup` only prompts for scope when no scope is provided/persisted and stdin/stdout are TTY.
-- Local project orchestration file is `./AGENTS.md` (project root).
-- If `AGENTS.md` exists and `--force` is not used, interactive TTY runs ask whether to overwrite. Non-interactive runs preserve the file.
+- Local project-scope OMX orchestration file is `./.codex/AGENTS.md`; repository-root `./AGENTS.md` is left to the project itself.
+- If the scope-specific `AGENTS.md` exists and `--force` is not used, interactive TTY runs ask whether to overwrite. Non-interactive runs preserve the file.
 - Scope targets:
   - `user`: user directories (`~/.codex`, `~/.codex/skills`, `~/.omx/agents`)
   - `project`: local directories (`./.codex`, `./.codex/skills`, `./.omx/agents`)
@@ -70,7 +70,7 @@ omx doctor
 From `omx doctor`, expect:
 - Prompts installed (scope-dependent: user or project)
 - Skills installed (scope-dependent: user or project)
-- AGENTS.md found in project root
+- AGENTS.md found in `./.codex/AGENTS.md` for project scope (or in user CODEX_HOME for user scope)
 - `.omx/state` exists
 - OMX MCP servers configured in scope target `config.toml` (`~/.codex/config.toml` or `./.codex/config.toml`)
 
@@ -89,4 +89,4 @@ node bin/omx.js setup --force --verbose
 node bin/omx.js doctor
 ```
 
-- If AGENTS.md was not overwritten during `--force`, stop active OMX session and rerun setup.
+- If the scope-specific AGENTS.md was not refreshed during `--force`, stop active OMX session and rerun setup.
