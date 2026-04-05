@@ -52,6 +52,7 @@ toml = "0.8"
 reqwest = { version = "0.12", features = ["json"] }
 insta = "1"
 async-trait = "0.1"
+tracing-subscriber = "0.3"
 
 # The profile that 'dist' will build with
 [profile.dist]

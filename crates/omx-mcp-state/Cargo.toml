@@ -1,0 +1,23 @@
+[package]
+name = "omx-mcp-state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MCP server for OMX state read/write/clear operations"
+
+[[bin]]
+name = "omx-mcp-state"
+path = "src/main.rs"
+
+[dependencies]
+omx-types = { path = "../omx-types" }
+omx-state = { path = "../omx-state" }
+omx-config = { path = "../omx-config" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+rmcp = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
