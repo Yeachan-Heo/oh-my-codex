@@ -1,0 +1,16 @@
+[package]
+name = "omx-setup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Setup and artifact generation for OMX"
+
+[dependencies]
+omx-types = { path = "../omx-types" }
+omx-config = { path = "../omx-config" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
