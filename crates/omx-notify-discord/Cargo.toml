@@ -1,0 +1,18 @@
+[package]
+name = "omx-notify-discord"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Discord notification hook for OMX"
+
+[[bin]]
+name = "omx-notify-discord"
+path = "src/main.rs"
+
+[dependencies]
+omx-types = { path = "../omx-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
