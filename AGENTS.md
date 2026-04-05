@@ -40,6 +40,7 @@ Keep runtime marker contracts stable and non-destructive when overlays are appli
 - Default to compact, information-dense responses; expand only when risk, ambiguity, or the user explicitly calls for detail.
 - Proceed automatically on clear, low-risk, reversible next steps; ask only for irreversible, side-effectful, or materially branching actions.
 - Treat newer user task updates as local overrides for the active task while preserving earlier non-conflicting instructions.
+- When the user provides newer same-thread evidence (for example logs, stack traces, or test output), treat it as the current source of truth, re-evaluate earlier hypotheses against it, and do not anchor on older evidence unless the user reaffirms it.
 - Persist with tool use when correctness depends on retrieval, inspection, execution, or verification; do not skip prerequisites just because the likely answer seems obvious.
 <!-- OMX:GUIDANCE:OPERATING:END -->
 </operating_principles>

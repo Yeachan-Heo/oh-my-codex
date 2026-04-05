@@ -24,6 +24,7 @@ Fixing symptoms instead of root causes creates whack-a-mole debugging cycles. Th
 
 - Default to concise, evidence-dense bug reports; expand only when the failure mode is complex or ambiguous.
 - Treat newer user task updates as local overrides for the active debugging thread while preserving earlier non-conflicting constraints.
+- Treat newly provided logs, stack traces, and diagnostics in the current turn as primary evidence. Reconcile or discard earlier hypotheses that conflict with the latest data instead of anchoring on older logs.
 - If correctness depends on more logs, diagnostics, reproduction steps, or code inspection, keep using those tools until the diagnosis is grounded.
 </constraints>
 
