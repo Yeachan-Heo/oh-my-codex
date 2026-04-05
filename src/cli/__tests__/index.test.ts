@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -34,6 +34,8 @@ import {
   resolveNotifyTempContract,
   buildNotifyTempStartupMessages,
   buildNotifyFallbackWatcherEnv,
+  shouldEnableNotifyFallbackWatcher,
+  reapStaleNotifyFallbackWatcher,
   cleanupLaunchOrphanedMcpProcesses,
   resolveBackgroundHelperLaunchMode,
   shouldDetachBackgroundHelper,
@@ -357,6 +359,110 @@ describe("buildNotifyFallbackWatcherEnv", () => {
     assert.equal(env.HOME, "/tmp/home");
     assert.equal(env.TMUX, undefined);
     assert.equal(env.TMUX_PANE, undefined);
+  });
+});
+
+describe("shouldEnableNotifyFallbackWatcher", () => {
+  it("keeps notify fallback enabled by default on non-Windows hosts", () => {
+    assert.equal(shouldEnableNotifyFallbackWatcher({}, "linux"), true);
+  });
+
+  it("disables notify fallback explicitly on non-Windows hosts", () => {
+    assert.equal(
+      shouldEnableNotifyFallbackWatcher({ OMX_NOTIFY_FALLBACK: "0" }, "linux"),
+      false,
+    );
+  });
+
+  it("disables notify fallback by default on win32", () => {
+    assert.equal(shouldEnableNotifyFallbackWatcher({}, "win32"), false);
+  });
+
+  it("allows explicit opt-in for notify fallback on win32", () => {
+    assert.equal(
+      shouldEnableNotifyFallbackWatcher({ OMX_NOTIFY_FALLBACK: "1" }, "win32"),
+      true,
+    );
+  });
+});
+
+describe("reapStaleNotifyFallbackWatcher", () => {
+  it("stops an existing watcher even when a later startup gate would skip relaunch", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-stale-notify-fallback-"));
+    try {
+      const pidPath = join(cwd, "notify-fallback.pid");
+      await writeFile(
+        pidPath,
+        JSON.stringify({ pid: 4321, started_at: "2026-04-05T00:00:00.000Z" }),
+        "utf-8",
+      );
+      const killed: Array<{ pid: number; signal?: NodeJS.Signals }> = [];
+
+      await reapStaleNotifyFallbackWatcher(pidPath, {
+        tryKillPid(pid, signal) {
+          killed.push({ pid, signal });
+          return true;
+        },
+      });
+
+      assert.deepEqual(killed, [{ pid: 4321, signal: "SIGTERM" }]);
+      assert.equal(shouldEnableNotifyFallbackWatcher({}, "win32"), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores missing pid files", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-missing-notify-fallback-"));
+    try {
+      const pidPath = join(cwd, "notify-fallback.pid");
+      let killCalls = 0;
+
+      await reapStaleNotifyFallbackWatcher(pidPath, {
+        tryKillPid() {
+          killCalls += 1;
+          return true;
+        },
+      });
+
+      assert.equal(killCalls, 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("suppresses ESRCH cleanup errors but warns on unexpected failures", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-esrch-notify-fallback-"));
+    try {
+      const pidPath = join(cwd, "notify-fallback.pid");
+      await writeFile(pidPath, JSON.stringify({ pid: 99 }), "utf-8");
+
+      const warnings: Array<{ message: unknown; meta: unknown }> = [];
+      await reapStaleNotifyFallbackWatcher(pidPath, {
+        readFile: async () => {
+          throw Object.assign(new Error("gone"), { code: "ESRCH" });
+        },
+        warn(message, meta) {
+          warnings.push({ message, meta });
+        },
+      });
+      assert.deepEqual(warnings, []);
+
+      const warned: Array<{ message: unknown; meta: unknown }> = [];
+      await reapStaleNotifyFallbackWatcher(pidPath, {
+        readFile: async (path, encoding) => readFile(path, encoding),
+        tryKillPid() {
+          throw new Error("permission denied");
+        },
+        warn(message, meta) {
+          warned.push({ message, meta });
+        },
+      });
+      assert.equal(warned.length, 1);
+      assert.equal(warned[0]?.message, "[omx] warning: failed to stop stale notify fallback watcher");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });
 

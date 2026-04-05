@@ -143,7 +143,7 @@ describe('buildPlatformCommandSpec', () => {
     }
   });
 
-  it('still prefers PowerShell shims over cmd shims when no node-hosted entrypoint exists', async () => {
+  it('prefers cmd shims over PowerShell shims when no node-hosted entrypoint exists', async () => {
     const fakeBin = await mkdtemp(join(tmpdir(), 'omx-platform-ps1-fallback-'));
     try {
       const ps1Path = join(fakeBin, 'codex.ps1');
@@ -160,9 +160,11 @@ describe('buildPlatformCommandSpec', () => {
         },
       );
 
-      assert.match(spec.command, /powershell(?:\.exe)?$/i);
-      assert.deepEqual(spec.args.slice(0, 5), ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File']);
-      assert.equal(spec.args[5], ps1Path);
+      assert.match(spec.command, /cmd(?:\.exe)?$/i);
+      assert.deepEqual(spec.args.slice(0, 3), ['/d', '/s', '/c']);
+      assert.match(spec.args[3] || '', /codex\.cmd/i);
+      assert.equal(spec.resolvedPath, cmdPath);
+      assert.notEqual(spec.resolvedPath, ps1Path);
     } finally {
       await rm(fakeBin, { recursive: true, force: true });
     }

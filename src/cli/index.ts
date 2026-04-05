@@ -1598,6 +1598,17 @@ export function buildNotifyFallbackWatcherEnv(
   };
 }
 
+export function shouldEnableNotifyFallbackWatcher(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const toggle = String(env.OMX_NOTIFY_FALLBACK ?? "").trim();
+  if (platform === "win32") {
+    return toggle === "1";
+  }
+  return toggle !== "0";
+}
+
 export async function cleanupLaunchOrphanedMcpProcesses(
   dependencies: CleanupDependencies = {},
 ): Promise<CleanupResult> {
@@ -2398,6 +2409,43 @@ function parseWatcherPidFile(content: string): number | null {
   }
 }
 
+export async function reapStaleNotifyFallbackWatcher(
+  pidPath: string,
+  deps: {
+    exists?: (path: string) => boolean;
+    readFile?: (path: string, encoding: BufferEncoding) => Promise<string>;
+    tryKillPid?: (pid: number, signal?: NodeJS.Signals) => boolean;
+    hasErrnoCode?: (error: unknown, code: string) => boolean;
+    warn?: (message?: unknown, ...optionalParams: unknown[]) => void;
+  } = {},
+): Promise<void> {
+  const exists = deps.exists ?? existsSync;
+  if (!exists(pidPath)) return;
+
+  const { readFile } = await import("fs/promises");
+  const readFileImpl = deps.readFile ?? readFile;
+  const tryKillPidImpl = deps.tryKillPid ?? tryKillPid;
+  const hasErrnoCodeImpl = deps.hasErrnoCode ?? hasErrnoCode;
+  const warn = deps.warn ?? console.warn;
+
+  try {
+    const prevPid = parseWatcherPidFile(await readFileImpl(pidPath, "utf-8"));
+    if (prevPid) {
+      tryKillPidImpl(prevPid, "SIGTERM");
+    }
+  } catch (error: unknown) {
+    if (!hasErrnoCodeImpl(error, "ESRCH")) {
+      warn(
+        "[omx] warning: failed to stop stale notify fallback watcher",
+        {
+          path: pidPath,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+  }
+}
+
 function tryKillPid(pid: number, signal: NodeJS.Signals = "SIGTERM"): boolean {
   try {
     process.kill(pid, signal);
@@ -2413,34 +2461,16 @@ async function startNotifyFallbackWatcher(
   cwd: string,
   options: { codexHomeOverride?: string; enableAuthority?: boolean; sessionId?: string } = {},
 ): Promise<void> {
-  if (process.env.OMX_NOTIFY_FALLBACK === "0") return;
-
-  const { mkdir, writeFile, readFile } = await import("fs/promises");
+  const { mkdir, writeFile } = await import("fs/promises");
   const pidPath = notifyFallbackPidPath(cwd);
+  await reapStaleNotifyFallbackWatcher(pidPath);
+
+  if (!shouldEnableNotifyFallbackWatcher(process.env, process.platform)) return;
+
   const pkgRoot = getPackageRoot();
   const watcherScript = resolveNotifyFallbackWatcherScript(pkgRoot);
   const notifyScript = resolveNotifyHookScript(pkgRoot);
   if (!existsSync(watcherScript) || !existsSync(notifyScript)) return;
-
-  // Stop stale watcher from a previous run.
-  if (existsSync(pidPath)) {
-    try {
-      const prevPid = parseWatcherPidFile(await readFile(pidPath, "utf-8"));
-      if (prevPid) {
-        tryKillPid(prevPid, "SIGTERM");
-      }
-    } catch (error: unknown) {
-      if (!hasErrnoCode(error, "ESRCH")) {
-        console.warn(
-          "[omx] warning: failed to stop stale notify fallback watcher",
-          {
-            path: pidPath,
-            error: error instanceof Error ? error.message : String(error),
-          },
-        );
-      }
-    }
-  }
 
   await mkdir(join(cwd, ".omx", "state"), { recursive: true }).catch(
     (error: unknown) => {
@@ -2648,6 +2678,7 @@ async function flushNotifyFallbackOnce(
   cwd: string,
   options: { codexHomeOverride?: string; enableAuthority?: boolean; sessionId?: string } = {},
 ): Promise<void> {
+  if (!shouldEnableNotifyFallbackWatcher(process.env, process.platform)) return;
   const { spawnSync } = await import("child_process");
   const pkgRoot = getPackageRoot();
   const watcherScript = resolveNotifyFallbackWatcherScript(pkgRoot);

@@ -16,6 +16,10 @@ const fallbackWatcherSource = readFileSync(join(repoRoot, 'src', 'scripts', 'not
 describe('Windows popup loop contracts', () => {
   it('keeps Windows helper spawns hidden', () => {
     assert.match(cliIndex, /buildWindowsMsysBackgroundHelperBootstrapScript/);
+    assert.match(
+      cliIndex,
+      /const pidPath = notifyFallbackPidPath\(cwd\);\s+await reapStaleNotifyFallbackWatcher\(pidPath\);\s+if \(!shouldEnableNotifyFallbackWatcher\(process\.env,\s*process\.platform\)\) return;/,
+    );
     assert.match(cliIndex, /detached:\s*shouldDetachBackgroundHelper\(options\.env,\s*process\.platform\),\s*[\s\S]*?stdio:\s*"ignore",\s*[\s\S]*?windowsHide:\s*true/);
     assert.match(cliIndex, /spawnSync\([\s\S]*?buildWindowsMsysBackgroundHelperBootstrapScript\([\s\S]*?windowsHide:\s*true/);
     assert.match(cliIndex, /detached:\s*true,\s*stdio:\s*'ignore',\s*windowsHide:\s*true/);
