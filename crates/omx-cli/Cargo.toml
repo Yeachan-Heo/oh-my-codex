@@ -1,0 +1,25 @@
+[package]
+name = "omx-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI entry point for OMX — clap router for all subcommands"
+
+[[bin]]
+name = "omx"
+path = "src/main.rs"
+
+[dependencies]
+omx-types = { path = "../omx-types" }
+omx-config = { path = "../omx-config" }
+omx-state = { path = "../omx-state" }
+omx-hooks = { path = "../omx-hooks" }
+omx-team = { path = "../omx-team" }
+omx-hud = { path = "../omx-hud" }
+omx-setup = { path = "../omx-setup" }
+clap = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
