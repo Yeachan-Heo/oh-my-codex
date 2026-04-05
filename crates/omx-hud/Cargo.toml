@@ -1,0 +1,15 @@
+[package]
+name = "omx-hud"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ratatui HUD widgets for OMX status display"
+
+[dependencies]
+omx-types = { path = "../omx-types" }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
