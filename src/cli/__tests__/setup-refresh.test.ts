@@ -225,6 +225,38 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     }
   });
 
+  it("writes portable-bash project config without repo-local absolute script paths when requested", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+
+      await runSetupInTempDir(wd, {
+        scope: "project",
+        projectConfigStyle: "portable-bash",
+      });
+
+      const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      assert.ok(
+        config.includes(
+          'notify = ["bash", "-c", "node \\"$(npm root -g)/oh-my-codex/dist/scripts/notify-hook.js\\" \\"$1\\"", "notify-hook"]',
+        ),
+      );
+      assert.ok(
+        config.includes(
+          'args = ["-c", "exec node \\"$(npm root -g)/oh-my-codex/dist/mcp/state-server.js\\""]',
+        ),
+      );
+      assert.doesNotMatch(
+        config,
+        new RegExp(
+          `${wd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*(notify-hook|state-server|memory-server|code-intel-server|trace-server)\\.js`,
+        ),
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("offers an upgrade from gpt-5.3-codex to gpt-5.4 when accepted", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     try {

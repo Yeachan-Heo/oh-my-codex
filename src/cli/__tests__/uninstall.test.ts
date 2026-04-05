@@ -98,6 +98,60 @@ function buildOmxConfig(): string {
 
 /** Build a config with OMX entries mixed with user entries */
 
+function buildPortableBashOmxConfig(): string {
+  return [
+    '# oh-my-codex top-level settings (must be before any [table])',
+    'notify = ["bash", "-c", "node \\"$(npm root -g)/oh-my-codex/dist/scripts/notify-hook.js\\" \\"$1\\"", "notify-hook"]',
+    'model_reasoning_effort = "high"',
+    'developer_instructions = "You have oh-my-codex installed."',
+    '',
+    '[features]',
+    'multi_agent = true',
+    'child_agents_md = true',
+    '',
+    '# ============================================================',
+    '# oh-my-codex (OMX) Configuration',
+    '# Managed by omx setup - manual edits preserved on next setup',
+    '# ============================================================',
+    '',
+    '# OMX State Management MCP Server',
+    '[mcp_servers.omx_state]',
+    'command = "bash"',
+    'args = ["-c", "exec node \\"$(npm root -g)/oh-my-codex/dist/mcp/state-server.js\\""]',
+    'enabled = true',
+    'startup_timeout_sec = 5',
+    '',
+    '# OMX Project Memory MCP Server',
+    '[mcp_servers.omx_memory]',
+    'command = "bash"',
+    'args = ["-c", "exec node \\"$(npm root -g)/oh-my-codex/dist/mcp/memory-server.js\\""]',
+    'enabled = true',
+    'startup_timeout_sec = 5',
+    '',
+    '# OMX Code Intelligence MCP Server',
+    '[mcp_servers.omx_code_intel]',
+    'command = "bash"',
+    'args = ["-c", "exec node \\"$(npm root -g)/oh-my-codex/dist/mcp/code-intel-server.js\\""]',
+    'enabled = true',
+    'startup_timeout_sec = 10',
+    '',
+    '# OMX Trace MCP Server',
+    '[mcp_servers.omx_trace]',
+    'command = "bash"',
+    'args = ["-c", "exec node \\"$(npm root -g)/oh-my-codex/dist/mcp/trace-server.js\\""]',
+    'enabled = true',
+    'startup_timeout_sec = 5',
+    '',
+    '# OMX TUI StatusLine (Codex CLI v0.101.0+)',
+    '[tui]',
+    'status_line = ["model-with-reasoning", "git-branch"]',
+    '',
+    '# ============================================================',
+    '# End oh-my-codex',
+    '',
+  ].join('\n');
+}
+
 function buildConfigWithSeededModelContext(): string {
   return [
     '# oh-my-codex top-level settings (must be before any [table])',
@@ -235,6 +289,29 @@ describe('omx uninstall', () => {
       assert.doesNotMatch(config, /developer_instructions\s*=/);
       assert.doesNotMatch(config, /multi_agent\s*=/);
       assert.doesNotMatch(config, /child_agents_md\s*=/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('removes portable-bash OMX block from config.toml', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-uninstall-'));
+    try {
+      const home = join(wd, 'home');
+      const codexDir = join(home, '.codex');
+      await mkdir(codexDir, { recursive: true });
+      await writeFile(join(codexDir, 'config.toml'), buildPortableBashOmxConfig());
+
+      const res = runOmx(wd, ['uninstall'], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.match(res.stdout, /Removed OMX configuration block/);
+
+      const config = await readFile(join(codexDir, 'config.toml'), 'utf-8');
+      assert.doesNotMatch(config, /notify-hook\.js/);
+      assert.doesNotMatch(config, /\[mcp_servers\.omx_state\]/);
+      assert.doesNotMatch(config, /exec node \\".*state-server\.js\\"/);
+      assert.doesNotMatch(config, /command = "bash"/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

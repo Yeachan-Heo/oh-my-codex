@@ -73,8 +73,10 @@ function detectOmxConfigArtifacts(config: string): {
     /^\[tui\]/m.test(config) &&
     config.includes("oh-my-codex (OMX) Configuration");
 
+  const hasManagedNotify =
+    /^\s*notify\s*=\s*\[/m.test(config) && config.includes("notify-hook.js");
   const hasTopLevelKeys =
-    /^\s*notify\s*=.*node/m.test(config) ||
+    hasManagedNotify ||
     /^\s*model_reasoning_effort\s*=/m.test(config) ||
     /^\s*developer_instructions\s*=.*oh-my-codex/m.test(config);
 

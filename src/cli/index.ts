@@ -7,7 +7,13 @@ import { execFileSync, spawn } from "child_process";
 import { basename, dirname, join } from "path";
 import { existsSync, readFileSync } from "fs";
 import { constants as osConstants } from "os";
-import { setup, SETUP_SCOPES, type SetupScope } from "./setup.js";
+import {
+  setup,
+  SETUP_SCOPES,
+  PROJECT_CONFIG_STYLES,
+  type SetupScope,
+  type ProjectConfigStyle,
+} from "./setup.js";
 import { uninstall } from "./uninstall.js";
 import { version } from "./version.js";
 import { tmuxHookCommand } from "./tmux-hook.js";
@@ -181,6 +187,9 @@ Options:
   --verbose     Show detailed output
   --scope       Setup scope for "omx setup" only:
                 user | project
+  --project-config-style
+                Project-scope config generation for "omx setup" only:
+                absolute-path | portable-bash
   --skill-target
                 User-scope skills target for "omx setup" only:
                 codex-home
@@ -282,20 +291,36 @@ export function readPersistedSetupScope(cwd: string): SetupScope | undefined {
 
 export function readPersistedSetupPreferences(
   cwd: string,
-): Partial<{ scope: SetupScope }> | undefined {
+): Partial<{
+  scope: SetupScope;
+  projectConfigStyle: ProjectConfigStyle;
+}> | undefined {
   const scopePath = join(cwd, ".omx", "setup-scope.json");
   if (!existsSync(scopePath)) return undefined;
   try {
     const parsed = JSON.parse(readFileSync(scopePath, "utf-8")) as Partial<{
       scope: string;
+      projectConfigStyle: string;
     }>;
-    const persisted: Partial<{ scope: SetupScope }> = {};
+    const persisted: Partial<{
+      scope: SetupScope;
+      projectConfigStyle: ProjectConfigStyle;
+    }> = {};
     if (typeof parsed.scope === "string") {
       if (SETUP_SCOPES.includes(parsed.scope as SetupScope)) {
         persisted.scope = parsed.scope as SetupScope;
       }
       const migrated = LEGACY_SCOPE_MIGRATION_SYNC[parsed.scope];
       if (migrated) persisted.scope = migrated;
+    }
+    if (
+      typeof parsed.projectConfigStyle === "string" &&
+      PROJECT_CONFIG_STYLES.includes(
+        parsed.projectConfigStyle as ProjectConfigStyle,
+      )
+    ) {
+      persisted.projectConfigStyle =
+        parsed.projectConfigStyle as ProjectConfigStyle;
     }
     return Object.keys(persisted).length > 0 ? persisted : undefined;
   } catch (err) {
@@ -342,6 +367,36 @@ export function resolveSetupScopeArg(args: string[]): SetupScope | undefined {
   }
   throw new Error(
     `Invalid setup scope: ${value}. Expected one of: ${SETUP_SCOPES.join(", ")}`,
+  );
+}
+
+export function resolveProjectConfigStyleArg(
+  args: string[],
+): ProjectConfigStyle | undefined {
+  let value: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--project-config-style") {
+      const next = args[index + 1];
+      if (!next || next.startsWith("-")) {
+        throw new Error(
+          `Missing project config style value after --project-config-style. Expected one of: ${PROJECT_CONFIG_STYLES.join(", ")}`,
+        );
+      }
+      value = next;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--project-config-style=")) {
+      value = arg.slice("--project-config-style=".length);
+    }
+  }
+  if (!value) return undefined;
+  if (PROJECT_CONFIG_STYLES.includes(value as ProjectConfigStyle)) {
+    return value as ProjectConfigStyle;
+  }
+  throw new Error(
+    `Invalid project config style: ${value}. Expected one of: ${PROJECT_CONFIG_STYLES.join(", ")}`,
   );
 }
 
@@ -629,6 +684,7 @@ export async function main(args: string[]): Promise<void> {
           dryRun: options.dryRun,
           verbose: options.verbose,
           scope: resolveSetupScopeArg(args.slice(1)),
+          projectConfigStyle: resolveProjectConfigStyleArg(args.slice(1)),
         });
         break;
       case "agents":

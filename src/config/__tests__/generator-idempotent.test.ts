@@ -120,6 +120,42 @@ describe("config generator idempotency (#384)", () => {
     }
   });
 
+  it("portable-bash project config stays idempotent and removes repo-local script paths", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+
+      await mergeConfig(configPath, wd);
+      await mergeConfig(configPath, wd, {
+        projectConfigStyle: "portable-bash",
+      });
+
+      const firstPortable = await readFile(configPath, "utf-8");
+      assertSingleOmxBlock(firstPortable);
+      assert.ok(
+        firstPortable.includes(
+          'notify = ["bash", "-c", "node \\"$(npm root -g)/oh-my-codex/dist/scripts/notify-hook.js\\" \\"$1\\"", "notify-hook"]',
+        ),
+      );
+      assert.doesNotMatch(
+        firstPortable,
+        new RegExp(
+          `${wd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*(notify-hook|state-server|memory-server|code-intel-server|trace-server)\\.js`,
+        ),
+        "portable project config should not preserve repo-local absolute script paths",
+      );
+
+      await mergeConfig(configPath, wd, {
+        projectConfigStyle: "portable-bash",
+      });
+      const secondPortable = await readFile(configPath, "utf-8");
+      assertSingleOmxBlock(secondPortable);
+      assert.equal(secondPortable, firstPortable);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("triple run stays clean", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {

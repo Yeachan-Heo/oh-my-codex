@@ -80,6 +80,42 @@ describe("omx setup scope behavior", () => {
     }
   });
 
+  it("accepts --project-config-style portable-bash and persists it for project scope", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-scope-"));
+    try {
+      const home = join(wd, "home");
+      await mkdir(home, { recursive: true });
+
+      const res = runOmx(
+        wd,
+        [
+          "setup",
+          "--scope",
+          "project",
+          "--project-config-style",
+          "portable-bash",
+        ],
+        { HOME: home },
+      );
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.match(res.stdout, /Using setup scope: project/);
+      assert.match(res.stdout, /Using project config style: portable-bash/);
+
+      const persisted = JSON.parse(
+        await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
+      ) as { scope: string; projectConfigStyle?: string };
+      assert.equal(persisted.scope, "project");
+      assert.equal(persisted.projectConfigStyle, "portable-bash");
+
+      const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      assert.match(config, /^notify = \["bash", "-c", "node/m);
+      assert.match(config, /^command = "bash"$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("uses persisted setup scope when --scope is omitted", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-scope-"));
     try {
@@ -98,6 +134,37 @@ describe("omx setup scope behavior", () => {
       assert.match(
         res.stdout,
         /Using setup scope: project \(from \.omx\/setup-scope\.json\)/,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("uses persisted portable-bash project config style when the CLI flag is omitted", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-scope-"));
+    try {
+      const omxDir = join(wd, ".omx");
+      const home = join(wd, "home");
+      await mkdir(omxDir, { recursive: true });
+      await mkdir(home, { recursive: true });
+      await writeFile(
+        join(omxDir, "setup-scope.json"),
+        JSON.stringify({
+          scope: "project",
+          projectConfigStyle: "portable-bash",
+        }),
+      );
+
+      const res = runOmx(wd, ["setup", "--dry-run"], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.match(
+        res.stdout,
+        /Using setup scope: project \(from \.omx\/setup-scope\.json\)/,
+      );
+      assert.match(
+        res.stdout,
+        /Using project config style: portable-bash \(from \.omx\/setup-scope\.json\)/,
       );
     } finally {
       await rm(wd, { recursive: true, force: true });

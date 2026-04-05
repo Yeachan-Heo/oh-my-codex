@@ -58,6 +58,7 @@ interface SetupOptions {
   force?: boolean;
   dryRun?: boolean;
   scope?: SetupScope;
+  projectConfigStyle?: ProjectConfigStyle;
   verbose?: boolean;
   agentsOverwritePrompt?: (destinationPath: string) => Promise<boolean>;
   modelUpgradePrompt?: (
@@ -78,6 +79,11 @@ const LEGACY_SCOPE_MIGRATION: Record<string, "project"> = {
 
 export const SETUP_SCOPES = ["user", "project"] as const;
 export type SetupScope = (typeof SETUP_SCOPES)[number];
+export const PROJECT_CONFIG_STYLES = [
+  "absolute-path",
+  "portable-bash",
+] as const;
+export type ProjectConfigStyle = (typeof PROJECT_CONFIG_STYLES)[number];
 
 export interface ScopeDirectories {
   codexConfigFile: string;
@@ -144,13 +150,19 @@ function applyScopePathRewritesToAgentsTemplate(
   return content.replaceAll("~/.codex", "./.codex");
 }
 
-interface PersistedSetupScope {
+interface PersistedSetupPreferences {
   scope: SetupScope;
+  projectConfigStyle?: ProjectConfigStyle;
 }
 
 interface ResolvedSetupScope {
   scope: SetupScope;
   source: "cli" | "persisted" | "prompt" | "default";
+}
+
+interface ResolvedProjectConfigStyle {
+  projectConfigStyle: ProjectConfigStyle;
+  source: "cli" | "persisted" | "default";
 }
 
 const REQUIRED_TEAM_CLI_API_MARKERS = [
@@ -160,6 +172,7 @@ const REQUIRED_TEAM_CLI_API_MARKERS = [
 ] as const;
 
 const DEFAULT_SETUP_SCOPE: SetupScope = "user";
+const DEFAULT_PROJECT_CONFIG_STYLE: ProjectConfigStyle = "absolute-path";
 const LEGACY_SETUP_MODEL = "gpt-5.3-codex";
 const DEFAULT_SETUP_MODEL = DEFAULT_FRONTIER_MODEL;
 const OBSOLETE_NATIVE_AGENT_FIELD = ["skill", "ref"].join("_");
@@ -372,6 +385,11 @@ function logCategorySummary(name: string, summary: SetupCategorySummary): void {
 function isSetupScope(value: string): value is SetupScope {
   return SETUP_SCOPES.includes(value as SetupScope);
 }
+
+function isProjectConfigStyle(value: string): value is ProjectConfigStyle {
+  return PROJECT_CONFIG_STYLES.includes(value as ProjectConfigStyle);
+}
+
 function getScopeFilePath(projectRoot: string): string {
   return join(projectRoot, ".omx", "setup-scope.json");
 }
@@ -401,13 +419,13 @@ export function resolveScopeDirectories(
 
 async function readPersistedSetupPreferences(
   projectRoot: string,
-): Promise<Partial<PersistedSetupScope> | undefined> {
+): Promise<Partial<PersistedSetupPreferences> | undefined> {
   const scopePath = getScopeFilePath(projectRoot);
   if (!existsSync(scopePath)) return undefined;
   try {
     const raw = await readFile(scopePath, "utf-8");
-    const parsed = JSON.parse(raw) as Partial<PersistedSetupScope>;
-    const persisted: Partial<PersistedSetupScope> = {};
+    const parsed = JSON.parse(raw) as Partial<PersistedSetupPreferences>;
+    const persisted: Partial<PersistedSetupPreferences> = {};
     if (parsed && typeof parsed.scope === "string") {
       // Direct match to current scopes
       if (isSetupScope(parsed.scope)) {
@@ -421,6 +439,11 @@ async function readPersistedSetupPreferences(
             `(see issue #243: simplified to user/project).`,
         );
         persisted.scope = migrated;
+      }
+    }
+    if (parsed && typeof parsed.projectConfigStyle === "string") {
+      if (isProjectConfigStyle(parsed.projectConfigStyle)) {
+        persisted.projectConfigStyle = parsed.projectConfigStyle;
       }
     }
     return Object.keys(persisted).length > 0 ? persisted : undefined;
@@ -555,6 +578,26 @@ async function resolveSetupScope(
   return { scope: DEFAULT_SETUP_SCOPE, source: "default" };
 }
 
+async function resolveProjectConfigStyle(
+  projectRoot: string,
+  requestedProjectConfigStyle?: ProjectConfigStyle,
+): Promise<ResolvedProjectConfigStyle> {
+  if (requestedProjectConfigStyle) {
+    return { projectConfigStyle: requestedProjectConfigStyle, source: "cli" };
+  }
+  const persisted = await readPersistedSetupPreferences(projectRoot);
+  if (persisted?.projectConfigStyle) {
+    return {
+      projectConfigStyle: persisted.projectConfigStyle,
+      source: "persisted",
+    };
+  }
+  return {
+    projectConfigStyle: DEFAULT_PROJECT_CONFIG_STYLE,
+    source: "default",
+  };
+}
+
 function hasGitignoreEntry(content: string, entry: string): boolean {
   return content
     .split(/\r?\n/)
@@ -629,9 +672,10 @@ async function ensureProjectGitignore(
   return destinationExists ? "updated" : "created";
 }
 
-async function persistSetupScope(
+async function persistSetupPreferences(
   projectRoot: string,
   scope: SetupScope,
+  projectConfigStyle: ProjectConfigStyle,
   options: Pick<SetupOptions, "dryRun" | "verbose">,
 ): Promise<void> {
   const scopePath = getScopeFilePath(projectRoot);
@@ -640,7 +684,7 @@ async function persistSetupScope(
     return;
   }
   await mkdir(dirname(scopePath), { recursive: true });
-  const payload: PersistedSetupScope = { scope };
+  const payload: PersistedSetupPreferences = { scope, projectConfigStyle };
   await writeFile(scopePath, JSON.stringify(payload, null, 2) + "\n");
   if (options.verbose) console.log(`  Wrote ${scopePath}`);
 }
@@ -650,15 +694,24 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     force = false,
     dryRun = false,
     scope: requestedScope,
+    projectConfigStyle: requestedProjectConfigStyle,
     verbose = false,
     modelUpgradePrompt,
   } = options;
   const pkgRoot = getPackageRoot();
   const projectRoot = process.cwd();
   const resolvedScope = await resolveSetupScope(projectRoot, requestedScope);
+  const resolvedProjectConfigStyle = await resolveProjectConfigStyle(
+    projectRoot,
+    requestedProjectConfigStyle,
+  );
   const scopeDirs = resolveScopeDirectories(resolvedScope.scope, projectRoot);
   const scopeSourceMessage =
     resolvedScope.source === "persisted" ? " (from .omx/setup-scope.json)" : "";
+  const projectConfigStyleSourceMessage =
+    resolvedProjectConfigStyle.source === "persisted"
+      ? " (from .omx/setup-scope.json)"
+      : "";
   const backupContext = getBackupContext(resolvedScope.scope, projectRoot);
 
   console.log("oh-my-codex setup");
@@ -666,6 +719,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log(
     `Using setup scope: ${resolvedScope.scope}${scopeSourceMessage}\n`,
   );
+  if (resolvedScope.scope === "project") {
+    console.log(
+      `Using project config style: ${resolvedProjectConfigStyle.projectConfigStyle}${projectConfigStyleSourceMessage}\n`,
+    );
+  }
 
   // Step 1: Ensure directories exist
   console.log("[1/8] Creating directories...");
@@ -684,10 +742,15 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     }
     if (verbose) console.log(`  mkdir ${dir}`);
   }
-  await persistSetupScope(projectRoot, resolvedScope.scope, {
-    dryRun,
-    verbose,
-  });
+  await persistSetupPreferences(
+    projectRoot,
+    resolvedScope.scope,
+    resolvedProjectConfigStyle.projectConfigStyle,
+    {
+      dryRun,
+      verbose,
+    },
+  );
   console.log("  Done.\n");
 
   if (resolvedScope.scope === "project") {
@@ -819,7 +882,16 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     sharedMcpRegistry,
     summary.config,
     backupContext,
-    { codexVersionProbe: options.codexVersionProbe, dryRun, verbose, modelUpgradePrompt },
+    {
+      codexVersionProbe: options.codexVersionProbe,
+      dryRun,
+      verbose,
+      modelUpgradePrompt,
+      projectConfigStyle:
+        resolvedScope.scope === "project"
+          ? resolvedProjectConfigStyle.projectConfigStyle
+          : undefined,
+    },
   );
   const resolvedConfig = managedConfig.finalConfig;
   if (resolvedScope.scope === "user") {
@@ -1534,7 +1606,11 @@ async function updateManagedConfig(
   backupContext: SetupBackupContext,
   options: Pick<
     SetupOptions,
-    "codexVersionProbe" | "dryRun" | "verbose" | "modelUpgradePrompt"
+    | "codexVersionProbe"
+    | "dryRun"
+    | "verbose"
+    | "modelUpgradePrompt"
+    | "projectConfigStyle"
   >,
 ): Promise<ManagedConfigResult> {
   const existing = existsSync(configPath)
@@ -1563,6 +1639,7 @@ async function updateManagedConfig(
   const finalConfig = buildMergedConfig(existing, pkgRoot, {
     includeTui: omxManagesTui,
     modelOverride,
+    projectConfigStyle: options.projectConfigStyle,
     sharedMcpServers: sharedMcpRegistry.servers,
     sharedMcpRegistrySource: sharedMcpRegistry.sourcePath,
     verbose: options.verbose,

@@ -54,6 +54,37 @@ describe('config generator', () => {
     }
   });
 
+  it('writes portable-bash notify and MCP launchers when requested', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
+    try {
+      const configPath = join(wd, 'config.toml');
+      await mergeConfig(configPath, wd, { projectConfigStyle: 'portable-bash' });
+      const toml = await readFile(configPath, 'utf-8');
+
+      assert.ok(
+        toml.includes(
+          'notify = ["bash", "-c", "node \\"$(npm root -g)/oh-my-codex/dist/scripts/notify-hook.js\\" \\"$1\\"", "notify-hook"]',
+        ),
+        'portable notify hook should resolve the global install via npm root -g',
+      );
+      assert.ok(
+        toml.includes('[mcp_servers.omx_state]\ncommand = "bash"\nargs = ["-c", "exec node \\"$(npm root -g)/oh-my-codex/dist/mcp/state-server.js\\""]'),
+        'portable state MCP launcher should use bash + npm root -g',
+      );
+      assert.ok(
+        toml.includes('[mcp_servers.omx_memory]\ncommand = "bash"\nargs = ["-c", "exec node \\"$(npm root -g)/oh-my-codex/dist/mcp/memory-server.js\\""]'),
+        'portable memory MCP launcher should use bash + npm root -g',
+      );
+      assert.doesNotMatch(
+        toml,
+        new RegExp(wd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+        'portable project config should not embed repo-local absolute paths',
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('seeds gpt-5.4 model and context defaults for fresh configs', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
     try {

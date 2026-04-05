@@ -126,6 +126,16 @@ Most users should think of OMX as **better task routing + better workflow + bett
 4. Use `$ralplan "..."` to approve the plan and review tradeoffs
 5. Choose `$team` for coordinated parallel execution or `$ralph` for persistent completion loops
 
+### Portable project setup for Bash environments
+
+If you want a project-scoped OMX install that is easier to move between macOS, Linux, and WSL machines that have Bash available, use:
+
+```bash
+omx setup --scope project --project-config-style portable-bash
+```
+
+This opt-in mode avoids embedding repo-local absolute paths for OMX-managed notify hooks and MCP launchers in the generated project config. The default `omx setup` behavior stays unchanged.
+
 ## Recommended workflow
 
 1. `$deep-interview` — clarify scope when the request or boundaries are still vague.

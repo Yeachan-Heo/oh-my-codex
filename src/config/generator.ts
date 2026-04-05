@@ -20,6 +20,7 @@ import type { UnifiedMcpRegistryServer } from "./mcp-registry.js";
 interface MergeOptions {
   includeTui?: boolean;
   modelOverride?: string;
+  projectConfigStyle?: ProjectConfigStyle;
   sharedMcpServers?: UnifiedMcpRegistryServer[];
   sharedMcpRegistrySource?: string;
   verbose?: boolean;
@@ -39,8 +40,14 @@ const OMX_TOP_LEVEL_KEYS = [
   "model_reasoning_effort",
   "developer_instructions",
 ] as const;
+export const PROJECT_CONFIG_STYLES = [
+  "absolute-path",
+  "portable-bash",
+] as const;
+export type ProjectConfigStyle = (typeof PROJECT_CONFIG_STYLES)[number];
 
 const DEFAULT_SETUP_MODEL = DEFAULT_FRONTIER_MODEL;
+const DEFAULT_PROJECT_CONFIG_STYLE: ProjectConfigStyle = "absolute-path";
 const DEFAULT_SETUP_MODEL_CONTEXT_WINDOW = 1000000;
 const DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT = 900000;
 const SHARED_MCP_REGISTRY_MARKER = "oh-my-codex (OMX) Shared MCP Registry Sync";
@@ -52,6 +59,7 @@ const OMX_EXPLORE_ROUTING_DEFAULT = '1';
 const OMX_EXPLORE_CMD_ENV = 'USE_OMX_EXPLORE_CMD';
 const OMX_TUI_STATUS_LINE =
   'status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"]';
+const PORTABLE_BASH_GLOBAL_OMX_ROOT = "$(npm root -g)/oh-my-codex";
 const LEGACY_OMX_TEAM_RUN_TABLE_PATTERN =
   /^\s*\[mcp_servers\.(?:"omx_team_run"|omx_team_run)\]\s*$/m;
 
@@ -79,14 +87,17 @@ function getOmxTopLevelLines(
   pkgRoot: string,
   existingConfig = "",
   modelOverride?: string,
+  projectConfigStyle: ProjectConfigStyle = DEFAULT_PROJECT_CONFIG_STYLE,
 ): string[] {
-  const notifyHookPath = join(pkgRoot, "dist", "scripts", "notify-hook.js");
-  const escapedPath = escapeTomlString(notifyHookPath);
   const rootValues = parseRootKeyValues(existingConfig);
+  const notifyLine =
+    projectConfigStyle === "portable-bash"
+      ? `notify = ["bash", "-c", "${escapeTomlString(`node "${PORTABLE_BASH_GLOBAL_OMX_ROOT}/dist/scripts/notify-hook.js" "$1"`)}", "notify-hook"]`
+      : `notify = ["node", "${escapeTomlString(join(pkgRoot, "dist", "scripts", "notify-hook.js"))}"]`;
 
   const lines = [
     "# oh-my-codex top-level settings (must be before any [table])",
-    `notify = ["node", "${escapedPath}"]`,
+    notifyLine,
     'model_reasoning_effort = "high"',
     `developer_instructions = "You have oh-my-codex installed. AGENTS.md is your orchestration brain and the main orchestration surface. Use skill/keyword routing like $name plus spawned role-specialized subagents for specialized work. Codex native subagents are available via .codex/agents and may be used for independent parallel subtasks within a single session or team pane. Skills are loaded from installed SKILL.md files under .codex/skills, not from native agent TOMLs. Use workflow skills via $name when explicitly invoked or clearly routed by AGENTS.md. Treat installed prompts as narrower internal execution surfaces under AGENTS.md authority, even when user-facing docs prefer $name keywords."`,
   ];
@@ -710,19 +721,30 @@ function getSharedMcpRegistryBlock(
  * OMX table-section block (MCP servers, TUI).
  * Contains ONLY [table] sections — no bare keys.
  */
-function getOmxTablesBlock(pkgRoot: string, includeTui = true): string {
-  const stateServerPath = escapeTomlString(
-    join(pkgRoot, "dist", "mcp", "state-server.js"),
-  );
-  const memoryServerPath = escapeTomlString(
-    join(pkgRoot, "dist", "mcp", "memory-server.js"),
-  );
-  const codeIntelServerPath = escapeTomlString(
-    join(pkgRoot, "dist", "mcp", "code-intel-server.js"),
-  );
-  const traceServerPath = escapeTomlString(
-    join(pkgRoot, "dist", "mcp", "trace-server.js"),
-  );
+function getOmxTablesBlock(
+  pkgRoot: string,
+  includeTui = true,
+  projectConfigStyle: ProjectConfigStyle = DEFAULT_PROJECT_CONFIG_STYLE,
+): string {
+  const stateServerPath =
+    projectConfigStyle === "portable-bash"
+      ? undefined
+      : escapeTomlString(join(pkgRoot, "dist", "mcp", "state-server.js"));
+  const memoryServerPath =
+    projectConfigStyle === "portable-bash"
+      ? undefined
+      : escapeTomlString(join(pkgRoot, "dist", "mcp", "memory-server.js"));
+  const codeIntelServerPath =
+    projectConfigStyle === "portable-bash"
+      ? undefined
+      : escapeTomlString(join(pkgRoot, "dist", "mcp", "code-intel-server.js"));
+  const traceServerPath =
+    projectConfigStyle === "portable-bash"
+      ? undefined
+      : escapeTomlString(join(pkgRoot, "dist", "mcp", "trace-server.js"));
+  const portableBashCommand = 'command = "bash"';
+  const portableBashArgs = (scriptName: string) =>
+    `args = ["-c", "${escapeTomlString(`exec node "${PORTABLE_BASH_GLOBAL_OMX_ROOT}/dist/mcp/${scriptName}"`)}"]`;
 
   return [
     "",
@@ -733,29 +755,37 @@ function getOmxTablesBlock(pkgRoot: string, includeTui = true): string {
     "",
     "# OMX State Management MCP Server",
     "[mcp_servers.omx_state]",
-    'command = "node"',
-    `args = ["${stateServerPath}"]`,
+    projectConfigStyle === "portable-bash" ? portableBashCommand : 'command = "node"',
+    projectConfigStyle === "portable-bash"
+      ? portableBashArgs("state-server.js")
+      : `args = ["${stateServerPath}"]`,
     "enabled = true",
     "startup_timeout_sec = 5",
     "",
     "# OMX Project Memory MCP Server",
     "[mcp_servers.omx_memory]",
-    'command = "node"',
-    `args = ["${memoryServerPath}"]`,
+    projectConfigStyle === "portable-bash" ? portableBashCommand : 'command = "node"',
+    projectConfigStyle === "portable-bash"
+      ? portableBashArgs("memory-server.js")
+      : `args = ["${memoryServerPath}"]`,
     "enabled = true",
     "startup_timeout_sec = 5",
     "",
     "# OMX Code Intelligence MCP Server (LSP diagnostics, AST search)",
     "[mcp_servers.omx_code_intel]",
-    'command = "node"',
-    `args = ["${codeIntelServerPath}"]`,
+    projectConfigStyle === "portable-bash" ? portableBashCommand : 'command = "node"',
+    projectConfigStyle === "portable-bash"
+      ? portableBashArgs("code-intel-server.js")
+      : `args = ["${codeIntelServerPath}"]`,
     "enabled = true",
     "startup_timeout_sec = 10",
     "",
     "# OMX Trace MCP Server (agent flow timeline & statistics)",
     "[mcp_servers.omx_trace]",
-    'command = "node"',
-    `args = ["${traceServerPath}"]`,
+    projectConfigStyle === "portable-bash" ? portableBashCommand : 'command = "node"',
+    projectConfigStyle === "portable-bash"
+      ? portableBashArgs("trace-server.js")
+      : `args = ["${traceServerPath}"]`,
     "enabled = true",
     "startup_timeout_sec = 5",
     ...(includeTui
@@ -823,10 +853,12 @@ export function buildMergedConfig(
     pkgRoot,
     existing,
     options.modelOverride,
+    options.projectConfigStyle,
   );
   const tablesBlock = getOmxTablesBlock(
     pkgRoot,
     includeTui && !tuiUpsert.hadExistingTui,
+    options.projectConfigStyle,
   );
   const sharedRegistryBlock = getSharedMcpRegistryBlock(
     options.sharedMcpServers ?? [],
@@ -834,7 +866,7 @@ export function buildMergedConfig(
     existing,
   );
 
-  let body = existing.trimEnd();
+  let body = existing.trim();
   if (sharedRegistryBlock) {
     body = body ? `${body}\n\n${sharedRegistryBlock}` : sharedRegistryBlock;
   }

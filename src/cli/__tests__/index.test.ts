@@ -24,6 +24,7 @@ import {
   injectModelInstructionsBypassArgs,
   resolveWorkerSparkModel,
   resolveSetupScopeArg,
+  resolveProjectConfigStyleArg,
   readPersistedSetupPreferences,
   readPersistedSetupScope,
   resolveCodexHomeForLaunch,
@@ -764,6 +765,49 @@ describe("resolveSetupScopeArg", () => {
     );
   });
 });
+
+describe("resolveProjectConfigStyleArg", () => {
+  it("returns undefined when project config style is omitted", () => {
+    assert.equal(resolveProjectConfigStyleArg(["--dry-run"]), undefined);
+  });
+
+  it("parses --project-config-style <value> form", () => {
+    assert.equal(
+      resolveProjectConfigStyleArg([
+        "--dry-run",
+        "--project-config-style",
+        "portable-bash",
+      ]),
+      "portable-bash",
+    );
+  });
+
+  it("parses --project-config-style=<value> form", () => {
+    assert.equal(
+      resolveProjectConfigStyleArg(["--project-config-style=portable-bash"]),
+      "portable-bash",
+    );
+  });
+
+  it("throws on invalid project config style", () => {
+    assert.throws(
+      () =>
+        resolveProjectConfigStyleArg([
+          "--project-config-style",
+          "workspace-portable",
+        ]),
+      /Invalid project config style: workspace-portable/,
+    );
+  });
+
+  it("throws when --project-config-style value is missing", () => {
+    assert.throws(
+      () => resolveProjectConfigStyleArg(["--project-config-style"]),
+      /Missing project config style value after --project-config-style/,
+    );
+  });
+});
+
 describe("project launch scope helpers", () => {
   it("reads persisted setup scope when valid", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-launch-scope-"));
@@ -779,16 +823,17 @@ describe("project launch scope helpers", () => {
     }
   });
 
-  it("reads persisted setup preferences when skill target is present", async () => {
+  it("reads persisted setup preferences when project config style is present", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-launch-scope-"));
     try {
       await mkdir(join(wd, ".omx"), { recursive: true });
       await writeFile(
         join(wd, ".omx", "setup-scope.json"),
-        JSON.stringify({ scope: "user" }),
+        JSON.stringify({ scope: "user", projectConfigStyle: "portable-bash" }),
       );
       assert.deepEqual(readPersistedSetupPreferences(wd), {
         scope: "user",
+        projectConfigStyle: "portable-bash",
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
