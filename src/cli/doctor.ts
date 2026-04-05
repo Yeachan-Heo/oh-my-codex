@@ -737,14 +737,14 @@ function checkAgentsMd(scope: DoctorSetupScope, codexHomeDir: string): Check {
     };
   }
 
-  const projectAgentsMd = join(process.cwd(), 'AGENTS.md');
+  const projectAgentsMd = join(codexHomeDir, 'AGENTS.md');
   if (existsSync(projectAgentsMd)) {
-    return { name: 'AGENTS.md', status: 'pass', message: 'found in project root' };
+    return { name: 'AGENTS.md', status: 'pass', message: `found in ${projectAgentsMd}` };
   }
   return {
     name: 'AGENTS.md',
     status: 'warn',
-    message: 'not found in project root (run omx agents-init . or omx setup --scope project)',
+    message: `not found in ${projectAgentsMd} (run omx setup --scope project)`,
   };
 }
 
