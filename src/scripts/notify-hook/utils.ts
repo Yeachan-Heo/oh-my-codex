@@ -26,6 +26,6 @@ export function clampPct(value: any): number | null {
   return Math.round(value);
 }
 
-export function isTerminalPhase(phase: any): boolean {
+export function isTerminalPhase(phase: string): boolean {
   return phase === 'complete' || phase === 'failed' || phase === 'cancelled';
 }

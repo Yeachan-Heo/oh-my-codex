@@ -15,5 +15,13 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 export function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    // Fallback: busy-wait when SharedArrayBuffer is unavailable
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      // spin
+    }
+  }
 }

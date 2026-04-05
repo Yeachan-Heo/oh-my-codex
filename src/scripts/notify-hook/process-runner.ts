@@ -18,19 +18,19 @@ export function runProcess(command: string, args: string[], timeoutMs = 3000): P
       reject(new Error(`timeout after ${timeoutMs}ms`));
     }, timeoutMs);
 
-    child.stdout.on('data', (chunk: any) => {
+    child.stdout.on('data', (chunk: Buffer) => {
       stdout += chunk.toString();
     });
-    child.stderr.on('data', (chunk: any) => {
+    child.stderr.on('data', (chunk: Buffer) => {
       stderr += chunk.toString();
     });
-    child.on('error', (err: any) => {
+    child.on('error', (err: Error) => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
       reject(err);
     });
-    child.on('close', (code: any) => {
+    child.on('close', (code: number | null) => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);

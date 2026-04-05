@@ -685,4 +685,8 @@ async function main() {
   }
 }
 
-main().catch(() => process.exit(0));
+main().catch((err) => {
+  process.exitCode = 1;
+  // eslint-disable-next-line no-console
+  console.error('[notify-hook] fatal error:', err);
+});
