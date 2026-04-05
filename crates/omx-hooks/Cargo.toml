@@ -1,0 +1,18 @@
+[package]
+name = "omx-hooks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Hook discovery, dispatch, and JSON contract for OMX"
+
+[dependencies]
+omx-types = { path = "../omx-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
