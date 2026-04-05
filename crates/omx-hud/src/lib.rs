@@ -1,7 +1,7 @@
 use omx_types::TeamPhase;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HudState {
     pub session_id: Option<String>,
     pub provider: Option<String>,
@@ -13,30 +13,11 @@ pub struct HudState {
     pub uptime_seconds: u64,
 }
 
-impl Default for HudState {
-    fn default() -> Self {
-        Self {
-            session_id: None,
-            provider: None,
-            model: None,
-            team_phase: None,
-            worker_count: 0,
-            pending_tasks: 0,
-            completed_tasks: 0,
-            uptime_seconds: 0,
-        }
-    }
-}
-
 pub async fn run_hud(_initial_state: HudState) -> Result<(), Box<dyn std::error::Error>> {
     todo!("Phase 4: ratatui event loop with crossterm backend, render widgets, listen for state updates via channel")
 }
 
-pub fn render_frame(
-    _state: &HudState,
-    _frame: &mut ratatui::Frame,
-    _area: ratatui::layout::Rect,
-) {
+pub fn render_frame(_state: &HudState, _frame: &mut ratatui::Frame, _area: ratatui::layout::Rect) {
     todo!("Phase 4: render HUD widgets — header, team status, task list, worker grid")
 }
 

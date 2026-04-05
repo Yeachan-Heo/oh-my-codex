@@ -1,4 +1,4 @@
-use rmcp::{ServerHandler, ServiceExt, tool};
+use rmcp::{tool, ServerHandler, ServiceExt};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -20,18 +20,12 @@ struct CodeIntelMcpServer;
 #[rmcp::tool(tool_box)]
 impl CodeIntelMcpServer {
     #[tool(description = "Get TypeScript/JavaScript diagnostics for workspace files")]
-    async fn diagnostics_typescript(
-        &self,
-        #[tool(aggr)] _params: DiagnosticsParams,
-    ) -> String {
+    async fn diagnostics_typescript(&self, #[tool(aggr)] _params: DiagnosticsParams) -> String {
         todo!("Phase 2: run diagnostics via tsc or language server")
     }
 
     #[tool(description = "Search code using AST patterns")]
-    async fn ast_pattern_search(
-        &self,
-        #[tool(aggr)] _params: AstPatternSearchParams,
-    ) -> String {
+    async fn ast_pattern_search(&self, #[tool(aggr)] _params: AstPatternSearchParams) -> String {
         todo!("Phase 2: AST pattern search via tree-sitter or similar")
     }
 }

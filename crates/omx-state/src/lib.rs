@@ -11,8 +11,11 @@ use serde::Serialize;
 #[async_trait::async_trait]
 pub trait StateStore: Send + Sync {
     async fn read<T: DeserializeOwned + Send>(&self, path: &Path) -> Result<Option<T>, OmxError>;
-    async fn write<T: Serialize + Send + Sync>(&self, path: &Path, value: &T)
-        -> Result<(), OmxError>;
+    async fn write<T: Serialize + Send + Sync>(
+        &self,
+        path: &Path,
+        value: &T,
+    ) -> Result<(), OmxError>;
     async fn delete(&self, path: &Path) -> Result<(), OmxError>;
     async fn list(&self, dir: &Path) -> Result<Vec<PathBuf>, OmxError>;
     async fn append_jsonl<T: Serialize + Send + Sync>(

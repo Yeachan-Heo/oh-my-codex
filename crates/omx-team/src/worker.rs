@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use omx_types::{OmxError, WorkerId};
 
-use crate::config::{TeamConfig, WorkerConfig, TeamTask};
+use crate::config::{TeamConfig, TeamTask, WorkerConfig};
 
 #[async_trait]
 pub trait WorkerBootstrap: Send + Sync {
@@ -17,11 +17,7 @@ pub trait WorkerBootstrap: Send + Sync {
         team: &TeamConfig,
     ) -> Result<String, OmxError>;
 
-    async fn write_inbox(
-        &self,
-        worker: &WorkerId,
-        tasks: &[TeamTask],
-    ) -> Result<(), OmxError>;
+    async fn write_inbox(&self, worker: &WorkerId, tasks: &[TeamTask]) -> Result<(), OmxError>;
 }
 
 pub struct DefaultWorkerBootstrap;
@@ -44,11 +40,7 @@ impl WorkerBootstrap for DefaultWorkerBootstrap {
         todo!("Phase 3: generate AGENTS.md with role, tools, constraints")
     }
 
-    async fn write_inbox(
-        &self,
-        _worker: &WorkerId,
-        _tasks: &[TeamTask],
-    ) -> Result<(), OmxError> {
+    async fn write_inbox(&self, _worker: &WorkerId, _tasks: &[TeamTask]) -> Result<(), OmxError> {
         todo!("Phase 3: write task list to worker inbox file")
     }
 }

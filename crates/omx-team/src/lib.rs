@@ -54,11 +54,7 @@ pub trait TeamRuntime: Send + Sync {
         body: &str,
     ) -> Result<(), OmxError>;
     async fn broadcast(&self, from: &WorkerId, body: &str) -> Result<(), OmxError>;
-    async fn claim_task(
-        &self,
-        worker: &WorkerId,
-        task: &TaskId,
-    ) -> Result<LeaseToken, OmxError>;
+    async fn claim_task(&self, worker: &WorkerId, task: &TaskId) -> Result<LeaseToken, OmxError>;
     async fn transition_task(
         &self,
         task: &TaskId,

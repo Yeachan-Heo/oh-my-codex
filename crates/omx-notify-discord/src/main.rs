@@ -1,5 +1,5 @@
-use std::io::{self, Read};
 use omx_types::HookEvent;
+use std::io::{self, Read};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

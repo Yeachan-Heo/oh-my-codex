@@ -1,4 +1,4 @@
-use rmcp::{ServerHandler, ServiceExt, tool};
+use rmcp::{tool, ServerHandler, ServiceExt};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
