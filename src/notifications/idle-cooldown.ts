@@ -19,6 +19,8 @@ import { codexHome } from '../utils/paths.js';
 const DEFAULT_COOLDOWN_SECONDS = 60;
 const SESSION_ID_SAFE_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,255}$/;
 const MAX_IDLE_FINGERPRINT_LENGTH = 512;
+const IDLE_NOTIFICATION_STATE_FILE = 'idle-notif-cooldown.json';
+const SESSION_IDLE_HOOK_STATE_FILE = 'session-idle-hook-state.json';
 
 interface IdleNotificationState {
   lastSentAt?: string;
@@ -65,11 +67,19 @@ export function getIdleNotificationCooldownSeconds(): number {
  * Resolve the path to the cooldown state file.
  * Uses a session-scoped path when sessionId is provided and safe.
  */
-function getCooldownStatePath(stateDir: string, sessionId?: string): string {
+function getScopedStatePath(stateDir: string, fileName: string, sessionId?: string): string {
   if (sessionId && SESSION_ID_SAFE_PATTERN.test(sessionId)) {
-    return join(stateDir, 'sessions', sessionId, 'idle-notif-cooldown.json');
+    return join(stateDir, 'sessions', sessionId, fileName);
   }
-  return join(stateDir, 'idle-notif-cooldown.json');
+  return join(stateDir, fileName);
+}
+
+function getCooldownStatePath(stateDir: string, sessionId?: string): string {
+  return getScopedStatePath(stateDir, IDLE_NOTIFICATION_STATE_FILE, sessionId);
+}
+
+function getSessionIdleHookStatePath(stateDir: string, sessionId?: string): string {
+  return getScopedStatePath(stateDir, SESSION_IDLE_HOOK_STATE_FILE, sessionId);
 }
 
 function normalizeIdleFingerprint(fingerprint: string | null | undefined): string {
@@ -91,6 +101,21 @@ function readIdleNotificationState(cooldownPath: string): IdleNotificationState 
     };
   } catch {
     return null;
+  }
+}
+
+function writeIdleNotificationState(cooldownPath: string, fingerprint?: string): void {
+  try {
+    const dir = dirname(cooldownPath);
+    mkdirSync(dir, { recursive: true });
+    const normalizedFingerprint = normalizeIdleFingerprint(fingerprint);
+    const state: IdleNotificationState = { lastSentAt: new Date().toISOString() };
+    if (normalizedFingerprint) {
+      state.fingerprint = normalizedFingerprint;
+    }
+    writeFileSync(cooldownPath, JSON.stringify(state, null, 2));
+  } catch {
+    // ignore write errors — best effort
   }
 }
 
@@ -134,16 +159,30 @@ export function shouldSendIdleNotification(stateDir: string, sessionId?: string,
  */
 export function recordIdleNotificationSent(stateDir: string, sessionId?: string, fingerprint?: string): void {
   const cooldownPath = getCooldownStatePath(stateDir, sessionId);
-  try {
-    const dir = dirname(cooldownPath);
-    mkdirSync(dir, { recursive: true });
-    const normalizedFingerprint = normalizeIdleFingerprint(fingerprint);
-    const state: IdleNotificationState = { lastSentAt: new Date().toISOString() };
-    if (normalizedFingerprint) {
-      state.fingerprint = normalizedFingerprint;
-    }
-    writeFileSync(cooldownPath, JSON.stringify(state, null, 2));
-  } catch {
-    // ignore write errors — best effort
-  }
+  writeIdleNotificationState(cooldownPath, fingerprint);
+}
+
+/**
+ * Check whether the coarse session-idle hook event should be dispatched.
+ *
+ * This path intentionally stays transition-based even when the lifecycle
+ * notification cooldown is set to 0, because downstream hook consumers only
+ * see the coarse `post_turn_idle_notification` reason and otherwise cannot
+ * distinguish unchanged repeats from new blocked states.
+ */
+export function shouldSendSessionIdleHookEvent(stateDir: string, sessionId?: string, fingerprint?: string): boolean {
+  const normalizedFingerprint = normalizeIdleFingerprint(fingerprint);
+  if (!normalizedFingerprint) return true;
+
+  const state = readIdleNotificationState(getSessionIdleHookStatePath(stateDir, sessionId));
+  if (!state) return true;
+
+  return state.fingerprint !== normalizedFingerprint;
+}
+
+/**
+ * Record that the coarse session-idle hook event was dispatched.
+ */
+export function recordSessionIdleHookEventSent(stateDir: string, sessionId?: string, fingerprint?: string): void {
+  writeIdleNotificationState(getSessionIdleHookStatePath(stateDir, sessionId), fingerprint);
 }

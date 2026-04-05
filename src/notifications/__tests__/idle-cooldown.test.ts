@@ -12,6 +12,8 @@ import {
   getIdleNotificationCooldownSeconds,
   shouldSendIdleNotification,
   recordIdleNotificationSent,
+  shouldSendSessionIdleHookEvent,
+  recordSessionIdleHookEventSent,
 } from '../idle-cooldown.js';
 
 function makeTmpStateDir(): string {
@@ -200,5 +202,39 @@ describe('recordIdleNotificationSent', () => {
     const content = JSON.parse(readFileSync(sessionFile, 'utf-8')) as { lastSentAt: string; fingerprint?: string };
     assert.equal(content.fingerprint, fingerprint);
     assert.equal(typeof content.lastSentAt, 'string');
+  });
+});
+
+describe('session-idle hook event dedupe', () => {
+  let stateDir: string;
+
+  beforeEach(() => {
+    stateDir = makeTmpStateDir();
+    delete process.env.OMX_IDLE_COOLDOWN_SECONDS;
+  });
+
+  afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+    delete process.env.OMX_IDLE_COOLDOWN_SECONDS;
+  });
+
+  it('suppresses unchanged hook fingerprints even when lifecycle cooldown is disabled', () => {
+    process.env.OMX_IDLE_COOLDOWN_SECONDS = '0';
+    const sessionId = 'test-session-hook-zero-cooldown';
+    const fingerprint = '{"phase":"idle","summary":"Waiting for input"}';
+
+    recordSessionIdleHookEventSent(stateDir, sessionId, fingerprint);
+
+    assert.equal(shouldSendSessionIdleHookEvent(stateDir, sessionId, fingerprint), false);
+  });
+
+  it('re-emits when the hook fingerprint changes', () => {
+    const sessionId = 'test-session-hook-change';
+    recordSessionIdleHookEventSent(stateDir, sessionId, '{"phase":"idle","summary":"Waiting on review"}');
+
+    assert.equal(
+      shouldSendSessionIdleHookEvent(stateDir, sessionId, '{"phase":"idle","summary":"Waiting on user input"}'),
+      true,
+    );
   });
 });
