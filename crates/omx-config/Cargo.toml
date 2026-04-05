@@ -1,0 +1,17 @@
+[package]
+name = "omx-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Configuration loading and resolution for OMX"
+
+[dependencies]
+omx-types = { path = "../omx-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
