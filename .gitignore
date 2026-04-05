@@ -9,6 +9,7 @@ dist/
 .omx/
 
 # Local agent/worktree artifacts (never commit)
+.worktrees/
 .claude/
 .claire/
 .codex/
