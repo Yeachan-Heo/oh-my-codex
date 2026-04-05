@@ -846,10 +846,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   // Step 6: Generate AGENTS.md
   console.log("[6/8] Generating AGENTS.md...");
   const agentsMdSrc = join(pkgRoot, "templates", "AGENTS.md");
-  const agentsMdDst =
-    resolvedScope.scope === "project"
-      ? join(projectRoot, "AGENTS.md")
-      : join(scopeDirs.codexHomeDir, "AGENTS.md");
+  const agentsMdDst = join(scopeDirs.codexHomeDir, "AGENTS.md");
   const agentsMdExists = existsSync(agentsMdDst);
 
   // Guard: refuse to overwrite project-root AGENTS.md during active session
@@ -889,7 +886,8 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
       resolvedScope.scope === "project" &&
       sessionIsActive &&
       agentsMdExists &&
-      changed
+      changed &&
+      agentsMdDst === join(projectRoot, "AGENTS.md")
     ) {
       summary.agentsMd.skipped += 1;
       console.log(
@@ -912,7 +910,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
       );
       console.log(
         resolvedScope.scope === "project"
-          ? "  Refreshed AGENTS.md model capability table in project root."
+          ? "  Refreshed AGENTS.md model capability table in project .codex."
           : `  Refreshed AGENTS.md model capability table in ${scopeDirs.codexHomeDir}.`,
       );
     } else {
@@ -932,13 +930,13 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
       if (result === "updated") {
         console.log(
           resolvedScope.scope === "project"
-            ? "  Generated AGENTS.md in project root."
+            ? "  Generated AGENTS.md in project .codex."
             : `  Generated AGENTS.md in ${scopeDirs.codexHomeDir}.`,
         );
       } else if (result === "unchanged") {
         console.log(
           resolvedScope.scope === "project"
-            ? "  AGENTS.md already up to date in project root."
+            ? "  AGENTS.md already up to date in project .codex."
             : `  AGENTS.md already up to date in ${scopeDirs.codexHomeDir}.`,
         );
       } else if (agentsMdExists) {
