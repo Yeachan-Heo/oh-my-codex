@@ -266,6 +266,76 @@ describe('notify-hook Ralph session resume', () => {
     }
   });
 
+  it('adopts a same-thread Ralph across OMX session turnover even when Codex session id is absent', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-notify-ralph-thread-turnover-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const priorOmxSessionId = 'sess-prior';
+      const currentOmxSessionId = 'sess-current';
+      const priorSessionDir = join(stateDir, 'sessions', priorOmxSessionId);
+      const currentSessionDir = join(stateDir, 'sessions', currentOmxSessionId);
+
+      await writeJson(join(stateDir, 'session.json'), { session_id: priorOmxSessionId });
+      await writeJson(join(priorSessionDir, 'ralph-state.json'), {
+        active: true,
+        iteration: 4,
+        max_iterations: 10,
+        current_phase: 'executing',
+        started_at: '2026-02-22T00:00:00.000Z',
+        owner_omx_session_id: priorOmxSessionId,
+        tmux_pane_id: '%42',
+      });
+
+      const firstResult = runNotifyHook(
+        buildPayload(wd, {
+          thread_id: 'thread-turnover-1',
+          turn_id: 'turn-thread-turnover-prior-1',
+        }),
+        await setupTmuxFixture(wd, '%81'),
+      );
+      assert.equal(firstResult.status, 0, firstResult.stderr || firstResult.stdout);
+
+      const updatedPriorState = JSON.parse(
+        await readFile(join(priorSessionDir, 'ralph-state.json'), 'utf-8'),
+      ) as Record<string, unknown>;
+      assert.equal(updatedPriorState.active, true);
+      assert.equal(updatedPriorState.iteration, 5);
+      assert.equal(updatedPriorState.owner_codex_session_id, undefined);
+      assert.equal(updatedPriorState.owner_codex_thread_id, 'thread-turnover-1');
+      assert.equal(updatedPriorState.tmux_pane_id, '%81');
+
+      await writeJson(join(stateDir, 'session.json'), { session_id: currentOmxSessionId });
+
+      const secondResult = runNotifyHook(
+        buildPayload(wd, {
+          thread_id: 'thread-turnover-1',
+          turn_id: 'turn-thread-turnover-current-1',
+        }),
+        await setupTmuxFixture(wd, '%82'),
+      );
+      assert.equal(secondResult.status, 0, secondResult.stderr || secondResult.stdout);
+
+      const currentState = JSON.parse(
+        await readFile(join(currentSessionDir, 'ralph-state.json'), 'utf-8'),
+      ) as Record<string, unknown>;
+      assert.equal(currentState.active, true);
+      assert.equal(currentState.iteration, 6);
+      assert.equal(currentState.owner_omx_session_id, currentOmxSessionId);
+      assert.equal(currentState.owner_codex_session_id, undefined);
+      assert.equal(currentState.owner_codex_thread_id, 'thread-turnover-1');
+      assert.equal(currentState.tmux_pane_id, '%82');
+
+      const priorState = JSON.parse(
+        await readFile(join(priorSessionDir, 'ralph-state.json'), 'utf-8'),
+      ) as Record<string, unknown>;
+      assert.equal(priorState.active, false);
+      assert.equal(priorState.current_phase, 'cancelled');
+      assert.equal(priorState.stop_reason, 'ownership_transferred');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('does not auto-resume without a unique matching prior Ralph owner', async (t) => {
     const scenarios = [
       {

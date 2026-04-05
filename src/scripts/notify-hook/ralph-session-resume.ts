@@ -214,12 +214,21 @@ export async function reconcileRalphSessionResume({
     if (currentRalphState && currentRalphState.active === true) {
       let changed = false;
       const updated: Record<string, unknown> = { ...currentRalphState };
+      const normalizedPayloadThreadId = safeString(payloadThreadId).trim();
       if (safeString(updated.owner_omx_session_id).trim() !== currentOmxSessionId) {
         updated.owner_omx_session_id = currentOmxSessionId;
         changed = true;
       }
       if (payloadSessionId && !safeString(updated.owner_codex_session_id).trim()) {
         updated.owner_codex_session_id = payloadSessionId;
+        changed = true;
+      }
+      if (
+        !safeString(updated.owner_codex_session_id).trim()
+        && normalizedPayloadThreadId
+        && safeString(updated.owner_codex_thread_id).trim() !== normalizedPayloadThreadId
+      ) {
+        updated.owner_codex_thread_id = normalizedPayloadThreadId;
         changed = true;
       }
       if (
