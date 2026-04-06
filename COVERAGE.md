@@ -168,3 +168,13 @@ To achieve 100% hook parity, these changes need to be contributed to Codex CLI:
 4. Add hook context injection (hook stdout -> system message)
 
 RFC tracking: TBD
+
+## Orchestration pressure / actionability regression guard
+
+Leader nudge regressions are not only about whether a nudge fires, but whether the emitted guidance remains actionable. The regression suite in `src/hooks/__tests__/notify-hook-team-leader-nudge.test.ts` now treats these as observable proxies:
+
+- idle + completed work -> shutdown/reconcile guidance
+- idle + pending follow-up -> reuse-team guidance
+- stalled worker progress -> inspect status and unblock/reassign guidance
+
+These cases must stay semantically distinct and must not collapse into generic "keep polling" wording.
