@@ -243,6 +243,7 @@ If this happens, try:
 - [Italiano](./docs/readme/README.it.md)
 - [Ελληνικά](./docs/readme/README.el.md)
 - [Polski](./docs/readme/README.pl.md)
+- [Українська](./docs/readme/README.uk.md)
 
 ## Contributors
 
