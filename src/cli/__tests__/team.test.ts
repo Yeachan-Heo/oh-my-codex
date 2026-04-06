@@ -471,16 +471,22 @@ describe('teamCommand api', () => {
         mailboxNotifiedByMessageId: {},
         completedEventTaskIds: {},
       }, wd);
-      await appendTeamEvent('api-read-stall', {
-        type: 'all_workers_idle',
-        worker: 'worker-2',
-        worker_count: 2,
-      }, wd);
-      await appendTeamEvent('api-read-stall', {
-        type: 'team_leader_nudge',
-        worker: 'leader-fixed',
-        reason: 'all_workers_idle',
-      }, wd);
+      await writeFile(join(wd, '.omx', 'state', 'team', 'api-read-stall', 'leader-attention.json'), JSON.stringify({
+        team_name: 'api-read-stall',
+        updated_at: '2026-03-10T10:05:00.000Z',
+        source: 'native_stop',
+        leader_decision_state: 'still_actionable',
+        leader_attention_pending: true,
+        leader_attention_reason: 'leader_session_stopped',
+        attention_reasons: ['leader_session_stopped'],
+        leader_stale: false,
+        leader_session_active: false,
+        leader_session_id: 'leader-session-1',
+        leader_session_stopped_at: '2026-03-10T10:05:00.000Z',
+        unread_leader_message_count: 1,
+        work_remaining: true,
+        stalled_for_ms: null,
+      }, null, 2));
 
       await teamCommand([
         'api',
@@ -508,7 +514,7 @@ describe('teamCommand api', () => {
       assert.equal(envelope.data?.team_stalled, true);
       assert.equal(envelope.data?.leader_stale, true);
       assert.deepEqual(envelope.data?.stalled_workers, ['worker-1']);
-      assert.match((envelope.data?.reasons ?? []).join(' '), /leader_attention_pending:team_leader_nudge/);
+      assert.match((envelope.data?.reasons ?? []).join(' '), /leader_attention_pending:leader_session_stopped/);
     } finally {
       console.log = originalLog;
       process.chdir(previousCwd);

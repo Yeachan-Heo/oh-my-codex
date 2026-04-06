@@ -3,7 +3,7 @@ import { join, dirname, resolve, sep } from 'path';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { omxStateDir } from '../utils/paths.js';
-import { type TeamPhase, type TerminalPhase } from './orchestrator.js';
+import { isTerminalPhase, type TeamPhase, type TerminalPhase } from './orchestrator.js';
 import {
   computeTaskReadiness as computeTaskReadinessImpl,
   claimTask as claimTaskImpl,
@@ -1824,12 +1824,86 @@ export interface TeamPhaseState {
   updated_at: string;
 }
 
+export type TeamLeaderDecisionState = 'still_actionable' | 'done_waiting_on_leader' | 'stuck_waiting_on_leader';
+
+export interface TeamLeaderAttentionState {
+  team_name: string;
+  updated_at: string;
+  source: 'notify_hook' | 'native_stop' | 'native_session_end';
+  leader_decision_state: TeamLeaderDecisionState;
+  leader_attention_pending: boolean;
+  leader_attention_reason: string | null;
+  attention_reasons: string[];
+  leader_stale: boolean;
+  leader_session_active: boolean;
+  leader_session_id: string | null;
+  leader_session_stopped_at: string | null;
+  unread_leader_message_count: number;
+  work_remaining: boolean;
+  stalled_for_ms: number | null;
+}
+
 function teamPhasePath(teamName: string, cwd: string): string {
   return join(teamDir(teamName, cwd), 'phase.json');
 }
 
 function monitorSnapshotPath(teamName: string, cwd: string): string {
   return join(teamDir(teamName, cwd), 'monitor-snapshot.json');
+}
+
+function leaderAttentionPath(teamName: string, cwd: string): string {
+  return join(teamDir(teamName, cwd), 'leader-attention.json');
+}
+
+function normalizeTeamLeaderAttentionState(
+  teamName: string,
+  raw: unknown,
+): TeamLeaderAttentionState | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const parsed = raw as Record<string, unknown>;
+  const source = parsed.source === 'native_stop'
+    ? 'native_stop'
+    : parsed.source === 'native_session_end'
+      ? 'native_session_end'
+      : 'notify_hook';
+  const leaderDecisionState = parsed.leader_decision_state === 'done_waiting_on_leader'
+    || parsed.leader_decision_state === 'stuck_waiting_on_leader'
+    ? parsed.leader_decision_state
+    : 'still_actionable';
+  const attentionReasons = Array.isArray(parsed.attention_reasons)
+    ? parsed.attention_reasons.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+    : [];
+  return {
+    team_name: typeof parsed.team_name === 'string' && parsed.team_name.trim() !== '' ? parsed.team_name : teamName,
+    updated_at: typeof parsed.updated_at === 'string' && parsed.updated_at.trim() !== '' ? parsed.updated_at : new Date().toISOString(),
+    source,
+    leader_decision_state: leaderDecisionState,
+    leader_attention_pending: parsed.leader_attention_pending === true,
+    leader_attention_reason:
+      typeof parsed.leader_attention_reason === 'string' && parsed.leader_attention_reason.trim() !== ''
+        ? parsed.leader_attention_reason
+        : null,
+    attention_reasons: attentionReasons,
+    leader_stale: parsed.leader_stale === true,
+    leader_session_active: parsed.leader_session_active !== false,
+    leader_session_id:
+      typeof parsed.leader_session_id === 'string' && parsed.leader_session_id.trim() !== ''
+        ? parsed.leader_session_id
+        : null,
+    leader_session_stopped_at:
+      typeof parsed.leader_session_stopped_at === 'string' && parsed.leader_session_stopped_at.trim() !== ''
+        ? parsed.leader_session_stopped_at
+        : null,
+    unread_leader_message_count:
+      typeof parsed.unread_leader_message_count === 'number' && Number.isFinite(parsed.unread_leader_message_count)
+        ? parsed.unread_leader_message_count
+        : 0,
+    work_remaining: parsed.work_remaining === true,
+    stalled_for_ms:
+      typeof parsed.stalled_for_ms === 'number' && Number.isFinite(parsed.stalled_for_ms)
+        ? parsed.stalled_for_ms
+        : null,
+  };
 }
 
 export async function readMonitorSnapshot(
@@ -1861,6 +1935,167 @@ export async function writeTeamPhase(
   cwd: string,
 ): Promise<void> {
   await writeTeamPhaseImpl(teamName, phaseState, cwd, teamPhasePath, writeAtomic);
+}
+
+export async function readTeamLeaderAttention(
+  teamName: string,
+  cwd: string,
+): Promise<TeamLeaderAttentionState | null> {
+  const path = leaderAttentionPath(teamName, cwd);
+  if (!existsSync(path)) return null;
+  try {
+    return normalizeTeamLeaderAttentionState(teamName, JSON.parse(await readFile(path, 'utf-8')));
+  } catch {
+    return null;
+  }
+}
+
+export async function writeTeamLeaderAttention(
+  teamName: string,
+  attentionState: TeamLeaderAttentionState,
+  cwd: string,
+): Promise<void> {
+  await writeAtomic(leaderAttentionPath(teamName, cwd), JSON.stringify({
+    ...attentionState,
+    team_name: teamName,
+  }, null, 2));
+}
+
+async function deriveLeaderStopAttentionState(
+  teamName: string,
+  cwd: string,
+  existing: TeamLeaderAttentionState | null,
+): Promise<Pick<
+  TeamLeaderAttentionState,
+  'leader_decision_state' | 'leader_attention_pending' | 'leader_attention_reason' | 'attention_reasons' | 'unread_leader_message_count' | 'work_remaining'
+>> {
+  const [config, tasks, snapshot, mailbox] = await Promise.all([
+    readTeamConfig(teamName, cwd),
+    listTasks(teamName, cwd).catch(() => [] as TeamTask[]),
+    readMonitorSnapshot(teamName, cwd),
+    listMailboxMessages(teamName, 'leader-fixed', cwd).catch(() => [] as TeamMailboxMessage[]),
+  ]);
+
+  const pendingCount = tasks.filter((task) => task.status === 'pending').length;
+  const blockedCount = tasks.filter((task) => task.status === 'blocked').length;
+  const inProgressCount = tasks.filter((task) => task.status === 'in_progress').length;
+  const workRemaining = pendingCount + blockedCount + inProgressCount > 0;
+
+  const workerNames = config?.workers.map((worker) => worker.name) ?? Object.keys(snapshot?.workerStateByName ?? {});
+  const workerStates = workerNames
+    .map((workerName) => snapshot?.workerStateByName?.[workerName] ?? '')
+    .filter((state) => typeof state === 'string' && state.trim() !== '');
+  const allWorkersIdle =
+    workerStates.length > 0
+    && workerStates.every((state) => state === 'idle' || state === 'done');
+
+  const leaderDecisionState: TeamLeaderDecisionState =
+    pendingCount === 0 && blockedCount === 0 && inProgressCount === 0 && allWorkersIdle
+      ? 'done_waiting_on_leader'
+      : blockedCount > 0 && pendingCount === 0 && inProgressCount === 0 && allWorkersIdle
+        ? 'stuck_waiting_on_leader'
+        : existing?.leader_decision_state ?? 'still_actionable';
+
+  const unreadLeaderMessageCount = mailbox.filter((message) => {
+    const deliveredAt = typeof message.delivered_at === 'string' ? message.delivered_at.trim() : '';
+    return deliveredAt.length === 0;
+  }).length;
+  const attentionReasons = new Set(existing?.attention_reasons ?? []);
+  const leaderAttentionPending =
+    leaderDecisionState !== 'still_actionable'
+    || workRemaining
+    || unreadLeaderMessageCount > 0
+    || existing?.leader_attention_pending === true;
+  if (leaderAttentionPending) {
+    attentionReasons.add('leader_session_stopped');
+  }
+
+  return {
+    leader_decision_state: leaderDecisionState,
+    leader_attention_pending: leaderAttentionPending,
+    leader_attention_reason: leaderAttentionPending ? (existing?.leader_attention_reason ?? 'leader_session_stopped') : null,
+    attention_reasons: [...attentionReasons],
+    unread_leader_message_count: unreadLeaderMessageCount,
+    work_remaining: workRemaining,
+  };
+}
+
+export async function markTeamLeaderSessionStopped(
+  teamName: string,
+  cwd: string,
+  leaderSessionId: string,
+  nowIso: string = new Date().toISOString(),
+): Promise<TeamLeaderAttentionState> {
+  return await markTeamLeaderStopObserved(teamName, cwd, leaderSessionId, nowIso, 'native_session_end');
+}
+
+export async function markTeamLeaderStopObserved(
+  teamName: string,
+  cwd: string,
+  leaderSessionId: string,
+  nowIso: string = new Date().toISOString(),
+  source: TeamLeaderAttentionState['source'] = 'native_stop',
+): Promise<TeamLeaderAttentionState> {
+  const existing = await readTeamLeaderAttention(teamName, cwd);
+  const derived = await deriveLeaderStopAttentionState(teamName, cwd, existing);
+  const nextSource =
+    existing?.source === 'native_stop' && source === 'native_session_end'
+      ? 'native_stop'
+      : source;
+  const next: TeamLeaderAttentionState = {
+    team_name: teamName,
+    updated_at: nowIso,
+    source: nextSource,
+    leader_decision_state: derived.leader_decision_state,
+    leader_attention_pending: derived.leader_attention_pending,
+    leader_attention_reason: derived.leader_attention_reason,
+    attention_reasons: derived.attention_reasons,
+    leader_stale: existing?.leader_stale ?? false,
+    leader_session_active: false,
+    leader_session_id: leaderSessionId || existing?.leader_session_id || null,
+    leader_session_stopped_at: nowIso,
+    unread_leader_message_count: derived.unread_leader_message_count,
+    work_remaining: derived.work_remaining,
+    stalled_for_ms: existing?.stalled_for_ms ?? null,
+  };
+  await writeTeamLeaderAttention(teamName, next, cwd);
+  return next;
+}
+
+export async function markOwnedTeamsLeaderSessionStopped(
+  cwd: string,
+  leaderSessionId: string,
+  nowIso: string = new Date().toISOString(),
+): Promise<string[]> {
+  return await markOwnedTeamsLeaderStopObserved(cwd, leaderSessionId, nowIso, 'native_session_end');
+}
+
+export async function markOwnedTeamsLeaderStopObserved(
+  cwd: string,
+  leaderSessionId: string,
+  nowIso: string = new Date().toISOString(),
+  source: TeamLeaderAttentionState['source'] = 'native_stop',
+): Promise<string[]> {
+  if (!leaderSessionId.trim()) return [];
+  const teamsRoot = join(omxStateDir(cwd), 'team');
+  if (!existsSync(teamsRoot)) return [];
+  const entries = await readdir(teamsRoot, { withFileTypes: true }).catch(() => []);
+  const updatedTeams: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const teamName = entry.name.trim();
+    if (!teamName) continue;
+    const [manifest, phase] = await Promise.all([
+      readTeamManifestV2(teamName, cwd),
+      readTeamPhase(teamName, cwd),
+    ]);
+    if (!manifest) continue;
+    if ((manifest.leader?.session_id ?? '').trim() !== leaderSessionId.trim()) continue;
+    if (phase && isTerminalPhase(phase.current_phase)) continue;
+    await markTeamLeaderStopObserved(teamName, cwd, leaderSessionId, nowIso, source);
+    updatedTeams.push(teamName);
+  }
+  return updatedTeams;
 }
 
 // === Config persistence (public wrapper) ===

@@ -43,6 +43,8 @@ export type {
   TeamMonitorSnapshotState,
   TeamWorkerIntegrationState,
   TeamPhaseState,
+  TeamLeaderDecisionState,
+  TeamLeaderAttentionState,
 } from './state.js';
 
 // === Constants ===
@@ -109,6 +111,10 @@ export { readMonitorSnapshot as teamReadMonitorSnapshot } from './state.js';
 export { writeMonitorSnapshot as teamWriteMonitorSnapshot } from './state.js';
 export { readTeamPhase as teamReadPhase } from './state.js';
 export { writeTeamPhase as teamWritePhase } from './state.js';
+export { readTeamLeaderAttention as teamReadLeaderAttention } from './state.js';
+export { writeTeamLeaderAttention as teamWriteLeaderAttention } from './state.js';
+export { markTeamLeaderSessionStopped as teamMarkLeaderSessionStopped } from './state.js';
+export { markOwnedTeamsLeaderSessionStopped as teamMarkOwnedTeamsLeaderSessionStopped } from './state.js';
 
 // === Worker status write ===
 export { writeWorkerStatus as teamWriteWorkerStatus } from './state.js';

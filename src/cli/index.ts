@@ -2486,6 +2486,15 @@ async function postLaunch(
     // Non-fatal: notification failures must never block session cleanup
   }
 
+  // 4.5. Persist team leader attention when an active leader session exits.
+  try {
+    const { markOwnedTeamsLeaderSessionStopped } = await import("../team/state.js");
+    await markOwnedTeamsLeaderSessionStopped(cwd, sessionId);
+  } catch (err) {
+    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    // Non-fatal
+  }
+
   // 5. Dispatch native hook event (best effort)
   try {
     const durationMs = sessionStartedAt

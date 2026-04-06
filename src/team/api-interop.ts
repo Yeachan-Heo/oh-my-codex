@@ -15,6 +15,8 @@ import {
 import { readTeamEvents, waitForTeamEvent } from './state/events.js';
 import { queueDirectMailboxMessage } from './mcp-comm.js';
 import { appendTeamDeliveryLogForCwd } from './delivery-log.js';
+import { readLatestLeaderActivityMsFromStateDir } from './leader-activity.js';
+import { isTerminalPhase } from './orchestrator.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
 import { buildLeaderMailboxTriggerDirective, buildMailboxTriggerDirective } from './worker-bootstrap.js';
 import {
@@ -45,10 +47,14 @@ import {
   teamWriteShutdownRequest,
   teamReadShutdownAck,
   teamReadMonitorSnapshot,
+  teamReadPhase,
+  teamReadLeaderAttention,
   teamWriteMonitorSnapshot,
   teamReadTaskApproval,
   teamWriteTaskApproval,
   type TeamEvent,
+  type TeamLeaderAttentionState,
+  type TeamPhaseState,
   type TeamMonitorSnapshotState,
   type TeamSummary,
 } from './team-ops.js';
@@ -297,6 +303,13 @@ function buildStallState(
   summary: TeamSummary | null,
   snapshot: TeamMonitorSnapshotState | null,
   recentEvents: TeamEvent[],
+  phaseState: TeamPhaseState | null,
+  leaderAttention: TeamLeaderAttentionState | null,
+  authoritativeLeaderState: {
+    unreadLeaderMessageCount: number;
+    pendingLeaderDispatchCount: number;
+    leaderStopObserved: boolean;
+  },
 ): Record<string, unknown> {
   const idleState = buildIdleState(teamName, summary, snapshot, recentEvents);
   const workerNames = listTeamWorkerNames(summary, snapshot);
@@ -312,25 +325,30 @@ function buildStallState(
   const liveWorkers = workerNames.filter(
     (workerName) => summary?.workers.find((worker) => worker.name === workerName)?.alive !== false,
   );
-  const latestLeaderReason = typeof latestLeaderNudgeEvent?.reason === 'string' ? latestLeaderNudgeEvent.reason : '';
   const terminalLeaderDecisionPending =
     pendingTaskCount === 0
     && idleState.all_workers_idle === true
     && liveWorkers.length > 0;
   const stuckLeaderDecisionPending =
-    (blockedCount > 0 && pendingCount === 0 && inProgressCount === 0 && idleState.all_workers_idle === true)
-    || latestLeaderReason === 'stuck_waiting_on_leader';
+    blockedCount > 0 && pendingCount === 0 && inProgressCount === 0 && idleState.all_workers_idle === true;
   const leaderDecisionState = terminalLeaderDecisionPending
     ? 'done_waiting_on_leader'
     : stuckLeaderDecisionPending
       ? 'stuck_waiting_on_leader'
       : 'still_actionable';
-  const leaderStale = pendingTaskCount > 0 && idleState.all_workers_idle === true && (
-    latestLeaderNudgeEvent !== null
-    || latestDeferredEvent !== null
-    || latestAllWorkersIdleEvent !== null
+  const teamTerminal = phaseState ? isTerminalPhase(phaseState.current_phase) : false;
+  const authoritativeDecisionState = teamTerminal
+    ? 'still_actionable'
+    : leaderDecisionState;
+  const unreadLeaderMessageCount = authoritativeLeaderState.unreadLeaderMessageCount;
+  const pendingLeaderDispatchCount = authoritativeLeaderState.pendingLeaderDispatchCount;
+  const leaderSessionStopped = authoritativeLeaderState.leaderStopObserved;
+  const leaderAttentionPending = !teamTerminal && (
+    unreadLeaderMessageCount > 0
+    || pendingLeaderDispatchCount > 0
+    || leaderSessionStopped
   );
-  const leaderAttentionPending = leaderDecisionState !== 'still_actionable' || leaderStale;
+  const leaderStale = !teamTerminal && leaderSessionStopped;
   const teamStalled =
     stalledWorkers.length > 0
     || leaderAttentionPending
@@ -343,12 +361,17 @@ function buildStallState(
   if (deadWorkers.length > 0 && pendingTaskCount > 0) {
     reasons.push(`dead_workers_with_pending_work:${deadWorkers.join(',')}`);
   }
-  if (leaderDecisionState !== 'still_actionable') {
-    reasons.push(`leader_decision_pending:${leaderDecisionState}`);
+  if (authoritativeDecisionState !== 'still_actionable') {
+    reasons.push(`leader_decision_pending:${authoritativeDecisionState}`);
   }
-  if (leaderStale) {
-    const leaderSignal = latestLeaderNudgeEvent ?? latestDeferredEvent ?? latestAllWorkersIdleEvent;
-    reasons.push(`leader_attention_pending:${leaderSignal?.type ?? 'all_workers_idle'}`);
+  if (unreadLeaderMessageCount > 0) {
+    reasons.push('leader_attention_pending:unread_leader_mailbox');
+  }
+  if (pendingLeaderDispatchCount > 0) {
+    reasons.push('leader_attention_pending:leader_dispatch_pending');
+  }
+  if (leaderSessionStopped) {
+    reasons.push('leader_attention_pending:leader_session_stopped');
   }
 
   return {
@@ -356,20 +379,24 @@ function buildStallState(
     team_stalled: teamStalled,
     leader_stale: leaderStale,
     leader_attention_pending: leaderAttentionPending,
-    leader_decision_state: leaderDecisionState,
+    leader_decision_state: authoritativeDecisionState,
     stalled_workers: stalledWorkers,
     dead_workers: deadWorkers,
     live_workers: liveWorkers,
     pending_task_count: pendingTaskCount,
+    unread_leader_message_count: unreadLeaderMessageCount,
+    pending_leader_dispatch_count: pendingLeaderDispatchCount,
     all_workers_idle: idleState.all_workers_idle,
     idle_workers: idleState.idle_workers,
     reasons,
+    leader_attention_state: leaderAttention,
     last_all_workers_idle_event: summarizeEvent(latestAllWorkersIdleEvent),
     last_team_leader_nudge_event: summarizeEvent(latestLeaderNudgeEvent),
     last_leader_notification_deferred_event: summarizeEvent(latestDeferredEvent),
     source: {
       summary_available: summary !== null,
       snapshot_available: snapshot !== null,
+      phase_available: phaseState !== null,
       recent_event_count: recentEvents.length,
     },
   };
@@ -992,19 +1019,46 @@ export async function executeTeamApiOperation(
         if (!teamName) {
           return { ok: false, operation, error: { code: 'invalid_input', message: 'team_name is required' } };
         }
-        const [summary, snapshot, events] = await Promise.all([
+        const [summary, snapshot, events, phaseState, leaderAttention, leaderMailboxMessages, leaderDispatchRequests, latestLeaderActivityMs] = await Promise.all([
           teamGetSummary(teamName, cwd),
           teamReadMonitorSnapshot(teamName, cwd),
           readTeamEvents(teamName, cwd),
+          teamReadPhase(teamName, cwd),
+          teamReadLeaderAttention(teamName, cwd),
+          listMailboxMessages(teamName, 'leader-fixed', cwd).catch(() => []),
+          teamListDispatchRequests(teamName, cwd, { to_worker: 'leader-fixed', limit: 200 }).catch(() => []),
+          readLatestLeaderActivityMsFromStateDir(join(cwd, '.omx', 'state')).catch(() => Number.NaN),
         ]);
         if (!summary) {
           return { ok: false, operation, error: { code: 'team_not_found', message: 'team_not_found' } };
         }
         const recentEvents = selectRecentEvents(events);
+        const unreadLeaderMessageCount = leaderMailboxMessages.filter((message: { delivered_at?: string }) => {
+          const deliveredAt = typeof message?.delivered_at === 'string' ? message.delivered_at.trim() : '';
+          return deliveredAt.length === 0;
+        }).length;
+        const pendingLeaderDispatchCount = leaderDispatchRequests.filter((request: { status?: string }) =>
+          request.status === 'pending' || request.status === 'notified'
+        ).length;
+        const leaderStoppedAtMs = leaderAttention?.leader_session_stopped_at
+          ? Date.parse(leaderAttention.leader_session_stopped_at)
+          : Number.NaN;
+        const leaderActivityAfterStop =
+          Number.isFinite(leaderStoppedAtMs)
+          && Number.isFinite(latestLeaderActivityMs)
+          && latestLeaderActivityMs > leaderStoppedAtMs;
+        const leaderStopObserved =
+          leaderAttention?.leader_session_active === false
+          && (leaderAttention?.source === 'native_stop' || leaderAttention?.source === 'native_session_end')
+          && !leaderActivityAfterStop;
         return {
           ok: true,
           operation,
-          data: buildStallState(teamName, summary, snapshot, recentEvents),
+          data: buildStallState(teamName, summary, snapshot, recentEvents, phaseState, leaderAttention, {
+            unreadLeaderMessageCount,
+            pendingLeaderDispatchCount,
+            leaderStopObserved,
+          }),
         };
       }
       case 'get-summary': {

@@ -14,12 +14,19 @@ import {
 import {
   initTeamState,
   createTask,
+  readTeamLeaderAttention,
+  readTeamManifestV2,
   readTask,
+  writeTeamLeaderAttention,
+  writeTeamManifestV2,
+  writeTeamPhase,
   sendDirectMessage,
   enqueueDispatchRequest,
   readDispatchRequest,
   listDispatchRequests,
   appendTeamEvent,
+  markOwnedTeamsLeaderStopObserved,
+  markOwnedTeamsLeaderSessionStopped,
   updateWorkerHeartbeat,
   writeMonitorSnapshot,
   writeWorkerStatus,
@@ -1508,7 +1515,7 @@ describe('executeTeamApiOperation: read-idle-state', () => {
 // ─── read-stall-state ───────────────────────────────────────────────────────
 
 describe('executeTeamApiOperation: read-stall-state', () => {
-  it('returns structured stall state from summary, snapshot, and recent events', async () => {
+  it('returns structured stall state from authoritative leader attention state', async () => {
     const { cwd, cleanup } = await setupTeam('stall-state-team');
     try {
       const task = await createTask('stall-state-team', {
@@ -1558,15 +1565,21 @@ describe('executeTeamApiOperation: read-stall-state', () => {
         mailboxNotifiedByMessageId: {},
         completedEventTaskIds: {},
       }, cwd);
-      const idleEvent = await appendTeamEvent('stall-state-team', {
-        type: 'all_workers_idle',
-        worker: 'worker-2',
-        worker_count: 2,
-      }, cwd);
-      const nudgeEvent = await appendTeamEvent('stall-state-team', {
-        type: 'team_leader_nudge',
-        worker: 'leader-fixed',
-        reason: 'all_workers_idle',
+      await writeTeamLeaderAttention('stall-state-team', {
+        team_name: 'stall-state-team',
+        updated_at: '2026-03-10T10:05:00.000Z',
+        source: 'native_stop',
+        leader_decision_state: 'still_actionable',
+        leader_attention_pending: true,
+        leader_attention_reason: 'leader_session_stopped',
+        attention_reasons: ['leader_session_stopped'],
+        leader_stale: false,
+        leader_session_active: false,
+        leader_session_id: 'leader-session-1',
+        leader_session_stopped_at: '2026-03-10T10:05:00.000Z',
+        unread_leader_message_count: 1,
+        work_remaining: true,
+        stalled_for_ms: null,
       }, cwd);
 
       const result = await executeTeamApiOperation('read-stall-state', {
@@ -1583,13 +1596,157 @@ describe('executeTeamApiOperation: read-stall-state', () => {
         assert.equal(result.data.pending_task_count, 1);
         assert.equal(result.data.all_workers_idle, true);
         assert.match((result.data.reasons as string[]).join(' '), /workers_non_reporting:worker-1/);
-        assert.match((result.data.reasons as string[]).join(' '), /leader_attention_pending:team_leader_nudge/);
-        const lastAllIdle = result.data.last_all_workers_idle_event as { event_id?: string } | null;
-        const lastNudge = result.data.last_team_leader_nudge_event as { event_id?: string; reason?: string } | null;
-        assert.equal(lastAllIdle?.event_id, idleEvent.event_id);
-        assert.equal(lastNudge?.event_id, nudgeEvent.event_id);
-        assert.equal(lastNudge?.reason, 'all_workers_idle');
+        assert.match((result.data.reasons as string[]).join(' '), /leader_attention_pending:leader_session_stopped/);
+        const attention = result.data.leader_attention_state as { leader_session_active?: boolean; source?: string } | null;
+        assert.equal(attention?.leader_session_active, false);
+        assert.equal(attention?.source, 'native_stop');
       }
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('uses unread leader mailbox state even without recent nudge events', async () => {
+    const { cwd, cleanup } = await setupTeam('stall-state-mailbox');
+    try {
+      await sendDirectMessage('stall-state-mailbox', 'worker-1', 'leader-fixed', 'please review', cwd);
+
+      const result = await executeTeamApiOperation('read-stall-state', {
+        team_name: 'stall-state-mailbox',
+      }, cwd);
+
+      assert.equal(result.ok, true);
+      if (result.ok) {
+        assert.equal(result.data.leader_attention_pending, true);
+        assert.equal(result.data.leader_stale, false);
+        assert.equal(result.data.unread_leader_message_count, 1);
+        assert.match((result.data.reasons as string[]).join(' '), /leader_attention_pending:unread_leader_mailbox/);
+      }
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('suppresses stale native-stop attention after newer leader activity', async () => {
+    const { cwd, cleanup } = await setupTeam('stall-state-resume');
+    try {
+      await writeTeamLeaderAttention('stall-state-resume', {
+        team_name: 'stall-state-resume',
+        updated_at: '2026-03-10T10:05:00.000Z',
+        source: 'native_stop',
+        leader_decision_state: 'still_actionable',
+        leader_attention_pending: true,
+        leader_attention_reason: 'leader_session_stopped',
+        attention_reasons: ['leader_session_stopped'],
+        leader_stale: false,
+        leader_session_active: false,
+        leader_session_id: 'leader-session-1',
+        leader_session_stopped_at: '2026-03-10T10:05:00.000Z',
+        unread_leader_message_count: 0,
+        work_remaining: false,
+        stalled_for_ms: null,
+      }, cwd);
+      await writeFile(join(cwd, '.omx', 'state', 'leader-runtime-activity.json'), JSON.stringify({
+        last_activity_at: '2026-03-10T10:06:00.000Z',
+        last_source: 'team_status',
+        last_team_name: 'stall-state-resume',
+      }, null, 2));
+
+      const result = await executeTeamApiOperation('read-stall-state', {
+        team_name: 'stall-state-resume',
+      }, cwd);
+
+      assert.equal(result.ok, true);
+      if (result.ok) {
+        assert.equal(result.data.leader_attention_pending, false);
+        assert.equal(result.data.leader_stale, false);
+        assert.doesNotMatch((result.data.reasons as string[]).join(' '), /leader_attention_pending:leader_session_stopped/);
+      }
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('marks only active leader-owned teams as stopped on session end', async () => {
+    const { cwd, cleanup } = await setupTeam('owned-team');
+    try {
+      await initTeamState('other-team', 'Other', 'executor', 1, cwd);
+      const ownedManifest = await readTeamManifestV2('owned-team', cwd);
+      const otherManifest = await readTeamManifestV2('other-team', cwd);
+      assert.ok(ownedManifest);
+      assert.ok(otherManifest);
+      await writeTeamManifestV2({
+        ...ownedManifest!,
+        leader: {
+          ...ownedManifest!.leader,
+          session_id: 'leader-session-1',
+        },
+      }, cwd);
+      await writeTeamManifestV2({
+        ...otherManifest!,
+        leader: {
+          ...otherManifest!.leader,
+          session_id: 'leader-session-2',
+        },
+      }, cwd);
+      await writeTeamLeaderAttention('owned-team', {
+        team_name: 'owned-team',
+        updated_at: '2026-03-10T10:12:00.000Z',
+        source: 'notify_hook',
+        leader_decision_state: 'still_actionable',
+        leader_attention_pending: true,
+        leader_attention_reason: 'stale_leader_with_messages',
+        attention_reasons: ['stale_leader_with_messages'],
+        leader_stale: true,
+        leader_session_active: true,
+        leader_session_id: 'leader-session-1',
+        leader_session_stopped_at: null,
+        unread_leader_message_count: 1,
+        work_remaining: true,
+        stalled_for_ms: null,
+      }, cwd);
+      await writeTeamPhase('other-team', {
+        current_phase: 'complete',
+        max_fix_attempts: 3,
+        current_fix_attempt: 0,
+        transitions: [],
+        updated_at: '2026-03-10T10:10:00.000Z',
+      }, cwd);
+
+      const updatedTeams = await markOwnedTeamsLeaderSessionStopped(cwd, 'leader-session-1', '2026-03-10T10:15:00.000Z');
+      assert.deepEqual(updatedTeams, ['owned-team']);
+
+      const ownedAttention = await readTeamLeaderAttention('owned-team', cwd);
+      const otherAttention = await readTeamLeaderAttention('other-team', cwd);
+      assert.equal(ownedAttention?.leader_session_active, false);
+      assert.equal(ownedAttention?.leader_attention_pending, true);
+      assert.equal(ownedAttention?.leader_attention_reason, 'stale_leader_with_messages');
+      assert.deepEqual(ownedAttention?.attention_reasons, ['stale_leader_with_messages', 'leader_session_stopped']);
+      assert.equal(otherAttention, null);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('marks only active leader-owned teams from the native stop hook', async () => {
+    const { cwd, cleanup } = await setupTeam('owned-stop-team');
+    try {
+      const ownedManifest = await readTeamManifestV2('owned-stop-team', cwd);
+      assert.ok(ownedManifest);
+      await writeTeamManifestV2({
+        ...ownedManifest!,
+        leader: {
+          ...ownedManifest!.leader,
+          session_id: 'leader-session-stop',
+        },
+      }, cwd);
+
+      const updatedTeams = await markOwnedTeamsLeaderStopObserved(cwd, 'leader-session-stop', '2026-03-10T10:15:00.000Z');
+      assert.deepEqual(updatedTeams, ['owned-stop-team']);
+
+      const ownedAttention = await readTeamLeaderAttention('owned-stop-team', cwd);
+      assert.equal(ownedAttention?.source, 'native_stop');
+      assert.equal(ownedAttention?.leader_session_active, false);
     } finally {
       await cleanup();
     }

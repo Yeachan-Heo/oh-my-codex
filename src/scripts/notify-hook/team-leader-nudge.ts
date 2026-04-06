@@ -19,6 +19,7 @@ import {
 import { DEFAULT_MARKER } from '../tmux-hook-engine.js';
 import { isLeaderRuntimeStale } from '../../team/leader-activity.js';
 import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
+import { writeTeamLeaderAttention } from '../../team/state.js';
 const LEADER_PANE_MISSING_NO_INJECTION_REASON = 'leader_pane_missing_no_injection';
 const LEADER_PANE_SHELL_NO_INJECTION_REASON = 'leader_pane_shell_no_injection';
 const LEADER_NOTIFICATION_DEFERRED_TYPE = 'leader_notification_deferred';
@@ -699,15 +700,6 @@ export async function maybeNudgeTeamLeader({
       taskCounts: progressSnapshot.taskCounts,
       leaderActionState,
     });
-    nudgeState.progress_by_team[teamName] = {
-      signature: progressSnapshot.signature,
-      last_progress_at: effectiveProgressAtIso,
-      observed_at: nowIso,
-      missing_signal_workers: progressSnapshot.missingSignalWorkers,
-      work_remaining: progressSnapshot.workRemaining,
-      leader_action_state: leaderActionState,
-    };
-
     const prev = nudgeState.last_nudged_by_team[teamName] && typeof nudgeState.last_nudged_by_team[teamName] === 'object'
       ? nudgeState.last_nudged_by_team[teamName]
       : {};
@@ -736,9 +728,7 @@ export async function maybeNudgeTeamLeader({
     const previousStalledTeamNudge = prevReason === 'stuck_waiting_on_leader';
     const stalledTeamNudge = teamProgressStalled && (dueByTime || !previousStalledTeamNudge);
     const staleFollowupDue = stalePanesNudge && dueByTime;
-
     const hasActionableNewMessage = hasNewMessage && (allowFreshMailboxNudges || leaderStale);
-    if (!shouldSendAllIdleNudge && !hasActionableNewMessage && !stalledTeamNudge && !staleFollowupDue) continue;
 
     let nudgeReason = '';
     let text = '';
@@ -781,9 +771,46 @@ export async function maybeNudgeTeamLeader({
     } else if (hasActionableNewMessage) {
       nudgeReason = 'new_mailbox_message';
       text = `Team ${teamName}: ${messages.length} msg(s) for leader. ${buildMailboxCheckReminder(teamName)}`;
-    } else {
-      continue;
     }
+
+    const unreadLeaderMessageCount = messages.filter((message) => !safeString(message?.delivered_at).trim()).length;
+    nudgeState.progress_by_team[teamName] = {
+      signature: progressSnapshot.signature,
+      last_progress_at: effectiveProgressAtIso,
+      observed_at: nowIso,
+      missing_signal_workers: progressSnapshot.missingSignalWorkers,
+      work_remaining: progressSnapshot.workRemaining,
+      leader_action_state: leaderActionState,
+      leader_attention_pending: !!nudgeReason,
+      leader_attention_reason: nudgeReason || null,
+      leader_stale: leaderStale,
+      all_workers_idle: allWorkersIdle,
+      pending_task_count:
+        (progressSnapshot.taskCounts.pending || 0)
+        + (progressSnapshot.taskCounts.blocked || 0)
+        + (progressSnapshot.taskCounts.in_progress || 0),
+      unread_leader_message_count: unreadLeaderMessageCount,
+      stalled_for_ms: teamProgressStalled ? stalledForMs : null,
+      source: source === 'notify_fallback_watcher' ? 'notify_hook' : source,
+    };
+    await writeTeamLeaderAttention(teamName, {
+      team_name: teamName,
+      updated_at: nowIso,
+      source: 'notify_hook',
+      leader_decision_state: leaderActionState,
+      leader_attention_pending: !!nudgeReason,
+      leader_attention_reason: nudgeReason || null,
+      attention_reasons: nudgeReason ? [nudgeReason] : [],
+      leader_stale: leaderStale,
+      leader_session_active: true,
+      leader_session_id: currentSessionId || ownerSessionId || null,
+      leader_session_stopped_at: null,
+      unread_leader_message_count: unreadLeaderMessageCount,
+      work_remaining: progressSnapshot.workRemaining,
+      stalled_for_ms: teamProgressStalled ? stalledForMs : null,
+    }, cwd).catch(() => {});
+
+    if (!nudgeReason) continue;
     const orchestrationIntent = resolveLeaderNudgeIntent({ nudgeReason, leaderActionState });
     const capped = text.length > 180 ? `${text.slice(0, 177)}...` : text;
     const markedText = `${capped} ${DEFAULT_MARKER}`;

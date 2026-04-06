@@ -2489,6 +2489,18 @@ exit 0
       const nudgeState = JSON.parse(await readFile(nudgeStatePath, 'utf-8'));
       assert.ok(nudgeState.last_nudged_by_team?.[teamName]?.at);
       assert.equal(nudgeState.last_nudged_by_team?.[teamName]?.orchestration_intent, 'pending-mailbox-review');
+
+      const leaderAttentionPath = join(stateDir, 'team', teamName, 'leader-attention.json');
+      assert.ok(existsSync(leaderAttentionPath), 'leader attention state should be written from notify-hook');
+      const leaderAttention = JSON.parse(await readFile(leaderAttentionPath, 'utf-8'));
+      assert.equal(leaderAttention.source, 'notify_hook');
+      assert.equal(leaderAttention.team_name, teamName);
+      assert.equal(leaderAttention.leader_decision_state, 'still_actionable');
+      assert.equal(leaderAttention.leader_attention_pending, true);
+      assert.equal(leaderAttention.leader_attention_reason, 'new_mailbox_message');
+      assert.deepEqual(leaderAttention.attention_reasons, ['new_mailbox_message']);
+      assert.equal(leaderAttention.leader_session_active, true);
+      assert.equal(leaderAttention.leader_session_stopped_at, null);
     });
   });
 
