@@ -1,0 +1,48 @@
+name: Bump Homebrew formula
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+
+jobs:
+  bump:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+
+      - name: Get latest version from npm
+        id: npm
+        run: |
+          VERSION=$(npm view oh-my-codex version)
+          URL=$(npm view oh-my-codex dist.tarball)
+          SHA=$(curl -sL "$URL" | shasum -a 256 | awk '{print $1}')
+
+          if [ -z "$VERSION" ] || [ -z "$URL" ] || [ -z "$SHA" ]; then
+            echo "::error::Failed to fetch package metadata from npm"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Update formula
+        run: |
+          sed -i "s|url \".*\"|url \"${{ steps.npm.outputs.url }}\"|" Formula/oh-my-codex.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${{ steps.npm.outputs.sha256 }}\"|" Formula/oh-my-codex.rb
+
+      - name: Commit and push if changed
+        run: |
+          git diff --quiet Formula/oh-my-codex.rb && exit 0
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/oh-my-codex.rb
+          git commit -m "formula: bump to ${{ steps.npm.outputs.version }}"
+          git push origin dev

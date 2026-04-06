@@ -56,17 +56,6 @@ omx setup
 omx --madmax --high
 ```
 
-Or install via Homebrew (macOS):
-
-```bash
-brew tap Yeachan-Heo/oh-my-codex https://github.com/Yeachan-Heo/oh-my-codex.git
-brew install oh-my-codex
-omx setup
-omx --madmax --high
-```
-
-See [docs/homebrew.md](docs/homebrew.md) for upgrade and maintenance details.
-
 Then work normally inside Codex:
 
 ```text
