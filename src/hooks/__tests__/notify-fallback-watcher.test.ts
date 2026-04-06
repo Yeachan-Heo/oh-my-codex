@@ -493,7 +493,7 @@ describe('notify-fallback watcher', () => {
       const tmuxLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
       assert.doesNotMatch(tmuxLog, /Ralph loop active continue/);
       assert.doesNotMatch(tmuxLog, /Team dispatch-team:/);
-      assert.doesNotMatch(tmuxLog, /yes, proceed \[OMX_TMUX_INJECT\]/);
+      assert.doesNotMatch(tmuxLog, /continue from current state \[OMX_TMUX_INJECT\]/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -675,7 +675,7 @@ describe('notify-fallback watcher', () => {
       assert.equal(result.status, 0, result.stderr || result.stdout);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf8');
-      assert.match(tmuxLog, /send-keys -t %42 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+      assert.match(tmuxLog, /send-keys -t %42 -l continue from current state \[OMX_TMUX_INJECT\]/);
 
       const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
       const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
@@ -727,7 +727,7 @@ describe('notify-fallback watcher', () => {
       assert.equal(result.status, 0, result.stderr || result.stdout);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
-      assert.doesNotMatch(tmuxLog, /send-keys -t %42 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+      assert.doesNotMatch(tmuxLog, /send-keys -t %42 -l continue from current state \[OMX_TMUX_INJECT\]/);
 
       const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
       const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
@@ -786,7 +786,7 @@ describe('notify-fallback watcher', () => {
       assert.equal(result.status, 0, result.stderr || result.stdout);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
-      assert.doesNotMatch(tmuxLog, /send-keys -t %42 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+      assert.doesNotMatch(tmuxLog, /send-keys -t %42 -l continue from current state \[OMX_TMUX_INJECT\]/);
 
       const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
       const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));

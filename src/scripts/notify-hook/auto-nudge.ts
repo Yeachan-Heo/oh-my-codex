@@ -16,7 +16,7 @@ import { evaluatePaneInjectionReadiness, mapPaneInjectionReadinessReason, sendPa
 import { buildCapturePaneArgv, DEFAULT_MARKER } from '../tmux-hook-engine.js';
 
 export const SKILL_ACTIVE_STATE_FILE = 'skill-active-state.json';
-export const DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS = ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead', 'next i should'];
+export const DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS = ['yes', 'y', 'proceed', 'continue', 'continue from current state', 'ok', 'sure', 'go ahead', 'next i should'];
 export const DEEP_INTERVIEW_INPUT_LOCK_MESSAGE = 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.';
 const DEEP_INTERVIEW_ERROR_PATTERNS = [' error', ' failed', ' failure', ' exception', 'unable to continue', 'cannot continue', 'could not continue'];
 const DEEP_INTERVIEW_ABORT_PATTERNS = ['aborted', 'cancelled', 'canceled'];
@@ -316,7 +316,7 @@ export function normalizeAutoNudgeConfig(raw) {
     return {
       enabled: true,
       patterns: DEFAULT_STALL_PATTERNS,
-      response: 'yes, proceed',
+      response: 'continue from current state',
       delaySec: 3,
       stallMs: 5000,
       ttlMs: DEFAULT_AUTO_NUDGE_TTL_MS,
@@ -329,7 +329,7 @@ export function normalizeAutoNudgeConfig(raw) {
       : DEFAULT_STALL_PATTERNS,
     response: typeof raw.response === 'string' && raw.response.trim() !== ''
       ? raw.response
-      : 'yes, proceed',
+      : 'continue from current state',
     delaySec: typeof raw.delaySec === 'number' && raw.delaySec >= 0 && raw.delaySec <= 60
       ? raw.delaySec
       : 3,

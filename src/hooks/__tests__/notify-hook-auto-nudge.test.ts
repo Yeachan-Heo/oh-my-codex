@@ -145,7 +145,7 @@ describe('notify-hook auto-nudge', () => {
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l continue from current state \[OMX_TMUX_INJECT\]/);
 
       const nudgeState = JSON.parse(await readFile(join(stateDir, 'auto-nudge-state.json'), 'utf-8'));
       assert.equal(nudgeState.nudgeCount, 0);
@@ -183,7 +183,7 @@ describe('notify-hook auto-nudge', () => {
 
       assert.ok(existsSync(tmuxLogPath), 'tmux should have been called');
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'should send nudge response with injection marker');
+      assert.match(tmuxLog, /send-keys -t %99 -l continue from current state \[OMX_TMUX_INJECT\]/, 'should send nudge response with injection marker');
       // Codex CLI needs C-m sent twice with a delay for reliable submission
       const cmMatches = tmuxLog.match(/send-keys -t %99 C-m/g);
       assert.ok(cmMatches && cmMatches.length >= 2, `should send C-m twice, got ${cmMatches?.length ?? 0}`);
@@ -224,7 +224,7 @@ describe('notify-hook auto-nudge', () => {
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /capture-pane/, 'should have tried capture-pane');
-      assert.match(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'should send nudge via capture-pane fallback with marker');
+      assert.match(tmuxLog, /send-keys -t %99 -l continue from current state \[OMX_TMUX_INJECT\]/, 'should send nudge via capture-pane fallback with marker');
     });
   });
 
@@ -324,7 +324,7 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /display-message -t %99 -p #S/, 'should anchor off the active mode pane');
-      assert.match(tmuxLog, /send-keys -t %100 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'should upgrade anchored shell pane to sibling codex pane');
+      assert.match(tmuxLog, /send-keys -t %100 -l continue from current state \[OMX_TMUX_INJECT\]/, 'should upgrade anchored shell pane to sibling codex pane');
     });
   });
 
@@ -357,7 +357,7 @@ exit 0
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'team-worker context should still send auto-nudge');
+      assert.match(tmuxLog, /send-keys -t %99 -l continue from current state \[OMX_TMUX_INJECT\]/, 'team-worker context should still send auto-nudge');
 
       const nudgeStatePath = join(workerStateRoot, 'auto-nudge-state.json');
       assert.ok(existsSync(nudgeStatePath), 'worker state root should receive auto-nudge state');
@@ -392,7 +392,7 @@ exit 0
 
       if (existsSync(tmuxLogPath)) {
         const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-        assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed/, 'should NOT send nudge');
+        assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l continue from current state/, 'should NOT send nudge');
       }
     });
   });
@@ -459,7 +459,7 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /display-message -t %99 -p #\{pane_current_command\}/);
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'shell pane should not receive auto-nudge injection');
+      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l continue from current state \[OMX_TMUX_INJECT\]/, 'shell pane should not receive auto-nudge injection');
     });
   });
 
@@ -557,7 +557,7 @@ exit 0
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /display-message -p #S/);
       assert.match(tmuxLog, /display-message -t %99 -p #\{pane_current_command\}/);
-      assert.match(tmuxLog, /send-keys -t %100 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+      assert.match(tmuxLog, /send-keys -t %100 -l continue from current state \[OMX_TMUX_INJECT\]/);
     });
   });
 
@@ -589,7 +589,7 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /display-message -p #S/);
-      assert.match(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'current implementation still injects in this copy-mode fixture');
+      assert.match(tmuxLog, /send-keys -t %99 -l continue from current state \[OMX_TMUX_INJECT\]/, 'current implementation still injects in this copy-mode fixture');
     });
   });
 
@@ -634,7 +634,7 @@ exit 0
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /display-message -p #S/);
       assert.doesNotMatch(tmuxLog, /capture-pane -t %99/, 'current canonical pane path no longer requires capture-pane here');
-      assert.match(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'current implementation still injects in this busy-pane fixture');
+      assert.match(tmuxLog, /send-keys -t %99 -l continue from current state \[OMX_TMUX_INJECT\]/, 'current implementation still injects in this busy-pane fixture');
     });
   });
 
@@ -707,7 +707,7 @@ exit 0
       assert.equal(second.status, 0, `second hook failed: ${second.stderr || second.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.equal((tmuxLog.match(/send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/g) || []).length, 1);
+      assert.equal((tmuxLog.match(/send-keys -t %99 -l continue from current state \[OMX_TMUX_INJECT\]/g) || []).length, 1);
 
       const nudgeState = JSON.parse(await readFile(join(stateDir, 'auto-nudge-state.json'), 'utf-8'));
       assert.equal(nudgeState.nudgeCount, 1);
@@ -749,7 +749,7 @@ exit 0
       assert.equal(second.status, 0, `second hook failed: ${second.stderr || second.stdout}`);
 
       let tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.equal((tmuxLog.match(/send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/g) || []).length, 1);
+      assert.equal((tmuxLog.match(/send-keys -t %99 -l continue from current state \[OMX_TMUX_INJECT\]/g) || []).length, 1);
 
       const nudgeStatePath = join(stateDir, 'auto-nudge-state.json');
       const nudgeStateBeforeThird = JSON.parse(await readFile(nudgeStatePath, 'utf-8'));
@@ -765,7 +765,7 @@ exit 0
       assert.equal(third.status, 0, `third hook failed: ${third.stderr || third.stdout}`);
 
       tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.equal((tmuxLog.match(/send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/g) || []).length, 2);
+      assert.equal((tmuxLog.match(/send-keys -t %99 -l continue from current state \[OMX_TMUX_INJECT\]/g) || []).length, 2);
 
       const nudgeState = JSON.parse(await readFile(nudgeStatePath, 'utf-8'));
       assert.equal(nudgeState.nudgeCount, 2);
@@ -910,7 +910,7 @@ exit 0
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l continue from current state \[OMX_TMUX_INJECT\]/);
     });
   });
 
@@ -1320,7 +1320,7 @@ exit 0
       assert.equal(result2.status, 0);
 
       const log2 = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(log2, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'custom pattern should trigger nudge with marker');
+      assert.match(log2, /send-keys -t %99 -l continue from current state \[OMX_TMUX_INJECT\]/, 'custom pattern should trigger nudge with marker');
     });
   });
 
@@ -1353,7 +1353,7 @@ exit 0
 
       assert.ok(existsSync(tmuxLogPath), 'tmux should be called with defaults');
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'should nudge with default config and marker');
+      assert.match(tmuxLog, /send-keys -t %99 -l continue from current state \[OMX_TMUX_INJECT\]/, 'should nudge with default config and marker');
     });
   });
 
@@ -1388,7 +1388,7 @@ exit 0
 
       if (existsSync(tmuxLogPath)) {
         const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-        assert.doesNotMatch(tmuxLog, /send-keys.*-l yes, proceed/, 'should not nudge without pane');
+        assert.doesNotMatch(tmuxLog, /send-keys.*-l continue from current state/, 'should not nudge without pane');
       }
     });
   });

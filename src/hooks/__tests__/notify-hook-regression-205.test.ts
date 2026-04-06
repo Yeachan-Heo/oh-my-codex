@@ -221,7 +221,7 @@ describe('regression-205: notify-hook records pending stall state on "if you wan
       const tmuxLog = await readFile(tmuxLogPath, 'utf8');
       assert.doesNotMatch(
         tmuxLog,
-        /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/,
+        /send-keys -t %99 -l continue from current state \[OMX_TMUX_INJECT\]/,
         'default notify-hook path should not inject before the real stall window elapses',
       );
 

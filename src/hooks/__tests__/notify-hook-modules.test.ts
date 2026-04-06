@@ -235,7 +235,7 @@ describe('notify-hook/auto-nudge – detectStallPattern', () => {
 
   it('ignores prior OMX injection lines so injected text cannot self-trigger detection', async () => {
     const { detectStallPattern, DEFAULT_STALL_PATTERNS } = await loadModule('notify-hook/auto-nudge.js');
-    const text = 'Completed the change.\nyes, proceed [OMX_TMUX_INJECT]\nkeep going [OMX_TMUX_INJECT]';
+    const text = 'Completed the change.\ncontinue from current state [OMX_TMUX_INJECT]\nkeep going [OMX_TMUX_INJECT]';
     assert.equal(detectStallPattern(text, DEFAULT_STALL_PATTERNS), false);
   });
 
@@ -263,7 +263,7 @@ describe('notify-hook/auto-nudge – normalizeAutoNudgeConfig', () => {
     const cfg = normalizeAutoNudgeConfig(null);
     assert.equal(cfg.enabled, true);
     assert.deepEqual(cfg.patterns, DEFAULT_STALL_PATTERNS);
-    assert.equal(cfg.response, 'yes, proceed');
+    assert.equal(cfg.response, 'continue from current state');
     assert.equal(cfg.delaySec, 3);
     assert.equal(cfg.ttlMs, 30_000);
   });
@@ -283,7 +283,7 @@ describe('notify-hook/auto-nudge – normalizeAutoNudgeConfig', () => {
   it('falls back to defaults for empty response string', async () => {
     const { normalizeAutoNudgeConfig } = await loadModule('notify-hook/auto-nudge.js');
     const cfg = normalizeAutoNudgeConfig({ response: '   ' });
-    assert.equal(cfg.response, 'yes, proceed');
+    assert.equal(cfg.response, 'continue from current state');
   });
 
   it('accepts valid delaySec', async () => {
@@ -357,7 +357,7 @@ describe('notify-hook/auto-nudge – inferSkillPhaseFromText', () => {
 describe('notify-hook/auto-nudge – blocked deep-interview auto approvals', () => {
   it('normalizes injected approval text before matching blocked inputs', async () => {
     const { normalizeBlockedAutoApprovalInput } = await loadModule('notify-hook/auto-nudge.js');
-    assert.equal(normalizeBlockedAutoApprovalInput(' yes, proceed [OMX_TMUX_INJECT] '), 'yes proceed');
+    assert.equal(normalizeBlockedAutoApprovalInput(' continue from current state [OMX_TMUX_INJECT] '), 'continue from current state');
   });
 
   it('matches each blocked approval keyword or phrase', async () => {
@@ -369,7 +369,7 @@ describe('notify-hook/auto-nudge – blocked deep-interview auto approvals', () 
 
   it('blocks combined yes/proceed injection text', async () => {
     const { isBlockedAutoApprovalInput } = await loadModule('notify-hook/auto-nudge.js');
-    assert.equal(isBlockedAutoApprovalInput('yes, proceed'), true);
+    assert.equal(isBlockedAutoApprovalInput('continue from current state'), true);
   });
 
   it('treats actionable "Next I should ..." replies like continuation approval', async () => {
