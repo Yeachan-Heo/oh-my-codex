@@ -1,32 +1,12 @@
 node_modules/
-dist/
-*.tsbuildinfo
-.omc/state/
-.omc/prompts/
-.omc/logs/
-.omc/research/
-.omc/
-.omx/
+.DS_Store
 
-# Local agent/worktree artifacts (never commit)
+# Local editor / agent artifacts
 .claude/
 .claire/
 .codex/
-.agents/
-coverage/
-target/
-bin/native/
-bin/omx-explore-harness
-bin/omx-explore-harness.exe
-bin/omx-explore-harness.meta.json
+!portable-codex-starter/.codex/
+!portable-codex-starter/.codex/**
 
-# Local runtime bridge artifacts (generated)
-authority.json
-backlog.json
-dispatch.json
-engine.lock
-events.json
-mailbox.json
-readiness.json
-replay.json
-snapshot.json
+# Starter-local runtime logs
+portable-codex-starter/.github/hooks/logs/

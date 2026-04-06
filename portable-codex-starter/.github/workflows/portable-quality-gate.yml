@@ -1,0 +1,102 @@
+name: Portable Quality Gate
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            **/package-lock.json
+
+      - name: Set up Rust
+        if: ${{ hashFiles('**/Cargo.toml') != '' }}
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        if: ${{ hashFiles('**/Cargo.toml') != '' }}
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install JavaScript dependencies
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            echo "No package-lock.json found; skipping npm ci."
+          fi
+
+      - name: Run common package scripts when present
+        shell: bash
+        run: |
+          if [ ! -f package.json ]; then
+            echo "No package.json found; skipping Node quality scripts."
+            exit 0
+          fi
+
+          node <<'EOF'
+          const { execSync } = require("node:child_process");
+          const fs = require("node:fs");
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const scripts = pkg.scripts || {};
+          const order = ["lint", "typecheck", "build", "test"];
+
+          for (const name of order) {
+            if (!scripts[name]) {
+              console.log(`Skipping npm run ${name} (script missing)`);
+              continue;
+            }
+            console.log(`Running npm run ${name}`);
+            execSync(`npm run ${name}`, { stdio: "inherit" });
+          }
+          EOF
+
+      - name: Run Cargo quality checks when present
+        if: ${{ hashFiles('**/Cargo.toml') != '' }}
+        shell: bash
+        run: |
+          cargo fmt --all -- --check
+          cargo check --workspace --locked || cargo check --workspace
+          cargo test --workspace --locked --no-run || cargo test --workspace --no-run
+
+      - name: Validate starter scaffolding
+        shell: bash
+        run: |
+          test -f AGENTS.md
+          test -d .codex/agents
+          test -f .github/copilot-instructions.md
+          test -d .github/instructions
+          test -d .github/hooks
+          test -d .github/workflows
+
+          if [ -d .agents/skills ]; then
+            echo ".agents/skills present"
+          elif [ -d .codex/skills ]; then
+            echo ".codex/skills present"
+          else
+            echo "No skill directory found"
+            exit 1
+          fi
+
+      - name: Validate Copilot hook JSON
+        shell: bash
+        run: |
+          node -e "JSON.parse(require('node:fs').readFileSync('.github/hooks/copilot-policy.json', 'utf8'))"

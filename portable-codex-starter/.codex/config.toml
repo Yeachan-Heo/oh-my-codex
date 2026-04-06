@@ -1,0 +1,10 @@
+# Portable Codex Starter defaults.
+# Keep this file minimal and portable.
+
+model_reasoning_effort = "high"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[agents]
+max_threads = 4
+max_depth = 1

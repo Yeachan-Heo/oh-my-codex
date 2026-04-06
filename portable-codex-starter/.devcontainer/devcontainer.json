@@ -1,0 +1,66 @@
+{
+  "name": "codex-workspace",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb",
+    "storage": "32gb"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": false,
+      "configureZshAsDefaultShell": false
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "stable"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "github.copilot",
+        "github.copilot-chat",
+        "github.vscode-github-actions",
+        "biomejs.biome",
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "files.insertFinalNewline": true,
+        "files.trimTrailingWhitespace": true,
+        "typescript.tsdk": "node_modules/typescript/lib"
+      }
+    },
+    "codespaces": {
+      "openFiles": [
+        "README.md",
+        "AGENTS.md",
+        ".github/copilot-instructions.md"
+      ]
+    }
+  },
+  "secrets": {
+    "GH_TOKEN": {
+      "description": "Optional personal access token for broader GitHub API access than the default Codespaces token.",
+      "documentationUrl": "https://docs.github.com/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token"
+    },
+    "OPENAI_API_KEY": {
+      "description": "Recommended if you use OpenAI Codex, OpenAI MCP integrations, or repo workflows that call OpenAI APIs.",
+      "documentationUrl": "https://platform.openai.com/api-keys"
+    },
+    "ANTHROPIC_API_KEY": {
+      "description": "Optional if you use the Claude helper scripts or external Anthropic-powered workflows from this repo.",
+      "documentationUrl": "https://console.anthropic.com/settings/keys"
+    },
+    "GEMINI_API_KEY": {
+      "description": "Optional if you use the Gemini helper scripts or external Gemini-powered workflows from this repo.",
+      "documentationUrl": "https://ai.google.dev/gemini-api/docs/api-key"
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/scripts/post-create.sh"
+}

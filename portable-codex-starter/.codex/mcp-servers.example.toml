@@ -1,0 +1,28 @@
+# Portable Codex Starter MCP template
+# Copy only the sections you actually use into `.codex/config.toml`.
+# Keep defaults minimal; enable external MCPs intentionally.
+
+# Official OpenAI docs MCP. Safe default if you want up-to-date OpenAI docs access.
+[mcp_servers.openaiDeveloperDocs]
+url = "https://developers.openai.com/mcp"
+
+# GitHub MCP example.
+# Fill these values from the official GitHub MCP server setup you choose.
+#[mcp_servers.github]
+#command = "YOUR_GITHUB_MCP_COMMAND"
+#args = ["..."]
+
+# Context7 example.
+#[mcp_servers.context7]
+#command = "YOUR_CONTEXT7_COMMAND"
+#args = ["..."]
+
+# Chrome DevTools MCP example.
+#[mcp_servers.chrome_devtools]
+#url = "http://localhost:3000/mcp"
+#startup_timeout_sec = 20
+
+# Markitdown example.
+#[mcp_servers.markitdown]
+#command = "YOUR_MARKITDOWN_COMMAND"
+#args = ["..."]

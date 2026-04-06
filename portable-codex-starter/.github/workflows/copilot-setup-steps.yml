@@ -1,0 +1,60 @@
+name: Copilot Setup Steps
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            **/package-lock.json
+
+      - name: Set up Rust
+        if: ${{ hashFiles('**/Cargo.toml') != '' }}
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        if: ${{ hashFiles('**/Cargo.toml') != '' }}
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install JavaScript dependencies
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            echo "No package-lock.json found; skipping npm ci."
+          fi
+
+      - name: Fetch Rust dependencies
+        if: ${{ hashFiles('**/Cargo.toml') != '' }}
+        shell: bash
+        run: cargo fetch --locked || cargo fetch
+
+      - name: Build project if a build script exists
+        shell: bash
+        run: |
+          if [ -f package.json ] && node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.build ? 0 : 1)"; then
+            npm run build
+          else
+            echo "No package.json build script found; skipping build."
+          fi
