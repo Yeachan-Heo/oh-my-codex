@@ -63,9 +63,20 @@ function normalizeProjectFilter(project: string | undefined, cwd: string): strin
   if (!project) return undefined;
   const trimmed = project.trim();
   if (trimmed === '') return undefined;
-  if (trimmed === 'current') return cwd;
+  if (trimmed === 'current') return normalizeFilesystemPath(trimmedPath(cwd));
   if (trimmed === 'all') return undefined;
   return trimmed;
+}
+
+function trimmedPath(value: string): string {
+  return value.trim();
+}
+
+function normalizeFilesystemPath(value: string): string {
+  if (process.platform === 'darwin' && value.startsWith('/private/var/')) {
+    return value.slice('/private'.length);
+  }
+  return value;
 }
 
 export function parseSinceSpec(value: string | undefined, now = Date.now()): number | null {
@@ -250,8 +261,18 @@ function buildSnippet(text: string, query: string, context: number, caseSensitiv
 function matchesFilter(value: string | null, filter: string | undefined, caseSensitive: boolean): boolean {
   if (!filter) return true;
   if (!value) return false;
-  if (caseSensitive) return value.includes(filter);
-  return value.toLowerCase().includes(filter.toLowerCase());
+
+  const normalizedValue = normalizeFilesystemPath(value);
+  const normalizedFilter = normalizeFilesystemPath(filter);
+  if (caseSensitive) {
+    if (value.includes(filter) || normalizedValue.includes(normalizedFilter)) return true;
+    return false;
+  }
+
+  if (value.toLowerCase().includes(filter.toLowerCase())) return true;
+  if (normalizedValue.toLowerCase().includes(normalizedFilter.toLowerCase())) return true;
+
+  return false;
 }
 
 async function searchRolloutFile(

@@ -8,6 +8,10 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { autoresearchCommand, normalizeAutoresearchCodexArgs, parseAutoresearchArgs } from '../autoresearch.js';
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function withMockedTty<T>(fn: () => Promise<T>): Promise<T> {
   const descriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
   Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true });
@@ -527,7 +531,10 @@ esac
 
       const tmuxOutput = await readFile(tmuxLog, 'utf-8');
       assert.match(tmuxOutput, /split-window -h -t %9 -d -P -F #\{pane_id\} -c/);
-      assert.match(tmuxOutput, /'autoresearch' '\/tmp\/[^']+\/missions\/demo' '--model' 'gpt-5'/);
+      assert.match(
+        tmuxOutput,
+        new RegExp(`'autoresearch' '${escapeRegExp(missionDir)}' '--model' 'gpt-5'`),
+      );
       assert.doesNotMatch(tmuxOutput, /kill-pane -t %9/);
     } finally {
       await rm(repo, { recursive: true, force: true });

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -170,7 +170,9 @@ describe('omx ask', () => {
 
       assert.equal(res.status, 0, res.stderr || res.stdout);
       const artifactPath = res.stdout.trim();
-      assert.ok(artifactPath.startsWith(join(wd, '.omx', 'artifacts', 'claude-')));
+      const resolvedWd = await realpath(wd);
+      const resolvedArtifactPath = await realpath(artifactPath);
+      assert.ok(resolvedArtifactPath.startsWith(join(resolvedWd, '.omx', 'artifacts', 'claude-')));
       assert.equal(existsSync(artifactPath), true);
       const artifact = await readFile(artifactPath, 'utf-8');
       assert.match(artifact, /NONROOT_DEFAULT_OK/);

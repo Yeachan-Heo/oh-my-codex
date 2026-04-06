@@ -699,10 +699,17 @@ fn validate_repo_paths(command_name: &str, args: &[String]) -> Result<(), String
     for operand in candidate_paths {
         let normalized = normalize_candidate_path(&repo_root, operand);
         if !normalized.starts_with(&repo_root) {
-            return Err(format!(
-                "path `{operand}` escapes the omx explore repository root {}",
-                repo_root.display()
-            ));
+            let lexical_mismatch_but_canonical_match = canonicalize_existing_prefix(&normalized)
+                .zip(canonical_repo_root.as_ref())
+                .map(|(candidate, root)| candidate.starts_with(root))
+                .unwrap_or(false);
+            let lexical_mismatch_but_alias_match = private_var_alias_within(&normalized, &repo_root);
+            if !lexical_mismatch_but_canonical_match && !lexical_mismatch_but_alias_match {
+                return Err(format!(
+                    "path `{operand}` escapes the omx explore repository root {}",
+                    repo_root.display()
+                ));
+            }
         }
         if let Some(canonical_candidate) = canonicalize_existing_prefix(&normalized) {
             if let Some(canonical_repo_root) = &canonical_repo_root {
@@ -716,6 +723,20 @@ fn validate_repo_paths(command_name: &str, args: &[String]) -> Result<(), String
         }
     }
     Ok(())
+}
+
+fn private_var_alias_within(path: &Path, root: &Path) -> bool {
+    let path_rel = path
+        .strip_prefix("/private/var")
+        .or_else(|_| path.strip_prefix("/var"));
+    let root_rel = root
+        .strip_prefix("/private/var")
+        .or_else(|_| root.strip_prefix("/var"));
+
+    match (path_rel, root_rel) {
+        (Ok(path_rel), Ok(root_rel)) => path_rel.starts_with(root_rel),
+        _ => false,
+    }
 }
 
 fn command_path_operands<'a>(command_name: &str, args: &'a [String]) -> Vec<&'a str> {

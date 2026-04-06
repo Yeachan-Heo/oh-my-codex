@@ -57,6 +57,8 @@ describe('omx launch fallback when tmux is unavailable', () => {
         wd,
         ['--xhigh', '--madmax'],
         {
+          TMUX: '',
+          TMUX_PANE: '',
           HOME: home,
           PATH: `${fakeBin}:/usr/bin:/bin`,
           OMX_AUTO_UPDATE: '0',

@@ -304,6 +304,12 @@ export async function resolveExploreHarnessCommandWithHydration(
     return { command: isAbsolute(override) ? override : join(packageRoot, override), args: [] };
   }
 
+  // In repository checkouts, prefer source/repo resolution over native cache hydration.
+  // This avoids running stale cached binaries while iterating on harness behavior.
+  if (isRepositoryCheckout(packageRoot)) {
+    return resolveExploreHarnessCommand(packageRoot, env);
+  }
+
   const version = await getPackageVersion(packageRoot);
   for (const cached of resolveCachedNativeBinaryCandidatePaths('omx-explore-harness', version, process.platform, process.arch, env)) {
     if (existsSync(cached)) {
@@ -317,13 +323,9 @@ export async function resolveExploreHarnessCommandWithHydration(
   const repoBuilt = repoBuiltExploreHarnessCommand(packageRoot);
   if (repoBuilt) return repoBuilt;
 
-  if (!isRepositoryCheckout(packageRoot)) {
-    const hydrated = await hydrateNativeBinary('omx-explore-harness', { packageRoot, env });
-    if (hydrated) return { command: hydrated, args: [] };
-    throw new Error('[explore] no compatible native harness is available for this install. Reconnect to the network so OMX can fetch the release asset, or set OMX_EXPLORE_BIN to a prebuilt harness binary.');
-  }
-
-  return resolveExploreHarnessCommand(packageRoot, env);
+  const hydrated = await hydrateNativeBinary('omx-explore-harness', { packageRoot, env });
+  if (hydrated) return { command: hydrated, args: [] };
+  throw new Error('[explore] no compatible native harness is available for this install. Reconnect to the network so OMX can fetch the release asset, or set OMX_EXPLORE_BIN to a prebuilt harness binary.');
 }
 
 export function buildExploreHarnessArgs(

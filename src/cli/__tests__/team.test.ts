@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildLeaderMonitoringHints, parseTeamStartArgs, teamCommand } from '../team.js';
@@ -858,7 +858,7 @@ describe('teamCommand status', () => {
   });
 
   it('returns pane ids and sparkshell hint in JSON mode', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-team-status-json-'));
+    const wd = await realpath(await mkdtemp(join(tmpdir(), 'omx-team-status-json-')));
     const previousCwd = process.cwd();
     const logs: string[] = [];
     const originalLog = console.log;
@@ -1499,12 +1499,20 @@ process.on('SIGTERM', () => process.exit(0));
       }) as typeof process.stderr.write;
 
       await withoutTeamTestWorkerEnv(() => teamCommand(['1:executor', teamTask]));
-      await new Promise((resolve) => setTimeout(resolve, 500));
 
-      logs.length = 0;
-      stderr.length = 0;
-      await withoutTeamTestWorkerEnv(() => teamCommand(['status', teamName]));
-      assert.match(logs.join('\n'), /phase=failed/);
+      let sawFailedPhase = false;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        logs.length = 0;
+        stderr.length = 0;
+        await withoutTeamTestWorkerEnv(() => teamCommand(['status', teamName]));
+        if (/phase=failed/.test(logs.join('\n'))) {
+          sawFailedPhase = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      assert.equal(sawFailedPhase, true, logs.join('\n'));
       assert.doesNotMatch(stderr.join('\n'), /ESRCH/);
 
       logs.length = 0;

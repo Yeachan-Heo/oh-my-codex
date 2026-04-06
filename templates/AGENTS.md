@@ -7,8 +7,7 @@ USE CODEX NATIVE SUBAGENTS FOR INDEPENDENT PARALLEL SUBTASKS WHEN THAT IMPROVES 
 
 # oh-my-codex - Intelligent Multi-Agent Orchestration
 
-You are running with oh-my-codex (OMX), a coordination layer for Codex CLI.
-This AGENTS.md is the top-level operating contract for the workspace.
+You are running oh-my-codex (OMX), a coordination layer for Codex CLI. This AGENTS.md is the top-level operating contract for the workspace.
 Role prompts under `prompts/*.md` are narrower execution surfaces. They must follow this file, not override it.
 
 <guidance_schema_contract>
@@ -77,22 +76,18 @@ Not-tested: <known gaps in verification>
 
 ### Rules
 
-1. **Intent line first.** The first line describes *why*, not *what*. The diff already shows what changed.
-2. **Trailers are optional but encouraged.** Use the ones that add value; skip the ones that don't.
-3. **`Rejected:` prevents re-exploration.** If you considered and rejected an alternative, record it so future agents don't waste cycles re-discovering the same dead end.
-4. **`Directive:` is a message to the future.** Use it for "do not change X without checking Y" warnings.
-5. **`Constraint:` captures external forces.** API limitations, policy requirements, upstream bugs — things not visible in the code.
-6. **`Not-tested:` is honest.** Declaring known verification gaps is more valuable than pretending everything is covered.
-7. **All trailers use git-native trailer format** (key-value after a blank line). No custom parsing required.
+1. Intent line first.
+2. Keep the message concise.
+3. Use native git trailer format for trailers.
+4. Include only trailers that add value.
+5. Record known verification gaps honestly.
 
 ### Example
 
 ```
 Prevent silent session drops during long-running operations
 
-The auth service returns inconsistent status codes on token
-expiry, so the interceptor catches all 4xx responses and
-triggers an inline refresh.
+The auth service returns inconsistent status codes on token expiry, so the interceptor treats all 4xx responses as refresh triggers.
 
 Constraint: Auth service does not support token introspection
 Constraint: Must not add latency to non-expired-token paths
@@ -107,17 +102,16 @@ Not-tested: Auth service cold-start > 500ms behavior
 
 ### Trailer Vocabulary
 
-| Trailer | Purpose |
-|---------|---------|
-| `Constraint:` | External constraint that shaped the decision |
-| `Rejected:` | Alternative considered and why it was rejected |
-| `Confidence:` | Author's confidence level (low/medium/high) |
-| `Scope-risk:` | How broadly the change affects the system (narrow/moderate/broad) |
-| `Reversibility:` | How easily the change can be undone (clean/messy/irreversible) |
-| `Directive:` | Forward-looking instruction for future modifiers |
-| `Tested:` | What verification was performed |
-| `Not-tested:` | Known gaps in verification |
-| `Related:` | Links to related commits, issues, or decisions |
+Trailer -> Purpose (use native git trailers):
+"Constraint" → external constraint that shaped the decision
+"Rejected" → alternative considered and why it was rejected
+"Confidence" → author's confidence level (low/medium/high)
+"Scope-risk" → how broadly the change affects the system (narrow/moderate/broad)
+"Reversibility" → how easily the change can be undone (clean/messy/irreversible)
+"Directive" → forward-looking instruction for future modifiers
+"Tested" → what verification was performed
+"Not-tested" → known gaps in verification
+"Related" → links to related commits, issues, or decisions
 
 Teams may introduce domain-specific trailers without breaking compatibility.
 </lore_commit_protocol>
@@ -128,23 +122,23 @@ Teams may introduce domain-specific trailers without breaking compatibility.
 Default posture: work directly.
 
 Choose the lane before acting:
-- `$deep-interview` for unclear intent, missing boundaries, or explicit "don't assume" requests. This mode clarifies and hands off; it does not implement.
-- `$ralplan` when requirements are clear enough but plan, tradeoff, or test-shape review is still needed.
-- `$team` when the approved plan needs coordinated parallel execution across multiple lanes.
-- `$ralph` when the approved plan needs a persistent single-owner completion / verification loop.
-- **Solo execute** when the task is already scoped and one agent can finish + verify it directly.
+- `$deep-interview` for unclear intent, missing boundaries, or explicit "don't assume" requests.
+- `$ralplan` when the plan, tradeoffs, or test shape still need review.
+- `$team` when the work needs coordinated parallel execution.
+- `$ralph` when the work needs a persistent single-owner completion loop.
+- Solo execute when one agent can finish and verify it.
 
-Delegate only when it materially improves quality, speed, or safety. Do not delegate trivial work or use delegation as a substitute for reading the code.
+Delegate only when it materially improves quality, speed, or safety. Do not use delegation as a substitute for reading the code.
 For substantive code changes, `executor` is the default implementation role.
-Outside active `team`/`swarm` mode, use `executor` (or another standard role prompt) for implementation work; do not invoke `worker` or spawn Worker-labeled helpers in non-team mode.
-Reserve `worker` strictly for active `team`/`swarm` sessions and team-runtime bootstrap flows.
-Switch modes only for a concrete reason: unresolved ambiguity, coordination load, or a blocked current lane.
+Outside active `team`/`swarm` mode, use `executor` for implementation work; do not invoke `worker`.
+Reserve `worker` strictly for active `team`/`swarm` sessions and bootstrap flows.
+Switch modes only for a concrete reason.
 </delegation_rules>
 
 <child_agent_protocol>
 Leader responsibilities:
-1. Pick the mode and keep the user-facing brief current.
-2. Delegate only bounded, verifiable subtasks with clear ownership.
+1. Pick the mode and keep the brief current.
+2. Delegate bounded, verifiable subtasks with clear ownership.
 3. Integrate results, decide follow-up, and own final verification.
 
 Worker responsibilities:
@@ -157,7 +151,7 @@ Rules:
 - Child prompts stay under AGENTS.md authority.
 - `worker` is a team-runtime surface, not a general-purpose child role.
 - Child agents should report recommended handoffs upward.
-- Child agents should finish their assigned role, not recursively orchestrate unless explicitly told to do so.
+- Child agents should finish their assigned role, not recursively orchestrate unless explicitly told.
 - Prefer inheriting the leader model by omitting `spawn_agent.model` unless a task truly requires a different model.
 - Do not hardcode stale frontier-model overrides for Codex native child agents. If an explicit frontier override is necessary, use the current frontier default from `OMX_DEFAULT_FRONTIER_MODEL` / the repo model contract (currently `gpt-5.4`), not older values such as `gpt-5.2`.
 - Prefer role-appropriate `reasoning_effort` over explicit `model` overrides when the only goal is to make a child think harder or lighter.
@@ -178,8 +172,6 @@ Match role to task shape:
 For Codex native child agents, model routing defaults to inheritance/current repo defaults unless the caller has a concrete reason to override it.
 </model_routing>
 
----
-
 <agent_catalog>
 Key roles:
 - `explore` — fast codebase search and mapping
@@ -195,30 +187,28 @@ Specialists remain available through advanced role surfaces such as `/prompts:*`
 ---
 
 <keyword_detection>
-When the user message contains a mapped keyword, activate the corresponding skill immediately.
-Do not ask for confirmation.
+Activate matched skill immediately if user message contains a mapped keyword, no confirmation required.
 
 Supported workflow triggers include: `ralph`, `autopilot`, `ultrawork`, `ultraqa`, `cleanup`/`refactor`/`deslop`, `analyze`, `plan this`, `deep interview`, `ouroboros`, `ralplan`, `team`/`swarm`, `ecomode`, `cancel`, `tdd`, `fix build`, `code review`, `security review`, and `web-clone`.
 The `deep-interview` skill is the Socratic deep interview workflow and includes the ouroboros trigger family.
 
-| Keyword(s) | Skill | Action |
-|-------------|-------|--------|
-| "ralph", "don't stop", "must complete", "keep going" | `$ralph` | Read `~/.codex/skills/ralph/SKILL.md`, execute persistence loop |
-| "autopilot", "build me", "I want a" | `$autopilot` | Read `~/.codex/skills/autopilot/SKILL.md`, execute autonomous pipeline |
-| "ultrawork", "ulw", "parallel" | `$ultrawork` | Read `~/.codex/skills/ultrawork/SKILL.md`, execute parallel agents |
-| "ultraqa" | `$ultraqa` | Read `~/.codex/skills/ultraqa/SKILL.md`, run QA cycling workflow |
-| "analyze", "investigate" | `$analyze` | Read `~/.codex/skills/analyze/SKILL.md`, run deep analysis |
-| "plan this", "plan the", "let's plan" | `$plan` | Read `~/.codex/skills/plan/SKILL.md`, start planning workflow |
-| "interview", "deep interview", "gather requirements", "interview me", "don't assume", "ouroboros" | `$deep-interview` | Read `~/.codex/skills/deep-interview/SKILL.md`, run Ouroboros-inspired Socratic ambiguity-gated interview workflow |
-| "ralplan", "consensus plan" | `$ralplan` | Read `~/.codex/skills/ralplan/SKILL.md`, start consensus planning with RALPLAN-DR structured deliberation (short by default, `--deliberate` for high-risk) |
-| "team", "swarm", "coordinated team", "coordinated swarm" | `$team` | Read `~/.codex/skills/team/SKILL.md`, start team orchestration (swarm compatibility alias) |
-| "ecomode", "eco", "budget" | `$ecomode` | Read `~/.codex/skills/ecomode/SKILL.md`, enable token-efficient mode |
-| "cancel", "stop", "abort" | `$cancel` | Read `~/.codex/skills/cancel/SKILL.md`, cancel active modes |
-| "tdd", "test first" | `$tdd` | Read `~/.codex/skills/tdd/SKILL.md`, start test-driven workflow |
-| "fix build", "type errors" | `$build-fix` | Read `~/.codex/skills/build-fix/SKILL.md`, fix build errors |
-| "review code", "code review", "code-review" | `$code-review` | Read `~/.codex/skills/code-review/SKILL.md`, run code review |
-| "security review" | `$security-review` | Read `~/.codex/skills/security-review/SKILL.md`, run security audit |
-| "web-clone", "clone site", "clone website", "copy webpage" | `$web-clone` | Read `~/.codex/skills/web-clone/SKILL.md`, start website cloning pipeline |
+Keywords → Skill → Action (read ~/.codex/skills/{skill}/SKILL.md, then execute):
+"ralph", "don't stop", "must complete", "keep going" → $ralph → persistence loop
+"autopilot", "build me", "I want a" → $autopilot → autonomous pipeline
+"ultrawork", "ulw", "parallel" → $ultrawork → parallel agents
+"ultraqa" → $ultraqa → QA cycling workflow
+"analyze", "investigate" → $analyze → deep analysis
+"plan this", "plan the", "let's plan" → $plan → planning workflow
+"interview", "deep interview", "gather requirements", "interview me", "don't assume", "ouroboros" → $deep-interview → Socratic ambiguity-gated interview
+"ralplan", "consensus plan" → $ralplan → RALPLAN-DR deliberation (short default, --deliberate for high-risk)
+"team", "swarm", "coordinated team", "coordinated swarm" → $team → team orchestration (swarm compatibility alias)
+"ecomode", "eco", "budget" → $ecomode → token-efficient mode
+"cancel", "stop", "abort" → $cancel → cancel active modes
+"tdd", "test first" → $tdd → test-driven workflow
+"fix build", "type errors" → $build-fix → fix build errors
+"review code", "code review", "code-review" → $code-review → code review
+"security review" → $security-review → security audit
+"web-clone", "clone site", "clone website", "copy webpage" → $web-clone → website cloning pipeline
 
 Detection rules:
 - Keywords are case-insensitive and match anywhere in the user message.
@@ -228,9 +218,7 @@ Detection rules:
 - The rest of the user message becomes the task description.
 
 Ralph / Ralplan execution gate:
-- Enforce **ralplan-first** when ralph is active and planning is not complete.
-- Planning is complete only after both `.omx/plans/prd-*.md` and `.omx/plans/test-spec-*.md` exist.
-- Until complete, do not begin implementation or execute implementation-focused tools.
+- When Ralph is active, enforce ralplan-first: do not begin implementation until both .omx/plans/prd-*.md and .omx/plans/test-spec-*.md exist. Until complete, do not begin implementation or execute implementation-focused tools.
 </keyword_detection>
 
 ---
@@ -382,5 +370,4 @@ Mode lifecycle requirements:
 ---
 
 ## Setup
-
 Run `omx setup` to install all components. Run `omx doctor` to verify installation.
