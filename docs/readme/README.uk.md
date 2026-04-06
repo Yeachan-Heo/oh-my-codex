@@ -12,7 +12,7 @@
 [![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/PUwSMR9XNk)
 
 **Вебсайт:** https://yeachan-heo.github.io/oh-my-codex-website/  
-**Документація:** [Початок роботи](../getting-started.html) · [Агенти](../agents.html) · [Навички](../skills.html) · [Інтеграції](../integrations.html) · [Demo](../../DEMO.md) · [Посібник OpenClaw](../openclaw-integration.md)  
+**Документація:** [Початок роботи](../getting-started.html) · [Агенти](../agents.html) · [Навички](../skills.html) · [Інтеграції](../integrations.html) · [Demo](../../DEMO.md) · [Посібник OpenClaw](../openclaw-integration.uk.md)  
 **Спільнота:** [Discord](https://discord.gg/PUwSMR9XNk) — спільний сервер OMX/спільноти для oh-my-codex та суміжних інструментів.
 
 OMX — це шар робочих процесів для [OpenAI Codex CLI](https://github.com/openai/codex).
@@ -222,7 +222,7 @@ omx sparkshell --tmux-pane %12 --tail-lines 400
 - [Каталог агентів](../agents.html)
 - [Довідник навичок](../skills.html)
 - [Інтеграції](../integrations.html)
-- [Посібник OpenClaw / шлюзу сповіщень](../openclaw-integration.md)
+- [Посібник OpenClaw / шлюзу сповіщень](../openclaw-integration.uk.md)
 - [Участь у проєкті](../../CONTRIBUTING.md)
 - [Журнал змін](../../CHANGELOG.md)
 
