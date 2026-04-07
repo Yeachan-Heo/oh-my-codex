@@ -1053,7 +1053,7 @@ describe("tmux HUD pane helpers", () => {
 });
 
 describe("detached tmux new-session sequencing", () => {
-  it("buildDetachedSessionBootstrapSteps uses shared HUD height and split-capture ordering", () => {
+  it("buildDetachedSessionBootstrapSteps uses session env steps and split-capture ordering", () => {
     const steps = buildDetachedSessionBootstrapSteps(
       "omx-demo",
       "/tmp/project",
@@ -1065,20 +1065,37 @@ describe("detached tmux new-session sequencing", () => {
     );
     assert.deepEqual(
       steps.map((step) => step.name),
-      ["new-session", "split-and-capture-hud-pane"],
+      [
+        "new-session",
+        "set-environment:OMX_TEAM_WORKER_LAUNCH_ARGS",
+        "set-environment:CODEX_HOME",
+        "set-environment:OMX_NOTIFY_TEMP_CONTRACT",
+        "split-and-capture-hud-pane",
+      ],
     );
-    assert.equal(steps[1]?.args[3], String(HUD_TMUX_HEIGHT_LINES));
-    assert.equal(steps[1]?.args[6], "omx-demo");
-    assert.equal(steps[1]?.args.includes("-P"), true);
-    assert.equal(steps[1]?.args.includes("#{pane_id}"), true);
-    assert.equal(steps[0]?.args.includes("-e"), true);
-    assert.equal(
-      steps[0]?.args.includes('OMX_NOTIFY_TEMP_CONTRACT={\"active\":true}'),
-      true,
+    const newSession = steps.find((step) => step.name === "new-session");
+    const splitStep = steps.find((step) => step.name === "split-and-capture-hud-pane");
+    const notifyStep = steps.find(
+      (step) => step.name === "set-environment:OMX_NOTIFY_TEMP_CONTRACT",
     );
+    assert.ok(newSession);
+    assert.ok(splitStep);
+    assert.ok(notifyStep);
+    assert.equal(newSession!.args.includes("-e"), false);
+    assert.deepEqual(notifyStep!.args, [
+      "set-environment",
+      "-t",
+      "omx-demo",
+      "OMX_NOTIFY_TEMP_CONTRACT",
+      '{"active":true}',
+    ]);
+    assert.equal(splitStep!.args[3], String(HUD_TMUX_HEIGHT_LINES));
+    assert.equal(splitStep!.args[6], "omx-demo");
+    assert.equal(splitStep!.args.includes("-P"), true);
+    assert.equal(splitStep!.args.includes("#{pane_id}"), true);
   });
 
-  it("buildDetachedSessionBootstrapSteps forwards temp contract env to detached tmux session", () => {
+  it("buildDetachedSessionBootstrapSteps stores temp contract in tmux session env", () => {
     const steps = buildDetachedSessionBootstrapSteps(
       "omx-demo",
       "/tmp/project",
@@ -1088,18 +1105,20 @@ describe("detached tmux new-session sequencing", () => {
       undefined,
       '{"active":true,"canonicalSelectors":["discord"]}',
     );
-    const newSession = steps.find((step) => step.name === "new-session");
-    assert.ok(newSession);
-    assert.equal(
-      newSession!.args.includes("-e") &&
-        newSession!.args.some((arg) =>
-          arg.startsWith("OMX_NOTIFY_TEMP_CONTRACT="),
-        ),
-      true,
+    const notifyStep = steps.find(
+      (step) => step.name === "set-environment:OMX_NOTIFY_TEMP_CONTRACT",
     );
+    assert.ok(notifyStep);
+    assert.deepEqual(notifyStep!.args, [
+      "set-environment",
+      "-t",
+      "omx-demo",
+      "OMX_NOTIFY_TEMP_CONTRACT",
+      '{"active":true,"canonicalSelectors":["discord"]}',
+    ]);
   });
 
-  it("buildDetachedSessionBootstrapSteps forwards OMX_SESSION_ID to detached tmux session", () => {
+  it("buildDetachedSessionBootstrapSteps stores OMX_SESSION_ID in tmux session env", () => {
     const steps = buildDetachedSessionBootstrapSteps(
       "omx-demo",
       "/tmp/project",
@@ -1111,13 +1130,15 @@ describe("detached tmux new-session sequencing", () => {
       false,
       "sess-detached-managed",
     );
-    const newSession = steps.find((step) => step.name === "new-session");
-    assert.ok(newSession);
-    assert.equal(
-      newSession!.args.includes("-e") &&
-        newSession!.args.some((arg) => arg === "OMX_SESSION_ID=sess-detached-managed"),
-      true,
-    );
+    const sessionStep = steps.find((step) => step.name === "set-environment:OMX_SESSION_ID");
+    assert.ok(sessionStep);
+    assert.deepEqual(sessionStep!.args, [
+      "set-environment",
+      "-t",
+      "omx-demo",
+      "OMX_SESSION_ID",
+      "sess-detached-managed",
+    ]);
   });
 
   it("buildDetachedSessionBootstrapSteps starts native Windows detached sessions with powershell", () => {
@@ -1138,6 +1159,7 @@ describe("detached tmux new-session sequencing", () => {
     );
     assert.equal(steps[0]?.name, "new-session");
     assert.equal(steps[0]?.args.at(-1), "powershell.exe");
+    assert.equal(steps[0]?.args.includes("-e"), true);
     assert.equal(steps[1]?.name, "split-and-capture-hud-pane");
     assert.equal(steps[1]?.args.at(-1), hudCmd);
   });
@@ -1162,7 +1184,7 @@ describe("detached tmux new-session sequencing", () => {
     assert.match(leaderCmd!, /exit \$status/);
   });
 
-  it("detached leader command executes codex and cleanup without shell-quote breakage", async () => {
+  it("detached leader command exports detached session env before codex launch without shell-quote breakage", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-detached-leader-"));
     const fakeBin = join(cwd, "bin");
     const logPath = join(cwd, "leader.log");
@@ -1170,13 +1192,14 @@ describe("detached tmux new-session sequencing", () => {
     try {
       await mkdir(fakeBin, { recursive: true });
       await writeFile(
-        join(fakeBin, "codex"),
+        join(fakeBin, "codex-env-check"),
         `#!/bin/sh
 printf 'codex:%s\\n' "$*" >> "${logPath}"
+printf 'env:%s|%s|%s|%s\\n' "$OMX_TEAM_WORKER_LAUNCH_ARGS" "$CODEX_HOME" "$OMX_NOTIFY_TEMP_CONTRACT" "$OMX_SESSION_ID" >> "${logPath}"
 exit 0
 `,
       );
-      await chmod(join(fakeBin, "codex"), 0o755);
+      await chmod(join(fakeBin, "codex-env-check"), 0o755);
       await writeFile(
         join(fakeBin, "tmux"),
         `#!/bin/sh
@@ -1204,12 +1227,16 @@ exit 0
         "omx-demo",
         cwd,
         buildTmuxPaneCommand(
-          "codex",
+          "codex-env-check",
           ["--dangerously-bypass-approvals-and-sandbox"],
           "/bin/sh",
         ),
         "'node' '/tmp/omx.js' 'hud' '--watch'",
-        null,
+        "--model gpt-5",
+        "/tmp/codex-home",
+        '{"active":true}',
+        false,
+        "sess-detached-managed",
       );
       const leaderCmd = steps[0]?.args.at(-1);
       assert.equal(typeof leaderCmd, "string");
@@ -1226,10 +1253,11 @@ exit 0
 
       const log = await readFile(logPath, "utf-8");
       assert.match(log, /codex:--dangerously-bypass-approvals-and-sandbox/);
+      assert.match(
+        log,
+        /env:--model gpt-5\|\/tmp\/codex-home\|\{"active":true\}\|sess-detached-managed/,
+      );
       assert.match(log, /tmux:display-message -p #\{socket_path\}/);
-      assert.match(log, /tmux:show-options -sv extended-keys/);
-      assert.match(log, /tmux:set-option -sq extended-keys always/);
-      assert.match(log, /tmux:set-option -sq extended-keys off/);
       assert.match(log, /tmux:kill-session -t omx-demo/);
     } finally {
       await rm(cwd, { recursive: true, force: true });

@@ -1496,9 +1496,11 @@ function buildDetachedSessionLeaderCommand(
   cwd: string,
   sessionName: string,
   codexCmd: string,
+  envEntries: ReadonlyArray<readonly [string, string]> = [],
 ): string {
   const wrapped = [
     buildTmuxExtendedKeysAcquireShellSnippet(cwd),
+    buildDetachedSessionEnvExportShellSnippet(envEntries),
     "omx_detached_session_cleanup() {",
     "status=$?;",
     "trap - 0 INT TERM HUP;",
@@ -1508,8 +1510,43 @@ function buildDetachedSessionLeaderCommand(
     "};",
     "trap omx_detached_session_cleanup 0 INT TERM HUP;",
     codexCmd,
-  ].join(" ");
+  ]
+    .filter((part) => part && part.trim() !== "")
+    .join(" ");
   return `/bin/sh -lc ${quoteShellArg(wrapped)}`;
+}
+
+function buildDetachedSessionEnvEntries(
+  workerLaunchArgs: string | null,
+  codexHomeOverride?: string,
+  notifyTempContractRaw?: string | null,
+  sessionId?: string,
+): ReadonlyArray<readonly [string, string]> {
+  const entries: Array<readonly [string, string]> = [];
+  if (workerLaunchArgs) entries.push([TEAM_WORKER_LAUNCH_ARGS_ENV, workerLaunchArgs]);
+  if (sessionId) entries.push(["OMX_SESSION_ID", sessionId]);
+  if (codexHomeOverride) entries.push(["CODEX_HOME", codexHomeOverride]);
+  if (notifyTempContractRaw)
+    entries.push([OMX_NOTIFY_TEMP_CONTRACT_ENV, notifyTempContractRaw]);
+  return entries;
+}
+
+function buildDetachedSessionEnvExportShellSnippet(
+  envEntries: ReadonlyArray<readonly [string, string]>,
+): string {
+  return envEntries
+    .map(([name, value]) => `export ${name}=${quoteShellArg(value)};`)
+    .join(" ");
+}
+
+function buildDetachedSessionEnvSteps(
+  sessionName: string,
+  envEntries: ReadonlyArray<readonly [string, string]>,
+): DetachedSessionTmuxStep[] {
+  return envEntries.map(([name, value]) => ({
+    name: `set-environment:${name}`,
+    args: ["set-environment", "-t", sessionName, name, value],
+  }));
 }
 
 type TmuxExecSync = (file: string, args: readonly string[]) => string;
@@ -1652,9 +1689,20 @@ export function buildDetachedSessionBootstrapSteps(
   nativeWindows = false,
   sessionId?: string,
 ): DetachedSessionTmuxStep[] {
+  const detachedEnvEntries = buildDetachedSessionEnvEntries(
+    workerLaunchArgs,
+    codexHomeOverride,
+    notifyTempContractRaw,
+    sessionId,
+  );
   const detachedLeaderCmd = nativeWindows
     ? "powershell.exe"
-    : buildDetachedSessionLeaderCommand(cwd, sessionName, codexCmd);
+    : buildDetachedSessionLeaderCommand(
+        cwd,
+        sessionName,
+        codexCmd,
+        detachedEnvEntries,
+      );
   const newSessionArgs: string[] = [
     "new-session",
     "-d",
@@ -1665,13 +1713,8 @@ export function buildDetachedSessionBootstrapSteps(
     sessionName,
     "-c",
     cwd,
-    ...(workerLaunchArgs
-      ? ["-e", `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`]
-      : []),
-    ...(sessionId ? ["-e", `OMX_SESSION_ID=${sessionId}`] : []),
-    ...(codexHomeOverride ? ["-e", `CODEX_HOME=${codexHomeOverride}`] : []),
-    ...(notifyTempContractRaw
-      ? ["-e", `${OMX_NOTIFY_TEMP_CONTRACT_ENV}=${notifyTempContractRaw}`]
+    ...(nativeWindows
+      ? detachedEnvEntries.flatMap(([name, value]) => ["-e", `${name}=${value}`])
       : []),
     detachedLeaderCmd,
   ];
@@ -1692,6 +1735,7 @@ export function buildDetachedSessionBootstrapSteps(
   ];
   return [
     { name: "new-session", args: newSessionArgs },
+    ...(nativeWindows ? [] : buildDetachedSessionEnvSteps(sessionName, detachedEnvEntries)),
     { name: "split-and-capture-hud-pane", args: splitCaptureArgs },
   ];
 }
