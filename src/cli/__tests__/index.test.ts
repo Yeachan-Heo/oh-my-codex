@@ -13,6 +13,7 @@ import {
   resolveCliInvocation,
   commandOwnsLocalHelp,
   resolveCodexLaunchPolicy,
+  resolveLeaderLaunchPolicyOverride,
   classifyCodexExecFailure,
   resolveSignalExitCode,
   parseTmuxPaneSnapshot,
@@ -200,6 +201,28 @@ describe("normalizeCodexLaunchArgs", () => {
       "--model",
       "gpt-5",
     ]);
+  });
+
+  it("strips --tmux from leader codex args", () => {
+    assert.deepEqual(normalizeCodexLaunchArgs(["--tmux", "--yolo"]), [
+      "--yolo",
+    ]);
+  });
+});
+
+describe("resolveLeaderLaunchPolicyOverride", () => {
+  it("detects explicit detached tmux launch requests", () => {
+    assert.equal(
+      resolveLeaderLaunchPolicyOverride(["--tmux", "--model", "gpt-5"]),
+      "detached-tmux",
+    );
+  });
+
+  it("returns undefined when no explicit policy override is present", () => {
+    assert.equal(
+      resolveLeaderLaunchPolicyOverride(["--model", "gpt-5"]),
+      undefined,
+    );
   });
 });
 
@@ -873,10 +896,10 @@ describe("project launch scope helpers", () => {
 });
 
 describe("resolveCodexLaunchPolicy", () => {
-  it("uses detached tmux on macOS when outside tmux and tmux is available", () => {
+  it("uses direct launch on macOS when outside tmux even if tmux is available", () => {
     assert.equal(
       resolveCodexLaunchPolicy({}, "darwin", true, false, true, true),
-      "detached-tmux",
+      "direct",
     );
   });
 
@@ -903,10 +926,10 @@ describe("resolveCodexLaunchPolicy", () => {
     );
   });
 
-  it("uses detached tmux on non-macOS hosts when outside tmux and tmux is available", () => {
+  it("uses direct launch on non-macOS hosts when outside tmux even if tmux is available", () => {
     assert.equal(
       resolveCodexLaunchPolicy({}, "linux", true, false, true, true),
-      "detached-tmux",
+      "direct",
     );
   });
 
@@ -923,6 +946,21 @@ describe("resolveCodexLaunchPolicy", () => {
         false,
         true,
         true,
+      ),
+      "direct",
+    );
+  });
+
+  it("honors explicit detached tmux launch requests when tmux is available", () => {
+    assert.equal(
+      resolveCodexLaunchPolicy(
+        {},
+        "linux",
+        true,
+        false,
+        true,
+        true,
+        "detached-tmux",
       ),
       "detached-tmux",
     );

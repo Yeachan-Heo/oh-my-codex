@@ -96,6 +96,13 @@ Launch OMX the recommended way:
 omx --madmax --high
 ```
 
+This starts the interactive leader session directly by default.
+If you explicitly want the leader session in tmux, use:
+
+```bash
+omx --tmux --madmax --high
+```
+
 Then try the canonical workflow:
 
 ```text
