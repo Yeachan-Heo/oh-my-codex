@@ -130,6 +130,28 @@ describe('findCleanupCandidates', () => {
       },
     ]);
   });
+
+  it('always keeps ppid=1 candidates launch-safe even if pid 1 looks like a Codex ancestor', () => {
+    const pidOneCodexProcesses: ProcessEntry[] = [
+      { pid: 1, ppid: 0, command: 'codex' },
+      { pid: 700, ppid: 500, command: 'codex' },
+      { pid: 701, ppid: 700, command: 'node /repo/bin/omx.js cleanup --dry-run' },
+      {
+        pid: 800,
+        ppid: 1,
+        command: 'node /tmp/oh-my-codex/dist/mcp/memory-server.js',
+      },
+    ];
+
+    assert.deepEqual(findLaunchSafeCleanupCandidates(pidOneCodexProcesses, 701), [
+      {
+        pid: 800,
+        ppid: 1,
+        command: 'node /tmp/oh-my-codex/dist/mcp/memory-server.js',
+        reason: 'ppid=1',
+      },
+    ]);
+  });
 });
 
 describe('listOmxProcesses', () => {

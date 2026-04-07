@@ -217,9 +217,15 @@ export function findLaunchSafeCleanupCandidates(
     processes.map((processEntry) => [processEntry.pid, processEntry] as const),
   );
 
-  return findCleanupCandidates(processes, currentPid)
-    .filter((candidate) => !hasAncestorMatching(processByPid, candidate.pid, isCodexSessionProcess))
-    .filter((candidate) => !hasAncestorMatching(processByPid, candidate.pid, isOmxLaunchProcess));
+  return findCleanupCandidates(processes, currentPid).filter((candidate) => {
+    // Reparented MCP children are definitively orphaned even if PID 1 happens
+    // to look Codex-like in a synthetic or platform-specific process table.
+    if (candidate.ppid <= 1) return true;
+    return (
+      !hasAncestorMatching(processByPid, candidate.pid, isCodexSessionProcess)
+      && !hasAncestorMatching(processByPid, candidate.pid, isOmxLaunchProcess)
+    );
+  });
 }
 
 function defaultIsPidAlive(pid: number): boolean {

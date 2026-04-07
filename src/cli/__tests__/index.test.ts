@@ -39,6 +39,7 @@ import {
   shouldEnableNotifyFallbackWatcher,
   reapStaleNotifyFallbackWatcher,
   cleanupLaunchOrphanedMcpProcesses,
+  reapPostLaunchOrphanedMcpProcesses,
   resolveBackgroundHelperLaunchMode,
   shouldDetachBackgroundHelper,
   resolveNotifyFallbackWatcherScript,
@@ -359,6 +360,71 @@ describe("cleanupLaunchOrphanedMcpProcesses", () => {
       false,
       "launch-safe cleanup must preserve OMX MCP processes still attached to another live OMX launch tree",
     );
+  });
+});
+
+describe("reapPostLaunchOrphanedMcpProcesses", () => {
+  it("reaps orphaned MCP processes after launch and reports successful cleanup", async () => {
+    const logs: string[] = [];
+    const warnings: string[] = [];
+    const errors: string[] = [];
+
+    await reapPostLaunchOrphanedMcpProcesses(
+      async () => ({
+        dryRun: false,
+        candidates: [],
+        terminatedCount: 2,
+        forceKilledCount: 0,
+        failedPids: [],
+      }),
+      (line) => logs.push(line),
+      (line) => warnings.push(line),
+      (line) => errors.push(line),
+    );
+
+    assert.deepEqual(logs, [
+      "[omx] postLaunch: reaped 2 orphaned OMX MCP process(es).",
+    ]);
+    assert.deepEqual(warnings, []);
+    assert.deepEqual(errors, []);
+  });
+
+  it("warns about failed post-launch cleanup attempts without throwing", async () => {
+    const warnings: string[] = [];
+
+    await reapPostLaunchOrphanedMcpProcesses(
+      async () => ({
+        dryRun: false,
+        candidates: [],
+        terminatedCount: 0,
+        forceKilledCount: 0,
+        failedPids: [800, 801],
+      }),
+      () => {},
+      (line) => warnings.push(line),
+      () => {},
+    );
+
+    assert.deepEqual(warnings, [
+      "[omx] postLaunch: failed to reap 2 orphaned OMX MCP process(es).",
+    ]);
+  });
+
+  it("swallows post-launch cleanup errors and reports them to stderr", async () => {
+    const errors: string[] = [];
+
+    await reapPostLaunchOrphanedMcpProcesses(
+      async () => {
+        throw new Error("boom");
+      },
+      () => {},
+      () => {},
+      (line) => errors.push(line),
+    );
+
+    assert.deepEqual(errors, [
+      "[cli/index] postLaunch MCP cleanup failed: Error: boom\n",
+    ]);
   });
 });
 
