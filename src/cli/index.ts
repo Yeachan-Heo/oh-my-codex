@@ -44,6 +44,10 @@ import {
   getStateDir,
   listModeStateFilesWithScopePreference,
 } from "../mcp/state-paths.js";
+import {
+  hasModelInstructionsOverride,
+  MODEL_INSTRUCTIONS_FILE_KEY,
+} from "../utils/model-instructions.js";
 import { maybeCheckAndPromptUpdate } from "./update.js";
 import { maybePromptGithubStar } from "./star-prompt.js";
 import {
@@ -189,7 +193,6 @@ Options:
 `;
 
 const REASONING_KEY = "model_reasoning_effort";
-const MODEL_INSTRUCTIONS_FILE_KEY = "model_instructions_file";
 const TEAM_WORKER_LAUNCH_ARGS_ENV = "OMX_TEAM_WORKER_LAUNCH_ARGS";
 const TEAM_INHERIT_LEADER_FLAGS_ENV = "OMX_TEAM_INHERIT_LEADER_FLAGS";
 const OMX_BYPASS_DEFAULT_SYSTEM_PROMPT_ENV = "OMX_BYPASS_DEFAULT_SYSTEM_PROMPT";
@@ -1086,32 +1089,6 @@ export function resolveWorkerSparkModel(
     }
   }
   return undefined;
-}
-
-function isModelInstructionsOverride(value: string): boolean {
-  return new RegExp(`^${MODEL_INSTRUCTIONS_FILE_KEY}\\s*=`).test(value.trim());
-}
-
-function hasModelInstructionsOverride(args: string[]): boolean {
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === CONFIG_FLAG || arg === LONG_CONFIG_FLAG) {
-      const maybeValue = args[i + 1];
-      if (
-        typeof maybeValue === "string" &&
-        isModelInstructionsOverride(maybeValue)
-      ) {
-        return true;
-      }
-      continue;
-    }
-
-    if (arg.startsWith(`${LONG_CONFIG_FLAG}=`)) {
-      const inlineValue = arg.slice(`${LONG_CONFIG_FLAG}=`.length);
-      if (isModelInstructionsOverride(inlineValue)) return true;
-    }
-  }
-  return false;
 }
 
 function shouldBypassDefaultSystemPrompt(env: NodeJS.ProcessEnv): boolean {

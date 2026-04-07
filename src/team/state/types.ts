@@ -1,5 +1,10 @@
 import type { TeamPhase, TerminalPhase } from '../orchestrator.js';
-import type { TeamDispatchRequestStatus, TeamEventType, TeamTaskStatus } from '../contracts.js';
+import type {
+  TeamDispatchRequestStatus,
+  TeamEventType,
+  TeamTaskStatus,
+  TeamWorkerIntegrationStatus,
+} from '../contracts.js';
 import type { TeamReminderIntent } from '../reminder-intents.js';
 import type { WorktreeMode } from '../worktree.js';
 
@@ -282,6 +287,17 @@ export interface ShutdownAck {
   updated_at?: string;
 }
 
+export interface TeamWorkerIntegrationState {
+  last_seen_head?: string;
+  last_integrated_head?: string;
+  last_leader_head?: string;
+  last_rebased_leader_head?: string;
+  status?: TeamWorkerIntegrationStatus;
+  conflict_commit?: string;
+  conflict_files?: string[];
+  updated_at?: string;
+}
+
 export interface TeamMonitorSnapshotState {
   taskStatusById: Record<string, string>;
   workerAliveByName: Record<string, boolean>;
@@ -290,6 +306,7 @@ export interface TeamMonitorSnapshotState {
   workerTaskIdByName: Record<string, string>;
   mailboxNotifiedByMessageId: Record<string, string>;
   completedEventTaskIds: Record<string, boolean>;
+  integrationByWorker?: Record<string, TeamWorkerIntegrationState>;
   monitorTimings?: {
     list_tasks_ms: number;
     worker_scan_ms: number;

@@ -2584,19 +2584,6 @@ export async function assignTask(
 }
 
 /**
- * Reassign a task from one worker to another.
- */
-export async function reassignTask(
-  teamName: string,
-  taskId: string,
-  _fromWorker: string,
-  toWorker: string,
-  cwd: string,
-): Promise<void> {
-  await assignTask(teamName, toWorker, taskId, cwd);
-}
-
-/**
  * Graceful shutdown: send shutdown inbox to all workers, wait, force kill, cleanup.
  */
 export async function shutdownTeam(teamName: string, cwd: string, options: ShutdownOptions = {}): Promise<TeamShutdownSummary> {
@@ -3403,11 +3390,19 @@ async function finalizeHookPreferredMailboxDispatch(params: {
     timeoutMs: dispatchPolicy.dispatch_ack_timeout_ms,
     pollMs: 50,
   });
-  if (receipt && (receipt.status === 'notified' || receipt.status === 'delivered')) {
-    await markMessageNotified(teamName, workerName, messageId, cwd).catch(() => false);
-    const outcome = { ok: true, transport: 'hook', reason: `hook_receipt_${receipt.status}`, request_id: requestId, message_id: messageId } as const;
+  const returnOutcome = async (outcome: DispatchOutcome): Promise<DispatchOutcome> => {
     await logRuntimeDispatchOutcome({ cwd, teamName, workerName, requestId, messageId, intent, outcome });
     return outcome;
+  };
+  if (receipt && (receipt.status === 'notified' || receipt.status === 'delivered')) {
+    await markMessageNotified(teamName, workerName, messageId, cwd).catch(() => false);
+    return returnOutcome({
+      ok: true,
+      transport: 'hook',
+      reason: `hook_receipt_${receipt.status}`,
+      request_id: requestId,
+      message_id: messageId,
+    } as const);
   }
 
   const fallback: DispatchOutcome = fallbackNotify
@@ -3426,15 +3421,13 @@ async function finalizeHookPreferredMailboxDispatch(params: {
         { message_id: messageId, last_reason: `fallback_confirmed_after_failed_receipt:${fallback.reason}` },
         cwd,
       ).catch(() => {});
-      const outcome = {
+      return returnOutcome({
         ok: true,
         transport: fallback.transport,
         reason: `fallback_confirmed_after_failed_receipt:${fallback.reason}`,
         request_id: requestId,
         message_id: messageId,
-      } as const;
-      await logRuntimeDispatchOutcome({ cwd, teamName, workerName, requestId, messageId, intent, outcome });
-      return outcome;
+      } as const);
     }
     await transitionDispatchRequest(
       teamName,
@@ -3444,15 +3437,13 @@ async function finalizeHookPreferredMailboxDispatch(params: {
       { message_id: messageId, last_reason: `fallback_attempted_but_unconfirmed:${fallback.reason}` },
       cwd,
     ).catch(() => {});
-    const outcome = {
+    return returnOutcome({
       ok: false,
       transport: fallback.transport,
       reason: `fallback_attempted_but_unconfirmed:${fallback.reason}`,
       request_id: requestId,
       message_id: messageId,
-    } as const;
-    await logRuntimeDispatchOutcome({ cwd, teamName, workerName, requestId, messageId, intent, outcome });
-    return outcome;
+    } as const);
   }
 
   if (fallback.ok) {
@@ -3463,15 +3454,13 @@ async function finalizeHookPreferredMailboxDispatch(params: {
         messageId,
         cwd,
       });
-      const outcome = {
+      return returnOutcome({
         ok: true,
         transport: fallback.transport,
         reason: 'leader_pane_missing_mailbox_persisted',
         request_id: requestId,
         message_id: messageId,
-      } as const;
-      await logRuntimeDispatchOutcome({ cwd, teamName, workerName, requestId, messageId, intent, outcome });
-      return outcome;
+      } as const);
     }
 
     await markMessageNotified(teamName, workerName, messageId, cwd).catch(() => false);
@@ -3491,15 +3480,13 @@ async function finalizeHookPreferredMailboxDispatch(params: {
         cwd,
       ).catch(() => {});
     }
-    const outcome = {
+    return returnOutcome({
       ok: true,
       transport: fallback.transport,
       reason: `hook_timeout_fallback_confirmed:${fallback.reason}`,
       request_id: requestId,
       message_id: messageId,
-    } as const;
-    await logRuntimeDispatchOutcome({ cwd, teamName, workerName, requestId, messageId, intent, outcome });
-    return outcome;
+    } as const);
   }
 
   const current = await readDispatchRequest(teamName, requestId, cwd);
@@ -3513,15 +3500,13 @@ async function finalizeHookPreferredMailboxDispatch(params: {
       cwd,
     ).catch(() => {});
   }
-  const outcome = {
+  return returnOutcome({
     ok: false,
     transport: fallback.transport,
     reason: `fallback_attempted_but_unconfirmed:${fallback.reason}`,
     request_id: requestId,
     message_id: messageId,
-  } as const;
-  await logRuntimeDispatchOutcome({ cwd, teamName, workerName, requestId, messageId, intent, outcome });
-  return outcome;
+  } as const);
 }
 
 async function notifyLeaderAsync(config: TeamConfig, message: string, cwd: string): Promise<DispatchOutcome> {

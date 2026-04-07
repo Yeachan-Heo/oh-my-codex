@@ -25,7 +25,6 @@ export function canTransitionTeamTaskStatus(from: TeamTaskStatus, to: TeamTaskSt
 export const TEAM_DISPATCH_REQUEST_STATUSES = ['pending', 'notified', 'delivered', 'failed'] as const;
 export type TeamDispatchRequestStatus = (typeof TEAM_DISPATCH_REQUEST_STATUSES)[number];
 
-export const TEAM_TERMINAL_DISPATCH_REQUEST_STATUSES: ReadonlySet<TeamDispatchRequestStatus> = new Set(['delivered', 'failed']);
 export const TEAM_DISPATCH_REQUEST_STATUS_TRANSITIONS: Readonly<Record<TeamDispatchRequestStatus, readonly TeamDispatchRequestStatus[]>> = {
   pending: ['notified', 'failed'],
   notified: ['delivered', 'failed'],
@@ -35,10 +34,6 @@ export const TEAM_DISPATCH_REQUEST_STATUS_TRANSITIONS: Readonly<Record<TeamDispa
 
 export function isTeamDispatchRequestStatus(status: unknown): status is TeamDispatchRequestStatus {
   return TEAM_DISPATCH_REQUEST_STATUSES.includes(status as TeamDispatchRequestStatus);
-}
-
-export function isTerminalTeamDispatchRequestStatus(status: TeamDispatchRequestStatus): boolean {
-  return TEAM_TERMINAL_DISPATCH_REQUEST_STATUSES.has(status);
 }
 
 export function canTransitionTeamDispatchRequestStatus(from: TeamDispatchRequestStatus, to: TeamDispatchRequestStatus): boolean {

@@ -1,21 +1,8 @@
 import { randomUUID } from 'crypto';
-import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir, type MailboxRecord, type RuntimeCommand } from '../../runtime/bridge.js';
+import { type MailboxRecord } from '../../runtime/bridge.js';
 import { appendTeamDeliveryLogForCwd } from '../delivery-log.js';
-
-export interface TeamMailboxMessage {
-  message_id: string;
-  from_worker: string;
-  to_worker: string;
-  body: string;
-  created_at: string;
-  notified_at?: string;
-  delivered_at?: string;
-}
-
-export interface TeamMailbox {
-  worker: string;
-  messages: TeamMailboxMessage[];
-}
+import { executeBridgeCommand } from './bridge-command.js';
+import type { TeamMailbox, TeamMailboxMessage } from './types.js';
 
 interface MailboxDeps {
   teamName: string;
@@ -36,16 +23,6 @@ interface MailboxDeps {
     cwd: string,
   ) => Promise<unknown>;
   readTeamConfig: (teamName: string, cwd: string) => Promise<{ workers: Array<{ name: string }> } | null>;
-}
-
-function executeBridgeCommand(cwd: string, command: RuntimeCommand): boolean {
-  if (!isBridgeEnabled()) return false;
-  try {
-    getDefaultBridge(resolveBridgeStateDir(cwd)).execCommand(command);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 export function normalizeBridgeMailboxMessage(record: MailboxRecord): TeamMailboxMessage {

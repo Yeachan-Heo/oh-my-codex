@@ -180,6 +180,55 @@ export async function isLeaderStale(stateDir, thresholdMs, nowMs) {
   return isLeaderRuntimeStale(stateDir, thresholdMs, nowMs);
 }
 
+function recordLeaderNudgeState(
+  nudgeState,
+  teamName,
+  nowIso,
+  newestId,
+  prevMsgId,
+  nudgeReason,
+  orchestrationIntent,
+  shouldSendAllIdleNudge,
+  workerCount,
+) {
+  nudgeState.last_nudged_by_team[teamName] = {
+    at: nowIso,
+    last_message_id: newestId || prevMsgId || '',
+    reason: nudgeReason,
+    orchestration_intent: orchestrationIntent,
+  };
+  if (shouldSendAllIdleNudge) {
+    nudgeState.last_idle_nudged_by_team[teamName] = {
+      at: nowIso,
+      worker_count: workerCount,
+      orchestration_intent: orchestrationIntent,
+    };
+  }
+}
+
+async function appendLeaderNudgeDeliveryLog(
+  logsDir,
+  source,
+  teamName,
+  transport,
+  result,
+  reason,
+  orchestrationIntent,
+  error,
+) {
+  await appendTeamDeliveryLog(logsDir, {
+    event: 'nudge_triggered',
+    source,
+    team: teamName,
+    to_worker: 'leader-fixed',
+    transport,
+    result,
+    reason,
+    orchestration_intent: orchestrationIntent,
+    ...(error ? { error } : {}),
+  }).catch(() => {});
+}
+
 function resolveTerminalAtFromPhaseDoc(parsed, fallbackIso) {
   const transitions = Array.isArray(parsed && parsed.transitions) ? parsed.transitions : [];
   for (let idx = transitions.length - 1; idx >= 0; idx -= 1) {
@@ -816,19 +865,17 @@ export async function maybeNudgeTeamLeader({
     const markedText = `${capped} ${DEFAULT_MARKER}`;
 
     if (!tmuxTarget) {
-      nudgeState.last_nudged_by_team[teamName] = {
-        at: nowIso,
-        last_message_id: newestId || prevMsgId || '',
-        reason: nudgeReason,
-        orchestration_intent: orchestrationIntent,
-      };
-      if (shouldSendAllIdleNudge) {
-        nudgeState.last_idle_nudged_by_team[teamName] = {
-          at: nowIso,
-          worker_count: workerNames.length,
-          orchestration_intent: orchestrationIntent,
-        };
-      }
+      recordLeaderNudgeState(
+        nudgeState,
+        teamName,
+        nowIso,
+        newestId,
+        prevMsgId,
+        nudgeReason,
+        orchestrationIntent,
+        shouldSendAllIdleNudge,
+        workerNames.length,
+      );
       await emitLeaderNudgeDeferredEvent(cwd, teamName, LEADER_PANE_MISSING_NO_INJECTION_REASON, orchestrationIntent, nowIso, {
         tmuxSession,
         leaderPaneId,
@@ -849,16 +896,15 @@ export async function maybeNudgeTeamLeader({
           source_type: 'leader_nudge',
         });
       } catch { /* ignore */ }
-      await appendTeamDeliveryLog(logsDir, {
-        event: 'nudge_triggered',
+      await appendLeaderNudgeDeliveryLog(
+        logsDir,
         source,
-        team: teamName,
-        to_worker: 'leader-fixed',
-        transport: 'none',
-        result: 'deferred',
-        reason: LEADER_PANE_MISSING_NO_INJECTION_REASON,
-        orchestration_intent: orchestrationIntent,
-      }).catch(() => {});
+        teamName,
+        'none',
+        'deferred',
+        LEADER_PANE_MISSING_NO_INJECTION_REASON,
+        orchestrationIntent,
+      );
       continue;
     }
 
@@ -874,19 +920,17 @@ export async function maybeNudgeTeamLeader({
       const deferredReason = paneGuard.reason === 'pane_running_shell'
         ? LEADER_PANE_SHELL_NO_INJECTION_REASON
         : paneGuard.reason;
-      nudgeState.last_nudged_by_team[teamName] = {
-        at: nowIso,
-        last_message_id: newestId || prevMsgId || '',
-        reason: nudgeReason,
-        orchestration_intent: orchestrationIntent,
-      };
-      if (shouldSendAllIdleNudge) {
-        nudgeState.last_idle_nudged_by_team[teamName] = {
-          at: nowIso,
-          worker_count: workerNames.length,
-          orchestration_intent: orchestrationIntent,
-        };
-      }
+      recordLeaderNudgeState(
+        nudgeState,
+        teamName,
+        nowIso,
+        newestId,
+        prevMsgId,
+        nudgeReason,
+        orchestrationIntent,
+        shouldSendAllIdleNudge,
+        workerNames.length,
+      );
       await emitLeaderNudgeDeferredEvent(cwd, teamName, deferredReason, orchestrationIntent, nowIso, {
         tmuxSession,
         leaderPaneId,
@@ -912,16 +956,7 @@ export async function maybeNudgeTeamLeader({
           source_type: 'leader_nudge',
         });
       } catch { /* ignore */ }
-      await appendTeamDeliveryLog(logsDir, {
-        event: 'nudge_triggered',
-        source,
-        team: teamName,
-        to_worker: 'leader-fixed',
-        transport: 'none',
-        result: 'deferred',
-        reason: deferredReason,
-        orchestration_intent: orchestrationIntent,
-      }).catch(() => {});
+      await appendLeaderNudgeDeliveryLog(logsDir, source, teamName, 'none', 'deferred', deferredReason, orchestrationIntent);
       continue;
     }
 
@@ -935,19 +970,17 @@ export async function maybeNudgeTeamLeader({
       if (!sendResult.ok) {
         throw new Error(sendResult.error || sendResult.reason);
       }
-      nudgeState.last_nudged_by_team[teamName] = {
-        at: nowIso,
-        last_message_id: newestId || prevMsgId || '',
-        reason: nudgeReason,
-        orchestration_intent: orchestrationIntent,
-      };
-      if (shouldSendAllIdleNudge) {
-        nudgeState.last_idle_nudged_by_team[teamName] = {
-          at: nowIso,
-          worker_count: workerNames.length,
-          orchestration_intent: orchestrationIntent,
-        };
-      }
+      recordLeaderNudgeState(
+        nudgeState,
+        teamName,
+        nowIso,
+        newestId,
+        prevMsgId,
+        nudgeReason,
+        orchestrationIntent,
+        shouldSendAllIdleNudge,
+        workerNames.length,
+      );
 
       await emitTeamNudgeEvent(cwd, teamName, nudgeReason, orchestrationIntent, nowIso);
 
@@ -966,16 +999,7 @@ export async function maybeNudgeTeamLeader({
           missing_signal_workers: progressSnapshot.missingSignalWorkers,
         });
       } catch { /* ignore */ }
-      await appendTeamDeliveryLog(logsDir, {
-        event: 'nudge_triggered',
-        source,
-        team: teamName,
-        to_worker: 'leader-fixed',
-        transport: 'send-keys',
-        result: 'sent',
-        reason: nudgeReason,
-        orchestration_intent: orchestrationIntent,
-      }).catch(() => {});
+      await appendLeaderNudgeDeliveryLog(logsDir, source, teamName, 'send-keys', 'sent', nudgeReason, orchestrationIntent);
     } catch (err) {
       try {
         await logTmuxHookEvent(logsDir, {
@@ -988,17 +1012,16 @@ export async function maybeNudgeTeamLeader({
           error: safeString(err && err.message ? err.message : err),
         });
       } catch { /* ignore */ }
-      await appendTeamDeliveryLog(logsDir, {
-        event: 'nudge_triggered',
+      await appendLeaderNudgeDeliveryLog(
+        logsDir,
         source,
-        team: teamName,
-        to_worker: 'leader-fixed',
-        transport: 'send-keys',
-        result: 'failed',
-        reason: nudgeReason,
-        orchestration_intent: orchestrationIntent,
-        error: safeString(err && err.message ? err.message : err),
-      }).catch(() => {});
+        teamName,
+        'send-keys',
+        'failed',
+        nudgeReason,
+        orchestrationIntent,
+        safeString(err && err.message ? err.message : err),
+      );
     }
   }
 

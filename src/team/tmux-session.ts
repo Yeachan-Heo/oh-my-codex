@@ -6,7 +6,6 @@ import {
   CODEX_BYPASS_FLAG,
   MADMAX_FLAG,
   CONFIG_FLAG,
-  LONG_CONFIG_FLAG,
   MODEL_FLAG,
 } from '../cli/constants.js';
 import {
@@ -19,6 +18,7 @@ import {
   paneLooksReady as sharedPaneLooksReady,
 } from '../scripts/tmux-hook-engine.js';
 import { readActiveProviderEnvOverrides } from '../config/models.js';
+import { hasModelInstructionsOverride, MODEL_INSTRUCTIONS_FILE_KEY } from '../utils/model-instructions.js';
 import { sleep, sleepSync } from '../utils/sleep.js';
 import { classifySpawnError, resolveCommandPathForPlatform, spawnPlatformCommandSync } from '../utils/platform-command.js';
 import { resolveOmxEntryPath } from '../utils/paths.js';
@@ -42,7 +42,6 @@ export interface TeamSession {
 }
 
 const INJECTION_MARKER = '[OMX_TMUX_INJECT]';
-const MODEL_INSTRUCTIONS_FILE_KEY = 'model_instructions_file';
 const OMX_BYPASS_DEFAULT_SYSTEM_PROMPT_ENV = 'OMX_BYPASS_DEFAULT_SYSTEM_PROMPT';
 const OMX_MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
 const OMX_TEAM_WORKER_CLI_ENV = 'OMX_TEAM_WORKER_CLI';
@@ -469,28 +468,6 @@ function buildWorkerLaunchSpec(shellPath: string | undefined): WorkerLaunchSpec 
 
 function escapeTomlString(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}
-
-function isModelInstructionsOverride(value: string): boolean {
-  return new RegExp(`^${MODEL_INSTRUCTIONS_FILE_KEY}\\s*=`).test(value.trim());
-}
-
-function hasModelInstructionsOverride(args: string[]): boolean {
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === CONFIG_FLAG || arg === LONG_CONFIG_FLAG) {
-      const maybeValue = args[i + 1];
-      if (typeof maybeValue === 'string' && isModelInstructionsOverride(maybeValue)) {
-        return true;
-      }
-      continue;
-    }
-    if (arg.startsWith(`${LONG_CONFIG_FLAG}=`)) {
-      const inlineValue = arg.slice(`${LONG_CONFIG_FLAG}=`.length);
-      if (isModelInstructionsOverride(inlineValue)) return true;
-    }
-  }
-  return false;
 }
 
 function normalizeTeamWorkerCliMode(raw: string | undefined, sourceEnv: string = OMX_TEAM_WORKER_CLI_ENV): TeamWorkerCliMode {
@@ -1652,15 +1629,6 @@ export async function teardownWorkerPanes(
   }
 
   return summary;
-}
-
-export async function killWorkerPanes(
-  paneIds: string[],
-  leaderPaneId: string,
-  graceMs: number = 2000,
-  hudPaneId?: string,
-): Promise<PaneTeardownSummary> {
-  return teardownWorkerPanes(paneIds, { leaderPaneId, hudPaneId: hudPaneId ?? null, graceMs });
 }
 
 // Kill entire tmux session. Tolerates already-dead sessions.

@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir, type DispatchRecord, type RuntimeCommand } from '../../runtime/bridge.js';
+import { type DispatchRecord } from '../../runtime/bridge.js';
 import { appendTeamDeliveryLogForCwd } from '../delivery-log.js';
 import { isTeamReminderIntent, type TeamReminderIntent } from '../reminder-intents.js';
 import {
@@ -7,46 +7,13 @@ import {
   isTeamDispatchRequestStatus,
   type TeamDispatchRequestStatus,
 } from '../contracts.js';
-
-export type TeamDispatchRequestKind = 'inbox' | 'mailbox' | 'nudge';
-export type TeamDispatchTransportPreference = 'hook_preferred_with_fallback' | 'transport_direct' | 'prompt_stdin';
-
-export interface TeamDispatchRequest {
-  request_id: string;
-  kind: TeamDispatchRequestKind;
-  team_name: string;
-  to_worker: string;
-  worker_index?: number;
-  pane_id?: string;
-  trigger_message: string;
-  intent?: TeamReminderIntent;
-  message_id?: string;
-  inbox_correlation_key?: string;
-  transport_preference: TeamDispatchTransportPreference;
-  fallback_allowed: boolean;
-  status: TeamDispatchRequestStatus;
-  attempt_count: number;
-  created_at: string;
-  updated_at: string;
-  notified_at?: string;
-  delivered_at?: string;
-  failed_at?: string;
-  last_reason?: string;
-}
-
-export interface TeamDispatchRequestInput {
-  kind: TeamDispatchRequestKind;
-  to_worker: string;
-  worker_index?: number;
-  pane_id?: string;
-  trigger_message: string;
-  intent?: TeamReminderIntent;
-  message_id?: string;
-  inbox_correlation_key?: string;
-  transport_preference?: TeamDispatchTransportPreference;
-  fallback_allowed?: boolean;
-  last_reason?: string;
-}
+import { executeBridgeCommand } from './bridge-command.js';
+import type {
+  TeamDispatchRequest,
+  TeamDispatchRequestInput,
+  TeamDispatchRequestKind,
+  TeamDispatchTransportPreference,
+} from './types.js';
 
 interface DispatchDeps {
   teamName: string;
@@ -161,16 +128,6 @@ function buildDispatchMetadata(teamName: string, requestInput: TeamDispatchReque
     transport_preference: requestInput.transport_preference,
     fallback_allowed: requestInput.fallback_allowed,
   };
-}
-
-function executeBridgeCommand(cwd: string, command: RuntimeCommand): boolean {
-  if (!isBridgeEnabled()) return false;
-  try {
-    getDefaultBridge(resolveBridgeStateDir(cwd)).execCommand(command);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function coerceMetadataValue<T extends string | number | boolean>(

@@ -2,71 +2,17 @@ import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { performance } from 'perf_hooks';
 import { isTeamWorkerIntegrationStatus, type TeamWorkerIntegrationStatus } from '../contracts.js';
-
-export interface TeamSummary {
-  teamName: string;
-  workerCount: number;
-  tasks: {
-    total: number;
-    pending: number;
-    blocked: number;
-    in_progress: number;
-    completed: number;
-    failed: number;
-  };
-  workers: Array<{ name: string; alive: boolean; lastTurnAt: string | null; turnsWithoutProgress: number }>;
-  nonReportingWorkers: string[];
-  performance?: TeamSummaryPerformance;
-}
-
-export interface TeamSummaryPerformance {
-  total_ms: number;
-  tasks_loaded_ms: number;
-  workers_polled_ms: number;
-  task_count: number;
-  worker_count: number;
-}
+import type {
+  TeamMonitorSnapshotState,
+  TeamPhaseState,
+  TeamSummary,
+  TeamSummaryPerformance,
+  TeamWorkerIntegrationState,
+} from './types.js';
 
 interface TeamSummarySnapshot {
   workerTurnCountByName: Record<string, number>;
   workerTaskByName: Record<string, string>;
-}
-
-export interface TeamWorkerIntegrationState {
-  last_seen_head?: string;
-  last_integrated_head?: string;
-  last_leader_head?: string;
-  last_rebased_leader_head?: string;
-  status?: TeamWorkerIntegrationStatus;
-  conflict_commit?: string;
-  conflict_files?: string[];
-  updated_at?: string;
-}
-
-export interface TeamMonitorSnapshotState {
-  taskStatusById: Record<string, string>;
-  workerAliveByName: Record<string, boolean>;
-  workerStateByName: Record<string, string>;
-  workerTurnCountByName: Record<string, number>;
-  workerTaskIdByName: Record<string, string>;
-  mailboxNotifiedByMessageId: Record<string, string>;
-  completedEventTaskIds: Record<string, boolean>;
-  integrationByWorker?: Record<string, TeamWorkerIntegrationState>;
-  monitorTimings?: {
-    list_tasks_ms: number;
-    worker_scan_ms: number;
-    mailbox_delivery_ms: number;
-    total_ms: number;
-    updated_at: string;
-  };
-}
-
-export interface TeamPhaseState {
-  current_phase: string;
-  max_fix_attempts: number;
-  current_fix_attempt: number;
-  transitions: Array<{ from: string; to: string; at: string; reason?: string }>;
-  updated_at: string;
 }
 
 interface MonitorDeps {

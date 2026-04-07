@@ -3,7 +3,7 @@ import { join, dirname, resolve, sep } from 'path';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { omxStateDir } from '../utils/paths.js';
-import { isTerminalPhase, type TeamPhase, type TerminalPhase } from './orchestrator.js';
+import { isTerminalPhase } from './orchestrator.js';
 import {
   computeTaskReadiness as computeTaskReadinessImpl,
   claimTask as claimTaskImpl,
@@ -58,251 +58,82 @@ import {
   WORKER_NAME_SAFE_PATTERN,
   TASK_ID_SAFE_PATTERN,
   TEAM_TASK_STATUSES,
-  type TeamWorkerIntegrationStatus,
   canTransitionTeamTaskStatus,
   isTerminalTeamTaskStatus,
   type TeamTaskStatus,
-  type TeamEventType,
 } from './contracts.js';
-import type { TeamReminderIntent } from './reminder-intents.js';
-import type { WorktreeMode } from './worktree.js';
+import { ABSOLUTE_MAX_WORKERS, DEFAULT_MAX_WORKERS } from './state/types.js';
+import type {
+  ClaimTaskResult,
+  PermissionsSnapshot,
+  ReclaimTaskResult,
+  ReleaseTaskClaimResult,
+  ShutdownAck,
+  TaskApprovalRecord,
+  TaskReadiness,
+  TeamConfig,
+  TeamDispatchRequest,
+  TeamDispatchRequestInput,
+  TeamDispatchRequestKind,
+  TeamDispatchTransportPreference,
+  TeamEvent,
+  TeamGovernance,
+  TeamLeader,
+  TeamMailbox,
+  TeamMailboxMessage,
+  TeamManifestV2,
+  TeamMonitorSnapshotState,
+  TeamPhaseState,
+  TeamPolicy,
+  TeamSummary,
+  TeamSummaryPerformance,
+  TeamTask,
+  TeamTaskClaim,
+  TeamTaskV2,
+  TeamWorkerIntegrationState,
+  TeamWorkspaceMetadata,
+  TransitionTaskResult,
+  WorkerHeartbeat,
+  WorkerInfo,
+  WorkerStatus,
+} from './state/types.js';
 
 export type { TeamDispatchRequestStatus, TeamWorkerIntegrationStatus } from './contracts.js';
-
-export interface TeamConfig {
-  name: string;
-  task: string;
-  agent_type: string;
-  worker_launch_mode: 'interactive' | 'prompt';
-  lifecycle_profile: 'default';
-  worker_count: number;
-  max_workers: number; // default 20, configurable up to 20
-  workers: WorkerInfo[];
-  created_at: string;
-  tmux_session: string; // "omx-team-{name}"
-  next_task_id: number;
-  leader_cwd?: string;
-  team_state_root?: string;
-  workspace_mode?: 'single' | 'worktree';
-  worktree_mode?: WorktreeMode;
-  /** Leader's own tmux pane ID — must never be killed during worker cleanup. */
-  leader_pane_id: string | null;
-  /** HUD pane spawned below the leader column — excluded from worker pane cleanup. */
-  hud_pane_id: string | null;
-  /** Registered HUD resize hook name used for window-size reconciliation. */
-  resize_hook_name: string | null;
-  /** Registered HUD resize hook target in "<session>:<window>" form. */
-  resize_hook_target: string | null;
-  /** Monotonic counter for worker index assignment during scaling. */
-  next_worker_index?: number;
-}
-
-export interface WorkerInfo {
-  name: string; // "worker-1"
-  index: number; // tmux window index (1-based)
-  role: string; // agent type
-  worker_cli?: 'codex' | 'claude' | 'gemini';
-  assigned_tasks: string[]; // task IDs
-  pid?: number;
-  pane_id?: string;
-  working_dir?: string;
-  worktree_repo_root?: string;
-  worktree_path?: string;
-  worktree_branch?: string;
-  worktree_detached?: boolean;
-  worktree_created?: boolean;
-  team_state_root?: string;
-}
-
-export interface WorkerHeartbeat {
-  pid: number;
-  last_turn_at: string;
-  turn_count: number;
-  alive: boolean;
-}
-
-export interface WorkerStatus {
-  state: 'idle' | 'working' | 'blocked' | 'done' | 'failed' | 'draining' | 'unknown';
-  current_task_id?: string;
-  reason?: string;
-  updated_at: string;
-}
-
-export interface TeamTask {
-  id: string;
-  subject: string;
-  description: string;
-  status: 'pending' | 'blocked' | 'in_progress' | 'completed' | 'failed';
-  requires_code_change?: boolean;
-  role?: string; // agent role for this task (e.g., 'executor', 'test-engineer', 'designer')
-  owner?: string; // worker name
-  result?: string; // completion summary
-  error?: string; // failure reason
-  blocked_by?: string[]; // task IDs
-  depends_on?: string[]; // task IDs
-  version?: number;
-  claim?: TeamTaskClaim;
-  created_at: string;
-  completed_at?: string;
-}
-
-export interface TeamTaskClaim {
-  owner: string;
-  token: string;
-  leased_until: string;
-}
-
-export interface TeamTaskV2 extends TeamTask {
-  version: number;
-}
-
-export interface TeamLeader {
-  session_id: string;
-  thread_id?: string;
-  worker_id: string;
-  role: string;
-}
-
-export interface TeamPolicy {
-  display_mode: 'split_pane' | 'auto';
-  worker_launch_mode: 'interactive' | 'prompt';
-  dispatch_mode: 'hook_preferred_with_fallback' | 'transport_direct';
-  dispatch_ack_timeout_ms: number;
-}
-
-/**
- * Lifecycle/workflow guardrails persisted alongside the manifest, but kept
- * separate from transport/runtime policy so each layer has a single owner.
- */
-export interface TeamGovernance {
-  delegation_only: boolean;
-  plan_approval_required: boolean;
-  nested_teams_allowed: boolean;
-  one_team_per_leader_session: boolean;
-  cleanup_requires_all_workers_inactive: boolean;
-}
-
-export type TeamDispatchRequestKind = 'inbox' | 'mailbox' | 'nudge';
-export type TeamDispatchTransportPreference = 'hook_preferred_with_fallback' | 'transport_direct' | 'prompt_stdin';
-
-export interface TeamDispatchRequest {
-  request_id: string;
-  kind: TeamDispatchRequestKind;
-  team_name: string;
-  to_worker: string;
-  worker_index?: number;
-  pane_id?: string;
-  trigger_message: string;
-  intent?: TeamReminderIntent;
-  message_id?: string;
-  inbox_correlation_key?: string;
-  transport_preference: TeamDispatchTransportPreference;
-  fallback_allowed: boolean;
-  status: TeamDispatchRequestStatus;
-  attempt_count: number;
-  created_at: string;
-  updated_at: string;
-  notified_at?: string;
-  delivered_at?: string;
-  failed_at?: string;
-  last_reason?: string;
-}
-
-export interface TeamDispatchRequestInput {
-  kind: TeamDispatchRequestKind;
-  to_worker: string;
-  worker_index?: number;
-  pane_id?: string;
-  trigger_message: string;
-  intent?: TeamReminderIntent;
-  message_id?: string;
-  inbox_correlation_key?: string;
-  transport_preference?: TeamDispatchTransportPreference;
-  fallback_allowed?: boolean;
-  last_reason?: string;
-}
-
-export interface PermissionsSnapshot {
-  approval_mode: string;
-  sandbox_mode: string;
-  network_access: boolean;
-}
-
-export interface TeamManifestV2 {
-  schema_version: 2;
-  name: string;
-  task: string;
-  leader: TeamLeader;
-  policy: TeamPolicy;
-  governance: TeamGovernance;
-  lifecycle_profile: 'default';
-  permissions_snapshot: PermissionsSnapshot;
-  tmux_session: string;
-  worker_count: number;
-  workers: WorkerInfo[];
-  next_task_id: number;
-  created_at: string;
-  leader_cwd?: string;
-  team_state_root?: string;
-  workspace_mode?: 'single' | 'worktree';
-  worktree_mode?: WorktreeMode;
-  leader_pane_id: string | null;
-  hud_pane_id: string | null;
-  resize_hook_name: string | null;
-  resize_hook_target: string | null;
-  /** Monotonic counter for worker index assignment during scaling. */
-  next_worker_index?: number;
-}
-
-export interface TeamWorkspaceMetadata {
-  leader_cwd?: string;
-  team_state_root?: string;
-  workspace_mode?: 'single' | 'worktree';
-  worktree_mode?: WorktreeMode;
-}
-
-export interface TeamEvent {
-  event_id: string;
-  team: string;
-  type: TeamEventType;
-  worker: string;
-  task_id?: string;
-  message_id?: string | null;
-  reason?: string;
-  intent?: TeamReminderIntent;
-  state?: WorkerStatus['state'];
-  prev_state?: WorkerStatus['state'];
-  worker_count?: number;
-  to_worker?: string;
-  source_type?: string;
-  metadata?: Record<string, unknown>;
-  created_at: string;
-  [key: string]: unknown;
-}
-
-export interface TeamMailboxMessage {
-  message_id: string;
-  from_worker: string;
-  to_worker: string;
-  body: string;
-  created_at: string;
-  notified_at?: string;
-  delivered_at?: string;
-}
-
-export interface TeamMailbox {
-  worker: string;
-  messages: TeamMailboxMessage[];
-}
-
-export interface TaskApprovalRecord {
-  task_id: string;
-  required: boolean;
-  status: 'pending' | 'approved' | 'rejected';
-  reviewer: string;
-  decision_reason: string;
-  decided_at: string;
-}
+export { ABSOLUTE_MAX_WORKERS, DEFAULT_MAX_WORKERS } from './state/types.js';
+export type {
+  ClaimTaskResult,
+  PermissionsSnapshot,
+  ReclaimTaskResult,
+  ReleaseTaskClaimResult,
+  ShutdownAck,
+  TaskApprovalRecord,
+  TaskReadiness,
+  TeamConfig,
+  TeamDispatchRequest,
+  TeamDispatchRequestInput,
+  TeamDispatchRequestKind,
+  TeamDispatchTransportPreference,
+  TeamEvent,
+  TeamGovernance,
+  TeamLeader,
+  TeamMailbox,
+  TeamMailboxMessage,
+  TeamManifestV2,
+  TeamMonitorSnapshotState,
+  TeamPhaseState,
+  TeamPolicy,
+  TeamSummary,
+  TeamSummaryPerformance,
+  TeamTask,
+  TeamTaskClaim,
+  TeamTaskV2,
+  TeamWorkerIntegrationState,
+  TeamWorkspaceMetadata,
+  TransitionTaskResult,
+  WorkerHeartbeat,
+  WorkerInfo,
+  WorkerStatus,
+} from './state/types.js';
 
 let renameForAtomicWrite: typeof rename = rename;
 
@@ -313,52 +144,7 @@ export function setWriteAtomicRenameForTests(fn: typeof rename): void {
 export function resetWriteAtomicRenameForTests(): void {
   renameForAtomicWrite = rename;
 }
-export type TaskReadiness =
-  | { ready: true }
-  | { ready: false; reason: 'blocked_dependency'; dependencies: string[] };
 
-export type ClaimTaskResult =
-  | { ok: true; task: TeamTaskV2; claimToken: string }
-  | { ok: false; error: 'claim_conflict' | 'blocked_dependency' | 'task_not_found' | 'already_terminal' | 'worker_not_found'; dependencies?: string[] };
-
-export type TransitionTaskResult =
-  | { ok: true; task: TeamTaskV2 }
-  | { ok: false; error: 'claim_conflict' | 'invalid_transition' | 'task_not_found' | 'already_terminal' | 'lease_expired' };
-
-export type ReleaseTaskClaimResult =
-  | { ok: true; task: TeamTaskV2 }
-  | { ok: false; error: 'claim_conflict' | 'task_not_found' | 'already_terminal' | 'lease_expired' };
-
-export type ReclaimTaskResult =
-  | { ok: true; task: TeamTaskV2; reclaimed: boolean }
-  | { ok: false; error: 'claim_conflict' | 'task_not_found' | 'already_terminal' | 'lease_active' };
-
-export interface TeamSummary {
-  teamName: string;
-  workerCount: number;
-  tasks: {
-    total: number;
-    pending: number;
-    blocked: number;
-    in_progress: number;
-    completed: number;
-    failed: number;
-  };
-  workers: Array<{ name: string; alive: boolean; lastTurnAt: string | null; turnsWithoutProgress: number }>;
-  nonReportingWorkers: string[];
-  performance?: TeamSummaryPerformance;
-}
-
-export interface TeamSummaryPerformance {
-  total_ms: number;
-  tasks_loaded_ms: number;
-  workers_polled_ms: number;
-  task_count: number;
-  worker_count: number;
-}
-
-export const DEFAULT_MAX_WORKERS = 20;
-export const ABSOLUTE_MAX_WORKERS = 20;
 const LOCK_STALE_MS = 5 * 60 * 1000;
 // Hook-preferred delivery can wait for the fallback watcher tick plus tmux
 // injection verification; keep the default ack budget above that steady-state
@@ -1744,12 +1530,6 @@ export async function getTeamSummary(teamName: string, cwd: string): Promise<Tea
 
 // === Shutdown control ===
 
-export interface ShutdownAck {
-  status: 'accept' | 'reject';
-  reason?: string;
-  updated_at?: string;
-}
-
 export async function writeShutdownRequest(
   teamName: string,
   workerName: string,
@@ -1781,47 +1561,6 @@ export async function readShutdownAck(
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     return null;
   }
-}
-
-// === Monitor snapshot ===
-
-export interface TeamWorkerIntegrationState {
-  last_seen_head?: string;
-  last_integrated_head?: string;
-  last_leader_head?: string;
-  last_rebased_leader_head?: string;
-  status?: TeamWorkerIntegrationStatus;
-  conflict_commit?: string;
-  conflict_files?: string[];
-  updated_at?: string;
-}
-
-export interface TeamMonitorSnapshotState {
-  taskStatusById: Record<string, string>;
-  workerAliveByName: Record<string, boolean>;
-  workerStateByName: Record<string, string>;
-  workerTurnCountByName: Record<string, number>;
-  workerTaskIdByName: Record<string, string>;
-  mailboxNotifiedByMessageId: Record<string, string>;
-  /** Task IDs for which a task_completed event has already been emitted (from any path). */
-  completedEventTaskIds: Record<string, boolean>;
-  integrationByWorker?: Record<string, TeamWorkerIntegrationState>;
-  /** Optional timing telemetry from the most recent monitorTeam poll. */
-  monitorTimings?: {
-    list_tasks_ms: number;
-    worker_scan_ms: number;
-    mailbox_delivery_ms: number;
-    total_ms: number;
-    updated_at: string;
-  };
-}
-
-export interface TeamPhaseState {
-  current_phase: TeamPhase | TerminalPhase;
-  max_fix_attempts: number;
-  current_fix_attempt: number;
-  transitions: Array<{ from: string; to: string; at: string; reason?: string }>;
-  updated_at: string;
 }
 
 export type TeamLeaderDecisionState = 'still_actionable' | 'done_waiting_on_leader' | 'stuck_waiting_on_leader';
