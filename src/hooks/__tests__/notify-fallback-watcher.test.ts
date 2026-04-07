@@ -249,6 +249,70 @@ describe('notify-fallback watcher', () => {
       assert.equal(turnLines.length, 1);
       assert.match(turnLines[0], new RegExp(freshTurn));
       assert.doesNotMatch(turnLines[0], new RegExp(staleTurn));
+
+      const fallbackLog = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+      const fallbackEntries = await readJsonLines(fallbackLog);
+      assert.deepEqual(fallbackEntries.map((entry) => entry.type), ['fallback_notify']);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(tempHome, { recursive: true, force: true });
+      await rm(rolloutPath, { force: true });
+    }
+  });
+
+  it('rotates notify-fallback logs when the size cap is exceeded', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-once-rotate-'));
+    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-home-'));
+    const sid = randomUUID();
+    const sessionDir = todaySessionDir(tempHome);
+    const rolloutPath = join(sessionDir, `rollout-test-fallback-rotate-${sid}.jsonl`);
+
+    try {
+      await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await mkdir(sessionDir, { recursive: true });
+
+      const threadId = `thread-${sid}`;
+      const turnIds = ['first', 'second', 'third'].map((label) => `turn-${label}-${sid}`);
+      const nowIso = new Date(Date.now() + 2_000).toISOString();
+      const lines = [
+        {
+          timestamp: nowIso,
+          type: 'session_meta',
+          payload: { id: threadId, cwd: wd },
+        },
+        ...turnIds.map((turnId) => ({
+          timestamp: nowIso,
+          type: 'event_msg',
+          payload: {
+            type: 'task_complete',
+            turn_id: turnId,
+            last_agent_message: `message for ${turnId}`,
+          },
+        })),
+      ];
+      await writeFile(rolloutPath, `${lines.map(v => JSON.stringify(v)).join('\n')}\n`);
+
+      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+      const result = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50', '--log-max-bytes', '1'],
+        { encoding: 'utf-8', env: buildCleanNotifyEnv({ HOME: tempHome }) }
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+
+      const fallbackLog = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+      const rotatedLog = `${fallbackLog}.1`;
+      const currentEntries = await readJsonLines(fallbackLog);
+      const rotatedEntries = await readJsonLines(rotatedLog);
+
+      assert.equal(currentEntries.length, 1);
+      assert.equal(rotatedEntries.length, 1);
+      assert.equal(currentEntries[0]?.turn_id, turnIds[2]);
+      assert.equal(rotatedEntries[0]?.turn_id, turnIds[1]);
+      assert.deepEqual(currentEntries.map((entry) => entry.type), ['fallback_notify']);
+      assert.deepEqual(rotatedEntries.map((entry) => entry.type), ['fallback_notify']);
     } finally {
       await rm(wd, { recursive: true, force: true });
       await rm(tempHome, { recursive: true, force: true });
@@ -879,7 +943,7 @@ describe('notify-fallback watcher', () => {
       assert.equal(watcherState.leader_nudge?.precomputed_leader_stale, false);
 
       const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
-      const logEntries = (await readFile(logPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const logEntries = await readJsonLines(logPath);
       const nudgeEvent = logEntries.find((entry: { type?: string }) => entry.type === 'leader_nudge_tick');
       assert.equal(nudgeEvent, undefined);
     } finally {
@@ -1460,7 +1524,7 @@ exit 0
       assert.equal(watcherState.dispatch_drain?.last_result?.processed, 0);
 
       const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
-      const logEntries = (await readFile(logPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const logEntries = await readJsonLines(logPath);
       const drainEvent = logEntries.find((entry: { type?: string }) => entry.type === 'dispatch_drain_tick');
       assert.equal(drainEvent, undefined);
     } finally {

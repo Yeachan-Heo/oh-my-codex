@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync } from 'fs';
-import { appendFile, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'fs/promises';
+import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'fs/promises';
 import { spawnSync } from 'child_process';
 import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
@@ -110,6 +110,13 @@ const stateDir = join(omxDir, 'state');
 const statePath = join(stateDir, 'notify-fallback-state.json');
 const pidFilePath = resolve(argValue('--pid-file', join(stateDir, 'notify-fallback.pid')));
 const logPath = join(logsDir, `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+const logRotatePath = `${logPath}.1`;
+const logLockPath = `${logPath}.lock`;
+const defaultMaxLogBytes = 10 * 1024 * 1024;
+const maxLogBytes = Math.max(
+  0,
+  asNumber(argValue('--log-max-bytes', process.env.OMX_NOTIFY_FALLBACK_LOG_MAX_BYTES || String(defaultMaxLogBytes)), defaultMaxLogBytes),
+);
 const ralphSteerTimestampPath = join(stateDir, 'ralph-last-steer-at');
 const ralphSteerLockPath = join(stateDir, 'ralph-continue-steer.lock');
 const watcherOwnerToken = `${process.pid}-${startedAt}-${Math.random().toString(36).slice(2, 10)}`;
@@ -117,6 +124,7 @@ const RALPH_CONTINUE_TEXT = 'Ralph loop active continue';
 const RALPH_CONTINUE_CADENCE_MS = 60_000;
 const RALPH_STEER_LOCK_STALE_MS = 30_000;
 const RALPH_TERMINAL_PHASES = new Set(['complete', 'failed', 'cancelled']);
+const QUIET_ONCE_EVENT_TYPES = new Set(['watcher_start', 'watcher_once_complete']);
 
 interface WatcherFileMeta {
   threadId: string;
@@ -311,8 +319,57 @@ let adaptivePollState: AdaptivePollState = {
   last_activity_at: null,
   last_activity_reason: 'init',
 };
-function eventLog(event: Record<string, unknown>): Promise<void> {
-  return appendFile(logPath, `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`).catch(() => {});
+
+function shouldSuppressEventLog(event: Record<string, unknown>): boolean {
+  const eventType = safeString(event.type).trim();
+  return runOnce && QUIET_ONCE_EVENT_TYPES.has(eventType);
+}
+
+async function acquireLogLock(timeoutMs = 1000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await mkdir(logLockPath, { recursive: false });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | null)?.code !== 'EEXIST') return false;
+      const lockStat = await stat(logLockPath).catch(() => null);
+      if (lockStat && Date.now() - lockStat.mtimeMs > 5000) {
+        await rm(logLockPath, { recursive: true, force: true }).catch(() => {});
+        continue;
+      }
+      await sleep(10);
+    }
+  }
+  return false;
+}
+
+async function releaseLogLock(): Promise<void> {
+  await rm(logLockPath, { recursive: true, force: true }).catch(() => {});
+}
+
+async function rotateLogIfNeeded(nextEntryBytes: number): Promise<void> {
+  if (maxLogBytes <= 0) return;
+  const currentStat = await stat(logPath).catch(() => null);
+  if (!currentStat || currentStat.size + nextEntryBytes <= maxLogBytes) return;
+  await unlink(logRotatePath).catch(() => {});
+  await rename(logPath, logRotatePath).catch(() => {});
+}
+
+async function eventLog(event: Record<string, unknown>): Promise<void> {
+  if (shouldSuppressEventLog(event)) return;
+  const line = `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`;
+  await mkdir(dirname(logPath), { recursive: true }).catch(() => {});
+  const locked = await acquireLogLock();
+  if (!locked) return;
+  try {
+    await rotateLogIfNeeded(Buffer.byteLength(line));
+    await appendFile(logPath, line);
+  } catch {
+    // best effort only
+  } finally {
+    await releaseLogLock();
+  }
 }
 
 function shouldLogLeaderNudgeTick(reason: string): boolean {
@@ -1669,8 +1726,8 @@ async function main(): Promise<void> {
       notify_script: notifyScript,
       authority_only: authorityOnly,
       poll_ms: pollMs,
-    effective_poll_ms: adaptivePollState.current_ms,
-    idle_max_poll_ms: idleMaxPollMs,
+      effective_poll_ms: adaptivePollState.current_ms,
+      idle_max_poll_ms: idleMaxPollMs,
       once: runOnce,
       parent_pid: parentPid,
       pid_file: runOnce ? null : pidFilePath,
