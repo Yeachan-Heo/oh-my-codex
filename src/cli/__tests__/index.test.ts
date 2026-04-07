@@ -39,6 +39,7 @@ import {
   shouldEnableNotifyFallbackWatcher,
   reapStaleNotifyFallbackWatcher,
   cleanupLaunchOrphanedMcpProcesses,
+  reapPostLaunchOrphanedMcpProcesses,
   resolveBackgroundHelperLaunchMode,
   shouldDetachBackgroundHelper,
   resolveNotifyFallbackWatcherScript,
@@ -359,6 +360,50 @@ describe("cleanupLaunchOrphanedMcpProcesses", () => {
       false,
       "launch-safe cleanup must preserve OMX MCP processes still attached to another live OMX launch tree",
     );
+  });
+});
+
+describe("reapPostLaunchOrphanedMcpProcesses", () => {
+  it("logs postLaunch reaped MCP orphans and keeps cleanup non-fatal", async () => {
+    const info: string[] = [];
+    const warnings: string[] = [];
+    const errors: string[] = [];
+
+    await reapPostLaunchOrphanedMcpProcesses({
+      cleanup: async () => ({
+        dryRun: false,
+        candidates: [],
+        terminatedCount: 2,
+        forceKilledCount: 0,
+        failedPids: [810],
+      }),
+      writeInfo: (line) => info.push(line),
+      writeWarn: (line) => warnings.push(line),
+      writeError: (line) => errors.push(line),
+    });
+
+    assert.deepEqual(errors, []);
+    assert.match(
+      info.join("\n"),
+      /postLaunch: reaped 2 orphaned OMX MCP process/,
+    );
+    assert.match(
+      warnings.join("\n"),
+      /postLaunch: failed to reap 1 orphaned OMX MCP process/,
+    );
+  });
+
+  it("writes a non-fatal postLaunch cleanup error when the cleanup step throws", async () => {
+    const errors: string[] = [];
+
+    await reapPostLaunchOrphanedMcpProcesses({
+      cleanup: async () => {
+        throw new Error("boom");
+      },
+      writeError: (line) => errors.push(line),
+    });
+
+    assert.match(errors.join("\n"), /postLaunch MCP cleanup failed: Error: boom/);
   });
 });
 

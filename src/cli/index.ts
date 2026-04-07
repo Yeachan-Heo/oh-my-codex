@@ -1917,6 +1917,39 @@ export async function cleanupLaunchOrphanedMcpProcesses(
   });
 }
 
+interface PostLaunchCleanupDependencies {
+  cleanup?: () => Promise<CleanupResult>;
+  writeInfo?: (line: string) => void;
+  writeWarn?: (line: string) => void;
+  writeError?: (line: string) => void;
+}
+
+export async function reapPostLaunchOrphanedMcpProcesses(
+  dependencies: PostLaunchCleanupDependencies = {},
+): Promise<void> {
+  const cleanup = dependencies.cleanup ?? cleanupLaunchOrphanedMcpProcesses;
+  const writeInfo = dependencies.writeInfo ?? console.log;
+  const writeWarn = dependencies.writeWarn ?? console.warn;
+  const writeError =
+    dependencies.writeError ?? ((line: string) => process.stderr.write(line));
+
+  try {
+    const result = await cleanup();
+    if (result.terminatedCount > 0) {
+      writeInfo(
+        `[omx] postLaunch: reaped ${result.terminatedCount} orphaned OMX MCP process(es).`,
+      );
+    }
+    if (result.failedPids.length > 0) {
+      writeWarn(
+        `[omx] postLaunch: failed to reap ${result.failedPids.length} orphaned OMX MCP process(es); continuing cleanup.`,
+      );
+    }
+  } catch (err) {
+    writeError(`[cli/index] postLaunch MCP cleanup failed: ${err}\n`);
+  }
+}
+
 /**
  * preLaunch: Prepare environment before Codex starts.
  * 1. Best-effort launch-safe orphan cleanup for detached OMX MCP processes
@@ -2446,6 +2479,9 @@ async function postLaunch(
     process.stderr.write(`[cli/index] operation failed: ${err}\n`);
     // Non-fatal
   }
+
+  // 0. Reap MCP orphans left behind by the session that just exited.
+  await reapPostLaunchOrphanedMcpProcesses();
 
   // 0. Flush fallback watcher once to reduce race with fast codex exit.
   try {

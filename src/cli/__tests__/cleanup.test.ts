@@ -130,6 +130,23 @@ describe('findCleanupCandidates', () => {
       },
     ]);
   });
+
+  it('always preserves ppid=1 orphan candidates even if pid 1 matches a protected ancestor predicate', () => {
+    const reparentedProcesses: ProcessEntry[] = [
+      { pid: 1, ppid: 0, command: 'codex' },
+      { pid: 701, ppid: 700, command: 'node /repo/bin/omx.js' },
+      { pid: 840, ppid: 1, command: 'node /tmp/reparented/dist/mcp/state-server.js' },
+    ];
+
+    assert.deepEqual(findLaunchSafeCleanupCandidates(reparentedProcesses, 701), [
+      {
+        pid: 840,
+        ppid: 1,
+        command: 'node /tmp/reparented/dist/mcp/state-server.js',
+        reason: 'ppid=1',
+      },
+    ]);
+  });
 });
 
 describe('listOmxProcesses', () => {
