@@ -6,6 +6,7 @@
 import { existsSync, readFileSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
+import { parse as parseToml } from "@iarna/toml";
 import { AGENT_DEFINITIONS, AgentDefinition } from "./definitions.js";
 import {
   getEnvConfiguredStandardDefaultModel,
@@ -103,6 +104,7 @@ export interface GeneratedNativeAgentConfig {
   developerInstructions?: string;
   model?: string;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  disabledMcpServers?: string[];
 }
 
 interface AgentModelResolutionOptions {
@@ -117,6 +119,13 @@ interface RoleInstructionMetadata {
   modelClass: AgentDefinition["modelClass"];
   routingRole: AgentDefinition["routingRole"];
 }
+
+const LEADER_ONLY_OMX_MCP_SERVERS = [
+  "omx_state",
+  "omx_memory",
+  "omx_trace",
+  "omx_team_run",
+] as const;
 
 function readConfigTomlContent(
   codexHomeOverride?: string,
@@ -284,8 +293,55 @@ export function generateStandaloneAgentToml(
     lines.push('developer_instructions = """', escapedInstructions, '"""');
   }
 
+  const disabledMcpServers = (config.disabledMcpServers ?? []).filter(Boolean);
+  if (disabledMcpServers.length > 0) {
+    lines.push(
+      "",
+      "# Disable leader-oriented OMX MCP servers for native subagents.",
+      "# These servers are session-scoped helpers; spawning them again in each",
+      "# subagent adds startup churn and can surface misleading MCP startup UI.",
+    );
+    for (const serverName of disabledMcpServers) {
+      lines.push(
+        `[mcp_servers.${escapeTomlBasicString(serverName)}]`,
+        "enabled = false",
+        "",
+      );
+    }
+  }
+
   lines.push("");
   return lines.join("\n");
+}
+
+function resolveConfigTomlContent(
+  options: AgentModelResolutionOptions = {},
+): string {
+  return readConfigTomlContent(
+    options.codexHomeOverride,
+    options.configTomlContent,
+  );
+}
+
+function resolveDisabledOmxMcpServers(
+  options: AgentModelResolutionOptions = {},
+): string[] {
+  const configTomlContent = resolveConfigTomlContent(options);
+  if (configTomlContent.trim().length === 0) {
+    return [];
+  }
+
+  try {
+    const parsed = parseToml(configTomlContent) as {
+      mcp_servers?: Record<string, unknown>;
+    };
+    const configuredServers = parsed?.mcp_servers ?? {};
+    return LEADER_ONLY_OMX_MCP_SERVERS.filter((serverName) =>
+      Object.prototype.hasOwnProperty.call(configuredServers, serverName),
+    );
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -296,13 +352,16 @@ export function generateAgentToml(
   promptContent: string,
   options: AgentModelResolutionOptions = {},
 ): string {
-  const resolvedModel = resolveAgentModel(agent, options);
+  const configTomlContent = resolveConfigTomlContent(options);
+  const optionsWithConfig = { ...options, configTomlContent };
+  const resolvedModel = resolveAgentModel(agent, optionsWithConfig);
   return generateStandaloneAgentToml({
     name: agent.name,
     description: agent.description,
     developerInstructions: composeRoleInstructions(promptContent, agent, resolvedModel),
     model: resolvedModel,
     reasoningEffort: agent.reasoningEffort,
+    disabledMcpServers: resolveDisabledOmxMcpServers(optionsWithConfig),
   });
 }
 

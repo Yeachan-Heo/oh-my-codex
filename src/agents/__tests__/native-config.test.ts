@@ -86,6 +86,64 @@ describe("agents/native-config", () => {
     assert.doesNotMatch(tunedToml, /exact gpt-5\.4-mini model/);
   });
 
+  it("disables leader-oriented OMX MCP servers for generated native subagents only when present in config", () => {
+    const agent: AgentDefinition = {
+      name: "planner",
+      description: "Project planner",
+      reasoningEffort: "medium",
+      posture: "frontier-orchestrator",
+      modelClass: "frontier",
+      routingRole: "leader",
+      tools: "analysis",
+      category: "build",
+    };
+
+    const prompt = "Instruction line";
+    const toml = generateAgentToml(agent, prompt, {
+      configTomlContent: `
+[mcp_servers.omx_state]
+command = "node"
+
+[mcp_servers.omx_code_intel]
+command = "node"
+
+[mcp_servers.omx_trace]
+command = "node"
+
+[mcp_servers.chrome-mcp]
+url = "http://127.0.0.1:12306/mcp"
+`,
+    });
+
+    assert.match(toml, /\[mcp_servers\.omx_state\]\nenabled = false/);
+    assert.match(toml, /\[mcp_servers\.omx_trace\]\nenabled = false/);
+    assert.doesNotMatch(toml, /\[mcp_servers\.omx_code_intel\]\nenabled = false/);
+    assert.doesNotMatch(toml, /\[mcp_servers\.chrome-mcp\]\nenabled = false/);
+  });
+
+  it("does not inject OMX MCP disable blocks when the current config has no matching OMX servers", () => {
+    const agent: AgentDefinition = {
+      name: "planner",
+      description: "Project planner",
+      reasoningEffort: "medium",
+      posture: "frontier-orchestrator",
+      modelClass: "frontier",
+      routingRole: "leader",
+      tools: "analysis",
+      category: "build",
+    };
+
+    const prompt = "Instruction line";
+    const toml = generateAgentToml(agent, prompt, {
+      configTomlContent: `
+[mcp_servers.chrome-mcp]
+url = "http://127.0.0.1:12306/mcp"
+`,
+    });
+
+    assert.doesNotMatch(toml, /\[mcp_servers\.omx_/);
+  });
+
   it("installs only agents with prompt files and skips existing files without force", async () => {
     const root = await mkdtemp(join(tmpdir(), "omx-native-config-"));
     const promptsDir = join(root, "prompts");
