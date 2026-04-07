@@ -208,6 +208,14 @@ describe("normalizeCodexLaunchArgs", () => {
       "--yolo",
     ]);
   });
+
+  it("preserves literal --tmux after -- in leader codex args", () => {
+    assert.deepEqual(normalizeCodexLaunchArgs(["--", "--tmux", "--yolo"]), [
+      "--",
+      "--tmux",
+      "--yolo",
+    ]);
+  });
 });
 
 describe("resolveLeaderLaunchPolicyOverride", () => {
@@ -221,6 +229,13 @@ describe("resolveLeaderLaunchPolicyOverride", () => {
   it("returns undefined when no explicit policy override is present", () => {
     assert.equal(
       resolveLeaderLaunchPolicyOverride(["--model", "gpt-5"]),
+      undefined,
+    );
+  });
+
+  it("stops scanning for --tmux after the end-of-options marker", () => {
+    assert.equal(
+      resolveLeaderLaunchPolicyOverride(["--", "--tmux", "--model", "gpt-5"]),
       undefined,
     );
   });

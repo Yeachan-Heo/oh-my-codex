@@ -389,13 +389,41 @@ export function commandOwnsLocalHelp(command: CliCommand): boolean {
 
 export type CodexLaunchPolicy = "inside-tmux" | "detached-tmux" | "direct";
 
+function splitLeaderLaunchPolicyArgs(args: string[]): {
+  explicitPolicy?: CodexLaunchPolicy;
+  remainingArgs: string[];
+} {
+  const remainingArgs: string[] = [];
+  let explicitPolicy: CodexLaunchPolicy | undefined;
+  let passthroughOnly = false;
+
+  for (const arg of args) {
+    if (passthroughOnly) {
+      remainingArgs.push(arg);
+      continue;
+    }
+
+    if (arg === "--") {
+      passthroughOnly = true;
+      remainingArgs.push(arg);
+      continue;
+    }
+
+    if (arg === "--tmux") {
+      explicitPolicy = "detached-tmux";
+      continue;
+    }
+
+    remainingArgs.push(arg);
+  }
+
+  return { explicitPolicy, remainingArgs };
+}
+
 export function resolveLeaderLaunchPolicyOverride(
   args: string[],
 ): CodexLaunchPolicy | undefined {
-  for (const arg of args) {
-    if (arg === "--tmux") return "detached-tmux";
-  }
-  return undefined;
+  return splitLeaderLaunchPolicyArgs(args).explicitPolicy;
 }
 
 export function resolveCodexLaunchPolicy(
@@ -1036,16 +1064,13 @@ export async function execWithOverlay(args: string[]): Promise<void> {
 
 export function normalizeCodexLaunchArgs(args: string[]): string[] {
   const parsed = parseWorktreeMode(args);
+  const launchPolicyParsed = splitLeaderLaunchPolicyArgs(parsed.remainingArgs);
   const normalized: string[] = [];
   let wantsBypass = false;
   let hasBypass = false;
   let reasoningMode: ReasoningMode | null = null;
 
-  for (const arg of parsed.remainingArgs) {
-    if (arg === "--tmux") {
-      continue;
-    }
-
+  for (const arg of launchPolicyParsed.remainingArgs) {
     if (arg === MADMAX_FLAG) {
       wantsBypass = true;
       continue;
