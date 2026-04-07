@@ -438,9 +438,10 @@ export function resolveCodexLaunchPolicy(
   if (env.TMUX) return "inside-tmux";
   if (explicitPolicy === "detached-tmux") return tmuxAvailable ? "detached-tmux" : "direct";
   if (explicitPolicy === "direct") return "direct";
+  if (_platform === "win32") return "direct";
   if (nativeWindows) return "direct";
   if (!stdinIsTTY || !stdoutIsTTY) return "direct";
-  return "direct";
+  return tmuxAvailable ? "detached-tmux" : "direct";
 }
 
 type ExecFileSyncFailure = NodeJS.ErrnoException & {

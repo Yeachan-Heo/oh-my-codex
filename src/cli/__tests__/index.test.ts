@@ -956,10 +956,10 @@ describe("project launch scope helpers", () => {
 });
 
 describe("resolveCodexLaunchPolicy", () => {
-  it("uses direct launch on macOS when outside tmux even if tmux is available", () => {
+  it("uses detached tmux on macOS when outside tmux and tmux is available", () => {
     assert.equal(
       resolveCodexLaunchPolicy({}, "darwin", true, false, true, true),
-      "direct",
+      "detached-tmux",
     );
   });
 
@@ -986,10 +986,10 @@ describe("resolveCodexLaunchPolicy", () => {
     );
   });
 
-  it("uses direct launch on non-macOS hosts when outside tmux even if tmux is available", () => {
+  it("uses detached tmux on non-macOS hosts when outside tmux and tmux is available", () => {
     assert.equal(
       resolveCodexLaunchPolicy({}, "linux", true, false, true, true),
-      "direct",
+      "detached-tmux",
     );
   });
 
