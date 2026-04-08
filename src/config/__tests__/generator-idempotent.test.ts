@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import TOML from "@iarna/toml";
 import { buildMergedConfig, mergeConfig, repairConfigIfNeeded } from "../generator.js";
 
 /** Count occurrences of a pattern in text */
@@ -781,6 +782,35 @@ describe("config generator idempotency (#384)", () => {
     assert.equal(count(merged, /^\[mcp_servers\.existing_server\]$/gm), 1);
     assert.match(merged, /command = "custom"/);
     assert.equal(count(merged, /^\[mcp_servers\.eslint\]$/gm), 1);
+  });
+
+  it("replaces legacy multiline notify arrays without leaving orphaned lines", () => {
+    const existing = [
+      "notify = [",
+      '  "node",',
+      '  "/tmp/legacy-notify-hook.js"',
+      "]",
+      "pre_commit_hooks = [",
+      '  "/Users/donovanyohan/.git-ai/bin/git-ai",',
+      '  "checkpoint",',
+      '  "codex",',
+      '  "--hook-input",',
+      "]",
+      'personality = "pragmatic"',
+      "",
+      "[notice]",
+      "hide_full_access_warning = true",
+      "",
+    ].join("\n");
+
+    const merged = buildMergedConfig(existing, "/tmp/omx");
+
+    assert.match(merged, /^notify = \["node", ".*notify-hook\.js"\]$/m);
+    assert.doesNotMatch(merged, /legacy-notify-hook\.js/);
+    assert.match(merged, /^pre_commit_hooks = \[$/m);
+    assert.match(merged, /\.git-ai\/bin\/git-ai/);
+    assert.doesNotMatch(merged, /^\s*"node",\s*$/m);
+    assert.doesNotThrow(() => TOML.parse(merged));
   });
 
 });

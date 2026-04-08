@@ -13,6 +13,7 @@
 import { readFile, writeFile } from "fs/promises";
 import { existsSync } from "fs";
 import { join } from "path";
+import { parse as parseToml } from "@iarna/toml";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { DEFAULT_FRONTIER_MODEL } from "./models.js";
 import type { UnifiedMcpRegistryServer } from "./mcp-registry.js";
@@ -154,9 +155,18 @@ function stripOrphanedManagedNotify(config: string): string {
       "",
     )
     .replace(
-      /\n?\s*"node",\s*\n\s*".*notify-hook\.js",\s*\n\s*\]\s*(?=\n|$)/g,
+      /\n?\s*"node"\s*,\s*\n\s*".*notify-hook\.js"\s*,?\s*\n\s*\]\s*(?=\n|$)/g,
       "",
     );
+}
+
+function assertValidGeneratedConfig(config: string): void {
+  try {
+    parseToml(config);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Generated config.toml is invalid: ${message}`);
+  }
 }
 
 /**
@@ -850,7 +860,9 @@ export function buildMergedConfig(
     body = body ? `${body}\n\n${sharedRegistryBlock}` : sharedRegistryBlock;
   }
 
-  return topLines.join("\n") + "\n\n" + body + "\n" + tablesBlock;
+  const mergedConfig = topLines.join("\n") + "\n\n" + body + "\n" + tablesBlock;
+  assertValidGeneratedConfig(mergedConfig);
+  return mergedConfig;
 }
 
 /**
