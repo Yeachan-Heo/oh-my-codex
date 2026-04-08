@@ -791,7 +791,7 @@ describe("config generator idempotency (#384)", () => {
       '  "/tmp/legacy-notify-hook.js"',
       "]",
       "pre_commit_hooks = [",
-      '  "/Users/donovanyohan/.git-ai/bin/git-ai",',
+      '  "/Users/example/.git-ai/bin/git-ai",',
       '  "checkpoint",',
       '  "codex",',
       '  "--hook-input",',
@@ -808,8 +808,27 @@ describe("config generator idempotency (#384)", () => {
     assert.match(merged, /^notify = \["node", ".*notify-hook\.js"\]$/m);
     assert.doesNotMatch(merged, /legacy-notify-hook\.js/);
     assert.match(merged, /^pre_commit_hooks = \[$/m);
-    assert.match(merged, /\.git-ai\/bin\/git-ai/);
+    assert.match(merged, /\/Users\/example\/\.git-ai\/bin\/git-ai/);
     assert.doesNotMatch(merged, /^\s*"node",\s*$/m);
+    assert.doesNotThrow(() => TOML.parse(merged));
+  });
+
+  it("does not strip user-owned multiline arrays that happen to mention notify-hook paths", () => {
+    const existing = [
+      "pre_commit_hooks = [",
+      '  "node",',
+      '  "/tmp/custom-notify-hook.js",',
+      '  "--flag",',
+      "]",
+      "",
+    ].join("\n");
+
+    const merged = buildMergedConfig(existing, "/tmp/omx");
+
+    assert.match(merged, /^pre_commit_hooks = \[$/m);
+    assert.match(merged, /^\s*"node",$/m);
+    assert.match(merged, /^\s*"\/tmp\/custom-notify-hook\.js",$/m);
+    assert.match(merged, /^\s*"--flag",$/m);
     assert.doesNotThrow(() => TOML.parse(merged));
   });
 

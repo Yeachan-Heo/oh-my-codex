@@ -149,15 +149,47 @@ function stripRootLevelKeys(config: string, keys: readonly string[]): string {
 }
 
 function stripOrphanedManagedNotify(config: string): string {
-  return config
-    .replace(
-      /^\s*notify\s*=\s*\["node",\s*".*notify-hook\.js"\]\s*$(\n)?/gm,
-      "",
-    )
-    .replace(
-      /\n?\s*"node"\s*,\s*\n\s*".*notify-hook\.js"\s*,?\s*\n\s*\]\s*(?=\n|$)/g,
-      "",
-    );
+  const lines = config.split(/\r?\n/);
+  const result: string[] = [];
+
+  const isNotifyPathLine = (line: string): boolean =>
+    /^\s*".*notify-hook\.js"\s*,?\s*$/.test(line);
+  const isNodeLine = (line: string): boolean => /^\s*"node"\s*,\s*$/.test(line);
+  const isClosingBracketLine = (line: string): boolean => /^\s*\]\s*$/.test(line);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (/^\s*notify\s*=\s*\["node",\s*".*notify-hook\.js"\]\s*$/.test(line)) {
+      continue;
+    }
+
+    if (
+      /^\s*notify\s*=\s*\[\s*$/.test(line) &&
+      isNodeLine(lines[i + 1] ?? "") &&
+      isNotifyPathLine(lines[i + 2] ?? "") &&
+      isClosingBracketLine(lines[i + 3] ?? "")
+    ) {
+      i += 3;
+      continue;
+    }
+
+    const previousNonEmpty = [...result].reverse().find((entry) => entry.trim() !== "");
+    const isStandaloneOrphanFragment =
+      isNodeLine(line) &&
+      isNotifyPathLine(lines[i + 1] ?? "") &&
+      isClosingBracketLine(lines[i + 2] ?? "") &&
+      !/=\s*\[\s*$/.test(previousNonEmpty ?? "");
+
+    if (isStandaloneOrphanFragment) {
+      i += 2;
+      continue;
+    }
+
+    result.push(line);
+  }
+
+  return result.join("\n");
 }
 
 function assertValidGeneratedConfig(config: string): void {
