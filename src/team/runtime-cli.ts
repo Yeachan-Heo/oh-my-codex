@@ -6,13 +6,33 @@
  * Spawned by OMX team orchestration entrypoints when a background team run starts.
  */
 
+import { createInterface } from 'readline';
 import { readdirSync, readFileSync } from 'fs';
 import { writeFile, rename } from 'fs/promises';
 import { join } from 'path';
 import { startTeam, monitorTeam, shutdownTeam } from './runtime.js';
-import type { TeamRuntime, TeamShutdownSummary } from './runtime.js';
+import type { TeamRuntime, TeamShutdownSummary, StaleTeamSummary } from './runtime.js';
 import { teamReadConfig as readTeamConfig } from './team-ops.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
+
+async function promptStaleCleanup(summary: StaleTeamSummary): Promise<boolean> {
+  process.stderr.write(
+    `\n[omx] Stale artifacts from previous team "${summary.teamName}":\n` +
+    `  Worktrees: ${summary.worktreePaths.join(', ')}\n` +
+    `  State dir: ${summary.statePath}\n` +
+    (summary.hasDirtyWorktrees
+      ? '  ⚠ Some worktrees have uncommitted changes that will be lost.\n'
+      : '') +
+    '  Clean up and continue? [y/N] ',
+  );
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  return new Promise<boolean>((res) => {
+    rl.question('', (answer) => {
+      rl.close();
+      res(answer.trim().toLowerCase() === 'y');
+    });
+  });
+}
 
 interface CliInput {
   teamName: string;
@@ -255,6 +275,7 @@ async function main(): Promise<void> {
         workerCount,
         tasks,
         cwd,
+        { confirmStaleCleanup: promptStaleCleanup },
       );
     } finally {
       if (typeof previousCliMap === 'string') process.env.OMX_TEAM_WORKER_CLI_MAP = previousCliMap;

@@ -110,7 +110,7 @@ function branchExists(repoRoot: string, branchName: string): boolean {
   return result.status === 0;
 }
 
-function isWorktreeDirty(worktreePath: string): boolean {
+export function isWorktreeDirty(worktreePath: string): boolean {
   const result = spawnSync('git', ['status', '--porcelain'], {
     cwd: worktreePath,
     encoding: 'utf-8',
@@ -485,4 +485,11 @@ export async function rollbackProvisionedWorktrees(
   if (errors.length > 0) {
     throw new Error(`worktree_rollback_failed:${errors.join(' | ')}`);
   }
+}
+
+export async function removeWorktreeForce(repoRoot: string, worktreePath: string): Promise<void> {
+  await execFilePromise('git', ['worktree', 'remove', '--force', worktreePath], {
+    cwd: repoRoot,
+    encoding: 'utf-8',
+  });
 }

@@ -129,7 +129,9 @@ import {
   assertCleanLeaderWorkspaceForWorkerWorktrees,
   ensureWorktree,
   isGitRepository,
+  isWorktreeDirty,
   planWorktreeTarget,
+  removeWorktreeForce,
   rollbackProvisionedWorktrees,
   type EnsureWorktreeResult,
   type WorktreeMode,
@@ -1056,8 +1058,16 @@ async function prepareWorkerWorktreeShutdownReports(config: TeamConfig, leaderCw
   return reports
 }
 
+export interface StaleTeamSummary {
+  teamName: string;
+  worktreePaths: string[];
+  statePath: string;
+  hasDirtyWorktrees: boolean;
+}
+
 export interface TeamStartOptions {
   worktreeMode?: WorktreeMode;
+  confirmStaleCleanup?: (summary: StaleTeamSummary) => Promise<boolean>;
 }
 
 interface ShutdownGateCounts {
@@ -1729,6 +1739,8 @@ export async function startTeam(
   for (let i = 1; i <= workerCount; i++) {
     workerWorkspaceByName.set(`worker-${i}`, { cwd: leaderCwd });
   }
+
+  await detectAndCleanStaleTeam(sanitized, leaderCwd, workerCount, options.confirmStaleCleanup);
 
   if (activeWorktreeMode) {
     assertCleanLeaderWorkspaceForWorkerWorktrees(leaderCwd);
@@ -2990,6 +3002,62 @@ async function findActiveTeams(cwd: string, leaderSessionId: string): Promise<st
     if (sessions.has(tmuxSession)) active.push(teamName);
   }
   return active;
+}
+
+async function detectAndCleanStaleTeam(
+  teamName: string,
+  leaderCwd: string,
+  workerCount: number,
+  confirmFn?: (summary: StaleTeamSummary) => Promise<boolean>,
+): Promise<void> {
+  const stateDir = join(leaderCwd, '.omx', 'state', 'team', teamName);
+  if (!existsSync(stateDir)) return;
+
+  const sessions = new Set(listTeamSessions());
+  if (sessions.has(`omx-team-${teamName}`)) return;
+
+  const repoRootResult = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+    cwd: leaderCwd, encoding: 'utf-8', windowsHide: true,
+  });
+  if (repoRootResult.status !== 0) return;
+  const repoRoot = repoRootResult.stdout.trim();
+
+  const worktreePaths: string[] = [];
+  for (let i = 1; i <= workerCount; i++) {
+    const wtPath = join(repoRoot, '.omx', 'team', teamName, 'worktrees', `worker-${i}`);
+    if (existsSync(wtPath)) worktreePaths.push(wtPath);
+  }
+
+  if (worktreePaths.length === 0) {
+    await cleanupTeamState(teamName, leaderCwd);
+    return;
+  }
+
+  const hasDirtyWorktrees = worktreePaths.some((p) => {
+    try { return isWorktreeDirty(p); } catch { return false; }
+  });
+
+  const summary: StaleTeamSummary = { teamName, worktreePaths, statePath: stateDir, hasDirtyWorktrees };
+
+  if (!confirmFn) {
+    throw new Error(
+      `stale_team_artifacts:${teamName}:${worktreePaths.length}_worktrees:` +
+      'pass_confirmStaleCleanup_or_manually_remove',
+    );
+  }
+
+  const confirmed = await confirmFn(summary);
+  if (!confirmed) {
+    throw new Error(
+      `stale_team_cleanup_declined:${teamName}:` +
+      'manually_remove_worktrees_and_state_before_retrying',
+    );
+  }
+
+  for (const wtPath of worktreePaths) {
+    await removeWorktreeForce(repoRoot, wtPath);
+  }
+  await cleanupTeamState(teamName, leaderCwd);
 }
 
 async function resolveLeaderSessionId(cwd: string): Promise<string> {
