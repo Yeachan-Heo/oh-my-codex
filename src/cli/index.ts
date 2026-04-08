@@ -84,6 +84,7 @@ import { HUD_TMUX_HEIGHT_LINES } from "../hud/constants.js";
 rememberOmxLaunchContext();
 import {
   classifySpawnError,
+  resolveCommandPathForPlatform,
   spawnPlatformCommandSync,
 } from "../utils/platform-command.js";
 import { buildHookEvent } from "../hooks/extensibility/events.js";
