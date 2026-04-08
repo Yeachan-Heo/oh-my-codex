@@ -1732,19 +1732,23 @@ describe("buildTmuxPaneCommand", () => {
 
 describe("buildWindowsPromptCommand", () => {
   it("encodes detached Windows commands for safe PowerShell prompt injection", () => {
-    const result = buildWindowsPromptCommand("codex", [
-      "--dangerously-bypass-approvals-and-sandbox",
-      "-c",
-      'model_reasoning_effort="high"',
-      "it's",
-    ]);
+    const result = buildWindowsPromptCommand(
+      "codex",
+      [
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-c",
+        'model_reasoning_effort="high"',
+        "it's",
+      ],
+      () => "C:\\Codex\\codex.cmd",
+    );
     const prefix = "powershell.exe -NoLogo -NoExit -EncodedCommand ";
     assert.ok(result.startsWith(prefix));
     const payload = result.slice(prefix.length);
     const decoded = Buffer.from(payload, "base64").toString("utf16le");
     assert.equal(
       decoded,
-      "$ErrorActionPreference = 'Stop'; & { & 'codex' '--dangerously-bypass-approvals-and-sandbox' '-c' 'model_reasoning_effort=\"high\"' 'it''s' }",
+      "$ErrorActionPreference = 'Stop'; & { & 'C:\\Codex\\codex.cmd' '--dangerously-bypass-approvals-and-sandbox' '-c' 'model_reasoning_effort=\"high\"' 'it''s' }",
     );
   });
 });
