@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mergeConfig } from '../generator.js';
 
+const ESCAPED_EXEC_PATH = process.execPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 describe('config generator', () => {
   it('places top-level keys before [features]', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
@@ -48,7 +50,7 @@ describe('config generator', () => {
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, 'utf-8');
 
-      assert.match(toml, /^notify = \["node", ".*notify-hook\.js"\]$/m);
+      assert.match(toml, new RegExp(`^notify = \\["${ESCAPED_EXEC_PATH}", ".*notify-hook\\.js"\\]$`, 'm'));
       assert.match(toml, /^codex_hooks = true$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -116,7 +118,7 @@ describe('config generator', () => {
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, 'utf-8');
 
-      const m = toml.match(/^notify = \["node", "(.*)"\]$/m);
+      const m = toml.match(new RegExp(`^notify = \\["${ESCAPED_EXEC_PATH}", "(.*)"\\]$`, 'm'));
       assert.ok(m, 'notify array not found');
       assert.match(m[1], /pkg root/);
       assert.match(m[1], /notify-hook\.js$/);
@@ -157,7 +159,7 @@ describe('config generator', () => {
       assert.match(rerun, /^name = "kept"$/m);
 
       // Top-level keys present and before [features]
-      assert.match(rerun, /^notify = \["node", ".*notify-hook\.js"\]$/m);
+      assert.match(rerun, new RegExp(`^notify = \\["${ESCAPED_EXEC_PATH}", ".*notify-hook\\.js"\\]$`, 'm'));
       assert.match(rerun, /^codex_hooks = true$/m);
       assert.match(rerun, /^model_reasoning_effort = "high"$/m);
       const notifyIdx = rerun.indexOf('notify =');
@@ -300,7 +302,7 @@ describe('config generator', () => {
       assert.match(toml, /^name = "kept-before"$/m);
       assert.match(toml, /^\[user.after\]$/m);
       assert.match(toml, /^name = "kept-after"$/m);
-      assert.match(toml, /^notify = \["node", ".*notify-hook\.js"\]$/m);
+      assert.match(toml, new RegExp(`^notify = \\["${ESCAPED_EXEC_PATH}", ".*notify-hook\\.js"\\]$`, 'm'));
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

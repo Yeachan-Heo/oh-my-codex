@@ -13,6 +13,8 @@ import {
   resolveSessionOwnerPidFromAncestry,
 } from "../codex-native-hook.js";
 
+const ESCAPED_EXEC_PATH = process.execPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true }).catch(() => {});
   await writeFile(path, JSON.stringify(value, null, 2));
@@ -39,7 +41,7 @@ describe("codex native hook config", () => {
     assert.equal(preToolUse.matcher, "Bash");
     assert.match(
       String(preToolUse.hooks?.[0]?.command || ""),
-      /codex-native-hook\.js"?$/,
+      new RegExp(`^"${ESCAPED_EXEC_PATH}" ".*codex-native-hook\\.js"$`),
     );
 
     const stop = config.hooks.Stop[0] as {

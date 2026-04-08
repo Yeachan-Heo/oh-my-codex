@@ -55,6 +55,10 @@ const OMX_TUI_STATUS_LINE =
 const LEGACY_OMX_TEAM_RUN_TABLE_PATTERN =
   /^\s*\[mcp_servers\.(?:"omx_team_run"|omx_team_run)\]\s*$/m;
 
+function getManagedNodeCommand(): string {
+  return process.execPath || "node";
+}
+
 function unwrapTomlString(value: string | undefined): string | undefined {
   return value?.match(/^"(.*)"$/)?.[1];
 }
@@ -80,13 +84,14 @@ function getOmxTopLevelLines(
   existingConfig = "",
   modelOverride?: string,
 ): string[] {
+  const nodeCommand = escapeTomlString(getManagedNodeCommand());
   const notifyHookPath = join(pkgRoot, "dist", "scripts", "notify-hook.js");
   const escapedPath = escapeTomlString(notifyHookPath);
   const rootValues = parseRootKeyValues(existingConfig);
 
   const lines = [
     "# oh-my-codex top-level settings (must be before any [table])",
-    `notify = ["node", "${escapedPath}"]`,
+    `notify = ["${nodeCommand}", "${escapedPath}"]`,
     'model_reasoning_effort = "high"',
     `developer_instructions = "You have oh-my-codex installed. AGENTS.md is your orchestration brain and the main orchestration surface. Use skill/keyword routing like $name plus spawned role-specialized subagents for specialized work. Codex native subagents are available via .codex/agents and may be used for independent parallel subtasks within a single session or team pane. Skills are loaded from installed SKILL.md files under .codex/skills, not from native agent TOMLs. Use workflow skills via $name when explicitly invoked or clearly routed by AGENTS.md. Treat installed prompts as narrower internal execution surfaces under AGENTS.md authority, even when user-facing docs prefer $name keywords."`,
   ];
@@ -150,11 +155,11 @@ function stripRootLevelKeys(config: string, keys: readonly string[]): string {
 function stripOrphanedManagedNotify(config: string): string {
   return config
     .replace(
-      /^\s*notify\s*=\s*\["node",\s*".*notify-hook\.js"\]\s*$(\n)?/gm,
+      /^\s*notify\s*=\s*\["[^"]+",\s*".*notify-hook\.js"\]\s*$(\n)?/gm,
       "",
     )
     .replace(
-      /\n?\s*"node",\s*\n\s*".*notify-hook\.js",\s*\n\s*\]\s*(?=\n|$)/g,
+      /\n?\s*"[^"]+",\s*\n\s*".*notify-hook\.js",\s*\n\s*\]\s*(?=\n|$)/g,
       "",
     );
 }
@@ -722,6 +727,7 @@ function getSharedMcpRegistryBlock(
  * Contains ONLY [table] sections — no bare keys.
  */
 function getOmxTablesBlock(pkgRoot: string, includeTui = true): string {
+  const nodeCommand = escapeTomlString(getManagedNodeCommand());
   const stateServerPath = escapeTomlString(
     join(pkgRoot, "dist", "mcp", "state-server.js"),
   );
@@ -744,28 +750,28 @@ function getOmxTablesBlock(pkgRoot: string, includeTui = true): string {
     "",
     "# OMX State Management MCP Server",
     "[mcp_servers.omx_state]",
-    'command = "node"',
+    `command = "${nodeCommand}"`,
     `args = ["${stateServerPath}"]`,
     "enabled = true",
     "startup_timeout_sec = 5",
     "",
     "# OMX Project Memory MCP Server",
     "[mcp_servers.omx_memory]",
-    'command = "node"',
+    `command = "${nodeCommand}"`,
     `args = ["${memoryServerPath}"]`,
     "enabled = true",
     "startup_timeout_sec = 5",
     "",
     "# OMX Code Intelligence MCP Server (LSP diagnostics, AST search)",
     "[mcp_servers.omx_code_intel]",
-    'command = "node"',
+    `command = "${nodeCommand}"`,
     `args = ["${codeIntelServerPath}"]`,
     "enabled = true",
     "startup_timeout_sec = 10",
     "",
     "# OMX Trace MCP Server (agent flow timeline & statistics)",
     "[mcp_servers.omx_trace]",
-    'command = "node"',
+    `command = "${nodeCommand}"`,
     `args = ["${traceServerPath}"]`,
     "enabled = true",
     "startup_timeout_sec = 5",

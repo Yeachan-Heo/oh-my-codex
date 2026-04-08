@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildMergedConfig, mergeConfig, repairConfigIfNeeded } from "../generator.js";
 
+const ESCAPED_EXEC_PATH = process.execPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /** Count occurrences of a pattern in text */
 function count(text: string, pattern: RegExp): number {
   return (text.match(pattern) ?? []).length;
@@ -99,6 +101,14 @@ describe("config generator idempotency (#384)", () => {
       const toml = await readFile(configPath, "utf-8");
 
       assertSingleOmxBlock(toml);
+      assert.match(
+        toml,
+        new RegExp(`^notify = \\["${ESCAPED_EXEC_PATH}", ".*notify-hook\\.js"\\]$`, "m"),
+      );
+      assert.match(
+        toml,
+        new RegExp(`^command = "${ESCAPED_EXEC_PATH}"$`, "m"),
+      );
       assert.match(toml, /^multi_agent = true$/m);
       assert.match(toml, /^child_agents_md = true$/m);
       assert.match(toml, /^codex_hooks = true$/m);
@@ -429,8 +439,8 @@ describe("config generator idempotency (#384)", () => {
       const toml = await readFile(configPath, "utf-8");
 
       assert.equal(count(toml, /^notify\s*=/gm), 1, "notify should appear once");
-      assert.match(toml, /^notify = \["node", ".*notify-hook\.js"\]$/m);
-      assert.doesNotMatch(toml, /^\s*"node",\s*$/m, "orphan fragment removed");
+      assert.match(toml, new RegExp(`^notify = \\["${ESCAPED_EXEC_PATH}", ".*notify-hook\\.js"\\]$`, "m"));
+      assert.doesNotMatch(toml, /^\s*"[^"]+",\s*$/m, "orphan fragment removed");
       assert.doesNotMatch(toml, /legacy-notify-hook\.js/, "legacy notify path removed");
     } finally {
       await rm(wd, { recursive: true, force: true });

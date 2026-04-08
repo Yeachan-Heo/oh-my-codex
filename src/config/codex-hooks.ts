@@ -32,7 +32,7 @@ function buildCommandHook(
 
 export function buildManagedCodexHooksConfig(pkgRoot: string): ManagedCodexHooksConfig {
   const hookScript = join(pkgRoot, "dist", "scripts", "codex-native-hook.js");
-  const command = `node "${hookScript}"`;
+  const command = `"${process.execPath || "node"}" "${hookScript}"`;
 
   return {
     hooks: {
