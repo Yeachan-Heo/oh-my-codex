@@ -183,15 +183,15 @@ export function isPaneRunningShell(paneCurrentCommand: any): boolean {
   return SHELL_COMMANDS.has(base);
 }
 
-// Codex agent commands — do NOT include 'claude' (that's Claude Code CLI, a different tool)
-const AGENT_COMMANDS = new Set(['node', 'codex', 'npx']);
+// Agent commands (Codex/Cursor wrappers) — do NOT include 'claude'
+const AGENT_COMMANDS = new Set(['node', 'codex', 'cursor', 'npx']);
 
 function isHudStartCommand(startCommand: string): boolean {
   return /\bomx\b.*\bhud\b.*--watch/i.test(startCommand);
 }
 
 /**
- * Canonical codex pane resolver. Finds the tmux pane running a codex/claude agent.
+ * Canonical agent pane resolver. Finds the tmux pane running a codex/cursor agent.
  *
  * Resolution order:
  * 1. TMUX_PANE env var — but only if the pane looks like a real agent pane, not HUD
@@ -218,7 +218,7 @@ export function resolveCodexPane(): string {
     }
     if (!SHELL_COMMANDS.has(base)) {
       // Not a shell and not a known agent (e.g. claude CLI) — fall through to
-      // session scan so we can still reject HUD or locate a codex pane.
+      // session scan so we can still reject HUD or locate an agent pane.
     }
   } catch {
     // Fall through to session scan instead of guessing.
@@ -241,7 +241,7 @@ export function resolveCodexPane(): string {
       const paneId = parts[0];
       const startCmd = (parts[2] || '').toLowerCase();
       if (!paneId) continue;
-      if (startCmd.includes('codex') && !isHudStartCommand(startCmd)) {
+      if ((startCmd.includes('codex') || startCmd.includes('cursor')) && !isHudStartCommand(startCmd)) {
         return paneId;
       }
     }
@@ -307,8 +307,10 @@ export function paneShowsCodexViewport(captured: any): boolean {
   if (lines.length === 0) return false;
   if (paneIsBootstrapping(lines)) return false;
 
-  const hasCodexBanner = lines.some((line) => /\bOpenAI Codex\b/i.test(line));
-  if (!hasCodexBanner) return false;
+  const hasAgentBanner = lines.some(
+    (line) => /\bOpenAI Codex\b/i.test(line) || /\bCursor\b/i.test(line),
+  );
+  if (!hasAgentBanner) return false;
 
   return lines.some((line) => /(?:^|\s)(?:model|directory):/i.test(line));
 }

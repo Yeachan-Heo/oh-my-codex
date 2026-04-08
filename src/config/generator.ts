@@ -16,6 +16,7 @@ import { join } from "path";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { DEFAULT_FRONTIER_MODEL } from "./models.js";
 import type { UnifiedMcpRegistryServer } from "./mcp-registry.js";
+import { resolveRuntimeProvider } from "../runtime/provider.js";
 
 interface MergeOptions {
   includeTui?: boolean;
@@ -172,6 +173,8 @@ export function stripOmxTopLevelKeys(config: string): string {
 // ---------------------------------------------------------------------------
 
 function upsertFeatureFlags(config: string): string {
+  const runtimeProvider = resolveRuntimeProvider(process.env);
+  const runtimeHooksKey = runtimeProvider === "cursor" ? "cursor_hooks" : "codex_hooks";
   const lines = config.split(/\r?\n/);
   const featuresStart = lines.findIndex((line) =>
     /^\s*\[features\]\s*$/.test(line),
@@ -184,6 +187,7 @@ function upsertFeatureFlags(config: string): string {
       "multi_agent = true",
       "child_agents_md = true",
       "codex_hooks = true",
+      ...(runtimeHooksKey === "cursor_hooks" ? ["cursor_hooks = true"] : []),
       "",
     ].join("\n");
     if (base.length === 0) {
@@ -211,6 +215,7 @@ function upsertFeatureFlags(config: string): string {
   let multiAgentIdx = -1;
   let childAgentsIdx = -1;
   let codexHooksIdx = -1;
+  let cursorHooksIdx = -1;
   for (let i = featuresStart + 1; i < sectionEnd; i++) {
     if (/^\s*multi_agent\s*=/.test(lines[i])) {
       multiAgentIdx = i;
@@ -218,6 +223,8 @@ function upsertFeatureFlags(config: string): string {
       childAgentsIdx = i;
     } else if (/^\s*codex_hooks\s*=/.test(lines[i])) {
       codexHooksIdx = i;
+    } else if (/^\s*cursor_hooks\s*=/.test(lines[i])) {
+      cursorHooksIdx = i;
     }
   }
 
@@ -239,6 +246,14 @@ function upsertFeatureFlags(config: string): string {
     lines[codexHooksIdx] = "codex_hooks = true";
   } else {
     lines.splice(sectionEnd, 0, "codex_hooks = true");
+    sectionEnd += 1;
+  }
+  if (runtimeHooksKey === "cursor_hooks") {
+    if (cursorHooksIdx >= 0) {
+      lines[cursorHooksIdx] = "cursor_hooks = true";
+    } else {
+      lines.splice(sectionEnd, 0, "cursor_hooks = true");
+    }
   }
 
   return lines.join("\n");
@@ -353,7 +368,13 @@ export function stripOmxFeatureFlags(config: string): string {
     }
   }
 
-  const omxFlags = ["multi_agent", "child_agents_md", "codex_hooks", "collab"];
+  const omxFlags = [
+    "multi_agent",
+    "child_agents_md",
+    "codex_hooks",
+    "cursor_hooks",
+    "collab",
+  ];
   const filtered: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     if (i > featuresStart && i < sectionEnd) {

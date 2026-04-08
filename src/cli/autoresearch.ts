@@ -24,9 +24,20 @@ import {
   listAutoresearchDeepInterviewResultPaths,
   resolveAutoresearchDeepInterviewResult,
 } from './autoresearch-intake.js';
-import { CODEX_BYPASS_FLAG, MADMAX_FLAG } from './constants.js';
+import {
+  CODEX_BYPASS_FLAG,
+  CONFIG_FLAG,
+  LONG_CONFIG_FLAG,
+  MADMAX_FLAG,
+} from './constants.js';
 import { restoreStandaloneHudPane, enableMouseScrolling } from '../team/tmux-session.js';
 import { resolveOmxEntryPath } from '../utils/paths.js';
+import {
+  resolveRuntimeCommand,
+  resolveRuntimeLeadingArgs,
+  resolveRuntimeProvider,
+  type RuntimeProvider,
+} from '../runtime/provider.js';
 
 export const AUTORESEARCH_HELP = `omx autoresearch - Launch OMX autoresearch with thin-supervisor parity semantics
 
@@ -148,10 +159,51 @@ export function normalizeAutoresearchCodexArgs(codexArgs: readonly string[]): st
   return normalized;
 }
 
-function runAutoresearchTurn(worktreePath: string, instructionsFile: string, codexArgs: string[]): void {
+export function normalizeAutoresearchLaunchArgs(
+  provider: RuntimeProvider,
+  rawArgs: readonly string[],
+): string[] {
+  if (provider === 'codex') {
+    return normalizeAutoresearchCodexArgs(rawArgs);
+  }
+  // Cursor path: strip Codex-only flags.
+  const sanitized: string[] = [];
+  for (let i = 0; i < rawArgs.length; i++) {
+    const arg = rawArgs[i];
+    if (arg === CODEX_BYPASS_FLAG || arg === MADMAX_FLAG) continue;
+    if (arg === CONFIG_FLAG || arg === LONG_CONFIG_FLAG) {
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith(`${LONG_CONFIG_FLAG}=`)) continue;
+    sanitized.push(arg);
+  }
+  return sanitized;
+}
+
+function buildRuntimeExecArgs(
+  provider: RuntimeProvider,
+  rawArgs: string[],
+): string[] {
+  const execSubcommand = String(
+    process.env.OMX_RUNTIME_EXEC_SUBCOMMAND ?? 'exec',
+  ).trim();
+  return [execSubcommand, ...normalizeAutoresearchLaunchArgs(provider, rawArgs), '-'];
+}
+
+function runAutoresearchTurn(
+  provider: RuntimeProvider,
+  worktreePath: string,
+  instructionsFile: string,
+  codexArgs: string[],
+): void {
   const prompt = readFileSync(instructionsFile, 'utf-8');
-  const launchArgs = ['exec', ...normalizeAutoresearchCodexArgs(codexArgs), '-'];
-  const result = spawnSync('codex', launchArgs, {
+  const launchArgs = [
+    ...resolveRuntimeLeadingArgs(provider),
+    ...buildRuntimeExecArgs(provider, codexArgs),
+  ];
+  const runtimeCommand = resolveRuntimeCommand(provider);
+  const result = spawnSync(runtimeCommand, launchArgs, {
     cwd: worktreePath,
     stdio: ['pipe', 'inherit', 'inherit'],
     input: prompt,
@@ -165,7 +217,9 @@ function runAutoresearchTurn(worktreePath: string, instructionsFile: string, cod
   }
   if (result.status !== 0) {
     process.exitCode = typeof result.status === 'number' ? result.status : 1;
-    throw new Error(`autoresearch_codex_exec_failed:${result.status ?? 'unknown'}`);
+    throw new Error(
+      `autoresearch_${provider}_exec_failed:${result.status ?? 'unknown'}`,
+    );
   }
 }
 
@@ -233,6 +287,7 @@ export function parseAutoresearchArgs(args: readonly string[]): ParsedAutoresear
 }
 
 async function runAutoresearchLoop(
+  provider: RuntimeProvider,
   codexArgs: string[],
   runtime: {
     instructionsFile: string;
@@ -248,7 +303,12 @@ async function runAutoresearchLoop(
 
   try {
     while (true) {
-      runAutoresearchTurn(runtime.worktreePath, runtime.instructionsFile, codexArgs);
+      runAutoresearchTurn(
+        provider,
+        runtime.worktreePath,
+        runtime.instructionsFile,
+        codexArgs,
+      );
 
       const contract = await loadAutoresearchMissionContract(missionDir);
       const { run_id: runId } = JSON.parse(readFileSync(runtime.manifestFile, 'utf-8')) as { run_id: string };
@@ -359,6 +419,7 @@ function launchAutoresearchInSplitPane(args: {
 }
 
 async function executeAutoresearchMissionRun(missionDir: string, codexArgs: string[]): Promise<void> {
+  const runtimeProvider = resolveRuntimeProvider(process.env);
   const contract = await loadAutoresearchMissionContract(missionDir);
   await assertModeStartAllowed('autoresearch', contract.repoRoot);
   const runTag = buildAutoresearchRunTag();
@@ -375,7 +436,12 @@ async function executeAutoresearchMissionRun(missionDir: string, codexArgs: stri
 
   const worktreeContract = await materializeAutoresearchMissionToWorktree(contract, ensured.worktreePath);
   const runtime = await prepareAutoresearchRuntime(worktreeContract, contract.repoRoot, ensured.worktreePath, { runTag });
-  await runAutoresearchLoop(codexArgs, runtime, worktreeContract.missionDir);
+  await runAutoresearchLoop(
+    runtimeProvider,
+    codexArgs,
+    runtime,
+    worktreeContract.missionDir,
+  );
 }
 
 export async function autoresearchCommand(args: string[]): Promise<void> {
@@ -423,11 +489,17 @@ export async function autoresearchCommand(args: string[]): Promise<void> {
   }
 
   if (parsed.runId) {
+    const runtimeProvider = resolveRuntimeProvider(process.env);
     const repoRoot = resolveRepoRoot(process.cwd());
     await assertModeStartAllowed('autoresearch', repoRoot);
     const manifest = await loadAutoresearchRunManifest(repoRoot, parsed.runId);
     const runtime = await resumeAutoresearchRuntime(repoRoot, parsed.runId);
-    await runAutoresearchLoop(parsed.codexArgs, runtime, manifest.mission_dir);
+    await runAutoresearchLoop(
+      runtimeProvider,
+      parsed.codexArgs,
+      runtime,
+      manifest.mission_dir,
+    );
     return;
   }
 

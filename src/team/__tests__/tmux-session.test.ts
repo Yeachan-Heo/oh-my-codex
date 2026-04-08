@@ -1147,10 +1147,18 @@ describe('team worker CLI helpers', () => {
     assert.equal(resolveTeamWorkerCli(['--model', 'gemini-2.0-pro'], {}), 'gemini');
     assert.equal(resolveTeamWorkerCli(['--model', 'gpt-5'], {}), 'codex');
     assert.equal(resolveTeamWorkerCli([], {}), 'codex');
+    assert.equal(
+      resolveTeamWorkerCli([], { OMX_RUNTIME_PROVIDER: 'cursor' }),
+      'cursor',
+    );
   });
 
   it('resolveTeamWorkerCli accepts explicit gemini override', () => {
     assert.equal(resolveTeamWorkerCli([], { OMX_TEAM_WORKER_CLI: 'gemini' }), 'gemini');
+  });
+
+  it('resolveTeamWorkerCli accepts explicit cursor override', () => {
+    assert.equal(resolveTeamWorkerCli([], { OMX_TEAM_WORKER_CLI: 'cursor' }), 'cursor');
   });
 
   it('resolveTeamWorkerCliPlan accepts gemini in CLI map', () => {
@@ -1161,6 +1169,14 @@ describe('team worker CLI helpers', () => {
   it('translateWorkerLaunchArgsForCli preserves args for codex', () => {
     const args = ['--model', 'gpt-5', '-c', 'model_reasoning_effort="xhigh"'];
     assert.deepEqual(translateWorkerLaunchArgsForCli('codex', args), args);
+  });
+
+  it('translateWorkerLaunchArgsForCli strips codex-only bypass flags for cursor', () => {
+    const args = ['--model', 'gpt-5', '--dangerously-bypass-approvals-and-sandbox', '--madmax'];
+    assert.deepEqual(
+      translateWorkerLaunchArgsForCli('cursor', args),
+      ['--model', 'gpt-5'],
+    );
   });
 
   it('translateWorkerLaunchArgsForCli returns only skip-permissions for claude', () => {
@@ -1286,6 +1302,13 @@ describe('team worker CLI helpers', () => {
 
   it('buildWorkerSubmitPlan preserves queue-first behavior for busy codex workers', () => {
     const plan = buildWorkerSubmitPlan('auto', 'codex', true, true);
+    assert.equal(plan.queueFirstRound, true);
+    assert.equal(plan.submitKeyPressesPerRound, 2);
+    assert.equal(plan.allowAdaptiveRetry, true);
+  });
+
+  it('buildWorkerSubmitPlan treats cursor workers as codex-like submit flow', () => {
+    const plan = buildWorkerSubmitPlan('auto', 'cursor', true, true);
     assert.equal(plan.queueFirstRound, true);
     assert.equal(plan.submitKeyPressesPerRound, 2);
     assert.equal(plan.allowAdaptiveRetry, true);

@@ -4,6 +4,9 @@ Thanks for contributing.
 
 ## Development setup
 
+Provider note: OMX defaults to Codex runtime. To test Cursor runtime paths, set
+`OMX_RUNTIME_PROVIDER=cursor` before running commands.
+
 - Node.js >= 20
 - npm
 
@@ -51,8 +54,8 @@ unset OMX_TEAM_WORKER OMX_TEAM_STATE_ROOT OMX_TEAM_LEADER_CWD OMX_TEAM_WORKER_CL
 ## Project structure
 
 - `src/` -- TypeScript source (CLI, config, agents, MCP servers, hooks, modes, team, verification)
-- `prompts/` -- 30 agent prompt markdown files (installed to `~/.codex/prompts/`)
-- `skills/` -- 39 skill directories with `SKILL.md` (installed to `~/.codex/skills/`)
+- `prompts/` -- agent prompt markdown files (installed under provider home, e.g. `~/.codex/prompts/` or `~/.cursor/prompts/`)
+- `skills/` -- skill directories with `SKILL.md` (installed under provider home, e.g. `~/.codex/skills/` or `~/.cursor/skills/`)
 - `templates/` -- `AGENTS.md` orchestration brain template
 
 ### Adding a new agent prompt

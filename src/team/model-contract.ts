@@ -5,6 +5,7 @@ import {
   getSparkDefaultModel,
   getStandardDefaultModel,
 } from '../config/models.js';
+import { resolveRuntimeProvider, type RuntimeProvider } from '../runtime/provider.js';
 
 const MADMAX_FLAG = '--madmax';
 const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
@@ -133,11 +134,12 @@ export function normalizeTeamWorkerLaunchArgs(
   args: string[],
   preferredModel?: string,
   preferredReasoning?: TeamReasoningEffort,
+  provider: RuntimeProvider = resolveRuntimeProvider(process.env),
 ): string[] {
   const parsed = parseTeamWorkerLaunchArgs(args);
   const normalized = [...parsed.passthrough];
 
-  if (parsed.wantsBypass) normalized.push(CODEX_BYPASS_FLAG);
+  if (provider === 'codex' && parsed.wantsBypass) normalized.push(CODEX_BYPASS_FLAG);
 
   const selectedReasoning = parsed.reasoningOverride
     ?? (normalizeOptionalReasoning(preferredReasoning)
@@ -152,6 +154,7 @@ export function normalizeTeamWorkerLaunchArgs(
 }
 
 export function resolveTeamWorkerLaunchArgs(options: ResolveTeamWorkerLaunchArgsOptions): string[] {
+  const provider = resolveRuntimeProvider(process.env);
   const envArgs = splitWorkerLaunchArgs(options.existingRaw);
   const inheritedArgs = options.inheritedArgs ?? [];
   const allArgs = [...envArgs, ...inheritedArgs];
@@ -160,7 +163,12 @@ export function resolveTeamWorkerLaunchArgs(options: ResolveTeamWorkerLaunchArgs
   const inheritedModel = normalizeOptionalModel(parseTeamWorkerLaunchArgs(inheritedArgs).modelOverride);
   const fallbackModel = normalizeOptionalModel(options.fallbackModel);
   const selectedModel = envModel ?? inheritedModel ?? fallbackModel;
-  return normalizeTeamWorkerLaunchArgs(allArgs, selectedModel, options.preferredReasoning);
+  return normalizeTeamWorkerLaunchArgs(
+    allArgs,
+    selectedModel,
+    options.preferredReasoning,
+    provider,
+  );
 }
 
 export function resolveAgentReasoningEffort(agentType?: string): TeamReasoningEffort | undefined {

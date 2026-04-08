@@ -1,6 +1,7 @@
 import { join } from "path";
+import { resolveRuntimeProvider, type RuntimeProvider } from "../runtime/provider.js";
 
-export interface ManagedCodexHooksConfig {
+export interface ManagedRuntimeHooksConfig {
   hooks: {
     SessionStart: Array<Record<string, unknown>>;
     PreToolUse: Array<Record<string, unknown>>;
@@ -30,8 +31,18 @@ function buildCommandHook(
   };
 }
 
-export function buildManagedCodexHooksConfig(pkgRoot: string): ManagedCodexHooksConfig {
-  const hookScript = join(pkgRoot, "dist", "scripts", "codex-native-hook.js");
+function resolveHookScriptName(provider: RuntimeProvider): string {
+  // Cursor currently reuses the same native bridge semantics as codex.
+  // Keep a dedicated resolver so provider-specific hook scripts can be added
+  // later without touching setup call sites.
+  return provider === "cursor" ? "codex-native-hook.js" : "codex-native-hook.js";
+}
+
+export function buildManagedRuntimeHooksConfig(
+  pkgRoot: string,
+  provider: RuntimeProvider = resolveRuntimeProvider(),
+): ManagedRuntimeHooksConfig {
+  const hookScript = join(pkgRoot, "dist", "scripts", resolveHookScriptName(provider));
   const command = `node "${hookScript}"`;
 
   return {
@@ -66,4 +77,12 @@ export function buildManagedCodexHooksConfig(pkgRoot: string): ManagedCodexHooks
       ],
     },
   };
+}
+
+export type ManagedCodexHooksConfig = ManagedRuntimeHooksConfig;
+
+export function buildManagedCodexHooksConfig(
+  pkgRoot: string,
+): ManagedCodexHooksConfig {
+  return buildManagedRuntimeHooksConfig(pkgRoot, "codex");
 }

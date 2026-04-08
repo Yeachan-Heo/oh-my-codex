@@ -9,6 +9,8 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const CODEX_BIN_ENV: &str = "OMX_EXPLORE_CODEX_BIN";
+const CURSOR_BIN_ENV: &str = "OMX_EXPLORE_CURSOR_BIN";
+const RUNTIME_PROVIDER_ENV: &str = "OMX_RUNTIME_PROVIDER";
 const HARNESS_ROOT_ENV: &str = "OMX_EXPLORE_ROOT";
 const INTERNAL_DIRECT_WRAPPER_FLAG: &str = "--internal-allowlist-direct";
 const INTERNAL_SHELL_WRAPPER_FLAG: &str = "--internal-allowlist-shell";
@@ -250,6 +252,30 @@ fn resolve_codex_launch() -> CodexLaunch {
 }
 
 fn resolve_codex_binary() -> String {
+    let provider = env::var(RUNTIME_PROVIDER_ENV)
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_else(|| "codex".to_string());
+    let preferred_env = if provider == "cursor" {
+        CURSOR_BIN_ENV
+    } else {
+        CODEX_BIN_ENV
+    };
+
+    if let Some(value) = env::var(preferred_env)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        if value.contains(std::path::MAIN_SEPARATOR) {
+            return value;
+        }
+        if let Some(path) = resolve_host_command(&value) {
+            return path.display().to_string();
+        }
+        return value;
+    }
+
     if let Some(value) = env::var(CODEX_BIN_ENV)
         .ok()
         .map(|value| value.trim().to_string())
@@ -264,6 +290,11 @@ fn resolve_codex_binary() -> String {
         return value;
     }
 
+    if provider == "cursor" {
+        return resolve_host_command("cursor")
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "cursor".to_string());
+    }
     resolve_host_command("codex")
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "codex".to_string())
@@ -330,7 +361,7 @@ fn discover_codex_support_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(home) = env::var_os("HOME").filter(|value| !value.is_empty()) {
         let home = PathBuf::from(home);
-        for relative in [".omx", ".codex"] {
+        for relative in [".omx", ".codex", ".cursor"] {
             let dir = home.join(relative);
             if dir.is_dir() {
                 dirs.push(dir);
@@ -984,12 +1015,13 @@ mod tests {
     }
 
     #[test]
-    fn discover_codex_support_dirs_includes_home_omx_and_codex_when_present() {
+    fn discover_codex_support_dirs_includes_home_omx_codex_cursor_when_present() {
         let _guard = env_lock();
         let root = temp_allowlist_dir().expect("temp root");
         let home_dir = root.path.join("home");
         create_dir_all(home_dir.join(".omx")).expect("create .omx");
         create_dir_all(home_dir.join(".codex")).expect("create .codex");
+        create_dir_all(home_dir.join(".cursor")).expect("create .cursor");
         let original_home = env::var_os("HOME");
         unsafe {
             env::set_var("HOME", &home_dir);
@@ -1001,7 +1033,14 @@ mod tests {
             Some(value) => unsafe { env::set_var("HOME", value) },
             None => unsafe { env::remove_var("HOME") },
         }
-        assert_eq!(dirs, vec![home_dir.join(".omx"), home_dir.join(".codex")]);
+        assert_eq!(
+            dirs,
+            vec![
+                home_dir.join(".omx"),
+                home_dir.join(".codex"),
+                home_dir.join(".cursor")
+            ]
+        );
     }
 
     #[test]

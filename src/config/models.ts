@@ -22,7 +22,8 @@
 import { parse as parseToml } from '@iarna/toml';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import { codexConfigPath, codexHome } from '../utils/paths.js';
+import { codexConfigPath, codexHome, runtimeConfigPath, runtimeHome } from '../utils/paths.js';
+import { resolveRuntimeProvider, type RuntimeProvider } from '../runtime/provider.js';
 
 export interface ModelsConfig {
   [mode: string]: string | undefined;
@@ -37,7 +38,7 @@ interface OmxConfigFile {
   models?: ModelsConfig;
 }
 
-interface CodexConfigFile {
+interface RuntimeConfigFile {
   model_provider?: unknown;
   model_providers?: Record<string, unknown>;
 }
@@ -59,15 +60,18 @@ function readOmxConfigFile(codexHomeOverride?: string): OmxConfigFile | null {
   }
 }
 
-function readCodexConfigFile(codexHomeOverride?: string): CodexConfigFile | null {
-  const configPath = codexHomeOverride
-    ? join(codexHomeOverride, 'config.toml')
-    : codexConfigPath();
+function readRuntimeConfigFile(
+  provider: RuntimeProvider,
+  runtimeHomeOverride?: string,
+): RuntimeConfigFile | null {
+  const configPath = runtimeHomeOverride
+    ? join(runtimeHomeOverride, 'config.toml')
+    : runtimeConfigPath(provider);
   if (!existsSync(configPath)) return null;
   try {
     const raw = parseToml(readFileSync(configPath, 'utf-8'));
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-    return raw as CodexConfigFile;
+    return raw as RuntimeConfigFile;
   } catch {
     return null;
   }
@@ -126,9 +130,10 @@ export function readConfiguredEnvOverrides(codexHomeOverride?: string): NodeJS.P
 
 export function readActiveProviderEnvOverrides(
   env: NodeJS.ProcessEnv = process.env,
-  codexHomeOverride?: string,
+  runtimeHomeOverride?: string,
+  provider: RuntimeProvider = resolveRuntimeProvider(),
 ): NodeJS.ProcessEnv {
-  const config = readCodexConfigFile(codexHomeOverride);
+  const config = readRuntimeConfigFile(provider, runtimeHomeOverride);
   if (!config) return {};
 
   const activeProvider = normalizeConfiguredValue(config.model_provider);
@@ -184,6 +189,20 @@ export function getEnvConfiguredSparkDefaultModel(
 export function getMainDefaultModel(codexHomeOverride?: string): string {
   return getEnvConfiguredMainDefaultModel(process.env, codexHomeOverride)
     ?? DEFAULT_FRONTIER_MODEL;
+}
+
+export function getRuntimeConfigPathCompat(
+  provider: RuntimeProvider = resolveRuntimeProvider(),
+): string {
+  if (provider === 'codex') return codexConfigPath();
+  return runtimeConfigPath(provider);
+}
+
+export function getRuntimeHomeCompat(
+  provider: RuntimeProvider = resolveRuntimeProvider(),
+): string {
+  if (provider === 'codex') return codexHome();
+  return runtimeHome(provider);
 }
 
 /**

@@ -15,7 +15,8 @@
 **Docs:** [Getting Started](./docs/getting-started.html) · [Agents](./docs/agents.html) · [Skills](./docs/skills.html) · [Integrations](./docs/integrations.html) · [Demo](./DEMO.md) · [OpenClaw guide](./docs/openclaw-integration.md)
 **Community:** [Discord](https://discord.gg/PUwSMR9XNk) — shared OMX/community server for oh-my-codex and related tooling.
 
-OMX is a workflow layer for [OpenAI Codex CLI](https://github.com/openai/codex).
+OMX is a workflow layer for [OpenAI Codex CLI](https://github.com/openai/codex), with
+incremental Cursor CLI runtime support via provider switching.
 
 It keeps Codex as the execution engine and makes it easier to:
 - start a stronger Codex session by default
@@ -84,6 +85,7 @@ If you want plain Codex with no extra workflow layer, you probably do not need O
 
 - Node.js 20+
 - Codex CLI installed: `npm install -g @openai/codex`
+- Optional Cursor CLI runtime path: set `OMX_RUNTIME_PROVIDER=cursor` and ensure `cursor` is on `PATH`
 - Codex auth configured
 - `tmux` on macOS/Linux if you later want the durable team runtime
 - `psmux` on native Windows if you later want Windows team mode
@@ -161,7 +163,7 @@ omx team shutdown <team-name>
 ### Setup, doctor, and HUD
 
 These are operator/support surfaces:
-- `omx setup` installs prompts, skills, AGENTS scaffolding, `.codex/config.toml`, and OMX-managed native Codex hooks in `.codex/hooks.json`
+- `omx setup` installs prompts, skills, AGENTS scaffolding, runtime config (`.codex` or `.cursor` by provider), and OMX-managed native runtime hooks (`hooks.json`)
 - `omx doctor` verifies the install when something seems wrong
 - `omx hud --watch` is a monitoring/status surface, not the primary user workflow
 

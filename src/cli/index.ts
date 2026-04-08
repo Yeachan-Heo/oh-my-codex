@@ -78,6 +78,14 @@ import { getPackageRoot } from "../utils/package.js";
 import { codexConfigPath, rememberOmxLaunchContext, resolveOmxEntryPath } from "../utils/paths.js";
 import { repairConfigIfNeeded } from "../config/generator.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../hud/constants.js";
+import {
+  resolveProjectRuntimeHome,
+  resolveRuntimeCommand,
+  resolveRuntimeLeadingArgs,
+  resolveRuntimeHomeEnvVar,
+  resolveRuntimeProvider,
+  type RuntimeProvider,
+} from "../runtime/provider.js";
 
 rememberOmxLaunchContext();
 import {
@@ -312,16 +320,28 @@ export function readPersistedSetupPreferences(
   return undefined;
 }
 
+export function resolveRuntimeHomeForLaunch(
+  provider: RuntimeProvider,
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const runtimeHomeEnvVar = resolveRuntimeHomeEnvVar(provider);
+  const runtimeHomeOverride = env[runtimeHomeEnvVar];
+  if (runtimeHomeOverride && runtimeHomeOverride.trim() !== "") {
+    return runtimeHomeOverride;
+  }
+  const persistedScope = readPersistedSetupScope(cwd);
+  if (persistedScope === "project") {
+    return resolveProjectRuntimeHome(provider, cwd);
+  }
+  return undefined;
+}
+
 export function resolveCodexHomeForLaunch(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-  if (env.CODEX_HOME && env.CODEX_HOME.trim() !== "") return env.CODEX_HOME;
-  const persistedScope = readPersistedSetupScope(cwd);
-  if (persistedScope === "project") {
-    return join(cwd, ".codex");
-  }
-  return undefined;
+  return resolveRuntimeHomeForLaunch("codex", cwd, env);
 }
 
 export function resolveSetupScopeArg(args: string[]): SetupScope | undefined {
@@ -473,15 +493,18 @@ export function classifyCodexExecFailure(
   };
 }
 
-function runCodexBlocking(
+function runProviderBlocking(
+  provider: RuntimeProvider,
   cwd: string,
   launchArgs: string[],
-  codexEnv: NodeJS.ProcessEnv,
+  runtimeEnv: NodeJS.ProcessEnv,
 ): void {
-  const { result } = spawnPlatformCommandSync("codex", launchArgs, {
+  const runtimeCommand = resolveRuntimeCommand(provider);
+  const runtimeArgs = [...resolveRuntimeLeadingArgs(provider), ...launchArgs];
+  const { result } = spawnPlatformCommandSync(runtimeCommand, runtimeArgs, {
     cwd,
     stdio: "inherit",
-    env: codexEnv,
+    env: runtimeEnv,
     encoding: "utf-8",
   });
 
@@ -490,14 +513,16 @@ function runCodexBlocking(
     const kind = classifySpawnError(errno);
     if (kind === "missing") {
       console.error(
-        "[omx] failed to launch codex: executable not found in PATH",
+        `[omx] failed to launch ${runtimeCommand}: executable not found in PATH`,
       );
     } else if (kind === "blocked") {
       console.error(
-        `[omx] failed to launch codex: executable is present but blocked in the current environment (${errno.code || "blocked"})`,
+        `[omx] failed to launch ${runtimeCommand}: executable is present but blocked in the current environment (${errno.code || "blocked"})`,
       );
     } else {
-      console.error(`[omx] failed to launch codex: ${errno.message}`);
+      console.error(
+        `[omx] failed to launch ${runtimeCommand}: ${errno.message}`,
+      );
     }
     throw result.error;
   }
@@ -508,7 +533,7 @@ function runCodexBlocking(
         ? result.status
         : resolveSignalExitCode(result.signal);
     if (result.signal) {
-      console.error(`[omx] codex exited due to signal ${result.signal}`);
+      console.error(`[omx] ${runtimeCommand} exited due to signal ${result.signal}`);
     }
   }
 }
@@ -808,6 +833,7 @@ async function reasoningCommand(args: string[]): Promise<void> {
 }
 
 export async function launchWithHud(args: string[]): Promise<void> {
+  const runtimeProvider = resolveRuntimeProvider(process.env);
   if (isNativeWindows()) {
     const { result } = spawnPlatformCommandSync("tmux", ["-V"], {
       encoding: "utf-8",
@@ -842,7 +868,11 @@ export async function launchWithHud(args: string[]): Promise<void> {
     parsedWorktree.remainingArgs,
     process.env,
   );
-  const codexHomeOverride = resolveCodexHomeForLaunch(launchCwd, process.env);
+  const runtimeHomeOverride = resolveRuntimeHomeForLaunch(
+    runtimeProvider,
+    launchCwd,
+    process.env,
+  );
   const launchPolicy = resolveCodexLaunchPolicy(
     process.env,
     process.platform,
@@ -852,7 +882,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
   const enableNotifyFallbackAuthority = launchPolicy === "direct";
   const workerSparkModel = resolveWorkerSparkModel(
     notifyTempResult.passthroughArgs,
-    codexHomeOverride,
+    runtimeHomeOverride,
   );
   const normalizedArgs = normalizeCodexLaunchArgs(
     notifyTempResult.passthroughArgs,
@@ -903,7 +933,13 @@ export async function launchWithHud(args: string[]): Promise<void> {
 
   // ── Phase 1: preLaunch ──────────────────────────────────────────────────
   try {
-    await preLaunch(cwd, sessionId, notifyTempResult.contract, codexHomeOverride, enableNotifyFallbackAuthority);
+    await preLaunch(
+      cwd,
+      sessionId,
+      notifyTempResult.contract,
+      runtimeHomeOverride,
+      enableNotifyFallbackAuthority,
+    );
   } catch (err) {
     // preLaunch errors must NOT prevent Codex from starting
     console.error(
@@ -917,27 +953,38 @@ export async function launchWithHud(args: string[]): Promise<void> {
       ? serializeNotifyTempContract(notifyTempResult.contract)
       : null;
     runCodex(
+      runtimeProvider,
       cwd,
       normalizedArgs,
       sessionId,
       workerSparkModel,
-      codexHomeOverride,
+      runtimeHomeOverride,
       notifyTempContractRaw,
     );
   } finally {
     // ── Phase 3: postLaunch ─────────────────────────────────────────────
-    await postLaunch(cwd, sessionId, codexHomeOverride, enableNotifyFallbackAuthority);
+    await postLaunch(
+      cwd,
+      sessionId,
+      runtimeHomeOverride,
+      enableNotifyFallbackAuthority,
+    );
   }
 }
 
 export async function execWithOverlay(args: string[]): Promise<void> {
+  const runtimeProvider = resolveRuntimeProvider(process.env);
   const launchCwd = process.cwd();
   const parsedWorktree = parseWorktreeMode(args);
   const notifyTempResult = resolveNotifyTempContract(
     parsedWorktree.remainingArgs,
     process.env,
   );
-  const codexHomeOverride = resolveCodexHomeForLaunch(launchCwd, process.env);
+  const runtimeHomeOverride = resolveRuntimeHomeForLaunch(
+    runtimeProvider,
+    launchCwd,
+    process.env,
+  );
   const normalizedArgs = normalizeCodexLaunchArgs(
     notifyTempResult.passthroughArgs,
   );
@@ -982,7 +1029,13 @@ export async function execWithOverlay(args: string[]): Promise<void> {
   }
 
   try {
-    await preLaunch(cwd, sessionId, notifyTempResult.contract, codexHomeOverride, true);
+    await preLaunch(
+      cwd,
+      sessionId,
+      notifyTempResult.contract,
+      runtimeHomeOverride,
+      true,
+    );
   } catch (err) {
     console.error(
       `[omx] preLaunch warning: ${err instanceof Error ? err.message : err}`,
@@ -993,24 +1046,28 @@ export async function execWithOverlay(args: string[]): Promise<void> {
     const notifyTempContractRaw = notifyTempResult.contract.active
       ? serializeNotifyTempContract(notifyTempResult.contract)
       : null;
-    const codexArgs = injectModelInstructionsBypassArgs(
-      cwd,
-      ["exec", ...normalizedArgs],
-      process.env,
-      sessionModelInstructionsPath(cwd, sessionId),
+    const codexArgs = sanitizeLaunchArgsForRuntimeProvider(
+      runtimeProvider,
+      injectModelInstructionsBypassArgs(
+        cwd,
+        ["exec", ...normalizedArgs],
+        process.env,
+        sessionModelInstructionsPath(cwd, sessionId),
+      ),
     );
-    const codexEnvBase = codexHomeOverride
-      ? { ...process.env, CODEX_HOME: codexHomeOverride }
+    const runtimeHomeEnvVar = resolveRuntimeHomeEnvVar(runtimeProvider);
+    const runtimeEnvBase = runtimeHomeOverride
+      ? { ...process.env, [runtimeHomeEnvVar]: runtimeHomeOverride }
       : process.env;
-    const codexEnv = notifyTempContractRaw
+    const runtimeEnv = notifyTempContractRaw
       ? {
-          ...codexEnvBase,
+          ...runtimeEnvBase,
           [OMX_NOTIFY_TEMP_CONTRACT_ENV]: notifyTempContractRaw,
         }
-      : codexEnvBase;
-    runCodexBlocking(cwd, codexArgs, codexEnv);
+      : runtimeEnvBase;
+    runProviderBlocking(runtimeProvider, cwd, codexArgs, runtimeEnv);
   } finally {
-    await postLaunch(cwd, sessionId, codexHomeOverride, true);
+    await postLaunch(cwd, sessionId, runtimeHomeOverride, true);
   }
 }
 
@@ -1069,6 +1126,30 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
   }
 
   return normalized;
+}
+
+function sanitizeLaunchArgsForRuntimeProvider(
+  provider: RuntimeProvider,
+  args: string[],
+): string[] {
+  if (provider !== "cursor") return [...args];
+
+  const sanitized: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === CODEX_BYPASS_FLAG || arg === MADMAX_FLAG) {
+      continue;
+    }
+    if (arg === CONFIG_FLAG || arg === LONG_CONFIG_FLAG) {
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith(`${LONG_CONFIG_FLAG}=`)) {
+      continue;
+    }
+    sanitized.push(arg);
+  }
+  return sanitized;
 }
 
 /**
@@ -1647,7 +1728,8 @@ export function buildDetachedSessionBootstrapSteps(
   codexCmd: string,
   hudCmd: string,
   workerLaunchArgs: string | null,
-  codexHomeOverride?: string,
+  runtimeHomeOverride?: string,
+  runtimeHomeEnvVar: string = "CODEX_HOME",
   notifyTempContractRaw?: string | null,
   nativeWindows = false,
   sessionId?: string,
@@ -1669,7 +1751,9 @@ export function buildDetachedSessionBootstrapSteps(
       ? ["-e", `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`]
       : []),
     ...(sessionId ? ["-e", `OMX_SESSION_ID=${sessionId}`] : []),
-    ...(codexHomeOverride ? ["-e", `CODEX_HOME=${codexHomeOverride}`] : []),
+    ...(runtimeHomeOverride
+      ? ["-e", `${runtimeHomeEnvVar}=${runtimeHomeOverride}`]
+      : []),
     ...(notifyTempContractRaw
       ? ["-e", `${OMX_NOTIFY_TEMP_CONTRACT_ENV}=${notifyTempContractRaw}`]
       : []),
@@ -1831,7 +1915,8 @@ export function buildNotifyTempStartupMessages(
 export function buildNotifyFallbackWatcherEnv(
   env: NodeJS.ProcessEnv = process.env,
   options: {
-    codexHomeOverride?: string;
+    runtimeHomeOverride?: string;
+    runtimeHomeEnvVar?: string;
     enableAuthority?: boolean;
     sessionId?: string;
   } = {},
@@ -1841,7 +1926,9 @@ export function buildNotifyFallbackWatcherEnv(
   delete nextEnv.TMUX_PANE;
   return {
     ...nextEnv,
-    ...(options.codexHomeOverride ? { CODEX_HOME: options.codexHomeOverride } : {}),
+    ...(options.runtimeHomeOverride
+      ? { [options.runtimeHomeEnvVar ?? "CODEX_HOME"]: options.runtimeHomeOverride }
+      : {}),
     ...(options.sessionId ? { OMX_SESSION_ID: options.sessionId } : {}),
     OMX_HUD_AUTHORITY: options.enableAuthority ? "1" : "0",
   };
@@ -1882,7 +1969,7 @@ async function preLaunch(
   cwd: string,
   sessionId: string,
   notifyTempContract?: NotifyTempContract,
-  codexHomeOverride?: string,
+  runtimeHomeOverride?: string,
   enableNotifyFallbackAuthority: boolean = false,
 ): Promise<void> {
   // 1. Best-effort launch-safe orphan cleanup
@@ -1924,7 +2011,12 @@ ${launchAppendix}`
 
   // 4. Start notify fallback watcher (best effort)
   try {
-    await startNotifyFallbackWatcher(cwd, { codexHomeOverride, enableAuthority: enableNotifyFallbackAuthority, sessionId });
+    await startNotifyFallbackWatcher(cwd, {
+      runtimeHomeOverride,
+      runtimeHomeEnvVar: resolveRuntimeHomeEnvVar(resolveRuntimeProvider(process.env)),
+      enableAuthority: enableNotifyFallbackAuthority,
+      sessionId,
+    });
   } catch (err) {
     process.stderr.write(`[cli/index] operation failed: ${err}\n`);
     // Non-fatal
@@ -1991,18 +2083,22 @@ ${launchAppendix}`
  * All 3 paths (new tmux, existing tmux, no tmux) block via execSync/execFileSync.
  */
 function runCodex(
+  runtimeProvider: RuntimeProvider,
   cwd: string,
   args: string[],
   sessionId: string,
   workerDefaultModel?: string,
-  codexHomeOverride?: string,
+  runtimeHomeOverride?: string,
   notifyTempContractRaw?: string | null,
 ): void {
-  const launchArgs = injectModelInstructionsBypassArgs(
-    cwd,
-    args,
-    process.env,
-    sessionModelInstructionsPath(cwd, sessionId),
+  const launchArgs = sanitizeLaunchArgsForRuntimeProvider(
+    runtimeProvider,
+    injectModelInstructionsBypassArgs(
+      cwd,
+      args,
+      process.env,
+      sessionModelInstructionsPath(cwd, sessionId),
+    ),
   );
   const nativeWindows = isNativeWindows();
   const omxBin = resolveOmxEntryPath();
@@ -2019,16 +2115,20 @@ function runCodex(
     inheritLeaderFlags,
     workerDefaultModel,
   );
-  const codexBaseEnv = codexHomeOverride
-    ? { ...process.env, CODEX_HOME: codexHomeOverride }
+  const runtimeHomeEnvVar = resolveRuntimeHomeEnvVar(runtimeProvider);
+  const runtimeBaseEnv = runtimeHomeOverride
+    ? { ...process.env, [runtimeHomeEnvVar]: runtimeHomeOverride }
     : process.env;
-  const codexEnvWithSession = { ...codexBaseEnv, OMX_SESSION_ID: sessionId };
-  const codexEnv = workerLaunchArgs
-    ? { ...codexEnvWithSession, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }
-    : codexEnvWithSession;
-  const codexEnvWithNotify = notifyTempContractRaw
-    ? { ...codexEnv, [OMX_NOTIFY_TEMP_CONTRACT_ENV]: notifyTempContractRaw }
-    : codexEnv;
+  const runtimeEnvWithSession = { ...runtimeBaseEnv, OMX_SESSION_ID: sessionId };
+  const runtimeEnv = workerLaunchArgs
+    ? {
+        ...runtimeEnvWithSession,
+        [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs,
+      }
+    : runtimeEnvWithSession;
+  const runtimeEnvWithNotify = notifyTempContractRaw
+    ? { ...runtimeEnv, [OMX_NOTIFY_TEMP_CONTRACT_ENV]: notifyTempContractRaw }
+    : runtimeEnv;
 
   const launchPolicy = resolveCodexLaunchPolicy(
     process.env,
@@ -2038,7 +2138,7 @@ function runCodex(
   );
 
   if (isCodexVersionRequest(launchArgs)) {
-    runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
+    runProviderBlocking(runtimeProvider, cwd, launchArgs, runtimeEnvWithNotify);
     return;
   }
 
@@ -2088,7 +2188,7 @@ function runCodex(
 
     try {
       withTmuxExtendedKeys(cwd, () => {
-        runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
+        runProviderBlocking(runtimeProvider, cwd, launchArgs, runtimeEnvWithNotify);
       });
     } finally {
       const cleanupPaneIds = buildHudPaneCleanupTargets(
@@ -2103,12 +2203,14 @@ function runCodex(
   } else if (launchPolicy === "direct") {
     // Detached HUD sessions require tmux. Skip the bootstrap entirely when the
     // binary is unavailable so direct launches do not emit noisy ENOENT logs.
-    runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
+    runProviderBlocking(runtimeProvider, cwd, launchArgs, runtimeEnvWithNotify);
   } else {
     // Not in tmux: create a new tmux session with codex + HUD pane
-    const codexCmd = buildTmuxPaneCommand("codex", launchArgs);
+    const runtimeCommand = resolveRuntimeCommand(runtimeProvider);
+    const runtimeArgs = [...resolveRuntimeLeadingArgs(runtimeProvider), ...launchArgs];
+    const codexCmd = buildTmuxPaneCommand(runtimeCommand, runtimeArgs);
     const detachedWindowsCodexCmd = nativeWindows
-      ? buildWindowsPromptCommand("codex", launchArgs)
+      ? buildWindowsPromptCommand(runtimeCommand, runtimeArgs)
       : null;
     const sessionName = buildDetachedTmuxSessionName(cwd, sessionId);
     let createdDetachedSession = false;
@@ -2122,7 +2224,8 @@ function runCodex(
         codexCmd,
         hudCmd,
         workerLaunchArgs,
-        codexHomeOverride,
+        runtimeHomeOverride,
+        runtimeHomeEnvVar,
         notifyTempContractRaw,
         nativeWindows,
         sessionId,
@@ -2223,7 +2326,7 @@ function runCodex(
         }
       }
       // tmux not available or failed, just run codex directly
-      runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
+      runProviderBlocking(runtimeProvider, cwd, launchArgs, runtimeEnvWithNotify);
     }
   }
 }
@@ -2381,7 +2484,7 @@ function scheduleDetachedWindowsCodexLaunch(
 async function postLaunch(
   cwd: string,
   sessionId: string,
-  codexHomeOverride?: string,
+  runtimeHomeOverride?: string,
   enableNotifyFallbackAuthority: boolean = false,
 ): Promise<void> {
   // Capture session start time before cleanup (writeSessionEnd deletes session.json)
@@ -2396,7 +2499,12 @@ async function postLaunch(
 
   // 0. Flush fallback watcher once to reduce race with fast codex exit.
   try {
-    await flushNotifyFallbackOnce(cwd, { codexHomeOverride, enableAuthority: enableNotifyFallbackAuthority, sessionId });
+    await flushNotifyFallbackOnce(cwd, {
+      runtimeHomeOverride,
+      runtimeHomeEnvVar: resolveRuntimeHomeEnvVar(resolveRuntimeProvider(process.env)),
+      enableAuthority: enableNotifyFallbackAuthority,
+      sessionId,
+    });
   } catch (err) {
     process.stderr.write(`[cli/index] operation failed: ${err}\n`);
     // Non-fatal
@@ -2722,7 +2830,12 @@ function tryKillPid(pid: number, signal: NodeJS.Signals = "SIGTERM"): boolean {
 
 async function startNotifyFallbackWatcher(
   cwd: string,
-  options: { codexHomeOverride?: string; enableAuthority?: boolean; sessionId?: string } = {},
+  options: {
+    runtimeHomeOverride?: string;
+    runtimeHomeEnvVar?: string;
+    enableAuthority?: boolean;
+    sessionId?: string;
+  } = {},
 ): Promise<void> {
   const { mkdir, writeFile } = await import("fs/promises");
   const pidPath = notifyFallbackPidPath(cwd);
@@ -2747,7 +2860,8 @@ async function startNotifyFallbackWatcher(
     },
   );
   const watcherEnv = buildNotifyFallbackWatcherEnv(process.env, {
-    codexHomeOverride: options.codexHomeOverride,
+    runtimeHomeOverride: options.runtimeHomeOverride,
+    runtimeHomeEnvVar: options.runtimeHomeEnvVar,
     enableAuthority: options.enableAuthority === true,
     sessionId: options.sessionId,
   });
@@ -2939,7 +3053,12 @@ async function stopHookDerivedWatcher(cwd: string): Promise<void> {
 
 async function flushNotifyFallbackOnce(
   cwd: string,
-  options: { codexHomeOverride?: string; enableAuthority?: boolean; sessionId?: string } = {},
+  options: {
+    runtimeHomeOverride?: string;
+    runtimeHomeEnvVar?: string;
+    enableAuthority?: boolean;
+    sessionId?: string;
+  } = {},
 ): Promise<void> {
   if (!shouldEnableNotifyFallbackWatcher(process.env, process.platform)) return;
   const { spawnSync } = await import("child_process");
@@ -2956,7 +3075,8 @@ async function flushNotifyFallbackOnce(
       timeout: 3000,
       windowsHide: true,
       env: buildNotifyFallbackWatcherEnv(process.env, {
-        codexHomeOverride: options.codexHomeOverride,
+        runtimeHomeOverride: options.runtimeHomeOverride,
+        runtimeHomeEnvVar: options.runtimeHomeEnvVar,
         enableAuthority: options.enableAuthority === true,
         sessionId: options.sessionId,
       }),

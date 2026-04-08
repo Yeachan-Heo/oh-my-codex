@@ -1584,7 +1584,7 @@ function spawnPromptWorker(
   workerCwd: string,
   launchArgs: string[],
   workerEnv: Record<string, string>,
-  workerCli: 'codex' | 'claude' | 'gemini',
+  workerCli: 'codex' | 'cursor' | 'claude' | 'gemini',
   initialPrompt?: string,
 ): ChildProcessByStdio<Writable, null, null> {
   const processSpec = buildWorkerProcessLaunchSpec(
@@ -1657,7 +1657,7 @@ export function resolveWorkerLaunchArgsFromEnv(
 function resolveEffectiveWorkerCliForStartupLog(
   resolvedLaunchArgs: string[],
   env: NodeJS.ProcessEnv,
-): 'codex' | 'claude' | 'gemini' {
+): 'codex' | 'cursor' | 'claude' | 'gemini' {
   const rawCliMap = String(env.OMX_TEAM_WORKER_CLI_MAP ?? '').trim();
   if (rawCliMap !== '') {
     const entries = rawCliMap
@@ -1669,13 +1669,15 @@ function resolveEffectiveWorkerCliForStartupLog(
         ...env,
         OMX_TEAM_WORKER_CLI: 'auto',
       });
-      const resolvedMap = entries.map((entry): 'codex' | 'claude' | 'gemini' | null => {
+      const resolvedMap = entries.map((entry): 'codex' | 'cursor' | 'claude' | 'gemini' | null => {
         if (entry === 'auto') return autoCli;
-        if (entry === 'codex' || entry === 'claude' || entry === 'gemini') return entry;
+        if (entry === 'codex' || entry === 'cursor' || entry === 'claude' || entry === 'gemini') return entry;
         return null;
       });
+      if (resolvedMap.every((entry) => entry === 'cursor')) return 'cursor';
       if (resolvedMap.every((entry) => entry === 'claude')) return 'claude';
       if (resolvedMap.every((entry) => entry === 'gemini')) return 'gemini';
+      if (resolvedMap.some((entry) => entry === 'cursor')) return 'cursor';
       if (resolvedMap.some((entry) => entry === 'codex')) return 'codex';
     }
   }

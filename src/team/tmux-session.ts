@@ -22,6 +22,7 @@ import { readActiveProviderEnvOverrides } from '../config/models.js';
 import { sleep, sleepSync } from '../utils/sleep.js';
 import { classifySpawnError, resolveCommandPathForPlatform, spawnPlatformCommandSync } from '../utils/platform-command.js';
 import { resolveOmxEntryPath } from '../utils/paths.js';
+import { resolveRuntimeProvider } from '../runtime/provider.js';
 
 const execFileAsync = promisify(execFile);
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../hud/constants.js';
@@ -56,7 +57,7 @@ const GEMINI_APPROVAL_MODE_YOLO = 'yolo';
 const OMX_LEADER_NODE_PATH_ENV = 'OMX_LEADER_NODE_PATH';
 const OMX_LEADER_CLI_PATH_ENV = 'OMX_LEADER_CLI_PATH';
 
-export type TeamWorkerCli = 'codex' | 'claude' | 'gemini';
+export type TeamWorkerCli = 'codex' | 'cursor' | 'claude' | 'gemini';
 type TeamWorkerCliMode = 'auto' | TeamWorkerCli;
 export type TeamWorkerLaunchMode = 'interactive' | 'prompt';
 
@@ -496,8 +497,8 @@ function hasModelInstructionsOverride(args: string[]): boolean {
 function normalizeTeamWorkerCliMode(raw: string | undefined, sourceEnv: string = OMX_TEAM_WORKER_CLI_ENV): TeamWorkerCliMode {
   const normalized = String(raw ?? 'auto').trim().toLowerCase();
   if (normalized === '' || normalized === 'auto') return 'auto';
-  if (normalized === 'codex' || normalized === 'claude' || normalized === 'gemini') return normalized;
-  throw new Error(`Invalid ${sourceEnv} value "${raw}". Expected: auto, codex, claude, gemini`);
+  if (normalized === 'codex' || normalized === 'cursor' || normalized === 'claude' || normalized === 'gemini') return normalized;
+  throw new Error(`Invalid ${sourceEnv} value "${raw}". Expected: auto, codex, cursor, claude, gemini`);
 }
 
 export function resolveTeamWorkerLaunchMode(
@@ -532,14 +533,19 @@ function extractModelOverride(args: string[]): string | null {
 export function resolveTeamWorkerCli(launchArgs: string[] = [], env: NodeJS.ProcessEnv = process.env): TeamWorkerCli {
   const mode = normalizeTeamWorkerCliMode(env[OMX_TEAM_WORKER_CLI_ENV]);
   if (mode !== 'auto') return mode;
-  return resolveTeamWorkerCliFromLaunchArgs(launchArgs);
+  return resolveTeamWorkerCliFromLaunchArgs(launchArgs, env);
 }
 
-function resolveTeamWorkerCliFromLaunchArgs(launchArgs: string[] = []): TeamWorkerCli {
+function resolveTeamWorkerCliFromLaunchArgs(
+  launchArgs: string[] = [],
+  env: NodeJS.ProcessEnv = process.env,
+): TeamWorkerCli {
   const model = extractModelOverride(launchArgs);
+  if (model && /cursor/i.test(model)) return 'cursor';
   if (model && /claude/i.test(model)) return 'claude';
   if (model && /gemini/i.test(model)) return 'gemini';
-  return 'codex';
+  const defaultProvider = resolveRuntimeProvider(env);
+  return defaultProvider === 'cursor' ? 'cursor' : 'codex';
 }
 
 export function resolveTeamWorkerCliPlan(
@@ -553,7 +559,8 @@ export function resolveTeamWorkerCliPlan(
 
   const rawMap = String(env[OMX_TEAM_WORKER_CLI_MAP_ENV] ?? '').trim();
   const fallback = (): TeamWorkerCli => resolveTeamWorkerCli(launchArgs, env);
-  const fallbackAutoFromArgs = (): TeamWorkerCli => resolveTeamWorkerCliFromLaunchArgs(launchArgs);
+  const fallbackAutoFromArgs = (): TeamWorkerCli =>
+    resolveTeamWorkerCliFromLaunchArgs(launchArgs, env);
 
   if (rawMap === '') {
     const cli = fallback();
@@ -567,7 +574,7 @@ export function resolveTeamWorkerCliPlan(
   if (entries.length === 0 || entries.every((part) => part.length === 0)) {
     throw new Error(
       `Invalid ${OMX_TEAM_WORKER_CLI_MAP_ENV} value "${env[OMX_TEAM_WORKER_CLI_MAP_ENV]}". `
-        + `Expected comma-separated values: auto|codex|claude|gemini.`,
+        + `Expected comma-separated values: auto|codex|cursor|claude|gemini.`,
     );
   }
   if (entries.some((part) => part.length === 0)) {
@@ -592,6 +599,9 @@ export function resolveTeamWorkerCliPlan(
 
 export function translateWorkerLaunchArgsForCli(workerCli: TeamWorkerCli, args: string[], initialPrompt?: string): string[] {
   if (workerCli === 'codex') return [...args];
+  if (workerCli === 'cursor') {
+    return args.filter((arg) => arg !== CODEX_BYPASS_FLAG && arg !== MADMAX_FLAG);
+  }
   if (workerCli === 'gemini') {
     const model = extractModelOverride(args);
     const geminiModel = model && /gemini/i.test(model) ? model : null;
@@ -614,6 +624,11 @@ function commandExists(binary: string): boolean {
     return classifySpawnError(result.error as NodeJS.ErrnoException) !== 'missing';
   }
   return true;
+}
+
+function resolveWorkerCliBinary(workerCli: TeamWorkerCli): string {
+  if (workerCli === 'cursor') return 'agent';
+  return workerCli;
 }
 
 /**
@@ -644,10 +659,11 @@ export function assertTeamWorkerCliBinaryAvailable(
   workerCli: TeamWorkerCli,
   existsImpl: (binary: string) => boolean = commandExists,
 ): void {
-  if (existsImpl(workerCli)) return;
+  const binary = resolveWorkerCliBinary(workerCli);
+  if (existsImpl(binary)) return;
   throw new Error(
-    `Selected team worker CLI "${workerCli}" is not available on PATH. `
-      + `Install "${workerCli}" or set ${OMX_TEAM_WORKER_CLI_ENV}=codex|claude|gemini.`,
+    `Selected team worker CLI "${workerCli}" (${binary}) is not available on PATH. `
+      + `Install "${workerCli}" or set ${OMX_TEAM_WORKER_CLI_ENV}=codex|cursor|claude|gemini.`,
   );
 }
 
@@ -725,15 +741,16 @@ export function buildWorkerProcessLaunchSpec(
     ? (isAbsolute(workerCodexHomeOverride) ? workerCodexHomeOverride : resolve(cwd, workerCodexHomeOverride))
     : undefined;
 
-  const resolvedCliPath = resolveAbsoluteBinaryPath(workerCli);
+  const resolvedCliPath = resolveAbsoluteBinaryPath(resolveWorkerCliBinary(workerCli));
   const workerEnv: Record<string, string> = {
     OMX_TEAM_WORKER: `${teamName}/worker-${workerIndex}`,
     [OMX_LEADER_NODE_PATH_ENV]: resolveLeaderNodePath(),
     [OMX_LEADER_CLI_PATH_ENV]: resolvedCliPath,
-    ...(workerCli === 'codex'
+    ...((workerCli === 'codex' || workerCli === 'cursor')
       ? readActiveProviderEnvOverrides(
           effectiveEnv,
           providerLookupCodexHome,
+          workerCli === 'cursor' ? 'cursor' : 'codex',
         )
       : {}),
   };
@@ -1160,7 +1177,7 @@ function resolveWorkerCliFromMapForSend(
   if (!selectedRaw) return null;
   try {
     const mode = normalizeTeamWorkerCliMode(selectedRaw, OMX_TEAM_WORKER_CLI_MAP_ENV);
-    return mode === 'auto' ? resolveTeamWorkerCliFromLaunchArgs(launchArgs) : mode;
+    return mode === 'auto' ? resolveTeamWorkerCliFromLaunchArgs(launchArgs, env) : mode;
   } catch {
     return null;
   }
@@ -1191,12 +1208,13 @@ export function buildWorkerSubmitPlan(
   allowAdaptiveRetry: boolean,
 ): WorkerSubmitPlan {
   const queueRequested = strategy === 'queue' || (strategy === 'auto' && paneBusyAtStart);
+  const isCodexLikeCli = workerCli === 'codex' || workerCli === 'cursor';
   return {
     shouldInterrupt: strategy === 'interrupt',
-    queueFirstRound: workerCli === 'codex' && queueRequested,
+    queueFirstRound: isCodexLikeCli && queueRequested,
     rounds: 6,
     submitKeyPressesPerRound: workerCli === 'claude' ? 1 : 2,
-    allowAdaptiveRetry: workerCli === 'codex' && allowAdaptiveRetry,
+    allowAdaptiveRetry: isCodexLikeCli && allowAdaptiveRetry,
   };
 }
 

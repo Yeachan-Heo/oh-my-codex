@@ -345,7 +345,11 @@ describe("buildNotifyFallbackWatcherEnv", () => {
   it("enables watcher authority and propagates CODEX_HOME override when requested", () => {
     const env = buildNotifyFallbackWatcherEnv(
       { HOME: "/tmp/home", OMX_HUD_AUTHORITY: "0", TMUX: "sock,1,0", TMUX_PANE: "%2" },
-      { codexHomeOverride: "/tmp/codex-home", enableAuthority: true },
+      {
+        runtimeHomeOverride: "/tmp/codex-home",
+        runtimeHomeEnvVar: "CODEX_HOME",
+        enableAuthority: true,
+      },
     );
     assert.equal(env.OMX_HUD_AUTHORITY, "1");
     assert.equal(env.CODEX_HOME, "/tmp/codex-home");
@@ -1107,6 +1111,7 @@ describe("detached tmux new-session sequencing", () => {
       "'node' '/tmp/omx.js' 'hud' '--watch'",
       null,
       undefined,
+      undefined,
       null,
       false,
       "sess-detached-managed",
@@ -1133,6 +1138,7 @@ describe("detached tmux new-session sequencing", () => {
       hudCmd,
       "--model gpt-5",
       "C:/codex-home",
+      "CODEX_HOME",
       null,
       true,
     );

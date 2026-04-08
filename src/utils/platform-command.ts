@@ -25,6 +25,7 @@ const WINDOWS_EXTENSION_PRIORITY = ['.exe', '.com', '.cmd', '.bat', '.ps1'];
 const NODE_HOSTED_SCRIPT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const WINDOWS_NODE_HOSTED_COMMANDS: Record<string, string[]> = {
   codex: ['node_modules', '@openai', 'codex', 'bin', 'codex.js'],
+  cursor: ['node_modules', '@cursor', 'cli', 'bin', 'cursor.js'],
 };
 
 function existsFileSync(path: string): boolean {

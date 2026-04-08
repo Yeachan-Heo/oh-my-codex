@@ -18,6 +18,11 @@ describe('analyzePaneContent', () => {
     assert.ok(result.confidence >= 0.5);
   });
 
+  it('detects "cursor" keyword', () => {
+    const result = analyzePaneContent('cursor agent running');
+    assert.equal(result.hasCodex, true);
+  });
+
   it('detects "omx" keyword', () => {
     const result = analyzePaneContent('omx session started');
     assert.equal(result.hasCodex, true);

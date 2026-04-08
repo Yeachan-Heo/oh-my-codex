@@ -25,7 +25,7 @@ describe('runtime-cli helpers', () => {
     );
     assert.throws(
       () => runtimeCli.normalizeAgentTypes(['codex', 'invalid'], 2),
-      /Expected codex\\|claude\\|gemini/,
+      /Expected codex\\|cursor\\|claude\\|gemini/,
     );
   });
 

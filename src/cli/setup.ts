@@ -19,17 +19,21 @@ import { createInterface } from "readline/promises";
 import { homedir } from "os";
 import {
   codexHome,
+  cursorHome,
   codexConfigPath,
+  runtimeConfigPath,
   codexPromptsDir,
   codexAgentsDir,
   userSkillsDir,
+  runtimeAgentsDir,
+  runtimePromptsDir,
   omxStateDir,
   detectLegacySkillRootOverlap,
   omxPlansDir,
   omxLogsDir,
 } from "../utils/paths.js";
 import { buildMergedConfig, getRootModelName } from "../config/generator.js";
-import { buildManagedCodexHooksConfig } from "../config/codex-hooks.js";
+import { buildManagedRuntimeHooksConfig } from "../config/codex-hooks.js";
 import {
   getLegacyUnifiedMcpRegistryCandidate,
   getUnifiedMcpRegistryCandidates,
@@ -53,6 +57,7 @@ import {
   upsertAgentsModelTable,
 } from "../utils/agents-model-table.js";
 import { spawnPlatformCommandSync } from "../utils/platform-command.js";
+import { resolveRuntimeProvider } from "../runtime/provider.js";
 
 interface SetupOptions {
   codexVersionProbe?: () => string | null;
@@ -382,8 +387,13 @@ export function resolveScopeDirectories(
   scope: SetupScope,
   projectRoot: string,
 ): ScopeDirectories {
+  const runtimeProvider = resolveRuntimeProvider(process.env);
+  const projectRuntimeDir =
+    runtimeProvider === "cursor"
+      ? join(projectRoot, ".cursor")
+      : join(projectRoot, ".codex");
   if (scope === "project") {
-    const codexHomeDir = join(projectRoot, ".codex");
+    const codexHomeDir = projectRuntimeDir;
     return {
       codexConfigFile: join(codexHomeDir, "config.toml"),
       codexHomeDir,
@@ -391,6 +401,16 @@ export function resolveScopeDirectories(
       nativeAgentsDir: join(codexHomeDir, "agents"),
       promptsDir: join(codexHomeDir, "prompts"),
       skillsDir: join(codexHomeDir, "skills"),
+    };
+  }
+  if (runtimeProvider === "cursor") {
+    return {
+      codexConfigFile: runtimeConfigPath("cursor"),
+      codexHomeDir: cursorHome(),
+      codexHooksFile: join(cursorHome(), "hooks.json"),
+      nativeAgentsDir: runtimeAgentsDir("cursor"),
+      promptsDir: runtimePromptsDir("cursor"),
+      skillsDir: userSkillsDir(),
     };
   }
   return {
@@ -837,7 +857,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log(`  Config refresh complete (${scopeDirs.codexConfigFile}).\n`);
 
   const hooksConfig = JSON.stringify(
-    buildManagedCodexHooksConfig(pkgRoot),
+    buildManagedRuntimeHooksConfig(pkgRoot, resolveRuntimeProvider(process.env)),
     null,
     2,
   ) + "\n";
@@ -850,7 +870,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     `native hooks ${scopeDirs.codexHooksFile}`,
   );
   console.log(
-    `  Native Codex hooks refresh complete (${scopeDirs.codexHooksFile}).\n`,
+    `  Native runtime hooks refresh complete (${scopeDirs.codexHooksFile}).\n`,
   );
 
   // Step 5.5: Verify team CLI interop surface is available.

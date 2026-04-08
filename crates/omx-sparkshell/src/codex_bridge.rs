@@ -10,6 +10,19 @@ use std::time::{Duration, Instant};
 pub const DEFAULT_SUMMARY_TIMEOUT_MS: u64 = 60_000;
 pub const DEFAULT_SPARK_MODEL: &str = "gpt-5.3-codex-spark";
 pub const DEFAULT_FRONTIER_MODEL: &str = "gpt-5.4";
+const RUNTIME_PROVIDER_ENV: &str = "OMX_RUNTIME_PROVIDER";
+
+fn resolve_runtime_command() -> &'static str {
+    let provider = env::var(RUNTIME_PROVIDER_ENV)
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_else(|| "codex".to_string());
+    if provider == "cursor" {
+        "cursor"
+    } else {
+        "codex"
+    }
+}
 
 pub fn resolve_model() -> String {
     env::var("OMX_SPARKSHELL_MODEL")
@@ -117,7 +130,8 @@ fn run_codex_exec(
     model: &str,
     timeout_ms: u64,
 ) -> Result<(String, String, bool), SparkshellError> {
-    let mut child = Command::new("codex")
+    let runtime_command = resolve_runtime_command();
+    let mut child = Command::new(runtime_command)
         .arg("exec")
         .arg("--model")
         .arg(model)
@@ -137,15 +151,15 @@ fn run_codex_exec(
     let mut stdin = child
         .stdin
         .take()
-        .ok_or_else(|| SparkshellError::SummaryBridge("failed to open codex stdin".to_string()))?;
+        .ok_or_else(|| SparkshellError::SummaryBridge("failed to open runtime stdin".to_string()))?;
     let mut stdout = child
         .stdout
         .take()
-        .ok_or_else(|| SparkshellError::SummaryBridge("failed to open codex stdout".to_string()))?;
+        .ok_or_else(|| SparkshellError::SummaryBridge("failed to open runtime stdout".to_string()))?;
     let mut stderr = child
         .stderr
         .take()
-        .ok_or_else(|| SparkshellError::SummaryBridge("failed to open codex stderr".to_string()))?;
+        .ok_or_else(|| SparkshellError::SummaryBridge("failed to open runtime stderr".to_string()))?;
 
     let prompt_owned = prompt.to_string();
     let stdin_writer = thread::spawn(move || stdin.write_all(prompt_owned.as_bytes()));
@@ -179,10 +193,10 @@ fn run_codex_exec(
     let _ = stdin_writer.join();
     let stdout_bytes = stdout_reader
         .join()
-        .map_err(|_| SparkshellError::SummaryBridge("failed reading codex stdout".to_string()))?;
+        .map_err(|_| SparkshellError::SummaryBridge("failed reading runtime stdout".to_string()))?;
     let stderr_bytes = stderr_reader
         .join()
-        .map_err(|_| SparkshellError::SummaryBridge("failed reading codex stderr".to_string()))?;
+        .map_err(|_| SparkshellError::SummaryBridge("failed reading runtime stderr".to_string()))?;
 
     Ok((
         String::from_utf8_lossy(&stdout_bytes).into_owned(),

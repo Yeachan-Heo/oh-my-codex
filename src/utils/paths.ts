@@ -9,10 +9,26 @@ import { readdir, readFile, realpath } from "fs/promises";
 import { dirname, isAbsolute, join, resolve } from "path";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
+import {
+  resolveRuntimeHomeEnvVar,
+  type RuntimeProvider,
+} from "../runtime/provider.js";
 
 /** Codex CLI home directory (~/.codex/) */
 export function codexHome(): string {
   return process.env.CODEX_HOME || join(homedir(), ".codex");
+}
+
+/** Cursor CLI home directory (~/.cursor/) */
+export function cursorHome(): string {
+  return process.env.CURSOR_HOME || join(homedir(), ".cursor");
+}
+
+/** Runtime home directory for the selected provider. */
+export function runtimeHome(provider: RuntimeProvider): string {
+  const envKey = resolveRuntimeHomeEnvVar(provider);
+  const fallbackDir = provider === "cursor" ? ".cursor" : ".codex";
+  return process.env[envKey] || join(homedir(), fallbackDir);
 }
 
 export const OMX_ENTRY_PATH_ENV = "OMX_ENTRY_PATH";
@@ -76,14 +92,30 @@ export function codexConfigPath(): string {
   return join(codexHome(), "config.toml");
 }
 
+/** Runtime config file path (~/.codex/config.toml or ~/.cursor/config.toml) */
+export function runtimeConfigPath(provider: RuntimeProvider): string {
+  return join(runtimeHome(provider), "config.toml");
+}
+
 /** Codex prompts directory (~/.codex/prompts/) */
 export function codexPromptsDir(): string {
   return join(codexHome(), "prompts");
 }
 
+export function runtimePromptsDir(provider: RuntimeProvider): string {
+  return join(runtimeHome(provider), "prompts");
+}
+
 /** Codex native agents directory (~/.codex/agents/) */
 export function codexAgentsDir(codexHomeDir?: string): string {
   return join(codexHomeDir || codexHome(), "agents");
+}
+
+export function runtimeAgentsDir(
+  provider: RuntimeProvider,
+  runtimeHomeDir?: string,
+): string {
+  return join(runtimeHomeDir || runtimeHome(provider), "agents");
 }
 
 /** Project-level Codex native agents directory (.codex/agents/) */

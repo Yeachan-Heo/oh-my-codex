@@ -47,6 +47,7 @@ export function analyzePaneContent(content: string): PaneAnalysis {
 
   const hasCodex =
     lower.includes('codex') ||
+    lower.includes('cursor') ||
     lower.includes('omx') ||
     lower.includes('oh-my-codex') ||
     lower.includes('openai');

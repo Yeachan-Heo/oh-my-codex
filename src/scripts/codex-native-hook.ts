@@ -260,7 +260,7 @@ function looksLikeShellCommand(command: string): boolean {
 
 function looksLikeCodexCommand(command: string): boolean {
   if (/codex-native-hook(?:\.js)?/i.test(command)) return false;
-  return /\bcodex(?:\.js)?\b/i.test(command);
+  return /\b(?:codex|cursor)(?:\.js)?\b/i.test(command);
 }
 
 export function resolveSessionOwnerPidFromAncestry(
