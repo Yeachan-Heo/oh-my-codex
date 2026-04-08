@@ -48,6 +48,8 @@ const OMX_MCP_SERVERS = [
   "omx_code_intel",
   "omx_trace",
 ];
+const OMX_MANAGED_NOTIFY_PATTERN =
+  /^\s*notify\s*=\s*\["[^"]+",\s*".*notify-hook\.js"\]/m;
 
 function detectOmxConfigArtifacts(config: string): {
   hasMcpServers: string[];
@@ -75,7 +77,7 @@ function detectOmxConfigArtifacts(config: string): {
     config.includes("oh-my-codex (OMX) Configuration");
 
   const hasTopLevelKeys =
-    /^\s*notify\s*=.*node/m.test(config) ||
+    OMX_MANAGED_NOTIFY_PATTERN.test(config) ||
     /^\s*model_reasoning_effort\s*=/m.test(config) ||
     /^\s*developer_instructions\s*=.*oh-my-codex/m.test(config);
 
