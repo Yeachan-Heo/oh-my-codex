@@ -155,6 +155,8 @@ function stripRootLevelKeys(config: string, keys: readonly string[]): string {
 function stripOrphanedManagedNotify(config: string): string {
   const lines = config.split(/\r?\n/);
   const result: string[] = [];
+  const firstTableIndex = lines.findIndex((line) => /^\s*\[/.test(line));
+  const rootBoundary = firstTableIndex >= 0 ? firstTableIndex : lines.length;
 
   const isManagedNotifySingleLine = (line: string): boolean =>
     /^\s*notify\s*=\s*\["[^"]+",\s*".*notify-hook\.js"\]\s*$/.test(line);
@@ -184,6 +186,15 @@ function stripOrphanedManagedNotify(config: string): string {
 
     if (isManagedNotifyMultilineStart(line) && isOrphanedManagedNotifyFragmentAt(i + 1)) {
       i += 4;
+      continue;
+    }
+
+    // stripRootLevelKeys() can remove a root-level `notify = [` header first,
+    // leaving behind only the three-line managed fragment before the first
+    // table. Remove that orphaned top-level fragment, but do not touch
+    // similarly shaped arrays that still belong to a user-owned key.
+    if (i < rootBoundary && isOrphanedManagedNotifyFragmentAt(i)) {
+      i += 3;
       continue;
     }
 

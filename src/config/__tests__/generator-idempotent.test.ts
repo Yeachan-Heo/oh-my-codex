@@ -473,6 +473,36 @@ describe("config generator idempotency (#384)", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it("removes header-stripped top-level notify fragments before the first table", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      const existing = [
+        'model = "o3"',
+        '  "node",',
+        '  "/tmp/legacy-notify-hook.js",',
+        "]",
+        "",
+        "[features]",
+        "web_search = true",
+        "",
+      ].join("\n");
+      await writeFile(configPath, existing);
+
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, "utf-8");
+
+      assert.match(toml, /^model = "o3"$/m);
+      assert.match(toml, /^\[features\]$/m);
+      assert.match(toml, /^web_search = true$/m);
+      assert.equal(count(toml, /^notify\s*=/gm), 1, "notify should appear once");
+      assert.doesNotMatch(toml, /legacy-notify-hook\.js/, "legacy orphan fragment removed");
+      assert.doesNotMatch(toml, /^\s*"node",$/m, "orphan node literal removed");
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
   it("seeds context keys when root model is missing and both context keys are absent", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
