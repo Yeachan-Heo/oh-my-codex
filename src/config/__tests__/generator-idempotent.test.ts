@@ -446,6 +446,33 @@ describe("config generator idempotency (#384)", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it("does not strip non-notify arrays that happen to mention notify-hook.js", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      const existing = [
+        "[shell_environment_policy]",
+        'inherit = "all"',
+        'fallback = [',
+        '  "node",',
+        '  "/tmp/legacy-notify-hook.js",',
+        "]",
+        "",
+      ].join("\n");
+      await writeFile(configPath, existing);
+
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, "utf-8");
+
+      assert.match(toml, /^\[shell_environment_policy\]$/m);
+      assert.match(toml, /^fallback = \[$/m);
+      assert.match(toml, /^\s*"node",$/m);
+      assert.match(toml, /legacy-notify-hook\.js/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
   it("seeds context keys when root model is missing and both context keys are absent", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {

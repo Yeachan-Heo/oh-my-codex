@@ -153,15 +153,45 @@ function stripRootLevelKeys(config: string, keys: readonly string[]): string {
 }
 
 function stripOrphanedManagedNotify(config: string): string {
-  return config
-    .replace(
-      /^\s*notify\s*=\s*\["[^"]+",\s*".*notify-hook\.js"\]\s*$(\n)?/gm,
-      "",
-    )
-    .replace(
-      /\n?\s*"[^"]+",\s*\n\s*".*notify-hook\.js",\s*\n\s*\]\s*(?=\n|$)/g,
-      "",
-    );
+  const lines = config.split(/\r?\n/);
+  const result: string[] = [];
+
+  const isManagedNotifySingleLine = (line: string): boolean =>
+    /^\s*notify\s*=\s*\["[^"]+",\s*".*notify-hook\.js"\]\s*$/.test(line);
+  const isManagedNotifyMultilineStart = (line: string): boolean =>
+    /^\s*notify\s*=\s*\[\s*$/.test(line);
+  const isOrphanedManagedNotifyFragmentAt = (start: number): boolean =>
+    start + 2 < lines.length &&
+    /^\s*"[^"]+",\s*$/.test(lines[start]) &&
+    /^\s*".*notify-hook\.js",\s*$/.test(lines[start + 1]) &&
+    /^\s*\]\s*$/.test(lines[start + 2]);
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (isManagedNotifySingleLine(line)) {
+      i += 1;
+      let j = i;
+      while (j < lines.length && lines[j].trim() === "") {
+        j += 1;
+      }
+      if (isOrphanedManagedNotifyFragmentAt(j)) {
+        i = j + 3;
+      }
+      continue;
+    }
+
+    if (isManagedNotifyMultilineStart(line) && isOrphanedManagedNotifyFragmentAt(i + 1)) {
+      i += 4;
+      continue;
+    }
+
+    result.push(line);
+    i += 1;
+  }
+
+  return result.join("\n");
 }
 
 /**
