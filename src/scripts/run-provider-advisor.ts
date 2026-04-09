@@ -4,17 +4,21 @@ import { join } from 'path';
 import process from 'process';
 import { spawnSync } from 'child_process';
 
-const PROVIDER_BINARIES: Record<string, string> = {
+const PROVIDER_BINARIES: Record<string, string | null> = {
   claude: 'claude',
   gemini: 'gemini',
+  minimax: null,
 };
 const ASK_ORIGINAL_TASK_ENV = 'OMX_ASK_ORIGINAL_TASK';
+const MINIMAX_BASE_URL_DEFAULT = 'https://api.minimax.io/v1';
+const MINIMAX_MODEL_DEFAULT = 'MiniMax-M2.7';
 
 function usage(): void {
-  console.error('Usage: omx ask <claude|gemini> "<prompt>"');
-  console.error('Legacy direct usage: node scripts/run-provider-advisor.js <claude|gemini> <prompt...>');
+  console.error('Usage: omx ask <claude|gemini|minimax> "<prompt>"');
+  console.error('Legacy direct usage: node scripts/run-provider-advisor.js <claude|gemini|minimax> <prompt...>');
   console.error('                 or: node scripts/run-provider-advisor.js claude --print "<prompt>"');
   console.error('                 or: node scripts/run-provider-advisor.js gemini --prompt "<prompt>"');
+  console.error('Env: MINIMAX_API_KEY required for minimax provider');
 }
 
 function slugify(value: string): string {
@@ -68,6 +72,48 @@ function ensureBinary(binary: string): void {
     console.error(`[ask-${binary}] Install/configure ${binary} CLI, then verify with: ${verify}`);
     process.exit(1);
   }
+}
+
+async function callMiniMaxAPI(prompt: string): Promise<{ output: string; exitCode: number }> {
+  const apiKey = process.env.MINIMAX_API_KEY;
+  if (!apiKey) {
+    console.error('[ask-minimax] Missing MINIMAX_API_KEY environment variable');
+    console.error('[ask-minimax] Set MINIMAX_API_KEY to your MiniMax API key and retry');
+    return { output: '', exitCode: 1 };
+  }
+
+  const baseUrl = (process.env.MINIMAX_BASE_URL || MINIMAX_BASE_URL_DEFAULT).replace(/\/$/, '');
+  const model = process.env.MINIMAX_MODEL || MINIMAX_MODEL_DEFAULT;
+
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 1.0,
+      }),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[ask-minimax] Network error: ${msg}`);
+    return { output: msg, exitCode: 1 };
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    console.error(`[ask-minimax] API error (${response.status}): ${errorText}`);
+    return { output: errorText, exitCode: 1 };
+  }
+
+  const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+  const content = data.choices?.[0]?.message?.content ?? '';
+  return { output: content, exitCode: 0 };
 }
 
 function buildSummary(exitCode: number, output: string): string {
@@ -147,20 +193,33 @@ async function writeArtifact({ provider, originalTask, finalPrompt, rawOutput, e
 
 async function main(): Promise<void> {
   const { provider, prompt } = parseArgs(process.argv.slice(2));
-  const binary = PROVIDER_BINARIES[provider];
 
-  ensureBinary(binary);
+  let rawOutput: string;
+  let exitCode: number;
+  let spawnError: string | undefined;
 
-  const run = spawnSync(binary, ['-p', prompt], {
-    encoding: 'utf8',
-    maxBuffer: 10 * 1024 * 1024,
-      windowsHide: true,
-    });
+  if (provider === 'minimax') {
+    const result = await callMiniMaxAPI(prompt);
+    rawOutput = result.output;
+    exitCode = result.exitCode;
+  } else {
+    const binary = PROVIDER_BINARIES[provider] as string;
+    ensureBinary(binary);
 
-  const stdout = run.stdout || '';
-  const stderr = run.stderr || '';
-  const rawOutput = [stdout, stderr].filter(Boolean).join(stdout && stderr ? '\n\n' : '');
-  const exitCode = typeof run.status === 'number' ? run.status : 1;
+    const run = spawnSync(binary, ['-p', prompt], {
+      encoding: 'utf8',
+      maxBuffer: 10 * 1024 * 1024,
+        windowsHide: true,
+      });
+
+    const stdout = run.stdout || '';
+    const stderr = run.stderr || '';
+    rawOutput = [stdout, stderr].filter(Boolean).join(stdout && stderr ? '\n\n' : '');
+    exitCode = typeof run.status === 'number' ? run.status : 1;
+    if (run.error) {
+      spawnError = run.error.message;
+    }
+  }
 
   const artifactPath = await writeArtifact({
     provider,
@@ -172,8 +231,8 @@ async function main(): Promise<void> {
 
   console.log(artifactPath);
 
-  if (run.error) {
-    console.error(`[ask-${provider}] ${run.error.message}`);
+  if (spawnError) {
+    console.error(`[ask-${provider}] ${spawnError}`);
   }
 
   if (exitCode !== 0) {
