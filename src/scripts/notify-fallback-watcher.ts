@@ -29,6 +29,7 @@ import {
   DEFAULT_SUBAGENT_ACTIVE_WINDOW_MS,
   readSubagentSessionSummary,
 } from '../subagents/tracker.js';
+import { listNotifyCanonicalActiveTeams } from './notify-hook/active-team.js';
 
 function argValue(name: string, fallback = ''): string {
   const idx = process.argv.indexOf(name);
@@ -561,12 +562,13 @@ async function resolveActiveRalphState(): Promise<ActiveModeResult> {
 
 async function resolveActiveTeamState(): Promise<ActiveTeamResult> {
   const candidateDirs: string[] = [];
+  let currentSessionId = '';
   const sessionPath = join(stateDir, 'session.json');
   try {
     const session = JSON.parse(await readFile(sessionPath, 'utf-8')) as Record<string, unknown>;
-    const sessionId = safeString(session?.session_id).trim();
-    if (sessionId) {
-      candidateDirs.push(join(stateDir, 'sessions', sessionId));
+    currentSessionId = safeString(session?.session_id).trim();
+    if (currentSessionId) {
+      candidateDirs.push(join(stateDir, 'sessions', currentSessionId));
     }
   } catch {
     // No active session file; fall back to root state only.
@@ -618,6 +620,41 @@ async function resolveActiveTeamState(): Promise<ActiveTeamResult> {
       path,
       state: parsed,
       team_name: teamName,
+      pane_count: paneStatus.paneCount,
+    };
+  }
+
+  const canonicalFallbackTeams = await listNotifyCanonicalActiveTeams(cwd, currentSessionId).catch(() => []);
+  for (const team of canonicalFallbackTeams) {
+    const teamConfigDir = join(stateDir, 'team', team.teamName);
+    const manifestPath = join(teamConfigDir, 'manifest.v2.json');
+    const configPath = join(teamConfigDir, 'config.json');
+    const teamConfigPath = existsSync(manifestPath) ? manifestPath : configPath;
+    const teamConfig = existsSync(teamConfigPath)
+      ? await readFile(teamConfigPath, 'utf-8')
+        .then((content) => JSON.parse(content) as Record<string, unknown>)
+        .catch(() => null)
+      : null;
+    const tmuxSession = safeString(teamConfig?.tmux_session).trim();
+    if (!tmuxSession) continue;
+
+    const workers = Array.isArray(teamConfig?.workers) ? teamConfig.workers as Array<Record<string, unknown>> : [];
+    const workerPaneIds: string[] = workers
+      .map((worker) => safeString(worker?.pane_id).trim())
+      .filter(Boolean);
+    const paneStatus = await checkWorkerPanesAlive(tmuxSession, workerPaneIds as any);
+    if (!paneStatus.alive) continue;
+
+    return {
+      active: true,
+      reason: team.source,
+      path: team.path,
+      state: {
+        active: true,
+        team_name: team.teamName,
+        current_phase: team.phase,
+      },
+      team_name: team.teamName,
       pane_count: paneStatus.paneCount,
     };
   }
