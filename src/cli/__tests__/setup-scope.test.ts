@@ -13,6 +13,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { repairLaunchConfigIfNeeded } from "../index.js";
 
 function runOmx(
   cwd: string,
@@ -147,6 +148,58 @@ describe("omx setup scope behavior", () => {
         ),
       );
       assert.doesNotMatch(res.stdout, /Codex home: .*\/home\/\.codex/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("launch repair targets the persisted project config path", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-launch-repair-scope-"));
+    try {
+      const home = join(wd, "home");
+      const userCodexHome = join(home, ".codex");
+      const projectCodexHome = join(wd, ".codex");
+      await mkdir(home, { recursive: true });
+      await mkdir(userCodexHome, { recursive: true });
+      await mkdir(projectCodexHome, { recursive: true });
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+      await writeFile(
+        join(projectCodexHome, "config.toml"),
+        [
+          '[mcp_servers.omx_team_run]',
+          'command = "node"',
+          'args = ["/tmp/team-server.js"]',
+          'enabled = true',
+          "",
+        ].join("\n"),
+      );
+      const userConfigPath = join(userCodexHome, "config.toml");
+      const userConfig = 'user_marker = true\n';
+      await writeFile(userConfigPath, userConfig);
+
+      const didRepair = await repairLaunchConfigIfNeeded(
+        wd,
+        wd,
+        { HOME: home },
+      );
+      assert.equal(didRepair, true, "project config should be repaired");
+
+      const repairedProject = await readFile(
+        join(projectCodexHome, "config.toml"),
+        "utf-8",
+      );
+      assert.doesNotMatch(
+        repairedProject,
+        /^\[mcp_servers\.omx_team_run\]$/m,
+      );
+      assert.match(repairedProject, /^\[mcp_servers\.omx_state\]$/m);
+
+      const repairedUser = await readFile(userConfigPath, "utf-8");
+      assert.equal(repairedUser, userConfig, "user config should be untouched");
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

@@ -344,6 +344,24 @@ export function resolveCodexHomeForLaunch(
   return undefined;
 }
 
+export function resolveLaunchConfigPath(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const codexHomeOverride = resolveCodexHomeForLaunch(cwd, env);
+  return codexHomeOverride
+    ? join(codexHomeOverride, "config.toml")
+    : codexConfigPath();
+}
+
+export async function repairLaunchConfigIfNeeded(
+  cwd: string,
+  pkgRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  return repairConfigIfNeeded(resolveLaunchConfigPath(cwd, env), pkgRoot);
+}
+
 export function resolveSetupScopeArg(args: string[]): SetupScope | undefined {
   let value: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
@@ -931,9 +949,10 @@ export async function launchWithHud(args: string[]): Promise<void> {
   // have written a config.toml with duplicate [tui] sections.  Codex CLI's
   // TOML parser rejects duplicates, so we repair before spawning the CLI.
   try {
-    const repaired = await repairConfigIfNeeded(
-      codexConfigPath(),
+    const repaired = await repairLaunchConfigIfNeeded(
+      cwd,
       getPackageRoot(),
+      process.env,
     );
     if (repaired) {
       console.log("[omx] Repaired managed config.toml compatibility issue.");
@@ -1012,9 +1031,10 @@ export async function execWithOverlay(args: string[]): Promise<void> {
   }
 
   try {
-    const repaired = await repairConfigIfNeeded(
-      codexConfigPath(),
+    const repaired = await repairLaunchConfigIfNeeded(
+      cwd,
       getPackageRoot(),
+      process.env,
     );
     if (repaired) {
       console.log("[omx] Repaired managed config.toml compatibility issue.");
