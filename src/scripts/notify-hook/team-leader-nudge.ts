@@ -12,6 +12,7 @@ import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
 import { evaluatePaneInjectionReadiness, sendPaneInput } from './team-tmux-guard.js';
 import { resolvePaneTarget } from './tmux-injection.js';
+import { listNotifyCanonicalActiveTeams } from './active-team.js';
 import {
   classifyLeaderActionState,
   resolveLeaderNudgeIntent,
@@ -599,6 +600,11 @@ export async function maybeNudgeTeamLeader({
     }
   } catch {
     // Non-critical
+  }
+
+  const canonicalFallbackTeams = await listNotifyCanonicalActiveTeams(cwd, currentSessionId).catch(() => []);
+  for (const team of canonicalFallbackTeams) {
+    candidateTeamNames.add(team.teamName);
   }
 
   // Use pre-computed staleness (captured before HUD state was updated this turn)

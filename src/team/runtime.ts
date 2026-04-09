@@ -3466,7 +3466,7 @@ async function dispatchCriticalInboxInstruction(params: {
       await transitionDispatchRequest(
         teamName,
         queued.request_id,
-        'failed',
+        'pending',
         'failed',
         { last_reason: `fallback_confirmed_after_failed_receipt:${fallback.reason}` },
         cwd,
@@ -3512,7 +3512,7 @@ async function dispatchCriticalInboxInstruction(params: {
       await transitionDispatchRequest(
         teamName,
         queued.request_id,
-        'failed',
+        'pending',
         'failed',
         { last_reason: `fallback_confirmed_after_failed_receipt:${fallback.reason}` },
         cwd,
@@ -3601,7 +3601,7 @@ async function finalizeHookPreferredMailboxDispatch(params: {
         'failed',
         { message_id: messageId, last_reason: `fallback_confirmed_after_failed_receipt:${fallback.reason}` },
         cwd,
-      ).catch(() => {});
+      ).catch(() => null);
       const outcome = {
         ok: true,
         transport: fallback.transport,

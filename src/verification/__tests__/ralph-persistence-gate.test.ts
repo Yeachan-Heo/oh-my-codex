@@ -58,9 +58,6 @@ describe('ralph persistence release gate artifacts', () => {
     const ci = readFileSync(workflow, 'utf-8');
 
     assert.match(ci, /ralph-persistence-gate:/);
-    assert.match(ci, /dist\/cli\/__tests__\/session-scoped-runtime\.test\.js/);
-    assert.match(ci, /dist\/mcp\/__tests__\/state-server-ralph-phase\.test\.js/);
-    assert.match(ci, /dist\/ralph\/__tests__\/persistence\.test\.js/);
-    assert.match(ci, /dist\/verification\/__tests__\/ralph-persistence-gate\.test\.js/);
+    assert.match(ci, /npm run test:ralph-persistence:compiled/);
   });
 });

@@ -1553,7 +1553,7 @@ function buildDetachedSessionLeaderCommand(
     "trap omx_detached_session_cleanup 0;",
     codexCmd,
   ].join(" ");
-  return `/bin/sh -lc ${quoteShellArg(wrapped)}`;
+  return `/bin/sh -c ${quoteShellArg(wrapped)}`;
 }
 
 type TmuxExecSync = (file: string, args: readonly string[]) => string;
@@ -2517,9 +2517,10 @@ export function buildWindowsPromptCommand(
 }
 
 /**
- * Wrap a command for tmux pane execution so the user's shell profile is
- * sourced.  Without this, tmux runs `default-shell -c "cmd"` which is
- * non-interactive/non-login and skips .zshrc / .bashrc.
+ * Wrap a command for tmux pane execution while preserving the tmux pane cwd.
+ * tmux already starts the pane at `-c <cwd>`; using a login shell here can
+ * reset that cwd back to the shell's startup directory on some setups.
+ * Source zsh/bash rc files explicitly when needed, then exec the target.
  */
 export function buildTmuxPaneCommand(
   command: string,
@@ -2537,7 +2538,7 @@ export function buildTmuxPaneCommand(
     shellPath && shellPath.trim() !== "" ? shellPath.trim() : "/bin/sh";
   const shellBin = ALLOWED_SHELLS.has(rawShell) ? rawShell : "/bin/sh";
   const inner = `${rcSource}exec ${bareCmd}`;
-  return `${quoteShellArg(shellBin)} -lc ${quoteShellArg(inner)}`;
+  return `${quoteShellArg(shellBin)} -c ${quoteShellArg(inner)}`;
 }
 
 function quoteShellArg(value: string): string {

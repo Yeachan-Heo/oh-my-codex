@@ -1370,7 +1370,8 @@ describe("detached tmux new-session sequencing", () => {
     );
     const leaderCmd = steps[0]?.args.at(-1);
     assert.equal(typeof leaderCmd, "string");
-    assert.match(leaderCmd!, /^\/bin\/sh -lc '/);
+    assert.match(leaderCmd!, /^\/bin\/sh -c '/);
+    assert.doesNotMatch(leaderCmd!, /^\/bin\/sh -lc '/);
     assert.match(leaderCmd!, /acquireTmuxExtendedKeysLease/);
     assert.match(leaderCmd!, /omx_detached_session_cleanup\(\)/);
     assert.match(leaderCmd!, /trap omx_detached_session_cleanup 0;/);
@@ -1763,46 +1764,50 @@ describe("buildTmuxShellCommand", () => {
 });
 
 describe("buildTmuxPaneCommand", () => {
-  it("wraps command with zsh profile sourcing for zsh shell", () => {
+  it("wraps command with zsh profile sourcing while preserving tmux cwd", () => {
     const result = buildTmuxPaneCommand(
       "codex",
       ["--model", "gpt-5"],
       "/usr/bin/zsh",
     );
     assert.ok(
-      result.startsWith("'/usr/bin/zsh' -lc "),
-      "should start with zsh login shell",
+      result.startsWith("'/usr/bin/zsh' -c "),
+      "should start with zsh non-login shell to preserve tmux cwd",
     );
+    assert.ok(!result.includes(" -lc "), "should not use a login shell");
     assert.ok(result.includes("source ~/.zshrc"), "should source .zshrc");
     assert.ok(result.includes("exec "), "should exec the command");
   });
 
-  it("wraps command with bash profile sourcing for bash shell", () => {
+  it("wraps command with bash profile sourcing while preserving tmux cwd", () => {
     const result = buildTmuxPaneCommand("codex", [], "/bin/bash");
     assert.ok(
-      result.startsWith("'/bin/bash' -lc "),
-      "should start with bash login shell",
+      result.startsWith("'/bin/bash' -c "),
+      "should start with bash non-login shell to preserve tmux cwd",
     );
+    assert.ok(!result.includes(" -lc "), "should not use a login shell");
     assert.ok(result.includes("source ~/.bashrc"), "should source .bashrc");
     assert.ok(result.includes("exec "), "should exec the command");
   });
 
-  it("skips rc sourcing for unknown shells but still uses login flag", () => {
+  it("skips rc sourcing for unknown shells without using a login shell", () => {
     const result = buildTmuxPaneCommand("codex", [], "/bin/fish");
     assert.ok(
-      result.startsWith("'/bin/fish' -lc "),
-      "should start with fish login shell",
+      result.startsWith("'/bin/fish' -c "),
+      "should start with fish non-login shell",
     );
+    assert.ok(!result.includes(" -lc "), "should not use a login shell");
     assert.ok(!result.includes("source"), "should not source any rc file");
     assert.ok(result.includes("exec "), "should exec the command");
   });
 
-  it("falls back to /bin/sh when shell path is empty", () => {
+  it("falls back to /bin/sh without using a login shell when shell path is empty", () => {
     const result = buildTmuxPaneCommand("codex", [], "");
     assert.ok(
-      result.startsWith("'/bin/sh' -lc "),
+      result.startsWith("'/bin/sh' -c "),
       "should fall back to /bin/sh",
     );
+    assert.ok(!result.includes(" -lc "), "should not use a login shell");
   });
 });
 

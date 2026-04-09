@@ -235,6 +235,82 @@ describe("omx setup scope behavior", () => {
     }
   });
 
+  it("setup preserves user hooks while replacing stale OMX wrappers", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-scope-"));
+    try {
+      const home = join(wd, "home");
+      const codexDir = join(wd, ".codex");
+      await mkdir(home, { recursive: true });
+      await mkdir(codexDir, { recursive: true });
+      await writeFile(
+        join(codexDir, "hooks.json"),
+        JSON.stringify(
+          {
+            hooks: {
+              SessionStart: [
+                {
+                  hooks: [
+                    {
+                      type: "command",
+                      command: 'node "/old/dist/scripts/codex-native-hook.js"',
+                    },
+                    { type: "command", command: "echo keep-me" },
+                  ],
+                },
+              ],
+              Stop: [
+                {
+                  hooks: [
+                    {
+                      type: "command",
+                      command: 'node "/old/dist/scripts/codex-native-hook.js"',
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+          null,
+          2,
+        ) + "\n",
+      );
+
+      const res = runOmx(wd, ["setup", "--scope", "project"], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+
+      const hooksJson = JSON.parse(
+        await readFile(join(codexDir, "hooks.json"), "utf-8"),
+      ) as {
+        hooks: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+      };
+      const sessionStartHooks = hooksJson.hooks.SessionStart.flatMap((entry) =>
+        entry.hooks ?? []
+      );
+      const stopHooks = hooksJson.hooks.Stop.flatMap((entry) => entry.hooks ?? []);
+
+      assert.equal(
+        sessionStartHooks.filter((hook) =>
+          String(hook.command ?? "").includes("codex-native-hook.js")
+        ).length,
+        1,
+      );
+      assert.equal(
+        stopHooks.filter((hook) =>
+          String(hook.command ?? "").includes("codex-native-hook.js")
+        ).length,
+        1,
+      );
+      assert.match(JSON.stringify(sessionStartHooks), /echo keep-me/);
+      assert.doesNotMatch(
+        JSON.stringify(hooksJson),
+        /\/old\/dist\/scripts\/codex-native-hook\.js/,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("defaults to user scope in non-interactive runs when no scope is persisted", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-scope-"));
     try {

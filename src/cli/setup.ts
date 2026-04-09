@@ -29,7 +29,7 @@ import {
   omxLogsDir,
 } from "../utils/paths.js";
 import { buildMergedConfig, getRootModelName } from "../config/generator.js";
-import { buildManagedCodexHooksConfig } from "../config/codex-hooks.js";
+import { mergeManagedCodexHooksConfig } from "../config/codex-hooks.js";
 import {
   getLegacyUnifiedMcpRegistryCandidate,
   getUnifiedMcpRegistryCandidates,
@@ -836,11 +836,13 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   }
   console.log(`  Config refresh complete (${scopeDirs.codexConfigFile}).\n`);
 
-  const hooksConfig = JSON.stringify(
-    buildManagedCodexHooksConfig(pkgRoot),
-    null,
-    2,
-  ) + "\n";
+  const existingHooksContent = existsSync(scopeDirs.codexHooksFile)
+    ? await readFile(scopeDirs.codexHooksFile, "utf-8")
+    : null;
+  const hooksConfig = mergeManagedCodexHooksConfig(
+    existingHooksContent,
+    pkgRoot,
+  );
   await syncManagedContent(
     hooksConfig,
     scopeDirs.codexHooksFile,

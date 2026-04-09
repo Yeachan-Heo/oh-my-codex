@@ -316,6 +316,7 @@ describe("codex native hook dispatch", () => {
     const originalTmux = process.env.TMUX;
     const originalTmuxPane = process.env.TMUX_PANE;
     const originalPath = process.env.PATH;
+    const originalArgv = process.argv;
     try {
       process.env.TMUX = "1";
       process.env.TMUX_PANE = "%1";
@@ -349,6 +350,7 @@ esac
       );
       await chmod(join(binDir, "tmux"), 0o755);
       process.env.PATH = `${binDir}:${originalPath}`;
+      process.argv = [originalArgv[0] || 'node', '/tmp/codex-host-binary'];
 
       const result = await dispatchCodexNativeHook(
         {
@@ -364,7 +366,9 @@ esac
       const tmuxCalls = await readFile(tmuxLog, "utf-8");
       assert.match(tmuxCalls, /list-panes/);
       assert.match(tmuxCalls, /split-window/);
-      assert.match(tmuxCalls, /resize-pane -t %9 -y 1/);
+      assert.match(tmuxCalls, /resize-pane -t %9 -y 3/);
+      assert.match(tmuxCalls, /dist\/cli\/omx\.js' hud --watch --preset=focused/);
+      assert.doesNotMatch(tmuxCalls, /\/tmp\/codex-host-binary' hud --watch/);
     } finally {
       if (originalTmux === undefined) {
         delete process.env.TMUX;
@@ -377,6 +381,7 @@ esac
         process.env.TMUX_PANE = originalTmuxPane;
       }
       process.env.PATH = originalPath;
+      process.argv = originalArgv;
       await rm(cwd, { recursive: true, force: true });
     }
   });

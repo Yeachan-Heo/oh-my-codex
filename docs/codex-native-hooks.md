@@ -9,15 +9,18 @@ This page is the canonical answer to:
 `omx setup` now owns both of these native Codex artifacts:
 
 - `.codex/config.toml` → enables `[features].codex_hooks = true`
-- `.codex/hooks.json` → registers the OMX-managed native hook command
+- `.codex/hooks.json` → registers the OMX-managed native hook command while preserving non-OMX hook entries already in the file
 
 For project scope, `.gitignore` keeps generated `.codex/hooks.json` out of source control.
+`omx uninstall` removes only the OMX-managed wrapper entries from `.codex/hooks.json`; if user hooks remain, the file stays in place.
 
 ## Ownership split
 
 - **Native Codex hooks**: `.codex/hooks.json`
 - **OMX plugin hooks**: `.omx/hooks/*.mjs`
 - **tmux/runtime fallbacks**: `omx tmux-hook`, notify-hook, derived watcher, idle/session-end reporters
+
+OMX only owns the wrapper entries that invoke `dist/scripts/codex-native-hook.js`. User-managed hook entries in the same `.codex/hooks.json` file are preserved across `omx setup` refreshes and `omx uninstall`.
 
 ## Mapping matrix
 

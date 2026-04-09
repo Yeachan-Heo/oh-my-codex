@@ -2272,6 +2272,46 @@ esac
       await rm(startupCwd, { recursive: true, force: true });
     }
   });
+
+  it('restores standalone HUD panes with the packaged CLI entry when argv1 is not the OMX CLI', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-standalone-noncli-hud-'));
+    const previousArgv = process.argv;
+
+    try {
+      await withMockTmuxFixture(
+        'omx-tmux-noncli-standalone-hud-',
+        (logPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${logPath}"
+case "\${1:-}" in
+  split-window)
+    echo "%44"
+    exit 0
+    ;;
+  run-shell|select-pane|resize-pane|set-hook)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        async ({ logPath }) => {
+          process.argv = [previousArgv[0] || 'node', '/tmp/codex-host-binary'];
+
+          const paneId = restoreStandaloneHudPane('%11', cwd);
+          assert.equal(paneId, '%44');
+
+          const tmuxLog = await readFile(logPath, 'utf-8');
+          assert.match(tmuxLog, /dist\/cli\/omx\.js' hud --watch/);
+          assert.doesNotMatch(tmuxLog, /\/tmp\/codex-host-binary' hud --watch/);
+        },
+      );
+    } finally {
+      process.argv = previousArgv;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('dismissTrustPromptIfPresent capture shape', () => {

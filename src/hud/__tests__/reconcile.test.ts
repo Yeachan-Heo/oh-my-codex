@@ -20,7 +20,6 @@ describe('reconcileHudForPromptSubmit', () => {
       listCurrentWindowPanes: () => [
         { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
       ],
-      readCurrentWindowSize: () => ({ width: 80, height: 24 }),
       createHudWatchPane: (cwd, cmd, options) => {
         created.push({ cwd, cmd, options });
         return '%9';
@@ -29,30 +28,16 @@ describe('reconcileHudForPromptSubmit', () => {
         resized.push({ paneId, heightLines });
         return true;
       },
-      readHudConfig: async () => ({ preset: 'focused', git: { display: 'branch' } }),
-      readAllState: async () => ({
-        version: null,
-        gitBranch: 'main',
-        ralph: null,
-        ultrawork: null,
-        autopilot: null,
-        ralplan: null,
-        deepInterview: null,
-        autoresearch: null,
-        ultraqa: null,
-        team: null,
-        metrics: null,
-        hudNotify: null,
-        session: null,
-      }),
-      resolveOmxEntryPath: () => '/repo/dist/index.js',
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
     assert.equal(result.status, 'recreated');
     assert.equal(result.paneId, '%9');
     assert.equal(created.length, 1);
-    assert.equal(created[0]?.options?.heightLines, 1);
+    assert.match(created[0]?.cmd || '', /\/repo\/dist\/cli\/omx\.js' hud --watch/);
+    assert.equal(created[0]?.options?.heightLines, 3);
     assert.equal(resized.length, 1);
+    assert.equal(resized[0]?.heightLines, 3);
   });
 
   it('kills duplicate HUD panes and recreates one full-width pane', async () => {
@@ -66,33 +51,17 @@ describe('reconcileHudForPromptSubmit', () => {
         { paneId: '%3', currentCommand: 'node', startCommand: 'node omx hud --watch' },
         { paneId: '%4', currentCommand: 'codex', startCommand: 'codex' },
       ],
-      readCurrentWindowSize: () => ({ width: 32, height: 24 }),
       killTmuxPane: (paneId) => {
         killed.push(paneId);
         return true;
       },
       createHudWatchPane: (_cwd, _cmd, options) => {
         assert.equal(options?.fullWidth, true);
+        assert.equal(options?.heightLines, 3);
         return '%9';
       },
       resizeTmuxPane: () => true,
-      readHudConfig: async () => ({ preset: 'focused', git: { display: 'branch' } }),
-      readAllState: async () => ({
-        version: null,
-        gitBranch: 'feature/some-branch',
-        ralph: { active: true, iteration: 3, max_iterations: 10 },
-        ultrawork: null,
-        autopilot: null,
-        ralplan: null,
-        deepInterview: null,
-        autoresearch: null,
-        ultraqa: null,
-        team: null,
-        metrics: null,
-        hudNotify: null,
-        session: null,
-      }),
-      resolveOmxEntryPath: () => '/repo/dist/index.js',
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
     assert.equal(result.status, 'replaced_duplicates');
@@ -107,33 +76,16 @@ describe('reconcileHudForPromptSubmit', () => {
         { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
         { paneId: '%2', currentCommand: 'node', startCommand: 'node omx hud --watch' },
       ],
-      readCurrentWindowSize: () => ({ width: 24, height: 24 }),
       resizeTmuxPane: (paneId, heightLines) => {
         resized.push({ paneId, heightLines });
         return true;
       },
-      readHudConfig: async () => ({ preset: 'focused', git: { display: 'branch' } }),
-      readAllState: async () => ({
-        version: null,
-        gitBranch: 'feature/some-branch',
-        ralph: { active: true, iteration: 3, max_iterations: 10 },
-        ultrawork: { active: true },
-        autopilot: { active: true, current_phase: 'planning' },
-        ralplan: { active: true, current_phase: 'review' },
-        deepInterview: null,
-        autoresearch: null,
-        ultraqa: null,
-        team: null,
-        metrics: null,
-        hudNotify: null,
-        session: null,
-      }),
-      resolveOmxEntryPath: () => '/repo/dist/index.js',
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
     assert.equal(result.status, 'resized');
     assert.equal(resized.length, 1);
     assert.equal(resized[0]?.paneId, '%2');
-    assert.ok((resized[0]?.heightLines ?? 0) >= 2);
+    assert.equal(resized[0]?.heightLines, 3);
   });
 });

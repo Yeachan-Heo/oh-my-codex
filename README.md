@@ -169,6 +169,8 @@ omx team shutdown <team-name>
 
 These are operator/support surfaces:
 - `omx setup` installs prompts, skills, AGENTS scaffolding, `.codex/config.toml`, and OMX-managed native Codex hooks in `.codex/hooks.json`
+  - setup refresh preserves non-OMX hook entries in `.codex/hooks.json` and only rewrites OMX-managed wrappers
+  - `omx uninstall` removes OMX-managed wrappers from `.codex/hooks.json` but keeps the file when user hooks remain
 - `omx doctor` verifies the install when something seems wrong
 - `omx hud --watch` is a monitoring/status surface, not the primary user workflow
 

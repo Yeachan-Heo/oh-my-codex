@@ -1,6 +1,5 @@
-import { readAllState, readHudConfig } from './state.js';
-import { renderHud, countRenderedHudLines } from './render.js';
-import { HUD_TMUX_HEIGHT_LINES, HUD_TMUX_MAX_HEIGHT_LINES } from './constants.js';
+import { readHudConfig } from './state.js';
+import { HUD_TMUX_HEIGHT_LINES } from './constants.js';
 import {
   buildHudWatchCommand,
   createHudWatchPane,
@@ -8,11 +7,10 @@ import {
   isHudWatchPane,
   killTmuxPane,
   listCurrentWindowPanes,
-  readCurrentWindowSize,
   resizeTmuxPane,
   type TmuxPaneSnapshot,
 } from './tmux.js';
-import { resolveOmxEntryPath } from '../utils/paths.js';
+import { resolveOmxCliEntryPath } from '../utils/paths.js';
 
 export interface ReconcileHudForPromptSubmitResult {
   status:
@@ -30,7 +28,6 @@ export interface ReconcileHudForPromptSubmitResult {
 export interface ReconcileHudForPromptSubmitDeps {
   env?: NodeJS.ProcessEnv;
   listCurrentWindowPanes?: () => TmuxPaneSnapshot[];
-  readCurrentWindowSize?: () => { width: number | null; height: number | null };
   createHudWatchPane?: (
     cwd: string,
     hudCmd: string,
@@ -39,39 +36,7 @@ export interface ReconcileHudForPromptSubmitDeps {
   killTmuxPane?: (paneId: string) => boolean;
   resizeTmuxPane?: (paneId: string, heightLines: number) => boolean;
   readHudConfig?: typeof readHudConfig;
-  readAllState?: typeof readAllState;
-  renderHud?: typeof renderHud;
-  resolveOmxEntryPath?: typeof resolveOmxEntryPath;
-}
-
-function resolveHudMaxLines(windowHeight: number | null): number {
-  if (!Number.isFinite(windowHeight) || !windowHeight || windowHeight <= 0) {
-    return HUD_TMUX_MAX_HEIGHT_LINES;
-  }
-  return Math.max(1, Math.min(HUD_TMUX_MAX_HEIGHT_LINES, Math.floor(windowHeight - 1)));
-}
-
-async function resolveDesiredHudHeight(
-  cwd: string,
-  width: number | null,
-  height: number | null,
-  deps: ReconcileHudForPromptSubmitDeps,
-): Promise<number> {
-  const maxLines = resolveHudMaxLines(height);
-  try {
-    const readHudConfigFn = deps.readHudConfig ?? readHudConfig;
-    const readAllStateFn = deps.readAllState ?? readAllState;
-    const renderHudFn = deps.renderHud ?? renderHud;
-    const config = await readHudConfigFn(cwd);
-    const ctx = await readAllStateFn(cwd, config);
-    const frame = renderHudFn(ctx, config.preset, {
-      maxWidth: width ?? undefined,
-      maxLines,
-    });
-    return Math.max(1, Math.min(maxLines, countRenderedHudLines(frame)));
-  } catch {
-    return Math.min(Math.max(1, maxLines), HUD_TMUX_HEIGHT_LINES);
-  }
+  resolveOmxCliEntryPath?: typeof resolveOmxCliEntryPath;
 }
 
 export async function reconcileHudForPromptSubmit(
@@ -88,8 +53,8 @@ export async function reconcileHudForPromptSubmit(
     };
   }
 
-  const resolveOmxEntryPathFn = deps.resolveOmxEntryPath ?? resolveOmxEntryPath;
-  const omxBin = resolveOmxEntryPathFn();
+  const resolveOmxCliEntryPathFn = deps.resolveOmxCliEntryPath ?? resolveOmxCliEntryPath;
+  const omxBin = resolveOmxCliEntryPathFn();
   if (!omxBin) {
     return {
       status: 'skipped_no_entry',
@@ -100,7 +65,6 @@ export async function reconcileHudForPromptSubmit(
   }
 
   const listPanes = deps.listCurrentWindowPanes ?? (() => listCurrentWindowPanes());
-  const readSize = deps.readCurrentWindowSize ?? (() => readCurrentWindowSize());
   const createPane = deps.createHudWatchPane ?? ((hudCwd, hudCmd, options) => createHudWatchPane(hudCwd, hudCmd, options));
   const killPane = deps.killTmuxPane ?? ((paneId) => killTmuxPane(paneId));
   const resizePane = deps.resizeTmuxPane ?? ((paneId, lines) => resizeTmuxPane(paneId, lines));
@@ -110,8 +74,7 @@ export async function reconcileHudForPromptSubmit(
   const hudPaneIds = findHudWatchPaneIds(panes, currentPaneId);
   const duplicateCount = Math.max(0, hudPaneIds.length - 1);
   const nonHudPaneCount = panes.filter((pane) => !isHudWatchPane(pane)).length;
-  const { width, height } = readSize();
-  const desiredHeight = await resolveDesiredHudHeight(cwd, width, height, deps);
+  const desiredHeight = HUD_TMUX_HEIGHT_LINES;
 
   const readHudConfigFn = deps.readHudConfig ?? readHudConfig;
   const hudConfig = await readHudConfigFn(cwd).catch(() => null);

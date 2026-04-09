@@ -41,18 +41,32 @@ describe('package bin contract', () => {
     assert.equal(pkg.scripts?.prepack, 'npm run build && npm run clean:native-package-assets');
     assert.equal(pkg.scripts?.postpack, 'npm run clean:native-package-assets');
     assert.equal(pkg.scripts?.['test:explore'], 'cargo test -p omx-explore-harness && node --test dist/cli/__tests__/explore.test.js dist/hooks/__tests__/explore-routing.test.js dist/hooks/__tests__/explore-sparkshell-guidance-contract.test.js');
+    assert.equal(pkg.scripts?.['test:team:cross-rebase-smoke:compiled'], 'node --test dist/team/__tests__/cross-rebase-smoke.test.js');
     assert.equal(pkg.scripts?.['test:node'], 'node dist/scripts/run-test-files.js dist');
+    assert.equal(pkg.scripts?.['test:ci:compiled'], 'npm run test:node && node dist/scripts/generate-catalog-docs.js --check');
     assert.equal(
       pkg.scripts?.['coverage:team-critical'],
       "npm run build && c8 --all --src dist/team --src dist/state --include 'dist/team/**/*.js' --include 'dist/state/**/*.js' --exclude '**/__tests__/**' --reporter=text-summary --reporter=lcov --reporter=json-summary --report-dir coverage/team --check-coverage --lines=78 --functions=90 --branches=70 --statements=78 node dist/scripts/run-test-files.js dist/team/__tests__ dist/state/__tests__",
     );
     assert.equal(
+      pkg.scripts?.['coverage:team-critical:compiled'],
+      "c8 --all --src dist/team --src dist/state --include 'dist/team/**/*.js' --include 'dist/state/**/*.js' --exclude '**/__tests__/**' --reporter=text-summary --reporter=lcov --reporter=json-summary --report-dir coverage/team --check-coverage --lines=78 --functions=90 --branches=70 --statements=78 node dist/scripts/run-test-files.js dist/team/__tests__ dist/state/__tests__",
+    );
+    assert.equal(
       pkg.scripts?.['coverage:ts:full'],
       "npm run build && c8 --all --src dist --exclude '**/__tests__/**' --exclude 'dist/bin/**' --exclude 'dist/**/*.d.ts' --reporter=text-summary --reporter=lcov --reporter=json-summary --report-dir coverage/ts-full node dist/scripts/run-test-files.js dist",
     );
+    assert.equal(
+      pkg.scripts?.['coverage:ts:full:compiled'],
+      "c8 --all --src dist --exclude '**/__tests__/**' --exclude 'dist/bin/**' --exclude 'dist/**/*.d.ts' --reporter=text-summary --reporter=lcov --reporter=json-summary --report-dir coverage/ts-full node dist/scripts/run-test-files.js dist",
+    );
+    assert.equal(
+      pkg.scripts?.['test:ralph-persistence:compiled'],
+      'node --test dist/cli/__tests__/session-scoped-runtime.test.js dist/mcp/__tests__/trace-server.test.js dist/hud/__tests__/state.test.js dist/mcp/__tests__/state-server-ralph-phase.test.js dist/ralph/__tests__/persistence.test.js dist/verification/__tests__/ralph-persistence-gate.test.js',
+    );
     assert.equal(pkg.scripts?.['test:compat:node'], 'npm run build && node dist/scripts/run-test-files.js dist/compat/__tests__');
 
-    for (const scriptName of ['test:node', 'coverage:team-critical', 'coverage:ts:full', 'test:compat:node'] as const) {
+    for (const scriptName of ['test:node', 'test:ci:compiled', 'coverage:team-critical', 'coverage:team-critical:compiled', 'coverage:ts:full', 'coverage:ts:full:compiled', 'test:ralph-persistence:compiled', 'test:compat:node'] as const) {
       const script: string | undefined = pkg.scripts?.[scriptName];
       assert.ok(script, `expected ${scriptName} to exist`);
       assert.equal(script.includes('$(find '), false, `${scriptName} should not rely on POSIX command substitution`);

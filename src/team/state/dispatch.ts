@@ -367,6 +367,10 @@ export async function markDispatchRequestNotified(
   const current = await readDispatchRequest(requestId, deps);
   if (!current) return null;
   if (current.status === 'notified' || current.status === 'delivered') return current;
+  // `failed` is a terminal state per TEAM_DISPATCH_REQUEST_STATUS_TRANSITIONS —
+  // return null so callers can fall through to an explicit failed→failed
+  // reason patch instead of silently promoting via the bridge side-channel.
+  if (current.status === 'failed') return null;
   if (executeBridgeCommand(deps.cwd, {
     command: 'MarkNotified',
     request_id: requestId,
@@ -385,6 +389,9 @@ export async function markDispatchRequestDelivered(
   const current = await readDispatchRequest(requestId, deps);
   if (!current) return null;
   if (current.status === 'delivered') return current;
+  // Mirror the terminal-state guard from markDispatchRequestNotified: failed
+  // dispatches cannot be promoted to delivered via the bridge side-channel.
+  if (current.status === 'failed') return null;
   if (executeBridgeCommand(deps.cwd, { command: 'MarkDelivered', request_id: requestId })) {
     return await readDispatchRequest(requestId, deps) ?? current;
   }

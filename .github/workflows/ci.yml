@@ -68,18 +68,76 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm run check:no-unused
 
+  build-dist:
+    name: Build dist artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Upload prebuilt dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-dist-node20
+          path: dist/
+          if-no-files-found: error
+
   test:
     name: Test (Node ${{ matrix.node-version }} / ${{ matrix.lane }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    needs: [build-dist]
     strategy:
       fail-fast: false
       matrix:
         include:
           - node-version: 20
-            lane: full
+            lane: team-state-runtime
+            test-roots: >-
+              dist/team/__tests__
+              dist/state/__tests__
+              dist/ralph/__tests__
+              dist/ralplan/__tests__
+              dist/runtime/__tests__
+            catalog-check: false
+          - node-version: 20
+            lane: hooks-notify-platform
+            test-roots: >-
+              dist/hooks/__tests__
+              dist/hooks/code-simplifier/__tests__
+              dist/hooks/extensibility/__tests__
+              dist/notifications/__tests__
+              dist/mcp/__tests__
+              dist/hud/__tests__
+              dist/verification/__tests__
+              dist/openclaw/__tests__
+            catalog-check: false
+          - node-version: 20
+            lane: cli-core-rest
+            test-roots: >-
+              dist/cli/__tests__
+              dist/agents/__tests__
+              dist/autoresearch/__tests__
+              dist/catalog/__tests__
+              dist/compat/__tests__
+              dist/config/__tests__
+              dist/modes/__tests__
+              dist/pipeline/__tests__
+              dist/planning/__tests__
+              dist/scripts/__tests__
+              dist/session-history/__tests__
+              dist/subagents/__tests__
+              dist/utils/__tests__
+              dist/visual/__tests__
+            catalog-check: true
           - node-version: 22
             lane: smoke
+            catalog-check: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v6
@@ -87,12 +145,21 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
-      - name: Run full suite
-        if: matrix.lane == 'full'
-        run: npm test
+      - name: Download prebuilt dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-dist-node20
+          path: dist
+      - name: Run grouped full-suite lane
+        if: matrix.lane != 'smoke'
+        run: |
+          node dist/scripts/run-test-files.js ${{ matrix.test-roots }}
+      - name: Verify generated catalog docs
+        if: matrix.catalog-check == true
+        run: node dist/scripts/generate-catalog-docs.js --check
       - name: Run cross-rebase smoke command
         if: matrix.lane == 'smoke'
-        run: npm run test:team:cross-rebase-smoke
+        run: npm run test:team:cross-rebase-smoke:compiled
       - name: Run remaining smoke suite
         if: matrix.lane == 'smoke'
         run: |
@@ -111,7 +178,7 @@ jobs:
     name: Coverage Gate (Team Critical)
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: [typecheck]
+    needs: [typecheck, build-dist]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v6
@@ -119,8 +186,13 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - name: Download prebuilt dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-dist-node20
+          path: dist
       - name: Run team/state coverage gate
-        run: npm run coverage:team-critical
+        run: npm run coverage:team-critical:compiled
       - name: Add coverage summary to job summary
         run: |
           node -e '
@@ -149,7 +221,7 @@ jobs:
     name: Coverage Report (TypeScript Full)
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: [typecheck]
+    needs: [typecheck, build-dist]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v6
@@ -157,8 +229,13 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - name: Download prebuilt dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-dist-node20
+          path: dist
       - name: Run full TypeScript coverage report
-        run: npm run coverage:ts:full
+        run: npm run coverage:ts:full:compiled
       - name: Add TypeScript coverage summary to job summary
         run: |
           node -e '
@@ -232,7 +309,7 @@ jobs:
     name: Ralph Persistence Gate
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [typecheck]
+    needs: [typecheck, build-dist]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v6
@@ -240,22 +317,19 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm run build
+      - name: Download prebuilt dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-dist-node20
+          path: dist
       - name: Run Ralph persistence verification matrix
-        run: |
-          node --test \
-            dist/cli/__tests__/session-scoped-runtime.test.js \
-            dist/mcp/__tests__/trace-server.test.js \
-            dist/hud/__tests__/state.test.js \
-            dist/mcp/__tests__/state-server-ralph-phase.test.js \
-            dist/ralph/__tests__/persistence.test.js \
-            dist/verification/__tests__/ralph-persistence-gate.test.js
+        run: npm run test:ralph-persistence:compiled
 
   build:
     name: Build (Full Source Build)
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: [rustfmt, clippy, lint, typecheck, test, ralph-persistence-gate]
+    needs: [rustfmt, clippy, lint, typecheck, build-dist, test, ralph-persistence-gate]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v6
@@ -265,7 +339,13 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
       - run: npm ci
-      - run: npm run build:full
+      - name: Download prebuilt dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-dist-node20
+          path: dist
+      - run: npm run build:explore:release
+      - run: npm run build:sparkshell
 
   ci-status:
     name: CI Status

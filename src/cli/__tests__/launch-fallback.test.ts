@@ -5,6 +5,9 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { HUD_TMUX_HEIGHT_LINES } from '../../hud/constants.js';
+
+const CLI_SPAWN_TIMEOUT_MS = 15_000;
 
 function runOmx(
   cwd: string,
@@ -17,35 +20,8 @@ function runOmx(
   const result = spawnSync(process.execPath, [omxBin, ...argv], {
     cwd,
     encoding: 'utf-8',
-    env: {
-      ...process.env,
-      ...envOverrides,
-    },
-  });
-  return {
-    status: result.status,
-    stdout: result.stdout || '',
-    stderr: result.stderr || '',
-    error: result.error?.message || '',
-  };
-}
-
-function shellEscape(arg: string): string {
-  return `'${arg.replace(/'/g, `'\"'\"'`)}'`;
-}
-
-function runOmxWithTty(
-  cwd: string,
-  argv: string[],
-  envOverrides: Record<string, string> = {},
-): { status: number | null; stdout: string; stderr: string; error: string } {
-  const testDir = dirname(fileURLToPath(import.meta.url));
-  const repoRoot = join(testDir, '..', '..', '..');
-  const omxBin = join(repoRoot, 'dist', 'cli', 'omx.js');
-  const command = [process.execPath, omxBin, ...argv].map(shellEscape).join(' ');
-  const result = spawnSync('script', ['-qfec', command, '/dev/null'], {
-    cwd,
-    encoding: 'utf-8',
+    timeout: CLI_SPAWN_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
     env: {
       ...process.env,
       ...envOverrides,
@@ -107,7 +83,7 @@ describe('omx launch fallback when tmux is unavailable', () => {
 });
 
 describe('omx launcher when tmux is available', () => {
-  it('launches --madmax through detached tmux so HUD bootstrap can run', async () => {
+  it('launches --madmax through explicitly requested detached tmux so HUD bootstrap can run', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-tmux-'));
     try {
       const home = join(wd, 'home');
@@ -164,9 +140,9 @@ exit 0
       );
       await chmod(fakeTmuxPath, 0o755);
 
-      const result = runOmxWithTty(
+      const result = runOmx(
         wd,
-        ['--madmax'],
+        ['--madmax', '--tmux'],
         {
           HOME: home,
           PATH: `${fakeBin}:/usr/bin:/bin`,
@@ -181,9 +157,9 @@ exit 0
       if (shouldSkipForSpawnPermissions(result.error)) return;
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
       assert.match(tmuxLog, /tmux:new-session .* -s /);
-      assert.match(tmuxLog, /tmux:split-window -v -l 2 .* -t /);
+      assert.match(tmuxLog, new RegExp(`tmux:split-window -v -l ${HUD_TMUX_HEIGHT_LINES} .* -t `));
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

@@ -4447,7 +4447,7 @@ esac
     }
   });
 
-  it('sendWorkerMessage keeps failed hook receipts failed when fallback mailbox persistence confirms delivery', async () => {
+  it('sendWorkerMessage keeps failed hook receipts failed when fallback mailbox persistence confirms delivery', { concurrency: false }, async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-leader-failed-receipt-'));
     try {
       await withMockTmuxFixture(

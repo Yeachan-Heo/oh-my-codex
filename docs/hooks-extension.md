@@ -9,6 +9,11 @@ Native Codex hook ownership is documented separately in
 - `.omx/hooks/*.mjs` = OMX plugin hooks dispatched by runtime/native events
 - `omx tmux-hook` / notify-hook / derived watcher = tmux/runtime fallback surfaces
 
+`omx setup` treats `.codex/hooks.json` as a shared-ownership file: it refreshes only the OMX-managed
+wrapper entries that invoke `dist/scripts/codex-native-hook.js` and preserves user hook entries in the
+same file. `omx uninstall` removes only those OMX-managed wrappers and leaves `.codex/hooks.json` in
+place when user hooks remain.
+
 > Compatibility guarantee: `omx tmux-hook` remains fully supported and unchanged.
 > The new `omx hooks` command group is additive and does **not** replace tmux-hook workflows.
 

@@ -4,6 +4,40 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.12.4] - 2026-04-09
+
+MCP-CLI parity surface, HUD recovery and reconciliation hardening, native-hook and team-runtime stability fixes, and state operations module extraction.
+
+### Added
+- **MCP-CLI parity surface** — new `omx state`, `omx notepad`, `omx project-memory`, `omx trace`, and `omx code-intel` CLI subcommands expose MCP server tools via CLI, enabling scriptable access without MCP transport. (`src/cli/mcp-parity.ts`, `src/cli/state.ts`)
+- **HUD reconciliation module** — new `src/hud/reconcile.ts` auto-reconciles HUD pane state across session boundaries.
+- **Shared HUD tmux helpers** — tmux pane management (`parseTmuxPaneSnapshot`, `createHudWatchPane`, `killTmuxPane`, etc.) extracted to `src/hud/tmux.ts` for shared use by CLI and reconciliation.
+- **State operations module** — new `src/state/operations.ts` provides read/write/clear/list-active/get-status for mode state, backing both the MCP state server and the new CLI parity surface.
+- **Path traversal guard** — `src/utils/paths.ts` adds safety utilities for path validation.
+
+### Fixed
+- **HUD recovery via OMX CLI entry** — prompt-submit recovery now restores the real HUD process instead of silently skipping it. (PRs [#1413](https://github.com/Yeachan-Heo/oh-my-codex/pull/1413), [#1414](https://github.com/Yeachan-Heo/oh-my-codex/pull/1414))
+- **User-owned Codex hooks preserved** — `omx setup` no longer clobbers user-written hooks when refreshing OMX wrappers.
+- **HUD prompt-submit layout churn** — prompt-submit autosizing stopped while preserving recovery behavior.
+- **Duplicate native-hook continuations** — stale Ralph state and unknown `$tokens` no longer trigger duplicate hook continuations.
+- **Stale team worktree cleanup** — `startTeam()` detects and cleans stale worktrees at launch. (PR [#1382](https://github.com/Yeachan-Heo/oh-my-codex/pull/1382), issue [#1354](https://github.com/Yeachan-Heo/oh-my-codex/issues/1354))
+- **Stale stop-hook deep-interview suppression** — deep-interview suppression after skill-state canonicalization no longer persists beyond its session.
+- **Native Stop stale blocker** — Stop no longer trusts stale blocker skill state.
+- **MCP transport death recovery** — transport death no longer stalls team recovery.
+- **Clean team shutdown** — explicit shutdown without weakening dirty-worktree safety.
+- **Detached session trap** — session cleanup only fires on normal exit (`status < 128`), not on signals; trap narrowed to `EXIT` only.
+- **CI hang prevention** — teardown dead-time reduced; CI hangs no longer stall root-cause work. (PR [#1405](https://github.com/Yeachan-Heo/oh-my-codex/pull/1405))
+
+### Changed
+- **State CLI routing** — `omx state` routed consistently through the CLI via `src/cli/state.ts`.
+- **Tmux session name truncation** — smarter truncation preserves session token when name exceeds 120 chars.
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, release body, and release notes aligned to `0.12.4`.
+
+### Verified
+- `npm run build` ✅
+- `npx biome lint src/` ✅ (435 files)
+- `npm test` — 3068/3070 passing. The 2 failures (`state.test.ts: dispatch request store keeps failed requests failed`, `runtime.test.ts: sendWorkerMessage keeps failed hook receipts failed`) are pre-existing on `main` (commit `3a193cfb`) and not regressions introduced by this release.
+
 ## [0.12.3] - 2026-04-08
 
 Follow-up patch release for the `v0.12.2..v0.12.3` train: `$team` prompt-routing correctness and duplicate team launch teardown. This ships PR [#1364](https://github.com/Yeachan-Heo/oh-my-codex/pull/1364) that was intended for `0.12.2` but finished its conflict resolution after the `0.12.2` cut.
