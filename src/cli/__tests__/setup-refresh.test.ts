@@ -376,6 +376,32 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it("backfills launcher-backed MCP startup timeouts during setup refresh", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+      await mkdir(join(wd, ".codex"), { recursive: true });
+      await writeFile(
+        join(wd, ".codex", "config.toml"),
+        [
+          '[mcp_servers.filesystem]',
+          'command = "npx"',
+          'args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]',
+          "",
+        ].join("\n"),
+      );
+
+      await runSetupInTempDir(wd, { scope: "project" });
+
+      const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      assert.match(config, /^\[mcp_servers\.filesystem\]$/m);
+      assert.match(config, /^startup_timeout_sec = 15$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("syncs shared MCP registry entries into ~/.claude/settings.json for user scope", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     const previousHome = process.env.HOME;

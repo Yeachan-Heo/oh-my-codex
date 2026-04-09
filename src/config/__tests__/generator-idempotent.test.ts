@@ -783,4 +783,80 @@ describe("config generator idempotency (#384)", () => {
     assert.equal(count(merged, /^\[mcp_servers\.eslint\]$/gm), 1);
   });
 
+  it("adds a default startup timeout to launcher-backed non-OMX MCP servers and stays idempotent", () => {
+    const existing = [
+      '[mcp_servers.filesystem]',
+      'command = "npx"',
+      'args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]',
+      "",
+    ].join("\n");
+
+    const first = buildMergedConfig(existing, "/tmp/omx");
+    const second = buildMergedConfig(first, "/tmp/omx");
+
+    assert.match(first, /^\[mcp_servers\.filesystem\]$/m);
+    assert.match(first, /^startup_timeout_sec = 15$/m);
+    assert.equal(count(second, /^startup_timeout_sec = 15$/gm), 1);
+  });
+
+  it("preserves explicit launcher timeouts and leaves non-launcher MCP servers untouched", () => {
+    const existing = [
+      '[mcp_servers.fetch]',
+      'command = "uvx"',
+      'args = ["mcp-server-fetch"]',
+      "startup_timeout_sec = 22",
+      "",
+      '[mcp_servers.custom]',
+      'command = "custom-mcp"',
+      'args = ["serve"]',
+      "",
+    ].join("\n");
+
+    const merged = buildMergedConfig(existing, "/tmp/omx");
+
+    assert.equal(count(merged, /^startup_timeout_sec = 22$/gm), 1);
+    assert.doesNotMatch(
+      merged,
+      /\[mcp_servers\.custom\][\s\S]*?startup_timeout_sec = 15/,
+    );
+  });
+
+  it("treats npm exec launchers as timeout-backed MCP commands", () => {
+    const existing = [
+      '[mcp_servers.seq]',
+      'command = "npm"',
+      'args = ["exec", "@modelcontextprotocol/server-sequential-thinking"]',
+      "",
+    ].join("\n");
+
+    const merged = buildMergedConfig(existing, "/tmp/omx");
+
+    assert.match(merged, /^\[mcp_servers\.seq\]$/m);
+    assert.match(merged, /^startup_timeout_sec = 15$/m);
+  });
+
+  it("repairConfigIfNeeded backfills launcher-backed MCP startup timeouts", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      await writeFile(
+        configPath,
+        [
+          '[mcp_servers.filesystem]',
+          'command = "npx"',
+          'args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]',
+          "",
+        ].join("\n"),
+      );
+
+      const repaired = await repairConfigIfNeeded(configPath, wd);
+      const config = await readFile(configPath, "utf-8");
+
+      assert.equal(repaired, true);
+      assert.match(config, /^startup_timeout_sec = 15$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 });

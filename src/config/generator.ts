@@ -13,6 +13,7 @@
 import { readFile, writeFile } from "fs/promises";
 import { existsSync } from "fs";
 import { join } from "path";
+import TOML from "@iarna/toml";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { DEFAULT_FRONTIER_MODEL } from "./models.js";
 import type { UnifiedMcpRegistryServer } from "./mcp-registry.js";
@@ -50,6 +51,7 @@ const OMX_AGENTS_MAX_THREADS = 6;
 const OMX_AGENTS_MAX_DEPTH = 2;
 const OMX_EXPLORE_ROUTING_DEFAULT = '1';
 const OMX_EXPLORE_CMD_ENV = 'USE_OMX_EXPLORE_CMD';
+const DEFAULT_LAUNCHER_MCP_STARTUP_TIMEOUT_SEC = 15;
 const OMX_TUI_STATUS_LINE =
   'status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"]';
 const LEGACY_OMX_TEAM_RUN_TABLE_PATTERN =
@@ -672,6 +674,110 @@ function configHasMcpServer(config: string, name: string): boolean {
   return new RegExp(`^\\s*\\[${tableName}\\]\\s*$`, "m").test(config);
 }
 
+function launcherCommandBasename(command: string): string {
+  return command.replace(/\\/g, "/").trim().split("/").pop()?.toLowerCase() ?? "";
+}
+
+function isLauncherBackedMcpCommand(
+  command: string,
+  args: readonly string[],
+): boolean {
+  const base = launcherCommandBasename(command);
+  if (base === "npx" || base === "uvx") {
+    return true;
+  }
+
+  return base === "npm" && args[0]?.toLowerCase() === "exec";
+}
+
+interface LauncherTimeoutRepairTarget {
+  insertAt: number;
+}
+
+function findLauncherTimeoutRepairTargets(
+  config: string,
+): LauncherTimeoutRepairTarget[] {
+  const lines = config.split(/\r?\n/);
+  const targets: LauncherTimeoutRepairTarget[] = [];
+
+  for (let start = 0; start < lines.length; start += 1) {
+    const isMcpSection = /^\s*\[mcp_servers\./.test(lines[start] ?? "");
+    if (!isMcpSection) continue;
+
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i += 1) {
+      if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(lines[i] ?? "")) {
+        end = i;
+        break;
+      }
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = TOML.parse(lines.slice(start, end).join("\n"));
+    } catch {
+      start = end - 1;
+      continue;
+    }
+
+    const mcpServers = (parsed as { mcp_servers?: Record<string, unknown> })
+      .mcp_servers;
+    const [name, value] = Object.entries(mcpServers ?? {})[0] ?? [];
+    if (!name || name.startsWith("omx_") || typeof value !== "object" || !value) {
+      start = end - 1;
+      continue;
+    }
+
+    const section = value as Record<string, unknown>;
+    const command =
+      typeof section.command === "string" ? section.command : undefined;
+    const args =
+      Array.isArray(section.args) &&
+      section.args.every((item) => typeof item === "string")
+        ? (section.args as string[])
+        : [];
+    const hasStartupTimeout =
+      (
+        typeof section.startup_timeout_sec === "number" &&
+        Number.isFinite(section.startup_timeout_sec)
+      ) || (
+        typeof section.startupTimeoutSec === "number" &&
+        Number.isFinite(section.startupTimeoutSec)
+      );
+
+    if (!command || hasStartupTimeout || !isLauncherBackedMcpCommand(command, args)) {
+      start = end - 1;
+      continue;
+    }
+
+    let insertAt = end;
+    while (insertAt > start + 1 && (lines[insertAt - 1] ?? "").trim() === "") {
+      insertAt -= 1;
+    }
+
+    targets.push({ insertAt });
+    start = end - 1;
+  }
+
+  return targets;
+}
+
+function addDefaultLauncherMcpStartupTimeouts(config: string): string {
+  const targets = findLauncherTimeoutRepairTargets(config);
+  if (targets.length === 0) return config;
+
+  const lines = config.split(/\r?\n/);
+  for (const target of [...targets].reverse()) {
+    lines.splice(
+      target.insertAt,
+      0,
+      `startup_timeout_sec = ${DEFAULT_LAUNCHER_MCP_STARTUP_TIMEOUT_SEC}`,
+    );
+  }
+
+  return lines.join("\n");
+}
+
 function getSharedMcpRegistryBlock(
   servers: UnifiedMcpRegistryServer[],
   sourcePath: string | undefined,
@@ -850,7 +956,9 @@ export function buildMergedConfig(
     body = body ? `${body}\n\n${sharedRegistryBlock}` : sharedRegistryBlock;
   }
 
-  return topLines.join("\n") + "\n\n" + body + "\n" + tablesBlock;
+  return addDefaultLauncherMcpStartupTimeouts(
+    topLines.join("\n") + "\n\n" + body + "\n" + tablesBlock,
+  );
 }
 
 /**
@@ -874,7 +982,8 @@ export async function repairConfigIfNeeded(
   const content = await readFile(configPath, "utf-8");
   const tuiCount = (content.match(/^\s*\[tui\]\s*$/gm) || []).length;
   const hasLegacyTeamRunTable = LEGACY_OMX_TEAM_RUN_TABLE_PATTERN.test(content);
-  if (tuiCount <= 1 && !hasLegacyTeamRunTable) return false;
+  const hasLauncherTimeoutGap = findLauncherTimeoutRepairTargets(content).length > 0;
+  if (tuiCount <= 1 && !hasLegacyTeamRunTable && !hasLauncherTimeoutGap) return false;
 
   // Managed config compatibility issue detected — run full merge to repair
   const repaired = buildMergedConfig(content, pkgRoot, options);
