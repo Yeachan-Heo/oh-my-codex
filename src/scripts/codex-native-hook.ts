@@ -189,14 +189,16 @@ async function readActiveRalphState(stateDir: string): Promise<Record<string, un
     ) {
       return sessionScoped;
     }
+
+    // Session ownership is authoritative whenever session.json has a bound session.
+    // Do not fall back to root Ralph state in this path.
+    return null;
   }
 
   const direct = await readJsonIfExists(join(stateDir, "ralph-state.json"));
   if (direct?.active === true && !TERMINAL_RALPH_PHASES.has(safeString(direct.current_phase).trim().toLowerCase())) {
     return direct;
   }
-
-  if (currentOmxSessionId) return null;
 
   const sessionsRoot = join(stateDir, "sessions");
   if (!existsSync(sessionsRoot)) return null;
