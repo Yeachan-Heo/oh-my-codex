@@ -179,7 +179,8 @@ async function readActiveRalphState(
   requestedSessionId = "",
 ): Promise<Record<string, unknown> | null> {
   const sessionInfo = await readJsonIfExists(join(stateDir, "session.json"));
-  const currentOmxSessionId = requestedSessionId.trim() || safeString(sessionInfo?.session_id).trim();
+  const normalizedRequestedSessionId = requestedSessionId.trim();
+  const currentOmxSessionId = normalizedRequestedSessionId || safeString(sessionInfo?.session_id).trim();
   if (currentOmxSessionId) {
     const sessionScoped = await readJsonIfExists(
       join(stateDir, "sessions", currentOmxSessionId, "ralph-state.json"),
@@ -193,7 +194,9 @@ async function readActiveRalphState(
       return sessionScoped;
     }
 
-    return null;
+    if (normalizedRequestedSessionId) {
+      return null;
+    }
   }
 
   const direct = await readJsonIfExists(join(stateDir, "ralph-state.json"));

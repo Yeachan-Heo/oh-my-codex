@@ -1554,6 +1554,42 @@ esac
     }
   });
 
+  it("returns Stop continuation output from root Ralph state for ownerless Stop even when session.json exists", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-root-ralph-session-file-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(stateDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stale-owner" });
+      await writeFile(
+        join(stateDir, "ralph-state.json"),
+        JSON.stringify({
+          active: true,
+          current_phase: "executing",
+        }),
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.deepEqual(result.outputJson, {
+        decision: "block",
+        reason:
+          "OMX Ralph is still active (phase: executing); continue the task and gather fresh verification evidence before stopping.",
+        stopReason: "ralph_executing",
+        systemMessage:
+          "OMX Ralph is still active (phase: executing); continue the task and gather fresh verification evidence before stopping.",
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not block Stop from stale session-scoped Ralph state that belongs to another session", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-stale-session-ralph-"));
     try {
