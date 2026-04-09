@@ -1581,6 +1581,40 @@ esac
     }
   });
 
+  it("preserves root Ralph fallback for explicit-session Stop when session-scoped Ralph file is missing", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-explicit-session-root-fallback-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(join(stateDir, "sessions", "sess-current"), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-current" });
+      await writeJson(join(stateDir, "ralph-state.json"), {
+        active: true,
+        current_phase: "executing",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-current",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.deepEqual(result.outputJson, {
+        decision: "block",
+        reason:
+          "OMX Ralph is still active (phase: executing); continue the task and gather fresh verification evidence before stopping.",
+        stopReason: "ralph_executing",
+        systemMessage:
+          "OMX Ralph is still active (phase: executing); continue the task and gather fresh verification evidence before stopping.",
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not re-block Ralph when Stop already continued once", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-ralph-once-"));
     try {
