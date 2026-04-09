@@ -836,6 +836,15 @@ export function isTmuxAvailable(): boolean {
   return result.status === 0;
 }
 
+export function assertCreateTeamSessionPrereqs(hasTmuxContext: boolean, tmuxAvailable: boolean): void {
+  if (!hasTmuxContext && !tmuxAvailable) {
+    throw new Error('tmux is not available');
+  }
+  if (!hasTmuxContext) {
+    throw new Error('team mode requires running inside tmux leader pane');
+  }
+}
+
 // Create tmux session with N worker windows
 // Split the current tmux leader window into worker panes.
 // Returns TeamSession or throws if tmux not available
@@ -852,15 +861,12 @@ export function createTeamSession(
     workerCli?: TeamWorkerCli;
   }> = [],
 ): TeamSession {
-  if (!isTmuxAvailable()) {
-    throw new Error('tmux is not available');
-  }
   if (!Number.isInteger(workerCount) || workerCount < 1) {
     throw new Error(`workerCount must be >= 1 (got ${workerCount})`);
   }
-  if (!hasCurrentTmuxClientContext()) {
-    throw new Error('team mode requires running inside tmux leader pane');
-  }
+  const hasTmuxContext = hasCurrentTmuxClientContext();
+  const tmuxAvailable = hasTmuxContext ? true : isTmuxAvailable();
+  assertCreateTeamSessionPrereqs(hasTmuxContext, tmuxAvailable);
   const normalizedWorkerLaunchArgs = resolveWorkerLaunchArgs(workerLaunchArgs, cwd);
   const defaultWorkerCliPlan = resolveTeamWorkerCliPlan(workerCount, normalizedWorkerLaunchArgs, process.env);
   const workerCliPlan = workerStartups.length > 0
