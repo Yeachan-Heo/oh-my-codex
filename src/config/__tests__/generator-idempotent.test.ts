@@ -436,6 +436,38 @@ describe("config generator idempotency (#384)", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it("replaces a multiline root notify array without leaving invalid TOML fragments", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      const existing = [
+        'approval_policy = "on-request"',
+        'sandbox_mode = "workspace-write"',
+        'web_search = "live"',
+        'notify = [',
+        '  "terminal-notifier",',
+        '  "-title", "Codex ECC",',
+        '  "-message", "Task completed!",',
+        '  "-sound", "default",',
+        ']',
+        'persistent_instructions = "Follow project AGENTS.md guidelines."',
+        "",
+      ].join("\n");
+      await writeFile(configPath, existing);
+
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, "utf-8");
+
+      assert.equal(count(toml, /^notify\s*=/gm), 1, "notify should appear once");
+      assert.match(toml, /^notify = \["node", ".*notify-hook\.js"\]$/m);
+      assert.doesNotMatch(toml, /terminal-notifier/);
+      assert.match(toml, /^persistent_instructions = "Follow project AGENTS\.md guidelines\."$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("seeds context keys when root model is missing and both context keys are absent", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {

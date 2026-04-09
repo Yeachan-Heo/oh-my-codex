@@ -133,13 +133,35 @@ function stripRootLevelKeys(config: string, keys: readonly string[]): string {
   const firstTable = lines.findIndex((l) => /^\s*\[/.test(l));
   const boundary = firstTable >= 0 ? firstTable : lines.length;
 
+  const arrayBracketDelta = (line: string): number => {
+    const withoutStrings = line.replace(/"(?:\\.|[^"\\])*"/g, "");
+    const opens = (withoutStrings.match(/\[/g) || []).length;
+    const closes = (withoutStrings.match(/\]/g) || []).length;
+    return opens - closes;
+  };
+
   const result: string[] = [];
+  let skipArrayDepth = 0;
   for (let i = 0; i < lines.length; i++) {
     if (i < boundary) {
+      if (skipArrayDepth > 0) {
+        skipArrayDepth += arrayBracketDelta(lines[i]);
+        if (skipArrayDepth < 0) skipArrayDepth = 0;
+        continue;
+      }
+
       const isManagedKey = keys.some((key) =>
         new RegExp(`^\\s*${key}\\s*=`).test(lines[i]),
       );
-      if (isManagedKey) continue;
+      if (isManagedKey) {
+        const eqIdx = lines[i].indexOf("=");
+        const rhs = eqIdx >= 0 ? lines[i].slice(eqIdx + 1).trim() : "";
+        if (rhs.startsWith("[")) {
+          skipArrayDepth = arrayBracketDelta(rhs);
+          if (skipArrayDepth < 0) skipArrayDepth = 0;
+        }
+        continue;
+      }
     }
     result.push(lines[i]);
   }
