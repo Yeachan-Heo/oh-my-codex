@@ -1193,8 +1193,6 @@ sleep 5
       assert.equal((runtime.config.workers[0]?.pid ?? 0) > 0, true);
 
       const expectedArgv = [
-        '--approval-mode',
-        'yolo',
         '-i',
         'Read .omx/state/team/team-gemini-prompt/workers/worker-1/inbox.md, start work now, report concrete progress, then continue assigned work or next feasible task.',
       ];
@@ -1290,8 +1288,8 @@ process.on('SIGTERM', () => process.exit(0));
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
       assert.ok(argv, 'codex argv capture file should be written');
-      assert.equal(argv.includes('--dangerously-bypass-approvals-and-sandbox'), true);
-      assert.equal(argv.filter((arg) => arg === '--dangerously-bypass-approvals-and-sandbox').length, 1);
+      assert.equal(argv.includes('--dangerously-bypass-approvals-and-sandbox'), false);
+      assert.equal(argv.filter((arg) => arg === '--dangerously-bypass-approvals-and-sandbox').length, 0);
       assert.equal(argv.includes('--model'), true);
       assert.equal(argv[argv.indexOf('--model') + 1], 'gpt-5.3-codex-spark');
       assert.equal(argv.includes('-c'), true);

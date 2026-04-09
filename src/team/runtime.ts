@@ -1692,6 +1692,7 @@ function spawnPromptWorker(
   workerEnv: Record<string, string>,
   workerCli: 'codex' | 'claude' | 'gemini',
   initialPrompt?: string,
+  workerRole?: string,
 ): ChildProcessByStdio<Writable, null, null> {
   const processSpec = buildWorkerProcessLaunchSpec(
     teamName,
@@ -1701,6 +1702,7 @@ function spawnPromptWorker(
     workerEnv,
     workerCli,
     initialPrompt,
+    workerRole,
   );
   const child = spawn(
     processSpec.command,
@@ -2042,6 +2044,7 @@ export async function startTeam(
         initialPrompt: plan.initialPrompt,
         launchArgs: plan.workerLaunchArgs,
         workerCli: plan.workerCli,
+        workerRole: plan.workerRole,
       };
     });
 
@@ -2073,6 +2076,7 @@ export async function startTeam(
           startup.env || {},
           startup.workerCli || workerCliPlan[i - 1],
           startup.initialPrompt,
+          startup.workerRole,
         );
         if (config.workers[i - 1]) {
           config.workers[i - 1].pid = child.pid;

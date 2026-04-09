@@ -26,6 +26,7 @@ import {
 export const SKILL_ACTIVE_STATE_FILE = 'skill-active-state.json';
 export const DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS = ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead', 'next i should'];
 export const DEEP_INTERVIEW_INPUT_LOCK_MESSAGE = 'Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.';
+export const DEFAULT_AUTO_NUDGE_RESPONSE = 'continue with the current task only if it is already authorized';
 const DEEP_INTERVIEW_ERROR_PATTERNS = [' error', ' failed', ' failure', ' exception', 'unable to continue', 'cannot continue', 'could not continue'];
 const DEEP_INTERVIEW_ABORT_PATTERNS = ['aborted', 'cancelled', 'canceled'];
 const DEEP_INTERVIEW_ABORT_INPUTS = new Set(['abort', 'cancel', 'stop']);
@@ -218,68 +219,63 @@ function latestUserInputFromPayload(payload) {
 }
 
 export const DEFAULT_STALL_PATTERNS = [
-  'if you want',
-  'would you like',
-  'shall i',
-  'next i can',
   'continue with',
   'continue on',
-  'do you want me to',
-  'let me know if',
-  'do you want',
-  'want me to',
-  'let me know',
-  'just let me know',
-  'i can also',
-  'i could also',
   'pick up with',
-  'next step',
-  'next steps',
-  'ready to proceed',
-  'i\'m ready to',
   'keep going',
-  'should i',
-  'whenever you',
-  'say go',
-  'say yes',
-  'type continue',
   'and i\'ll continue',
-  'and i\'ll proceed',
   'keep driving',
   'keep pushing',
   'move forward',
   'drive forward',
-  'proceed from here',
   'i\'ll continue from',
 ];
 
 const SEMANTIC_STALL_PROMPT_PATTERNS = [
-  /\bif you want\b/g,
-  /\bwould you like\b/g,
-  /\bshall i\b/g,
-  /\bshould i\b/g,
-  /\bdo you want(?: me)? to\b/g,
-  /\bwant me to\b/g,
-  /\blet me know(?: if)?\b/g,
-  /\bjust let me know\b/g,
-  /\bi can also\b/g,
-  /\bi could also\b/g,
-  /\bnext i can\b/g,
   /\bcontinue (?:with|on)\b/g,
   /\bpick up with\b/g,
-  /\bnext steps?\b/g,
-  /\bready to proceed\b/g,
-  /\bi'?m ready to\b/g,
   /\bkeep going\b/g,
-  /\bwhenever you\b/g,
-  /\bsay (?:go|yes)\b/g,
-  /\btype continue\b/g,
-  /\band i'?ll (?:continue|proceed)\b/g,
+  /\band i'?ll continue\b/g,
   /\bkeep (?:driving|pushing)\b/g,
   /\bmove forward\b/g,
   /\bdrive forward\b/g,
-  /\bproceed from here\b/g,
   /\bi'?ll continue from\b/g,
+];
+
+const PLANNING_ONLY_STALL_PATTERNS = [
+  'plan',
+  'planning',
+  'approach',
+  'proposal',
+  'options',
+  'review',
+  'feedback',
+  'spec',
+  'design',
+  'next step',
+  'next steps',
+  'ready to proceed',
+];
+
+const PERMISSION_SEEKING_STALL_PATTERNS = [
+  'if you want',
+  'would you like',
+  'shall i',
+  'should i',
+  'do you want me to',
+  'do you want',
+  'want me to',
+  'let me know if',
+  'let me know',
+  'just let me know',
+  'i can also',
+  'i could also',
+  'next i can',
+  'whenever you',
+  'say go',
+  'say yes',
+  'type continue',
+  'proceed from here',
 ];
 
 function normalizeStallDetectionText(text) {
@@ -313,6 +309,34 @@ export function normalizeAutoNudgeSignatureText(text) {
   }
 
   return normalized;
+}
+
+function normalizePatternList(patterns) {
+  return patterns.map((pattern) => normalizeStallDetectionText(pattern)).filter(Boolean);
+}
+
+function usesDefaultStallPatterns(patterns) {
+  const normalizedPatterns = normalizePatternList(patterns);
+  const normalizedDefaults = normalizePatternList(DEFAULT_STALL_PATTERNS);
+  return normalizedPatterns.length === normalizedDefaults.length
+    && normalizedPatterns.every((pattern, index) => pattern === normalizedDefaults[index]);
+}
+
+function matchesNormalizedPatterns(normalizedText, normalizedPatterns) {
+  if (!normalizedText || normalizedPatterns.length === 0) return false;
+  const tail = normalizedText.slice(-800);
+  const lines = tail.split('\n').filter((line) => line.trim());
+  const hotZone = lines.slice(-3).join('\n');
+  if (normalizedPatterns.some((pattern) => hotZone.includes(pattern))) return true;
+  return normalizedPatterns.some((pattern) => tail.includes(pattern));
+}
+
+function looksLikePlanningOnlyContinuation(normalizedText) {
+  return matchesNormalizedPatterns(normalizedText, normalizePatternList(PLANNING_ONLY_STALL_PATTERNS));
+}
+
+function looksLikePermissionSeekingContinuation(normalizedText) {
+  return matchesNormalizedPatterns(normalizedText, normalizePatternList(PERMISSION_SEEKING_STALL_PATTERNS));
 }
 
 function summarizePaneCaptureForLog(captured, maxLines = 6) {
@@ -358,6 +382,12 @@ export function normalizeAutoNudgeConfig(raw) {
   };
 }
 
+export function resolveEffectiveAutoNudgeResponse(response) {
+  const normalized = safeString(response).trim();
+  if (!normalized) return DEFAULT_AUTO_NUDGE_RESPONSE;
+  return isBlockedAutoApprovalInput(normalized) ? DEFAULT_AUTO_NUDGE_RESPONSE : normalized;
+}
+
 export async function loadAutoNudgeConfig() {
   const codexHomePath = process.env.CODEX_HOME || join(homedir(), '.codex');
   const configPath = join(codexHomePath, '.omx-config.json');
@@ -373,16 +403,16 @@ async function localTmuxInjectionDisabled(cwd) {
   return tmuxHookExplicitlyDisablesInjection(raw);
 }
 
-export function detectStallPattern(text, patterns) {
+export function detectStallPattern(text, patterns, currentPhase = '') {
   if (!text || typeof text !== 'string') return false;
   const normalized = normalizeStallDetectionText(text);
   if (!normalized) return false;
-  const tail = normalized.slice(-800);
-  const normalizedPatterns = patterns.map((pattern) => normalizeStallDetectionText(pattern)).filter(Boolean);
-  const lines = tail.split('\n').filter((line) => line.trim());
-  const hotZone = lines.slice(-3).join('\n');
-  if (normalizedPatterns.some((pattern) => hotZone.includes(pattern))) return true;
-  return normalizedPatterns.some((pattern) => tail.includes(pattern));
+  const normalizedPatterns = normalizePatternList(patterns);
+  if (!matchesNormalizedPatterns(normalized, normalizedPatterns)) return false;
+  if (!usesDefaultStallPatterns(patterns)) return true;
+  if (looksLikePermissionSeekingContinuation(normalized)) return false;
+  if (safeString(currentPhase).trim().toLowerCase() === 'planning') return false;
+  return !looksLikePlanningOnlyContinuation(normalized);
 }
 
 export async function capturePane(paneId, lines = 10) {
@@ -426,6 +456,7 @@ export async function resolveNudgePaneTarget(stateDir: any, cwd = '', payload: a
 
 export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
   const config = await loadAutoNudgeConfig();
+  const effectiveResponse = resolveEffectiveAutoNudgeResponse(config.response);
   if (!config.enabled) return;
   if (await localTmuxInjectionDisabled(cwd)) {
     await logTmuxHookEvent(logsDir, {
@@ -470,13 +501,13 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
     }
     const paneId = await resolveNudgePaneTarget(stateDir, cwd, payload);
 
-    let detected = detectStallPattern(lastMessage, config.patterns);
+    let detected = detectStallPattern(lastMessage, config.patterns, skillState?.phase);
     let source = 'payload';
     let captured = '';
 
     if (!detected && paneId) {
       captured = await capturePane(paneId);
-      detected = detectStallPattern(captured, config.patterns);
+      detected = detectStallPattern(captured, config.patterns, skillState?.phase);
       source = 'capture-pane';
     }
 
@@ -556,10 +587,10 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
         timestamp: new Date().toISOString(),
         type: 'auto_nudge_blocked',
         pane_id: paneId,
-        response: config.response,
+        response: effectiveResponse,
         source,
         blocked_by: 'deep-interview-lock',
-        block_kind: isBlockedAutoApprovalInput(config.response, skillState.input_lock?.blocked_inputs)
+        block_kind: isBlockedAutoApprovalInput(effectiveResponse, skillState.input_lock?.blocked_inputs)
           ? 'blocked-auto-approval'
           : 'input-lock-active',
         message: blockedMessage,
@@ -576,7 +607,7 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
     try {
       const sendResult = await sendPaneInput({
         paneTarget: paneId,
-        prompt: `${config.response} ${DEFAULT_MARKER}`,
+        prompt: `${effectiveResponse} ${DEFAULT_MARKER}`,
         submitKeyPresses: 2,
         submitDelayMs: 100,
       });
@@ -592,18 +623,11 @@ export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
       nudgeState.pendingSince = '';
       await writeFile(nudgeStatePath, JSON.stringify(nudgeState, null, 2)).catch(() => {});
 
-      if (skillState && skillState.phase === 'planning') {
-        skillState.phase = 'executing';
-        skillState.active = true;
-        skillState.updated_at = nowIso;
-        await persistSkillActiveState(stateDir, skillState);
-      }
-
       await logTmuxHookEvent(logsDir, {
         timestamp: nowIso,
         type: 'auto_nudge',
         pane_id: paneId,
-        response: config.response,
+        response: effectiveResponse,
         source,
         nudge_count: nudgeState.nudgeCount,
       });

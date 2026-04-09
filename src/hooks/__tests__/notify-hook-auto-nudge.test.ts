@@ -10,6 +10,7 @@ import { buildTmuxSessionName } from '../../cli/index.js';
 const NOTIFY_HOOK_SCRIPT = new URL('../../../dist/scripts/notify-hook.js', import.meta.url);
 const DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS = ['yes', 'y', 'proceed', 'continue', 'ok', 'sure', 'go ahead', 'next i should'];
 const NEXT_I_SHOULD_RESPONSE = 'Next I should update the focused tests.';
+const DEFAULT_AUTO_NUDGE_RESPONSE = 'continue with the current task only if it is already authorized';
 
 async function withTempWorkingDir(run: (cwd: string) => Promise<void>): Promise<void> {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-auto-nudge-'));
@@ -63,6 +64,10 @@ async function writeManagedSessionState(stateDir: string, cwd: string): Promise<
 
 function escapeRegex(value: string): string {
   return value.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+}
+
+function defaultAutoNudgePattern(targetPane: string): RegExp {
+  return new RegExp(`send-keys -t ${escapeRegex(targetPane)} -l ${escapeRegex(DEFAULT_AUTO_NUDGE_RESPONSE)} \\[OMX_TMUX_INJECT\\]`);
 }
 
 /**
@@ -208,12 +213,12 @@ describe('notify-hook auto-nudge', () => {
       await writeManagedSessionState(stateDir, cwd);
 
       const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'I analyzed the code. If you want me to make these changes, let me know.',
+        'last-assistant-message': 'I analyzed the code. Keep going and finish the focused cleanup.',
       });
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%99'));
 
       const nudgeState = JSON.parse(await readFile(join(stateDir, 'auto-nudge-state.json'), 'utf-8'));
       assert.equal(nudgeState.nudgeCount, 0);
@@ -246,16 +251,58 @@ describe('notify-hook auto-nudge', () => {
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'I analyzed the code. If you want me to make these changes, let me know.',
+        'last-assistant-message': 'I analyzed the code. Keep going and finish the focused cleanup.',
       });
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       assert.ok(existsSync(tmuxLogPath), 'tmux should have been called');
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'should send nudge response with injection marker');
+      assert.match(tmuxLog, defaultAutoNudgePattern('%99'), 'should send nudge response with injection marker');
       // Codex CLI needs C-m sent twice with a delay for reliable submission
       const cmMatches = tmuxLog.match(/send-keys -t %99 C-m/g);
       assert.ok(cmMatches && cmMatches.length >= 2, `should send C-m twice, got ${cmMatches?.length ?? 0}`);
+    });
+  });
+
+  it('does not auto-nudge planning-phase skill state into execution', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
+      });
+      await writeManagedSessionState(stateDir, cwd);
+      await writeJson(join(stateDir, 'skill-active-state.json'), {
+        active: true,
+        skill: 'analyze',
+        keyword: 'investigate',
+        phase: 'planning',
+        source: 'keyword-detector',
+      });
+
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'I can continue with the plan from here.',
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
+      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l/, 'planning-phase prompts should not be auto-nudged');
+
+      const skillState = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8'));
+      assert.equal(skillState.phase, 'planning');
     });
   });
 
@@ -291,7 +338,7 @@ describe('notify-hook auto-nudge', () => {
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%99'));
     });
   });
 
@@ -341,7 +388,7 @@ describe('notify-hook auto-nudge', () => {
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%99'));
     });
   });
 
@@ -374,7 +421,7 @@ describe('notify-hook auto-nudge', () => {
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%99'));
     });
   });
 
@@ -412,7 +459,7 @@ describe('notify-hook auto-nudge', () => {
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%99'));
     });
   });
 
@@ -456,7 +503,7 @@ describe('notify-hook auto-nudge', () => {
         new RegExp(`list-panes -s -t ${escapeRegex(expectedManagedSessionName)}`),
         'should resolve panes against the current OMX session identity, not the drifted tmux session name',
       );
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%99'));
     });
   });
 
@@ -481,7 +528,7 @@ describe('notify-hook auto-nudge', () => {
       await writeManagedSessionState(stateDir, cwd);
 
       // capture-pane will return content with a stall pattern
-      await writeFile(captureFile, 'Here are the results.\nWould you like me to continue with the implementation?\n› ');
+      await writeFile(captureFile, 'Here are the results.\nKeep going and finish the implementation.\n› ');
 
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
@@ -495,7 +542,7 @@ describe('notify-hook auto-nudge', () => {
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /capture-pane/, 'should have tried capture-pane');
-      assert.match(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'should send nudge via capture-pane fallback with marker');
+      assert.match(tmuxLog, defaultAutoNudgePattern('%99'), 'should send nudge via capture-pane fallback with marker');
     });
   });
 
@@ -589,14 +636,14 @@ exit 0
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'If you want, I can keep going from here.',
+        'last-assistant-message': 'Keep going and finish the cleanup from here.',
       }, {
         TMUX_PANE: '',
       });
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /send-keys -t %100 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'should upgrade anchored shell pane to sibling codex pane');
+      assert.match(tmuxLog, defaultAutoNudgePattern('%100'), 'should upgrade anchored shell pane to sibling codex pane');
     });
   });
 
@@ -630,7 +677,7 @@ exit 0
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'team-worker context should still send auto-nudge');
+      assert.match(tmuxLog, defaultAutoNudgePattern('%99'), 'team-worker context should still send auto-nudge');
 
       const nudgeStatePath = join(workerStateRoot, 'auto-nudge-state.json');
       assert.ok(existsSync(nudgeStatePath), 'worker state root should receive auto-nudge state');
@@ -665,7 +712,7 @@ exit 0
 
       if (existsSync(tmuxLogPath)) {
         const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-        assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed/, 'should NOT send nudge');
+        assert.doesNotMatch(tmuxLog, new RegExp(`send-keys -t %99 -l ${escapeRegex(DEFAULT_AUTO_NUDGE_RESPONSE)}`), 'should NOT send nudge');
       }
     });
   });
@@ -733,7 +780,7 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.ok(tmuxLog.includes('display-message -p -t %99 #S'), 'should inspect the managed anchor pane before deciding');
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'shell pane should not receive auto-nudge injection');
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%99'), 'shell pane should not receive auto-nudge injection');
     });
   });
 
@@ -798,7 +845,7 @@ shift || true
   exit 0
 fi
 if [[ "$cmd" == "capture-pane" ]]; then
-  printf "› say \\"if you want\\"\\n\\n• if you want\\n\\n› Implement {feature}\\n\\n  gpt-5.4 high · dev · 98%% left\\n"
+  printf "› keep going\\n\\n• keep going\\n\\n› Implement {feature}\\n\\n  gpt-5.4 high · dev · 98%% left\\n"
   exit 0
 fi
 if [[ "$cmd" == "send-keys" ]]; then
@@ -825,14 +872,14 @@ exit 0
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'if you want',
+        'last-assistant-message': 'keep going',
       });
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /display-message -p #S/);
       assert.ok(tmuxLog.includes('display-message -p -t %99 #S'), 'should inspect the anchored shell pane before upgrading');
-      assert.match(tmuxLog, /send-keys -t %100 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+      assert.match(tmuxLog, defaultAutoNudgePattern('%100'));
     });
   });
 
@@ -859,13 +906,13 @@ exit 0
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'If you want, I can keep going from here.',
+        'last-assistant-message': 'Keep going and finish the cleanup from here.',
       });
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /display-message -p #S/);
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'copy-mode pane should not receive auto-nudge injection');
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%99'), 'copy-mode pane should not receive auto-nudge injection');
     });
   });
 
@@ -910,7 +957,7 @@ exit 0
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /display-message -p #S/);
       assert.match(tmuxLog, /capture-pane -t %99/, 'busy pane detection should inspect capture output');
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'busy pane should not receive auto-nudge injection');
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%99'), 'busy pane should not receive auto-nudge injection');
     });
   });
 
@@ -972,18 +1019,18 @@ exit 0
       const sharedTurnId = 'semantic-dedup-turn';
       const first = runNotifyHook(cwd, fakeBinDir, codexHome, {
         'turn-id': sharedTurnId,
-        'last-assistant-message': 'If you want, I can keep going from here.',
+        'last-assistant-message': 'Keep going and finish the cleanup from here.',
       });
       assert.equal(first.status, 0, `first hook failed: ${first.stderr || first.stdout}`);
 
       const second = runNotifyHook(cwd, fakeBinDir, codexHome, {
         'turn-id': sharedTurnId,
-        'last-assistant-message': 'Shall I proceed from here?',
+        'last-assistant-message': 'Continue with the cleanup from here.',
       });
       assert.equal(second.status, 0, `second hook failed: ${second.stderr || second.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.equal((tmuxLog.match(/send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/g) || []).length, 1);
+      assert.equal((tmuxLog.match(new RegExp(defaultAutoNudgePattern('%99').source, 'g')) || []).length, 1);
 
       const nudgeState = JSON.parse(await readFile(join(stateDir, 'auto-nudge-state.json'), 'utf-8'));
       assert.equal(nudgeState.nudgeCount, 1);
@@ -1014,7 +1061,7 @@ exit 0
 
       const first = runNotifyHook(cwd, fakeBinDir, codexHome, {
         'turn-id': 'cooldown-turn-1',
-        'last-assistant-message': 'Would you like me to continue with the implementation?',
+        'last-assistant-message': 'Continue with the implementation from here.',
       });
       assert.equal(first.status, 0, `first hook failed: ${first.stderr || first.stdout}`);
 
@@ -1025,7 +1072,7 @@ exit 0
       assert.equal(second.status, 0, `second hook failed: ${second.stderr || second.stdout}`);
 
       let tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.equal((tmuxLog.match(/send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/g) || []).length, 1);
+      assert.equal((tmuxLog.match(new RegExp(defaultAutoNudgePattern('%99').source, 'g')) || []).length, 1);
 
       const nudgeStatePath = join(stateDir, 'auto-nudge-state.json');
       const nudgeStateBeforeThird = JSON.parse(await readFile(nudgeStatePath, 'utf-8'));
@@ -1036,12 +1083,12 @@ exit 0
 
       const third = runNotifyHook(cwd, fakeBinDir, codexHome, {
         'turn-id': 'cooldown-turn-3',
-        'last-assistant-message': 'Do you want me to proceed with the focused tests?',
+        'last-assistant-message': 'Keep going and finish the focused tests.',
       });
       assert.equal(third.status, 0, `third hook failed: ${third.stderr || third.stdout}`);
 
       tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.equal((tmuxLog.match(/send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/g) || []).length, 2);
+      assert.equal((tmuxLog.match(new RegExp(defaultAutoNudgePattern('%99').source, 'g')) || []).length, 2);
 
       const nudgeState = JSON.parse(await readFile(nudgeStatePath, 'utf-8'));
       assert.equal(nudgeState.nudgeCount, 2);
@@ -1058,7 +1105,7 @@ exit 0
       const fakeBinDir = join(cwd, 'fake-bin');
       const tmuxLogPath = join(cwd, 'tmux.log');
       const lastTurnAt = '2026-03-01T00:00:00.000Z';
-      const lastMessage = 'If you want, I can keep going from here.';
+      const lastMessage = 'Keep going and finish the cleanup from here.';
 
       await mkdir(logsDir, { recursive: true });
       await mkdir(stateDir, { recursive: true });
@@ -1097,7 +1144,7 @@ exit 0
       assert.equal(result.status, 0, `second hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
-      assert.equal((tmuxLog.match(/send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/g) || []).length, 1);
+      assert.equal((tmuxLog.match(new RegExp(defaultAutoNudgePattern('%99').source, 'g')) || []).length, 1);
 
       const nudgeState = JSON.parse(await readFile(nudgeStatePath, 'utf-8'));
       assert.equal(nudgeState.nudgeCount, 1);
@@ -1113,7 +1160,7 @@ exit 0
       const codexHome = join(cwd, 'codex-home');
       const fakeBinDir = join(cwd, 'fake-bin');
       const tmuxLogPath = join(cwd, 'tmux.log');
-      const lastMessage = 'If you want, I can keep going from here.';
+      const lastMessage = 'Keep going and finish the cleanup from here.';
 
       await mkdir(logsDir, { recursive: true });
       await mkdir(stateDir, { recursive: true });
@@ -1143,7 +1190,7 @@ exit 0
       assert.equal(second.status, 0, `second hook failed: ${second.stderr || second.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.equal((tmuxLog.match(/send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/g) || []).length, 1);
+      assert.equal((tmuxLog.match(new RegExp(defaultAutoNudgePattern('%99').source, 'g')) || []).length, 1);
 
       const hudState = JSON.parse(await readFile(join(stateDir, 'hud-state.json'), 'utf-8'));
       assert.equal(hudState.turn_count, 1);
@@ -1176,7 +1223,7 @@ exit 0
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'Do you want me to implement this feature?',
+        'last-assistant-message': 'Keep going and implement this feature.',
       });
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
@@ -1207,7 +1254,7 @@ exit 0
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'Ready to proceed when you are.',
+        'last-assistant-message': 'Keep going and finish the focused cleanup.',
       });
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
@@ -1291,7 +1338,7 @@ exit 0
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%99'));
     });
   });
 
@@ -1318,7 +1365,7 @@ exit 0
         active: true,
         skill: 'deep-interview',
         keyword: 'deep interview',
-        phase: 'planning',
+        phase: 'executing',
         activated_at: '2026-02-25T00:00:00.000Z',
         updated_at: '2026-02-25T00:00:00.000Z',
         source: 'keyword-detector',
@@ -1340,7 +1387,7 @@ exit 0
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
-      assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/);
+      assert.doesNotMatch(tmuxLog, defaultAutoNudgePattern('%99'));
     });
   });
 
@@ -1432,7 +1479,7 @@ exit 0
         await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
         const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-          'last-assistant-message': 'Would you like me to continue?',
+          'last-assistant-message': 'Keep going and finish the cleanup.',
         });
         assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
@@ -1443,7 +1490,7 @@ exit 0
     });
   }
 
-  it('logs deep-interview auto-approval suppression without injecting tmux input', async () => {
+  it('suppresses deep-interview auto-approval without injecting tmux input', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
       const stateDir = join(omxDir, 'state');
@@ -1482,18 +1529,12 @@ exit 0
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'Would you like me to continue?',
+        'last-assistant-message': 'Keep going and finish the cleanup.',
       });
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.doesNotMatch(tmuxLog, /send-keys -t %99 -l Deep interview is active; auto-approval shortcuts are blocked until the interview finishes\. \[OMX_TMUX_INJECT\]/);
-
-      const hookLogPath = join(logsDir, `tmux-hook-${new Date().toISOString().split('T')[0]}.jsonl`);
-      const hookLog = await readFile(hookLogPath, 'utf-8');
-      assert.match(hookLog, /"type":"auto_nudge_blocked"/);
-      assert.match(hookLog, /"blocked_by":"deep-interview-lock"/);
-      assert.match(hookLog, /"suppressed":true/);
     });
   });
 
@@ -1740,7 +1781,7 @@ exit 0
 
       // Default pattern should NOT trigger with custom config
       const result1 = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'Would you like me to proceed?',
+        'last-assistant-message': 'Keep going and finish the focused cleanup.',
       });
       assert.equal(result1.status, 0);
 
@@ -1761,7 +1802,7 @@ exit 0
       assert.equal(result2.status, 0);
 
       const log2 = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(log2, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'custom pattern should trigger nudge with marker');
+      assert.match(log2, defaultAutoNudgePattern('%99'), 'custom pattern should trigger nudge with marker');
     });
   });
 
@@ -1788,13 +1829,13 @@ exit 0
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'If you want, I can fix the remaining issues.',
+        'last-assistant-message': 'Keep going and fix the remaining issues.',
       });
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
       assert.ok(existsSync(tmuxLogPath), 'tmux should be called with defaults');
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'should nudge with default config and marker');
+      assert.match(tmuxLog, defaultAutoNudgePattern('%99'), 'should nudge with default config and marker');
     });
   });
 
@@ -1820,7 +1861,7 @@ exit 0
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
-        'last-assistant-message': 'Would you like me to continue?',
+        'last-assistant-message': 'Keep going and finish the focused cleanup.',
       }, {
         TMUX_PANE: '',  // No pane available
         TMUX: '',
@@ -1829,7 +1870,7 @@ exit 0
 
       if (existsSync(tmuxLogPath)) {
         const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-        assert.match(tmuxLog, /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'should fall back to the managed session pane when TMUX_PANE is absent');
+        assert.match(tmuxLog, defaultAutoNudgePattern('%99'), 'should fall back to the managed session pane when TMUX_PANE is absent');
       }
     });
   });

@@ -392,6 +392,8 @@ export async function scaleUp(
         workerCwd,
         extraEnv,
         workerCliPlan[i],
+        undefined,
+        workerRole,
       );
 
       // Find the right-most worker pane to split from, or fall back to leader pane.

@@ -9,6 +9,7 @@ import {
   LONG_CONFIG_FLAG,
   MODEL_FLAG,
 } from '../cli/constants.js';
+import { getAgent } from '../agents/definitions.js';
 import {
   buildCapturePaneArgv as sharedBuildCapturePaneArgv,
   buildVisibleCapturePaneArgv as sharedBuildVisibleCapturePaneArgv,
@@ -603,12 +604,27 @@ export function resolveTeamWorkerCliPlan(
   });
 }
 
-export function translateWorkerLaunchArgsForCli(workerCli: TeamWorkerCli, args: string[], initialPrompt?: string): string[] {
+function shouldGrantExecutionBypassForRole(workerRole?: string): boolean {
+  const normalizedRole = workerRole?.trim().toLowerCase();
+  if (!normalizedRole) return true;
+  const agent = getAgent(normalizedRole);
+  if (!agent) return true;
+  return agent.tools === 'execution';
+}
+
+export function translateWorkerLaunchArgsForCli(
+  workerCli: TeamWorkerCli,
+  args: string[],
+  initialPrompt?: string,
+  workerRole?: string,
+): string[] {
   if (workerCli === 'codex') return [...args];
   if (workerCli === 'gemini') {
     const model = extractModelOverride(args);
     const geminiModel = model && /gemini/i.test(model) ? model : null;
-    const translatedArgs = [GEMINI_APPROVAL_MODE_FLAG, GEMINI_APPROVAL_MODE_YOLO];
+    const translatedArgs = shouldGrantExecutionBypassForRole(workerRole)
+      ? [GEMINI_APPROVAL_MODE_FLAG, GEMINI_APPROVAL_MODE_YOLO]
+      : [];
     const trimmedPrompt = initialPrompt?.trim();
     if (trimmedPrompt) translatedArgs.push(GEMINI_PROMPT_INTERACTIVE_FLAG, trimmedPrompt);
     if (geminiModel) translatedArgs.push(MODEL_FLAG, geminiModel);
@@ -618,7 +634,7 @@ export function translateWorkerLaunchArgsForCli(workerCli: TeamWorkerCli, args: 
   // Claude workers must launch with exactly one permissions bypass flag.
   // All other launch args are dropped to avoid Codex-only flags and model/config overrides.
   void args;
-  return [CLAUDE_SKIP_PERMISSIONS_FLAG];
+  return shouldGrantExecutionBypassForRole(workerRole) ? [CLAUDE_SKIP_PERMISSIONS_FLAG] : [];
 }
 
 function commandExists(binary: string): boolean {
@@ -693,6 +709,7 @@ export function buildWorkerStartupCommand(
   extraEnv: Record<string, string> = {},
   workerCliOverride?: TeamWorkerCli,
   initialPrompt?: string,
+  workerRole?: string,
 ): string {
   const processSpec = buildWorkerProcessLaunchSpec(
     teamName,
@@ -702,6 +719,7 @@ export function buildWorkerStartupCommand(
     extraEnv,
     workerCliOverride,
     initialPrompt,
+    workerRole,
   );
   const resolvedLeaderNodePath = resolveLeaderNodePath();
   const leaderNodeDir = /[\\/]/.test(resolvedLeaderNodePath)
@@ -745,12 +763,15 @@ export function buildWorkerProcessLaunchSpec(
   extraEnv: Record<string, string> = {},
   workerCliOverride?: TeamWorkerCli,
   initialPrompt?: string,
+  workerRole?: string,
 ): WorkerProcessLaunchSpec {
   const effectiveEnv: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
   const fullLaunchArgs = resolveWorkerLaunchArgs(launchArgs, cwd, effectiveEnv);
   const workerCli = workerCliOverride ?? resolveTeamWorkerCli(fullLaunchArgs, effectiveEnv);
-  const cliLaunchArgs = translateWorkerLaunchArgsForCli(workerCli, fullLaunchArgs, initialPrompt);
-  const effectiveCliLaunchArgs = workerCli === 'codex' && !cliLaunchArgs.includes(CODEX_BYPASS_FLAG)
+  const cliLaunchArgs = translateWorkerLaunchArgsForCli(workerCli, fullLaunchArgs, initialPrompt, workerRole);
+  const effectiveCliLaunchArgs = workerCli === 'codex'
+    && shouldGrantExecutionBypassForRole(workerRole)
+    && !cliLaunchArgs.includes(CODEX_BYPASS_FLAG)
     ? [...cliLaunchArgs, CODEX_BYPASS_FLAG]
     : cliLaunchArgs;
   const workerCodexHomeOverride = typeof effectiveEnv.CODEX_HOME === 'string'
@@ -850,6 +871,7 @@ export function createTeamSession(
     initialPrompt?: string;
     launchArgs?: string[];
     workerCli?: TeamWorkerCli;
+    workerRole?: string;
   }> = [],
 ): TeamSession {
   if (!isTmuxAvailable()) {
@@ -915,6 +937,7 @@ export function createTeamSession(
         workerEnv,
         workerCliPlan[i - 1],
         startup.initialPrompt,
+        startup.workerRole,
       );
       // First split creates the right side from leader. Remaining splits stack on the right.
       const splitDirection = i === 1 ? '-h' : '-v';

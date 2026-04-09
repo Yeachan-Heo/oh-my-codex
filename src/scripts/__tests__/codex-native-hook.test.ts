@@ -24,6 +24,8 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 
 const TEAM_STOP_COMMIT_GUIDANCE =
   " If system-generated worker auto-checkpoint commits exist, rewrite them into Lore-format final commits before merge/finalization.";
+const DEFAULT_AUTO_NUDGE_RESPONSE =
+  "continue with the current task only if it is already authorized";
 
 const TEAM_ENV_KEYS = [
   "OMX_TEAM_WORKER",
@@ -1596,7 +1598,7 @@ esac
           hook_event_name: "Stop",
           cwd,
           session_id: "sess-stop-auto",
-          last_assistant_message: "Would you like me to keep going and finish the cleanup?",
+          last_assistant_message: "Keep going and finish the cleanup.",
         },
         { cwd },
       );
@@ -1604,7 +1606,7 @@ esac
       assert.equal(result.omxEventName, "stop");
       assert.deepEqual(result.outputJson, {
         decision: "block",
-        reason: "yes, proceed",
+        reason: DEFAULT_AUTO_NUDGE_RESPONSE,
         stopReason: "auto_nudge",
         systemMessage:
           "OMX native Stop detected a stall/permission-style handoff and continued the turn automatically.",
@@ -1627,7 +1629,7 @@ esac
           session_id: "sess-stop-auto-once",
           thread_id: "thread-stop-auto",
           turn_id: "turn-stop-auto-1",
-          last_assistant_message: "Would you like me to continue?",
+          last_assistant_message: "Keep going and finish the cleanup.",
         },
         { cwd },
       );
@@ -1640,7 +1642,7 @@ esac
           thread_id: "thread-stop-auto",
           turn_id: "turn-stop-auto-1",
           stop_hook_active: true,
-          last_assistant_message: "Would you like me to continue?",
+          last_assistant_message: "Keep going and finish the cleanup.",
         },
         { cwd },
       );
@@ -1665,7 +1667,7 @@ esac
           session_id: "sess-stop-auto-refire",
           thread_id: "thread-stop-auto-refire",
           turn_id: "turn-stop-auto-refire-1",
-          last_assistant_message: "Would you like me to continue?",
+          last_assistant_message: "Keep going and finish the cleanup.",
         },
         { cwd },
       );
@@ -1678,7 +1680,7 @@ esac
           thread_id: "thread-stop-auto-refire",
           turn_id: "turn-stop-auto-refire-2",
           stop_hook_active: true,
-          last_assistant_message: "If you want, I can keep going and finish the cleanup.",
+          last_assistant_message: "Continue with the cleanup from here.",
         },
         { cwd },
       );
@@ -1686,11 +1688,33 @@ esac
       assert.equal(result.omxEventName, "stop");
       assert.deepEqual(result.outputJson, {
         decision: "block",
-        reason: "yes, proceed",
+        reason: DEFAULT_AUTO_NUDGE_RESPONSE,
         stopReason: "auto_nudge",
         systemMessage:
           "OMX native Stop detected a stall/permission-style handoff and continued the turn automatically.",
       });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not auto-continue native Stop on permission-seeking prompts", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-auto-nudge-permission-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-auto-permission",
+          last_assistant_message: "Would you like me to continue with the cleanup?",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1822,7 +1846,7 @@ esac
           session_id: "sess-stop-auto-stale-root-mode",
           thread_id: "thread-stop-auto-stale-root-mode",
           turn_id: "turn-stop-auto-stale-root-mode-1",
-          last_assistant_message: "Would you like me to continue with the next step?",
+          last_assistant_message: "Keep going and finish the cleanup.",
         },
         { cwd },
       );
@@ -1830,7 +1854,7 @@ esac
       assert.equal(result.omxEventName, "stop");
       assert.deepEqual(result.outputJson, {
         decision: "block",
-        reason: "yes, proceed",
+        reason: DEFAULT_AUTO_NUDGE_RESPONSE,
         stopReason: "auto_nudge",
         systemMessage:
           "OMX native Stop detected a stall/permission-style handoff and continued the turn automatically.",
@@ -1858,7 +1882,7 @@ esac
           session_id: "sess-stop-auto-stale-root-skill",
           thread_id: "thread-stop-auto-stale-root-skill",
           turn_id: "turn-stop-auto-stale-root-skill-1",
-          last_assistant_message: "Would you like me to continue with the next step?",
+          last_assistant_message: "Keep going and finish the cleanup.",
         },
         { cwd },
       );
@@ -1866,7 +1890,7 @@ esac
       assert.equal(result.omxEventName, "stop");
       assert.deepEqual(result.outputJson, {
         decision: "block",
-        reason: "yes, proceed",
+        reason: DEFAULT_AUTO_NUDGE_RESPONSE,
         stopReason: "auto_nudge",
         systemMessage:
           "OMX native Stop detected a stall/permission-style handoff and continued the turn automatically.",
@@ -1900,7 +1924,7 @@ esac
           session_id: "sess-stop-auto-stale-root-lock",
           thread_id: "thread-stop-auto-stale-root-lock",
           turn_id: "turn-stop-auto-stale-root-lock-1",
-          last_assistant_message: "Would you like me to continue with the next step?",
+          last_assistant_message: "Keep going and finish the cleanup.",
         },
         { cwd },
       );
@@ -1908,7 +1932,7 @@ esac
       assert.equal(result.omxEventName, "stop");
       assert.deepEqual(result.outputJson, {
         decision: "block",
-        reason: "yes, proceed",
+        reason: DEFAULT_AUTO_NUDGE_RESPONSE,
         stopReason: "auto_nudge",
         systemMessage:
           "OMX native Stop detected a stall/permission-style handoff and continued the turn automatically.",

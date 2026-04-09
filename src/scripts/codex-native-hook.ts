@@ -27,6 +27,7 @@ import {
   detectStallPattern,
   loadAutoNudgeConfig,
   normalizeAutoNudgeSignatureText,
+  resolveEffectiveAutoNudgeResponse,
 } from "./notify-hook/auto-nudge.js";
 import {
   buildNativePostToolUseOutput,
@@ -1027,13 +1028,14 @@ async function buildStopHookOutput(
       && autoNudgeConfig.enabled
       && detectStallPattern(lastAssistantMessage, autoNudgeConfig.patterns)
     ) {
+      const effectiveResponse = resolveEffectiveAutoNudgeResponse(autoNudgeConfig.response);
       return await maybeReturnRepeatableStopOutput(
         payload,
         stateDir,
         buildRepeatableStopSignature(payload, "auto-nudge", lastAssistantMessage),
         {
           decision: "block",
-          reason: autoNudgeConfig.response,
+          reason: effectiveResponse,
           stopReason: "auto_nudge",
           systemMessage:
             "OMX native Stop detected a stall/permission-style handoff and continued the turn automatically.",
