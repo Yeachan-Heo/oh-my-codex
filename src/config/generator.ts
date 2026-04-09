@@ -134,7 +134,10 @@ function stripRootLevelKeys(config: string, keys: readonly string[]): string {
   const boundary = firstTable >= 0 ? firstTable : lines.length;
 
   const arrayBracketDelta = (line: string): number => {
-    const withoutStrings = line.replace(/"(?:\\.|[^"\\])*"/g, "");
+    const withoutStrings = line.replace(
+      /"(?:\\.|[^"\\])*"|'(?:''|[^'])*'/g,
+      "",
+    );
     const opens = (withoutStrings.match(/\[/g) || []).length;
     const closes = (withoutStrings.match(/\]/g) || []).length;
     return opens - closes;
