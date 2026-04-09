@@ -196,7 +196,7 @@ If a change only affects posture overlays or native agent metadata, document it 
 
 ## Canonical role prompts vs specialized behavior prompts
 
-The main role catalog is the installable specialized-agent set used by `/prompts:name` and native agent generation.
+The main role catalog is the installable specialized-agent set used by native agent generation and internal role prompt composition.
 
 - Files like `prompts/executor.md`, `prompts/planner.md`, and `prompts/architect.md` are canonical XML-tagged role prompt surfaces.
 - `prompts/sisyphus-lite.md` should be treated as a specialized worker-behavior prompt, not as a first-class main catalog role.

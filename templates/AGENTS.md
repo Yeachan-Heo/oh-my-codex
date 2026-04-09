@@ -168,7 +168,7 @@ Rules:
 <invocation_conventions>
 - `$name` — invoke a workflow skill
 - `/skills` — browse available skills
-- `/prompts:name` — advanced specialist role surface when the task already needs a specific agent
+- Prefer skill invocation and keyword routing as the primary user-facing workflow surface
 </invocation_conventions>
 
 <model_routing>
@@ -191,7 +191,7 @@ Key roles:
 - `executor` — implementation and refactoring
 - `verifier` — completion evidence and validation
 
-Specialists remain available through advanced role surfaces such as `/prompts:*` when the task clearly benefits from them.
+Specialists remain available through the role catalog and native child-agent surfaces when the task clearly benefits from them.
 </agent_catalog>
 
 ---
@@ -208,7 +208,7 @@ The `deep-interview` skill is the Socratic deep interview workflow and includes 
 Runtime availability gate:
 - Treat `autopilot`, `ralph`, `ultrawork`, `ultraqa`, `team`/`swarm`, and `ecomode` as **OMX runtime workflows**, not generic prompt aliases.
 - Auto-activate those runtime workflows only when the current session is actually running under OMX CLI/runtime (for example, launched via `omx`, with OMX session overlay/runtime state available, or when the user explicitly asks to run `omx ...` in the shell).
-- In Codex App or plain Codex sessions without OMX runtime, do **not** treat those keywords alone as activation. Explain that they require OMX CLI runtime support, and continue with the nearest App-safe surface (`deep-interview`, `ralplan`, `plan`, `/prompts:*`, or native subagents) unless the user explicitly wants you to launch OMX from the shell.
+- In Codex App or plain Codex sessions without OMX runtime, do **not** treat those keywords alone as activation. Explain that they require OMX CLI runtime support, and continue with the nearest App-safe surface (`deep-interview`, `ralplan`, `plan`, or native subagents) unless the user explicitly wants you to launch OMX from the shell.
 
 | Keyword(s) | Skill | Action |
 |-------------|-------|--------|
@@ -234,7 +234,6 @@ Detection rules:
 - Explicit `$name` invocations run left-to-right and override non-explicit keyword resolution.
 - If multiple non-explicit keywords match, use the most specific match.
 - Runtime-only keywords must pass the runtime availability gate before activation.
-- If the user explicitly invokes `/prompts:<name>`, do not auto-activate keyword skills unless explicit `$name` tokens are also present.
 - The rest of the user message becomes the task description.
 
 Ralph / Ralplan execution gate:
