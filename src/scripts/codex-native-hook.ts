@@ -174,9 +174,12 @@ function formatPhase(value: unknown, fallback = "active"): string {
   return phase || fallback;
 }
 
-async function readActiveRalphState(stateDir: string): Promise<Record<string, unknown> | null> {
+async function readActiveRalphState(
+  stateDir: string,
+  requestedSessionId = "",
+): Promise<Record<string, unknown> | null> {
   const sessionInfo = await readJsonIfExists(join(stateDir, "session.json"));
-  const currentOmxSessionId = safeString(sessionInfo?.session_id).trim();
+  const currentOmxSessionId = requestedSessionId.trim() || safeString(sessionInfo?.session_id).trim();
   if (currentOmxSessionId) {
     const sessionScoped = await readJsonIfExists(
       join(stateDir, "sessions", currentOmxSessionId, "ralph-state.json"),
@@ -189,6 +192,8 @@ async function readActiveRalphState(stateDir: string): Promise<Record<string, un
     ) {
       return sessionScoped;
     }
+
+    return null;
   }
 
   const direct = await readJsonIfExists(join(stateDir, "ralph-state.json"));
@@ -974,7 +979,7 @@ async function buildStopHookOutput(
 
   const sessionId = readPayloadSessionId(payload);
   const threadId = readPayloadThreadId(payload);
-  const ralphState = await readActiveRalphState(stateDir);
+  const ralphState = await readActiveRalphState(stateDir, sessionId);
   const stopHookActive = payload.stop_hook_active === true || payload.stopHookActive === true;
   if (!ralphState) {
     const teamWorkerOutput = await buildTeamWorkerStopOutput(cwd);

@@ -1490,7 +1490,7 @@ esac
     }
   });
 
-  it("returns Stop continuation output while Ralph is active", async () => {
+  it("does not block Stop from root Ralph state when a session id is provided", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -1508,6 +1508,34 @@ esac
           hook_event_name: "Stop",
           cwd,
           session_id: "sess-stop",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("returns Stop continuation output from root Ralph state when no session id is available", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-root-ralph-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        join(stateDir, "ralph-state.json"),
+        JSON.stringify({
+          active: true,
+          current_phase: "executing",
+        }),
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
         },
         { cwd },
       );
@@ -1533,6 +1561,35 @@ esac
       await mkdir(join(stateDir, "sessions", "sess-current"), { recursive: true });
       await mkdir(join(stateDir, "sessions", "sess-stale"), { recursive: true });
       await writeJson(join(stateDir, "session.json"), { session_id: "sess-current" });
+      await writeJson(join(stateDir, "sessions", "sess-stale", "ralph-state.json"), {
+        active: true,
+        current_phase: "starting",
+        session_id: "sess-stale",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-current",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers payload session id over stale session.json owner when evaluating Ralph Stop gating", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-payload-session-ralph-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(join(stateDir, "sessions", "sess-current"), { recursive: true });
+      await mkdir(join(stateDir, "sessions", "sess-stale"), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stale" });
       await writeJson(join(stateDir, "sessions", "sess-stale", "ralph-state.json"), {
         active: true,
         current_phase: "starting",
