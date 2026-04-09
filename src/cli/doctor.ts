@@ -14,6 +14,7 @@ import { getCatalogExpectations } from './catalog-contract.js';
 import { parse as parseToml } from '@iarna/toml';
 import { resolvePackagedExploreHarnessCommand, EXPLORE_BIN_ENV } from './explore.js';
 import { getPackageRoot } from '../utils/package.js';
+import { hasLegacyOmxTeamRunTable } from '../config/generator.js';
 import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
 import { OMX_EXPLORE_CMD_ENV, isExploreCommandRoutingEnabled } from '../hooks/explore-routing.js';
 import { isLeaderRuntimeStale } from '../team/leader-activity.js';
@@ -580,6 +581,15 @@ async function checkConfig(configPath: string): Promise<Check> {
         name: 'Config',
         status: 'fail',
         message: `invalid config.toml (${hint})`,
+      };
+    }
+
+    if (hasLegacyOmxTeamRunTable(content)) {
+      return {
+        name: 'Config',
+        status: 'warn',
+        message:
+          'retired [mcp_servers.omx_team_run] table still present; run "omx setup --force" to repair the config',
       };
     }
 

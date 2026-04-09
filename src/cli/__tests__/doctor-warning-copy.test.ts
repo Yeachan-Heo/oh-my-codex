@@ -66,6 +66,38 @@ command = "node"
     }
   });
 
+  it('warns when the retired omx_team_run table is still present', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-doctor-legacy-team-run-'));
+    try {
+      const home = join(wd, 'home');
+      const codexDir = join(home, '.codex');
+      await mkdir(codexDir, { recursive: true });
+      await writeFile(
+        join(codexDir, 'config.toml'),
+        `
+[mcp_servers.omx_state]
+command = "node"
+
+[mcp_servers.omx_team_run]
+command = "node"
+`.trimStart(),
+      );
+
+      const res = runOmx(wd, ['doctor'], {
+        HOME: home,
+        CODEX_HOME: join(home, '.codex'),
+      });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.match(
+        res.stdout,
+        /Config: retired \[mcp_servers\.omx_team_run\] table still present; run "omx setup --force" to repair the config/,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('warns when explore harness sources are packaged but cargo is unavailable', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-doctor-explore-copy-'));
     try {
