@@ -61,6 +61,17 @@ const GEMINI_APPROVAL_MODE_FLAG = '--approval-mode';
 const GEMINI_APPROVAL_MODE_YOLO = 'yolo';
 const OMX_LEADER_NODE_PATH_ENV = 'OMX_LEADER_NODE_PATH';
 const OMX_LEADER_CLI_PATH_ENV = 'OMX_LEADER_CLI_PATH';
+const TMUX_NO_UNDERLINE_STYLE_FLAGS = [
+  'nounderscore',
+  'nodouble-underscore',
+  'nocurly-underscore',
+  'nodotted-underscore',
+  'nodashed-underscore',
+] as const;
+const TMUX_COPY_MODE_STYLE_OPTIONS = [
+  'mode-style',
+  'copy-mode-selection-style',
+] as const;
 
 export type TeamWorkerCli = 'codex' | 'claude' | 'gemini';
 type TeamWorkerCliMode = 'auto' | TeamWorkerCli;
@@ -276,6 +287,54 @@ async function isWorkerAliveAsync(sessionName: string, workerIndex: number, work
 
 function shellQuoteSingle(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function appendNoUnderlineStyleFlags(style: string): string {
+  const normalized = style
+    .split(/[,\s]+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
+  const combined = [...normalized];
+  for (const flag of TMUX_NO_UNDERLINE_STYLE_FLAGS) {
+    if (!combined.includes(flag)) combined.push(flag);
+  }
+  return combined.join(',');
+}
+
+function sanitizeTmuxStyleOption(sessionTarget: string, optionName: string): boolean {
+  const shown = runTmux(['show-options', '-gv', '-t', sessionTarget, optionName]);
+  if (!shown.ok) return false;
+
+  const current = shown.stdout.trim();
+  if (current === '') return false;
+
+  const sanitized = appendNoUnderlineStyleFlags(current);
+  if (sanitized === current) return true;
+
+  const result = runTmux(['set-option', '-t', sessionTarget, optionName, sanitized]);
+  return result.ok;
+}
+
+/**
+ * Remove underline attributes from tmux copy-mode/session mode styling for an
+ * OMX-managed session. Some terminal/tmux combinations render underlined
+ * spaces as visible underscore glyphs during mouse selection/copy-mode.
+ *
+ * This keeps the user's existing colours/other attrs intact by appending only
+ * the explicit no-underline flags, and stays session-scoped so it does not
+ * mutate global tmux config or other sessions.
+ */
+export function mitigateCopyModeUnderlineArtifacts(sessionTarget: string): boolean {
+  const normalizedTarget = sessionTarget.trim();
+  if (normalizedTarget === '') return false;
+
+  let applied = false;
+  for (const optionName of TMUX_COPY_MODE_STYLE_OPTIONS) {
+    if (sanitizeTmuxStyleOption(normalizedTarget, optionName)) {
+      applied = true;
+    }
+  }
+  return applied;
 }
 
 function quotePowerShellArg(value: string): string {
@@ -745,11 +804,12 @@ export function buildWorkerStartupCommand(
   }
 
   const launchSpec = buildWorkerLaunchSpec(process.env.SHELL);
+  const targetCwd = shellQuoteSingle(translatePathForMsys(cwd));
   const pathPrefix = leaderNodeDir ? `export PATH='${leaderNodeDir}':$PATH; ` : '';
   const quotedArgs = processSpec.args.map(shellQuoteSingle).join(' ');
   const cliInvocation = quotedArgs.length > 0 ? `exec ${processSpec.command} ${quotedArgs}` : `exec ${processSpec.command}`;
   const rcPrefix = launchSpec.rcFile ? `if [ -f ${launchSpec.rcFile} ]; then source ${launchSpec.rcFile}; fi; ` : '';
-  const inner = `${rcPrefix}${pathPrefix}${cliInvocation}`;
+  const inner = `${rcPrefix}cd ${targetCwd} || exit 1; ${pathPrefix}${cliInvocation}`;
   const envParts = Object.entries(processSpec.env).map(([key, value]) => `${key}=${value}`);
 
   return `env ${envParts.map(shellQuoteSingle).join(' ')} ${shellQuoteSingle(launchSpec.shell)} -lc ${shellQuoteSingle(inner)}`;
@@ -1144,6 +1204,11 @@ export function enableMouseScrolling(sessionTarget: string): boolean {
   // Enable OSC 52 so copy-selection-and-cancel propagates selected text to
   // the terminal's clipboard without requiring xclip or pbcopy. (closes #206)
   runTmux(['set-option', '-t', sessionTarget, 'set-clipboard', 'on']);
+
+  // Mouse selection enters tmux copy-mode. Strip underline attrs from the
+  // session-scoped copy/mode styling so terminals that render underlined
+  // spaces as "_" do not leave stray underline artifacts behind. (issue #1448)
+  mitigateCopyModeUnderlineArtifacts(sessionTarget);
 
   return true;
 }
@@ -1547,7 +1612,7 @@ export function notifyLeaderStatus(sessionName: string, message: string): boolea
 
 // Get PID of the shell process in a worker's tmux pane
 export function getWorkerPanePid(sessionName: string, workerIndex: number, workerPaneId?: string): number | null {
-  const result = runTmux(['list-panes', '-t', paneTarget(sessionName, workerIndex, workerPaneId), '-F', '#{pane_pid}']);
+  const result = runTmux(['display-message', '-p', '-t', paneTarget(sessionName, workerIndex, workerPaneId), '#{pane_pid}']);
   if (!result.ok) return null;
 
   const firstLine = result.stdout.split('\n')[0]?.trim();

@@ -1416,6 +1416,9 @@ describe("detached tmux new-session sequencing", () => {
     assert.match(leaderCmd!, /if \[ "\$status" -lt 128 \]; then/);
     assert.match(leaderCmd!, /tmux kill-session -t/);
     assert.match(leaderCmd!, /"omx-demo"/);
+    assert.match(leaderCmd!, /cd /);
+    assert.match(leaderCmd!, /\/tmp\/project/);
+    assert.match(leaderCmd!, /\|\| exit 1;/);
     assert.match(leaderCmd!, /exit \$status/);
   });
 
@@ -1728,7 +1731,7 @@ exit 0
     );
     assert.deepEqual(
       steps.map((step) => step.name),
-      ["set-mouse", "attach-session"],
+      ["set-mouse", "sanitize-copy-mode-style", "attach-session"],
     );
   });
 
@@ -1746,6 +1749,25 @@ exit 0
     assert.equal(
       steps.some((step) => step.args.includes("terminal-overrides")),
       false,
+    );
+  });
+
+  it("buildDetachedSessionFinalizeSteps sanitizes copy-mode styling before attach when mouse mode is enabled", () => {
+    const steps = buildDetachedSessionFinalizeSteps(
+      "omx-demo",
+      "%12",
+      "3",
+      true,
+    );
+    assert.equal(
+      steps.findIndex((step) => step.name === "sanitize-copy-mode-style")
+      > steps.findIndex((step) => step.name === "set-mouse"),
+      true,
+    );
+    assert.equal(
+      steps.findIndex((step) => step.name === "attach-session")
+      > steps.findIndex((step) => step.name === "sanitize-copy-mode-style"),
+      true,
     );
   });
 
@@ -1810,6 +1832,21 @@ describe("buildTmuxPaneCommand", () => {
     assert.ok(
       result.startsWith("'/usr/bin/zsh' -c "),
       "should start with zsh non-login shell to preserve tmux cwd",
+    );
+    assert.ok(!result.includes(" -lc "), "should not use a login shell");
+    assert.ok(result.includes("source ~/.zshrc"), "should source .zshrc");
+    assert.ok(result.includes("exec "), "should exec the command");
+  });
+
+  it("allows Homebrew zsh paths while preserving tmux cwd", () => {
+    const result = buildTmuxPaneCommand(
+      "codex",
+      ["--model", "gpt-5"],
+      "/opt/homebrew/bin/zsh",
+    );
+    assert.ok(
+      result.startsWith("'/opt/homebrew/bin/zsh' -c "),
+      "should preserve Homebrew zsh instead of falling back to /bin/sh",
     );
     assert.ok(!result.includes(" -lc "), "should not use a login shell");
     assert.ok(result.includes("source ~/.zshrc"), "should source .zshrc");

@@ -48,6 +48,8 @@ import {
   waitForWorkerReady,
   paneIsBootstrapping,
   dismissTrustPromptIfPresent,
+  getWorkerPanePid,
+  mitigateCopyModeUnderlineArtifacts,
 } from '../tmux-session.js';
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../../hud/constants.js';
 import * as tmuxSessionModule from '../tmux-session.js';
@@ -169,6 +171,45 @@ describe('chooseTeamLeaderPaneId', () => {
       { paneId: '%3', currentCommand: 'node', startCommand: "node omx hud --watch" },
     ];
     assert.equal(chooseTeamLeaderPaneId(panes, '%2'), '%2');
+  });
+});
+
+describe('getWorkerPanePid', () => {
+  it('queries the targeted pane directly instead of taking the first row from list-panes output', async () => {
+    await withMockTmuxFixture(
+      'omx-tmux-pane-pid-',
+      (tmuxLogPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  display-message)
+    case "$*" in
+      *"-p -t %2 #{pane_pid}"*)
+        echo "4242"
+        exit 0
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    ;;
+  list-panes)
+    printf "1111\\n4242\\n"
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+`,
+      async ({ logPath }) => {
+        assert.equal(getWorkerPanePid('leader:0', 1, '%2'), 4242);
+
+        const tmuxLog = await readFile(logPath, 'utf-8');
+        assert.match(tmuxLog, /display-message -p -t %2 #\{pane_pid\}/);
+        assert.doesNotMatch(tmuxLog, /list-panes -t %2 -F #\{pane_pid\}/);
+      },
+    );
   });
 });
 
@@ -726,6 +767,9 @@ describe('buildWorkerStartupCommand', () => {
       assert.match(cmd, /OMX_TEAM_WORKER=alpha\/worker-2/);
       assert.match(cmd, /'\/bin\/zsh' -lc/);
       assert.match(cmd, /source ~\/\.zshrc/);
+      assert.match(cmd, /cd /);
+      assert.match(cmd, /Workspace\/oh-my-codex/);
+      assert.match(cmd, /\|\| exit 1;/);
       assert.match(cmd, /exec .*codex/);
     } finally {
       if (typeof prevShell === 'string') process.env.SHELL = prevShell;
@@ -772,6 +816,31 @@ describe('buildWorkerStartupCommand', () => {
       );
       assert.match(cmd, /OMX_TEAM_STATE_ROOT=\/tmp\/leader\/\.omx\/state/);
       assert.match(cmd, /OMX_TEAM_LEADER_CWD=\/tmp\/leader/);
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('re-enters the requested worker cwd after shell startup files run', () => {
+    const prevShell = process.env.SHELL;
+    process.env.SHELL = '/bin/bash';
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = buildWorkerStartupCommand(
+        'alpha',
+        1,
+        [],
+        '/tmp/project with spaces',
+      );
+      assert.match(cmd, /source ~\/\.bashrc/);
+      assert.match(cmd, /cd /);
+      assert.match(cmd, /\/tmp\/project with spaces/);
+      assert.match(cmd, /\|\| exit 1;/);
+      assert.match(cmd, /exec .*codex/);
     } finally {
       if (typeof prevShell === 'string') process.env.SHELL = prevShell;
       else delete process.env.SHELL;
@@ -2704,6 +2773,13 @@ describe('enableMouseScrolling session scoping (issue #817)', () => {
       (tmuxLogPath) => `#!/bin/sh
 printf '%s\n' "$*" >> "${tmuxLogPath}"
 case "$1" in
+  show-options)
+    if [ "$2" = "-gv" ] && [ "$3" = "-t" ] && [ "$4" = "omx-team-x" ] && [ "$5" = "mode-style" ]; then
+      printf '%s\n' 'bg=yellow,fg=black,underscore'
+      exit 0
+    fi
+    exit 1
+    ;;
   set-option)
     if [ "$2" = "-t" ]; then
       exit 0
@@ -2720,8 +2796,58 @@ esac
         const tmuxLog = await readFile(logPath, 'utf-8');
         assert.match(tmuxLog, /set-option -t omx-team-x mouse on/);
         assert.match(tmuxLog, /set-option -t omx-team-x set-clipboard on/);
+        assert.match(
+          tmuxLog,
+          /set-option -t omx-team-x mode-style bg=yellow,fg=black,underscore,nounderscore,nodouble-underscore,nocurly-underscore,nodotted-underscore,nodashed-underscore/,
+        );
         assert.doesNotMatch(tmuxLog, /bind-key/);
         assert.doesNotMatch(tmuxLog, /terminal-overrides/);
+      },
+    );
+  });
+});
+
+describe('mitigateCopyModeUnderlineArtifacts', () => {
+  it('best-effort sanitizes copy-mode style options without requiring global tmux changes', async () => {
+    await withMockTmuxFixture(
+      'omx-tmux-sanitize-copy-style-',
+      (tmuxLogPath) => `#!/bin/sh
+printf '%s\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  show-options)
+    if [ "$2" = "-gv" ] && [ "$3" = "-t" ] && [ "$4" = "omx-team-x" ] && [ "$5" = "mode-style" ]; then
+      printf '%s\n' 'bg=yellow,fg=black,underscore'
+      exit 0
+    fi
+    if [ "$2" = "-gv" ] && [ "$3" = "-t" ] && [ "$4" = "omx-team-x" ] && [ "$5" = "copy-mode-selection-style" ]; then
+      printf '%s\n' 'fg=white,bg=blue,curly-underscore'
+      exit 0
+    fi
+    exit 1
+    ;;
+  set-option)
+    if [ "$2" = "-t" ]; then
+      exit 0
+    fi
+    exit 1
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+      async ({ logPath }) => {
+        assert.equal(mitigateCopyModeUnderlineArtifacts('omx-team-x'), true);
+        const tmuxLog = await readFile(logPath, 'utf-8');
+        assert.match(
+          tmuxLog,
+          /set-option -t omx-team-x mode-style bg=yellow,fg=black,underscore,nounderscore,nodouble-underscore,nocurly-underscore,nodotted-underscore,nodashed-underscore/,
+        );
+        assert.match(
+          tmuxLog,
+          /set-option -t omx-team-x copy-mode-selection-style fg=white,bg=blue,curly-underscore,nounderscore,nodouble-underscore,nocurly-underscore,nodotted-underscore,nodashed-underscore/,
+        );
+        assert.doesNotMatch(tmuxLog, /set-option -g/);
       },
     );
   });

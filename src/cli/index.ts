@@ -75,6 +75,8 @@ import {
   isMsysOrGitBash,
   isNativeWindows,
   isTmuxAvailable,
+  mitigateCopyModeUnderlineArtifacts,
+  translatePathForMsys,
 } from "../team/tmux-session.js";
 import { getPackageRoot } from "../utils/package.js";
 import { codexConfigPath, rememberOmxLaunchContext, resolveOmxEntryPath } from "../utils/paths.js";
@@ -226,6 +228,9 @@ const ALLOWED_SHELLS = new Set([
   "/bin/zsh",
   "/bin/dash",
   "/bin/fish",
+  "/opt/homebrew/bin/bash",
+  "/opt/homebrew/bin/zsh",
+  "/opt/homebrew/bin/fish",
   "/usr/bin/sh",
   "/usr/bin/bash",
   "/usr/bin/zsh",
@@ -234,6 +239,7 @@ const ALLOWED_SHELLS = new Set([
   "/usr/local/bin/bash",
   "/usr/local/bin/zsh",
   "/usr/local/bin/fish",
+  "/opt/homebrew/bin/zsh",
 ]);
 const WINDOWS_DETACHED_BOOTSTRAP_DELAY_MS = 2500;
 const CODEX_VERSION_FLAGS = new Set(["--version", "-V"]);
@@ -1549,6 +1555,7 @@ function buildDetachedSessionLeaderCommand(
   sessionName: string,
   codexCmd: string,
 ): string {
+  const leaderCwd = translatePathForMsys(cwd);
   const wrapped = [
     buildTmuxExtendedKeysAcquireShellSnippet(cwd),
     "omx_detached_session_cleanup() {",
@@ -1561,6 +1568,7 @@ function buildDetachedSessionLeaderCommand(
     "exit $status;",
     "};",
     "trap omx_detached_session_cleanup 0;",
+    `cd ${quoteShellArg(leaderCwd)} || exit 1;`,
     codexCmd,
   ].join(" ");
   return `/bin/sh -c ${quoteShellArg(wrapped)}`;
@@ -1824,6 +1832,10 @@ export function buildDetachedSessionFinalizeSteps(
     steps.push({
       name: "set-mouse",
       args: ["set-option", "-t", sessionName, "mouse", "on"],
+    });
+    steps.push({
+      name: "sanitize-copy-mode-style",
+      args: [],
     });
   }
   steps.push({
@@ -2424,6 +2436,14 @@ function runCodex(
             );
           }
           for (const finalizeStep of finalizeSteps) {
+            if (finalizeStep.name === "sanitize-copy-mode-style") {
+              try {
+                mitigateCopyModeUnderlineArtifacts(sessionName);
+              } catch (err) {
+                process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+              }
+              continue;
+            }
             const stdio =
               finalizeStep.name === "attach-session" ? "inherit" : "ignore";
             try {
