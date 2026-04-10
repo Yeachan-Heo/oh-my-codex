@@ -1572,12 +1572,13 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
   if (subcommand === 'shutdown') {
     const name = teamArgs[1];
     if (!name) throw new Error('Usage: omx team shutdown <team-name> [--force] [--confirm-issues]');
+    const sanitizedName = sanitizeTeamName(name);
     const force = teamArgs.includes('--force');
     const confirmIssues = teamArgs.includes('--confirm-issues');
-    const configBeforeShutdown = await readTeamConfig(name, cwd);
+    const configBeforeShutdown = await readTeamConfig(sanitizedName, cwd);
     const summary = await shutdownTeam(name, cwd, { force, confirmIssues });
     await persistTeamShutdownModeState(
-      name,
+      sanitizedName,
       cwd,
       configBeforeShutdown
         ? {
