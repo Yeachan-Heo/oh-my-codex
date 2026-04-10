@@ -3452,6 +3452,10 @@ async function dispatchCriticalInboxInstruction(params: {
   }
   const requiresObservedStartupEvidence = requireWorkerStartupEvidence === true
     && (workerCli === 'claude' || workerCli === 'codex');
+  const startupEvidenceTimeoutMs = resolveWorkerStartupEvidenceTimeoutMs(
+    process.env,
+    resolveWorkerReadyTimeoutMs(process.env),
+  );
   let startupEvidence: WorkerStartupEvidence = 'none';
   if (receipt?.status === 'notified') {
     if (!requiresObservedStartupEvidence) {
@@ -3462,6 +3466,7 @@ async function dispatchCriticalInboxInstruction(params: {
       workerName,
       workerCli,
       cwd,
+      timeoutMs: startupEvidenceTimeoutMs,
     });
     if (startupEvidence !== 'none') {
       return {

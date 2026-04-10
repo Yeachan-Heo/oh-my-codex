@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { updateModeState, startMode, readModeState } from '../modes/base.js';
-import { getBaseStateDir, getStatePath } from '../mcp/state-paths.js';
+import { getStatePath, resolveStateScope } from '../mcp/state-paths.js';
 import { monitorTeam, resumeTeam, shutdownTeam, startTeam, type TeamRuntime, type TeamSnapshot } from '../team/runtime.js';
 import { DEFAULT_MAX_WORKERS } from '../team/state.js';
 import { sanitizeTeamName } from '../team/tmux-session.js';
@@ -1246,8 +1246,9 @@ async function persistTeamShutdownModeState(
 ): Promise<void> {
   const existing = await readModeState('team', cwd);
   if (!existing) {
-    await mkdir(getBaseStateDir(cwd), { recursive: true });
-    const teamStatePath = getStatePath('team', cwd);
+    const scope = await resolveStateScope(cwd);
+    await mkdir(scope.stateDir, { recursive: true });
+    const teamStatePath = getStatePath('team', cwd, scope.sessionId);
     await writeFile(
       teamStatePath,
       JSON.stringify({
