@@ -1635,7 +1635,7 @@ esac
     }
   });
 
-  it("returns Stop continuation output while Ralph is active", async () => {
+  it("returns Stop continuation output while Ralph is active without an explicit session pin", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -1652,7 +1652,6 @@ esac
         {
           hook_event_name: "Stop",
           cwd,
-          session_id: "sess-stop",
         },
         { cwd },
       );
@@ -1735,6 +1734,33 @@ esac
     }
   });
 
+  it("does not block Stop from another session-scoped Ralph state when an explicit session_id has no active Ralph state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-explicit-session-ralph-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(join(stateDir, "sessions", "sess-other"), { recursive: true });
+      await writeJson(join(stateDir, "sessions", "sess-other", "ralph-state.json"), {
+        active: true,
+        current_phase: "starting",
+        session_id: "sess-other",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-current",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not block Stop from root Ralph fallback when the current session has no scoped Ralph state", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-root-fallback-ralph-"));
     try {
@@ -1762,7 +1788,7 @@ esac
     }
   });
 
-  it("ignores mismatched session.json cwd and still blocks from active root Ralph fallback", async () => {
+  it("does not block Stop from root Ralph fallback when an explicit session_id is present and session.json points to another worktree", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-root-fallback-cwd-mismatch-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -1786,14 +1812,7 @@ esac
       );
 
       assert.equal(result.omxEventName, "stop");
-      assert.deepEqual(result.outputJson, {
-        decision: "block",
-        reason:
-          "OMX Ralph is still active (phase: executing); continue the task and gather fresh verification evidence before stopping.",
-        stopReason: "ralph_executing",
-        systemMessage:
-          "OMX Ralph is still active (phase: executing); continue the task and gather fresh verification evidence before stopping.",
-      });
+      assert.equal(result.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

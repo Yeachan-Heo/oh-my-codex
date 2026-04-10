@@ -203,7 +203,7 @@ async function readActiveRalphState(
     }
   }
 
-  if (currentOmxSessionId) return null;
+  if (sessionCandidates.length > 0) return null;
 
   const direct = await readJsonIfExists(join(stateDir, "ralph-state.json"));
   if (direct?.active === true && !TERMINAL_RALPH_PHASES.has(safeString(direct.current_phase).trim().toLowerCase())) {
