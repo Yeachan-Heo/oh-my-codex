@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { updateModeState, startMode, readModeState } from '../modes/base.js';
+import { getBaseStateDir, getStatePath } from '../mcp/state-paths.js';
 import { monitorTeam, resumeTeam, shutdownTeam, startTeam, type TeamRuntime, type TeamSnapshot } from '../team/runtime.js';
 import { DEFAULT_MAX_WORKERS } from '../team/state.js';
 import { sanitizeTeamName } from '../team/tmux-session.js';
@@ -1231,6 +1233,49 @@ async function ensureTeamModeState(
     completed_at: completionStamp,
   });
 
+}
+
+async function persistTeamShutdownModeState(
+  teamName: string,
+  cwd: string,
+  configSnapshot?: {
+    task: string;
+    workerCount: number;
+    agentType: string;
+  } | null,
+): Promise<void> {
+  const existing = await readModeState('team', cwd);
+  if (!existing) {
+    await mkdir(getBaseStateDir(cwd), { recursive: true });
+    const teamStatePath = getStatePath('team', cwd);
+    await writeFile(
+      teamStatePath,
+      JSON.stringify({
+        active: true,
+        mode: 'team',
+        iteration: 0,
+        max_iterations: 50,
+        current_phase: 'starting',
+        task_description: configSnapshot?.task ?? `shutdown team ${teamName}`,
+        started_at: new Date().toISOString(),
+      }, null, 2),
+      'utf-8',
+    );
+  }
+
+  await updateModeState('team', {
+    active: false,
+    current_phase: 'cancelled',
+    completed_at: new Date().toISOString(),
+    team_name: teamName,
+    ...(configSnapshot
+      ? {
+        task_description: configSnapshot.task,
+        agent_count: configSnapshot.workerCount,
+        agent_types: configSnapshot.agentType,
+      }
+      : {}),
+  }, cwd);
 }
 
 

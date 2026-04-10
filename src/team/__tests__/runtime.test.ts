@@ -33,6 +33,7 @@ import {
   applyCreatedInteractiveSessionToConfig,
   resolveWorkerLaunchArgsFromEnv,
   shouldPrekillInteractiveShutdownProcessTrees,
+  resolveWorkerStartupEvidenceTimeoutMs,
   waitForWorkerStartupEvidence,
   waitForClaudeStartupEvidence,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
@@ -40,6 +41,21 @@ import {
 } from '../runtime.js';
 import { resolveTeamLowComplexityDefaultModel } from '../model-contract.js';
 import { readTeamEvents } from '../state/events.js';
+
+describe('resolveWorkerStartupEvidenceTimeoutMs', () => {
+  it('defaults to worker ready timeout without 5s cap', () => {
+    const timeout = resolveWorkerStartupEvidenceTimeoutMs({}, 45_000);
+    assert.equal(timeout, 45_000);
+  });
+
+  it('respects explicit OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS override', () => {
+    const timeout = resolveWorkerStartupEvidenceTimeoutMs(
+      { OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS: '1500' },
+      45_000,
+    );
+    assert.equal(timeout, 1_500);
+  });
+});
 
 async function initRepo(): Promise<string> {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-worktree-repo-'));

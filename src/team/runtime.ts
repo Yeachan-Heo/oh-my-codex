@@ -1234,6 +1234,14 @@ function resolveWorkerReadyTimeoutMs(env: NodeJS.ProcessEnv): number {
   return 45_000;
 }
 
+export function resolveWorkerStartupEvidenceTimeoutMs(
+  env: NodeJS.ProcessEnv,
+  workerReadyTimeoutMs: number,
+): number {
+  const raw = Number.parseInt(String(env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS ?? ''), 10);
+  if (Number.isFinite(raw) && raw >= 500) return raw;
+  return Math.max(STARTUP_EVIDENCE_TIMEOUT_MS, workerReadyTimeoutMs);
+}
 function parseTeamWorkerContext(raw: string | undefined): { teamName: string; workerName: string } | null {
   if (typeof raw !== 'string' || raw.trim() === '') return null;
   const [teamName, workerName] = raw.trim().split('/');
