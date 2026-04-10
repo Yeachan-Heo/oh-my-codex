@@ -1573,12 +1573,19 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     if (!name) throw new Error('Usage: omx team shutdown <team-name> [--force] [--confirm-issues]');
     const force = teamArgs.includes('--force');
     const confirmIssues = teamArgs.includes('--confirm-issues');
+    const configBeforeShutdown = await readTeamConfig(name, cwd);
     const summary = await shutdownTeam(name, cwd, { force, confirmIssues });
-    await updateModeState('team', {
-      active: false,
-      current_phase: 'cancelled',
-      completed_at: new Date().toISOString(),
-    }).catch((error: unknown) => {
+    await persistTeamShutdownModeState(
+      name,
+      cwd,
+      configBeforeShutdown
+        ? {
+          task: configBeforeShutdown.task,
+          workerCount: configBeforeShutdown.worker_count,
+          agentType: configBeforeShutdown.agent_type,
+        }
+        : null,
+    ).catch((error: unknown) => {
       console.warn('[omx] warning: failed to persist team mode shutdown state', {
         team: name,
         error: error instanceof Error ? error.message : String(error),
