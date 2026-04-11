@@ -1250,7 +1250,7 @@ describe("detached tmux new-session sequencing", () => {
     );
     const leaderCmd = steps[0]?.args.at(-1);
     assert.equal(typeof leaderCmd, "string");
-    assert.match(leaderCmd!, /^\/bin\/sh -lc '/);
+    assert.match(leaderCmd!, /^\/bin\/sh -c '/);
     assert.match(leaderCmd!, /acquireTmuxExtendedKeysLease/);
     assert.match(leaderCmd!, /omx_detached_session_cleanup\(\)/);
     assert.match(leaderCmd!, /trap omx_detached_session_cleanup 0 INT TERM HUP/);
@@ -1271,10 +1271,15 @@ describe("detached tmux new-session sequencing", () => {
         join(fakeBin, "codex"),
         `#!/bin/sh
 printf 'codex:%s\\n' "$*" >> "${logPath}"
+printf 'codex-pwd:%s\\n' "$(pwd)" >> "${logPath}"
 exit 0
 `,
       );
       await chmod(join(fakeBin, "codex"), 0o755);
+      await writeFile(
+        join(cwd, ".profile"),
+        "cd ..\n",
+      );
       await writeFile(
         join(fakeBin, "tmux"),
         `#!/bin/sh
@@ -1312,7 +1317,7 @@ exit 0
       const leaderCmd = steps[0]?.args.at(-1);
       assert.equal(typeof leaderCmd, "string");
 
-      execFileSync("/bin/sh", ["-lc", leaderCmd!], {
+      execFileSync("/bin/sh", ["-c", leaderCmd!], {
         cwd,
         env: {
           ...process.env,
@@ -1324,6 +1329,7 @@ exit 0
 
       const log = await readFile(logPath, "utf-8");
       assert.match(log, /codex:--dangerously-bypass-approvals-and-sandbox/);
+      assert.match(log, new RegExp(`codex-pwd:${cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
       assert.match(log, /tmux:display-message -p #\{socket_path\}/);
       assert.match(log, /tmux:show-options -sv extended-keys/);
       assert.match(log, /tmux:set-option -sq extended-keys always/);
@@ -1574,8 +1580,8 @@ describe("buildTmuxPaneCommand", () => {
       "/usr/bin/zsh",
     );
     assert.ok(
-      result.startsWith("'/usr/bin/zsh' -lc "),
-      "should start with zsh login shell",
+      result.startsWith("'/usr/bin/zsh' -c "),
+      "should start with zsh shell wrapper",
     );
     assert.ok(result.includes("source ~/.zshrc"), "should source .zshrc");
     assert.ok(result.includes("exec "), "should exec the command");
@@ -1584,18 +1590,18 @@ describe("buildTmuxPaneCommand", () => {
   it("wraps command with bash profile sourcing for bash shell", () => {
     const result = buildTmuxPaneCommand("codex", [], "/bin/bash");
     assert.ok(
-      result.startsWith("'/bin/bash' -lc "),
-      "should start with bash login shell",
+      result.startsWith("'/bin/bash' -c "),
+      "should start with bash shell wrapper",
     );
     assert.ok(result.includes("source ~/.bashrc"), "should source .bashrc");
     assert.ok(result.includes("exec "), "should exec the command");
   });
 
-  it("skips rc sourcing for unknown shells but still uses login flag", () => {
+  it("skips rc sourcing for unknown shells without using login mode", () => {
     const result = buildTmuxPaneCommand("codex", [], "/bin/fish");
     assert.ok(
-      result.startsWith("'/bin/fish' -lc "),
-      "should start with fish login shell",
+      result.startsWith("'/bin/fish' -c "),
+      "should start with fish shell wrapper",
     );
     assert.ok(!result.includes("source"), "should not source any rc file");
     assert.ok(result.includes("exec "), "should exec the command");
@@ -1604,7 +1610,7 @@ describe("buildTmuxPaneCommand", () => {
   it("falls back to /bin/sh when shell path is empty", () => {
     const result = buildTmuxPaneCommand("codex", [], "");
     assert.ok(
-      result.startsWith("'/bin/sh' -lc "),
+      result.startsWith("'/bin/sh' -c "),
       "should fall back to /bin/sh",
     );
   });
