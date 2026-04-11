@@ -127,6 +127,7 @@ const watcherOwnerToken = `${process.pid}-${startedAt}-${Math.random().toString(
 const RALPH_CONTINUE_TEXT = 'Ralph loop active continue';
 const RALPH_CONTINUE_CADENCE_MS = 60_000;
 const RALPH_STEER_LOCK_STALE_MS = 30_000;
+const RALPH_STARTING_STALE_MS = 120_000;
 const RALPH_TERMINAL_PHASES = new Set(['complete', 'failed', 'cancelled']);
 const QUIET_ONCE_EVENT_TYPES = new Set(['watcher_start', 'watcher_once_complete']);
 
@@ -459,6 +460,19 @@ function hasRalphTerminalState(raw: Record<string, unknown> | null | undefined):
   if (phase && RALPH_TERMINAL_PHASES.has(phase)) return true;
   if (safeString(raw.completed_at).trim()) return true;
   return false;
+}
+
+function hasStaleRalphStartingState(raw: Record<string, unknown> | null | undefined, now = Date.now()): boolean {
+  if (!raw || typeof raw !== 'object' || raw.active !== true) return false;
+  const phase = safeString(raw.current_phase).trim().toLowerCase();
+  if (phase !== 'starting') return false;
+  const anchorIso = safeString(raw.started_at).trim()
+    || safeString(raw.updated_at).trim()
+    || safeString(raw.activated_at).trim();
+  const anchorMs = parseIsoMillis(anchorIso);
+  if (anchorMs === null) return false;
+  if (now <= anchorMs) return false;
+  return now - anchorMs >= RALPH_STARTING_STALE_MS;
 }
 
 async function loadPersistedWatcherState(): Promise<void> {
@@ -1005,6 +1019,10 @@ async function runRalphContinueSteerTick(): Promise<void> {
   };
 
   if (!activeRalph.active) return;
+  if (hasStaleRalphStartingState(activeRalph.state, now)) {
+    lastRalphContinueSteer.last_reason = 'starting_stale';
+    return;
+  }
 
   if (parseIsoMillis(lastRalphContinueSteer.last_sent_at) === null && parseIsoMillis(lastRalphContinueSteer.cooldown_anchor_at) === null) {
     lastRalphContinueSteer.cooldown_anchor_at = startupIso;

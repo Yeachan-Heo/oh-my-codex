@@ -1920,6 +1920,60 @@ exit 0
     }
   });
 
+  it('suppresses Ralph continue steer when session-scoped Ralph is stuck in stale starting phase', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-starting-stale-'));
+    const fakeBinDir = join(wd, 'fake-bin');
+    const tmuxLogPath = join(wd, 'tmux.log');
+    const stateDir = join(wd, '.omx', 'state');
+    const sessionId = 'sess-starting-stale';
+    const sessionStateDir = join(stateDir, 'sessions', sessionId);
+    const watcherStatePath = join(stateDir, 'notify-fallback-state.json');
+    try {
+      await mkdir(sessionStateDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+      await writeSessionStart(wd, sessionId);
+      await writeFile(join(sessionStateDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'starting',
+        started_at: new Date(Date.now() - 180_000).toISOString(),
+        tmux_pane_id: '%42',
+      }, null, 2));
+      await writeFile(join(sessionStateDir, 'hud-state.json'), JSON.stringify({
+        last_progress_at: new Date(Date.now() - 180_000).toISOString(),
+      }, null, 2));
+      await writeFile(watcherStatePath, JSON.stringify({
+        ralph_continue_steer: {
+          last_sent_at: new Date(Date.now() - 61_000).toISOString(),
+        },
+      }, null, 2));
+
+      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+      const run = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
+        {
+          encoding: 'utf-8',
+          env: buildCleanNotifyEnv({
+            PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          }),
+        },
+      );
+      assert.equal(run.status, 0, run.stderr || run.stdout);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
+      const sends = tmuxLog.match(/send-keys -t %42 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/g) || [];
+      assert.equal(sends.length, 0, 'stale starting phase should suppress continue steer');
+
+      const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+      assert.equal(watcherState.ralph_continue_steer?.last_reason, 'starting_stale');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('suppresses Ralph continue steer while tracked native subagents are still active', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-subagents-active-'));
     const fakeBinDir = join(wd, 'fake-bin');
