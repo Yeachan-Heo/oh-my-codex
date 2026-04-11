@@ -128,6 +128,7 @@ const RALPH_CONTINUE_TEXT = 'Ralph loop active continue';
 const RALPH_CONTINUE_CADENCE_MS = 60_000;
 const RALPH_STEER_LOCK_STALE_MS = 30_000;
 const RALPH_TERMINAL_PHASES = new Set(['complete', 'failed', 'cancelled']);
+const RALPH_STARTING_PHASE_TIMEOUT_MS = RALPH_CONTINUE_CADENCE_MS * 2;
 const QUIET_ONCE_EVENT_TYPES = new Set(['watcher_start', 'watcher_once_complete']);
 
 interface WatcherFileMeta {
@@ -457,8 +458,17 @@ function hasRalphTerminalState(raw: Record<string, unknown> | null | undefined):
   if (raw.active !== true) return true;
   const phase = safeString(raw.current_phase).trim().toLowerCase();
   if (phase && RALPH_TERMINAL_PHASES.has(phase)) return true;
+  if (isStaleRalphStartingPhase(raw)) return true;
   if (safeString(raw.completed_at).trim()) return true;
   return false;
+}
+
+function isStaleRalphStartingPhase(raw: Record<string, unknown>): boolean {
+  const phase = safeString(raw.current_phase).trim().toLowerCase();
+  if (phase !== 'starting') return false;
+  const reference = parseIsoMillis(safeString(raw.last_turn_at)) ?? parseIsoMillis(safeString(raw.started_at));
+  if (reference === null) return false;
+  return Date.now() - reference > RALPH_STARTING_PHASE_TIMEOUT_MS;
 }
 
 async function loadPersistedWatcherState(): Promise<void> {
