@@ -123,4 +123,166 @@ describe('CLI session-scoped state parity', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('cancels stale Ralph startup state and clears matching skill-active state', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralph-stale-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-stale' }));
+      await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'starting',
+        started_at: '2026-02-22T00:00:00.000Z',
+        updated_at: '2026-02-22T00:00:00.000Z',
+        thread_id: 'sess-stale',
+      }));
+      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'ralph',
+        phase: 'starting',
+        session_id: 'sess-stale',
+        active_skills: [{ skill: 'ralph', phase: 'starting', active: true, session_id: 'sess-stale' }],
+      }));
+
+      const cancelResult = runOmx(wd, 'cancel', 'ralph', '--stale');
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /Cancelled stale Ralph session\./);
+
+      const ralph = JSON.parse(await readFile(join(stateDir, 'ralph-state.json'), 'utf-8'));
+      assert.equal(ralph.active, false);
+      assert.equal(ralph.current_phase, 'cancelled');
+      assert.ok(typeof ralph.completed_at === 'string' && ralph.completed_at.length > 0);
+
+      const skillState = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8'));
+      assert.equal(skillState.active, false);
+      assert.deepEqual(skillState.active_skills, []);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps normal Ralph cancel behavior when --stale is not provided', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralph-normal-cancel-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-normal' }));
+      await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'executing',
+        started_at: '2026-02-22T00:00:00.000Z',
+        updated_at: '2026-02-22T00:00:00.000Z',
+        thread_id: 'sess-normal',
+      }));
+
+      const cancelResult = runOmx(wd, 'cancel', 'ralph');
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /Cancelled: ralph/);
+
+      const ralph = JSON.parse(await readFile(join(stateDir, 'ralph-state.json'), 'utf-8'));
+      assert.equal(ralph.active, false);
+      assert.equal(ralph.current_phase, 'cancelled');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses stale Ralph cancellation when startup evidence exists', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralph-stale-refuse-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const contextDir = join(wd, '.omx', 'context');
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(contextDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-refuse' }));
+      await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'starting',
+        started_at: '2026-02-22T00:00:00.000Z',
+        updated_at: '2026-02-22T00:00:00.000Z',
+        thread_id: 'sess-refuse',
+        context_snapshot_path: '.omx/context/seed.md',
+      }));
+      await writeFile(join(contextDir, 'seed.md'), '# snapshot\n');
+
+      const cancelResult = runOmx(wd, 'cancel', 'ralph', '--stale');
+      assert.equal(cancelResult.status, 1, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /Refused stale Ralph cancellation\./);
+
+      const ralph = JSON.parse(await readFile(join(stateDir, 'ralph-state.json'), 'utf-8'));
+      assert.equal(ralph.active, true);
+      assert.equal(ralph.current_phase, 'starting');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses stale Ralph cancellation for fresh or actively executing runs', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralph-stale-age-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-fresh' }));
+      await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'starting',
+        started_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        thread_id: 'sess-fresh',
+      }));
+
+      let cancelResult = runOmx(wd, 'cancel', 'ralph', '--stale');
+      assert.equal(cancelResult.status, 1, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /too fresh/);
+
+      await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'executing',
+        started_at: '2026-02-22T00:00:00.000Z',
+        updated_at: '2026-02-22T00:00:00.000Z',
+        thread_id: 'sess-fresh',
+      }));
+
+      cancelResult = runOmx(wd, 'cancel', 'ralph', '--stale');
+      assert.equal(cancelResult.status, 1, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /phase executing/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not mutate unrelated sessions during stale Ralph cancellation', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralph-stale-cross-session-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const otherSessionDir = join(stateDir, 'sessions', 'sess-other');
+      await mkdir(otherSessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-current' }));
+      await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'starting',
+        started_at: '2026-02-22T00:00:00.000Z',
+        updated_at: '2026-02-22T00:00:00.000Z',
+        thread_id: 'sess-current',
+      }));
+      await writeFile(join(otherSessionDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'executing',
+        started_at: '2026-02-22T00:00:00.000Z',
+        session_id: 'sess-other',
+      }));
+
+      const cancelResult = runOmx(wd, 'cancel', 'ralph', '--stale');
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+
+      const currentState = JSON.parse(await readFile(join(stateDir, 'ralph-state.json'), 'utf-8'));
+      const otherState = JSON.parse(await readFile(join(otherSessionDir, 'ralph-state.json'), 'utf-8'));
+      assert.equal(currentState.current_phase, 'cancelled');
+      assert.equal(otherState.active, true);
+      assert.equal(otherState.current_phase, 'executing');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });

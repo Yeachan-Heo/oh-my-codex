@@ -5,6 +5,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { buildManagedCodexHooksConfig } from "../../config/codex-hooks.js";
 import {
   initTeamState,
@@ -23,6 +24,8 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, JSON.stringify(value, null, 2));
 }
 
+const testDir = dirname(fileURLToPath(import.meta.url));
+const omxBin = join(testDir, "..", "..", "cli", "omx.js");
 const TEAM_STOP_COMMIT_GUIDANCE =
   " If system-generated worker auto-checkpoint commits exist, rewrite them into Lore-format final commits before merge/finalization.";
 const DEFAULT_AUTO_NUDGE_RESPONSE =
@@ -1823,6 +1826,74 @@ esac
         systemMessage:
           "OMX Ralph is still active (phase: executing); continue the task and gather fresh verification evidence before stopping.",
       });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("stops blocking Stop after stale Ralph cancellation terminalizes the session", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-stale-cancel-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-stop-stale-cancel");
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-stale-cancel" });
+      await writeJson(join(sessionDir, "ralph-state.json"), {
+        active: true,
+        current_phase: "starting",
+        started_at: "2026-02-22T00:00:00.000Z",
+        updated_at: "2026-02-22T00:00:00.000Z",
+        thread_id: "sess-stop-stale-cancel",
+      });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        active: true,
+        skill: "ralph",
+        phase: "starting",
+        session_id: "sess-stop-stale-cancel",
+        active_skills: [{
+          skill: "ralph",
+          phase: "starting",
+          active: true,
+          session_id: "sess-stop-stale-cancel",
+        }],
+      });
+
+      let result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-stale-cancel",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.deepEqual(result.outputJson, {
+        decision: "block",
+        reason:
+          "OMX Ralph is still active (phase: starting); continue the task and gather fresh verification evidence before stopping.",
+        stopReason: "ralph_starting",
+        systemMessage:
+          "OMX Ralph is still active (phase: starting); continue the task and gather fresh verification evidence before stopping.",
+      });
+
+      execFileSync(process.execPath, [omxBin, "cancel", "ralph", "--stale"], {
+        cwd,
+        stdio: "pipe",
+      });
+
+      result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-stale-cancel",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

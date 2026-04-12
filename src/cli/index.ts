@@ -5,7 +5,7 @@
 
 import { execFileSync, spawn } from "child_process";
 import { basename, dirname, join } from "path";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { constants as osConstants } from "os";
 import { setup, SETUP_SCOPES, type SetupScope } from "./setup.js";
 import { uninstall } from "./uninstall.js";
@@ -45,8 +45,16 @@ import {
   getBaseStateDir,
   getStateDir,
   listModeStateFilesWithScopePreference,
+  readCurrentSessionId,
 } from "../mcp/state-paths.js";
-import { SKILL_ACTIVE_STATE_MODE, syncCanonicalSkillStateForMode } from "../state/skill-active.js";
+import {
+  SKILL_ACTIVE_STATE_MODE,
+  getSkillActiveStatePaths,
+  listActiveSkills,
+  readSkillActiveState,
+  syncCanonicalSkillStateForMode,
+  writeSkillActiveStateCopies,
+} from "../state/skill-active.js";
 import { isTrackedWorkflowMode } from "../state/workflow-transition.js";
 import { maybeCheckAndPromptUpdate } from "./update.js";
 import { maybePromptGithubStar } from "./star-prompt.js";
@@ -175,6 +183,7 @@ Usage:
   omx help      Show this help message
   omx status    Show active modes and state
   omx cancel    Cancel active execution modes
+                Use \`omx cancel ralph --stale\` for a Ralph session stuck in \`starting\`
   omx reasoning Show or set model reasoning effort (low|medium|high|xhigh)
 
 Options:
@@ -759,7 +768,7 @@ export async function main(args: string[]): Promise<void> {
         await showStatus();
         break;
       case "cancel":
-        await cancelModes();
+        await cancelModes(args.slice(1));
         break;
       case "reasoning":
         await reasoningCommand(args.slice(1));
@@ -3277,11 +3286,215 @@ async function flushHookDerivedWatcherOnce(cwd: string): Promise<void> {
   });
 }
 
-async function cancelModes(): Promise<void> {
+const RALPH_STALE_MIN_AGE_MS = 2 * 60 * 1000;
+
+function asTrimmedString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function resolveRepoPath(cwd: string, value: unknown): string {
+  const candidate = asTrimmedString(value);
+  if (!candidate) return "";
+  return candidate.startsWith("/") ? candidate : join(cwd, candidate);
+}
+
+function existingEvidencePath(cwd: string, value: unknown): string {
+  const resolved = resolveRepoPath(cwd, value);
+  return resolved && existsSync(resolved) ? resolved : "";
+}
+
+function latestTimestampMs(state: Record<string, unknown> | undefined): number | null {
+  const timestamps = [
+    state?.updated_at,
+    state?.last_turn_at,
+    state?.started_at,
+  ]
+    .map((value) => Date.parse(asTrimmedString(value)))
+    .filter((value) => Number.isFinite(value));
+  if (timestamps.length === 0) return null;
+  return Math.max(...timestamps);
+}
+
+function ralphStateEvidenceReason(cwd: string, state: Record<string, unknown> | undefined): string {
+  const directContextPath = existingEvidencePath(cwd, state?.context_snapshot_path);
+  if (directContextPath) {
+    return `context snapshot exists at ${directContextPath}`;
+  }
+
+  const contextDir = join(cwd, ".omx", "context");
+  if (existsSync(contextDir) && readdirSync(contextDir).some((entry) => entry !== "." && entry !== "..")) {
+    return "context snapshot directory is not empty";
+  }
+
+  const directPlanPath = existingEvidencePath(cwd, state?.approved_plan_path);
+  if (directPlanPath) return `approved plan exists at ${directPlanPath}`;
+
+  const canonicalPrdPath = existingEvidencePath(cwd, state?.canonical_prd_path);
+  if (canonicalPrdPath) return `canonical PRD exists at ${canonicalPrdPath}`;
+
+  const canonicalProgressPath = existingEvidencePath(cwd, state?.canonical_progress_path);
+  if (canonicalProgressPath) return `canonical progress exists at ${canonicalProgressPath}`;
+
+  const approvedTestSpec = Array.isArray(state?.approved_test_spec_paths)
+    ? state.approved_test_spec_paths
+      .map((value) => existingEvidencePath(cwd, value))
+      .find(Boolean)
+    : "";
+  if (approvedTestSpec) return `approved test spec exists at ${approvedTestSpec}`;
+
+  const approvedDeepInterviewSpec = Array.isArray(state?.approved_deep_interview_spec_paths)
+    ? state.approved_deep_interview_spec_paths
+      .map((value) => existingEvidencePath(cwd, value))
+      .find(Boolean)
+    : "";
+  if (approvedDeepInterviewSpec) {
+    return `approved deep-interview spec exists at ${approvedDeepInterviewSpec}`;
+  }
+
+  return "";
+}
+
+function parseCancelModeArgs(args: string[]): {
+  targetMode: string;
+  stale: boolean;
+} {
+  let targetMode = "";
+  let stale = false;
+  for (const arg of args) {
+    const token = asTrimmedString(arg);
+    if (!token) continue;
+    if (token === "--stale") {
+      stale = true;
+      continue;
+    }
+    if (!token.startsWith("-") && !targetMode) {
+      targetMode = token;
+    }
+  }
+  return { targetMode, stale };
+}
+
+function readJsonFile(path: string): Record<string, unknown> | null {
+  if (!path || !existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function shouldRefuseRalphStaleCancel(
+  cwd: string,
+  sessionId: string | undefined,
+  state: Record<string, unknown> | undefined,
+  states: Map<string, {
+    path: string;
+    scope: "root" | "session";
+    state: Record<string, unknown>;
+  }>,
+): string {
+  if (!state || state.active !== true) {
+    return "Ralph is not active in the current session scope";
+  }
+
+  const ownerSession = asTrimmedString(state.owner_omx_session_id)
+    || asTrimmedString(state.session_id)
+    || asTrimmedString(state.thread_id);
+  if (sessionId && ownerSession && ownerSession !== sessionId) {
+    return "a different session owns the active Ralph state";
+  }
+
+  const phase = asTrimmedString(state.current_phase);
+  if (phase !== "starting") {
+    return phase ? `Ralph is in phase ${phase}` : "Ralph phase is not starting";
+  }
+
+  if (states.get("ultrawork")?.state?.active === true || states.get("ecomode")?.state?.active === true) {
+    return "linked execution mode is still active";
+  }
+
+  const evidenceReason = ralphStateEvidenceReason(cwd, state);
+  if (evidenceReason) return evidenceReason;
+
+  const latestTimestamp = latestTimestampMs(state);
+  if (latestTimestamp == null || !Number.isFinite(latestTimestamp)) {
+    return "Ralph state has no timestamp evidence";
+  }
+  if (Date.now() - latestTimestamp < RALPH_STALE_MIN_AGE_MS) {
+    return "Ralph state is too fresh to classify as stale";
+  }
+
+  return "";
+}
+
+function terminalizeModeState(
+  entry: {
+    path: string;
+    scope: "root" | "session";
+    state: Record<string, unknown>;
+  } | undefined,
+  nowIso: string,
+  phase: string = "cancelled",
+): boolean {
+  if (!entry) return false;
+  const needsChange =
+    entry.state.active !== false
+    || entry.state.current_phase !== phase
+    || typeof entry.state.completed_at !== "string"
+    || String(entry.state.completed_at).trim() === "";
+  if (!needsChange) return false;
+  entry.state.active = false;
+  entry.state.current_phase = phase;
+  entry.state.completed_at = nowIso;
+  entry.state.last_turn_at = nowIso;
+  writeFileSync(entry.path, JSON.stringify(entry.state, null, 2));
+  return true;
+}
+
+async function deactivateCanonicalSkillEntry(
+  cwd: string,
+  skill: string,
+  sessionId: string | undefined,
+  nowIso: string,
+): Promise<boolean> {
+  const { rootPath, sessionPath } = getSkillActiveStatePaths(cwd, sessionId);
+  const visibleState = sessionPath && existsSync(sessionPath)
+    ? await readSkillActiveState(sessionPath)
+    : await readSkillActiveState(rootPath);
+  if (!visibleState) return false;
+
+  const entries = listActiveSkills(visibleState);
+  const filtered = entries.filter((entry) => {
+    if (entry.skill !== skill) return true;
+    const entrySession = asTrimmedString(entry.session_id);
+    const visibleSession = asTrimmedString(visibleState.session_id);
+    if (sessionId && entrySession && entrySession !== sessionId) return true;
+    if (sessionId && !entrySession && visibleSession && visibleSession !== sessionId) return true;
+    return false;
+  });
+
+  if (filtered.length === entries.length && visibleState.active !== true) return false;
+
+  const primary = filtered[0];
+  await writeSkillActiveStateCopies(cwd, {
+    ...visibleState,
+    active: filtered.length > 0,
+    skill: primary?.skill || asTrimmedString(visibleState.skill) || skill,
+    phase: primary?.phase || "",
+    activated_at: primary?.activated_at || asTrimmedString(visibleState.activated_at) || nowIso,
+    updated_at: nowIso,
+    session_id: sessionId || asTrimmedString(visibleState.session_id) || undefined,
+    active_skills: filtered,
+  }, sessionId || undefined);
+  return true;
+}
+
+async function cancelModes(args: string[] = []): Promise<void> {
   const { writeFile, readFile } = await import("fs/promises");
   const cwd = process.cwd();
   const nowIso = new Date().toISOString();
   try {
+    const { targetMode, stale } = parseCancelModeArgs(args);
     const refs = await listModeStateFilesWithScopePreference(cwd);
     const states = new Map<
       string,
@@ -3306,6 +3519,63 @@ async function cancelModes(): Promise<void> {
         scope: ref.scope,
         state: parsedState,
       });
+    }
+
+    if (stale) {
+      if (targetMode !== "ralph") {
+        console.log("Refused stale Ralph cancellation.");
+        console.log("reason: use `omx cancel ralph --stale`");
+        console.log("next: use `omx cancel ralph`");
+        process.exitCode = 1;
+        return;
+      }
+
+      const sessionId = await readCurrentSessionId(cwd);
+      const ralphEntry = states.get("ralph");
+      const refusalReason = shouldRefuseRalphStaleCancel(cwd, sessionId, ralphEntry?.state, states);
+      if (refusalReason) {
+        console.log("Refused stale Ralph cancellation.");
+        console.log(`reason: ${refusalReason}`);
+        console.log("next: use `omx cancel ralph`");
+        process.exitCode = 1;
+        return;
+      }
+
+      const cleared: string[] = [];
+      if (terminalizeModeState(ralphEntry, nowIso)) {
+        cleared.push(ralphEntry?.scope === "session" ? "session ralph-state" : "legacy global ralph-state");
+      }
+
+      const rootRalphPath = join(getBaseStateDir(cwd), "ralph-state.json");
+      if (ralphEntry?.path !== rootRalphPath) {
+        const rootRalphState = readJsonFile(rootRalphPath);
+        const rootReason = shouldRefuseRalphStaleCancel(cwd, sessionId, rootRalphState ?? undefined, states);
+        if (!rootReason && rootRalphState) {
+          const rootEntry = {
+            path: rootRalphPath,
+            scope: "root" as const,
+            state: rootRalphState,
+          };
+          if (terminalizeModeState(rootEntry, nowIso)) {
+            cleared.push("legacy global ralph-state");
+          }
+        }
+      }
+
+      if (await deactivateCanonicalSkillEntry(cwd, "ralph", sessionId, nowIso)) {
+        cleared.push("matching skill-active-state");
+      }
+
+      console.log("Cancelled stale Ralph session.");
+      console.log(`session_id: ${sessionId || "root"}`);
+      console.log("reason: stuck_in_starting_without_execution_artifacts");
+      if (cleared.length > 0) {
+        console.log("cleared:");
+        for (const item of cleared) {
+          console.log(`  - ${item}`);
+        }
+      }
+      return;
     }
 
     const changed = new Set<string>();
