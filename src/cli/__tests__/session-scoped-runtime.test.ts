@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile, readFile } from 'fs/promises';
 import { dirname, join } from 'path';
+import { resolveRepoPath } from '../index.js';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
@@ -18,6 +19,13 @@ function runOmx(cwd: string, ...args: string[]) {
 }
 
 describe('CLI session-scoped state parity', () => {
+  it('treats Windows drive-letter evidence paths as absolute when resolving stale evidence', () => {
+    assert.equal(
+      resolveRepoPath('/repo/worktree', 'C:\\Users\\alice\\project\\.omx\\plans\\prd.md'),
+      'C:\\Users\\alice\\project\\.omx\\plans\\prd.md',
+    );
+  });
+
   it('status and cancel include session-scoped states', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-session-scope-'));
     try {
@@ -157,6 +165,55 @@ describe('CLI session-scoped state parity', () => {
       const skillState = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8'));
       assert.equal(skillState.active, false);
       assert.deepEqual(skillState.active_skills, []);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves unrelated root skill entries when cancelling scoped stale Ralph state', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralph-stale-root-skill-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-current';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(sessionDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'starting',
+        started_at: '2026-02-22T00:00:00.000Z',
+        updated_at: '2026-02-22T00:00:00.000Z',
+        session_id: sessionId,
+      }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'ralph',
+        phase: 'starting',
+        session_id: sessionId,
+        active_skills: [{ skill: 'ralph', phase: 'starting', active: true, session_id: sessionId }],
+      }));
+      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'deep-interview',
+        phase: 'planning',
+        active_skills: [{ skill: 'deep-interview', phase: 'planning', active: true, session_id: '' }],
+      }));
+
+      const cancelResult = runOmx(wd, 'cancel', 'ralph', '--stale');
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /Cancelled stale Ralph session\./);
+
+      const rootSkillState = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8'));
+      assert.equal(rootSkillState.active, true);
+      assert.equal(rootSkillState.skill, 'deep-interview');
+      assert.equal(rootSkillState.active_skills.length, 1);
+      assert.equal(rootSkillState.active_skills[0].skill, 'deep-interview');
+      assert.equal(rootSkillState.active_skills[0].phase, 'planning');
+      assert.equal(rootSkillState.active_skills[0].active, true);
+
+      const sessionSkillState = JSON.parse(await readFile(join(sessionDir, 'skill-active-state.json'), 'utf-8'));
+      assert.equal(sessionSkillState.active, false);
+      assert.deepEqual(sessionSkillState.active_skills, []);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

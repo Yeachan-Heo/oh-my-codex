@@ -4,7 +4,7 @@
  */
 
 import { execFileSync, spawn } from "child_process";
-import { basename, dirname, join } from "path";
+import { basename, dirname, isAbsolute, join, win32 } from "path";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { constants as osConstants } from "os";
 import { setup, SETUP_SCOPES, type SetupScope } from "./setup.js";
@@ -3292,10 +3292,10 @@ function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function resolveRepoPath(cwd: string, value: unknown): string {
+export function resolveRepoPath(cwd: string, value: unknown): string {
   const candidate = asTrimmedString(value);
   if (!candidate) return "";
-  return candidate.startsWith("/") ? candidate : join(cwd, candidate);
+  return isAbsolute(candidate) || win32.isAbsolute(candidate) ? candidate : join(cwd, candidate);
 }
 
 function existingEvidencePath(cwd: string, value: unknown): string {
@@ -3464,6 +3464,36 @@ function isTerminalizedModeEntry(
   return phase === "cancelled" || phase === "failed" || phase === "complete";
 }
 
+function rebuildSkillActiveState(
+  base: Record<string, unknown> | undefined,
+  entries: Array<{
+    skill?: string;
+    phase?: string;
+    activated_at?: string;
+    session_id?: string;
+    thread_id?: string;
+    turn_id?: string;
+  }>,
+  fallbackSkill: string,
+  nowIso: string,
+): Record<string, unknown> {
+  const currentPrimary = asTrimmedString(base?.skill);
+  const primary = entries.find((entry) => asTrimmedString(entry.skill) === currentPrimary) ?? entries[0];
+  return {
+    ...(base ?? {}),
+    version: typeof base?.version === "number" ? base.version : 1,
+    active: entries.length > 0,
+    skill: asTrimmedString(primary?.skill) || currentPrimary || fallbackSkill,
+    phase: asTrimmedString(primary?.phase) || "",
+    activated_at: asTrimmedString(primary?.activated_at) || asTrimmedString(base?.activated_at) || nowIso,
+    updated_at: nowIso,
+    session_id: asTrimmedString(primary?.session_id) || undefined,
+    thread_id: asTrimmedString(primary?.thread_id) || asTrimmedString(base?.thread_id) || undefined,
+    turn_id: asTrimmedString(primary?.turn_id) || asTrimmedString(base?.turn_id) || undefined,
+    active_skills: entries,
+  };
+}
+
 async function deactivateCanonicalSkillEntry(
   cwd: string,
   skill: string,
@@ -3490,17 +3520,40 @@ async function deactivateCanonicalSkillEntry(
 
     if (filtered.length === entries.length && visibleState.active !== true) return false;
 
-    const primary = filtered[0];
-    await writeSkillActiveStateCopies(cwd, {
-      ...visibleState,
-      active: filtered.length > 0,
-      skill: primary?.skill || asTrimmedString(visibleState.skill) || skill,
-      phase: primary?.phase || "",
-      activated_at: primary?.activated_at || asTrimmedString(visibleState.activated_at) || nowIso,
-      updated_at: nowIso,
-      session_id: targetSessionId || asTrimmedString(visibleState.session_id) || undefined,
-      active_skills: filtered,
-    }, targetSessionId || undefined);
+    const nextVisibleState = rebuildSkillActiveState(
+      visibleState,
+      filtered,
+      skill,
+      nowIso,
+    );
+
+    if (targetSessionId) {
+      const rootState = await readSkillActiveState(rootPath);
+      if (!rootState) {
+        writeFileSync(path, JSON.stringify({ version: 1, ...nextVisibleState }, null, 2));
+        return true;
+      }
+
+      const rootEntries = listActiveSkills(rootState);
+      const filteredRootEntries = rootEntries.filter((entry) => {
+        if (entry.skill !== skill) return true;
+        const entrySession = asTrimmedString(entry.session_id);
+        if (entrySession) return entrySession !== targetSessionId;
+        const rootVisibleSession = asTrimmedString(rootState.session_id);
+        if (rootVisibleSession) return rootVisibleSession !== targetSessionId;
+        return true;
+      });
+      const nextRootState = rebuildSkillActiveState(
+        rootState,
+        filteredRootEntries,
+        skill,
+        nowIso,
+      );
+      await writeSkillActiveStateCopies(cwd, nextVisibleState, targetSessionId, nextRootState);
+      return true;
+    }
+
+    await writeSkillActiveStateCopies(cwd, nextVisibleState, undefined, nextVisibleState);
     return true;
   };
 
