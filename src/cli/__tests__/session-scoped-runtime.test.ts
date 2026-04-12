@@ -285,4 +285,97 @@ describe('CLI session-scoped state parity', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('cancels stale root Ralph state when the current session has no scoped Ralph entry', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralph-stale-root-fallback-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      await mkdir(join(stateDir, 'sessions', 'sess-current'), { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-current' }));
+      await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'starting',
+        started_at: '2026-02-22T00:00:00.000Z',
+        updated_at: '2026-02-22T00:00:00.000Z',
+        thread_id: 'sess-current',
+      }));
+      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'ralph',
+        phase: 'starting',
+        session_id: '',
+        active_skills: [{ skill: 'ralph', phase: 'starting', active: true, session_id: '' }],
+      }));
+
+      const cancelResult = runOmx(wd, 'cancel', 'ralph', '--stale');
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /Cancelled stale Ralph session\./);
+
+      const ralph = JSON.parse(await readFile(join(stateDir, 'ralph-state.json'), 'utf-8'));
+      assert.equal(ralph.active, false);
+      assert.equal(ralph.current_phase, 'cancelled');
+
+      const skillState = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8'));
+      assert.equal(skillState.active, false);
+      assert.deepEqual(skillState.active_skills, []);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('cancels stale root Ralph state when the current session already has terminal scoped Ralph state', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralph-stale-root-terminal-scoped-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', 'sess-current');
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-current' }));
+      await writeFile(join(sessionDir, 'ralph-state.json'), JSON.stringify({
+        active: false,
+        current_phase: 'cancelled',
+        started_at: '2026-02-22T00:00:00.000Z',
+        updated_at: '2026-02-22T00:00:00.000Z',
+        session_id: 'sess-current',
+      }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: false,
+        skill: 'ralph',
+        phase: '',
+        session_id: 'sess-current',
+        active_skills: [],
+      }));
+      await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'starting',
+        started_at: '2026-02-22T00:00:00.000Z',
+        updated_at: '2026-02-22T00:00:00.000Z',
+        thread_id: 'sess-current',
+      }));
+      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'ralph',
+        phase: 'starting',
+        session_id: '',
+        active_skills: [{ skill: 'ralph', phase: 'starting', active: true, session_id: '' }],
+      }));
+
+      const cancelResult = runOmx(wd, 'cancel', 'ralph', '--stale');
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /Cancelled stale Ralph session\./);
+
+      const rootRalph = JSON.parse(await readFile(join(stateDir, 'ralph-state.json'), 'utf-8'));
+      assert.equal(rootRalph.active, false);
+      assert.equal(rootRalph.current_phase, 'cancelled');
+
+      const rootSkillState = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8'));
+      assert.equal(rootSkillState.active, false);
+      assert.deepEqual(rootSkillState.active_skills, []);
+
+      const scopedRalph = JSON.parse(await readFile(join(sessionDir, 'ralph-state.json'), 'utf-8'));
+      assert.equal(scopedRalph.active, false);
+      assert.equal(scopedRalph.current_phase, 'cancelled');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
