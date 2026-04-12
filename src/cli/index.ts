@@ -3451,6 +3451,19 @@ function terminalizeModeState(
   return true;
 }
 
+function isTerminalizedModeEntry(
+  entry: {
+    path: string;
+    scope: "root" | "session";
+    state: Record<string, unknown>;
+  } | undefined,
+): boolean {
+  if (!entry) return true;
+  if (entry.state.active !== true) return true;
+  const phase = asTrimmedString(entry.state.current_phase).toLowerCase();
+  return phase === "cancelled" || phase === "failed" || phase === "complete";
+}
+
 async function deactivateCanonicalSkillEntry(
   cwd: string,
   skill: string,
@@ -3458,35 +3471,43 @@ async function deactivateCanonicalSkillEntry(
   nowIso: string,
 ): Promise<boolean> {
   const { rootPath, sessionPath } = getSkillActiveStatePaths(cwd, sessionId);
-  const visibleState = sessionPath && existsSync(sessionPath)
-    ? await readSkillActiveState(sessionPath)
-    : await readSkillActiveState(rootPath);
-  if (!visibleState) return false;
+  const updateStateAtPath = async (
+    path: string,
+    targetSessionId: string | undefined,
+  ): Promise<boolean> => {
+    const visibleState = await readSkillActiveState(path);
+    if (!visibleState) return false;
 
-  const entries = listActiveSkills(visibleState);
-  const filtered = entries.filter((entry) => {
-    if (entry.skill !== skill) return true;
-    const entrySession = asTrimmedString(entry.session_id);
-    const visibleSession = asTrimmedString(visibleState.session_id);
-    if (sessionId && entrySession && entrySession !== sessionId) return true;
-    if (sessionId && !entrySession && visibleSession && visibleSession !== sessionId) return true;
-    return false;
-  });
+    const entries = listActiveSkills(visibleState);
+    const filtered = entries.filter((entry) => {
+      if (entry.skill !== skill) return true;
+      const entrySession = asTrimmedString(entry.session_id);
+      const visibleSession = asTrimmedString(visibleState.session_id);
+      if (targetSessionId && entrySession && entrySession !== targetSessionId) return true;
+      if (targetSessionId && !entrySession && visibleSession && visibleSession !== targetSessionId) return true;
+      return false;
+    });
 
-  if (filtered.length === entries.length && visibleState.active !== true) return false;
+    if (filtered.length === entries.length && visibleState.active !== true) return false;
 
-  const primary = filtered[0];
-  await writeSkillActiveStateCopies(cwd, {
-    ...visibleState,
-    active: filtered.length > 0,
-    skill: primary?.skill || asTrimmedString(visibleState.skill) || skill,
-    phase: primary?.phase || "",
-    activated_at: primary?.activated_at || asTrimmedString(visibleState.activated_at) || nowIso,
-    updated_at: nowIso,
-    session_id: sessionId || asTrimmedString(visibleState.session_id) || undefined,
-    active_skills: filtered,
-  }, sessionId || undefined);
-  return true;
+    const primary = filtered[0];
+    await writeSkillActiveStateCopies(cwd, {
+      ...visibleState,
+      active: filtered.length > 0,
+      skill: primary?.skill || asTrimmedString(visibleState.skill) || skill,
+      phase: primary?.phase || "",
+      activated_at: primary?.activated_at || asTrimmedString(visibleState.activated_at) || nowIso,
+      updated_at: nowIso,
+      session_id: targetSessionId || asTrimmedString(visibleState.session_id) || undefined,
+      active_skills: filtered,
+    }, targetSessionId || undefined);
+    return true;
+  };
+
+  if (sessionPath && existsSync(sessionPath) && await updateStateAtPath(sessionPath, sessionId)) {
+    return true;
+  }
+  return await updateStateAtPath(rootPath, undefined);
 }
 
 async function cancelModes(args: string[] = []): Promise<void> {
@@ -3532,8 +3553,31 @@ async function cancelModes(args: string[] = []): Promise<void> {
 
       const sessionId = await readCurrentSessionId(cwd);
       const ralphEntry = states.get("ralph");
+      const rootRalphPath = join(getBaseStateDir(cwd), "ralph-state.json");
+      const rootRalphState = ralphEntry?.path === rootRalphPath
+        ? undefined
+        : readJsonFile(rootRalphPath);
+      const rootEntry = rootRalphState
+        ? {
+          path: rootRalphPath,
+          scope: "root" as const,
+          state: rootRalphState,
+        }
+        : undefined;
+
       const refusalReason = shouldRefuseRalphStaleCancel(cwd, sessionId, ralphEntry?.state, states);
-      if (refusalReason) {
+      const rootReason = rootEntry
+        ? shouldRefuseRalphStaleCancel(cwd, sessionId, rootEntry.state, states)
+        : "Ralph is not active in the current session scope";
+      const chosenEntry = !refusalReason
+        ? ralphEntry
+        : (
+          isTerminalizedModeEntry(ralphEntry) && !rootReason
+            ? rootEntry
+            : undefined
+        );
+
+      if (!chosenEntry) {
         console.log("Refused stale Ralph cancellation.");
         console.log(`reason: ${refusalReason}`);
         console.log("next: use `omx cancel ralph`");
@@ -3542,23 +3586,13 @@ async function cancelModes(args: string[] = []): Promise<void> {
       }
 
       const cleared: string[] = [];
-      if (terminalizeModeState(ralphEntry, nowIso)) {
-        cleared.push(ralphEntry?.scope === "session" ? "session ralph-state" : "legacy global ralph-state");
+      if (terminalizeModeState(chosenEntry, nowIso)) {
+        cleared.push(chosenEntry.scope === "session" ? "session ralph-state" : "legacy global ralph-state");
       }
 
-      const rootRalphPath = join(getBaseStateDir(cwd), "ralph-state.json");
-      if (ralphEntry?.path !== rootRalphPath) {
-        const rootRalphState = readJsonFile(rootRalphPath);
-        const rootReason = shouldRefuseRalphStaleCancel(cwd, sessionId, rootRalphState ?? undefined, states);
-        if (!rootReason && rootRalphState) {
-          const rootEntry = {
-            path: rootRalphPath,
-            scope: "root" as const,
-            state: rootRalphState,
-          };
-          if (terminalizeModeState(rootEntry, nowIso)) {
-            cleared.push("legacy global ralph-state");
-          }
+      if (rootEntry?.path !== chosenEntry.path && !rootReason) {
+        if (terminalizeModeState(rootEntry, nowIso)) {
+          cleared.push("legacy global ralph-state");
         }
       }
 
