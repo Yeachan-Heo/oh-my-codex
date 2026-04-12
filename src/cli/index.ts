@@ -3541,7 +3541,7 @@ async function deactivateCanonicalSkillEntry(
         if (entrySession) return entrySession !== targetSessionId;
         const rootVisibleSession = asTrimmedString(rootState.session_id);
         if (rootVisibleSession) return rootVisibleSession !== targetSessionId;
-        return true;
+        return false;
       });
       const nextRootState = rebuildSkillActiveState(
         rootState,

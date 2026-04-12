@@ -219,6 +219,53 @@ describe('CLI session-scoped state parity', () => {
     }
   });
 
+  it('clears a stale root Ralph skill entry when scoped stale cleanup targets a different visible session skill', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralph-stale-root-global-skill-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-current';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(sessionDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'starting',
+        started_at: '2026-02-22T00:00:00.000Z',
+        updated_at: '2026-02-22T00:00:00.000Z',
+        session_id: sessionId,
+      }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'deep-interview',
+        phase: 'planning',
+        session_id: sessionId,
+        active_skills: [{ skill: 'deep-interview', phase: 'planning', active: true, session_id: sessionId }],
+      }));
+      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'ralph',
+        phase: 'starting',
+        active_skills: [{ skill: 'ralph', phase: 'starting', active: true }],
+      }));
+
+      const cancelResult = runOmx(wd, 'cancel', 'ralph', '--stale');
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /Cancelled stale Ralph session\./);
+
+      const rootSkillState = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8'));
+      assert.equal(rootSkillState.active, false);
+      assert.deepEqual(rootSkillState.active_skills, []);
+
+      const sessionSkillState = JSON.parse(await readFile(join(sessionDir, 'skill-active-state.json'), 'utf-8'));
+      assert.equal(sessionSkillState.active, true);
+      assert.equal(sessionSkillState.skill, 'deep-interview');
+      assert.equal(sessionSkillState.active_skills.length, 1);
+      assert.equal(sessionSkillState.active_skills[0].skill, 'deep-interview');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('keeps normal Ralph cancel behavior when --stale is not provided', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralph-normal-cancel-'));
     try {
