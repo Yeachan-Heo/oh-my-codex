@@ -268,10 +268,12 @@ function isInlineShellEnvAssignment(token: string): boolean {
 }
 
 function isGitExecutableToken(token: string): boolean {
-  if (token.toLowerCase() === "git") return true;
+  const lowerToken = token.toLowerCase();
+  if (lowerToken === "git" || lowerToken === "git.exe") return true;
   const normalized = token.replaceAll("\\", "/");
   const segments = normalized.split("/");
-  return (segments[segments.length - 1] ?? "").toLowerCase() === "git";
+  const basename = (segments[segments.length - 1] ?? "").toLowerCase();
+  return basename === "git" || basename === "git.exe";
 }
 
 function parseGitCommitCommand(commandText: string): GitCommitCommandParseResult {
