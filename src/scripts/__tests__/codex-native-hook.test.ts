@@ -724,6 +724,158 @@ esac
     }
   });
 
+  it("blocks PreToolUse git commit when the inline message is not Lore-compliant", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-git-commit-invalid-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-invalid",
+          tool_input: { command: 'git commit -m "fix tests"' },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.deepEqual(result.outputJson, {
+        decision: "block",
+        reason:
+          "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          additionalContext: [
+            "Lore-format git commit enforcement triggered.",
+            "- Add a blank line after the subject before the narrative body.",
+            "- Add a narrative body paragraph explaining the decision context.",
+            "- Add at least one Lore trailer such as `Constraint:`, `Confidence:`, or `Tested:`.",
+            "- Add the required co-author trailer: `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
+          ].join("\n"),
+        },
+        systemMessage: [
+          "git commit is blocked until the inline commit message follows the Lore protocol and includes `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
+          "- Add a blank line after the subject before the narrative body.",
+          "- Add a narrative body paragraph explaining the decision context.",
+          "- Add at least one Lore trailer such as `Constraint:`, `Confidence:`, or `Tested:`.",
+          "- Add the required co-author trailer: `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
+        ].join("\n"),
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks PreToolUse git commit when the message comes from an external source", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-git-commit-file-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-file",
+          tool_input: { command: "git commit -F .git/COMMIT_EDITMSG" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.deepEqual(result.outputJson, {
+        decision: "block",
+        reason:
+          "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          additionalContext: [
+            "Lore-format git commit enforcement triggered.",
+            "- Use inline `git commit -m ...` paragraphs for Lore-format commits in this path; file/editor/reuse/fixup message sources are not inspectable safely from pre-tool-use enforcement.",
+          ].join("\n"),
+        },
+        systemMessage: [
+          "git commit is blocked until the inline commit message follows the Lore protocol and includes `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
+          "- Use inline `git commit -m ...` paragraphs for Lore-format commits in this path; file/editor/reuse/fixup message sources are not inspectable safely from pre-tool-use enforcement.",
+        ].join("\n"),
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks PreToolUse git commit when Lore trailers exist but the OmX co-author trailer is missing", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-git-commit-missing-omx-coauthor-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-missing-omx-coauthor",
+          tool_input: {
+            command: [
+              'git commit',
+              '-m "Prevent invalid history from bypassing Lore enforcement"',
+              '-m "The native pre-tool-use hook now blocks inline git commit messages that skip Lore trailers or the required OmX co-author trailer."',
+              '-m "Constraint: Native PreToolUse can only inspect the Bash command text"',
+              '-m "Tested: node --test dist/scripts/__tests__/codex-native-hook.test.js"',
+            ].join(" "),
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.deepEqual(result.outputJson, {
+        decision: "block",
+        reason:
+          "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          additionalContext: [
+            "Lore-format git commit enforcement triggered.",
+            "- Add the required co-author trailer: `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
+          ].join("\n"),
+        },
+        systemMessage: [
+          "git commit is blocked until the inline commit message follows the Lore protocol and includes `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
+          "- Add the required co-author trailer: `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
+        ].join("\n"),
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("stays silent on PreToolUse for Lore-compliant git commit with OmX co-author trailer", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-git-commit-valid-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-valid",
+          tool_input: {
+            command: [
+              'git commit',
+              '-m "Prevent invalid history from bypassing Lore enforcement"',
+              '-m "The native pre-tool-use hook now blocks inline git commit messages that skip Lore trailers or the required OmX co-author trailer."',
+              '-m "Constraint: Native PreToolUse can only inspect the Bash command text"',
+              '-m "Tested: node --test dist/scripts/__tests__/codex-native-hook.test.js"',
+              '-m "Co-authored-by: OmX <omx@oh-my-codex.dev>"',
+            ].join(" "),
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns PostToolUse remediation guidance for command-not-found output", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-failure-"));
     try {
