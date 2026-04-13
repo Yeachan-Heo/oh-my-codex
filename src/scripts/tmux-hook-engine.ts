@@ -299,6 +299,9 @@ export function paneLooksReady(captured: any): boolean {
     && lines.some((line) => /directory:/i.test(line));
   if (hasCodexWelcomeFrame) return true;
 
+  const hasMcpStartupIncompleteTail = lines.some((line) => /MCP startup incomplete/i.test(line));
+  if (hasMcpStartupIncompleteTail) return true;
+
   return lines.some((line) => /^\s*(?:[›>❯]\s*)?[A-Z][A-Z0-9]+-\d+\s+only(?:\s*(?:…|\.{3}))?\s*$/iu.test(line));
 }
 

@@ -1417,6 +1417,46 @@ esac
     );
   });
 
+  it('waitForWorkerReady falls back to tailed capture when visible capture is not ready', async () => {
+    await withMockTmuxFixture(
+      'omx-tmux-worker-ready-tail-fallback-',
+      (logPath) => `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${logPath}"
+case "$1" in
+  capture-pane)
+    if printf '%s\n' "$*" | grep -q -- ' -S '; then
+      cat <<'EOF'
+╭────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.120.0)                 │
+│                                            │
+│ model:     gpt-5.4 high   /model to change │
+│ directory: ~/Workspace/demo                │
+╰────────────────────────────────────────────╯
+
+⚠ MCP startup incomplete
+EOF
+    else
+      cat <<'EOF'
+codex session metadata only
+EOF
+    fi
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+      async ({ logPath }) => {
+        assert.equal(waitForWorkerReady('omx-team-x', 1, 1_000), true);
+        const log = await readFile(logPath, 'utf-8');
+        assert.match(log, /capture-pane -t omx-team-x:1 -p\b/);
+        assert.match(log, /capture-pane -t omx-team-x:1 -p -S -120/);
+      },
+    );
+  });
+
   it('waitForWorkerReady auto-accepts the Claude bypass prompt', async () => {
     await withMockTmuxFixture(
       'omx-tmux-claude-bypass-ready-',

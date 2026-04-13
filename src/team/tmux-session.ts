@@ -1235,7 +1235,10 @@ export function waitForWorkerReady(
       blockedByTrustPrompt = true;
       return false;
     }
-    return paneLooksReady(result.stdout);
+    if (paneLooksReady(result.stdout)) return true;
+    const fallback = runTmux(sharedBuildCapturePaneArgv(target, 120));
+    if (!fallback.ok) return false;
+    return paneLooksReady(fallback.stdout);
   };
 
   let delayMs = initialBackoffMs;

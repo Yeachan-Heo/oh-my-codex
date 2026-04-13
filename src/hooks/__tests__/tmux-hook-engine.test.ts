@@ -352,6 +352,10 @@ describe('paneLooksReady', () => {
     );
   });
 
+  it('accepts MCP-startup-incomplete tails as ready when bootstrapping markers are gone', () => {
+    assert.equal(paneLooksReady('⚠ MCP startup incomplete (failed:'), true);
+  });
+
   it('accepts Codex welcome-screen suggestion rows with a prompt glyph', () => {
     assert.equal(paneLooksReady('› Explain this codebase'), true);
   });
