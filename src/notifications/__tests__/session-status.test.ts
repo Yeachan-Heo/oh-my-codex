@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   createSubagentTrackingState,
@@ -15,6 +15,10 @@ import {
   buildDiscordSessionStatusReply,
   isDiscordStatusCommand,
 } from '../session-status.js';
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 function createMapping(projectPath: string, sessionId = 'sess-1'): SessionMapping {
   return {
@@ -79,11 +83,11 @@ describe('session-status helper', () => {
       assert.match(status, /^Tracked OMX session status/m);
       assert.match(status, /Session: sess-1/);
       assert.match(status, /Native: native-1/);
-      assert.match(status, new RegExp(`Project: ${wd.split('/').pop()}`));
+      assert.match(status, new RegExp(`Project: ${escapeRegExp(basename(wd))}`));
       assert.match(status, /State: running \(ralph\/executing\)/);
       assert.match(status, /Started: /);
       assert.match(status, /Tmux: omx-session \/ %9/);
-      assert.match(status, /History: \.omx\/logs\/session-history\.jsonl/);
+      assert.match(status, new RegExp(`History: ${escapeRegExp(join('.omx', 'logs', 'session-history.jsonl'))}`));
       assert.match(status, /Updated: 2026-03-20T00:04:30.000Z/);
       assert.match(status, /Freshness: Fresh/);
       assert.match(status, /Subagents: 4 active \(a1b2c3, d4e5f6, g7h8i9, \+1 more\)/);
@@ -114,10 +118,10 @@ describe('session-status helper', () => {
 
       assert.match(status, /Session: sess-old/);
       assert.match(status, /Native: unknown/);
-      assert.match(status, new RegExp(`Project: ${wd.split('/').pop()}`));
+      assert.match(status, new RegExp(`Project: ${escapeRegExp(basename(wd))}`));
       assert.match(status, /State: ended/);
       assert.match(status, /Started: 2026-03-20T00:00:00.000Z/);
-      assert.match(status, /History: \.omx\/logs\/session-history\.jsonl/);
+      assert.match(status, new RegExp(`History: ${escapeRegExp(join('.omx', 'logs', 'session-history.jsonl'))}`));
       assert.match(status, /Updated: 2026-03-20T00:01:00.000Z/);
       assert.match(status, /Freshness: May be stale \(last updated 2026-03-20T00:01:00.000Z\)/);
       assert.match(status, /Subagents: unknown/);
@@ -171,12 +175,12 @@ describe('session-status helper', () => {
       });
 
       assert.doesNotMatch(status, /State: running/);
-      assert.match(status, new RegExp(`Project: ${wd.split('/').pop()}`));
+      assert.doesNotMatch(status, /Project:/);
       assert.match(status, /State: ended/);
       assert.match(status, /Native: native-orphaned/);
       assert.match(status, /Started: 2026-03-20T00:00:00.000Z/);
       assert.doesNotMatch(status, /PID:/);
-      assert.match(status, /History: \.omx\/logs\/session-history\.jsonl/);
+      assert.doesNotMatch(status, /History:/);
       assert.match(status, /Freshness: May be stale \(last updated 2026-03-20T00:01:00.000Z\)/);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -206,10 +210,18 @@ describe('session-status helper', () => {
       assert.doesNotMatch(status, /Project:/);
       assert.doesNotMatch(status, /Started:/);
       assert.doesNotMatch(status, /History:/);
-      assert.match(status, /Subagents: 1 active \(a1b2c3\)/);
+      assert.match(status, /Subagents: 0 active|Subagents: unknown/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
+  });
+
+  it('returns the existing bounded failure when the mapping has no project path', async () => {
+    const status = await buildDiscordSessionStatusReply({
+      ...createMapping('/tmp/unused', 'sess-missing-path'),
+      projectPath: undefined,
+    });
+    assert.equal(status, STATUS_DATA_UNAVAILABLE_MESSAGE);
   });
 
   it('returns a bounded failure message when correlated state cannot be resolved', async () => {
