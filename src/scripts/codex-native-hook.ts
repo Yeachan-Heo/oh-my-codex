@@ -44,6 +44,7 @@ import type { HookEventEnvelope } from "../hooks/extensibility/types.js";
 import { dispatchHookEvent } from "../hooks/extensibility/dispatcher.js";
 import { reconcileHudForPromptSubmit } from "../hud/reconcile.js";
 import { onSessionStart as buildWikiSessionStartContext } from "../wiki/lifecycle.js";
+import { sessionModelInstructionsPath } from "../hooks/agents-overlay.js";
 
 type CodexHookEventName =
   | "SessionStart"
@@ -933,6 +934,29 @@ function readNativeStopSessionKey(payload: CodexHookPayload): string {
   return readPayloadSessionId(payload) || readPayloadThreadId(payload) || "global";
 }
 
+function hasManagedStopSessionEnv(sessionIds: string[]): boolean {
+  const envSessionId = safeString(process.env.OMX_SESSION_ID).trim();
+  if (!envSessionId) return false;
+  return sessionIds.length === 0 || sessionIds.includes(envSessionId);
+}
+
+async function hasManagedStopContext(
+  cwd: string,
+  payload: CodexHookPayload,
+  canonicalSessionId: string,
+): Promise<boolean> {
+  if (hasTeamWorkerContext()) return true;
+
+  const sessionIds = [...new Set([
+    canonicalSessionId,
+    readPayloadSessionId(payload),
+  ].map((value) => safeString(value).trim()).filter(Boolean))];
+
+  if (hasManagedStopSessionEnv(sessionIds)) return true;
+
+  return sessionIds.some((sessionId) => existsSync(sessionModelInstructionsPath(cwd, sessionId)));
+}
+
 function readPreviousNativeStopSignature(
   state: Record<string, unknown>,
   sessionKey: string,
@@ -1215,6 +1239,7 @@ async function buildStopHookOutput(
   const threadId = readPayloadThreadId(payload);
   const ralphState = await readActiveRalphState(stateDir, canonicalSessionId);
   const stopHookActive = payload.stop_hook_active === true || payload.stopHookActive === true;
+  const managedStopContext = await hasManagedStopContext(cwd, payload, canonicalSessionId);
   if (!ralphState) {
     const teamWorkerOutput = await buildTeamWorkerStopOutput(cwd);
     if (!stopHookActive && hasTeamWorkerContext()) return teamWorkerOutput;
@@ -1261,6 +1286,10 @@ async function buildStopHookOutput(
 
       const skillOutput = await buildSkillStopOutput(cwd, canonicalSessionId, threadId);
       if (!stopHookActive && skillOutput) return skillOutput;
+    }
+
+    if (!managedStopContext) {
+      return null;
     }
 
     const lastAssistantMessage = safeString(

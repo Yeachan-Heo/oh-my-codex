@@ -73,6 +73,7 @@ const TEAM_ENV_KEYS = [
   "OMX_TEAM_WORKER",
   "OMX_TEAM_STATE_ROOT",
   "OMX_TEAM_LEADER_CWD",
+  "OMX_SESSION_ID",
 ] as const;
 
 const priorTeamEnv = new Map<(typeof TEAM_ENV_KEYS)[number], string | undefined>();
@@ -2226,6 +2227,7 @@ esac
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(stateDir, { recursive: true });
+      process.env.OMX_SESSION_ID = "sess-stop-auto";
 
       const result = await dispatchCodexNativeHook(
         {
@@ -2255,6 +2257,7 @@ esac
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(stateDir, { recursive: true });
+      process.env.OMX_SESSION_ID = "sess-stop-auto-once";
 
       await dispatchCodexNativeHook(
         {
@@ -2293,6 +2296,7 @@ esac
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(stateDir, { recursive: true });
+      process.env.OMX_SESSION_ID = "sess-stop-auto-refire";
 
       await dispatchCodexNativeHook(
         {
@@ -2336,6 +2340,7 @@ esac
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-auto-nudge-permission-"));
     try {
       await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      process.env.OMX_SESSION_ID = "sess-stop-auto-permission";
 
       const result = await dispatchCodexNativeHook(
         {
@@ -2359,6 +2364,7 @@ esac
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-auto-question"), { recursive: true });
+      process.env.OMX_SESSION_ID = "sess-stop-auto-question";
       await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-auto-question" });
       await writeJson(join(stateDir, "sessions", "sess-stop-auto-question", "skill-active-state.json"), {
         version: 1,
@@ -2409,6 +2415,7 @@ esac
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-auto-interview"), { recursive: true });
+      process.env.OMX_SESSION_ID = "sess-stop-auto-interview";
       await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-auto-interview" });
       await writeJson(join(stateDir, "sessions", "sess-stop-auto-interview", "deep-interview-state.json"), {
         active: true,
@@ -2441,6 +2448,7 @@ esac
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(stateDir, { recursive: true });
+      process.env.OMX_SESSION_ID = "sess-stop-auto-mode";
       await writeJson(join(stateDir, "deep-interview-state.json"), {
         active: true,
         mode: "deep-interview",
@@ -2469,6 +2477,7 @@ esac
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(stateDir, { recursive: true });
+      process.env.OMX_SESSION_ID = "sess-stop-auto-stale-root-mode";
       await writeJson(join(stateDir, "deep-interview-state.json"), {
         active: true,
         mode: "deep-interview",
@@ -2505,6 +2514,7 @@ esac
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(stateDir, { recursive: true });
+      process.env.OMX_SESSION_ID = "sess-stop-auto-stale-root-skill";
       await writeJson(join(stateDir, "skill-active-state.json"), {
         active: true,
         skill: "deep-interview",
@@ -2541,6 +2551,7 @@ esac
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(stateDir, { recursive: true });
+      process.env.OMX_SESSION_ID = "sess-stop-auto-stale-root-lock";
       await writeJson(join(stateDir, "skill-active-state.json"), {
         active: true,
         skill: "deep-interview",
@@ -2583,6 +2594,7 @@ esac
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-auto-inactive-mode"), { recursive: true });
+      process.env.OMX_SESSION_ID = "sess-stop-auto-inactive-mode";
       await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-auto-inactive-mode" });
       await writeJson(join(stateDir, "sessions", "sess-stop-auto-inactive-mode", "deep-interview-state.json"), {
         active: false,
@@ -2615,6 +2627,40 @@ esac
         systemMessage:
           "OMX native Stop detected a stall/permission-style handoff and continued the turn automatically.",
       });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not auto-continue native Stop for a plain Codex session started outside OMX runtime", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-auto-nudge-plain-session-"));
+    try {
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: "plain-stop-session",
+        },
+        {
+          cwd,
+          sessionOwnerPid: process.pid,
+        },
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "plain-stop-session",
+          thread_id: "plain-thread",
+          turn_id: "plain-turn-1",
+          last_assistant_message: "Keep going and finish the cleanup.",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
