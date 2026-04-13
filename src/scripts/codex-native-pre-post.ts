@@ -202,6 +202,10 @@ const LORE_TRAILER_PREFIXES = [
 
 const OMX_COAUTHOR_TRAILER = "Co-authored-by: OmX <omx@oh-my-codex.dev>";
 
+function isDoubleQuotedShellEscapeTarget(char: string | undefined): boolean {
+  return char === "\"" || char === "\\" || char === "$" || char === "`" || char === "\n";
+}
+
 function tokenizeShellCommand(commandText: string): string[] | null {
   const trimmed = commandText.trim();
   if (!trimmed) return null;
@@ -211,7 +215,8 @@ function tokenizeShellCommand(commandText: string): string[] | null {
   let quote: "'" | "\"" | null = null;
   let escaping = false;
 
-  for (const char of trimmed) {
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const char = trimmed[index] ?? "";
     if (escaping) {
       current += char;
       escaping = false;
@@ -226,7 +231,10 @@ function tokenizeShellCommand(commandText: string): string[] | null {
 
     if (quote === "\"") {
       if (char === "\"") quote = null;
-      else if (char === "\\") escaping = true;
+      else if (char === "\\") {
+        if (isDoubleQuotedShellEscapeTarget(trimmed[index + 1])) escaping = true;
+        else current += char;
+      }
       else current += char;
       continue;
     }
