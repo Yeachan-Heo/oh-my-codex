@@ -93,6 +93,21 @@ describe('assertRequiredRalphPrdJson', () => {
     }
   });
 
+  it('still requires legacy .omx/prd.json even when canonical PRD markdown exists', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-prd-gate-'));
+    try {
+      await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'plans', 'prd-existing.md'), '# Existing canonical PRD\n');
+
+      assert.throws(
+        () => assertRequiredRalphPrdJson(cwd, ['--prd', 'ship release checklist']),
+        /Missing required PRD\.json at \.omx\/prd\.json/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('rejects completed stories without architect approval', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-prd-gate-'));
     try {

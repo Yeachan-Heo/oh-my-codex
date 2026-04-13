@@ -85,8 +85,10 @@ starting
 ## Canonical PRD/progress sources
 
 - Canonical PRD: `.omx/plans/prd-{slug}.md`
+- Startup validation source during the legacy-compatibility window: `.omx/prd.json`
 - Canonical progress ledger: `.omx/state/{scope}/ralph-progress.json`
 - Legacy compatibility migration:
   - `.omx/prd.json` migrates one-way to canonical PRD markdown when no canonical PRD exists.
   - `.omx/progress.txt` migrates one-way to canonical `ralph-progress.json` when no canonical ledger exists.
   - Legacy files remain read-only compatibility artifacts for one release cycle.
+- Canonical PRD markdown is storage/documentation-canonical today; Ralph `--prd` startup still validates machine-readable story approval state from `.omx/prd.json` until a structured replacement exists.
