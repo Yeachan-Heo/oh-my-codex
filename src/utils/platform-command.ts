@@ -23,6 +23,9 @@ const WINDOWS_DIRECT_EXTENSIONS = new Set(['.com', '.exe']);
 const WINDOWS_CMD_EXTENSIONS = new Set(['.bat', '.cmd']);
 const WINDOWS_EXTENSION_PRIORITY = ['.exe', '.com', '.cmd', '.bat', '.ps1'];
 const NODE_HOSTED_SCRIPT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
+const WINDOWS_COMPATIBLE_COMMAND_ALIASES: Record<string, string[]> = {
+  tmux: ['tmux', 'psmux'],
+};
 const WINDOWS_NODE_HOSTED_COMMANDS: Record<string, string[]> = {
   codex: ['node_modules', '@openai', 'codex', 'bin', 'codex.js'],
 };
@@ -62,6 +65,14 @@ function normalizeWindowsCommandName(command: string): string {
   return basename(command, extname(command)).toLowerCase();
 }
 
+function resolveWindowsCommandVariants(command: string): string[] {
+  if (isWindowsPathLike(command)) return [command];
+  const extension = extname(command);
+  const aliases = WINDOWS_COMPATIBLE_COMMAND_ALIASES[normalizeWindowsCommandName(command)];
+  if (!aliases || aliases.length === 0) return [command];
+  return [...new Set(aliases.map((alias) => `${alias}${extension}`))];
+}
+
 function resolveWindowsNodeHostedCommandPath(
   command: string,
   resolvedPath: string,
@@ -87,35 +98,38 @@ function resolveWindowsCommandPath(
   env: NodeJS.ProcessEnv,
   existsImpl: ExistsSyncLike,
 ): string | null {
-  const candidates: string[] = [];
-  const extension = extname(command).toLowerCase();
   const pathext = normalizeWindowsPathext(env);
+  const pathEntries = String(env.Path ?? env.PATH ?? '')
+    .split(delimiter)
+    .map((value) => value.trim())
+    .filter(Boolean);
 
-  const addCandidatesForBase = (base: string): void => {
-    if (extension) {
+  for (const commandVariant of resolveWindowsCommandVariants(command)) {
+    const candidates: string[] = [];
+    const extension = extname(commandVariant).toLowerCase();
+
+    const addCandidatesForBase = (base: string): void => {
+      if (extension) {
+        candidates.push(base);
+        return;
+      }
+      for (const ext of pathext) {
+        candidates.push(`${base}${ext}`);
+      }
       candidates.push(base);
-      return;
-    }
-    for (const ext of pathext) {
-      candidates.push(`${base}${ext}`);
-    }
-    candidates.push(base);
-  };
+    };
 
-  if (isWindowsPathLike(command)) {
-    addCandidatesForBase(command);
-  } else {
-    const pathEntries = String(env.Path ?? env.PATH ?? '')
-      .split(delimiter)
-      .map((value) => value.trim())
-      .filter(Boolean);
-    for (const entry of pathEntries) {
-      addCandidatesForBase(join(entry, command));
+    if (isWindowsPathLike(commandVariant)) {
+      addCandidatesForBase(commandVariant);
+    } else {
+      for (const entry of pathEntries) {
+        addCandidatesForBase(join(entry, commandVariant));
+      }
     }
-  }
 
-  for (const candidate of candidates) {
-    if (existsImpl(candidate)) return candidate;
+    for (const candidate of candidates) {
+      if (existsImpl(candidate)) return candidate;
+    }
   }
 
   return null;
@@ -189,6 +203,14 @@ export function resolveCommandPathForPlatform(
     return resolveWindowsCommandPath(command, env, existsImpl);
   }
   return resolvePosixCommandPath(command, env, existsImpl);
+}
+
+export function resolveTmuxBinaryForPlatform(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  existsImpl: ExistsSyncLike = existsFileSync,
+): string | null {
+  return resolveCommandPathForPlatform('tmux', platform, env, existsImpl);
 }
 
 export function buildPlatformCommandSpec(

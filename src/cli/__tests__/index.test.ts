@@ -48,6 +48,7 @@ import {
   resolveNotifyFallbackWatcherScript,
   resolveHookDerivedWatcherScript,
   resolveNotifyHookScript,
+  buildDetachedWindowsBootstrapScript,
   acquireTmuxExtendedKeysLease,
   releaseTmuxExtendedKeysLease,
   withTmuxExtendedKeys,
@@ -1462,6 +1463,18 @@ describe("detached tmux new-session sequencing", () => {
     assert.equal(steps[0]?.args.at(-1), "powershell.exe");
     assert.equal(steps[1]?.name, "split-and-capture-hud-pane");
     assert.equal(steps[1]?.args.at(-1), hudCmd);
+  });
+
+  it("buildDetachedWindowsBootstrapScript targets the resolved tmux-compatible command", () => {
+    const script = buildDetachedWindowsBootstrapScript(
+      "omx-demo",
+      "powershell.exe -NoLogo -NoExit -EncodedCommand abc",
+      2500,
+      "C:\\Program Files\\psmux\\psmux.exe",
+    );
+    assert.match(script, /const tmuxCommand = "C:\\\\Program Files\\\\psmux\\\\psmux\.exe";/);
+    assert.match(script, /execFileSync\(tmuxCommand, \['send-keys'/);
+    assert.doesNotMatch(script, /execFileSync\('tmux'/);
   });
 
   it("buildDetachedSessionBootstrapSteps kills detached tmux session on normal shell exit", () => {

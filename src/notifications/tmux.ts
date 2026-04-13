@@ -4,8 +4,9 @@
  * Detects the current tmux session name and pane ID for inclusion in notification payloads.
  */
 
-import { execFileSync, execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { buildCapturePaneArgv } from "./tmux-detector.js";
+import { resolveTmuxBinaryForPlatform } from "../utils/platform-command.js";
 
 const TMUX_PANE_TARGET_RE = /^%\d+$/;
 const DEFAULT_CAPTURE_LINES = 12;
@@ -56,6 +57,15 @@ function shouldUsePidFallback(): boolean {
   return process.env.OMX_TMUX_PID_FALLBACK === "1";
 }
 
+function execTmux(args: string[]): string {
+  return execFileSync(resolveTmuxBinaryForPlatform() || "tmux", args, {
+    encoding: "utf-8",
+    timeout: 3000,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: process.platform === "win32",
+  }).trim();
+}
+
 /**
  * Get the current tmux session name.
  * First checks $TMUX env, then falls back to finding the tmux session
@@ -68,15 +78,11 @@ export function getCurrentTmuxSession(): string | null {
     try {
       const tmuxPaneTarget = process.env.TMUX_PANE;
       const paneTargetSafe = tmuxPaneTarget && TMUX_PANE_TARGET_RE.test(tmuxPaneTarget) ? tmuxPaneTarget : null;
-      const displayCmd = paneTargetSafe
-        ? `tmux display-message -p -t ${paneTargetSafe} '#S'`
-        : "tmux display-message -p '#S'";
-      const sessionName = execSync(displayCmd, {
-        encoding: "utf-8",
-        timeout: 3000,
-        stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    }).trim();
+      const sessionName = execTmux(
+        paneTargetSafe
+          ? ["display-message", "-p", "-t", paneTargetSafe, "#S"]
+          : ["display-message", "-p", "#S"],
+      );
       if (sessionName) return sessionName;
     } catch {
       // fall through to PID-based detection
@@ -99,14 +105,7 @@ function detectTmuxSessionByPid(): string | null {
   if (process.platform === 'win32') return null;
   try {
     // Get all tmux pane PIDs with their session names
-    const output = execSync(
-      "tmux list-panes -a -F '#{pane_pid} #{session_name}'",
-      {
-        encoding: "utf-8",
-        timeout: 3000,
-        stdio: ["pipe", "pipe", "pipe"],
-      }
-    ).trim();
+    const output = execTmux(["list-panes", "-a", "-F", "#{pane_pid} #{session_name}"]);
     if (!output) return null;
 
     const panePids = new Map<number, string>();
@@ -162,11 +161,7 @@ export function getTeamTmuxSessions(teamName: string): string[] {
 
   const prefix = `omx-team-${sanitized}`;
   try {
-    const output = execSync("tmux list-sessions -F '#{session_name}'", {
-      encoding: "utf-8",
-      timeout: 3000,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const output = execTmux(["list-sessions", "-F", "#{session_name}"]);
     return output
       .trim()
       .split("\n")
@@ -195,12 +190,7 @@ export function captureTmuxPaneWithLiveness(paneId?: string | null, lines: numbe
   const clampedLines = Math.max(1, Math.min(MAX_CAPTURE_LINES, safeLines));
 
   try {
-    const paneStatus = execFileSync("tmux", ["list-panes", "-t", target, "-F", "#{pane_dead} #{pane_pid}"], {
-      encoding: "utf-8",
-      timeout: 3000,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    }).trim();
+    const paneStatus = execTmux(["list-panes", "-t", target, "-F", "#{pane_dead} #{pane_pid}"]);
     const firstStatusLine = paneStatus.split("\n")[0]?.trim() || "";
     const [paneDead = "", panePidRaw = ""] = firstStatusLine.split(/\s+/, 2);
     const panePid = Number.parseInt(panePidRaw, 10);
@@ -213,11 +203,11 @@ export function captureTmuxPaneWithLiveness(paneId?: string | null, lines: numbe
       return { content: null, live: false };
     }
 
-    const output = execFileSync("tmux", buildCapturePaneArgv(target, clampedLines), {
+    const output = execFileSync(resolveTmuxBinaryForPlatform() || "tmux", buildCapturePaneArgv(target, clampedLines), {
       encoding: "utf-8",
       timeout: 3000,
       stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
+      windowsHide: process.platform === "win32",
     }).trim();
     return { content: output || null, live: true };
   } catch {
@@ -252,11 +242,7 @@ export function getCurrentTmuxPaneId(): string | null {
   // but it is still better than nothing and matches the PID-walk fallback below.
   if (process.env.TMUX) {
     try {
-      const paneId = execSync("tmux display-message -p '#{pane_id}'", {
-        encoding: "utf-8",
-        timeout: 3000,
-        stdio: ["pipe", "pipe", "pipe"],
-      }).trim();
+      const paneId = execTmux(["display-message", "-p", "#{pane_id}"]);
       if (paneId && /^%\d+$/.test(paneId)) return paneId;
     } catch {
       // fall through
@@ -275,14 +261,7 @@ export function getCurrentTmuxPaneId(): string | null {
 function detectTmuxPaneByPid(): string | null {
   if (process.platform === 'win32') return null;
   try {
-    const output = execSync(
-      "tmux list-panes -a -F '#{pane_pid} #{pane_id}'",
-      {
-        encoding: "utf-8",
-        timeout: 3000,
-        stdio: ["pipe", "pipe", "pipe"],
-      }
-    ).trim();
+    const output = execTmux(["list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"]);
     if (!output) return null;
 
     const panePids = new Map<number, string>();

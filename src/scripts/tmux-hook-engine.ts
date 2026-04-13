@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
+import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 
 export const DEFAULT_ALLOWED_MODES = ['ralph', 'ultrawork', 'team'];
 export const DEFAULT_MARKER = '[OMX_TMUX_INJECT]';
@@ -203,14 +204,15 @@ function isHudStartCommand(startCommand: string): boolean {
  */
 export function resolveCodexPane(): string {
   const envPane = (process.env.TMUX_PANE || '').trim();
+  const tmuxCommand = resolveTmuxBinaryForPlatform() || 'tmux';
   if (!envPane) return '';
 
   try {
-    const cmd = execFileSync('tmux', ['display-message', '-t', envPane, '-p', '#{pane_current_command}'], {
-      encoding: 'utf-8', timeout: 2000,
+    const cmd = execFileSync(tmuxCommand, ['display-message', '-t', envPane, '-p', '#{pane_current_command}'], {
+      encoding: 'utf-8', timeout: 2000, windowsHide: process.platform === 'win32',
     }).trim().toLowerCase();
-    const startCmd = execFileSync('tmux', ['display-message', '-t', envPane, '-p', '#{pane_start_command}'], {
-      encoding: 'utf-8', timeout: 2000,
+    const startCmd = execFileSync(tmuxCommand, ['display-message', '-t', envPane, '-p', '#{pane_start_command}'], {
+      encoding: 'utf-8', timeout: 2000, windowsHide: process.platform === 'win32',
     }).trim().toLowerCase();
     const base = cmd.split('/').pop()?.replace(/^-/, '') || '';
     if (AGENT_COMMANDS.has(base) && !isHudStartCommand(startCmd)) {
@@ -225,16 +227,16 @@ export function resolveCodexPane(): string {
   }
 
   try {
-    const sessionName = execFileSync('tmux', ['display-message', '-t', envPane, '-p', '#S'], {
+    const sessionName = execFileSync(tmuxCommand, ['display-message', '-t', envPane, '-p', '#S'], {
       encoding: 'utf-8', timeout: 2000,
       windowsHide: true,
     }).trim();
     if (!sessionName) return '';
 
-    const panes = execFileSync('tmux', [
+    const panes = execFileSync(tmuxCommand, [
       'list-panes', '-s', '-t', sessionName,
       '-F', '#{pane_id}\t#{pane_current_command}\t#{pane_start_command}',
-    ], { encoding: 'utf-8', timeout: 2000 }).trim().split('\n');
+    ], { encoding: 'utf-8', timeout: 2000, windowsHide: process.platform === 'win32' }).trim().split('\n');
 
     for (const line of panes) {
       const parts = line.split('\t');

@@ -7,7 +7,7 @@
 
 import { execFileSync, spawnSync } from 'child_process';
 import { sleepSync } from '../utils/sleep.js';
-import { resolveCommandPathForPlatform } from '../utils/platform-command.js';
+import { resolveCommandPathForPlatform, resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 import { buildCapturePaneArgv as sharedBuildCapturePaneArgv } from '../scripts/tmux-hook-engine.js';
 
 export function isTmuxAvailable(): boolean {
@@ -25,10 +25,11 @@ export function buildCapturePaneArgv(paneId: string, lines: number): string[] {
 
 export function capturePaneContent(paneId: string, lines: number = 15): string {
   try {
-    return execFileSync('tmux', buildCapturePaneArgv(paneId, lines), {
+    return execFileSync(resolveTmuxBinaryForPlatform() || 'tmux', buildCapturePaneArgv(paneId, lines), {
       encoding: 'utf-8',
       timeout: 3000,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: process.platform === 'win32',
     });
   } catch {
     return '';
@@ -134,6 +135,7 @@ type SpawnSyncImpl = (
     timeout?: number;
     stdio?: ['pipe', 'pipe', 'pipe'];
     encoding?: 'utf-8';
+    windowsHide?: boolean;
   },
 ) => { error?: Error; status: number | null };
 
@@ -151,12 +153,14 @@ export function sendToPane(
   const spawnSyncImpl = deps.spawnSyncImpl ?? spawnSync;
   const sleepImpl = deps.sleepImpl ?? sleepSync;
   const argvs = buildSendPaneArgvs(paneId, text, pressEnter);
+  const tmuxCommand = resolveTmuxBinaryForPlatform() || 'tmux';
 
   for (const [index, argv] of argvs.entries()) {
-    const result = spawnSyncImpl('tmux', argv, {
+    const result = spawnSyncImpl(tmuxCommand, argv, {
       timeout: 3000,
       stdio: ['pipe', 'pipe', 'pipe'],
       encoding: 'utf-8',
+      windowsHide: process.platform === 'win32',
     });
     if (result.error || result.status !== 0) return false;
 

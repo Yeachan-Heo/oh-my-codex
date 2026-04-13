@@ -4,6 +4,7 @@ import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { getPackageRoot } from '../utils/package.js';
 import { resolveCodexPane } from '../scripts/tmux-hook-engine.js';
+import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 
 type TmuxTargetType = 'session' | 'pane';
 
@@ -207,7 +208,7 @@ async function loadConfigForCommand(
 }
 
 function runTmux(args: string[]): { ok: true; stdout: string } | { ok: false; stderr: string } {
-  const result = spawnSync('tmux', args, { encoding: 'utf-8',
+  const result = spawnSync(resolveTmuxBinaryForPlatform() || 'tmux', args, { encoding: 'utf-8',
       windowsHide: true,
     });
   if (result.error) {

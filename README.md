@@ -220,6 +220,7 @@ omx wiki refresh --json
 
 `omx team` works best on macOS/Linux with `tmux`.
 Native Windows remains a secondary path, and WSL2 is generally the better choice if you want a Windows-hosted setup.
+On native Windows, OMX accepts `psmux` as the tmux-compatible binary for the existing tmux-backed paths it already uses.
 
 | Platform | Install |
 | --- | --- |

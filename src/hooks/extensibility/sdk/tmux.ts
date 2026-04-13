@@ -5,6 +5,7 @@ import { dirname } from 'path';
 import { spawnSync } from 'child_process';
 import { sleepSync } from '../../../utils/sleep.js';
 import { resolveCodexPane } from '../../../scripts/tmux-hook-engine.js';
+import { resolveTmuxBinaryForPlatform } from '../../../utils/platform-command.js';
 import type {
   HookEventEnvelope,
   HookPluginSdk,
@@ -55,7 +56,7 @@ function sleepFractionalSeconds(seconds: number): void {
 }
 
 function runTmux(args: string[]): { ok: true; stdout: string } | { ok: false; stderr: string } {
-  const result = spawnSync('tmux', args, { encoding: 'utf-8',
+  const result = spawnSync(resolveTmuxBinaryForPlatform() || 'tmux', args, { encoding: 'utf-8',
       windowsHide: true,
     });
   if (result.error) return { ok: false, stderr: result.error.message };

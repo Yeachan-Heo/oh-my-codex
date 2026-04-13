@@ -7,6 +7,7 @@ import {
   buildPlatformCommandSpec,
   classifySpawnError,
   resolveCommandPathForPlatform,
+  resolveTmuxBinaryForPlatform,
   spawnPlatformCommandSync,
 } from '../platform-command.js';
 
@@ -220,6 +221,37 @@ describe('resolveCommandPathForPlatform', () => {
           },
         ),
         exePath,
+      );
+    } finally {
+      await rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to psmux on Windows when tmux is absent', async () => {
+    const fakeBin = await mkdtemp(join(tmpdir(), 'omx-platform-psmux-path-'));
+    try {
+      const psmuxPath = join(fakeBin, 'psmux.exe');
+      await writeFile(psmuxPath, '');
+      assert.equal(
+        resolveCommandPathForPlatform(
+          'tmux',
+          'win32',
+          {
+            PATH: fakeBin,
+            PATHEXT: '.EXE;.CMD',
+          },
+        ),
+        psmuxPath,
+      );
+      assert.equal(
+        resolveTmuxBinaryForPlatform(
+          'win32',
+          {
+            PATH: fakeBin,
+            PATHEXT: '.EXE;.CMD',
+          },
+        ),
+        psmuxPath,
       );
     } finally {
       await rm(fakeBin, { recursive: true, force: true });

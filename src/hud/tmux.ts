@@ -1,5 +1,6 @@
 import { execFileSync } from 'child_process';
 import { HUD_TMUX_HEIGHT_LINES } from './constants.js';
+import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 
 export interface TmuxPaneSnapshot {
   paneId: string;
@@ -10,7 +11,10 @@ export interface TmuxPaneSnapshot {
 type TmuxExecSync = (args: string[]) => string;
 
 function defaultExecTmuxSync(args: string[]): string {
-  return execFileSync('tmux', args, { encoding: 'utf-8' });
+  return execFileSync(resolveTmuxBinaryForPlatform() || 'tmux', args, {
+    encoding: 'utf-8',
+    ...(process.platform === 'win32' ? { windowsHide: true } : {}),
+  });
 }
 
 export function parseTmuxPaneSnapshot(output: string): TmuxPaneSnapshot[] {
