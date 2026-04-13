@@ -79,8 +79,11 @@ describe('session-status helper', () => {
       assert.match(status, /^Tracked OMX session status/m);
       assert.match(status, /Session: sess-1/);
       assert.match(status, /Native: native-1/);
+      assert.match(status, new RegExp(`Project: ${wd.split('/').pop()}`));
       assert.match(status, /State: running \(ralph\/executing\)/);
+      assert.match(status, /Started: /);
       assert.match(status, /Tmux: omx-session \/ %9/);
+      assert.match(status, /History: \.omx\/logs\/session-history\.jsonl/);
       assert.match(status, /Updated: 2026-03-20T00:04:30.000Z/);
       assert.match(status, /Freshness: Fresh/);
       assert.match(status, /Subagents: 4 active \(a1b2c3, d4e5f6, g7h8i9, \+1 more\)/);
@@ -111,7 +114,10 @@ describe('session-status helper', () => {
 
       assert.match(status, /Session: sess-old/);
       assert.match(status, /Native: unknown/);
+      assert.match(status, new RegExp(`Project: ${wd.split('/').pop()}`));
       assert.match(status, /State: ended/);
+      assert.match(status, /Started: 2026-03-20T00:00:00.000Z/);
+      assert.match(status, /History: \.omx\/logs\/session-history\.jsonl/);
       assert.match(status, /Updated: 2026-03-20T00:01:00.000Z/);
       assert.match(status, /Freshness: May be stale \(last updated 2026-03-20T00:01:00.000Z\)/);
       assert.match(status, /Subagents: unknown/);
@@ -165,9 +171,42 @@ describe('session-status helper', () => {
       });
 
       assert.doesNotMatch(status, /State: running/);
+      assert.match(status, new RegExp(`Project: ${wd.split('/').pop()}`));
       assert.match(status, /State: ended/);
       assert.match(status, /Native: native-orphaned/);
+      assert.match(status, /Started: 2026-03-20T00:00:00.000Z/);
+      assert.doesNotMatch(status, /PID:/);
+      assert.match(status, /History: \.omx\/logs\/session-history\.jsonl/);
       assert.match(status, /Freshness: May be stale \(last updated 2026-03-20T00:01:00.000Z\)/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not render project-derived detail lines when only tracker-style evidence exists', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-session-status-tracker-only-'));
+    try {
+      let tracking = createSubagentTrackingState();
+      tracking = recordSubagentTurn(tracking, {
+        sessionId: 'sess-tracker-only',
+        threadId: 'a1b2c3-thread',
+        turnId: 'turn-1',
+        timestamp: '2026-03-20T00:04:00.000Z',
+        mode: 'ralph',
+      });
+      await writeSubagentTrackingState(wd, tracking);
+
+      const status = await buildDiscordSessionStatusReply(createMapping(wd, 'sess-tracker-only'), {
+        now: '2026-03-20T00:05:00.000Z',
+        readSessionStateImpl: async () => null,
+        readUsableSessionStateImpl: async () => null,
+      });
+
+      assert.match(status, /Session: sess-tracker-only/);
+      assert.doesNotMatch(status, /Project:/);
+      assert.doesNotMatch(status, /Started:/);
+      assert.doesNotMatch(status, /History:/);
+      assert.match(status, /Subagents: 1 active \(a1b2c3\)/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { isSessionStateUsable, readSessionState, readUsableSessionState } from '../hooks/session.js';
 import { getSkillActiveStatePaths, listActiveSkills, readSkillActiveState } from '../state/skill-active.js';
 import {
@@ -20,6 +20,8 @@ interface SessionHistoryEntry {
   native_session_id?: string;
   started_at?: string;
   ended_at?: string;
+  cwd?: string;
+  pid?: number;
 }
 
 interface SkillStateSummary {
@@ -236,6 +238,9 @@ export async function buildDiscordSessionStatusReply(
   const nativeSessionId = currentSessionMatches?.native_session_id
     || historyEntry?.native_session_id
     || 'unknown';
+  const projectPath = currentSessionMatches?.cwd || historyEntry?.cwd || '';
+  const startedAt = currentSessionMatches?.started_at || historyEntry?.started_at;
+  const historyHint = projectPath ? join('.omx', 'logs', 'session-history.jsonl') : '';
   const stateLabel = formatStateLabel(Boolean(currentSessionMatches), Boolean(historyEntry), skillState);
   const tmuxSessionName = mapping.tmuxSessionName?.trim() || 'unknown';
   const tmuxPaneId = mapping.tmuxPaneId?.trim() || 'unknown';
@@ -246,8 +251,11 @@ export async function buildDiscordSessionStatusReply(
     'Tracked OMX session status',
     `Session: ${mapping.sessionId}`,
     `Native: ${nativeSessionId}`,
+    ...(projectPath ? [`Project: ${basename(projectPath) || projectPath}`] : []),
     `State: ${stateLabel}`,
+    ...(startedAt ? [`Started: ${startedAt}`] : []),
     `Tmux: ${tmuxSessionName} / ${tmuxPaneId}`,
+    ...(historyHint ? [`History: ${historyHint}`] : []),
     ...(latestTimestamp ? [`Updated: ${latestTimestamp}`] : []),
     `Freshness: ${freshness}`,
     `Subagents: ${subagents}`,
