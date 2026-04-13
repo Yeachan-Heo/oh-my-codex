@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { startMode, updateModeState } from '../modes/base.js';
@@ -36,6 +37,84 @@ Common patterns:
 const VALUE_TAKING_FLAGS = new Set(['--model', '--provider', '--config', '-c', '-i', '--images-dir']);
 const RALPH_OMX_FLAGS = new Set(['--prd', '--no-deslop']);
 const RALPH_APPEND_ENV = 'OMX_RALPH_APPEND_INSTRUCTIONS_FILE';
+const REQUIRED_RALPH_PRD_JSON_PATH = '.omx/prd.json';
+const COMPLETED_RALPH_STORY_STATUSES = new Set(['passed', 'complete', 'completed']);
+const APPROVED_RALPH_ARCHITECT_VERDICTS = new Set(['approve', 'approved']);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isStoryMarkedPassedOrCompleted(story: Record<string, unknown>): boolean {
+  if (story.passes === true) return true;
+  if (typeof story.status !== 'string') return false;
+  return COMPLETED_RALPH_STORY_STATUSES.has(story.status.trim().toLowerCase());
+}
+
+function hasApprovedArchitectValidation(story: Record<string, unknown>): boolean {
+  const candidates = [story.architect_validation, story.architectValidation, story.architect_review, story.architectReview];
+  for (const candidate of candidates) {
+    if (!isRecord(candidate)) continue;
+    if (candidate.approved === true) return true;
+    if (typeof candidate.verdict === 'string' && APPROVED_RALPH_ARCHITECT_VERDICTS.has(candidate.verdict.trim().toLowerCase())) {
+      return true;
+    }
+    if (typeof candidate.status === 'string' && APPROVED_RALPH_ARCHITECT_VERDICTS.has(candidate.status.trim().toLowerCase())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function describeStory(story: Record<string, unknown>, index: number): string {
+  const id = typeof story.id === 'string' && story.id.trim() !== '' ? story.id.trim() : null;
+  const title = typeof story.title === 'string' && story.title.trim() !== '' ? story.title.trim() : null;
+  if (id && title) return `${id} (${title})`;
+  if (id) return id;
+  if (title) return title;
+  return `story #${index + 1}`;
+}
+
+function readAndValidateRequiredRalphPrdJson(cwd: string): void {
+  const requiredPath = join(cwd, REQUIRED_RALPH_PRD_JSON_PATH);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(requiredPath, 'utf-8'));
+  } catch (error) {
+    throw new Error(`[ralph] Invalid PRD.json at ${REQUIRED_RALPH_PRD_JSON_PATH}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  if (!isRecord(parsed)) {
+    throw new Error(`[ralph] Invalid PRD.json at ${REQUIRED_RALPH_PRD_JSON_PATH}: expected a JSON object.`);
+  }
+
+  if (parsed.userStories == null) return;
+  if (!Array.isArray(parsed.userStories)) {
+    throw new Error(`[ralph] Invalid PRD.json at ${REQUIRED_RALPH_PRD_JSON_PATH}: userStories must be an array when present.`);
+  }
+
+  for (const [index, story] of parsed.userStories.entries()) {
+    if (!isRecord(story)) continue;
+    if (!isStoryMarkedPassedOrCompleted(story)) continue;
+    if (hasApprovedArchitectValidation(story)) continue;
+    throw new Error(`[ralph] PRD.json ${describeStory(story, index)} is marked passed/completed without architect approval. Record architect_validation.verdict="approved" (or architect_review.verdict="approve") before running Ralph.`);
+  }
+}
+
+export function isRalphPrdMode(args: readonly string[]): boolean {
+  return args.some((arg) => arg === '--prd' || arg.startsWith('--prd='));
+}
+
+export function assertRequiredRalphPrdJson(cwd: string, args: readonly string[]): void {
+  if (!isRalphPrdMode(args)) return;
+
+  const requiredPath = join(cwd, REQUIRED_RALPH_PRD_JSON_PATH);
+  if (!existsSync(requiredPath)) {
+    throw new Error(`[ralph] Missing required PRD.json at ${REQUIRED_RALPH_PRD_JSON_PATH}. Create the file before running \`omx ralph --prd ...\`.`);
+  }
+
+  readAndValidateRequiredRalphPrdJson(cwd);
+}
 
 export function extractRalphTaskDescription(args: readonly string[], fallbackTask?: string): string {
   const words: string[] = [];
@@ -172,6 +251,7 @@ export async function ralphCommand(args: string[]): Promise<void> {
     console.log(RALPH_HELP);
     return;
   }
+  assertRequiredRalphPrdJson(cwd, args);
   const artifacts = await ensureCanonicalRalphArtifacts(cwd);
   const approvedHint = readApprovedExecutionLaunchHint(cwd, 'ralph');
   const explicitTask = extractRalphTaskDescription(normalizedArgs);

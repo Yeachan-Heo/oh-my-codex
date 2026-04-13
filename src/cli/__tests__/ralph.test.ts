@@ -1,11 +1,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
+  assertRequiredRalphPrdJson,
   buildRalphAppendInstructions,
   buildRalphChangedFilesSeedContents,
   extractRalphTaskDescription,
-  normalizeRalphCliArgs,
   filterRalphCodexArgs,
+  isRalphPrdMode,
+  normalizeRalphCliArgs,
 } from '../ralph.js';
 import type { ApprovedExecutionLaunchHint } from '../../planning/artifacts.js';
 
@@ -24,6 +29,20 @@ describe('extractRalphTaskDescription', () => {
   });
   it('supports -- separator', () => {
     assert.equal(extractRalphTaskDescription(['--model', 'gpt-5', '--', 'fix', '--weird-name']), 'fix --weird-name');
+  });
+});
+
+describe('isRalphPrdMode', () => {
+  it('detects --prd flag usage', () => {
+    assert.equal(isRalphPrdMode(['--prd', 'ship release checklist']), true);
+  });
+
+  it('detects --prd=value usage', () => {
+    assert.equal(isRalphPrdMode(['--prd=ship release checklist']), true);
+  });
+
+  it('ignores non-prd Ralph runs', () => {
+    assert.equal(isRalphPrdMode(['fix', 'the', 'bug']), false);
   });
 });
 
@@ -60,6 +79,86 @@ const approvedHint: ApprovedExecutionLaunchHint = {
   testSpecPaths: ['.omx/plans/test-spec-issue-1072.md'],
   deepInterviewSpecPaths: ['.omx/specs/deep-interview-issue-1072.md'],
 };
+
+describe('assertRequiredRalphPrdJson', () => {
+  it('throws when --prd mode starts without .omx/prd.json', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-prd-gate-'));
+    try {
+      assert.throws(
+        () => assertRequiredRalphPrdJson(cwd, ['--prd', 'ship release checklist']),
+        /Missing required PRD\.json at \.omx\/prd\.json/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects completed stories without architect approval', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-prd-gate-'));
+    try {
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'prd.json'), JSON.stringify({
+        project: 'Issue 1555',
+        userStories: [{
+          id: 'US-001',
+          title: 'Guard story completion',
+          passes: true,
+        }],
+      }, null, 2));
+
+      assert.throws(
+        () => assertRequiredRalphPrdJson(cwd, ['--prd', 'ship release checklist']),
+        /marked passed\/completed without architect approval/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows completed stories with architect approval recorded', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-prd-gate-'));
+    try {
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'prd.json'), JSON.stringify({
+        project: 'Issue 1555',
+        userStories: [{
+          id: 'US-001',
+          title: 'Guard story completion',
+          status: 'completed',
+          architect_review: { verdict: 'approve' },
+        }],
+      }, null, 2));
+
+      assert.doesNotThrow(() => assertRequiredRalphPrdJson(cwd, ['--prd', 'ship release checklist']));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows --prd mode when .omx/prd.json exists', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-prd-gate-'));
+    try {
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'prd.json'), JSON.stringify({
+        project: 'Issue 1555',
+        userStories: [],
+      }, null, 2));
+
+      assert.doesNotThrow(() => assertRequiredRalphPrdJson(cwd, ['--prd', 'ship release checklist']));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not gate non-prd Ralph runs', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-prd-gate-'));
+    try {
+      assert.doesNotThrow(() => assertRequiredRalphPrdJson(cwd, ['fix', 'the', 'bug']));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('ralph deslop launch wiring', () => {
   it('consumes --no-deslop so it is not forwarded to codex', () => {
