@@ -230,9 +230,20 @@ export function buildNativePostToolUseOutput(
 
   const normalized = normalizePostToolUsePayload(payload);
   if (!normalized.isBash) return null;
+  if (normalized.exitCode === 0) return null;
+
+  const failureContext = [
+    normalized.stderrText,
+    safeString(normalized.parsedToolResponse?.error),
+    safeString(normalized.parsedToolResponse?.message),
+    safeString(normalized.parsedToolResponse?.details),
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .trim();
 
   const combined = `${normalized.stderrText}\n${normalized.stdoutText}`.trim();
-  if (containsHardFailure(combined)) {
+  if (containsHardFailure(failureContext)) {
     return {
       decision: "block",
       reason: "The Bash output indicates a command/setup failure that should be fixed before retrying.",
@@ -248,7 +259,7 @@ export function buildNativePostToolUseOutput(
     normalized.exitCode !== null
     && normalized.exitCode !== 0
     && combined.length > 0
-    && !containsHardFailure(combined)
+    && !containsHardFailure(failureContext)
   ) {
     return {
       decision: "block",

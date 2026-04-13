@@ -1078,6 +1078,50 @@ esac
     }
   });
 
+  it("stays silent when successful PostToolUse stdout contains command-not-found text", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-stdout-cnf-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-ok-stdout-cnf",
+          tool_input: { command: "printf 'command not found'" },
+          tool_response: "{\"exit_code\":0,\"stdout\":\"command not found\",\"stderr\":\"\"}",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("stays silent when successful PostToolUse stdout contains permission-denied text", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-stdout-perm-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-ok-stdout-perm",
+          tool_input: { command: "python3 -c \"print('permission denied')\"" },
+          tool_response: "{\"exit_code\":0,\"stdout\":\"permission denied\",\"stderr\":\"\"}",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns CLI fallback guidance and preserves failed team state on clear MCP transport death", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-mcp-transport-"));
     try {
