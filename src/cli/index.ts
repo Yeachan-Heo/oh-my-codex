@@ -1258,12 +1258,19 @@ function extractIssueNumber(text: string): number | undefined {
   return generic ? Number.parseInt(generic[2], 10) : undefined;
 }
 
-function resolveNativeSessionName(cwd: string, sessionId: string): string {
-  if (process.env.TMUX) {
+export function resolveNativeSessionName(
+  cwd: string,
+  sessionId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (env.TMUX) {
     try {
-      const tmuxSession = execFileSync(
-        "tmux",
-        ["display-message", "-p", "#S"],
+      const tmuxPaneTarget = env.TMUX_PANE?.trim();
+      const displayArgs = tmuxPaneTarget
+        ? ["display-message", "-p", "-t", tmuxPaneTarget, "#S"]
+        : ["display-message", "-p", "#S"];
+      const tmuxSession = execTmuxFileSync(
+        displayArgs,
         {
           encoding: "utf-8",
           stdio: ["ignore", "pipe", "ignore"],
@@ -1473,10 +1480,9 @@ function parseWindowIndexFromTmuxOutput(rawOutput: string): string | null {
   return /^[0-9]+$/.test(windowIndex) ? windowIndex : null;
 }
 
-function detectDetachedSessionWindowIndex(sessionName: string): string | null {
+export function detectDetachedSessionWindowIndex(sessionName: string): string | null {
   try {
-    const output = execFileSync(
-      "tmux",
+    const output = execTmuxFileSync(
       ["display-message", "-p", "-t", sessionName, "#{window_index}"],
       { encoding: "utf-8" },
     );
