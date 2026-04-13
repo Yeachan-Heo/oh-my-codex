@@ -125,7 +125,9 @@ function shouldIgnoreLeaderWorkspaceStatusLine(line: string): boolean {
   const pathText = normalized.slice(3).trim();
   return /^\.omx\/state\/leader-runtime-activity\.json$/.test(pathText)
     || /^\.omx\/state\/team-state\.json$/.test(pathText)
+    || /^\.omx\/state\/team(?:\/|$)/.test(pathText)
     || /^\.omx\/state\/notify-fallback(?:-[^/]+)?(?:\.[^/]+)?$/.test(pathText)
+    || /^\.omx\/team(?:\/|$)/.test(pathText)
     || /^\.omx\/logs\/team-dispatch-\d{4}-\d{2}-\d{2}\.jsonl$/.test(pathText)
     || /^\.omx\/logs\/notify-fallback-\d{4}-\d{2}-\d{2}\.jsonl$/.test(pathText);
 }

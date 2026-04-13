@@ -2,10 +2,11 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
+  assertCleanLeaderWorkspaceForWorkerWorktrees,
   parseWorktreeMode,
   planWorktreeTarget,
   ensureWorktree,
@@ -224,6 +225,37 @@ describe('worktree ensure + rollback', () => {
     }
   });
 
+  it('prunes stale missing worktree entries before attempting reuse', async () => {
+    const repo = await initRepo();
+    try {
+      const plan = planWorktreeTarget({
+        cwd: repo,
+        scope: 'team',
+        mode: { enabled: true, detached: true, name: null },
+        teamName: 'alpha',
+        workerName: 'worker-1',
+      });
+      assert.equal(plan.enabled, true);
+      if (!plan.enabled) return;
+
+      const created = ensureWorktree(plan);
+      assert.equal(created.enabled, true);
+      if (!created.enabled) return;
+      assert.equal(created.created, true);
+
+      await rm(created.worktreePath, { recursive: true, force: true });
+      mkdirSync(join(repo, '.omx', 'team', 'alpha', 'worktrees'), { recursive: true });
+
+      const reused = ensureWorktree(plan);
+      assert.equal(reused.enabled, true);
+      if (!reused.enabled) return;
+      assert.equal(reused.created, true);
+      assert.equal(existsSync(reused.worktreePath), true);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it('preserves mismatch safety when existing alias points to a different branch', async () => {
     const repo = await initRepo();
     try {
@@ -298,6 +330,29 @@ describe('worktree ensure + rollback', () => {
       assert.equal(existsSync(ensured.worktreePath), false);
       // Branch is preserved when skipBranchDeletion is true (ralph policy)
       assert.equal(branchExists(repo, 'feature/ralph-keep'), true);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores OMX-generated leader runtime artifacts during dirty-workspace preflight', async () => {
+    const repo = await initRepo();
+    try {
+      mkdirSync(join(repo, '.omx', 'state'), { recursive: true });
+      mkdirSync(join(repo, '.omx', 'logs'), { recursive: true });
+      await writeFile(join(repo, '.omx', 'state', 'leader-runtime-activity.json'), '{"ok":true}\n', 'utf-8');
+      await writeFile(join(repo, '.omx', 'state', 'team-state.json'), '{"ok":true}\n', 'utf-8');
+      await writeFile(join(repo, '.omx', 'state', 'notify-fallback-state.json'), '{"ok":true}\n', 'utf-8');
+      mkdirSync(join(repo, '.omx', 'state', 'team', 'demo'), { recursive: true });
+      await writeFile(join(repo, '.omx', 'state', 'team', 'demo', 'config.json'), '{"ok":true}\n', 'utf-8');
+      mkdirSync(join(repo, '.omx', 'team', 'demo', 'worktrees', 'worker-1'), { recursive: true });
+      await writeFile(join(repo, '.omx', 'team', 'demo', 'worktrees', 'worker-1', 'README.tmp'), 'ok\n', 'utf-8');
+      await writeFile(join(repo, '.omx', 'logs', 'team-dispatch-2026-04-13.jsonl'), '{}\n', 'utf-8');
+      await writeFile(join(repo, '.omx', 'logs', 'notify-fallback-2026-04-13.jsonl'), '{}\n', 'utf-8');
+      assert.doesNotThrow(() => assertCleanLeaderWorkspaceForWorkerWorktrees(repo));
+
+      await writeFile(join(repo, 'notes.txt'), 'user change\n', 'utf-8');
+      assert.throws(() => assertCleanLeaderWorkspaceForWorkerWorktrees(repo), /leader_workspace_dirty_for_worktrees/);
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
