@@ -263,9 +263,20 @@ interface GitCommitCommandParseResult {
   requiresExternalMessageSource: boolean;
 }
 
+function isInlineShellEnvAssignment(token: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=.*$/u.test(token);
+}
+
+function isGitExecutableToken(token: string): boolean {
+  if (token.toLowerCase() === "git") return true;
+  const normalized = token.replaceAll("\\", "/");
+  const segments = normalized.split("/");
+  return (segments[segments.length - 1] ?? "").toLowerCase() === "git";
+}
+
 function parseGitCommitCommand(commandText: string): GitCommitCommandParseResult {
   const tokens = tokenizeShellCommand(commandText);
-  if (!tokens || tokens[0]?.toLowerCase() !== "git") {
+  if (!tokens) {
     return {
       isGitCommit: false,
       inlineMessage: null,
@@ -273,7 +284,16 @@ function parseGitCommitCommand(commandText: string): GitCommitCommandParseResult
     };
   }
 
-  const commitIndex = tokens.findIndex((token, index) => index > 0 && token.toLowerCase() === "commit");
+  const gitTokenIndex = tokens.findIndex((token) => !isInlineShellEnvAssignment(token));
+  if (gitTokenIndex < 0 || !isGitExecutableToken(tokens[gitTokenIndex] ?? "")) {
+    return {
+      isGitCommit: false,
+      inlineMessage: null,
+      requiresExternalMessageSource: false,
+    };
+  }
+
+  const commitIndex = tokens.findIndex((token, index) => index > gitTokenIndex && token.toLowerCase() === "commit");
   if (commitIndex < 0) {
     return {
       isGitCommit: false,
