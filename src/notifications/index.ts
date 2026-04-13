@@ -27,6 +27,9 @@ export type {
   NotificationProfilesConfig,
   NotificationsBlock,
   VerbosityLevel,
+  TrackedJob,
+  TrackedJobRegistry,
+  TrackedJobStatus,
 } from "./types.js";
 
 export {
@@ -74,6 +77,12 @@ export {
   pruneStale,
 } from "./session-registry.js";
 export type { SessionMapping } from "./session-registry.js";
+export {
+  getTrackedJobRegistryPath,
+  loadTrackedJobRegistry,
+  listTrackedJobs,
+  lookupTrackedJob,
+} from "./job-registry.js";
 export {
   startReplyListener,
   stopReplyListener,

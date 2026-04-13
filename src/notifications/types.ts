@@ -258,3 +258,44 @@ export interface ReplyConfig {
   /** Authorized Discord user IDs (REQUIRED for Discord, empty = Discord disabled) */
   authorizedDiscordUserIds: string[];
 }
+
+export type TrackedJobStatus = "running" | "finished" | "stopped" | "failed";
+
+export interface TrackedJobSource {
+  platform?: NotificationPlatform | "cli";
+  messageId?: string;
+  sessionId?: string;
+}
+
+export interface TrackedJobArtifacts {
+  promptPath?: string;
+  logPath?: string;
+  outputs?: string[];
+}
+
+export interface TrackedJobDiscordContext {
+  channelId?: string;
+  threadId?: string;
+}
+
+export interface TrackedJobCompletion {
+  announced?: boolean;
+  messageId?: string | null;
+}
+
+export interface TrackedJob {
+  jobName: string;
+  status: TrackedJobStatus;
+  startedAt: string;
+  finishedAt?: string | null;
+  pid?: number | null;
+  source?: TrackedJobSource;
+  artifacts?: TrackedJobArtifacts;
+  discord?: TrackedJobDiscordContext;
+  completion?: TrackedJobCompletion;
+}
+
+export interface TrackedJobRegistry {
+  version: number;
+  jobs: Record<string, TrackedJob>;
+}

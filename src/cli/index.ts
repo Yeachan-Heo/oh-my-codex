@@ -17,6 +17,7 @@ import { teamCommand } from "./team.js";
 import { ralphCommand } from "./ralph.js";
 import { askCommand } from "./ask.js";
 import { stateCommand } from "./state.js";
+import { jobsCommand, jobCommand } from "./jobs.js";
 import {
   cleanupCommand,
   cleanupOmxMcpProcesses,
@@ -159,6 +160,8 @@ Usage:
   omx hooks     Manage hook plugins (init|status|validate|test)
   omx hud       Show HUD statusline (--watch, --json, --preset=NAME)
   omx state     Read/write/list OMX mode state via CLI parity surface
+  omx jobs      List tracked jobs from the notification control registry
+  omx job       Show one tracked job by name
   omx notepad   CLI parity for OMX notepad MCP tools
   omx project-memory
                 CLI parity for OMX project-memory MCP tools
@@ -266,6 +269,8 @@ type CliCommand =
   | "hooks"
   | "hud"
   | "state"
+  | "jobs"
+  | "job"
   | "status"
   | "cancel"
   | "help"
@@ -282,6 +287,8 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "exec",
   "hooks",
   "hud",
+  "jobs",
+  "job",
   "state",
   "ralph",
   "resume",
@@ -632,6 +639,8 @@ export async function main(args: string[]): Promise<void> {
     "tmux-hook",
     "hooks",
     "hud",
+    "jobs",
+    "job",
     "state",
     "status",
     "cancel",
@@ -728,6 +737,12 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "state":
         await stateCommand(args.slice(1));
+        break;
+      case "jobs":
+        await jobsCommand(args.slice(1));
+        break;
+      case "job":
+        await jobCommand(args.slice(1));
         break;
       case "notepad":
         await mcpParityCommand("notepad", args.slice(1));
