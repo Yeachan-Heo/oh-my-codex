@@ -284,6 +284,46 @@ function isGitExecutableToken(token: string): boolean {
   return basename === "git" || basename === "git.exe";
 }
 
+function isEnvExecutableToken(token: string): boolean {
+  const lowerToken = token.toLowerCase();
+  if (lowerToken === "env") return true;
+  const normalized = token.replaceAll("\\", "/");
+  const segments = normalized.split("/");
+  const basename = (segments[segments.length - 1] ?? "").toLowerCase();
+  return basename === "env";
+}
+
+function findGitCommandTokenIndex(tokens: string[]): number {
+  let index = 0;
+
+  while (index < tokens.length && isInlineShellEnvAssignment(tokens[index] ?? "")) {
+    index += 1;
+  }
+
+  while (index < tokens.length && isEnvExecutableToken(tokens[index] ?? "")) {
+    index += 1;
+    while (index < tokens.length) {
+      const token = tokens[index] ?? "";
+      if (token === "--") {
+        index += 1;
+        break;
+      }
+      if (isInlineShellEnvAssignment(token) || token.startsWith("-")) {
+        index += 1;
+        continue;
+      }
+      break;
+    }
+    while (index < tokens.length && isInlineShellEnvAssignment(tokens[index] ?? "")) {
+      index += 1;
+    }
+  }
+
+  return index < tokens.length && isGitExecutableToken(tokens[index] ?? "")
+    ? index
+    : -1;
+}
+
 function parseGitCommitCommand(commandText: string): GitCommitCommandParseResult {
   const tokens = tokenizeShellCommand(commandText);
   if (!tokens) {
@@ -294,7 +334,7 @@ function parseGitCommitCommand(commandText: string): GitCommitCommandParseResult
     };
   }
 
-  const gitTokenIndex = tokens.findIndex((token) => !isInlineShellEnvAssignment(token));
+  const gitTokenIndex = findGitCommandTokenIndex(tokens);
   if (gitTokenIndex < 0 || !isGitExecutableToken(tokens[gitTokenIndex] ?? "")) {
     return {
       isGitCommit: false,
