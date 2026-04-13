@@ -294,6 +294,11 @@ export function paneLooksReady(captured: any): boolean {
   const hasCodexWelcomePrompt = lines.some((line) => /\bhow can i help(?: you)?\b/i.test(line));
   if (hasCodexWelcomePrompt) return true;
 
+  const hasCodexWelcomeFrame = lines.some((line) => /OpenAI Codex/i.test(line))
+    && lines.some((line) => /model:/i.test(line))
+    && lines.some((line) => /directory:/i.test(line));
+  if (hasCodexWelcomeFrame) return true;
+
   return lines.some((line) => /^\s*(?:[›>❯]\s*)?[A-Z][A-Z0-9]+-\d+\s+only(?:\s*(?:…|\.{3}))?\s*$/iu.test(line));
 }
 

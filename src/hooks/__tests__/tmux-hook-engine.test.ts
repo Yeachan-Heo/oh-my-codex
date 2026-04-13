@@ -336,6 +336,22 @@ describe('paneLooksReady', () => {
     assert.equal(paneLooksReady('How can I help you today?'), true);
   });
 
+  it('accepts Codex welcome frames even when helper text is missing', () => {
+    assert.equal(
+      paneLooksReady(
+        '╭────────────────────────────────────────────╮\n'
+        + '│ >_ OpenAI Codex (v0.120.0)                 │\n'
+        + '│                                            │\n'
+        + '│ model:     gpt-5.4 high   /model to change │\n'
+        + '│ directory: ~/Workspace/demo                │\n'
+        + '╰────────────────────────────────────────────╯\n'
+        + '\n'
+        + '⚠ MCP startup incomplete',
+      ),
+      true,
+    );
+  });
+
   it('accepts Codex welcome-screen suggestion rows with a prompt glyph', () => {
     assert.equal(paneLooksReady('› Explain this codebase'), true);
   });

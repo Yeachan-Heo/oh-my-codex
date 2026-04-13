@@ -1386,6 +1386,37 @@ esac
     );
   });
 
+  it('waitForWorkerReady accepts Codex 0.120.0-style welcome frames without helper text', async () => {
+    await withMockTmuxFixture(
+      'omx-tmux-worker-ready-frame-',
+      (logPath) => `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${logPath}"
+case "$1" in
+  capture-pane)
+    cat <<'EOF'
+╭────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.120.0)                 │
+│                                            │
+│ model:     gpt-5.4 high   /model to change │
+│ directory: ~/Workspace/demo                │
+╰────────────────────────────────────────────╯
+
+⚠ MCP startup incomplete
+EOF
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+      async () => {
+        assert.equal(waitForWorkerReady('omx-team-x', 1, 1_000), true);
+      },
+    );
+  });
+
   it('waitForWorkerReady auto-accepts the Claude bypass prompt', async () => {
     await withMockTmuxFixture(
       'omx-tmux-claude-bypass-ready-',

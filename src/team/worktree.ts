@@ -119,6 +119,17 @@ function isWorktreeDirty(worktreePath: string): boolean {
   return (result.stdout || '').trim() !== '';
 }
 
+function shouldIgnoreLeaderWorkspaceStatusLine(line: string): boolean {
+  const normalized = line.trim();
+  if (normalized.length < 4) return false;
+  const pathText = normalized.slice(3).trim();
+  return /^\.omx\/state\/leader-runtime-activity\.json$/.test(pathText)
+    || /^\.omx\/state\/team-state\.json$/.test(pathText)
+    || /^\.omx\/state\/notify-fallback(?:-[^/]+)?(?:\.[^/]+)?$/.test(pathText)
+    || /^\.omx\/logs\/team-dispatch-\d{4}-\d{2}-\d{2}\.jsonl$/.test(pathText)
+    || /^\.omx\/logs\/notify-fallback-\d{4}-\d{2}-\d{2}\.jsonl$/.test(pathText);
+}
+
 export function readWorkspaceStatusLines(cwd: string): string[] {
   const result = spawnSync('git', ['status', '--porcelain', '--untracked-files=all'], {
     cwd,
@@ -131,7 +142,8 @@ export function readWorkspaceStatusLines(cwd: string): string[] {
   return (result.stdout || '')
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((line) => !shouldIgnoreLeaderWorkspaceStatusLine(line));
 }
 
 export function assertCleanLeaderWorkspaceForWorkerWorktrees(cwd: string): void {
@@ -172,6 +184,16 @@ function listWorktrees(repoRoot: string): GitWorktreeEntry[] {
   }
 
   return entries;
+}
+
+function pruneWorktrees(repoRoot: string): void {
+  const result = spawnSync('git', ['worktree', 'prune'], {
+    cwd: repoRoot,
+    encoding: 'utf-8',
+  });
+  if (result.status === 0) return;
+  const stderr = (result.stderr || '').trim();
+  throw new Error(stderr || `worktree_prune_failed:${repoRoot}`);
 }
 
 function resolveBranchName(input: WorktreePlanInput): string | null {
@@ -349,7 +371,12 @@ export function planWorktreeTarget(input: WorktreePlanInput): PlannedWorktreeTar
 export function ensureWorktree(plan: PlannedWorktreeTarget | { enabled: false }): EnsureWorktreeResult | { enabled: false } {
   if (!plan.enabled) return { enabled: false };
 
-  const allWorktrees = listWorktrees(plan.repoRoot);
+  let allWorktrees = listWorktrees(plan.repoRoot);
+  const staleExistingAtPath = findWorktreeByPath(allWorktrees, plan.worktreePath);
+  if (staleExistingAtPath && !existsSync(plan.worktreePath)) {
+    pruneWorktrees(plan.repoRoot);
+    allWorktrees = listWorktrees(plan.repoRoot);
+  }
   const existingAtPath = findWorktreeByPath(allWorktrees, plan.worktreePath)
     ?? readWorktreeEntryFromPath(plan.repoRoot, plan.worktreePath);
   const expectedBranchRef = plan.branchName ? `refs/heads/${plan.branchName}` : null;
