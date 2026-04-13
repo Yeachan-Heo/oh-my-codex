@@ -293,6 +293,15 @@ function isEnvExecutableToken(token: string): boolean {
   return basename === "env";
 }
 
+function envOptionConsumesNextValue(token: string): boolean {
+  return token === "-u"
+    || token === "--unset"
+    || token === "-C"
+    || token === "--chdir"
+    || token === "-S"
+    || token === "--split-string";
+}
+
 function findGitCommandTokenIndex(tokens: string[]): number {
   let index = 0;
 
@@ -309,6 +318,9 @@ function findGitCommandTokenIndex(tokens: string[]): number {
         break;
       }
       if (isInlineShellEnvAssignment(token) || token.startsWith("-")) {
+        if (envOptionConsumesNextValue(token)) {
+          index += 1;
+        }
         index += 1;
         continue;
       }
