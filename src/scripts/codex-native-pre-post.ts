@@ -336,6 +336,52 @@ function findGitCommandTokenIndex(tokens: string[]): number {
     : -1;
 }
 
+function gitOptionConsumesNextValue(token: string): boolean {
+  return token === "-c"
+    || token === "-C"
+    || token === "--git-dir"
+    || token === "--work-tree"
+    || token === "--namespace"
+    || token === "--super-prefix"
+    || token === "--exec-path"
+    || token === "--config-env"
+    || token === "--attr-source";
+}
+
+function gitOptionStopsBeforeSubcommand(token: string): boolean {
+  return token === "-h"
+    || token === "--help"
+    || token === "--version"
+    || token === "--html-path"
+    || token === "--man-path"
+    || token === "--info-path";
+}
+
+function findGitSubcommandIndex(tokens: string[], gitTokenIndex: number): number {
+  let index = gitTokenIndex + 1;
+
+  while (index < tokens.length) {
+    const token = tokens[index] ?? "";
+    if (!token) {
+      index += 1;
+      continue;
+    }
+    if (token === "--") {
+      index += 1;
+      break;
+    }
+    if (!token.startsWith("-")) break;
+    if (gitOptionStopsBeforeSubcommand(token)) return -1;
+    if (gitOptionConsumesNextValue(token)) {
+      index += 2;
+      continue;
+    }
+    index += 1;
+  }
+
+  return index < tokens.length ? index : -1;
+}
+
 function parseGitCommitCommand(commandText: string): GitCommitCommandParseResult {
   const tokens = tokenizeShellCommand(commandText);
   if (!tokens) {
@@ -355,8 +401,8 @@ function parseGitCommitCommand(commandText: string): GitCommitCommandParseResult
     };
   }
 
-  const commitIndex = tokens.findIndex((token, index) => index > gitTokenIndex && token.toLowerCase() === "commit");
-  if (commitIndex < 0) {
+  const subcommandIndex = findGitSubcommandIndex(tokens, gitTokenIndex);
+  if (subcommandIndex < 0 || tokens[subcommandIndex]?.toLowerCase() !== "commit") {
     return {
       isGitCommit: false,
       inlineMessage: null,
@@ -366,7 +412,7 @@ function parseGitCommitCommand(commandText: string): GitCommitCommandParseResult
 
   const messageParts: string[] = [];
   let requiresExternalMessageSource = false;
-  const args = tokens.slice(commitIndex + 1);
+  const args = tokens.slice(subcommandIndex + 1);
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index] ?? "";
     if (token === "-m" || token === "--message") {
