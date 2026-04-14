@@ -2,6 +2,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   validateMention,
+  validateSlackMention,
   parseMentionAllowedMentions,
   buildConfigFromEnv,
   getReplyListenerPlatformConfig,
@@ -18,6 +19,7 @@ const ENV_KEYS = [
   'OMX_TELEGRAM_NOTIFIER_CHAT_ID',
   'OMX_TELEGRAM_NOTIFIER_UID',
   'OMX_SLACK_WEBHOOK_URL',
+  'OMX_SLACK_MENTION',
   'OMX_REPLY_ENABLED',
   'OMX_REPLY_DISCORD_USER_IDS',
   'OMX_REPLY_POLL_INTERVAL_MS',
@@ -81,6 +83,24 @@ describe('validateMention', () => {
 
   it('rejects whitespace-only string', () => {
     assert.equal(validateMention('   '), undefined);
+  });
+});
+
+describe('validateSlackMention', () => {
+  it('accepts valid user mentions', () => {
+    assert.equal(validateSlackMention('<@U12345678>'), '<@U12345678>');
+    assert.equal(validateSlackMention('<@W1234567890>'), '<@W1234567890>');
+  });
+
+  it('accepts special channel-style mentions and user groups', () => {
+    assert.equal(validateSlackMention('<!channel>'), '<!channel>');
+    assert.equal(validateSlackMention('<!subteam^S12345678>'), '<!subteam^S12345678>');
+  });
+
+  it('rejects invalid or plain-text mentions', () => {
+    assert.equal(validateSlackMention('@channel'), undefined);
+    assert.equal(validateSlackMention('<@12345678901234567>'), undefined);
+    assert.equal(validateSlackMention(''), undefined);
   });
 });
 
@@ -176,6 +196,31 @@ describe('buildConfigFromEnv', () => {
 
   it('builds slack config from env var', () => {
     process.env.OMX_SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/test';
+    const config = buildConfigFromEnv();
+    assert.ok(config);
+    assert.deepEqual(config.slack, {
+      enabled: true,
+      webhookUrl: 'https://hooks.slack.com/services/test',
+    });
+  });
+
+  it('includes a validated slack mention in slack config', () => {
+    process.env.OMX_SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/test';
+    process.env.OMX_SLACK_MENTION = '<!here>';
+
+    const config = buildConfigFromEnv();
+    assert.ok(config);
+    assert.deepEqual(config.slack, {
+      enabled: true,
+      webhookUrl: 'https://hooks.slack.com/services/test',
+      mention: '<!here>',
+    });
+  });
+
+  it('drops invalid slack mention env values', () => {
+    process.env.OMX_SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/test';
+    process.env.OMX_SLACK_MENTION = '@here';
+
     const config = buildConfigFromEnv();
     assert.ok(config);
     assert.deepEqual(config.slack, {
