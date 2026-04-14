@@ -3,7 +3,7 @@
 <p align="center">
   <img src="https://yeachan-heo.github.io/oh-my-codex-website/omx-character-nobg.png" alt="oh-my-codex character" width="280">
   <br>
-  <em>你的 codex 并不孤单。</em>
+  <em>先把 Codex 启动得更强，再在任务变复杂时用 OMX 的提示词、工作流和运行时能力。</em>
 </p>
 
 [![npm version](https://img.shields.io/npm/v/oh-my-codex)](https://www.npmjs.com/package/oh-my-codex)
@@ -11,253 +11,278 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 [![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/PUwSMR9XNk)
 
-> **[Website](https://yeachan-heo.github.io/oh-my-codex-website/)** | **[Documentation](https://yeachan-heo.github.io/oh-my-codex-website/docs.html)** | **[CLI Reference](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#cli-reference)** | **[Workflows](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#workflows)** | **[OpenClaw 集成指南](../openclaw-integration.zh.md)** | **[GitHub](https://github.com/Yeachan-Heo/oh-my-codex)** | **[npm](https://www.npmjs.com/package/oh-my-codex)**
+**官网:** https://yeachan-heo.github.io/oh-my-codex-website/
+**文档:** [快速开始](../getting-started.html) · [代理](../agents.html) · [技能](../skills.html) · [集成](../integrations.html) · [演示](../../DEMO.md) · [OpenClaw 指南](../openclaw-integration.zh.md)
+**社区:** [Discord](https://discord.gg/PUwSMR9XNk)（oh-my-codex 与相关工具共享社区）
 
-[OpenAI Codex CLI](https://github.com/openai/codex) 的多智能体编排层。
+OMX 是 [OpenAI Codex CLI](https://github.com/openai/codex) 的工作流增强层。
 
-## v0.9.0 新特性 — Spark Initiative
+<table>
+<tr>
+<td><strong>🚨 注意：默认推荐环境是 macOS 或 Linux + Codex CLI。</strong><br><br><strong>OMX 主要围绕这条路径持续优化。</strong><br><strong>原生 Windows 和 Codex App 不是默认体验，可能不稳定，当前支持力度也较弱。</strong></td>
+</tr>
+</table>
 
-Spark Initiative 是一次强化 OMX 原生探索与检查路径的版本发布。
+OMX 保留 Codex 作为执行引擎，并让你更容易：
+- 默认启动更强的 Codex 会话
+- 从澄清到完成使用一条一致工作流
+- 通过 `$deep-interview`、`$ralplan`、`$team`、`$ralph` 调用标准技能
+- 把项目指导、计划、日志和状态统一放在 `.omx/`
 
-- **`omx explore` 原生 harness** —— 通过 Rust 原生 harness 更快、更严格地执行只读仓库探索。
-- **`omx sparkshell`** —— 面向操作者的原生检查界面，支持长输出摘要与 tmux pane 捕获。
-- **跨平台原生发布资产** —— `omx-explore-harness`、`omx-sparkshell` 与 `native-release-manifest.json` 的 hydration 路径现已纳入发布流水线。
-- **增强的 CI/CD** —— 为 `build` job 增加显式 Rust toolchain 设置，并加入 `cargo fmt --check` 与 `cargo clippy -- -D warnings`。
+## 核心维护者
 
-详情请参阅 [v0.9.0 发布说明](../release-notes-0.9.0.md) 和 [发布正文](../release-body-0.9.0.md)。
+| 角色 | 名称 | GitHub |
+| --- | --- | --- |
+| Creator & Lead | Yeachan Heo | [@Yeachan-Heo](https://github.com/Yeachan-Heo) |
+| Maintainer | HaD0Yun | [@HaD0Yun](https://github.com/HaD0Yun) |
 
-## 首次会话
+## 大使
 
-在 Codex 内部：
+| 名称 | GitHub |
+| --- | --- |
+| Sigrid Jin | [@sigridjineth](https://github.com/sigridjineth) |
+
+## 主要贡献者
+
+| 名称 | GitHub |
+| --- | --- |
+| HaD0Yun | [@HaD0Yun](https://github.com/HaD0Yun) |
+| Junho Yeo | [@junhoyeo](https://github.com/junhoyeo) |
+| JiHongKim98 | [@JiHongKim98](https://github.com/JiHongKim98) |
+| Lor | — |
+| HyunjunJeon | [@HyunjunJeon](https://github.com/HyunjunJeon) |
+
+## 推荐默认流程
+
+如果你希望获得 OMX 的默认体验，从这里开始：
+
+```bash
+npm install -g @openai/codex oh-my-codex
+omx setup
+omx --madmax --high
+```
+
+然后在 Codex 里正常工作：
 
 ```text
-$deep-interview "clarify the auth change"
+$deep-interview "clarify the authentication change"
 $ralplan "approve the auth plan and review tradeoffs"
 $ralph "carry the approved plan to completion"
 $team 3:executor "execute the approved plan in parallel"
 ```
 
-从终端：
+这是主路径。
+先把 OMX 以更强配置启动；在需要时先澄清；确认计划后，根据任务形态选择 `$team` 并行推进或 `$ralph` 持续收敛到完成。
+
+## OMX 适用场景
+
+如果你喜欢 Codex，但希望日常运行更稳定高效，OMX 适合你：
+- 围绕 `$deep-interview`、`$ralplan`、`$team`、`$ralph` 的标准化工作流
+- 任务需要时可调用的专用角色和辅助技能
+- 通过分层 `AGENTS.md` 做项目级指导
+- `.omx/` 下可持续保存的计划、日志、记忆与模式状态
+
+如果你只想使用纯 Codex，不需要额外工作流层，通常不需要 OMX。
+
+## 快速开始
+
+### 环境要求
+
+- Node.js 20+
+- 已安装 Codex CLI：`npm install -g @openai/codex`
+- 已完成 Codex 认证
+- macOS/Linux 上建议安装 `tmux`（用于推荐的 team 运行时）
+- 若你明确要走原生 Windows 次级路径，可安装 `psmux`
+
+### 一次好的首会话
+
+推荐启动方式：
 
 ```bash
-omx team 4:executor "parallelize a multi-module refactor"
-omx team status <team-name>
-omx team shutdown <team-name>
+omx --madmax --high
 ```
+
+默认会直接启动交互式 leader 会话。
+如果你明确希望 leader 在 tmux 内运行，使用：
+
+```bash
+omx --tmux --madmax --high
+```
+
+然后尝试标准工作流：
+
+```text
+$deep-interview "clarify the authentication change"
+$ralplan "approve the safest implementation path"
+$ralph "carry the approved plan to completion"
+$team 3:executor "execute the approved plan in parallel"
+```
+
+当计划需要协调并行执行时用 `$team`，当你希望单一负责人持续推进到完成时用 `$ralph`。
+
+## 一个简单心智模型
+
+OMX **不会**替代 Codex。
+
+它是在 Codex 外层加一层更好用的工作层：
+- **Codex** 负责实际 agent 执行
+- **OMX 角色关键词** 让常用角色可复用
+- **OMX 技能** 让常用流程可复用
+- **`.omx/`** 保存计划、日志、记忆和运行时状态
+
+大多数用户可以把 OMX 理解为：**更好的任务路由 + 更好的工作流 + 更好的运行时**，而不是需要整天手动操控的命令集合。
+
+## 新用户从这里开始
+
+1. 运行 `omx setup`
+2. 用 `omx --madmax --high` 启动
+3. 当需求或边界还不清楚时，使用 `$deep-interview "..."`
+4. 使用 `$ralplan "..."` 审核并确认计划和权衡
+5. 在协调并行时选 `$team`，在单负责人持续推进时选 `$ralph`
 
 ## 推荐工作流
 
-1. `$deep-interview` — 当范围或边界还不清楚时，先用它澄清需求。
-2. `$ralplan` — 把澄清后的范围整理成可批准的架构与实施计划。
-3. `$team` 或 `$ralph` — 需要协调并行执行时用 `$team`，需要单一负责人持续推进到完成并验证时用 `$ralph`。
+1. `$deep-interview`：当范围和边界仍然模糊时，先澄清。
+2. `$ralplan`：把已澄清范围收敛为可批准的架构与实现计划。
+3. `$team` 或 `$ralph`：需要协同并行就用 `$team`，需要单一 owner 持续推进就用 `$ralph`。
 
-## 核心模型
+## 会话内常用入口
 
-OMX 安装并连接以下层：
+| 入口 | 用途 |
+| --- | --- |
+| `$deep-interview "..."` | 澄清意图、边界和非目标 |
+| `$ralplan "..."` | 审核实现计划与权衡 |
+| `$ralph "..."` | 持续推进 + 验证闭环 |
+| `$team "..."` | 当任务足够大时做协调并行 |
+| `/skills` | 浏览已安装技能及辅助能力 |
 
-```text
-User
-  -> Codex CLI
-    -> AGENTS.md (编排大脑)
-    -> ~/.codex/prompts/*.md (代理 prompt 目录)
-    -> ~/.codex/skills/*/SKILL.md (skill 目录)
-    -> ~/.codex/config.toml (功能、通知、MCP)
-    -> .omx/ (运行时状态、记忆、计划、日志)
-```
+## 高级 / 运维入口
 
-## 主要命令
+这些入口有用，但不是新手主路径。
 
-```bash
-omx                # 启动 Codex（在 tmux 中附带 HUD）
-omx setup          # 按作用域安装 prompt/skill/config + 项目 .omx + 作用域专属 AGENTS.md
-omx doctor         # 安装/运行时诊断
-omx doctor --team  # Team/swarm 诊断
-omx team ...       # 启动/状态/恢复/关闭 tmux 团队 worker
-omx status         # 显示活动模式
-omx cancel         # 取消活动执行模式
-omx reasoning <mode> # low|medium|high|xhigh
-omx tmux-hook ...  # init|status|validate|test
-omx hooks ...      # init|status|validate|test（插件扩展工作流）
-omx hud ...        # --watch|--json|--preset
-omx help
-```
+### Team runtime
 
-## Hooks 扩展（附加表面）
-
-OMX 现在包含用于插件脚手架和验证的 `omx hooks`。
-
-- `omx tmux-hook` 继续支持且未更改。
-- `omx hooks` 是附加的，不会替代 tmux-hook 工作流。
-- 插件文件位于 `.omx/hooks/*.mjs`。
-- 插件默认关闭；使用 `OMX_HOOK_PLUGINS=1` 启用。
-
-完整的扩展工作流和事件模型请参阅 `docs/hooks-extension.md`。
-
-## 启动标志
+当你明确需要耐久化的 tmux/worktree 协同时再使用 team runtime，而不是默认起手方式。
 
 ```bash
---yolo
---high
---xhigh
---madmax
---force
---dry-run
---verbose
---scope <user|project>  # 仅用于 setup
-```
-
-`--madmax` 映射到 Codex `--dangerously-bypass-approvals-and-sandbox`。
-仅在可信/外部沙箱环境中使用。
-
-### MCP workingDirectory 策略（可选加固）
-
-默认情况下，MCP state/memory/trace 工具接受调用方提供的 `workingDirectory`。
-要限制此行为，请设置允许的根目录列表：
-
-```bash
-export OMX_MCP_WORKDIR_ROOTS="/path/to/project:/path/to/another-root"
-```
-
-设置后，超出这些根目录的 `workingDirectory` 值将被拒绝。
-
-## Codex-First Prompt 控制
-
-默认情况下，OMX 注入：
-
-```text
--c model_instructions_file="<cwd>/AGENTS.md"
-```
-
-这会将 `CODEX_HOME` 中的 `AGENTS.md` 与项目 `AGENTS.md`（如果存在）合并，然后再附加运行时 overlay。
-扩展 Codex 行为，但不会替换/绕过 Codex 核心系统策略。
-
-控制：
-
-```bash
-OMX_BYPASS_DEFAULT_SYSTEM_PROMPT=0 omx     # 禁用 AGENTS.md 注入
-OMX_MODEL_INSTRUCTIONS_FILE=/path/to/instructions.md omx
-```
-
-## 团队模式
-
-对于受益于并行 worker 的大规模工作，使用团队模式。
-
-生命周期：
-
-```text
-start -> assign scoped lanes -> monitor -> verify terminal tasks -> shutdown
-```
-
-操作命令：
-
-```bash
-omx team <args>
+omx team 3:executor "fix the failing tests with verification"
 omx team status <team-name>
 omx team resume <team-name>
 omx team shutdown <team-name>
 ```
 
-重要规则：除非中止，否则不要在任务仍处于 `in_progress` 状态时关闭。
+### Setup、Doctor、HUD
 
-### Team shutdown policy
+这些属于运维/支持入口：
+- `omx setup` 会安装 prompts、skills、AGENTS 脚手架、`.codex/config.toml`，以及写入 `.codex/hooks.json` 中由 OMX 管理的原生 Codex hooks
+  - setup 刷新会保留 `.codex/hooks.json` 里非 OMX 条目，只重写 OMX 管理的包装层
+  - `omx uninstall` 会移除 `.codex/hooks.json` 里的 OMX 管理包装；如果用户 hooks 仍存在则保留该文件
+- `omx doctor` 用于安装健康检查和故障诊断
+- `omx hud --watch` 是监控/状态入口，不是主要工作流入口
 
-Use `omx team shutdown <team-name>` after the team reaches a terminal state.
-Team cleanup now follows one standalone path; legacy linked-Ralph shutdown handling is no longer a separate public workflow.
+对于非 team 会话，原生 Codex hooks 现在是标准生命周期入口：
+- `.codex/hooks.json` = 原生 Codex hook 注册
+- `.omx/hooks/*.mjs` = OMX 插件 hooks
+- `omx tmux-hook` / notify-hook / derived watcher = tmux + 运行时回退路径
 
-团队 worker 的 Worker CLI 选择：
+详见 [Codex 原生 Hook 映射](../codex-native-hooks.md)。
 
-```bash
-OMX_TEAM_WORKER_CLI=auto    # 默认；当 worker --model 包含 "claude" 时使用 claude
-OMX_TEAM_WORKER_CLI=codex   # 强制 Codex CLI worker
-OMX_TEAM_WORKER_CLI=claude  # 强制 Claude CLI worker
-OMX_TEAM_WORKER_CLI_MAP=codex,codex,claude,claude  # 每个 worker 的 CLI 混合（长度=1 或 worker 数量）
-OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # 可选：禁用自适应 queue->resend 回退
-```
+### Explore 与 sparkshell
 
-注意：
-- Worker 启动参数仍通过 `OMX_TEAM_WORKER_LAUNCH_ARGS` 共享。
-- `OMX_TEAM_WORKER_CLI_MAP` 覆盖 `OMX_TEAM_WORKER_CLI` 以实现每个 worker 的选择。
-- 触发器提交默认使用自适应重试（queue/submit，需要时使用安全的 clear-line+resend 回退）。
-- 在 Claude worker 模式下，OMX 以普通 `claude` 启动 worker（无额外启动参数），并忽略显式的 `--model` / `--config` / `--effort` 覆盖，使 Claude 使用默认 `settings.json`。
-
-## `omx setup` 写入的内容
-
-- `.omx/setup-scope.json`（持久化的设置作用域）
-- 依赖作用域的安装：
-  - `user`：`~/.codex/prompts/`、`~/.codex/skills/`、`~/.codex/config.toml`、`~/.omx/agents/`、`~/.codex/AGENTS.md`
-  - `project`：`./.codex/prompts/`、`./.codex/skills/`、`./.codex/config.toml`、`./.omx/agents/`、`./AGENTS.md`
-- 启动行为：如果持久化的作用域是 `project`，`omx` 启动时自动使用 `CODEX_HOME=./.codex`（除非 `CODEX_HOME` 已设置）。
-- 启动指令会合并 `~/.codex/AGENTS.md`（或被覆盖的 `CODEX_HOME/AGENTS.md`）与项目 `./AGENTS.md`，然后附加运行时 overlay。
-- 现有 `AGENTS.md` 文件绝不会被静默覆盖：交互式 TTY 下 setup 会先询问是否替换；非交互模式下除非传入 `--force`，否则会跳过替换（活动会话安全检查仍然适用）。
-- `config.toml` 更新（两种作用域均适用）：
-  - `notify = ["node", "..."]`
-  - `model_reasoning_effort = "high"`
-  - `developer_instructions = "..."`
-  - `[features] multi_agent = true, child_agents_md = true`
-  - MCP 服务器条目（`omx_state`、`omx_memory`、`omx_code_intel`、`omx_trace`）
-  - `[tui] status_line`
-- 作用域专属 `AGENTS.md`
-- `.omx/` 运行时目录和 HUD 配置
-
-## 代理和技能
-
-- Prompt：`prompts/*.md`（`user` 安装到 `~/.codex/prompts/`，`project` 安装到 `./.codex/prompts/`）
-- Skill：`skills/*/SKILL.md`（`user` 安装到 `~/.codex/skills/`，`project` 安装到 `./.codex/skills/`）
+- `omx explore --prompt "..."` 用于只读仓库查询
+- `omx sparkshell <command>` 用于 shell 原生检查和有界验证
+- 当 `.omx/wiki/` 存在时，`omx explore` 可先注入 wiki 上下文再回退到全仓搜索
 
 示例：
-- 代理：`architect`、`planner`、`executor`、`debugger`、`verifier`、`security-reviewer`
-- 技能：`deep-interview`、`ralplan`、`team`、`ralph`、`plan`、`cancel`
-
-## 项目结构
-
-```text
-oh-my-codex/
-  bin/omx.js
-  src/
-    cli/
-    team/
-    mcp/
-    hooks/
-    hud/
-    config/
-    modes/
-    notifications/
-    verification/
-  prompts/
-  skills/
-  templates/
-  scripts/
-```
-
-## 开发
 
 ```bash
-git clone https://github.com/Yeachan-Heo/oh-my-codex.git
-cd oh-my-codex
-npm install
-npm run build
-npm test
+omx explore --prompt "find where team state is written"
+omx sparkshell git status
+omx sparkshell --tmux-pane %12 --tail-lines 400
 ```
+
+### Wiki
+
+- `omx wiki` 是 OMX wiki MCP 服务的 CLI 对等入口
+- wiki 数据本地存放在 `.omx/wiki/`
+- wiki 是 markdown-first、search-first，而不是 vector-first
+
+示例：
+
+```bash
+omx wiki list --json
+omx wiki query --input '{"query":"session-start lifecycle"}' --json
+omx wiki lint --json
+omx wiki refresh --json
+```
+
+### Team 模式平台说明
+
+`omx team` 在 macOS/Linux + `tmux` 下体验最佳。
+原生 Windows 是次级路径；如果你是 Windows 主机，通常 WSL2 更推荐。
+
+| 平台 | 安装命令 |
+| --- | --- |
+| macOS | `brew install tmux` |
+| Ubuntu/Debian | `sudo apt install tmux` |
+| Fedora | `sudo dnf install tmux` |
+| Arch | `sudo pacman -S tmux` |
+| Windows | `winget install psmux` |
+| Windows (WSL2) | `sudo apt install tmux` |
+
+## 已知问题
+
+### Intel Mac：启动时 `syspolicyd` / `trustd` CPU 偏高
+
+在部分 Intel Mac 上，OMX 启动（尤其 `--madmax --high`）期间，macOS Gatekeeper 对并发进程做校验时可能导致 `syspolicyd` / `trustd` CPU 峰值。
+
+如果遇到这个问题，可以尝试：
+- `xattr -dr com.apple.quarantine $(which omx)`
+- 在 macOS 安全设置里把你的终端加入 Developer Tools 允许列表
+- 降低并发（例如避免 `--madmax --high`）
 
 ## 文档
 
-- **[完整文档](https://yeachan-heo.github.io/oh-my-codex-website/docs.html)** — 完整指南
-- **[CLI 参考](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#cli-reference)** — 所有 `omx` 命令、标志和工具
-- **[通知指南](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#notifications)** — Discord、Telegram、Slack 和 webhook 设置
-- **[推荐工作流](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#workflows)** — 用于常见任务的经过实战检验的 skill 链
-- **[发行说明](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#release-notes)** — 每个版本的新功能
+- [快速开始](../getting-started.html)
+- [Demo 指南](../../DEMO.md)
+- [Wiki 功能](../wiki-feature.md)
+- [代理目录](../agents.html)
+- [技能参考](../skills.html)
+- [Codex 原生 Hook 映射](../codex-native-hooks.md)
+- [集成](../integrations.html)
+- [OpenClaw / 通知网关指南](../openclaw-integration.zh.md)
+- [贡献指南](../../CONTRIBUTING.md)
+- [更新日志](../../CHANGELOG.md)
 
-## 备注
+## 语言
 
-- 完整变更日志：`CHANGELOG.md`
-- 迁移指南（v0.4.4 后的 mainline）：`docs/migration-mainline-post-v0.4.4.md`
-- 覆盖率和对等说明：`COVERAGE.md`
-- Hook 扩展工作流：`docs/hooks-extension.md`
-- 设置和贡献详情：`CONTRIBUTING.md`
+- [English](../../README.md)
+- [한국어](./README.ko.md)
+- [日本語](./README.ja.md)
+- [简体中文](./README.zh.md)
+- [繁體中文](./README.zh-TW.md)
+- [Tiếng Việt](./README.vi.md)
+- [Español](./README.es.md)
+- [Português](./README.pt.md)
+- [Русский](./README.ru.md)
+- [Türkçe](./README.tr.md)
+- [Deutsch](./README.de.md)
+- [Français](./README.fr.md)
+- [Italiano](./README.it.md)
+- [Ελληνικά](./README.el.md)
+- [Polski](./README.pl.md)
+- [Українська](./README.uk.md)
 
-## 致谢
+## 贡献者
 
-受 [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) 启发，为 Codex CLI 适配。
+| 角色 | 名称 | GitHub |
+| --- | --- | --- |
+| Creator & Lead | Yeachan Heo | [@Yeachan-Heo](https://github.com/Yeachan-Heo) |
+| Maintainer | HaD0Yun | [@HaD0Yun](https://github.com/HaD0Yun) |
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Yeachan-Heo/oh-my-codex&type=date&legend=top-left)](https://www.star-history.com/#Yeachan-Heo/oh-my-codex&type=date&legend=top-left)
 
 ## 许可证
 
