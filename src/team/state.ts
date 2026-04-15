@@ -1528,12 +1528,10 @@ export async function updateTask(
     const rawDeps = updates.depends_on ?? updates.blocked_by ?? existing.depends_on ?? existing.blocked_by ?? [];
     const normalizedDeps = Array.isArray(rawDeps) ? rawDeps : [];
     const classified = classifyTaskExecution({
-      ...existing,
-      ...updates,
-      id: existing.id,
-      created_at: existing.created_at,
-      status: updates.status ?? existing.status,
-      depends_on: normalizedDeps,
+      subject: updates.subject ?? existing.subject,
+      description: updates.description ?? existing.description,
+      execution_contract: updates.execution_contract ?? existing.execution_contract,
+      execution: updates.execution ?? existing.execution,
     });
 
     const merged: TeamTaskV2 = {
