@@ -577,7 +577,10 @@ describe('executeTeamApiOperation: update-task', () => {
       }, cwd);
       assert.equal(result.ok, true);
 
-      const reread = await readTask('upd-tsk-execution', task.id, cwd);
+      const reread = await readTask('upd-tsk-execution', task.id, cwd) as (Record<string, unknown> & {
+        execution?: Record<string, unknown>;
+        execution_contract?: Record<string, unknown>;
+      }) | null;
       assert.equal(reread?.execution?.escalation_count, 1);
       assert.equal(reread?.execution?.last_failure_reason, 'shared-file conflict');
       assert.equal(reread?.execution?.ambiguity_observed, true);

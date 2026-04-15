@@ -838,7 +838,7 @@ export async function executeTeamApiOperation(
           requires_code_change: requiresCodeChange,
           execution_contract: executionContract,
           execution,
-        }, cwd);
+        } as Parameters<typeof teamCreateTask>[1], cwd);
         return { ok: true, operation, data: { task } };
       }
       case 'read-task': {
