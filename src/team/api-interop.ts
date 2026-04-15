@@ -52,7 +52,14 @@ import {
   type TeamSummary,
 } from './team-ops.js';
 
-const TEAM_UPDATE_TASK_MUTABLE_FIELDS = new Set(['subject', 'description', 'blocked_by', 'requires_code_change']);
+const TEAM_EXECUTION_COMPLEXITIES = new Set(['low', 'medium', 'high']);
+const TEAM_EXECUTION_DELEGATION_MODES = new Set(['direct_only', 'mini_allowed', 'mini_preferred']);
+const TEAM_EXECUTION_MODEL_TIERS = new Set(['low', 'standard', 'frontier']);
+const TEAM_EXECUTION_VERIFICATION_MODES = new Set(['light', 'standard', 'thorough']);
+const TEAM_EXECUTION_DELEGATION_STATES = new Set(['not_started', 'direct', 'delegated', 'escalated']);
+const TEAM_REPORT_OUTCOMES = new Set(['completed', 'blocked', 'escalated', 'failed']);
+
+const TEAM_UPDATE_TASK_MUTABLE_FIELDS = new Set(['subject', 'description', 'blocked_by', 'requires_code_change', 'execution']);
 const TEAM_UPDATE_TASK_REQUEST_FIELDS = new Set(['team_name', 'task_id', 'workingDirectory', ...TEAM_UPDATE_TASK_MUTABLE_FIELDS]);
 
 export const LEGACY_TEAM_MCP_TOOLS = [
@@ -199,6 +206,173 @@ function parseOptionalMetadata(value: unknown): Record<string, unknown> | undefi
     throw new Error('metadata must be an object when provided');
   }
   return { ...(value as Record<string, unknown>) };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseStringArray(value: unknown, fieldName: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array of strings`);
+  }
+  return value.map((entry, index) => {
+    if (typeof entry !== 'string') {
+      throw new Error(`${fieldName}[${index}] must be a string`);
+    }
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      throw new Error(`${fieldName}[${index}] cannot be empty`);
+    }
+    return trimmed;
+  });
+}
+
+function parseExecutionContract(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error('execution_contract must be an object when provided');
+  }
+
+  const complexity = String(value.complexity ?? '').trim();
+  if (!TEAM_EXECUTION_COMPLEXITIES.has(complexity)) {
+    throw new Error('execution_contract.complexity must be one of: low, medium, high');
+  }
+
+  const delegationMode = String(value.delegation_mode ?? '').trim();
+  if (!TEAM_EXECUTION_DELEGATION_MODES.has(delegationMode)) {
+    throw new Error('execution_contract.delegation_mode must be one of: direct_only, mini_allowed, mini_preferred');
+  }
+
+  const preferredModelTier = String(value.preferred_model_tier ?? '').trim();
+  if (!TEAM_EXECUTION_MODEL_TIERS.has(preferredModelTier)) {
+    throw new Error('execution_contract.preferred_model_tier must be one of: low, standard, frontier');
+  }
+
+  const verificationMode = String(value.verification_mode ?? '').trim();
+  if (!TEAM_EXECUTION_VERIFICATION_MODES.has(verificationMode)) {
+    throw new Error('execution_contract.verification_mode must be one of: light, standard, thorough');
+  }
+
+  const reportFormat = String(value.report_format ?? '').trim();
+  if (reportFormat !== 'structured_markdown') {
+    throw new Error('execution_contract.report_format must be "structured_markdown"');
+  }
+
+  const doneDefinition = parseStringArray(value.done_definition, 'execution_contract.done_definition');
+  const allowedEditScope = parseStringArray(value.allowed_edit_scope, 'execution_contract.allowed_edit_scope');
+  const supervisorNotes = value.supervisor_notes === undefined
+    ? undefined
+    : parseStringArray(value.supervisor_notes, 'execution_contract.supervisor_notes');
+  const maxParallelSubtasks = value.max_parallel_subtasks;
+  if (maxParallelSubtasks !== undefined && (!isFiniteInteger(maxParallelSubtasks) || maxParallelSubtasks < 0)) {
+    throw new Error('execution_contract.max_parallel_subtasks must be a non-negative integer when provided');
+  }
+
+  return {
+    complexity,
+    delegation_mode: delegationMode,
+    preferred_model_tier: preferredModelTier,
+    done_definition: doneDefinition,
+    allowed_edit_scope: allowedEditScope,
+    verification_mode: verificationMode,
+    report_format: reportFormat,
+    ...(supervisorNotes ? { supervisor_notes: supervisorNotes } : {}),
+    ...(maxParallelSubtasks !== undefined ? { max_parallel_subtasks: maxParallelSubtasks } : {}),
+  };
+}
+
+function parseExecutionReportSummary(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error('execution.latest_report_summary must be an object when provided');
+  }
+
+  const parsed: Record<string, unknown> = {};
+  if (value.outcome !== undefined) {
+    const outcome = String(value.outcome).trim();
+    if (!TEAM_REPORT_OUTCOMES.has(outcome)) {
+      throw new Error('execution.latest_report_summary.outcome must be one of: completed, blocked, escalated, failed');
+    }
+    parsed.outcome = outcome;
+  }
+
+  for (const field of ['verification_summary', 'delegation_summary', 'escalation_summary'] as const) {
+    if (value[field] === undefined) continue;
+    if (typeof value[field] !== 'string') {
+      throw new Error(`execution.latest_report_summary.${field} must be a string when provided`);
+    }
+    parsed[field] = value[field].trim();
+  }
+
+  return parsed;
+}
+
+function parseExecutionMetadata(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error('execution must be an object when provided');
+  }
+
+  const parsed: Record<string, unknown> = {};
+
+  if (value.assigned_model_tier !== undefined) {
+    const assignedModelTier = String(value.assigned_model_tier).trim();
+    if (!TEAM_EXECUTION_MODEL_TIERS.has(assignedModelTier)) {
+      throw new Error('execution.assigned_model_tier must be one of: low, standard, frontier');
+    }
+    parsed.assigned_model_tier = assignedModelTier;
+  }
+
+  if (value.observed_complexity !== undefined) {
+    const observedComplexity = String(value.observed_complexity).trim();
+    if (!TEAM_EXECUTION_COMPLEXITIES.has(observedComplexity)) {
+      throw new Error('execution.observed_complexity must be one of: low, medium, high');
+    }
+    parsed.observed_complexity = observedComplexity;
+  }
+
+  if (value.observed_delegation_mode !== undefined) {
+    const observedDelegationMode = String(value.observed_delegation_mode).trim();
+    if (!TEAM_EXECUTION_DELEGATION_MODES.has(observedDelegationMode)) {
+      throw new Error('execution.observed_delegation_mode must be one of: direct_only, mini_allowed, mini_preferred');
+    }
+    parsed.observed_delegation_mode = observedDelegationMode;
+  }
+
+  if (value.delegation_state !== undefined) {
+    const delegationState = String(value.delegation_state).trim();
+    if (!TEAM_EXECUTION_DELEGATION_STATES.has(delegationState)) {
+      throw new Error('execution.delegation_state must be one of: not_started, direct, delegated, escalated');
+    }
+    parsed.delegation_state = delegationState;
+  }
+
+  for (const field of ['escalation_count', 'child_attempts', 'attempt_count'] as const) {
+    if (value[field] === undefined) continue;
+    if (!isFiniteInteger(value[field]) || value[field] < 0) {
+      throw new Error(`execution.${field} must be a non-negative integer when provided`);
+    }
+    parsed[field] = value[field];
+  }
+
+  for (const field of ['rebalance_requested', 'shared_core_risk_observed', 'ambiguity_observed'] as const) {
+    if (value[field] === undefined) continue;
+    if (typeof value[field] !== 'boolean') {
+      throw new Error(`execution.${field} must be a boolean when provided`);
+    }
+    parsed[field] = value[field];
+  }
+
+  if (value.last_failure_reason !== undefined) {
+    if (typeof value.last_failure_reason !== 'string') {
+      throw new Error('execution.last_failure_reason must be a string when provided');
+    }
+    parsed.last_failure_reason = value.last_failure_reason.trim();
+  }
+
+  if (value.latest_report_summary !== undefined) {
+    parsed.latest_report_summary = parseExecutionReportSummary(value.latest_report_summary);
+  }
+
+  return parsed;
 }
 
 function selectRecentEvents(events: TeamEvent[]): TeamEvent[] {
@@ -643,8 +817,27 @@ export async function executeTeamApiOperation(
         const owner = args.owner as string | undefined;
         const blockedBy = args.blocked_by as string[] | undefined;
         const requiresCodeChange = args.requires_code_change as boolean | undefined;
+        let executionContract: Record<string, unknown> | undefined;
+        let execution: Record<string, unknown> | undefined;
+        try {
+          executionContract = args.execution_contract === undefined
+            ? undefined
+            : parseExecutionContract(args.execution_contract);
+          execution = args.execution === undefined
+            ? undefined
+            : parseExecutionMetadata(args.execution);
+        } catch (error) {
+          return { ok: false, operation, error: { code: 'invalid_input', message: (error as Error).message } };
+        }
         const task = await teamCreateTask(teamName, {
-          subject, description, status: 'pending', owner: owner || undefined, blocked_by: blockedBy, requires_code_change: requiresCodeChange,
+          subject,
+          description,
+          status: 'pending',
+          owner: owner || undefined,
+          blocked_by: blockedBy,
+          requires_code_change: requiresCodeChange,
+          execution_contract: executionContract,
+          execution,
         }, cwd);
         return { ok: true, operation, data: { task } };
       }
@@ -704,6 +897,13 @@ export async function executeTeamApiOperation(
         if ('blocked_by' in args) {
           try {
             updates.blocked_by = parseValidatedTaskIdArray(args.blocked_by, 'blocked_by');
+          } catch (error) {
+            return { ok: false, operation, error: { code: 'invalid_input', message: (error as Error).message } };
+          }
+        }
+        if ('execution' in args) {
+          try {
+            updates.execution = parseExecutionMetadata(args.execution);
           } catch (error) {
             return { ok: false, operation, error: { code: 'invalid_input', message: (error as Error).message } };
           }

@@ -416,6 +416,46 @@ describe('executeTeamApiOperation: create-task', () => {
     }
   });
 
+  it('creates a task with execution-contract metadata', async () => {
+    const { cwd, cleanup } = await setupTeam('create-tsk-execution');
+    try {
+      const result = await executeTeamApiOperation('create-task', {
+        team_name: 'create-tsk-execution',
+        subject: 'Owned task',
+        description: 'Has execution metadata',
+        execution_contract: {
+          complexity: 'medium',
+          delegation_mode: 'mini_allowed',
+          preferred_model_tier: 'standard',
+          done_definition: ['Implement the task', 'Verify the task'],
+          allowed_edit_scope: ['src/team/api-interop.ts'],
+          verification_mode: 'standard',
+          report_format: 'structured_markdown',
+          max_parallel_subtasks: 2,
+        },
+        execution: {
+          assigned_model_tier: 'standard',
+          escalation_count: 0,
+          child_attempts: 0,
+          attempt_count: 0,
+          rebalance_requested: false,
+          shared_core_risk_observed: false,
+          ambiguity_observed: false,
+          delegation_state: 'not_started',
+        },
+      }, cwd);
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+      const task = result.data.task as Record<string, unknown>;
+      assert.equal((task.execution_contract as Record<string, unknown>).complexity, 'medium');
+      assert.equal((task.execution_contract as Record<string, unknown>).delegation_mode, 'mini_allowed');
+      assert.equal((task.execution as Record<string, unknown>).assigned_model_tier, 'standard');
+      assert.equal((task.execution as Record<string, unknown>).delegation_state, 'not_started');
+    } finally {
+      await cleanup();
+    }
+  });
+
   it('returns error when required fields missing', async () => {
     const result = await executeTeamApiOperation('create-task', {
       team_name: 'x', subject: 'only subject',
@@ -499,6 +539,63 @@ describe('executeTeamApiOperation: update-task', () => {
         subject: 'New subject', description: 'New desc',
       }, cwd);
       assert.equal(result.ok, true);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('updates execution metadata while keeping execution_contract immutable through update-task', async () => {
+    const { cwd, cleanup } = await setupTeam('upd-tsk-execution');
+    try {
+      const task = await createTask('upd-tsk-execution', {
+        subject: 'Old',
+        description: 'Old desc',
+        status: 'pending',
+        execution_contract: {
+          complexity: 'medium',
+          delegation_mode: 'mini_allowed',
+          preferred_model_tier: 'standard',
+          done_definition: ['Implement the task', 'Verify the task'],
+          allowed_edit_scope: ['src/team/api-interop.ts'],
+          verification_mode: 'standard',
+          report_format: 'structured_markdown',
+        },
+      } as Parameters<typeof createTask>[1], cwd);
+
+      const result = await executeTeamApiOperation('update-task', {
+        team_name: 'upd-tsk-execution',
+        task_id: task.id,
+        execution: {
+          escalation_count: 1,
+          last_failure_reason: 'shared-file conflict',
+          ambiguity_observed: true,
+          latest_report_summary: {
+            outcome: 'blocked',
+            escalation_summary: 'needs leader help',
+          },
+        },
+      }, cwd);
+      assert.equal(result.ok, true);
+
+      const reread = await readTask('upd-tsk-execution', task.id, cwd);
+      assert.equal(reread?.execution?.escalation_count, 1);
+      assert.equal(reread?.execution?.last_failure_reason, 'shared-file conflict');
+      assert.equal(reread?.execution?.ambiguity_observed, true);
+      assert.deepEqual(reread?.execution?.latest_report_summary, {
+        outcome: 'blocked',
+        escalation_summary: 'needs leader help',
+      });
+      assert.equal(reread?.execution_contract?.complexity, 'medium');
+
+      const invalid = await executeTeamApiOperation('update-task', {
+        team_name: 'upd-tsk-execution',
+        task_id: task.id,
+        execution_contract: {
+          complexity: 'high',
+        },
+      }, cwd);
+      assert.equal(invalid.ok, false);
+      if (!invalid.ok) assert.match(invalid.error.message, /unsupported fields/);
     } finally {
       await cleanup();
     }
