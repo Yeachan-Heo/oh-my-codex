@@ -281,6 +281,232 @@ When marking completion, include structured verification evidence in your task r
 `;
 }
 
+type WorkerSupervisorTask = TeamTask & {
+  subject?: string;
+  complexity?: string;
+  delegation_mode?: string;
+  preferred_model_tier?: string;
+  assigned_model_tier?: string;
+  done_definition?: string | string[];
+  allowed_edit_scope?: string | string[];
+  verification_mode?: string;
+  report_format?: string;
+  supervisor_notes?: string | string[];
+  max_parallel_subtasks?: number;
+  escalation_count?: number;
+  last_failure_reason?: string;
+  observed_complexity?: string;
+  observed_delegation_mode?: string;
+  execution?: Record<string, unknown>;
+};
+
+function readTaskList(value: string | string[] | undefined): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+  }
+  if (typeof value === "string") {
+    return value
+      .split(/\r?\n/)
+      .map((entry) => entry.replace(/^[\s*-]+/, "").trim())
+      .filter((entry) => entry.length > 0);
+  }
+  return [];
+}
+
+function formatBulletList(items: string[], fallback: string): string {
+  if (items.length === 0) {
+    return `- ${fallback}`;
+  }
+  return items.map((item) => `- ${item}`).join("\n");
+}
+
+function normalizeExecutionValue(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return null;
+}
+
+function buildExecutionContractSection(task: WorkerSupervisorTask): string {
+  const execution = task.execution ?? {};
+  const entries = [
+    ["Complexity", task.complexity ?? task.observed_complexity],
+    [
+      "Delegation Mode",
+      task.delegation_mode ?? task.observed_delegation_mode,
+    ],
+    ["Preferred Model Tier", task.preferred_model_tier],
+    ["Assigned Model Tier", task.assigned_model_tier],
+    ["Verification Mode", task.verification_mode],
+    [
+      "Max Parallel Subtasks",
+      typeof task.max_parallel_subtasks === "number"
+        ? String(task.max_parallel_subtasks)
+        : null,
+    ],
+    [
+      "Delegation State",
+      normalizeExecutionValue(execution["delegation_state"]),
+    ],
+    [
+      "Attempt Count",
+      normalizeExecutionValue(execution["attempt_count"]),
+    ],
+    [
+      "Observed Shared/Core Risk",
+      normalizeExecutionValue(execution["shared_core_risk_observed"]),
+    ],
+    [
+      "Observed Ambiguity",
+      normalizeExecutionValue(execution["ambiguity_observed"]),
+    ],
+  ].filter((entry): entry is [string, string] => typeof entry[1] === "string");
+
+  if (entries.length === 0) {
+    return "- Use the task description plus existing team lifecycle semantics.\n- Keep immutable routing intent unchanged and record any observed mismatch separately.";
+  }
+
+  return entries.map(([label, value]) => `- ${label}: ${value}`).join("\n");
+}
+
+function buildDelegationRules(task: WorkerSupervisorTask): string {
+  const mode = task.delegation_mode?.trim();
+  const rules: string[] = [];
+
+  if (mode) {
+    rules.push(`Follow delegation_mode=${mode}.`);
+  }
+  if (mode === "direct_only") {
+    rules.push(
+      "Handle the task directly; do not spin up mini-child delegation unless the lead widens the contract.",
+    );
+  } else {
+    rules.push(
+      "You may use bounded mini-child delegation only for independent, low-risk subtasks that stay within the allowed edit scope.",
+    );
+  }
+  if (typeof task.max_parallel_subtasks === "number") {
+    rules.push(`Do not exceed ${task.max_parallel_subtasks} parallel delegated subtasks.`);
+  }
+  rules.push(
+    "Do not rewrite immutable planning intent; report observed complexity or delegation mismatches separately.",
+  );
+
+  return formatBulletList(rules, "Handle the work directly unless bounded delegation is clearly safe.");
+}
+
+function buildEscalationRules(task: WorkerSupervisorTask): string {
+  const rules = [
+    "Escalate when the task requires editing a shared/core file outside the allowed edit scope.",
+    "Escalate when ambiguity, shared-risk, or repeated verification failure blocks safe completion.",
+    "Include concrete evidence such as failing checks, last failure reason, or why rebalance/help is needed.",
+  ];
+
+  if (typeof task.escalation_count === "number") {
+    rules.push(`Current escalation_count: ${task.escalation_count}.`);
+  }
+  if (task.last_failure_reason?.trim()) {
+    rules.push(`Last failure reason: ${task.last_failure_reason.trim()}.`);
+  }
+
+  return formatBulletList(rules, "Escalate when safe completion is blocked.");
+}
+
+function buildStructuredReportFormat(task: WorkerSupervisorTask): string {
+  const reportHints = readTaskList(task.report_format);
+  if (reportHints.length > 0) {
+    return formatBulletList(reportHints, "Outcome, verification, delegated work, observed execution, escalation evidence.");
+  }
+
+  return [
+    "- Outcome: what changed and whether the task completed or blocked.",
+    "- Verification: PASS/FAIL checks with command/output references.",
+    "- Delegated Work: any mini-child task, scope, and result (or `none`).",
+    "- Observed Execution: observed_complexity, observed_delegation_mode, attempts, and notable execution metadata.",
+    "- Escalation Evidence: blocker, shared-risk, or rebalance evidence (or `none`).",
+  ].join("\n");
+}
+
+function buildTaskContractSummary(task: WorkerSupervisorTask): string {
+  const summary: string[] = [];
+  const doneDefinition = readTaskList(task.done_definition);
+  const allowedEditScope = readTaskList(task.allowed_edit_scope);
+  const executionBits = [
+    task.complexity,
+    task.delegation_mode,
+    task.preferred_model_tier,
+    task.verification_mode,
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+
+  if (doneDefinition.length > 0) {
+    summary.push(`  Done Definition: ${doneDefinition.join("; ")}`);
+  }
+  if (executionBits.length > 0) {
+    summary.push(`  Execution Contract: ${executionBits.join(" | ")}`);
+  }
+  if (allowedEditScope.length > 0) {
+    summary.push(`  Allowed Edit Scope: ${allowedEditScope.join(", ")}`);
+  }
+
+  return summary.length > 0 ? `\n${summary.join("\n")}` : "";
+}
+
+function buildTaskAssignmentDetails(task: WorkerSupervisorTask): string {
+  const objective = [task.subject, task.description]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n\n");
+  const doneDefinition = formatBulletList(
+    readTaskList(task.done_definition),
+    "Complete the assigned work, preserve existing lifecycle/API semantics, and verify the result before reporting completion.",
+  );
+  const allowedEditScope = formatBulletList(
+    readTaskList(task.allowed_edit_scope),
+    "Stay within the files/modules named by the assignment and inbox instructions.",
+  );
+  const supervisorNotes = formatBulletList(
+    readTaskList(task.supervisor_notes),
+    "Treat planning intent as immutable and record only observed execution evidence.",
+  );
+
+  return `## Objective
+
+${objective || "Complete the assigned task using the task contract and existing team lifecycle semantics."}
+
+## Done Definition
+
+${doneDefinition}
+
+## Execution Contract
+
+${buildExecutionContractSection(task)}
+
+## Allowed Edit Scope
+
+${allowedEditScope}
+
+## Delegation Rules
+
+${buildDelegationRules(task)}
+
+## Escalation Rules
+
+${buildEscalationRules(task)}
+
+## Structured Report Format
+
+${buildStructuredReportFormat(task)}
+
+## Supervisor Notes
+
+${supervisorNotes}`;
+}
+
 /**
  * Generate generic AGENTS.md overlay for team workers.
  * This is the SAME for all workers -- no per-worker identity.
@@ -653,6 +879,7 @@ export function generateInitialInbox(
       if (t.role) {
         entry += `\n  Role: ${t.role}`;
       }
+      entry += buildTaskContractSummary(t as WorkerSupervisorTask);
       return entry;
     })
     .join("\n");
@@ -738,23 +965,31 @@ ${specializationSection}`;
 export function generateTaskAssignmentInbox(
   workerName: string,
   teamName: string,
-  taskId: string,
-  taskDescription: string,
+  taskOrId: string | TeamTask,
+  taskDescription?: string,
 ): string {
+  const task = typeof taskOrId === "string"
+    ? ({
+        id: taskOrId,
+        subject: taskDescription ?? "Assigned task",
+        description: taskDescription ?? "",
+        status: "pending",
+        created_at: new Date(0).toISOString(),
+      } satisfies TeamTask)
+    : taskOrId;
+
   return `# New Task Assignment
 
 **Worker:** ${workerName}
-**Task ID:** ${taskId}
+**Task ID:** ${task.id}
 
-## Task Description
-
-${taskDescription}
+${buildTaskAssignmentDetails(task as WorkerSupervisorTask)}
 
 ## Instructions
 
-1. Resolve canonical team state root and read the task file at \`<team_state_root>/team/${teamName}/tasks/task-${taskId}.json\`
+1. Resolve canonical team state root and read the task file at \`<team_state_root>/team/${teamName}/tasks/task-${task.id}.json\`
 2. Task id format:
-   - State/MCP APIs use \`task_id: "${taskId}"\` (not \`"task-${taskId}"\`).
+   - State/MCP APIs use \`task_id: "${task.id}"\` (not \`"task-${task.id}"\`).
 3. Request a claim via CLI interop (\`omx team api claim-task --json\`)
 4. Complete the work
 5. After completing work, commit your changes before reporting completion:
@@ -764,7 +999,7 @@ ${taskDescription}
 7. Use \`omx team api release-task-claim --json\` only for rollback to \`pending\`
 8. Write \`{"state": "idle", "updated_at": "<current ISO timestamp>"}\` to your status file
 
-${buildVerificationSection(taskDescription)}
+${buildVerificationSection(task.description || task.subject)}
 `;
 }
 
