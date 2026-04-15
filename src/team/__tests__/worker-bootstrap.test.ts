@@ -54,6 +54,10 @@ describe("worker bootstrap", () => {
       workerSkill,
       /`?\{"status":"failed","error":"\.\.\."\}`?/,
     );
+    assert.match(workerSkill, /supervisor worker/i);
+    assert.match(workerSkill, /bounded mini-child delegation/i);
+    assert.match(workerSkill, /structured report/i);
+    assert.match(workerSkill, /immutable planning intent/i);
   });
 
   it("generateWorkerOverlay produces markdown with correct start/end markers", () => {
@@ -386,6 +390,53 @@ describe("worker bootstrap", () => {
     assert.match(inbox, /Role: test-engineer/);
   });
 
+  it("generateInitialInbox summarizes richer task contract fields", () => {
+    const tasks = [
+      {
+        id: "7",
+        subject: "Route follow-up",
+        description: "Render richer task metadata",
+        status: "pending",
+        created_at: new Date().toISOString(),
+        done_definition: [
+          "Render the supervisor contract",
+          "Keep lifecycle semantics stable",
+        ],
+        delegation_mode: "mini_ok",
+        complexity: "low",
+        preferred_model_tier: "mini",
+        verification_mode: "standard",
+        allowed_edit_scope: ["src/team/worker-bootstrap.ts"],
+      },
+    ] as Array<
+      TeamTask & {
+        done_definition: string[];
+        delegation_mode: string;
+        complexity: string;
+        preferred_model_tier: string;
+        verification_mode: string;
+        allowed_edit_scope: string[];
+      }
+    >;
+
+    const inbox = generateInitialInbox(
+      "worker-1",
+      "team-contract",
+      "executor",
+      tasks,
+    );
+
+    assert.match(inbox, /Done Definition: Render the supervisor contract;/);
+    assert.match(
+      inbox,
+      /Execution Contract: low \| mini_ok \| mini \| standard/,
+    );
+    assert.match(
+      inbox,
+      /Allowed Edit Scope: src\/team\/worker-bootstrap\.ts/,
+    );
+  });
+
   it("generateTaskAssignmentInbox includes task ID and description", () => {
     const inbox = generateTaskAssignmentInbox(
       "worker-3",
@@ -407,6 +458,89 @@ describe("worker bootstrap", () => {
     );
     assert.match(inbox, /Verification Requirements/);
     assert.match(inbox, /PASS\/FAIL/);
+  });
+
+  it("generateTaskAssignmentInbox renders supervisor contract sections from the full task object", () => {
+    const task = {
+      id: "42",
+      subject: "Implement parser update",
+      description: "Use the full task contract in the inbox renderer.",
+      status: "pending",
+      created_at: new Date().toISOString(),
+      done_definition: [
+        "Use structured assignment rendering",
+        "Preserve lifecycle API instructions",
+      ],
+      complexity: "low",
+      delegation_mode: "mini_ok",
+      preferred_model_tier: "mini",
+      assigned_model_tier: "mini",
+      verification_mode: "standard",
+      allowed_edit_scope: [
+        "src/team/worker-bootstrap.ts",
+        "src/team/__tests__/worker-bootstrap.test.ts",
+      ],
+      supervisor_notes: [
+        "Keep immutable planning intent unchanged.",
+        "Record only observed execution metadata.",
+      ],
+      report_format: [
+        "Outcome",
+        "Verification",
+        "Delegated Work",
+        "Escalation Evidence",
+      ],
+      max_parallel_subtasks: 2,
+      escalation_count: 1,
+      last_failure_reason: "Shared file conflict",
+      execution: {
+        delegation_state: "direct",
+        attempt_count: 2,
+        shared_core_risk_observed: true,
+      },
+    } as TeamTask & {
+      done_definition: string[];
+      complexity: string;
+      delegation_mode: string;
+      preferred_model_tier: string;
+      assigned_model_tier: string;
+      verification_mode: string;
+      allowed_edit_scope: string[];
+      supervisor_notes: string[];
+      report_format: string[];
+      max_parallel_subtasks: number;
+      escalation_count: number;
+      last_failure_reason: string;
+      execution: {
+        delegation_state: string;
+        attempt_count: number;
+        shared_core_risk_observed: boolean;
+      };
+    };
+
+    const inbox = generateTaskAssignmentInbox(
+      "worker-3",
+      "team-followup",
+      task,
+    );
+
+    assert.match(inbox, /## Objective/);
+    assert.match(inbox, /## Done Definition/);
+    assert.match(inbox, /## Execution Contract/);
+    assert.match(inbox, /## Allowed Edit Scope/);
+    assert.match(inbox, /## Delegation Rules/);
+    assert.match(inbox, /## Escalation Rules/);
+    assert.match(inbox, /## Structured Report Format/);
+    assert.match(inbox, /## Supervisor Notes/);
+    assert.match(inbox, /Complexity: low/);
+    assert.match(inbox, /Delegation Mode: mini_ok/);
+    assert.match(inbox, /Preferred Model Tier: mini/);
+    assert.match(inbox, /Assigned Model Tier: mini/);
+    assert.match(inbox, /Max Parallel Subtasks: 2/);
+    assert.match(inbox, /Current escalation_count: 1/);
+    assert.match(inbox, /Last failure reason: Shared file conflict/);
+    assert.match(inbox, /Delegated Work/);
+    assert.match(inbox, /Escalation Evidence/);
   });
 
   it("generateShutdownInbox contains exit instruction and concrete ack path", () => {
