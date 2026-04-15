@@ -3264,6 +3264,72 @@ esac
     }
   });
 
+  it('assignTask writes the full task contract into the assignment inbox', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-assignment-inbox-'));
+    try {
+      await initTeamState('team-assignment-inbox', 'assignment test', 'executor', 1, cwd);
+      const task = await createTask(
+        'team-assignment-inbox',
+        {
+          subject: 'Search docs',
+          description: 'Single-file search and summary task',
+          status: 'pending',
+          requires_code_change: false,
+          execution_contract: {
+            complexity: 'low',
+            delegation_mode: 'mini_preferred',
+            preferred_model_tier: 'low',
+            done_definition: ['Collect the relevant docs evidence'],
+            allowed_edit_scope: ['src/team/runtime.ts'],
+            verification_mode: 'light',
+            report_format: 'structured_markdown',
+            supervisor_notes: ['Treat this as a bounded read-only style task'],
+            max_parallel_subtasks: 1,
+          },
+        },
+        cwd,
+      );
+
+      const configPath = join(cwd, '.omx', 'state', 'team', 'team-assignment-inbox', 'config.json');
+      const config = JSON.parse(await readFile(configPath, 'utf-8')) as any;
+      config.worker_launch_mode = 'prompt';
+      config.tmux_session = 'prompt-team-assignment-inbox';
+      config.workers[0].pid = process.pid;
+      config.workers[0].pane_id = null;
+      await writeFile(configPath, JSON.stringify(config, null, 2));
+
+      const manifestPath = join(cwd, '.omx', 'state', 'team', 'team-assignment-inbox', 'manifest.v2.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as any;
+      manifest.policy = { ...(manifest.policy || {}), worker_launch_mode: 'prompt' };
+      manifest.workers[0].pid = process.pid;
+      manifest.workers[0].pane_id = null;
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      await assert.rejects(
+        () => assignTask('team-assignment-inbox', 'worker-1', task.id, cwd),
+        /worker_notify_failed/,
+      );
+
+      const inboxPath = join(cwd, '.omx', 'state', 'team', 'team-assignment-inbox', 'workers', 'worker-1', 'inbox.md');
+      const inbox = await readFile(inboxPath, 'utf-8');
+      assert.match(inbox, /## Objective/);
+      assert.match(inbox, /## Done Definition/);
+      assert.match(inbox, /Collect the relevant docs evidence/);
+      assert.match(inbox, /## Execution Contract/);
+      assert.match(inbox, /mini_preferred/);
+      assert.match(inbox, /## Allowed Edit Scope/);
+      assert.match(inbox, /src\/team\/runtime\.ts/);
+      assert.match(inbox, /## Structured Report Format/);
+
+      const reread = await readTask('team-assignment-inbox', task.id, cwd);
+      assert.equal(reread?.status, 'pending');
+      assert.equal(reread?.owner, undefined);
+      assert.equal(reread?.claim, undefined);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('assignTask rolls back claim when inbox write fails after claim', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-'));
     try {
