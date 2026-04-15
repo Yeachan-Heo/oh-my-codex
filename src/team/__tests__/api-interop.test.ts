@@ -576,6 +576,14 @@ describe('executeTeamApiOperation: update-task', () => {
         },
       }, cwd);
       assert.equal(result.ok, true);
+      if (!result.ok) return;
+      assert.deepEqual(
+        ((result.data.task as Record<string, unknown>).execution as Record<string, unknown>).latest_report_summary,
+        {
+          outcome: 'blocked',
+          escalation_summary: 'needs leader help',
+        },
+      );
 
       const reread = await readTask('upd-tsk-execution', task.id, cwd) as unknown as (Record<string, unknown> & {
         execution?: Record<string, unknown>;
