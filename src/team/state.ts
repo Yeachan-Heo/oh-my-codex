@@ -59,6 +59,7 @@ import {
   type TeamTaskStatus,
   type TeamEventType,
 } from './contracts.js';
+import { classifyTaskExecution } from './routing-policy.js';
 import type { WorktreeMode } from './worktree.js';
 
 export interface TeamConfig {
@@ -124,6 +125,58 @@ export interface WorkerStatus {
   updated_at: string;
 }
 
+export const TEAM_TASK_COMPLEXITIES = ['low', 'medium', 'high'] as const;
+export type TeamTaskComplexity = (typeof TEAM_TASK_COMPLEXITIES)[number];
+
+export const TEAM_TASK_DELEGATION_MODES = ['direct_only', 'mini_allowed', 'mini_preferred'] as const;
+export type TeamTaskDelegationMode = (typeof TEAM_TASK_DELEGATION_MODES)[number];
+
+export const TEAM_TASK_MODEL_TIERS = ['low', 'standard', 'frontier'] as const;
+export type TeamTaskModelTier = (typeof TEAM_TASK_MODEL_TIERS)[number];
+
+export const TEAM_TASK_VERIFICATION_MODES = ['light', 'standard', 'thorough'] as const;
+export type TeamTaskVerificationMode = (typeof TEAM_TASK_VERIFICATION_MODES)[number];
+
+export const TEAM_TASK_REPORT_FORMATS = ['structured_markdown'] as const;
+export type TeamTaskReportFormat = (typeof TEAM_TASK_REPORT_FORMATS)[number];
+
+export const TEAM_TASK_DELEGATION_STATES = ['not_started', 'direct', 'delegated', 'escalated'] as const;
+export type TeamTaskDelegationState = (typeof TEAM_TASK_DELEGATION_STATES)[number];
+
+export interface TeamTaskStructuredReportSummary {
+  outcome?: 'completed' | 'blocked' | 'escalated' | 'failed';
+  verification_summary?: string;
+  delegation_summary?: string;
+  escalation_summary?: string;
+}
+
+export interface TeamTaskExecutionContract {
+  complexity: TeamTaskComplexity;
+  delegation_mode: TeamTaskDelegationMode;
+  preferred_model_tier: TeamTaskModelTier;
+  done_definition: string[];
+  allowed_edit_scope: string[];
+  verification_mode: TeamTaskVerificationMode;
+  report_format: TeamTaskReportFormat;
+  supervisor_notes?: string[];
+  max_parallel_subtasks?: number;
+}
+
+export interface TeamTaskExecutionMetadata {
+  assigned_model_tier?: TeamTaskModelTier;
+  escalation_count?: number;
+  last_failure_reason?: string;
+  observed_complexity?: TeamTaskComplexity;
+  observed_delegation_mode?: TeamTaskDelegationMode;
+  delegation_state?: TeamTaskDelegationState;
+  child_attempts?: number;
+  attempt_count?: number;
+  rebalance_requested?: boolean;
+  shared_core_risk_observed?: boolean;
+  ambiguity_observed?: boolean;
+  latest_report_summary?: TeamTaskStructuredReportSummary;
+}
+
 export interface TeamTask {
   id: string;
   subject: string;
@@ -138,6 +191,8 @@ export interface TeamTask {
   depends_on?: string[]; // task IDs
   version?: number;
   claim?: TeamTaskClaim;
+  execution_contract?: TeamTaskExecutionContract;
+  execution?: TeamTaskExecutionMetadata;
   created_at: string;
   completed_at?: string;
 }
