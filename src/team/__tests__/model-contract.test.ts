@@ -5,6 +5,9 @@ import {
   isLowComplexityAgentType,
   resolveAgentDefaultModel,
   resolveAgentReasoningEffort,
+  resolveModelTierDefaultModel,
+  resolveTaskDefaultModel,
+  resolveTaskModelTier,
   resolveTeamWorkerLaunchArgs,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
   resolveTeamLowComplexityDefaultModel,
@@ -117,6 +120,55 @@ describe('team model contract', () => {
     assert.equal(resolveAgentDefaultModel('executor'), 'gpt-5.4');
     assert.equal(resolveAgentDefaultModel('architect'), 'gpt-5.4');
     assert.equal(resolveAgentDefaultModel('does-not-exist'), undefined);
+  });
+
+  it('maps model tiers to default models', () => {
+    assert.equal(resolveModelTierDefaultModel('low'), expectedLowComplexityModel());
+    assert.equal(resolveModelTierDefaultModel('standard'), 'gpt-5.4-mini');
+    assert.equal(resolveModelTierDefaultModel('frontier'), 'gpt-5.4');
+    assert.equal(resolveModelTierDefaultModel(undefined), undefined);
+  });
+
+  it('resolves task model tier from assigned tier before preferred tier', () => {
+    assert.equal(
+      resolveTaskModelTier({
+        execution_contract: { preferred_model_tier: 'standard' } as { preferred_model_tier: 'standard' },
+        execution: { assigned_model_tier: 'frontier' } as { assigned_model_tier: 'frontier' },
+      }),
+      'frontier',
+    );
+
+    assert.equal(
+      resolveTaskModelTier({
+        execution_contract: { preferred_model_tier: 'low' } as { preferred_model_tier: 'low' },
+      }),
+      'low',
+    );
+  });
+
+  it('resolves task default model from task contract before role fallback', () => {
+    assert.equal(
+      resolveTaskDefaultModel(
+        {
+          execution_contract: { preferred_model_tier: 'low' } as { preferred_model_tier: 'low' },
+          execution: { assigned_model_tier: 'frontier' } as { assigned_model_tier: 'frontier' },
+        },
+        'explore',
+      ),
+      'gpt-5.4',
+    );
+
+    assert.equal(
+      resolveTaskDefaultModel(
+        {
+          execution_contract: { preferred_model_tier: 'standard' } as { preferred_model_tier: 'standard' },
+        },
+        'explore',
+      ),
+      'gpt-5.4-mini',
+    );
+
+    assert.equal(resolveTaskDefaultModel(undefined, 'explore'), expectedLowComplexityModel());
   });
 });
 

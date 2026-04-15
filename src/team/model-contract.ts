@@ -5,6 +5,7 @@ import {
   getSparkDefaultModel,
   getStandardDefaultModel,
 } from '../config/models.js';
+import type { TeamTask, TeamTaskModelTier } from './state/types.js';
 
 const MADMAX_FLAG = '--madmax';
 const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
@@ -188,6 +189,39 @@ export function resolveAgentDefaultModel(
     default:
       return undefined;
   }
+}
+
+export function resolveModelTierDefaultModel(
+  modelTier?: TeamTaskModelTier,
+  codexHomeOverride?: string,
+): string | undefined {
+  switch (modelTier) {
+    case 'low':
+      return resolveTeamLowComplexityDefaultModel(codexHomeOverride);
+    case 'frontier':
+      return getMainDefaultModel(codexHomeOverride);
+    case 'standard':
+      return getStandardDefaultModel(codexHomeOverride);
+    default:
+      return undefined;
+  }
+}
+
+export function resolveTaskModelTier(
+  task?: Pick<TeamTask, 'execution_contract' | 'execution'> | null,
+): TeamTaskModelTier | undefined {
+  return task?.execution?.assigned_model_tier
+    ?? task?.execution_contract?.preferred_model_tier;
+}
+
+export function resolveTaskDefaultModel(
+  task?: Pick<TeamTask, 'execution_contract' | 'execution'> | null,
+  agentType?: string,
+  codexHomeOverride?: string,
+): string | undefined {
+  const taskTier = resolveTaskModelTier(task);
+  return resolveModelTierDefaultModel(taskTier, codexHomeOverride)
+    ?? resolveAgentDefaultModel(agentType, codexHomeOverride);
 }
 
 export function isLowComplexityAgentType(agentType?: string): boolean {
