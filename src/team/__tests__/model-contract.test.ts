@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import type { TeamTaskExecutionContract, TeamTaskExecutionMetadata } from '../state/types.js';
 import {
   collectInheritableTeamWorkerArgs,
   isLowComplexityAgentType,
@@ -15,6 +16,26 @@ import {
 
 function expectedLowComplexityModel(): string {
   return resolveTeamLowComplexityDefaultModel();
+}
+
+function contractWithTier(
+  preferred_model_tier: TeamTaskExecutionContract['preferred_model_tier'],
+): TeamTaskExecutionContract {
+  return {
+    complexity: 'medium',
+    delegation_mode: 'mini_allowed',
+    preferred_model_tier,
+    done_definition: ['verify'],
+    allowed_edit_scope: ['src/team/model-contract.ts'],
+    verification_mode: 'standard',
+    report_format: 'structured_markdown',
+  };
+}
+
+function executionWithTier(
+  assigned_model_tier: TeamTaskExecutionMetadata['assigned_model_tier'],
+): TeamTaskExecutionMetadata {
+  return { assigned_model_tier };
 }
 
 describe('team model contract', () => {
@@ -132,15 +153,15 @@ describe('team model contract', () => {
   it('resolves task model tier from assigned tier before preferred tier', () => {
     assert.equal(
       resolveTaskModelTier({
-        execution_contract: { preferred_model_tier: 'standard' } as { preferred_model_tier: 'standard' },
-        execution: { assigned_model_tier: 'frontier' } as { assigned_model_tier: 'frontier' },
+        execution_contract: contractWithTier('standard'),
+        execution: executionWithTier('frontier'),
       }),
       'frontier',
     );
 
     assert.equal(
       resolveTaskModelTier({
-        execution_contract: { preferred_model_tier: 'low' } as { preferred_model_tier: 'low' },
+        execution_contract: contractWithTier('low'),
       }),
       'low',
     );
@@ -150,8 +171,8 @@ describe('team model contract', () => {
     assert.equal(
       resolveTaskDefaultModel(
         {
-          execution_contract: { preferred_model_tier: 'low' } as { preferred_model_tier: 'low' },
-          execution: { assigned_model_tier: 'frontier' } as { assigned_model_tier: 'frontier' },
+          execution_contract: contractWithTier('low'),
+          execution: executionWithTier('frontier'),
         },
         'explore',
       ),
@@ -161,7 +182,7 @@ describe('team model contract', () => {
     assert.equal(
       resolveTaskDefaultModel(
         {
-          execution_contract: { preferred_model_tier: 'standard' } as { preferred_model_tier: 'standard' },
+          execution_contract: contractWithTier('standard'),
         },
         'explore',
       ),
