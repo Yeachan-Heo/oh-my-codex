@@ -73,12 +73,12 @@ export function buildObservedEscalationPatch(
       options.shared_core_risk_observed ?? task.execution?.shared_core_risk_observed ?? false,
     ambiguity_observed:
       options.ambiguity_observed ?? task.execution?.ambiguity_observed ?? false,
-    rebalance_requested:
-      options.rebalance_requested
-      ?? task.execution?.rebalance_requested
-      ?? options.shared_core_risk_observed
-      ?? options.ambiguity_observed
-      ?? false,
+    rebalance_requested: options.rebalance_requested
+      ?? Boolean(
+        task.execution?.rebalance_requested
+        || options.shared_core_risk_observed
+        || options.ambiguity_observed,
+      ),
   };
 }
 
