@@ -596,11 +596,215 @@ async function resolveLeaderSessionId(cwd: string, env: NodeJS.ProcessEnv): Prom
 }
 
 function normalizeTask(task: TeamTask): TeamTaskV2 {
+  const classified = classifyTaskExecution(task);
   return {
     ...task,
     depends_on: task.depends_on ?? task.blocked_by ?? [],
+    execution_contract: normalizeExecutionContract(
+      task.execution_contract,
+      classified.executionContract,
+    ),
+    execution: normalizeExecutionMetadata(
+      task.execution,
+      classified.initialExecution,
+    ),
     version: Math.max(1, task.version ?? 1),
   };
+}
+
+function normalizeStringArray(value: unknown, fallback: string[] = []): string[] {
+  if (!Array.isArray(value)) return [...fallback];
+  const normalized = value
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return normalized.length > 0 ? normalized : [...fallback];
+}
+
+function normalizeOptionalModelTier(value: unknown): TeamTaskModelTier | undefined {
+  return value === 'low' || value === 'standard' || value === 'frontier' ? value : undefined;
+}
+
+function normalizeOptionalComplexity(value: unknown): TeamTaskComplexity | undefined {
+  return value === 'low' || value === 'medium' || value === 'high' ? value : undefined;
+}
+
+function normalizeOptionalDelegationMode(value: unknown): TeamTaskDelegationMode | undefined {
+  return value === 'direct_only' || value === 'mini_allowed' || value === 'mini_preferred' ? value : undefined;
+}
+
+function normalizeOptionalVerificationMode(value: unknown): TeamTaskVerificationMode | undefined {
+  return value === 'light' || value === 'standard' || value === 'thorough' ? value : undefined;
+}
+
+function normalizeOptionalReportFormat(value: unknown): TeamTaskReportFormat | undefined {
+  return value === 'structured_markdown' ? value : undefined;
+}
+
+function normalizeOptionalDelegationState(value: unknown): TeamTaskDelegationState | undefined {
+  return value === 'not_started' || value === 'direct' || value === 'delegated' || value === 'escalated'
+    ? value
+    : undefined;
+}
+
+function normalizeOptionalNonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function normalizeStructuredReportSummary(
+  value: unknown,
+  fallback?: TeamTaskStructuredReportSummary,
+): TeamTaskStructuredReportSummary | undefined {
+  if (!value || typeof value !== 'object') {
+    return fallback ? { ...fallback } : undefined;
+  }
+  const candidate = value as Record<string, unknown>;
+  const outcome = candidate.outcome;
+  const normalized: TeamTaskStructuredReportSummary = {
+    outcome:
+      outcome === 'completed' || outcome === 'blocked' || outcome === 'escalated' || outcome === 'failed'
+        ? outcome
+        : fallback?.outcome,
+    verification_summary:
+      typeof candidate.verification_summary === 'string'
+        ? candidate.verification_summary.trim() || fallback?.verification_summary
+        : fallback?.verification_summary,
+    delegation_summary:
+      typeof candidate.delegation_summary === 'string'
+        ? candidate.delegation_summary.trim() || fallback?.delegation_summary
+        : fallback?.delegation_summary,
+    escalation_summary:
+      typeof candidate.escalation_summary === 'string'
+        ? candidate.escalation_summary.trim() || fallback?.escalation_summary
+        : fallback?.escalation_summary,
+  };
+
+  if (
+    normalized.outcome === undefined &&
+    normalized.verification_summary === undefined &&
+    normalized.delegation_summary === undefined &&
+    normalized.escalation_summary === undefined
+  ) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function normalizeExecutionContract(
+  contract: TeamTask['execution_contract'] | undefined,
+  fallback: TeamTaskExecutionContract,
+): TeamTaskExecutionContract {
+  return {
+    complexity: normalizeOptionalComplexity(contract?.complexity) ?? fallback.complexity,
+    delegation_mode: normalizeOptionalDelegationMode(contract?.delegation_mode) ?? fallback.delegation_mode,
+    preferred_model_tier: normalizeOptionalModelTier(contract?.preferred_model_tier) ?? fallback.preferred_model_tier,
+    done_definition: normalizeStringArray(contract?.done_definition, fallback.done_definition),
+    allowed_edit_scope: normalizeStringArray(contract?.allowed_edit_scope, fallback.allowed_edit_scope),
+    verification_mode: normalizeOptionalVerificationMode(contract?.verification_mode) ?? fallback.verification_mode,
+    report_format: normalizeOptionalReportFormat(contract?.report_format) ?? fallback.report_format,
+    supervisor_notes: normalizeStringArray(contract?.supervisor_notes, fallback.supervisor_notes ?? []),
+    max_parallel_subtasks:
+      normalizeOptionalNonNegativeInteger(contract?.max_parallel_subtasks) ?? fallback.max_parallel_subtasks,
+  };
+}
+
+function normalizeExecutionMetadata(
+  execution: TeamTask['execution'] | undefined,
+  fallback: TeamTaskExecutionMetadata,
+): TeamTaskExecutionMetadata {
+  return {
+    assigned_model_tier: normalizeOptionalModelTier(execution?.assigned_model_tier) ?? fallback.assigned_model_tier,
+    escalation_count: normalizeOptionalNonNegativeInteger(execution?.escalation_count) ?? fallback.escalation_count,
+    last_failure_reason:
+      typeof execution?.last_failure_reason === 'string'
+        ? execution.last_failure_reason.trim() || fallback.last_failure_reason
+        : fallback.last_failure_reason,
+    observed_complexity: normalizeOptionalComplexity(execution?.observed_complexity) ?? fallback.observed_complexity,
+    observed_delegation_mode:
+      normalizeOptionalDelegationMode(execution?.observed_delegation_mode) ?? fallback.observed_delegation_mode,
+    delegation_state: normalizeOptionalDelegationState(execution?.delegation_state) ?? fallback.delegation_state,
+    child_attempts: normalizeOptionalNonNegativeInteger(execution?.child_attempts) ?? fallback.child_attempts,
+    attempt_count: normalizeOptionalNonNegativeInteger(execution?.attempt_count) ?? fallback.attempt_count,
+    rebalance_requested:
+      typeof execution?.rebalance_requested === 'boolean'
+        ? execution.rebalance_requested
+        : fallback.rebalance_requested,
+    shared_core_risk_observed:
+      typeof execution?.shared_core_risk_observed === 'boolean'
+        ? execution.shared_core_risk_observed
+        : fallback.shared_core_risk_observed,
+    ambiguity_observed:
+      typeof execution?.ambiguity_observed === 'boolean'
+        ? execution.ambiguity_observed
+        : fallback.ambiguity_observed,
+    latest_report_summary: normalizeStructuredReportSummary(
+      execution?.latest_report_summary,
+      fallback.latest_report_summary,
+    ),
+  };
+}
+
+function mergeExecutionContract(
+  existing: TeamTask['execution_contract'] | undefined,
+  incoming: TeamTask['execution_contract'] | undefined,
+  fallback: TeamTaskExecutionContract,
+): TeamTaskExecutionContract {
+  const normalizedExisting = existing ? normalizeExecutionContract(existing, fallback) : undefined;
+  const normalizedIncoming = incoming ? normalizeExecutionContract(incoming, fallback) : undefined;
+
+  return {
+    complexity: normalizedExisting?.complexity ?? normalizedIncoming?.complexity ?? fallback.complexity,
+    delegation_mode:
+      normalizedExisting?.delegation_mode ?? normalizedIncoming?.delegation_mode ?? fallback.delegation_mode,
+    preferred_model_tier:
+      normalizedExisting?.preferred_model_tier
+      ?? normalizedIncoming?.preferred_model_tier
+      ?? fallback.preferred_model_tier,
+    done_definition:
+      normalizedExisting?.done_definition.length
+        ? normalizedExisting.done_definition
+        : normalizedIncoming?.done_definition.length
+          ? normalizedIncoming.done_definition
+          : fallback.done_definition,
+    allowed_edit_scope:
+      normalizedExisting?.allowed_edit_scope.length
+        ? normalizedExisting.allowed_edit_scope
+        : normalizedIncoming?.allowed_edit_scope.length
+          ? normalizedIncoming.allowed_edit_scope
+          : fallback.allowed_edit_scope,
+    verification_mode:
+      normalizedExisting?.verification_mode
+      ?? normalizedIncoming?.verification_mode
+      ?? fallback.verification_mode,
+    report_format: normalizedExisting?.report_format ?? normalizedIncoming?.report_format ?? fallback.report_format,
+    supervisor_notes:
+      normalizedExisting?.supervisor_notes?.length
+        ? normalizedExisting.supervisor_notes
+        : normalizedIncoming?.supervisor_notes?.length
+          ? normalizedIncoming.supervisor_notes
+          : fallback.supervisor_notes,
+    max_parallel_subtasks:
+      normalizedExisting?.max_parallel_subtasks
+      ?? normalizedIncoming?.max_parallel_subtasks
+      ?? fallback.max_parallel_subtasks,
+  };
+}
+
+function mergeExecutionMetadata(
+  existing: TeamTask['execution'] | undefined,
+  incoming: TeamTask['execution'] | undefined,
+  fallback: TeamTaskExecutionMetadata,
+): TeamTaskExecutionMetadata {
+  const normalizedExisting = existing ? normalizeExecutionMetadata(existing, fallback) : undefined;
+  const normalizedIncoming = incoming ? normalizeExecutionMetadata(incoming, fallback) : undefined;
+  return normalizeExecutionMetadata(
+    {
+      ...normalizedExisting,
+      ...normalizedIncoming,
+      latest_report_summary: normalizedIncoming?.latest_report_summary ?? normalizedExisting?.latest_report_summary,
+    },
+    fallback,
+  );
 }
 
 // Team state directory: .omx/state/team/{teamName}/
@@ -1263,12 +1467,23 @@ export async function createTask(
       nextNumeric = await computeNextTaskIdFromDisk(teamName, cwd);
     }
     const nextId = String(nextNumeric);
+    const classified = classifyTaskExecution(task);
 
     const created: TeamTaskV2 = {
       ...task,
       id: nextId,
       status: task.status ?? 'pending',
       depends_on: task.depends_on ?? task.blocked_by ?? [],
+      execution_contract: mergeExecutionContract(
+        undefined,
+        task.execution_contract,
+        classified.executionContract,
+      ),
+      execution: mergeExecutionMetadata(
+        undefined,
+        task.execution,
+        classified.initialExecution,
+      ),
       version: 1,
       created_at: new Date().toISOString(),
     };
@@ -1312,6 +1527,14 @@ export async function updateTask(
 
     const rawDeps = updates.depends_on ?? updates.blocked_by ?? existing.depends_on ?? existing.blocked_by ?? [];
     const normalizedDeps = Array.isArray(rawDeps) ? rawDeps : [];
+    const classified = classifyTaskExecution({
+      ...existing,
+      ...updates,
+      id: existing.id,
+      created_at: existing.created_at,
+      status: updates.status ?? existing.status,
+      depends_on: normalizedDeps,
+    });
 
     const merged: TeamTaskV2 = {
       ...normalizeTask(existing),
@@ -1319,6 +1542,16 @@ export async function updateTask(
       id: existing.id,
       created_at: existing.created_at,
       depends_on: normalizedDeps,
+      execution_contract: mergeExecutionContract(
+        existing.execution_contract,
+        updates.execution_contract,
+        classified.executionContract,
+      ),
+      execution: mergeExecutionMetadata(
+        existing.execution,
+        updates.execution,
+        classified.initialExecution,
+      ),
       version: Math.max(1, existing.version ?? 1) + 1,
     };
 
