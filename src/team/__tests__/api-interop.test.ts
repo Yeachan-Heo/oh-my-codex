@@ -577,7 +577,7 @@ describe('executeTeamApiOperation: update-task', () => {
       }, cwd);
       assert.equal(result.ok, true);
 
-      const reread = await readTask('upd-tsk-execution', task.id, cwd) as (Record<string, unknown> & {
+      const reread = await readTask('upd-tsk-execution', task.id, cwd) as unknown as (Record<string, unknown> & {
         execution?: Record<string, unknown>;
         execution_contract?: Record<string, unknown>;
       }) | null;
@@ -1690,7 +1690,7 @@ describe('executeTeamApiOperation: error handling', () => {
         team_name: 'err-team', task_id: '1', worker: 'w1',
       }, cwd);
       assert.ok(result.ok === true || result.ok === false);
-      if (!result.ok) {
+      if (result.ok === false) {
         assert.equal(result.operation, 'claim-task');
         assert.ok(result.error.code);
         assert.ok(result.error.message);
