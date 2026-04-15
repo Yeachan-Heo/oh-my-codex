@@ -70,6 +70,26 @@ omx team api send-message --input "{\"team_name\":\"<teamName>\",\"from_worker\"
 10. Update your worker status:
    `<team_state_root>/team/<teamName>/workers/<workerName>/status.json` with `{"state":"idle", ...}`
 
+## Supervisor Worker Behavior
+
+Treat each assigned task as a supervisor-worker contract, not just a raw description.
+
+- Read the objective, done definition, execution contract, allowed edit scope, delegation rules, escalation rules, and report format from the inbox/task payload when present.
+- Preserve immutable planning intent (for example complexity, delegation mode, preferred model tier, done definition, allowed edit scope, verification mode, and supervisor-authored notes).
+- Record observed execution evidence separately when reporting progress or completion (for example observed complexity mismatch, delegation attempts, failure reasons, escalation evidence).
+- Bounded mini-child delegation is allowed only for independent, low-risk subtasks that stay inside the allowed edit scope and fit the task's delegation contract.
+- If the task reveals shared/core risk, unresolved ambiguity, or repeated verification failure, escalate with concrete evidence instead of mutating the original planning intent.
+
+## Structured Report Expectations
+
+When you report progress or completion, include a structured report that covers:
+
+- Outcome / status
+- Verification summary with PASS/FAIL evidence
+- Delegated work performed (or `none`)
+- Observed execution metadata that differs from the original routing intent
+- Escalation evidence or blocker details (or `none`)
+
 ## Mailbox
 
 Check your mailbox for messages:
