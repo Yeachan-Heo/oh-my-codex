@@ -838,6 +838,28 @@ async function prepareWorkerWorktreeShutdownReports(config: TeamConfig, leaderCw
   }
 }
 
+function buildTaskAssignmentInbox(
+  workerName: string,
+  teamName: string,
+  task: TeamTask,
+): string {
+  const inboxTask = Object.assign(
+    Object.create({
+      toString: () => task.id,
+    }) as Record<string, unknown>,
+    task,
+  ) as TeamTask;
+
+  return (
+    generateTaskAssignmentInbox as unknown as (
+      workerName: string,
+      teamName: string,
+      task: TeamTask,
+      taskDescription?: string,
+    ) => string
+  )(workerName, teamName, inboxTask, task.description);
+}
+
 export interface TeamStartOptions {
   worktreeMode?: WorktreeMode;
   /** When true, applies ralph-specific cleanup policy during startup rollback (skip branch deletion). */
@@ -2189,7 +2211,7 @@ export async function assignTask(
 
   try {
     // Retry dispatch up to 2 times to handle trust prompts during assignment (fixes #393).
-    const inbox = generateTaskAssignmentInbox(workerName, sanitized, taskId, task.description);
+    const inbox = buildTaskAssignmentInbox(workerName, sanitized, task);
     const maxAssignRetries = 2;
     const assignRetryDelayS = 2;
     let outcome: DispatchOutcome = { ok: false, transport: 'none', reason: 'not_attempted' };
