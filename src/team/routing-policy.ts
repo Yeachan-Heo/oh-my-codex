@@ -5,7 +5,7 @@ import type {
   TeamTaskExecutionContract,
   TeamTaskExecutionMetadata,
   TeamTaskModelTier,
-} from './state.js';
+} from './state/types.js';
 
 export interface TaskExecutionClassification {
   executionContract: TeamTaskExecutionContract;

@@ -44,6 +44,14 @@ import {
   readDispatchRequest,
   resolveDispatchLockTimeoutMs,
 } from '../state.js';
+import {
+  buildObservedEscalationPatch,
+  chooseAssignedModelTier,
+  choosePreferredModelTier,
+  classifyTaskExecution,
+  shouldRequestRebalance,
+  shouldWorkerDelegateToMini,
+} from '../routing-policy.js';
 
 const ORIGINAL_OMX_TEAM_STATE_ROOT = process.env.OMX_TEAM_STATE_ROOT;
 
@@ -1326,6 +1334,148 @@ describe('team state', () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+
+  it('createTask seeds execution contract and observed metadata defaults', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-exec-contract-'));
+    try {
+      await initTeamState('team-exec-contract', 't', 'executor', 1, cwd);
+      const created = await createTask(
+        'team-exec-contract',
+        {
+          subject: 'Find single-file docs summary',
+          description: 'Search docs and summarize one file',
+          status: 'pending',
+        },
+        cwd,
+      );
+
+      assert.equal(created.execution_contract?.complexity, 'low');
+      assert.equal(created.execution_contract?.delegation_mode, 'mini_preferred');
+      assert.equal(created.execution_contract?.preferred_model_tier, 'low');
+      assert.deepEqual(created.execution_contract?.done_definition, [
+        'Implement requested behavior',
+        'Verify changed area',
+        'Report concrete evidence',
+      ]);
+      assert.equal(created.execution?.assigned_model_tier, 'low');
+      assert.equal(created.execution?.delegation_state, 'not_started');
+      assert.equal(created.execution?.escalation_count, 0);
+      assert.equal(created.execution?.attempt_count, 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('updateTask preserves immutable execution contract while allowing observed execution metadata updates', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-exec-immutability-'));
+    try {
+      await initTeamState('team-exec-immutability', 't', 'executor', 1, cwd);
+      const created = await createTask(
+        'team-exec-immutability',
+        {
+          subject: 'Refactor runtime orchestration',
+          description: 'Multi-file runtime orchestration update',
+          status: 'pending',
+          execution_contract: {
+            complexity: 'high',
+            delegation_mode: 'direct_only',
+            preferred_model_tier: 'frontier',
+            done_definition: ['Preserve public lifecycle semantics'],
+            allowed_edit_scope: ['src/team/state.ts'],
+            verification_mode: 'thorough',
+            report_format: 'structured_markdown',
+            supervisor_notes: ['keep owner semantics stable'],
+            max_parallel_subtasks: 1,
+          },
+        },
+        cwd,
+      );
+
+      const updated = await updateTask(
+        'team-exec-immutability',
+        created.id,
+        {
+          execution_contract: {
+            complexity: 'low',
+            delegation_mode: 'mini_preferred',
+            preferred_model_tier: 'low',
+            done_definition: ['attempt overwrite'],
+            allowed_edit_scope: ['src/team/runtime.ts'],
+            verification_mode: 'light',
+            report_format: 'structured_markdown',
+            supervisor_notes: ['attempt overwrite'],
+            max_parallel_subtasks: 5,
+          },
+          execution: {
+            observed_complexity: 'medium',
+            observed_delegation_mode: 'mini_allowed',
+            escalation_count: 2,
+            last_failure_reason: 'shared file conflict',
+            delegation_state: 'escalated',
+            child_attempts: 1,
+            attempt_count: 3,
+            rebalance_requested: true,
+            shared_core_risk_observed: true,
+            ambiguity_observed: true,
+            latest_report_summary: {
+              outcome: 'escalated',
+              escalation_summary: 'needs shared owner decision',
+            },
+          },
+        },
+        cwd,
+      );
+
+      assert.equal(updated?.execution_contract?.complexity, 'high');
+      assert.equal(updated?.execution_contract?.delegation_mode, 'direct_only');
+      assert.equal(updated?.execution_contract?.preferred_model_tier, 'frontier');
+      assert.deepEqual(updated?.execution_contract?.allowed_edit_scope, ['src/team/state.ts']);
+      assert.equal(updated?.execution_contract?.verification_mode, 'thorough');
+      assert.equal(updated?.execution?.observed_complexity, 'medium');
+      assert.equal(updated?.execution?.observed_delegation_mode, 'mini_allowed');
+      assert.equal(updated?.execution?.escalation_count, 2);
+      assert.equal(updated?.execution?.last_failure_reason, 'shared file conflict');
+      assert.equal(updated?.execution?.rebalance_requested, true);
+      assert.equal(updated?.execution?.latest_report_summary?.outcome, 'escalated');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('routing-policy helpers stay pure and derive compatibility-safe decisions', () => {
+    const classified = classifyTaskExecution({
+      subject: 'Search docs',
+      description: 'Single-file search and summary task',
+    });
+
+    assert.equal(classified.executionContract.complexity, 'low');
+    assert.equal(choosePreferredModelTier('medium'), 'standard');
+    assert.equal(choosePreferredModelTier('high'), 'frontier');
+    assert.equal(chooseAssignedModelTier({ execution_contract: classified.executionContract }), 'low');
+    assert.equal(
+      shouldWorkerDelegateToMini({
+        execution_contract: classified.executionContract,
+        execution: classified.initialExecution,
+      }),
+      true,
+    );
+
+    const escalationPatch = buildObservedEscalationPatch(
+      { execution: classified.initialExecution },
+      'shared risk discovered',
+      { shared_core_risk_observed: true },
+    );
+    assert.equal(escalationPatch.escalation_count, 1);
+    assert.equal(escalationPatch.last_failure_reason, 'shared risk discovered');
+    assert.equal(escalationPatch.rebalance_requested, true);
+    assert.equal(
+      shouldRequestRebalance({
+        execution_contract: classified.executionContract,
+        execution: { ...classified.initialExecution, ...escalationPatch },
+      }),
+      true,
+    );
   });
 
   it('writeAtomic creates file and is safe to call concurrently (basic)', async () => {
