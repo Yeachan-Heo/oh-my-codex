@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ASK_PROVIDERS } from '../ask.js';
+import { ADAPT_SUBCOMMANDS, ADAPT_TARGETS } from '../../adapt/contracts.js';
 import { AGENTS_SUBCOMMANDS } from '../agents.js';
 import { AUTORESEARCH_SUBCOMMANDS } from '../autoresearch.js';
 import { buildCompletionCatalog, type CompletionNode } from '../completion/catalog.js';
@@ -61,6 +62,10 @@ function findNode(root: CompletionNode, path: string[]): CompletionNode | undefi
     if (!current) return undefined;
   }
   return current;
+}
+
+function findOption(root: CompletionNode, path: string[], flag: string) {
+  return findNode(root, path)?.options?.find((entry) => entry.flags.includes(flag));
 }
 
 describe('omx completion', () => {
@@ -296,6 +301,8 @@ exit 1
   it('reuses exported CLI constants to keep completion structure aligned', async () => {
     const catalog = await buildCompletionCatalog();
 
+    assert.deepEqual(findNode(catalog, ['adapt'])?.subcommands?.map((entry) => entry.name), [...ADAPT_TARGETS]);
+    assert.deepEqual(findNode(catalog, ['adapt', ADAPT_TARGETS[0]])?.subcommands?.map((entry) => entry.name), [...ADAPT_SUBCOMMANDS]);
     assert.deepEqual(findNode(catalog, ['agents'])?.subcommands?.map((entry) => entry.name), [...AGENTS_SUBCOMMANDS]);
     assert.deepEqual(findNode(catalog, ['hooks'])?.subcommands?.map((entry) => entry.name), [...HOOKS_SUBCOMMANDS]);
     assert.deepEqual(findNode(catalog, ['tmux-hook'])?.subcommands?.map((entry) => entry.name), [...TMUX_HOOK_SUBCOMMANDS]);
@@ -304,6 +311,12 @@ exit 1
     assert.deepEqual(findNode(catalog, ['team'])?.subcommands?.map((entry) => entry.name), [...TEAM_CLI_SUBCOMMANDS]);
     assert.deepEqual(findNode(catalog, ['state'])?.subcommands?.map((entry) => entry.name), Object.keys(STATE_OPERATION_MAP));
     assert.deepEqual(findNode(catalog, ['ask'])?.positionalValues, [...ASK_PROVIDERS]);
+    assert.equal(findOption(catalog, [], '--worktree')?.expectsValue, true);
+    assert.equal(findOption(catalog, [], '--worktree')?.values, undefined);
+    assert.equal(findOption(catalog, ['explore'], '--prompt')?.expectsValue, true);
+    assert.equal(findOption(catalog, ['explore'], '--prompt')?.values, undefined);
+    assert.equal(findOption(catalog, [], '--custom')?.expectsValue, true);
+    assert.deepEqual(findOption(catalog, ['adapt', ADAPT_TARGETS[0], 'init'], '--write')?.expectsValue, undefined);
   });
 
   it('keeps representative static completion coverage in the rendered bash script', async () => {
@@ -312,6 +325,8 @@ exit 1
 
     assert.match(script, /\["completion"\]="bash zsh fish powershell"/);
     assert.match(script, /team api/);
+    assert.match(script, /adapt/);
+    assert.match(script, /openclaw hermes/);
     assert.match(script, /mailbox-list/);
     assert.match(script, /state/);
     assert.match(script, /list-active/);
@@ -319,6 +334,9 @@ exit 1
     assert.match(script, /add-directive/);
     assert.match(script, /reasoning/);
     assert.match(script, /low medium high xhigh/);
+    assert.match(script, /__OMX_EXPECTS_VALUE/);
+    assert.match(script, /--worktree/);
+    assert.match(script, /--prompt/);
   });
 
   it('upserts managed profile blocks without duplicating them', () => {

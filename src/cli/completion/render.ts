@@ -3,6 +3,7 @@ import type { CompletionNode } from './catalog.js';
 interface FlatCompletionTables {
   subcommands: Record<string, string[]>;
   options: Record<string, string[]>;
+  expectsValue: Record<string, string[]>;
   positionalValues: Record<string, string[]>;
   optionValues: Record<string, string[]>;
 }
@@ -20,12 +21,16 @@ function flattenCatalog(
   tables: FlatCompletionTables = {
     subcommands: {},
     options: {},
+    expectsValue: {},
     positionalValues: {},
     optionValues: {},
   },
 ): FlatCompletionTables {
   tables.subcommands[path] = unique(node.subcommands?.map((entry) => entry.name));
   tables.options[path] = unique(node.options?.flatMap((entry) => entry.flags));
+  tables.expectsValue[path] = unique(
+    node.options?.filter((entry) => entry.expectsValue === true).flatMap((entry) => entry.flags),
+  );
   tables.positionalValues[path] = unique(node.positionalValues);
 
   for (const option of node.options ?? []) {
@@ -99,6 +104,8 @@ export function renderBashCompletion(catalog: CompletionNode): string {
     '',
     renderBashAssoc('__OMX_OPTIONS', tables.options),
     '',
+    renderBashAssoc('__OMX_EXPECTS_VALUE', tables.expectsValue),
+    '',
     renderBashAssoc('__OMX_POSITIONALS', tables.positionalValues),
     '',
     renderBashAssoc('__OMX_OPTION_VALUES', tables.optionValues),
@@ -142,7 +149,10 @@ export function renderBashCompletion(catalog: CompletionNode): string {
     '',
     '__omx_option_expects_value() {',
     '  local path="$1" flag="$2"',
-    '  [[ -n "${__OMX_OPTION_VALUES["$path|$flag"]}" ]]',
+    '  local path_key values',
+    '  path_key="$(__omx_path_key "$path")"',
+    '  mapfile -t values < <(__omx_list "${__OMX_EXPECTS_VALUE[$path_key]}")',
+    '  __omx_contains "$flag" "${values[@]}"',
     '}',
     '',
     '_omx() {',
@@ -194,6 +204,8 @@ export function renderZshCompletion(catalog: CompletionNode): string {
     '',
     renderZshAssoc('__OMX_OPTIONS', tables.options),
     '',
+    renderZshAssoc('__OMX_EXPECTS_VALUE', tables.expectsValue),
+    '',
     renderZshAssoc('__OMX_POSITIONALS', tables.positionalValues),
     '',
     renderZshAssoc('__OMX_OPTION_VALUES', tables.optionValues),
@@ -228,7 +240,9 @@ export function renderZshCompletion(catalog: CompletionNode): string {
     '',
     '__omx_option_expects_value() {',
     '  local path="$1" flag="$2"',
-    '  [[ -n "${__OMX_OPTION_VALUES["$path|$flag"]}" ]]',
+    '  local -a values',
+    '  values=(${=__OMX_EXPECTS_VALUE[$path]})',
+    '  __omx_contains "$flag" "${values[@]}"',
     '}',
     '',
     '_omx() {',
@@ -295,6 +309,12 @@ export function renderFishCompletion(catalog: CompletionNode): string {
     '  end',
     'end',
     '',
+    'function __omx_get_expect_value_flags --argument-names path',
+    '  switch "$path"',
+    ...renderFishCaseBlocks(tables.expectsValue),
+    '  end',
+    'end',
+    '',
     'function __omx_get_positionals --argument-names path',
     '  switch "$path"',
     ...renderFishCaseBlocks(tables.positionalValues),
@@ -308,8 +328,7 @@ export function renderFishCompletion(catalog: CompletionNode): string {
     'end',
     '',
     'function __omx_option_expects_value --argument-names path flag',
-    '  set -l values (__omx_get_option_values "$path" "$flag")',
-    '  test (count $values) -gt 0',
+    '  contains -- "$flag" (__omx_get_expect_value_flags "$path")',
     'end',
     '',
     'function __omx_complete',
@@ -366,6 +385,8 @@ export function renderPowerShellCompletion(catalog: CompletionNode): string {
     '',
     renderPowerShellHashtable('OmxOptions', tables.options),
     '',
+    renderPowerShellHashtable('OmxExpectsValue', tables.expectsValue),
+    '',
     renderPowerShellHashtable('OmxPositionals', tables.positionalValues),
     '',
     renderPowerShellHashtable('OmxOptionValues', tables.optionValues),
@@ -382,6 +403,10 @@ export function renderPowerShellCompletion(catalog: CompletionNode): string {
     '  return $false',
     '}',
     '',
+    'function Test-OmxOptionExpectsValue([string]$Path, [string]$Flag) {',
+    '  return Test-OmxContains (Get-OmxList $OmxExpectsValue $Path) $Flag',
+    '}',
+    '',
     'function Join-OmxPath([string]$Path, [string]$Token) {',
     '  if ([string]::IsNullOrEmpty($Path)) { return $Token }',
     '  return "$Path $Token"',
@@ -391,8 +416,7 @@ export function renderPowerShellCompletion(catalog: CompletionNode): string {
     '  $path = ""',
     '  for ($idx = 0; $idx -lt $CompletedWords.Count; $idx++) {',
     '    $token = $CompletedWords[$idx]',
-    '    $optionKey = "$path|$token"',
-    '    if ($OmxOptionValues.ContainsKey($optionKey)) {',
+    '    if (Test-OmxOptionExpectsValue $path $token) {',
     '      $idx += 1',
     '      continue',
     '    }',

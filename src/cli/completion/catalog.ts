@@ -1,4 +1,5 @@
 import { ASK_PROVIDERS } from '../ask.js';
+import { ADAPT_SUBCOMMANDS, ADAPT_TARGETS } from '../../adapt/contracts.js';
 import { AGENTS_SUBCOMMANDS } from '../agents.js';
 import { AUTORESEARCH_SUBCOMMANDS } from '../autoresearch.js';
 import { HOOKS_SUBCOMMANDS } from '../hooks.js';
@@ -11,6 +12,7 @@ import { TEAM_API_OPERATIONS } from '../../team/api-interop.js';
 
 export interface CompletionOptionSpec {
   flags: string[];
+  expectsValue?: boolean;
   values?: string[];
 }
 
@@ -25,9 +27,14 @@ const LOCAL_HELP_OPTION: CompletionOptionSpec = {
   flags: ['--help', '-h'],
 };
 
-function option(flags: string[], values?: readonly string[]): CompletionOptionSpec {
+function option(
+  flags: string[],
+  values?: readonly string[],
+  expectsValue = Boolean(values && values.length > 0),
+): CompletionOptionSpec {
   return {
     flags: [...flags],
+    ...(expectsValue ? { expectsValue: true } : {}),
     ...(values && values.length > 0 ? { values: [...values] } : {}),
   };
 }
@@ -170,13 +177,13 @@ async function loadMcpToolNames(): Promise<{
 export async function buildCompletionCatalog(): Promise<CompletionNode> {
   const mcpToolNames = await loadMcpToolNames();
 
-  const ioOptions = [option(['--input']), option(['--json'])] as const;
+  const ioOptions = [option(['--input'], undefined, true), option(['--json'])] as const;
   const teamStateSubcommands = TEAM_CLI_SUBCOMMANDS.map((name) => {
     switch (name) {
       case 'status':
-        return node(name, { options: [option(['--json']), option(['--tail-lines'])] });
+        return node(name, { options: [option(['--json']), option(['--tail-lines'], undefined, true)] });
       case 'await':
-        return node(name, { options: [option(['--timeout-ms']), option(['--after-event-id']), option(['--json'])] });
+        return node(name, { options: [option(['--timeout-ms'], undefined, true), option(['--after-event-id'], undefined, true), option(['--json'])] });
       case 'shutdown':
         return node(name, { options: [option(['--force']), option(['--confirm-issues'])] });
       case 'api':
@@ -202,8 +209,8 @@ export async function buildCompletionCatalog(): Promise<CompletionNode> {
       option(['--discord']),
       option(['--slack']),
       option(['--telegram']),
-      option(['--custom']),
-      option(['--worktree', '-w']),
+      option(['--custom'], undefined, true),
+      option(['--worktree', '-w'], undefined, true),
     ],
     subcommands: [
       node('launch', {
@@ -219,8 +226,8 @@ export async function buildCompletionCatalog(): Promise<CompletionNode> {
           option(['--discord']),
           option(['--slack']),
           option(['--telegram']),
-          option(['--custom']),
-          option(['--worktree', '-w']),
+          option(['--custom'], undefined, true),
+          option(['--worktree', '-w'], undefined, true),
         ],
       }),
       node('exec', {
@@ -234,32 +241,46 @@ export async function buildCompletionCatalog(): Promise<CompletionNode> {
           option(['--discord']),
           option(['--slack']),
           option(['--telegram']),
-          option(['--custom']),
-          option(['--worktree', '-w']),
+          option(['--custom'], undefined, true),
+          option(['--worktree', '-w'], undefined, true),
         ],
       }),
       node('setup', {
-        options: [option(['--force']), option(['--dry-run']), option(['--verbose']), option(['--scope'], ['user', 'project']), option(['--skill-target'], ['codex-home'])],
+        options: [option(['--force']), option(['--dry-run']), option(['--verbose']), option(['--scope'], ['user', 'project'], true), option(['--skill-target'], ['codex-home'], true)],
       }),
       node('agents', {
-        subcommands: AGENTS_SUBCOMMANDS.map((name) => node(name, { options: [option(['--scope'], ['user', 'project']), ...(name === 'add' || name === 'remove' ? [option(['--force'])] : [])] })),
+        subcommands: AGENTS_SUBCOMMANDS.map((name) => node(name, { options: [option(['--scope'], ['user', 'project'], true), ...(name === 'add' || name === 'remove' ? [option(['--force'])] : [])] })),
       }),
       node('agents-init', { options: [option(['--dry-run']), option(['--force']), option(['--verbose'])] }),
       node('deepinit', { options: [option(['--dry-run']), option(['--force']), option(['--verbose'])] }),
-      node('uninstall', { options: [option(['--dry-run']), option(['--keep-config']), option(['--verbose']), option(['--purge']), option(['--scope'], ['user', 'project'])] }),
+      node('uninstall', { options: [option(['--dry-run']), option(['--keep-config']), option(['--verbose']), option(['--purge']), option(['--scope'], ['user', 'project'], true)] }),
       node('doctor', { options: [option(['--team']), option(['--verbose'])] }),
       node('cleanup', { options: [option(['--dry-run'])] }),
-      node('ask', { positionalValues: [...ASK_PROVIDERS], options: [option(['-p', '--prompt', '--print']), option(['--agent-prompt'])] }),
+      node('ask', { positionalValues: [...ASK_PROVIDERS], options: [option(['-p', '--prompt', '--print'], undefined, true), option(['--agent-prompt'], undefined, true)] }),
+      node('adapt', {
+        subcommands: ADAPT_TARGETS.map((target) =>
+          node(target, {
+            subcommands: ADAPT_SUBCOMMANDS.map((name) =>
+              node(name, {
+                options: [
+                  option(['--json']),
+                  ...(name === 'init' ? [option(['--write'])] : []),
+                ],
+              }),
+            ),
+          }),
+        ),
+      }),
       node('resume'),
-      node('explore', { options: [option(['--prompt']), option(['--prompt-file'])] }),
+      node('explore', { options: [option(['--prompt'], undefined, true), option(['--prompt-file'], undefined, true)] }),
       node('session', {
         subcommands: SESSION_SUBCOMMANDS.map((name) => node(name, {
           options: [
-            option(['--limit']),
-            option(['--session']),
-            option(['--since']),
-            option(['--project'], ['current', 'all']),
-            option(['--context']),
+            option(['--limit'], undefined, true),
+            option(['--session'], undefined, true),
+            option(['--since'], undefined, true),
+            option(['--project'], ['current', 'all'], true),
+            option(['--context'], undefined, true),
             option(['--case-sensitive']),
             option(['--json']),
           ],
@@ -272,13 +293,13 @@ export async function buildCompletionCatalog(): Promise<CompletionNode> {
       node('ralph'),
       node('autoresearch', {
         subcommands: AUTORESEARCH_SUBCOMMANDS.map((name) => node(name)),
-        options: [option(['--topic']), option(['--evaluator']), option(['--keep-policy']), option(['--slug']), option(['--resume'])],
+        options: [option(['--topic'], undefined, true), option(['--evaluator'], undefined, true), option(['--keep-policy'], undefined, true), option(['--slug'], undefined, true), option(['--resume'], undefined, true)],
       }),
       node('completion', { positionalValues: ['bash', 'zsh', 'fish', 'powershell'] }),
       node('version'),
       node('tmux-hook', { subcommands: repeatOptions(TMUX_HOOK_SUBCOMMANDS, []) }),
       node('hooks', { subcommands: repeatOptions(HOOKS_SUBCOMMANDS, []) }),
-      node('hud', { options: [option(['--watch']), option(['--json']), option(['--preset'])] }),
+      node('hud', { options: [option(['--watch']), option(['--json']), option(['--preset'], undefined, true)] }),
       node('state', {
         subcommands: repeatOptions(Object.keys(STATE_OPERATION_MAP), ioOptions),
       }),
@@ -287,7 +308,7 @@ export async function buildCompletionCatalog(): Promise<CompletionNode> {
       node('trace', { subcommands: repeatOptions(mcpToolNames.trace, ioOptions), options: [...ioOptions] }),
       node('code-intel', { subcommands: repeatOptions(mcpToolNames.codeIntel, ioOptions), options: [...ioOptions] }),
       node('wiki', { subcommands: repeatOptions(mcpToolNames.wiki, ioOptions), options: [...ioOptions] }),
-      node('sparkshell', { options: [option(['--tmux-pane']), option(['--tail-lines'])] }),
+      node('sparkshell', { options: [option(['--tmux-pane'], undefined, true), option(['--tail-lines'], undefined, true)] }),
       node('help'),
       node('status'),
       node('cancel'),
@@ -305,6 +326,7 @@ export async function buildCompletionCatalog(): Promise<CompletionNode> {
           'doctor',
           'cleanup',
           'ask',
+          'adapt',
           'resume',
           'explore',
           'session',
