@@ -461,6 +461,40 @@ describe('readAllState canonical skill precedence', () => {
     });
   });
 
+  it('prefers canonical team phase over stale team detail current_phase', async () => {
+    await withTempRepo('omx-hud-canonical-team-phase-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-team-phase';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      const teamDir = join(rootStateDir, 'team', 'alpha');
+      await mkdir(sessionDir, { recursive: true });
+      await mkdir(teamDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'team',
+        phase: 'starting',
+        session_id: sessionId,
+        active_skills: [{ skill: 'team', phase: 'starting', active: true, session_id: sessionId }],
+      }));
+      await writeFile(join(sessionDir, 'team-state.json'), JSON.stringify({
+        active: true,
+        team_name: 'alpha',
+        current_phase: 'starting',
+      }));
+      await writeFile(join(teamDir, 'phase.json'), JSON.stringify({
+        current_phase: 'team-exec',
+        max_fix_attempts: 3,
+        current_fix_attempt: 0,
+        transitions: [],
+        updated_at: new Date().toISOString(),
+      }));
+
+      const state = await readAllState(cwd);
+      assert.deepEqual(state.team, { active: true, team_name: 'alpha', current_phase: 'team-exec' });
+    });
+  });
+
   it('surfaces approved combined workflow state from canonical multi-skill data', async () => {
     await withTempRepo('omx-hud-canonical-combined-', async (cwd) => {
       const rootStateDir = join(cwd, '.omx', 'state');
