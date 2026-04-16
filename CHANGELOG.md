@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+- **`omx completion` shell installer** — OMX can now install direct shell completion for bash, zsh, fish, and powershell, with static CLI command/subcommand/flag/value coverage, idempotent managed profile updates, a Bash 4+ safety gate, and updated README onboarding.
+
 ## [0.12.6] - 2026-04-13
 
 Wiki-first knowledge workflows, notification and hook delivery hardening, launch/worktree safety improvements, and automatic closure of explicitly linked issues after `dev` merges across 32 PRs.

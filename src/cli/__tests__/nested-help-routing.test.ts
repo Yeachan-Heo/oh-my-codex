@@ -28,6 +28,7 @@ describe('nested help routing', () => {
     [['autoresearch', '--help'], /Usage:[\s\S]*omx autoresearch <mission-dir>/i],
     [['hud', '--help'], /Usage:\s*\n\s*omx hud\s+Show current HUD state/i],
     [['hooks', '--help'], /Usage:\s*\n\s*omx hooks init/i],
+    [['completion', '--help'], /Usage:\s*omx completion <bash\|zsh\|fish\|powershell>/i],
     [['state', '--help'], /Usage:\s*omx state <read\|write\|clear\|list-active\|get-status>/i],
     [['tmux-hook', '--help'], /Usage:\s*\n\s*omx tmux-hook init/i],
     [['ralph', '--help'], /omx ralph - Launch Codex with ralph persistence mode active/i],

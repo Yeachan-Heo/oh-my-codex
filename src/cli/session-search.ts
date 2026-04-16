@@ -21,6 +21,8 @@ Examples:
   omx session search "team api" --project current --json
 `;
 
+export const SESSION_SUBCOMMANDS = ['search'] as const;
+
 const HELP_TOKENS = new Set(['--help', '-h', 'help']);
 
 export interface ParsedSessionSearchArgs {
