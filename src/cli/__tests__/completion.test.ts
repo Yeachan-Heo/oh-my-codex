@@ -132,6 +132,39 @@ describe('omx completion', () => {
       });
       assert.equal(sourceResult.status, 0, `${sourceResult.stderr}\n${sourceResult.stdout}`);
 
+      const freeformValueResult = spawnSync(
+        'bash',
+        ['-c', `source "${bashScriptPath}"; COMP_WORDS=(omx --worktree ""); COMP_CWORD=2; _omx; printf "%s" "\${COMPREPLY[*]}"`],
+        {
+          encoding: 'utf-8',
+          env: {
+            ...process.env,
+            HOME: home,
+            USERPROFILE: home,
+          },
+        },
+      );
+      assert.equal(freeformValueResult.status, 0, `${freeformValueResult.stderr}\n${freeformValueResult.stdout}`);
+      assert.equal(freeformValueResult.stdout.trim(), '');
+
+      const enumeratedValueResult = spawnSync(
+        'bash',
+        ['-c', `source "${bashScriptPath}"; COMP_WORDS=(omx setup --scope ""); COMP_CWORD=3; _omx; printf "%s\\n" "\${COMPREPLY[@]}"`],
+        {
+          encoding: 'utf-8',
+          env: {
+            ...process.env,
+            HOME: home,
+            USERPROFILE: home,
+          },
+        },
+      );
+      assert.equal(enumeratedValueResult.status, 0, `${enumeratedValueResult.stderr}\n${enumeratedValueResult.stdout}`);
+      assert.deepEqual(
+        enumeratedValueResult.stdout.trim().split('\n').filter(Boolean),
+        ['user', 'project'],
+      );
+
       const backupFiles = await listRelativeFiles(join(home, '.omx', 'backups', 'completion'));
       assert.ok(backupFiles.some((file) => file.endsWith('.bashrc')), `expected .bashrc backup, got: ${backupFiles.join(', ')}`);
 
