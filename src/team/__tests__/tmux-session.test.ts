@@ -1077,7 +1077,7 @@ describe('buildWorkerStartupCommand', () => {
 
       assert.match(cmd, new RegExp(escapeRegExp(`OMX_LEADER_NODE_PATH=${nodePath}`)));
       assert.match(cmd, new RegExp(escapeRegExp(`OMX_LEADER_CLI_PATH=${codexPath}`)));
-      assert.match(cmd, new RegExp(escapeRegExp(`export PATH='\\''${fakeBin}'\\'':$PATH; exec ${codexPath}`)));
+      assert.match(cmd, new RegExp(escapeRegExp(`export PATH='\\''${fakeBin}'\\'':$PATH; exec '\\''${codexPath}'\\''`)));
       assert.doesNotMatch(cmd, /export PATH='\\''node'\\'':\$PATH/);
       assert.doesNotMatch(cmd, / exec codex(?:\s|')/);
     } finally {
