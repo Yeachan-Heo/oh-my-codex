@@ -340,7 +340,8 @@ export function appendLog(root: string, entry: WikiLogEntry): void {
 export function titleToSlug(title: string): string {
   const base = title
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
+    .normalize('NFC')
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 64);
 
