@@ -6,7 +6,7 @@
 
 import { readFile } from 'fs/promises';
 import { readFileSync } from 'fs';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { join, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { omxStateDir } from '../utils/paths.js';
@@ -216,8 +216,9 @@ function runGit(cwd: string, args: string[]): string | null {
           const config = readGitLayoutFile(gitLayout.gitDir, 'config')
             ?? readGitLayoutFile(gitLayout.commonDir, 'config');
           if (config) {
+            const escaped = remoteName.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
             const re = new RegExp(
-              `\\[remote "${remoteName}"\\][\\s\\S]*?url\\s*=\\s*(.+)`,
+              `\\[remote "${escaped}"\\][\\s\\S]*?url\\s*=\\s*(.+)`,
               'm',
             );
             const m = config.match(re);
@@ -248,7 +249,7 @@ function runGit(cwd: string, args: string[]): string | null {
 
 function runGitExec(cwd: string, args: string[]): string | null {
   try {
-    return execSync(`git ${args.join(' ')}`, {
+    return execFileSync('git', args, {
       cwd,
       encoding: 'utf-8',
       timeout: 2000,
