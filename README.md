@@ -120,6 +120,22 @@ $team 3:executor "execute the approved plan in parallel"
 
 Use `$team` when the approved plan needs coordinated parallel work, or `$ralph` when one persistent owner should keep pushing to completion.
 
+### Optional: install shell completion
+
+If you want `omx` command, subcommand, and static flag/value completion in your shell, install it once with:
+
+```bash
+omx completion zsh
+# or: omx completion bash
+# or: omx completion fish
+# or: omx completion powershell
+```
+
+Notes:
+- The command writes directly to the shell's load point/profile and is safe to rerun; OMX-managed completion blocks are updated in place instead of duplicated.
+- Bash completion requires **Bash 4+** because the generated script uses associative arrays and `mapfile`.
+- On Bash 3.x environments (for example the default `/bin/bash` on older macOS setups), `omx completion bash` fails clearly **before** modifying your profile. Use a newer Bash, `zsh`, `fish`, or `powershell` instead.
+
 ## A simple mental model
 
 OMX does **not** replace Codex.

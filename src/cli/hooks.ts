@@ -7,6 +7,8 @@ import { dispatchHookEvent } from '../hooks/extensibility/dispatcher.js';
 import { discoverHookPlugins, isHookPluginsEnabled } from '../hooks/extensibility/loader.js';
 import type { HookPluginDescriptor } from '../hooks/extensibility/types.js';
 
+export const HOOKS_SUBCOMMANDS = ['init', 'status', 'validate', 'test'] as const;
+
 const HELP = `
 Usage:
   omx hooks init       Create .omx/hooks/sample-plugin.mjs scaffold

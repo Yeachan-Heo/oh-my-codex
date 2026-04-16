@@ -9,6 +9,8 @@ import { codexAgentsDir, projectCodexAgentsDir } from '../utils/paths.js';
 
 export const RESERVED_NATIVE_AGENT_NAMES = new Set(['default', 'worker', 'explorer']);
 const DEFAULT_AGENT_MODEL = 'gpt-5.4';
+export const AGENTS_SUBCOMMANDS = ['list', 'add', 'edit', 'remove'] as const;
+
 const AGENTS_USAGE = [
   'Usage:',
   '  omx agents list [--scope user|project]',

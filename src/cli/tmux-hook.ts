@@ -56,6 +56,8 @@ const DEFAULT_CONFIG: TmuxHookConfig = {
   skip_if_scrolling: true,
 };
 
+export const TMUX_HOOK_SUBCOMMANDS = ['init', 'status', 'validate', 'test'] as const;
+
 const HELP = `
 Usage:
   omx tmux-hook init       Create .omx/tmux-hook.json

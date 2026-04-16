@@ -15,7 +15,7 @@ export const ASK_USAGE = [
   '   or: omx ask <claude|gemini> --agent-prompt=<role> --prompt "<prompt>"',
 ].join('\n');
 
-const ASK_PROVIDERS = ['claude', 'gemini'] as const;
+export const ASK_PROVIDERS = ['claude', 'gemini'] as const;
 type AskProvider = typeof ASK_PROVIDERS[number];
 const ASK_PROVIDER_SET = new Set<string>(ASK_PROVIDERS);
 const ASK_ADVISOR_SCRIPT_ENV = 'OMX_ASK_ADVISOR_SCRIPT';

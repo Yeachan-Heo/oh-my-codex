@@ -175,6 +175,8 @@ Examples:
   omx team api claim-task --input '{"team_name":"my-team","task_id":"1","worker":"worker-1","expected_version":1}' --json
 `;
 
+export const TEAM_CLI_SUBCOMMANDS = ['status', 'await', 'resume', 'shutdown', 'api'] as const;
+
 const HELP_TOKENS = new Set(['--help', '-h', 'help']);
 
 const TEAM_API_OPERATION_REQUIRED_FIELDS: Record<TeamApiOperation, string[]> = {

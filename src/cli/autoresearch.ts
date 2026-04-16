@@ -57,6 +57,8 @@ Behavior:
   - --resume loads the authoritative per-run manifest and continues from the last kept commit
 `;
 
+export const AUTORESEARCH_SUBCOMMANDS = ['init', 'run'] as const;
+
 const AUTORESEARCH_APPEND_INSTRUCTIONS_ENV = 'OMX_AUTORESEARCH_APPEND_INSTRUCTIONS_FILE';
 const AUTORESEARCH_MAX_CONSECUTIVE_NOOPS = 3;
 

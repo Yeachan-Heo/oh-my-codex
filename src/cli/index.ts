@@ -25,6 +25,7 @@ import {
   type CleanupResult,
 } from "./cleanup.js";
 import { exploreCommand } from "./explore.js";
+import { completionCommand } from "./completion.js";
 import { sparkshellCommand } from "./sparkshell.js";
 import { agentsInitCommand } from "./agents-init.js";
 import { agentsCommand } from "./agents.js";
@@ -112,6 +113,7 @@ import {
   ensureWorktree,
 } from "../team/worktree.js";
 import { ensureReusableNodeModules } from "../utils/repo-deps.js";
+import { buildTopLevelHelp, TOP_LEVEL_COMMAND_NAMES, TOP_LEVEL_LOCAL_HELP_COMMANDS } from "./top-level-commands.js";
 import {
   OMX_NOTIFY_TEMP_CONTRACT_ENV,
   parseNotifyTempContractFromArgs,
@@ -136,83 +138,7 @@ function resolveDistScript(pkgRoot: string, scriptName: string): string {
   return join(pkgRoot, "dist", "scripts", scriptName);
 }
 
-const HELP = `
-oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
-
-Usage:
-  omx           Launch Codex CLI (HUD auto-attaches only when already inside tmux)
-  omx exec      Run codex exec non-interactively with OMX AGENTS/overlay injection
-  omx setup     Install skills, prompts, MCP servers, and scope-specific AGENTS.md
-  omx uninstall Remove OMX configuration and clean up installed artifacts
-  omx doctor    Check installation health
-  omx cleanup   Kill orphaned OMX MCP server processes and remove stale OMX /tmp directories
-  omx doctor --team  Check team/swarm runtime health diagnostics
-  omx ask       Ask local provider CLI (claude|gemini) and write artifact output
-  omx adapt     Scaffold OMX-owned adapter foundations for persistent external targets
-  omx resume    Resume a previous interactive Codex session
-  omx explore   Default read-only exploration entrypoint (may adaptively use sparkshell backend)
-  omx session   Search prior local session transcripts and history artifacts
-  omx agents-init [path]
-                Bootstrap lightweight AGENTS.md files for a repo/subtree
-  omx agents    Manage Codex native agent TOML files
-  omx deepinit [path]
-                Alias for agents-init (lightweight AGENTS bootstrap only)
-  omx team      Spawn parallel worker panes in tmux and bootstrap inbox/task state
-  omx ralph     Launch Codex with ralph persistence mode active
-  omx autoresearch Launch thin-supervisor autoresearch with keep/discard/reset parity
-  omx version   Show version information
-  omx tmux-hook Manage tmux prompt injection workaround (init|status|validate|test)
-  omx hooks     Manage hook plugins (init|status|validate|test)
-  omx hud       Show HUD statusline (--watch, --json, --preset=NAME)
-  omx state     Read/write/list OMX mode state via CLI parity surface
-  omx notepad   CLI parity for OMX notepad MCP tools
-  omx project-memory
-                CLI parity for OMX project-memory MCP tools
-  omx trace     CLI parity for OMX trace MCP tools
-  omx code-intel
-                CLI parity for OMX code-intel MCP tools
-  omx wiki      CLI parity for OMX wiki MCP tools
-  omx sparkshell <command> [args...]
-  omx sparkshell --tmux-pane <pane-id> [--tail-lines <100-1000>]
-                Run native sparkshell sidecar for direct command execution or explicit tmux-pane summarization
-                (also used as an adaptive backend for qualifying read-only explore tasks)
-  omx help      Show this help message
-  omx status    Show active modes and state
-  omx cancel    Cancel active execution modes
-  omx reasoning Show or set model reasoning effort (low|medium|high|xhigh)
-
-Options:
-  --yolo        Launch Codex in yolo mode (shorthand for: omx launch --yolo)
-  --high        Launch Codex with high reasoning effort
-                (shorthand for: -c model_reasoning_effort="high")
-  --xhigh       Launch Codex with xhigh reasoning effort
-                (shorthand for: -c model_reasoning_effort="xhigh")
-  --madmax      DANGEROUS: bypass Codex approvals and sandbox
-                (alias for --dangerously-bypass-approvals-and-sandbox)
-  --spark       Use the Codex spark model (~1.3x faster) for team workers only
-                Workers get the configured low-complexity team model; leader model unchanged
-  --madmax-spark  spark model for workers + bypass approvals for leader and workers
-                (shorthand for: --spark --madmax)
-  --notify-temp  Enable temporary notification routing for this run/session only
-  --tmux         Launch the interactive leader session in detached tmux
-  --discord      Select Discord provider for temporary notification mode
-  --slack        Select Slack provider for temporary notification mode
-  --telegram     Select Telegram provider for temporary notification mode
-  --custom <name>
-                Select custom/OpenClaw gateway name for temporary notification mode
-  -w, --worktree[=<name>]
-                Launch Codex in a git worktree (detached when no name is given)
-  --force       Force reinstall (overwrite existing files)
-  --dry-run     Show what would be done without doing it
-  --keep-config Skip config.toml cleanup during uninstall
-  --purge       Remove .omx/ cache directory during uninstall
-  --verbose     Show detailed output
-  --scope       Setup scope for "omx setup" only:
-                user | project
-  --skill-target
-                User-scope skills target for "omx setup" only:
-                codex-home
-`;
+const HELP = buildTopLevelHelp();
 
 const REASONING_KEY = "model_reasoning_effort";
 const MODEL_INSTRUCTIONS_FILE_KEY = "model_instructions_file";
@@ -265,6 +191,7 @@ type CliCommand =
   | "ask"
   | "adapt"
   | "explore"
+  | "completion"
   | "sparkshell"
   | "team"
   | "session"
@@ -281,26 +208,7 @@ type CliCommand =
   | "reasoning"
   | string;
 
-const NESTED_HELP_COMMANDS = new Set<CliCommand>([
-  "ask",
-  "cleanup",
-  "adapt",
-  "autoresearch",
-  "agents",
-  "agents-init",
-  "deepinit",
-  "exec",
-  "hooks",
-  "hud",
-  "state",
-  "wiki",
-  "ralph",
-  "resume",
-  "session",
-  "sparkshell",
-  "team",
-  "tmux-hook",
-]);
+const NESTED_HELP_COMMANDS = new Set<CliCommand>(TOP_LEVEL_LOCAL_HELP_COMMANDS);
 
 export interface ResolvedCliInvocation {
   command: CliCommand;
@@ -635,35 +543,7 @@ export function buildHudPaneCleanupTargets(
 }
 
 export async function main(args: string[]): Promise<void> {
-  const knownCommands = new Set([
-    "launch",
-    "exec",
-    "setup",
-    "agents",
-    "agents-init",
-    "deepinit",
-    "uninstall",
-    "doctor",
-    "cleanup",
-    "ask",
-    "autoresearch",
-    "explore",
-    "sparkshell",
-    "team",
-    "ralph",
-    "session",
-    "resume",
-    "version",
-    "tmux-hook",
-    "hooks",
-    "hud",
-    "state",
-    "status",
-    "cancel",
-    "help",
-    "--help",
-    "-h",
-  ]);
+  const knownCommands = new Set([...TOP_LEVEL_COMMAND_NAMES, "--help", "-h"]);
   const firstArg = args[0];
   const { command, launchArgs } = resolveCliInvocation(args);
   const flags = new Set(args.filter((a) => a.startsWith("--")));
@@ -732,6 +612,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "explore":
         await exploreCommand(args.slice(1));
+        break;
+      case "completion":
+        await completionCommand(args.slice(1));
         break;
       case "exec":
         await execWithOverlay(launchArgs);
