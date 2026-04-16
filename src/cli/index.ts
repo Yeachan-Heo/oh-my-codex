@@ -1633,9 +1633,7 @@ function buildDetachedSessionLeaderCommand(
     "exit $status;",
     "};",
     "trap omx_detached_session_cleanup 0 INT TERM HUP;",
-    `${codexCmd} &`,
-    "omx_codex_pid=$!;",
-    'wait "$omx_codex_pid";',
+    `${codexCmd};`,
   ].join(" ");
   return `/bin/sh -c ${quoteShellArg(wrapped)}`;
 }
