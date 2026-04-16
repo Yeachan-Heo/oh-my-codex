@@ -1,5 +1,8 @@
-import { execFileSync } from 'node:child_process';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import {
+  createDuplicateCoordinator,
+  type DuplicateCoordinator,
+} from './duplicate-coordination.js';
 
 export type McpServerName = 'state' | 'memory' | 'code_intel' | 'trace' | 'wiki';
 
@@ -14,162 +17,10 @@ const SERVER_DISABLE_ENV: Record<McpServerName, string> = {
 const GLOBAL_DISABLE_ENV = 'OMX_MCP_SERVER_DISABLE_AUTO_START';
 const LIFECYCLE_DEBUG_ENV = 'OMX_MCP_TRANSPORT_DEBUG';
 const PARENT_WATCHDOG_INTERVAL_MS = 25;
-const DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS = 5_000;
-const DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS = 2_000;
-const MCP_ENTRYPOINT_PATTERN = /\b([a-z0-9-]+-server\.(?:[cm]?js|ts))\b/i;
 
 interface StdioLifecycleServer {
   connect(transport: StdioServerTransport): Promise<unknown>;
   close(): Promise<unknown>;
-}
-
-export interface ProcessTableEntry {
-  pid: number;
-  ppid: number;
-  command: string;
-}
-
-export interface DuplicateSiblingObservation {
-  status: 'ambiguous' | 'unique' | 'newest' | 'older_duplicate';
-  entrypoint: string | null;
-  matchingPids: number[];
-  newerSiblingPids: number[];
-}
-
-function normalizeCommand(command: string): string {
-  return command.replace(/\\+/g, '/').trim();
-}
-
-export function extractMcpEntrypointMarker(command: string): string | null {
-  const match = normalizeCommand(command).match(MCP_ENTRYPOINT_PATTERN);
-  return match?.[1]?.toLowerCase() ?? null;
-}
-
-export function parseProcessTable(output: string): ProcessTableEntry[] {
-  return output
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const match = line.match(/^(\d+)\s+(\d+)\s+(.+)$/);
-      if (!match) return null;
-      const pid = Number.parseInt(match[1], 10);
-      const ppid = Number.parseInt(match[2], 10);
-      const command = match[3]?.trim();
-      if (!Number.isInteger(pid) || pid <= 0) return null;
-      if (!Number.isInteger(ppid) || ppid < 0) return null;
-      if (!command) return null;
-      return { pid, ppid, command } satisfies ProcessTableEntry;
-    })
-    .filter((entry): entry is ProcessTableEntry => entry !== null);
-}
-
-export function listProcessTable(
-  readPs: typeof execFileSync = execFileSync,
-): ProcessTableEntry[] | null {
-  if (process.platform === 'win32') {
-    return null;
-  }
-
-  try {
-    const output = readPs('ps', ['axww', '-o', 'pid=,ppid=,command='], {
-      encoding: 'utf-8',
-      windowsHide: true,
-    });
-    return parseProcessTable(output);
-  } catch {
-    return null;
-  }
-}
-
-export function analyzeDuplicateSiblingState(
-  processes: readonly ProcessTableEntry[],
-  currentPid: number,
-  currentParentPid: number,
-  currentEntrypoint: string | null,
-): DuplicateSiblingObservation {
-  if (!currentEntrypoint || !Number.isInteger(currentPid) || currentPid <= 0) {
-    return {
-      status: 'ambiguous',
-      entrypoint: currentEntrypoint,
-      matchingPids: [],
-      newerSiblingPids: [],
-    };
-  }
-
-  const self = processes.find((entry) => entry.pid === currentPid);
-  if (!self || self.ppid !== currentParentPid) {
-    return {
-      status: 'ambiguous',
-      entrypoint: currentEntrypoint,
-      matchingPids: [],
-      newerSiblingPids: [],
-    };
-  }
-
-  const selfMarker = extractMcpEntrypointMarker(self.command);
-  if (selfMarker !== currentEntrypoint) {
-    return {
-      status: 'ambiguous',
-      entrypoint: currentEntrypoint,
-      matchingPids: [],
-      newerSiblingPids: [],
-    };
-  }
-
-  const matching = processes
-    .filter((entry) => entry.ppid === currentParentPid)
-    .filter((entry) => extractMcpEntrypointMarker(entry.command) === currentEntrypoint)
-    .sort((left, right) => left.pid - right.pid);
-
-  if (!matching.some((entry) => entry.pid === currentPid)) {
-    return {
-      status: 'ambiguous',
-      entrypoint: currentEntrypoint,
-      matchingPids: matching.map((entry) => entry.pid),
-      newerSiblingPids: [],
-    };
-  }
-
-  if (matching.length <= 1) {
-    return {
-      status: 'unique',
-      entrypoint: currentEntrypoint,
-      matchingPids: matching.map((entry) => entry.pid),
-      newerSiblingPids: [],
-    };
-  }
-
-  const newerSiblingPids = matching
-    .filter((entry) => entry.pid > currentPid)
-    .map((entry) => entry.pid);
-
-  return {
-    status: newerSiblingPids.length > 0 ? 'older_duplicate' : 'newest',
-    entrypoint: currentEntrypoint,
-    matchingPids: matching.map((entry) => entry.pid),
-    newerSiblingPids,
-  };
-}
-
-export function shouldSelfExitForDuplicateSibling(
-  observation: DuplicateSiblingObservation,
-  nowMs: number,
-  duplicateObservedAtMs: number | null,
-  lastTrafficAtMs: number | null,
-  preTrafficGraceMs = DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS,
-): boolean {
-  if (observation.status !== 'older_duplicate') {
-    return false;
-  }
-  if (!Number.isFinite(nowMs) || duplicateObservedAtMs === null || duplicateObservedAtMs > nowMs) {
-    return false;
-  }
-
-  if (lastTrafficAtMs === null) {
-    return nowMs - duplicateObservedAtMs >= preTrafficGraceMs;
-  }
-  return false;
 }
 
 export function isParentProcessAlive(
@@ -208,60 +59,15 @@ export function autoStartStdioMcpServer(
 
   const transport = new StdioServerTransport();
   let shuttingDown = false;
+  let duplicateCoordinator: DuplicateCoordinator | null = null;
   const lifecycleDebugEnabled = env[LIFECYCLE_DEBUG_ENV] === '1';
   const trackedParentPid = Number.isInteger(process.ppid) ? process.ppid : 0;
-  const trackedEntrypoint = extractMcpEntrypointMarker(process.argv[1] ?? '');
-  let lastTrafficAtMs: number | null = null;
-  let duplicateObservedAtMs: number | null = null;
 
   const logLifecycle = (message: string, error?: unknown) => {
     if (!lifecycleDebugEnabled) return;
     const detail = error ? ` ${error instanceof Error ? error.message : String(error)}` : '';
     process.stderr.write(`[omx-${serverName}-server] ${message}${detail}\n`);
   };
-
-  const parentWatchdog = trackedParentPid > 1
-    ? setInterval(() => {
-      if (!isParentProcessAlive(trackedParentPid)) {
-        void shutdown('parent_gone');
-      }
-    }, PARENT_WATCHDOG_INTERVAL_MS)
-    : null;
-  parentWatchdog?.unref();
-  const duplicateSiblingWatchdog = trackedParentPid > 1 && trackedEntrypoint
-    ? setInterval(() => {
-      const processes = listProcessTable();
-      if (!processes) {
-        duplicateObservedAtMs = null;
-        return;
-      }
-
-      const observation = analyzeDuplicateSiblingState(
-        processes,
-        process.pid,
-        trackedParentPid,
-        trackedEntrypoint,
-      );
-
-      if (observation.status !== 'older_duplicate') {
-        duplicateObservedAtMs = null;
-        return;
-      }
-
-      duplicateObservedAtMs ??= Date.now();
-      if (!shouldSelfExitForDuplicateSibling(
-        observation,
-        Date.now(),
-        duplicateObservedAtMs,
-        lastTrafficAtMs,
-      )) {
-        return;
-      }
-
-      void shutdown('superseded_duplicate_before_traffic');
-    }, DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS)
-    : null;
-  duplicateSiblingWatchdog?.unref();
 
   const shutdown = async (reason: string) => {
     if (shuttingDown) {
@@ -272,14 +78,17 @@ export function autoStartStdioMcpServer(
     if (parentWatchdog) {
       clearInterval(parentWatchdog);
     }
-    if (duplicateSiblingWatchdog) {
-      clearInterval(duplicateSiblingWatchdog);
-    }
-    process.stdin.off('data', handleStdinData);
+    process.stdin.off('data', handleFirstTraffic);
     process.stdin.off('end', handleStdinEnd);
     process.stdin.off('close', handleStdinClose);
     process.off('SIGTERM', handleSigterm);
     process.off('SIGINT', handleSigint);
+
+    try {
+      await duplicateCoordinator?.dispose();
+    } catch (error) {
+      logLifecycle('duplicate coordination dispose failed', error);
+    }
 
     try {
       await server.close();
@@ -291,14 +100,47 @@ export function autoStartStdioMcpServer(
     process.exit(0);
   };
 
+  const parentWatchdog = trackedParentPid > 1
+    ? setInterval(() => {
+      if (!isParentProcessAlive(trackedParentPid)) {
+        void shutdown('parent_gone');
+      }
+    }, PARENT_WATCHDOG_INTERVAL_MS)
+    : null;
+  parentWatchdog?.unref();
+
+  const duplicateCoordinatorPromise = createDuplicateCoordinator({
+    parentPid: trackedParentPid,
+    selfPid: process.pid,
+    serverName,
+    lifecycleDebugEnabled,
+    shutdown,
+  }).then(async (coordinator) => {
+    if (shuttingDown) {
+      await coordinator.dispose();
+      return coordinator;
+    }
+    duplicateCoordinator = coordinator;
+    return coordinator;
+  }).catch((error) => {
+    logLifecycle('duplicate coordination setup failed', error);
+    return null;
+  });
+
   const handleStdinEnd = () => {
     void shutdown('stdin_end');
   };
   const handleStdinClose = () => {
     void shutdown('stdin_close');
   };
-  const handleStdinData = () => {
-    lastTrafficAtMs = Date.now();
+  const handleFirstTraffic = () => {
+    // Duplicate reconciliation must stay off the message hot path. We only react to the
+    // first stdin chunk, then hand coordination off to a one-shot owner claim.
+    void duplicateCoordinatorPromise
+      .then((coordinator) => coordinator?.markFirstTraffic())
+      .catch((error) => {
+        logLifecycle('duplicate coordination first-traffic hook failed', error);
+      });
   };
   const handleSigterm = () => {
     void shutdown('sigterm');
@@ -307,7 +149,7 @@ export function autoStartStdioMcpServer(
     void shutdown('sigint');
   };
 
-  process.stdin.on('data', handleStdinData);
+  process.stdin.once('data', handleFirstTraffic);
   process.stdin.once('end', handleStdinEnd);
   process.stdin.once('close', handleStdinClose);
   process.once('SIGTERM', handleSigterm);
@@ -320,7 +162,7 @@ export function autoStartStdioMcpServer(
 
   server.connect(transport).catch((error) => {
     logLifecycle('server.connect failed', error);
-    process.stdin.off('data', handleStdinData);
+    process.stdin.off('data', handleFirstTraffic);
     process.stdin.off('end', handleStdinEnd);
     process.stdin.off('close', handleStdinClose);
     process.off('SIGTERM', handleSigterm);

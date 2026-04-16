@@ -3,12 +3,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
-  analyzeDuplicateSiblingState,
-  extractMcpEntrypointMarker,
   isParentProcessAlive,
-  parseProcessTable,
   shouldAutoStartMcpServer,
-  shouldSelfExitForDuplicateSibling,
   type McpServerName,
 } from '../bootstrap.js';
 
@@ -98,8 +94,12 @@ describe('mcp shared stdio lifecycle contract', () => {
     assert.match(src, /process\.exit\(0\)/, 'bootstrap should force child exit after shutdown completes');
     assert.match(src, /SIGTERM/, 'bootstrap should handle SIGTERM');
     assert.match(src, /SIGINT/, 'bootstrap should handle SIGINT');
-    assert.match(src, /analyzeDuplicateSiblingState/, 'bootstrap should keep duplicate sibling detection in the shared layer');
-    assert.match(src, /shouldSelfExitForDuplicateSibling/, 'bootstrap should gate self-exit conservatively in the shared layer');
+    assert.match(src, /createDuplicateCoordinator/, 'bootstrap should keep duplicate coordination in the shared layer');
+    assert.match(src, /once\(['"]data['"],\s*handleFirstTraffic\)/, 'bootstrap should treat first traffic as a one-shot event');
+    assert.doesNotMatch(src, /ps axww -o pid=,ppid=,command=/, 'bootstrap must not shell out to ps in the hot path');
+    assert.doesNotMatch(src, /listProcessTable\(/, 'bootstrap must not call process-table scanners');
+    assert.doesNotMatch(src, /execFileSync\(/, 'bootstrap must not import or call execFileSync for duplicate coordination');
+    assert.doesNotMatch(src, /DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS/, 'bootstrap must not keep duplicate polling intervals');
   });
 
   it('keeps individual server entrypoints free of duplicated raw stdio connect snippets', async () => {
@@ -122,119 +122,5 @@ describe('mcp shared stdio lifecycle contract', () => {
         `${file} should not duplicate raw server.connect(transport) bootstrap`,
       );
     }
-  });
-});
-
-describe('mcp duplicate sibling detection', () => {
-  it('extracts same-entrypoint markers from command lines', () => {
-    assert.equal(
-      extractMcpEntrypointMarker('node /tmp/oh-my-codex/dist/mcp/state-server.js'),
-      'state-server.js',
-    );
-    assert.equal(
-      extractMcpEntrypointMarker('node C:\\\\tmp\\\\oh-my-codex\\\\dist\\\\mcp\\\\trace-server.ts'),
-      'trace-server.ts',
-    );
-    assert.equal(extractMcpEntrypointMarker('node something-else.js'), null);
-  });
-
-  it('parses ps output into process table entries', () => {
-    assert.deepEqual(
-      parseProcessTable('101 55 node /tmp/dist/mcp/state-server.js\n'),
-      [{ pid: 101, ppid: 55, command: 'node /tmp/dist/mcp/state-server.js' }],
-    );
-  });
-
-  it('treats a single instance as unique and no-op', () => {
-    const observation = analyzeDuplicateSiblingState(
-      [{ pid: 101, ppid: 55, command: 'node /tmp/dist/mcp/state-server.js' }],
-      101,
-      55,
-      'state-server.js',
-    );
-
-    assert.equal(observation.status, 'unique');
-    assert.deepEqual(observation.matchingPids, [101]);
-    assert.equal(
-      shouldSelfExitForDuplicateSibling(observation, 10_000, 9_000, null),
-      false,
-    );
-  });
-
-  it('prefers the newest same-parent same-entrypoint process as survivor', () => {
-    const processes = [
-      { pid: 101, ppid: 55, command: 'node /tmp/dist/mcp/state-server.js' },
-      { pid: 140, ppid: 55, command: 'node /tmp/dist/mcp/state-server.js' },
-      { pid: 160, ppid: 55, command: 'node /tmp/dist/mcp/memory-server.js' },
-    ];
-
-    const older = analyzeDuplicateSiblingState(processes, 101, 55, 'state-server.js');
-    const newest = analyzeDuplicateSiblingState(processes, 140, 55, 'state-server.js');
-
-    assert.equal(older.status, 'older_duplicate');
-    assert.deepEqual(older.newerSiblingPids, [140]);
-    assert.equal(newest.status, 'newest');
-    assert.deepEqual(newest.newerSiblingPids, []);
-  });
-
-  it('only lets older duplicates self-exit after the conservative grace window before traffic', () => {
-    const observation = {
-      status: 'older_duplicate' as const,
-      entrypoint: 'state-server.js',
-      matchingPids: [101, 140],
-      newerSiblingPids: [140],
-    };
-
-    assert.equal(
-      shouldSelfExitForDuplicateSibling(observation, 10_500, 9_000, null),
-      false,
-    );
-    assert.equal(
-      shouldSelfExitForDuplicateSibling(observation, 11_100, 9_000, null),
-      true,
-    );
-  });
-
-  it('does not self-exit after traffic until the duplicate has remained safely idle long enough', () => {
-    const observation = {
-      status: 'older_duplicate' as const,
-      entrypoint: 'state-server.js',
-      matchingPids: [101, 140],
-      newerSiblingPids: [140],
-    };
-
-    assert.equal(
-      shouldSelfExitForDuplicateSibling(observation, 35_000, 1_000, 10_000),
-      false,
-    );
-    assert.equal(
-      shouldSelfExitForDuplicateSibling(observation, 40_500, 1_000, 10_000),
-      false,
-    );
-  });
-
-  it('treats ambiguous duplicate state as no-op', () => {
-    const missingSelf = analyzeDuplicateSiblingState(
-      [{ pid: 140, ppid: 55, command: 'node /tmp/dist/mcp/state-server.js' }],
-      101,
-      55,
-      'state-server.js',
-    );
-    const mismatchedSelfMarker = analyzeDuplicateSiblingState(
-      [
-        { pid: 101, ppid: 55, command: 'node /tmp/dist/mcp/memory-server.js' },
-        { pid: 140, ppid: 55, command: 'node /tmp/dist/mcp/state-server.js' },
-      ],
-      101,
-      55,
-      'state-server.js',
-    );
-
-    assert.equal(missingSelf.status, 'ambiguous');
-    assert.equal(mismatchedSelfMarker.status, 'ambiguous');
-    assert.equal(
-      shouldSelfExitForDuplicateSibling(missingSelf, 50_000, 10_000, null),
-      false,
-    );
   });
 });
