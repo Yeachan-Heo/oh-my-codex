@@ -162,6 +162,36 @@ describe('leader runtime activity', () => {
     }
   });
 
+  it('reuses cached git activity within one process to avoid repeated shell-outs', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-leader-activity-cache-'));
+    const originalPath = process.env.PATH;
+    try {
+      execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd, stdio: 'ignore' });
+      await writeFile(join(cwd, 'README.md'), 'hello\n', 'utf-8');
+      execFileSync('git', ['add', 'README.md'], { cwd, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd, stdio: 'ignore' });
+
+      const stateDir = join(cwd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+
+      const first = await readLatestLeaderActivityMsFromStateDir(stateDir);
+      assert.equal(Number.isFinite(first), true);
+
+      process.env.PATH = '/definitely-missing-for-omx-test';
+      const second = await readLatestLeaderActivityMsFromStateDir(stateDir);
+      assert.equal(second, first);
+    } finally {
+      if (originalPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = originalPath;
+      }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('treats worktree .git file pointers as recent branch activity on Windows', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-leader-activity-worktree-'));
     try {

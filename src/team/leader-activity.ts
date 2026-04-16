@@ -5,6 +5,10 @@ import { dirname, join, posix, resolve, win32 } from 'node:path';
 import { omxStateDir } from '../utils/paths.js';
 import { findGitLayout, readGitLayoutFile } from '../utils/git-layout.js';
 
+const MIN_GIT_ACTIVITY_CACHE_TTL_MS = 1000;
+const MAX_GIT_ACTIVITY_CACHE_TTL_MS = 5000;
+const gitActivityCache = new Map<string, { value: number; expiresAt: number }>();
+
 interface LeaderRuntimeActivityDoc {
   last_activity_at?: string;
   last_team_status_at?: string;
@@ -145,6 +149,36 @@ async function readLeaderBranchGitActivityMs(stateDir: string): Promise<number> 
   return await readBranchGitActivityMsForPath(stateDirToProjectRoot(stateDir));
 }
 
+function resolveLeaderGitActivityCacheTtlMs(thresholdMs: number): number {
+  if (!Number.isFinite(thresholdMs) || thresholdMs <= 0) {
+    return MAX_GIT_ACTIVITY_CACHE_TTL_MS;
+  }
+
+  return Math.max(
+    MIN_GIT_ACTIVITY_CACHE_TTL_MS,
+    Math.min(MAX_GIT_ACTIVITY_CACHE_TTL_MS, Math.floor(thresholdMs / 4)),
+  );
+}
+
+async function readLeaderBranchGitActivityMsCached(
+  stateDir: string,
+  thresholdMs: number,
+  nowMs: number,
+): Promise<number> {
+  const cacheKey = stateDirToProjectRoot(stateDir);
+  const cached = gitActivityCache.get(cacheKey);
+  if (cached && cached.expiresAt > nowMs) {
+    return cached.value;
+  }
+
+  const value = await readLeaderBranchGitActivityMs(stateDir);
+  gitActivityCache.set(cacheKey, {
+    value,
+    expiresAt: nowMs + resolveLeaderGitActivityCacheTtlMs(thresholdMs),
+  });
+  return value;
+}
+
 export function leaderRuntimeActivityPath(cwd: string): string {
   return join(omxStateDir(cwd), 'leader-runtime-activity.json');
 }
@@ -183,7 +217,7 @@ export async function readLeaderRuntimeSignalStatuses(
   const [hudState, leaderActivity, leaderGitActivityMs] = await Promise.all([
     existsSync(hudPath) ? readJsonIfExists(hudPath) : Promise.resolve(null),
     existsSync(leaderActivityPath) ? readJsonIfExists(leaderActivityPath) : Promise.resolve(null),
-    readLeaderBranchGitActivityMs(stateDir),
+    readLeaderBranchGitActivityMsCached(stateDir, thresholdMs, nowMs),
   ]);
 
   const signals: Array<{ source: LeaderRuntimeSignalStatus['source']; at: unknown; ms?: number }> = [
