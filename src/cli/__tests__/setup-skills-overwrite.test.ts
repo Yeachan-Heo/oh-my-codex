@@ -17,8 +17,59 @@ describe('omx setup skills overwrite behavior', () => {
       await setup({ scope: 'project' });
 
       const wikiSkill = join(wd, '.codex', 'skills', 'wiki', 'SKILL.md');
+      const provenanceManifestPath = join(
+        wd,
+        '.codex',
+        'skills',
+        '.system',
+        'omx-installed-skills.json',
+      );
       assert.equal(existsSync(wikiSkill), true);
-      assert.match(await readFile(wikiSkill, 'utf-8'), /^---\nname: wiki/m);
+      const manifest = JSON.parse(await readFile(provenanceManifestPath, 'utf-8')) as {
+        skills: Record<string, { origin: string; source: string }>;
+      };
+      assert.deepEqual(manifest.skills.wiki, {
+        origin: 'omx',
+        source: 'repo-shipped',
+      });
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('records shipped OMX skills in a provenance manifest without changing installed or shipped skill metadata', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-'));
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+
+      await setup({ scope: 'project' });
+
+      const installedHelpSkill = join(wd, '.codex', 'skills', 'help', 'SKILL.md');
+      const shippedHelpSkill = join(previousCwd, 'skills', 'help', 'SKILL.md');
+      const provenanceManifestPath = join(
+        wd,
+        '.codex',
+        'skills',
+        '.system',
+        'omx-installed-skills.json',
+      );
+      const manifest = JSON.parse(await readFile(provenanceManifestPath, 'utf-8')) as {
+        schema_version: number;
+        generated_at: string;
+        skills: Record<string, { origin: string; source: string }>;
+      };
+
+      assert.equal(manifest.schema_version, 1);
+      assert.equal(typeof manifest.generated_at, 'string');
+      assert.deepEqual(manifest.skills.help, {
+        origin: 'omx',
+        source: 'repo-shipped',
+      });
+      assert.match(await readFile(installedHelpSkill, 'utf-8'), /^name: help$/m);
+      assert.match(await readFile(shippedHelpSkill, 'utf-8'), /^name: help$/m);
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
@@ -184,9 +235,23 @@ describe('omx setup skills overwrite behavior', () => {
 
       await setup({ scope: 'project' });
       assert.equal(await readFile(customSkillPath, 'utf-8'), '---\nname: my-custom-skill\ndescription: local custom skill\n---\n');
+      const manifestAfterInstall = JSON.parse(
+        await readFile(
+          join(wd, '.codex', 'skills', '.system', 'omx-installed-skills.json'),
+          'utf-8',
+        ),
+      ) as { skills: Record<string, unknown> };
+      assert.equal('my-custom-skill' in manifestAfterInstall.skills, false);
 
       await setup({ scope: 'project', force: true });
       assert.equal(await readFile(customSkillPath, 'utf-8'), '---\nname: my-custom-skill\ndescription: local custom skill\n---\n');
+      const manifestAfterForce = JSON.parse(
+        await readFile(
+          join(wd, '.codex', 'skills', '.system', 'omx-installed-skills.json'),
+          'utf-8',
+        ),
+      ) as { skills: Record<string, unknown> };
+      assert.equal('my-custom-skill' in manifestAfterForce.skills, false);
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });

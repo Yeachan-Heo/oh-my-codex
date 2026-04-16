@@ -27,6 +27,7 @@ import {
   detectLegacySkillRootOverlap,
   omxPlansDir,
   omxLogsDir,
+  omxInstalledSkillsManifestPath,
 } from "../utils/paths.js";
 import {
   buildMergedConfig,
@@ -339,6 +340,71 @@ export function parseSkillFrontmatter(
 export async function validateSkillFile(skillMdPath: string): Promise<void> {
   const content = await readFile(skillMdPath, "utf-8");
   parseSkillFrontmatter(content, skillMdPath);
+}
+
+interface InstalledOmxSkillsManifestMetadata {
+  schema_version: 1;
+  generated_at: string;
+  skills: Record<
+    string,
+    {
+      origin: "omx";
+      source: "repo-shipped";
+    }
+  >;
+}
+
+function tryParseInstalledOmxSkillsManifest(
+  content: string,
+): InstalledOmxSkillsManifestMetadata | null {
+  try {
+    const parsed = JSON.parse(content) as Partial<InstalledOmxSkillsManifestMetadata>;
+    if (
+      parsed?.schema_version !== 1 ||
+      typeof parsed.generated_at !== "string" ||
+      parsed.skills == null ||
+      typeof parsed.skills !== "object"
+    ) {
+      return null;
+    }
+    return parsed as InstalledOmxSkillsManifestMetadata;
+  } catch {
+    return null;
+  }
+}
+
+function buildInstalledOmxSkillsManifest(
+  skillNames: readonly string[],
+  existingContent?: string,
+): string {
+  const skills = Object.fromEntries(
+    [...new Set(skillNames)]
+      .sort((left, right) => left.localeCompare(right))
+      .map((skillName) => [
+        skillName,
+        {
+          origin: "omx" as const,
+          source: "repo-shipped" as const,
+        },
+      ]),
+  );
+  const existingManifest = existingContent
+    ? tryParseInstalledOmxSkillsManifest(existingContent)
+    : null;
+  const generatedAt =
+    existingManifest &&
+      JSON.stringify(existingManifest.skills) === JSON.stringify(skills)
+      ? existingManifest.generated_at
+      : new Date().toISOString();
+  return JSON.stringify(
+    {
+      schema_version: 1 as const,
+      generated_at: generatedAt,
+      skills,
+    },
+    null,
+    2,
+  ) + "\n";
 }
 
 async function buildLegacySkillOverlapNotice(
@@ -1530,6 +1596,17 @@ export async function installSkills(
       const sfStat = await stat(sfPath);
       if (!sfStat.isFile()) continue;
       const dstPath = join(skillDst, sf);
+      if (sf === "SKILL.md") {
+        await syncManagedContent(
+          await readFile(sfPath, "utf-8"),
+          dstPath,
+          summary,
+          backupContext,
+          options,
+          `skill ${skillName}/${sf}`,
+        );
+        continue;
+      }
       await syncManagedFileFromDisk(
         sfPath,
         dstPath,
@@ -1540,6 +1617,23 @@ export async function installSkills(
       );
     }
   }
+
+  const omxSkillsManifestPath = omxInstalledSkillsManifestPath(dstDir);
+  const existingManifestContent = existsSync(omxSkillsManifestPath)
+    ? await readFile(omxSkillsManifestPath, "utf-8")
+    : undefined;
+
+  await syncManagedContent(
+    buildInstalledOmxSkillsManifest(
+      installableSkills.map((skill) => skill.name),
+      existingManifestContent,
+    ),
+    omxSkillsManifestPath,
+    summary,
+    backupContext,
+    options,
+    "skill provenance manifest",
+  );
 
   if (options.force && manifest && existsSync(dstDir)) {
     for (const staleSkill of staleCandidateSkillNames) {

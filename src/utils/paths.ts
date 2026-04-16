@@ -145,11 +145,25 @@ export function legacyUserSkillsDir(): string {
 }
 
 export type InstalledSkillScope = "project" | "user";
+export type InstalledSkillOrigin = "omx" | "user" | "project" | "unknown";
+
+export interface InstalledOmxSkillsManifest {
+  schema_version: 1;
+  generated_at: string;
+  skills: Record<
+    string,
+    {
+      origin: "omx";
+      source: "repo-shipped";
+    }
+  >;
+}
 
 export interface InstalledSkillDirectory {
   name: string;
   path: string;
   scope: InstalledSkillScope;
+  origin: InstalledSkillOrigin;
 }
 
 export interface SkillRootOverlapReport {
@@ -166,9 +180,58 @@ export interface SkillRootOverlapReport {
   mismatchedSkillNames: string[];
 }
 
+export function omxInstalledSkillsSystemDir(skillsRoot: string): string {
+  return join(skillsRoot, ".system");
+}
+
+export function omxInstalledSkillsManifestPath(skillsRoot: string): string {
+  return join(omxInstalledSkillsSystemDir(skillsRoot), "omx-installed-skills.json");
+}
+
+async function readInstalledOmxSkillsManifest(
+  skillsRoot: string,
+): Promise<InstalledOmxSkillsManifest | null> {
+  const manifestPath = omxInstalledSkillsManifestPath(skillsRoot);
+  if (!existsSync(manifestPath)) return null;
+
+  try {
+    const parsed = JSON.parse(
+      await readFile(manifestPath, "utf-8"),
+    ) as Partial<InstalledOmxSkillsManifest>;
+    if (
+      parsed?.schema_version !== 1 ||
+      parsed.generated_at == null ||
+      parsed.skills == null ||
+      typeof parsed.skills !== "object"
+    ) {
+      return null;
+    }
+    return parsed as InstalledOmxSkillsManifest;
+  } catch {
+    return null;
+  }
+}
+
+function classifyInstalledSkillOrigin(
+  skillName: string,
+  scope: InstalledSkillScope,
+  omxSkillNames: ReadonlySet<string>,
+): InstalledSkillOrigin {
+  if (omxSkillNames.has(skillName)) return "omx";
+  switch (scope) {
+    case "project":
+      return "project";
+    case "user":
+      return "user";
+    default:
+      return "unknown";
+  }
+}
+
 async function readInstalledSkillsFromDir(
   dir: string,
   scope: InstalledSkillScope,
+  omxSkillNames: ReadonlySet<string> = new Set<string>(),
 ): Promise<InstalledSkillDirectory[]> {
   if (!existsSync(dir)) return [];
 
@@ -179,6 +242,7 @@ async function readInstalledSkillsFromDir(
       name: entry.name,
       path: join(dir, entry.name),
       scope,
+      origin: classifyInstalledSkillOrigin(entry.name, scope, omxSkillNames),
     }))
     .filter((entry) => existsSync(join(entry.path, "SKILL.md")))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -200,7 +264,9 @@ export async function listInstalledSkillDirectories(
   const seenNames = new Set<string>();
 
   for (const { dir, scope } of orderedDirs) {
-    const skills = await readInstalledSkillsFromDir(dir, scope);
+    const manifest = await readInstalledOmxSkillsManifest(dir);
+    const omxSkillNames = new Set(Object.keys(manifest?.skills ?? {}));
+    const skills = await readInstalledSkillsFromDir(dir, scope, omxSkillNames);
     for (const skill of skills) {
       if (seenNames.has(skill.name)) continue;
       seenNames.add(skill.name);
