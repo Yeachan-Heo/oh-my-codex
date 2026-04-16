@@ -105,6 +105,7 @@ import {
   splitWorkerLaunchArgs,
   resolveAgentDefaultModel,
   resolveAgentReasoningEffort,
+  resolveWorkerRuntimeProfile,
   type TeamReasoningEffort,
 } from './model-contract.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
@@ -1510,27 +1511,29 @@ export async function startTeam(
       const workerRole = taskRoles.length > 0 && uniqueTaskRoles.size === 1
         ? taskRoles[0]
         : agentType;
-      const rolePromptContent = await loadRolePrompt(workerRole, join(leaderCwd, '.codex', 'prompts'))
-        ?? await loadRolePrompt(workerRole, codexPromptsDir());
+      const runtimeProfile = resolveWorkerRuntimeProfile(workerTasks, workerRole);
+      const runtimeRole = runtimeProfile.runtimeRole;
+      const rolePromptContent = await loadRolePrompt(runtimeRole, join(leaderCwd, '.codex', 'prompts'))
+        ?? await loadRolePrompt(runtimeRole, codexPromptsDir());
       const workerWorktreePath = workerWorkspace.worktreePath ?? undefined;
       const fallbackInstructionsPath = workerInstructionsPath ?? join(leaderCwd, 'AGENTS.md');
       const instructionsFilePath = workerWorktreePath
         ? await writeWorkerWorktreeRootAgentsFile({
           teamName: sanitized,
           workerName,
-          workerRole,
+          workerRole: runtimeRole,
           rolePromptContent: rolePromptContent ?? "",
           teamStateRoot,
           leaderCwd,
           worktreePath: workerWorktreePath,
         })
         : rolePromptContent
-          ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, fallbackInstructionsPath, workerRole, rolePromptContent)
+          ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, fallbackInstructionsPath, runtimeRole, rolePromptContent)
           : fallbackInstructionsPath;
       const inbox = generateInitialInbox(workerName, sanitized, agentType, workerTasks, {
         teamStateRoot,
         leaderCwd,
-        workerRole,
+        workerRole: runtimeRole,
         rolePromptContent: rolePromptContent ?? undefined,
         worktreeRootAgentsCanonical: Boolean(workerWorkspace.worktreePath),
       });
@@ -1539,10 +1542,11 @@ export async function startTeam(
         sanitized,
         resolveInstructionStateRoot(workerWorkspace.worktreePath),
       );
-      const preferredReasoning = resolveAgentReasoningEffort(workerRole) ?? resolveAgentReasoningEffort(agentType);
+      const preferredReasoning = runtimeProfile.preferredReasoning
+        ?? resolveAgentReasoningEffort(agentType);
       const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(
         process.env,
-        workerRole,
+        runtimeRole,
         undefined,
         preferredReasoning,
         workerCliPlan[i - 1],

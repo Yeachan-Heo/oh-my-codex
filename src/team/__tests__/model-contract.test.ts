@@ -10,6 +10,7 @@ import {
   resolveTaskDefaultModel,
   resolveTaskModelTier,
   resolveTeamWorkerLaunchArgs,
+  resolveWorkerRuntimeProfile,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
   resolveTeamLowComplexityDefaultModel,
 } from '../model-contract.js';
@@ -36,6 +37,18 @@ function executionWithTier(
   assigned_model_tier: TeamTaskExecutionMetadata['assigned_model_tier'],
 ): TeamTaskExecutionMetadata {
   return { assigned_model_tier };
+}
+
+function lightweightContract(): TeamTaskExecutionContract {
+  return {
+    complexity: 'low',
+    delegation_mode: 'direct_only',
+    preferred_model_tier: 'low',
+    done_definition: ['ship'],
+    allowed_edit_scope: ['src/team/runtime.ts'],
+    verification_mode: 'light',
+    report_format: 'structured_markdown',
+  };
 }
 
 describe('team model contract', () => {
@@ -137,6 +150,7 @@ describe('team model contract', () => {
 
   it('maps worker roles to explicit default model lanes', () => {
     assert.equal(resolveAgentDefaultModel('explore'), expectedLowComplexityModel());
+    assert.equal(resolveAgentDefaultModel('sisyphus-lite'), expectedLowComplexityModel());
     assert.equal(resolveAgentDefaultModel('writer'), 'gpt-5.4-mini');
     assert.equal(resolveAgentDefaultModel('executor'), 'gpt-5.4');
     assert.equal(resolveAgentDefaultModel('architect'), 'gpt-5.4');
@@ -190,6 +204,46 @@ describe('team model contract', () => {
     );
 
     assert.equal(resolveTaskDefaultModel(undefined, 'explore'), expectedLowComplexityModel());
+  });
+
+  it('switches low/direct low-tier workers onto sisyphus-lite runtime', () => {
+    assert.deepEqual(
+      resolveWorkerRuntimeProfile([
+        { execution_contract: lightweightContract() },
+      ], 'team-executor'),
+      {
+        runtimeRole: 'sisyphus-lite',
+        preferredReasoning: 'low',
+      },
+    );
+  });
+
+  it('keeps assigned runtime role for mixed or delegation-heavy work', () => {
+    assert.deepEqual(
+      resolveWorkerRuntimeProfile([
+        { execution_contract: lightweightContract() },
+        { execution_contract: contractWithTier('standard') },
+      ], 'team-executor'),
+      {
+        runtimeRole: 'team-executor',
+        preferredReasoning: 'medium',
+      },
+    );
+
+    assert.deepEqual(
+      resolveWorkerRuntimeProfile([
+        {
+          execution_contract: {
+            ...lightweightContract(),
+            delegation_mode: 'mini_preferred',
+          },
+        },
+      ], 'team-executor'),
+      {
+        runtimeRole: 'team-executor',
+        preferredReasoning: 'medium',
+      },
+    );
   });
 });
 

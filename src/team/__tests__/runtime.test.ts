@@ -230,6 +230,14 @@ describe('runtime', () => {
     assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-5.4']);
   });
 
+  it('resolveWorkerLaunchArgsFromEnv treats sisyphus-lite as a low-complexity runtime lane', () => {
+    const args = resolveWorkerLaunchArgsFromEnv(
+      { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
+      'sisyphus-lite',
+    );
+    assert.deepEqual(args, ['--no-alt-screen', '--model', expectedLowComplexityModel()]);
+  });
+
   it('resolveWorkerLaunchArgsFromEnv treats *-low aliases as low complexity', () => {
     const args = resolveWorkerLaunchArgsFromEnv(
       { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },

@@ -62,6 +62,7 @@ import {
   resolveTeamWorkerLaunchArgs,
   isLowComplexityAgentType,
   resolveAgentReasoningEffort,
+  resolveWorkerRuntimeProfile,
   resolveTeamLowComplexityDefaultModel,
   type TeamReasoningEffort,
 } from './model-contract.js';
@@ -323,7 +324,8 @@ export async function scaleUp(
       await mkdir(workerDirPath, { recursive: true });
 
       // Resolve per-worker role from assigned task roles before launch so reasoning effort can vary by teammate.
-      const workerTaskRoles = persistedTasks.filter(t => t.owner === workerName).map(t => t.role).filter(Boolean) as string[];
+      const workerTasks = persistedTasks.filter(t => t.owner === workerName);
+      const workerTaskRoles = workerTasks.map(t => t.role).filter(Boolean) as string[];
       const uniqueTaskRoles = new Set(workerTaskRoles);
       const workerRole = workerTaskRoles.length > 0 && uniqueTaskRoles.size === 1
         ? workerTaskRoles[0]
@@ -331,6 +333,8 @@ export async function scaleUp(
       if (uniqueTaskRoles.size > 1) {
         console.log(`[omx:scaling] ${workerName}: mixed task roles [${[...uniqueTaskRoles].join(', ')}], falling back to ${agentType}`);
       }
+      const runtimeProfile = resolveWorkerRuntimeProfile(workerTasks, workerRole);
+      const runtimeRole = runtimeProfile.runtimeRole;
 
       const worktreeMode = resolveScaleUpWorktreeMode(config);
       const workerWorkspaceResult = worktreeMode.enabled
@@ -346,21 +350,21 @@ export async function scaleUp(
       const workerCwd = workerWorkspace ? workerWorkspace.worktreePath : leaderCwd;
 
       // Build startup command and create tmux pane
-      const rolePromptContent = await loadRolePrompt(workerRole, join(leaderCwd, '.codex', 'prompts'))
-        ?? await loadRolePrompt(workerRole, codexPromptsDir());
+      const rolePromptContent = await loadRolePrompt(runtimeRole, join(leaderCwd, '.codex', 'prompts'))
+        ?? await loadRolePrompt(runtimeRole, codexPromptsDir());
       const teamInstructionsPath = join(leaderCwd, '.omx', 'state', 'team', sanitized, 'worker-agents.md');
       const instructionsFilePath = workerWorkspace
         ? await writeWorkerWorktreeRootAgentsFile({
             teamName: sanitized,
             workerName,
-            workerRole,
+            workerRole: runtimeRole,
             rolePromptContent: rolePromptContent ?? '',
             teamStateRoot,
             leaderCwd,
             worktreePath: workerWorkspace.worktreePath,
           })
         : rolePromptContent
-          ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, teamInstructionsPath, workerRole, rolePromptContent)
+          ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, teamInstructionsPath, runtimeRole, rolePromptContent)
           : teamInstructionsPath;
       const extraEnv: Record<string, string> = {
         OMX_TEAM_STATE_ROOT: teamStateRoot,
@@ -374,8 +378,9 @@ export async function scaleUp(
         }
         extraEnv.OMX_TEAM_WORKTREE_DETACHED = workerWorkspace.detached ? '1' : '0';
       }
-      const preferredReasoning = resolveAgentReasoningEffort(workerRole) ?? resolveAgentReasoningEffort(agentType);
-      const workerLaunchArgs = resolveWorkerLaunchArgsForScaling(env, agentType, preferredReasoning);
+      const preferredReasoning = runtimeProfile.preferredReasoning
+        ?? resolveAgentReasoningEffort(agentType);
+      const workerLaunchArgs = resolveWorkerLaunchArgsForScaling(env, runtimeRole, preferredReasoning);
       const cmd = buildWorkerStartupCommand(
         sanitized,
         workerIndex,
@@ -449,12 +454,10 @@ export async function scaleUp(
       }
 
       // Get assigned tasks for this worker
-      const workerTasks = persistedTasks.filter(t => t.owner === workerName);
-
       const inbox = generateInitialInbox(workerName, sanitized, agentType, workerTasks, {
         teamStateRoot,
         leaderCwd,
-        workerRole,
+        workerRole: runtimeRole,
         rolePromptContent: rolePromptContent ?? undefined,
         worktreeRootAgentsCanonical: Boolean(workerWorkspace?.worktreePath),
       });

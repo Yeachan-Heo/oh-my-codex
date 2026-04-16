@@ -39,6 +39,17 @@ const TEAM_EXECUTOR_AGENT: AgentDefinition = {
   category: 'build',
 };
 
+const SISYPHUS_LITE_AGENT: AgentDefinition = {
+  name: 'sisyphus-lite',
+  description: 'Lightweight bounded worker runtime for low-complexity team tasks',
+  reasoningEffort: 'low',
+  posture: 'fast-lane',
+  modelClass: 'fast',
+  routingRole: 'executor',
+  tools: 'execution',
+  category: 'build',
+};
+
 export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   // Build/Analysis Lane
   'explore': {
@@ -93,6 +104,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   },
   'executor': EXECUTOR_AGENT,
   'team-executor': TEAM_EXECUTOR_AGENT,
+  'sisyphus-lite': SISYPHUS_LITE_AGENT,
   'verifier': {
     name: 'verifier',
     description: 'Completion evidence, claim validation, test adequacy',

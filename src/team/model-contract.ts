@@ -5,7 +5,12 @@ import {
   getSparkDefaultModel,
   getStandardDefaultModel,
 } from '../config/models.js';
-import type { TeamTask, TeamTaskModelTier } from './state/types.js';
+import type {
+  TeamTask,
+  TeamTaskComplexity,
+  TeamTaskDelegationMode,
+  TeamTaskModelTier,
+} from './state/types.js';
 
 const MADMAX_FLAG = '--madmax';
 const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
@@ -17,6 +22,7 @@ const LOW_COMPLEXITY_AGENT_TYPES = new Set([
   'explore',
   'explorer',
   'style-reviewer',
+  'sisyphus-lite',
 ]);
 
 // Canonical default only; effective low-complexity resolution flows through resolveTeamLowComplexityDefaultModel().
@@ -36,6 +42,17 @@ export interface ResolveTeamWorkerLaunchArgsOptions {
   fallbackModel?: string;
   preferredReasoning?: TeamReasoningEffort;
 }
+
+export interface TeamWorkerRuntimeProfile {
+  runtimeRole: string;
+  preferredReasoning?: TeamReasoningEffort;
+}
+
+const LIGHTWEIGHT_WORKER_RUNTIME_ROLE = 'sisyphus-lite';
+const LIGHTWEIGHT_WORKER_ALLOWED_DELEGATION = new Set<TeamTaskDelegationMode>([
+  'direct_only',
+  'mini_allowed',
+]);
 
 function isReasoningOverride(value: string): boolean {
   return new RegExp(`^${REASONING_KEY}\\s*=`).test(value.trim());
@@ -212,6 +229,51 @@ export function resolveTaskModelTier(
 ): TeamTaskModelTier | undefined {
   return task?.execution?.assigned_model_tier
     ?? task?.execution_contract?.preferred_model_tier;
+}
+
+function resolveTaskComplexity(
+  task?: Pick<TeamTask, 'execution_contract' | 'execution'> | null,
+): TeamTaskComplexity | undefined {
+  return task?.execution?.observed_complexity
+    ?? task?.execution_contract?.complexity;
+}
+
+function resolveTaskDelegationMode(
+  task?: Pick<TeamTask, 'execution_contract' | 'execution'> | null,
+): TeamTaskDelegationMode | undefined {
+  return task?.execution?.observed_delegation_mode
+    ?? task?.execution_contract?.delegation_mode;
+}
+
+function isLightweightWorkerTask(
+  task?: Pick<TeamTask, 'execution_contract' | 'execution'> | null,
+): boolean {
+  return resolveTaskModelTier(task) === 'low'
+    && resolveTaskComplexity(task) === 'low'
+    && LIGHTWEIGHT_WORKER_ALLOWED_DELEGATION.has(
+      resolveTaskDelegationMode(task) ?? 'direct_only',
+    );
+}
+
+export function resolveWorkerRuntimeProfile(
+  tasks: ReadonlyArray<Pick<TeamTask, 'execution_contract' | 'execution'>>,
+  assignedRole: string,
+): TeamWorkerRuntimeProfile {
+  const normalizedAssignedRole = typeof assignedRole === 'string' && assignedRole.trim() !== ''
+    ? assignedRole.trim()
+    : 'executor';
+
+  if (tasks.length > 0 && tasks.every((task) => isLightweightWorkerTask(task))) {
+    return {
+      runtimeRole: LIGHTWEIGHT_WORKER_RUNTIME_ROLE,
+      preferredReasoning: resolveAgentReasoningEffort(LIGHTWEIGHT_WORKER_RUNTIME_ROLE),
+    };
+  }
+
+  return {
+    runtimeRole: normalizedAssignedRole,
+    preferredReasoning: resolveAgentReasoningEffort(normalizedAssignedRole),
+  };
 }
 
 export function resolveTaskDefaultModel(
