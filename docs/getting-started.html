@@ -32,7 +32,9 @@
       <h2>Installation</h2>
       <pre><code>npm install -g @openai/codex oh-my-codex
 omx setup
-omx doctor</code></pre>
+omx doctor
+codex login status
+omx exec --skip-git-repo-check -C "$(pwd)" "Reply with exactly OMX-EXEC-OK"</code></pre>
 
       <h2>Recommended Launch</h2>
       <pre><code>omx --xhigh --madmax   # trusted environments
@@ -54,6 +56,12 @@ omx                    # standard launch</code></pre>
       <pre><code>OMX_BYPASS_DEFAULT_SYSTEM_PROMPT=0 omx
 OMX_MODEL_INSTRUCTIONS_FILE=/path/to/instructions.md omx</code></pre>
 
+      <h2>Execution Readiness Check</h2>
+      <p><code>omx doctor</code> is necessary, but it is not the full proof boundary for real work. Before treating an install as ready, verify both auth and a real execution path:</p>
+      <pre><code>codex login status
+omx exec --skip-git-repo-check -C "$(pwd)" "Reply with exactly OMX-EXEC-OK"</code></pre>
+      <p>If both commands succeed, the runtime is ready for real Codex-backed work. If <code>doctor</code> is green but the smoke test still fails, treat the install as not ready yet.</p>
+
       <h2>Troubleshooting</h2>
       <table>
         <thead><tr><th>Issue</th><th>What to check</th></tr></thead>
@@ -62,6 +70,8 @@ OMX_MODEL_INSTRUCTIONS_FILE=/path/to/instructions.md omx</code></pre>
           <tr><td>Prompts not available</td><td>Confirm files exist in <code>~/.codex/prompts/</code> and re-run <code>omx setup</code>.</td></tr>
           <tr><td>Skills not loading</td><td>Verify <code>~/.codex/skills/*/SKILL.md</code> files were installed.</td></tr>
           <tr><td>Doctor reports config issues</td><td>Run <code>omx doctor</code> and apply the suggested fixes.</td></tr>
+          <tr><td><code>omx doctor</code> is green but <code>omx exec</code> still fails</td><td>Run <code>codex login status</code> and verify the active runtime <code>~/.codex</code> contains the expected auth and provider/base-URL config.</td></tr>
+          <tr><td><code>omx doctor --team</code> fails because an old team references a dead tmux session</td><td>Clean the stale runtime with <code>omx team shutdown &lt;team-name&gt; --force --confirm-issues</code>, then run <code>omx cancel</code> and <code>omx doctor --team</code> again.</td></tr>
         </tbody>
       </table>
     </main>

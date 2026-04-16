@@ -29,6 +29,9 @@ If you want the default OMX experience, start here:
 ```bash
 npm install -g @openai/codex oh-my-codex
 omx setup
+omx doctor
+codex login status
+omx exec --skip-git-repo-check -C "$(pwd)" "Reply with exactly OMX-EXEC-OK"
 omx --madmax --high
 ```
 
@@ -131,6 +134,23 @@ These are operator/support surfaces:
 - `omx setup` installs prompts, skills, config, and AGENTS scaffolding
 - `omx doctor` verifies the install when something seems wrong
 - `omx hud --watch` is a monitoring/status surface, not the primary user workflow
+
+Important: `omx doctor` is necessary but not the full readiness boundary for real work. Before treating an install as ready, also verify:
+
+```bash
+codex login status
+omx exec --skip-git-repo-check -C "$(pwd)" "Reply with exactly OMX-EXEC-OK"
+```
+
+If `omx doctor --team` fails because stale team state still references a dead tmux session, the normal recovery path is:
+
+```bash
+omx team shutdown <team-name> --force --confirm-issues
+omx cancel
+omx doctor --team
+```
+
+If `omx doctor` is green but real execution still fails, verify that the active runtime `~/.codex` is the one that actually contains the expected auth and provider/base-url configuration. This matters especially in custom HOME, profile, container, or wrapper-managed environments.
 
 ### Explore and sparkshell
 
