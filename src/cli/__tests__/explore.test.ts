@@ -147,6 +147,10 @@ set -e
 {
   printf 'PATH=%s\n' "$PATH"
   printf 'SHELL=%s\n' "\${SHELL:-}"
+  printf 'BASH_ENV=%s\n' "\${BASH_ENV:-}"
+  printf 'ENV=%s\n' "\${ENV:-}"
+  printf 'PROMPT_COMMAND=%s\n' "\${PROMPT_COMMAND:-}"
+  printf 'ALLOWLIST_DEPTH=%s\n' "\${OMX_EXPLORE_ALLOWLIST_DEPTH:-}"
   printf 'ALLOWED_STATUS=%s\n' "$allowed_status"
   printf 'BLOCKED_STATUS=%s\n' "$blocked_status"
   printf -- '--ARGV--\n'
@@ -853,6 +857,10 @@ describe('exploreCommand', () => {
         const captured = await readFile(capturePath, 'utf-8');
         assert.match(captured, /PATH=.*omx-explore-allowlist-/);
         assert.match(captured, /SHELL=.*omx-explore-allowlist-.*\/bin\/bash$/m);
+        assert.match(captured, /BASH_ENV=.*empty-startup\.sh/m);
+        assert.match(captured, /ENV=.*empty-startup\.sh/m);
+        assert.match(captured, /PROMPT_COMMAND=$/m);
+        assert.match(captured, /ALLOWLIST_DEPTH=0/m);
         assert.match(captured, /ALLOWED_STATUS=0/);
         assert.match(captured, /BLOCKED_STATUS=(?!0)\d+/);
         assert.match(captured, /--ARGV--[\s\S]*\nexec\n/);
