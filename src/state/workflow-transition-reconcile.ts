@@ -35,6 +35,11 @@ function safeString(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
+function isStateEffectivelyActive(state: TransitionStateLike | null | undefined): boolean {
+  if (!state || state.active !== true) return false;
+  return safeString(state.completed_at).trim() === '';
+}
+
 async function readJsonIfExists(
   path: string,
   options?: { mode?: TrackedWorkflowMode; throwOnParseError?: boolean },
@@ -68,7 +73,7 @@ async function visibleTrackedModes(cwd: string, sessionId?: string): Promise<Tra
         mode,
         throwOnParseError: true,
       });
-      if (state?.active === true) {
+      if (isStateEffectivelyActive(state)) {
         visibleModes.add(mode);
       }
     }
@@ -93,13 +98,14 @@ async function completeSourceModeState(
 
   for (const candidatePath of candidatePaths) {
     const existing = await readJsonIfExists(candidatePath);
-    if (!existing || existing.active !== true) continue;
+    if (!isStateEffectivelyActive(existing)) continue;
+    const activeExisting = existing as TransitionStateLike;
 
     const nextState: TransitionStateLike = {
-      ...existing,
+      ...activeExisting,
       active: false,
       current_phase: 'completed',
-      completed_at: safeString(existing.completed_at).trim() || nowIso,
+      completed_at: safeString(activeExisting.completed_at).trim() || nowIso,
       auto_completed_reason: transitionMessage,
       completion_note: `Auto-completed ${sourceMode} during allowlisted transition to ${destinationMode}.`,
       transition_source: source,

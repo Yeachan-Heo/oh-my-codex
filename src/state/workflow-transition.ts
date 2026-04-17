@@ -1,6 +1,6 @@
 import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
-import { getReadScopedStatePaths } from '../mcp/state-paths.js';
+import { getStatePath } from '../mcp/state-paths.js';
 
 export const TRACKED_WORKFLOW_MODES = [
   'autopilot',
@@ -26,6 +26,7 @@ const AUTO_COMPLETE_TRANSITIONS = new Set([
   'ralplan->team',
   'ralplan->ralph',
   'ralplan->autopilot',
+  'autopilot->ralph',
 ]);
 
 const PLANNING_LIKE_MODES = new Set<TrackedWorkflowMode>([
@@ -44,6 +45,11 @@ const EXECUTION_LIKE_MODES = new Set<TrackedWorkflowMode>([
 
 function safeString(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+
+function isStateEffectivelyActive(state: { active?: unknown; completed_at?: unknown } | null | undefined): boolean {
+  if (!state || state.active !== true) return false;
+  return safeString(state.completed_at).trim() === '';
 }
 
 function normalizeTrackedModes(modes: Iterable<string>): TrackedWorkflowMode[] {
@@ -216,12 +222,17 @@ export async function readActiveWorkflowModes(
   const activeModes: TrackedWorkflowMode[] = [];
 
   for (const mode of TRACKED_WORKFLOW_MODES) {
-    const candidatePaths = await getReadScopedStatePaths(mode, cwd, sessionId);
+    const candidatePaths = sessionId
+      ? [getStatePath(mode, cwd, sessionId), getStatePath(mode, cwd)]
+      : [getStatePath(mode, cwd)];
     for (const candidatePath of candidatePaths) {
       if (!existsSync(candidatePath)) continue;
       try {
-        const parsed = JSON.parse(await readFile(candidatePath, 'utf-8')) as { active?: unknown };
-        if (parsed.active === true) {
+        const parsed = JSON.parse(await readFile(candidatePath, 'utf-8')) as {
+          active?: unknown;
+          completed_at?: unknown;
+        };
+        if (isStateEffectivelyActive(parsed)) {
           activeModes.push(mode);
         }
         break;

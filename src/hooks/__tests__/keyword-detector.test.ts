@@ -1040,7 +1040,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
-  it('denies switching away from a standalone workflow without explicit clear', async () => {
+  it('auto-completes autopilot when explicit handoff moves to ralph', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-skill-switch-deny-'));
     const stateDir = join(cwd, '.omx', 'state');
     const statePath = join(stateDir, SKILL_ACTIVE_STATE_FILE);
@@ -1067,9 +1067,10 @@ describe('keyword detector skill-active-state lifecycle', () => {
       });
 
       assert.ok(result);
-      assert.equal(result.skill, 'autopilot');
-      assert.match(String(result.transition_error), /Unsupported workflow overlap: autopilot \+ ralph\./);
-      assert.equal(result.activated_at, '2026-02-25T00:00:00.000Z');
+      assert.equal(result.skill, 'ralph');
+      assert.equal(result.transition_error, undefined);
+      assert.equal(result.transition_message, 'mode transiting: autopilot -> ralph');
+      assert.equal(result.activated_at, '2026-02-26T00:00:00.000Z');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

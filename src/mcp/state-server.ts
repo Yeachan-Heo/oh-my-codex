@@ -74,6 +74,17 @@ const TEAM_COMM_TOOL_NAMES: Set<string> = new Set([...LEGACY_TEAM_MCP_TOOLS]);
 
 const stateWriteQueues = new Map<string, Promise<void>>();
 
+function safeString(value: unknown): string {
+	return typeof value === "string" ? value : "";
+}
+
+function isStateEffectivelyActive(
+	state: { active?: unknown; completed_at?: unknown } | null | undefined,
+): boolean {
+	if (!state || state.active !== true) return false;
+	return safeString(state.completed_at).trim() === "";
+}
+
 async function listStateSessionIds(cwd: string): Promise<string[]> {
 	const sessionsDir = join(getStateDir(cwd), "sessions");
 	if (!existsSync(sessionsDir)) return [];
@@ -397,7 +408,7 @@ export async function handleStateToolCall(request: {
 							Object.assign(mergedRaw, validation.state);
 							ensureRalphArtifacts = true;
 						}
-						if (isTrackedWorkflowMode(mode) && mergedRaw.active === true) {
+						if (isTrackedWorkflowMode(mode) && isStateEffectivelyActive(mergedRaw)) {
 							try {
 								if (!effectiveSessionId) {
 									for (const sessionId of await listStateSessionIds(cwd)) {
@@ -448,7 +459,7 @@ export async function handleStateToolCall(request: {
 						await syncCanonicalSkillStateForMode({
 							cwd,
 						mode,
-						active: data.active === true,
+								active: isStateEffectivelyActive(data),
 						currentPhase: typeof data.current_phase === "string" ? data.current_phase : undefined,
 						sessionId: effectiveSessionId,
 					});
@@ -546,7 +557,7 @@ export async function handleStateToolCall(request: {
 							const data = JSON.parse(
 								await readFile(join(stateDir, f), "utf-8"),
 							);
-							if (data.active) {
+							if (isStateEffectivelyActive(data)) {
 								active.push(mode);
 							}
 						} catch (e) {
@@ -585,7 +596,7 @@ export async function handleStateToolCall(request: {
 								await readFile(join(stateDir, f), "utf-8"),
 							);
 							statuses[m] = {
-								active: data.active,
+								active: isStateEffectivelyActive(data),
 								phase: data.current_phase,
 								path: join(stateDir, f),
 								data,

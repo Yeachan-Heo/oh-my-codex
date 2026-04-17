@@ -362,8 +362,7 @@ describe("codex native hook dispatch", () => {
 
       assert.equal(result.omxEventName, "keyword-detector");
       assert.equal(result.skillState?.skill, "ralplan");
-      assert.ok(result.outputJson, "UserPromptSubmit should emit developer context");
-      assert.match(JSON.stringify(result.outputJson), /skill: ralplan activated and initial state initialized at \.omx\/state\/sessions\/sess-1\/ralplan-state\.json; write subsequent updates via omx_state MCP\./);
+      assert.equal(result.outputJson, null);
 
       const statePath = join(cwd, ".omx", "state", "skill-active-state.json");
       assert.equal(existsSync(statePath), true);
@@ -399,13 +398,7 @@ describe("codex native hook dispatch", () => {
 
       assert.equal(result.omxEventName, "keyword-detector");
       assert.equal(result.skillState?.skill, "ralph");
-      const message = String(
-        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
-      );
-      assert.match(message, /\$ralph" -> ralph/);
-      assert.match(message, /skill: ralph activated and initial state initialized at \.omx\/state\/sessions\/sess-ralph-msg\/ralph-state\.json; write subsequent updates via omx_state MCP\./);
-      assert.match(message, /Prompt-side `\$ralph` activation seeds Ralph workflow state only; it does not invoke `omx ralph`\./);
-      assert.match(message, /Use `omx ralph --prd \.\.\.` only when you explicitly want the PRD-gated CLI startup path\./);
+      assert.equal(result.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -543,12 +536,7 @@ export async function onHookEvent(event) {
 
       assert.equal(result.omxEventName, "keyword-detector");
       assert.equal(result.skillState?.skill, "team");
-      assert.match(
-        JSON.stringify(result.outputJson),
-        /skill: team activated and initial state initialized at \.omx\/state\/team-state\.json; write subsequent updates via omx_state MCP\./,
-      );
-      assert.match(JSON.stringify(result.outputJson), /Use the durable OMX team runtime via `omx team \.\.\.`/);
-      assert.match(JSON.stringify(result.outputJson), /If you need runtime syntax, run `omx team --help` yourself\./);
+      assert.equal(result.outputJson, null);
 
       const state = JSON.parse(
         await readFile(join(cwd, ".omx", "state", "team-state.json"), "utf-8"),
@@ -602,7 +590,7 @@ export async function onHookEvent(event) {
     }
   });
 
-  it("surfaces transition success output for allowlisted prompt-submit handoffs", async () => {
+  it("keeps allowlisted prompt-submit handoffs silent while still reconciling state", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-transition-success-"));
     try {
       const sessionDir = join(cwd, ".omx", "state", "sessions", "sess-handoff-1");
@@ -632,13 +620,62 @@ export async function onHookEvent(event) {
         { cwd },
       );
 
-      assert.match(JSON.stringify(result.outputJson), /mode transiting: deep-interview -> ralplan/);
+      assert.equal(result.outputJson, null);
       const completed = JSON.parse(await readFile(join(sessionDir, "deep-interview-state.json"), "utf-8")) as {
         active?: boolean;
         current_phase?: string;
       };
       assert.equal(completed.active, false);
       assert.equal(completed.current_phase, "completed");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps autopilot to ralph prompt-submit handoff silent while reconciling state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-ralph-handoff-"));
+    try {
+      const sessionDir = join(cwd, ".omx", "state", "sessions", "sess-handoff-2");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(sessionDir, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "validation",
+        started_at: "2026-02-25T00:00:00.000Z",
+      });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        active: true,
+        skill: "autopilot",
+        phase: "validation",
+        session_id: "sess-handoff-2",
+        active_skills: [{ skill: "autopilot", phase: "validation", active: true, session_id: "sess-handoff-2" }],
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-handoff-2",
+          thread_id: "thread-handoff-2",
+          turn_id: "turn-handoff-2",
+          prompt: "$ralph should fix this",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson, null);
+      const completed = JSON.parse(await readFile(join(sessionDir, "autopilot-state.json"), "utf-8")) as {
+        active?: boolean;
+        current_phase?: string;
+      };
+      assert.equal(completed.active, false);
+      assert.equal(completed.current_phase, "completed");
+      const ralph = JSON.parse(await readFile(join(sessionDir, "ralph-state.json"), "utf-8")) as {
+        active?: boolean;
+        mode?: string;
+      };
+      assert.equal(ralph.active, true);
+      assert.equal(ralph.mode, "ralph");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -661,16 +698,9 @@ export async function onHookEvent(event) {
         { cwd },
       );
 
-      const message = String(
-        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || '',
-      );
-      assert.match(message, /\$ralplan" -> ralplan/);
-      assert.match(message, /\$team" -> team/);
-      assert.match(message, /\$ralph" -> ralph/);
-      assert.doesNotMatch(message, /mode transiting:/);
-      assert.match(message, /planning preserved over simultaneous execution follow-up; deferred skills: team, ralph\./);
-      assert.match(message, /skill: ralplan activated and initial state initialized at \.omx\/state\/sessions\/sess-multi-1\/ralplan-state\.json; write subsequent updates via omx_state MCP\./);
-      assert.doesNotMatch(message, /Use the durable OMX team runtime via `omx team \.\.\.`/);
+      assert.equal(result.outputJson, null);
+      assert.equal(result.skillState?.skill, "ralplan");
+      assert.deepEqual(result.skillState?.deferred_skills, ["team", "ralph"]);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

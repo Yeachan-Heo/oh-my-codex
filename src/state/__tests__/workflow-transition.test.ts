@@ -58,6 +58,13 @@ describe('workflow transition rules', () => {
     assert.equal(ralplanToRalph.kind, 'auto-complete');
     assert.deepEqual(ralplanToRalph.autoCompleteModes, ['ralplan']);
     assert.deepEqual(ralplanToRalph.resultingModes, ['ultrawork', 'ralph']);
+
+    const autopilotToRalph = evaluateWorkflowTransition(['autopilot'], 'ralph');
+    assert.equal(autopilotToRalph.allowed, true);
+    assert.equal(autopilotToRalph.kind, 'auto-complete');
+    assert.deepEqual(autopilotToRalph.autoCompleteModes, ['autopilot']);
+    assert.deepEqual(autopilotToRalph.resultingModes, ['ralph']);
+    assert.equal(autopilotToRalph.transitionMessage, 'mode transiting: autopilot -> ralph');
   });
 
   it('builds rollback denial guidance for execution-to-planning transitions', () => {

@@ -82,6 +82,15 @@ async function writeAtomicFile(path: string, data: string): Promise<void> {
   }
 }
 
+function safeString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function isStateEffectivelyActive(state: { active?: unknown; completed_at?: unknown } | null | undefined): boolean {
+  if (!state || state.active !== true) return false;
+  return safeString(state.completed_at).trim() === '';
+}
+
 function readModeSupportsStrictValidation(mode: string): mode is SupportedStateReadMode {
   return SUPPORTED_STATE_READ_MODES.includes(mode as SupportedStateReadMode);
 }
@@ -135,7 +144,7 @@ export async function listStateStatuses(
       try {
         const data = JSON.parse(await readFile(join(stateDir, file), 'utf-8'));
         statuses[currentMode] = {
-          active: data.active,
+          active: isStateEffectivelyActive(data),
           phase: data.current_phase,
           path: join(stateDir, file),
           data,
@@ -252,7 +261,7 @@ export async function executeStateOperation(
             ensureRalphArtifacts = true;
           }
 
-          if (isTrackedWorkflowMode(mode) && mergedRaw.active === true) {
+          if (isTrackedWorkflowMode(mode) && isStateEffectivelyActive(mergedRaw)) {
             try {
               if (!effectiveSessionId) {
                 for (const sessionId of await listStateSessionIds(cwd)) {
@@ -301,7 +310,7 @@ export async function executeStateOperation(
           await syncCanonicalSkillStateForMode({
             cwd,
             mode,
-            active: data.active === true,
+            active: isStateEffectivelyActive(data),
             currentPhase: typeof data.current_phase === 'string' ? data.current_phase : undefined,
             sessionId: effectiveSessionId,
             source: 'state-operations',
