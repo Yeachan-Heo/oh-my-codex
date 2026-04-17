@@ -519,8 +519,12 @@ fn prepare_allowlist_environment() -> Result<AllowlistEnvironment, String> {
     write_executable(&shell_path, &bash_wrapper)?;
     write_executable(&bin_dir.join("sh"), &sh_wrapper)?;
     let startup_env_path = root.path.join("empty-startup.sh");
-    write(&startup_env_path, b"")
-        .map_err(|err| format!("failed to write startup env stub {}: {err}", startup_env_path.display()))?;
+    write(&startup_env_path, b"").map_err(|err| {
+        format!(
+            "failed to write startup env stub {}: {err}",
+            startup_env_path.display()
+        )
+    })?;
 
     Ok(AllowlistEnvironment {
         bin_dir,
@@ -1391,9 +1395,8 @@ exec node "$basedir/../@openai/codex/bin/codex.js" "$@"
             env::set_var(ALLOWLIST_DEPTH_ENV, MAX_ALLOWLIST_DEPTH.to_string());
         }
         let err = checked_allowlist_depth().expect_err("depth should fail");
-        match env::var_os(ALLOWLIST_DEPTH_ENV) {
-            Some(_) => unsafe { env::remove_var(ALLOWLIST_DEPTH_ENV) },
-            None => {}
+        if env::var_os(ALLOWLIST_DEPTH_ENV).is_some() {
+            unsafe { env::remove_var(ALLOWLIST_DEPTH_ENV) }
         }
         assert!(err.contains("recursion depth exceeded"));
     }
