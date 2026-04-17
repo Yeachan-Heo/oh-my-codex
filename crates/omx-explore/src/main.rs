@@ -12,7 +12,8 @@ const CODEX_BIN_ENV: &str = "OMX_EXPLORE_CODEX_BIN";
 const HARNESS_ROOT_ENV: &str = "OMX_EXPLORE_ROOT";
 const INTERNAL_DIRECT_WRAPPER_FLAG: &str = "--internal-allowlist-direct";
 const INTERNAL_SHELL_WRAPPER_FLAG: &str = "--internal-allowlist-shell";
-const TEMP_ALLOWLIST_DIR_PREFIX: &str = "omx-explore-allowlist-";
+const ALLOWLIST_DEPTH_ENV: &str = "OMX_EXPLORE_ALLOWLIST_DEPTH";
+const MAX_ALLOWLIST_DEPTH: u32 = 8;
 const WINDOWS_UNSUPPORTED_ALLOWLIST_MESSAGE: &str =
     "omx explore built-in harness is not ready on Windows because its allowlist runtime relies on POSIX sh/bash wrappers. Set OMX_EXPLORE_BIN to a compatible custom harness, prefer `omx sparkshell` for shell-native read-only lookups, or run `omx doctor` for readiness details.";
 
@@ -40,6 +41,7 @@ struct AttemptResult {
 struct AllowlistEnvironment {
     bin_dir: PathBuf,
     shell_path: PathBuf,
+    startup_env_path: PathBuf,
     _root: TempDirGuard,
 }
 
@@ -226,7 +228,14 @@ fn invoke_codex(args: &Args, model: &str, prompt_contract: &str) -> io::Result<A
         .arg(&final_prompt)
         .env(HARNESS_ROOT_ENV, &args.cwd)
         .env("PATH", &allowlist.bin_dir)
-        .env("SHELL", &allowlist.shell_path);
+        .env("SHELL", &allowlist.shell_path)
+        // Keep explore runs independent from ambient shell startup hooks. The
+        // incident showed a shell-snapshot path that sourced ~/.bashrc when
+        // BASH_ENV was empty, which can re-enter allowlist wrappers.
+        .env("BASH_ENV", &allowlist.startup_env_path)
+        .env("ENV", &allowlist.startup_env_path)
+        .env("PROMPT_COMMAND", "")
+        .env(ALLOWLIST_DEPTH_ENV, "0");
     let output = command.output()?;
 
     let markdown = read_to_string(&output_path).ok();
@@ -509,10 +518,14 @@ fn prepare_allowlist_environment() -> Result<AllowlistEnvironment, String> {
     let shell_path = bin_dir.join("bash");
     write_executable(&shell_path, &bash_wrapper)?;
     write_executable(&bin_dir.join("sh"), &sh_wrapper)?;
+    let startup_env_path = root.path.join("empty-startup.sh");
+    write(&startup_env_path, b"")
+        .map_err(|err| format!("failed to write startup env stub {}: {err}", startup_env_path.display()))?;
 
     Ok(AllowlistEnvironment {
         bin_dir,
         shell_path,
+        startup_env_path,
         _root: root,
     })
 }
@@ -583,42 +596,31 @@ fn resolve_host_command(command: &str) -> Option<PathBuf> {
     let candidate = Path::new(command);
     if candidate.is_absolute()
         && is_usable_host_command(candidate)
-        && !is_omx_explore_allowlist_path(candidate)
+        && !is_within_explore_allowlist_dir(candidate)
     {
         return Some(candidate.to_path_buf());
     }
 
     let path = env::var_os("PATH")?;
     for entry in env::split_paths(&path) {
+        if is_within_explore_allowlist_dir(&entry) {
+            continue;
+        }
         let resolved = entry.join(command);
-        if is_usable_host_command(&resolved) && !is_omx_explore_allowlist_path(&resolved) {
+        if is_usable_host_command(&resolved) && !is_within_explore_allowlist_dir(&resolved) {
             return Some(resolved);
         }
     }
     None
 }
 
-fn is_omx_explore_allowlist_path(path: &Path) -> bool {
-    fn is_under_allowlist_bin(path: &Path) -> bool {
-        path.ancestors().any(|ancestor| {
-            let is_allowlist_root = ancestor
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(TEMP_ALLOWLIST_DIR_PREFIX));
-            if !is_allowlist_root {
-                return false;
-            }
-            path.strip_prefix(ancestor)
-                .ok()
-                .and_then(|relative| relative.components().next())
-                .is_some_and(|component| component.as_os_str() == "bin")
-        })
-    }
-
-    is_under_allowlist_bin(path)
-        || canonicalize_existing_prefix(path)
-            .as_deref()
-            .is_some_and(is_under_allowlist_bin)
+fn is_within_explore_allowlist_dir(path: &Path) -> bool {
+    path.ancestors().any(|ancestor| {
+        ancestor
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("omx-explore-allowlist-"))
+    })
 }
 
 fn is_usable_host_command(path: &Path) -> bool {
@@ -644,10 +646,24 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+fn checked_allowlist_depth() -> Result<u32, String> {
+    let current = env::var(ALLOWLIST_DEPTH_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    if current >= MAX_ALLOWLIST_DEPTH {
+        return Err(format!(
+            "allowlist wrapper recursion depth exceeded safety threshold ({MAX_ALLOWLIST_DEPTH})"
+        ));
+    }
+    Ok(current)
+}
+
 fn run_internal_direct_wrapper<I>(mut args: I) -> Result<(), String>
 where
     I: Iterator<Item = OsString>,
 {
+    let current_depth = checked_allowlist_depth()?;
     let spec = args
         .next()
         .ok_or_else(|| "missing direct wrapper spec".to_string())?;
@@ -657,9 +673,17 @@ where
         .ok_or_else(|| format!("invalid direct wrapper spec: {spec}"))?;
     let forwarded: Vec<String> = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
     validate_direct_command(command_name, &forwarded)?;
+    let real_path = Path::new(real_path);
+    if is_within_explore_allowlist_dir(real_path) {
+        return Err(format!(
+            "allowlisted `{command_name}` resolved back into an omx explore allowlist dir: {}",
+            real_path.display()
+        ));
+    }
 
     let status = Command::new(real_path)
         .args(&forwarded)
+        .env(ALLOWLIST_DEPTH_ENV, (current_depth + 1).to_string())
         .status()
         .map_err(|err| format!("failed to execute allowlisted `{command_name}`: {err}"))?;
     std::process::exit(status.code().unwrap_or(1));
@@ -669,10 +693,18 @@ fn run_internal_shell_wrapper<I>(mut args: I) -> Result<(), String>
 where
     I: Iterator<Item = OsString>,
 {
+    let current_depth = checked_allowlist_depth()?;
     let real_shell = args
         .next()
         .ok_or_else(|| "missing real shell path for internal wrapper".to_string())?;
     let real_shell = real_shell.to_string_lossy().into_owned();
+    let real_shell_path = Path::new(&real_shell);
+    if is_within_explore_allowlist_dir(real_shell_path) {
+        return Err(format!(
+            "allowlisted shell resolved back into an omx explore allowlist dir: {}",
+            real_shell_path.display()
+        ));
+    }
     let forwarded: Vec<String> = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
     let command = validate_shell_invocation(&forwarded)?;
 
@@ -683,6 +715,7 @@ where
     let status = child
         .arg("-lc")
         .arg(&command)
+        .env(ALLOWLIST_DEPTH_ENV, (current_depth + 1).to_string())
         .status()
         .map_err(|err| format!("failed to execute validated shell command: {err}"))?;
     std::process::exit(status.code().unwrap_or(1));
@@ -762,7 +795,7 @@ fn validate_direct_command(command_name: &str, args: &[String]) -> Result<(), St
                 );
             }
         }
-        "find"
+        "find" => {
             if args.iter().any(|arg| {
                 matches!(
                     arg.as_str(),
@@ -776,14 +809,13 @@ fn validate_direct_command(command_name: &str, args: &[String]) -> Result<(), St
                         | "-fprintf"
                         | "-fls"
                 )
-            }) =>
-        {
-            return Err(
-                "find actions that execute, delete, or write files are not allowed in omx explore"
-                    .to_string(),
-            );
+            }) {
+                return Err(
+                    "find actions that execute, delete, or write files are not allowed in omx explore"
+                        .to_string(),
+                );
+            }
         }
-        "find" => {}
         "cat" => {
             let operands = non_option_operands(args);
             if operands.is_empty() {
@@ -950,6 +982,20 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
+    fn temp_test_root(prefix: &str) -> TempDirGuard {
+        let dir = env::temp_dir().join(format!(
+            "omx-explore-test-{}-{}-{}",
+            prefix,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        create_dir_all(&dir).expect("create temp test root");
+        TempDirGuard { path: dir }
+    }
+
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -1015,17 +1061,7 @@ mod tests {
     #[test]
     fn resolve_codex_binary_resolves_bare_env_override_from_path() {
         let _guard = env_lock();
-        let root = TempDirGuard {
-            path: env::temp_dir().join(format!(
-                "omx-explore-resolve-codex-binary-{}-{}",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            )),
-        };
-        create_dir_all(&root.path).expect("create temp root");
+        let root = temp_test_root("resolve-codex-binary");
         let bin_dir = root.path.join("bin");
         create_dir_all(&bin_dir).expect("create bin");
         let fake_codex = bin_dir.join("codex-custom");
@@ -1054,7 +1090,7 @@ mod tests {
     #[test]
     fn codex_launch_for_env_node_shebang_uses_host_node_absolute_path() {
         let _guard = env_lock();
-        let root = temp_allowlist_dir().expect("temp root");
+        let root = temp_test_root("env-node");
         let script_path = root.path.join("codex-script");
         write(&script_path, b"#!/usr/bin/env node\nconsole.log(\"ok\");\n").expect("write script");
 
@@ -1069,7 +1105,7 @@ mod tests {
     #[test]
     fn codex_launch_for_posix_package_manager_shim_uses_host_node_and_entrypoint() {
         let _guard = env_lock();
-        let root = temp_allowlist_dir().expect("temp root");
+        let root = temp_test_root("posix-shim");
         let host_bin = root.path.join("host-bin");
         let shim_dir = root.path.join("node_modules").join(".bin");
         let entrypoint = root
@@ -1122,7 +1158,7 @@ exec node "$basedir/../@openai/codex/bin/codex.js" "$@"
     #[test]
     fn resolve_host_command_skips_directory_and_non_executable_path_entries() {
         let _guard = env_lock();
-        let root = temp_allowlist_dir().expect("temp root");
+        let root = temp_test_root("resolve-host-command");
         let bad_bin = root.path.join("bad-bin");
         let blocked_file_bin = root.path.join("blocked-file-bin");
         let good_bin = root.path.join("good-bin");
@@ -1176,7 +1212,7 @@ exec node "$basedir/../@openai/codex/bin/codex.js" "$@"
     #[test]
     fn codex_launch_for_env_node_shebang_skips_non_executable_earlier_node_entry() {
         let _guard = env_lock();
-        let root = temp_allowlist_dir().expect("temp root");
+        let root = temp_test_root("env-node-skip");
         let bad_bin = root.path.join("bad-bin");
         let good_bin = root.path.join("good-bin");
         create_dir_all(&bad_bin).expect("create bad bin");
@@ -1223,7 +1259,7 @@ exec node "$basedir/../@openai/codex/bin/codex.js" "$@"
 
     #[cfg(unix)]
     fn create_host_bin_with_commands(commands: &[&str]) -> (TempDirGuard, PathBuf) {
-        let root = temp_allowlist_dir().expect("temp root");
+        let root = temp_test_root("host-bin");
         let host_bin = root.path.join("host-bin");
         create_dir_all(&host_bin).expect("create host bin");
         for command in commands {
@@ -1311,68 +1347,55 @@ exec node "$basedir/../@openai/codex/bin/codex.js" "$@"
 
     #[cfg(unix)]
     #[test]
-    fn resolve_host_command_skips_omx_explore_allowlist_wrappers() {
+    fn build_direct_wrapper_ignores_allowlist_dirs_in_path_resolution() {
         let _guard = env_lock();
-        let allowlist_root = temp_allowlist_dir().expect("allowlist root");
-        let real_root = TempDirGuard {
-            path: env::temp_dir().join(format!(
-                "omx-explore-host-resolution-{}-{}",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            )),
-        };
-        create_dir_all(&real_root.path).expect("create real root");
-        let real_bin = real_root.path.join("real-bin");
-        let allowlist_bin = allowlist_root
-            .path
-            .join(format!("{TEMP_ALLOWLIST_DIR_PREFIX}fixture"))
-            .join("bin");
-        create_dir_all(&real_bin).expect("create real bin");
-        create_dir_all(&allowlist_bin).expect("create allowlist bin");
-
-        let real_grep = real_bin.join("grep");
-        write_executable(&real_grep, "#!/bin/sh\nexit 0\n").expect("write real grep");
-        let wrapper_grep = allowlist_bin.join("grep");
-        write_executable(&wrapper_grep, "#!/bin/sh\nexit 0\n").expect("write wrapper grep");
-
-        let original_path = env::var_os("PATH");
-        unsafe {
-            env::set_var(
-                "PATH",
-                env::join_paths([allowlist_bin.as_path(), real_bin.as_path()]).expect("join path"),
-            );
+        let self_exe = env::current_exe().expect("current exe");
+        let root = temp_allowlist_dir().expect("temp root");
+        let poisoned_bin = root.path.join("omx-explore-allowlist-poison").join("bin");
+        create_dir_all(&poisoned_bin).expect("create poisoned bin");
+        let poisoned_grep = poisoned_bin.join("grep");
+        write(&poisoned_grep, "#!/bin/sh\nexit 0\n").expect("write poisoned grep");
+        #[cfg(unix)]
+        {
+            use std::fs;
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&poisoned_grep)
+                .expect("stat poisoned grep")
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&poisoned_grep, perms).expect("chmod poisoned grep");
         }
 
-        let resolved = resolve_host_command("grep");
+        let (_host_root, host_bin) = create_host_bin_with_commands(&["bash", "sh", "grep"]);
+        let joined_path = format!("{}:{}", poisoned_bin.display(), host_bin.display());
+        let wrapper = with_path(Path::new(&joined_path), || {
+            build_direct_wrapper(&self_exe, "grep").expect("grep wrapper")
+        });
 
-        match original_path {
-            Some(value) => unsafe { env::set_var("PATH", value) },
-            None => unsafe { env::remove_var("PATH") },
-        }
-
-        assert_eq!(resolved, Some(real_grep));
+        assert!(!wrapper.contains(&poisoned_grep.display().to_string()));
+        assert!(wrapper.contains(&host_bin.join("grep").display().to_string()));
     }
 
-    #[cfg(unix)]
     #[test]
-    fn resolve_host_command_rejects_absolute_allowlist_wrapper_paths() {
-        let _guard = env_lock();
-        let root = temp_allowlist_dir().expect("temp root");
-        let wrapper_dir = root
-            .path
-            .join(format!("{TEMP_ALLOWLIST_DIR_PREFIX}fixture"))
-            .join("bin");
-        create_dir_all(&wrapper_dir).expect("create wrapper dir");
-        let wrapper = wrapper_dir.join("grep");
-        write_executable(&wrapper, "#!/bin/sh\nexit 0\n").expect("write wrapper");
+    fn is_within_explore_allowlist_dir_detects_allowlist_ancestors() {
+        assert!(is_within_explore_allowlist_dir(Path::new(
+            "/tmp/omx-explore-allowlist-123/bin/grep"
+        )));
+        assert!(!is_within_explore_allowlist_dir(Path::new("/usr/bin/grep")));
+    }
 
-        assert_eq!(
-            resolve_host_command(wrapper.to_str().expect("wrapper path")),
-            None
-        );
+    #[test]
+    fn checked_allowlist_depth_rejects_excessive_depth() {
+        let _guard = env_lock();
+        unsafe {
+            env::set_var(ALLOWLIST_DEPTH_ENV, MAX_ALLOWLIST_DEPTH.to_string());
+        }
+        let err = checked_allowlist_depth().expect_err("depth should fail");
+        match env::var_os(ALLOWLIST_DEPTH_ENV) {
+            Some(_) => unsafe { env::remove_var(ALLOWLIST_DEPTH_ENV) },
+            None => {}
+        }
+        assert!(err.contains("recursion depth exceeded"));
     }
 
     #[test]
