@@ -51,6 +51,38 @@ function runWorkerNotify(
 }
 
 describe('notify-hook cross-worktree heartbeat resolution', () => {
+  it('logs only the latest user input preview instead of concatenating prior inputs', async () => {
+    await withTempDir(async (root) => {
+      const cwd = join(root, 'latest-input-preview');
+      await mkdir(join(cwd, '.omx', 'logs'), { recursive: true });
+      await mkdir(join(cwd, '.omx', 'state'), { recursive: true });
+
+      const payload = {
+        cwd,
+        type: 'agent-turn-complete',
+        'thread-id': 'thread-latest-preview',
+        'turn-id': 'turn-latest-preview',
+        'input-messages': ['上一轮 query', '本轮 query'],
+        'last-assistant-message': 'ok',
+      };
+
+      const result = spawnSync(process.execPath, [NOTIFY_HOOK_SCRIPT.pathname, JSON.stringify(payload)], {
+        encoding: 'utf8',
+        env: { ...process.env, TMUX: '', TMUX_PANE: '' },
+      });
+
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+      const turnLogPath = join(cwd, '.omx', 'logs', `turns-${new Date().toISOString().split('T')[0]}.jsonl`);
+      const lines = (await readFile(turnLogPath, 'utf8')).trim().split('\n');
+      const entry = JSON.parse(lines[lines.length - 1]) as {
+        input_preview?: string;
+        input_message_count?: number;
+      };
+      assert.equal(entry.input_preview, '本轮 query');
+      assert.equal(entry.input_message_count, 2);
+    });
+  });
+
   it('writes heartbeat under OMX_TEAM_STATE_ROOT even when payload cwd is a different worktree', async () => {
     await withTempDir(async (root) => {
       const leaderCwd = join(root, 'leader');

@@ -80,6 +80,18 @@ const STABLE_FINAL_RECOMMENDATION_PATTERNS = [
 ] as const;
 const RELEASE_READINESS_FINALIZE_SYSTEM_MESSAGE =
   "OMX release-readiness detected a stable final recommendation with no active worker tasks; emit one concise final decision summary and finalize.";
+const EXECUTION_HANDOFF_PATTERNS = [
+  /^(?:好|好的|行|可以|那就|那现在)?[，,\s]*(?:开始|继续|直接)\s*(?:执行|优化|实现|修改|修复)\b/u,
+  /(?:按照|按|基于)(?:这个|上述|当前)?\s*(?:plan|计划|方案).{0,16}(?:开始|继续|直接)?\s*(?:执行|优化|实现|修改|修复)/u,
+  /(?:不用|别|不要).{0,6}讨论/u,
+  /\b(?:start|begin|go ahead(?: and)?|proceed(?: now)?)\s+(?:to\s+)?(?:implement|execute|apply|fix)\b/i,
+  /\b(?:according to|based on)\s+(?:the|this|that)\s+plan\b.{0,20}\b(?:start|begin|proceed(?: now)?|go ahead(?: and)?)\b/i,
+] as const;
+const SHORT_FOLLOWUP_PRIORITY_PATTERNS = [
+  /^(?:继续|接着|然后|那就|那现在|还有(?:一个)?问题|这些优化都做了么|这些都做了么|现在呢|本轮|当前轮|这一轮)/u,
+  /(?:按照|按|基于)(?:这个|上述|当前)?(?:plan|计划|方案)/u,
+  /\b(?:follow up|latest request|this turn|current turn|newest request)\b/i,
+] as const;
 
 function safeString(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -94,6 +106,34 @@ function safePositiveInteger(value: unknown): number | null {
   if (typeof value === "string" && value.trim() !== "") {
     const parsed = Number.parseInt(value.trim(), 10);
     if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
+function normalizePromptSignalText(text: string): string {
+  return text.trim().replace(/\s+/g, " ");
+}
+
+function looksLikeExecutionHandoffPrompt(prompt: string): boolean {
+  const normalized = normalizePromptSignalText(prompt);
+  if (!normalized) return false;
+  return EXECUTION_HANDOFF_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function looksLikeShortFollowupPrompt(prompt: string): boolean {
+  const normalized = normalizePromptSignalText(prompt);
+  if (!normalized) return false;
+  if (looksLikeExecutionHandoffPrompt(normalized)) return true;
+  if (normalized.length > 240) return false;
+  return SHORT_FOLLOWUP_PRIORITY_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function buildPromptPriorityMessage(prompt: string): string | null {
+  if (looksLikeExecutionHandoffPrompt(prompt)) {
+    return "Newest user input is an execution handoff for the current task. Treat it as authorization to act now against the latest approved plan/request. Do not restate the prior plan unless the user explicitly asks for a recap or status update.";
+  }
+  if (looksLikeShortFollowupPrompt(prompt)) {
+    return "Newest user input is a same-thread follow-up. Answer that latest follow-up directly and prefer it over older unresolved prompts when choosing what to do next.";
   }
   return null;
 }
@@ -459,9 +499,10 @@ async function buildSessionStartContext(
 
 function buildAdditionalContextMessage(prompt: string, skillState?: SkillActiveState | null): string | null {
   if (!prompt) return null;
+  const promptPriorityMessage = buildPromptPriorityMessage(prompt);
   const matches = detectKeywords(prompt);
   const match = detectPrimaryKeyword(prompt);
-  if (!match) return null;
+  if (!match) return promptPriorityMessage;
   const detectedKeywordMessage = matches.length > 1
     ? `OMX native UserPromptSubmit detected workflow keywords ${matches.map((entry) => `"${entry.keyword}" -> ${entry.skill}`).join(", ")}.`
     : `OMX native UserPromptSubmit detected workflow keyword "${match.keyword}" -> ${match.skill}.`;
@@ -487,6 +528,7 @@ function buildAdditionalContextMessage(prompt: string, skillState?: SkillActiveS
     return [
       `OMX native UserPromptSubmit denied workflow keyword "${match.keyword}" -> ${match.skill}.`,
       skillState.transition_error,
+      promptPriorityMessage,
       'Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.',
     ].join(' ');
   }
@@ -499,6 +541,7 @@ function buildAdditionalContextMessage(prompt: string, skillState?: SkillActiveS
       deferredSkills.length > 0
         ? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
         : null,
+      promptPriorityMessage,
       skillState.initialized_mode && skillState.initialized_state_path
         ? `skill: ${skillState.initialized_mode} activated and initial state initialized at ${skillState.initialized_state_path}; write subsequent updates via omx_state MCP.`
         : null,
@@ -520,6 +563,7 @@ function buildAdditionalContextMessage(prompt: string, skillState?: SkillActiveS
       deferredSkills.length > 0
         ? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
         : null,
+      promptPriorityMessage,
       initializedStateMessage,
       "Use the durable OMX team runtime via `omx team ...` for coordinated execution; do not replace it with in-process fanout.",
       "If you need runtime syntax, run `omx team --help` yourself.",
@@ -534,13 +578,14 @@ function buildAdditionalContextMessage(prompt: string, skillState?: SkillActiveS
       deferredSkills.length > 0
         ? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
         : null,
+      promptPriorityMessage,
       `skill: ${skillState.initialized_mode} activated and initial state initialized at ${skillState.initialized_state_path}; write subsequent updates via omx_state MCP.`,
       ralphPromptActivationNote,
       "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
     ].join(" ");
   }
 
-  return `${detectedKeywordMessage} Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.`;
+  return [detectedKeywordMessage, promptPriorityMessage, "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules."].filter(Boolean).join(" ");
 }
 
 function parseTeamWorkerEnv(rawValue: string): { teamName: string; workerName: string } | null {

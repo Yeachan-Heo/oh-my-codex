@@ -238,14 +238,19 @@ async function main() {
   }
 
   // 1. Log the turn
+  const normalizedInputMessages = normalizeInputMessages(payload);
+  const latestInputPreview = safeString(
+    normalizedInputMessages.length > 0
+      ? normalizedInputMessages[normalizedInputMessages.length - 1]
+      : '',
+  ).slice(0, 200);
   const logEntry = {
     timestamp: new Date().toISOString(),
     type: payload.type || 'agent-turn-complete',
     thread_id: payload['thread-id'] || payload.thread_id,
     turn_id: payload['turn-id'] || payload.turn_id,
-    input_preview: (payload['input-messages'] || payload.input_messages || [])
-      .map((m: any) => m.slice(0, 100))
-      .join('; '),
+    input_preview: latestInputPreview,
+    input_message_count: normalizedInputMessages.length,
     output_preview: (payload['last-assistant-message'] || payload.last_assistant_message || '')
       .slice(0, 200),
   };
