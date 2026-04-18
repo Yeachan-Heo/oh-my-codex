@@ -5,6 +5,7 @@
  * and provides structured logging for session events.
  */
 
+import { execFileSync } from 'child_process';
 import { readFile, writeFile, mkdir, unlink, appendFile, rm } from 'fs/promises';
 import { dirname, join } from 'path';
 import { existsSync, readFileSync } from 'fs';
@@ -158,6 +159,7 @@ interface SessionStartOptions {
   pid?: number;
   platform?: NodeJS.Platform;
   nativeSessionId?: string;
+  readParentPid?: (pid: number) => number | null;
 }
 
 function defaultIsPidAlive(pid: number): boolean {
@@ -167,6 +169,52 @@ function defaultIsPidAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+function defaultReadParentPid(pid: number): number | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
+    const commandEnd = stat.lastIndexOf(')');
+    if (commandEnd === -1) return null;
+    const remainder = stat.slice(commandEnd + 1).trim();
+    const fields = remainder.split(/\s+/);
+    if (fields.length < 2) return null;
+    const parentPid = Number(fields[1]);
+    return Number.isFinite(parentPid) && parentPid > 0 ? parentPid : null;
+  } catch {
+    try {
+      const raw = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      const parentPid = Number.parseInt(raw, 10);
+      return Number.isFinite(parentPid) && parentPid > 0 ? parentPid : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function isDescendantProcess(
+  pid: number,
+  ancestorPid: number,
+  readParentPid: (pid: number) => number | null = defaultReadParentPid,
+): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  if (!Number.isInteger(ancestorPid) || ancestorPid <= 0) return false;
+
+  const visited = new Set<number>();
+  let currentPid: number | null = pid;
+  let depth = 0;
+
+  while (currentPid && currentPid > 0 && depth < 64 && !visited.has(currentPid)) {
+    if (currentPid === ancestorPid) return true;
+    visited.add(currentPid);
+    currentPid = readParentPid(currentPid);
+    depth += 1;
+  }
+
+  return false;
 }
 
 function parseLinuxProcStartTicks(statContent: string): number | null {
@@ -331,6 +379,29 @@ export async function reconcileNativeSessionStart(
     ? existing.native_session_id.trim()
     : '';
   if (existingNativeSessionId && existingNativeSessionId !== nativeSessionId) {
+    const incomingPid = Number.isInteger(options.pid) && options.pid && options.pid > 0
+      ? options.pid
+      : process.pid;
+    const existingPid = Number.isInteger(existing.pid) && existing.pid > 0
+      ? existing.pid
+      : null;
+    if (
+      existingPid
+      && incomingPid !== existingPid
+      && isDescendantProcess(incomingPid, existingPid, options.readParentPid ?? defaultReadParentPid)
+    ) {
+      const nowIso = new Date().toISOString();
+      await appendToLog(cwd, {
+        event: 'session_start_preserved_subagent',
+        session_id: existing.session_id,
+        native_session_id: nativeSessionId,
+        preserved_native_session_id: existingNativeSessionId,
+        pid: incomingPid,
+        timestamp: nowIso,
+      });
+      return existing;
+    }
+
     return await writeSessionStart(cwd, nativeSessionId, {
       ...options,
       nativeSessionId,

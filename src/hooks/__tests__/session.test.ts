@@ -226,6 +226,36 @@ describe('session lifecycle manager', () => {
     }
   });
 
+  it('preserves the canonical session when a descendant subagent SessionStart arrives in the same cwd', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-subagent-'));
+    try {
+      await writeSessionStart(cwd, 'omx-leader-session', {
+        nativeSessionId: 'codex-native-leader',
+      });
+
+      const childPid = process.pid + 1000;
+      const reconciled = await reconcileNativeSessionStart(cwd, 'codex-native-child', {
+        pid: childPid,
+        platform: process.platform,
+        readParentPid: (pid) => (pid === childPid ? process.pid : null),
+      });
+
+      assert.equal(reconciled.session_id, 'omx-leader-session');
+      assert.equal(reconciled.native_session_id, 'codex-native-leader');
+
+      const persisted = await readSessionState(cwd);
+      assert.equal(persisted?.session_id, 'omx-leader-session');
+      assert.equal(persisted?.native_session_id, 'codex-native-leader');
+
+      const dailyLogPath = join(cwd, '.omx', 'logs', `omx-${todayIsoDate()}.jsonl`);
+      const dailyLog = await readFile(dailyLogPath, 'utf-8');
+      assert.match(dailyLog, /"event":"session_start_preserved_subagent"/);
+      assert.match(dailyLog, /"native_session_id":"codex-native-child"/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to a fresh canonical session when reconciling without authoritative launch state', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-fallback-'));
     try {
