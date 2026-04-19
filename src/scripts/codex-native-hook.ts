@@ -2,6 +2,7 @@ import { execFileSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { mkdir, readFile, readdir, writeFile } from "fs/promises";
 import { join, resolve } from "path";
+import { pathToFileURL } from "url";
 import { readModeState, readModeStateForSession, updateModeState } from "../modes/base.js";
 import {
   listActiveSkills,
@@ -1786,7 +1787,7 @@ export async function runCodexNativeHookCli(): Promise<void> {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   runCodexNativeHookCli().catch((error) => {
     process.stderr.write(
       `[omx] codex-native-hook failed: ${

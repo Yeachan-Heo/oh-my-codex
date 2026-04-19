@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -171,6 +171,37 @@ describe("codex native hook dispatch", () => {
       String(output.hookSpecificOutput?.additionalContext ?? ""),
       /stdin JSON parsing failed inside codex-native-hook:/,
     );
+  });
+
+  it("runs the CLI entrypoint when the script path contains spaces", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "omx Application Support "));
+    try {
+      await cp(join(process.cwd(), "dist"), join(tempRoot, "dist"), { recursive: true });
+      await symlink(join(process.cwd(), "node_modules"), join(tempRoot, "node_modules"), "dir");
+      const stdout = execFileSync(
+        process.execPath,
+        [join(tempRoot, "dist", "scripts", "codex-native-hook.js")],
+        {
+          cwd: tempRoot,
+          input: "{",
+          encoding: "utf-8",
+          stdio: ["pipe", "pipe", "pipe"],
+        },
+      );
+
+      const output = JSON.parse(stdout.trim()) as {
+        decision?: string;
+        hookSpecificOutput?: { hookEventName?: string; additionalContext?: string };
+      };
+      assert.equal(output.decision, "block");
+      assert.equal(output.hookSpecificOutput?.hookEventName, "Unknown");
+      assert.match(
+        String(output.hookSpecificOutput?.additionalContext ?? ""),
+        /stdin JSON parsing failed inside codex-native-hook:/,
+      );
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("maps Codex events onto OMX logical surfaces", () => {
