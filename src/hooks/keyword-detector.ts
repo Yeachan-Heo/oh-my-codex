@@ -469,6 +469,17 @@ function hasExplicitPromptsInvocation(text: string): boolean {
   return /(?:^|\s)\/prompts:[\w.-]+(?=[\s.,!?;:]|$)/i.test(text);
 }
 
+/**
+ * Korean 2-set keyboard typo aliases for workflow keywords.
+ *
+ * Keep this intentionally narrow: only the `ulw` ultrawork shorthand is
+ * normalized so users who forget to switch IMEs get the same activation path
+ * as the canonical keyword without introducing broad transliteration surprises.
+ */
+function normalizeWorkflowKeyboardTypos(text: string): string {
+  return text.replace(/ㅕㅣㅈ/g, 'ulw');
+}
+
 function hasExplicitSkillLikeInvocation(text: string): boolean {
   return /(?:^|[^\w])\$([a-z][a-z0-9-]*)\b/i.test(text);
 }
@@ -522,11 +533,12 @@ function hasIntentContextForKeyword(text: string, keyword: string): boolean {
  * then appends implicit keyword matches sorted by priority.
  */
 export function detectKeywords(text: string): KeywordMatch[] {
-  const explicit = extractExplicitSkillInvocations(text);
-  if (hasExplicitPromptsInvocation(text) && explicit.length === 0) {
+  const normalizedText = normalizeWorkflowKeyboardTypos(text);
+  const explicit = extractExplicitSkillInvocations(normalizedText);
+  if (hasExplicitPromptsInvocation(normalizedText) && explicit.length === 0) {
     return [];
   }
-  if (explicit.length === 0 && hasExplicitSkillLikeInvocation(text)) {
+  if (explicit.length === 0 && hasExplicitSkillLikeInvocation(normalizedText)) {
     return [];
   }
   if (explicit.length > 0) {
@@ -536,9 +548,9 @@ export function detectKeywords(text: string): KeywordMatch[] {
   const implicit: KeywordMatch[] = [];
 
   for (const { pattern, skill, priority } of KEYWORD_MAP) {
-    const match = text.match(pattern);
+    const match = normalizedText.match(pattern);
     if (match) {
-      if (!hasIntentContextForKeyword(text, match[0].toLowerCase())) continue;
+      if (!hasIntentContextForKeyword(normalizedText, match[0].toLowerCase())) continue;
       implicit.push({
         keyword: match[0],
         skill,

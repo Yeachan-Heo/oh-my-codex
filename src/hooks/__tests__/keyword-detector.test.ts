@@ -242,6 +242,15 @@ describe('keyword detector swarm/team compatibility', () => {
     assert.equal(detectPrimaryKeyword('PASS runs assertions in parallel when sharding is enabled'), null);
     assert.equal(detectPrimaryKeyword('running 8 tests in parallel across 4 workers'), null);
   });
+
+  it('normalizes the Korean keyboard typo for ulw to ultrawork only', () => {
+    const match = detectPrimaryKeyword('ㅕㅣㅈ로 이 작업 처리해줘');
+
+    assert.ok(match);
+    assert.equal(match.skill, 'ultrawork');
+    assert.equal(match.keyword, 'ulw');
+    assert.equal(detectPrimaryKeyword('ㅁㅔㅔ로 처리해줘'), null);
+  });
 });
 
 describe('autoresearch keyword detection', () => {
@@ -544,6 +553,37 @@ describe('keyword detector skill-active-state lifecycle', () => {
         await readFile(join(stateDir, 'sessions', 'sess-visible', SKILL_ACTIVE_STATE_FILE), 'utf-8'),
       ) as { active_skills?: Array<{ skill: string }> };
       assert.deepEqual(persisted.active_skills?.map((entry) => entry.skill), ['team', 'ralph', 'ultrawork']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('activates ultrawork mode from the Korean keyboard typo for ulw', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ulw-ko-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(stateDir, { recursive: true });
+      const result = await recordSkillActivation({
+        stateDir,
+        text: 'ㅕㅣㅈ로 병렬 처리해줘',
+        sessionId: 'sess-ulw-ko',
+        threadId: 'thread-ulw-ko',
+        turnId: 'turn-ulw-ko',
+        nowIso: '2026-04-21T00:00:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'ultrawork');
+      assert.equal(result.keyword, 'ulw');
+      assert.equal(result.initialized_mode, 'ultrawork');
+      assert.equal(result.initialized_state_path, '.omx/state/sessions/sess-ulw-ko/ultrawork-state.json');
+
+      const modeState = JSON.parse(
+        await readFile(join(stateDir, 'sessions', 'sess-ulw-ko', 'ultrawork-state.json'), 'utf-8'),
+      ) as { mode: string; active: boolean; current_phase: string };
+      assert.equal(modeState.mode, 'ultrawork');
+      assert.equal(modeState.active, true);
+      assert.equal(modeState.current_phase, 'planning');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
