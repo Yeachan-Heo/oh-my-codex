@@ -606,6 +606,35 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("normalizes the Korean keyboard typo for ulw during UserPromptSubmit activation", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ulw-ko-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-ulw-ko",
+          thread_id: "thread-ulw-ko",
+          turn_id: "turn-ulw-ko",
+          prompt: "ㅕㅣㅈ로 병렬 처리해줘",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.skill, "ultrawork");
+      assert.equal(result.skillState?.keyword, "ulw");
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(additionalContext, /workflow keyword \"ulw\" -> ultrawork/);
+      assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", "sess-ulw-ko", "ultrawork-state.json")), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not activate Ralph workflow state from a plain conversational mention", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-plain-text-"));
     try {

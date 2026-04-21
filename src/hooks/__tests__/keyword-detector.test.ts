@@ -242,6 +242,21 @@ describe('keyword detector swarm/team compatibility', () => {
     assert.equal(detectPrimaryKeyword('PASS runs assertions in parallel when sharding is enabled'), null);
     assert.equal(detectPrimaryKeyword('running 8 tests in parallel across 4 workers'), null);
   });
+
+  it('normalizes the Korean keyboard typo for ulw to ultrawork only', () => {
+    const match = detectPrimaryKeyword('ㅕㅣㅈ로 이 작업 처리해줘');
+
+    assert.ok(match);
+    assert.equal(match.skill, 'ultrawork');
+    assert.equal(match.keyword, 'ulw');
+
+    const explicitMatch = detectPrimaryKeyword('$ㅕㅣㅈ로 이 작업 처리해줘');
+    assert.ok(explicitMatch);
+    assert.equal(explicitMatch.skill, 'ultrawork');
+    assert.equal(explicitMatch.keyword, '$ulw');
+
+    assert.equal(detectPrimaryKeyword('ㅁㅔㅔ로 처리해줘'), null);
+  });
 });
 
 describe('autoresearch keyword detection', () => {
@@ -544,6 +559,37 @@ describe('keyword detector skill-active-state lifecycle', () => {
         await readFile(join(stateDir, 'sessions', 'sess-visible', SKILL_ACTIVE_STATE_FILE), 'utf-8'),
       ) as { active_skills?: Array<{ skill: string }> };
       assert.deepEqual(persisted.active_skills?.map((entry) => entry.skill), ['team', 'ralph', 'ultrawork']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('activates ultrawork mode from the Korean keyboard typo for ulw', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ulw-ko-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(stateDir, { recursive: true });
+      const result = await recordSkillActivation({
+        stateDir,
+        text: 'ㅕㅣㅈ로 병렬 처리해줘',
+        sessionId: 'sess-ulw-ko',
+        threadId: 'thread-ulw-ko',
+        turnId: 'turn-ulw-ko',
+        nowIso: '2026-04-21T00:00:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'ultrawork');
+      assert.equal(result.keyword, 'ulw');
+      assert.equal(result.initialized_mode, 'ultrawork');
+      assert.equal(result.initialized_state_path, '.omx/state/sessions/sess-ulw-ko/ultrawork-state.json');
+
+      const modeState = JSON.parse(
+        await readFile(join(stateDir, 'sessions', 'sess-ulw-ko', 'ultrawork-state.json'), 'utf-8'),
+      ) as { mode: string; active: boolean; current_phase: string };
+      assert.equal(modeState.mode, 'ultrawork');
+      assert.equal(modeState.active, true);
+      assert.equal(modeState.current_phase, 'planning');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1298,6 +1344,86 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(modeState.current_phase, 'verifying');
       assert.equal(modeState.iteration, 3);
       assert.equal(modeState.max_iterations, 10);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps Korean ulw typo first in mixed explicit workflow persistence', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ulw-ko-mixed-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(stateDir, { recursive: true });
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$ㅕㅣㅈ $autopilot 병렬 작업으로 처리해줘',
+        sessionId: 'sess-ulw-ko-mixed',
+        nowIso: '2026-04-21T00:20:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'ultrawork');
+      assert.equal(result.keyword, '$ulw');
+      assert.deepEqual(result.requested_skills, ['ultrawork', 'autopilot']);
+      assert.deepEqual(result.active_skills?.map((entry) => entry.skill), ['ultrawork', 'autopilot']);
+      assert.equal(
+        existsSync(join(stateDir, 'sessions', 'sess-ulw-ko-mixed', 'ultrawork-state.json')),
+        true,
+      );
+      assert.equal(
+        existsSync(join(stateDir, 'sessions', 'sess-ulw-ko-mixed', 'autopilot-state.json')),
+        true,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('lets an explicit Korean ulw typo override an active workflow continuation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ulw-ko-explicit-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(join(stateDir, 'sessions', 'sess-ulw-ko-explicit'), { recursive: true });
+      await writeFile(
+        join(stateDir, 'sessions', 'sess-ulw-ko-explicit', SKILL_ACTIVE_STATE_FILE),
+        JSON.stringify({
+          version: 1,
+          active: true,
+          skill: 'autopilot',
+          keyword: '$autopilot',
+          phase: 'executing',
+          activated_at: '2026-04-21T00:00:00.000Z',
+          updated_at: '2026-04-21T00:05:00.000Z',
+          source: 'keyword-detector',
+          session_id: 'sess-ulw-ko-explicit',
+          active_skills: [
+            {
+              skill: 'autopilot',
+              phase: 'executing',
+              active: true,
+              activated_at: '2026-04-21T00:00:00.000Z',
+              updated_at: '2026-04-21T00:05:00.000Z',
+              session_id: 'sess-ulw-ko-explicit',
+            },
+          ],
+        }, null, 2),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$ㅕㅣㅈ continue',
+        sessionId: 'sess-ulw-ko-explicit',
+        nowIso: '2026-04-21T00:10:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'ultrawork');
+      assert.equal(result.keyword, '$ulw');
+      assert.deepEqual(result.active_skills?.map((entry) => entry.skill), ['autopilot', 'ultrawork']);
+      assert.equal(
+        existsSync(join(stateDir, 'sessions', 'sess-ulw-ko-explicit', 'ultrawork-state.json')),
+        true,
+      );
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
