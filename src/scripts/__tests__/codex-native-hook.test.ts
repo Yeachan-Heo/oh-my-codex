@@ -1912,6 +1912,58 @@ esac
     }
   });
 
+  it("stays silent when successful Bash stdout merely mentions command-not-found text", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-command-not-found-stdout-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-stdout-hard-failure-text",
+          tool_input: { command: "echo command not found" },
+          tool_response: JSON.stringify({
+            exit_code: 0,
+            stdout: "command not found",
+            stderr: "",
+          }),
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not flag successful MCP stdout that only mentions transport closure text", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-mcp-transport-stdout-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "mcp__omx_state__state_write",
+          tool_use_id: "tool-mcp-transport-stdout",
+          tool_input: { mode: "team", active: true },
+          tool_response: JSON.stringify({
+            exit_code: 0,
+            stdout: "mcp transport closed",
+            stderr: "",
+          }),
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns PostToolUse MCP transport fallback guidance for clear MCP transport death", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-mcp-transport-"));
     try {

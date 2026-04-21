@@ -134,9 +134,8 @@ export function detectMcpTransportFailure(
   payload: CodexHookPayload,
 ): McpTransportFailureSignal | null {
   const normalized = normalizePostToolUsePayload(payload);
-  const combined = [
+  const diagnosticText = [
     normalized.stderrText,
-    normalized.stdoutText,
     safeString(normalized.parsedToolResponse?.error),
     safeString(normalized.parsedToolResponse?.message),
     safeString(normalized.parsedToolResponse?.details),
@@ -146,17 +145,17 @@ export function detectMcpTransportFailure(
     .trim();
 
   const mcpContextDetected = isMcpLikeToolName(normalized.toolName)
-    || /\bmcp\b/i.test(combined)
-    || /\bomx-(?:state|memory|trace|code-intel)-server\b/i.test(combined);
+    || /\bmcp\b/i.test(diagnosticText)
+    || /\bomx-(?:state|memory|trace|code-intel)-server\b/i.test(diagnosticText);
   if (!mcpContextDetected) return null;
-  if (!combined) return null;
-  if (!MCP_TRANSPORT_FAILURE_PATTERNS.some((pattern) => pattern.test(combined))) {
+  if (!diagnosticText) return null;
+  if (!MCP_TRANSPORT_FAILURE_PATTERNS.some((pattern) => pattern.test(diagnosticText))) {
     return null;
   }
 
   return {
     toolName: normalized.toolName,
-    summary: combined,
+    summary: diagnosticText,
   };
 }
 
@@ -608,7 +607,18 @@ export function buildNativePostToolUseOutput(
   if (!normalized.isBash) return null;
 
   const combined = `${normalized.stderrText}\n${normalized.stdoutText}`.trim();
-  if (containsHardFailure(combined)) {
+  const hardFailureSignal = normalized.exitCode !== null && normalized.exitCode !== 0
+    ? [
+      normalized.stderrText,
+      safeString(normalized.parsedToolResponse?.error),
+      safeString(normalized.parsedToolResponse?.message),
+      safeString(normalized.parsedToolResponse?.details),
+    ]
+      .filter(Boolean)
+      .join("\n")
+      .trim()
+    : "";
+  if (containsHardFailure(hardFailureSignal)) {
     return {
       decision: "block",
       reason: "The Bash output indicates a command/setup failure that should be fixed before retrying.",
@@ -624,7 +634,7 @@ export function buildNativePostToolUseOutput(
     normalized.exitCode !== null
     && normalized.exitCode !== 0
     && combined.length > 0
-    && !containsHardFailure(combined)
+    && !containsHardFailure(hardFailureSignal)
   ) {
     return {
       decision: "block",
