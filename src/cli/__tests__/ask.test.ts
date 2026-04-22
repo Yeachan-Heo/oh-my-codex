@@ -92,6 +92,20 @@ describe('parseAskArgs', () => {
     assert.throws(() => parseAskArgs(['openai', 'hello']), /Invalid provider/);
   });
 
+  it('parses minimax provider', () => {
+    assert.deepEqual(parseAskArgs(['minimax', 'hello', 'world']), {
+      provider: 'minimax',
+      prompt: 'hello world',
+    });
+  });
+
+  it('parses minimax with -p flag', () => {
+    assert.deepEqual(parseAskArgs(['minimax', '-p', 'what is MiniMax?']), {
+      provider: 'minimax',
+      prompt: 'what is MiniMax?',
+    });
+  });
+
   it('throws when prompt is missing', () => {
     assert.throws(() => parseAskArgs(['claude']), /Missing prompt text/);
   });
@@ -111,6 +125,22 @@ describe('omx ask', () => {
       assert.equal(res.status, 1, res.stderr || res.stdout);
       assert.match(res.stderr, /claude --print/);
       assert.match(res.stderr, /gemini --prompt/);
+      assert.match(res.stderr, /minimax/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('minimax provider writes artifact and returns 1 without MINIMAX_API_KEY', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-ask-minimax-no-key-'));
+    try {
+      const res = runOmx(wd, ['ask', 'minimax', 'hello minimax'], {
+        MINIMAX_API_KEY: '',
+      });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+
+      assert.equal(res.status, 1, res.stderr || res.stdout);
+      assert.match(res.stderr, /MINIMAX_API_KEY/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
