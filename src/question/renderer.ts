@@ -38,6 +38,24 @@ function isPaneId(value: string | null | undefined): value is string {
   return typeof value === 'string' && /^%\d+$/.test(value.trim());
 }
 
+function hasVisibleAttachedTmuxSession(
+  env: NodeJS.ProcessEnv,
+  execTmux: ExecTmuxSync,
+): boolean {
+  if (safeString(env.TMUX).trim() === '') return false;
+
+  const paneTarget = safeString(env.TMUX_PANE).trim();
+  const args = isPaneId(paneTarget)
+    ? ['display-message', '-p', '-t', paneTarget, '#{session_attached}']
+    : ['display-message', '-p', '#{session_attached}'];
+
+  try {
+    return execTmux(args).trim() === '1';
+  } catch {
+    return false;
+  }
+}
+
 export function resolveQuestionRendererStrategy(
   env: NodeJS.ProcessEnv = process.env,
   // Kept for callers/tests that used to pass detected tmux availability; default
@@ -226,8 +244,12 @@ export function launchQuestionRenderer(
   const execTmux = deps.execTmux ?? defaultExecTmux;
   const sleepImpl = deps.sleepSync ?? sleepSync;
   const launchedAt = options.nowIso ?? new Date().toISOString();
+  const env = options.env ?? process.env;
 
-  if (strategy === 'unsupported') {
+  if (
+    strategy === 'unsupported'
+    || (strategy === 'inside-tmux' && !hasVisibleAttachedTmuxSession(env, execTmux))
+  ) {
     throw new Error(
       'omx question cannot open a visible renderer because this process is not running inside an attached tmux pane. Run omx question from inside tmux.',
     );
@@ -235,7 +257,7 @@ export function launchQuestionRenderer(
 
   const commandArgs = buildQuestionUiTmuxArgs(options.recordPath, {
     cwd: options.cwd,
-    env: options.env,
+    env,
     sessionId: options.sessionId,
   });
 
