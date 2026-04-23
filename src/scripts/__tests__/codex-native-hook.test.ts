@@ -1912,6 +1912,28 @@ esac
     }
   });
 
+  it("does not classify empty-output exit-1 Bash commands as setup failures", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-empty-exit-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-empty-exit",
+          tool_input: { command: "rg -n missing pattern file" },
+          tool_response: '{"exit_code":1,"stdout":"","stderr":""}',
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns PostToolUse MCP transport fallback guidance for clear MCP transport death", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-mcp-transport-"));
     try {

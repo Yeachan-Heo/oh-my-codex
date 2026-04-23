@@ -85,7 +85,8 @@ export function normalizePostToolUsePayload(
     ?? safeInteger(parsedToolResponse?.exitCode)
     ?? null;
   const rawText = safeString(rawToolResponse).trim();
-  const stdoutText = safeString(parsedToolResponse?.stdout).trim() || rawText;
+  const stdoutText = safeString(parsedToolResponse?.stdout).trim()
+    || (parsedToolResponse ? "" : rawText);
   const stderrText = safeString(parsedToolResponse?.stderr).trim();
 
   return {
@@ -580,8 +581,19 @@ export function buildNativePreToolUseOutput(
   };
 }
 
-function containsHardFailure(text: string): boolean {
-  return /command not found|permission denied|no such file or directory/i.test(text);
+function containsHardFailure(stderrText: string, stdoutText = "", exitCode: number | null = null): boolean {
+  if (exitCode === 0) {
+    return false;
+  }
+  const stderr = String(stderrText ?? "").trim();
+  if (stderr) {
+    return /command not found|permission denied|no such file or directory/i.test(stderr);
+  }
+  const stdout = String(stdoutText ?? "").trim();
+  if (!stdout) {
+    return false;
+  }
+  return /(?:^|\n)\s*(?:bash|sh|zsh|node|python|python3|env|git|rg|grep|sed|cat|tail|head|find|npm|pnpm|yarn|flutter|dart|omx)?[^\n]*?(?:command not found|permission denied|no such file or directory)/i.test(stdout);
 }
 
 export function buildNativePostToolUseOutput(
@@ -608,7 +620,7 @@ export function buildNativePostToolUseOutput(
   if (!normalized.isBash) return null;
 
   const combined = `${normalized.stderrText}\n${normalized.stdoutText}`.trim();
-  if (containsHardFailure(combined)) {
+  if (containsHardFailure(normalized.stderrText, normalized.stdoutText, normalized.exitCode)) {
     return {
       decision: "block",
       reason: "The Bash output indicates a command/setup failure that should be fixed before retrying.",
@@ -624,7 +636,7 @@ export function buildNativePostToolUseOutput(
     normalized.exitCode !== null
     && normalized.exitCode !== 0
     && combined.length > 0
-    && !containsHardFailure(combined)
+    && !containsHardFailure(normalized.stderrText, normalized.stdoutText, normalized.exitCode)
   ) {
     return {
       decision: "block",
