@@ -1,6 +1,6 @@
 ---
 name: visual-ralph
-description: Visual Ralph orchestration for frontend UI: generate an approved image reference with $imagegen, then run $ralph with $visual-verdict and pixel-diff evidence until the implementation matches and leaves a reproducible design system.
+description: "Visual Ralph orchestration for frontend UI: generate an approved image reference with $imagegen, then run $ralph with $visual-verdict and pixel-diff evidence until the implementation matches and leaves a reproducible design system."
 ---
 
 # Visual Ralph Skill
