@@ -60,7 +60,7 @@ const EXPLORE_STARTERS: readonly string[] = [
 /** External docs/reference lookup prompts → LIGHT/researcher */
 const RESEARCHER_EXTERNAL_SIGNALS: RegExp[] = [
   /\b(?:official docs?|upstream docs?|vendor docs?|api docs?|reference docs?|release notes?|changelog|version(?:ing)?|compatib(?:ility|le)|documentation)\b/,
-  /\b(?:web|internet|online|external sources?|sources?|citations?|source-backed|in the wild)\b/,
+  /\b(?:web|internet|online|external sources?|external citations?|source-backed|in the wild)\b/,
   /\b(?:github|npm|pypi|crates\.io|mdn|stackoverflow)\b/,
   /(?:공식\s*(?:문서|docs?)|외부\s*(?:자료|문서|소스)|웹에서|인터넷에서|출처|레퍼런스|릴리즈\s*노트|버전\s*호환|호환성)/,
 ];
@@ -76,6 +76,13 @@ const RESEARCHER_TECH_SUBJECTS: RegExp[] = [
 
 const RESEARCHER_TECH_NEEDS: RegExp[] = [
   /\b(?:behavior|best way|configuration|configure|example|examples|feature|features?|how(?:\s+do|\s+to)?|lifecycle|option|options|parameter|parameters|usage|what(?:\s+does|\s+is)|when(?:\s+does|\s+should)|why(?:\s+does)?)\b/,
+];
+
+const LOCAL_RESEARCH_EXCLUSION_SIGNALS: RegExp[] = [
+  /\b(?:repo|repository|codebase|local|in-repo|source tree|working tree)\b/,
+  /\b(?:src|lib|test|spec|app|pages|components|hooks|utils|services|api|dist|build|scripts)\/[\w./\-]+/,
+  /\b[\w./\-]+\.(?:ts|js|py|go|rs|java|tsx|jsx|vue|svelte|rb|c|cpp|h|css|scss|html|json|yaml|yml|toml)\b/,
+  /(?:이\s*(?:레포|저장소|코드베이스)|레포에서|저장소에서|코드베이스에서|소스에서|파일에서)/,
 ];
 
 /** Starters / keywords for visual / styling prompts → LIGHT/designer */
@@ -213,6 +220,7 @@ export function triagePrompt(prompt: string): TriageDecision {
 
   // ── Rule 3: External docs / source-backed lookup → LIGHT/researcher ──────
   if (
+    !LOCAL_RESEARCH_EXCLUSION_SIGNALS.some((pattern) => pattern.test(normalized)) &&
     RESEARCHER_LOOKUP_VERBS.some((pattern) => pattern.test(normalized)) &&
     (
       RESEARCHER_EXTERNAL_SIGNALS.some((pattern) => pattern.test(normalized)) ||

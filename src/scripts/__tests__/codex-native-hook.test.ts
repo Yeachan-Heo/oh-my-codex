@@ -5932,6 +5932,72 @@ describe("codex native hook triage integration", () => {
     }
   });
 
+  it("keeps local source lookup prompts off researcher", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-local-source-explore-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-local-source-1",
+          thread_id: "thread-triage-local-source-1",
+          turn_id: "turn-triage-local-source-1",
+          prompt: "search source for parseConfig in src/config.ts",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.doesNotMatch(additionalContext, /Prefer the researcher role surface/);
+      assert.match(additionalContext, /Prefer the executor role surface/);
+
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-local-source-1", "prompt-routing-state.json");
+      const state = JSON.parse(await readFile(stateFile, "utf-8")) as {
+        last_triage?: { lane?: string; destination?: string };
+      };
+      assert.equal(state.last_triage?.lane, "LIGHT");
+      assert.equal(state.last_triage?.destination, "executor");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps anchored local API usage prompts on executor instead of researcher", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-local-api-executor-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-local-api-1",
+          thread_id: "thread-triage-local-api-1",
+          turn_id: "turn-triage-local-api-1",
+          prompt: "find API usage in src/foo.ts",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.doesNotMatch(additionalContext, /Prefer the researcher role surface/);
+      assert.match(additionalContext, /Prefer the executor role surface/);
+
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-local-api-1", "prompt-routing-state.json");
+      const state = JSON.parse(await readFile(stateFile, "utf-8")) as {
+        last_triage?: { lane?: string; destination?: string };
+      };
+      assert.equal(state.last_triage?.lane, "LIGHT");
+      assert.equal(state.last_triage?.destination, "executor");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   // ── Group 6: PASS (no triage injection, no state) ────────────────────────
 
   it("produces no triage advisory and no state for trivial greeting prompts", async () => {
