@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { buildManagedCodexHooksConfig } from "../../config/codex-hooks.js";
+import { DOCUMENT_REFRESH_EXEMPTION_PREFIX } from "../../document-refresh/enforcer.js";
 import {
   initTeamState,
   readTeamLeaderAttention,
@@ -2042,6 +2043,181 @@ esac
     }
   });
 
+  it("warns on PreToolUse git commit when mapped source changes lack staged docs refresh", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-document-refresh-warn-"));
+    try {
+      execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Test User"], { cwd, stdio: "ignore" });
+      await mkdir(join(cwd, "src", "scripts"), { recursive: true });
+      await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 1;\n", "utf-8");
+      await writeFile(join(cwd, "README.md"), "base\n", "utf-8");
+      execFileSync("git", ["add", "README.md", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "init"], { cwd, stdio: "ignore" });
+      await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 2;\n", "utf-8");
+      execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-doc-refresh-warn",
+          tool_input: {
+            command: [
+              'git commit',
+              '-m "Keep native hooks aligned with docs"',
+              '-m "Update the stop hook internals without refreshing the operator docs yet."',
+              '-m "Constraint: native hook warning MVP must remain non-blocking on commit path"',
+              '-m "Tested: node --test dist/scripts/__tests__/codex-native-hook.test.js"',
+              '-m "Co-authored-by: OmX <omx@oh-my-codex.dev>"',
+            ].join(" "),
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, undefined);
+      assert.equal((result.outputJson as { hookSpecificOutput?: { hookEventName?: string } } | null)?.hookSpecificOutput?.hookEventName, "PreToolUse");
+      assert.match(JSON.stringify(result.outputJson), /Document-refresh warning/);
+      assert.match(JSON.stringify(result.outputJson), /docs\/codex-native-hooks\.md/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not warn on PreToolUse when relevant docs are staged", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-document-refresh-docs-"));
+    try {
+      await mkdir(join(cwd, "src", "scripts"), { recursive: true });
+      await mkdir(join(cwd, "docs"), { recursive: true });
+      execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Test User"], { cwd, stdio: "ignore" });
+      await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 1;\n", "utf-8");
+      await writeFile(join(cwd, "docs", "codex-native-hooks.md"), "initial\n", "utf-8");
+      execFileSync("git", ["add", "src/scripts/codex-native-hook.ts", "docs/codex-native-hooks.md"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "init"], { cwd, stdio: "ignore" });
+      await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 2;\n", "utf-8");
+      await writeFile(join(cwd, "docs", "codex-native-hooks.md"), "updated\n", "utf-8");
+      execFileSync("git", ["add", "src/scripts/codex-native-hook.ts", "docs/codex-native-hooks.md"], { cwd, stdio: "ignore" });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-doc-refresh-docs",
+          tool_input: {
+            command: [
+              'git commit',
+              '-m "Keep native hooks aligned with docs"',
+              '-m "Update the stop hook internals and refresh the native hook docs together."',
+              '-m "Constraint: native hook warning MVP must remain non-blocking on commit path"',
+              '-m "Tested: node --test dist/scripts/__tests__/codex-native-hook.test.js"',
+              '-m "Co-authored-by: OmX <omx@oh-my-codex.dev>"',
+            ].join(" "),
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not run commit-path document-refresh against payload cwd when git -C targets another repo", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-document-refresh-chdir-"));
+    const otherRepo = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-document-refresh-other-"));
+    try {
+      await mkdir(join(cwd, "src", "scripts"), { recursive: true });
+      execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Test User"], { cwd, stdio: "ignore" });
+      await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 1;\n", "utf-8");
+      execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "init"], { cwd, stdio: "ignore" });
+      await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 2;\n", "utf-8");
+      execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
+
+      execFileSync("git", ["init"], { cwd: otherRepo, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: otherRepo, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Test User"], { cwd: otherRepo, stdio: "ignore" });
+      await writeFile(join(otherRepo, "README.md"), "base\n", "utf-8");
+      execFileSync("git", ["add", "README.md"], { cwd: otherRepo, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "init"], { cwd: otherRepo, stdio: "ignore" });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-doc-refresh-chdir",
+          tool_input: {
+            command: [
+              `git -C ${JSON.stringify(otherRepo)}`,
+              'commit',
+              '-m "Keep native hooks aligned with docs"',
+              '-m "Document-refresh check should not inspect the caller cwd when commit targets another repo."',
+              '-m "Constraint: alternate git targets are skipped unless hook-side repo resolution is added explicitly"',
+              '-m "Tested: node --test dist/scripts/__tests__/codex-native-hook.test.js"',
+              '-m "Co-authored-by: OmX <omx@oh-my-codex.dev>"',
+            ].join(" "),
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(otherRepo, { recursive: true, force: true });
+    }
+  });
+
+  it("suppresses PreToolUse document-refresh warning when commit message includes an exemption", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-document-refresh-exempt-"));
+    try {
+      await mkdir(join(cwd, "src", "scripts"), { recursive: true });
+      execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Test User"], { cwd, stdio: "ignore" });
+      await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 1;\n", "utf-8");
+      execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "init"], { cwd, stdio: "ignore" });
+      await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 2;\n", "utf-8");
+      execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-doc-refresh-exempt",
+          tool_input: {
+            command: [
+              'git commit',
+              '-m "Keep native hooks aligned with docs"',
+              '-m "Update the stop hook internals without docs refresh because behavior is internal-only."',
+              '-m "Constraint: native hook warning MVP must remain non-blocking on commit path"',
+              `-m "${DOCUMENT_REFRESH_EXEMPTION_PREFIX} internal-only behavior verified"`,
+              '-m "Tested: node --test dist/scripts/__tests__/codex-native-hook.test.js"',
+              '-m "Co-authored-by: OmX <omx@oh-my-codex.dev>"',
+            ].join(" "),
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns PostToolUse remediation guidance for command-not-found output", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-failure-"));
     try {
@@ -3873,6 +4049,123 @@ esac
           cwd,
           session_id: "sess-stop-main",
           thread_id: "main-thread",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a non-blocking Stop document-refresh warning before auto-nudge when Ralph is not active", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-document-refresh-"));
+    try {
+      await mkdir(join(cwd, "src", "scripts"), { recursive: true });
+      execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Test User"], { cwd, stdio: "ignore" });
+      await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 1;\n", "utf-8");
+      execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "init"], { cwd, stdio: "ignore" });
+      await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 2;\n", "utf-8");
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-doc-refresh",
+          last_assistant_message: "Launch-ready: yes",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, undefined);
+      assert.equal((result.outputJson as { hookSpecificOutput?: { hookEventName?: string } } | null)?.hookSpecificOutput?.hookEventName, "Stop");
+      assert.match(JSON.stringify(result.outputJson), /Document-refresh warning/);
+      assert.match(JSON.stringify(result.outputJson), /staged \+ unstaged changes/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not warn on ordinary non-terminal Stop attempts before auto-nudge", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-document-refresh-nonterminal-"));
+    try {
+      await mkdir(join(cwd, "src", "scripts"), { recursive: true });
+      execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Test User"], { cwd, stdio: "ignore" });
+      await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 1;\n", "utf-8");
+      execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "init"], { cwd, stdio: "ignore" });
+      await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 2;\n", "utf-8");
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-doc-refresh-nonterminal",
+          last_assistant_message: "Continuing implementation; next I will run focused tests.",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("dedupes identical Stop document-refresh warnings during active Stop-hook replays", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-document-refresh-dedupe-"));
+    try {
+      await mkdir(join(cwd, "src", "scripts"), { recursive: true });
+      execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Test User"], { cwd, stdio: "ignore" });
+      await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 1;\n", "utf-8");
+      execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "init"], { cwd, stdio: "ignore" });
+      await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 2;\n", "utf-8");
+
+      const payload = {
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-stop-doc-refresh-dedupe",
+        last_assistant_message: "Launch-ready: yes",
+      } as const;
+
+      const first = await dispatchCodexNativeHook(payload, { cwd });
+      const replay = await dispatchCodexNativeHook({ ...payload, stop_hook_active: true }, { cwd });
+
+      assert.match(JSON.stringify(first.outputJson), /Document-refresh warning/);
+      assert.equal(replay.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("suppresses Stop document-refresh warning when the final handoff message includes an exemption", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-document-refresh-exempt-"));
+    try {
+      await mkdir(join(cwd, "src", "scripts"), { recursive: true });
+      execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Test User"], { cwd, stdio: "ignore" });
+      await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 1;\n", "utf-8");
+      execFileSync("git", ["add", "src/scripts/codex-native-hook.ts"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "init"], { cwd, stdio: "ignore" });
+      await writeFile(join(cwd, "src", "scripts", "codex-native-hook.ts"), "export const hook = 2;\n", "utf-8");
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-doc-refresh-exempt",
+          last_assistant_message: `${DOCUMENT_REFRESH_EXEMPTION_PREFIX} internal-only behavior verified`,
         },
         { cwd },
       );

@@ -67,6 +67,11 @@ import {
   reconcileDeepInterviewQuestionEnforcementFromAnsweredRecords,
 } from "../question/deep-interview.js";
 import { resolveOmxCliEntryPath } from "../utils/paths.js";
+import {
+  buildDocumentRefreshAdvisoryOutput,
+  evaluateFinalHandoffDocumentRefresh,
+  isFinalHandoffDocumentRefreshCandidate,
+} from "../document-refresh/enforcer.js";
 
 type CodexHookEventName =
   | "SessionStart"
@@ -1647,6 +1652,25 @@ async function buildStopHookOutput(
         },
         canonicalSessionId,
       );
+    }
+
+    if (isFinalHandoffDocumentRefreshCandidate(lastAssistantMessage)) {
+      const documentRefreshWarning = evaluateFinalHandoffDocumentRefresh(cwd, lastAssistantMessage);
+      if (documentRefreshWarning) {
+        return await maybeReturnRepeatableStopOutput(
+          payload,
+          stateDir,
+          buildRepeatableStopSignature(
+            payload,
+            "document-refresh-stop",
+            documentRefreshWarning.triggeringPaths.join("|"),
+            canonicalSessionId,
+          ),
+          buildDocumentRefreshAdvisoryOutput(documentRefreshWarning, "Stop"),
+          canonicalSessionId,
+          { allowRepeatDuringStopHook: false },
+        );
+      }
     }
 
     return null;

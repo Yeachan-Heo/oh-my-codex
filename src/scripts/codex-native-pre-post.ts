@@ -1,4 +1,11 @@
+import {
+  buildDocumentRefreshAdvisoryOutput,
+  evaluateStagedDocumentRefresh,
+} from "../document-refresh/enforcer.js";
+
 type CodexHookPayload = Record<string, unknown>;
+
+type GitRepositorySelection = "current-cwd" | "explicit-target";
 
 export interface NormalizedPreToolUsePayload {
   toolName: string;
@@ -268,6 +275,7 @@ function tokenizeShellCommand(commandText: string): string[] | null {
 interface GitCommitCommandParseResult {
   isGitCommit: boolean;
   inlineMessage: string | null;
+  repositorySelection: GitRepositorySelection;
   requiresExternalMessageSource: boolean;
 }
 
@@ -348,6 +356,14 @@ function gitOptionConsumesNextValue(token: string): boolean {
     || token === "--attr-source";
 }
 
+function gitOptionSelectsRepository(token: string): boolean {
+  return token === "-C"
+    || token === "--git-dir"
+    || token === "--work-tree"
+    || token.startsWith("--git-dir=")
+    || token.startsWith("--work-tree=");
+}
+
 function gitOptionStopsBeforeSubcommand(token: string): boolean {
   return token === "-h"
     || token === "--help"
@@ -382,12 +398,22 @@ function findGitSubcommandIndex(tokens: string[], gitTokenIndex: number): number
   return index < tokens.length ? index : -1;
 }
 
-function parseGitCommitCommand(commandText: string): GitCommitCommandParseResult {
+function readGitRepositorySelection(tokens: string[], gitTokenIndex: number, subcommandIndex: number): GitRepositorySelection {
+  for (let index = gitTokenIndex + 1; index < subcommandIndex; index += 1) {
+    const token = tokens[index] ?? "";
+    if (gitOptionSelectsRepository(token)) return "explicit-target";
+    if (gitOptionConsumesNextValue(token)) index += 1;
+  }
+  return "current-cwd";
+}
+
+export function parseGitCommitCommand(commandText: string): GitCommitCommandParseResult {
   const tokens = tokenizeShellCommand(commandText);
   if (!tokens) {
     return {
       isGitCommit: false,
       inlineMessage: null,
+      repositorySelection: "current-cwd",
       requiresExternalMessageSource: false,
     };
   }
@@ -397,6 +423,7 @@ function parseGitCommitCommand(commandText: string): GitCommitCommandParseResult
     return {
       isGitCommit: false,
       inlineMessage: null,
+      repositorySelection: "current-cwd",
       requiresExternalMessageSource: false,
     };
   }
@@ -406,10 +433,12 @@ function parseGitCommitCommand(commandText: string): GitCommitCommandParseResult
     return {
       isGitCommit: false,
       inlineMessage: null,
+      repositorySelection: "current-cwd",
       requiresExternalMessageSource: false,
     };
   }
 
+  const repositorySelection = readGitRepositorySelection(tokens, gitTokenIndex, subcommandIndex);
   const messageParts: string[] = [];
   let requiresExternalMessageSource = false;
   const args = tokens.slice(subcommandIndex + 1);
@@ -452,6 +481,7 @@ function parseGitCommitCommand(commandText: string): GitCommitCommandParseResult
   return {
     isGitCommit: true,
     inlineMessage: messageParts.length > 0 ? messageParts.join("\n\n").trim() : null,
+    repositorySelection,
     requiresExternalMessageSource,
   };
 }
@@ -562,6 +592,22 @@ function buildGitCommitEnforcementOutput(commandText: string): Record<string, un
   };
 }
 
+
+function buildDocumentRefreshPreToolUseOutput(
+  commandText: string,
+  cwd: string,
+): Record<string, unknown> | null {
+  const parsed = parseGitCommitCommand(commandText);
+  if (!parsed.isGitCommit) return null;
+
+  if (parsed.repositorySelection !== "current-cwd") return null;
+
+  const warning = evaluateStagedDocumentRefresh(cwd, parsed.inlineMessage);
+  if (!warning) return null;
+
+  return buildDocumentRefreshAdvisoryOutput(warning, "PreToolUse");
+}
+
 function commandInvokesOmxQuestion(command: string): boolean {
   const tokens = tokenizeShellCommand(command)?.map((token) => token.toLowerCase()) ?? [];
   for (let index = 0; index < tokens.length; index += 1) {
@@ -614,6 +660,11 @@ export function buildNativePreToolUseOutput(
   if (gitCommitEnforcement) return gitCommitEnforcement;
   const questionEnforcement = buildOmxQuestionPreToolUseEnforcementOutput(normalized.normalizedCommand);
   if (questionEnforcement) return questionEnforcement;
+  const documentRefreshWarning = buildDocumentRefreshPreToolUseOutput(
+    normalized.normalizedCommand,
+    safeString(payload.cwd).trim() || process.cwd(),
+  );
+  if (documentRefreshWarning) return documentRefreshWarning;
   if (!matchesDestructiveFixture(normalized.normalizedCommand)) return null;
 
   return {
