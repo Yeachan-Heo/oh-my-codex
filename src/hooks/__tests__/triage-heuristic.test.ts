@@ -184,7 +184,32 @@ describe('triagePrompt — LIGHT/designer', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5. HEAVY
+// 5. LIGHT / researcher
+// ---------------------------------------------------------------------------
+
+describe('triagePrompt — LIGHT/researcher', () => {
+  it('routes official documentation lookup prompts to researcher', () => {
+    assertLightDestination('Find the official docs and version compatibility notes for this SDK', 'researcher');
+  });
+
+  it('routes Korean official documentation lookup prompts to researcher', () => {
+    assertLightDestination('OpenAI Responses API 공식 문서 찾아줘', 'researcher');
+  });
+
+  it('does not steal implementation-shaped official-doc prompts from HEAVY', () => {
+    const result = triagePrompt('implement auth using official docs for the SDK');
+    assert.equal(result.lane, 'HEAVY', `expected HEAVY got ${result.lane} (reason=${result.reason})`);
+    assert.equal(result.destination, 'autopilot');
+    assert.equal(result.reason, 'implementation_research_goal');
+  });
+
+  it('keeps anchored local API usage prompts on executor even with lookup verbs', () => {
+    assertLightDestination('find API usage in src/foo.ts', 'executor');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. HEAVY
 // ---------------------------------------------------------------------------
 
 describe('triagePrompt — HEAVY', () => {
@@ -225,7 +250,7 @@ describe('triagePrompt — HEAVY', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6. Punctuation / casing regression
+// 7. Punctuation / casing regression
 // ---------------------------------------------------------------------------
 
 describe('triagePrompt — punctuation and casing regression', () => {
@@ -247,7 +272,7 @@ describe('triagePrompt — punctuation and casing regression', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7. Determinism / purity proof
+// 8. Determinism / purity proof
 // ---------------------------------------------------------------------------
 
 describe('triagePrompt — determinism', () => {
@@ -276,7 +301,7 @@ describe('triagePrompt — determinism', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 8. Performance benchmark (soft assertion — avg < 1 ms per call)
+// 9. Performance benchmark (soft assertion — avg < 1 ms per call)
 // ---------------------------------------------------------------------------
 
 describe('triagePrompt — performance benchmark', () => {

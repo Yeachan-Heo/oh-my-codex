@@ -243,7 +243,7 @@ The keyword detector is the first and deterministic routing surface. Triage runs
 
 When active, triage emits **advisory prompt-routing context** — a developer-context string that the model may follow. It does not activate a skill or workflow by itself. It is a best-effort hint, not a guarantee.
 
-Note: `explore`, `executor`, and `designer` are agent role-prompt files under `prompts/`, not workflow skills.
+Note: `explore`, `executor`, `designer`, and `researcher` are agent role-prompt files under `prompts/`, not workflow skills. `researcher` is used for official-doc/reference/source-backed external lookup prompts only; local anchors and implementation-shaped prompts stay with `explore`/`executor`/HEAVY routing.
 
 Explicit keywords remain the deterministic control surface when you want explicit, guaranteed routing — use them whenever exact behavior matters.
 
