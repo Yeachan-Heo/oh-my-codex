@@ -121,6 +121,10 @@ import { getTeamTmuxSessions } from '../notifications/tmux.js';
 import { hasStructuredVerificationEvidence } from '../verification/verifier.js';
 import { buildRebalanceDecisions } from './rebalance-policy.js';
 import { getStatePath } from '../mcp/state-paths.js';
+import {
+  cleanupLaunchOrphanedMcpProcesses,
+  type CleanupResult,
+} from '../cli/cleanup.js';
 import { readModeState, updateModeState } from '../modes/base.js';
 import {
   appendTeamCommitHygieneEntries,
@@ -1189,6 +1193,13 @@ export interface StaleTeamSummary {
 export interface TeamStartOptions {
   worktreeMode?: WorktreeMode;
   confirmStaleCleanup?: (summary: StaleTeamSummary) => Promise<boolean>;
+  /**
+   * Injected best-effort reap for detached OMX MCP orphans before worker
+   * launch. Defaults to `cleanupLaunchOrphanedMcpProcesses`, which is the same
+   * launch-safe reap used by `launchWithHud`. Tests override this to observe
+   * invocation without touching real processes.
+   */
+  reapOrphanedMcpProcesses?: () => Promise<CleanupResult>;
 }
 
 interface ShutdownGateCounts {
@@ -2269,6 +2280,34 @@ export async function startTeam(
       await writeWorkerIdentity(sanitized, bootstrapPlan.workerName, identity, leaderCwd);
       await writeWorkerInbox(sanitized, bootstrapPlan.workerName, bootstrapPlan.inbox, leaderCwd);
     };
+
+    // 5.5. Best-effort launch-safe orphan cleanup for detached OMX MCP
+    // processes before worker codex instances are spawned. Matches the
+    // invariant established by `launchWithHud` (#1345 / 994b161e) so team
+    // workers do not bleed MCP orphans from prior crashed/aborted sessions.
+    // `findLaunchSafeCleanupCandidates` preserves the live leader ancestry,
+    // so the current team leader's MCP children are never at risk.
+    const reapOrphanedMcpProcesses =
+      options.reapOrphanedMcpProcesses ?? cleanupLaunchOrphanedMcpProcesses;
+    try {
+      const cleanup = await reapOrphanedMcpProcesses();
+      if (cleanup.terminatedCount > 0) {
+        console.log(
+          `[omx] team: reaped ${cleanup.terminatedCount} orphaned OMX MCP process(es) before worker launch.`,
+        );
+      }
+      if (cleanup.failedPids.length > 0) {
+        console.warn(
+          `[omx] team: failed to reap ${cleanup.failedPids.length} orphaned OMX MCP process(es); continuing launch.`,
+        );
+      }
+    } catch (err) {
+      // Non-fatal: team launch must still proceed even if the reap probe
+      // (e.g. `ps axww`) is unavailable in the current environment.
+      process.stderr.write(
+        `[team/runtime] pre-worker MCP reap failed: ${err}\n`,
+      );
+    }
 
     // 6. Create worker runtime (interactive tmux panes or prompt-mode child processes)
     if (workerLaunchMode === 'interactive') {
