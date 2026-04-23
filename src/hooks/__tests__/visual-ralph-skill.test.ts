@@ -10,7 +10,7 @@ const skill = readFileSync(join(__dirname, '../../../skills/visual-ralph/SKILL.m
 describe('visual-ralph skill contract', () => {
   it('defines the image approval to Ralph workflow', () => {
     assert.match(skill, /^---\nname: visual-ralph/m);
-    assert.match(skill, /description: Visual Ralph orchestration/i);
+    assert.match(skill, /description:\s*"Visual Ralph orchestration/i);
     assert.match(skill, /\$imagegen/);
     assert.match(skill, /explicit user approval|explicit user confirmation/i);
     assert.match(skill, /\$ralph/);
