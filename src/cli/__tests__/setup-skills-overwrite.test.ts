@@ -73,6 +73,7 @@ describe('omx setup skills overwrite behavior', () => {
       assert.equal(installed.has('ecomode'), false);
       assert.equal(installed.has('ultraqa'), true);
       assert.equal(installed.has('ralph-init'), false);
+      assert.equal(installed.has('visual-ralph'), true);
       assert.equal(installed.has('frontend-ui-ux'), false);
       assert.equal(installed.has('pipeline'), false);
       assert.equal(installed.has('configure-notifications'), true);

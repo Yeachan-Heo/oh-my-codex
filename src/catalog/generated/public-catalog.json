@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-04-18T08:54:56.317Z",
+  "generatedAt": "2026-04-23T07:12:22.060Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 40,
+    "skillCount": 41,
     "promptCount": 30,
-    "activeSkillCount": 26,
+    "activeSkillCount": 27,
     "activeAgentCount": 18
   },
   "coreSkills": [
@@ -162,6 +162,14 @@
       "category": "shortcut",
       "status": "active",
       "canonical": "vision",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "visual-ralph",
+      "category": "shortcut",
+      "status": "active",
+      "canonical": "designer",
       "core": false,
       "internalRequired": false
     },

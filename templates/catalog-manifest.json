@@ -153,6 +153,14 @@
       "internalRequired": false
     },
     {
+      "name": "visual-ralph",
+      "category": "shortcut",
+      "status": "active",
+      "canonical": "designer",
+      "core": false,
+      "internalRequired": false
+    },
+    {
       "name": "frontend-ui-ux",
       "category": "shortcut",
       "status": "alias",
