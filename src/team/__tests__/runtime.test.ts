@@ -36,6 +36,7 @@ import {
   shouldPrekillInteractiveShutdownProcessTrees,
   waitForWorkerStartupEvidence,
   waitForClaudeStartupEvidence,
+  cleanupTeamWorkerLaunchOrphanedMcpProcesses,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
   type TeamRuntime,
 } from '../runtime.js';
@@ -660,6 +661,34 @@ describe('runtime', () => {
     }
   });
 
+  it('cleanupTeamWorkerLaunchOrphanedMcpProcesses keeps ps and cleanup failures non-fatal', async () => {
+    const warnings: string[] = [];
+    let calls = 0;
+
+    await cleanupTeamWorkerLaunchOrphanedMcpProcesses({
+      cleanup: async () => {
+        calls += 1;
+        throw new Error('ps unavailable');
+      },
+      writeWarning: (message) => warnings.push(message),
+    });
+
+    await cleanupTeamWorkerLaunchOrphanedMcpProcesses({
+      cleanup: async () => ({
+        dryRun: false,
+        candidates: [],
+        terminatedCount: 0,
+        forceKilledCount: 0,
+        failedPids: [1234],
+      }),
+      writeWarning: (message) => warnings.push(message),
+    });
+
+    assert.equal(calls, 1);
+    assert.match(warnings.join('\n'), /ps unavailable.*continuing worker launch/);
+    assert.match(warnings.join('\n'), /Failed to reap 1 orphaned OMX MCP process/);
+  });
+
   it('waitForWorkerStartupEvidence treats blocked worker status as settled progress even without a claimed task id', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-codex-blocked-startup-'));
     try {
@@ -1203,6 +1232,120 @@ esac
       assert.equal(config.workers[0]?.pane_id, '%2');
       assert.equal(config.workers[1]?.pane_id, '%3');
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('startTeam runs worker MCP orphan cleanup before interactive tmux worker spawn', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-interactive-mcp-cleanup-'));
+    const prevTmux = process.env.TMUX;
+    const prevTmuxPane = process.env.TMUX_PANE;
+    const prevLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevSkipReadyWait = process.env.OMX_TEAM_SKIP_READY_WAIT;
+    let runtime: TeamRuntime | null = null;
+
+    try {
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-interactive-mcp-cleanup-bin-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${tmuxLogPath}"
+case "\${1:-}" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  display-message)
+    case "$*" in
+      *"#{window_width}"*) echo "120" ;;
+      *) echo "leader:0 %1" ;;
+    esac
+    exit 0
+    ;;
+  list-panes)
+    case "$*" in
+      *"pane_current_command"*) printf "%%1\tnode\t'codex'\n" ;;
+      *"#{pane_dead} #{pane_pid}"*) echo "1 999999" ;;
+      *"-t %2"*"#{pane_pid}"*) echo "2222" ;;
+      *"#{pane_pid}"*) echo "1111" ;;
+      *) exit 0 ;;
+    esac
+    exit 0
+    ;;
+  split-window)
+    case "$*" in
+      *" -h "*)
+        mkdir -p "${cwd}/.omx/state/team/team-interactive-cleanup/workers/worker-1"
+        cat > "${cwd}/.omx/state/team/team-interactive-cleanup/workers/worker-1/status.json" <<'EOF'
+{
+  "state": "working",
+  "current_task_id": "1",
+  "updated_at": "2026-04-23T00:00:00.000Z"
+}
+EOF
+        echo "%2"
+        ;;
+      *) echo "%3" ;;
+    esac
+    exit 0
+    ;;
+  set-hook|run-shell|select-layout|set-window-option|select-pane|send-keys|kill-pane|kill-session)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+          binaries: [{ name: 'codex', content: '#!/bin/sh\nexit 0\n' }],
+        },
+        async ({ tmuxLogPath }) => {
+          delete process.env.TMUX;
+          process.env.TMUX_PANE = '%1';
+          process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
+          process.env.OMX_TEAM_WORKER_CLI = 'codex';
+          process.env.OMX_TEAM_SKIP_READY_WAIT = '1';
+
+          const events: string[] = [];
+          runtime = await withoutTeamWorkerEnv(() =>
+            startTeam(
+              'team-interactive-cleanup',
+              'interactive cleanup before worker spawn',
+              'executor',
+              1,
+              [{ subject: 's', description: 'd', owner: 'worker-1' }],
+              cwd,
+              {
+                cleanupLaunchOrphanedMcpProcesses: async () => {
+                  events.push('cleanup');
+                  return { dryRun: false, candidates: [], terminatedCount: 0, forceKilledCount: 0, failedPids: [] };
+                },
+              },
+            ));
+
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+          assert.match(tmuxLog, /split-window/);
+          assert.deepEqual(events, ['cleanup']);
+          assert.equal(runtime.config.workers[0]?.pane_id, '%2');
+        },
+      );
+    } finally {
+      const runtimeToShutdown = runtime as TeamRuntime | null;
+      if (runtimeToShutdown) {
+        await shutdownTeam(runtimeToShutdown.teamName, cwd, { force: true }).catch(() => {});
+      }
+      if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
+      else delete process.env.TMUX;
+      if (typeof prevTmuxPane === 'string') process.env.TMUX_PANE = prevTmuxPane;
+      else delete process.env.TMUX_PANE;
+      if (typeof prevLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = prevLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevSkipReadyWait === 'string') process.env.OMX_TEAM_SKIP_READY_WAIT = prevSkipReadyWait;
+      else delete process.env.OMX_TEAM_SKIP_READY_WAIT;
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -1894,6 +2037,82 @@ process.on('SIGTERM', () => process.exit(0));
       if (typeof prevLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = prevLaunchMode;
       else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
       await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('startTeam runs worker MCP orphan cleanup before prompt worker spawn', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-prompt-mcp-cleanup-'));
+    const binDir = join(cwd, 'bin');
+    const fakeCodexPath = join(binDir, 'codex');
+    const capturePath = join(cwd, 'prompt-cleanup-order.jsonl');
+    await mkdir(binDir, { recursive: true });
+    await writeFakePromptWorkerBinary(
+      fakeCodexPath,
+      `const capturePath = process.env.OMX_PROMPT_CLEANUP_CAPTURE_PATH;
+if (capturePath) require('fs').appendFileSync(capturePath, 'spawn' + String.fromCharCode(10));
+setTimeout(() => {}, 5000);`,
+    );
+
+    const prevPath = process.env.PATH;
+    const prevTmux = process.env.TMUX;
+    const prevLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevLaunchArgs = process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+    const prevCapture = process.env.OMX_PROMPT_CLEANUP_CAPTURE_PATH;
+    const prevAllowNonTty = process.env.OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT;
+    let runtime: TeamRuntime | null = null;
+
+    try {
+      process.env.PATH = `${binDir}:${prevPath ?? ''}`;
+      delete process.env.TMUX;
+      process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
+      process.env.OMX_TEAM_WORKER_CLI = 'codex';
+      process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = `--config ${JSON.stringify(`model_instructions_file=\"${join(cwd, 'AGENTS.md')}\"`)}`;
+      process.env.OMX_PROMPT_CLEANUP_CAPTURE_PATH = capturePath;
+      process.env.OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT = '1';
+
+      const started = await withoutTeamWorkerEnv(() =>
+        startTeam(
+          'team-prompt-cleanup',
+          'prompt cleanup before worker spawn',
+          'executor',
+          1,
+          [{ subject: 's', description: 'd', owner: 'worker-1' }],
+          cwd,
+          {
+            cleanupLaunchOrphanedMcpProcesses: async () => {
+              await writeFile(capturePath, 'cleanup\n', 'utf-8');
+              return { dryRun: false, candidates: [], terminatedCount: 0, forceKilledCount: 0, failedPids: [] };
+            },
+          },
+        ),
+      );
+      runtime = started;
+
+      const order = await waitForFileText(capturePath, (content) => /spawn/.test(content));
+      assert.equal(order, 'cleanup\nspawn\n');
+
+      await shutdownTeam(runtime.teamName, cwd, { force: true });
+      runtime = null;
+    } finally {
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
+      }
+      if (typeof prevPath === 'string') process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
+      else delete process.env.TMUX;
+      if (typeof prevLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = prevLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevLaunchArgs === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = prevLaunchArgs;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+      if (typeof prevCapture === 'string') process.env.OMX_PROMPT_CLEANUP_CAPTURE_PATH = prevCapture;
+      else delete process.env.OMX_PROMPT_CLEANUP_CAPTURE_PATH;
+      if (typeof prevAllowNonTty === 'string') process.env.OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT = prevAllowNonTty;
+      else delete process.env.OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT;
+      await rm(cwd, { recursive: true, force: true });
     }
   });
 
