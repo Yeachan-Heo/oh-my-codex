@@ -545,3 +545,46 @@ export async function cleanupCommand(
   if (args.includes('--help') || args.includes('-h')) return;
   await cleanupTmpDirectories(args);
 }
+
+export async function cleanupLaunchOrphanedMcpProcesses(
+  dependencies: CleanupDependencies = {},
+): Promise<CleanupResult> {
+  return cleanupOmxMcpProcesses([], {
+    ...dependencies,
+    selectCandidates: dependencies.selectCandidates ?? findLaunchSafeCleanupCandidates,
+    writeLine: dependencies.writeLine ?? (() => {}),
+  });
+}
+
+export interface PostLaunchCleanupDependencies {
+  cleanup?: () => Promise<CleanupResult>;
+  writeInfo?: (line: string) => void;
+  writeWarn?: (line: string) => void;
+  writeError?: (line: string) => void;
+}
+
+export async function reapPostLaunchOrphanedMcpProcesses(
+  dependencies: PostLaunchCleanupDependencies = {},
+): Promise<void> {
+  const cleanup = dependencies.cleanup ?? cleanupLaunchOrphanedMcpProcesses;
+  const writeInfo = dependencies.writeInfo ?? console.log;
+  const writeWarn = dependencies.writeWarn ?? console.warn;
+  const writeError =
+    dependencies.writeError ?? ((line: string) => process.stderr.write(line));
+
+  try {
+    const result = await cleanup();
+    if (result.terminatedCount > 0) {
+      writeInfo(
+        `[omx] postLaunch: reaped ${result.terminatedCount} orphaned OMX MCP process(es).`,
+      );
+    }
+    if (result.failedPids.length > 0) {
+      writeWarn(
+        `[omx] postLaunch: failed to reap ${result.failedPids.length} orphaned OMX MCP process(es); continuing cleanup.`,
+      );
+    }
+  } catch (err) {
+    writeError(`[cli/index] postLaunch MCP cleanup failed: ${err}\n`);
+  }
+}

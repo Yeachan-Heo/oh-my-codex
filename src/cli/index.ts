@@ -20,11 +20,16 @@ import { questionCommand } from "./question.js";
 import { stateCommand } from "./state.js";
 import {
   cleanupCommand,
-  cleanupOmxMcpProcesses,
-  findLaunchSafeCleanupCandidates,
-  type CleanupDependencies,
-  type CleanupResult,
+  cleanupLaunchOrphanedMcpProcesses,
+  reapPostLaunchOrphanedMcpProcesses,
+  type PostLaunchCleanupDependencies,
 } from "./cleanup.js";
+
+export {
+  cleanupLaunchOrphanedMcpProcesses,
+  reapPostLaunchOrphanedMcpProcesses,
+  type PostLaunchCleanupDependencies,
+};
 import { exploreCommand } from "./explore.js";
 import { sparkshellCommand } from "./sparkshell.js";
 import { agentsInitCommand } from "./agents-init.js";
@@ -1987,23 +1992,6 @@ export function shouldEnableNotifyFallbackWatcher(
   return toggle !== "0";
 }
 
-export async function cleanupLaunchOrphanedMcpProcesses(
-  dependencies: CleanupDependencies = {},
-): Promise<CleanupResult> {
-  return cleanupOmxMcpProcesses([], {
-    ...dependencies,
-    selectCandidates: dependencies.selectCandidates ?? findLaunchSafeCleanupCandidates,
-    writeLine: dependencies.writeLine ?? (() => {}),
-  });
-}
-
-interface PostLaunchCleanupDependencies {
-  cleanup?: () => Promise<CleanupResult>;
-  writeInfo?: (line: string) => void;
-  writeWarn?: (line: string) => void;
-  writeError?: (line: string) => void;
-}
-
 interface PostLaunchModeCleanupDependencies {
   readdir?: typeof import("fs/promises").readdir;
   readFile?: typeof import("fs/promises").readFile;
@@ -2211,32 +2199,6 @@ export async function cleanupPostLaunchModeStateFiles(
         );
       }
     }
-  }
-}
-
-export async function reapPostLaunchOrphanedMcpProcesses(
-  dependencies: PostLaunchCleanupDependencies = {},
-): Promise<void> {
-  const cleanup = dependencies.cleanup ?? cleanupLaunchOrphanedMcpProcesses;
-  const writeInfo = dependencies.writeInfo ?? console.log;
-  const writeWarn = dependencies.writeWarn ?? console.warn;
-  const writeError =
-    dependencies.writeError ?? ((line: string) => process.stderr.write(line));
-
-  try {
-    const result = await cleanup();
-    if (result.terminatedCount > 0) {
-      writeInfo(
-        `[omx] postLaunch: reaped ${result.terminatedCount} orphaned OMX MCP process(es).`,
-      );
-    }
-    if (result.failedPids.length > 0) {
-      writeWarn(
-        `[omx] postLaunch: failed to reap ${result.failedPids.length} orphaned OMX MCP process(es); continuing cleanup.`,
-      );
-    }
-  } catch (err) {
-    writeError(`[cli/index] postLaunch MCP cleanup failed: ${err}\n`);
   }
 }
 
