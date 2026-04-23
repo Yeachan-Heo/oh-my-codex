@@ -93,7 +93,7 @@ const LOCAL_RESEARCH_EXCLUSION_SIGNALS: RegExp[] = [
   /\b(?:repo|repository|codebase|local|in-repo|source tree|working tree)\b/,
   /\b(?:this|current|our)\s+(?:project|workspace|code|repo|repository|codebase)\b/,
   /\bin\s+(?:the\s+)?(?:project|workspace)\b/,
-  /\b(?:src|lib|test|spec|app|pages|components|hooks|utils|services|api|dist|build|scripts)\/[\w./\-]+/,
+  /\b(?:src|lib|test|spec|app|pages|components|hooks|utils|services|dist|build|scripts)\/[\w./\-]+/,
   /\b[\w./\-]+\.(?:ts|js|py|go|rs|java|tsx|jsx|vue|svelte|rb|c|cpp|h|css|scss|html|json|yaml|yml|toml)\b/,
   /(?:이\s*(?:레포|저장소|코드베이스)|레포에서|저장소에서|코드베이스에서|소스에서|파일에서)/,
 ];
@@ -255,9 +255,10 @@ export function triagePrompt(prompt: string): TriageDecision {
   const hasResearchLookupVerb = RESEARCHER_LOOKUP_VERBS.some((pattern) => pattern.test(normalized));
   const hasQuestionOrExplanation = isQuestionOrExplanation(normalized, wordCount);
   const hasAnchoredEdit = hasAnchoredEditPattern(normalized);
+  const hasExternalResearchSignal = RESEARCHER_EXTERNAL_SIGNALS.some((pattern) => pattern.test(normalized));
 
   // ── Rule 3: Obvious question / explanation → LIGHT/explore ───────────────
-  if (hasQuestionOrExplanation) {
+  if (hasQuestionOrExplanation && !(hasResearchLookupVerb && hasExternalResearchSignal)) {
     return { lane: "LIGHT", destination: "explore", reason: "question_or_explanation" };
   }
 
@@ -277,7 +278,7 @@ export function triagePrompt(prompt: string): TriageDecision {
     hasImplementationAction &&
     hasImplementationConnector &&
     (
-      RESEARCHER_EXTERNAL_SIGNALS.some((pattern) => pattern.test(normalized)) ||
+      hasExternalResearchSignal ||
       hasResearchLookupVerb
     )
   ) {
@@ -290,7 +291,7 @@ export function triagePrompt(prompt: string): TriageDecision {
     !hasImplementationAction &&
     hasResearchLookupVerb &&
     (
-      RESEARCHER_EXTERNAL_SIGNALS.some((pattern) => pattern.test(normalized)) ||
+      hasExternalResearchSignal ||
       (
         RESEARCHER_TECH_SUBJECTS.some((pattern) => pattern.test(normalized)) &&
         RESEARCHER_TECH_NEEDS.some((pattern) => pattern.test(normalized))

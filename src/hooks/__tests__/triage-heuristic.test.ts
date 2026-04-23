@@ -196,6 +196,14 @@ describe('triagePrompt — LIGHT/researcher', () => {
     assertLightDestination('OpenAI Responses API 공식 문서 찾아줘', 'researcher');
   });
 
+  it('routes official-doc question prompts to researcher instead of explore', () => {
+    assertLightDestination('where can I find official docs for OpenAI Responses API?', 'researcher');
+  });
+
+  it('routes endpoint-shaped official-doc lookups to researcher instead of local explore', () => {
+    assertLightDestination('find official docs for api/v1/responses', 'researcher');
+  });
+
   it('does not steal implementation-shaped official-doc prompts from HEAVY', () => {
     const result = triagePrompt('implement auth using official docs for the SDK');
     assert.equal(result.lane, 'HEAVY', `expected HEAVY got ${result.lane} (reason=${result.reason})`);
