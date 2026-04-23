@@ -1,0 +1,28 @@
+{
+  "name": "oh-my-codex",
+  "version": "0.14.3",
+  "description": "Multi-agent orchestration layer for OpenAI Codex CLI",
+  "author": {
+    "name": "Yeachan Heo",
+    "url": "https://github.com/Yeachan-Heo"
+  },
+  "homepage": "https://yeachan-heo.github.io/oh-my-codex",
+  "repository": "https://github.com/Yeachan-Heo/oh-my-codex.git",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "openai",
+    "cli",
+    "agents",
+    "orchestration",
+    "multi-agent"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "oh-my-codex",
+    "shortDescription": "Workflow layer and skill bundle for OpenAI Codex CLI.",
+    "longDescription": "Plugin = OMX skill/workflow discovery. Setup = runtime wiring; keep npm install plus omx setup for native agents, prompts, config, hooks, AGENTS.md, HUD, and runtime state.",
+    "developerName": "Yeachan Heo",
+    "category": "Developer Tools"
+  }
+}
