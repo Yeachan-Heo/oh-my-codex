@@ -18,7 +18,7 @@ export interface QuestionInput {
   session_id?: string;
 }
 
-export type QuestionRendererKind = 'tmux-pane' | 'tmux-session';
+export type QuestionRendererKind = 'tmux-pane' | 'tmux-session' | 'inline-tty';
 
 export interface QuestionAnswer {
   kind: 'option' | 'other' | 'multi';
