@@ -263,12 +263,12 @@ export function triagePrompt(prompt: string): TriageDecision {
   }
 
   // ── Rule 4: Short anchored edit → LIGHT/executor ─────────────────────────
-  if (wordCount <= ANCHORED_EDIT_WORD_LIMIT && hasAnchoredEdit) {
+  if (wordCount <= ANCHORED_EDIT_WORD_LIMIT && hasAnchoredEdit && !(hasResearchLookupVerb && hasExternalResearchSignal)) {
     return { lane: "LIGHT", destination: "executor", reason: "anchored_edit" };
   }
 
   // ── Rule 5: Repo-local lookup → LIGHT/explore ────────────────────────────
-  if (hasLocalResearchAnchor && hasResearchLookupVerb && !hasImplementationAction) {
+  if (hasLocalResearchAnchor && hasResearchLookupVerb && !hasImplementationAction && !hasExternalResearchSignal) {
     return { lane: "LIGHT", destination: "explore", reason: "local_reference_lookup" };
   }
 
@@ -287,7 +287,7 @@ export function triagePrompt(prompt: string): TriageDecision {
 
   // ── Rule 7: External docs / source-backed lookup → LIGHT/researcher ──────
   if (
-    !hasLocalResearchAnchor &&
+    (!hasLocalResearchAnchor || hasExternalResearchSignal) &&
     !hasImplementationAction &&
     hasResearchLookupVerb &&
     (

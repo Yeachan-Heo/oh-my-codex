@@ -6034,6 +6034,41 @@ describe("codex native hook triage integration", () => {
     }
   });
 
+  it("routes URL-shaped official-doc lookups with repo paths to researcher instead of local routes", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-url-path-researcher-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-url-path-researcher-1",
+          thread_id: "thread-triage-url-path-researcher-1",
+          turn_id: "turn-triage-url-path-researcher-1",
+          prompt: "find official docs for github.com/org/repo/src/foo.ts",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.doesNotMatch(additionalContext, /Prefer the executor role surface/);
+      assert.doesNotMatch(additionalContext, /Prefer the explore role surface/);
+      assert.match(additionalContext, /Prefer the researcher role surface/);
+
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-url-path-researcher-1", "prompt-routing-state.json");
+      const state = JSON.parse(await readFile(stateFile, "utf-8")) as {
+        last_triage?: { lane?: string; destination?: string; reason?: string };
+      };
+      assert.equal(state.last_triage?.lane, "LIGHT");
+      assert.equal(state.last_triage?.destination, "researcher");
+      assert.equal(state.last_triage?.reason, "external_reference_research");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("keeps implementation-shaped official-doc prompts on HEAVY instead of researcher", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-triage-researcher-implementation-"));
     try {
