@@ -45,6 +45,66 @@ describe('keyword detector swarm/team compatibility', () => {
     assert.equal(primary, null);
   });
 
+  it('recognizes plugin-prefixed explicit skill tokens', () => {
+    const matches = detectKeywords('$oh-my-codex:ralplan implement issue #1307');
+    assert.deepEqual(matches.map((m) => m.skill), ['ralplan']);
+    assert.equal(matches[0]?.keyword, '$oh-my-codex:ralplan');
+  });
+
+  it('supports mixed-form explicit multi-skill invocation ordering and dedupe', () => {
+    const matches = detectKeywords('$oh-my-codex:ralplan $ralph $oh-my-codex:ralplan ship this');
+    assert.deepEqual(matches.map((m) => m.skill), ['ralplan', 'ralph']);
+    assert.deepEqual(matches.map((m) => m.keyword), ['$oh-my-codex:ralplan', '$ralph']);
+  });
+
+  it('keeps recognized tokens on both sides of an unknown plugin-prefixed token in the same contiguous block', () => {
+    const matches = detectKeywords('$oh-my-codex:ralplan $oh-my-codex:unknown $ralph');
+    assert.deepEqual(matches.map((m) => m.skill), ['ralplan', 'ralph']);
+    assert.deepEqual(matches.map((m) => m.keyword), ['$oh-my-codex:ralplan', '$ralph']);
+  });
+
+  it('limits mixed-form explicit invocation to the first contiguous block', () => {
+    const matches = detectKeywords('$oh-my-codex:ralplan text $ralph');
+    assert.deepEqual(matches.map((m) => m.skill), ['ralplan']);
+  });
+
+  it('normalizes plugin-prefixed alias tokens', () => {
+    const swarm = detectPrimaryKeyword('$oh-my-codex:swarm handle this');
+    assert.ok(swarm);
+    assert.equal(swarm.skill, 'team');
+    assert.equal(swarm.keyword, '$oh-my-codex:swarm');
+
+    const ulw = detectPrimaryKeyword('$oh-my-codex:ulw continue');
+    assert.ok(ulw);
+    assert.equal(ulw.skill, 'ultrawork');
+    assert.equal(ulw.keyword, '$oh-my-codex:ulw');
+  });
+
+  it('supports plugin-prefixed hyphenated workflow tokens', () => {
+    const deepInterview = detectPrimaryKeyword('$oh-my-codex:deep-interview gather requirements');
+    assert.ok(deepInterview);
+    assert.equal(deepInterview.skill, 'deep-interview');
+    assert.equal(deepInterview.keyword, '$oh-my-codex:deep-interview');
+
+    const codeReview = detectPrimaryKeyword('$oh-my-codex:code-review before merge');
+    assert.ok(codeReview);
+    assert.equal(codeReview.skill, 'code-review');
+    assert.equal(codeReview.keyword, '$oh-my-codex:code-review');
+  });
+
+  it('does not fall back to implicit keyword detection when an unknown plugin-prefixed $token is present', () => {
+    const matches = detectKeywords('$oh-my-codex:maer-thinking 다시 설명해봐 keep going');
+    assert.deepEqual(matches, []);
+    const primary = detectPrimaryKeyword('$oh-my-codex:maer-thinking 다시 설명해봐 keep going');
+    assert.equal(primary, null);
+  });
+
+  it('suppresses implicit detection when an unknown plugin-prefixed token is present with other keyword text', () => {
+    const matches = detectKeywords('$oh-my-codex:unknown analyze this issue');
+    assert.deepEqual(matches, []);
+    assert.equal(detectPrimaryKeyword('$oh-my-codex:unknown analyze this issue'), null);
+  });
+
   it('does not auto-detect keywords for explicit /prompts invocation without $skills', () => {
     const matches = detectKeywords('/prompts:architect analyze this issue');
     assert.deepEqual(matches, []);
@@ -1653,6 +1713,50 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(modeState.current_phase, 'verifying');
       assert.equal(modeState.iteration, 7);
       assert.equal(modeState.max_iterations, 50);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not reuse active workflow continuation when prompt contains an unknown plugin-prefixed explicit token', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-unknown-prefixed-explicit-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(join(stateDir, 'sessions', 'sess-unknown-prefixed'), { recursive: true });
+      await writeFile(
+        join(stateDir, 'sessions', 'sess-unknown-prefixed', SKILL_ACTIVE_STATE_FILE),
+        JSON.stringify({
+          version: 1,
+          active: true,
+          skill: 'ralph',
+          keyword: '$ralph',
+          phase: 'executing',
+          activated_at: '2026-04-19T00:00:00.000Z',
+          updated_at: '2026-04-19T00:10:00.000Z',
+          source: 'keyword-detector',
+          session_id: 'sess-unknown-prefixed',
+          active_skills: [
+            {
+              skill: 'ralph',
+              phase: 'executing',
+              active: true,
+              activated_at: '2026-04-19T00:00:00.000Z',
+              updated_at: '2026-04-19T00:10:00.000Z',
+              session_id: 'sess-unknown-prefixed',
+            },
+          ],
+        }, null, 2),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$oh-my-codex:unknown continue',
+        sessionId: 'sess-unknown-prefixed',
+        nowIso: '2026-04-19T00:15:00.000Z',
+      });
+
+      assert.equal(result, null);
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-unknown-prefixed', 'ralph-state.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -509,13 +509,18 @@ function normalizeWorkflowKeyboardTypos(text: string): string {
   return text.replace(/ㅕㅣㅈ/g, 'ulw');
 }
 
-function hasExplicitSkillLikeInvocation(text: string): boolean {
-  return /(?:^|[^\w])\$([a-z][a-z0-9-]*)\b/i.test(text);
+interface ExplicitSkillParseResult {
+  matches: KeywordMatch[];
+  sawExplicitLikeInvocation: boolean;
 }
 
-function extractExplicitSkillInvocations(text: string): KeywordMatch[] {
+function normalizeExplicitSkillToken(token: string): string {
+  return token === 'swarm' ? 'team' : token === 'ulw' ? 'ultrawork' : token;
+}
+
+function parseExplicitSkillInvocations(text: string): ExplicitSkillParseResult {
   const results: KeywordMatch[] = [];
-  const regex = /(?:^|[^\w])\$([a-z][a-z0-9-]*)\b/gi;
+  const regex = /(?:^|[^\w])\$(?:(?:oh-my-codex:)?([a-z][a-z0-9-]*))\b/gi;
   let match: RegExpExecArray | null;
   let captureStarted = false;
   let lastMatchEnd = -1;
@@ -523,11 +528,9 @@ function extractExplicitSkillInvocations(text: string): KeywordMatch[] {
   while ((match = regex.exec(text)) !== null) {
     const token = (match[1] ?? '').toLowerCase();
     if (!token) continue;
-
-    const normalizedSkill = token === 'swarm' ? 'team' : token === 'ulw' ? 'ultrawork' : token;
+    const rawKeyword = match[0].slice(match[0].lastIndexOf('$')).toLowerCase();
+    const normalizedSkill = normalizeExplicitSkillToken(token);
     const registryEntry = KEYWORD_TRIGGER_DEFINITIONS.find((entry) => entry.skill.toLowerCase() === normalizedSkill);
-    if (!registryEntry) continue;
-
     const matchStart = match.index + match[0].lastIndexOf('$');
     if (captureStarted) {
       const between = text.slice(lastMatchEnd, matchStart);
@@ -535,18 +538,22 @@ function extractExplicitSkillInvocations(text: string): KeywordMatch[] {
     }
 
     captureStarted = true;
-    lastMatchEnd = matchStart + token.length + 1;
+    lastMatchEnd = matchStart + rawKeyword.length;
+    if (!registryEntry) continue;
 
     if (results.some((item) => item.skill === normalizedSkill)) continue;
 
     results.push({
-      keyword: `$${token}`,
+      keyword: rawKeyword,
       skill: normalizedSkill,
       priority: registryEntry.priority,
     });
   }
 
-  return results;
+  return {
+    matches: results,
+    sawExplicitLikeInvocation: captureStarted,
+  };
 }
 
 function hasIntentContextForKeyword(text: string, keyword: string): boolean {
@@ -570,11 +577,12 @@ function hasIntentContextForKeyword(text: string, keyword: string): boolean {
  */
 export function detectKeywords(text: string): KeywordMatch[] {
   const normalizedText = normalizeWorkflowKeyboardTypos(text);
-  const explicit = extractExplicitSkillInvocations(normalizedText);
+  const explicitParse = parseExplicitSkillInvocations(normalizedText);
+  const explicit = explicitParse.matches;
   if (hasExplicitPromptsInvocation(normalizedText) && explicit.length === 0) {
     return [];
   }
-  if (explicit.length === 0 && hasExplicitSkillLikeInvocation(normalizedText)) {
+  if (explicit.length === 0 && explicitParse.sawExplicitLikeInvocation) {
     return [];
   }
   if (explicit.length > 0) {
@@ -651,7 +659,7 @@ function resolveContinuationKeywordMatch(
     return fallbackMatch;
   }
 
-  if (extractExplicitSkillInvocations(normalizeWorkflowKeyboardTypos(text)).length > 0) {
+  if (parseExplicitSkillInvocations(normalizeWorkflowKeyboardTypos(text)).sawExplicitLikeInvocation) {
     return fallbackMatch;
   }
 
@@ -773,7 +781,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
 
   if (isTrackedWorkflowMode(match.skill)) {
     const normalizedInputText = normalizeWorkflowKeyboardTypos(input.text);
-    const workflowMatches = extractExplicitSkillInvocations(normalizedInputText)
+    const workflowMatches = parseExplicitSkillInvocations(normalizedInputText).matches
       .map((entry) => entry.skill)
       .filter(isTrackedWorkflowMode);
     const { requestedSkills: requestedWorkflowSkills, deferredSkills } = resolveRequestedWorkflowSkills(
