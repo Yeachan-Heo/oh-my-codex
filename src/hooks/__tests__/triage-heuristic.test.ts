@@ -203,8 +203,27 @@ describe('triagePrompt — LIGHT/researcher', () => {
     assert.equal(result.reason, 'implementation_research_goal');
   });
 
-  it('keeps anchored local API usage prompts on executor even with lookup verbs', () => {
+  it('does not steal planning-shaped official-doc prompts from HEAVY', () => {
+    const result = triagePrompt('research and plan auth migration using official docs for the SDK');
+    assert.equal(result.lane, 'HEAVY', `expected HEAVY got ${result.lane} (reason=${result.reason})`);
+    assert.equal(result.destination, 'autopilot');
+    assert.equal(result.reason, 'implementation_research_goal');
+  });
+
+  it('routes anchored local API usage prompts through executor even with lookup verbs', () => {
     assertLightDestination('find API usage in src/foo.ts', 'executor');
+  });
+
+  it('routes project-scoped local API usage prompts through explore instead of researcher', () => {
+    assertLightDestination('find API usage in this project', 'explore');
+  });
+
+  it('routes current-code lookup prompts through explore instead of researcher', () => {
+    assertLightDestination('find API usage in our code', 'explore');
+  });
+
+  it('routes anchored read-only questions through explore before executor', () => {
+    assertLightDestination('what does src/foo.ts do?', 'explore');
   });
 });
 
