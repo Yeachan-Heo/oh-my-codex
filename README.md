@@ -63,7 +63,7 @@ npm install -g @openai/codex oh-my-codex
 omx --madmax --high
 ```
 
-On a real `oh-my-codex` version bump, the global npm install now launches the interactive `omx setup` refresh automatically when a TTY is available. If npm scripts are skipped or the install is non-interactive, run `omx setup` manually or use `omx update` to force the same refresh path later.
+On a real `oh-my-codex` version bump, the global npm install now prints an explicit reminder instead of launching `omx setup` automatically. When you're ready, run `omx setup` manually or use `omx update` to check npm and then run the same setup refresh path.
 
 **Codex plugin install note:** this repo also ships an official Codex plugin layout at `plugins/oh-my-codex` with marketplace metadata in `.agents/plugins/marketplace.json`. Plugin install/discovery exposes the packaged OMX skills/workflows, but it is **not** a replacement for `npm install -g oh-my-codex` plus `omx setup`. `omx setup` remains responsible for native agents, prompts/config/hooks/AGENTS.md/HUD/runtime wiring.
 
@@ -151,7 +151,7 @@ Most users should think of OMX as **better task routing + better workflow + bett
 ## Start here if you are new
 
 1. Install or update OMX with `npm install -g @openai/codex oh-my-codex`
-2. Let the interactive `omx setup` refresh run automatically on real OMX version bumps, or run `omx setup` / `omx update` yourself when scripts are skipped or you want to rerun it
+2. After install or real OMX version bumps, run `omx setup` yourself when you're ready, or use `omx update` when you also want npm to check for and install the latest build before refreshing setup
 3. Run `omx doctor`
 4. Run a real execution smoke test: `codex login status` and `omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"`
 5. Launch with `omx --madmax --high`

@@ -32,7 +32,7 @@
       <h2>Installation</h2>
       <pre><code>npm install -g @openai/codex oh-my-codex
 omx doctor</code></pre>
-      <p>When <code>oh-my-codex</code> actually bumps to a newer version, the global npm install now launches the interactive <code>omx setup</code> refresh automatically when a TTY is available. If npm scripts are skipped or the install is non-interactive, rerun <code>omx setup</code> or <code>omx update</code> manually. Fresh OMX-managed <code>gpt-5.4</code> configs now recommend <code>model_context_window = 250000</code> and <code>model_auto_compact_token_limit = 200000</code> only when those keys are missing.</p>
+      <p>When <code>oh-my-codex</code> actually bumps to a newer version, the global npm install now prints an explicit reminder instead of launching <code>omx setup</code> automatically. When you're ready, rerun <code>omx setup</code> manually or use <code>omx update</code> to check npm and then run the same setup refresh path. Fresh OMX-managed <code>gpt-5.4</code> configs now recommend <code>model_context_window = 250000</code> and <code>model_auto_compact_token_limit = 200000</code> only when those keys are missing.</p>
       <p><code>omx doctor</code> verifies the install shape. Before treating the runtime as ready, also prove that the active Codex profile can perform a real request:</p>
       <pre><code>codex login status
 omx exec --skip-git-repo-check -C . &quot;Reply with exactly OMX-EXEC-OK&quot;</code></pre>
@@ -45,7 +45,7 @@ omx                    # standard launch</code></pre>
       <ol>
         <li>Create or enter a project directory.</li>
         <li>Install or update OMX globally.</li>
-        <li>Let the interactive <code>omx setup</code> refresh run automatically on real OMX version bumps, or rerun <code>omx setup</code> / <code>omx update</code> manually when scripts are skipped.</li>
+        <li>After install or real OMX version bumps, rerun <code>omx setup</code> yourself when you're ready, or use <code>omx update</code> when you also want npm to update OMX first.</li>
         <li>Run <code>omx doctor</code>, then the <code>codex login status</code> plus <code>omx exec</code> smoke test above.</li>
         <li>Start Codex CLI with <code>omx</code>.</li>
         <li>Use <code>$deep-interview "clarify the auth change"</code> when intent or boundaries are still unclear.</li>
