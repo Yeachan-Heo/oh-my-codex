@@ -240,6 +240,14 @@ describe('triagePrompt — LIGHT/researcher', () => {
     assertLightDestination('find API usage in our code', 'explore');
   });
 
+  it('keeps repository changelog lookup prompts local despite generic docs terms', () => {
+    assertLightDestination('find changelog in this repository', 'explore');
+  });
+
+  it('keeps anchored documentation lookup prompts local despite generic docs terms', () => {
+    assertLightDestination('find documentation in src/config.ts', 'executor');
+  });
+
   it('routes anchored read-only questions through explore before executor', () => {
     assertLightDestination('what does src/foo.ts do?', 'explore');
   });

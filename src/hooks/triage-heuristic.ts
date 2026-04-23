@@ -65,6 +65,12 @@ const RESEARCHER_EXTERNAL_SIGNALS: RegExp[] = [
   /(?:공식\s*(?:문서|docs?)|외부\s*(?:자료|문서|소스)|웹에서|인터넷에서|출처|레퍼런스|릴리즈\s*노트|버전\s*호환|호환성)/,
 ];
 
+const RESEARCHER_EXTERNAL_ROUTE_OVERRIDE_SIGNALS: RegExp[] = [
+  /\b(?:web|internet|online|external sources?|external citations?|source-backed|in the wild)\b/,
+  /\b(?:github|npm|pypi|crates\.io|mdn|stackoverflow)\b/,
+  /(?:외부\s*(?:자료|문서|소스)|웹에서|인터넷에서|출처)/,
+];
+
 const RESEARCHER_LOOKUP_VERBS: RegExp[] = [
   /\b(?:find|look up|lookup|research|search|check|verify|read|consult|collect|gather)\b/,
   /(?:찾아줘|찾아봐|찾아|검색해|검색|조사해|조사|확인해|확인|알아봐|알아내)/,
@@ -256,19 +262,27 @@ export function triagePrompt(prompt: string): TriageDecision {
   const hasQuestionOrExplanation = isQuestionOrExplanation(normalized, wordCount);
   const hasAnchoredEdit = hasAnchoredEditPattern(normalized);
   const hasExternalResearchSignal = RESEARCHER_EXTERNAL_SIGNALS.some((pattern) => pattern.test(normalized));
+  const hasExternalRouteOverride = RESEARCHER_EXTERNAL_ROUTE_OVERRIDE_SIGNALS.some((pattern) => pattern.test(normalized));
 
   // ── Rule 3: Obvious question / explanation → LIGHT/explore ───────────────
-  if (hasQuestionOrExplanation && !(hasResearchLookupVerb && hasExternalResearchSignal)) {
+  if (
+    hasQuestionOrExplanation &&
+    !(
+      hasResearchLookupVerb &&
+      hasExternalResearchSignal &&
+      (!hasLocalResearchAnchor || hasExternalRouteOverride)
+    )
+  ) {
     return { lane: "LIGHT", destination: "explore", reason: "question_or_explanation" };
   }
 
   // ── Rule 4: Short anchored edit → LIGHT/executor ─────────────────────────
-  if (wordCount <= ANCHORED_EDIT_WORD_LIMIT && hasAnchoredEdit && !(hasResearchLookupVerb && hasExternalResearchSignal)) {
+  if (wordCount <= ANCHORED_EDIT_WORD_LIMIT && hasAnchoredEdit && !(hasResearchLookupVerb && hasExternalRouteOverride)) {
     return { lane: "LIGHT", destination: "executor", reason: "anchored_edit" };
   }
 
   // ── Rule 5: Repo-local lookup → LIGHT/explore ────────────────────────────
-  if (hasLocalResearchAnchor && hasResearchLookupVerb && !hasImplementationAction && !hasExternalResearchSignal) {
+  if (hasLocalResearchAnchor && hasResearchLookupVerb && !hasImplementationAction && !hasExternalRouteOverride) {
     return { lane: "LIGHT", destination: "explore", reason: "local_reference_lookup" };
   }
 
@@ -287,7 +301,7 @@ export function triagePrompt(prompt: string): TriageDecision {
 
   // ── Rule 7: External docs / source-backed lookup → LIGHT/researcher ──────
   if (
-    (!hasLocalResearchAnchor || hasExternalResearchSignal) &&
+    (!hasLocalResearchAnchor || hasExternalRouteOverride) &&
     !hasImplementationAction &&
     hasResearchLookupVerb &&
     (
