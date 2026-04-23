@@ -147,6 +147,11 @@ describe('keyword detector swarm/team compatibility', () => {
     assert.equal(match, null);
   });
 
+  it('does not trigger ralplan from plain conversational mention', () => {
+    const match = detectPrimaryKeyword('why does ralplan keep blocking stop?');
+    assert.equal(match, null);
+  });
+
   it('still triggers ralph for explicit $ralph invocation', () => {
     const match = detectPrimaryKeyword('$ralph continue verification');
     assert.ok(match);
@@ -390,6 +395,36 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(modeState.mode, 'autopilot');
       assert.equal(modeState.active, true);
       assert.equal(modeState.current_phase, 'planning');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not persist ralplan state from plain conversational mention', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ralplan-conversation-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(stateDir, { recursive: true });
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: 'why does ralplan keep blocking stop?',
+        sessionId: 'sess-ralplan-conversation',
+        threadId: 'thread-ralplan-conversation',
+        turnId: 'turn-ralplan-conversation',
+        nowIso: '2026-04-24T00:00:00.000Z',
+      });
+
+      assert.equal(result, null);
+      assert.equal(
+        existsSync(join(stateDir, 'sessions', 'sess-ralplan-conversation', SKILL_ACTIVE_STATE_FILE)),
+        false,
+      );
+      assert.equal(
+        existsSync(join(stateDir, 'sessions', 'sess-ralplan-conversation', 'ralplan-state.json')),
+        false,
+      );
+      assert.equal(existsSync(join(stateDir, SKILL_ACTIVE_STATE_FILE)), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
