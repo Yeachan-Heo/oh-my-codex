@@ -94,7 +94,7 @@ const LOCAL_RESEARCH_EXCLUSION_SIGNALS: RegExp[] = [
   /\b(?:this|current|our)\s+(?:project|workspace|code|repo|repository|codebase)\b/,
   /\bin\s+(?:the\s+)?(?:project|workspace)\b/,
   /\b(?:src|lib|test|spec|app|pages|components|hooks|utils|services|dist|build|scripts)\/[\w./\-]+/,
-  /\b[\w./\-]+\.(?:ts|js|py|go|rs|java|tsx|jsx|vue|svelte|rb|c|cpp|h|css|scss|html|json|yaml|yml|toml)\b/,
+  /(?:^|[\s"'`(])(?:\.{1,2}\/|\/|[\w.-]+\/)[\w./\-]+\.(?:ts|js|py|go|rs|java|tsx|jsx|vue|svelte|rb|c|cpp|h|css|scss|html|json|yaml|yml|toml)\b/,
   /(?:이\s*(?:레포|저장소|코드베이스)|레포에서|저장소에서|코드베이스에서|소스에서|파일에서)/,
 ];
 

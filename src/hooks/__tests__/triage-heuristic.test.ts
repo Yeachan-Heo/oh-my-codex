@@ -204,6 +204,11 @@ describe('triagePrompt — LIGHT/researcher', () => {
     assertLightDestination('find official docs for api/v1/responses', 'researcher');
   });
 
+  it('routes dotted technology official-doc lookups to researcher instead of local explore', () => {
+    assertLightDestination('find official docs for Node.js', 'researcher');
+    assertLightDestination('find official docs for Next.js', 'researcher');
+  });
+
   it('does not steal implementation-shaped official-doc prompts from HEAVY', () => {
     const result = triagePrompt('implement auth using official docs for the SDK');
     assert.equal(result.lane, 'HEAVY', `expected HEAVY got ${result.lane} (reason=${result.reason})`);
