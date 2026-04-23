@@ -586,8 +586,8 @@ function containsHardFailure(stderrText: string, stdoutText = "", exitCode: numb
     return false;
   }
   const stderr = String(stderrText ?? "").trim();
-  if (stderr) {
-    return /command not found|permission denied|no such file or directory/i.test(stderr);
+  if (stderr && /command not found|permission denied|no such file or directory/i.test(stderr)) {
+    return true;
   }
   const stdout = String(stdoutText ?? "").trim();
   if (!stdout) {

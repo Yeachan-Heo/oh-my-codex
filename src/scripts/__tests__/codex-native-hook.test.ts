@@ -1934,6 +1934,40 @@ esac
     }
   });
 
+  it("still classifies setup failures when stdout contains the shell error and stderr is only noise", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-mixed-hard-failure-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-mixed-hard-failure",
+          tool_input: { command: "foo --version" },
+          tool_response: JSON.stringify({
+            exit_code: 127,
+            stdout: "bash: foo: command not found",
+            stderr: "prelude",
+          }),
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.deepEqual(result.outputJson, {
+        decision: "block",
+        reason: "The Bash output indicates a command/setup failure that should be fixed before retrying.",
+        hookSpecificOutput: {
+          hookEventName: "PostToolUse",
+          additionalContext:
+            "Bash reported `command not found`, `permission denied`, or a missing file/path. Verify the command, dependency installation, PATH, file permissions, and referenced paths before retrying.",
+        },
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns PostToolUse MCP transport fallback guidance for clear MCP transport death", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-mcp-transport-"));
     try {
