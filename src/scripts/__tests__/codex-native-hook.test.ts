@@ -5859,6 +5859,79 @@ describe("codex native hook triage integration", () => {
     }
   });
 
+  it("injects LIGHT/researcher advisory and writes state for an official-doc lookup prompt", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-light-researcher-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-researcher-1",
+          thread_id: "thread-triage-researcher-1",
+          turn_id: "turn-triage-researcher-1",
+          prompt: "Find the official docs and version compatibility notes for this SDK",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /external documentation\/reference research request/);
+      assert.match(additionalContext, /Prefer the researcher role surface/);
+      assert.doesNotMatch(additionalContext, /skill: researcher activated/);
+
+      assert.equal(existsSync(join(cwd, ".omx", "state", "skill-active-state.json")), false);
+
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-researcher-1", "prompt-routing-state.json");
+      assert.equal(existsSync(stateFile), true);
+      const state = JSON.parse(await readFile(stateFile, "utf-8")) as {
+        last_triage?: { lane?: string; destination?: string; reason?: string };
+        suppress_followup?: boolean;
+      };
+      assert.equal(state.last_triage?.lane, "LIGHT");
+      assert.equal(state.last_triage?.destination, "researcher");
+      assert.equal(state.last_triage?.reason, "external_reference_research");
+      assert.equal(state.suppress_followup, true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("routes Korean external lookup phrasing to researcher without treating it as workflow activation", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-light-researcher-ko-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-researcher-ko-1",
+          thread_id: "thread-triage-researcher-ko-1",
+          turn_id: "turn-triage-researcher-ko-1",
+          prompt: "OpenAI Responses API 공식 문서 찾아줘",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /Prefer the researcher role surface/);
+      assert.equal(result.skillState, null);
+
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-researcher-ko-1", "prompt-routing-state.json");
+      const state = JSON.parse(await readFile(stateFile, "utf-8")) as {
+        last_triage?: { lane?: string; destination?: string };
+      };
+      assert.equal(state.last_triage?.lane, "LIGHT");
+      assert.equal(state.last_triage?.destination, "researcher");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   // ── Group 6: PASS (no triage injection, no state) ────────────────────────
 
   it("produces no triage advisory and no state for trivial greeting prompts", async () => {

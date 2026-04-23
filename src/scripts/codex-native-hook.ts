@@ -1796,9 +1796,12 @@ export async function dispatchCodexNativeHook(
               } else if (decision.destination === "designer") {
                 triageAdditionalContext =
                   "OMX native UserPromptSubmit triage detected a visual/style request with no workflow keyword. This is advisory prompt-routing context only. Prefer the designer role surface.";
+              } else if (decision.destination === "researcher") {
+                triageAdditionalContext =
+                  "OMX native UserPromptSubmit triage detected an external documentation/reference research request with no workflow keyword. This is advisory prompt-routing context only. Prefer the researcher role surface rather than repo-local explore or autopilot.";
               }
               if (triageAdditionalContext !== null) {
-                const dest = decision.destination as "explore" | "executor" | "designer";
+                const dest = decision.destination as "explore" | "executor" | "designer" | "researcher";
                 const newState: TriageStateFile = {
                   version: 1,
                   last_triage: {

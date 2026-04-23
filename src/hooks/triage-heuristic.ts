@@ -6,12 +6,12 @@
  *
  * Lanes:
  *   PASS  — trivial acknowledgements, explicit opt-out phrases, or ambiguous short prompts
- *   LIGHT — single-agent destination: explore | executor | designer
+ *   LIGHT — single-agent destination: explore | executor | designer | researcher
  *   HEAVY — autopilot; longer goal-shaped imperative prompts
  */
 
 export type TriageLane = "HEAVY" | "LIGHT" | "PASS";
-export type LightDestination = "explore" | "executor" | "designer";
+export type LightDestination = "explore" | "executor" | "designer" | "researcher";
 
 export interface TriageDecision {
   lane: TriageLane;
@@ -55,6 +55,27 @@ const EXPLORE_STARTERS: readonly string[] = [
   "show me how ",
   "can you explain ",
   "could you explain ",
+];
+
+/** External docs/reference lookup prompts → LIGHT/researcher */
+const RESEARCHER_EXTERNAL_SIGNALS: RegExp[] = [
+  /\b(?:official docs?|upstream docs?|vendor docs?|api docs?|reference docs?|release notes?|changelog|version(?:ing)?|compatib(?:ility|le)|documentation)\b/,
+  /\b(?:web|internet|online|external sources?|sources?|citations?|source-backed|in the wild)\b/,
+  /\b(?:github|npm|pypi|crates\.io|mdn|stackoverflow)\b/,
+  /(?:공식\s*(?:문서|docs?)|외부\s*(?:자료|문서|소스)|웹에서|인터넷에서|출처|레퍼런스|릴리즈\s*노트|버전\s*호환|호환성)/,
+];
+
+const RESEARCHER_LOOKUP_VERBS: RegExp[] = [
+  /\b(?:find|look up|lookup|research|search|check|verify|read|consult|collect|gather)\b/,
+  /(?:찾아줘|찾아봐|찾아|검색해|검색|조사해|조사|확인해|확인|알아봐|알아내)/,
+];
+
+const RESEARCHER_TECH_SUBJECTS: RegExp[] = [
+  /\b(?:api|apis|sdk|sdks|framework|frameworks|library|libraries|package|packages|service|services|tool|tools|vendor|browser|runtime)\b/,
+];
+
+const RESEARCHER_TECH_NEEDS: RegExp[] = [
+  /\b(?:behavior|best way|configuration|configure|example|examples|feature|features?|how(?:\s+do|\s+to)?|lifecycle|option|options|parameter|parameters|usage|what(?:\s+does|\s+is)|when(?:\s+does|\s+should)|why(?:\s+does)?)\b/,
 ];
 
 /** Starters / keywords for visual / styling prompts → LIGHT/designer */
@@ -190,7 +211,21 @@ export function triagePrompt(prompt: string): TriageDecision {
     }
   }
 
-  // ── Rule 3: Obvious question / explanation → LIGHT/explore ───────────────
+  // ── Rule 3: External docs / source-backed lookup → LIGHT/researcher ──────
+  if (
+    RESEARCHER_LOOKUP_VERBS.some((pattern) => pattern.test(normalized)) &&
+    (
+      RESEARCHER_EXTERNAL_SIGNALS.some((pattern) => pattern.test(normalized)) ||
+      (
+        RESEARCHER_TECH_SUBJECTS.some((pattern) => pattern.test(normalized)) &&
+        RESEARCHER_TECH_NEEDS.some((pattern) => pattern.test(normalized))
+      )
+    )
+  ) {
+    return { lane: "LIGHT", destination: "researcher", reason: "external_reference_research" };
+  }
+
+  // ── Rule 4: Obvious question / explanation → LIGHT/explore ───────────────
   for (const starter of EXPLORE_STARTERS) {
     if (normalized.startsWith(starter)) {
       return { lane: "LIGHT", destination: "explore", reason: "question_or_explanation" };
@@ -201,7 +236,7 @@ export function triagePrompt(prompt: string): TriageDecision {
     return { lane: "LIGHT", destination: "explore", reason: "short_question" };
   }
 
-  // ── Rule 4: Structural redesign goals → HEAVY ────────────────────────────
+  // ── Rule 5: Structural redesign goals → HEAVY ────────────────────────────
   if (
     BROAD_DESIGN_STARTERS.some((starter) => normalized.startsWith(starter)) &&
     STRUCTURAL_REDESIGN_TERMS.some((pattern) => pattern.test(normalized))
@@ -209,7 +244,7 @@ export function triagePrompt(prompt: string): TriageDecision {
     return { lane: "HEAVY", destination: "autopilot", reason: "structural_redesign_goal" };
   }
 
-  // ── Rule 5: Obvious visual / styling → LIGHT/designer ────────────────────
+  // ── Rule 6: Obvious visual / styling → LIGHT/designer ────────────────────
   for (const starter of DESIGNER_STARTERS) {
     if (normalized.startsWith(starter)) {
       return { lane: "LIGHT", destination: "designer", reason: "visual_styling_prompt" };
@@ -221,7 +256,7 @@ export function triagePrompt(prompt: string): TriageDecision {
     }
   }
 
-  // ── Rule 6: Short anchored edit → LIGHT/executor ─────────────────────────
+  // ── Rule 7: Short anchored edit → LIGHT/executor ─────────────────────────
   if (wordCount <= ANCHORED_EDIT_WORD_LIMIT) {
     for (const pattern of EXECUTOR_ANCHOR_PATTERNS) {
       if (pattern.test(normalized)) {
@@ -230,7 +265,7 @@ export function triagePrompt(prompt: string): TriageDecision {
     }
   }
 
-  // ── Rule 7: Longer goal-shaped imperative → HEAVY ────────────────────────
+  // ── Rule 8: Longer goal-shaped imperative → HEAVY ────────────────────────
   if (wordCount > HEAVY_WORD_THRESHOLD) {
     for (const verb of HEAVY_IMPERATIVE_VERBS) {
       if (normalized.startsWith(verb)) {
@@ -239,6 +274,6 @@ export function triagePrompt(prompt: string): TriageDecision {
     }
   }
 
-  // ── Rule 8: Fallback → PASS ───────────────────────────────────────────────
+  // ── Rule 9: Fallback → PASS ───────────────────────────────────────────────
   return { lane: "PASS", reason: "ambiguous_short_prompt" };
 }

@@ -27,7 +27,7 @@ export interface TriageStateFile {
   version: 1;
   last_triage: {
     lane: "HEAVY" | "LIGHT";
-    destination: "autopilot" | "explore" | "executor" | "designer";
+    destination: "autopilot" | "explore" | "executor" | "designer" | "researcher";
     reason: string;
     /** sha256 of the normalized prompt, prefixed with "sha256:" */
     prompt_signature: string;
@@ -185,7 +185,8 @@ function isTriageStateFile(value: unknown): value is TriageStateFile {
     (lt['destination'] === 'autopilot' ||
       lt['destination'] === 'explore' ||
       lt['destination'] === 'executor' ||
-      lt['destination'] === 'designer') &&
+      lt['destination'] === 'designer' ||
+      lt['destination'] === 'researcher') &&
     typeof lt['reason'] === 'string' &&
     typeof lt['prompt_signature'] === 'string' &&
     typeof lt['turn_id'] === 'string' &&
