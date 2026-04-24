@@ -74,6 +74,7 @@ describe('omx setup skills overwrite behavior', () => {
       assert.equal(installed.has('ultraqa'), true);
       assert.equal(installed.has('ralph-init'), false);
       assert.equal(installed.has('visual-ralph'), true);
+      assert.equal(installed.has('web-clone'), false);
       assert.equal(installed.has('frontend-ui-ux'), false);
       assert.equal(installed.has('pipeline'), false);
       assert.equal(installed.has('configure-notifications'), true);
@@ -90,6 +91,33 @@ describe('omx setup skills overwrite behavior', () => {
         await readFile(join(skillsDir, 'autoresearch', 'SKILL.md'), 'utf-8'),
         /^---\nname: autoresearch/m,
       );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('removes stale web-clone installs during normal hard-deprecation refresh', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-'));
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+
+      await setup({ scope: 'project' });
+
+      const staleWebCloneDir = join(wd, '.codex', 'skills', 'web-clone');
+      await mkdir(staleWebCloneDir, { recursive: true });
+      await writeFile(
+        join(staleWebCloneDir, 'SKILL.md'),
+        '---\nname: web-clone\ndescription: old standalone pipeline\n---\n\nClone a target website from its URL.\n',
+      );
+      assert.equal(existsSync(staleWebCloneDir), true);
+
+      await setup({ scope: 'project' });
+
+      assert.equal(existsSync(staleWebCloneDir), false);
+      assert.equal(existsSync(join(wd, '.codex', 'skills', 'visual-ralph', 'SKILL.md')), true);
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });

@@ -152,6 +152,7 @@ const PROJECT_GITIGNORE_ENTRIES = [
 ] as const;
 const LEGACY_PROJECT_GITIGNORE_ENTRIES = [".codex/"] as const;
 const SETUP_ONLY_INSTALLABLE_SKILLS = new Set(["wiki"]);
+const HARD_DEPRECATED_SKILLS_TO_REMOVE = new Set(["web-clone"]);
 
 function isCatalogInstallableStatus(status: string | undefined): boolean {
   return status === "active" || status === "internal";
@@ -1875,10 +1876,14 @@ export async function installSkills(
     }
   }
 
-  if (options.force && manifest && existsSync(dstDir)) {
+  if (manifest && existsSync(dstDir)) {
     for (const staleSkill of staleCandidateSkillNames) {
       const status = skillStatusByName?.get(staleSkill);
       if (isSetupInstallableSkill(staleSkill, status)) continue;
+
+      const shouldRemoveStaleSkill =
+        options.force || HARD_DEPRECATED_SKILLS_TO_REMOVE.has(staleSkill);
+      if (!shouldRemoveStaleSkill) continue;
 
       const staleSkillDir = join(dstDir, staleSkill);
       if (!existsSync(staleSkillDir)) continue;

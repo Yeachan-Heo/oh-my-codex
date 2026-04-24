@@ -114,8 +114,8 @@
     {
       "name": "web-clone",
       "category": "shortcut",
-      "status": "active",
-      "canonical": "vision"
+      "status": "merged",
+      "canonical": "visual-ralph"
     },
     {
       "name": "visual-ralph",
