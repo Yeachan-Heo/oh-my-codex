@@ -73,43 +73,6 @@ That document defines the GPT-5.4 behavior contract contributors should preserve
 2. Run `omx setup --force` to install it to `~/.codex/skills/`
 3. Use `$my-skill` in Codex CLI
 
-
-### Document refresh warnings
-
-OMX has an agent-only document-refresh warning MVP for spec-driven changes. It
-warns Codex/OMX agents when mapped product or test-contract code changes appear
-without a rule-scoped planning-spec or product-doc refresh. This is warning-only:
-it does not add a generic CI failure, does not install a pre-commit framework,
-and must not hard-block `git commit` for document-refresh reasons.
-
-Current mapped refresh examples:
-
-- Native hook behavior (`src/scripts/codex-native-hook.ts`,
-  `src/scripts/codex-native-pre-post.ts`, `src/config/codex-hooks.ts`, and
-  related native-hook tests) should refresh `docs/codex-native-hooks.md` or a
-  native-hook-scoped planning/spec file.
-- Document-refresh enforcer behavior (`src/document-refresh/**`) should refresh
-  `docs/codex-native-hooks.md` or a document-refresh-scoped planning/spec file.
-- CLI/operator behavior (`src/cli/**`) should refresh `README.md`,
-  `docs/getting-started.html`, or a relevant planning/spec file.
-- Prompt-guidance behavior (`src/hooks/**` rule-owned guidance surfaces) should
-  refresh `docs/prompt-guidance-contract.md` or a relevant planning/spec file.
-
-Commit-path warnings are Bash `git commit` scoped and read only the staged diff.
-Because `.omx/` is gitignored, `.omx/plans/**` and `.omx/specs/**` count for
-commit-path suppression only when tracked or force-staged and rule-owned.
-Final-handoff warnings run only on terminal-looking handoff attempts, read staged
-plus unstaged changes, and can count fresh local rule-owned `.omx` planning/spec
-files. That mtime-based local freshness is heuristic evidence, not proof of a
-semantic refresh.
-
-If no document refresh is needed, include an explicit acknowledgement with a
-reason in the commit message or final handoff:
-
-```text
-Document-refresh: not-needed | <reason>
-```
-
 ## Workflow
 
 1. Create a branch from `dev` for normal contributions.

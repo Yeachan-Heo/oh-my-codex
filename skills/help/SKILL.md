@@ -7,7 +7,7 @@ description: Guide on using oh-my-codex plugin
 
 Plain English works as best-effort guidance — OMX inspects each prompt and may add advisory routing context to steer the model toward a suitable lane. This is **advisory prompt-routing context**: it does not activate a skill or workflow by itself. Explicit keywords remain the deterministic control surface when you want exact, guaranteed routing.
 
-**Triage lanes** (when no keyword matches): complex/multi-step prompts may receive HEAVY guidance (autopilot-shaped); repo-local read-only lookups receive LIGHT/explore guidance; implementation work receives LIGHT/executor guidance; UI work receives LIGHT/designer guidance; external official-doc/reference/source-backed lookup receives LIGHT/researcher guidance; simple conversational prompts receive no injection (PASS). To opt out per prompt, include a phrase such as `no workflow`, `just chat`, or `plain answer`.
+**Triage lanes** (when no keyword matches): complex/multi-step prompts may receive HEAVY guidance (autopilot-shaped); read-only lookups receive LIGHT/explore guidance; implementation work receives LIGHT/executor guidance; UI work receives LIGHT/designer guidance; simple conversational prompts receive no injection (PASS). To opt out per prompt, include a phrase such as `no workflow`, `just chat`, or `plain answer`.
 
 ## What Happens Automatically
 
@@ -49,7 +49,7 @@ If you haven't configured OMX yet:
 /omx-setup
 ```
 
-This is the primary setup command for full OMX runtime wiring. Codex plugin install/discovery can expose packaged skills/workflows plus plugin-scoped companion metadata for MCP servers and apps, while native/runtime hooks remain setup-owned; it is not a replacement for `npm install -g oh-my-codex` plus `omx setup`. `omx setup` remains responsible for native agents, prompts/config/hooks/AGENTS.md/HUD/runtime wiring, including native `.codex/hooks.json` coverage. Plugin caches may appear under `${CODEX_HOME:-~/.codex}/plugins/cache/$MARKETPLACE_NAME/oh-my-codex/$VERSION/` (or `local` for local installs).
+This is the **only command** you need to know. It downloads the configuration and you're done.
 
 If you only need lightweight directory guidance scaffolding for `AGENTS.md` files, use:
 

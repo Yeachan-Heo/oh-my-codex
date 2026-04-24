@@ -24,7 +24,7 @@
         <h1>oh-my-codex</h1>
         <p>Multi-agent orchestration for OpenAI Codex CLI.</p>
         <pre><code>npm install -g oh-my-codex</code></pre>
-        <p>Real global version bumps now print an explicit reminder instead of auto-launching <code>omx setup</code>. When you're ready, run <code>omx setup</code> manually or use <code>omx update</code> to check npm and then run the same setup refresh path. Fresh OMX-managed <code>gpt-5.5</code> configs recommend <code>250000 / 200000</code> only when those keys are missing.</p>
+        <p>Real global version bumps now auto-launch the interactive <code>omx setup</code> refresh when npm has a TTY. Use <code>omx update</code> or rerun <code>omx setup</code> manually when scripts are skipped. Fresh OMX-managed <code>gpt-5.5</code> configs recommend <code>250000 / 200000</code> only when those keys are missing.</p>
       </section>
 
       <section aria-labelledby="whats-new-060">
@@ -69,7 +69,7 @@
       <h2>Quick Start</h2>
       <ol>
         <li><code>npm install -g oh-my-codex</code></li>
-        <li>After install or real version bumps, run <code>omx setup</code> yourself when you're ready, or use <code>omx update</code> when you also want npm to update OMX first.</li>
+        <li>Let the install-triggered <code>omx setup</code> refresh run on real version bumps, or use <code>omx setup</code> / <code>omx update</code> manually.</li>
         <li><code>omx doctor</code></li>
         <li><code>omx --xhigh --madmax</code> (trusted environments) or <code>omx</code></li>
       </ol>

@@ -140,11 +140,6 @@ import {
   type EnsureWorktreeResult,
   type WorktreeMode,
 } from './worktree.js';
-import {
-  cleanupOmxMcpProcesses,
-  findLaunchSafeCleanupCandidates,
-  type CleanupResult,
-} from '../cli/cleanup.js';
 
 /** Snapshot of the team state at a point in time */
 export interface TeamSnapshot {
@@ -376,31 +371,6 @@ export function shouldPrekillInteractiveShutdownProcessTrees(sessionName: string
   // including native Windows prompt-worker ancestry where pane-targeted
   // teardown alone is insufficient.
   return true;
-}
-
-export async function cleanupTeamWorkerLaunchOrphanedMcpProcesses(
-  dependencies: {
-    cleanup?: () => Promise<CleanupResult>;
-    writeWarning?: (message: string) => void;
-  } = {},
-): Promise<void> {
-  const cleanup = dependencies.cleanup ?? (() =>
-    cleanupOmxMcpProcesses([], {
-      selectCandidates: findLaunchSafeCleanupCandidates,
-      writeLine: () => {},
-    }));
-  const writeWarning = dependencies.writeWarning ?? ((message: string) => process.stderr.write(`${message}\n`));
-
-  try {
-    const result = await cleanup();
-    if (result.failedPids.length > 0) {
-      writeWarning(
-        `[team/runtime] Failed to reap ${result.failedPids.length} orphaned OMX MCP process(es); continuing worker launch.`,
-      );
-    }
-  } catch (err) {
-    writeWarning(`[team/runtime] pre-launch MCP cleanup failed: ${err}; continuing worker launch.`);
-  }
 }
 
 async function logRuntimeDispatchOutcome(params: {
@@ -1219,8 +1189,6 @@ export interface StaleTeamSummary {
 export interface TeamStartOptions {
   worktreeMode?: WorktreeMode;
   confirmStaleCleanup?: (summary: StaleTeamSummary) => Promise<boolean>;
-  cleanupLaunchOrphanedMcpProcesses?: () => Promise<CleanupResult>;
-  writeCleanupWarning?: (message: string) => void;
 }
 
 interface ShutdownGateCounts {
@@ -2303,10 +2271,6 @@ export async function startTeam(
     };
 
     // 6. Create worker runtime (interactive tmux panes or prompt-mode child processes)
-    await cleanupTeamWorkerLaunchOrphanedMcpProcesses({
-      cleanup: options.cleanupLaunchOrphanedMcpProcesses,
-      writeWarning: options.writeCleanupWarning,
-    });
     if (workerLaunchMode === 'interactive') {
       const createdSession = createTeamSession(sanitized, workerCount, leaderCwd, sharedWorkerLaunchArgs, workerStartups);
       sessionName = createdSession.name;

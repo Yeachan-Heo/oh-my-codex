@@ -62,9 +62,7 @@
     "skills/",
     "prompts/",
     "templates/",
-    "src/scripts/",
-    "plugins/",
-    ".agents/plugins/marketplace.json"
+    "src/scripts/"
   ],
   "keywords": [
     "codex",

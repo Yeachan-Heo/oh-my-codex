@@ -67,11 +67,6 @@ import {
   reconcileDeepInterviewQuestionEnforcementFromAnsweredRecords,
 } from "../question/deep-interview.js";
 import { resolveOmxCliEntryPath } from "../utils/paths.js";
-import {
-  buildDocumentRefreshAdvisoryOutput,
-  evaluateFinalHandoffDocumentRefresh,
-  isFinalHandoffDocumentRefreshCandidate,
-} from "../document-refresh/enforcer.js";
 
 type CodexHookEventName =
   | "SessionStart"
@@ -1654,25 +1649,6 @@ async function buildStopHookOutput(
       );
     }
 
-    if (isFinalHandoffDocumentRefreshCandidate(lastAssistantMessage)) {
-      const documentRefreshWarning = evaluateFinalHandoffDocumentRefresh(cwd, lastAssistantMessage);
-      if (documentRefreshWarning) {
-        return await maybeReturnRepeatableStopOutput(
-          payload,
-          stateDir,
-          buildRepeatableStopSignature(
-            payload,
-            "document-refresh-stop",
-            documentRefreshWarning.triggeringPaths.join("|"),
-            canonicalSessionId,
-          ),
-          buildDocumentRefreshAdvisoryOutput(documentRefreshWarning, "Stop"),
-          canonicalSessionId,
-          { allowRepeatDuringStopHook: false },
-        );
-      }
-    }
-
     return null;
   }
 
@@ -1796,12 +1772,9 @@ export async function dispatchCodexNativeHook(
               } else if (decision.destination === "designer") {
                 triageAdditionalContext =
                   "OMX native UserPromptSubmit triage detected a visual/style request with no workflow keyword. This is advisory prompt-routing context only. Prefer the designer role surface.";
-              } else if (decision.destination === "researcher") {
-                triageAdditionalContext =
-                  "OMX native UserPromptSubmit triage detected an external documentation/reference research request with no workflow keyword. This is advisory prompt-routing context only. Prefer the researcher role surface rather than repo-local explore or autopilot.";
               }
               if (triageAdditionalContext !== null) {
-                const dest = decision.destination as "explore" | "executor" | "designer" | "researcher";
+                const dest = decision.destination as "explore" | "executor" | "designer";
                 const newState: TriageStateFile = {
                   version: 1,
                   last_triage: {

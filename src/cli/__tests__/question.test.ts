@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, it } from 'node:test';
-import { questionCommand } from '../question.js';
 import { markQuestionAnswered, readQuestionRecord } from '../../question/state.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -402,88 +401,6 @@ esac
     const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
     assert.match(tmuxLog, /split-window -v -l 12 -t %44 -P -F #\{pane_id\}/);
     assert.doesNotMatch(tmuxLog, /new-session/);
-  });
-
-  it('runs inline in interactive Windows non-attached sessions instead of hard-failing on missing TMUX', async () => {
-    const cwd = await makeRepo();
-    const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
-    const originalStdinIsTTY = process.stdin.isTTY;
-    const originalStdoutIsTTY = process.stdout.isTTY;
-    const originalSetRawMode = process.stdin.setRawMode;
-    const originalResume = process.stdin.resume;
-    const originalPause = process.stdin.pause;
-    const originalWrite = process.stdout.write.bind(process.stdout);
-    const originalCwd = process.cwd();
-    const originalTmux = process.env.TMUX;
-    const originalTmuxPane = process.env.TMUX_PANE;
-    const originalQuestionReturnPane = process.env.OMX_QUESTION_RETURN_PANE;
-    const originalLeaderPaneId = process.env.OMX_LEADER_PANE_ID;
-    const writes: string[] = [];
-
-    Object.defineProperty(process, 'platform', { value: 'win32' });
-    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
-    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
-    delete process.env.TMUX;
-    delete process.env.TMUX_PANE;
-    delete process.env.OMX_QUESTION_RETURN_PANE;
-    delete process.env.OMX_LEADER_PANE_ID;
-    process.stdin.setRawMode = ((_: boolean) => process.stdin) as unknown as typeof process.stdin.setRawMode;
-    process.stdin.resume = (() => process.stdin) as unknown as typeof process.stdin.resume;
-    process.stdin.pause = (() => process.stdin) as unknown as typeof process.stdin.pause;
-    process.stdout.write = ((chunk: string | Uint8Array) => {
-      writes.push(String(chunk));
-      return true;
-    }) as typeof process.stdout.write;
-    process.chdir(cwd);
-
-    try {
-      const runPromise = questionCommand([
-        '--input',
-        JSON.stringify({
-          question: 'Pick one',
-          options: [{ label: 'A', value: 'a' }],
-          allow_other: false,
-          session_id: 'sess-q',
-        }),
-        '--json',
-      ]);
-
-      setTimeout(() => {
-        process.stdin.emit('keypress', '', { name: 'enter' });
-      }, 25);
-
-      await runPromise;
-      const joined = writes.join('');
-      const lastJsonLine = joined.trim().split('\n').reverse().find((line) => line.trim().startsWith('{'));
-      assert.ok(lastJsonLine, `expected JSON output in: ${joined}`);
-      const payload = JSON.parse(lastJsonLine);
-      assert.equal(payload.ok, true);
-      assert.equal(payload.answer.value, 'a');
-      assert.match(joined, /Use ↑\/↓ to move, Enter to select\./);
-
-      const entries = await readdir(join(cwd, '.omx', 'state', 'sessions', 'sess-q', 'questions'));
-      assert.equal(entries.length, 1);
-      const record = await readQuestionRecord(join(cwd, '.omx', 'state', 'sessions', 'sess-q', 'questions', entries[0]!));
-      assert.equal(record?.status, 'answered');
-      assert.equal(record?.renderer?.renderer, 'inline-tty');
-    } finally {
-      if (originalPlatformDescriptor) Object.defineProperty(process, 'platform', originalPlatformDescriptor);
-      Object.defineProperty(process.stdin, 'isTTY', { value: originalStdinIsTTY, configurable: true });
-      Object.defineProperty(process.stdout, 'isTTY', { value: originalStdoutIsTTY, configurable: true });
-      process.stdin.setRawMode = originalSetRawMode;
-      process.stdin.resume = originalResume;
-      process.stdin.pause = originalPause;
-      process.stdout.write = originalWrite as typeof process.stdout.write;
-      process.chdir(originalCwd);
-      if (typeof originalTmux === 'string') process.env.TMUX = originalTmux;
-      else delete process.env.TMUX;
-      if (typeof originalTmuxPane === 'string') process.env.TMUX_PANE = originalTmuxPane;
-      else delete process.env.TMUX_PANE;
-      if (typeof originalQuestionReturnPane === 'string') process.env.OMX_QUESTION_RETURN_PANE = originalQuestionReturnPane;
-      else delete process.env.OMX_QUESTION_RETURN_PANE;
-      if (typeof originalLeaderPaneId === 'string') process.env.OMX_LEADER_PANE_ID = originalLeaderPaneId;
-      else delete process.env.OMX_LEADER_PANE_ID;
-    }
   });
 
 });

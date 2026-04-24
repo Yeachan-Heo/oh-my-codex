@@ -184,77 +184,7 @@ describe('triagePrompt — LIGHT/designer', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5. LIGHT / researcher
-// ---------------------------------------------------------------------------
-
-describe('triagePrompt — LIGHT/researcher', () => {
-  it('routes official documentation lookup prompts to researcher', () => {
-    assertLightDestination('Find the official docs and version compatibility notes for this SDK', 'researcher');
-  });
-
-  it('routes Korean official documentation lookup prompts to researcher', () => {
-    assertLightDestination('OpenAI Responses API 공식 문서 찾아줘', 'researcher');
-  });
-
-  it('routes official-doc question prompts to researcher instead of explore', () => {
-    assertLightDestination('where can I find official docs for OpenAI Responses API?', 'researcher');
-  });
-
-  it('routes endpoint-shaped official-doc lookups to researcher instead of local explore', () => {
-    assertLightDestination('find official docs for api/v1/responses', 'researcher');
-  });
-
-  it('routes dotted technology official-doc lookups to researcher instead of local explore', () => {
-    assertLightDestination('find official docs for Node.js', 'researcher');
-    assertLightDestination('find official docs for Next.js', 'researcher');
-  });
-
-  it('routes external URL-shaped official-doc lookups with repo paths to researcher', () => {
-    assertLightDestination('find official docs for github.com/org/repo/src/foo.ts', 'researcher');
-    assertLightDestination('find official docs for github.com/org/repo/src/server', 'researcher');
-  });
-
-  it('does not steal implementation-shaped official-doc prompts from HEAVY', () => {
-    const result = triagePrompt('implement auth using official docs for the SDK');
-    assert.equal(result.lane, 'HEAVY', `expected HEAVY got ${result.lane} (reason=${result.reason})`);
-    assert.equal(result.destination, 'autopilot');
-    assert.equal(result.reason, 'implementation_research_goal');
-  });
-
-  it('does not steal planning-shaped official-doc prompts from HEAVY', () => {
-    const result = triagePrompt('research and plan auth migration using official docs for the SDK');
-    assert.equal(result.lane, 'HEAVY', `expected HEAVY got ${result.lane} (reason=${result.reason})`);
-    assert.equal(result.destination, 'autopilot');
-    assert.equal(result.reason, 'implementation_research_goal');
-  });
-
-  it('routes anchored local API usage prompts through executor even with lookup verbs', () => {
-    assertLightDestination('find API usage in src/foo.ts', 'executor');
-  });
-
-  it('routes project-scoped local API usage prompts through explore instead of researcher', () => {
-    assertLightDestination('find API usage in this project', 'explore');
-  });
-
-  it('routes current-code lookup prompts through explore instead of researcher', () => {
-    assertLightDestination('find API usage in our code', 'explore');
-  });
-
-  it('keeps repository changelog lookup prompts local despite generic docs terms', () => {
-    assertLightDestination('find changelog in this repository', 'explore');
-  });
-
-  it('keeps anchored documentation lookup prompts local despite generic docs terms', () => {
-    assertLightDestination('find documentation in src/config.ts', 'executor');
-  });
-
-  it('routes anchored read-only questions through explore before executor', () => {
-    assertLightDestination('what does src/foo.ts do?', 'explore');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 6. HEAVY
+// 5. HEAVY
 // ---------------------------------------------------------------------------
 
 describe('triagePrompt — HEAVY', () => {
@@ -295,7 +225,7 @@ describe('triagePrompt — HEAVY', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7. Punctuation / casing regression
+// 6. Punctuation / casing regression
 // ---------------------------------------------------------------------------
 
 describe('triagePrompt — punctuation and casing regression', () => {
@@ -317,7 +247,7 @@ describe('triagePrompt — punctuation and casing regression', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 8. Determinism / purity proof
+// 7. Determinism / purity proof
 // ---------------------------------------------------------------------------
 
 describe('triagePrompt — determinism', () => {
@@ -346,7 +276,7 @@ describe('triagePrompt — determinism', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 9. Performance benchmark (soft assertion — avg < 1 ms per call)
+// 8. Performance benchmark (soft assertion — avg < 1 ms per call)
 // ---------------------------------------------------------------------------
 
 describe('triagePrompt — performance benchmark', () => {

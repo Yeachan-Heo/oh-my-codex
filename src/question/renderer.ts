@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename } from 'node:path';
-import { stdin as processStdin, stdout as processStdout } from 'node:process';
 import { parsePaneIdFromTmuxOutput } from '../hud/tmux.js';
 import { buildSendPaneArgvs } from '../notifications/tmux-detector.js';
 import { sleepSync } from '../utils/sleep.js';
@@ -13,7 +12,7 @@ import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
 import type { QuestionAnswer, QuestionRendererState } from './types.js';
 
-export type QuestionRendererStrategy = 'inside-tmux' | 'detached-tmux' | 'inline-tty' | 'test-noop' | 'unsupported';
+export type QuestionRendererStrategy = 'inside-tmux' | 'detached-tmux' | 'test-noop' | 'unsupported';
 
 export interface LaunchQuestionRendererOptions {
   cwd: string;
@@ -21,9 +20,6 @@ export interface LaunchQuestionRendererOptions {
   sessionId?: string;
   env?: NodeJS.ProcessEnv;
   nowIso?: string;
-  platform?: NodeJS.Platform;
-  stdinIsTTY?: boolean;
-  stdoutIsTTY?: boolean;
 }
 
 export type ExecTmuxSync = (args: string[]) => string;
@@ -46,15 +42,6 @@ function hasExplicitQuestionPaneTarget(env: NodeJS.ProcessEnv): boolean {
   return isPaneId(safeString(env.OMX_QUESTION_RETURN_PANE || env.OMX_LEADER_PANE_ID).trim());
 }
 
-function hasInteractiveQuestionTty(options?: {
-  stdinIsTTY?: boolean;
-  stdoutIsTTY?: boolean;
-}): boolean {
-  const stdinIsTTY = options?.stdinIsTTY ?? Boolean(processStdin.isTTY);
-  const stdoutIsTTY = options?.stdoutIsTTY ?? Boolean(processStdout.isTTY);
-  return stdinIsTTY && stdoutIsTTY;
-}
-
 export function resolveQuestionRendererStrategy(
   env: NodeJS.ProcessEnv = process.env,
   // Kept for callers/tests that used to pass detected tmux availability; default
@@ -63,18 +50,12 @@ export function resolveQuestionRendererStrategy(
   options?: {
     cwd?: string;
     sessionId?: string;
-    platform?: NodeJS.Platform;
-    stdinIsTTY?: boolean;
-    stdoutIsTTY?: boolean;
   },
 ): QuestionRendererStrategy {
   if (safeString(env.OMX_QUESTION_TEST_RENDERER).trim() === 'noop') return 'test-noop';
   if (safeString(env.TMUX).trim() !== '') return 'inside-tmux';
   if (hasExplicitQuestionPaneTarget(env)) return 'inside-tmux';
   if (options?.cwd && readPersistedQuestionReturnTarget(options.cwd, options.sessionId)) return 'inside-tmux';
-  if ((options?.platform ?? process.platform) === 'win32' && hasInteractiveQuestionTty(options)) {
-    return 'inline-tty';
-  }
   return 'unsupported';
 }
 
@@ -275,9 +256,6 @@ export function launchQuestionRenderer(
   const strategy = deps.strategy ?? resolveQuestionRendererStrategy(options.env ?? process.env, undefined, {
     cwd: options.cwd,
     sessionId: options.sessionId,
-    platform: options.platform,
-    stdinIsTTY: options.stdinIsTTY,
-    stdoutIsTTY: options.stdoutIsTTY,
   });
   const execTmux = deps.execTmux ?? defaultExecTmux;
   const sleepImpl = deps.sleepSync ?? sleepSync;
@@ -336,14 +314,6 @@ export function launchQuestionRenderer(
       target: paneId,
       launched_at: launchedAt,
       ...(returnTarget ? { return_target: returnTarget, return_transport: 'tmux-send-keys' } : {}),
-    };
-  }
-
-  if (strategy === 'inline-tty') {
-    return {
-      renderer: 'inline-tty',
-      target: 'inline-tty',
-      launched_at: launchedAt,
     };
   }
 

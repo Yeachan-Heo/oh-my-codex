@@ -11,10 +11,7 @@ dist/
 # Local agent/worktree artifacts (never commit)
 .claude/
 .claire/
-.agents/*
-!.agents/plugins/
-.agents/plugins/*
-!.agents/plugins/marketplace.json
+.agents/
 coverage/
 target/
 bin/native/

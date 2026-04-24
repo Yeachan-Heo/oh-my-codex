@@ -152,9 +152,6 @@ export async function questionCommand(args: string[]): Promise<void> {
       sessionId: policy.sessionId,
     });
     await markQuestionPrompting(recordPath, renderer);
-    if (renderer.renderer === 'inline-tty') {
-      await runQuestionUi(recordPath);
-    }
     finalRecord = await waitForQuestionTerminalState(recordPath);
   } catch (error) {
     const message = extractErrorMessage(error);

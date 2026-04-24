@@ -25,12 +25,12 @@ Candidate branch: `hotrelease/0.14.4-gpt55`
 | TypeScript build | `npm run build` | PASS |
 | Targeted model/default suites | `node --test dist/agents/__tests__/definitions.test.js dist/agents/__tests__/native-config.test.js dist/team/__tests__/model-contract.test.js dist/utils/__tests__/agents-model-table.test.js dist/cli/__tests__/setup-agents-overwrite.test.js` | PASS |
 | Targeted executor launch defaults | `node --test --test-name-pattern=... dist/team/__tests__/runtime.test.js` | PASS |
-| Earlier pre-interruption gates | `npm run lint`, `npm run check:no-unused`, `cargo test --workspace` | PASS |
+| Scope check | `git diff --name-status v0.14.3..HEAD` plus plugin-path grep | PASS |
 
 ## Known limits
 
-- External push, GitHub PR/merge, and tag publication depend on local credentials/network availability.
-- CI merge gating still depends on the opened PR reaching green on GitHub.
+- CI merge gating still depends on the replacement PR reaching green on GitHub.
+- This branch is rebuilt from `v0.14.3` and intentionally excludes unrelated dev/plugin-layout changes.
 
 ## Verdict
 

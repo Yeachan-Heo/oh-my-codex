@@ -31,8 +31,8 @@ OMX only owns the wrapper entries that invoke `dist/scripts/codex-native-hook.js
 | `session-start` | `SessionStart` | `session-start` | native | Native adapter refreshes session bookkeeping, restores startup developer context, and ensures `.omx/` is gitignored at the repo root |
 | wiki startup context | `SessionStart` | `session-start` | native | Wiki session-start context can append a compact `.omx/wiki/` summary when wiki pages exist; startup writes stay config-gated |
 | `keyword-detector` | `UserPromptSubmit` | `keyword-detector` | native | Persists skill activation state and can add prompt-side developer context; `$ralph` prompt routing seeds workflow state only and does not launch `omx ralph --prd ...` |
-| `pre-tool-use` | `PreToolUse` (`Bash`) | `pre-tool-use` | native-partial | Current native scope is Bash-only; built-in native behavior cautions on `rm -rf dist`, blocks inspectable inline `git commit` commands until Lore-format structure + the required `Co-authored-by: OmX <omx@oh-my-codex.dev>` trailer are present, and emits non-blocking document-refresh warnings for mapped staged commit changes that lack rule-scoped docs/spec refresh evidence |
-| `post-tool-use` | `PostToolUse` (`Bash`) | `post-tool-use` | native-partial | Current native scope is Bash-only; built-in native behavior covers command-not-found / permission-denied / missing-path guidance and informative non-zero-output review; document-refresh commit warnings use PreToolUse advisory output, with PostToolUse reserved as a future fallback if Codex advisory semantics change |
+| `pre-tool-use` | `PreToolUse` (`Bash`) | `pre-tool-use` | native-partial | Current native scope is Bash-only; built-in native behavior cautions on `rm -rf dist` and blocks inspectable inline `git commit` commands until Lore-format structure + the required `Co-authored-by: OmX <omx@oh-my-codex.dev>` trailer are present |
+| `post-tool-use` | `PostToolUse` (`Bash`) | `post-tool-use` | native-partial | Current native scope is Bash-only; built-in native behavior covers command-not-found / permission-denied / missing-path guidance and informative non-zero-output review |
 | Ralph/persistence stop handling | `Stop` | `stop` | native-partial | Native adapter uses the documented native Stop continuation contract (`decision: "block"` + `reason`) for active Ralph runs and avoids re-blocking once `stop_hook_active` is set |
 | Autopilot continuation | `Stop` | `stop` | native-partial | Native adapter continues non-terminal autopilot sessions from active session/root mode state |
 | Ultrawork continuation | `Stop` | `stop` | native-partial | Native adapter continues non-terminal ultrawork sessions from active session/root mode state |
@@ -49,50 +49,6 @@ OMX only owns the wrapper entries that invoke `dist/scripts/codex-native-hook.js
 | `session-end` | none | `session-end` | runtime-fallback | Still emitted from runtime/notify path, not native Codex hooks |
 | wiki session capture | none | `session-end` | runtime-fallback | Wiki session-log capture runs from the existing runtime session-end cleanup path, not from a native Codex hook |
 | `session-idle` | none | `session-idle` | runtime-fallback | Still emitted from runtime/notify path, not native Codex hooks |
-
-
-## Document-refresh warning MVP
-
-The native hook adapter includes an agent-only document-refresh warning MVP for
-spec-driven development hygiene. It does **not** install a generic CI gate, does
-**not** add a repo-wide pre-commit framework, and must not hard-block `git
-commit` for document-refresh reasons. Existing Lore commit blocking remains
-separate and still wins when an inline commit message is not Lore-compliant.
-
-Warning scope is intentionally narrow and rule-scoped:
-
-- **Commit path:** `PreToolUse` is Bash-only in this MVP and evaluates only
-  inspectable `git commit` commands. It reads `git diff --cached --name-status`,
-  so only staged changes count. Staged product docs such as
-  `docs/codex-native-hooks.md` can suppress a native-hook rule warning.
-  Rule-owned `.omx/plans/**` and `.omx/specs/**` targets suppress commit-path
-  warnings only when they are tracked or force-staged despite `.omx/` being
-  gitignored. Local-only ignored planning files do not suppress commit warnings.
-- **Final handoff path:** `Stop` evaluates only terminal-looking final handoff
-  attempts, after active-mode blockers and auto-nudge recovery. It reads staged
-  plus unstaged diffs and can count fresh local rule-owned `.omx/plans/**` or
-  `.omx/specs/**` files when their mtimes are newer than the mapped source
-  change. This is an agent-local heuristic freshness check for final handoff,
-  not commit evidence or proof of semantic refresh.
-- **Mappings:** rules live in `src/document-refresh/config.ts`; unrelated doc
-  or `.omx` edits do not suppress warnings for another rule. Initial rules cover
-  native hook behavior, document-refresh enforcer behavior, CLI/operator
-  behavior, and prompt-guidance behavior only.
-- **Exclusions:** tooling-only changes, release collateral, rename-only changes,
-  and explicitly ignored non-user-facing internal tests are ignored
-  conservatively. Ambiguous refactors should use the explicit exemption if no
-  product/spec refresh is needed.
-
-To acknowledge a legitimate no-refresh case, include this exact line in the
-commit message or final handoff text with a concrete reason:
-
-```text
-Document-refresh: not-needed | <reason>
-```
-
-The warning output names the mapped triggering path(s) and expected refresh
-target group(s), so agents can refresh the right product docs or planning specs
-instead of using an unrelated docs edit as a blanket suppression.
 
 ## Project wiki addendum (approved v1 backport)
 
@@ -135,7 +91,7 @@ operator to clear incompatible state explicitly via `omx state ...` or the
 
 ## UserPromptSubmit: triage advisory context
 
-`UserPromptSubmit` can now emit triage advisory context alongside keyword context. When no keyword matches, the triage layer classifies the prompt and may inject an advisory prompt-routing context string — this is advisory prompt-routing context that does not activate a skill or workflow by itself; it adds a developer-context hint the model may follow. Light advisory destinations include repo-local `explore`, narrow-edit `executor`, visual `designer`, and external documentation/reference `researcher`; researcher routing is for official-doc, version-compatibility, source-backed, or external lookup requests, does not override local anchors or implementation-shaped prompts, and still writes only prompt-routing state. Keywords remain the deterministic control surface: a matched keyword always takes precedence over triage output, and users can suppress triage injection per prompt with phrases such as `no workflow`, `just chat`, or `plain answer`.
+`UserPromptSubmit` can now emit triage advisory context alongside keyword context. When no keyword matches, the triage layer classifies the prompt and may inject an advisory prompt-routing context string — this is advisory prompt-routing context that does not activate a skill or workflow by itself; it adds a developer-context hint the model may follow. Keywords remain the deterministic control surface: a matched keyword always takes precedence over triage output, and users can suppress triage injection per prompt with phrases such as `no workflow`, `just chat`, or `plain answer`.
 
 ## Verification guidance
 

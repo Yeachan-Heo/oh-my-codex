@@ -6,12 +6,12 @@
  *
  * Lanes:
  *   PASS  — trivial acknowledgements, explicit opt-out phrases, or ambiguous short prompts
- *   LIGHT — single-agent destination: explore | executor | designer | researcher
+ *   LIGHT — single-agent destination: explore | executor | designer
  *   HEAVY — autopilot; longer goal-shaped imperative prompts
  */
 
 export type TriageLane = "HEAVY" | "LIGHT" | "PASS";
-export type LightDestination = "explore" | "executor" | "designer" | "researcher";
+export type LightDestination = "explore" | "executor" | "designer";
 
 export interface TriageDecision {
   lane: TriageLane;
@@ -55,53 +55,6 @@ const EXPLORE_STARTERS: readonly string[] = [
   "show me how ",
   "can you explain ",
   "could you explain ",
-];
-
-/** External docs/reference lookup prompts → LIGHT/researcher */
-const RESEARCHER_EXTERNAL_SIGNALS: RegExp[] = [
-  /\b(?:official docs?|upstream docs?|vendor docs?|api docs?|reference docs?|release notes?|changelog|version(?:ing)?|compatib(?:ility|le)|documentation)\b/,
-  /\b(?:web|internet|online|external sources?|external citations?|source-backed|in the wild)\b/,
-  /\b(?:github|npm|pypi|crates\.io|mdn|stackoverflow)\b/,
-  /(?:공식\s*(?:문서|docs?)|외부\s*(?:자료|문서|소스)|웹에서|인터넷에서|출처|레퍼런스|릴리즈\s*노트|버전\s*호환|호환성)/,
-];
-
-const RESEARCHER_EXTERNAL_ROUTE_OVERRIDE_SIGNALS: RegExp[] = [
-  /\b(?:web|internet|online|external sources?|external citations?|source-backed|in the wild)\b/,
-  /\b(?:github|npm|pypi|crates\.io|mdn|stackoverflow)\b/,
-  /(?:외부\s*(?:자료|문서|소스)|웹에서|인터넷에서|출처)/,
-];
-
-const RESEARCHER_LOOKUP_VERBS: RegExp[] = [
-  /\b(?:find|look up|lookup|research|search|check|verify|read|consult|collect|gather)\b/,
-  /(?:찾아줘|찾아봐|찾아|검색해|검색|조사해|조사|확인해|확인|알아봐|알아내)/,
-];
-
-const RESEARCHER_TECH_SUBJECTS: RegExp[] = [
-  /\b(?:api|apis|sdk|sdks|framework|frameworks|library|libraries|package|packages|service|services|tool|tools|vendor|browser|runtime)\b/,
-];
-
-const RESEARCHER_TECH_NEEDS: RegExp[] = [
-  /\b(?:behavior|best way|configuration|configure|example|examples|feature|features?|how(?:\s+do|\s+to)?|lifecycle|option|options|parameter|parameters|usage|what(?:\s+does|\s+is)|when(?:\s+does|\s+should)|why(?:\s+does)?)\b/,
-];
-
-const IMPLEMENTATION_ACTION_SIGNALS: RegExp[] = [
-  /\b(?:add|build|change|create|delete|fix|implement|integrate|migrate|modify|patch|plan|planning|refactor|remove|replace|rewrite|scaffold|set up|update|wire)\b/,
-  /(?:구현|추가|수정|변경|삭제|교체|마이그레이션|연동|적용)/,
-];
-
-const IMPLEMENTATION_CONNECTOR_SIGNALS: RegExp[] = [
-  /\b(?:after|and|based on|then|using|with)\b/,
-  /[,;].*\b(?:find|look up|lookup|research|search|check|verify|read|consult|collect|gather)\b/,
-  /(?:기반으로|보고|읽고|찾고|확인하고|사용해서|써서|로\s*구현|로\s*수정)/,
-];
-
-const LOCAL_RESEARCH_EXCLUSION_SIGNALS: RegExp[] = [
-  /\b(?:repo|repository|codebase|local|in-repo|source tree|working tree)\b/,
-  /\b(?:this|current|our)\s+(?:project|workspace|code|repo|repository|codebase)\b/,
-  /\bin\s+(?:the\s+)?(?:project|workspace)\b/,
-  /\b(?:src|lib|test|spec|app|pages|components|hooks|utils|services|dist|build|scripts)\/[\w./\-]+/,
-  /(?:^|[\s"'`(])(?:\.{1,2}\/|\/|[\w.-]+\/)[\w./\-]+\.(?:ts|js|py|go|rs|java|tsx|jsx|vue|svelte|rb|c|cpp|h|css|scss|html|json|yaml|yml|toml)\b/,
-  /(?:이\s*(?:레포|저장소|코드베이스)|레포에서|저장소에서|코드베이스에서|소스에서|파일에서)/,
 ];
 
 /** Starters / keywords for visual / styling prompts → LIGHT/designer */
@@ -211,24 +164,6 @@ const SHORT_QUESTION_WORD_LIMIT = 10;
  */
 const ANCHORED_EDIT_WORD_LIMIT = 15;
 
-function isQuestionOrExplanation(normalized: string, wordCount: number): boolean {
-  for (const starter of EXPLORE_STARTERS) {
-    if (normalized.startsWith(starter)) {
-      return true;
-    }
-  }
-  return wordCount <= SHORT_QUESTION_WORD_LIMIT && normalized.endsWith("?");
-}
-
-function hasAnchoredEditPattern(normalized: string): boolean {
-  for (const pattern of EXECUTOR_ANCHOR_PATTERNS) {
-    if (pattern.test(normalized)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 // ---------------------------------------------------------------------------
 // Main classifier
 // ---------------------------------------------------------------------------
@@ -255,67 +190,18 @@ export function triagePrompt(prompt: string): TriageDecision {
     }
   }
 
-  const hasLocalResearchAnchor = LOCAL_RESEARCH_EXCLUSION_SIGNALS.some((pattern) => pattern.test(normalized));
-  const hasImplementationAction = IMPLEMENTATION_ACTION_SIGNALS.some((pattern) => pattern.test(normalized));
-  const hasImplementationConnector = IMPLEMENTATION_CONNECTOR_SIGNALS.some((pattern) => pattern.test(normalized));
-  const hasResearchLookupVerb = RESEARCHER_LOOKUP_VERBS.some((pattern) => pattern.test(normalized));
-  const hasQuestionOrExplanation = isQuestionOrExplanation(normalized, wordCount);
-  const hasAnchoredEdit = hasAnchoredEditPattern(normalized);
-  const hasExternalResearchSignal = RESEARCHER_EXTERNAL_SIGNALS.some((pattern) => pattern.test(normalized));
-  const hasExternalRouteOverride = RESEARCHER_EXTERNAL_ROUTE_OVERRIDE_SIGNALS.some((pattern) => pattern.test(normalized));
-
   // ── Rule 3: Obvious question / explanation → LIGHT/explore ───────────────
-  if (
-    hasQuestionOrExplanation &&
-    !(
-      hasResearchLookupVerb &&
-      hasExternalResearchSignal &&
-      (!hasLocalResearchAnchor || hasExternalRouteOverride)
-    )
-  ) {
-    return { lane: "LIGHT", destination: "explore", reason: "question_or_explanation" };
+  for (const starter of EXPLORE_STARTERS) {
+    if (normalized.startsWith(starter)) {
+      return { lane: "LIGHT", destination: "explore", reason: "question_or_explanation" };
+    }
+  }
+  // Short prompt ending with "?" is also an exploration signal
+  if (wordCount <= SHORT_QUESTION_WORD_LIMIT && normalized.endsWith("?")) {
+    return { lane: "LIGHT", destination: "explore", reason: "short_question" };
   }
 
-  // ── Rule 4: Short anchored edit → LIGHT/executor ─────────────────────────
-  if (wordCount <= ANCHORED_EDIT_WORD_LIMIT && hasAnchoredEdit && !(hasResearchLookupVerb && hasExternalRouteOverride)) {
-    return { lane: "LIGHT", destination: "executor", reason: "anchored_edit" };
-  }
-
-  // ── Rule 5: Repo-local lookup → LIGHT/explore ────────────────────────────
-  if (hasLocalResearchAnchor && hasResearchLookupVerb && !hasImplementationAction && !hasExternalRouteOverride) {
-    return { lane: "LIGHT", destination: "explore", reason: "local_reference_lookup" };
-  }
-
-  // ── Rule 6: Implementation/planning-shaped research prompt → HEAVY ───────
-  if (
-    wordCount > HEAVY_WORD_THRESHOLD &&
-    hasImplementationAction &&
-    hasImplementationConnector &&
-    (
-      hasExternalResearchSignal ||
-      hasResearchLookupVerb
-    )
-  ) {
-    return { lane: "HEAVY", destination: "autopilot", reason: "implementation_research_goal" };
-  }
-
-  // ── Rule 7: External docs / source-backed lookup → LIGHT/researcher ──────
-  if (
-    (!hasLocalResearchAnchor || hasExternalRouteOverride) &&
-    !hasImplementationAction &&
-    hasResearchLookupVerb &&
-    (
-      hasExternalResearchSignal ||
-      (
-        RESEARCHER_TECH_SUBJECTS.some((pattern) => pattern.test(normalized)) &&
-        RESEARCHER_TECH_NEEDS.some((pattern) => pattern.test(normalized))
-      )
-    )
-  ) {
-    return { lane: "LIGHT", destination: "researcher", reason: "external_reference_research" };
-  }
-
-  // ── Rule 8: Structural redesign goals → HEAVY ────────────────────────────
+  // ── Rule 4: Structural redesign goals → HEAVY ────────────────────────────
   if (
     BROAD_DESIGN_STARTERS.some((starter) => normalized.startsWith(starter)) &&
     STRUCTURAL_REDESIGN_TERMS.some((pattern) => pattern.test(normalized))
@@ -323,7 +209,7 @@ export function triagePrompt(prompt: string): TriageDecision {
     return { lane: "HEAVY", destination: "autopilot", reason: "structural_redesign_goal" };
   }
 
-  // ── Rule 9: Obvious visual / styling → LIGHT/designer ────────────────────
+  // ── Rule 5: Obvious visual / styling → LIGHT/designer ────────────────────
   for (const starter of DESIGNER_STARTERS) {
     if (normalized.startsWith(starter)) {
       return { lane: "LIGHT", destination: "designer", reason: "visual_styling_prompt" };
@@ -335,7 +221,16 @@ export function triagePrompt(prompt: string): TriageDecision {
     }
   }
 
-  // ── Rule 10: Longer goal-shaped imperative → HEAVY ───────────────────────
+  // ── Rule 6: Short anchored edit → LIGHT/executor ─────────────────────────
+  if (wordCount <= ANCHORED_EDIT_WORD_LIMIT) {
+    for (const pattern of EXECUTOR_ANCHOR_PATTERNS) {
+      if (pattern.test(normalized)) {
+        return { lane: "LIGHT", destination: "executor", reason: "anchored_edit" };
+      }
+    }
+  }
+
+  // ── Rule 7: Longer goal-shaped imperative → HEAVY ────────────────────────
   if (wordCount > HEAVY_WORD_THRESHOLD) {
     for (const verb of HEAVY_IMPERATIVE_VERBS) {
       if (normalized.startsWith(verb)) {
@@ -344,6 +239,6 @@ export function triagePrompt(prompt: string): TriageDecision {
     }
   }
 
-  // ── Rule 11: Fallback → PASS ─────────────────────────────────────────────
+  // ── Rule 8: Fallback → PASS ───────────────────────────────────────────────
   return { lane: "PASS", reason: "ambiguous_short_prompt" };
 }

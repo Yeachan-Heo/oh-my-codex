@@ -79,8 +79,6 @@ describe('package bin contract', () => {
     assert.ok(pkg.files?.includes('Cargo.toml'));
     assert.ok(pkg.files?.includes('Cargo.lock'));
     assert.ok(pkg.files?.includes('crates/'));
-    assert.ok(pkg.files?.includes('plugins/'));
-    assert.ok(pkg.files?.includes('.agents/plugins/marketplace.json'));
 
     const binPath = join(process.cwd(), 'dist', 'cli', 'omx.js');
     const compiledCliPath = join(process.cwd(), 'dist', 'cli', 'index.js');
@@ -116,21 +114,6 @@ describe('package bin contract', () => {
     const cargoLockEntry = results[0]?.files?.find((file) => file.path === 'Cargo.lock');
     const crateManifestEntry = results[0]?.files?.find((file) => file.path === 'crates/omx-explore/Cargo.toml');
     const crateMainEntry = results[0]?.files?.find((file) => file.path === 'crates/omx-explore/src/main.rs');
-    const marketplaceEntry = results[0]?.files?.find((file) => file.path === '.agents/plugins/marketplace.json');
-    const pluginManifestEntry = results[0]?.files?.find((file) => file.path === 'plugins/oh-my-codex/.codex-plugin/plugin.json');
-    const pluginMcpEntry = results[0]?.files?.find((file) => file.path === 'plugins/oh-my-codex/.mcp.json');
-    const pluginAppsEntry = results[0]?.files?.find((file) => file.path === 'plugins/oh-my-codex/.app.json');
-    const stateServerEntry = results[0]?.files?.find((file) => file.path === 'dist/mcp/state-server.js');
-    const memoryServerEntry = results[0]?.files?.find((file) => file.path === 'dist/mcp/memory-server.js');
-    const codeIntelServerEntry = results[0]?.files?.find((file) => file.path === 'dist/mcp/code-intel-server.js');
-    const traceServerEntry = results[0]?.files?.find((file) => file.path === 'dist/mcp/trace-server.js');
-    const wikiServerEntry = results[0]?.files?.find((file) => file.path === 'dist/mcp/wiki-server.js');
-    const pluginRalphSkillEntry = results[0]?.files?.find((file) => file.path === 'plugins/oh-my-codex/skills/ralph/SKILL.md');
-    const pluginWorkerSkillEntry = results[0]?.files?.find((file) => file.path === 'plugins/oh-my-codex/skills/worker/SKILL.md');
-    const rootRalphSkillEntry = results[0]?.files?.find((file) => file.path === 'skills/ralph/SKILL.md');
-    const promptEntry = results[0]?.files?.find((file) => file.path === 'prompts/executor.md');
-    const templateEntry = results[0]?.files?.find((file) => file.path === 'templates/AGENTS.md');
-    const postinstallEntry = results[0]?.files?.find((file) => file.path === 'src/scripts/postinstall-bootstrap.js');
 
     assert.equal(packagedHarnessEntry, undefined, `did not expect ${packagedHarnessPath} in npm pack output`);
     assert.equal(packagedHarnessMetaEntry, undefined, 'did not expect packaged explore harness metadata in npm pack output');
@@ -139,20 +122,5 @@ describe('package bin contract', () => {
     assert.ok(cargoLockEntry, 'expected npm pack output to include Cargo.lock');
     assert.ok(crateManifestEntry, 'expected npm pack output to include crates/omx-explore/Cargo.toml');
     assert.ok(crateMainEntry, 'expected npm pack output to include crates/omx-explore/src/main.rs');
-    assert.ok(marketplaceEntry, 'expected npm pack output to include .agents/plugins/marketplace.json');
-    assert.ok(pluginManifestEntry, 'expected npm pack output to include plugins/oh-my-codex/.codex-plugin/plugin.json');
-    assert.ok(pluginMcpEntry, 'expected npm pack output to include plugins/oh-my-codex/.mcp.json');
-    assert.ok(pluginAppsEntry, 'expected npm pack output to include plugins/oh-my-codex/.app.json');
-    assert.ok(stateServerEntry, 'expected npm pack output to include dist/mcp/state-server.js for plugin MCP metadata');
-    assert.ok(memoryServerEntry, 'expected npm pack output to include dist/mcp/memory-server.js for plugin MCP metadata');
-    assert.ok(codeIntelServerEntry, 'expected npm pack output to include dist/mcp/code-intel-server.js for plugin MCP metadata');
-    assert.ok(traceServerEntry, 'expected npm pack output to include dist/mcp/trace-server.js for plugin MCP metadata');
-    assert.ok(wikiServerEntry, 'expected npm pack output to include dist/mcp/wiki-server.js for plugin MCP metadata');
-    assert.ok(pluginRalphSkillEntry, 'expected npm pack output to include mirrored plugin ralph skill');
-    assert.ok(pluginWorkerSkillEntry, 'expected npm pack output to include mirrored plugin worker skill');
-    assert.ok(rootRalphSkillEntry, 'expected npm pack output to keep canonical root skills');
-    assert.ok(promptEntry, 'expected npm pack output to keep prompts');
-    assert.ok(templateEntry, 'expected npm pack output to keep templates');
-    assert.ok(postinstallEntry, 'expected npm pack output to keep postinstall bootstrap script');
   });
 });

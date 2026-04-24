@@ -26,17 +26,6 @@ describe('resolveQuestionRendererStrategy', () => {
     );
   });
 
-  it('uses inline-tty on Windows when no tmux bridge exists but the current terminal is interactive', () => {
-    assert.equal(
-      resolveQuestionRendererStrategy(
-        {} as NodeJS.ProcessEnv,
-        '/usr/bin/tmux',
-        { platform: 'win32', stdinIsTTY: true, stdoutIsTTY: true },
-      ),
-      'inline-tty',
-    );
-  });
-
   it('supports explicit host-pane bridge hints when TMUX is absent', () => {
     assert.equal(
       resolveQuestionRendererStrategy({ OMX_QUESTION_RETURN_PANE: '%77' } as NodeJS.ProcessEnv, '/usr/bin/tmux'),
@@ -318,33 +307,6 @@ describe('launchQuestionRenderer', () => {
       '/repo/.omx/state/sessions/s1/questions/question-1.json',
     ]);
     assert.deepEqual(calls[2], ['list-panes', '-t', '%42', '-F', '#{pane_dead}\t#{pane_id}']);
-  });
-
-  it('uses inline-tty on Windows without invoking tmux when no attached tmux pane is available', () => {
-    const calls: string[][] = [];
-    const result = launchQuestionRenderer(
-      {
-        cwd: '/repo',
-        recordPath: '/repo/.omx/state/sessions/s1/questions/question-inline.json',
-        sessionId: 's1',
-        nowIso: '2026-04-23T00:00:00.000Z',
-        env: {} as NodeJS.ProcessEnv,
-        platform: 'win32',
-        stdinIsTTY: true,
-        stdoutIsTTY: true,
-      },
-      {
-        execTmux: (args) => {
-          calls.push(args);
-          return '';
-        },
-        sleepSync: () => {},
-      },
-    );
-
-    assert.equal(result.renderer, 'inline-tty');
-    assert.equal(result.target, 'inline-tty');
-    assert.deepEqual(calls, []);
   });
 
   it('falls back to the persisted session mode pane when Bash/tool env lost TMUX_PANE', () => {

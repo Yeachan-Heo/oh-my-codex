@@ -118,12 +118,6 @@
       "canonical": "vision"
     },
     {
-      "name": "visual-ralph",
-      "category": "shortcut",
-      "status": "active",
-      "canonical": "designer"
-    },
-    {
       "name": "frontend-ui-ux",
       "category": "shortcut",
       "status": "alias",
