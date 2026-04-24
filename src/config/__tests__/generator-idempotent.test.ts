@@ -358,7 +358,7 @@ describe("config generator idempotency (#384)", () => {
     }
   });
 
-  it("merges OMX status_line into an existing user [tui] section without duplicating the table", async () => {
+  it("preserves an existing user status_line in [tui]", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
       const configPath = join(wd, "config.toml");
@@ -377,8 +377,34 @@ describe("config generator idempotency (#384)", () => {
       assert.match(toml, /^theme = "night"$/m, "user tui key preserved");
       assert.match(
         toml,
+        /^status_line = \["git-branch"\]$/m,
+        "user status_line preserved",
+      );
+      assert.doesNotMatch(
+        toml,
         /^status_line = \["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"\]$/m,
-        "status_line updated in-place",
+        "OMX default should not replace a user status_line",
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("adds the OMX status_line when an existing user [tui] section does not define one", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      await writeFile(configPath, ["[tui]", 'theme = "night"', ""].join("\n"));
+
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, "utf-8");
+
+      assert.equal(count(toml, /^\[tui\]$/gm), 1, "[tui] should appear once");
+      assert.match(toml, /^theme = "night"$/m, "user tui key preserved");
+      assert.match(
+        toml,
+        /^status_line = \["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"\]$/m,
+        "OMX default status_line added when missing",
       );
     } finally {
       await rm(wd, { recursive: true, force: true });

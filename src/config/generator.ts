@@ -701,6 +701,7 @@ function upsertTuiStatusLine(config: string): {
   }
 
   const preservedKeyLines: string[] = [];
+  let preservedStatusLine: string[] | undefined;
   const seenKeys = new Set<string>();
 
   for (const section of sections) {
@@ -713,13 +714,34 @@ function upsertTuiStatusLine(config: string): {
       if (!keyMatch) continue;
 
       const key = keyMatch[1];
-      if (key === "status_line" || seenKeys.has(key)) continue;
+      const entryLines = [trimmed];
+      while (
+        !parseStandaloneToml(`[tui]\n${entryLines.join("\n")}`) &&
+        i + entryLines.length < section.end
+      ) {
+        entryLines.push(lines[i + entryLines.length].trim());
+      }
+
+      if (key === "status_line") {
+        preservedStatusLine ??= entryLines;
+        i += entryLines.length - 1;
+        continue;
+      }
+      if (seenKeys.has(key)) {
+        i += entryLines.length - 1;
+        continue;
+      }
       seenKeys.add(key);
-      preservedKeyLines.push(trimmed);
+      preservedKeyLines.push(...entryLines);
+      i += entryLines.length - 1;
     }
   }
 
-  const mergedSection = ["[tui]", ...preservedKeyLines, OMX_TUI_STATUS_LINE];
+  const mergedSection = [
+    "[tui]",
+    ...preservedKeyLines,
+    ...(preservedStatusLine ?? [OMX_TUI_STATUS_LINE]),
+  ];
   const firstStart = sections[0].start;
   const rebuilt: string[] = [];
 
