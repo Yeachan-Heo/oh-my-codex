@@ -309,15 +309,10 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     }
   });
 
-  it("skips OMX-managed [tui] writes for Codex CLI >= 0.107.0 and preserves an existing [tui] table", async () => {
+  it("configures OMX status_line by default for Codex CLI >= 0.107.0", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     try {
       await mkdir(join(wd, ".omx", "state"), { recursive: true });
-      await mkdir(join(wd, ".codex"), { recursive: true });
-      await writeFile(
-        join(wd, ".codex", "config.toml"),
-        ['model = "gpt-5.5"', "", "[tui]", 'theme = "night"', 'status_line = ["git-branch"]', ""].join("\n"),
-      );
 
       const output = await runSetupWithCapturedLogs(wd, {
         scope: "project",
@@ -326,12 +321,11 @@ describe("omx setup refresh summary and dry-run behavior", () => {
 
       const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
       assert.equal(config.match(/^\[tui\]$/gm)?.length ?? 0, 1);
-      assert.match(config, /^theme = "night"$/m);
-      assert.match(config, /^status_line = \["git-branch"\]$/m);
       assert.match(
-        output,
-        /Codex CLI >= 0\.107\.0 manages \[tui\]; OMX left that section untouched\./,
+        config,
+        /^status_line = \["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"\]$/m,
       );
+      assert.match(output, /StatusLine configured in config\.toml via \[tui\] section\./);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
