@@ -38,7 +38,9 @@ describe('package bin contract', () => {
     assert.equal(pkg.scripts?.['build:explore:release'], 'node dist/scripts/build-explore-harness.js');
     assert.equal(pkg.scripts?.['build:full'], 'npm run build && npm run build:explore:release && npm run build:sparkshell');
     assert.equal(pkg.scripts?.['clean:native-package-assets'], 'node dist/scripts/cleanup-explore-harness.js');
-    assert.equal(pkg.scripts?.prepack, 'npm run build && npm run clean:native-package-assets');
+    assert.equal(pkg.scripts?.['sync:plugin'], 'node dist/scripts/sync-plugin-mirror.js');
+    assert.equal(pkg.scripts?.['sync:plugin:check'], 'node dist/scripts/sync-plugin-mirror.js --check');
+    assert.equal(pkg.scripts?.prepack, 'npm run build && npm run sync:plugin && npm run clean:native-package-assets');
     assert.equal(pkg.scripts?.postinstall, 'node src/scripts/postinstall-bootstrap.js');
     assert.equal(pkg.scripts?.postpack, 'npm run clean:native-package-assets');
     assert.equal(pkg.scripts?.['test:explore'], 'cargo test -p omx-explore-harness && node --test dist/cli/__tests__/explore.test.js dist/hooks/__tests__/explore-routing.test.js dist/hooks/__tests__/explore-sparkshell-guidance-contract.test.js');

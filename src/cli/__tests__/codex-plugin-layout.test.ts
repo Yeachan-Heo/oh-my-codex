@@ -5,6 +5,8 @@ import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } fro
 import { tmpdir } from 'node:os';
 import { delimiter, join, relative, sep } from 'node:path';
 import { buildMergedConfig } from '../../config/generator.js';
+import type { CatalogManifest } from '../../catalog/schema.js';
+import { getSetupInstallableSkillNames } from '../../catalog/installable.js';
 import {
   buildOmxPluginMcpManifest,
   OMX_FIRST_PARTY_MCP_ENTRYPOINTS,
@@ -18,14 +20,14 @@ type PackageJson = {
   version: string;
 };
 
-type CatalogManifest = {
-  skills?: Array<{ name?: string; status?: string }>;
-};
 
 type PluginManifest = {
   name?: string;
   version?: string;
   skills?: string;
+  agents?: string;
+  prompts?: string;
+  hooks?: string;
   mcpServers?: string;
   apps?: string;
   interface?: {
@@ -55,7 +57,6 @@ const pluginManifestPath = join(pluginRoot, '.codex-plugin', 'plugin.json');
 const pluginMcpPath = join(pluginRoot, '.mcp.json');
 const pluginAppsPath = join(pluginRoot, '.app.json');
 const marketplacePath = join(root, '.agents', 'plugins', 'marketplace.json');
-const setupOnlyInstallableSkills = new Set(['wiki']);
 const omxBin = join(root, 'dist', 'cli', 'omx.js');
 
 type PluginMcpManifest = {
@@ -165,7 +166,10 @@ describe('official Codex plugin layout', () => {
     ]);
     const expectedPluginMcpManifest = buildOmxPluginMcpManifest();
 
-    assert.equal('hooks' in (await readJson<Record<string, unknown>>(pluginManifestPath)), false);
+    const pluginManifest = await readJson<PluginManifest>(pluginManifestPath);
+    assert.equal(pluginManifest.agents, undefined);
+    assert.equal(pluginManifest.prompts, undefined);
+    assert.equal(pluginManifest.hooks, undefined);
     assert.deepEqual(appsManifest, { apps: {} });
     assert.deepEqual(mcpManifest, expectedPluginMcpManifest);
 
@@ -242,12 +246,7 @@ describe('official Codex plugin layout', () => {
 
   it('mirrors exactly the setup-installable skill subset from the canonical root skills', async () => {
     const manifest = await readJson<CatalogManifest>(join(root, 'src', 'catalog', 'manifest.json'));
-    const expectedSkillNames = [...new Set([
-      ...(manifest.skills ?? [])
-        .filter((skill) => skill.name && (skill.status === 'active' || skill.status === 'internal'))
-        .map((skill) => skill.name as string),
-      ...setupOnlyInstallableSkills,
-    ])].sort();
+    const expectedSkillNames = [...getSetupInstallableSkillNames(manifest)].sort();
 
     const pluginSkillEntries = await readdir(join(pluginRoot, 'skills'), { withFileTypes: true });
     const actualSkillNames = pluginSkillEntries

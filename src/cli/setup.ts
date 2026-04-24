@@ -49,6 +49,14 @@ import { getPackageRoot } from "../utils/package.js";
 import { readSessionState, isSessionStale } from "../hooks/session.js";
 import { getCatalogHeadlineCounts } from "./catalog-contract.js";
 import { tryReadCatalogManifest } from "../catalog/reader.js";
+import {
+  getSetupInstallableSkillNames,
+  isCatalogInstallableStatus,
+} from "../catalog/installable.js";
+import {
+  compareDirectoryMirror,
+  compareSkillMirror,
+} from "../catalog/skill-mirror.js";
 import { DEFAULT_FRONTIER_MODEL } from "../config/models.js";
 import {
   addGeneratedAgentsMarker,
@@ -151,27 +159,7 @@ const PROJECT_GITIGNORE_ENTRIES = [
   "!.codex/prompts/**",
 ] as const;
 const LEGACY_PROJECT_GITIGNORE_ENTRIES = [".codex/"] as const;
-const SETUP_ONLY_INSTALLABLE_SKILLS = new Set(["wiki"]);
 const HARD_DEPRECATED_SKILLS_TO_REMOVE = new Set(["web-clone"]);
-
-function isCatalogInstallableStatus(status: string | undefined): boolean {
-  return status === "active" || status === "internal";
-}
-
-function getSetupInstallableSkillNames(
-  manifest = tryReadCatalogManifest(),
-): Set<string> {
-  return new Set([
-    ...((manifest?.skills ?? [])
-      .filter(
-        (skill) =>
-          typeof skill.name === "string" &&
-          isCatalogInstallableStatus(skill.status),
-      )
-      .map((skill) => skill.name)),
-    ...SETUP_ONLY_INSTALLABLE_SKILLS,
-  ]);
-}
 
 function applyScopePathRewritesToAgentsTemplate(
   content: string,
@@ -483,19 +471,18 @@ async function listPluginInstallArtifactPaths(
   return discoveredPaths.sort();
 }
 
-async function pluginInstallArtifactHasExpectedSkills(
+async function pluginInstallArtifactHasExpectedSkillMirror(
   artifactPath: string,
+  packageRoot: string,
 ): Promise<boolean> {
   const skillsDir = join(artifactPath, "skills");
-  if (!existsSync(skillsDir)) return false;
-  const installableSkillNames = getSetupInstallableSkillNames();
-
-  for (const skillName of installableSkillNames) {
-    if (!existsSync(join(skillsDir, skillName, "SKILL.md"))) {
-      return false;
-    }
-  }
-  return true;
+  const manifest = tryReadCatalogManifest(packageRoot);
+  const installableSkillNames = [...getSetupInstallableSkillNames(manifest)].sort();
+  return (await compareSkillMirror(
+    join(packageRoot, "skills"),
+    skillsDir,
+    installableSkillNames,
+  )) === null;
 }
 
 interface PluginReadinessResult {
@@ -506,12 +493,13 @@ interface PluginReadinessResult {
 
 async function detectUserVisiblePluginReadiness(
   codexHomeDir: string,
+  packageRoot: string,
 ): Promise<PluginReadinessResult> {
   const artifactPaths = await listPluginInstallArtifactPaths(codexHomeDir);
   const validArtifacts: string[] = [];
 
   for (const artifactPath of artifactPaths) {
-    if (await pluginInstallArtifactHasExpectedSkills(artifactPath)) {
+    if (await pluginInstallArtifactHasExpectedSkillMirror(artifactPath, packageRoot)) {
       validArtifacts.push(artifactPath);
     }
   }
@@ -521,7 +509,7 @@ async function detectUserVisiblePluginReadiness(
       ready: true,
       evidencePaths: validArtifacts,
       message:
-        `Plugin discovery artifacts found in ${getPluginCacheRoot(codexHomeDir)} and skill mirror readiness verified.`,
+        `Plugin discovery artifacts found in ${getPluginCacheRoot(codexHomeDir)} and exact skill mirror readiness verified.`,
     };
   }
 
@@ -529,8 +517,21 @@ async function detectUserVisiblePluginReadiness(
     ready: false,
     evidencePaths: artifactPaths,
     message:
-      `No user-visible oh-my-codex plugin discovery artifact with the expected skill mirror was found under ${getPluginCacheRoot(codexHomeDir)}.`,
+      `No user-visible oh-my-codex plugin discovery artifact with an exact skill mirror was found under ${getPluginCacheRoot(codexHomeDir)}.`,
   };
+}
+
+async function hasAnySetupInstallableSkill(
+  packageRoot: string,
+  skillsDir: string,
+): Promise<boolean> {
+  const installableSkillNames = getSetupInstallableSkillNames(
+    tryReadCatalogManifest(packageRoot),
+  );
+  for (const skillName of installableSkillNames) {
+    if (existsSync(join(skillsDir, skillName, "SKILL.md"))) return true;
+  }
+  return false;
 }
 
 function logCategorySummary(name: string, summary: SetupCategorySummary): void {
@@ -1046,13 +1047,25 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
       summary.skills = createEmptyCategorySummary();
       const pluginReadiness = await detectUserVisiblePluginReadiness(
         scopeDirs.codexHomeDir,
+        pkgRoot,
       );
       if (!pluginReadiness.ready) {
-        summary.skills.skipped += 1;
         console.log(`  warning: ${pluginReadiness.message}`);
-        console.log(
-          `  Legacy OMX skills under ${scopeDirs.skillsDir} were left in place because plugin readiness is not established.`,
-        );
+        if (await hasAnySetupInstallableSkill(pkgRoot, skillsDst)) {
+          summary.skills.skipped += 1;
+          console.log(
+            `  Legacy OMX skills under ${scopeDirs.skillsDir} were left in place because plugin readiness is not established.`,
+          );
+        } else {
+          console.log(
+            "  No legacy OMX skills were present, so plugin mode is falling back to legacy skill installation for this setup run.",
+          );
+          summary.skills = await installSkills(skillsSrc, skillsDst, backupContext, {
+            force,
+            dryRun,
+            verbose,
+          });
+        }
       } else {
         if (verbose) {
           for (const evidencePath of pluginReadiness.evidencePaths) {
@@ -1788,7 +1801,7 @@ export async function installSkills(
 ): Promise<SetupCategorySummary> {
   const summary = createEmptyCategorySummary();
   if (!existsSync(srcDir)) return summary;
-  const installableSkillNames = getSetupInstallableSkillNames();
+  const installableSkillNames = getSetupInstallableSkillNames(tryReadCatalogManifest());
   const installableSkills: Array<{
     name: string;
     sourceDir: string;
@@ -1965,18 +1978,22 @@ async function cleanupLegacyManagedUserSkills(
     const installedSkillMd = join(installedSkillDir, "SKILL.md");
     if (!existsSync(shippedSkillMd) || !existsSync(installedSkillMd)) continue;
 
-    const [shippedSkillContent, installedSkillContent] = await Promise.all([
-      readFile(shippedSkillMd, "utf-8"),
-      readFile(installedSkillMd, "utf-8"),
-    ]);
-    const expectedInstalledContent = rewriteInstalledSkillDescriptionBadge(
-      shippedSkillContent,
-      shippedSkillMd,
-    );
+    const mismatch = await compareDirectoryMirror(shippedSkillDir, installedSkillDir, {
+      expectedContent: (relativeFile, content) => {
+        if (relativeFile !== "SKILL.md") return content;
+        return Buffer.from(
+          rewriteInstalledSkillDescriptionBadge(
+            content.toString("utf-8"),
+            shippedSkillMd,
+          ),
+          "utf-8",
+        );
+      },
+    });
 
-    if (installedSkillContent !== expectedInstalledContent) {
+    if (mismatch) {
       const warning =
-        `Skipping legacy skill cleanup for ${skillName}: installed SKILL.md differs from OMX-managed content.`;
+        `Skipping legacy skill cleanup for ${skillName}: installed directory differs from OMX-managed content (${mismatch.kind}${mismatch.path ? `: ${mismatch.path}` : ""}).`;
       result.skippedSkillNames.push(skillName);
       result.warnings.push(warning);
       continue;

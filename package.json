@@ -16,7 +16,7 @@
     "clean:native-package-assets": "node dist/scripts/cleanup-explore-harness.js",
     "dev": "tsc --watch",
     "lint": "biome lint src",
-    "prepack": "npm run build && npm run clean:native-package-assets",
+    "prepack": "npm run build && npm run sync:plugin && npm run clean:native-package-assets",
     "postinstall": "node src/scripts/postinstall-bootstrap.js",
     "setup": "node dist/cli/omx.js setup",
     "doctor": "node dist/cli/omx.js doctor",
@@ -49,7 +49,9 @@
     "smoke:packed-install": "node dist/scripts/smoke-packed-install.js",
     "test:sparkshell": "node dist/scripts/test-sparkshell.js",
     "test:reply-listener:live": "node dist/scripts/test-reply-listener-live.js",
-    "postpack": "npm run clean:native-package-assets"
+    "postpack": "npm run clean:native-package-assets",
+    "sync:plugin": "node dist/scripts/sync-plugin-mirror.js",
+    "sync:plugin:check": "node dist/scripts/sync-plugin-mirror.js --check"
   },
   "engines": {
     "node": ">=20"
