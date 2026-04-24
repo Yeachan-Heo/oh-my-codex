@@ -570,7 +570,7 @@ exit 0
     }
   });
 
-  it('does not apply mini guidance during scale-up when the final worker model is gpt-5.4', async () => {
+  it('does not apply mini guidance during scale-up when the final worker model is gpt-5.5', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-frontier-role-'));
     const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-frontier-role-bin-'));
     const tmuxStubPath = join(fakeBinDir, 'tmux');

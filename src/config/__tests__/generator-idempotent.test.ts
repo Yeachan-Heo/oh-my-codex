@@ -159,7 +159,7 @@ describe("config generator idempotency (#384)", () => {
         'model = "o3"',
         "",
         'notify = ["node", "/old/path/notify-hook.js"]',
-        'model_reasoning_effort = "high"',
+        'model_reasoning_effort = "medium"',
         'developer_instructions = "old instructions"',
         "",
         "[features]",
@@ -451,7 +451,7 @@ describe("config generator idempotency (#384)", () => {
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, "utf-8");
 
-      assert.match(toml, /^model = "gpt-5.4"$/m);
+      assert.match(toml, /^model = "gpt-5.5"$/m);
       assert.match(
         toml,
         /^# oh-my-codex seeded behavioral defaults \(uninstall removes unchanged defaults\)$/m,
@@ -464,14 +464,14 @@ describe("config generator idempotency (#384)", () => {
     }
   });
 
-  it("can override gpt-5.3-codex to gpt-5.4 and seed 250k context defaults", async () => {
+  it("can override gpt-5.3-codex to gpt-5.5 and seed 250k context defaults", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
       const toml = buildMergedConfig('model = \"gpt-5.3-codex\"\n', wd, {
-        modelOverride: "gpt-5.4",
+        modelOverride: "gpt-5.5",
       });
 
-      assert.match(toml, /^model = "gpt-5\.4"$/m);
+      assert.match(toml, /^model = "gpt-5\.5"$/m);
       assert.doesNotMatch(toml, /^model = "gpt-5\.3-codex"$/m);
       assert.match(
         toml,
@@ -484,7 +484,7 @@ describe("config generator idempotency (#384)", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
-  it("does not seed 250k context defaults for non-gpt-5.4 models", async () => {
+  it("does not seed 250k context defaults for non-gpt-5.5 models", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
       const configPath = join(wd, "config.toml");
@@ -507,13 +507,13 @@ describe("config generator idempotency (#384)", () => {
       const configPath = join(wd, "config.toml");
       await writeFile(
         configPath,
-        ['model = "gpt-5.4"', "model_context_window = 640000", ""].join("\n"),
+        ['model = "gpt-5.5"', "model_context_window = 640000", ""].join("\n"),
       );
 
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, "utf-8");
 
-      assert.match(toml, /^model = "gpt-5\.4"$/m);
+      assert.match(toml, /^model = "gpt-5\.5"$/m);
       assert.match(toml, /^model_context_window = 640000$/m);
       assert.match(toml, /^model_auto_compact_token_limit = 200000$/m);
     } finally {
@@ -527,13 +527,13 @@ describe("config generator idempotency (#384)", () => {
       const configPath = join(wd, "config.toml");
       await writeFile(
         configPath,
-        ['model = "gpt-5.4"', "model_auto_compact_token_limit = 150000", ""].join("\n"),
+        ['model = "gpt-5.5"', "model_auto_compact_token_limit = 150000", ""].join("\n"),
       );
 
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, "utf-8");
 
-      assert.match(toml, /^model = "gpt-5\.4"$/m);
+      assert.match(toml, /^model = "gpt-5\.5"$/m);
       assert.match(toml, /^model_context_window = 250000$/m);
       assert.match(toml, /^model_auto_compact_token_limit = 150000$/m);
     } finally {
@@ -547,7 +547,7 @@ describe("config generator idempotency (#384)", () => {
       const configPath = join(wd, "config.toml");
       await writeFile(
         configPath,
-        ['model = "gpt-5.4"', "model_context_window = 640000", ""].join("\n"),
+        ['model = "gpt-5.5"', "model_context_window = 640000", ""].join("\n"),
       );
 
       await mergeConfig(configPath, wd);
@@ -571,7 +571,7 @@ describe("config generator idempotency (#384)", () => {
 
       const toml = await readFile(configPath, "utf-8");
       assert.equal(
-        count(toml, /^model = "gpt-5\.4"$/gm),
+        count(toml, /^model = "gpt-5\.5"$/gm),
         1,
         "seeded model should appear once",
       );
@@ -907,7 +907,7 @@ describe("config generator idempotency (#384)", () => {
 
   it("removes an existing multiline developer_instructions assignment as one root entry", () => {
     const existing = [
-      'model = "gpt-5.4"',
+      'model = "gpt-5.5"',
       'developer_instructions = """Custom instructions survive as valid TOML.',
       'This line used to be orphaned by setup.',
       'This closing line used to break parsing."""',

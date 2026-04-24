@@ -43,7 +43,7 @@ function buildOmxConfig(): string {
   return [
     '# oh-my-codex top-level settings (must be before any [table])',
     'notify = ["node", "/path/to/notify-hook.js"]',
-    'model_reasoning_effort = "high"',
+    'model_reasoning_effort = "medium"',
     'developer_instructions = "You have oh-my-codex installed."',
     '',
     '[features]',
@@ -111,9 +111,9 @@ function buildConfigWithSeededModelContext(): string {
   return [
     '# oh-my-codex top-level settings (must be before any [table])',
     'notify = ["node", "/path/to/notify-hook.js"]',
-    'model_reasoning_effort = "high"',
+    'model_reasoning_effort = "medium"',
     'developer_instructions = "You have oh-my-codex installed."',
-    'model = "gpt-5.4"',
+    'model = "gpt-5.5"',
     '# oh-my-codex seeded behavioral defaults (uninstall removes unchanged defaults)',
     'model_context_window = 250000',
     'model_auto_compact_token_limit = 200000',
@@ -144,9 +144,9 @@ function buildConfigWithEditedSeededModelContext(): string {
   return [
     '# oh-my-codex top-level settings (must be before any [table])',
     'notify = ["node", "/path/to/notify-hook.js"]',
-    'model_reasoning_effort = "high"',
+    'model_reasoning_effort = "medium"',
     'developer_instructions = "You have oh-my-codex installed."',
-    'model = "gpt-5.4"',
+    'model = "gpt-5.5"',
     '# oh-my-codex seeded behavioral defaults (uninstall removes unchanged defaults)',
     'model_context_window = 123456',
     'model_auto_compact_token_limit = 200000',
@@ -180,7 +180,7 @@ function buildMixedConfig(): string {
     '',
     '# oh-my-codex top-level settings (must be before any [table])',
     'notify = ["node", "/path/to/notify-hook.js"]',
-    'model_reasoning_effort = "high"',
+    'model_reasoning_effort = "medium"',
     'developer_instructions = "You have oh-my-codex installed."',
     '',
     '[features]',
@@ -389,7 +389,7 @@ describe('omx uninstall', () => {
       assert.equal(res.status, 0, res.stderr || res.stdout);
 
       const config = await readFile(join(codexDir, 'config.toml'), 'utf-8');
-      assert.match(config, /^model = "gpt-5\.4"$/m);
+      assert.match(config, /^model = "gpt-5\.5"$/m);
       assert.doesNotMatch(config, /^model_context_window = 250000$/m);
       assert.doesNotMatch(config, /^model_auto_compact_token_limit = 200000$/m);
       assert.doesNotMatch(config, /seeded behavioral defaults/);
@@ -415,7 +415,7 @@ describe('omx uninstall', () => {
       assert.equal(res.status, 0, res.stderr || res.stdout);
 
       const config = await readFile(join(codexDir, 'config.toml'), 'utf-8');
-      assert.match(config, /^model = "gpt-5\.4"$/m);
+      assert.match(config, /^model = "gpt-5\.5"$/m);
       assert.match(config, /^model_context_window = 123456$/m);
       assert.match(config, /^model_auto_compact_token_limit = 200000$/m);
       assert.doesNotMatch(config, /seeded behavioral defaults/);

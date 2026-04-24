@@ -225,7 +225,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     }
   });
 
-  it("offers an upgrade from gpt-5.3-codex to gpt-5.4 when accepted", async () => {
+  it("offers an upgrade from gpt-5.3-codex to gpt-5.5 when accepted", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     try {
       await mkdir(join(wd, ".omx", "state"), { recursive: true });
@@ -241,14 +241,14 @@ describe("omx setup refresh summary and dry-run behavior", () => {
         modelUpgradePrompt: async (currentModel, targetModel) => {
           promptCalls += 1;
           assert.equal(currentModel, "gpt-5.3-codex");
-          assert.equal(targetModel, "gpt-5.4");
+          assert.equal(targetModel, "gpt-5.5");
           return true;
         },
       });
 
       const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
       assert.equal(promptCalls, 1);
-      assert.match(config, /^model = "gpt-5\.4"$/m);
+      assert.match(config, /^model = "gpt-5\.5"$/m);
       assert.doesNotMatch(config, /^model = "gpt-5\.3-codex"$/m);
       assert.match(
         config,
@@ -279,7 +279,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
 
       const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
       assert.match(config, /^model = "gpt-5\.3-codex"$/m);
-      assert.doesNotMatch(config, /^model = "gpt-5\.4"$/m);
+      assert.doesNotMatch(config, /^model = "gpt-5\.5"$/m);
       assert.doesNotMatch(config, /^model_context_window = 250000$/m);
       assert.doesNotMatch(config, /^model_auto_compact_token_limit = 200000$/m);
     } finally {
@@ -301,7 +301,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
 
       const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
       assert.match(config, /^model = "gpt-5\.3-codex"$/m);
-      assert.doesNotMatch(config, /^model = "gpt-5\.4"$/m);
+      assert.doesNotMatch(config, /^model = "gpt-5\.5"$/m);
       assert.doesNotMatch(config, /^model_context_window = 250000$/m);
       assert.doesNotMatch(config, /^model_auto_compact_token_limit = 200000$/m);
     } finally {
@@ -316,7 +316,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       await mkdir(join(wd, ".codex"), { recursive: true });
       await writeFile(
         join(wd, ".codex", "config.toml"),
-        ['model = "gpt-5.4"', "", "[tui]", 'theme = "night"', 'status_line = ["git-branch"]', ""].join("\n"),
+        ['model = "gpt-5.5"', "", "[tui]", 'theme = "night"', 'status_line = ["git-branch"]', ""].join("\n"),
       );
 
       const output = await runSetupWithCapturedLogs(wd, {

@@ -1089,7 +1089,7 @@ exit 0
         const harnessStub = await writeExploreHarnessScenarioStub(
           wd,
           `
-printf '[omx explore] spark model \`%s\` unavailable or failed (exit 17). Falling back to \`gpt-5.4\`.\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
+printf '[omx explore] spark model \`%s\` unavailable or failed (exit 17). Falling back to \`gpt-5.5\`.\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
 printf '[omx explore] spark stderr: spark timed out; retry with the frontier fallback\n' >&2
 printf '%s\n' '# Answer' '- recovered with fallback model' '- MUST: actionable recovery path remained available'
 `,
@@ -1118,9 +1118,9 @@ printf '%s\n' '# Answer' '- recovered with fallback model' '- MUST: actionable r
         const harnessStub = await writeExploreHarnessScenarioStub(
           wd,
           `
-printf '[omx explore] spark model \`%s\` unavailable or failed (exit 23). Falling back to \`gpt-5.4\`.\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
+printf '[omx explore] spark model \`%s\` unavailable or failed (exit 23). Falling back to \`gpt-5.5\`.\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
 printf '[omx explore] spark stderr: spark backend unavailable; install the fallback runtime\n' >&2
-printf '[omx explore] both spark (\`%s\`) and fallback (\`gpt-5.4\`) attempts failed (codes 23 / 29). Last stderr: fallback backend unavailable; set OMX_EXPLORE_BIN to a working harness\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
+printf '[omx explore] both spark (\`%s\`) and fallback (\`gpt-5.5\`) attempts failed (codes 23 / 29). Last stderr: fallback backend unavailable; set OMX_EXPLORE_BIN to a working harness\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
 exit 1
 `,
         );
@@ -1135,7 +1135,7 @@ exit 1
         assert.match(result.stderr, /spark stderr: spark backend unavailable; install the fallback runtime/);
         assert.match(
           result.stderr,
-          /both spark \(`spark-test-model`\) and fallback \(`gpt-5\.4`\) attempts failed \(codes 23 \/ 29\)\. Last stderr: fallback backend unavailable; set OMX_EXPLORE_BIN to a working harness/,
+          /both spark \(`spark-test-model`\) and fallback \(`gpt-5\.5`\) attempts failed \(codes 23 \/ 29\)\. Last stderr: fallback backend unavailable; set OMX_EXPLORE_BIN to a working harness/,
         );
       });
     } finally {

@@ -91,7 +91,7 @@ Press Enter to confirm`;
 const READY_HELPER_CAPTURE = `╭────────────────────────────────────────────╮
 │ >_ OpenAI Codex (v0.114.0)                 │
 │                                            │
-│ model:     gpt-5.4 high   /model to change │
+│ model:     gpt-5.5 high   /model to change │
 │ directory: ~/Workspace/demo                │
 ╰────────────────────────────────────────────╯
 
@@ -100,7 +100,7 @@ How can I help you today?`;
 const VIEWPORT_WITHOUT_VISIBLE_PROMPT_CAPTURE = `╭────────────────────────────────────────────╮
 │ >_ OpenAI Codex (v0.118.0)                 │
 │                                            │
-│ model:     gpt-5.4 high   /model to change │
+│ model:     gpt-5.5 high   /model to change │
 │ directory: ~/Workspace/demo                │
 ╰────────────────────────────────────────────╯
 
@@ -2360,7 +2360,7 @@ case "$1" in
 ╭────────────────────────────────────────────╮
 │ >_ OpenAI Codex (v0.114.0)                 │
 │                                            │
-│ model:     gpt-5.4 high   /model to change │
+│ model:     gpt-5.5 high   /model to change │
 │ directory: ~/Workspace/demo                │
 ╰────────────────────────────────────────────╯
 

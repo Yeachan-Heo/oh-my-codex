@@ -202,7 +202,7 @@ describe('omx setup AGENTS refresh behavior', () => {
       );
       assert.match(
         agentsContent,
-        new RegExp(String.raw`\| \`executor\` \| \`${expectedContext.frontierModel}\` \| high \| Code implementation, refactoring, feature work`),
+        new RegExp(String.raw`\| \`executor\` \| \`${expectedContext.frontierModel}\` \| medium \| Code implementation, refactoring, feature work`),
       );
       assert.doesNotMatch(agentsContent, /legacy-frontier/);
       assert.doesNotMatch(agentsContent, /legacy-spark/);

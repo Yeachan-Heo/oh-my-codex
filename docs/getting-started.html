@@ -32,7 +32,7 @@
       <h2>Installation</h2>
       <pre><code>npm install -g @openai/codex oh-my-codex
 omx doctor</code></pre>
-      <p>When <code>oh-my-codex</code> actually bumps to a newer version, the global npm install now prints an explicit reminder instead of launching <code>omx setup</code> automatically. When you're ready, rerun <code>omx setup</code> manually or use <code>omx update</code> to check npm and then run the same setup refresh path. Fresh OMX-managed <code>gpt-5.4</code> configs now recommend <code>model_context_window = 250000</code> and <code>model_auto_compact_token_limit = 200000</code> only when those keys are missing.</p>
+      <p>When <code>oh-my-codex</code> actually bumps to a newer version, the global npm install now prints an explicit reminder instead of launching <code>omx setup</code> automatically. When you're ready, rerun <code>omx setup</code> manually or use <code>omx update</code> to check npm and then run the same setup refresh path. Fresh OMX-managed <code>gpt-5.5</code> configs now recommend <code>model_context_window = 250000</code> and <code>model_auto_compact_token_limit = 200000</code> only when those keys are missing.</p>
       <p><code>omx doctor</code> verifies the install shape. Before treating the runtime as ready, also prove that the active Codex profile can perform a real request:</p>
       <pre><code>codex login status
 omx exec --skip-git-repo-check -C . &quot;Reply with exactly OMX-EXEC-OK&quot;</code></pre>

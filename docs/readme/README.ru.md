@@ -190,7 +190,7 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # опционально: отключить а
 - Существующие файлы `AGENTS.md` никогда не перезаписываются молча: в интерактивном TTY setup спрашивает перед заменой, а в неинтерактивном режиме пропускает замену без `--force` (проверки безопасности активных сессий остаются в силе).
 - Обновления `config.toml` (для обеих областей):
   - `notify = ["node", "..."]`
-  - `model_reasoning_effort = "high"`
+  - `model_reasoning_effort = "medium"`
   - `developer_instructions = "..."`
   - `[features] multi_agent = true, child_agents_md = true`
   - Записи MCP-серверов (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki`)

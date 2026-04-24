@@ -41,7 +41,7 @@ describe("agents/native-config", () => {
     const toml = generateAgentToml(agent, prompt);
 
     assert.match(toml, /# oh-my-codex agent: executor/);
-    assert.match(toml, /model = "gpt-5\.4"/);
+    assert.match(toml, /model = "gpt-5\.5"/);
     assert.match(toml, /model_reasoning_effort = "medium"/);
     assert.ok(!toml.includes("title: demo"));
     assert.ok(toml.includes("Instruction line"));
@@ -73,7 +73,7 @@ describe("agents/native-config", () => {
       env: { OMX_DEFAULT_STANDARD_MODEL: "gpt-5.4-mini" } as NodeJS.ProcessEnv,
     });
     const frontierToml = generateAgentToml(agent, prompt, {
-      env: { OMX_DEFAULT_STANDARD_MODEL: "gpt-5.4" } as NodeJS.ProcessEnv,
+      env: { OMX_DEFAULT_STANDARD_MODEL: "gpt-5.5" } as NodeJS.ProcessEnv,
     });
     const tunedToml = generateAgentToml(agent, prompt, {
       env: { OMX_DEFAULT_STANDARD_MODEL: "gpt-5.4-mini-tuned" } as NodeJS.ProcessEnv,
@@ -107,8 +107,8 @@ describe("agents/native-config", () => {
         join(outDir, "executor.toml"),
         "utf8",
       );
-      assert.match(executorToml, /model = "gpt-5\.4"/);
-      assert.match(executorToml, /model_reasoning_effort = "high"/);
+      assert.match(executorToml, /model = "gpt-5\.5"/);
+      assert.match(executorToml, /model_reasoning_effort = "medium"/);
 
       const skipped = await installNativeAgentConfigs(root, {
         agentsDir: outDir,

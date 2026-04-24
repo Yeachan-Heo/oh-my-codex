@@ -20,7 +20,7 @@ export interface AgentDefinition {
 const EXECUTOR_AGENT: AgentDefinition = {
   name: 'executor',
   description: 'Code implementation, refactoring, feature work',
-  reasoningEffort: 'high',
+  reasoningEffort: 'medium',
   posture: 'deep-worker',
   modelClass: 'standard',
   routingRole: 'executor',

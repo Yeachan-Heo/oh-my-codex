@@ -1,50 +1,30 @@
-# oh-my-codex v0.14.3
+# oh-my-codex v0.14.4
 
 ## Summary
 
-`0.14.3` is a patch release after `v0.14.2` focused on the latest `dev` hardening train for interactive OMX execution. It preserves leader-pane question replies across tool-launched `omx question`, keeps reused deep-interview sessions attached to the correct pane, honors project-local `CODEX_HOME` for explore sessions, prevents multiline root TOML corruption during setup, keeps HUD reconciliation in the emitting tmux window, adds deep-interview summary gates, prevents answered deep-interview rounds from re-prompting, aligns ultrawork with upstream protocol improvements, hardens visible question rendering across tmux/docker-host metadata races, keeps cleanup compatible with BusyBox `ps`, avoids stale native Stop/autopilot loops, adds canonical runtime events for supervisor control, and hardens native Windows psmux worker pane bootstrap.
-
-## Added
-
-- **Canonical supervisor runtime events** — runtime command-event contracts now include canonical event types for supervisor control and downstream dispatch/readiness decisions.
-- **Deep-interview summary gates** — oversized interview flows now require compact summaries before continuing, reducing context blow-up during long clarification paths.
-- **Docker-host tmux question bridge** — question rendering can bridge docker-host tmux detection so operator-visible prompts survive container/host pane splits.
+`0.14.4` is a patch release after `v0.14.3` that promotes the default frontier lane from `gpt-5.4` to `gpt-5.5` while intentionally preserving the exact `gpt-5.4-mini` standard/mini seam and the `gpt-5.3-codex-spark` spark lane. The release aligns runtime defaults, setup/config seeding, docs, templates, and regression coverage around that model contract.
 
 ## Changed
 
-- **Question replies preserve the leader pane** — tool-launched `omx question` flows now retain and reuse the correct return pane across prompt reseeding and renderer metadata races.
-- **Explore respects project-local Codex homes** — launch/session helpers honor persisted project setup scope by resolving `CODEX_HOME` to the project `.codex` directory when appropriate.
-- **Setup config repair is safer** — multiline root TOML strings are parsed as root entries so setup refreshes no longer orphan fragments or corrupt `developer_instructions`-style values.
-- **HUD reconciliation stays window-local** — hook-driven HUD resize/reconcile work targets the emitting tmux window instead of drifting across windows.
-- **Ultrawork protocol stays aligned upstream** — the shipped ultrawork skill incorporates the upstream protocol refresh used by oh-my-openagent.
-- **Native Windows worker panes are more robust** — psmux worker bootstrap avoids the stale pane/startup assumptions that caused native Windows team launch regressions.
-
-## Fixed
-
-- **Answered deep-interview rounds no longer re-prompt** — stale question state is reconciled against answered records before enforcement asks again.
-- **Question answers no longer stall on renderer metadata races** — renderer return-target metadata is stabilized so answers can be injected back to the invoking pane.
-- **Detached/hidden question prompts remain operator-visible** — question rendering fails closed or bridges to visible tmux contexts instead of leaving prompts hidden from the operator.
-- **BusyBox cleanup compatibility** — cleanup retries process discovery with the BusyBox-compatible `args` field when `ps` rejects `command`.
-- **Native Stop no longer loops on stale autopilot planning state** — stale planning state is cleared/reconciled before Stop handling repeats.
-- **Release metadata drift** — Node/Cargo metadata, lockfiles, changelog, release body, release notes, and release-readiness collateral are aligned to `0.14.3`.
+- **Default frontier model is now `gpt-5.5`** — runtime defaults, Codex agent defaults, and `omx explore` fallback handling now point at `gpt-5.5`.
+- **Setup/config guidance stays aligned with the new frontier default** — config generators, setup-refresh coverage, README/site docs, and managed-config guidance now describe `gpt-5.5` seeding and the same `250000 / 200000` context recommendations.
+- **Mini and spark lanes remain exact** — the `gpt-5.4-mini` seam and `gpt-5.3-codex-spark` low-complexity lane remain unchanged, with tests/docs preserving the exact-match contract.
+- **Release metadata is aligned to `0.14.4`** — package/Cargo metadata plus release collateral are prepared for the `0.14.4` cut.
 
 ## Verification
 
-- `npm test` ✅ — 3910 tests passed, 0 failed; catalog check ok.
-- `npm run check:no-unused` ✅
-- `cargo test --workspace` ✅
-- `npm run lint` ✅
 - `npm run build` ✅
-- `node --test` targeted changed-path suites for question/deep-interview/hooks/team/config/cleanup/HUD ✅
+- Targeted Node suites for model/default changes ✅
+- `npm run lint`, `npm run check:no-unused`, and `cargo test --workspace` passed earlier on this branch ✅
+- Full `npm test` was intentionally not rerun after the final fast-path executor reasoning tweak.
 
 ## Upgrade notes
 
-- No migration steps are required for normal users.
-- Operators relying on project-local setup should benefit from the corrected `.codex` launch resolution automatically after setup/update refresh.
-- `omx question` continues to require an operator-visible tmux path for owned question UI rendering; when that path is unavailable it fails closed with actionable guidance.
+- Existing users do not need to change mini or spark overrides.
+- Fresh/default frontier paths will now seed or recommend `gpt-5.5` where OMX owns that configuration.
 
 ## Contributors
 
 Thanks to the contributors who made this release possible.
 
-**Full Changelog**: [`v0.14.2...v0.14.3`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.14.2...v0.14.3)
+**Full Changelog**: [`v0.14.3...v0.14.4`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.14.3...v0.14.4)

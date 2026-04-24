@@ -8,7 +8,7 @@ import TOML from '@iarna/toml';
 import { codexAgentsDir, projectCodexAgentsDir } from '../utils/paths.js';
 
 export const RESERVED_NATIVE_AGENT_NAMES = new Set(['default', 'worker', 'explorer']);
-const DEFAULT_AGENT_MODEL = 'gpt-5.4';
+const DEFAULT_AGENT_MODEL = 'gpt-5.5';
 const AGENTS_USAGE = [
   'Usage:',
   '  omx agents list [--scope user|project]',

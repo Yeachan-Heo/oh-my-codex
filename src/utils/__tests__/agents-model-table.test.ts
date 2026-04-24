@@ -72,7 +72,7 @@ describe('agents model table', () => {
     assert.match(table, /\| `architect` \| `gpt-frontier` \| high \| System design, boundaries, interfaces, long-horizon tradeoffs \(frontier-orchestrator, frontier\) \|/);
     assert.match(table, /\| `security-reviewer` \| `gpt-frontier` \| medium \| Vulnerabilities, trust boundaries, authn\/authz \(frontier-orchestrator, frontier\) \|/);
     assert.match(table, /\| `writer` \| `gpt-standard` \| high \| Documentation, migration notes, user guidance \(fast-lane, standard\) \|/);
-    assert.match(table, /\| `executor` \| `gpt-frontier` \| high \| Code implementation, refactoring, feature work \(deep-worker, standard\) \|/);
+    assert.match(table, /\| `executor` \| `gpt-frontier` \| medium \| Code implementation, refactoring, feature work \(deep-worker, standard\) \|/);
   });
 
   it('replaces existing marker-bounded content and inserts the block after team_model_resolution when missing', () => {

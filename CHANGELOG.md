@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.14.4] - 2026-04-24
+
+Patch release focused on promoting the default frontier lane from `gpt-5.4` to `gpt-5.5` while preserving the exact `gpt-5.4-mini` standard/mini seam and the `gpt-5.3-codex-spark` spark lane. Docs, setup/config guidance, templates, regression coverage, and release metadata are aligned to that contract.
+
+### Changed
+- **Frontier defaults now target `gpt-5.5`** — runtime defaults, Codex agent defaults, and `omx explore` fallback behavior now use `gpt-5.5` instead of `gpt-5.4`.
+- **Setup/config guidance matches the new frontier default** — config seeding docs and regression coverage now describe `gpt-5.5` while preserving the same `250000 / 200000` context recommendations.
+- **Setup and executor reasoning default to medium** — generated setup config and executor worker launch defaults now use medium reasoning instead of high.
+- **Mini and spark lanes remain exact** — `gpt-5.4-mini` and `gpt-5.3-codex-spark` behavior remains unchanged, with prompt guidance and tests still enforcing exact-match semantics.
+
+### Fixed
+- **Release metadata drift** — Node/Cargo metadata, lockfiles, changelog, release body, release notes, and release-readiness collateral are aligned to `0.14.4`.
+
 ## [0.14.3] - 2026-04-22
 
 Patch release focused on the latest `dev` hardening train after `0.14.2`: question/deep-interview return-pane reliability, project-local explore launch context, setup TOML repair safety, HUD reconcile window targeting, ultrawork protocol alignment, BusyBox cleanup compatibility, stale Stop/autopilot state handling, canonical runtime supervisor events, Docker-host tmux question rendering, and native Windows psmux worker pane bootstrap hardening.
@@ -765,7 +778,7 @@ Generated from the latest merged `dev` runtime/model-default work and validated 
 
 ### Added
 - **Additive team event-query APIs** — `omx team api` now exposes dedicated event-query operations so team runtime signals can be consumed more structurally. (PR [#714](https://github.com/Yeachan-Heo/oh-my-codex/pull/714))
-- **Explicit model-default contract** — runtime/docs/tests now align around the intended main/spark default model behavior (`gpt-5.4` / `gpt-5.3-codex-spark`). (PR [#718](https://github.com/Yeachan-Heo/oh-my-codex/pull/718))
+- **Explicit model-default contract** — runtime/docs/tests now align around the intended main/spark default model behavior (`gpt-5.5` / `gpt-5.3-codex-spark`). (PR [#718](https://github.com/Yeachan-Heo/oh-my-codex/pull/718))
 
 ### Changed
 - **Team prompt decomposition is less brittle for prose prompts** — natural-language task prompts are no longer fragmented into pathological subtasks as easily. (PR [#712](https://github.com/Yeachan-Heo/oh-my-codex/pull/712))
@@ -874,7 +887,7 @@ Generated from `v0.8.3..dev` (non-merge commits) and release validation on `dev`
 - Setup refresh coverage for managed artifact replacement, scope-aware updates, and uninstall compatibility paths.
 
 ### Fixed
-- Setup now prompts before upgrading managed Codex model references from `gpt-5.3-codex` to `gpt-5.4`, reducing surprise config churn during refreshes.
+- Setup now prompts before upgrading managed Codex model references from `gpt-5.3-codex` to `gpt-5.5`, reducing surprise config churn during refreshes.
 - Config generation and setup refresh flows are more idempotent and resilient across repeated runs and scoped installs.
 
 ### Docs
@@ -905,7 +918,7 @@ Generated from `v0.8.1..main` (non-merge commits) and release validation on `mai
 
 ### Added
 - Gemini CLI worker support for OMX team mode, including mixed CLI maps and `--model` passthrough (`#576`, `#579`, related issue `#573`).
-- Default frontier-model fallback is now centralized through `DEFAULT_FRONTIER_MODEL` (currently `gpt-5.4`) instead of hardcoded references (`#583`).
+- Default frontier-model fallback is now centralized through `DEFAULT_FRONTIER_MODEL` (currently `gpt-5.5`) instead of hardcoded references (`#583`).
 - `configure-notifications` is now the canonical shipped notification-setup skill, with catalog/setup behavior aligned to match docs (`#584`).
 
 ### Changed

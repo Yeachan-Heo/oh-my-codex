@@ -349,7 +349,7 @@ describe('paneLooksReady', () => {
     assert.equal(paneLooksReady(`╭────────────────────────────────────────────╮
 │ >_ OpenAI Codex (v0.118.0)                 │
 │                                            │
-│ model:     gpt-5.4 high   /model to change │
+│ model:     gpt-5.5 high   /model to change │
 │ directory: /tmp/demo                       │
 ╰────────────────────────────────────────────╯
 
@@ -362,7 +362,7 @@ describe('paneShowsCodexViewport', () => {
     assert.equal(paneShowsCodexViewport(`╭────────────────────────────────────────────╮
 │ >_ OpenAI Codex (v0.118.0)                 │
 │                                            │
-│ model:     gpt-5.4 high   /model to change │
+│ model:     gpt-5.5 high   /model to change │
 │ directory: /tmp/demo                       │
 ╰────────────────────────────────────────────╯
 
