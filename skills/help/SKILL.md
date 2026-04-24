@@ -49,7 +49,7 @@ If you haven't configured OMX yet:
 /omx-setup
 ```
 
-This is the primary setup command for full OMX runtime wiring. Codex plugin install/discovery can expose packaged skills/workflows, but it is not a replacement for `npm install -g oh-my-codex` plus `omx setup`; `omx setup` remains responsible for native agents, prompts/config/hooks/AGENTS.md/HUD/runtime wiring. Plugin caches may appear under `${CODEX_HOME:-~/.codex}/plugins/cache/$MARKETPLACE_NAME/oh-my-codex/$VERSION/` (or `local` for local installs).
+This is the primary setup command for full OMX runtime wiring. Codex plugin install/discovery can expose packaged skills/workflows plus plugin-scoped companion metadata for MCP servers and apps, while native/runtime hooks remain setup-owned; it is not a replacement for `npm install -g oh-my-codex` plus `omx setup`. `omx setup` remains responsible for native agents, prompts/config/hooks/AGENTS.md/HUD/runtime wiring, including native `.codex/hooks.json` coverage. Plugin caches may appear under `${CODEX_HOME:-~/.codex}/plugins/cache/$MARKETPLACE_NAME/oh-my-codex/$VERSION/` (or `local` for local installs).
 
 If you only need lightweight directory guidance scaffolding for `AGENTS.md` files, use:
 

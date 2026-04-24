@@ -18,10 +18,12 @@
     "multi-agent"
   ],
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "apps": "./.app.json",
   "interface": {
     "displayName": "oh-my-codex",
     "shortDescription": "Workflow layer and skill bundle for OpenAI Codex CLI.",
-    "longDescription": "Plugin = OMX skill/workflow discovery. Setup = runtime wiring; keep npm install plus omx setup for native agents, prompts, config, hooks, AGENTS.md, HUD, and runtime state.",
+    "longDescription": "Plugin = OMX skill/workflow discovery plus plugin-scoped companion metadata for MCP servers and apps. Setup = runtime wiring; keep npm install plus omx setup for native agents, prompts, config, native .codex/hooks.json coverage, AGENTS.md, HUD, and runtime state.",
     "developerName": "Yeachan Heo",
     "category": "Developer Tools"
   }

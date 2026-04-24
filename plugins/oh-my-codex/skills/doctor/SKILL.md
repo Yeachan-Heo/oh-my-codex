@@ -51,7 +51,7 @@ echo "Latest npm: $LATEST"
 - If no cache entry exists: INFO - plugin marketplace artifact not cached; this may be normal when OMX was installed only through npm/setup
 - Compare each printed `PLUGIN_VERSION` with `LATEST`; if it differs and is not `local`: WARN - outdated plugin cache
 - If one marketplace has multiple version directories: WARN - stale cache for that marketplace/plugin pair
-- Remember: plugin install/discovery is not a replacement for `npm install -g oh-my-codex` plus `omx setup`; `omx setup` owns native agents, prompts/config/hooks/AGENTS.md/HUD/runtime wiring
+- Remember: plugin install/discovery is not a replacement for `npm install -g oh-my-codex` plus `omx setup`; the packaged plugin now carries plugin-scoped companion metadata for MCP servers and apps, while native/runtime hooks and the rest of OMX runtime wiring stay setup-owned
 
 ### Step 2: Check Hook Configuration (config.toml + legacy settings.json)
 
@@ -123,7 +123,7 @@ ls -la ~/.agents/skills/ 2>/dev/null
 ```
 
 **Diagnosis**:
-- If `~/.codex/agents/` exists with oh-my-codex-related files: WARN - legacy generated agents or hand-installed role files. The Codex plugin can package reusable workflows, but `omx setup` remains responsible for native agents/config/hooks.
+- If `~/.codex/agents/` exists with oh-my-codex-related files: WARN - legacy generated agents or hand-installed role files. The Codex plugin can package reusable workflows plus plugin-scoped companion metadata for MCP/apps, but `omx setup` remains responsible for native agents/config/hooks.
 - If `~/.codex/commands/` exists with oh-my-codex-related files: WARN - legacy command files from older installs. Current OMX uses skills/workflows plus setup-managed native surfaces.
 - If `${CODEX_HOME:-~/.codex}/skills/` exists with OMX skills: OK - canonical current user skill root
 - If `~/.agents/skills/` exists: WARN - historical legacy skill root that can overlap with `${CODEX_HOME:-~/.codex}/skills/` and cause duplicate Enable/Disable Skills entries

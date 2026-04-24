@@ -1,0 +1,39 @@
+{
+  "mcpServers": {
+    "omx_state": {
+      "command": "node",
+      "args": [
+        "../../dist/mcp/state-server.js"
+      ],
+      "enabled": true
+    },
+    "omx_memory": {
+      "command": "node",
+      "args": [
+        "../../dist/mcp/memory-server.js"
+      ],
+      "enabled": true
+    },
+    "omx_code_intel": {
+      "command": "node",
+      "args": [
+        "../../dist/mcp/code-intel-server.js"
+      ],
+      "enabled": true
+    },
+    "omx_trace": {
+      "command": "node",
+      "args": [
+        "../../dist/mcp/trace-server.js"
+      ],
+      "enabled": true
+    },
+    "omx_wiki": {
+      "command": "node",
+      "args": [
+        "../../dist/mcp/wiki-server.js"
+      ],
+      "enabled": true
+    }
+  }
+}

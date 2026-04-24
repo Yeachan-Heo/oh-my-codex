@@ -15,8 +15,8 @@ omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"
 
 Treat the boundary this way:
 
-- Codex plugin install/discovery may cache `oh-my-codex` under `${CODEX_HOME:-~/.codex}/plugins/cache/$MARKETPLACE_NAME/oh-my-codex/$VERSION/` (with `local` possible as a version identifier for local installs). That confirms a marketplace/plugin artifact, not the full OMX runtime setup.
-- Plugin install/discovery is not a replacement for `npm install -g oh-my-codex` plus `omx setup`; `omx setup` remains responsible for native agents, prompts/config/hooks/AGENTS.md/HUD/runtime wiring.
+- Codex plugin install/discovery may cache `oh-my-codex` under `${CODEX_HOME:-~/.codex}/plugins/cache/$MARKETPLACE_NAME/oh-my-codex/$VERSION/` (with `local` possible as a version identifier for local installs). That confirms a marketplace/plugin artifact; the packaged plugin includes plugin-scoped companion metadata for MCP servers and apps, while native/runtime hooks remain setup-owned, so it is still not the full OMX runtime setup.
+- Plugin install/discovery is not a replacement for `npm install -g oh-my-codex` plus `omx setup`; `omx setup` remains responsible for native agents, prompts/config/hooks/AGENTS.md/HUD/runtime wiring, including native `.codex/hooks.json` coverage.
 - `omx doctor` green: install and local runtime wiring look sane.
 - `codex login status` green: the active Codex profile can see login state.
 - `omx exec ...` returns `OMX-EXEC-OK`: real execution, auth, provider routing, and current working-directory assumptions are working together.
