@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setup } from "../setup.js";
@@ -443,10 +443,43 @@ describe("omx setup install mode behavior", () => {
           assert.equal(existsSync(helpSkillDir), true);
           assert.equal(existsSync(wikiSkillDir), true);
 
-          await setup({ scope: "user", installMode: "plugin" });
+          const outputLines: string[] = [];
+          const previousLog = console.log;
+          console.log = (...args: unknown[]) => {
+            outputLines.push(args.join(" "));
+          };
+          try {
+            await setup({ scope: "user", installMode: "plugin" });
+          } finally {
+            console.log = previousLog;
+          }
 
+          const setupOutput = outputLines.join("\n");
           assert.equal(existsSync(helpSkillDir), false);
           assert.equal(existsSync(wikiSkillDir), false);
+          assert.match(
+            setupOutput,
+            /skills: updated=0, unchanged=0, backed_up=\d+, skipped=0, removed=\d+/,
+          );
+
+          const backupSetupRoot = join(wd, "home", ".omx", "backups", "setup");
+          const backupTimestamps = await readdir(backupSetupRoot);
+          assert.equal(backupTimestamps.length, 1);
+          const backupSkillsDir = join(
+            backupSetupRoot,
+            backupTimestamps[0],
+            ".codex",
+            "skills",
+          );
+          const backedUpSkillNames = await readdir(backupSkillsDir);
+          assert.ok(backedUpSkillNames.includes("help"));
+          assert.ok(backedUpSkillNames.includes("wiki"));
+          assert.match(
+            setupOutput,
+            new RegExp(
+              `skills: updated=0, unchanged=0, backed_up=${backedUpSkillNames.length}, skipped=0, removed=${backedUpSkillNames.length}`,
+            ),
+          );
         });
       });
     } finally {
