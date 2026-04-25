@@ -20,6 +20,7 @@ import {
   omxAdaptersDir,
   omxLogsDir,
   packageRoot,
+  canonicalizeComparablePath,
   OMX_ENTRY_PATH_ENV,
   OMX_STARTUP_CWD_ENV,
   rememberOmxLaunchContext,
@@ -442,7 +443,7 @@ describe("OMX launcher path resolution", () => {
         },
       });
 
-      assert.equal(resolved, launcherPath);
+      assert.equal(resolved, canonicalizeComparablePath(launcherPath));
     } finally {
       await rm(startupCwd, { recursive: true, force: true });
       await rm(laterCwd, { recursive: true, force: true });
@@ -466,7 +467,7 @@ describe("OMX launcher path resolution", () => {
       });
 
       assert.equal(process.env[OMX_STARTUP_CWD_ENV], startupCwd);
-      assert.equal(process.env[OMX_ENTRY_PATH_ENV], launcherPath);
+      assert.equal(process.env[OMX_ENTRY_PATH_ENV], canonicalizeComparablePath(launcherPath));
     } finally {
       await rm(startupCwd, { recursive: true, force: true });
     }
@@ -490,7 +491,7 @@ describe("OMX launcher path resolution", () => {
         },
       });
 
-      assert.equal(resolved, launcherPath);
+      assert.equal(resolved, canonicalizeComparablePath(launcherPath));
     } finally {
       await rm(startupCwd, { recursive: true, force: true });
     }
@@ -515,7 +516,7 @@ describe("OMX launcher path resolution", () => {
       });
 
       assert.equal(process.env[OMX_STARTUP_CWD_ENV], startupCwd);
-      assert.equal(process.env[OMX_ENTRY_PATH_ENV], launcherPath);
+      assert.equal(process.env[OMX_ENTRY_PATH_ENV], canonicalizeComparablePath(launcherPath));
     } finally {
       process.argv[1] = originalArgv1;
       await rm(startupCwd, { recursive: true, force: true });
@@ -545,7 +546,7 @@ describe("OMX launcher path resolution", () => {
         packageRootDir,
       });
 
-      assert.equal(resolved, cliPath);
+      assert.equal(resolved, canonicalizeComparablePath(cliPath));
     } finally {
       await rm(startupCwd, { recursive: true, force: true });
       await rm(packageRootDir, { recursive: true, force: true });
@@ -569,7 +570,7 @@ describe("OMX launcher path resolution", () => {
         },
       });
 
-      assert.equal(resolved, cliPath);
+      assert.equal(resolved, canonicalizeComparablePath(cliPath));
     } finally {
       await rm(startupCwd, { recursive: true, force: true });
     }
@@ -596,7 +597,7 @@ describe("OMX launcher path resolution", () => {
         packageRootDir,
       });
 
-      assert.equal(resolved, cliPath);
+      assert.equal(resolved, canonicalizeComparablePath(cliPath));
     } finally {
       await rm(startupCwd, { recursive: true, force: true });
       await rm(packageRootDir, { recursive: true, force: true });
