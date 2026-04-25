@@ -2020,9 +2020,15 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     "  3. Browse skills with /skills; AGENTS keyword routing can also activate them implicitly",
   );
   console.log("  4. The AGENTS.md orchestration brain is loaded automatically");
-  console.log(
-    "  5. Native agent defaults configured in config.toml [agents] and TOML files written to .codex/agents/",
-  );
+  if (isPluginInstallMode) {
+    console.log(
+      "  5. Plugin mode uses Codex plugin discovery for skills/prompts/agents; setup refreshed native hooks and did not write native agent TOML files.",
+    );
+  } else {
+    console.log(
+      "  5. Native agent defaults configured in config.toml [agents] and TOML files written to .codex/agents/",
+    );
+  }
   console.log(
     '  6. "omx explore" and "omx sparkshell" can hydrate native release binaries on first use; source installs still allow repo-local fallbacks and OMX_EXPLORE_BIN / OMX_SPARKSHELL_BIN overrides',
   );

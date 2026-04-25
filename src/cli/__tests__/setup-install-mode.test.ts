@@ -18,6 +18,26 @@ async function withTempCwd(wd: string, fn: () => Promise<void>): Promise<void> {
   }
 }
 
+async function runSetupWithCapturedLogs(
+  wd: string,
+  options: Parameters<typeof setup>[0],
+): Promise<string> {
+  const previousCwd = process.cwd();
+  const originalLog = console.log;
+  const logs: string[] = [];
+  process.chdir(wd);
+  console.log = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(" "));
+  };
+  try {
+    await setup(options);
+    return logs.join("\n");
+  } finally {
+    console.log = originalLog;
+    process.chdir(previousCwd);
+  }
+}
+
 async function withIsolatedUserHome<T>(
   wd: string,
   fn: (codexHomeDir: string) => Promise<T>,
@@ -78,6 +98,47 @@ async function seedPluginCacheFromInstalledSkills(
 }
 
 describe("omx setup install mode behavior", () => {
+  it("prints plugin-mode next steps without claiming native agent TOML files were written", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+    try {
+      await withIsolatedUserHome(wd, async () => {
+        const output = await runSetupWithCapturedLogs(wd, {
+          scope: "user",
+          installMode: "plugin",
+        });
+
+        assert.match(output, /Next steps:/);
+        assert.match(
+          output,
+          /Plugin mode uses Codex plugin discovery for skills\/prompts\/agents/,
+        );
+        assert.doesNotMatch(output, /TOML files written to \.codex\/agents\//);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps legacy-mode next steps describing native agent TOML output", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+    try {
+      await withIsolatedUserHome(wd, async () => {
+        const output = await runSetupWithCapturedLogs(wd, {
+          scope: "user",
+          installMode: "legacy",
+        });
+
+        assert.match(output, /Next steps:/);
+        assert.match(
+          output,
+          /Native agent defaults configured in config\.toml \[agents\] and TOML files written to \.codex\/agents\//,
+        );
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("persists user install mode choices alongside setup scope", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
     try {
