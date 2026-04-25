@@ -42,6 +42,38 @@ async function withIsolatedUserHome<T>(
   }
 }
 
+async function assertProjectPluginModeArtifacts(wd: string): Promise<void> {
+  const hooks = await readFile(join(wd, ".codex", "hooks.json"), "utf-8");
+  assert.match(hooks, /codex-native-hook\.js/);
+  const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+  assert.match(config, /^codex_hooks = true$/m);
+  assert.doesNotMatch(
+    config,
+    /developer_instructions|notify-hook|mcp_servers/,
+  );
+  assert.equal(
+    existsSync(join(wd, ".codex", "skills", "help", "SKILL.md")),
+    false,
+  );
+  assert.equal(
+    existsSync(join(wd, ".codex", "agents", "planner.toml")),
+    false,
+  );
+  assert.equal(
+    existsSync(join(wd, ".codex", "prompts", "executor.md")),
+    false,
+  );
+  assert.equal(existsSync(join(wd, "AGENTS.md")), false);
+
+  const persisted = JSON.parse(
+    await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
+  ) as { scope: string; installMode?: string };
+  assert.deepEqual(persisted, {
+    scope: "project",
+    installMode: "plugin",
+  });
+}
+
 async function seedPluginCacheFromInstalledSkills(
   codexHomeDir: string,
 ): Promise<void> {
@@ -155,6 +187,29 @@ describe("omx setup install mode behavior", () => {
         await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
       ) as { scope: string; installMode?: string };
       assert.deepEqual(persisted, { scope: "project" });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not carry user plugin mode into non-plugin project setup", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+    try {
+      await withIsolatedUserHome(wd, async () => {
+        await withTempCwd(wd, async () => {
+          await setup({ scope: "user", installMode: "plugin" });
+          await setup({ scope: "project" });
+
+          const persisted = JSON.parse(
+            await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
+          ) as { scope: string; installMode?: string };
+          assert.deepEqual(persisted, { scope: "project" });
+          assert.equal(
+            existsSync(join(wd, ".codex", "skills", "help", "SKILL.md")),
+            true,
+          );
+        });
+      });
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -346,37 +401,21 @@ describe("omx setup install mode behavior", () => {
       await withTempCwd(wd, async () => {
         await setup({ scope: "project", installMode: "plugin" });
 
-        const hooks = await readFile(join(wd, ".codex", "hooks.json"), "utf-8");
-        assert.match(hooks, /codex-native-hook\.js/);
-        const config = await readFile(
-          join(wd, ".codex", "config.toml"),
-          "utf-8",
-        );
-        assert.match(config, /^codex_hooks = true$/m);
-        assert.doesNotMatch(
-          config,
-          /developer_instructions|notify-hook|mcp_servers/,
-        );
-        assert.equal(
-          existsSync(join(wd, ".codex", "skills", "help", "SKILL.md")),
-          false,
-        );
-        assert.equal(
-          existsSync(join(wd, ".codex", "agents", "planner.toml")),
-          false,
-        );
-        assert.equal(
-          existsSync(join(wd, ".codex", "prompts", "executor.md")),
-          false,
-        );
-        assert.equal(existsSync(join(wd, "AGENTS.md")), false);
-        const persisted = JSON.parse(
-          await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
-        ) as { scope: string; installMode?: string };
-        assert.deepEqual(persisted, {
-          scope: "project",
-          installMode: "plugin",
-        });
+        await assertProjectPluginModeArtifacts(wd);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("honors persisted project plugin mode on repeat setup", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+    try {
+      await withTempCwd(wd, async () => {
+        await setup({ scope: "project", installMode: "plugin" });
+        await setup();
+
+        await assertProjectPluginModeArtifacts(wd);
       });
     } finally {
       await rm(wd, { recursive: true, force: true });

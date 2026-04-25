@@ -849,12 +849,16 @@ async function resolveSetupInstallMode(
   if (requestedInstallMode) {
     return { installMode: requestedInstallMode, source: "cli" };
   }
-  if (scope !== "user") return null;
 
   const persisted = await readPersistedSetupPreferences(projectRoot);
-  if (persisted?.installMode) {
+  if (
+    persisted?.installMode &&
+    (!persisted.scope || persisted.scope === scope)
+  ) {
     return { installMode: persisted.installMode, source: "persisted" };
   }
+
+  if (scope !== "user") return null;
 
   const discoveredPluginCacheDir = await discoverOmxPluginCacheDir();
   const defaultMode = discoveredPluginCacheDir
@@ -1390,7 +1394,6 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     installModePrompt,
   );
   const scopeDirs = resolveScopeDirectories(resolvedScope.scope, projectRoot);
-  const persistedPreferences = await readPersistedSetupPreferences(projectRoot);
   const scopeSourceMessage =
     resolvedScope.source === "persisted" ? " (from .omx/setup-scope.json)" : "";
   const backupContext = getBackupContext(resolvedScope.scope, projectRoot);
@@ -1423,7 +1426,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
         ? " (from .omx/setup-scope.json)"
         : "";
     console.log(
-      `Using user-scope skill delivery mode: ${resolvedInstallMode.installMode}${installModeSourceMessage}\n`,
+      `Using ${resolvedScope.scope}-scope skill delivery mode: ${resolvedInstallMode.installMode}${installModeSourceMessage}\n`,
     );
   }
 
@@ -1458,10 +1461,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
           scope: resolvedScope.scope,
           installMode: resolvedInstallMode.installMode,
         }
-      : {
-          ...persistedPreferences,
-          scope: resolvedScope.scope,
-        },
+      : { scope: resolvedScope.scope },
     {
       dryRun,
       verbose,
