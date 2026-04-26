@@ -43,7 +43,7 @@ OMX — це шар робочих процесів для [OpenAI Codex CLI](ht
 | HaD0Yun | [@HaD0Yun](https://github.com/HaD0Yun) |
 | Junho Yeo | [@junhoyeo](https://github.com/junhoyeo) |
 | JiHongKim98 | [@JiHongKim98](https://github.com/JiHongKim98) |
-| Lor | — |
+| Lor | [@gobylor](https://github.com/gobylor) |
 | HyunjunJeon | [@HyunjunJeon](https://github.com/HyunjunJeon) |
 
 ## Рекомендований стандартний процес
