@@ -3254,6 +3254,54 @@ esac
     }
   });
 
+  it("stays silent when successful Bash output quotes MCP transport warnings", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-bash-mcp-quote-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-bash-mcp-quote",
+          tool_input: { command: "cat diagnostic-log.txt" },
+          tool_response: JSON.stringify({
+            exit_code: 0,
+            stdout: "diagnostic log quoted: MCP transport closed; stdio pipe closed before response",
+            stderr: "",
+          }),
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("stays silent when Bash hard-failure text has no parsed exit code", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-bash-unparsed-failure-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-bash-unparsed-failure",
+          tool_input: { command: "cat captured-output.txt" },
+          tool_response: "captured transcript says: bash: foo: command not found",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns PostToolUse MCP transport fallback guidance for clear MCP transport death", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-mcp-transport-"));
     try {
