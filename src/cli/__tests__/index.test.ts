@@ -2571,6 +2571,23 @@ describe("buildTmuxPaneCommand", () => {
     assert.ok(result.includes("source ~/.zshrc"), "should source .zshrc");
   });
 
+  it("keeps MacPorts zsh instead of downgrading to /bin/sh", () => {
+    const result = buildTmuxPaneCommand(
+      "codex",
+      ["--model", "gpt-5"],
+      "/opt/local/bin/zsh",
+    );
+    assert.ok(
+      result.startsWith("'/opt/local/bin/zsh' -c "),
+      "should preserve MacPorts zsh when SHELL points to it",
+    );
+    assert.ok(
+      !result.startsWith("'/bin/sh' -c "),
+      "should not fall back to /bin/sh for supported MacPorts zsh",
+    );
+    assert.ok(result.includes("source ~/.zshrc"), "should source .zshrc");
+  });
+
   it("wraps command with bash profile sourcing while preserving tmux cwd", () => {
     const result = buildTmuxPaneCommand("codex", [], "/bin/bash");
     assert.ok(

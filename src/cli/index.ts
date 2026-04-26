@@ -259,6 +259,7 @@ const ALLOWED_SHELLS = new Set([
   "/usr/local/bin/bash",
   "/usr/local/bin/zsh",
   "/usr/local/bin/fish",
+  "/opt/local/bin/zsh",
   "/opt/homebrew/bin/zsh",
 ]);
 const WINDOWS_DETACHED_BOOTSTRAP_DELAY_MS = 2500;
