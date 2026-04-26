@@ -1362,7 +1362,12 @@ exec node "$basedir/../@openai/codex/bin/codex.js" "$@"
     fn prepare_allowlist_environment_adds_controlled_bwrap_without_host_path() {
         let _guard = env_lock();
         let mut commands = vec!["bash", "sh"];
-        commands.extend(ALLOWED_DIRECT_COMMANDS.iter().copied());
+        commands.extend(
+            ALLOWED_DIRECT_COMMANDS
+                .iter()
+                .copied()
+                .filter(|command| *command != "rg"),
+        );
         let (_root, host_bin) = create_host_bin_with_commands(&commands);
         let fake_bwrap = host_bin.join("bwrap");
         write_executable(&fake_bwrap, "#!/bin/sh\nexit 0\n").expect("write fake bwrap");
@@ -1392,7 +1397,12 @@ exec node "$basedir/../@openai/codex/bin/codex.js" "$@"
     fn prepare_allowlist_environment_leaves_path_allowlist_only_without_bwrap() {
         let _guard = env_lock();
         let mut commands = vec!["bash", "sh"];
-        commands.extend(ALLOWED_DIRECT_COMMANDS.iter().copied());
+        commands.extend(
+            ALLOWED_DIRECT_COMMANDS
+                .iter()
+                .copied()
+                .filter(|command| *command != "rg"),
+        );
         let (_root, host_bin) = create_host_bin_with_commands(&commands);
 
         let allowlist =
