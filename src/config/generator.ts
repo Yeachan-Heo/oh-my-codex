@@ -702,6 +702,7 @@ function upsertTuiStatusLine(config: string): {
 
   const preservedKeyLines: string[] = [];
   const seenKeys = new Set<string>();
+  let hasUserStatusLine = false;
 
   for (const section of sections) {
     for (let i = section.start + 1; i < section.end; i++) {
@@ -713,13 +714,16 @@ function upsertTuiStatusLine(config: string): {
       if (!keyMatch) continue;
 
       const key = keyMatch[1];
-      if (key === "status_line" || seenKeys.has(key)) continue;
+      if (seenKeys.has(key)) continue;
       seenKeys.add(key);
+      if (key === "status_line") hasUserStatusLine = true;
       preservedKeyLines.push(trimmed);
     }
   }
 
-  const mergedSection = ["[tui]", ...preservedKeyLines, OMX_TUI_STATUS_LINE];
+  const mergedSection = hasUserStatusLine
+    ? ["[tui]", ...preservedKeyLines]
+    : ["[tui]", ...preservedKeyLines, OMX_TUI_STATUS_LINE];
   const firstStart = sections[0].start;
   const rebuilt: string[] = [];
 
