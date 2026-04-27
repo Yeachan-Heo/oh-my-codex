@@ -334,7 +334,9 @@ describe('Planner prompt follow-up staffing guidance', () => {
     assert.match(plannerPrompt, /`scope`.*`build`.*`verify`/s);
     assert.match(plannerPrompt, /usually 3-6 total refs/i);
     assert.match(plannerPrompt, /query role\/tag views before materializing excerpts/i);
-    assert.match(plannerPrompt, /pack `sync` once as the final handoff-ready gate/i);
+    assert.match(plannerPrompt, /record the exact pack path in `Context Pack Outcome`, then run pack `sync` once as the final handoff-ready gate/i);
+    assert.match(plannerPrompt, /Use pack `status` only as a read-only diagnostic for the canonical lifecycle state/i);
+    assert.match(plannerPrompt, /If the PRD, test spec, or outcome section changes after sync, rerun sync before handoff/i);
     assert.match(plannerPrompt, /Use tags only for optional topical cross-cuts/i);
     assert.match(plannerPrompt, /View Notes.*concrete question/i);
     assert.match(plannerPrompt, /execution authority remains the canonical JSON pack/i);

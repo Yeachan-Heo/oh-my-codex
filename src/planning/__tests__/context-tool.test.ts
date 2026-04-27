@@ -119,6 +119,7 @@ describe('context-tool', () => {
       const stdout = await captureStdout(() => contextToolMain(args, tempDir));
       assert.match(stdout, /Usage:/);
       assert.match(stdout, /node dist\/planning\/context-tool\.js add/);
+      assert.match(stdout, /node dist\/planning\/context-tool\.js status/);
       assert.match(stdout, /node dist\/planning\/context-tool\.js view/);
     }
   });
@@ -170,6 +171,17 @@ describe('context-tool', () => {
     await assert.rejects(
       () => contextToolMain(['sync', packRelativePath(), '--oops'], tempDir),
       /Unknown sync option: --oops/,
+    );
+  });
+
+  it('rejects malformed status CLI arguments', async () => {
+    await assert.rejects(
+      () => contextToolMain(['status'], tempDir),
+      /status requires <pack\.json>\./,
+    );
+    await assert.rejects(
+      () => contextToolMain(['status', packRelativePath(), '--oops'], tempDir),
+      /Unknown status option: --oops/,
     );
   });
 
@@ -455,6 +467,107 @@ describe('context-tool', () => {
       () => contextToolMain(['sync', packRelativePath()], tempDir),
       /Context pack is not handoff-ready: missing required roles scope, verify\./,
     );
+  });
+
+  it('reports ready context-pack handoff status without mutating pack artifacts', async () => {
+    const { relativePackPath, packPath } = await writeReadyPack(tempDir, 'issue-status-ready');
+    const prdPath = join(tempDir, '.omx', 'plans', 'prd-issue-status-ready.md');
+    await writeFile(
+      prdPath,
+      [
+        '# PRD',
+        '',
+        'Approved context basis.',
+        '',
+        '## Context Pack Outcome',
+        `- pack: created \`${relativePackPath}\``,
+        '',
+      ].join('\n'),
+    );
+    await contextToolMain(['sync', relativePackPath], tempDir);
+    const indexPath = packPath.replace(/\.json$/i, '.md');
+    const packBefore = await readFile(packPath, 'utf-8');
+    const indexBefore = await readFile(indexPath, 'utf-8');
+
+    const stdout = await captureStdout(() => contextToolMain(['status', relativePackPath, '--json'], tempDir));
+    const status = JSON.parse(stdout) as {
+      handoffState: string;
+      baselineState: string;
+      outcomeState: string;
+      packState: string;
+      roleCoverage: string;
+      basisState: string;
+      indexState: string;
+      issues: string[];
+    };
+    assert.equal(status.handoffState, 'ready');
+    assert.equal(status.baselineState, 'present');
+    assert.equal(status.outcomeState, 'single');
+    assert.equal(status.packState, 'valid');
+    assert.equal(status.roleCoverage, 'covered');
+    assert.equal(status.basisState, 'fresh');
+    assert.equal(status.indexState, 'fresh');
+    assert.deepEqual(status.issues, []);
+    assert.equal(await readFile(packPath, 'utf-8'), packBefore);
+    assert.equal(await readFile(indexPath, 'utf-8'), indexBefore);
+  });
+
+  it('status keeps provisional synced packs plan-only until Context Pack Outcome declares them', async () => {
+    const { relativePackPath } = await writeReadyPack(tempDir, 'issue-status-plan-only');
+
+    const stdout = await captureStdout(() => contextToolMain(['status', relativePackPath, '--json'], tempDir));
+    const status = JSON.parse(stdout) as { handoffState: string; outcomeState: string };
+
+    assert.equal(status.handoffState, 'plan-only');
+    assert.equal(status.outcomeState, 'absent');
+  });
+
+  it('status reports stale PRD basis when outcome is added after pack sync', async () => {
+    const { relativePackPath } = await writeReadyPack(tempDir, 'issue-status-stale');
+    await writeFile(
+      join(tempDir, '.omx', 'plans', 'prd-issue-status-stale.md'),
+      [
+        '# PRD',
+        '',
+        'Approved context basis.',
+        '',
+        '## Context Pack Outcome',
+        `- pack: created \`${relativePackPath}\``,
+        '',
+      ].join('\n'),
+    );
+
+    const stdout = await captureStdout(() => contextToolMain(['status', relativePackPath, '--json'], tempDir));
+    const status = JSON.parse(stdout) as { handoffState: string; outcomeState: string; basisState: string; issues: string[] };
+
+    assert.equal(status.handoffState, 'invalid');
+    assert.equal(status.outcomeState, 'single');
+    assert.equal(status.basisState, 'stale-prd');
+    assert.ok(status.issues.some((issue) => issue.includes('basis prd hash')));
+  });
+
+  it('status fails closed when Context Pack Outcome points at a different pack', async () => {
+    const { relativePackPath } = await writeReadyPack(tempDir, 'issue-status-other');
+    await writeFile(
+      join(tempDir, '.omx', 'plans', 'prd-issue-status-other.md'),
+      [
+        '# PRD',
+        '',
+        'Approved context basis.',
+        '',
+        '## Context Pack Outcome',
+        '- pack: created `.omx/context/context-20260420T000001Z-issue-status-other.json`',
+        '',
+      ].join('\n'),
+    );
+    await contextToolMain(['sync', relativePackPath], tempDir);
+
+    const stdout = await captureStdout(() => contextToolMain(['status', relativePackPath, '--json'], tempDir));
+    const status = JSON.parse(stdout) as { handoffState: string; outcomeState: string; issues: string[] };
+
+    assert.equal(status.handoffState, 'invalid');
+    assert.equal(status.outcomeState, 'single-other');
+    assert.ok(status.issues.some((issue) => issue.includes('not') && issue.includes(relativePackPath)));
   });
 
   it('query returns matching refs without materializing excerpts', async () => {

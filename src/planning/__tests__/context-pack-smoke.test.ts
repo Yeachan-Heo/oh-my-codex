@@ -187,7 +187,9 @@ describe('context-pack smoke', () => {
     assert.match(prompt, /`scope` for boundary\/guardrail refs, `build` for implementation refs, and `verify` for proof refs/i);
     assert.match(prompt, /usually 3-6 total refs/i);
     assert.match(prompt, /query role\/tag views before materializing excerpts/i);
-    assert.match(prompt, /pack `sync` once as the final handoff-ready gate/i);
+    assert.match(prompt, /record the exact pack path in `Context Pack Outcome`, then run pack `sync` once as the final handoff-ready gate/i);
+    assert.match(prompt, /Use pack `status` only as a read-only diagnostic for the canonical lifecycle state/i);
+    assert.match(prompt, /If the PRD, test spec, or outcome section changes after sync, rerun sync before handoff/i);
     assert.match(prompt, /tags only for optional topical cross-cuts/i);
     assert.match(prompt, /what concrete question a tagged view helps answer/i);
     assert.match(prompt, /execution authority remains the canonical JSON pack/i);

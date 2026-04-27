@@ -1,12 +1,16 @@
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
+  contextPackIndexPath,
   findMissingContextPackRoles,
+  inspectContextPackBasis,
   inspectContextPackGeneratedIndex,
+  parseContextPackPathInfo,
   REQUIRED_CONTEXT_PACK_ROLES,
   materializeContextPackRefs,
   readContextPackDocument,
   validateContextPackManifest,
+  type ContextPackBasisState,
   type ContextPackExecutionRef,
   type ContextPackRole,
 } from './context-packs.js';
@@ -35,6 +39,11 @@ export interface ContextPackRef {
 }
 
 export type ContextPackStatus = 'missing-baseline' | 'ready' | 'plan-only' | 'incomplete' | 'invalid';
+export type ContextPackBaselineState = 'missing-prd' | 'missing-test-spec' | 'present';
+export type ContextPackOutcomeState = 'absent' | 'malformed' | 'ambiguous' | 'single' | 'single-other';
+export type ContextPackPackState = 'missing' | 'unreadable' | 'schema-invalid' | 'valid';
+export type ContextPackRoleCoverageState = 'missing-required-roles' | 'covered';
+export type ContextPackIndexState = 'missing' | 'invalid' | 'fresh';
 
 export function isApprovedExecutionFollowupReadyStatus(status: ContextPackStatus): boolean {
   return status === 'ready' || status === 'plan-only';
@@ -108,6 +117,31 @@ interface ContextPackResolution {
   contextPackStatus: ContextPackStatus;
   missingRequiredContextPackRoles: ContextPackRole[];
   contextPackIssues: string[];
+}
+
+interface ContextPackOutcomeInspection {
+  outcomeState: ContextPackOutcomeState;
+  contextPack: ContextPackRef | null;
+  declaredPackPath: string | null;
+  issues: string[];
+}
+
+export interface ContextPackHandoffStatusSnapshot {
+  packPath: string;
+  indexPath: string;
+  slug: string | null;
+  prdPath: string | null;
+  testSpecPaths: string[];
+  declaredPackPath: string | null;
+  baselineState: ContextPackBaselineState;
+  outcomeState: ContextPackOutcomeState;
+  packState: ContextPackPackState;
+  roleCoverage: ContextPackRoleCoverageState;
+  basisState: ContextPackBasisState;
+  indexState: ContextPackIndexState;
+  handoffState: ContextPackStatus;
+  missingRequiredContextPackRoles: ContextPackRole[];
+  issues: string[];
 }
 
 function readMatchingPaths(dir: string, pattern: RegExp): string[] {
@@ -329,6 +363,48 @@ function validateContextPackFile(packPath: string, expectedSlug: string, repoRoo
   });
 }
 
+export function resolveContextPackHandoffState(input: {
+  baselineState: ContextPackBaselineState;
+  outcomeState: ContextPackOutcomeState;
+  packState: ContextPackPackState;
+  roleCoverage: ContextPackRoleCoverageState;
+  basisState: ContextPackBasisState;
+  indexState: ContextPackIndexState;
+}): ContextPackStatus {
+  if (input.baselineState !== 'present') {
+    return 'missing-baseline';
+  }
+  if (input.outcomeState === 'absent') {
+    return 'plan-only';
+  }
+  if (
+    input.outcomeState === 'malformed'
+    || input.outcomeState === 'ambiguous'
+    || input.outcomeState === 'single-other'
+  ) {
+    return 'invalid';
+  }
+  if (input.packState === 'missing') {
+    return 'incomplete';
+  }
+  if (input.packState === 'unreadable' || input.packState === 'schema-invalid') {
+    return 'invalid';
+  }
+  if (input.basisState !== 'fresh') {
+    return 'invalid';
+  }
+  if (input.indexState === 'invalid') {
+    return 'invalid';
+  }
+  if (input.roleCoverage === 'missing-required-roles') {
+    return 'incomplete';
+  }
+  if (input.indexState === 'missing') {
+    return 'incomplete';
+  }
+  return 'ready';
+}
+
 function resolveDeclaredContextPackReadiness(
   ref: ContextPackRef,
   missingRequiredContextPackRoles: ContextPackRole[],
@@ -336,25 +412,17 @@ function resolveDeclaredContextPackReadiness(
   generatedIndexInspection: ReturnType<typeof inspectContextPackGeneratedIndex>,
 ): ContextPackResolution {
   const contextPackIssues = [...missingCoverageIssues, ...generatedIndexInspection.issues];
-  if (generatedIndexInspection.status === 'invalid') {
-    return {
-      contextPack: ref,
-      contextPackStatus: 'invalid',
-      missingRequiredContextPackRoles,
-      contextPackIssues,
-    };
-  }
-  if (missingRequiredContextPackRoles.length > 0 || generatedIndexInspection.status === 'missing') {
-    return {
-      contextPack: ref,
-      contextPackStatus: 'incomplete',
-      missingRequiredContextPackRoles,
-      contextPackIssues,
-    };
-  }
+  const contextPackStatus = resolveContextPackHandoffState({
+    baselineState: 'present',
+    outcomeState: 'single',
+    packState: 'valid',
+    roleCoverage: missingRequiredContextPackRoles.length > 0 ? 'missing-required-roles' : 'covered',
+    basisState: 'fresh',
+    indexState: generatedIndexInspection.status === 'ready' ? 'fresh' : generatedIndexInspection.status,
+  });
   return {
     contextPack: ref,
-    contextPackStatus: 'ready',
+    contextPackStatus,
     missingRequiredContextPackRoles,
     contextPackIssues,
   };
@@ -430,6 +498,77 @@ function readContextPackOutcomeDeclaration(
   };
 }
 
+function inspectContextPackOutcome(repoRoot: string, content: string): ContextPackOutcomeInspection {
+  const outcomeSections = extractContextPackOutcomeSections(content);
+  let ref: ContextPackRef | null = null;
+  let declaredPackPath: string | null = null;
+  const issues: string[] = [];
+  let hasDuplicatePackDeclaration = false;
+
+  if (outcomeSections.length === 0) {
+    return {
+      outcomeState: 'absent',
+      contextPack: null,
+      declaredPackPath: null,
+      issues: [],
+    };
+  }
+  if (outcomeSections.length > 1) {
+    return {
+      outcomeState: 'ambiguous',
+      contextPack: null,
+      declaredPackPath: null,
+      issues: ['Approved plan contains multiple Context Pack Outcome sections.'],
+    };
+  }
+
+  for (const line of outcomeSections[0]!) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const declaration = readContextPackOutcomeDeclaration(repoRoot, trimmed);
+    if (!declaration.isDeclaration) {
+      continue;
+    }
+    if (declaration.issue) {
+      issues.push(declaration.issue);
+      continue;
+    }
+    if (ref) {
+      issues.push('Context Pack Outcome may declare only one pack.');
+      hasDuplicatePackDeclaration = true;
+      continue;
+    }
+    declaredPackPath = declaration.declaredPath;
+    ref = declaration.ref;
+  }
+
+  if (issues.length > 0) {
+    return {
+      outcomeState: hasDuplicatePackDeclaration ? 'ambiguous' : 'malformed',
+      contextPack: ref,
+      declaredPackPath,
+      issues,
+    };
+  }
+
+  if (!ref) {
+    return {
+      outcomeState: 'malformed',
+      contextPack: null,
+      declaredPackPath: null,
+      issues: ['Context Pack Outcome must declare exactly one pack.'],
+    };
+  }
+
+  return {
+    outcomeState: 'single',
+    contextPack: ref,
+    declaredPackPath,
+    issues: [],
+  };
+}
+
 function readContextPackResolution(
   artifacts: PlanningArtifacts,
   prdPath: string | null,
@@ -448,12 +587,9 @@ function readContextPackResolution(
 
   try {
     const content = readFileSync(prdPath, 'utf-8');
-    const outcomeSections = extractContextPackOutcomeSections(content);
-    let ref: ContextPackRef | null = null;
-    let declaredPackPath: string | null = null;
-    const issues: string[] = [];
+    const outcome = inspectContextPackOutcome(repoRoot, content);
 
-    if (outcomeSections.length === 0) {
+    if (outcome.outcomeState === 'absent') {
       return {
         contextPack: null,
         contextPackStatus: 'plan-only',
@@ -461,44 +597,24 @@ function readContextPackResolution(
         contextPackIssues: [],
       };
     }
-    if (outcomeSections.length > 1) {
+    if (outcome.outcomeState === 'ambiguous') {
       return {
         contextPack: null,
         contextPackStatus: 'invalid',
         missingRequiredContextPackRoles: [...REQUIRED_CONTEXT_PACK_ROLES],
-        contextPackIssues: ['Approved plan contains multiple Context Pack Outcome sections.'],
+        contextPackIssues: outcome.issues,
       };
     }
-
-    for (const line of outcomeSections[0]!) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-
-      const declaration = readContextPackOutcomeDeclaration(repoRoot, trimmed);
-      if (!declaration.isDeclaration) {
-        continue;
-      }
-      if (declaration.issue) {
-        issues.push(declaration.issue);
-        continue;
-      }
-      if (ref) {
-        issues.push('Context Pack Outcome may declare only one pack.');
-        continue;
-      }
-      declaredPackPath = declaration.declaredPath;
-      ref = declaration.ref;
-    }
-
-    if (issues.length > 0) {
+    if (outcome.outcomeState === 'malformed') {
       return {
-        contextPack: ref,
+        contextPack: outcome.contextPack,
         contextPackStatus: 'invalid',
-        missingRequiredContextPackRoles: ref ? [...REQUIRED_CONTEXT_PACK_ROLES] : [],
-        contextPackIssues: issues,
+        missingRequiredContextPackRoles: outcome.contextPack ? [...REQUIRED_CONTEXT_PACK_ROLES] : [],
+        contextPackIssues: outcome.issues,
       };
     }
 
+    const ref = outcome.contextPack;
     if (!ref) {
       return {
         contextPack: null,
@@ -513,7 +629,7 @@ function readContextPackResolution(
         contextPack: ref,
         contextPackStatus: 'incomplete',
         missingRequiredContextPackRoles: [...REQUIRED_CONTEXT_PACK_ROLES],
-        contextPackIssues: [`Declared context pack file is missing: ${declaredPackPath ?? ref.path}.`],
+        contextPackIssues: [`Declared context pack file is missing: ${outcome.declaredPackPath ?? ref.path}.`],
       };
     }
 
@@ -555,6 +671,136 @@ function readContextPackResolution(
       contextPackIssues: ['Approved plan could not be read while resolving context packs.'],
     };
   }
+}
+
+function sameResolvedPath(left: string, right: string): boolean {
+  try {
+    return realpathSync.native(left) === realpathSync.native(right);
+  } catch {
+    return resolve(left) === resolve(right);
+  }
+}
+
+function classifyGeneratedIndexState(
+  inspection: ReturnType<typeof inspectContextPackGeneratedIndex>,
+): ContextPackIndexState {
+  return inspection.status === 'ready' ? 'fresh' : inspection.status;
+}
+
+export function readContextPackHandoffStatus(cwd: string, packPath: string): ContextPackHandoffStatusSnapshot {
+  const artifacts = readPlanningArtifacts(cwd);
+  const repoRoot = dirname(dirname(artifacts.plansDir));
+  const indexPath = contextPackIndexPath(packPath);
+  const pathInfo = parseContextPackPathInfo(packPath);
+  const issues: string[] = [];
+  let slug: string | null = pathInfo?.slugHint ?? null;
+  let packState: ContextPackPackState = 'missing';
+  let roleCoverage: ContextPackRoleCoverageState = 'missing-required-roles';
+  let basisState: ContextPackBasisState = 'absent';
+  let indexState: ContextPackIndexState = 'missing';
+  let missingRequiredContextPackRoles: ContextPackRole[] = [...REQUIRED_CONTEXT_PACK_ROLES];
+  const documentExists = existsSync(packPath);
+  const document = documentExists ? readContextPackDocument(packPath) : null;
+
+  if (!documentExists) {
+    issues.push(`Context pack not found: ${packPath}`);
+  } else {
+    try {
+      readFileSync(packPath, 'utf-8');
+      if (!document) {
+        packState = 'schema-invalid';
+        issues.push(`Could not read context pack: ${packPath}`);
+      } else {
+        slug = document.slug;
+        const manifestIssues = validateContextPackManifest({
+          packPath,
+          expectedSlug: slug,
+          repoRoot,
+        });
+        if (manifestIssues.length > 0) {
+          packState = 'schema-invalid';
+          issues.push(...manifestIssues);
+        } else {
+          packState = 'valid';
+        }
+
+        missingRequiredContextPackRoles = findMissingContextPackRoles(document, REQUIRED_CONTEXT_PACK_ROLES);
+        roleCoverage = missingRequiredContextPackRoles.length > 0 ? 'missing-required-roles' : 'covered';
+        if (missingRequiredContextPackRoles.length > 0) {
+          issues.push(`Declared context pack is missing required roles: ${missingRequiredContextPackRoles.join(', ')}.`);
+        }
+
+        const basisInspection = inspectContextPackBasis(document, packPath, repoRoot, slug);
+        basisState = basisInspection.status;
+        issues.push(...basisInspection.issues);
+
+        const indexInspection = inspectContextPackGeneratedIndex(packPath, document);
+        indexState = classifyGeneratedIndexState(indexInspection);
+        issues.push(...indexInspection.issues);
+      }
+    } catch {
+      packState = 'unreadable';
+      issues.push(`Context pack could not be read: ${packPath}`);
+    }
+  }
+
+  const prdPath = slug ? join(artifacts.plansDir, `prd-${slug}.md`) : null;
+  const selection = selectPlanningArtifactsForPrdPath(artifacts, prdPath);
+  const baselineState: ContextPackBaselineState = !selection.canonicalPrdPath || !existsSync(selection.canonicalPrdPath)
+    ? 'missing-prd'
+    : selection.testSpecPaths.length === 0
+      ? 'missing-test-spec'
+      : 'present';
+  if (baselineState === 'missing-prd') {
+    issues.push(slug ? `Approved PRD is missing for slug ${slug}.` : 'Could not infer a context-pack slug for approved PRD lookup.');
+  } else if (baselineState === 'missing-test-spec') {
+    issues.push(`Approved plan is missing a matching test spec for slug ${slug}.`);
+  }
+
+  let outcomeState: ContextPackOutcomeState = 'absent';
+  let declaredPackPath: string | null = null;
+  if (selection.canonicalPrdPath && existsSync(selection.canonicalPrdPath)) {
+    try {
+      const outcome = inspectContextPackOutcome(repoRoot, readFileSync(selection.canonicalPrdPath, 'utf-8'));
+      outcomeState = outcome.outcomeState;
+      declaredPackPath = outcome.declaredPackPath;
+      issues.push(...outcome.issues);
+      if (outcome.outcomeState === 'single' && outcome.contextPack && !sameResolvedPath(outcome.contextPack.path, packPath)) {
+        outcomeState = 'single-other';
+        issues.push(`Context Pack Outcome declares ${declaredPackPath ?? outcome.contextPack.path}, not ${packPath}.`);
+      }
+    } catch {
+      outcomeState = 'malformed';
+      issues.push(`Approved PRD could not be read for slug ${slug}.`);
+    }
+  }
+
+  const handoffState = resolveContextPackHandoffState({
+    baselineState,
+    outcomeState,
+    packState,
+    roleCoverage,
+    basisState,
+    indexState,
+  });
+
+  return {
+    packPath,
+    indexPath,
+    slug,
+    prdPath: selection.prdPath,
+    testSpecPaths: selection.testSpecPaths,
+    declaredPackPath,
+    baselineState,
+    outcomeState,
+    packState,
+    roleCoverage,
+    basisState,
+    indexState,
+    handoffState,
+    missingRequiredContextPackRoles,
+    issues: [...new Set(issues)],
+  };
 }
 
 function readApprovedPlanText(

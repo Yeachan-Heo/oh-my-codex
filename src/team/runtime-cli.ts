@@ -256,7 +256,6 @@ async function main(): Promise<void> {
 
   const {
     teamName,
-    tasks,
     cwd,
     pollIntervalMs = 5000,
   } = input;

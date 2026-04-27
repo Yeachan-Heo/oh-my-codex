@@ -31,7 +31,9 @@ describe('pre-context gate guidance in planning/execution-heavy skills', () => {
     assert.match(ralplanSkill, /omx-context-pack-v1/i);
     assert.match(ralplanSkill, /Reuse before rebuild/i);
     assert.match(ralplanSkill, /planning note only/i);
-    assert.match(ralplanSkill, /run pack `sync` once/i);
+    assert.match(ralplanSkill, /record the exact pack path in `Context Pack Outcome`, then run pack `sync` once/i);
+    assert.match(ralplanSkill, /Use pack `status` as the read-only diagnostic/i);
+    assert.match(ralplanSkill, /If the PRD, test spec, or outcome section changes after sync, rerun sync before handoff/i);
   });
 
   it('team documents required context snapshot gate before launch', () => {

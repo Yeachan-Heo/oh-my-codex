@@ -60,7 +60,8 @@ Leave execution with a right-sized, evidence-grounded plan: scope, steps, accept
 - For implementation handoffs, create, refresh, or explicitly revalidate exactly one canonical `.omx/context/context-<timestamp>-<slug>.json` pack and record it in a `Context Pack Outcome` section.
 - Keep the v1 context-pack ontology fixed: `scope` for boundary/guardrail refs, `build` for implementation refs, and `verify` for proof refs. Do not invent extra roles.
 - Build the smallest useful pack first: usually 3-6 total refs, with at least one useful `scope`, `build`, and `verify` ref, and prefer shared multi-role refs before duplicated entries.
-- Use the internal context-tool flow: add refs, query role/tag views before materializing excerpts, view once to validate selectors and excerpt sizing, save the approved `prd-*` plus matching `test-spec-*`, then run pack `sync` once as the final handoff-ready gate.
+- Use the internal context-tool flow: add refs, query role/tag views before materializing excerpts, view once to validate selectors and excerpt sizing, save the approved `prd-*` plus matching `test-spec-*`, record the exact pack path in `Context Pack Outcome`, then run pack `sync` once as the final handoff-ready gate. If the PRD, test spec, or outcome section changes after sync, rerun sync before handoff.
+- Use pack `status` only as a read-only diagnostic for the canonical lifecycle state; it must not replace the final `sync` gate.
 - Use tags only for optional topical cross-cuts; do not mirror roles or labels into tags. When tags help, add concise `View Notes` that tell implementors what concrete question a tagged view helps answer.
 - Treat the generated markdown sibling as scaffold-only human index output. Only `View Notes` may be extended; execution authority remains the canonical JSON pack.
 </success_criteria>

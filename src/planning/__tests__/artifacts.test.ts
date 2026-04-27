@@ -1760,4 +1760,39 @@ describe('planning artifacts', () => {
       hint?.contextPackIssues.some((issue) => issue.includes('basis test-spec hash')),
     );
   });
+
+  it('marks packs stale when Context Pack Outcome is added after pack sync', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    const prdPath = join(plansDir, 'prd-issue-909-outcome-after-sync.md');
+    await writeFile(
+      prdPath,
+      '# PRD\n\nLaunch via omx ralph "Execute approved outcome-after-sync plan"\n',
+    );
+    await writeFile(join(plansDir, 'test-spec-issue-909-outcome-after-sync.md'), '# Test Spec\n');
+    const contextPacks = await writeContextPacks('issue-909-outcome-after-sync');
+    refreshContextPackBasis(contextPacks.absolutePath);
+
+    await writeFile(
+      prdPath,
+      [
+        '# PRD',
+        '',
+        buildContextPackOutcome(contextPacks.relativePath),
+        '',
+        'Launch via omx ralph "Execute approved outcome-after-sync plan"',
+        '',
+      ].join('\n'),
+    );
+
+    const artifacts = readPlanningArtifacts(tempDir);
+    assert.equal(isPlanningComplete(artifacts), false);
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
+    assert.ok(hint);
+    assert.equal(hint?.contextPackStatus, 'invalid');
+    assert.ok(
+      hint?.contextPackIssues.some((issue) => issue.includes('basis prd hash')),
+    );
+  });
 });

@@ -26,7 +26,7 @@ Examples:
 
 These files determine whether a workflow mode is active, completed, cancelled, or failed. Those mode phases are not always identical to the user-facing terminal lifecycle vocabulary; see the explicit terminal lifecycle section below for that compatibility boundary.
 
-Launch, planning approval, handoff, Team/Ralph startup, runtime binding, reassignment, scale-up, and runtime context projection semantics are governed by the canonical lifecycle reference: [`docs/reference/launch-lifecycle-state-machine.md`](./reference/launch-lifecycle-state-machine.md).
+Launch, planning approval, handoff, Team/Ralph startup, context-pack readiness, runtime binding, reassignment, scale-up, and runtime context projection semantics are governed by the canonical lifecycle reference: [`docs/reference/launch-lifecycle-state-machine.md`](./reference/launch-lifecycle-state-machine.md). This state model should point to those lifecycle states instead of redefining their ordered handoff classifier.
 
 ### 2. `skill-active-state.json` — compatibility / visibility layer
 
@@ -245,6 +245,7 @@ Update together:
 - `src/state/workflow-transition.ts`
 - `src/state/workflow-transition-reconcile.ts`
 - lifecycle / MCP callers
+- `docs/reference/launch-lifecycle-state-machine.md` when launch, handoff, or context-pack lifecycle semantics change
 - prompt-submit/native-hook rendering
 - regression tests
 

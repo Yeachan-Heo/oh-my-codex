@@ -21,7 +21,6 @@ import { classifyTaskSize } from '../hooks/task-size-detector.js';
 import {
   isApprovedExecutionContextReadyStatus,
   isApprovedExecutionFollowupReadyStatus,
-  readApprovedExecutionLaunchHint,
   readApprovedExecutionLaunchHintOutcome,
   type ApprovedExecutionLaunchHint,
 } from '../planning/artifacts.js';
@@ -98,13 +97,6 @@ function persistExactTeamModeState(
   } catch {
     return false;
   }
-}
-
-function resolveApprovedTeamExecutionHint(
-  cwd: string,
-  task: string,
-): ApprovedExecutionLaunchHint | null {
-  return readApprovedExecutionLaunchHint(cwd, 'team', { task });
 }
 
 function buildApprovedTeamFollowupContext(

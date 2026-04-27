@@ -21,11 +21,13 @@ import {
   type ContextPackRole,
 } from './context-packs.js';
 import { isCanonicalContextPackPath, normalizePlanningRepoRelativePath } from './path-utils.js';
+import { readContextPackHandoffStatus, type ContextPackHandoffStatusSnapshot } from './artifacts.js';
 
 const HELP = `
 Usage:
   node dist/planning/context-tool.js add <pack.json> <repo/path> [--label <label>] [--role <role>]... [--tag <tag>]... [--heading <heading>] [--max-words <n>] [--lines <start:end>] [--relation <tag>:<target>] [--json]
   node dist/planning/context-tool.js sync <pack.json> [--json]
+  node dist/planning/context-tool.js status <pack.json> [--json]
   node dist/planning/context-tool.js query <pack.json> [--role <role>]... [--tag <tag>]... [--label <label>]... [--json]
   node dist/planning/context-tool.js view <pack.json> [--role <role>]... [--tag <tag>]... [--label <label>]... [--json]
 
@@ -33,6 +35,7 @@ Notes:
   The tool is internal to planning/execution workflows. It generates canonical JSON packs and a markdown index sibling.
   \`add\` creates the pack when absent and infers defaults for omitted label/relation-path data. When no role is supplied, it defaults to \`build\`.
   \`sync\` is the handoff-ready check: it refreshes the pack index and approved PRD/test-spec basis after the approved handoff files exist, and it fails until the pack covers \`scope\`, \`build\`, and \`verify\`.
+  \`status\` is read-only: it reports the canonical lifecycle handoff state without refreshing basis, indexes, or excerpts.
   The markdown sibling is tool-generated scaffold. If planners add concise notes in its \`View Notes\` block, later tool writes preserve that block.
   \`query\` returns matching normalized refs without materializing excerpt files.
   \`view\` materializes matching entries into excerpts or direct file refs using the pack's selectors, roles, and tags.
@@ -445,6 +448,39 @@ function buildSyncText(params: {
   ].join('\n');
 }
 
+function buildStatusText(status: ContextPackHandoffStatusSnapshot): string {
+  const lines = [
+    'Context pack status:',
+    `- pack: ${status.packPath}`,
+    `- index: ${status.indexPath}`,
+    `- slug: ${status.slug ?? '(unknown)'}`,
+    `- handoff: ${status.handoffState}`,
+    `- baseline: ${status.baselineState}`,
+    `- outcome: ${status.outcomeState}`,
+    `- pack-state: ${status.packState}`,
+    `- roles: ${status.roleCoverage}`,
+    `- basis: ${status.basisState}`,
+    `- generated-index: ${status.indexState}`,
+  ];
+  if (status.prdPath) {
+    lines.push(`- prd: ${status.prdPath}`);
+  }
+  if (status.declaredPackPath) {
+    lines.push(`- declared-pack: ${status.declaredPackPath}`);
+  }
+  lines.push(`- test-specs: ${status.testSpecPaths.length}`);
+  if (status.missingRequiredContextPackRoles.length > 0) {
+    lines.push(`- missing roles: ${status.missingRequiredContextPackRoles.join(', ')}`);
+  }
+  if (status.issues.length > 0) {
+    lines.push('- issues:');
+    for (const issue of status.issues) {
+      lines.push(`  - ${issue}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 async function runAdd(cwd: string, args: readonly string[]): Promise<void> {
   const parsed = parseAddArgs(args);
   const workspaceRoot = resolveWorkspaceRootForAdd(cwd, parsed.sourcePath);
@@ -526,6 +562,27 @@ async function runSync(cwd: string, args: readonly string[]): Promise<void> {
     slug: result.slug,
     basisCount: 1 + (result.basis?.testSpecs.length ?? 0),
   }));
+}
+
+async function runStatus(cwd: string, args: readonly string[]): Promise<void> {
+  const [rawPackPath, ...rest] = args;
+  if (!rawPackPath) {
+    throw new Error('status requires <pack.json>.');
+  }
+  const json = rest.includes('--json');
+  const unknown = rest.find((token) => token !== '--json');
+  if (unknown) {
+    throw new Error(`Unknown status option: ${unknown}`);
+  }
+
+  const workspaceRoot = resolveWorkspaceRootForPack(cwd, rawPackPath);
+  const packPath = resolvePackPathFromWorkspaceRoot(workspaceRoot, rawPackPath);
+  const status = readContextPackHandoffStatus(workspaceRoot, packPath);
+  if (json) {
+    console.log(JSON.stringify(status, null, 2));
+    return;
+  }
+  console.log(buildStatusText(status));
 }
 
 async function runView(cwd: string, args: readonly string[]): Promise<void> {
@@ -624,6 +681,9 @@ export async function contextToolMain(args: readonly string[], cwd: string = pro
       return;
     case 'sync':
       await runSync(cwd, rest);
+      return;
+    case 'status':
+      await runStatus(cwd, rest);
       return;
     case 'query':
       await runQuery(cwd, rest);

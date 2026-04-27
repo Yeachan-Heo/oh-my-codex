@@ -125,6 +125,13 @@ export interface ContextPackGeneratedIndexInspection {
   issues: string[];
 }
 
+export type ContextPackBasisState = 'absent' | 'stale-prd' | 'stale-test-spec' | 'unexpected-test-spec' | 'fresh';
+
+export interface ContextPackBasisInspection {
+  status: ContextPackBasisState;
+  issues: string[];
+}
+
 export interface ContextPackWriteOptions {
   repoRoot?: string;
   refreshBasis?: boolean;
@@ -1387,29 +1394,38 @@ export function findMissingContextPackRoles(
   return requiredRoles.filter((role) => !presentRoles.has(role));
 }
 
-function validateFreshContextPackBasis(
+export function inspectContextPackBasis(
   document: ContextPackDocument,
   packPath: string,
   repoRoot: string,
   expectedSlug?: string,
-): string[] {
+): ContextPackBasisInspection {
   const file = basename(packPath);
   if (!document.basis) {
-    return [`${file} must declare basis hashes for the approved PRD/test-spec artifacts.`];
+    return {
+      status: 'absent',
+      issues: [`${file} must declare basis hashes for the approved PRD/test-spec artifacts.`],
+    };
   }
 
   const slug = expectedSlug ?? document.slug;
   const expectedBasis = buildContextPackBasis(repoRoot, slug);
   if (!expectedBasis) {
-    return [`${file} could not resolve the approved PRD/test-spec basis for slug ${slug}.`];
+    return {
+      status: 'absent',
+      issues: [`${file} could not resolve the approved PRD/test-spec basis for slug ${slug}.`],
+    };
   }
 
   const issues: string[] = [];
+  let status: ContextPackBasisState = 'fresh';
   if (document.basis.prd.path !== expectedBasis.prd.path) {
     issues.push(`${file} basis prd path ${document.basis.prd.path} does not match ${expectedBasis.prd.path}.`);
+    status = 'stale-prd';
   }
   if (document.basis.prd.sha1 !== expectedBasis.prd.sha1) {
     issues.push(`${file} basis prd hash for ${document.basis.prd.path} does not match the current approved PRD.`);
+    status = 'stale-prd';
   }
 
   const storedTestSpecs = new Map(document.basis.testSpecs.map((testSpec) => [testSpec.path, testSpec.sha1]));
@@ -1418,19 +1434,31 @@ function validateFreshContextPackBasis(
     const storedHash = storedTestSpecs.get(expectedTestSpec.path);
     if (!storedHash) {
       issues.push(`${file} basis is missing test-spec ${expectedTestSpec.path}.`);
+      if (status === 'fresh') status = 'stale-test-spec';
       continue;
     }
     if (storedHash !== expectedTestSpec.sha1) {
       issues.push(`${file} basis test-spec hash for ${expectedTestSpec.path} does not match the current approved test spec.`);
+      if (status === 'fresh') status = 'stale-test-spec';
     }
   }
   for (const storedTestSpecPath of storedTestSpecs.keys()) {
     if (!expectedTestSpecs.has(storedTestSpecPath)) {
       issues.push(`${file} basis includes unexpected test-spec ${storedTestSpecPath}.`);
+      if (status === 'fresh') status = 'unexpected-test-spec';
     }
   }
 
-  return issues;
+  return { status, issues };
+}
+
+function validateFreshContextPackBasis(
+  document: ContextPackDocument,
+  packPath: string,
+  repoRoot: string,
+  expectedSlug?: string,
+): string[] {
+  return inspectContextPackBasis(document, packPath, repoRoot, expectedSlug).issues;
 }
 
 function validateResolvedContextPackDocument(

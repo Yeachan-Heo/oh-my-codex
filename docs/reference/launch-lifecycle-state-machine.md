@@ -187,6 +187,112 @@ invalid:
   but declaration or pack contract is malformed, ambiguous, drifted, or non-canonical
 ```
 
+Expanded context-pack handoff state domains:
+
+```text
+BaselineState(p) ∈ {
+  missing-prd,
+  missing-test-spec,
+  present
+}
+
+OutcomeState(p) ∈ {
+  absent,
+  malformed,
+  ambiguous,
+  single(action, canonical_pack_path)
+}
+
+For a pack-specific read-only query, normalize `single(action,
+canonical_pack_path)` to `single` when `canonical_pack_path = k`, and to
+`single-other` when `canonical_pack_path ≠ k`.
+
+PackState(k) ∈ {
+  missing,
+  unreadable,
+  schema-invalid,
+  valid
+}
+
+RoleCoverage(k) ∈ {
+  missing-required-roles(S),
+  covered
+}
+
+BasisState(k, p) ∈ {
+  absent,
+  stale-prd,
+  stale-test-spec,
+  unexpected-test-spec,
+  fresh
+}
+
+IndexState(k) ∈ {
+  missing,
+  invalid,
+  fresh
+}
+```
+
+Total readiness mapping is ordered and total. The first matching rule wins, which
+keeps malformed or stale declared packs from being reclassified as merely
+incomplete because a later generated index or role is also missing.
+
+```text
+HandoffState(p, k) =
+  missing-baseline  when BaselineState(p) ≠ present
+  plan-only         when OutcomeState(p) = absent
+  invalid           when OutcomeState(p) ∈ {malformed, ambiguous}
+  invalid           when pack-specific OutcomeState(p, k) = single-other
+  incomplete        when PackState(k) = missing
+  invalid           when PackState(k) ∈ {unreadable, schema-invalid}
+  invalid           when BasisState(k, p) ∈ {
+                       absent,
+                       stale-prd,
+                       stale-test-spec,
+                       unexpected-test-spec
+                     }
+  invalid           when IndexState(k) = invalid
+  incomplete        when RoleCoverage(k) = missing-required-roles(S)
+  incomplete        when IndexState(k) = missing
+  ready             otherwise
+```
+
+Authoring-order invariant:
+
+```text
+FinalSyncReady(p, k) :=
+  OutcomeState(p) = single(...)
+  ∧ Sync(k) occurs after the latest write to p and matching test specs
+  ∧ BasisState(k, p) = fresh
+
+SyncBeforeOutcomeThenOutcomeAdded(p, k)
+  -> BasisState(k, p) = stale-prd
+  -> HandoffState(p, k) = invalid
+  -> no Ralph/Team approved-context handoff is allowed
+
+OutcomeState(p) = absent
+  -> HandoffState(p, k) = plan-only
+  regardless of provisional pack sync artifacts
+```
+
+The read-only context-tool status command is a diagnostic projection of this
+same classifier:
+
+```text
+context-tool status k
+  -> no writes to k, index(k), excerpt cache, or approved artifacts
+  -> reports {
+       BaselineState,
+       OutcomeState,
+       PackState,
+       RoleCoverage,
+       BasisState,
+       IndexState,
+       HandoffState
+     }
+```
+
 Required consumer mapping:
 
 ```text

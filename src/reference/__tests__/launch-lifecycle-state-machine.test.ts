@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { readApprovedExecutionLaunchHint } from '../../planning/artifacts.js';
+import { readApprovedExecutionLaunchHint, resolveContextPackHandoffState } from '../../planning/artifacts.js';
 import {
   contextPackExcerptPath,
   readContextPackDocument,
@@ -32,6 +32,12 @@ type PipelineTeamExecTaskSource = 'upstream-request' | 'approved-hint' | 'unreac
 type DispatchApprovedContextState = 'unbound' | 'carry' | 'blocked';
 type InboxSurface = 'bootstrap' | 'reassignment';
 type TeamCliFollowupState = 'generic' | 'approved-unbound' | 'approved-bound' | 'rejected-bound' | 'blocked';
+type BaselineState = 'missing-prd' | 'missing-test-spec' | 'present';
+type OutcomeState = 'absent' | 'malformed' | 'ambiguous' | 'single' | 'single-other';
+type PackState = 'missing' | 'unreadable' | 'schema-invalid' | 'valid';
+type RoleCoverageState = 'missing-required-roles' | 'covered';
+type BasisState = 'absent' | 'stale-prd' | 'stale-test-spec' | 'unexpected-test-spec' | 'fresh';
+type IndexState = 'missing' | 'invalid' | 'fresh';
 
 interface Candidate {
   id: string;
@@ -82,6 +88,44 @@ function oldLifecycleReferenceNames(): string[] {
 
 function planningCompleteModel(prdCount: number, testSpecCount: number): boolean {
   return prdCount > 0 && testSpecCount > 0;
+}
+
+function handoffStateModel(input: {
+  baseline: BaselineState;
+  outcome: OutcomeState;
+  pack: PackState;
+  roles: RoleCoverageState;
+  basis: BasisState;
+  index: IndexState;
+}): HandoffState {
+  if (input.baseline !== 'present') {
+    return 'missing-baseline';
+  }
+  if (input.outcome === 'absent') {
+    return 'plan-only';
+  }
+  if (input.outcome === 'malformed' || input.outcome === 'ambiguous' || input.outcome === 'single-other') {
+    return 'invalid';
+  }
+  if (input.pack === 'missing') {
+    return 'incomplete';
+  }
+  if (input.pack === 'unreadable' || input.pack === 'schema-invalid') {
+    return 'invalid';
+  }
+  if (input.basis !== 'fresh') {
+    return 'invalid';
+  }
+  if (input.index === 'invalid') {
+    return 'invalid';
+  }
+  if (input.roles === 'missing-required-roles') {
+    return 'incomplete';
+  }
+  if (input.index === 'missing') {
+    return 'incomplete';
+  }
+  return 'ready';
 }
 
 function artifactSlug(path: string, prefixPattern: RegExp): string | null {
@@ -704,6 +748,11 @@ describe('launch-lifecycle-state-machine reference', () => {
     assert.match(MODEL_DOC, /input contains approvedExecution = null -> startTeam receives explicit null and suppresses persisted bindings/);
     assert.match(MODEL_DOC, /Ralph context-pack refinement/);
     assert.match(MODEL_DOC, /approved-context-materialized/);
+    assert.match(MODEL_DOC, /BaselineState\(p\) ∈ \{/);
+    assert.match(MODEL_DOC, /OutcomeState\(p\) ∈ \{/);
+    assert.match(MODEL_DOC, /PackState\(k\) ∈ \{/);
+    assert.match(MODEL_DOC, /BasisState\(k, p\) ∈ \{/);
+    assert.match(MODEL_DOC, /SyncBeforeOutcomeThenOutcomeAdded\(p, k\)/);
   });
 
   it('exhaustively model-checks planning completeness, latest artifact selection, and compatibility hint projection', () => {
@@ -748,6 +797,96 @@ describe('launch-lifecycle-state-machine reference', () => {
       const selected = projectLastHintModel(hints.slice(0, hintCount));
       assert.equal(selected, hintCount === 0 ? null : hints[hintCount - 1]);
     }
+  });
+
+  it('exhaustively model-checks context-pack handoff readiness over the finite state product', () => {
+    const baselines: BaselineState[] = ['missing-prd', 'missing-test-spec', 'present'];
+    const outcomes: OutcomeState[] = ['absent', 'malformed', 'ambiguous', 'single-other', 'single'];
+    const packs: PackState[] = ['missing', 'unreadable', 'schema-invalid', 'valid'];
+    const roleCoverageStates: RoleCoverageState[] = ['missing-required-roles', 'covered'];
+    const basisStates: BasisState[] = ['absent', 'stale-prd', 'stale-test-spec', 'unexpected-test-spec', 'fresh'];
+    const indexStates: IndexState[] = ['missing', 'invalid', 'fresh'];
+    const seen = new Set<HandoffState>();
+
+    for (const baseline of baselines) {
+      for (const outcome of outcomes) {
+        for (const pack of packs) {
+          for (const roles of roleCoverageStates) {
+            for (const basis of basisStates) {
+              for (const index of indexStates) {
+                const state = handoffStateModel({ baseline, outcome, pack, roles, basis, index });
+                assert.equal(
+                  resolveContextPackHandoffState({
+                    baselineState: baseline,
+                    outcomeState: outcome,
+                    packState: pack,
+                    roleCoverage: roles,
+                    basisState: basis,
+                    indexState: index,
+                  }),
+                  state,
+                );
+                seen.add(state);
+                if (baseline !== 'present') {
+                  assert.equal(state, 'missing-baseline');
+                  continue;
+                }
+                if (outcome === 'absent') {
+                  assert.equal(state, 'plan-only');
+                  continue;
+                }
+                if (outcome === 'malformed' || outcome === 'ambiguous' || outcome === 'single-other') {
+                  assert.equal(state, 'invalid');
+                  continue;
+                }
+                if (pack === 'missing') {
+                  assert.equal(state, 'incomplete');
+                  continue;
+                }
+                if (
+                  pack === 'unreadable'
+                  || pack === 'schema-invalid'
+                  || basis !== 'fresh'
+                  || index === 'invalid'
+                ) {
+                  assert.equal(state, 'invalid');
+                  continue;
+                }
+                if (roles === 'missing-required-roles' || index === 'missing') {
+                  assert.equal(state, 'incomplete');
+                  continue;
+                }
+                assert.equal(state, 'ready');
+              }
+            }
+          }
+        }
+      }
+    }
+
+    assert.deepEqual([...seen].sort(), ['incomplete', 'invalid', 'missing-baseline', 'plan-only', 'ready']);
+    assert.equal(
+      handoffStateModel({
+        baseline: 'present',
+        outcome: 'single',
+        pack: 'valid',
+        roles: 'covered',
+        basis: 'stale-prd',
+        index: 'fresh',
+      }),
+      'invalid',
+    );
+    assert.equal(
+      handoffStateModel({
+        baseline: 'present',
+        outcome: 'absent',
+        pack: 'valid',
+        roles: 'covered',
+        basis: 'fresh',
+        index: 'fresh',
+      }),
+      'plan-only',
+    );
   });
 
   it('exhaustively model-checks generic mode reads fail closed on malformed higher-precedence state', () => {
