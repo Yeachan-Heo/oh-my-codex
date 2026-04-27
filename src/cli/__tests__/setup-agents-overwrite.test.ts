@@ -5,7 +5,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setup } from '../setup.js';
-import { addGeneratedAgentsMarker } from '../../utils/agents-md.js';
+import {
+  addGeneratedAgentsMarker,
+  OMX_MANAGED_AGENTS_END_MARKER,
+  OMX_MANAGED_AGENTS_START_MARKER,
+} from '../../utils/agents-md.js';
 import { resolveAgentsModelTableContext, upsertAgentsModelTable } from '../../utils/agents-model-table.js';
 
 function setMockTty(value: boolean): () => void {
@@ -38,6 +42,10 @@ function setMockHome(home: string): () => void {
 
 function normalizeDarwinTmpPath(value: string): string {
   return process.platform === 'darwin' ? value.replaceAll('/private/var/', '/var/') : value;
+}
+
+function countOccurrences(value: string, needle: string): number {
+  return value.split(needle).length - 1;
 }
 
 async function runSetupWithCapturedLogs(
@@ -284,6 +292,163 @@ describe('omx setup AGENTS refresh behavior', () => {
 
       assert.match(output, /Skipped AGENTS\.md overwrite/);
       assert.doesNotMatch(output, /Refreshed AGENTS\.md model capability table/);
+      assert.equal(await readFile(join(wd, 'AGENTS.md'), 'utf-8'), existing);
+      assert.equal(existsSync(join(wd, '.omx', 'backups', 'setup')), false);
+    } finally {
+      restoreHome();
+      restoreTty();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('merges OMX-managed sections into an unmarked user-authored AGENTS.md when explicitly requested', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agents-'));
+    const restoreTty = setMockTty(false);
+    const home = join(wd, 'home');
+    const restoreHome = setMockHome(home);
+    const existing = '# Team Instructions\n\nKeep this custom guidance.\n';
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(join(wd, 'AGENTS.md'), existing);
+
+      const output = await runSetupWithCapturedLogs(wd, {
+        scope: 'project',
+        mergeAgents: true,
+      });
+
+      const agentsContent = await readFile(join(wd, 'AGENTS.md'), 'utf-8');
+
+      assert.match(output, /Merged OMX-managed AGENTS\.md sections into project root\./);
+      assert.match(output, /agents_md: updated=1, unchanged=0, backed_up=1, skipped=0, removed=0/);
+      assert.match(agentsContent, /^# Team Instructions/);
+      assert.match(agentsContent, /Keep this custom guidance\./);
+      assert.match(agentsContent, new RegExp(OMX_MANAGED_AGENTS_START_MARKER));
+      assert.match(agentsContent, new RegExp(OMX_MANAGED_AGENTS_END_MARKER));
+      assert.match(agentsContent, /# oh-my-codex - Intelligent Multi-Agent Orchestration/);
+      assert.equal(existsSync(join(wd, '.omx', 'backups', 'setup')), true);
+    } finally {
+      restoreHome();
+      restoreTty();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps explicit AGENTS.md merge idempotent on repeated runs', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agents-'));
+    const restoreTty = setMockTty(false);
+    const home = join(wd, 'home');
+    const restoreHome = setMockHome(home);
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(join(wd, 'AGENTS.md'), '# Team Instructions\n\nKeep this custom guidance.\n');
+
+      await runSetupWithCapturedLogs(wd, {
+        scope: 'project',
+        mergeAgents: true,
+      });
+      const firstContent = await readFile(join(wd, 'AGENTS.md'), 'utf-8');
+      const output = await runSetupWithCapturedLogs(wd, {
+        scope: 'project',
+        mergeAgents: true,
+      });
+      const secondContent = await readFile(join(wd, 'AGENTS.md'), 'utf-8');
+
+      assert.equal(secondContent, firstContent);
+      assert.match(output, /AGENTS\.md already up to date in project root\./);
+      assert.match(output, /agents_md: updated=0, unchanged=1, backed_up=0, skipped=0, removed=0/);
+      assert.equal(countOccurrences(secondContent, OMX_MANAGED_AGENTS_START_MARKER), 1);
+      assert.equal(countOccurrences(secondContent, OMX_MANAGED_AGENTS_END_MARKER), 1);
+      assert.equal(countOccurrences(secondContent, '# oh-my-codex - Intelligent Multi-Agent Orchestration'), 1);
+    } finally {
+      restoreHome();
+      restoreTty();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshes the managed model table inside an explicit merged AGENTS.md block', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agents-'));
+    const restoreTty = setMockTty(false);
+    const home = join(wd, 'home');
+    const restoreHome = setMockHome(home);
+    const template = readFileSync(join(process.cwd(), 'templates', 'AGENTS.md'), 'utf-8');
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      const staleManaged = upsertAgentsModelTable(
+        addGeneratedAgentsMarker(template),
+        {
+          frontierModel: 'legacy-frontier',
+          sparkModel: 'legacy-spark',
+          subagentDefaultModel: 'legacy-frontier',
+        },
+      );
+      const existing = [
+        '# Team Instructions',
+        '',
+        'Keep this custom guidance.',
+        '',
+        OMX_MANAGED_AGENTS_START_MARKER,
+        staleManaged.trimEnd(),
+        OMX_MANAGED_AGENTS_END_MARKER,
+        '',
+      ].join('\n');
+      await writeFile(join(wd, 'AGENTS.md'), existing);
+
+      const output = await runSetupWithCapturedLogs(wd, {
+        scope: 'project',
+        mergeAgents: true,
+      });
+      const agentsContent = await readFile(join(wd, 'AGENTS.md'), 'utf-8');
+      const expectedContext = resolveAgentsModelTableContext(
+        await readFile(join(wd, '.codex', 'config.toml'), 'utf-8'),
+        { codexHomeOverride: join(wd, '.codex') },
+      );
+
+      assert.match(output, /Merged OMX-managed AGENTS\.md sections into project root\./);
+      assert.match(agentsContent, /Keep this custom guidance\./);
+      assert.match(
+        agentsContent,
+        new RegExp(`\\| Frontier \\(leader\\) \\| \`${expectedContext.frontierModel}\` \\| high \\|`),
+      );
+      assert.doesNotMatch(agentsContent, /legacy-frontier/);
+      assert.doesNotMatch(agentsContent, /legacy-spark/);
+      assert.equal(countOccurrences(agentsContent, OMX_MANAGED_AGENTS_START_MARKER), 1);
+    } finally {
+      restoreHome();
+      restoreTty();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('skips explicit AGENTS.md merge during an active project session', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agents-'));
+    const restoreTty = setMockTty(true);
+    const home = join(wd, 'home');
+    const restoreHome = setMockHome(home);
+    const existing = '# active session file\n';
+    try {
+      const pidStartTicks = await readCurrentLinuxStartTicks();
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(join(wd, 'AGENTS.md'), existing);
+      await writeFile(
+        join(wd, '.omx', 'state', 'session.json'),
+        JSON.stringify({
+          session_id: 'sess-test',
+          started_at: new Date().toISOString(),
+          cwd: wd,
+          pid: process.pid,
+          pid_start_ticks: pidStartTicks,
+        }, null, 2)
+      );
+
+      const output = await runSetupWithCapturedLogs(wd, {
+        scope: 'project',
+        mergeAgents: true,
+      });
+
+      assert.match(output, /WARNING: Active omx session detected/);
+      assert.match(output, /Skipping AGENTS\.md overwrite to avoid corrupting runtime overlay\./);
+      assert.match(output, /agents_md: updated=0, unchanged=0, backed_up=0, skipped=1, removed=0/);
       assert.equal(await readFile(join(wd, 'AGENTS.md'), 'utf-8'), existing);
       assert.equal(existsSync(join(wd, '.omx', 'backups', 'setup')), false);
     } finally {

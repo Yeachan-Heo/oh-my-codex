@@ -67,6 +67,7 @@ import {
   addGeneratedAgentsMarker,
   hasOmxManagedAgentsSections,
   isOmxGeneratedAgentsMd,
+  upsertManagedAgentsBlock,
 } from "../utils/agents-md.js";
 import {
   resolveAgentsModelTableContext,
@@ -76,6 +77,7 @@ import {
 interface SetupOptions {
   codexVersionProbe?: () => string | null;
   force?: boolean;
+  mergeAgents?: boolean;
   dryRun?: boolean;
   installMode?: SetupInstallMode;
   scope?: SetupScope;
@@ -1843,15 +1845,22 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
       let changed = true;
       let canApplyManagedModelRefresh = false;
       let managedRefreshContent = "";
+      let canApplyManagedAgentsMerge = false;
+      let mergedAgentsContent = "";
       if (agentsMdExists) {
         const existing = await readFile(agentsMdDst, "utf-8");
         changed = existing !== rewritten;
-        if (hasOmxManagedAgentsSections(existing)) {
-          managedRefreshContent = upsertAgentsModelTable(
-            existing,
-            modelTableContext,
-          );
-          canApplyManagedModelRefresh = managedRefreshContent !== existing;
+        if (options.mergeAgents) {
+          mergedAgentsContent = upsertManagedAgentsBlock(existing, rewritten);
+          canApplyManagedAgentsMerge = mergedAgentsContent !== existing;
+        } else {
+          if (hasOmxManagedAgentsSections(existing)) {
+            managedRefreshContent = upsertAgentsModelTable(
+              existing,
+              modelTableContext,
+            );
+            canApplyManagedModelRefresh = managedRefreshContent !== existing;
+          }
         }
       }
 
@@ -1859,7 +1868,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
         resolvedScope.scope === "project" &&
         sessionIsActive &&
         agentsMdExists &&
-        changed
+        (changed || canApplyManagedAgentsMerge || canApplyManagedModelRefresh)
       ) {
         summary.agentsMd.skipped += 1;
         console.log(
@@ -1871,6 +1880,27 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
           "  Skipping AGENTS.md overwrite to avoid corrupting runtime overlay.",
         );
         console.log("  Stop the active session first, then re-run setup.");
+      } else if (options.mergeAgents && agentsMdExists && !canApplyManagedAgentsMerge) {
+        summary.agentsMd.unchanged += 1;
+        console.log(
+          resolvedScope.scope === "project"
+            ? "  AGENTS.md already up to date in project root."
+            : `  AGENTS.md already up to date in ${scopeDirs.codexHomeDir}.`,
+        );
+      } else if (canApplyManagedAgentsMerge) {
+        await syncManagedContent(
+          mergedAgentsContent,
+          agentsMdDst,
+          summary.agentsMd,
+          backupContext,
+          { dryRun, verbose },
+          `merged AGENTS ${agentsMdDst}`,
+        );
+        console.log(
+          resolvedScope.scope === "project"
+            ? "  Merged OMX-managed AGENTS.md sections into project root."
+            : `  Merged OMX-managed AGENTS.md sections into ${scopeDirs.codexHomeDir}.`,
+        );
       } else if (canApplyManagedModelRefresh) {
         await syncManagedContent(
           managedRefreshContent,

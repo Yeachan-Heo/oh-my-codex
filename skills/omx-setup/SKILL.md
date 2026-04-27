@@ -10,13 +10,14 @@ Use this skill when users want to install or refresh oh-my-codex for the **curre
 ## Command
 
 ```bash
-omx setup [--force] [--dry-run] [--verbose] [--scope <user|project>] [--plugin]
+omx setup [--force] [--merge-agents] [--dry-run] [--verbose] [--scope <user|project>] [--plugin]
 ```
 
 If you only want lightweight `AGENTS.md` scaffolding for an existing repo or subtree, use `omx agents-init [path]` instead of full setup.
 
 Supported setup flags (current implementation):
 - `--force`: overwrite/reinstall managed artifacts where applicable
+- `--merge-agents`: when `AGENTS.md` already exists, preserve user-authored content and insert/refresh OMX-managed generated sections between explicit `<!-- OMX:AGENTS:START -->` / `<!-- OMX:AGENTS:END -->` markers
 - `--dry-run`: print actions without mutating files
 - `--verbose`: print per-file/per-step details
 - `--scope`: choose install scope (`user`, `project`)
@@ -48,7 +49,8 @@ Supported setup flags (current implementation):
 - `omx setup` only prompts for scope when no scope is provided/persisted and stdin/stdout are TTY.
 - In `user` scope, `omx setup` also prompts for skill delivery mode when no prior install mode is persisted; installed plugin cache discovery makes plugin mode the default prompt/non-interactive choice.
 - Local project orchestration file is `./AGENTS.md` (project root).
-- If `AGENTS.md` exists and `--force` is not used, interactive TTY runs ask whether to overwrite. Non-interactive runs preserve the file.
+- If `AGENTS.md` exists and neither `--force` nor `--merge-agents` is used, interactive TTY runs ask whether to overwrite. Non-interactive runs preserve the file.
+- Use `--merge-agents` to keep existing project guidance while allowing setup to refresh OMX-managed AGENTS sections and the generated model capability table idempotently.
 - Scope targets:
   - `user`: user directories (`~/.codex`, `~/.codex/skills`, `~/.omx/agents`)
   - `project`: local directories (`./.codex`, `./.codex/skills`, `./.omx/agents`)
@@ -58,7 +60,7 @@ Supported setup flags (current implementation):
 - Migration hint: in `user` scope, if historical `~/.agents/skills` still exists alongside `${CODEX_HOME:-~/.codex}/skills`, current setup prints a cleanup hint. **Why the paths differ**: `${CODEX_HOME:-~/.codex}/skills/` is the path current Codex CLI natively loads as its skill root; `~/.agents/skills/` was the skill root in an older Codex CLI release before `~/.codex` became the standard home directory. OMX writes only to the canonical `${CODEX_HOME:-~/.codex}/skills/` path. When both directories exist simultaneously, Codex discovers skills from both trees and may show duplicate entries in Enable/Disable Skills. Archive or remove `~/.agents/skills/` to resolve this.
 - If persisted scope is `project`, `omx` launch automatically uses `CODEX_HOME=./.codex` unless user explicitly overrides `CODEX_HOME`.
 - Plugin mode prompts separately for optional AGENTS.md defaults and optional `developer_instructions` defaults. If `developer_instructions` already exists, setup asks before overwriting it; non-interactive runs preserve it.
-- With `--force`, AGENTS overwrite may still be skipped if an active OMX session is detected (safety guard).
+- With `--force` or `--merge-agents`, AGENTS updates may still be skipped if an active OMX session is detected (safety guard).
 - Legacy persisted scope values (`project-local`) are automatically migrated to `project` with a one-time warning.
 
 ## Recommended workflow
@@ -102,3 +104,4 @@ node bin/omx.js doctor
 ```
 
 - If AGENTS.md was not overwritten during `--force`, stop active OMX session and rerun setup.
+- If AGENTS.md was not merged during `--merge-agents`, stop active OMX session and rerun setup.

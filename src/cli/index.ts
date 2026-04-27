@@ -222,6 +222,9 @@ Options:
   -w, --worktree[=<name>]
                 Launch Codex in a git worktree (detached when no name is given)
   --force       Force reinstall (overwrite existing files)
+  --merge-agents
+                Merge OMX-managed AGENTS.md sections into an existing AGENTS.md
+                instead of overwriting user-authored content
   --dry-run     Show what would be done without doing it
   --plugin      Use Codex plugin delivery for omx setup and remove legacy OMX-managed user/project components
   --keep-config Skip config.toml cleanup during uninstall
@@ -731,6 +734,7 @@ export async function main(args: string[]): Promise<void> {
   const flags = new Set(args.filter((a) => a.startsWith("--")));
   const options = {
     force: flags.has("--force"),
+    mergeAgents: flags.has("--merge-agents"),
     dryRun: flags.has("--dry-run"),
     verbose: flags.has("--verbose"),
     team: flags.has("--team"),
@@ -752,6 +756,7 @@ export async function main(args: string[]): Promise<void> {
       case "setup":
         await setup({
           force: options.force,
+          mergeAgents: options.mergeAgents,
           dryRun: options.dryRun,
           verbose: options.verbose,
           scope: resolveSetupScopeArg(args.slice(1)),
