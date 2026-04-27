@@ -28,6 +28,7 @@ type BindingHydrationState = 'reusable' | 'surfaced-nonready' | 'stale' | 'ambig
 type MarkdownScanState = 'normal' | 'fenced' | 'indented-code';
 type PlanningArtifactsAuthorityState = 'none' | 'structural' | 'approved-authoritative';
 type PipelineTeamExecLaunchState = 'structured-generic' | 'structured-approved' | 'blocked';
+type PipelineTeamExecTaskSource = 'upstream-request' | 'approved-hint' | 'unreachable';
 type DispatchApprovedContextState = 'unbound' | 'carry' | 'blocked';
 type InboxSurface = 'bootstrap' | 'reassignment';
 type TeamCliFollowupState = 'generic' | 'approved-unbound' | 'approved-bound' | 'rejected-bound' | 'blocked';
@@ -108,6 +109,44 @@ function resolveExplicitModel(candidates: readonly Candidate[]): Candidate | nul
     }
   }
   return newestBroken ?? newestSurfacedNonReady;
+}
+
+function resolveExplicitTeamModel(candidates: readonly Candidate[]): Candidate | null {
+  let newestBrokenSameSignature: Candidate | null = null;
+  let newestSurfacedNonReadySameSignature: Candidate | null = null;
+  let lineageAnchor: Candidate | null = null;
+
+  for (const candidate of candidates) {
+    if (candidate.matchState === 'no-match') {
+      continue;
+    }
+    if (!lineageAnchor) {
+      if (candidate.matchState === 'ambiguous') {
+        return null;
+      }
+      lineageAnchor = candidate;
+    }
+    if (candidate.matchState === 'ambiguous') {
+      if (sameTeamLaunchSignatureModel(lineageAnchor, candidate)) {
+        return null;
+      }
+      continue;
+    }
+    if (!sameTeamLaunchSignatureModel(lineageAnchor, candidate)) {
+      continue;
+    }
+    if (executionReusable(candidate.handoffState)) {
+      return candidate;
+    }
+    if (broken(candidate.handoffState) && !newestBrokenSameSignature) {
+      newestBrokenSameSignature = candidate;
+    }
+    if (candidate.handoffState === 'missing-baseline' && !newestSurfacedNonReadySameSignature) {
+      newestSurfacedNonReadySameSignature = candidate;
+    }
+  }
+
+  return newestBrokenSameSignature ?? newestSurfacedNonReadySameSignature;
 }
 
 function resolveBareModel(candidates: readonly Candidate[]): Candidate | null {
@@ -289,6 +328,19 @@ function pipelineTeamExecLaunchProjectionModel(
     return 'structured-approved';
   }
   return 'blocked';
+}
+
+function pipelineTeamExecTaskSourceModel(
+  authorityState: PlanningArtifactsAuthorityState,
+  state: HandoffState | null,
+): PipelineTeamExecTaskSource {
+  if (authorityState === 'none' || authorityState === 'structural') {
+    return 'upstream-request';
+  }
+  if (state === 'ready' || state === 'plan-only') {
+    return 'approved-hint';
+  }
+  return 'unreachable';
 }
 
 function dispatchApprovedContextProjectionModel(
@@ -484,6 +536,7 @@ describe('context-pack-handoff-state-machine reference', () => {
     assert.match(MODEL_DOC, /ScaleUpBindingState\(team\)/);
     assert.match(MODEL_DOC, /PlanningArtifactsAuthorityState\(artifacts\) ∈ \{/);
     assert.match(MODEL_DOC, /PipelineTeamExecLaunchState\(descriptor, authority\) ∈ \{/);
+    assert.match(MODEL_DOC, /descriptor\.task := h\.task/);
     assert.match(MODEL_DOC, /DispatchApprovedContextState\(team\) ∈ \{/);
     assert.match(MODEL_DOC, /InboxSurface ∈ \{/);
     assert.match(MODEL_DOC, /RuntimeProjection/);
@@ -680,6 +733,43 @@ describe('context-pack-handoff-state-machine reference', () => {
     assert.equal(resolveBareTeamModel([latest, olderSameSignature])?.id, 'older-same-signature');
   });
 
+  it('model-checks Team explicit task fallback stays on the same launch signature', () => {
+    const latest: Candidate = {
+      id: 'latest',
+      task: 'shared',
+      command: 'omx team 5:debugger "shared"',
+      handoffState: 'incomplete',
+      matchState: 'unique',
+      workerCount: 5,
+      agentType: 'debugger',
+    };
+    const olderDifferentSignature: Candidate = {
+      id: 'older-different-signature',
+      task: 'shared',
+      command: 'omx team 2:executor "shared"',
+      handoffState: 'ready',
+      matchState: 'unique',
+      workerCount: 2,
+      agentType: 'executor',
+    };
+    const olderSameSignature: Candidate = {
+      id: 'older-same-signature',
+      task: 'shared',
+      command: 'omx team 5:debugger "shared"',
+      handoffState: 'ready',
+      matchState: 'unique',
+      workerCount: 5,
+      agentType: 'debugger',
+    };
+
+    assert.equal(resolveExplicitTeamModel([latest, olderDifferentSignature])?.id, 'latest');
+    assert.equal(resolveExplicitTeamModel([latest, olderSameSignature])?.id, 'older-same-signature');
+    assert.equal(
+      resolveExplicitTeamModel([latest, olderSameSignature, olderDifferentSignature])?.id,
+      'older-same-signature',
+    );
+  });
+
   it('exhaustively model-checks effective Team state-root selection', () => {
     const cwd = '/repo';
     const visibleStates = [
@@ -827,6 +917,24 @@ describe('context-pack-handoff-state-machine reference', () => {
           assert.equal(projection, 'structured-generic');
         } else {
           assert.equal(projection, 'blocked');
+        }
+      }
+    }
+  });
+
+  it('exhaustively model-checks that authoritative team-exec uses the approved PRD task text for ready and plan-only handoffs', () => {
+    const authorityStates: PlanningArtifactsAuthorityState[] = ['none', 'structural', 'approved-authoritative'];
+    const handoffStates: Array<HandoffState | null> = [null, 'missing-baseline', 'plan-only', 'ready', 'incomplete', 'invalid'];
+
+    for (const authorityState of authorityStates) {
+      for (const handoffState of handoffStates) {
+        const taskSource = pipelineTeamExecTaskSourceModel(authorityState, handoffState);
+        if (authorityState === 'none' || authorityState === 'structural') {
+          assert.equal(taskSource, 'upstream-request');
+        } else if (handoffState === 'ready' || handoffState === 'plan-only') {
+          assert.equal(taskSource, 'approved-hint');
+        } else {
+          assert.equal(taskSource, 'unreachable');
         }
       }
     }

@@ -747,14 +747,16 @@ PlanningArtifactsAuthorityState = structural
   -> structured-generic
 
 PlanningArtifactsAuthorityState = approved-authoritative(latest_prd_path)
-   ∧ ResolveApprovedHint(cwd, team, task = descriptor.task, prdPath = latest_prd_path) = reusable(h)
+   ∧ ResolveApprovedHint(cwd, team, prdPath = latest_prd_path) = reusable(h)
    ∧ HandoffState(h.sourcePath) = ready
+   ∧ descriptor.task := h.task
    ∧ b = BuildBinding(h)
   -> structured-approved(b)
 
 PlanningArtifactsAuthorityState = approved-authoritative(latest_prd_path)
    ∧ ResolveApprovedHint(...) = reusable(h)
    ∧ HandoffState(h.sourcePath) = plan-only
+   ∧ descriptor.task := h.task
   -> structured-generic
 
 PlanningArtifactsAuthorityState = approved-authoritative(latest_prd_path)
@@ -770,6 +772,10 @@ PipelineTeamExecLaunchState = structured-generic
 
 PipelineTeamExecLaunchState = structured-approved(b)
 -> runnable launch instruction carries approvedExecution = b as structured runtime input
+
+PlanningArtifactsAuthorityState = approved-authoritative(latest_prd_path)
+   ∧ ResolveApprovedHint(cwd, team, prdPath = latest_prd_path) ∈ { reusable(h), surfaced-nonready(h) }
+-> runnable Team task text is derived from h.task, not from the original upstream request text
 -> runnable launch instruction must not collapse back to raw task text alone
 -> runnable launch instruction targets the package-owned Team runtime entry, not target-workspace dist paths
 -> runnable launch instruction preserves full task assignments including owner and optional role
