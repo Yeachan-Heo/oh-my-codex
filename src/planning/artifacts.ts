@@ -310,17 +310,6 @@ function decodeQuotedValue(raw: string): string | null {
   }
 }
 
-function artifactSlug(path: string, prefixPattern: RegExp): string | null {
-  const file = basename(path);
-  const match = file.match(prefixPattern);
-  return match?.groups?.slug ?? null;
-}
-
-function filterArtifactsForSlug(paths: readonly string[], prefixPattern: RegExp, slug: string | null): string[] {
-  if (!slug) return [];
-  return paths.filter((path) => artifactSlug(path, prefixPattern) === slug);
-}
-
 function selectTestSpecPathsForPrd(
   testSpecPaths: readonly string[],
   prdPath: string | null,
