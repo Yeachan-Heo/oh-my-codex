@@ -518,7 +518,14 @@ function tmuxFailureMessage(error: unknown): string {
 }
 
 function isBenignMissingTmuxServerMessage(message: string): boolean {
-  return /no server running/i.test(message);
+  const trimmed = message.trim();
+  return (
+    /^no server running(?: on \S+)?$/i.test(trimmed) ||
+    /^failed to connect to server$/i.test(trimmed) ||
+    /^error connecting to \S+\/tmux-\d+\/default \(No such file or directory\)$/i.test(
+      trimmed,
+    )
+  );
 }
 
 export interface TmuxLaunchHealth {
