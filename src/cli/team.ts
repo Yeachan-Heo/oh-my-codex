@@ -39,6 +39,7 @@ interface ParsedTeamArgs {
   explicitWorkerCount: boolean;
   task: string;
   teamName: string;
+  allowRepoAwareDagHandoff: boolean;
 }
 
 
@@ -156,6 +157,7 @@ Notes:
   --worktree is deprecated for omx team and is now only a backward-compatible no-op override.
   omx team is a tmux-runtime surface by default; in Codex App or plain outside-tmux sessions, launch OMX CLI from shell first instead of treating team as directly available.
   use native Codex subagents for small in-session fanout; use omx team for durable tmux/state/worktree coordination.
+  repo-aware DAG handoff is opt-in: Team only imports a DAG when the invocation matches the latest approved PRD/test-spec launch hint (or a short approved follow-up like \`omx team team\`).
 
 Examples:
   omx team 3:executor "fix failing tests"
@@ -709,8 +711,14 @@ function parseTeamArgs(args: string[], cwd: string = process.cwd()): ParsedTeamA
     }
   }
 
+  const approvedHint = readApprovedExecutionLaunchHint(cwd, 'team');
+  const matchesApprovedLaunchHint = approvedHint?.task.trim() === effectiveTask.trim()
+    && (approvedHint.workerCount == null || approvedHint.workerCount === workerCount)
+    && (approvedHint.agentType == null || approvedHint.agentType === agentType);
+  const allowRepoAwareDagHandoff = followupContext != null || matchesApprovedLaunchHint;
+
   const teamName = sanitizeTeamName(slugifyTask(effectiveTask));
-  return { workerCount, agentType, explicitAgentType, explicitWorkerCount, task: effectiveTask, teamName };
+  return { workerCount, agentType, explicitAgentType, explicitWorkerCount, task: effectiveTask, teamName, allowRepoAwareDagHandoff };
 }
 
 export function parseTeamStartArgs(args: string[]): ParsedTeamStartArgs {
@@ -1100,6 +1108,7 @@ async function persistTeamShutdownModeState(
         explicitAgentType: false,
         explicitWorkerCount: false,
         teamName,
+        allowRepoAwareDagHandoff: false,
       });
     } else {
       await startMode('team', `shutdown team ${teamName}`, 50, cwd);
@@ -1389,6 +1398,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
       explicitAgentType: false,
       explicitWorkerCount: false,
       teamName: runtime.teamName,
+      allowRepoAwareDagHandoff: false,
     });
     const availableAgentTypes = await resolveAvailableAgentTypes(cwd);
     const staffingPlan = buildFollowupStaffingPlan('team', runtime.config.task, availableAgentTypes, {
@@ -1439,6 +1449,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     explicitWorkerCount: parsed.explicitWorkerCount,
     cwd,
     buildLegacyPlan: buildTeamExecutionPlan,
+    allowDagHandoff: parsed.allowRepoAwareDagHandoff,
   });
   const tasks = executionPlan.tasks;
   const effectiveParsed = executionPlan.workerCount === parsed.workerCount

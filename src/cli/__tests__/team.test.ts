@@ -217,6 +217,7 @@ describe('parseTeamStartArgs', () => {
       assert.equal(result.parsed.workerCount, 3);
       assert.equal(result.parsed.agentType, 'executor');
       assert.equal(result.parsed.explicitWorkerCount, true);
+      assert.equal(result.parsed.allowRepoAwareDagHandoff, true);
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
@@ -238,6 +239,49 @@ describe('parseTeamStartArgs', () => {
       const result = parseTeamStartArgs(['team으로', '해줘']);
       assert.equal(result.parsed.task, 'Execute approved issue 831 plan');
       assert.equal(result.parsed.workerCount, 3);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+
+  it('does not opt normal team startup into repo-aware DAG handoff even when a stale sidecar exists', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-dag-normal-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(wd);
+      await mkdir(join(wd, '.omx', 'plans'), { recursive: true });
+      await writeFile(
+        join(wd, '.omx', 'plans', 'prd-issue-831.md'),
+        '# Approved plan\n\nLaunch via omx team 3:executor "Execute approved issue 831 plan"\n',
+      );
+      await writeFile(join(wd, '.omx', 'plans', 'test-spec-issue-831.md'), '# Test spec\n');
+      await writeFile(join(wd, '.omx', 'plans', 'team-dag-issue-831.json'), '{"schema_version":1,"nodes":[{"id":"impl","subject":"Impl","description":"Impl"}]}\n');
+
+      const result = parseTeamStartArgs(['3:executor', 'fix', 'unrelated', 'bug']);
+      assert.equal(result.parsed.task, 'fix unrelated bug');
+      assert.equal(result.parsed.allowRepoAwareDagHandoff, false);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('opts into repo-aware DAG handoff when the invocation matches the approved launch hint', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-dag-approved-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(wd);
+      await mkdir(join(wd, '.omx', 'plans'), { recursive: true });
+      await writeFile(
+        join(wd, '.omx', 'plans', 'prd-issue-831.md'),
+        '# Approved plan\n\nLaunch via omx team 3:executor "Execute approved issue 831 plan"\n',
+      );
+      await writeFile(join(wd, '.omx', 'plans', 'test-spec-issue-831.md'), '# Test spec\n');
+
+      const result = parseTeamStartArgs(['3:executor', 'Execute', 'approved', 'issue', '831', 'plan']);
+      assert.equal(result.parsed.allowRepoAwareDagHandoff, true);
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });

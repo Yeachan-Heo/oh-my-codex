@@ -109,7 +109,7 @@ function readApprovedPlanText(cwd: string): { content: string; context: Approved
 
   const selection = selectLatestPlanningArtifacts(artifacts);
   const latestPrdPath = selection.prdPath;
-  if (!latestPrdPath || !existsSync(latestPrdPath)) return null;
+  if (!latestPrdPath || selection.testSpecPaths.length === 0 || !existsSync(latestPrdPath)) return null;
 
   try {
     return {
@@ -179,6 +179,9 @@ export function readTeamDagArtifactResolution(cwd: string): TeamDagArtifactResol
   const planSlug = prdPath ? artifactSlug(prdPath, /^prd-(?<slug>.*)\.md$/i) : null;
   if (!prdPath || !planSlug) {
     return { source: 'none', prdPath, planSlug, warnings: ['missing_prd_slug'] };
+  }
+  if (selection.testSpecPaths.length === 0) {
+    return { source: 'none', prdPath, planSlug, warnings: ['missing_matching_test_spec'] };
   }
 
   const sidecarName = `team-dag-${planSlug}.json`;

@@ -87,6 +87,30 @@ describe('planning artifacts', () => {
   });
 
 
+  it('does not approve latest PRD launch hints without a matching test spec slug', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-alpha.md'), '# Alpha\n\nLaunch via omx team 2:executor "Execute alpha"\n');
+    await writeFile(join(plansDir, 'test-spec-other.md'), '# Other Test Spec\n');
+
+    assert.equal(readApprovedExecutionLaunchHint(tempDir, 'team'), null);
+  });
+
+  it('does not resolve Team DAG artifacts without a matching test spec slug', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-repo-aware.md'), '# PRD\n');
+    await writeFile(join(plansDir, 'test-spec-other.md'), '# Other Test Spec\n');
+    await writeFile(join(plansDir, 'team-dag-repo-aware.json'), '{"source":"sidecar"}\n');
+
+    const resolution = readTeamDagArtifactResolution(tempDir);
+
+    assert.equal(resolution.source, 'none');
+    assert.equal(resolution.planSlug, 'repo-aware');
+    assert.deepEqual(resolution.warnings, ['missing_matching_test_spec']);
+  });
+
+
   it('parses $ralph aliases with single-quoted task text for approved launch hints', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     const specsDir = join(tempDir, '.omx', 'specs');
@@ -284,6 +308,40 @@ describe('planning artifacts', () => {
     const result = readTeamDagHandoffForLatestPlan(tempDir);
     assert.equal(result.warning, 'multiple_matches');
     assert.equal(result.dag?.nodes[0]?.id, 'new');
+  });
+
+
+  it('does not load a Team DAG handoff when the latest PRD lacks a matching test spec', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-epsilon.md'), '# Epsilon\n');
+    await writeFile(join(plansDir, 'test-spec-other.md'), '# Other Test\n');
+    await writeFile(join(plansDir, 'team-dag-epsilon.json'), JSON.stringify({
+      schema_version: 1,
+      nodes: [{ id: 'impl', subject: 'Implement epsilon', description: 'Implement epsilon DAG' }],
+    }));
+
+    const result = readTeamDagHandoffForLatestPlan(tempDir);
+    assert.equal(result.source, 'none');
+    assert.equal(result.dag, null);
+    assert.equal(result.error, 'missing_matching_test_spec');
+  });
+
+  it('rejects a Team DAG sidecar whose declared plan_slug does not match the latest PRD', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-zeta.md'), '# Zeta\n');
+    await writeFile(join(plansDir, 'test-spec-zeta.md'), '# Zeta Test\n');
+    await writeFile(join(plansDir, 'team-dag-zeta.json'), JSON.stringify({
+      schema_version: 1,
+      plan_slug: 'other',
+      nodes: [{ id: 'impl', subject: 'Implement zeta', description: 'Implement zeta DAG' }],
+    }));
+
+    const result = readTeamDagHandoffForLatestPlan(tempDir);
+    assert.equal(result.source, 'sidecar');
+    assert.equal(result.dag, null);
+    assert.match(result.error ?? '', /does not match/);
   });
 
   it('fails open with explicit parse error metadata for malformed DAG sidecars', async () => {

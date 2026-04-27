@@ -162,7 +162,16 @@ function parseJsonText(text: string): TeamDagHandoff {
   return parseTeamDagHandoff(JSON.parse(text) as unknown);
 }
 
-function readSidecar(plansDir: string, slug: string): Omit<TeamDagResolution, 'planSlug'> | null {
+function assertDagMatchesPlan(dag: TeamDagHandoff, slug: string, prdPath: string): void {
+  if (dag.plan_slug !== undefined && dag.plan_slug !== slug) {
+    throw new Error(`Team DAG plan_slug ${dag.plan_slug} does not match latest approved plan slug ${slug}`);
+  }
+  if (dag.source_prd !== undefined && basename(dag.source_prd) !== basename(prdPath)) {
+    throw new Error(`Team DAG source_prd ${dag.source_prd} does not match latest approved PRD ${basename(prdPath)}`);
+  }
+}
+
+function readSidecar(plansDir: string, slug: string, prdPath: string): Omit<TeamDagResolution, 'planSlug'> | null {
   if (!existsSync(plansDir)) return null;
   const candidates = readdirSync(plansDir)
     .filter((file) => file.startsWith(`team-dag-${slug}`) && file.endsWith('.json'))
@@ -172,7 +181,11 @@ function readSidecar(plansDir: string, slug: string): Omit<TeamDagResolution, 'p
   const selected = candidates.at(-1)!;
   try {
     return {
-      dag: parseJsonText(readFileSync(selected, 'utf-8')),
+      dag: (() => {
+        const dag = parseJsonText(readFileSync(selected, 'utf-8'));
+        assertDagMatchesPlan(dag, slug, prdPath);
+        return dag;
+      })(),
       source: 'sidecar',
       path: selected,
       warning: candidates.length > 1 ? 'multiple_matches' : undefined,
@@ -201,7 +214,11 @@ export function readTeamDagHandoffForLatestPlan(cwd: string): TeamDagResolution 
   if (!prdPath || !planSlug) return { dag: null, source: 'none' };
 
   const plansDir = join(cwd, '.omx', 'plans');
-  const sidecar = readSidecar(plansDir, planSlug);
+  if (selection.testSpecPaths.length === 0) {
+    return { dag: null, source: 'none', planSlug, error: 'missing_matching_test_spec' };
+  }
+
+  const sidecar = readSidecar(plansDir, planSlug, prdPath);
   if (sidecar?.dag) return { ...sidecar, planSlug };
   if (sidecar?.error) return { ...sidecar, planSlug };
 
@@ -209,7 +226,11 @@ export function readTeamDagHandoffForLatestPlan(cwd: string): TeamDagResolution 
     const markdownJson = extractMarkdownHandoff(readFileSync(prdPath, 'utf-8'));
     if (!markdownJson) return { dag: null, source: 'none', planSlug };
     return {
-      dag: parseJsonText(markdownJson),
+      dag: (() => {
+        const dag = parseJsonText(markdownJson);
+        assertDagMatchesPlan(dag, planSlug, prdPath);
+        return dag;
+      })(),
       source: 'markdown',
       path: prdPath,
       planSlug,
