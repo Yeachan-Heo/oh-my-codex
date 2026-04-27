@@ -151,22 +151,52 @@ function storedBasisAfterUpsertModel(input: {
   return input.stored;
 }
 
-function artifactSlug(path: string, prefixPattern: RegExp): string | null {
+function artifactName(path: string): { kind: 'prd' | 'test-spec'; slug: string; timestamp?: string } | null {
   const file = path.split('/').pop() ?? path;
-  const match = file.match(prefixPattern);
-  return match?.groups?.slug ?? null;
+  const match = file.match(/^(?<kind>prd|test-?spec)-(?<rawSlug>.+)\.md$/i);
+  if (!match?.groups?.kind || !match.groups.rawSlug) return null;
+  const separatorIndex = match.groups.rawSlug.indexOf('-');
+  const timestamp = separatorIndex === -1 ? null : match.groups.rawSlug.slice(0, separatorIndex);
+  const slug = timestamp && /^\d{8}T\d{6}Z$/.test(timestamp)
+    ? match.groups.rawSlug.slice(separatorIndex + 1)
+    : match.groups.rawSlug;
+  return {
+    kind: match.groups.kind.toLowerCase().replace('testspec', 'test-spec') as 'prd' | 'test-spec',
+    slug,
+    ...(timestamp && /^\d{8}T\d{6}Z$/.test(timestamp) ? { timestamp } : {}),
+  };
+}
+
+function comparePlanningArtifactPathModel(left: string, right: string): number {
+  const leftArtifact = artifactName(left);
+  const rightArtifact = artifactName(right);
+  if (leftArtifact?.timestamp && rightArtifact?.timestamp && leftArtifact.timestamp !== rightArtifact.timestamp) {
+    return leftArtifact.timestamp.localeCompare(rightArtifact.timestamp);
+  }
+  if (leftArtifact?.timestamp && !rightArtifact?.timestamp) return 1;
+  if (!leftArtifact?.timestamp && rightArtifact?.timestamp) return -1;
+  return left.localeCompare(right);
 }
 
 function latestPlanningSelectionModel(
   prds: readonly string[],
   testSpecs: readonly string[],
 ): { prd: string | null; testSpecs: string[] } {
-  const prd = prds.length > 0 ? prds[prds.length - 1]! : null;
-  const slug = prd ? artifactSlug(prd, /^prd-(?<slug>.*)\.md$/i) : null;
+  const prd = [...prds].sort(comparePlanningArtifactPathModel).at(-1) ?? null;
+  const prdArtifact = prd ? artifactName(prd) : null;
+  const slug = prdArtifact?.kind === 'prd' ? prdArtifact.slug : null;
+  const exactTestSpec = slug && prdArtifact?.timestamp
+    ? testSpecs.find((path) => (path.split('/').pop() ?? path) === `test-spec-${prdArtifact.timestamp}-${slug}.md`)
+    : null;
   return {
     prd,
-    testSpecs: slug
-      ? testSpecs.filter((path) => artifactSlug(path, /^test-?spec-(?<slug>.*)\.md$/i) === slug)
+    testSpecs: exactTestSpec
+      ? [exactTestSpec]
+      : slug
+        ? testSpecs.filter((path) => {
+          const artifact = artifactName(path);
+          return artifact?.kind === 'test-spec' && artifact.slug === slug;
+        })
       : [],
   };
 }
@@ -835,12 +865,30 @@ describe('launch-lifecycle-state-machine reference', () => {
       const prds = prdPaths.slice(0, prdCount);
       const selection = latestPlanningSelectionModel(prds, testSpecPaths);
       assert.equal(selection.prd, prdCount === 0 ? null : prds[prdCount - 1]);
-      const expectedSlug = selection.prd ? artifactSlug(selection.prd, /^prd-(?<slug>.*)\.md$/i) : null;
+      const expectedSlug = selection.prd ? artifactName(selection.prd)?.slug : null;
       const expectedSpecs = expectedSlug
-        ? testSpecPaths.filter((path) => artifactSlug(path, /^test-?spec-(?<slug>.*)\.md$/i) === expectedSlug)
+        ? testSpecPaths.filter((path) => artifactName(path)?.slug === expectedSlug)
         : [];
       assert.deepEqual(selection.testSpecs, expectedSpecs);
     }
+
+    assert.deepEqual(
+      latestPlanningSelectionModel(
+        [
+          '/repo/.omx/plans/prd-zeta.md',
+          '/repo/.omx/plans/prd-20260427T153000Z-alpha.md',
+          '/repo/.omx/plans/prd-20260427T153100Z-alpha.md',
+        ],
+        [
+          '/repo/.omx/plans/test-spec-alpha.md',
+          '/repo/.omx/plans/test-spec-20260427T153100Z-alpha.md',
+        ],
+      ),
+      {
+        prd: '/repo/.omx/plans/prd-20260427T153100Z-alpha.md',
+        testSpecs: ['/repo/.omx/plans/test-spec-20260427T153100Z-alpha.md'],
+      },
+    );
 
     for (let hintCount = 0; hintCount <= hints.length; hintCount += 1) {
       const selected = projectLastHintModel(hints.slice(0, hintCount));

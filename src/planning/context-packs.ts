@@ -3,6 +3,11 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, extname, join, relative } from 'node:path';
+import {
+  comparePlanningArtifactPaths,
+  parsePlanningArtifactFileName,
+  planningArtifactSlug,
+} from './artifact-names.js';
 import { advanceMarkdownFenceState, isIndentedMarkdownCodeLine, type MarkdownFenceState } from './markdown-structure.js';
 import { isCanonicalContextPackPath, normalizePlanningRepoRelativePath } from './path-utils.js';
 
@@ -21,8 +26,6 @@ const MAX_LABEL_LENGTH = 80;
 const MAX_SLUG_LENGTH = 120;
 const MAX_PATH_LENGTH = 240;
 const SHA1_PATTERN = /^[0-9a-f]{40}$/i;
-const PRD_FILENAME_PATTERN = /^prd-(?<slug>.*)\.md$/i;
-const TEST_SPEC_FILENAME_PATTERN = /^test-?spec-(?<slug>.*)\.md$/i;
 const CONTEXT_PACK_VIEW_NOTES_START = '<!-- OMX:CONTEXT:VIEW-NOTES:START -->';
 const CONTEXT_PACK_VIEW_NOTES_END = '<!-- OMX:CONTEXT:VIEW-NOTES:END -->';
 const CONTEXT_PACK_VIEW_NOTES_PLACEHOLDER = '<!-- Optional planner-added notes on when to use specific role or tag views. Keep them concise, advisory, and focused on when a role/tag view helps answer a concrete implementation question. -->';
@@ -543,11 +546,6 @@ function normalizeBasis(
   return { prd, testSpecs };
 }
 
-function matchPlanningArtifactSlug(fileName: string, pattern: RegExp, slug: string): boolean {
-  const match = fileName.match(pattern);
-  return (match?.groups?.slug ?? null) === slug;
-}
-
 function selectPlanningArtifactFileNames(
   planFileNames: readonly string[],
   slug: string,
@@ -555,19 +553,28 @@ function selectPlanningArtifactFileNames(
     prdFileName: string;
     testSpecFileNames: string[];
   } | null {
-  const prdFileName = planFileNames.includes(`prd-${slug}.md`)
-    ? `prd-${slug}.md`
-    : [...planFileNames]
-      .filter((fileName) => matchPlanningArtifactSlug(fileName, PRD_FILENAME_PATTERN, slug))
-      .sort((left, right) => left.localeCompare(right))
-      .at(0);
+  const matchingPrdFileNames = planFileNames
+    .filter((fileName) => planningArtifactSlug(fileName, 'prd') === slug);
+  const timestampedPrdFileNames = matchingPrdFileNames
+    .filter((fileName) => parsePlanningArtifactFileName(fileName)?.timestamp);
+  const prdFileName = timestampedPrdFileNames.length > 0
+    ? timestampedPrdFileNames.sort(comparePlanningArtifactPaths).at(-1)
+    : matchingPrdFileNames.includes(`prd-${slug}.md`)
+      ? `prd-${slug}.md`
+      : matchingPrdFileNames.sort(comparePlanningArtifactPaths).at(-1);
   if (!prdFileName) {
     return null;
   }
 
-  const testSpecFileNames = planFileNames
-    .filter((fileName) => matchPlanningArtifactSlug(fileName, TEST_SPEC_FILENAME_PATTERN, slug))
-    .sort((left, right) => left.localeCompare(right));
+  const prdArtifact = parsePlanningArtifactFileName(prdFileName);
+  const exactTimestampedTestSpecFileName = prdArtifact?.timestamp
+    ? `test-spec-${prdArtifact.timestamp}-${slug}.md`
+    : null;
+  const testSpecFileNames = exactTimestampedTestSpecFileName && planFileNames.includes(exactTimestampedTestSpecFileName)
+    ? [exactTimestampedTestSpecFileName]
+    : planFileNames
+      .filter((fileName) => planningArtifactSlug(fileName, 'test-spec') === slug)
+      .sort(comparePlanningArtifactPaths);
   if (testSpecFileNames.length === 0) {
     return null;
   }

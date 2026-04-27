@@ -22,6 +22,12 @@ import {
   type MarkdownFenceState,
 } from './markdown-structure.js';
 import { normalizePlanningRepoRelativePath, resolveDeclaredContextPackPath } from './path-utils.js';
+import {
+  comparePlanningArtifactPaths,
+  parsePlanningArtifactFileName,
+  planningArtifactSlug,
+  selectLatestPlanningArtifactPath,
+} from './artifact-names.js';
 import { omxPlansDir } from '../utils/paths.js';
 
 const PRD_PATTERN = /^prd-.*\.md$/i;
@@ -170,7 +176,9 @@ export function readPlanningArtifacts(cwd: string): PlanningArtifacts {
     contextDir,
     prdPaths: readMatchingPaths(plansDir, PRD_PATTERN),
     testSpecPaths: readMatchingPaths(plansDir, TEST_SPEC_PATTERN),
-    deepInterviewSpecPaths: readMatchingPaths(specsDir, DEEP_INTERVIEW_SPEC_PATTERN),
+    deepInterviewSpecPaths: readMatchingPaths(specsDir, DEEP_INTERVIEW_SPEC_PATTERN)
+      .filter((path) => parsePlanningArtifactFileName(path)?.kind === 'deep-interview')
+      .sort(comparePlanningArtifactPaths),
     contextPackPaths: readMatchingPaths(contextDir, CONTEXT_PACK_PATTERN),
   };
 }
@@ -183,18 +191,10 @@ function selectPlanningArtifactsForPrdPath(
   const resolvedPrdPath = prdIdentity?.persistedPath ?? null;
   const canonicalPrdPath = prdIdentity?.canonicalPath ?? null;
   const slug = canonicalPrdPath
-    ? artifactSlug(canonicalPrdPath, /^prd-(?<slug>.*)\.md$/i)
+    ? planningArtifactSlug(canonicalPrdPath, 'prd')
     : null;
-  const testSpecPaths = filterArtifactsForSlug(
-    artifacts.testSpecPaths,
-    /^test-?spec-(?<slug>.*)\.md$/i,
-    slug,
-  );
-  const deepInterviewSpecPaths = filterArtifactsForSlug(
-    artifacts.deepInterviewSpecPaths,
-    /^deep-interview-(?<slug>.*)\.md$/i,
-    slug,
-  );
+  const testSpecPaths = selectTestSpecPathsForPrd(artifacts.testSpecPaths, canonicalPrdPath, slug);
+  const deepInterviewSpecPaths = selectDeepInterviewSpecPathsForSlug(artifacts.deepInterviewSpecPaths, slug);
   const contextPackResolution = readContextPackResolution(
     artifacts,
     canonicalPrdPath,
@@ -260,7 +260,7 @@ function resolvePlanningArtifactSelection(
 ): LatestPlanningArtifactSelection {
   return selectPlanningArtifactsForPrdPath(
     artifacts,
-    prdPath ?? artifacts.prdPaths.at(-1) ?? null,
+    prdPath ?? selectLatestPlanningArtifactPath(artifacts.prdPaths),
   );
 }
 
@@ -319,6 +319,43 @@ function artifactSlug(path: string, prefixPattern: RegExp): string | null {
 function filterArtifactsForSlug(paths: readonly string[], prefixPattern: RegExp, slug: string | null): string[] {
   if (!slug) return [];
   return paths.filter((path) => artifactSlug(path, prefixPattern) === slug);
+}
+
+function selectTestSpecPathsForPrd(
+  testSpecPaths: readonly string[],
+  prdPath: string | null,
+  slug: string | null,
+): string[] {
+  if (!prdPath || !slug) return [];
+  const prdArtifact = parsePlanningArtifactFileName(prdPath);
+  if (prdArtifact?.kind === 'prd' && prdArtifact.timestamp) {
+    const exactFileName = `test-spec-${prdArtifact.timestamp}-${slug}.md`;
+    const exactPath = testSpecPaths.find((path) => basename(path) === exactFileName);
+    if (exactPath) return [exactPath];
+  }
+  return testSpecPaths
+    .filter((path) => planningArtifactSlug(path, 'test-spec') === slug)
+    .sort(comparePlanningArtifactPaths);
+}
+
+function selectDeepInterviewSpecPathsForSlug(
+  deepInterviewSpecPaths: readonly string[],
+  slug: string | null,
+): string[] {
+  if (!slug) return [];
+  return deepInterviewSpecPaths
+    .filter((path) => planningArtifactSlug(path, 'deep-interview') === slug)
+    .sort(comparePlanningArtifactPaths);
+}
+
+function orderedPrdPathsNewestFirst(paths: readonly string[]): string[] {
+  return [...paths].sort(comparePlanningArtifactPaths).reverse();
+}
+
+function selectLatestPrdPathForSlug(paths: readonly string[], slug: string): string | null {
+  return selectLatestPlanningArtifactPath(
+    paths.filter((path) => planningArtifactSlug(path, 'prd') === slug),
+  );
 }
 
 function extractContextPackOutcomeSections(content: string): string[][] {
@@ -436,7 +473,7 @@ function resolveApprovedExecutionRefs(
   if (!contextPack) {
     return { refs: [], issues: [] };
   }
-  const slug = artifactSlug(prdPath, /^prd-(?<slug>.*)\.md$/i);
+  const slug = planningArtifactSlug(prdPath, 'prd');
   return materializeContextPackRefs({
     packPath: contextPack.path,
     expectedSlug: slug ?? '',
@@ -744,7 +781,7 @@ export function readContextPackHandoffStatus(cwd: string, packPath: string): Con
     }
   }
 
-  const prdPath = slug ? join(artifacts.plansDir, `prd-${slug}.md`) : null;
+  const prdPath = slug ? selectLatestPrdPathForSlug(artifacts.prdPaths, slug) : null;
   const selection = selectPlanningArtifactsForPrdPath(artifacts, prdPath);
   const baselineState: ContextPackBaselineState = !selection.canonicalPrdPath || !existsSync(selection.canonicalPrdPath)
     ? 'missing-prd'
@@ -1011,13 +1048,14 @@ function resolveOlderReusableSameTaskHint(
   latestPrdPath: string,
   anchorHint: ApprovedExecutionLaunchHint,
 ): SameTaskLineageFallback {
-  const latestIndex = artifacts.prdPaths.lastIndexOf(latestPrdPath);
+  const orderedPrdPaths = [...artifacts.prdPaths].sort(comparePlanningArtifactPaths);
+  const latestIndex = orderedPrdPaths.lastIndexOf(latestPrdPath);
   if (latestIndex <= 0) {
     return { status: 'none' };
   }
 
   for (let index = latestIndex - 1; index >= 0; index -= 1) {
-    const prdPath = artifacts.prdPaths[index]!;
+    const prdPath = orderedPrdPaths[index]!;
     const approvedPlan = readApprovedPlanText(cwd, { prdPath });
     if (!approvedPlan) {
       continue;
@@ -1074,7 +1112,7 @@ export function readApprovedExecutionLaunchHintOutcome(
   const normalizedCommand = options.command?.trim();
   if (!normalizedTask && !normalizedCommand && !options.prdPath) {
     const artifacts = readPlanningArtifacts(cwd);
-    const latestPrdPath = artifacts.prdPaths.at(-1);
+    const latestPrdPath = selectLatestPlanningArtifactPath(artifacts.prdPaths);
     if (!latestPrdPath) {
       return { status: 'absent' };
     }
@@ -1112,8 +1150,7 @@ export function readApprovedExecutionLaunchHintOutcome(
     const artifacts = readPlanningArtifacts(cwd);
     let newestNonReusableHint: ApprovedExecutionLaunchHint | null = null;
     let lineageAnchorHint: ApprovedExecutionLaunchHint | null = null;
-    for (let index = artifacts.prdPaths.length - 1; index >= 0; index -= 1) {
-      const prdPath = artifacts.prdPaths[index];
+    for (const prdPath of orderedPrdPathsNewestFirst(artifacts.prdPaths)) {
       const approvedPlan = readApprovedPlanText(cwd, {
         ...options,
         prdPath,

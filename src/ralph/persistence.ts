@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { existsSync } from 'fs';
 import { mkdir, readFile, readdir, writeFile } from 'fs/promises';
 import { join } from 'path';
+import { comparePlanningArtifactPaths } from '../planning/artifact-names.js';
 import { getStateDir } from '../state/paths.js';
 import { VISUAL_NEXT_ACTIONS_LIMIT, type VisualVerdictStatus } from '../visual/constants.js';
 
@@ -52,6 +53,10 @@ function slugify(raw: string): string {
     .slice(0, 48) || 'legacy';
 }
 
+function planningArtifactTimestamp(date: Date = new Date()): string {
+  return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
 function stableJson(value: unknown): string {
   if (value == null || typeof value !== 'object') {
     return JSON.stringify(value);
@@ -90,7 +95,7 @@ async function listCanonicalPrdFiles(cwd: string): Promise<string[]> {
   const files = await readdir(plansDir).catch(() => [] as string[]);
   return files
     .filter((file) => file.startsWith(PRD_PREFIX) && file.endsWith(PRD_SUFFIX))
-    .sort()
+    .sort(comparePlanningArtifactPaths)
     .map((file) => join(plansDir, file));
 }
 
@@ -191,10 +196,11 @@ async function migrateLegacyPrdIfNeeded(
 
   const title = resolveLegacyPrdTitle(legacyParsed);
   const baseSlug = slugify(title);
-  let canonicalPrdPath = join(plansDir, `prd-${baseSlug}.md`);
+  const timestamp = planningArtifactTimestamp();
+  let canonicalPrdPath = join(plansDir, `prd-${timestamp}-${baseSlug}.md`);
   let counter = 1;
   while (existsSync(canonicalPrdPath)) {
-    canonicalPrdPath = join(plansDir, `prd-${baseSlug}-${counter}.md`);
+    canonicalPrdPath = join(plansDir, `prd-${timestamp}-${baseSlug}-${counter}.md`);
     counter += 1;
   }
 
@@ -315,7 +321,7 @@ export async function ensureCanonicalRalphArtifacts(
   await mkdir(getStateDir(cwd, sessionId), { recursive: true });
 
   const canonicalPrdFiles = await listCanonicalPrdFiles(cwd);
-  const migratedPrdResult = await migrateLegacyPrdIfNeeded(cwd, canonicalPrdFiles[0]);
+  const migratedPrdResult = await migrateLegacyPrdIfNeeded(cwd, canonicalPrdFiles.at(-1));
   const migratedProgress = await migrateLegacyProgressIfNeeded(cwd, canonicalProgressPath);
   await ensureCanonicalProgressLedgerFile(canonicalProgressPath);
 

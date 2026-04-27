@@ -6,6 +6,11 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { readContextPackHandoffStatus } from '../artifacts.js';
 import {
+  comparePlanningArtifactPaths,
+  parsePlanningArtifactFileName,
+  selectLatestPlanningArtifactPath,
+} from '../artifact-names.js';
+import {
   CONTEXT_PACK_SCHEMA,
   buildContextPackBasis,
   contextPackExcerptPath,
@@ -60,6 +65,47 @@ afterEach(async () => {
 });
 
 describe('context-packs', () => {
+  it('parses timestamped and legacy planning artifact filenames', () => {
+    assert.deepEqual(parsePlanningArtifactFileName('prd-20260427T153000Z-my-feature.md'), {
+      kind: 'prd',
+      timestamp: '20260427T153000Z',
+      slug: 'my-feature',
+    });
+    assert.deepEqual(parsePlanningArtifactFileName('test-spec-20260427T153000Z-my-feature.md'), {
+      kind: 'test-spec',
+      timestamp: '20260427T153000Z',
+      slug: 'my-feature',
+    });
+    assert.deepEqual(parsePlanningArtifactFileName('testspec-my-feature.md'), {
+      kind: 'test-spec',
+      slug: 'my-feature',
+    });
+    assert.deepEqual(parsePlanningArtifactFileName('deep-interview-20260427T153000Z-my-feature.md'), {
+      kind: 'deep-interview',
+      timestamp: '20260427T153000Z',
+      slug: 'my-feature',
+    });
+    assert.deepEqual(parsePlanningArtifactFileName('deep-interview-my-feature.md'), {
+      kind: 'deep-interview',
+      slug: 'my-feature',
+    });
+    assert.deepEqual(parsePlanningArtifactFileName('deep-interview-autoresearch-20260427T153000Z-my-feature.md'), {
+      kind: 'deep-interview-autoresearch',
+      timestamp: '20260427T153000Z',
+      slug: 'my-feature',
+    });
+    assert.equal(parsePlanningArtifactFileName('notes-my-feature.md'), null);
+    assert.equal(selectLatestPlanningArtifactPath([
+      'prd-zeta.md',
+      'prd-20260427T153000Z-alpha.md',
+      'prd-20260427T153100Z-alpha.md',
+    ]), 'prd-20260427T153100Z-alpha.md');
+    assert.equal(
+      ['prd-zeta.md', 'prd-20260427T153000Z-alpha.md'].sort(comparePlanningArtifactPaths).at(-1),
+      'prd-20260427T153000Z-alpha.md',
+    );
+  });
+
   it('parses context-pack filenames and resolves repo roots from canonical paths', () => {
     assert.deepEqual(
       parseContextPackPathInfo('context-20260420T000000Z-Feature API.json'),
@@ -170,6 +216,42 @@ describe('context-packs', () => {
     );
   });
 
+  it('builds basis from exact timestamped PRD/test-spec pairs when available', async () => {
+    await mkdir(join(tempDir, '.omx', 'plans'), { recursive: true });
+    await writeFile(join(tempDir, '.omx', 'plans', 'prd-20260427T153000Z-issue-timestamped.md'), '# Old PRD\n');
+    await writeFile(join(tempDir, '.omx', 'plans', 'prd-20260427T153100Z-issue-timestamped.md'), '# New PRD\n');
+    await writeFile(join(tempDir, '.omx', 'plans', 'test-spec-issue-timestamped.md'), '# Legacy Test Spec\n');
+    await writeFile(join(tempDir, '.omx', 'plans', 'test-spec-20260427T153100Z-issue-timestamped.md'), '# New Test Spec\n');
+
+    const basis = buildContextPackBasis(tempDir, 'issue-timestamped');
+
+    assert.ok(basis);
+    assert.equal(basis?.prd.path, '.omx/plans/prd-20260427T153100Z-issue-timestamped.md');
+    assert.deepEqual(
+      basis?.testSpecs.map((entry) => entry.path),
+      ['.omx/plans/test-spec-20260427T153100Z-issue-timestamped.md'],
+    );
+  });
+
+  it('falls back to slug-matched test specs when a timestamped PRD has no exact test-spec pair', async () => {
+    await mkdir(join(tempDir, '.omx', 'plans'), { recursive: true });
+    await writeFile(join(tempDir, '.omx', 'plans', 'prd-20260427T153000Z-issue-fallback.md'), '# PRD\n');
+    await writeFile(join(tempDir, '.omx', 'plans', 'test-spec-issue-fallback.md'), '# Test Spec A\n');
+    await writeFile(join(tempDir, '.omx', 'plans', 'testspec-issue-fallback.md'), '# Test Spec B\n');
+
+    const basis = buildContextPackBasis(tempDir, 'issue-fallback');
+
+    assert.ok(basis);
+    assert.equal(basis?.prd.path, '.omx/plans/prd-20260427T153000Z-issue-fallback.md');
+    assert.deepEqual(
+      basis?.testSpecs.map((entry) => entry.path),
+      [
+        '.omx/plans/test-spec-issue-fallback.md',
+        '.omx/plans/testspec-issue-fallback.md',
+      ],
+    );
+  });
+
   it('preserves mixed-case approved artifact names in fresh basis validation', async () => {
     await mkdir(join(tempDir, '.omx', 'plans'), { recursive: true });
     await writeFile(join(tempDir, '.omx', 'plans', 'prd-Issue-ABC.md'), '# PRD\n');
@@ -228,6 +310,72 @@ describe('context-packs', () => {
       requireFreshBasis: true,
     });
     assert.deepEqual(issues, []);
+  });
+
+  it('treats timestamped PRD/test-spec artifacts as handoff-ready basis', async () => {
+    const slug = 'issue-timestamped-ready';
+    const packPath = packAbsolutePath(slug);
+    await mkdir(join(tempDir, '.omx', 'plans'), { recursive: true });
+    await writeFile(
+      join(tempDir, '.omx', 'plans', `prd-20260427T153000Z-${slug}.md`),
+      [
+        '# PRD',
+        '',
+        'Approved context basis.',
+        '',
+        '## Context Pack Outcome',
+        `- pack: created \`${packRelativePath(slug)}\``,
+        '',
+      ].join('\n'),
+    );
+    await writeFile(join(tempDir, '.omx', 'plans', `test-spec-20260427T153000Z-${slug}.md`), '# Test Spec\n');
+    await writeRepoFile('docs/scope.md', '# Scope\n\nStay inside the approved slice.\n');
+    await writeRepoFile('docs/runtime.md', '# Runtime\n\nBuild the approved slice.\n');
+    await writeRepoFile('docs/verify.md', '# Verify\n\nCheck the approved slice.\n');
+
+    writeContextPackDocument(packPath, {
+      schema: CONTEXT_PACK_SCHEMA,
+      slug,
+      entries: [
+        {
+          label: 'scope',
+          path: 'docs/scope.md',
+          roles: ['scope'],
+          tags: [],
+          relationPath: [
+            { tag: 'plan', target: slug },
+            { tag: 'bounds', target: 'docs/scope.md' },
+          ],
+        },
+        {
+          label: 'runtime',
+          path: 'docs/runtime.md',
+          roles: ['build'],
+          tags: [],
+          relationPath: [
+            { tag: 'plan', target: slug },
+            { tag: 'implements', target: 'docs/runtime.md' },
+          ],
+        },
+        {
+          label: 'verify',
+          path: 'docs/verify.md',
+          roles: ['verify'],
+          tags: [],
+          relationPath: [
+            { tag: 'plan', target: slug },
+            { tag: 'verifies', target: 'docs/verify.md' },
+          ],
+        },
+      ],
+    }, { refreshBasis: true });
+
+    const status = readContextPackHandoffStatus(tempDir, packPath);
+
+    assert.equal(status.handoffState, 'ready');
+    assert.equal(status.basisState, 'fresh');
+    assert.equal(status.prdPath, join(tempDir, '.omx', 'plans', `prd-20260427T153000Z-${slug}.md`));
+    assert.deepEqual(status.testSpecPaths, [join(tempDir, '.omx', 'plans', `test-spec-20260427T153000Z-${slug}.md`)]);
   });
 
   it('returns null when reading invalid JSON or structurally invalid pack manifests', async () => {

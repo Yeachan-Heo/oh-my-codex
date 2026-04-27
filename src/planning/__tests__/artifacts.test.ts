@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isPlanningComplete, readApprovedExecutionLaunchHint, readPlanningArtifacts } from '../artifacts.js';
+import { isPlanningComplete, readApprovedExecutionLaunchHint, readLatestPlanningArtifacts, readPlanningArtifacts } from '../artifacts.js';
 import {
   contextPackExcerptPath,
   REQUIRED_CONTEXT_PACK_ROLES,
@@ -136,6 +136,48 @@ describe('planning artifacts', () => {
     assert.equal(hint?.contextPack, null);
     assert.deepEqual(hint?.missingRequiredContextPackRoles, []);
     assert.deepEqual(hint?.contextPackIssues, []);
+  });
+
+  it('prefers timestamped PRD/test-spec pairs while keeping legacy artifacts compatible', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const specsDir = join(tempDir, '.omx', 'specs');
+    await mkdir(plansDir, { recursive: true });
+    await mkdir(specsDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-legacy.md'),
+      '# Legacy\n\nLaunch via omx ralph "Execute legacy plan"\n',
+    );
+    await writeFile(join(plansDir, 'test-spec-legacy.md'), '# Legacy Test Spec\n');
+    await writeFile(
+      join(plansDir, 'prd-20260427T153000Z-alpha.md'),
+      '# Old Alpha\n\nLaunch via omx ralph "Execute old alpha plan"\n',
+    );
+    await writeFile(join(plansDir, 'test-spec-alpha.md'), '# Alpha Legacy Test Spec\n');
+    await writeFile(
+      join(plansDir, 'prd-20260427T153100Z-alpha.md'),
+      '# New Alpha\n\nLaunch via omx ralph "Execute new alpha plan"\n',
+    );
+    await writeFile(join(plansDir, 'test-spec-20260427T153100Z-alpha.md'), '# Alpha Timestamped Test Spec\n');
+    await writeFile(join(specsDir, 'deep-interview-alpha.md'), '# Alpha Legacy Deep Interview\n');
+    await writeFile(join(specsDir, 'deep-interview-20260427T153100Z-alpha.md'), '# Alpha Timestamped Deep Interview\n');
+    await writeFile(join(specsDir, 'deep-interview-autoresearch-20260427T153100Z-alpha.md'), '# Autoresearch Draft\n');
+
+    const selection = readLatestPlanningArtifacts(tempDir);
+    assert.equal(selection.prdPath, join(plansDir, 'prd-20260427T153100Z-alpha.md'));
+    assert.deepEqual(selection.testSpecPaths, [join(plansDir, 'test-spec-20260427T153100Z-alpha.md')]);
+    assert.deepEqual(selection.deepInterviewSpecPaths, [
+      join(specsDir, 'deep-interview-alpha.md'),
+      join(specsDir, 'deep-interview-20260427T153100Z-alpha.md'),
+    ]);
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
+    assert.ok(hint);
+    assert.equal(hint?.task, 'Execute new alpha plan');
+    assert.deepEqual(hint?.testSpecPaths, [join(plansDir, 'test-spec-20260427T153100Z-alpha.md')]);
+    assert.deepEqual(hint?.deepInterviewSpecPaths, [
+      join(specsDir, 'deep-interview-alpha.md'),
+      join(specsDir, 'deep-interview-20260427T153100Z-alpha.md'),
+    ]);
   });
 
   it('uses compatibility fallback when the approved plan declares context packs but required roles are missing', async () => {
@@ -1724,13 +1766,18 @@ describe('planning artifacts', () => {
     );
     await writeFile(join(plansDir, 'test-spec-issue-827.md'), '# Test Spec\n');
     await writeFile(join(specsDir, 'deep-interview-issue-827.md'), '# Deep Interview Spec\n');
+    await writeFile(join(specsDir, 'deep-interview-20260427T153000Z-issue-827.md'), '# Timestamped Deep Interview Spec\n');
+    await writeFile(join(specsDir, 'deep-interview-autoresearch-20260427T153000Z-issue-827.md'), '# Autoresearch Draft\n');
     refreshContextPackBasis(contextPacks.absolutePath);
 
     const artifacts = readPlanningArtifacts(tempDir);
     assert.equal(isPlanningComplete(artifacts), true);
     assert.deepEqual(
       artifacts.deepInterviewSpecPaths.map((file) => file.split('/').pop()),
-      ['deep-interview-issue-827.md'],
+      [
+        'deep-interview-issue-827.md',
+        'deep-interview-20260427T153000Z-issue-827.md',
+      ],
     );
     assert.deepEqual(
       artifacts.contextPackPaths.map((file) => file.split('/').pop()),

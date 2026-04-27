@@ -96,13 +96,21 @@ Pipeline launches must target the package-owned dist/team/runtime-cli.js path, n
 Repository artifact domains:
 
 ```text
-PRDs(cwd)               ::= ordered canonical discovered .omx/plans/prd-*.md
-TestSpecs(cwd)          ::= ordered canonical discovered .omx/plans/test-spec-*.md
-DeepInterviewSpecs(cwd) ::= ordered canonical discovered .omx/specs/deep-interview-*.md
+PRDs(cwd)               ::= ordered canonical discovered .omx/plans/prd-<timestamp>-<slug>.md and legacy .omx/plans/prd-<slug>.md
+TestSpecs(cwd)          ::= ordered canonical discovered .omx/plans/test-spec-<timestamp>-<slug>.md and legacy .omx/plans/test-spec-<slug>.md
+DeepInterviewSpecs(cwd) ::= ordered canonical discovered .omx/specs/deep-interview-<timestamp>-<slug>.md and legacy .omx/specs/deep-interview-<slug>.md
 Packs(cwd)              ::= ordered canonical discovered .omx/context/context-<timestamp>-<slug>.json
 
 LatestPRD(cwd) ::= last(PRDs(cwd)) when |PRDs(cwd)| > 0 else ⊥
 ```
+
+Timestamped PRD/test-spec names use the same timestamp token shape as context
+packs, but their timestamps are artifact identity/order metadata, not update
+timestamps. PRD/test-spec matching remains slug-based for compatibility, except
+that an exact timestamped `test-spec-<timestamp>-<slug>.md` is preferred when
+the selected PRD is `prd-<timestamp>-<slug>.md`.
+Deep-interview spec matching is slug-based after stripping an optional leading
+timestamp, with timestamped specs naturally ordered after legacy specs.
 
 Accepted PRD inputs preserve canonical membership and persisted identity:
 

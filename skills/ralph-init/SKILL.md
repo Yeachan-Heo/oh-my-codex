@@ -16,7 +16,7 @@ Initialize a PRD (Product Requirements Document) for structured ralph-loop execu
 ## Behavior
 
 1. **Gather requirements** via interactive interview or from the provided description
-2. **Create PRD** at `.omx/plans/prd-{slug}.md` with:
+2. **Create PRD** at `.omx/plans/prd-<timestamp>-{slug}.md` with:
    - Problem statement
    - Goals and non-goals
    - Acceptance criteria (testable)
@@ -27,7 +27,7 @@ Initialize a PRD (Product Requirements Document) for structured ralph-loop execu
 
 ### Canonical source contract
 
-- Canonical PRD source of truth is `.omx/plans/prd-{slug}.md`.
+- Canonical PRD source of truth is `.omx/plans/prd-<timestamp>-{slug}.md`; legacy `.omx/plans/prd-{slug}.md` remains readable.
 - Ralph progress source of truth is `.omx/state/{scope}/ralph-progress.json` (session scope when available).
 - During the current compatibility window, Ralph `--prd` startup still validates machine-readable story state from `.omx/prd.json`.
 - Legacy `.omx/prd.json` / `.omx/progress.txt` inputs migrate one-way into canonical artifacts, but canonical PRD markdown is not yet the startup validation source for `omx ralph --prd ...`.

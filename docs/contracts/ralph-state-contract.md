@@ -84,7 +84,7 @@ starting
 
 ## Canonical PRD/progress sources
 
-- Canonical PRD: `.omx/plans/prd-{slug}.md`
+- Canonical PRD: `.omx/plans/prd-<timestamp>-{slug}.md`; legacy `.omx/plans/prd-{slug}.md` remains readable.
 - Startup validation source during the legacy-compatibility window: `.omx/prd.json`
 - Canonical progress ledger: `.omx/state/{scope}/ralph-progress.json`
 - Legacy compatibility migration:

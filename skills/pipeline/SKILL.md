@@ -43,7 +43,7 @@ return a `StageResult` with status, artifacts, and duration.
 
 ## Built-in Stages
 
-- **ralplan**: Consensus planning (planner + architect + critic). Skips only when both `prd-*.md` and `test-spec-*.md` planning artifacts already exist, and carries any `deep-interview-*.md` spec paths forward for traceability.
+- **ralplan**: Consensus planning (planner + architect + critic). Skips only when both timestamped `prd-<timestamp>-<slug>.md` and `test-spec-<timestamp>-<slug>.md` planning artifacts already exist, with legacy `prd-<slug>.md` / `test-spec-<slug>.md` still readable, and carries any timestamped `deep-interview-<timestamp>-<slug>.md` or legacy `deep-interview-<slug>.md` spec paths forward for traceability.
 - **team-exec**: Team execution via Codex CLI workers. Always the OMX execution backend.
 - **ralph-verify**: Ralph verification loop with configurable iteration count.
 
