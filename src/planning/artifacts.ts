@@ -643,6 +643,25 @@ function sameLaunchLineage(
     : true;
 }
 
+function sameTeamLaunchSignatureMatch(
+  anchor: ApprovedExecutionLaunchHint,
+  match: RegExpMatchArray,
+  task: string,
+): boolean {
+  const groups = match.groups;
+  if (!groups) {
+    return false;
+  }
+  const workerCount = Number.parseInt(groups.count ?? '', 10);
+  if (!Number.isFinite(workerCount)) {
+    return false;
+  }
+  return anchor.task.trim() === task.trim()
+    && anchor.workerCount === workerCount
+    && (anchor.agentType ?? null) === (groups.role || null)
+    && Boolean(anchor.linkedRalph) === Boolean(groups.ralph?.trim());
+}
+
 function launchHintPattern(mode: 'team' | 'ralph'): RegExp {
   return mode === 'team'
     ? /(?<command>(?:omx\s+team|\$team)\s+(?<ralph>ralph\s+)?(?<count>\d+)(?::(?<role>[a-z][a-z0-9-]*))?\s+(?<task>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'))/gi
@@ -662,6 +681,7 @@ function selectLaunchHintMatch(
   commandGroup: string,
   normalizedTask?: string,
   normalizedCommand?: string,
+  matchFilter?: (match: RegExpMatchArray, task: string) => boolean,
 ): LaunchHintSelection {
   if (normalizedCommand) {
     const exactMatches = matches.flatMap((match) => {
@@ -674,7 +694,13 @@ function selectLaunchHintMatch(
         return [];
       }
       const task = decodeQuotedValue(rawTask);
-      return task ? [{ match, task }] : [];
+      if (!task) {
+        return [];
+      }
+      if (matchFilter && !matchFilter(match, task)) {
+        return [];
+      }
+      return [{ match, task }];
     });
     if (exactMatches.length === 0) {
       return { status: 'no-match' };
@@ -692,7 +718,13 @@ function selectLaunchHintMatch(
         return [];
       }
       const task = decodeQuotedValue(rawTask);
-      return task ? [{ match, task }] : [];
+      if (!task) {
+        return [];
+      }
+      if (matchFilter && !matchFilter(match, task)) {
+        return [];
+      }
+      return [{ match, task }];
     });
     if (decodedMatches.length === 0) {
       return { status: 'no-match' };
@@ -710,6 +742,9 @@ function selectLaunchHintMatch(
     }
     const task = decodeQuotedValue(rawTask);
     if (!task || task.trim() !== normalizedTask) {
+      return [];
+    }
+    if (matchFilter && !matchFilter(match, task)) {
       return [];
     }
     return [{ match, task }];
@@ -743,7 +778,16 @@ function resolveOlderReusableSameTaskHint(
     }
 
     const matches = collectLaunchHintMatches(approvedPlan.content, mode);
-    const selection = selectLaunchHintMatch(matches, 'task', 'command', anchorHint.task, undefined);
+    const selection = selectLaunchHintMatch(
+      matches,
+      'task',
+      'command',
+      anchorHint.task,
+      undefined,
+      mode === 'team'
+        ? (match, task) => sameTeamLaunchSignatureMatch(anchorHint, match, task)
+        : undefined,
+    );
     if (selection.status === 'ambiguous') {
       return { status: 'ambiguous' };
     }
@@ -751,10 +795,16 @@ function resolveOlderReusableSameTaskHint(
       continue;
     }
 
-    const approvedHint = readApprovedExecutionLaunchHint(cwd, mode, {
-      task: anchorHint.task,
-      prdPath,
-    });
+    const selectedCommand = selection.match.groups?.command?.trim();
+    const approvedHint = readApprovedExecutionLaunchHint(cwd, mode, selectedCommand
+      ? {
+        command: selectedCommand,
+        prdPath,
+      }
+      : {
+        task: selection.task,
+        prdPath,
+      });
     if (!approvedHint) {
       continue;
     }
@@ -822,29 +872,52 @@ export function readApprovedExecutionLaunchHintOutcome(
         ...options,
         prdPath,
       });
-      if (approvedPlan) {
-        const matches = collectLaunchHintMatches(approvedPlan.content, mode);
-        const selection = selectLaunchHintMatch(matches, 'task', 'command', normalizedTask, normalizedCommand);
-        if (selection.status === 'ambiguous') {
-          return { status: 'ambiguous' };
-        }
+      if (!approvedPlan) {
+        continue;
       }
-      const approvedHintOutcome = readApprovedExecutionLaunchHintOutcome(cwd, mode, {
-        ...options,
-        prdPath,
-      });
-      if (approvedHintOutcome.status === 'ambiguous') {
+      const matches = collectLaunchHintMatches(approvedPlan.content, mode);
+      const teamLineageFilter = (() => {
+        if (!(mode === 'team' && normalizedTask && !normalizedCommand && lineageAnchorHint)) {
+          return undefined;
+        }
+        const anchorHint = lineageAnchorHint;
+        return (match: RegExpMatchArray, task: string) => sameTeamLaunchSignatureMatch(anchorHint, match, task);
+      })();
+      const selection = selectLaunchHintMatch(
+        matches,
+        'task',
+        'command',
+        normalizedTask,
+        normalizedCommand,
+        teamLineageFilter,
+      );
+      if (selection.status === 'ambiguous') {
         return { status: 'ambiguous' };
       }
+      if (selection.status !== 'unique') {
+        continue;
+      }
+      const selectedCommand = selection.match.groups?.command?.trim();
+      const approvedHintOutcome = readApprovedExecutionLaunchHintOutcome(cwd, mode, selectedCommand
+        ? {
+          ...options,
+          prdPath,
+          command: selectedCommand,
+        }
+        : {
+          ...options,
+          prdPath,
+          task: selection.task,
+        });
       if (approvedHintOutcome.status !== 'resolved') {
+        if (approvedHintOutcome.status === 'ambiguous') {
+          return { status: 'ambiguous' };
+        }
         continue;
       }
       const approvedHint = approvedHintOutcome.hint;
       if (mode === 'team' && normalizedTask && !normalizedCommand) {
         lineageAnchorHint ??= approvedHint;
-        if (!sameLaunchLineage(mode, lineageAnchorHint, approvedHint)) {
-          continue;
-        }
       }
       if (isApprovedExecutionFollowupReadyStatus(approvedHint.contextPackStatus)) {
         return { status: 'resolved', hint: approvedHint };

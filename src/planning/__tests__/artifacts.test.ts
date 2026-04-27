@@ -1104,6 +1104,74 @@ describe('planning artifacts', () => {
     assert.equal(hint?.agentType, 'debugger');
   });
 
+  it('prefers the older exact team handoff when a same-task PRD also contains a different launch signature', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const readyPacks = await writeContextPacks('alpha-shared-team-signature-fallback');
+    const incompletePacks = await writeContextPacks('zeta-shared-team-signature-fallback', ['scope']);
+    const task = 'Execute shared team handoff';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-alpha-shared-team-signature-fallback.md'),
+      [
+        '# Alpha',
+        '',
+        buildContextPackOutcome(readyPacks.relativePath),
+        '',
+        `Launch via omx team 5:debugger ${JSON.stringify(task)}`,
+        `Launch via $team 2:executor ${JSON.stringify(task)}`,
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-alpha-shared-team-signature-fallback.md'), '# Alpha Test Spec\n');
+    refreshContextPackBasis(readyPacks.absolutePath);
+    await writeFile(
+      join(plansDir, 'prd-zeta-shared-team-signature-fallback.md'),
+      `# Zeta\n\n${buildContextPackOutcome(incompletePacks.relativePath)}\n\nLaunch via omx team 5:debugger ${JSON.stringify(task)}\n`,
+    );
+    await writeFile(join(plansDir, 'test-spec-zeta-shared-team-signature-fallback.md'), '# Zeta Test Spec\n');
+    refreshContextPackBasis(incompletePacks.absolutePath);
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'team', { task });
+    assert.ok(hint);
+    assert.equal(hint?.sourcePath, join(plansDir, 'prd-alpha-shared-team-signature-fallback.md'));
+    assert.equal(hint?.contextPackStatus, 'ready');
+    assert.equal(hint?.workerCount, 5);
+    assert.equal(hint?.agentType, 'debugger');
+  });
+
+  it('prefers the older bare team handoff when a same-task PRD also contains a different launch signature', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const readyPacks = await writeContextPacks('alpha-shared-team-bare-signature-fallback');
+    const incompletePacks = await writeContextPacks('zeta-shared-team-bare-signature-fallback', ['scope']);
+    const task = 'Execute shared bare team handoff';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-alpha-shared-team-bare-signature-fallback.md'),
+      [
+        '# Alpha',
+        '',
+        buildContextPackOutcome(readyPacks.relativePath),
+        '',
+        `Launch via omx team 5:debugger ${JSON.stringify(task)}`,
+        `Launch via $team 2:executor ${JSON.stringify(task)}`,
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-alpha-shared-team-bare-signature-fallback.md'), '# Alpha Test Spec\n');
+    refreshContextPackBasis(readyPacks.absolutePath);
+    await writeFile(
+      join(plansDir, 'prd-zeta-shared-team-bare-signature-fallback.md'),
+      `# Zeta\n\n${buildContextPackOutcome(incompletePacks.relativePath)}\n\nLaunch via omx team 5:debugger ${JSON.stringify(task)}\n`,
+    );
+    await writeFile(join(plansDir, 'test-spec-zeta-shared-team-bare-signature-fallback.md'), '# Zeta Test Spec\n');
+    refreshContextPackBasis(incompletePacks.absolutePath);
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'team');
+    assert.ok(hint);
+    assert.equal(hint?.sourcePath, join(plansDir, 'prd-alpha-shared-team-bare-signature-fallback.md'));
+    assert.equal(hint?.contextPackStatus, 'ready');
+    assert.equal(hint?.workerCount, 5);
+    assert.equal(hint?.agentType, 'debugger');
+  });
+
   it('prefers the last reusable bare Ralph handoff when the latest unique same-task PRD is missing its matching test spec', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     const readyPacks = await writeContextPacks('alpha-shared-bare-missing-baseline');
@@ -1457,7 +1525,7 @@ describe('planning artifacts', () => {
     assert.equal(hint, null);
   });
 
-  it('fails closed for bare team lookups when an older same-task lineage becomes ambiguous', async () => {
+  it('keeps the latest non-ready bare team hint when an older same-task PRD only differs by launch signature', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     const olderContextPacks = await writeContextPacks('issue-910-older-bare-ambiguous');
     const newerContextPacks = await writeContextPacks('issue-910-newer-broken-bare');
@@ -1489,6 +1557,49 @@ describe('planning artifacts', () => {
       ].join('\n'),
     );
     await writeFile(join(plansDir, 'test-spec-zeta-ship-feature-bare.md'), '# Test Spec\n');
+    refreshContextPackBasis(newerContextPacks.absolutePath);
+    await rm(newerContextPacks.absolutePath, { force: true });
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'team');
+    assert.ok(hint);
+    assert.equal(hint?.sourcePath, join(plansDir, 'prd-zeta-ship-feature-bare.md'));
+    assert.equal(hint?.contextPackStatus, 'incomplete');
+    assert.equal(hint?.workerCount, 3);
+    assert.equal(hint?.agentType, 'reviewer');
+  });
+
+  it('fails closed for bare team lookups when an older same-signature lineage becomes ambiguous', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const olderContextPacks = await writeContextPacks('issue-910-older-bare-same-signature-ambiguous');
+    const newerContextPacks = await writeContextPacks('issue-910-newer-broken-bare-same-signature', ['scope']);
+    const sharedTask = 'Ship feature';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-alpha-ship-feature-bare-same-signature.md'),
+      [
+        '# Older ambiguous approved plan',
+        '',
+        buildContextPackOutcome(olderContextPacks.relativePath),
+        '',
+        `Launch via omx team 3:reviewer ${JSON.stringify(sharedTask)}`,
+        `Launch via $team 3:reviewer ${JSON.stringify(sharedTask)}`,
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-alpha-ship-feature-bare-same-signature.md'), '# Test Spec\n');
+    refreshContextPackBasis(olderContextPacks.absolutePath);
+    await rm(olderContextPacks.absolutePath, { force: true });
+
+    await writeFile(
+      join(plansDir, 'prd-zeta-ship-feature-bare-same-signature.md'),
+      [
+        '# Newer broken approved plan',
+        '',
+        buildContextPackOutcome(newerContextPacks.relativePath),
+        '',
+        `Launch via omx team 3:reviewer ${JSON.stringify(sharedTask)}`,
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-zeta-ship-feature-bare-same-signature.md'), '# Test Spec\n');
     refreshContextPackBasis(newerContextPacks.absolutePath);
     await rm(newerContextPacks.absolutePath, { force: true });
 
