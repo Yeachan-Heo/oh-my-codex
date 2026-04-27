@@ -67,6 +67,12 @@ Before changing `AGENTS.md`, `templates/AGENTS.md`, `prompts/*.md`, or the gener
 
 That document defines the GPT-5.4 behavior contract contributors should preserve across prompt surfaces and explains how it differs from posture-aware routing metadata.
 
+### Launch lifecycle contract
+
+Before changing launch, planning approval, handoff, Team/Ralph startup, runtime binding, reassignment, scale-up, mode-state visibility, or runtime context projection behavior, read [`docs/reference/launch-lifecycle-state-machine.md`](./docs/reference/launch-lifecycle-state-machine.md).
+
+Update that reference in the same change when lifecycle behavior, state domains, transitions, or invariants change.
+
 ### Adding a new skill
 
 1. Create `skills/my-skill/SKILL.md` with the skill workflow

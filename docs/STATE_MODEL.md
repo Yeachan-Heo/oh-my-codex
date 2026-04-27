@@ -26,6 +26,8 @@ Examples:
 
 These files determine whether a workflow mode is active, completed, cancelled, or failed. Those mode phases are not always identical to the user-facing terminal lifecycle vocabulary; see the explicit terminal lifecycle section below for that compatibility boundary.
 
+Launch, planning approval, handoff, Team/Ralph startup, runtime binding, reassignment, scale-up, and runtime context projection semantics are governed by the canonical lifecycle reference: [`docs/reference/launch-lifecycle-state-machine.md`](./reference/launch-lifecycle-state-machine.md).
+
 ### 2. `skill-active-state.json` — compatibility / visibility layer
 
 `skill-active-state.json` is still used as a compatibility surface for hooks/HUD/native messaging, but transition reconciliation should be driven from the shared transition/reconciliation helpers rather than re-deriving semantics ad hoc.
@@ -37,13 +39,15 @@ Locations:
 
 ### 3. Session precedence
 
-Read precedence is:
+Generic mode-state read precedence is:
 
 1. explicit session scope
 2. current session scope
 3. root scope fallback
 
 If root and session disagree for the same mode, session wins for the active execution context, but stale root survivors should be terminalized during reconciliation when they would otherwise resurrect old state.
+
+Team launch and approved-handoff recovery has one additional lifecycle boundary: generic mode reads fail closed on malformed higher-precedence state, while Team active-state lookup may continue past malformed, inactive, or active-but-incomplete session state to find a root active Team. Approved Team binding recovery then reads `approved-execution.json` from the active Team state's effective `team_state_root`, not from ambient environment or a default root guess. The full state machine for that behavior lives in the canonical lifecycle reference.
 
 ## Terminal lifecycle outcome compatibility
 
@@ -251,7 +255,8 @@ Check these in order:
 1. session-scoped `<mode>-state.json`
 2. root `<mode>-state.json`
 3. session/root `skill-active-state.json`
-4. whether a previous auto-complete wrote audit metadata but compatibility sync reintroduced the mode
+4. for Team approved-handoff issues, the active Team state's `team_state_root` and `<team_state_root>/team/<team_name>/approved-execution.json`
+5. whether a previous auto-complete wrote audit metadata but compatibility sync reintroduced the mode
 
 ### If you are adding a new allowlisted handoff
 

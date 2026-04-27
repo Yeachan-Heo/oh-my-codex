@@ -44,8 +44,14 @@ interface Candidate {
   linkedRalph?: boolean;
 }
 
+type ReferenceHint = { id: string; task: string; command: string };
+type TeamFollowupState = {
+  task_description?: string;
+  agent_count?: number;
+};
+
 const MODEL_DOC = readFileSync(
-  new URL('../../../docs/reference/context-pack-handoff-state-machine.md', import.meta.url),
+  new URL('../../../docs/reference/launch-lifecycle-state-machine.md', import.meta.url),
   'utf8',
 );
 
@@ -65,6 +71,110 @@ function broken(state: HandoffState): boolean {
 
 function surfacedNonReady(state: HandoffState): boolean {
   return state === 'missing-baseline' || broken(state);
+}
+
+function oldLifecycleReferenceNames(): string[] {
+  return [
+    `${'launch-lifecycle'}-model.md`,
+    `${'context-pack-handoff'}-state-machine.md`,
+  ];
+}
+
+function planningCompleteModel(prdCount: number, testSpecCount: number): boolean {
+  return prdCount > 0 && testSpecCount > 0;
+}
+
+function artifactSlug(path: string, prefixPattern: RegExp): string | null {
+  const file = path.split('/').pop() ?? path;
+  const match = file.match(prefixPattern);
+  return match?.groups?.slug ?? null;
+}
+
+function latestPlanningSelectionModel(
+  prds: readonly string[],
+  testSpecs: readonly string[],
+): { prd: string | null; testSpecs: string[] } {
+  const prd = prds.length > 0 ? prds[prds.length - 1]! : null;
+  const slug = prd ? artifactSlug(prd, /^prd-(?<slug>.*)\.md$/i) : null;
+  return {
+    prd,
+    testSpecs: slug
+      ? testSpecs.filter((path) => artifactSlug(path, /^test-?spec-(?<slug>.*)\.md$/i) === slug)
+      : [],
+  };
+}
+
+function projectLastHintModel<T>(hints: readonly T[]): T | null {
+  return hints.length > 0 ? hints[hints.length - 1]! : null;
+}
+
+function readModeStateCompatibilityModel(paths: readonly GenericPathState[]): 'state' | null {
+  for (const path of paths) {
+    if (path === 'missing') {
+      continue;
+    }
+    if (path === 'parseable') {
+      return 'state';
+    }
+    if (path === 'malformed') {
+      return null;
+    }
+  }
+  return null;
+}
+
+function resolveShortTeamFollowupModel(
+  shortFollowup: boolean,
+  approvedHint: ReferenceHint | null,
+  rootState: TeamFollowupState | null,
+): { task: string; workerCount: number } | null {
+  if (!shortFollowup || !approvedHint) {
+    return null;
+  }
+  if (
+    rootState
+    && rootState.task_description === approvedHint.task
+    && typeof rootState.agent_count === 'number'
+  ) {
+    return {
+      task: rootState.task_description,
+      workerCount: rootState.agent_count,
+    };
+  }
+  return {
+    task: approvedHint.task,
+    workerCount: 3,
+  };
+}
+
+function launchRalphModel(input: 'help' | 'invalid-prd-gate' | 'runnable'): string[] {
+  if (input === 'help') {
+    return ['help'];
+  }
+  if (input === 'invalid-prd-gate') {
+    return ['idle', 'invalid-prd-gate'];
+  }
+  return [
+    'idle',
+    'artifacts-ready',
+    'approved-handoff-selected',
+    'approved-context-materialized',
+    'mode-started',
+    'session-files-written',
+    'mode-updated(starting)',
+    'hud-launched',
+  ];
+}
+
+function launchTeamModel(command: 'api' | 'status' | 'await' | 'resume' | 'shutdown' | 'launch'): string[] {
+  switch (command) {
+    case 'launch':
+      return ['parsed', 'execution-planned', 'runtime-started', 'mode-state-synced', 'summary-rendered'];
+    case 'resume':
+      return ['runtime-resumed', 'mode-state-synced', 'summary-rendered'];
+    default:
+      return [command];
+  }
 }
 
 function classifyCanonicalPrdInputModel(
@@ -513,8 +623,51 @@ afterEach(async () => {
   }
 });
 
-describe('context-pack-handoff-state-machine reference', () => {
-  it('documents the state domains exercised by this executable model', () => {
+describe('launch-lifecycle-state-machine reference', () => {
+  it('exists as the canonical reference and removes superseded reference filenames from public docs and scripts', () => {
+    assert.equal(existsSync(new URL('../../../docs/reference/launch-lifecycle-state-machine.md', import.meta.url)), true);
+    for (const oldName of oldLifecycleReferenceNames()) {
+      assert.equal(existsSync(new URL(`../../../docs/reference/${oldName}`, import.meta.url)), false);
+    }
+
+    const scannedFiles = [
+      '../../../package.json',
+      '../../../CONTRIBUTING.md',
+      '../../../docs/STATE_MODEL.md',
+      '../../../docs/reference/launch-lifecycle-state-machine.md',
+    ];
+    for (const file of scannedFiles) {
+      const content = readFileSync(new URL(file, import.meta.url), 'utf8');
+      for (const oldName of oldLifecycleReferenceNames()) {
+        assert.equal(content.includes(oldName), false, `${file} still references ${oldName}`);
+      }
+    }
+  });
+
+  it('documents the update contract, launch surfaces, and core state domains exercised by this executable model', () => {
+    assert.match(MODEL_DOC, /Contributors and coding agents who touch lifecycle behavior must read this document before making changes/);
+    assert.match(MODEL_DOC, /update it after the change when behavior, state domains, transitions, or invariants change/);
+    assert.match(
+      readFileSync(new URL('../../../CONTRIBUTING.md', import.meta.url), 'utf8'),
+      /Update that reference in the same change when lifecycle behavior, state domains, transitions, or invariants change/,
+    );
+    assert.match(
+      readFileSync(new URL('../../../docs/STATE_MODEL.md', import.meta.url), 'utf8'),
+      /canonical lifecycle reference: \[`docs\/reference\/launch-lifecycle-state-machine\.md`\]/,
+    );
+    assert.match(
+      readFileSync(new URL('../../../docs/STATE_MODEL.md', import.meta.url), 'utf8'),
+      /Team active-state lookup may continue past malformed, inactive, or active-but-incomplete session state/,
+    );
+    assert.match(
+      readFileSync(new URL('../../../docs/STATE_MODEL.md', import.meta.url), 'utf8'),
+      /approved-execution\.json` from the active Team state's effective `team_state_root`/,
+    );
+    assert.match(MODEL_DOC, /LaunchSurface ∈ \{/);
+    assert.match(MODEL_DOC, /ralph-cli/);
+    assert.match(MODEL_DOC, /team-cli/);
+    assert.match(MODEL_DOC, /pipeline-team-exec/);
+    assert.match(MODEL_DOC, /team-runtime-cli/);
     assert.match(MODEL_DOC, /CanonicalPRDInput\(cwd, p\) ∈ \{/);
     assert.match(MODEL_DOC, /canonical-existing\(canonical_path, persisted_path\)/);
     assert.match(MODEL_DOC, /CanonicalPackMutationInput\(cwd, k\) ∈ \{/);
@@ -546,6 +699,140 @@ describe('context-pack-handoff-state-machine reference', () => {
     assert.match(MODEL_DOC, /plan-only  -> generic compatibility only; no approved binding\/context projection/);
     assert.match(MODEL_DOC, /canonical_path is the source of slug and sibling-artifact correlation/);
     assert.match(MODEL_DOC, /launch-hint-like command lines are ignored/);
+    assert.match(MODEL_DOC, /LaunchBindingWriteRoot\(cwd\) := resolveCanonicalTeamStateRoot\(cwd\)/);
+    assert.match(MODEL_DOC, /Recovery-time visibility root/);
+    assert.match(MODEL_DOC, /input contains approvedExecution = null -> startTeam receives explicit null and suppresses persisted bindings/);
+    assert.match(MODEL_DOC, /Ralph context-pack refinement/);
+    assert.match(MODEL_DOC, /approved-context-materialized/);
+  });
+
+  it('exhaustively model-checks planning completeness, latest artifact selection, and compatibility hint projection', () => {
+    for (let prdCount = 0; prdCount <= 3; prdCount += 1) {
+      for (let testSpecCount = 0; testSpecCount <= 3; testSpecCount += 1) {
+        assert.equal(
+          planningCompleteModel(prdCount, testSpecCount),
+          prdCount > 0 && testSpecCount > 0,
+          `unexpected planning completeness for prdCount=${prdCount}, testSpecCount=${testSpecCount}`,
+        );
+      }
+    }
+
+    const hints: ReferenceHint[] = [
+      { id: 'a', task: 'task-a', command: 'omx ralph "task-a"' },
+      { id: 'b', task: 'task-b', command: 'omx ralph "task-b"' },
+      { id: 'c', task: 'task-c', command: 'omx ralph "task-c"' },
+    ];
+    const prdPaths = [
+      '/repo/.omx/plans/prd-alpha.md',
+      '/repo/.omx/plans/prd-beta.md',
+      '/repo/.omx/plans/prd-gamma.md',
+    ];
+    const testSpecPaths = [
+      '/repo/.omx/plans/test-spec-alpha.md',
+      '/repo/.omx/plans/test-spec-beta.md',
+      '/repo/.omx/plans/test-spec-delta.md',
+    ];
+
+    for (let prdCount = 0; prdCount <= prdPaths.length; prdCount += 1) {
+      const prds = prdPaths.slice(0, prdCount);
+      const selection = latestPlanningSelectionModel(prds, testSpecPaths);
+      assert.equal(selection.prd, prdCount === 0 ? null : prds[prdCount - 1]);
+      const expectedSlug = selection.prd ? artifactSlug(selection.prd, /^prd-(?<slug>.*)\.md$/i) : null;
+      const expectedSpecs = expectedSlug
+        ? testSpecPaths.filter((path) => artifactSlug(path, /^test-?spec-(?<slug>.*)\.md$/i) === expectedSlug)
+        : [];
+      assert.deepEqual(selection.testSpecs, expectedSpecs);
+    }
+
+    for (let hintCount = 0; hintCount <= hints.length; hintCount += 1) {
+      const selected = projectLastHintModel(hints.slice(0, hintCount));
+      assert.equal(selected, hintCount === 0 ? null : hints[hintCount - 1]);
+    }
+  });
+
+  it('exhaustively model-checks generic mode reads fail closed on malformed higher-precedence state', () => {
+    const states: GenericPathState[] = ['missing', 'parseable', 'malformed'];
+    for (const first of states) {
+      for (const second of states) {
+        const actual = readModeStateCompatibilityModel([first, second]);
+        if (first === 'parseable') {
+          assert.equal(actual, 'state');
+          continue;
+        }
+        if (first === 'malformed') {
+          assert.equal(actual, null);
+          continue;
+        }
+        if (second === 'parseable') {
+          assert.equal(actual, 'state');
+        } else {
+          assert.equal(actual, null);
+        }
+      }
+    }
+  });
+
+  it('property-checks short Team follow-up resolution uses root follow-up state only before approved binding recovery takes over', () => {
+    const approvedHint: ReferenceHint = {
+      id: 'approved',
+      task: 'ship feature',
+      command: 'omx team 3:executor "ship feature"',
+    };
+    const sessionStates = ['active', 'inactive', 'malformed', 'missing'] as const;
+    const rootStates = ['active', 'inactive', 'malformed', 'missing'] as const;
+    const rootPayloads: Record<(typeof rootStates)[number], TeamFollowupState | null> = {
+      active: { task_description: 'ship feature', agent_count: 5 },
+      inactive: { task_description: 'other task', agent_count: 2 },
+      malformed: null,
+      missing: null,
+    };
+
+    for (const session of sessionStates) {
+      for (const root of rootStates) {
+        const resolved = resolveShortTeamFollowupModel(true, approvedHint, rootPayloads[root]);
+        if (root === 'active') {
+          assert.deepEqual(resolved, { task: 'ship feature', workerCount: 5 });
+        } else {
+          assert.deepEqual(resolved, { task: 'ship feature', workerCount: 3 }, `session=${session} root=${root}`);
+        }
+      }
+    }
+  });
+
+  it('model-checks the Ralph and Team transition graphs for totality and order', () => {
+    assert.deepEqual(launchRalphModel('help'), ['help']);
+    assert.deepEqual(launchRalphModel('invalid-prd-gate'), ['idle', 'invalid-prd-gate']);
+    assert.deepEqual(
+      launchRalphModel('runnable'),
+      [
+        'idle',
+        'artifacts-ready',
+        'approved-handoff-selected',
+        'approved-context-materialized',
+        'mode-started',
+        'session-files-written',
+        'mode-updated(starting)',
+        'hud-launched',
+      ],
+    );
+
+    assert.deepEqual(launchTeamModel('launch'), ['parsed', 'execution-planned', 'runtime-started', 'mode-state-synced', 'summary-rendered']);
+    assert.deepEqual(launchTeamModel('resume'), ['runtime-resumed', 'mode-state-synced', 'summary-rendered']);
+    assert.deepEqual(launchTeamModel('status'), ['status']);
+  });
+
+  it('property-checks last-hint compatibility projection over generated hint sequences', () => {
+    const random = lcg(0x22f1656c);
+    for (let caseIndex = 0; caseIndex < 64; caseIndex += 1) {
+      const hintCount = (random.next().value as number) % 6;
+      const generatedHints: ReferenceHint[] = Array.from({ length: hintCount }, (_, index) => ({
+        id: `hint-${caseIndex}-${index}`,
+        task: `task-${(random.next().value as number) % 7}`,
+        command: `omx ralph ${JSON.stringify(`task-${index}`)}`,
+      }));
+      const selected = projectLastHintModel(generatedHints);
+      assert.equal(selected, hintCount === 0 ? null : generatedHints[hintCount - 1]);
+    }
   });
 
   it('exhaustively model-checks explicit selector resolution over the finite newest/older state space', () => {
