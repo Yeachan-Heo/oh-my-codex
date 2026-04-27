@@ -27,6 +27,7 @@ interface MergeOptions {
   sharedMcpRegistrySource?: string;
   verbose?: boolean;
   statusLinePreset?: HudPreset;
+  forceStatusLinePreset?: boolean;
 }
 
 function escapeTomlString(value: string): string {
@@ -795,6 +796,7 @@ function extractCustomizedTuiSectionsFromOmxBlocks(config: string): string[] {
 function upsertTuiStatusLine(
   config: string,
   preset: HudPreset = DEFAULT_STATUS_LINE_PRESET,
+  options: { forceStatusLinePreset?: boolean } = {},
 ): {
   cleaned: string;
   hadExistingTui: boolean;
@@ -843,7 +845,9 @@ function upsertTuiStatusLine(
           i += 1;
           entryLines.push(lines[i].trim());
         }
-        preservedStatusLine ??= entryLines.join("\n");
+        if (!options.forceStatusLinePreset) {
+          preservedStatusLine ??= entryLines.join("\n");
+        }
         continue;
       }
       if (seenKeys.has(key)) continue;
@@ -1225,8 +1229,9 @@ export function buildMergedConfig(
   const includeTui = options.includeTui !== false;
   const statusLinePreset =
     options.statusLinePreset ?? DEFAULT_STATUS_LINE_PRESET;
-  const customizedManagedTuiSections =
-    extractCustomizedTuiSectionsFromOmxBlocks(existing);
+  const customizedManagedTuiSections = options.forceStatusLinePreset
+    ? []
+    : extractCustomizedTuiSectionsFromOmxBlocks(existing);
 
   if (existing.includes(OMX_CONFIG_MARKER)) {
     const stripped = stripExistingOmxBlocks(existing);
@@ -1250,7 +1255,9 @@ export function buildMergedConfig(
   existing = upsertEnvSettings(existing);
   existing = upsertAgentsSettings(existing);
   const tuiUpsert = includeTui
-    ? upsertTuiStatusLine(existing, statusLinePreset)
+    ? upsertTuiStatusLine(existing, statusLinePreset, {
+        forceStatusLinePreset: options.forceStatusLinePreset,
+      })
     : { cleaned: existing, hadExistingTui: false };
   existing = tuiUpsert.cleaned;
 

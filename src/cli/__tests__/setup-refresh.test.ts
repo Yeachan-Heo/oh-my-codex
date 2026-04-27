@@ -404,6 +404,52 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     }
   });
 
+  it("keeps forced HUD config overwrite and generated status_line preset in sync", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+      await mkdir(join(wd, ".codex"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "hud-config.json"),
+        JSON.stringify({
+          preset: "focused",
+          statusLine: { preset: "minimal" },
+        }),
+      );
+      await writeFile(
+        join(wd, ".codex", "config.toml"),
+        [
+          "[tui]",
+          "# omx:managed-status-line",
+          'status_line = ["model-with-reasoning", "git-branch"]',
+          "",
+        ].join("\n"),
+      );
+
+      await runSetupInTempDir(wd, {
+        scope: "project",
+        force: true,
+      });
+
+      const hudConfig = JSON.parse(
+        await readFile(join(wd, ".omx", "hud-config.json"), "utf-8"),
+      ) as { preset?: unknown };
+      assert.equal(hudConfig.preset, "focused");
+
+      const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      assert.match(
+        config,
+        /^status_line = \["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"\]$/m,
+      );
+      assert.doesNotMatch(
+        config,
+        /^status_line = \["model-with-reasoning", "git-branch"\]$/m,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("keeps OMX-managed [tui] writes for older Codex CLI versions", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     try {

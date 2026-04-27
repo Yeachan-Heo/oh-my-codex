@@ -69,11 +69,15 @@ import {
   isOmxGeneratedAgentsMd,
   upsertManagedAgentsBlock,
 } from "../utils/agents-md.js";
-import type { HudPreset } from "../hud/types.js";
+import { DEFAULT_HUD_CONFIG, type HudPreset } from "../hud/types.js";
 
-async function readStatusLinePresetFromHudConfig(
+async function resolveStatusLinePresetForSetup(
   projectRoot: string,
+  options: Pick<SetupOptions, "force">,
 ): Promise<HudPreset | undefined> {
+  if (options.force) {
+    return DEFAULT_HUD_CONFIG.statusLine.preset;
+  }
   const path = join(projectRoot, ".omx", "hud-config.json");
   if (!existsSync(path)) return undefined;
   try {
@@ -1811,8 +1815,9 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     for (const warning of sharedMcpRegistry.warnings) {
       console.log(`  warning: ${warning}`);
     }
-    const statusLinePreset =
-      await readStatusLinePresetFromHudConfig(projectRoot);
+    const statusLinePreset = await resolveStatusLinePresetForSetup(projectRoot, {
+      force,
+    });
     const managedConfig = await updateManagedConfig(
       scopeDirs.codexConfigFile,
       pkgRoot,
@@ -1824,6 +1829,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
         modelUpgradePrompt,
         verbose,
         statusLinePreset,
+        forceStatusLinePreset: force,
       },
     );
     resolvedConfig = managedConfig.finalConfig;
@@ -2888,7 +2894,7 @@ async function updateManagedConfig(
   options: Pick<
     SetupOptions,
     "dryRun" | "verbose" | "modelUpgradePrompt"
-  > & { statusLinePreset?: HudPreset },
+  > & { statusLinePreset?: HudPreset; forceStatusLinePreset?: boolean },
 ): Promise<ManagedConfigResult> {
   const existing = existsSync(configPath)
     ? await readFile(configPath, "utf-8")
@@ -2919,6 +2925,7 @@ async function updateManagedConfig(
     sharedMcpRegistrySource: sharedMcpRegistry.sourcePath,
     verbose: options.verbose,
     statusLinePreset: options.statusLinePreset,
+    forceStatusLinePreset: options.forceStatusLinePreset,
   });
   const changed = existing !== finalConfig;
 
