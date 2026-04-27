@@ -297,7 +297,7 @@ describe('Team Exec Stage', () => {
     assert.equal(arts.agentType, 'architect');
   });
 
-  it('keeps the approved task text intact and keeps plan-only ralplan artifacts on the generic path', async () => {
+  it('derives the plan-only team-exec task from the latest approved PRD and keeps the launch on the generic path', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     const prdPath = join(plansDir, 'prd-approved-exact-task.md');
@@ -306,7 +306,7 @@ describe('Team Exec Stage', () => {
       [
         '# Approved plan',
         '',
-        'Launch via omx team 2:executor "approved exact task"',
+        'Launch via omx team 2:executor "approved refined task"',
       ].join('\n'),
       'utf-8',
     );
@@ -314,10 +314,10 @@ describe('Team Exec Stage', () => {
 
     const stage = createTeamExecStage();
     const ctx = makeCtx({
-      task: 'approved exact task',
+      task: 'original request task',
       artifacts: {
         ralplan: {
-          task: 'approved exact task',
+          task: 'original request task',
           data: 'plan-content',
           stage: 'ralplan',
           latestPlanPath: prdPath,
@@ -327,12 +327,12 @@ describe('Team Exec Stage', () => {
     const result = await stage.run(ctx);
 
     const descriptor = (result.artifacts as Record<string, unknown>).teamDescriptor as Record<string, unknown>;
-    assert.equal(descriptor.task, 'approved exact task');
-    assert.equal(descriptor.teamName, 'approved-exact-task');
+    assert.equal(descriptor.task, 'approved refined task');
+    assert.equal(descriptor.teamName, 'approved-refined-task');
     assert.ok(Array.isArray(descriptor.tasks));
     assert.equal(descriptor.approvedExecution, null);
     assert.deepEqual(descriptor.planningArtifacts, {
-      task: 'approved exact task',
+      task: 'original request task',
       data: 'plan-content',
       stage: 'ralplan',
       latestPlanPath: prdPath,
@@ -354,7 +354,7 @@ describe('Team Exec Stage', () => {
     assert.doesNotMatch((result.artifacts as Record<string, unknown>).instruction as string, /plan-content/);
   });
 
-  it('carries an exact approved binding on the team-exec path only when the handoff is ready', async () => {
+  it('derives the ready team-exec binding from the approved PRD handoff instead of the original request task', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await writeContextPacks('approved-exact-task-ready');
     const relativePackPath = '.omx/context/context-20260420T000000Z-approved-exact-task-ready.json';
@@ -367,7 +367,7 @@ describe('Team Exec Stage', () => {
         '',
         buildContextPackOutcome(relativePackPath),
         '',
-        'Launch via omx team 2:executor "approved exact task ready"',
+        'Launch via omx team 2:executor "approved refined task ready"',
       ].join('\n'),
       'utf-8',
     );
@@ -376,10 +376,10 @@ describe('Team Exec Stage', () => {
 
     const stage = createTeamExecStage();
     const ctx = makeCtx({
-      task: 'approved exact task ready',
+      task: 'original request task ready',
       artifacts: {
         ralplan: {
-          task: 'approved exact task ready',
+          task: 'original request task ready',
           data: 'plan-content',
           stage: 'ralplan',
           latestPlanPath: prdPath,
@@ -389,10 +389,11 @@ describe('Team Exec Stage', () => {
     const result = await stage.run(ctx);
 
     const descriptor = (result.artifacts as Record<string, unknown>).teamDescriptor as Record<string, unknown>;
+    assert.equal(descriptor.task, 'approved refined task ready');
     assert.deepEqual(descriptor.approvedExecution, {
       prd_path: prdPath,
-      task: 'approved exact task ready',
-      command: 'omx team 2:executor "approved exact task ready"',
+      task: 'approved refined task ready',
+      command: 'omx team 2:executor "approved refined task ready"',
     });
     assert.match((result.artifacts as Record<string, unknown>).instruction as string, /approvedExecution/);
   });

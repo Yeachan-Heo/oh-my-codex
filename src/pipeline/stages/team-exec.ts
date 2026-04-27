@@ -17,7 +17,7 @@ import { buildApprovedTeamExecutionBinding, type ApprovedTeamExecutionBinding } 
 import {
   isApprovedExecutionContextReadyStatus,
   isApprovedExecutionFollowupReadyStatus,
-  readApprovedExecutionLaunchHint,
+  readApprovedExecutionLaunchHintOutcome,
 } from '../../planning/artifacts.js';
 import { packageRoot } from '../../utils/paths.js';
 
@@ -41,35 +41,42 @@ function shellSingleQuote(value: string): string {
 
 function resolveApprovedExecutionForTeamExec(
   cwd: string,
-  approvedTask: string,
+  requestedTask: string,
   planningArtifacts?: Record<string, unknown>,
-): ApprovedTeamExecutionBinding | null {
+): { task: string; approvedExecution: ApprovedTeamExecutionBinding | null } {
   if (!planningArtifacts) {
-    return null;
+    return { task: requestedTask, approvedExecution: null };
   }
   const latestPlanPath = typeof planningArtifacts.latestPlanPath === 'string' && planningArtifacts.latestPlanPath.trim() !== ''
     ? planningArtifacts.latestPlanPath
     : undefined;
   if (!latestPlanPath) {
-    return null;
+    return { task: requestedTask, approvedExecution: null };
   }
-  const approvedHint = readApprovedExecutionLaunchHint(cwd, 'team', {
-    task: approvedTask,
+
+  const approvedHintOutcome = readApprovedExecutionLaunchHintOutcome(cwd, 'team', {
     prdPath: latestPlanPath,
   });
-  if (!approvedHint) {
-    throw new Error(`team_exec_approved_handoff_missing:${approvedTask}`);
+  if (approvedHintOutcome.status === 'absent') {
+    throw new Error(`team_exec_approved_handoff_missing:${latestPlanPath}`);
   }
+  if (approvedHintOutcome.status === 'ambiguous') {
+    throw new Error(`team_exec_approved_handoff_ambiguous:${latestPlanPath}`);
+  }
+  const approvedHint = approvedHintOutcome.hint;
   if (isApprovedExecutionContextReadyStatus(approvedHint.contextPackStatus)) {
-    return buildApprovedTeamExecutionBinding(approvedHint);
+    return {
+      task: approvedHint.task,
+      approvedExecution: buildApprovedTeamExecutionBinding(approvedHint),
+    };
   }
   if (isApprovedExecutionFollowupReadyStatus(approvedHint.contextPackStatus)) {
-    return null;
+    return { task: approvedHint.task, approvedExecution: null };
   }
   if (!isApprovedExecutionFollowupReadyStatus(approvedHint.contextPackStatus)) {
     throw new Error(`team_exec_approved_handoff_not_ready:${approvedHint.contextPackStatus}:${approvedHint.sourcePath}`);
   }
-  return null;
+  return { task: approvedHint.task, approvedExecution: null };
 }
 
 /**
@@ -92,11 +99,12 @@ export function createTeamExecStage(options: TeamExecStageOptions = {}): Pipelin
 
       try {
         const ralplanArtifacts = ctx.artifacts['ralplan'] as Record<string, unknown> | undefined;
-        const approvedTask = typeof ralplanArtifacts?.task === 'string' && ralplanArtifacts.task.trim() !== ''
+        const requestedTask = typeof ralplanArtifacts?.task === 'string' && ralplanArtifacts.task.trim() !== ''
           ? ralplanArtifacts.task
           : ctx.task;
+        const approvedLaunch = resolveApprovedExecutionForTeamExec(ctx.cwd, requestedTask, ralplanArtifacts);
+        const approvedTask = approvedLaunch.task;
         const executionPlan = buildTeamExecutionPlan(approvedTask, workerCount, agentType, true, true);
-        const approvedExecution = resolveApprovedExecutionForTeamExec(ctx.cwd, approvedTask, ralplanArtifacts);
         const availableAgentTypes = await resolveAvailableAgentTypes(ctx.cwd);
         const staffingPlan = buildFollowupStaffingPlan('team', approvedTask, availableAgentTypes, {
           workerCount,
@@ -115,7 +123,7 @@ export function createTeamExecStage(options: TeamExecStageOptions = {}): Pipelin
           useWorktrees: options.useWorktrees ?? false,
           cwd: ctx.cwd,
           extraEnv: options.extraEnv,
-          approvedExecution,
+          approvedExecution: approvedLaunch.approvedExecution,
           planningArtifacts: ralplanArtifacts,
         };
 
