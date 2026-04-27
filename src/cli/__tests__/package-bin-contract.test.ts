@@ -101,6 +101,35 @@ describe('package bin contract', () => {
     const binSource = readFileSync(binPath, 'utf-8');
     const compiledCliSource = readFileSync(compiledCliPath, 'utf-8');
     assert.match(binSource, /^#!\/usr\/bin\/env node/);
+    const mcpInitialize = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'package-bin-contract', version: '0' },
+      },
+    }) + '\n';
+    const mcpServe = spawnSync(
+      process.execPath,
+      [binPath, 'mcp-serve', 'state'],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf-8',
+        input: mcpInitialize,
+        timeout: 5_000,
+      },
+    );
+    assert.equal(mcpServe.status, 0, mcpServe.stderr || mcpServe.stdout);
+    const mcpResponse = JSON.parse(mcpServe.stdout) as {
+      result?: { serverInfo?: { name?: string; version?: string } };
+    };
+    assert.deepEqual(
+      mcpResponse.result?.serverInfo,
+      { name: 'omx-state', version: '0.1.0' },
+      'omx bin wrapper must keep mcp-serve alive long enough to complete stdio initialization',
+    );
     assert.match(compiledCliSource, /omx update\s+Check npm now, update the global install immediately, then refresh setup/);
     assert.match(compiledCliSource, /case "update"/);
 
