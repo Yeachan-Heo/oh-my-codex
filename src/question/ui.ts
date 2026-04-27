@@ -44,16 +44,39 @@ interface KeyLike {
   sequence?: string;
 }
 
-function getOptionLabels(record: QuestionRecord): string[] {
-  const labels = record.options.map((option, index) => `${index + 1}. ${option.label}`);
+interface QuestionOptionEntry {
+  label: string;
+  description?: string;
+}
+
+function getOptionEntries(record: QuestionRecord): QuestionOptionEntry[] {
+  const entries = record.options.map((option, index) => ({
+    label: `${index + 1}. ${option.label}`,
+    description: typeof option.description === 'string' && option.description.trim()
+      ? option.description.trim()
+      : undefined,
+  }));
   if (record.allow_other) {
-    labels.push(`${record.options.length + 1}. ${record.other_label}`);
+    entries.push({
+      label: `${record.options.length + 1}. ${record.other_label}`,
+      description: undefined,
+    });
   }
-  return labels;
+  return entries;
+}
+
+function getOptionLabels(record: QuestionRecord): string[] {
+  return getOptionEntries(record).map((entry) => entry.label);
 }
 
 function renderOptions(record: QuestionRecord): string[] {
-  return getOptionLabels(record).map((label) => `  [ ] ${label}`);
+  return getOptionEntries(record).flatMap((entry) => {
+    const lines = [`  [ ] ${entry.label}`];
+    if (entry.description) {
+      lines.push(`      ${entry.description}`);
+    }
+    return lines;
+  });
 }
 
 function parseSelection(raw: string, optionCount: number, multiSelect: boolean): number[] | null {
@@ -240,16 +263,19 @@ export function renderInteractiveQuestionFrame(
   record: QuestionRecord,
   state: InteractiveSelectionState,
 ): string {
-  const optionLabels = getOptionLabels(record);
+  const optionEntries = getOptionEntries(record);
   const lines: string[] = [];
 
   if (record.header) lines.push(record.header);
   lines.push(record.question, '');
 
-  optionLabels.forEach((label, index) => {
+  optionEntries.forEach((entry, index) => {
     const isActive = state.cursorIndex === index;
     const isChecked = isMultiAnswerableQuestion(record) ? state.selectedIndices.includes(index) : isActive;
-    lines.push(`${isActive ? '›' : ' '} [${isChecked ? 'x' : ' '}] ${label}`);
+    lines.push(`${isActive ? '›' : ' '} [${isChecked ? 'x' : ' '}] ${entry.label}`);
+    if (entry.description) {
+      lines.push(`      ${entry.description}`);
+    }
   });
 
   lines.push('');
