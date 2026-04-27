@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { describe, it } from 'node:test';
+import { PassThrough } from 'node:stream';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -141,6 +142,24 @@ describe('question ui arrow navigation', () => {
     assert.deepEqual(update.state.selectedIndices, [0, 1]);
   });
 
+  it('renders option descriptions beneath each option when present', () => {
+    const frame = renderInteractiveQuestionFrame(
+      makeRecord({
+        options: [
+          { label: 'Alpha', value: 'alpha', description: 'First choice explanation' },
+          { label: 'Beta', value: 'beta', description: 'Second choice explanation' },
+        ],
+      }),
+      {
+        cursorIndex: 0,
+        selectedIndices: [],
+      },
+    );
+
+    assert.match(frame, /› \[x\] 1\. Alpha\n\s+First choice explanation/);
+    assert.match(frame, /\[ \] 2\. Beta\n\s+Second choice explanation/);
+  });
+
   it('renders navigation instructions with checkbox markers', () => {
     const frame = renderInteractiveQuestionFrame(
       makeRecord({ multi_select: true, type: 'multi-answerable' }),
@@ -205,6 +224,48 @@ describe('question ui arrow navigation', () => {
       assert.equal(loaded?.answer?.kind, 'option');
       assert.equal(loaded?.answer?.value, 'b');
       assert.equal(loaded?.type, 'single-answerable');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('renders option descriptions in number-prompt mode', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-question-ui-number-mode-'));
+    try {
+      const { recordPath } = await createQuestionRecord(
+        cwd,
+        {
+          question: 'Which lane?',
+          options: [
+            { label: 'Plan first', value: 'ralplan', description: 'Need architecture and test-shape review before execution' },
+            { label: 'Execute directly', value: 'autopilot', description: 'Requirements are already explicit enough for planning plus execution' },
+          ],
+          allow_other: false,
+          other_label: 'Other',
+          multi_select: false,
+          type: 'single-answerable',
+        },
+        'sess-ui-number-mode',
+      );
+
+      const input = new PassThrough() as PassThrough & { isTTY: boolean };
+      input.isTTY = false;
+      const output = new PassThrough() as PassThrough & { isTTY: boolean };
+      output.isTTY = false;
+      let rendered = '';
+      output.on('data', (chunk) => {
+        rendered += chunk.toString();
+      });
+
+      const runPromise = runQuestionUi(recordPath, { input, output });
+      input.write('1\n');
+      input.end();
+
+      await runPromise;
+      const loaded = await readQuestionRecord(recordPath);
+      assert.equal(loaded?.answer?.value, 'ralplan');
+      assert.match(rendered, /1\. Plan first\n\s+Need architecture and test-shape review before execution/);
+      assert.match(rendered, /2\. Execute directly\n\s+Requirements are already explicit enough for planning plus execution/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
