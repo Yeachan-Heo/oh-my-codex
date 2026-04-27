@@ -139,6 +139,46 @@ describe("agents/native-config", () => {
     }
   });
 
+  it("preserves active provider on native agents so websocket-capable Responses providers are inherited", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-native-config-provider-"));
+    const codexHome = join(root, ".codex");
+    const promptsDir = join(root, "prompts");
+    const outDir = join(codexHome, "agents");
+    const previousCodexHome = process.env.CODEX_HOME;
+
+    try {
+      delete process.env.OMX_DEFAULT_STANDARD_MODEL;
+      process.env.CODEX_HOME = codexHome;
+      await mkdir(promptsDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await writeFile(join(codexHome, "config.toml"), [
+        'model = "gpt-5.5"',
+        'model_provider = "cheapRouter"',
+        '',
+        '[model_providers.cheapRouter]',
+        'name = "Cheap Router"',
+        'base_url = "https://cheaprouter.uk/v1"',
+        'wire_api = "responses"',
+        'supports_websockets = true',
+        '',
+      ].join('\n'));
+      await writeFile(join(promptsDir, "executor.md"), "executor prompt");
+
+      await installNativeAgentConfigs(root, {
+        agentsDir: outDir,
+        catalogManifest: manifestWithAgents(["executor"]),
+      });
+      const executorToml = await readFile(join(outDir, "executor.toml"), "utf8");
+      assert.match(executorToml, /model = "gpt-5\.5"/);
+      assert.match(executorToml, /model_provider = "cheapRouter"/);
+    } finally {
+      if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
+      else delete process.env.CODEX_HOME;
+      process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.4-mini";
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("inherits a custom root model for standard agents when no standard override exists", async () => {
     const root = await mkdtemp(join(tmpdir(), "omx-native-config-root-model-"));
     const codexHome = join(root, ".codex");

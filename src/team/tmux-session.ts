@@ -925,16 +925,20 @@ export function buildWorkerProcessLaunchSpec(
     ? buildPlatformCommandSpec(workerCli, effectiveCliLaunchArgs, process.platform, effectiveEnv)
     : { command: resolvedCliPath, args: effectiveCliLaunchArgs };
   const resolvedLauncherPath = platformSpec.resolvedPath || resolvedCliPath;
+  const codexProviderEnv = workerCli === 'codex'
+    ? readActiveProviderEnvOverrides(
+        effectiveEnv,
+        providerLookupCodexHome,
+      )
+    : {};
   const workerEnv: Record<string, string> = {
     OMX_TEAM_WORKER: `${teamName}/worker-${workerIndex}`,
     [OMX_LEADER_NODE_PATH_ENV]: resolveLeaderNodePath(),
     [OMX_LEADER_CLI_PATH_ENV]: resolvedLauncherPath,
-    ...(workerCli === 'codex'
-      ? readActiveProviderEnvOverrides(
-          effectiveEnv,
-          providerLookupCodexHome,
-        )
+    ...(workerCli === 'codex' && workerCodexHomeOverride
+      ? { CODEX_HOME: workerCodexHomeOverride }
       : {}),
+    ...codexProviderEnv,
   };
   for (const [key, value] of Object.entries(extraEnv)) {
     if (typeof value !== 'string' || value.trim() === '') continue;

@@ -11,6 +11,7 @@ import { readCatalogManifest } from "../catalog/reader.js";
 import type { CatalogManifest } from "../catalog/schema.js";
 import { getInstallableNativeAgentNames } from "./policy.js";
 import {
+  getCodexConfigRootModelProvider,
   getEnvConfiguredStandardDefaultModel,
   getMainDefaultModel,
   getSparkDefaultModel,
@@ -105,6 +106,7 @@ export interface GeneratedNativeAgentConfig {
   description: string;
   developerInstructions?: string;
   model?: string;
+  modelProvider?: string;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh";
 }
 
@@ -274,6 +276,9 @@ export function generateStandaloneAgentToml(
   if (config.model) {
     lines.push(`model = "${escapeTomlBasicString(config.model)}"`);
   }
+  if (config.modelProvider) {
+    lines.push(`model_provider = "${escapeTomlBasicString(config.modelProvider)}"`);
+  }
   if (config.reasoningEffort) {
     lines.push(`model_reasoning_effort = "${config.reasoningEffort}"`);
   }
@@ -300,11 +305,13 @@ export function generateAgentToml(
   options: AgentModelResolutionOptions = {},
 ): string {
   const resolvedModel = resolveAgentModel(agent, options);
+  const resolvedModelProvider = getCodexConfigRootModelProvider(options.codexHomeOverride);
   return generateStandaloneAgentToml({
     name: agent.name,
     description: agent.description,
     developerInstructions: composeRoleInstructions(promptContent, agent, resolvedModel),
     model: resolvedModel,
+    modelProvider: resolvedModelProvider,
     reasoningEffort: agent.reasoningEffort,
   });
 }

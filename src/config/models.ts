@@ -166,6 +166,10 @@ function getCodexConfigRootModel(codexHomeOverride?: string): string | undefined
   return normalizeConfiguredValue(readCodexConfigFile(codexHomeOverride)?.model);
 }
 
+export function getCodexConfigRootModelProvider(codexHomeOverride?: string): string | undefined {
+  return normalizeConfiguredValue(readCodexConfigFile(codexHomeOverride)?.model_provider);
+}
+
 export function getEnvConfiguredStandardDefaultModel(
   env: NodeJS.ProcessEnv = process.env,
   codexHomeOverride?: string,
