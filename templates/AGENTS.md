@@ -63,6 +63,32 @@ Keep runtime marker contracts stable and non-destructive when overlays are appli
 - Run lint, typecheck, tests, and static analysis after changes.
 - Final reports must include changed files, simplifications made, and remaining risks.
 
+## OMX planning context packs
+
+- Any planning artifact that can hand work to implementation is not handoff-ready unless it creates, refreshes, or explicitly revalidates the required context pack in `.omx/context/`.
+- The approved plan must include a `Context Pack Outcome` section that names the exact canonical pack path.
+- Each approved implementation plan owns one canonical pack file. Do not split a single handoff into per-role pack files.
+- Minimum required roles for implementation handoff: `scope`, `build`, `verify`.
+- Role meanings:
+  - `scope`: boundary, non-goal, and guardrail refs that keep the slice from widening
+  - `build`: the smallest set of refs needed to implement the approved slice now
+  - `verify`: the refs that prove the slice is done now
+- Keep the role vocabulary fixed in v1. Do not invent extra roles; use tags for alternate topical views instead.
+- Do not rebuild packs blindly. Reuse the latest pack for the same slug when it still matches the approved PRD/test-spec and the refs remain sufficient; otherwise refresh only the stale entries.
+- Use an exact repo-relative pack reference in the plan with an explicit action: `- pack: revalidated .omx/context/context-<timestamp>-<slug>.json`
+- Each pack is a compact JSON reference bundle, not a second PRD. The canonical artifact is schema `omx-context-pack-v1` with `schema`, `slug`, `basis`, and `entries`. `basis` is tool-generated from the approved PRD/test-spec files and should not be hand-crafted.
+- Each entry is ref-first: `path` and `roles` are required; `label`, `selector`, `relationPath`, and `tags` are optional when the internal context-tool can infer them.
+- Tags are optional compact topical labels. Use them only for useful cross-cuts such as `auth`, `migration`, or `api-contract`; they can connect refs across roles, and multiple tag filters intersect.
+- A minimal useful pack is usually 3-6 total refs covering `scope`, `build`, and `verify`. Keep packs compact on purpose, but widen them whenever the approved slice needs more refs.
+- Prefer one shared entry with multiple roles when the same source truly serves boundary, implementation, and proof needs. Do not duplicate refs just to satisfy role checklists.
+- Use the internal planning context-tool to generate or update packs instead of hand-crafting JSON when possible. Adding a single file should be as simple as providing its repo-relative path; only add a `selector` when the source is too large to load wholesale. Short sources stay direct file refs, and default `relationPath` values should follow the role semantics (`plan -> bounds/implements/verifies`) unless a custom path is genuinely more informative.
+- Minimal planner loop: choose `context-<timestamp>-<slug>.json`, add the smallest useful refs, use pack `query` to inspect role/tag views without materializing excerpts, use `view` once to verify selectors and excerpt sizing, save the approved `prd-*` plus matching `test-spec-*`, run pack `sync` once as the handoff-ready check, then record that exact pack path in the plan's `Context Pack Outcome`.
+- `sync` is the final gate: it refreshes `basis`, rewrites the markdown index, and fails until the pack covers `scope`, `build`, and `verify` against the current approved PRD/test-spec.
+- The markdown sibling is a tool-generated scaffold from the JSON pack. It includes the pack summary, role views, tag views, ref index, query/view hints, and one optional `View Notes` block. It also includes derived facts such as role counts, tag counts, selector-backed entry counts, and direct-file entry counts so executors can scan the pack before querying it. Planners may extend only the `View Notes` block when concise notes add value, especially for tag-driven cross-cuts. It is not the canonical handoff artifact and must not become a second brief or carry embedded excerpts.
+- Executors start from the approved `build` materials generated from the pack. Verifiers start from the approved `verify` materials. Open `scope` refs only when boundaries or guardrails become unclear. Use pack `query` views when you need refs by role, tag, or label without materializing excerpts; use `view` only when you need the actual runtime materials. When an approved pack exists, do not create a second freeform `.omx/context/*.md` brief beside it.
+- Compatibility fallback for upgraded repos: if an older approved plan only has PRD/test-spec artifacts, or the declared packs/generated materials are missing or invalid, execution may proceed from the approved plan, matching test specs, and any deep-interview artifact, but it should recreate a local execution snapshot before broadening context.
+- Invalid newly declared packs are not handoff-ready. Repair or recreate them instead of treating them as equivalent to the legacy path.
+
 <lore_commit_protocol>
 ## Lore Commit Protocol
 
@@ -252,7 +278,7 @@ To opt out per prompt with phrases such as `no workflow`, `just chat`, or `plain
 
 Ralph / Ralplan execution gate:
 - Enforce **ralplan-first** when ralph is active and planning is not complete.
-- Planning is complete only after both `.omx/plans/prd-*.md` and `.omx/plans/test-spec-*.md` exist.
+- New implementation handoffs should include both `.omx/plans/prd-*.md` and `.omx/plans/test-spec-*.md` plus a `Context Pack Outcome` section in the latest approved PRD that references the required `.omx/context/` pack. That pack is only handoff-ready when the referenced `.json` artifact is valid, covers the required roles (`scope`, `build`, `verify`), and can generate the required runtime materials. Legacy upgraded repos may fall back to PRD/test-spec handoff when those pack refs or generated materials do not exist yet.
 - Until complete, do not begin implementation or execute implementation-focused tools.
 </keyword_detection>
 

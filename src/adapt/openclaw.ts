@@ -160,6 +160,7 @@ function observeOpenClaw(
 				...(planning.prdPath ? [planning.prdPath] : []),
 				...planning.testSpecPaths,
 				...planning.deepInterviewSpecPaths,
+				...(planning.contextPack ? [planning.contextPack.path] : []),
 			],
 		},
 	};

@@ -33,6 +33,20 @@ Jumping into code without understanding requirements leads to rework, scope cree
 - When session guidance enables `USE_OMX_EXPLORE_CMD`, prefer `omx explore` for simple read-only repository lookups during planning; keep prompts narrow and concrete, and keep prompt-heavy or ambiguous planning work on the richer normal path and fall back normally if `omx explore` is unavailable.
 - Plans must meet quality standards: 80%+ claims cite file/line, 90%+ criteria are testable
 - Implementation step count must be right-sized to task scope; avoid defaulting to exactly five steps when the work is clearly smaller or larger
+- Planning-for-implementation is not complete until the plan creates, refreshes, or explicitly revalidates the required context pack in `.omx/context/` and records it in a `Context Pack Outcome` section
+- Use one canonical pack per approved plan. Do not split a handoff into per-role pack files
+- Role meanings: `scope` carries boundary and guardrail refs, `build` carries implementation refs, and `verify` carries proof/acceptance refs
+- Keep the role vocabulary fixed in v1. Do not invent extra roles; use tags only for optional topical cross-cuts
+- Do not rebuild packs blindly. Reuse the latest pack for the same slug when it still matches the approved PRD/test-spec and the refs remain sufficient; otherwise refresh only the stale entries
+- Make the pack minimal on purpose: usually 3-6 total refs covering `scope`, `build`, and `verify`, but add more whenever the approved slice genuinely needs more grounding
+- Typed packs are compact JSON reference bundles, not mini-PRDs: use schema `omx-context-pack-v1` with `schema`, `slug`, tool-generated `basis`, and `entries`
+- Each entry is ref-first: `path` and `roles` are required; `label`, `selector`, `relationPath`, and `tags` are optional when the internal context-tool can infer them
+- Prefer one shared entry with multiple roles when the same source truly serves multiple purposes. Do not duplicate refs just to satisfy role checklists
+- Tags are optional compact topical labels only. Use them for useful cross-cuts across roles, and remember that multiple tag filters intersect
+- Use the internal planning context-tool to generate or update packs instead of hand-crafting JSON when possible; adding a single file should be as simple as providing its repo-relative path
+- Minimal pack creation loop: choose `context-<timestamp>-<slug>.json`, add the smallest useful refs, let the context-tool infer defaults, use pack `query` to inspect role/tag views without materializing excerpts, use `view` once to verify selectors and excerpt sizing, save the approved `prd-*` plus matching `test-spec-*`, run pack `sync` once as the handoff-ready check, then record that exact pack path in `Context Pack Outcome`
+- `sync` is the final gate: it refreshes `basis`, rewrites the markdown index, and fails until the pack covers `scope`, `build`, and `verify` against the current approved PRD/test-spec
+- Add a `selector` only when the source is too large to load wholesale; let short sources stay as direct file refs, let default relation paths follow `plan -> bounds/implements/verifies`, and let the tool generate the markdown sibling scaffold before adding any optional notes
 - Consensus mode outputs the final plan by default; add `--interactive` to enable execution handoff
 - Consensus mode uses RALPLAN-DR short mode by default; switch to deliberate mode with `--deliberate` or when the request explicitly signals high risk (auth/security, data migration, destructive/irreversible changes, production incident, compliance/PII, public API breakage)
 - Default to concise, evidence-dense progress and completion reporting unless the user or risk level requires more detail
@@ -99,6 +113,12 @@ Jumping into code without understanding requirements leads to rework, scope cree
    d. Note which improvements were applied in a brief changelog section at the end of the plan
    e. Before any execution handoff, derive an explicit **available-agent-types roster** from the known prompt catalog and add concrete **follow-up staffing guidance** for both `$ralph` and `$team` (recommended roles, counts, suggested reasoning levels by lane, and why each lane exists)
    f. For the `$team` path, add an explicit launch-hint block with concrete `omx team` / `$team` commands and a **team verification path** (what team proves before shutdown, what Ralph verifies after handoff)
+   g. Before any implementation handoff, create, refresh, or explicitly revalidate the required context pack in `.omx/context/` and add a **Context Pack Outcome** section that names the exact pack path. Use explicit action wording: `created`, `refreshed`, or `revalidated`
+   h. Use one compact typed pack with schema `omx-context-pack-v1` and a JSON-first shape: `schema`, `slug`, tool-generated `basis`, and `entries`. Keep role semantics crisp inside entry `roles`: `scope` for boundary refs, `build` for implementation refs, `verify` for proof refs. Prefer shared multi-role entries over duplicated refs, and do not invent extra roles in v1
+   i. Generate or update the pack with the internal context-tool instead of hand-crafting JSON when possible. Each entry must at least name a repo-relative `path` and one or more `roles`; let the tool infer `label` and default `relationPath`, add tags only when they create a useful alternate topical view, and add a `selector` only for longer sources that should be excerpted
+   j. Build the smallest useful pack first: one boundary/guardrail ref, the minimum build refs needed to implement now, and the minimum verify refs needed to prove done now. Only widen the pack when a concrete gap remains
+   k. Treat the generated markdown sibling as a human index only. The tool generates the scaffold from the JSON pack first: pack summary, role views, tag views, ref index, query/view hints, and the optional `View Notes` block. That scaffold includes derived facts such as role counts, tag counts, selector-backed entry counts, and direct-file entry counts. Planners may extend only `View Notes` when concise notes add value, especially for tag-driven cross-cuts, while execution consumes the canonical JSON pack plus tag queries and materialized views; do not let the index turn into a second brief or pasted excerpt dump
+   l. If the plan cannot name a valid pack path, emit only the valid v1 roles (`scope`, `build`, `verify`), or keep the pack compact, stop at plan revision rather than treating planning as complete
 7. On Critic approval (with improvements applied): *(--interactive only)* If running with `--interactive`, use `AskUserQuestion` to present the plan with these options:
    - **Approve and execute** — proceed to implementation via ralph+ultrawork
    - **Approve and implement via team** — proceed to implementation via coordinated parallel team agents
@@ -115,9 +135,10 @@ Jumping into code without understanding requirements leads to rework, scope cree
 0. Treat review as a reviewer-only pass. The context that wrote the plan, cleanup proposal, or diff MUST NOT be the context that approves it.
 1. Read plan file from `.omx/plans/`
 2. Evaluate via Critic using `ask_codex` with `agent_role: "critic"`
-3. For cleanup/refactor/anti-slop work, verify that the artifact includes a cleanup plan, regression tests or an explicit test gap, smell-by-smell passes, and quality gates.
-4. Return verdict: APPROVED, REVISE (with specific feedback), or REJECT (replanning required)
-5. If the current context authored the artifact, hand the review to `/review`, `critic`, `quality-reviewer`, `security-reviewer`, or `verifier` as appropriate.
+3. For implementation-handoff plans, verify that a `Context Pack Outcome` section exists and references the required `.omx/context/` pack and that the pack is a valid `omx-context-pack-v1` JSON artifact whose entries cover `scope`, `build`, and `verify`. Reject packless, stale, or invalid handoffs.
+4. For cleanup/refactor/anti-slop work, verify that the artifact includes a cleanup plan, regression tests or an explicit test gap, smell-by-smell passes, and quality gates.
+5. Return verdict: APPROVED, REVISE (with specific feedback), or REJECT (replanning required)
+6. If the current context authored the artifact, hand the review to `/review`, `critic`, `quality-reviewer`, `security-reviewer`, or `verifier` as appropriate.
 
 ### Plan Output Format
 
@@ -128,6 +149,8 @@ Every plan includes:
 - Adaptive step count sized to the actual scope (not a fixed five-step template)
 - Risks and Mitigations
 - Verification Steps
+- Context Pack Outcome (exact `.omx/context/` pack path for implementation handoff)
+- Context Pack (`omx-context-pack-v1` JSON with `schema`, `slug`, tool-generated `basis`, and ref-first `entries`, plus the generated markdown index of role/tag views when helpful for human review)
 - For consensus/ralplan: **RALPLAN-DR summary** (Principles, Decision Drivers, Options)
 - For consensus/ralplan final output: **ADR** (Decision, Drivers, Alternatives considered, Why chosen, Consequences, Follow-ups)
 - For consensus/ralplan execution handoff: **Available-Agent-Types Roster**, **Follow-up Staffing Guidance** (including suggested reasoning levels by lane), explicit `omx team` / `$team` **Launch Hints**, and **Team Verification Path**
@@ -225,6 +248,8 @@ Why bad: Decision fatigue. Present one option with trade-offs, get reaction, the
 - [ ] All risks have mitigations identified
 - [ ] No vague terms without metrics ("fast" -> "p99 < 200ms")
 - [ ] Plan saved to `.omx/plans/`
+- [ ] Implementation handoff plans include a `Context Pack Outcome` section with the required `.omx/context/` pack ref
+- [ ] The handoff pack is a valid `omx-context-pack-v1` JSON artifact, its entries cover `scope`, `build`, and `verify`, and any generated markdown sibling stays index-only
 - [ ] In consensus mode: RALPLAN-DR summary includes 3-5 principles, top 3 drivers, and >=2 viable options (or explicit invalidation rationale)
 - [ ] In consensus mode final output: ADR section included (Decision / Drivers / Alternatives considered / Why chosen / Consequences / Follow-ups)
 - [ ] In deliberate consensus mode: pre-mortem (3 scenarios) + expanded test plan (unit/integration/e2e/observability) included

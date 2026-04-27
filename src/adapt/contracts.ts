@@ -48,6 +48,10 @@ export interface AdaptPlanningLink {
 	prdPath: string | null;
 	testSpecPaths: string[];
 	deepInterviewSpecPaths: string[];
+	contextPack: { path: string; action?: "created" | "refreshed" | "revalidated" } | null;
+	contextPackStatus?: "missing-baseline" | "ready" | "plan-only" | "incomplete" | "invalid";
+	missingRequiredContextPackRoles?: string[];
+	contextPackIssues?: string[];
 	summary: string;
 }
 

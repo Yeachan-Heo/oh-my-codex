@@ -11,6 +11,12 @@ import {
 	buildAdaptStatusReport,
 	initAdaptFoundation,
 } from "../index.js";
+import {
+	REQUIRED_CONTEXT_PACK_ROLES,
+	readContextPackDocument,
+	writeContextPackDocument,
+	type ContextPackRole,
+} from "../../planning/context-packs.js";
 import { resolveAdaptPaths } from "../paths.js";
 import { getAdaptTargetDescriptor } from "../registry.js";
 
@@ -48,6 +54,60 @@ async function writeOpenClawOmxConfig(config: unknown): Promise<void> {
 	);
 }
 
+function defaultReadFirstRef(
+	slug: string,
+	role: ContextPackRole,
+): { label: string; path: string; relationTag: string } {
+	if (role === "scope") {
+		return { label: "boundary", path: `docs/${slug}-boundary.md`, relationTag: "bounds" };
+	}
+	if (role === "verify") {
+		return { label: "acceptance", path: `docs/${slug}-acceptance.md`, relationTag: "verifies" };
+	}
+	return { label: "implementation", path: `docs/${slug}-implementation.md`, relationTag: "implements" };
+}
+
+async function writeDefaultContextPack(slug: string, timestamp: string): Promise<string> {
+	for (const role of REQUIRED_CONTEXT_PACK_ROLES) {
+		const readFirstRef = defaultReadFirstRef(slug, role);
+		await mkdir(join(tempDir, "docs"), { recursive: true });
+		await writeFile(
+			join(tempDir, readFirstRef.path),
+			`# ${readFirstRef.label}\n\n${role} context for ${slug}.\n`,
+		);
+	}
+	const packName = `context-${timestamp}-${slug}.json`;
+	writeContextPackDocument(
+		join(tempDir, ".omx", "context", packName),
+		{
+			schema: "omx-context-pack-v1",
+			slug,
+			entries: REQUIRED_CONTEXT_PACK_ROLES.map((role) => {
+				const readFirstRef = defaultReadFirstRef(slug, role);
+				return {
+					label: readFirstRef.label,
+					path: readFirstRef.path,
+					roles: [role],
+					tags: [],
+					relationPath: [
+						{ tag: "plan", target: slug },
+						{ tag: readFirstRef.relationTag, target: readFirstRef.path },
+					],
+				};
+			}),
+		},
+		{ refreshBasis: true },
+	);
+	return packName;
+}
+
+function refreshContextPackBasis(packName: string): void {
+	const packPath = join(tempDir, ".omx", "context", packName);
+	const document = readContextPackDocument(packPath);
+	assert.ok(document, `expected context pack at ${packPath}`);
+	writeContextPackDocument(packPath, document, { refreshBasis: true });
+}
+
 describe("adapt foundation", () => {
 	it("resolves OMX-owned adapter paths under .omx/adapters/<target>", () => {
 		const paths = resolveAdaptPaths(tempDir, "openclaw");
@@ -75,14 +135,27 @@ describe("adapt foundation", () => {
 
 	it("links the latest canonical PRD/test-spec artifacts into the envelope", async () => {
 		const plansDir = join(tempDir, ".omx", "plans");
+		const contextDir = join(tempDir, ".omx", "context");
 		await mkdir(plansDir, { recursive: true });
+		await mkdir(contextDir, { recursive: true });
+		const packName = await writeDefaultContextPack("zeta", "20260420T000000Z");
 		await writeFile(join(plansDir, "prd-alpha.md"), "# Alpha\n");
 		await writeFile(
 			join(plansDir, "test-spec-alpha.md"),
 			"# Alpha Test Spec\n",
 		);
-		await writeFile(join(plansDir, "prd-zeta.md"), "# Zeta\n");
+		await writeFile(
+			join(plansDir, "prd-zeta.md"),
+			[
+				"# Zeta",
+				"",
+				"## Context Pack Outcome",
+				"- pack: created `.omx/context/context-20260420T000000Z-zeta.json`",
+				"",
+			].join("\n"),
+		);
 		await writeFile(join(plansDir, "test-spec-zeta.md"), "# Zeta Test Spec\n");
+		refreshContextPackBasis(packName);
 
 		const envelope = buildAdaptEnvelope(
 			tempDir,
@@ -93,7 +166,28 @@ describe("adapt foundation", () => {
 		assert.deepEqual(envelope.planning.testSpecPaths, [
 			join(plansDir, "test-spec-zeta.md"),
 		]);
-		assert.match(envelope.planning.summary, /matching test spec/i);
+		assert.deepEqual(envelope.planning.contextPack, {
+			path: join(contextDir, packName),
+			action: "created",
+		});
+		assert.match(envelope.planning.summary, /context pack/i);
+	});
+
+	it("keeps the plan-only execution baseline visible for upgraded repos without context packs", async () => {
+		const plansDir = join(tempDir, ".omx", "plans");
+		await mkdir(plansDir, { recursive: true });
+		await writeFile(join(plansDir, "prd-legacy.md"), "# Legacy\n");
+		await writeFile(join(plansDir, "test-spec-legacy.md"), "# Legacy Test Spec\n");
+
+		const envelope = buildAdaptEnvelope(
+			tempDir,
+			"openclaw",
+			new Date("2026-04-14T00:00:00.000Z"),
+		);
+		assert.equal(envelope.planning.prdPath, join(plansDir, "prd-legacy.md"));
+		assert.equal(envelope.planning.contextPackStatus, "plan-only");
+		assert.equal(envelope.planning.contextPack, null);
+		assert.match(envelope.planning.summary, /plan-only execution baseline remains available/i);
 	});
 
 	it("reports asymmetric capability ownership in the shared envelope", () => {

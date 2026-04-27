@@ -929,12 +929,17 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
       modelTableContext,
     );
     let changed = true;
+    let canApplyManagedTemplateRefresh = false;
+    let managedTemplateRefreshContent = "";
     let canApplyManagedModelRefresh = false;
     let managedRefreshContent = "";
     if (agentsMdExists) {
       const existing = await readFile(agentsMdDst, "utf-8");
       changed = existing !== rewritten;
-      if (hasOmxManagedAgentsSections(existing)) {
+      if (isOmxGeneratedAgentsMd(existing)) {
+        managedTemplateRefreshContent = rewritten;
+        canApplyManagedTemplateRefresh = managedTemplateRefreshContent !== existing;
+      } else if (hasOmxManagedAgentsSections(existing)) {
         managedRefreshContent = upsertAgentsModelTable(
           existing,
           modelTableContext,
@@ -959,6 +964,20 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
         "  Skipping AGENTS.md overwrite to avoid corrupting runtime overlay.",
       );
       console.log("  Stop the active session first, then re-run setup.");
+    } else if (canApplyManagedTemplateRefresh) {
+      await syncManagedContent(
+        managedTemplateRefreshContent,
+        agentsMdDst,
+        summary.agentsMd,
+        backupContext,
+        { dryRun, verbose },
+        `managed AGENTS ${agentsMdDst}`,
+      );
+      console.log(
+        resolvedScope.scope === "project"
+          ? "  Refreshed managed AGENTS.md in project root."
+          : `  Refreshed managed AGENTS.md in ${scopeDirs.codexHomeDir}.`,
+      );
     } else if (canApplyManagedModelRefresh) {
       await syncManagedContent(
         managedRefreshContent,

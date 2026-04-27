@@ -51,21 +51,32 @@ export function buildAdaptPlanningLink(cwd: string): AdaptPlanningLink {
 			prdPath: null,
 			testSpecPaths: [],
 			deepInterviewSpecPaths: [],
+			contextPack: null,
 			summary:
 				"No canonical OMX PRD/test-spec artifacts are present in this worktree.",
 		};
 	}
 
-	const testSpecSummary =
-		selection.testSpecPaths.length > 0
-			? `${selection.testSpecPaths.length} matching test spec artifact(s) linked.`
-			: "PRD detected, but no matching test spec artifact was found for its slug.";
+	const summary =
+		selection.testSpecPaths.length === 0
+			? "PRD detected, but no matching test spec artifact was found for its slug."
+			: selection.contextPackStatus === "plan-only"
+				? "PRD/test-spec artifacts are present and the plan-only execution baseline remains available because the approved plan does not yet declare context packs."
+				: selection.contextPackStatus === "incomplete"
+					? `PRD/test-spec artifacts are present, but the declared context pack is incomplete: ${(selection.contextPackIssues.length > 0 ? selection.contextPackIssues.join(" ") : `missing required roles ${selection.missingRequiredContextPackRoles.join(", ")}`)}. Execution should fall back to the plan/test-spec brief and recreate the missing coverage.`
+					: selection.contextPackStatus === "invalid"
+						? `PRD/test-spec artifacts are present, but the declared context pack is invalid: ${selection.contextPackIssues.join(" ")}`
+						: `${selection.testSpecPaths.length} matching test spec artifact(s) linked and one context pack is declared.`;
 
 	return {
 		prdPath: selection.prdPath,
 		testSpecPaths: selection.testSpecPaths,
 		deepInterviewSpecPaths: selection.deepInterviewSpecPaths,
-		summary: testSpecSummary,
+		contextPack: selection.contextPack,
+		contextPackStatus: selection.contextPackStatus,
+		missingRequiredContextPackRoles: selection.missingRequiredContextPackRoles,
+		contextPackIssues: selection.contextPackIssues,
+		summary,
 	};
 }
 

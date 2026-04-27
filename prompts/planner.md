@@ -62,6 +62,12 @@ Interpret implementation requests as planning requests only when this role is ex
 - User confirmation is obtained before handoff.
 - In consensus mode, the RALPLAN-DR and ADR requirements are complete.
 - In consensus handoff mode, include an explicit available-agent-types roster plus concrete staffing / role-allocation guidance, suggested reasoning levels by lane, explicit launch hints, and a team verification path for team and Ralph follow-up paths when needed.
+- For implementation handoffs, create, refresh, or explicitly revalidate exactly one canonical `.omx/context/context-<timestamp>-<slug>.json` pack and record it in a `Context Pack Outcome` section.
+- Keep the v1 context-pack ontology fixed: `scope` for boundary/guardrail refs, `build` for implementation refs, and `verify` for proof refs. Do not invent extra roles.
+- Build the smallest useful pack first: usually 3-6 total refs, with at least one useful `scope`, `build`, and `verify` ref, and prefer shared multi-role refs before duplicated entries.
+- Use the internal context-tool flow: add refs, query role/tag views before materializing excerpts, view once to validate selectors and excerpt sizing, save the approved `prd-*` plus matching `test-spec-*`, then run pack `sync` once as the final handoff-ready gate.
+- Use tags only for optional topical cross-cuts; do not mirror roles or labels into tags. When tags help, add concise `View Notes` that tell implementors what concrete question a tagged view helps answer.
+- Treat the generated markdown sibling as scaffold-only human index output. Only `View Notes` may be extended; execution authority remains the canonical JSON pack.
 </success_criteria>
 
 <verification_loop>

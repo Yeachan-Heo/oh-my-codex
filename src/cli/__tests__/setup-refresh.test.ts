@@ -225,6 +225,36 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     }
   });
 
+  it("refreshes an existing project AGENTS.md with context-pack planning guidance during setup updates", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+      await runSetupInTempDir(wd, { scope: "project" });
+
+      const agentsPath = join(wd, "AGENTS.md");
+      const initialAgents = await readFile(agentsPath, "utf-8");
+      assert.match(initialAgents, /## OMX planning context packs/);
+
+      const staleAgents = initialAgents.replace(
+        /\n## OMX planning context packs[\s\S]*?(?=\n<lore_commit_protocol>)/,
+        "\n",
+      );
+      assert.notEqual(staleAgents, initialAgents);
+      await writeFile(agentsPath, staleAgents);
+
+      await runSetupInTempDir(wd, { scope: "project" });
+
+      const refreshedAgents = await readFile(agentsPath, "utf-8");
+      assert.match(refreshedAgents, /## OMX planning context packs/);
+      assert.match(refreshedAgents, /Compatibility fallback for upgraded repos/i);
+      assert.match(refreshedAgents, /Legacy upgraded repos may fall back to PRD\/test-spec handoff/i);
+      assert.match(refreshedAgents, /omx-context-pack-v1/i);
+      assert.match(refreshedAgents, /Do not rebuild packs blindly/i);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("offers an upgrade from gpt-5.3-codex to gpt-5.4 when accepted", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     try {
