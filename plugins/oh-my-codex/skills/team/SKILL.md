@@ -98,7 +98,7 @@ Before launching `omx team`, require a grounded context snapshot:
 
 1. Derive a task slug from the request.
 2. Reuse the latest relevant snapshot in `.omx/context/{slug}-*.md` when available.
-3. If none exists, create `.omx/context/{slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`) with:
+3. If there is no approved implementation handoff yet and no snapshot exists, create `.omx/context/{slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`) with:
    - task statement
    - desired outcome
    - known facts/evidence
@@ -107,6 +107,7 @@ Before launching `omx team`, require a grounded context snapshot:
    - likely codebase touchpoints
 4. If ambiguity remains high, run `explore` first for brownfield facts, then run `$deep-interview --quick <task>` before team launch.
 5. If current correctness depends on official docs, version-aware framework guidance, best practices, or external dependency behavior, auto-delegate `researcher` as an evidence lane before or alongside worker launch instead of relying on repo-local recall alone.
+6. When team launch is based on an approved implementation plan, the canonical pack index plus approved refs are the grounding context. Load the approved context refs first when they exist, use the generated `build` refs (excerpts or short direct-file refs) as the default worker brief, keep the generated `verify` refs attached to the evidence lane, and open `scope` refs only when boundaries or guardrails become unclear. The canonical pack must cover `scope`, `build`, and `verify` through entry `roles`. Do not create a second freeform `.omx/context/*.md` brief beside that approved pack. If the plan is a legacy upgraded handoff without that pack, or the declared pack/ref manifests are missing or invalid, fall back to the approved plan/test-spec/deep-interview brief and recreate a local execution snapshot before broadening context.
 
 Do not start worker panes until this gate is satisfied; if forced to proceed quickly, state explicit scope/risk limitations in the launch report.
 

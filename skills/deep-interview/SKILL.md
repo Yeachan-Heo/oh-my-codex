@@ -294,7 +294,7 @@ Track used modes in state to prevent repetition.
 When threshold is met (or user exits with warning / hard cap):
 
 1. Write interview transcript summary to:
-   - `.omx/interviews/{slug}-{timestamp}.md`  
+   - `.omx/interviews/{slug}-{timestamp}.md`
      (kept for ralph PRD compatibility)
 2. Write execution-ready spec to:
    - `.omx/specs/deep-interview-{slug}.md`

@@ -40,7 +40,7 @@ Complex tasks often fail silently: partial implementations get declared "done", 
 
 <Steps>
 0. **Pre-context intake (required before planning/execution loop starts)**:
-   - Assemble or load a context snapshot at `.omx/context/{task-slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`).
+   - If there is no approved implementation handoff yet, assemble or load a context snapshot at `.omx/context/{task-slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`).
    - Minimum snapshot fields:
      - task statement
      - desired outcome
@@ -49,7 +49,10 @@ Complex tasks often fail silently: partial implementations get declared "done", 
      - unknowns/open questions
      - likely codebase touchpoints
    - If an existing relevant snapshot is available, reuse it and record the path in Ralph state.
+   - When Ralph is entered from an approved implementation plan, the canonical pack index plus approved refs are the grounding context. Load the approved context refs first, treat the generated `build` refs (excerpts or short direct-file refs) as the default implementation brief, keep the generated `verify` refs as the proof checklist, and open `scope` refs only when boundaries or guardrails become unclear; use the markdown index only as a view map.
+   - In that approved-handoff flow, do not create a second freeform `.omx/context/*.md` brief beside the canonical pack.
    - If request ambiguity is high, gather brownfield facts first. When session guidance enables `USE_OMX_EXPLORE_CMD`, prefer `omx explore` for simple read-only repository lookups with narrow, concrete prompts; otherwise use the richer normal explore path. Then run `$deep-interview --quick <task>` to close critical gaps.
+   - If an approved implementation handoff exists but the required context pack or its ref manifests are missing, stale, invalid, or not referenced, use compatibility fallback: start from the approved plan, matching test specs, and any deep-interview artifact, then recreate a local execution snapshot before widening context. Prefer returning to planning only when the newer plan itself is still being authored and should be fixed before handoff.
    - Do not begin Ralph execution work (delegation, implementation, or verification loops) until snapshot grounding exists. If forced to proceed quickly, note explicit risk tradeoffs.
 1. **Review progress**: Check TODO list and any prior iteration state
 2. **Continue from where you left off**: Pick up incomplete tasks
