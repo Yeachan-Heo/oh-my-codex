@@ -39,7 +39,7 @@ export async function evaluatePaneInjectionReadiness(paneTarget: any, {
   }
   if (skipIfScrolling) {
     try {
-      const modeResult = await runProcess('tmux', buildPaneInModeArgv(target), 1000);
+      const modeResult = await runProcess('tmux', buildPaneInModeArgv(target), 3000);
       if (safeString(modeResult.stdout).trim() === '1') {
         return {
           ok: false,
@@ -67,7 +67,7 @@ export async function evaluatePaneInjectionReadiness(paneTarget: any, {
     readinessEvidence,
   });
   try {
-    const result = await runProcess('tmux', buildPaneCurrentCommandArgv(target), 1000);
+    const result = await runProcess('tmux', buildPaneCurrentCommandArgv(target), 3000);
     paneCurrentCommand = safeString(result.stdout).trim();
     paneRunningShell = requireRunningAgent && isPaneRunningShell(paneCurrentCommand);
   } catch {
@@ -75,7 +75,7 @@ export async function evaluatePaneInjectionReadiness(paneTarget: any, {
   }
 
   try {
-    const capture = await runProcess('tmux', buildCapturePaneArgv(target, captureLines), 1000);
+    const capture = await runProcess('tmux', buildCapturePaneArgv(target, captureLines), 3000);
     const paneCapture = safeString(capture.stdout);
     const hasCaptureEvidence = paneCapture.trim() !== '';
     if (hasCaptureEvidence) {

@@ -47,6 +47,7 @@ export const OMX_DEFAULT_FRONTIER_MODEL_ENV = 'OMX_DEFAULT_FRONTIER_MODEL';
 export const OMX_DEFAULT_STANDARD_MODEL_ENV = 'OMX_DEFAULT_STANDARD_MODEL';
 export const OMX_DEFAULT_SPARK_MODEL_ENV = 'OMX_DEFAULT_SPARK_MODEL';
 export const OMX_SPARK_MODEL_ENV = 'OMX_SPARK_MODEL';
+export const OMX_TEAM_CHILD_MODEL_ENV = 'OMX_TEAM_CHILD_MODEL';
 
 function readOmxConfigFile(codexHomeOverride?: string): OmxConfigFile | null {
   const configPath = join(codexHomeOverride || codexHome(), '.omx-config.json');
@@ -86,6 +87,7 @@ function readModelsBlock(codexHomeOverride?: string): ModelsConfig | null {
 export const DEFAULT_FRONTIER_MODEL = 'gpt-5.5';
 export const DEFAULT_STANDARD_MODEL = 'gpt-5.4-mini';
 export const DEFAULT_SPARK_MODEL = 'gpt-5.3-codex-spark';
+export const DEFAULT_TEAM_CHILD_MODEL = DEFAULT_STANDARD_MODEL;
 
 function normalizeConfiguredValue(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -128,11 +130,12 @@ export function readConfiguredEnvOverrides(codexHomeOverride?: string): NodeJS.P
 export function readActiveProviderEnvOverrides(
   env: NodeJS.ProcessEnv = process.env,
   codexHomeOverride?: string,
+  activeProviderOverride?: string,
 ): NodeJS.ProcessEnv {
   const config = readCodexConfigFile(codexHomeOverride);
   if (!config) return {};
 
-  const activeProvider = normalizeConfiguredValue(config.model_provider);
+  const activeProvider = normalizeConfiguredValue(activeProviderOverride) ?? normalizeConfiguredValue(config.model_provider);
   if (!activeProvider) return {};
 
   const providers = config.model_providers;
@@ -164,6 +167,10 @@ function getCodexConfigRootModel(codexHomeOverride?: string): string | undefined
   return normalizeConfiguredValue(readCodexConfigFile(codexHomeOverride)?.model);
 }
 
+export function getCodexConfigRootModelProvider(codexHomeOverride?: string): string | undefined {
+  return normalizeConfiguredValue(readCodexConfigFile(codexHomeOverride)?.model_provider);
+}
+
 export function getEnvConfiguredStandardDefaultModel(
   env: NodeJS.ProcessEnv = process.env,
   codexHomeOverride?: string,
@@ -180,6 +187,13 @@ export function getEnvConfiguredSparkDefaultModel(
     ?? normalizeConfiguredValue(env[OMX_SPARK_MODEL_ENV])
     ?? readConfigEnvValue(OMX_DEFAULT_SPARK_MODEL_ENV, codexHomeOverride)
     ?? readConfigEnvValue(OMX_SPARK_MODEL_ENV, codexHomeOverride);
+}
+
+
+export function getTeamChildModel(codexHomeOverride?: string): string {
+  return normalizeConfiguredValue(process.env[OMX_TEAM_CHILD_MODEL_ENV])
+    ?? readConfigEnvValue(OMX_TEAM_CHILD_MODEL_ENV, codexHomeOverride)
+    ?? DEFAULT_TEAM_CHILD_MODEL;
 }
 
 /**

@@ -424,6 +424,56 @@ describe("worker bootstrap", () => {
     assert.match(inbox, /Role: test-engineer/);
   });
 
+
+
+  it("generateInitialInbox includes Native Subagent Delegation Contract for broad delegated tasks", () => {
+    const tasks: TeamTask[] = [{
+      id: "7",
+      subject: "Investigate runtime failure",
+      description: "Search runtime and debug flaky assignment behavior",
+      status: "pending",
+      created_at: new Date(0).toISOString(),
+      delegation: {
+        mode: "auto",
+        max_parallel_subtasks: 3,
+        required_parallel_probe: true,
+        spawn_before_serial_search_threshold: 3,
+        child_model_policy: "standard",
+        child_model: "gpt-5.4-mini",
+        subtask_candidates: ["Map runtime assignment flow", "Inspect bootstrap tests"],
+        child_report_format: "bullets",
+        skip_allowed_reason_required: true,
+      },
+    }];
+
+    const inbox = generateInitialInbox("worker-1", "team-delegation", "executor", tasks);
+
+    assert.match(inbox, /Native Subagent Delegation Contract/);
+    assert.match(inbox, /Task 7/);
+    assert.match(inbox, /before doing more than 3 serial repo-search\/read commands/i);
+    assert.match(inbox, /spawn up to 3 Codex native subagents/i);
+    assert.match(inbox, /gpt-5\.4-mini/);
+    assert.match(inbox, /Map runtime assignment flow/);
+    assert.match(inbox, /Subagent evidence reporting fields/);
+    assert.match(inbox, /Subagent skip reason:/);
+  });
+
+  it("generateInitialInbox keeps mode none tasks quiet about delegation contract", () => {
+    const tasks: TeamTask[] = [{
+      id: "8",
+      subject: "Fix typo",
+      description: "Fix one typo in README.md",
+      status: "pending",
+      created_at: new Date(0).toISOString(),
+      delegation: { mode: "none" },
+    }];
+
+    const inbox = generateInitialInbox("worker-1", "team-narrow", "executor", tasks);
+
+    assert.doesNotMatch(inbox, /Native Subagent Delegation Contract/);
+    assert.doesNotMatch(inbox, /gpt-5\.4-mini/);
+  });
+
   it("generateTaskAssignmentInbox includes task ID and description", () => {
     const inbox = generateTaskAssignmentInbox(
       "worker-3",
@@ -465,6 +515,37 @@ describe("worker bootstrap", () => {
     assert.match(inbox, /Approved plan: \.omx\/plans\/prd-issue-906\.md/);
     assert.match(inbox, /Build refs \(read first\): runtime=\/tmp\/context-pack-cache\/context-issue-906\/01-runtime\.md \[excerpt\]/);
     assert.match(inbox, /read those context refs before broader repo exploration/i);
+  });
+
+  it("generateTaskAssignmentInbox includes delegation contract for follow-up task object", () => {
+    const inbox = generateTaskAssignmentInbox(
+      "worker-3",
+      "team-followup",
+      {
+        id: "42",
+        subject: "Investigate parser regression",
+        description: "Investigate parser regression across tests",
+        status: "pending",
+        created_at: new Date(0).toISOString(),
+        delegation: {
+          mode: "auto",
+          max_parallel_subtasks: 3,
+          required_parallel_probe: true,
+          spawn_before_serial_search_threshold: 3,
+          child_model_policy: "standard",
+          child_model: "gpt-5.4-mini",
+          subtask_candidates: ["Search parser references", "Review parser tests"],
+          child_report_format: "bullets",
+          skip_allowed_reason_required: true,
+        },
+      },
+    );
+
+    assert.match(inbox, /Native Subagent Delegation Contract/);
+    assert.match(inbox, /spawn up to 3 Codex native subagents/i);
+    assert.match(inbox, /gpt-5\.4-mini/);
+    assert.match(inbox, /Search parser references/);
+    assert.match(inbox, /Subagent skip reason:/);
   });
 
   it("generateShutdownInbox contains exit instruction and concrete ack path", () => {

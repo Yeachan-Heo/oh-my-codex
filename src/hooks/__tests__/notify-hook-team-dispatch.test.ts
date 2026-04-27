@@ -475,6 +475,118 @@ exit 1
     }
   });
 
+
+  it('logs structured evidence when bridge dispatch compat cannot be parsed and legacy requests are used', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      const queued = await enqueueDispatchRequest('alpha', {
+        kind: 'inbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        trigger_message: 'ping',
+      }, cwd);
+      await writeFile(join(cwd, '.omx', 'state', 'dispatch.json'), '{ broken bridge json');
+
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const mod = await import(pathToFileURL(modulePath).href);
+      const result = await mod.drainPendingTeamDispatch({
+        cwd,
+        maxPerTick: 5,
+        injector: async () => ({ ok: true, reason: 'injected_for_test' }),
+      });
+
+      assert.equal(result.processed, 1, 'legacy request fallback must still process the pending request');
+      const request = await readDispatchRequest('alpha', queued.request.request_id, cwd);
+      assert.equal(request?.status, 'notified');
+
+      const dispatchLogPath = join(cwd, '.omx', 'logs', `team-dispatch-${new Date().toISOString().slice(0, 10)}.jsonl`);
+      const dispatchLogs = (await readFile(dispatchLogPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const fallback = dispatchLogs.find((entry: { type?: string; fallback?: boolean; bridge_operation?: string }) =>
+        entry.type === 'bridge_fallback' && entry.bridge_operation === 'readBridgeDispatchRequests' && entry.fallback === true);
+      assert.ok(fallback, 'expected structured bridge fallback evidence in dispatch log');
+      assert.equal(fallback.team, 'alpha');
+      assert.equal(fallback.fallback_target, 'legacy_dispatch_requests');
+      assert.equal(fallback.counter, 'team_dispatch_bridge_fallback_total');
+      assert.match(fallback.reason, /parse_failed|invalid_dispatch_compat/);
+
+      const deliveryLog = await readTeamDeliveryLog(cwd);
+      assert.ok(deliveryLog.some((entry) =>
+        entry.event === 'bridge_fallback'
+        && entry.source === 'notify-hook.team-dispatch'
+        && entry.bridge_operation === 'readBridgeDispatchRequests'
+        && entry.fallback_target === 'legacy_dispatch_requests'
+        && entry.counter === 'team_dispatch_bridge_fallback_total'));
+    } finally {
+      if (typeof previousRuntimeBridge === 'string') process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+      else delete process.env.OMX_RUNTIME_BRIDGE;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('logs structured evidence when runtimeExec fails and JS state remains authoritative', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
+    const fakeBinDir = join(cwd, 'fake-bin');
+    const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(
+        join(fakeBinDir, 'omx-runtime'),
+        `#!/usr/bin/env bash
+set -eu
+if [[ "\${1:-}" == "exec" ]]; then
+  echo "runtime schema drift" >&2
+  exit 43
+fi
+exit 0
+`,
+      );
+      await chmod(join(fakeBinDir, 'omx-runtime'), 0o755);
+      process.env.OMX_RUNTIME_BINARY = join(fakeBinDir, 'omx-runtime');
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      const queued = await enqueueDispatchRequest('alpha', {
+        kind: 'inbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        trigger_message: 'ping',
+      }, cwd);
+
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const mod = await import(pathToFileURL(modulePath).href);
+      const result = await mod.drainPendingTeamDispatch({
+        cwd,
+        maxPerTick: 5,
+        injector: async () => ({ ok: true, reason: 'injected_for_test' }),
+      });
+
+      assert.equal(result.processed, 1, 'JS fallback path must still finish the dispatch');
+      const request = await readDispatchRequest('alpha', queued.request.request_id, cwd);
+      assert.equal(request?.status, 'notified');
+
+      const dispatchLogPath = join(cwd, '.omx', 'logs', `team-dispatch-${new Date().toISOString().slice(0, 10)}.jsonl`);
+      const dispatchLogs = (await readFile(dispatchLogPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const fallback = dispatchLogs.find((entry: { type?: string; bridge_operation?: string; request_id?: string }) =>
+        entry.type === 'bridge_fallback' && entry.bridge_operation === 'runtimeExec' && entry.request_id === queued.request.request_id);
+      assert.ok(fallback, 'expected structured runtimeExec fallback evidence in dispatch log');
+      assert.equal(fallback.command, 'MarkNotified');
+      assert.equal(fallback.team, 'alpha');
+      assert.equal(fallback.fallback_target, 'js_state_mutation');
+      assert.equal(fallback.counter, 'team_dispatch_bridge_fallback_total');
+      assert.match(fallback.reason, /runtime schema drift|failed/);
+    } finally {
+      if (typeof previousRuntimeBinary === 'string') process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
+      else delete process.env.OMX_RUNTIME_BINARY;
+      if (typeof previousRuntimeBridge === 'string') process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+      else delete process.env.OMX_RUNTIME_BRIDGE;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('leader-fixed dispatch uses pane target only when leader_pane_id exists', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
     const fakeBinDir = join(cwd, 'fake-bin');

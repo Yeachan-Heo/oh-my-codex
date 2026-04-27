@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -42,12 +42,38 @@ exit 0
 `;
 }
 
+function writeWorkerIdentityFixture(cwd: string, workerEnv: string): string {
+  const [teamName, workerName] = workerEnv.split('/');
+  assert.ok(teamName, 'worker env fixture should include a team name');
+  assert.ok(workerName, 'worker env fixture should include a worker name');
+
+  const stateRoot = join(cwd, '.omx', 'state');
+  const workerDir = join(stateRoot, 'team', teamName, 'workers', workerName);
+  const identityPath = join(workerDir, 'identity.json');
+  if (!existsSync(identityPath)) {
+    mkdirSync(workerDir, { recursive: true });
+    writeFileSync(identityPath, JSON.stringify({
+      name: workerName,
+      index: Number(workerName.replace(/^worker-/, '')) || 1,
+      role: 'executor',
+      assigned_tasks: [],
+      worktree_path: cwd,
+      team_state_root: stateRoot,
+    }, null, 2));
+  }
+  return stateRoot;
+}
+
 function runNotifyHookAsWorker(
   cwd: string,
   fakeBinDir: string,
   workerEnv: string,
   extraEnv: Record<string, string> = {},
+  options: { writeIdentity?: boolean } = {},
 ): ReturnType<typeof spawnSync> {
+  const stateRoot = options.writeIdentity === false
+    ? join(cwd, '.omx', 'state')
+    : writeWorkerIdentityFixture(cwd, workerEnv);
   const payload = {
     cwd,
     type: 'agent-turn-complete',
@@ -68,7 +94,7 @@ function runNotifyHookAsWorker(
       TMUX: '',
       TMUX_PANE: '',
       // Isolate from inherited team env (same pattern as all-workers-idle tests)
-      OMX_TEAM_STATE_ROOT: '',
+      OMX_TEAM_STATE_ROOT: stateRoot,
       OMX_TEAM_LEADER_CWD: '',
       ...extraEnv,
     },
@@ -134,6 +160,62 @@ describe('notify-hook per-worker idle notification', () => {
       assert.equal(event.tmux_session, 'devsess:0');
       assert.equal(event.leader_pane_id, null);
       assert.equal(event.tmux_injection_attempted, false);
+    });
+  });
+
+  it('fails closed instead of guessing the worker cwd .omx/state when identity is missing', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const logsDir = join(cwd, '.omx', 'logs');
+      const teamName = 'missing-identity-team';
+      const teamDir = join(stateDir, 'team', teamName);
+      const workersDir = join(teamDir, 'workers');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'missing-identity:0',
+        leader_pane_id: '%77',
+        workers: [
+          { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
+        ],
+      });
+      await writeJson(join(workersDir, 'worker-1', 'status.json'), {
+        state: 'idle',
+        current_task_id: 'task-42',
+        reason: 'task complete',
+        updated_at: new Date().toISOString(),
+      });
+      await writeJson(join(workersDir, 'worker-1', 'prev-notify-state.json'), {
+        state: 'working',
+        updated_at: new Date(Date.now() - 5000).toISOString(),
+      });
+
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHookAsWorker(
+        cwd,
+        fakeBinDir,
+        `${teamName}/worker-1`,
+        { OMX_TEAM_STATE_ROOT: '' },
+        { writeIdentity: false },
+      );
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      assert.equal(existsSync(join(workersDir, 'worker-1', 'heartbeat.json')), false, 'heartbeat should not be written without a validated worker identity');
+      assert.equal(existsSync(join(workersDir, 'worker-1', 'worker-idle-notify.json')), false, 'idle notify state should not be written without a validated worker identity');
+      assert.equal(existsSync(join(teamDir, 'all-workers-idle.json')), false, 'all-idle state should not be written without a validated worker identity');
+      assert.equal(existsSync(join(teamDir, 'events', 'events.ndjson')), false, 'worker idle events should not be emitted without a validated worker identity');
+      if (existsSync(tmuxLogPath)) {
+        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+        assert.doesNotMatch(tmuxLog, /send-keys/, 'missing identity must not inject leader notifications');
+      }
     });
   });
 

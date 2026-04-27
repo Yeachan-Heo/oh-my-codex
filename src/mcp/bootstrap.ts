@@ -226,7 +226,7 @@ export function shouldSelfExitForDuplicateSibling(
   duplicateObservedAtMs: number | null,
   lastTrafficAtMs: number | null,
   preTrafficGraceMs = DEFAULT_DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS,
-  postTrafficIdleMs = DEFAULT_DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS,
+  _postTrafficIdleMs = DEFAULT_DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS,
 ): boolean {
   if (observation.status !== 'older_duplicate') {
     return false;
@@ -239,10 +239,16 @@ export function shouldSelfExitForDuplicateSibling(
     return false;
   }
 
-  if (lastTrafficAtMs === null || lastTrafficAtMs <= duplicateObservedAtMs) {
-    return nowMs - duplicateObservedAtMs >= preTrafficGraceMs;
+  if (lastTrafficAtMs !== null) {
+    // Any stdin traffic means a client has already initialized or otherwise owns
+    // this stdio transport. In Codex App native subagent sessions, leader and
+    // subagent MCP servers can share a parent process and entrypoint while both
+    // transports remain active, so PID age alone is not safe proof that the
+    // older process is a stale duplicate.
+    return false;
   }
-  return nowMs - lastTrafficAtMs >= postTrafficIdleMs;
+
+  return nowMs - duplicateObservedAtMs >= preTrafficGraceMs;
 }
 
 export function isParentProcessAlive(

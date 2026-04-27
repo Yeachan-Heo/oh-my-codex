@@ -11,6 +11,7 @@ const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
 const MODEL_FLAG = '--model';
 const CONFIG_FLAG = '-c';
 const REASONING_KEY = 'model_reasoning_effort';
+const MODEL_PROVIDER_KEY = 'model_provider';
 
 const LOW_COMPLEXITY_AGENT_TYPES = new Set([
   'explore',
@@ -26,6 +27,7 @@ export interface ParsedTeamWorkerLaunchArgs {
   passthrough: string[];
   wantsBypass: boolean;
   reasoningOverride: string | null;
+  modelProviderOverride: string | null;
   modelOverride: string | null;
 }
 
@@ -37,8 +39,26 @@ export interface ResolveTeamWorkerLaunchArgsOptions {
 }
 
 
+function isConfigOverrideForKey(value: string, key: string): boolean {
+  return new RegExp(`^${key}\\s*=`).test(value.trim());
+}
+
 function isReasoningOverride(value: string): boolean {
-  return new RegExp(`^${REASONING_KEY}\\s*=`).test(value.trim());
+  return isConfigOverrideForKey(value, REASONING_KEY);
+}
+
+function isModelProviderOverride(value: string): boolean {
+  return isConfigOverrideForKey(value, MODEL_PROVIDER_KEY);
+}
+
+function extractConfigStringValue(value: string, key: string): string | null {
+  const trimmed = value.trim();
+  const match = new RegExp(`^${key}\\s*=\\s*(.+)$`).exec(trimmed);
+  if (!match) return null;
+  const raw = match[1]?.trim() ?? '';
+  if (raw === '') return null;
+  const quoted = /^(?:\"([^\"]*)\"|'([^']*)')$/.exec(raw);
+  return (quoted?.[1] ?? quoted?.[2] ?? raw).trim() || null;
 }
 
 function isValidModelValue(value: string): boolean {
@@ -72,6 +92,7 @@ export function parseTeamWorkerLaunchArgs(args: string[]): ParsedTeamWorkerLaunc
   const passthrough: string[] = [];
   let wantsBypass = false;
   let reasoningOverride: string | null = null;
+  let modelProviderOverride: string | null = null;
   let modelOverride: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
@@ -107,6 +128,11 @@ export function parseTeamWorkerLaunchArgs(args: string[]): ParsedTeamWorkerLaunc
         i += 1;
         continue;
       }
+      if (typeof maybeValue === 'string' && isModelProviderOverride(maybeValue)) {
+        modelProviderOverride = maybeValue;
+        i += 1;
+        continue;
+      }
     }
 
     passthrough.push(arg);
@@ -116,6 +142,7 @@ export function parseTeamWorkerLaunchArgs(args: string[]): ParsedTeamWorkerLaunc
     passthrough,
     wantsBypass,
     reasoningOverride,
+    modelProviderOverride,
     modelOverride,
   };
 }
@@ -125,15 +152,23 @@ export function collectInheritableTeamWorkerArgs(codexArgs: string[]): string[] 
 
   const inherited: string[] = [];
   if (parsed.wantsBypass) inherited.push(CODEX_BYPASS_FLAG);
+  if (parsed.modelProviderOverride) inherited.push(CONFIG_FLAG, parsed.modelProviderOverride);
   if (parsed.reasoningOverride) inherited.push(CONFIG_FLAG, parsed.reasoningOverride);
   if (parsed.modelOverride) inherited.push(MODEL_FLAG, parsed.modelOverride);
   return inherited;
+}
+
+export function extractModelProviderOverrideValue(args: string[]): string | undefined {
+  const override = parseTeamWorkerLaunchArgs(args).modelProviderOverride;
+  if (!override) return undefined;
+  return extractConfigStringValue(override, MODEL_PROVIDER_KEY) ?? undefined;
 }
 
 export function normalizeTeamWorkerLaunchArgs(
   args: string[],
   preferredModel?: string,
   preferredReasoning?: TeamReasoningEffort,
+  preferredModelProviderOverride?: string,
 ): string[] {
   const parsed = parseTeamWorkerLaunchArgs(args);
   const normalized = [...parsed.passthrough];
@@ -144,6 +179,8 @@ export function normalizeTeamWorkerLaunchArgs(
     ?? (normalizeOptionalReasoning(preferredReasoning)
       ? `${REASONING_KEY}="${normalizeOptionalReasoning(preferredReasoning)}"`
       : null);
+  const selectedModelProvider = preferredModelProviderOverride ?? parsed.modelProviderOverride;
+  if (selectedModelProvider) normalized.push(CONFIG_FLAG, selectedModelProvider);
   if (selectedReasoning) normalized.push(CONFIG_FLAG, selectedReasoning);
 
   const selectedModel = normalizeOptionalModel(preferredModel) ?? normalizeOptionalModel(parsed.modelOverride);
@@ -157,11 +194,14 @@ export function resolveTeamWorkerLaunchArgs(options: ResolveTeamWorkerLaunchArgs
   const inheritedArgs = options.inheritedArgs ?? [];
   const allArgs = [...envArgs, ...inheritedArgs];
 
-  const envModel = normalizeOptionalModel(parseTeamWorkerLaunchArgs(envArgs).modelOverride);
-  const inheritedModel = normalizeOptionalModel(parseTeamWorkerLaunchArgs(inheritedArgs).modelOverride);
+  const envParsed = parseTeamWorkerLaunchArgs(envArgs);
+  const inheritedParsed = parseTeamWorkerLaunchArgs(inheritedArgs);
+  const envModel = normalizeOptionalModel(envParsed.modelOverride);
+  const inheritedModel = normalizeOptionalModel(inheritedParsed.modelOverride);
   const fallbackModel = normalizeOptionalModel(options.fallbackModel);
   const selectedModel = envModel ?? inheritedModel ?? fallbackModel;
-  return normalizeTeamWorkerLaunchArgs(allArgs, selectedModel, options.preferredReasoning);
+  const selectedModelProvider = envParsed.modelProviderOverride ?? inheritedParsed.modelProviderOverride ?? undefined;
+  return normalizeTeamWorkerLaunchArgs(allArgs, selectedModel, options.preferredReasoning, selectedModelProvider);
 }
 
 export function resolveAgentReasoningEffort(agentType?: string): TeamReasoningEffort | undefined {

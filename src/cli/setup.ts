@@ -56,6 +56,7 @@ import {
   getCatalogAgentStatusByName,
   getInstallableNativeAgentNames,
   isNativeAgentInstallableStatus,
+  isSetupPromptAssetName,
 } from "../agents/policy.js";
 import { getPackageRoot } from "../utils/package.js";
 import { readSessionState, isSessionStale } from "../hooks/session.js";
@@ -66,21 +67,50 @@ import {
   addGeneratedAgentsMarker,
   hasOmxManagedAgentsSections,
   isOmxGeneratedAgentsMd,
+  upsertManagedAgentsBlock,
 } from "../utils/agents-md.js";
+import { DEFAULT_HUD_CONFIG, type HudPreset } from "../hud/types.js";
+
+async function resolveStatusLinePresetForSetup(
+  projectRoot: string,
+  options: Pick<SetupOptions, "force">,
+): Promise<HudPreset | undefined> {
+  if (options.force) {
+    return DEFAULT_HUD_CONFIG.statusLine.preset;
+  }
+  const path = join(projectRoot, ".omx", "hud-config.json");
+  if (!existsSync(path)) return undefined;
+  try {
+    const raw = JSON.parse(await readFile(path, "utf-8")) as {
+      statusLine?: { preset?: unknown };
+    };
+    const preset = raw?.statusLine?.preset;
+    if (preset === "minimal" || preset === "focused" || preset === "full") {
+      return preset;
+    }
+  } catch {
+    // Malformed hud-config.json — fall through to default.
+  }
+  return undefined;
+}
 import {
   resolveAgentsModelTableContext,
   upsertAgentsModelTable,
 } from "../utils/agents-model-table.js";
-import { spawnPlatformCommandSync } from "../utils/platform-command.js";
 
 interface SetupOptions {
   codexVersionProbe?: () => string | null;
   force?: boolean;
+  mergeAgents?: boolean;
   dryRun?: boolean;
   installMode?: SetupInstallMode;
   scope?: SetupScope;
   verbose?: boolean;
   agentsOverwritePrompt?: (destinationPath: string) => Promise<boolean>;
+  setupScopePrompt?: (defaultScope: SetupScope) => Promise<SetupScope>;
+  persistedSetupReviewPrompt?: (
+    preferences: Partial<PersistedSetupScope>,
+  ) => Promise<PersistedSetupReviewDecision>;
   installModePrompt?: (
     defaultMode: SetupInstallMode,
   ) => Promise<SetupInstallMode>;
@@ -213,6 +243,8 @@ interface ResolvedSetupInstallMode {
   source: "cli" | "persisted" | "prompt" | "default";
 }
 
+type PersistedSetupReviewDecision = "keep" | "review" | "reset";
+
 const REQUIRED_TEAM_CLI_API_MARKERS = [
   "if (subcommand === 'api')",
   "executeTeamApiOperation",
@@ -224,7 +256,6 @@ const DEFAULT_SETUP_INSTALL_MODE: SetupInstallMode = "legacy";
 const LEGACY_SETUP_MODEL = "gpt-5.3-codex";
 const DEFAULT_SETUP_MODEL = DEFAULT_FRONTIER_MODEL;
 const OBSOLETE_NATIVE_AGENT_FIELD = ["skill", "ref"].join("_");
-const TUI_OWNED_BY_CODEX_VERSION = [0, 107, 0] as const;
 
 function createEmptyCategorySummary(): SetupCategorySummary {
   return {
@@ -558,15 +589,23 @@ async function promptForSetupScope(
     output: process.stdout,
   });
   try {
+    const userDefaultMarker = defaultScope === "user" ? " (default)" : "";
+    const projectDefaultMarker = defaultScope === "project" ? " (default)" : "";
+    const defaultChoice = defaultScope === "project" ? "2" : "1";
     console.log("Select setup scope:");
     console.log(
-      `  1) user (default) — installs to ${codexHome()} (skills default to ${userSkillsDir()})`,
+      `  1) user${userDefaultMarker} — installs to ${codexHome()} (skills default to ${userSkillsDir()})`,
     );
-    console.log("  2) project — installs to ./.codex (local to project)");
-    const answer = (await rl.question("Scope [1-2] (default: 1): "))
+    console.log(
+      `  2) project${projectDefaultMarker} — installs to ./.codex (local to project)`,
+    );
+    const answer = (
+      await rl.question(`Scope [1-2] (default: ${defaultChoice}): `)
+    )
       .trim()
       .toLowerCase();
     if (answer === "2" || answer === "project") return "project";
+    if (answer === "1" || answer === "user") return "user";
     return defaultScope;
   } finally {
     rl.close();
@@ -605,6 +644,54 @@ async function promptForSetupInstallMode(
   }
 }
 
+function hasPersistedSetupPreferences(
+  preferences: Partial<PersistedSetupScope> | undefined,
+): preferences is Partial<PersistedSetupScope> {
+  return Boolean(preferences?.scope || preferences?.installMode);
+}
+
+function formatPersistedSetupPreferenceSummary(
+  preferences: Partial<PersistedSetupScope>,
+): string {
+  return [
+    `scope=${preferences.scope ?? "not recorded"}`,
+    `installMode=${preferences.installMode ?? "not recorded"}`,
+  ].join(", ");
+}
+
+async function promptForPersistedSetupReview(
+  preferences: Partial<PersistedSetupScope>,
+): Promise<PersistedSetupReviewDecision> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    return "keep";
+  }
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    console.log("Existing OMX setup preferences detected:");
+    console.log(`  ${formatPersistedSetupPreferenceSummary(preferences)}`);
+    console.log("  1) keep   — reuse these choices for this setup run");
+    console.log("  2) review — review/change choices, using these values as defaults");
+    console.log("  3) reset  — ignore saved choices and run setup as if fresh");
+    const answer = (
+      await rl.question("Setup preferences [1-3] (default: 1 keep): ")
+    )
+      .trim()
+      .toLowerCase();
+    if (answer === "2" || answer === "review" || answer === "change") {
+      return "review";
+    }
+    if (answer === "3" || answer === "reset" || answer === "fresh") {
+      return "reset";
+    }
+    return "keep";
+  } finally {
+    rl.close();
+  }
+}
+
 async function promptForModelUpgrade(
   currentModel: string,
   targetModel: string,
@@ -628,40 +715,6 @@ async function promptForModelUpgrade(
   } finally {
     rl.close();
   }
-}
-
-function parseSemverTriplet(version: string): [number, number, number] | null {
-  const match = version.match(/(\d+)\.(\d+)\.(\d+)/);
-  if (!match) return null;
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
-}
-
-function semverGte(
-  version: [number, number, number],
-  minimum: readonly [number, number, number],
-): boolean {
-  if (version[0] !== minimum[0]) return version[0] > minimum[0];
-  if (version[1] !== minimum[1]) return version[1] > minimum[1];
-  return version[2] >= minimum[2];
-}
-
-function probeInstalledCodexVersion(): string | null {
-  const { result } = spawnPlatformCommandSync("codex", ["--version"], {
-    encoding: "utf-8",
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  if (result.error || result.status !== 0) return null;
-  const stdout = (result.stdout || "").trim();
-  return stdout === "" ? null : stdout;
-}
-
-function shouldOmxManageTuiFromCodexVersion(
-  versionOutput: string | null,
-): boolean {
-  if (!versionOutput) return true;
-  const parsed = parseSemverTriplet(versionOutput);
-  if (!parsed) return true;
-  return !semverGte(parsed, TUI_OWNED_BY_CODEX_VERSION);
 }
 
 async function promptForAgentsOverwrite(
@@ -763,16 +816,29 @@ async function promptForPluginDeveloperInstructionsOverwrite(
 async function resolveSetupScope(
   projectRoot: string,
   requestedScope?: SetupScope,
+  persistedReviewDecision: PersistedSetupReviewDecision = "keep",
+  persistedPreferences?: Partial<PersistedSetupScope>,
+  setupScopePrompt?: (defaultScope: SetupScope) => Promise<SetupScope>,
 ): Promise<ResolvedSetupScope> {
   if (requestedScope) {
     return { scope: requestedScope, source: "cli" };
   }
-  const persisted = await readPersistedSetupPreferences(projectRoot);
-  if (persisted?.scope) {
+  const persisted =
+    persistedPreferences ?? (await readPersistedSetupPreferences(projectRoot));
+  if (persisted?.scope && persistedReviewDecision === "keep") {
     return { scope: persisted.scope, source: "persisted" };
   }
-  if (process.stdin.isTTY && process.stdout.isTTY) {
-    const scope = await promptForSetupScope(DEFAULT_SETUP_SCOPE);
+  if (
+    typeof setupScopePrompt === "function" ||
+    (process.stdin.isTTY && process.stdout.isTTY)
+  ) {
+    const defaultScope =
+      persistedReviewDecision === "review" && persisted?.scope
+        ? persisted.scope
+        : DEFAULT_SETUP_SCOPE;
+    const scope = setupScopePrompt
+      ? await setupScopePrompt(defaultScope)
+      : await promptForSetupScope(defaultScope);
     return { scope, source: "prompt" };
   }
   return { scope: DEFAULT_SETUP_SCOPE, source: "default" };
@@ -845,24 +911,37 @@ async function resolveSetupInstallMode(
   installModePrompt?: (
     defaultMode: SetupInstallMode,
   ) => Promise<SetupInstallMode>,
+  persistedReviewDecision: PersistedSetupReviewDecision = "keep",
+  persistedPreferences?: Partial<PersistedSetupScope>,
 ): Promise<ResolvedSetupInstallMode | null> {
   if (requestedInstallMode) {
     return { installMode: requestedInstallMode, source: "cli" };
   }
 
-  const persisted = await readPersistedSetupPreferences(projectRoot);
-  if (persisted?.installMode && persisted.scope === scope) {
+  const persisted =
+    persistedPreferences ?? (await readPersistedSetupPreferences(projectRoot));
+  if (
+    persisted?.installMode &&
+    persistedReviewDecision === "keep" &&
+    persisted.scope === scope
+  ) {
     return { installMode: persisted.installMode, source: "persisted" };
   }
 
   if (scope !== "user") return null;
 
   const discoveredPluginCacheDir = await discoverOmxPluginCacheDir();
-  const defaultMode = discoveredPluginCacheDir
-    ? "plugin"
-    : DEFAULT_SETUP_INSTALL_MODE;
+  const defaultMode =
+    persistedReviewDecision === "review" && persisted?.installMode
+      ? persisted.installMode
+      : discoveredPluginCacheDir
+        ? "plugin"
+        : DEFAULT_SETUP_INSTALL_MODE;
 
-  if (process.stdin.isTTY && process.stdout.isTTY) {
+  if (
+    typeof installModePrompt === "function" ||
+    (process.stdin.isTTY && process.stdout.isTTY)
+  ) {
     if (discoveredPluginCacheDir) {
       console.log(
         `Detected installed oh-my-codex Codex plugin cache at ${discoveredPluginCacheDir}.`,
@@ -1017,33 +1096,14 @@ async function cleanupPluginModeLegacyPrompts(
   if (!existsSync(srcDir) || !existsSync(dstDir)) return summary;
 
   const manifest = tryReadCatalogManifest();
-  const agentStatusByName = manifest
-    ? getCatalogAgentStatusByName(manifest)
-    : null;
 
   for (const file of await readdir(srcDir)) {
     if (!file.endsWith(".md")) continue;
     const promptName = file.slice(0, -3);
-    const status = agentStatusByName?.get(promptName);
-    if (agentStatusByName && !isNativeAgentInstallableStatus(status)) continue;
+    if (manifest && !isSetupPromptAssetName(promptName, manifest)) continue;
 
-    const src = join(srcDir, file);
     const dst = join(dstDir, file);
     if (!existsSync(dst)) continue;
-
-    const [srcContent, dstContent] = await Promise.all([
-      readFile(src, "utf-8"),
-      readFile(dst, "utf-8"),
-    ]);
-    if (srcContent !== dstContent) {
-      summary.skipped += 1;
-      if (options.verbose) {
-        console.log(
-          `  skipped legacy prompt cleanup for ${file}: installed content differs from OMX-managed content`,
-        );
-      }
-      continue;
-    }
 
     if (await ensureBackup(dst, true, backupContext, options)) {
       summary.backedUp += 1;
@@ -1054,7 +1114,7 @@ async function cleanupPluginModeLegacyPrompts(
     summary.removed += 1;
     if (options.verbose) {
       console.log(
-        `  ${options.dryRun ? "would remove" : "removed"} legacy prompt ${file}`,
+        `  ${options.dryRun ? "would archive and remove" : "archived and removed"} legacy prompt ${file}`,
       );
     }
   }
@@ -1090,11 +1150,14 @@ async function cleanupPluginModeLegacyNativeAgents(
       codexHomeOverride: join(agentsDir, ".."),
     });
     const installedToml = await readFile(dst, "utf-8");
-    if (installedToml !== expectedToml) {
+    if (
+      installedToml !== expectedToml &&
+      !isGeneratedOmxNativeAgentToml(installedToml, name)
+    ) {
       summary.skipped += 1;
       if (options.verbose) {
         console.log(
-          `  skipped legacy native agent cleanup for ${name}.toml: installed content differs from OMX-managed content`,
+          `  skipped legacy native agent cleanup for ${name}.toml: installed content is not an OMX-generated native agent`,
         );
       }
       continue;
@@ -1109,9 +1172,20 @@ async function cleanupPluginModeLegacyNativeAgents(
     summary.removed += 1;
     if (options.verbose) {
       console.log(
-        `  ${options.dryRun ? "would remove" : "removed"} legacy native agent ${name}.toml`,
+        `  ${options.dryRun ? "would archive and remove" : "archived and removed"} legacy native agent ${name}.toml`,
       );
     }
+  }
+
+  if (manifest) {
+    const generatedCleanup = await cleanupGeneratedNonInstallableNativeAgents(
+      agentsDir,
+      manifest,
+      backupContext,
+      options,
+    );
+    summary.backedUp += generatedCleanup.backedUp;
+    summary.removed += generatedCleanup.removed;
   }
 
   await removeEmptyDirectoryIfPresent(agentsDir, options);
@@ -1375,6 +1449,8 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     installMode: requestedInstallMode,
     scope: requestedScope,
     verbose = false,
+    setupScopePrompt,
+    persistedSetupReviewPrompt,
     installModePrompt,
     modelUpgradePrompt,
     pluginAgentsMdPrompt,
@@ -1383,12 +1459,44 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   } = options;
   const pkgRoot = getPackageRoot();
   const projectRoot = process.cwd();
-  const resolvedScope = await resolveSetupScope(projectRoot, requestedScope);
+  const persistedPreferences = await readPersistedSetupPreferences(projectRoot);
+  let persistedReviewDecision: PersistedSetupReviewDecision = "keep";
+  const effectiveScopeForInstallMode =
+    requestedScope ?? persistedPreferences?.scope ?? DEFAULT_SETUP_SCOPE;
+  const wouldUsePersistedScope =
+    !requestedScope && Boolean(persistedPreferences?.scope);
+  const wouldUsePersistedInstallMode =
+    !requestedInstallMode &&
+    Boolean(persistedPreferences?.installMode) &&
+    (!persistedPreferences?.scope ||
+      persistedPreferences.scope === effectiveScopeForInstallMode);
+  const shouldReviewPersistedSetup =
+    hasPersistedSetupPreferences(persistedPreferences) &&
+    (wouldUsePersistedScope || wouldUsePersistedInstallMode) &&
+    (typeof persistedSetupReviewPrompt === "function" ||
+      (process.stdin.isTTY && process.stdout.isTTY));
+  if (shouldReviewPersistedSetup) {
+    persistedReviewDecision = persistedSetupReviewPrompt
+      ? await persistedSetupReviewPrompt(persistedPreferences)
+      : await promptForPersistedSetupReview(persistedPreferences);
+    console.log(
+      `Setup preference review: ${persistedReviewDecision} (${formatPersistedSetupPreferenceSummary(persistedPreferences)})\n`,
+    );
+  }
+  const resolvedScope = await resolveSetupScope(
+    projectRoot,
+    requestedScope,
+    persistedReviewDecision,
+    persistedPreferences,
+    setupScopePrompt,
+  );
   const resolvedInstallMode = await resolveSetupInstallMode(
     projectRoot,
     resolvedScope.scope,
     requestedInstallMode,
     installModePrompt,
+    persistedReviewDecision,
+    persistedPreferences,
   );
   const scopeDirs = resolveScopeDirectories(resolvedScope.scope, projectRoot);
   const scopeSourceMessage =
@@ -1502,7 +1610,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
       );
       console.log(
         summary.prompts.removed > 0
-          ? `  ${dryRun ? "Would remove" : "Removed"} ${summary.prompts.removed} legacy OMX-managed prompt file(s).\n`
+          ? `  ${dryRun ? "Would archive and remove" : "Archived and removed"} ${summary.prompts.removed} legacy OMX-managed prompt file(s).\n`
           : "  Prompt refresh skipped; no legacy OMX-managed prompt files found.\n",
       );
     } else {
@@ -1602,7 +1710,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     );
     console.log(
       summary.nativeAgents.removed > 0
-        ? `  ${dryRun ? "Would remove" : "Removed"} ${summary.nativeAgents.removed} legacy OMX-managed native agent config(s).\n`
+        ? `  ${dryRun ? "Would archive and remove" : "Archived and removed"} ${summary.nativeAgents.removed} legacy OMX-managed native agent config(s).\n`
         : "  Native agent refresh skipped; no legacy OMX-managed native agent configs found.\n",
     );
   } else {
@@ -1707,6 +1815,9 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     for (const warning of sharedMcpRegistry.warnings) {
       console.log(`  warning: ${warning}`);
     }
+    const statusLinePreset = await resolveStatusLinePresetForSetup(projectRoot, {
+      force,
+    });
     const managedConfig = await updateManagedConfig(
       scopeDirs.codexConfigFile,
       pkgRoot,
@@ -1714,10 +1825,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
       summary.config,
       backupContext,
       {
-        codexVersionProbe: options.codexVersionProbe,
         dryRun,
         modelUpgradePrompt,
         verbose,
+        statusLinePreset,
+        forceStatusLinePreset: force,
       },
     );
     resolvedConfig = managedConfig.finalConfig;
@@ -1870,17 +1982,16 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
         modelTableContext,
       );
       let changed = true;
-      let canApplyManagedTemplateRefresh = false;
-      let managedTemplateRefreshContent = "";
       let canApplyManagedModelRefresh = false;
       let managedRefreshContent = "";
+      let canApplyManagedAgentsMerge = false;
+      let mergedAgentsContent = "";
       if (agentsMdExists) {
         const existing = await readFile(agentsMdDst, "utf-8");
         changed = existing !== rewritten;
-        if (isOmxGeneratedAgentsMd(existing)) {
-          managedTemplateRefreshContent = rewritten;
-          canApplyManagedTemplateRefresh =
-            managedTemplateRefreshContent !== existing;
+        if (options.mergeAgents) {
+          mergedAgentsContent = upsertManagedAgentsBlock(existing, rewritten);
+          canApplyManagedAgentsMerge = mergedAgentsContent !== existing;
         } else if (hasOmxManagedAgentsSections(existing)) {
           managedRefreshContent = upsertAgentsModelTable(
             existing,
@@ -1894,7 +2005,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
         resolvedScope.scope === "project" &&
         sessionIsActive &&
         agentsMdExists &&
-        changed
+        (changed || canApplyManagedAgentsMerge || canApplyManagedModelRefresh)
       ) {
         summary.agentsMd.skipped += 1;
         console.log(
@@ -1906,19 +2017,26 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
           "  Skipping AGENTS.md overwrite to avoid corrupting runtime overlay.",
         );
         console.log("  Stop the active session first, then re-run setup.");
-      } else if (canApplyManagedTemplateRefresh) {
+      } else if (options.mergeAgents && agentsMdExists && !canApplyManagedAgentsMerge) {
+        summary.agentsMd.unchanged += 1;
+        console.log(
+          resolvedScope.scope === "project"
+            ? "  AGENTS.md already up to date in project root."
+            : `  AGENTS.md already up to date in ${scopeDirs.codexHomeDir}.`,
+        );
+      } else if (canApplyManagedAgentsMerge) {
         await syncManagedContent(
-          managedTemplateRefreshContent,
+          mergedAgentsContent,
           agentsMdDst,
           summary.agentsMd,
           backupContext,
           { dryRun, verbose },
-          `managed AGENTS ${agentsMdDst}`,
+          `merged AGENTS ${agentsMdDst}`,
         );
         console.log(
           resolvedScope.scope === "project"
-            ? "  Refreshed managed AGENTS.md in project root."
-            : `  Refreshed managed AGENTS.md in ${scopeDirs.codexHomeDir}.`,
+            ? "  Merged OMX-managed AGENTS.md sections into project root."
+            : `  Merged OMX-managed AGENTS.md sections into ${scopeDirs.codexHomeDir}.`,
         );
       } else if (canApplyManagedModelRefresh) {
         await syncManagedContent(
@@ -2000,10 +2118,6 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   }
   if (omxManagesTui) {
     console.log("  StatusLine configured in config.toml via [tui] section.");
-  } else {
-    console.log(
-      "  Codex CLI >= 0.107.0 manages [tui]; OMX left that section untouched.",
-    );
   }
   console.log();
 
@@ -2278,20 +2392,16 @@ async function installPrompts(
     : null;
 
   const files = await readdir(srcDir);
-  const staleCandidatePromptNames = new Set(
-    manifest?.agents.map((agent) => agent.name) ?? [],
-  );
 
   for (const file of files) {
     if (!file.endsWith(".md")) continue;
     const promptName = file.slice(0, -3);
-    staleCandidatePromptNames.add(promptName);
 
     const status = agentStatusByName?.get(promptName);
-    if (agentStatusByName && !isNativeAgentInstallableStatus(status)) {
+    if (manifest && !isSetupPromptAssetName(promptName, manifest)) {
       summary.skipped += 1;
       if (options.verbose) {
-        const label = status ?? "unlisted";
+        const label = status ?? "unclassified";
         console.log(`  skipped ${file} (status: ${label})`);
       }
       continue;
@@ -2317,13 +2427,14 @@ async function installPrompts(
       if (!file.endsWith(".md")) continue;
       const promptName = file.slice(0, -3);
       const status = agentStatusByName?.get(promptName);
-      if (isNativeAgentInstallableStatus(status)) continue;
-      if (!staleCandidatePromptNames.has(promptName) && status === undefined)
-        continue;
+      if (isSetupPromptAssetName(promptName, manifest)) continue;
 
       const stalePromptPath = join(dstDir, file);
       if (!existsSync(stalePromptPath)) continue;
 
+      if (await ensureBackup(stalePromptPath, true, backupContext, options)) {
+        summary.backedUp += 1;
+      }
       if (!options.dryRun) {
         await rm(stalePromptPath, { force: true });
       }
@@ -2335,6 +2446,72 @@ async function installPrompts(
         const label = status ?? "unlisted";
         console.log(`  ${prefix} ${file} (status: ${label})`);
       }
+    }
+  }
+
+  return summary;
+}
+
+function isGeneratedOmxNativeAgentToml(
+  content: string,
+  agentName: string,
+): boolean {
+  const firstLine = content.split(/\r?\n/, 1)[0]?.trim();
+  return firstLine === `# oh-my-codex agent: ${agentName}`;
+}
+
+async function cleanupGeneratedNonInstallableNativeAgents(
+  agentsDir: string,
+  manifest: NonNullable<ReturnType<typeof tryReadCatalogManifest>>,
+  backupContext: SetupBackupContext,
+  options: Pick<SetupOptions, "dryRun" | "verbose">,
+): Promise<SetupCategorySummary> {
+  const summary = createEmptyCategorySummary();
+  if (!existsSync(agentsDir)) return summary;
+
+  const agentStatusByName = getCatalogAgentStatusByName(manifest);
+  const installedFiles = await readdir(agentsDir);
+
+  for (const file of installedFiles) {
+    if (!file.endsWith(".toml")) continue;
+    const agentName = file.slice(0, -5);
+    const agentStatus = agentStatusByName.get(agentName);
+    if (
+      agentStatus === undefined ||
+      isNativeAgentInstallableStatus(agentStatus)
+    ) {
+      continue;
+    }
+
+    const staleAgentPath = join(agentsDir, file);
+    let content = "";
+    try {
+      content = await readFile(staleAgentPath, "utf-8");
+    } catch {
+      continue;
+    }
+
+    if (!isGeneratedOmxNativeAgentToml(content, agentName)) {
+      if (options.verbose) {
+        console.log(
+          `  skipped stale native agent ${file}: not an OMX-generated native agent`,
+        );
+      }
+      continue;
+    }
+
+    if (await ensureBackup(staleAgentPath, true, backupContext, options)) {
+      summary.backedUp += 1;
+    }
+    if (!options.dryRun) {
+      await rm(staleAgentPath, { force: true });
+    }
+    summary.removed += 1;
+    if (options.verbose) {
+      const prefix = options.dryRun
+        ? "would remove stale generated native agent"
+        : "removed stale generated native agent";
+      console.log(`  ${prefix} ${file} (status: ${agentStatus})`);
     }
   }
 
@@ -2402,6 +2579,17 @@ async function refreshNativeAgentConfigs(
     options,
   );
 
+  if (manifest) {
+    const generatedCleanup = await cleanupGeneratedNonInstallableNativeAgents(
+      agentsDir,
+      manifest,
+      backupContext,
+      options,
+    );
+    summary.backedUp += generatedCleanup.backedUp;
+    summary.removed += generatedCleanup.removed;
+  }
+
   if (options.force && manifest && existsSync(agentsDir)) {
     const installedFiles = await readdir(agentsDir);
     for (const file of installedFiles) {
@@ -2418,6 +2606,9 @@ async function refreshNativeAgentConfigs(
       const staleAgentPath = join(agentsDir, file);
       if (!existsSync(staleAgentPath)) continue;
 
+      if (await ensureBackup(staleAgentPath, true, backupContext, options)) {
+        summary.backedUp += 1;
+      }
       if (!options.dryRun) {
         await rm(staleAgentPath, { force: true });
       }
@@ -2700,8 +2891,8 @@ async function updateManagedConfig(
   backupContext: SetupBackupContext,
   options: Pick<
     SetupOptions,
-    "codexVersionProbe" | "dryRun" | "verbose" | "modelUpgradePrompt"
-  >,
+    "dryRun" | "verbose" | "modelUpgradePrompt"
+  > & { statusLinePreset?: HudPreset; forceStatusLinePreset?: boolean },
 ): Promise<ManagedConfigResult> {
   const existing = existsSync(configPath)
     ? await readFile(configPath, "utf-8")
@@ -2709,9 +2900,7 @@ async function updateManagedConfig(
   const hadLegacyTeamRunTable = hasLegacyOmxTeamRunTable(existing);
   const currentModel = getRootModelName(existing);
   let modelOverride: string | undefined;
-  const codexVersion =
-    options.codexVersionProbe?.() ?? probeInstalledCodexVersion();
-  const omxManagesTui = shouldOmxManageTuiFromCodexVersion(codexVersion);
+  const omxManagesTui = true;
 
   if (currentModel === LEGACY_SETUP_MODEL) {
     const shouldPrompt =
@@ -2733,6 +2922,8 @@ async function updateManagedConfig(
     sharedMcpServers: sharedMcpRegistry.servers,
     sharedMcpRegistrySource: sharedMcpRegistry.sourcePath,
     verbose: options.verbose,
+    statusLinePreset: options.statusLinePreset,
+    forceStatusLinePreset: options.forceStatusLinePreset,
   });
   const changed = existing !== finalConfig;
 

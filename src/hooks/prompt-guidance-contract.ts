@@ -234,3 +234,94 @@ export const SKILL_CONTRACTS: GuidanceSurfaceContract[] = [
     requiredPatterns: ULTRAWORK_SKILL_PATTERNS,
   },
 ];
+
+export const PROMPT_REFACTOR_MARKER_CONTRACTS = [
+  {
+    id: 'runtime-overlay-markers',
+    markers: ['<!-- OMX:RUNTIME:START -->', '<!-- OMX:RUNTIME:END -->'],
+    requiredPaths: ['templates/AGENTS.md', 'src/hooks/agents-overlay.ts'],
+  },
+  {
+    id: 'team-worker-overlay-markers',
+    markers: ['<!-- OMX:TEAM:WORKER:START -->', '<!-- OMX:TEAM:WORKER:END -->'],
+    requiredPaths: ['templates/AGENTS.md', 'src/team/worker-bootstrap.ts', 'src/hooks/agents-overlay.ts'],
+  },
+  {
+    id: 'model-table-markers',
+    markers: ['<!-- OMX:MODELS:START -->', '<!-- OMX:MODELS:END -->'],
+    requiredPaths: ['templates/AGENTS.md', 'src/utils/agents-model-table.ts'],
+  },
+  {
+    id: 'generated-agents-marker',
+    markers: ['<!-- omx:generated:agents-md -->'],
+    requiredPaths: ['src/utils/agents-md.ts'],
+  },
+];
+
+export const PROMPT_REFACTOR_INVARIANT_CONTRACTS: GuidanceSurfaceContract[] = [
+  {
+    id: 'team-skill-state-machine',
+    path: 'skills/team/SKILL.md',
+    requiredPatterns: [
+      rx('Current Runtime Behavior'),
+      rx('tasks/task-<id>\\.json'),
+      rx('claim-task'),
+      rx('transition-task-status'),
+    ],
+  },
+  {
+    id: 'worker-skill-state-machine',
+    path: 'skills/worker/SKILL.md',
+    requiredPatterns: [
+      rx('Send a startup ACK'),
+      rx('claim-task'),
+      rx('transition-task-status'),
+      rx('release-task-claim.*pending'),
+      rx('mailbox-mark-delivered'),
+    ],
+  },
+  {
+    id: 'ralph-planning-gate',
+    path: 'skills/ralph/SKILL.md',
+    requiredPatterns: [
+      rx('PRD'),
+      rx('snapshot grounding|pre-context intake'),
+      rx('Do not begin Ralph execution work|do not begin implementation|must not implement|no implementation'),
+    ],
+  },
+  {
+    id: 'ralplan-consensus-sequence',
+    path: 'skills/ralplan/SKILL.md',
+    requiredPatterns: [rx('Planner'), rx('Architect'), rx('Critic'), rx('ADR')],
+  },
+  {
+    id: 'deep-interview-question-gate',
+    path: 'skills/deep-interview/SKILL.md',
+    requiredPatterns: [rx('omx\\s+question'), rx('Socratic|interview'), rx('ambiguity')],
+  },
+  {
+    id: 'cancel-safety-boundary',
+    path: 'skills/cancel/SKILL.md',
+    requiredPatterns: [rx('Strip AGENTS\\.md'), rx('shutdown'), rx('state')],
+  },
+  {
+    id: 'ultraqa-verification-loop',
+    path: 'skills/ultraqa/SKILL.md',
+    requiredPatterns: [rx('test'), rx('verify'), rx('fix'), rx('repeat|loop')],
+  },
+  {
+    id: 'autopilot-completion-loop',
+    path: 'skills/autopilot/SKILL.md',
+    requiredPatterns: [rx('requirements analysis'), rx('implementation'), rx('validation')],
+  },
+  {
+    id: 'explore-read-only-role-boundary',
+    path: 'prompts/explore.md',
+    requiredPatterns: [rx('read-only'), rx('cannot create, modify, or delete files')],
+  },
+  {
+    id: 'researcher-source-boundary',
+    path: 'prompts/researcher.md',
+    requiredPatterns: [rx('source|citation|cite'), rx('official documentation|primary source')],
+  },
+];

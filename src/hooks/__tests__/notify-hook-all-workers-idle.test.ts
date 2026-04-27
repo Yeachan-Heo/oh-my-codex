@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -42,12 +42,35 @@ exit 0
 `;
 }
 
+function writeWorkerIdentityFixture(cwd: string, workerEnv: string): string {
+  const [teamName, workerName] = workerEnv.split('/');
+  assert.ok(teamName, 'worker env fixture should include a team name');
+  assert.ok(workerName, 'worker env fixture should include a worker name');
+
+  const stateRoot = join(cwd, '.omx', 'state');
+  const workerDir = join(stateRoot, 'team', teamName, 'workers', workerName);
+  const identityPath = join(workerDir, 'identity.json');
+  if (!existsSync(identityPath)) {
+    mkdirSync(workerDir, { recursive: true });
+    writeFileSync(identityPath, JSON.stringify({
+      name: workerName,
+      index: Number(workerName.replace(/^worker-/, '')) || 1,
+      role: 'executor',
+      assigned_tasks: [],
+      worktree_path: cwd,
+      team_state_root: stateRoot,
+    }, null, 2));
+  }
+  return stateRoot;
+}
+
 function runNotifyHookAsWorker(
   cwd: string,
   fakeBinDir: string,
   workerEnv: string,
   extraEnv: Record<string, string> = {},
 ): ReturnType<typeof spawnSync> {
+  const stateRoot = writeWorkerIdentityFixture(cwd, workerEnv);
   const payload = {
     cwd,
     type: 'agent-turn-complete',
@@ -63,7 +86,7 @@ function runNotifyHookAsWorker(
       ...process.env,
       PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
       OMX_TEAM_WORKER: workerEnv,
-      OMX_TEAM_STATE_ROOT: join(cwd, '.omx', 'state'),
+      OMX_TEAM_STATE_ROOT: stateRoot,
       OMX_TEAM_LEADER_CWD: '',
       OMX_MODEL_INSTRUCTIONS_FILE: '',
       OMX_TEAM_WORKER_IDLE_NOTIFY: 'false',

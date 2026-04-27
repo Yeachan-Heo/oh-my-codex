@@ -28,6 +28,10 @@ In this repository, `prompts/*.md` remain the canonical source files even when t
 
 This document is the contributor-oriented index for those surfaces.
 
+## Workflow skill guidance dedupe
+
+Workflow skills in `skills/*/SKILL.md` may use a compact reference to the shared workflow guidance pattern instead of repeating every GPT-5.4 bullet verbatim. That pattern must preserve four behaviors: concise evidence-backed reporting, scoped task-update overrides, persistent inspection/verification while correctness depends on it, and automatic continuation for safe reversible next steps. Workflow-specific invariants such as state transitions, gates, cleanup, cancellation, and verification commands remain explicit in the owning skill.
+
 ## Exact-model mini adaptation seam
 
 OMX also has a narrow **instruction-composition seam** for subagents/workers whose **final resolved model** is exactly `gpt-5.4-mini`.

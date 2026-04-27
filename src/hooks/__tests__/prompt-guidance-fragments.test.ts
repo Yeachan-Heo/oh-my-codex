@@ -1,8 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { listTrackedAgentSurfaces } from './prompt-guidance-test-helpers.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '../../../');
@@ -25,7 +26,7 @@ describe('prompt-guidance fragments stay synced with generated surfaces', () => 
     const specialistRouting = read('docs/prompt-guidance-fragments/leader-specialist-routing.md').trim();
     const verifySeq = read('docs/prompt-guidance-fragments/core-verification-and-sequencing.md').trim();
 
-    for (const file of ['AGENTS.md', 'templates/AGENTS.md'].filter((path) => existsSync(join(repoRoot, path)))) {
+    for (const file of listTrackedAgentSurfaces()) {
       const content = read(file);
       assert.equal(
         extract(content, '<!-- OMX:GUIDANCE:OPERATING:START -->', '<!-- OMX:GUIDANCE:OPERATING:END -->'),

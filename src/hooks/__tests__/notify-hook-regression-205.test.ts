@@ -255,7 +255,7 @@ describe('regression-205: resolveTeamStateDirForWorker is exported from team-wor
     );
   });
 
-  it('uses OMX_TEAM_STATE_ROOT env var when set', async () => {
+  it('fails closed for OMX_TEAM_STATE_ROOT when worker identity is missing', async () => {
     const { resolveTeamStateDirForWorker } = await loadModule('notify-hook/team-worker.js');
     const saved = process.env.OMX_TEAM_STATE_ROOT;
     process.env.OMX_TEAM_STATE_ROOT = '/custom/state/root';
@@ -264,7 +264,7 @@ describe('regression-205: resolveTeamStateDirForWorker is exported from team-wor
         '/some/cwd',
         { teamName: 'fix-ts', workerName: 'worker-1' },
       );
-      assert.equal(result, '/custom/state/root');
+      assert.equal(result, null);
     } finally {
       if (saved === undefined) {
         delete process.env.OMX_TEAM_STATE_ROOT;
@@ -274,7 +274,7 @@ describe('regression-205: resolveTeamStateDirForWorker is exported from team-wor
     }
   });
 
-  it('falls back to {cwd}/.omx/state when no env var and no team dir exists', async () => {
+  it('does not guess {cwd}/.omx/state when no worker identity exists', async () => {
     const { resolveTeamStateDirForWorker } = await loadModule('notify-hook/team-worker.js');
     const savedRoot = process.env.OMX_TEAM_STATE_ROOT;
     const savedLeader = process.env.OMX_TEAM_LEADER_CWD;
@@ -286,7 +286,7 @@ describe('regression-205: resolveTeamStateDirForWorker is exported from team-wor
         cwd,
         { teamName: 'fix-ts', workerName: 'worker-1' },
       );
-      assert.equal(result, join(cwd, '.omx', 'state'));
+      assert.equal(result, null);
     } finally {
       if (savedRoot === undefined) {
         delete process.env.OMX_TEAM_STATE_ROOT;

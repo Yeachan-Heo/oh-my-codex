@@ -138,6 +138,7 @@ describe('buildGitBranchLabel', () => {
     assert.equal(buildGitBranchLabel('/repo', {
       preset: 'focused',
       git: { display: 'repo-branch', remoteName: 'upstream' },
+      statusLine: { preset: 'focused' },
     }, gitRunner), 'upstream-repo/feature/test');
   });
 
@@ -181,6 +182,7 @@ describe('buildGitBranchLabel', () => {
     assert.equal(buildGitBranchLabel('/repo', {
       preset: 'focused',
       git: { display: 'branch' },
+      statusLine: { preset: 'focused' },
     }, gitRunner), 'feature/test');
   });
 
@@ -192,6 +194,7 @@ describe('buildGitBranchLabel', () => {
     assert.equal(buildGitBranchLabel('/repo', {
       preset: 'focused',
       git: { display: 'repo-branch', repoLabel: 'manual' },
+      statusLine: { preset: 'focused' },
     }, gitRunner), 'manual/feature/test');
   });
 
@@ -204,6 +207,7 @@ describe('buildGitBranchLabel', () => {
       const label = buildGitBranchLabel(cwd, {
         preset: 'focused',
         git: { display: 'repo-branch', remoteName: maliciousRemoteName },
+        statusLine: { preset: 'focused' },
       });
 
       assert.equal(label, 'origin-repo/safe-branch');

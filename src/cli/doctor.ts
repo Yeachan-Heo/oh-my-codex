@@ -196,7 +196,7 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 }
 
 interface TeamDoctorIssue {
-  code: 'delayed_status_lag' | 'slow_shutdown' | 'orphan_tmux_session' | 'resume_blocker' | 'stale_leader';
+  code: 'delayed_status_lag' | 'slow_shutdown' | 'orphan_tmux_session' | 'resume_blocker' | 'prompt_resume_unavailable' | 'stale_leader';
   message: string;
   severity: 'warn' | 'fail';
 }
@@ -276,23 +276,29 @@ async function collectTeamDoctorIssues(cwd: string): Promise<TeamDoctorIssue[]> 
     const configPath = join(teamDir, 'config.json');
 
     let tmuxSession = `omx-team-${teamName}`;
+    let workerLaunchMode: 'interactive' | 'prompt' = 'interactive';
+    let promptWorkers: Array<{ name?: string; pid?: number }> = [];
     if (existsSync(manifestPath)) {
       try {
         const raw = await readFile(manifestPath, 'utf-8');
-        const parsed = JSON.parse(raw) as { tmux_session?: string };
+        const parsed = JSON.parse(raw) as { tmux_session?: string; policy?: { worker_launch_mode?: string }; workers?: Array<{ name?: string; pid?: number }> };
         if (typeof parsed.tmux_session === 'string' && parsed.tmux_session.trim() !== '') {
           tmuxSession = parsed.tmux_session;
         }
+        if (parsed.policy?.worker_launch_mode === 'prompt') workerLaunchMode = 'prompt';
+        if (Array.isArray(parsed.workers)) promptWorkers = parsed.workers;
       } catch {
         // ignore malformed manifest
       }
     } else if (existsSync(configPath)) {
       try {
         const raw = await readFile(configPath, 'utf-8');
-        const parsed = JSON.parse(raw) as { tmux_session?: string };
+        const parsed = JSON.parse(raw) as { tmux_session?: string; worker_launch_mode?: string; workers?: Array<{ name?: string; pid?: number }> };
         if (typeof parsed.tmux_session === 'string' && parsed.tmux_session.trim() !== '') {
           tmuxSession = parsed.tmux_session;
         }
+        if (parsed.worker_launch_mode === 'prompt') workerLaunchMode = 'prompt';
+        if (Array.isArray(parsed.workers)) promptWorkers = parsed.workers;
       } catch {
         // ignore malformed config
       }
@@ -300,8 +306,19 @@ async function collectTeamDoctorIssues(cwd: string): Promise<TeamDoctorIssue[]> 
 
     knownTeamSessions.add(tmuxSession);
 
-    // resume_blocker: only meaningful if tmux is available to query
-    if (!tmuxUnavailable && !tmuxSessions.has(tmuxSession)) {
+    if (workerLaunchMode === 'prompt') {
+      for (const worker of promptWorkers) {
+        const pid = worker.pid ?? 0;
+        if (Number.isFinite(pid) && pid > 0 && isPidAlive(pid)) {
+          issues.push({
+            code: 'prompt_resume_unavailable',
+            message: `${teamName}/${worker.name ?? 'unknown'} pid ${pid} appears to be running, but doctor cannot verify that the PID still belongs to the original prompt-mode worker after CLI restart; if this is the original worker, shut it down or start a new team`,
+            severity: 'warn',
+          });
+        }
+      }
+    } else if (!tmuxUnavailable && !tmuxSessions.has(tmuxSession)) {
+      // resume_blocker: only meaningful if tmux is available to query for interactive teams.
       issues.push({
         code: 'resume_blocker',
         message: `${teamName} references missing tmux session ${tmuxSession}`,
@@ -401,6 +418,17 @@ async function collectTeamDoctorIssues(cwd: string): Promise<TeamDoctorIssue[]> 
   }
 
   return dedupeIssues(issues);
+}
+
+function isPidAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    return false;
+  }
 }
 
 function dedupeIssues(issues: TeamDoctorIssue[]): TeamDoctorIssue[] {

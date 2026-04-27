@@ -385,7 +385,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     }
   });
 
-  it("skips OMX-managed [tui] writes for Codex CLI >= 0.107.0 and preserves an existing [tui] table", async () => {
+  it("seeds [tui].status_line for Codex CLI >= 0.107.0 while preserving an existing customization", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     try {
       await mkdir(join(wd, ".omx", "state"), { recursive: true });
@@ -406,7 +406,117 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       assert.match(config, /^status_line = \["git-branch"\]$/m);
       assert.match(
         output,
-        /Codex CLI >= 0\.107\.0 manages \[tui\]; OMX left that section untouched\./,
+        /StatusLine configured in config\.toml via \[tui\] section\./,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("seeds default [tui].status_line on fresh setup for Codex CLI >= 0.107.0", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+
+      await runSetupInTempDir(wd, {
+        scope: "project",
+        codexVersionProbe: () => "codex-cli 0.107.0",
+      });
+
+      const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      assert.equal(config.match(/^\[tui\]$/gm)?.length ?? 0, 1);
+      assert.match(
+        config,
+        /^status_line = \["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"\]$/m,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps forced HUD config overwrite and generated status_line preset in sync", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+      await mkdir(join(wd, ".codex"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "hud-config.json"),
+        JSON.stringify({
+          preset: "focused",
+          statusLine: { preset: "minimal" },
+        }),
+      );
+      await writeFile(
+        join(wd, ".codex", "config.toml"),
+        [
+          "[tui]",
+          "# omx:managed-status-line",
+          'status_line = ["model-with-reasoning", "git-branch"]',
+          "",
+        ].join("\n"),
+      );
+
+      await runSetupInTempDir(wd, {
+        scope: "project",
+        force: true,
+      });
+
+      const hudConfig = JSON.parse(
+        await readFile(join(wd, ".omx", "hud-config.json"), "utf-8"),
+      ) as { preset?: unknown };
+      assert.equal(hudConfig.preset, "focused");
+
+      const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      assert.match(
+        config,
+        /^status_line = \["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"\]$/m,
+      );
+      assert.doesNotMatch(
+        config,
+        /^status_line = \["model-with-reasoning", "git-branch"\]$/m,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves user-owned status_line during forced setup", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+      await mkdir(join(wd, ".codex"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "hud-config.json"),
+        JSON.stringify({
+          preset: "focused",
+          statusLine: { preset: "minimal" },
+        }),
+      );
+      await writeFile(
+        join(wd, ".codex", "config.toml"),
+        [
+          'model = "gpt-5.5"',
+          "",
+          "[tui]",
+          'theme = "night"',
+          'status_line = ["git-branch"]',
+          "",
+        ].join("\n"),
+      );
+
+      await runSetupInTempDir(wd, {
+        scope: "project",
+        force: true,
+        codexVersionProbe: () => "codex-cli 0.107.0",
+      });
+
+      const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      assert.equal(config.match(/^\[tui\]$/gm)?.length ?? 0, 1);
+      assert.match(config, /^theme = "night"$/m);
+      assert.match(config, /^status_line = \["git-branch"\]$/m);
+      assert.doesNotMatch(
+        config,
+        /^status_line = \["model-with-reasoning", "git-branch", "context-remaining"/m,
       );
     } finally {
       await rm(wd, { recursive: true, force: true });

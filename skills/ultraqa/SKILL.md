@@ -11,10 +11,7 @@ description: QA cycling workflow - test, verify, fix, repeat until goal met
 
 ## GPT-5.4 Guidance Alignment
 
-- Default to concise, evidence-dense progress and completion reporting unless the user or risk level requires more detail.
-- Treat newer user task updates as local overrides for the active workflow branch while preserving earlier non-conflicting constraints.
-- If correctness depends on additional inspection, retrieval, execution, or verification, keep using the relevant tools until the QA cycle is grounded.
-- Continue through clear, low-risk, reversible next steps automatically; ask only when the next step is materially branching, destructive, or preference-dependent.
+Use the shared workflow guidance pattern: concise, evidence-dense progress and completion reporting, local overrides for the active workflow branch, persistent inspection/verification while the QA cycle depends on it, and automatic continuation for safe reversible steps. Ask only for material, destructive, or preference-dependent branches.
 
 You are now in **ULTRAQA** mode - an autonomous QA cycling workflow that runs until your quality goal is met.
 

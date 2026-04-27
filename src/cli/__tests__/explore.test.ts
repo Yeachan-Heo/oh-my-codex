@@ -1088,16 +1088,17 @@ exit 0
     }
   });
 
-  it('falls back after spark failure and preserves actionable stderr guidance', async () => {
+  it('falls back after spark failure with explicit output notice and actionable stderr guidance', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-explore-fallback-success-'));
     try {
       await withPackagedExploreHarnessHidden(async () => {
         const harnessStub = await writeExploreHarnessScenarioStub(
           wd,
           `
+printf '[omx explore] fallback-attempt=model from=\`%s\` to=\`gpt-5.5\` reason=spark_attempt_failed exit=17. Cost/behavior boundary changed if fallback succeeds; stdout fallback notice is emitted only after successful fallback output.\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
 printf '[omx explore] spark model \`%s\` unavailable or failed (exit 17). Falling back to \`gpt-5.5\`.\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
 printf '[omx explore] spark stderr: spark timed out; retry with the frontier fallback\n' >&2
-printf '%s\n' '# Answer' '- recovered with fallback model' '- MUST: actionable recovery path remained available'
+printf '%s\n' '## OMX Explore fallback' '- fallback: model' '- from: \`spark-test-model\`' '- to: \`gpt-5.5\`' '- reason: spark attempt failed with exit 17' '- boundary: cost/behavior may differ from the low-cost spark path' '' '# Answer' '- recovered with fallback model' '- MUST: actionable recovery path remained available'
 `,
         );
 
@@ -1107,8 +1108,15 @@ printf '%s\n' '# Answer' '- recovered with fallback model' '- MUST: actionable r
         });
 
         assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+        assert.match(result.stderr, /fallback-attempt=model from=`spark-test-model` to=`gpt-5\.5` reason=spark_attempt_failed exit=17/);
+        assert.match(result.stderr, /stdout fallback notice is emitted only after successful fallback output/);
         assert.match(result.stderr, /spark model `spark-test-model` unavailable or failed \(exit 17\)/);
         assert.match(result.stderr, /spark stderr: spark timed out; retry with the frontier fallback/);
+        assert.match(result.stdout, /## OMX Explore fallback/);
+        assert.match(result.stdout, /fallback: model/);
+        assert.match(result.stdout, /from: `spark-test-model`/);
+        assert.match(result.stdout, /to: `gpt-5\.5`/);
+        assert.match(result.stdout, /cost\/behavior may differ from the low-cost spark path/);
         assert.match(result.stdout, /recovered with fallback model/);
         assert.match(result.stdout, /MUST: actionable recovery path remained available/);
       });
@@ -1124,6 +1132,7 @@ printf '%s\n' '# Answer' '- recovered with fallback model' '- MUST: actionable r
         const harnessStub = await writeExploreHarnessScenarioStub(
           wd,
           `
+printf '[omx explore] fallback-attempt=model from=\`%s\` to=\`gpt-5.5\` reason=spark_attempt_failed exit=23. Cost/behavior boundary changed if fallback succeeds; stdout fallback notice is emitted only after successful fallback output.\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
 printf '[omx explore] spark model \`%s\` unavailable or failed (exit 23). Falling back to \`gpt-5.5\`.\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
 printf '[omx explore] spark stderr: spark backend unavailable; install the fallback runtime\n' >&2
 printf '[omx explore] both spark (\`%s\`) and fallback (\`gpt-5.5\`) attempts failed (codes 23 / 29). Last stderr: fallback backend unavailable; set OMX_EXPLORE_BIN to a working harness\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
@@ -1137,6 +1146,10 @@ exit 1
         });
 
         assert.equal(result.exitCode, 1, result.stderr || result.stdout);
+        assert.match(result.stderr, /fallback-attempt=model from=`spark-test-model` to=`gpt-5\.5` reason=spark_attempt_failed exit=23/);
+        assert.match(result.stderr, /stdout fallback notice is emitted only after successful fallback output/);
+        assert.doesNotMatch(result.stderr, /output includes a fallback notice/);
+        assert.doesNotMatch(result.stdout, /## OMX Explore fallback/);
         assert.match(result.stderr, /spark model `spark-test-model` unavailable or failed \(exit 23\)/);
         assert.match(result.stderr, /spark stderr: spark backend unavailable; install the fallback runtime/);
         assert.match(

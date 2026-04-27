@@ -152,6 +152,7 @@ export function detectMcpTransportFailure(
   payload: CodexHookPayload,
 ): McpTransportFailureSignal | null {
   const normalized = normalizePostToolUsePayload(payload);
+  if (normalized.isBash) return null;
   const combined = [
     normalized.stderrText,
     normalized.stdoutText,
@@ -789,7 +790,11 @@ export function buildNativePostToolUseOutput(
 
   const combined = `${normalized.stderrText}\n${normalized.stdoutText}`.trim();
   if (normalized.exitCode === 0) return null;
-  if (containsHardFailure(combined)) {
+  if (
+    normalized.exitCode !== null
+    && normalized.exitCode !== 0
+    && containsHardFailure(combined)
+  ) {
     return {
       decision: "block",
       reason: "The Bash output indicates a command/setup failure that should be fixed before retrying.",

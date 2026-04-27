@@ -11,6 +11,10 @@ describe('DEFAULT_HUD_CONFIG', () => {
   it('defaults git display to repo-branch', () => {
     assert.deepEqual(DEFAULT_HUD_CONFIG.git, { display: 'repo-branch' });
   });
+
+  it('defaults statusLine preset to "focused"', () => {
+    assert.equal(DEFAULT_HUD_CONFIG.statusLine.preset, 'focused');
+  });
 });
 
 describe('normalizeHudConfig', () => {
@@ -23,6 +27,7 @@ describe('normalizeHudConfig', () => {
     assert.deepEqual(normalizeHudConfig({ preset: 'minimal' }), {
       preset: 'minimal',
       git: { display: 'repo-branch' },
+      statusLine: { preset: 'focused' },
     });
   });
 
@@ -41,6 +46,7 @@ describe('normalizeHudConfig', () => {
         remoteName: 'upstream',
         repoLabel: 'manual-repo',
       },
+      statusLine: { preset: 'focused' },
     });
   });
 
@@ -53,5 +59,30 @@ describe('normalizeHudConfig', () => {
         repoLabel: 123 as never,
       },
     }), DEFAULT_HUD_CONFIG);
+  });
+
+  it('accepts a valid statusLine preset', () => {
+    const resolved = normalizeHudConfig({
+      preset: 'focused',
+      statusLine: { preset: 'minimal' },
+    });
+    assert.equal(resolved.statusLine.preset, 'minimal');
+  });
+
+  it('falls back to default for invalid statusLine preset', () => {
+    const resolved = normalizeHudConfig({
+      preset: 'focused',
+      statusLine: { preset: 'bogus' as never },
+    });
+    assert.equal(resolved.statusLine.preset, 'focused');
+  });
+
+  it('lets statusLine.preset diverge from top-level preset', () => {
+    const resolved = normalizeHudConfig({
+      preset: 'minimal',
+      statusLine: { preset: 'full' },
+    });
+    assert.equal(resolved.preset, 'minimal');
+    assert.equal(resolved.statusLine.preset, 'full');
   });
 });

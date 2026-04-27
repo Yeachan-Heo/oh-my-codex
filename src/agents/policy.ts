@@ -48,6 +48,16 @@ export function getNonInstallableNativeAgentNames(
   );
 }
 
+export function isSetupPromptAssetName(
+  promptName: string,
+  manifest: Pick<CatalogManifest, "agents">,
+): boolean {
+  return (
+    manifest.agents.some((agent) => agent.name === promptName) ||
+    NON_NATIVE_AGENT_PROMPT_ASSETS.has(promptName)
+  );
+}
+
 export function assertNativeAgentCanonicalTargets(
   manifest: Pick<CatalogManifest, "agents">,
 ): void {

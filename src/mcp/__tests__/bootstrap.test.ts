@@ -251,7 +251,7 @@ describe('mcp duplicate sibling detection', () => {
     );
   });
 
-  it('does not self-exit after post-duplicate traffic until the duplicate has remained safely idle long enough', () => {
+  it('does not self-exit after any client traffic even when a newer sibling appears', () => {
     const observation = {
       status: 'older_duplicate' as const,
       entrypoint: 'state-server.js',
@@ -265,11 +265,11 @@ describe('mcp duplicate sibling detection', () => {
     );
     assert.equal(
       shouldSelfExitForDuplicateSibling(observation, 311_000, 1_000, 10_000),
-      true,
+      false,
     );
   });
 
-  it('uses the duplicate grace window when last traffic predates duplicate observation', () => {
+  it('keeps an already-initialized older sibling alive when last traffic predates duplicate observation', () => {
     const observation = {
       status: 'older_duplicate' as const,
       entrypoint: 'state-server.js',
@@ -283,7 +283,7 @@ describe('mcp duplicate sibling detection', () => {
     );
     assert.equal(
       shouldSelfExitForDuplicateSibling(observation, 11_100, 9_000, 1_000),
-      true,
+      false,
     );
   });
 

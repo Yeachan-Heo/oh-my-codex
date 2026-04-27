@@ -634,6 +634,50 @@ async function withAgentsMdLock<T>(
   }
 }
 
+
+function renderDelegationContract(task: TeamTask): string {
+  const plan = task.delegation;
+  if (!plan || plan.mode === "none") return "";
+
+  const threshold = plan.spawn_before_serial_search_threshold ?? 3;
+  const maxParallel = plan.max_parallel_subtasks ?? 2;
+  const childModel = plan.child_model ?? "gpt-5.4-mini";
+  const candidates = (plan.subtask_candidates ?? [])
+    .map((candidate) => `- ${candidate}`)
+    .join("\n");
+  const requiredProbe = plan.required_parallel_probe
+    ? "- A parallel probe is required unless there is a documented skip reason.\n"
+    : "";
+  const skipLine = plan.skip_allowed_reason_required
+    ? "- If skipped, include `Subagent skip reason:` in your result and explain why serial work was safer or sufficient.\n"
+    : "";
+  const reportFormat = plan.child_report_format ?? "bullets";
+
+  return `
+### Native Subagent Delegation Contract — Task ${task.id}
+
+- Delegation mode: ${plan.mode}
+- Before doing more than ${threshold} serial repo-search/read commands, spawn up to ${maxParallel} Codex native subagents using model ${childModel}, wait for them, then integrate their findings before continuing.
+${requiredProbe}- Keep subagent work independent, bounded, and inside this worker's task scope.
+- Use child report format: ${reportFormat}.
+${skipLine}${candidates ? `\nRole/probe subtask candidates:\n${candidates}\n` : ""}
+Subagent evidence reporting fields:
+- Subagents spawned: <count and task names>
+- Subagent model: ${childModel}
+- Findings integrated: <brief bullets>
+- Serial searches before spawn: <number>
+`;
+}
+
+function renderDelegationContracts(tasks: TeamTask[]): string {
+  const sections = tasks.map(renderDelegationContract).filter((section) => section.trim().length > 0);
+  if (sections.length === 0) return "";
+  return `
+## Native Subagent Delegation Contract
+
+${sections.join("\n")}`;
+}
+
 /**
  * Generate initial inbox file content for worker bootstrap.
  * This is written to .omx/state/team/{team}/workers/{worker}/inbox.md by the lead.
@@ -671,6 +715,7 @@ export function generateInitialInbox(
   const approvedContextSection = options.approvedContextSection
     ? `\n## Approved Handoff Context\n\n${options.approvedContextSection}\n`
     : "";
+  const delegationSection = renderDelegationContracts(tasks);
 
   const specializationSection = options.worktreeRootAgentsCanonical === true
     ? ""
@@ -734,6 +779,7 @@ When using \`omx team api send-message\`, ALWAYS include from_worker with YOUR w
 
 Example: omx team api send-message --input "{\"team_name\":\"${teamName}\",\"from_worker\":\"${workerName}\",\"to_worker\":\"leader-fixed\",\"body\":\"ACK: initialized\"}" --json
 
+${delegationSection}
 ${buildVerificationSection("each assigned task")}
 
 ## Scope Rules
@@ -751,15 +797,43 @@ ${specializationSection}`;
 export function generateTaskAssignmentInbox(
   workerName: string,
   teamName: string,
+  task: TeamTask,
+  options?: {
+    approvedContextSection?: string;
+  },
+): string;
+export function generateTaskAssignmentInbox(
+  workerName: string,
+  teamName: string,
   taskId: string,
   taskDescription: string,
-  options: {
+  options?: {
+    approvedContextSection?: string;
+  },
+): string;
+export function generateTaskAssignmentInbox(
+  workerName: string,
+  teamName: string,
+  taskOrId: TeamTask | string,
+  taskDescriptionOrOptions?: string | {
+    approvedContextSection?: string;
+  },
+  optionsArg: {
     approvedContextSection?: string;
   } = {},
 ): string {
+  const task = typeof taskOrId === "string"
+    ? { id: taskOrId, description: typeof taskDescriptionOrOptions === "string" ? taskDescriptionOrOptions : "" }
+    : taskOrId;
+  const options = typeof taskDescriptionOrOptions === "object"
+    ? taskDescriptionOrOptions
+    : optionsArg;
+  const taskId = task.id;
+  const taskDescription = task.description;
   const approvedContextSection = options.approvedContextSection
     ? `\n## Approved Handoff Context\n\n${options.approvedContextSection}\n`
     : "";
+  const delegationSection = renderDelegationContracts([task as TeamTask]);
   return `# New Task Assignment
 
 **Worker:** ${workerName}
@@ -785,6 +859,7 @@ ${approvedContextSection}
 8. Write \`{"state": "idle", "updated_at": "<current ISO timestamp>"}\` to your status file
 9. When the inbox includes an **Approved Handoff Context** section, read those context refs before broader repo exploration. If they are insufficient, open the named pack index or query the canonical pack by role/tag/label next.
 
+${delegationSection}
 ${buildVerificationSection(taskDescription)}
 `;
 }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mergeConfig } from '../generator.js';
+import { mergeConfig, OMX_DEVELOPER_INSTRUCTIONS } from '../generator.js';
 
 describe('config generator', () => {
   it('places top-level keys before [features]', async () => {
@@ -122,10 +122,11 @@ describe('config generator', () => {
 
       assert.match(toml, /^model_reasoning_effort = "medium"$/m);
       assert.match(toml, /^developer_instructions = "You have oh-my-codex installed/m);
-      assert.match(toml, /AGENTS\.md is your orchestration brain and the main orchestration surface/);
-      assert.match(toml, /Use skill\/keyword routing like \$name plus spawned role-specialized subagents for specialized work/);
-      assert.match(toml, /Codex native subagents are available via \.codex\/agents/);
-      assert.match(toml, /Treat installed prompts as narrower internal execution surfaces under AGENTS\.md authority/);
+      assert.match(toml, /AGENTS\.md is the orchestration brain and main control surface/);
+      assert.match(toml, /Follow AGENTS\.md for skill\/keyword routing, \$name workflow invocation, and role-specialized subagents/);
+      assert.match(toml, /Native subagents live in \.codex\/agents/);
+      assert.match(toml, /Treat installed prompts as narrower execution surfaces under AGENTS\.md authority/);
+      assert.match(toml, new RegExp(`^developer_instructions = "${OMX_DEVELOPER_INSTRUCTIONS.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"$`, 'm'));
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

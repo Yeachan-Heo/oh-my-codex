@@ -54,14 +54,10 @@ Keep runtime marker contracts stable and non-destructive when overlays are appli
 </operating_principles>
 
 ## Working agreements
-- Write a cleanup plan before modifying code for cleanup/refactor/deslop work.
-- Lock existing behavior with regression tests before cleanup edits when behavior is not already protected.
-- Prefer deletion over addition.
-- Reuse existing utils and patterns before introducing new abstractions.
-- No new dependencies without explicit request.
+- For cleanup/refactor/deslop work, write a cleanup plan and lock behavior with regression tests before editing when coverage is missing.
+- Prefer deletion, existing utilities, and existing patterns before new abstractions; add dependencies only when explicitly requested.
 - Keep diffs small, reviewable, and reversible.
-- Run lint, typecheck, tests, and static analysis after changes.
-- Final reports must include changed files, simplifications made, and remaining risks.
+- Verify with lint, typecheck, tests, and static analysis after changes; final reports include changed files, simplifications, and remaining risks.
 
 ## OMX planning context packs
 
@@ -92,70 +88,31 @@ Keep runtime marker contracts stable and non-destructive when overlays are appli
 <lore_commit_protocol>
 ## Lore Commit Protocol
 
-Every commit message must follow the Lore protocol — structured decision records using native git trailers.
-Commits are not just labels on diffs; they are the atomic unit of institutional knowledge.
+Every commit message must follow the Lore protocol: a concise decision record using git-native trailers.
 
 ### Format
 
 ```
 <intent line: why the change was made, not what changed>
 
-<body: narrative context — constraints, approach rationale>
+<optional concise body: constraints and approach rationale>
 
 Constraint: <external constraint that shaped the decision>
 Rejected: <alternative considered> | <reason for rejection>
 Confidence: <low|medium|high>
 Scope-risk: <narrow|moderate|broad>
 Directive: <forward-looking warning for future modifiers>
-Tested: <what was verified (unit, integration, manual)>
+Tested: <what was verified>
 Not-tested: <known gaps in verification>
 ```
 
 ### Rules
 
-1. **Intent line first.** The first line describes *why*, not *what*. The diff already shows what changed.
-2. **Trailers are optional but encouraged.** Use the ones that add value; skip the ones that don't.
-3. **`Rejected:` prevents re-exploration.** If you considered and rejected an alternative, record it so future agents don't waste cycles re-discovering the same dead end.
-4. **`Directive:` is a message to the future.** Use it for "do not change X without checking Y" warnings.
-5. **`Constraint:` captures external forces.** API limitations, policy requirements, upstream bugs — things not visible in the code.
-6. **`Not-tested:` is honest.** Declaring known verification gaps is more valuable than pretending everything is covered.
-7. **All trailers use git-native trailer format** (key-value after a blank line). No custom parsing required.
-
-### Example
-
-```
-Prevent silent session drops during long-running operations
-
-The auth service returns inconsistent status codes on token
-expiry, so the interceptor catches all 4xx responses and
-triggers an inline refresh.
-
-Constraint: Auth service does not support token introspection
-Constraint: Must not add latency to non-expired-token paths
-Rejected: Extend token TTL to 24h | security policy violation
-Rejected: Background refresh on timer | race condition with concurrent requests
-Confidence: high
-Scope-risk: narrow
-Directive: Error handling is intentionally broad (all 4xx) — do not narrow without verifying upstream behavior
-Tested: Single expired token refresh (unit)
-Not-tested: Auth service cold-start > 500ms behavior
-```
-
-### Trailer Vocabulary
-
-| Trailer | Purpose |
-|---------|---------|
-| `Constraint:` | External constraint that shaped the decision |
-| `Rejected:` | Alternative considered and why it was rejected |
-| `Confidence:` | Author's confidence level (low/medium/high) |
-| `Scope-risk:` | How broadly the change affects the system (narrow/moderate/broad) |
-| `Reversibility:` | How easily the change can be undone (clean/messy/irreversible) |
-| `Directive:` | Forward-looking instruction for future modifiers |
-| `Tested:` | What verification was performed |
-| `Not-tested:` | Known gaps in verification |
-| `Related:` | Links to related commits, issues, or decisions |
-
-Teams may introduce domain-specific trailers without breaking compatibility.
+- Intent line first; describe why, not what.
+- Use trailers only when they add decision context.
+- Use `Rejected:` for alternatives future agents should not re-explore.
+- Use `Directive:` for warnings, `Constraint:` for external forces, and `Not-tested:` for known verification gaps.
+- Teams may introduce domain-specific trailers without breaking compatibility.
 </lore_commit_protocol>
 
 ---
@@ -230,13 +187,7 @@ Leader/workflow routing contract:
 ---
 
 <agent_catalog>
-Key roles:
-- `explore` — fast codebase search and mapping
-- `planner` — work plans and sequencing
-- `architect` — read-only analysis, diagnosis, tradeoffs
-- `debugger` — root-cause analysis
-- `executor` — implementation and refactoring
-- `verifier` — completion evidence and validation
+Key roles: `explore` (repo search/mapping), `planner` (plans/sequencing), `architect` (read-only design/diagnosis), `debugger` (root cause), `executor` (implementation/refactoring), and `verifier` (completion evidence).
 
 Research/discovery specialists:
 - `explore` — first-stop repository lookup and symbol/file mapping
@@ -253,14 +204,14 @@ Keyword routing is implemented primarily by native `UserPromptSubmit` hooks and 
 
 Fallback behavior when hook context is unavailable:
 - Explicit `$name` invocations run left-to-right and override implicit keywords.
-- Bare skill names do not activate skills by themselves; skill-name activation requires explicit `$skill` invocation. Natural-language routing phrases may still map to a workflow when they are not just the bare skill name. Examples: `analyze` / `investigate` → `$analyze` for read-only deep analysis with ranked synthesis, explicit confidence, and concrete file references; `deep interview`, `interview`, `don't assume`, or `ouroboros` → `$deep-interview`; `ralplan` / `consensus plan` → `$ralplan`; `cancel`, `stop`, or `abort` → `$cancel`.
+- Bare skill names do not activate skills by themselves; skill-name activation requires explicit `$skill` invocation. Natural-language routing phrases may still map to a workflow when they are not just the bare skill name. Examples: `analyze` / `investigate` → `$analyze` for read-only deep analysis with ranked synthesis, explicit confidence, and concrete file references; `deep interview`, `interview`, `don't assume`, or `ouroboros` → `$deep-interview` for Socratic deep interview requirements clarification; `ralplan` / `consensus plan` → `$ralplan`; `cancel`, `stop`, or `abort` → `$cancel`.
 - Keep the detailed keyword list in `src/hooks/keyword-registry.ts`; do not duplicate that table here.
 
 Runtime availability gate:
 - Treat `autopilot`, `ralph`, `ultrawork`, `ultraqa`, `team`/`swarm`, and `ecomode` as **OMX runtime workflows**, not generic prompt aliases.
 - Auto-activate runtime workflows only when the current session is actually running under OMX CLI/runtime (for example, launched via `omx`, with OMX session overlay/runtime state available, or when the user explicitly asks to run `omx ...` in the shell).
 - In Codex App or plain Codex sessions without OMX runtime, do **not** treat those keywords alone as activation. Explain that they require OMX CLI runtime support and are not directly available there, and continue with the nearest App-safe surface (`deep-interview`, `ralplan`, `plan`, or native subagents) unless the user explicitly wants you to launch OMX CLI from shell first.
-- When deep-interview is active in OMX CLI/runtime, ask interview rounds via `omx question`; after launching `omx question` in a background terminal, wait for that terminal to finish and read the JSON answer before continuing; do not substitute `request_user_input` or ad hoc plain-text questioning, and respect Stop-hook blocking while a deep-interview question obligation is pending.
+- When deep-interview is active in attached-tmux OMX CLI/runtime, ask interview rounds via `omx question`; after launching `omx question` in a background terminal, wait for that terminal to finish and read the JSON answer before continuing; preserve the leader pane with `OMX_QUESTION_RETURN_PANE=$TMUX_PANE` (or an explicit `%pane` value) when invoking it through Bash/tool paths, and respect Stop-hook blocking while a deep-interview question obligation is pending. Outside tmux or native surfaces that cannot render `omx question` should use the native structured question path when available, otherwise ask exactly one concise plain-text question and wait for the answer.
 
 <triage_routing>
 ## Triage: advisory prompt-routing context
@@ -285,15 +236,13 @@ Ralph / Ralplan execution gate:
 ---
 
 <skills>
-Skills are workflow commands.
-Core workflows include `autopilot`, `ralph`, `ultrawork`, `visual-verdict`, `visual-ralph`, `ecomode`, `team`, `swarm`, `ultraqa`, `plan`, `deep-interview` (Socratic deep interview, Ouroboros-inspired), and `ralplan`.
-Utilities include `cancel`, `note`, `doctor`, `help`, and `trace`.
+Skills are workflow commands. Core workflows include `autopilot`, `ralph`, `ultrawork`, `visual-verdict`, `visual-ralph`, `ecomode`, `team`, `swarm`, `ultraqa`, `plan`, `deep-interview`, and `ralplan`; utilities include `cancel`, `note`, `doctor`, `help`, and `trace`.
 </skills>
 
 ---
 
 <team_compositions>
-Common team compositions remain available when explicit team orchestration is warranted, for example feature development, bug investigation, code review, and UX audit.
+Use explicit team orchestration for feature development, bug investigation, code review, UX audit, and similar multi-lane work when coordination value outweighs overhead.
 </team_compositions>
 
 ---
@@ -344,24 +293,13 @@ Verification loop: identify what proves the claim, run the verification, read th
 </verification>
 
 <execution_protocols>
-Mode selection:
-- Use `$deep-interview` first when the request is broad, intent/boundaries are unclear, or the user says not to assume.
-- Use `$ralplan` when the requirements are clear enough but architecture, tradeoffs, or test strategy still need consensus.
-- Use `$team` when the approved plan has multiple independent lanes, shared blockers, or durable coordination needs.
-- Use `$ralph` when the approved plan should stay in a persistent completion / verification loop with one owner.
-- Otherwise execute directly in solo mode.
-- Do not change modes casually; switch only when evidence shows the current lane is mismatched or blocked.
+Mode selection: use `$deep-interview` for unclear intent/boundaries; `$ralplan` for consensus on architecture, tradeoffs, or tests; `$team` for approved multi-lane work; `$ralph` for persistent single-owner completion/verification loops; otherwise execute directly in solo mode. Switch modes only when evidence shows the current lane is mismatched or blocked.
 
 Command routing:
 - When `USE_OMX_EXPLORE_CMD` enables advisory routing, strongly prefer `omx explore` as the default surface for simple read-only repository lookup tasks (files, symbols, patterns, relationships).
 - For simple file/symbol lookups, use `omx explore` FIRST before attempting full code analysis.
 
-When to use what:
-- Use `omx explore --prompt ...` for simple read-only lookups.
-- Use `omx sparkshell` for noisy read-only shell commands, bounded verification runs, repo-wide listing/search, or tmux-pane summaries; `omx sparkshell --tmux-pane ...` is explicit opt-in.
-- Keep ambiguous, implementation-heavy, edit-heavy, or non-shell-only work on the richer normal path.
-- `omx explore` is a shell-only, allowlisted, read-only path; do not rely on it for edits, tests, diagnostics, MCP/web access, or complex shell composition.
-- If `omx explore` or `omx sparkshell` is incomplete or ambiguous, retry narrower and gracefully fall back to the normal path.
+Use `omx explore --prompt ...` for simple read-only lookups through the shell-only, allowlisted, read-only path. Use `omx sparkshell` for noisy read-only shell commands, bounded verification, repo-wide listing/search, or explicit `omx sparkshell --tmux-pane` summaries. Treat sparkshell as explicit opt-in. When to use what: keep ambiguous, implementation-heavy, edit-heavy, diagnostics, tests, MCP/web, and complex shell work on the normal path; if `omx explore` or `omx sparkshell` is incomplete, retry narrower or gracefully fall back to the normal path.
 
 Leader vs worker:
 - The leader chooses the mode, keeps the brief current, delegates bounded work, and owns verification plus stop/escalate calls.
@@ -379,18 +317,15 @@ Output contract:
 - Keep rationale once; do not restate the full plan every turn.
 - Expand only for risk, handoff, or explicit user request.
 
-Parallelization:
-- Run independent tasks in parallel.
-- Run dependent tasks sequentially.
-- Use background execution for builds and tests when helpful.
-- Prefer Team mode only when its coordination value outweighs its overhead.
-- If correctness depends on retrieval, diagnostics, tests, or other tools, continue using them until the task is grounded and verified.
+Parallelization: run independent tasks in parallel, dependent tasks sequentially, and long builds/tests in the background when helpful. Prefer Team mode only when coordination value outweighs overhead. If correctness depends on retrieval, diagnostics, tests, or other tools, continue until the task is grounded and verified.
 
 Anti-slop workflow:
 - Cleanup/refactor/deslop work still follows the same `$deep-interview` -> `$ralplan` -> `$team`/`$ralph` path; use `$ai-slop-cleaner` as a bounded helper inside the chosen execution lane, not as a competing top-level workflow.
-- Lock behavior with tests first, then make one smell-focused pass at a time.
-- Prefer deletion, reuse, and boundary repair over new layers.
-- Keep writer/reviewer pass separation for cleanup plans and approvals.
+- Write a cleanup plan before modifying code; lock existing behavior with regression tests first, then make one smell-focused pass at a time.
+- Prefer deletion over addition, and prefer reuse plus boundary repair over new layers.
+- No new dependencies without explicit request.
+- Run lint, typecheck, tests, and static analysis before claiming completion.
+- Keep writer/reviewer pass separation for cleanup plans and approvals; preserve writer/reviewer pass separation explicitly.
 
 Visual iteration gate:
 - For visual tasks, run `$visual-verdict` every iteration before the next edit.

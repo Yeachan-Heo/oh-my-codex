@@ -6,12 +6,15 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setup } from '../setup.js';
 import { readCatalogManifest } from '../../catalog/reader.js';
-import { getInstallableNativeAgentNames } from '../../agents/policy.js';
+import {
+  NON_NATIVE_AGENT_PROMPT_ASSETS,
+  getInstallableNativeAgentNames,
+} from '../../agents/policy.js';
 
 describe('omx setup prompt/native-agent overwrite behavior', () => {
   const obsoleteNativeAgentField = ['skill', 'ref'].join('_');
 
-  it('installs only active/internal catalog prompts and native agents', async () => {
+  it('installs setup-owned prompts separately from active/internal native agents', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-prompts-'));
     const previousCwd = process.cwd();
     try {
@@ -28,16 +31,34 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
       assert.equal(installedPrompts.has('executor.md'), true);
       assert.equal(installedPrompts.has('team-executor.md'), true);
       assert.equal(installedPrompts.has('code-reviewer.md'), true);
-      assert.equal(installedPrompts.has('style-reviewer.md'), false);
-      assert.equal(installedPrompts.has('quality-reviewer.md'), false);
-      assert.equal(installedPrompts.has('api-reviewer.md'), false);
-      assert.equal(installedPrompts.has('performance-reviewer.md'), false);
-      assert.equal(installedPrompts.has('product-manager.md'), false);
-      assert.equal(installedPrompts.has('ux-researcher.md'), false);
-      assert.equal(installedPrompts.has('information-architect.md'), false);
-      assert.equal(installedPrompts.has('product-analyst.md'), false);
-      assert.equal(installedPrompts.has('sisyphus-lite.md'), false);
       assert.equal(installedPrompts.has('code-simplifier.md'), true);
+
+      for (const promptOnlyAgent of [
+        'style-reviewer',
+        'quality-reviewer',
+        'api-reviewer',
+        'performance-reviewer',
+        'product-manager',
+        'ux-researcher',
+        'information-architect',
+        'product-analyst',
+        'qa-tester',
+        'quality-strategist',
+      ]) {
+        assert.equal(
+          installedPrompts.has(`${promptOnlyAgent}.md`),
+          true,
+          `expected setup to preserve prompt-only role ${promptOnlyAgent}.md`,
+        );
+      }
+
+      for (const promptAsset of NON_NATIVE_AGENT_PROMPT_ASSETS) {
+        assert.equal(
+          installedPrompts.has(`${promptAsset}.md`),
+          true,
+          `expected setup to preserve explicit prompt asset ${promptAsset}.md`,
+        );
+      }
 
       const installableNativeAgents = getInstallableNativeAgentNames(readCatalogManifest());
       for (const agentName of installableNativeAgents) {
@@ -67,7 +88,7 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
     }
   });
 
-  it('removes stale merged/unlisted prompts on --force', async () => {
+  it('preserves setup-owned prompt assets and removes unknown prompts on --force', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-prompts-'));
     const previousCwd = process.cwd();
     try {
@@ -76,24 +97,28 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
 
       await setup({ scope: 'project' });
 
-      const stalePrompts = ['style-reviewer.md', 'quality-reviewer.md', 'sisyphus-lite.md'];
-      for (const stalePrompt of stalePrompts) {
-        const stalePath = join(wd, '.codex', 'prompts', stalePrompt);
-        await writeFile(stalePath, `# stale ${stalePrompt}\n`);
-        assert.equal(existsSync(stalePath), true);
+      const validPrompts = ['style-reviewer.md', 'quality-reviewer.md', 'sisyphus-lite.md'];
+      for (const validPrompt of validPrompts) {
+        assert.equal(existsSync(join(wd, '.codex', 'prompts', validPrompt)), true);
       }
+
+      const unknownPromptPath = join(wd, '.codex', 'prompts', 'unclassified-local.md');
+      await writeFile(unknownPromptPath, '# unclassified local prompt\n');
+      assert.equal(existsSync(unknownPromptPath), true);
 
       await setup({ scope: 'project', force: true });
 
-      for (const stalePrompt of stalePrompts) {
-        assert.equal(existsSync(join(wd, '.codex', 'prompts', stalePrompt)), false);
+      for (const validPrompt of validPrompts) {
+        assert.equal(existsSync(join(wd, '.codex', 'prompts', validPrompt)), true);
       }
+      assert.equal(existsSync(unknownPromptPath), false);
       assert.equal(existsSync(join(wd, '.codex', 'prompts', 'executor.md')), true);
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
     }
   });
+
   it('removes stale merged native agents on --force', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-prompts-'));
     const previousCwd = process.cwd();
@@ -115,6 +140,69 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
       for (const staleAgent of staleAgents) {
         assert.equal(existsSync(join(wd, '.codex', 'agents', staleAgent)), false);
       }
+      assert.equal(existsSync(join(wd, '.codex', 'agents', 'executor.toml')), true);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('removes generated non-installable native agents during normal setup', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-prompts-'));
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+
+      await setup({ scope: 'project' });
+
+      const stalePath = join(wd, '.codex', 'agents', 'style-reviewer.toml');
+      await writeFile(
+        stalePath,
+        [
+          '# oh-my-codex agent: style-reviewer',
+          'name = "style-reviewer"',
+          'description = "old generated merged role"',
+          'developer_instructions = """old"""',
+          '',
+        ].join('\n'),
+      );
+      assert.equal(existsSync(stalePath), true);
+
+      await setup({ scope: 'project' });
+
+      assert.equal(existsSync(stalePath), false);
+      assert.equal(existsSync(join(wd, '.codex', 'agents', 'executor.toml')), true);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves user-authored non-installable native agents during normal setup', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-prompts-'));
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+
+      await setup({ scope: 'project' });
+
+      const userAuthoredPath = join(wd, '.codex', 'agents', 'style-reviewer.toml');
+      await writeFile(
+        userAuthoredPath,
+        [
+          '# user-authored local agent',
+          'name = "style-reviewer"',
+          'description = "custom local role"',
+          '',
+        ].join('\n'),
+      );
+      assert.equal(existsSync(userAuthoredPath), true);
+
+      await setup({ scope: 'project' });
+
+      assert.equal(existsSync(userAuthoredPath), true);
       assert.equal(existsSync(join(wd, '.codex', 'agents', 'executor.toml')), true);
     } finally {
       process.chdir(previousCwd);
@@ -152,5 +240,4 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
-
 });

@@ -44,10 +44,7 @@ describe('team/state/events', () => {
       await cleanup();
     }
   });
-
-
-
-  it('treats merge conflicts and stale alerts as wakeable while keeping diff reports audit-only', async () => {
+  it('treats integration requests, merge conflicts, and stale alerts as wakeable while keeping audit-only events filtered', async () => {
     const { cwd, cleanup } = await setupTeam('wakeable-matrix');
     try {
       const baseline = await appendTeamEvent('wakeable-matrix', {
@@ -88,6 +85,16 @@ describe('team/state/events', () => {
         metadata: {
           worktree_path: '/tmp/team/worktrees/worker-1',
           conflict_files: ['src/team/runtime.ts'],
+        },
+      }, cwd);
+      await appendTeamEvent('wakeable-matrix', {
+        type: 'worker_integration_attempt_requested',
+        worker: 'worker-1',
+        reason: 'posttooluse worker commit ready',
+        metadata: {
+          operation_kind: 'leader_integration_attempt',
+          checkpoint_commit: 'def456',
+          dedupe_key: 'wakeable-matrix|worker-1|def456|abc123|leader_integration_attempt',
         },
       }, cwd);
       await appendTeamEvent('wakeable-matrix', {
@@ -135,13 +142,14 @@ describe('team/state/events', () => {
       });
       assert.deepEqual(
         wakeable.map((event) => event.type),
-        ['worker_merge_conflict', 'worker_cherry_pick_conflict', 'worker_rebase_conflict', 'worker_cross_rebase_conflict', 'worker_stale_stdout'],
+        ['worker_merge_conflict', 'worker_cherry_pick_conflict', 'worker_rebase_conflict', 'worker_integration_attempt_requested', 'worker_cross_rebase_conflict', 'worker_stale_stdout'],
       );
       assert.equal(wakeable[0]?.metadata?.diff_path, '/tmp/team/worktrees/worker-1/.omx/diff.md');
       assert.deepEqual(wakeable[1]?.metadata?.conflict_files, ['src/team/runtime.ts']);
       assert.deepEqual(wakeable[2]?.metadata?.conflict_files, ['src/team/runtime.ts']);
-      assert.deepEqual(wakeable[3]?.metadata?.conflict_files, ['src/team/runtime.ts']);
-      assert.equal(wakeable[4]?.metadata?.stale_window_ms, 30000);
+      assert.equal(wakeable[3]?.metadata?.operation_kind, 'leader_integration_attempt');
+      assert.deepEqual(wakeable[4]?.metadata?.conflict_files, ['src/team/runtime.ts']);
+      assert.equal(wakeable[5]?.metadata?.stale_window_ms, 30000);
 
       const all = await readTeamEvents('wakeable-matrix', cwd, {
         afterEventId: baseline.event_id,
@@ -153,12 +161,54 @@ describe('team/state/events', () => {
           'worker_merge_conflict',
           'worker_cherry_pick_conflict',
           'worker_rebase_conflict',
+          'worker_integration_attempt_requested',
           'worker_cross_rebase_applied',
           'worker_cross_rebase_conflict',
           'worker_cross_rebase_skipped',
           'worker_stale_stdout',
         ],
       );
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('awaits worker integration requests through the same wakeable event path leader integrations use', async () => {
+    const { cwd, cleanup } = await setupTeam('await-integration-request');
+    try {
+      const waitPromise = waitForTeamEvent('await-integration-request', cwd, {
+        timeoutMs: 500,
+        pollMs: 25,
+        wakeableOnly: true,
+        type: 'worker_integration_attempt_requested',
+        worker: 'worker-1',
+      });
+
+      setTimeout(() => {
+        void appendTeamEvent('await-integration-request', {
+          type: 'worker_diff_report',
+          worker: 'worker-1',
+          metadata: { diff_path: '/tmp/worker-1/.omx/diff.md' },
+        }, cwd);
+      }, 25);
+
+      setTimeout(() => {
+        void appendTeamEvent('await-integration-request', {
+          type: 'worker_integration_attempt_requested',
+          worker: 'worker-1',
+          metadata: {
+            operation_kind: 'leader_integration_attempt',
+            checkpoint_commit: 'def456',
+            worker_head_after: 'def456',
+          },
+        }, cwd);
+      }, 60);
+
+      const result = await waitPromise;
+      assert.equal(result.status, 'event');
+      assert.equal(result.event?.type, 'worker_integration_attempt_requested');
+      assert.equal(result.event?.worker, 'worker-1');
+      assert.equal(result.event?.metadata?.operation_kind, 'leader_integration_attempt');
     } finally {
       await cleanup();
     }

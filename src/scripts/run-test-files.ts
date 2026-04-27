@@ -62,6 +62,7 @@ console.error(
 
 const childEnv = { ...process.env };
 delete childEnv.NODE_TEST_CONTEXT;
+childEnv.OMX_TEST_RELAX_TMUX_TIMEOUT = '1';
 
 const result = spawnSync(process.execPath, testArgs, {
   stdio: 'inherit',

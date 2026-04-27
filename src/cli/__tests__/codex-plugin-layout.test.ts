@@ -304,7 +304,7 @@ describe('official Codex plugin layout', () => {
     const combined = combinedDocs.join('\n');
     assert.match(combined, /plugins\/cache\/\$MARKETPLACE_NAME\/oh-my-codex\/\$VERSION\//);
     assert.match(combined, /not a replacement for `npm install -g oh-my-codex` plus `omx setup`/);
-    assert.match(combined, /omx setup` remains responsible for native agents, prompts\/config\/hooks\/AGENTS\.md\/HUD\/runtime wiring/);
+    assert.match(combined, /legacy setup mode installs native agents\/prompts|plugin setup mode archives stale legacy prompt\/native-agent files/);
     assert.match(combined, /plugin-scoped companion metadata for MCP servers and apps/i);
     assert.match(combined, /hooks stay setup-owned|hooks remain setup-owned|native \.codex\/hooks\.json coverage/i);
   });

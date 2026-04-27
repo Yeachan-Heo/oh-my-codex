@@ -82,6 +82,9 @@ export function normalizeHudConfig(raw: HudConfig | null | undefined): ResolvedH
     git: {
       ...DEFAULT_HUD_CONFIG.git,
     },
+    statusLine: {
+      preset: DEFAULT_HUD_CONFIG.statusLine.preset,
+    },
   };
 
   if (!raw || typeof raw !== 'object') return normalized;
@@ -100,6 +103,12 @@ export function normalizeHudConfig(raw: HudConfig | null | undefined): ResolvedH
 
     const repoLabel = sanitizeOptionalString(raw.git.repoLabel);
     if (repoLabel) normalized.git.repoLabel = repoLabel;
+  }
+
+  if (raw.statusLine && typeof raw.statusLine === 'object') {
+    if (isValidPreset(raw.statusLine.preset)) {
+      normalized.statusLine.preset = raw.statusLine.preset;
+    }
   }
 
   return normalized;

@@ -129,6 +129,21 @@ export interface WorkerStatus {
   updated_at: string;
 }
 
+export type TeamTaskDelegationMode = 'none' | 'optional' | 'auto' | 'required';
+export type TeamTaskChildModelPolicy = 'standard' | 'fast' | 'inherit' | 'frontier';
+
+export interface TeamTaskDelegationPlan {
+  mode: TeamTaskDelegationMode;
+  max_parallel_subtasks?: number;
+  required_parallel_probe?: boolean;
+  spawn_before_serial_search_threshold?: number;
+  child_model_policy?: TeamTaskChildModelPolicy;
+  child_model?: string;
+  subtask_candidates?: string[];
+  child_report_format?: 'bullets' | 'json';
+  skip_allowed_reason_required?: boolean;
+}
+
 export interface TeamTask {
   id: string;
   subject: string;
@@ -145,6 +160,7 @@ export interface TeamTask {
   claim?: TeamTaskClaim;
   created_at: string;
   completed_at?: string;
+  delegation?: TeamTaskDelegationPlan;
 }
 
 export interface TeamTaskClaim {

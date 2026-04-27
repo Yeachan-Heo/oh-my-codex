@@ -62,6 +62,7 @@ async function withIsolatedUserHome<T>(
   }
 }
 
+
 async function assertProjectPluginModeArtifacts(wd: string): Promise<void> {
   const hooks = await readFile(join(wd, ".codex", "hooks.json"), "utf-8");
   assert.match(hooks, /codex-native-hook\.js/);
@@ -149,6 +150,218 @@ async function seedPluginCacheFromInstalledSkills(
 }
 
 describe("omx setup install mode behavior", () => {
+  it("summarizes and keeps persisted setup preferences when review chooses keep", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+    try {
+      await withIsolatedUserHome(wd, async () => {
+        await withTempCwd(wd, async () => {
+          await mkdir(join(wd, ".omx"), { recursive: true });
+          await writeFile(
+            join(wd, ".omx", "setup-scope.json"),
+            JSON.stringify({ scope: "user", installMode: "legacy" }),
+          );
+
+          const output = await captureConsoleOutput(async () => {
+            await setup({
+              persistedSetupReviewPrompt: async (preferences) => {
+                assert.deepEqual(preferences, {
+                  scope: "user",
+                  installMode: "legacy",
+                });
+                return "keep";
+              },
+            });
+          });
+
+          assert.match(
+            output,
+            /Setup preference review: keep \(scope=user, installMode=legacy\)/,
+          );
+          assert.match(
+            output,
+            /Using setup scope: user \(from \.omx\/setup-scope\.json\)/,
+          );
+          assert.match(
+            output,
+            /Using setup install mode: legacy \(from \.omx\/setup-scope\.json\)/,
+          );
+        });
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("uses persisted choices as defaults when review changes setup preferences", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+    try {
+      await withIsolatedUserHome(wd, async () => {
+        await withTempCwd(wd, async () => {
+          await mkdir(join(wd, ".omx"), { recursive: true });
+          await writeFile(
+            join(wd, ".omx", "setup-scope.json"),
+            JSON.stringify({ scope: "user", installMode: "legacy" }),
+          );
+
+          await setup({
+            persistedSetupReviewPrompt: async () => "review",
+            setupScopePrompt: async (defaultScope) => {
+              assert.equal(defaultScope, "user");
+              return "user";
+            },
+            installModePrompt: async (defaultMode) => {
+              assert.equal(defaultMode, "legacy");
+              return "plugin";
+            },
+          });
+
+          const persisted = JSON.parse(
+            await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
+          ) as { scope: string; installMode?: string };
+          assert.deepEqual(persisted, { scope: "user", installMode: "plugin" });
+        });
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("clears user-scope install mode when review switches setup to project scope", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+    try {
+      await withIsolatedUserHome(wd, async () => {
+        await withTempCwd(wd, async () => {
+          await mkdir(join(wd, ".omx"), { recursive: true });
+          await writeFile(
+            join(wd, ".omx", "setup-scope.json"),
+            JSON.stringify({ scope: "user", installMode: "plugin" }),
+          );
+
+          await setup({
+            persistedSetupReviewPrompt: async () => "review",
+            setupScopePrompt: async (defaultScope) => {
+              assert.equal(defaultScope, "user");
+              return "project";
+            },
+          });
+
+          const persisted = JSON.parse(
+            await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
+          ) as { scope: string; installMode?: string };
+          assert.deepEqual(persisted, { scope: "project" });
+        });
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("reviews persisted scope when only install mode is provided", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+    try {
+      await withIsolatedUserHome(wd, async () => {
+        await withTempCwd(wd, async () => {
+          await mkdir(join(wd, ".omx"), { recursive: true });
+          await writeFile(
+            join(wd, ".omx", "setup-scope.json"),
+            JSON.stringify({ scope: "project" }),
+          );
+
+          let reviewed = false;
+          await setup({
+            installMode: "plugin",
+            persistedSetupReviewPrompt: async () => {
+              reviewed = true;
+              return "reset";
+            },
+            setupScopePrompt: async (defaultScope) => {
+              assert.equal(defaultScope, "user");
+              return "user";
+            },
+          });
+
+          assert.equal(reviewed, true);
+          const persisted = JSON.parse(
+            await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
+          ) as { scope: string; installMode?: string };
+          assert.deepEqual(persisted, { scope: "user", installMode: "plugin" });
+        });
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("reviews persisted install mode when only user scope is provided", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+    try {
+      await withIsolatedUserHome(wd, async () => {
+        await withTempCwd(wd, async () => {
+          await mkdir(join(wd, ".omx"), { recursive: true });
+          await writeFile(
+            join(wd, ".omx", "setup-scope.json"),
+            JSON.stringify({ scope: "user", installMode: "legacy" }),
+          );
+
+          let reviewed = false;
+          await setup({
+            scope: "user",
+            persistedSetupReviewPrompt: async () => {
+              reviewed = true;
+              return "review";
+            },
+            installModePrompt: async (defaultMode) => {
+              assert.equal(defaultMode, "legacy");
+              return "plugin";
+            },
+          });
+
+          assert.equal(reviewed, true);
+          const persisted = JSON.parse(
+            await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
+          ) as { scope: string; installMode?: string };
+          assert.deepEqual(persisted, { scope: "user", installMode: "plugin" });
+        });
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores persisted setup preferences when review chooses reset", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+    try {
+      await withIsolatedUserHome(wd, async () => {
+        await withTempCwd(wd, async () => {
+          await mkdir(join(wd, ".omx"), { recursive: true });
+          await writeFile(
+            join(wd, ".omx", "setup-scope.json"),
+            JSON.stringify({ scope: "project", installMode: "plugin" }),
+          );
+
+          await setup({
+            persistedSetupReviewPrompt: async () => "reset",
+            setupScopePrompt: async (defaultScope) => {
+              assert.equal(defaultScope, "user");
+              return "user";
+            },
+            installModePrompt: async (defaultMode) => {
+              assert.equal(defaultMode, "legacy");
+              return "legacy";
+            },
+          });
+
+          const persisted = JSON.parse(
+            await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
+          ) as { scope: string; installMode?: string };
+          assert.deepEqual(persisted, { scope: "user", installMode: "legacy" });
+        });
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("prints plugin-mode next steps without claiming native agent TOML files were written", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
     try {
@@ -430,6 +643,13 @@ describe("omx setup install mode behavior", () => {
             agentsMd,
             /oh-my-codex - Intelligent Multi-Agent Orchestration/,
           );
+          assert.match(agentsMd, /<!-- omx:generated:agents-md -->/);
+          assert.match(agentsMd, /<!-- OMX:MODELS:START -->/);
+          assert.match(agentsMd, /<!-- OMX:MODELS:END -->/);
+          assert.match(agentsMd, /<guidance_schema_contract>/);
+          assert.match(agentsMd, /<execution_protocols>/);
+          assert.match(agentsMd, /AGENTS\.md is the top-level operating contract/);
+          assert.match(agentsMd, /Treat installed prompts as narrower execution surfaces under AGENTS\.md authority|Role prompts under `prompts\/\*\.md` are narrower execution surfaces/);
         });
       });
     } finally {
@@ -691,6 +911,61 @@ describe("omx setup install mode behavior", () => {
           assert.doesNotMatch(
             config,
             /oh-my-codex|mcp_servers|notify|developer_instructions/,
+          );
+        });
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("archives stale legacy prompts and generated native agents when plugin mode refreshes", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        await withTempCwd(wd, async () => {
+          await setup({ scope: "user", installMode: "legacy" });
+
+          const promptPath = join(codexHomeDir, "prompts", "executor.md");
+          const agentPath = join(codexHomeDir, "agents", "planner.toml");
+          await writeFile(
+            promptPath,
+            "---\ndescription: stale legacy executor prompt\n---\n\nold executor body\n",
+          );
+          await writeFile(
+            agentPath,
+            [
+              "# oh-my-codex agent: planner",
+              'name = "planner"',
+              'description = "stale legacy generated planner"',
+              'developer_instructions = """old planner body"""',
+              "",
+            ].join("\n"),
+          );
+
+          const output = await captureConsoleOutput(async () => {
+            await setup({ scope: "user", installMode: "plugin" });
+          });
+
+          assert.equal(existsSync(promptPath), false);
+          assert.equal(existsSync(agentPath), false);
+          assert.match(output, /Archived and removed .* legacy OMX-managed prompt file/);
+          assert.match(output, /Archived and removed .* legacy OMX-managed native agent config/);
+
+          const backupRoot = join(wd, "home", ".omx", "backups", "setup");
+          const backupRuns = await readdir(backupRoot);
+          assert.ok(backupRuns.length > 0);
+          assert.equal(
+            backupRuns.some((entry) =>
+              existsSync(join(backupRoot, entry, ".codex", "prompts", "executor.md")),
+            ),
+            true,
+          );
+          assert.equal(
+            backupRuns.some((entry) =>
+              existsSync(join(backupRoot, entry, ".codex", "agents", "planner.toml")),
+            ),
+            true,
           );
         });
       });

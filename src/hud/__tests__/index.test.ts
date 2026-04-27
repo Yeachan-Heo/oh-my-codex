@@ -53,7 +53,7 @@ describe('runWatchMode', () => {
       isTTY: true,
       env: {},
       readAllStateFn: async (_cwd, config) => ({ ...emptyCtx(), gitBranch: config?.git.display ?? null }),
-      readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' } }),
+      readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' }, statusLine: { preset: 'focused' } }),
       renderHudFn: (ctx) => `frame:${ctx.gitBranch}`,
       writeStdout: (text) => { writes.push(text); },
       writeStderr: () => {},
@@ -103,7 +103,7 @@ describe('runWatchMode', () => {
           inFlight -= 1;
         }
       },
-      readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' } }),
+      readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' }, statusLine: { preset: 'focused' } }),
       renderHudFn: () => 'frame',
       writeStdout: (text) => { writes.push(text); },
       writeStderr: () => {},
@@ -142,7 +142,7 @@ describe('runWatchMode', () => {
       isTTY: true,
       env: {},
       readAllStateFn: async () => emptyCtx(),
-      readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' } }),
+      readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' }, statusLine: { preset: 'focused' } }),
       renderHudFn: () => 'frame',
       writeStdout: (text) => { writes.push(text); },
       writeStderr: () => {},
@@ -171,7 +171,7 @@ describe('runWatchMode', () => {
       readAllStateFn: async (_cwd, config) => {
         throw new Error('boom');
       },
-      readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' } }),
+      readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' }, statusLine: { preset: 'focused' } }),
       renderHudFn: () => 'frame',
       writeStdout: (text) => { writes.push(text); },
       writeStderr: (text) => { errors.push(text); },

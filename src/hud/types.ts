@@ -111,10 +111,16 @@ export interface HudGitConfig {
   repoLabel?: string;
 }
 
+/** Status line preset configuration (drives [tui].status_line in ~/.codex/config.toml) */
+export interface HudStatusLineConfig {
+  preset?: HudPreset;
+}
+
 /** HUD configuration stored in .omx/hud-config.json */
 export interface HudConfig {
   preset?: HudPreset;
   git?: HudGitConfig;
+  statusLine?: HudStatusLineConfig;
 }
 
 export interface ResolvedHudGitConfig {
@@ -123,9 +129,14 @@ export interface ResolvedHudGitConfig {
   repoLabel?: string;
 }
 
+export interface ResolvedHudStatusLineConfig {
+  preset: HudPreset;
+}
+
 export interface ResolvedHudConfig {
   preset: HudPreset;
   git: ResolvedHudGitConfig;
+  statusLine: ResolvedHudStatusLineConfig;
 }
 
 /** Default HUD configuration */
@@ -133,6 +144,9 @@ export const DEFAULT_HUD_CONFIG: ResolvedHudConfig = {
   preset: 'focused',
   git: {
     display: 'repo-branch',
+  },
+  statusLine: {
+    preset: 'focused',
   },
 };
 

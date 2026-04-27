@@ -2004,6 +2004,24 @@ exit 0
     ]);
   });
 
+  it("acquireTmuxExtendedKeysLease can bind lease liveness to a long-lived owner pid", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-tmux-lease-owner-pid-"));
+    try {
+      const execStub = (_file: string, args: readonly string[]) => {
+        if (args[0] === "display-message") return "/tmp/tmux-owner-pid.sock\n";
+        if (args[0] === "show-options") return "off\n";
+        return "";
+      };
+
+      const lease = acquireTmuxExtendedKeysLease(cwd, execStub, 12345);
+
+      assert.match(lease ?? "", /^\/tmp\/tmux-owner-pid\.sock\t12345-/);
+      if (lease) releaseTmuxExtendedKeysLease(cwd, lease, execStub);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("overlapping tmux extended-keys leases restore only after the last holder exits", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-tmux-lease-overlap-"));
     const calls: string[][] = [];
@@ -2183,6 +2201,185 @@ exit 0
 
     if (lease) releaseTmuxExtendedKeysLease(cwd, lease, execStub);
     await rm(cwd, { recursive: true, force: true });
+  });
+
+  it("acquireTmuxExtendedKeysLease reaps dead holders and restores before taking a new lease", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-tmux-dead-holder-acquire-"));
+    try {
+      const leaseDir = join(cwd, ".omx", "state", "tmux-extended-keys");
+      const leasePath = join(leaseDir, "tmp-stale-holder-sock.json");
+      await mkdir(leaseDir, { recursive: true });
+      await writeFile(
+        leasePath,
+        JSON.stringify({
+          originalMode: "off",
+          holders: ["2147483647-stale-holder"],
+        }),
+        "utf-8",
+      );
+
+      const calls: string[][] = [];
+      const execStub = (_file: string, args: readonly string[]): string => {
+        calls.push([...args]);
+        if (args[0] === "display-message") return "/tmp/stale-holder.sock\n";
+        if (args[0] === "show-options") return "off\n";
+        return "";
+      };
+
+      const lease = acquireTmuxExtendedKeysLease(cwd, execStub);
+
+      assert.equal(typeof lease, "string");
+      const persisted = JSON.parse(await readFile(leasePath, "utf-8")) as {
+        holders: Array<string | { id?: string; pid?: number; linuxStartTicks?: number }>;
+      };
+      assert.equal(persisted.holders.length, 1);
+      const holder = persisted.holders[0];
+      const holderId = typeof holder === "string" ? holder : holder?.id ?? "";
+      assert.match(holderId, new RegExp(`^${process.pid}-`));
+      assert.equal(typeof holder === "object" ? holder.pid : process.pid, process.pid);
+      assert.doesNotMatch(JSON.stringify(persisted), /2147483647-stale-holder/);
+
+      if (lease) releaseTmuxExtendedKeysLease(cwd, lease, execStub);
+
+      assert.deepEqual(calls, [
+        ["display-message", "-p", "#{socket_path}"],
+        ["set-option", "-sq", "extended-keys", "off"],
+        ["show-options", "-sv", "extended-keys"],
+        ["set-option", "-sq", "extended-keys", "always"],
+        ["set-option", "-sq", "extended-keys", "off"],
+      ]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("releaseTmuxExtendedKeysLease preserves live legacy string holders", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-tmux-live-legacy-holder-"));
+    try {
+      const leaseDir = join(cwd, ".omx", "state", "tmux-extended-keys");
+      const leasePath = join(leaseDir, "tmp-live-legacy-sock.json");
+      const legacyHolder = `${process.pid}-legacy-holder`;
+      await mkdir(leaseDir, { recursive: true });
+      await writeFile(
+        leasePath,
+        JSON.stringify({
+          originalMode: "off",
+          holders: [legacyHolder],
+        }),
+        "utf-8",
+      );
+
+      const calls: string[][] = [];
+      const execStub = (_file: string, args: readonly string[]): string => {
+        calls.push([...args]);
+        return "";
+      };
+
+      releaseTmuxExtendedKeysLease(
+        cwd,
+        "/tmp/live-legacy.sock\tmissing-holder",
+        execStub,
+      );
+
+      const persisted = JSON.parse(await readFile(leasePath, "utf-8")) as {
+        holders: string[];
+      };
+      assert.deepEqual(persisted.holders, [legacyHolder]);
+      assert.deepEqual(
+        calls,
+        [],
+        "live legacy string holders should not be restored away",
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("acquireTmuxExtendedKeysLease reaps Linux PID-reuse identity mismatches", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-tmux-pid-reuse-holder-"));
+    try {
+      const leaseDir = join(cwd, ".omx", "state", "tmux-extended-keys");
+      const leasePath = join(leaseDir, "tmp-pid-reuse-sock.json");
+      await mkdir(leaseDir, { recursive: true });
+      await writeFile(
+        leasePath,
+        JSON.stringify({
+          originalMode: "off",
+          holders: [{
+            id: `${process.pid}-reused-holder`,
+            pid: process.pid,
+            platform: "linux",
+            linuxStartTicks: -1,
+          }],
+        }),
+        "utf-8",
+      );
+
+      const calls: string[][] = [];
+      const execStub = (_file: string, args: readonly string[]): string => {
+        calls.push([...args]);
+        if (args[0] === "display-message") return "/tmp/pid-reuse.sock\n";
+        if (args[0] === "show-options") return "off\n";
+        return "";
+      };
+
+      const lease = acquireTmuxExtendedKeysLease(cwd, execStub);
+
+      assert.equal(typeof lease, "string");
+      const persisted = JSON.parse(await readFile(leasePath, "utf-8")) as {
+        holders: Array<string | { id?: string; pid?: number }>;
+      };
+      const holderIds = persisted.holders.map((holder) =>
+        typeof holder === "string" ? holder : holder.id ?? "",
+      );
+      if (process.platform === "linux") {
+        assert.equal(persisted.holders.length, 1);
+        assert.match(holderIds[0] ?? "", new RegExp(`^${process.pid}-`));
+        assert.doesNotMatch(JSON.stringify(persisted), /reused-holder/);
+        assert.deepEqual(calls, [
+          ["display-message", "-p", "#{socket_path}"],
+          ["set-option", "-sq", "extended-keys", "off"],
+          ["show-options", "-sv", "extended-keys"],
+          ["set-option", "-sq", "extended-keys", "always"],
+        ]);
+      } else {
+        assert.ok(holderIds.includes(`${process.pid}-reused-holder`));
+      }
+
+      if (lease) releaseTmuxExtendedKeysLease(cwd, lease, execStub);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("releaseTmuxExtendedKeysLease restores when all remaining holders are dead", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-tmux-dead-holder-release-"));
+    try {
+      const leaseDir = join(cwd, ".omx", "state", "tmux-extended-keys");
+      const leasePath = join(leaseDir, "tmp-dead-release-sock.json");
+      await mkdir(leaseDir, { recursive: true });
+      await writeFile(
+        leasePath,
+        JSON.stringify({
+          originalMode: "off",
+          holders: ["2147483647-stale-holder"],
+        }),
+        "utf-8",
+      );
+
+      const calls: string[][] = [];
+      const execStub = (_file: string, args: readonly string[]): string => {
+        calls.push([...args]);
+        return "";
+      };
+
+      releaseTmuxExtendedKeysLease(cwd, "/tmp/dead-release.sock\tmissing-holder", execStub);
+
+      assert.ok(!existsSync(leasePath), "stale-only lease file should be removed");
+      assert.deepEqual(calls, [["set-option", "-sq", "extended-keys", "off"]]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
     it("buildDetachedSessionFinalizeSteps keeps schedule after split-capture and before attach", () => {
     const steps = buildDetachedSessionFinalizeSteps(
@@ -2370,6 +2567,23 @@ describe("buildTmuxPaneCommand", () => {
     assert.ok(
       !result.startsWith("'/bin/sh' -c "),
       "should not fall back to /bin/sh for supported Homebrew zsh",
+    );
+    assert.ok(result.includes("source ~/.zshrc"), "should source .zshrc");
+  });
+
+  it("keeps MacPorts zsh instead of downgrading to /bin/sh", () => {
+    const result = buildTmuxPaneCommand(
+      "codex",
+      ["--model", "gpt-5"],
+      "/opt/local/bin/zsh",
+    );
+    assert.ok(
+      result.startsWith("'/opt/local/bin/zsh' -c "),
+      "should preserve MacPorts zsh when SHELL points to it",
+    );
+    assert.ok(
+      !result.startsWith("'/bin/sh' -c "),
+      "should not fall back to /bin/sh for supported MacPorts zsh",
     );
     assert.ok(result.includes("source ~/.zshrc"), "should source .zshrc");
   });
@@ -2586,6 +2800,21 @@ describe("team worker launch arg inheritance helpers", () => {
     assert.deepEqual(
       collectInheritableTeamWorkerArgs(["--model=gpt-5.3-codex"]),
       ["--model", "gpt-5.3-codex"],
+    );
+  });
+
+
+  it("collectInheritableTeamWorkerArgs preserves only safe model_provider config overrides", () => {
+    assert.deepEqual(
+      collectInheritableTeamWorkerArgs([
+        "-c",
+        'sandbox_mode="danger-full-access"',
+        "-c",
+        'model_provider="cheapRouter"',
+        "--model",
+        "gpt-5.5",
+      ]),
+      ["-c", 'model_provider="cheapRouter"', "--model", "gpt-5.5"],
     );
   });
 

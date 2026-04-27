@@ -55,9 +55,10 @@ If no flag is provided, use **Standard**.
 - Keep total prompt payloads within a safe budget by summarizing or trimming retained history; preserve newest/highest-signal answers and never let raw oversized context crowd out the current question
 - Reduce user effort: ask only the highest-leverage unresolved question, and never ask the user for codebase facts that can be discovered directly
 - For brownfield work, prefer evidence-backed confirmation questions such as "I found X in Y. Should this change follow that pattern?"
-- In Codex CLI, deep-interview uses `omx question` as the required OMX-owned structured questioning path for every interview round
+- In attached-tmux Codex CLI, deep-interview uses `omx question` as the required OMX-owned structured questioning path for every interview round
+- When invoking `omx question` through attached-tmux Bash/tool paths, preserve the leader-pane return target by prefixing the command with `OMX_QUESTION_RETURN_PANE=$TMUX_PANE` (or a concrete `%pane` value)
 - If you launch `omx question` in a background terminal, immediately wait for that background terminal to finish and read its JSON answer before scoring ambiguity, asking another round, or handing off
-- If `omx question` is unavailable in the current runtime, treat that as a blocker/error for deep-interview rather than falling back to `request_user_input` or plain-text questioning
+- If the current runtime is outside tmux and cannot render `omx question`, use the native structured question tool when available; otherwise ask exactly one concise plain-text question and wait for the answer
 - Re-score ambiguity after each answer and show progress transparently
 - Do not hand off to execution while ambiguity remains above threshold unless user explicitly opts to proceed with warning
 - Do not crystallize or hand off while `Non-goals` or `Decision Boundaries` remain unresolved, even if the weighted ambiguity threshold is met
@@ -155,7 +156,7 @@ Detailed dimensions:
 `Non-goals` and `Decision Boundaries` are mandatory readiness gates. Ask about them early and keep revisiting them until they are explicit.
 
 ### 2b) Ask the question
-Use OMX-owned structured questioning via `omx question` for every interview round (this is the required `AskUserQuestion` equivalent for deep-interview) and present:
+Use the surface-appropriate structured questioning path for every interview round. In attached-tmux sessions, use OMX-owned structured questioning via `omx question` (this is the required `AskUserQuestion` equivalent for deep-interview). Outside tmux, use native structured input when available; otherwise ask exactly one concise plain-text question and wait for the answer. Present:
 
 ```
 Round {n} | Target: {weakest_dimension} | Ambiguity: {score}%
@@ -397,9 +398,11 @@ Present execution options after artifact generation using explicit handoff contr
 
 <Tool_Usage>
 - Use `explore` for codebase fact gathering
-- Use `omx question` as the OMX-native structured user-input tool for each interview round
-- If `omx question` is unavailable in the current runtime, stop and surface that deep-interview requires the OMX question tool rather than falling back to another questioning path
+- Use `omx question` as the OMX-native structured user-input tool for each interview round when an attached tmux renderer is available
+- From attached-tmux Bash/tool paths, call it as `OMX_QUESTION_RETURN_PANE=$TMUX_PANE omx question ...` unless an explicit `%pane` return target is already known
+- If the current runtime is outside tmux and cannot render `omx question`, use native structured input when available; otherwise ask exactly one concise plain-text question and wait for the answer
 - Use `state_write` / `state_read` for resumable mode state
+- If the interview cannot ask a required `omx question` round, persist the blocker as terminal state with `active: false` and `current_phase: "blocked"`; do not write a terminal blocked phase with `active: true`
 - Read/write context snapshots under `.omx/context/`
 - Record whether the oversized-context summary gate is not needed, pending, or satisfied before any scoring or handoff step
 - Save transcript/spec artifacts under `.omx/interviews/` and `.omx/specs/`

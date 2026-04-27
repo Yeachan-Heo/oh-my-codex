@@ -13,6 +13,7 @@ import { version } from "./version.js";
 import { tmuxHookCommand } from "./tmux-hook.js";
 import { hooksCommand } from "./hooks.js";
 import { hudCommand } from "../hud/index.js";
+import { sidecarCommand } from "../sidecar/index.js";
 import { teamCommand } from "./team.js";
 import { ralphCommand } from "./ralph.js";
 import { askCommand } from "./ask.js";
@@ -182,6 +183,7 @@ Usage:
   omx tmux-hook Manage tmux prompt injection workaround (init|status|validate|test)
   omx hooks     Manage hook plugins (init|status|validate|test)
   omx hud       Show HUD statusline (--watch, --json, --preset=NAME)
+  omx sidecar   Show read-only team/multi-agent visualization (--watch, --json, --tmux)
   omx state     Read/write/list OMX mode state via CLI parity surface
   omx notepad   CLI parity for OMX notepad MCP tools
   omx project-memory
@@ -222,6 +224,9 @@ Options:
   -w, --worktree[=<name>]
                 Launch Codex in a git worktree (detached when no name is given)
   --force       Force reinstall (overwrite existing files)
+  --merge-agents
+                Merge OMX-managed AGENTS.md sections into an existing AGENTS.md
+                instead of overwriting user-authored content
   --dry-run     Show what would be done without doing it
   --plugin      Use Codex plugin delivery for omx setup and remove legacy OMX-managed user/project components
   --keep-config Skip config.toml cleanup during uninstall
@@ -259,6 +264,7 @@ const ALLOWED_SHELLS = new Set([
   "/usr/local/bin/bash",
   "/usr/local/bin/zsh",
   "/usr/local/bin/fish",
+  "/opt/local/bin/zsh",
   "/opt/homebrew/bin/zsh",
 ]);
 const WINDOWS_DETACHED_BOOTSTRAP_DELAY_MS = 2500;
@@ -294,6 +300,7 @@ type CliCommand =
   | "tmux-hook"
   | "hooks"
   | "hud"
+  | "sidecar"
   | "state"
   | "wiki"
   | "mcp-serve"
@@ -316,6 +323,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "hooks",
   "list",
   "hud",
+  "sidecar",
   "state",
   "wiki",
   "mcp-serve",
@@ -717,6 +725,7 @@ export async function main(args: string[]): Promise<void> {
     "tmux-hook",
     "hooks",
     "hud",
+    "sidecar",
     "state",
     "mcp-serve",
     "status",
@@ -730,6 +739,7 @@ export async function main(args: string[]): Promise<void> {
   const flags = new Set(args.filter((a) => a.startsWith("--")));
   const options = {
     force: flags.has("--force"),
+    mergeAgents: flags.has("--merge-agents"),
     dryRun: flags.has("--dry-run"),
     verbose: flags.has("--verbose"),
     team: flags.has("--team"),
@@ -751,6 +761,7 @@ export async function main(args: string[]): Promise<void> {
       case "setup":
         await setup({
           force: options.force,
+          mergeAgents: options.mergeAgents,
           dryRun: options.dryRun,
           verbose: options.verbose,
           scope: resolveSetupScopeArg(args.slice(1)),
@@ -824,6 +835,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "hud":
         await hudCommand(args.slice(1));
+        break;
+      case "sidecar":
+        await sidecarCommand(args.slice(1));
         break;
       case "state":
         await stateCommand(args.slice(1));
@@ -1578,9 +1592,18 @@ function escapeShellDoubleQuotedValue(value: string): string {
   return value.replace(/["\\$`]/g, "\\$&");
 }
 
+interface TmuxExtendedKeysLeaseHolderRecord {
+  id: string;
+  pid: number;
+  platform?: NodeJS.Platform;
+  linuxStartTicks?: number;
+}
+
+type TmuxExtendedKeysLeaseHolder = string | TmuxExtendedKeysLeaseHolderRecord;
+
 interface TmuxExtendedKeysLeaseState {
   originalMode: string;
-  holders: string[];
+  holders: TmuxExtendedKeysLeaseHolder[];
 }
 
 function sanitizeTmuxLeaseKey(value: string): string {
@@ -1621,6 +1644,27 @@ function tmuxExtendedKeysLeasePath(cwd: string, socketPath: string): string {
   );
 }
 
+function isTmuxExtendedKeysLeaseHolderRecord(
+  holder: unknown,
+): holder is TmuxExtendedKeysLeaseHolderRecord {
+  if (!holder || typeof holder !== "object") return false;
+  const record = holder as Record<string, unknown>;
+  if (typeof record.id !== "string" || !record.id.trim()) return false;
+  if (!Number.isSafeInteger(record.pid) || Number(record.pid) <= 0) return false;
+  if (record.platform !== undefined && typeof record.platform !== "string") return false;
+  if (
+    record.linuxStartTicks !== undefined &&
+    !Number.isSafeInteger(record.linuxStartTicks)
+  ) return false;
+  return true;
+}
+
+function isTmuxExtendedKeysLeaseHolder(
+  holder: unknown,
+): holder is TmuxExtendedKeysLeaseHolder {
+  return typeof holder === "string" || isTmuxExtendedKeysLeaseHolderRecord(holder);
+}
+
 function readTmuxExtendedKeysLeaseState(
   leasePath: string,
 ): TmuxExtendedKeysLeaseState | null {
@@ -1633,7 +1677,7 @@ function readTmuxExtendedKeysLeaseState(
     if (
       typeof parsed.originalMode !== "string" ||
       !Array.isArray(parsed.holders) ||
-      !parsed.holders.every((holder) => typeof holder === "string")
+      !parsed.holders.every(isTmuxExtendedKeysLeaseHolder)
     ) {
       return null;
     }
@@ -1652,6 +1696,92 @@ function writeTmuxExtendedKeysLeaseState(
 ): void {
   mkdirSync(dirname(leasePath), { recursive: true });
   writeFileSync(leasePath, JSON.stringify(state, null, 2));
+}
+
+function parseTmuxExtendedKeysLeaseHolderPid(holder: string): number | null {
+  const match = /^([1-9]\d*)-/.exec(holder);
+  if (!match) return null;
+  const pid = Number.parseInt(match[1], 10);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+}
+
+function getTmuxExtendedKeysLeaseHolderId(holder: TmuxExtendedKeysLeaseHolder): string {
+  return typeof holder === "string" ? holder : holder.id;
+}
+
+function getTmuxExtendedKeysLeaseHolderPid(holder: TmuxExtendedKeysLeaseHolder): number | null {
+  if (typeof holder === "string") return parseTmuxExtendedKeysLeaseHolderPid(holder);
+  return Number.isSafeInteger(holder.pid) && holder.pid > 0 ? holder.pid : null;
+}
+
+function parseLinuxProcStartTicks(statContent: string): number | null {
+  const commandEnd = statContent.lastIndexOf(")");
+  if (commandEnd === -1) return null;
+
+  const remainder = statContent.slice(commandEnd + 1).trim();
+  const fields = remainder.split(/\s+/);
+  if (fields.length <= 19) return null;
+
+  const startTicks = Number(fields[19]);
+  return Number.isSafeInteger(startTicks) ? startTicks : null;
+}
+
+function readLinuxProcessStartTicks(pid: number): number | null {
+  try {
+    return parseLinuxProcStartTicks(readFileSync(`/proc/${pid}/stat`, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+function createTmuxExtendedKeysLeaseHolder(
+  id: string,
+  pid: number,
+): TmuxExtendedKeysLeaseHolderRecord {
+  const linuxStartTicks = process.platform === "linux"
+    ? readLinuxProcessStartTicks(pid) ?? undefined
+    : undefined;
+  return {
+    id,
+    pid,
+    platform: process.platform,
+    ...(linuxStartTicks !== undefined ? { linuxStartTicks } : {}),
+  };
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code =
+      err && typeof err === "object" && "code" in err
+        ? String((err as NodeJS.ErrnoException).code)
+        : "";
+    return code === "EPERM";
+  }
+}
+
+function isTmuxExtendedKeysLeaseHolderAlive(
+  holder: TmuxExtendedKeysLeaseHolder,
+): boolean {
+  const pid = getTmuxExtendedKeysLeaseHolderPid(holder);
+  if (pid === null || !isProcessAlive(pid)) return false;
+
+  if (typeof holder === "string") return true;
+  if (holder.platform !== "linux" || process.platform !== "linux") return true;
+  if (holder.linuxStartTicks === undefined) return true;
+
+  return readLinuxProcessStartTicks(pid) === holder.linuxStartTicks;
+}
+
+function reapDeadTmuxExtendedKeysLeaseHolders(
+  state: TmuxExtendedKeysLeaseState,
+): TmuxExtendedKeysLeaseState {
+  return {
+    originalMode: state.originalMode,
+    holders: state.holders.filter(isTmuxExtendedKeysLeaseHolderAlive),
+  };
 }
 
 function withTmuxExtendedKeysLeaseLock<T>(
@@ -1754,13 +1884,24 @@ export function acquireTmuxExtendedKeysLease(
       encoding: "utf-8",
       ...(process.platform === "win32" ? { windowsHide: true } : {}),
     }) as string,
+  ownerPid = process.pid,
 ): string | null {
   try {
     const socketPath = resolveTmuxSocketPath(execFileSyncImpl);
     const leasePath = tmuxExtendedKeysLeasePath(cwd, socketPath);
-    const leaseId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const holderPid =
+      Number.isSafeInteger(ownerPid) && ownerPid > 0 ? ownerPid : process.pid;
+    const leaseId = `${holderPid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     withTmuxExtendedKeysLeaseLock(cwd, socketPath, () => {
-      const state = readTmuxExtendedKeysLeaseState(leasePath);
+      const stateRaw = readTmuxExtendedKeysLeaseState(leasePath);
+      const state = stateRaw ? reapDeadTmuxExtendedKeysLeaseHolders(stateRaw) : null;
+      if (stateRaw && state?.holders.length === 0) {
+        execTmuxSync(
+          ["set-option", "-sq", "extended-keys", state.originalMode],
+          execFileSyncImpl,
+        );
+        rmSync(leasePath, { force: true });
+      }
       if (!state || state.holders.length === 0) {
         const previousMode =
           execTmuxSync(["show-options", "-sv", "extended-keys"], execFileSyncImpl) ||
@@ -1771,12 +1912,12 @@ export function acquireTmuxExtendedKeysLease(
         );
         writeTmuxExtendedKeysLeaseState(leasePath, {
           originalMode: previousMode,
-          holders: [leaseId],
+          holders: [createTmuxExtendedKeysLeaseHolder(leaseId, holderPid)],
         });
         return;
       }
 
-      state.holders.push(leaseId);
+      state.holders.push(createTmuxExtendedKeysLeaseHolder(leaseId, holderPid));
       writeTmuxExtendedKeysLeaseState(leasePath, state);
     });
     return `${socketPath}\t${leaseId}`;
@@ -1803,13 +1944,22 @@ export function releaseTmuxExtendedKeysLease(
   try {
     const leasePath = tmuxExtendedKeysLeasePath(cwd, socketPath);
     withTmuxExtendedKeysLeaseLock(cwd, socketPath, () => {
-      const state = readTmuxExtendedKeysLeaseState(leasePath);
+      const stateRaw = readTmuxExtendedKeysLeaseState(leasePath);
+      const state = stateRaw ? reapDeadTmuxExtendedKeysLeaseHolders(stateRaw) : null;
       if (!state || state.holders.length === 0) {
+        if (stateRaw) {
+          execTmuxSync(
+            ["set-option", "-sq", "extended-keys", stateRaw.originalMode],
+            execFileSyncImpl,
+          );
+        }
         rmSync(leasePath, { force: true });
         return;
       }
 
-      const holders = state.holders.filter((holder) => holder !== leaseId);
+      const holders = state.holders.filter(
+        (holder) => getTmuxExtendedKeysLeaseHolderId(holder) !== leaseId,
+      );
       if (holders.length > 0) {
         writeTmuxExtendedKeysLeaseState(leasePath, {
           originalMode: state.originalMode,
@@ -1837,13 +1987,13 @@ function buildTmuxExtendedKeysHelperCommand(
   const moduleUrlLiteral = JSON.stringify(import.meta.url);
   const script =
     operation === "acquire"
-      ? `const mod = await import(${moduleUrlLiteral}); const lease = mod.acquireTmuxExtendedKeysLease(${cwdLiteral}); if (lease) process.stdout.write(lease);`
+      ? `const mod = await import(${moduleUrlLiteral}); const ownerPid = Number.parseInt(process.argv[1] ?? "", 10); const lease = mod.acquireTmuxExtendedKeysLease(${cwdLiteral}, undefined, Number.isSafeInteger(ownerPid) && ownerPid > 0 ? ownerPid : undefined); if (lease) process.stdout.write(lease);`
       : `const mod = await import(${moduleUrlLiteral}); mod.releaseTmuxExtendedKeysLease(${cwdLiteral}, process.argv[1] ?? "");`;
   return `${quoteShellArg(process.execPath)} --input-type=module -e ${quoteShellArg(script)}`;
 }
 
 function buildTmuxExtendedKeysAcquireShellSnippet(cwd: string): string {
-  return `OMX_TMUX_EXTENDED_KEYS_LEASE=$(${buildTmuxExtendedKeysHelperCommand(cwd, "acquire")} 2>/dev/null || true);`;
+  return `OMX_TMUX_EXTENDED_KEYS_LEASE=$(${buildTmuxExtendedKeysHelperCommand(cwd, "acquire")} "$$" 2>/dev/null || true);`;
 }
 
 function buildTmuxExtendedKeysReleaseShellSnippet(cwd: string): string {

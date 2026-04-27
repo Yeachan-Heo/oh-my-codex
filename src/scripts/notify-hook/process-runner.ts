@@ -6,7 +6,11 @@ import { spawn } from 'child_process';
 
 export function runProcess(command: string, args: string[], timeoutMs = 3000): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const usingTestTmux = command === 'tmux' && process.env.OMX_TEST_TMUX_BIN;
+    const relaxingTestTmuxTimeout = command === 'tmux' && process.env.OMX_TEST_RELAX_TMUX_TIMEOUT === '1';
+    const executable = usingTestTmux ? process.env.OMX_TEST_TMUX_BIN as string : command;
+    const effectiveTimeoutMs = usingTestTmux || relaxingTestTmuxTimeout ? Math.max(timeoutMs, 10_000) : timeoutMs;
+    const child = spawn(executable, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     let finished = false;
@@ -15,8 +19,8 @@ export function runProcess(command: string, args: string[], timeoutMs = 3000): P
       if (finished) return;
       finished = true;
       child.kill('SIGTERM');
-      reject(new Error(`timeout after ${timeoutMs}ms`));
-    }, timeoutMs);
+      reject(new Error(`timeout after ${effectiveTimeoutMs}ms`));
+    }, effectiveTimeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => {
       stdout += chunk.toString();

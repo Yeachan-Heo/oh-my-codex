@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 import { questionCommand } from '../question.js';
 import { markQuestionAnswered, readQuestionRecord } from '../../question/state.js';
 
@@ -12,6 +12,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..', '..', '..');
 const omxBin = join(repoRoot, 'dist', 'cli', 'omx.js');
 const tempDirs: string[] = [];
+let originalProcessExitCode: string | number | null | undefined;
 
 async function makeRepo(): Promise<string> {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-question-cli-'));
@@ -22,10 +23,16 @@ async function makeRepo(): Promise<string> {
 }
 
 afterEach(async () => {
+  process.exitCode = originalProcessExitCode;
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
 describe('omx question CLI', () => {
+  beforeEach(() => {
+    originalProcessExitCode = process.exitCode;
+    process.exitCode = undefined;
+  });
+
   it('hard-fails worker contexts before UI launch', async () => {
     const cwd = await makeRepo();
     const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {

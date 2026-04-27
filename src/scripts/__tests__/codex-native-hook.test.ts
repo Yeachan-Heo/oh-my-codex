@@ -22,6 +22,7 @@ import {
 } from "../codex-native-hook.js";
 import { writeSessionStart } from "../../hooks/session.js";
 import { resetTriageConfigCache } from "../../hooks/triage-config.js";
+import { executeStateOperation } from "../../state/operations.js";
 
 function nativeHookScriptPath(): string {
   return join(process.cwd(), "dist", "scripts", "codex-native-hook.js");
@@ -264,6 +265,24 @@ describe("codex native hook dispatch", () => {
     );
   });
 
+  it("emits parseable no-op JSON stdout for inactive Stop CLI runs", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-noop-json-"));
+    try {
+      const stdout = runNativeHookCli({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-cli-stop-noop-json",
+        thread_id: "thread-cli-stop-noop-json",
+        turn_id: "turn-cli-stop-noop-json",
+      }, { cwd });
+      const output = parseSingleJsonStdout(stdout);
+
+      assert.deepEqual(output, {});
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("emits exactly one parseable JSON object for active Stop CLI continuation", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-json-"));
     try {
@@ -435,6 +454,164 @@ describe("codex native hook dispatch", () => {
       assert.equal(existsSync(join(stateDir, "sessions", canonicalSessionId, "ralplan-state.json")), true);
       assert.equal(existsSync(join(stateDir, "sessions", nativeSessionId, "skill-active-state.json")), false);
       assert.equal(existsSync(join(stateDir, "sessions", nativeSessionId, "ralplan-state.json")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps subagent SessionStart from replacing the canonical leader session", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-session-start-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const canonicalSessionId = "omx-leader-session";
+      const leaderNativeSessionId = "codex-leader-thread";
+      const childNativeSessionId = "codex-child-thread";
+      await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
+      await writeSessionStart(cwd, canonicalSessionId, {
+        nativeSessionId: leaderNativeSessionId,
+      });
+      await writeJson(join(stateDir, "sessions", canonicalSessionId, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        iteration: 1,
+        max_iterations: 5,
+      });
+      const transcriptPath = join(cwd, "subagent-rollout.jsonl");
+      await writeFile(
+        transcriptPath,
+        `${JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: childNativeSessionId,
+            source: {
+              subagent: {
+                thread_spawn: {
+                  parent_thread_id: leaderNativeSessionId,
+                  depth: 1,
+                  agent_nickname: "Hegel",
+                  agent_role: "critic",
+                },
+              },
+            },
+            agent_nickname: "Hegel",
+            agent_role: "critic",
+          },
+        })}\n`,
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: childNativeSessionId,
+          transcript_path: transcriptPath,
+        },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+
+      const sessionState = JSON.parse(
+        await readFile(join(stateDir, "session.json"), "utf-8"),
+      ) as { session_id?: string; native_session_id?: string };
+      assert.equal(sessionState.session_id, canonicalSessionId);
+      assert.equal(sessionState.native_session_id, leaderNativeSessionId);
+      assert.equal(
+        existsSync(join(stateDir, "sessions", childNativeSessionId, "ralph-state.json")),
+        false,
+      );
+      assert.ok(result.outputJson);
+
+      const leaderRalph = JSON.parse(
+        await readFile(join(stateDir, "sessions", canonicalSessionId, "ralph-state.json"), "utf-8"),
+      ) as { active?: boolean; current_phase?: string };
+      assert.equal(leaderRalph.active, true);
+      assert.equal(leaderRalph.current_phase, "executing");
+
+      const tracking = JSON.parse(
+        await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"),
+      ) as {
+        sessions?: Record<string, {
+          leader_thread_id?: string;
+          threads?: Record<string, { kind?: string; mode?: string }>;
+        }>;
+      };
+      assert.equal(tracking.sessions?.[canonicalSessionId]?.leader_thread_id, leaderNativeSessionId);
+      assert.equal(tracking.sessions?.[canonicalSessionId]?.threads?.[childNativeSessionId]?.kind, "subagent");
+      assert.equal(tracking.sessions?.[canonicalSessionId]?.threads?.[childNativeSessionId]?.mode, "critic");
+      assert.equal(tracking.sessions?.[leaderNativeSessionId]?.leader_thread_id, leaderNativeSessionId);
+      assert.equal(tracking.sessions?.[leaderNativeSessionId]?.threads?.[childNativeSessionId]?.kind, "subagent");
+      assert.equal(tracking.sessions?.[leaderNativeSessionId]?.threads?.[childNativeSessionId]?.mode, "critic");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not attach a subagent SessionStart to an unrelated canonical leader", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-session-start-mismatch-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const canonicalSessionId = "omx-leader-session-a";
+      const leaderNativeSessionId = "codex-leader-thread-a";
+      const unrelatedParentNativeSessionId = "codex-leader-thread-b";
+      const childNativeSessionId = "codex-child-thread-b";
+      await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
+      await writeSessionStart(cwd, canonicalSessionId, {
+        nativeSessionId: leaderNativeSessionId,
+      });
+      await writeJson(join(stateDir, "sessions", canonicalSessionId, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        iteration: 1,
+        max_iterations: 5,
+      });
+      const transcriptPath = join(cwd, "unrelated-subagent-rollout.jsonl");
+      await writeFile(
+        transcriptPath,
+        `${JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: childNativeSessionId,
+            source: {
+              subagent: {
+                thread_spawn: {
+                  parent_thread_id: unrelatedParentNativeSessionId,
+                  depth: 1,
+                  agent_nickname: "Spinoza",
+                  agent_role: "critic",
+                },
+              },
+            },
+            agent_nickname: "Spinoza",
+            agent_role: "critic",
+          },
+        })}\n`,
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: childNativeSessionId,
+          transcript_path: transcriptPath,
+        },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+
+      const sessionState = JSON.parse(
+        await readFile(join(stateDir, "session.json"), "utf-8"),
+      ) as { session_id?: string; native_session_id?: string };
+      assert.equal(sessionState.session_id, canonicalSessionId);
+      assert.equal(sessionState.native_session_id, leaderNativeSessionId);
+      assert.equal(existsSync(join(stateDir, "subagent-tracking.json")), false);
+      assert.equal(existsSync(join(stateDir, "sessions", childNativeSessionId)), false);
+      assert.equal(result.outputJson, null);
+
+      const leaderRalph = JSON.parse(
+        await readFile(join(stateDir, "sessions", canonicalSessionId, "ralph-state.json"), "utf-8"),
+      ) as { active?: boolean; current_phase?: string };
+      assert.equal(leaderRalph.active, true);
+      assert.equal(leaderRalph.current_phase, "executing");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -3095,6 +3272,54 @@ esac
     }
   });
 
+  it("stays silent when successful Bash output quotes MCP transport warnings", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-bash-mcp-quote-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-bash-mcp-quote",
+          tool_input: { command: "cat diagnostic-log.txt" },
+          tool_response: JSON.stringify({
+            exit_code: 0,
+            stdout: "diagnostic log quoted: MCP transport closed; stdio pipe closed before response",
+            stderr: "",
+          }),
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("stays silent when Bash hard-failure text has no parsed exit code", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-bash-unparsed-failure-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-bash-unparsed-failure",
+          tool_input: { command: "cat captured-output.txt" },
+          tool_response: "captured transcript says: bash: foo: command not found",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns PostToolUse MCP transport fallback guidance for clear MCP transport death", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-mcp-transport-"));
     try {
@@ -3711,7 +3936,17 @@ esac
         undefined,
         { ...process.env, OMX_SESSION_ID: "sess-stop-team-worker" },
       );
+      const workerCwd = join(cwd, ".omx", "team", "worker-stop-team", "worktrees", "worker-1");
       const workerDir = join(cwd, ".omx", "state", "team", "worker-stop-team", "workers", "worker-1");
+      await mkdir(workerCwd, { recursive: true });
+      await writeJson(join(workerDir, "identity.json"), {
+        name: "worker-1",
+        index: 1,
+        role: "executor",
+        assigned_tasks: ["1"],
+        worktree_path: workerCwd,
+        team_state_root: join(cwd, ".omx", "state"),
+      });
       await writeJson(join(workerDir, "status.json"), {
         state: "idle",
         current_task_id: "1",
@@ -3733,10 +3968,10 @@ esac
       const result = await dispatchCodexNativeHook(
         {
           hook_event_name: "Stop",
-          cwd: join(cwd, ".omx", "team", "worker-stop-team", "worktrees", "worker-1"),
+          cwd: workerCwd,
           session_id: "sess-stop-team-worker",
         },
-        { cwd: join(cwd, ".omx", "team", "worker-stop-team", "worktrees", "worker-1") },
+        { cwd: workerCwd },
       );
 
       assert.deepEqual(result.outputJson, {
@@ -3772,6 +4007,16 @@ esac
       const stateDir = join(cwd, ".omx", "state");
       const workerDir = join(stateDir, "team", "worker-repeat-team", "workers", "worker-1");
       const taskPath = join(stateDir, "team", "worker-repeat-team", "tasks", "task-1.json");
+      const workerCwd = join(cwd, ".omx", "team", "worker-repeat-team", "worktrees", "worker-1");
+      await mkdir(workerCwd, { recursive: true });
+      await writeJson(join(workerDir, "identity.json"), {
+        name: "worker-1",
+        index: 1,
+        role: "executor",
+        assigned_tasks: ["1"],
+        worktree_path: workerCwd,
+        team_state_root: stateDir,
+      });
       await writeJson(join(workerDir, "status.json"), {
         state: "idle",
         current_task_id: "1",
@@ -3790,7 +4035,6 @@ esac
       process.env.OMX_TEAM_STATE_ROOT = stateDir;
       process.env.OMX_TEAM_LEADER_CWD = cwd;
 
-      const workerCwd = join(cwd, ".omx", "team", "worker-repeat-team", "worktrees", "worker-1");
       const basePayload = {
         hook_event_name: "Stop",
         cwd: workerCwd,
@@ -5136,10 +5380,10 @@ esac
       assert.deepEqual(result.outputJson, {
         decision: "block",
         reason:
-          "OMX Ralph is still active (phase: executing); continue the task and gather fresh verification evidence before stopping.",
+          "OMX Ralph is still active (phase: executing; state: .omx/state/ralph-state.json); continue the task and gather fresh verification evidence before stopping.",
         stopReason: "ralph_executing",
         systemMessage:
-          "OMX Ralph is still active (phase: executing); continue the task and gather fresh verification evidence before stopping.",
+          "OMX Ralph is still active (phase: executing; state: .omx/state/ralph-state.json); continue the task and gather fresh verification evidence before stopping.",
       });
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -5171,10 +5415,10 @@ esac
       assert.deepEqual(result.outputJson, {
         decision: "block",
         reason:
-          "OMX Ralph is still active (phase: executing); continue the task and gather fresh verification evidence before stopping.",
+          "OMX Ralph is still active (phase: executing; state: .omx/state/sessions/sess-live-ralph/ralph-state.json); continue the task and gather fresh verification evidence before stopping.",
         stopReason: "ralph_executing",
         systemMessage:
-          "OMX Ralph is still active (phase: executing); continue the task and gather fresh verification evidence before stopping.",
+          "OMX Ralph is still active (phase: executing; state: .omx/state/sessions/sess-live-ralph/ralph-state.json); continue the task and gather fresh verification evidence before stopping.",
       });
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -5254,6 +5498,87 @@ esac
 
       assert.equal(result.omxEventName, "stop");
       assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not hard-block Stop on stale session-scoped Ralph starting state after visible active modes are cleared", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-cleared-stale-ralph-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-cleared-ralph";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "starting",
+        session_id: sessionId,
+      });
+      await writeJson(join(stateDir, "skill-active-state.json"), {
+        active: false,
+        skill: "ralph",
+        active_skills: [],
+      });
+
+      const listActive = await executeStateOperation("state_list_active", {
+        workingDirectory: cwd,
+      });
+      assert.deepEqual(listActive.payload, { active_modes: [] });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks Stop on visible active session-scoped Ralph starting state and reports its path", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-visible-starting-ralph-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-visible-ralph";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "starting",
+        session_id: sessionId,
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "ralph",
+        phase: "starting",
+        active_skills: [{ skill: "ralph", phase: "starting", active: true, session_id: sessionId }],
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.deepEqual(result.outputJson, {
+        decision: "block",
+        reason:
+          "OMX Ralph is still active (phase: starting; state: .omx/state/sessions/sess-visible-ralph/ralph-state.json); continue the task and gather fresh verification evidence before stopping.",
+        stopReason: "ralph_starting",
+        systemMessage:
+          "OMX Ralph is still active (phase: starting; state: .omx/state/sessions/sess-visible-ralph/ralph-state.json); continue the task and gather fresh verification evidence before stopping.",
+      });
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -5399,10 +5724,10 @@ esac
       const expected = {
         decision: "block",
         reason:
-          "OMX Ralph is still active (phase: executing); continue the task and gather fresh verification evidence before stopping.",
+          "OMX Ralph is still active (phase: executing; state: .omx/state/ralph-state.json); continue the task and gather fresh verification evidence before stopping.",
         stopReason: "ralph_executing",
         systemMessage:
-          "OMX Ralph is still active (phase: executing); continue the task and gather fresh verification evidence before stopping.",
+          "OMX Ralph is still active (phase: executing; state: .omx/state/ralph-state.json); continue the task and gather fresh verification evidence before stopping.",
       };
 
       const first = await dispatchCodexNativeHook(payload, { cwd });

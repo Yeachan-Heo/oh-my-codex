@@ -35,10 +35,7 @@ Jumping into code without understanding requirements leads to rework, scope cree
 - Implementation step count must be right-sized to task scope; avoid defaulting to exactly five steps when the work is clearly smaller or larger
 - Consensus mode outputs the final plan by default; add `--interactive` to enable execution handoff
 - Consensus mode uses RALPLAN-DR short mode by default; switch to deliberate mode with `--deliberate` or when the request explicitly signals high risk (auth/security, data migration, destructive/irreversible changes, production incident, compliance/PII, public API breakage)
-- Default to concise, evidence-dense progress and completion reporting unless the user or risk level requires more detail
-- Treat newer user task updates as local overrides for the active workflow branch while preserving earlier non-conflicting constraints
-- If correctness depends on additional inspection, retrieval, execution, or verification, keep using the relevant tools until the plan is grounded
-- Continue through clear, low-risk, reversible next steps automatically; ask only when the next step is materially branching, destructive, or preference-dependent
+- Apply the shared workflow guidance pattern: concise, evidence-dense progress and completion reporting, local overrides for the active workflow branch, persistent inspection/verification while the plan depends on it, and automatic continuation for safe reversible steps. Ask only for material, destructive, or preference-dependent branches.
 </Execution_Policy>
 
 <Steps>

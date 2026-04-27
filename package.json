@@ -55,7 +55,8 @@
     "sync:plugin": "node dist/scripts/sync-plugin-mirror.js",
     "sync:plugin:check": "node dist/scripts/sync-plugin-mirror.js --check",
     "verify:plugin-bundle": "node dist/scripts/sync-plugin-mirror.js --check",
-    "verify:native-agents": "node dist/scripts/verify-native-agents.js"
+    "verify:native-agents": "node dist/scripts/verify-native-agents.js",
+    "prompt:inventory": "node dist/scripts/prompt-inventory.js"
   },
   "engines": {
     "node": ">=20"

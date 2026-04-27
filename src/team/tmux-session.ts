@@ -21,6 +21,7 @@ import {
   paneLooksReady as sharedPaneLooksReady,
 } from '../scripts/tmux-hook-engine.js';
 import { readActiveProviderEnvOverrides } from '../config/models.js';
+import { extractModelProviderOverrideValue } from './model-contract.js';
 import { sleep, sleepSync } from '../utils/sleep.js';
 import {
   buildPlatformCommandSpec,
@@ -566,7 +567,7 @@ export function buildReconcileHudResizeArgs(
   return ['run-shell', buildBestEffortShellCommand(buildNestedTmuxShellCommand(buildHudResizeCommand(hudPaneId, heightLines)))];
 }
 
-const ZSH_CANDIDATE_PATHS = ['/bin/zsh', '/usr/bin/zsh', '/usr/local/bin/zsh', '/opt/homebrew/bin/zsh'];
+const ZSH_CANDIDATE_PATHS = ['/bin/zsh', '/usr/bin/zsh', '/usr/local/bin/zsh', '/opt/local/bin/zsh', '/opt/homebrew/bin/zsh'];
 const BASH_CANDIDATE_PATHS = ['/bin/bash', '/usr/bin/bash'];
 
 function buildShellLaunchSpec(shell: string, rcFile: string | null): WorkerLaunchSpec {
@@ -925,16 +926,24 @@ export function buildWorkerProcessLaunchSpec(
     ? buildPlatformCommandSpec(workerCli, effectiveCliLaunchArgs, process.platform, effectiveEnv)
     : { command: resolvedCliPath, args: effectiveCliLaunchArgs };
   const resolvedLauncherPath = platformSpec.resolvedPath || resolvedCliPath;
+  const modelProviderOverride = workerCli === 'codex'
+    ? extractModelProviderOverrideValue(effectiveCliLaunchArgs)
+    : undefined;
+  const codexProviderEnv = workerCli === 'codex'
+    ? readActiveProviderEnvOverrides(
+        effectiveEnv,
+        providerLookupCodexHome,
+        modelProviderOverride,
+      )
+    : {};
   const workerEnv: Record<string, string> = {
     OMX_TEAM_WORKER: `${teamName}/worker-${workerIndex}`,
     [OMX_LEADER_NODE_PATH_ENV]: resolveLeaderNodePath(),
     [OMX_LEADER_CLI_PATH_ENV]: resolvedLauncherPath,
-    ...(workerCli === 'codex'
-      ? readActiveProviderEnvOverrides(
-          effectiveEnv,
-          providerLookupCodexHome,
-        )
+    ...(workerCli === 'codex' && workerCodexHomeOverride
+      ? { CODEX_HOME: workerCodexHomeOverride }
       : {}),
+    ...codexProviderEnv,
   };
   for (const [key, value] of Object.entries(extraEnv)) {
     if (typeof value !== 'string' || value.trim() === '') continue;
@@ -1486,9 +1495,6 @@ async function attemptSubmitRounds(
   return false;
 }
 
-// Poll tmux capture-pane for a worker-ready Codex/Claude prompt or welcome screen.
-// Start with short waits so we notice the first ready frame quickly, then back off.
-// Returns true if ready, false on timeout.
 export function waitForWorkerReady(
   sessionName: string,
   workerIndex: number,
@@ -1556,6 +1562,82 @@ export function waitForWorkerReady(
     const remaining = timeoutMs - (Date.now() - startedAt);
     if (remaining <= 0) break;
     sleepSeconds(Math.max(0, Math.min(delayMs, remaining)) / 1000);
+    delayMs = Math.min(maxBackoffMs, delayMs * 2);
+  }
+
+  return false;
+}
+
+// Async twin of waitForWorkerReady for team startup fan-out. Keep the readiness
+// semantics mirrored with the synchronous helper above, but yield between polls
+// so one slow worker pane cannot block later workers' startup attempts.
+export async function waitForWorkerReadyAsync(
+  sessionName: string,
+  workerIndex: number,
+  timeoutMs: number = 30_000,
+  workerPaneId?: string,
+): Promise<boolean> {
+  const initialBackoffMs = 150;
+  const maxBackoffMs = 8000;
+  const startedAt = Date.now();
+  let blockedByTrustPrompt = false;
+  let promptDismissed = false;
+
+  const sendRobustEnter = async (): Promise<void> => {
+    const target = paneTarget(sessionName, workerIndex, workerPaneId);
+    // Trust + follow-up splash can require two submits in Codex TUI.
+    // Use C-m (carriage return) for raw-mode compatibility.
+    await runTmuxAsync(['send-keys', '-t', target, 'C-m']);
+    await sleep(120);
+    await runTmuxAsync(['send-keys', '-t', target, 'C-m']);
+  };
+
+  const check = async (): Promise<boolean> => {
+    const target = paneTarget(sessionName, workerIndex, workerPaneId);
+    const result = await runTmuxAsync(sharedBuildVisibleCapturePaneArgv(target));
+    if (!result.ok) return false;
+    if (dismissClaudeBypassPermissionsPromptIfPresent(target, result.stdout)) {
+      promptDismissed = true;
+      return false;
+    }
+    if (paneHasClaudeBypassPermissionsPrompt(result.stdout)) {
+      return false;
+    }
+    if (paneHasTrustPrompt(result.stdout)) {
+      // Default-on for team workers: they are spawned explicitly by the leader in the same cwd.
+      // Opt-out by setting OMX_TEAM_AUTO_TRUST=0.
+      if (process.env.OMX_TEAM_AUTO_TRUST !== '0') {
+        await sendRobustEnter();
+        promptDismissed = true;
+        return false;
+      }
+      blockedByTrustPrompt = true;
+      return false;
+    }
+    if (paneLooksReady(result.stdout)) return true;
+    // Keep startup safety checks anchored to the visible pane. Only if the
+    // visible slice already proves a live Codex viewport do we consult recent
+    // scrollback for the prompt/helper text that may have slipped below the fold.
+    if (!sharedPaneShowsCodexViewport(result.stdout)) return false;
+
+    const scrollbackResult = await runTmuxAsync(sharedBuildCapturePaneArgv(target, 80));
+    if (!scrollbackResult.ok) return false;
+    return paneLooksReady(scrollbackResult.stdout);
+  };
+
+  let delayMs = initialBackoffMs;
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await check()) return true;
+    if (blockedByTrustPrompt) return false;
+    // After dismissing a trust prompt, reset backoff so we re-check quickly
+    // instead of sleeping 2s/4s/8s while the worker is starting up.
+    if (promptDismissed) {
+      delayMs = initialBackoffMs;
+      promptDismissed = false;
+    }
+    const remaining = timeoutMs - (Date.now() - startedAt);
+    if (remaining <= 0) break;
+    await sleep(Math.max(0, Math.min(delayMs, remaining)));
     delayMs = Math.min(maxBackoffMs, delayMs * 2);
   }
 
