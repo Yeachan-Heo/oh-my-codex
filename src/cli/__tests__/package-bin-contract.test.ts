@@ -101,6 +101,11 @@ describe('package bin contract', () => {
     const binSource = readFileSync(binPath, 'utf-8');
     const compiledCliSource = readFileSync(compiledCliPath, 'utf-8');
     assert.match(binSource, /^#!\/usr\/bin\/env node/);
+    assert.match(
+      binSource,
+      /process\.argv\[2\] !== ['"]mcp-serve['"]/,
+      'omx bin wrapper must not exit immediately after launching stdio MCP servers',
+    );
     assert.match(compiledCliSource, /omx update\s+Check npm now, update the global install immediately, then refresh setup/);
     assert.match(compiledCliSource, /case "update"/);
 
