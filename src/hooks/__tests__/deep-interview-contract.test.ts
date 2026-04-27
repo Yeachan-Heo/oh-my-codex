@@ -305,7 +305,7 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /evaluator readiness/i);
 		assert.match(
 			deepInterviewSkill,
-			/\.omx\/specs\/deep-interview-autoresearch-\{slug\}\.md/i,
+			/\.omx\/specs\/deep-interview-autoresearch-<timestamp>-<slug>\.md/i,
 		);
 		assert.match(deepInterviewSkill, /Mission Draft/i);
 		assert.match(deepInterviewSkill, /Evaluator Draft/i);

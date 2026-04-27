@@ -13,6 +13,7 @@ import {
 } from "../autoresearch-guided.js";
 import {
 	isLaunchReadyEvaluatorCommand,
+	listAutoresearchDeepInterviewDraftPaths,
 	resolveAutoresearchDeepInterviewResult,
 	writeAutoresearchDeepInterviewArtifacts,
 	writeAutoresearchDraftArtifact,
@@ -182,7 +183,7 @@ describe("autoresearch intake draft artifacts", () => {
 
 			assert.match(
 				artifact.path,
-				/\.omx\/specs\/deep-interview-autoresearch-improve-onboarding-for-first-time-contributors\.md$/,
+				/\.omx\/specs\/deep-interview-autoresearch-\d{8}T\d{6}Z-improve-onboarding-for-first-time-contributors\.md$/,
 			);
 			assert.equal(artifact.launchReady, false);
 			assert.match(artifact.content, /## Mission Draft/);
@@ -216,7 +217,7 @@ describe("autoresearch intake draft artifacts", () => {
 
 			assert.match(
 				artifacts.draftArtifactPath,
-				/deep-interview-autoresearch-onboarding-friction\.md$/,
+				/deep-interview-autoresearch-\d{8}T\d{6}Z-onboarding-friction\.md$/,
 			);
 			assert.match(
 				artifacts.missionArtifactPath,
@@ -250,6 +251,48 @@ describe("autoresearch intake draft artifacts", () => {
 			await rm(repo, { recursive: true, force: true });
 		}
 	});
+
+	it("resolves legacy and timestamped deep-interview autoresearch drafts by slug", async () => {
+		const repo = await initWorkspace();
+		try {
+			const specsDir = join(repo, ".omx", "specs");
+			await mkdir(specsDir, { recursive: true });
+			const draftContent = [
+				"# Autoresearch Deep Interview Draft",
+				"",
+				"## Mission Draft",
+				"Measure onboarding friction",
+				"",
+				"## Evaluator Draft",
+				"node scripts/eval.js",
+				"",
+				"## Keep Policy",
+				"pass_only",
+				"",
+				"## Session Slug",
+				"onboarding-friction",
+				"",
+				"## Launch Readiness",
+				"Launch-ready: yes",
+				"",
+			].join("\n");
+			await writeFile(join(specsDir, "deep-interview-autoresearch-onboarding-friction.md"), draftContent);
+			await writeFile(
+				join(specsDir, "deep-interview-autoresearch-20260427T153000Z-onboarding-friction.md"),
+				draftContent.replace("Measure onboarding friction", "Measure timestamped onboarding friction"),
+			);
+
+			const resolved = await resolveAutoresearchDeepInterviewResult(repo, {
+				slug: "onboarding-friction",
+			});
+
+			assert.ok(resolved);
+			assert.match(resolved?.draftArtifactPath ?? "", /deep-interview-autoresearch-20260427T153000Z-onboarding-friction\.md$/);
+			assert.match(resolved?.missionContent ?? "", /Measure timestamped onboarding friction/);
+		} finally {
+			await rm(repo, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("buildAutoresearchDeepInterviewPrompt", () => {
@@ -266,7 +309,7 @@ describe("buildAutoresearchDeepInterviewPrompt", () => {
 			prompt,
 			/Do not launch tmux or run `omx autoresearch` yourself/,
 		);
-		assert.match(prompt, /deep-interview-autoresearch-\{slug\}\.md/);
+		assert.match(prompt, /deep-interview-autoresearch-<timestamp>-<slug>\.md/);
 		assert.match(prompt, /autoresearch-\{slug\}\/mission\.md/);
 		assert.match(prompt, /- topic: Investigate flaky tests/);
 		assert.match(prompt, /- evaluator: node scripts\/eval\.js/);
@@ -416,10 +459,10 @@ describe("runAutoresearchNoviceBridge", () => {
 				),
 			);
 
-			const draftContent = await readFile(
-				join(repo, ".omx", "specs", "deep-interview-autoresearch-ux-eval.md"),
-				"utf-8",
-			);
+			const draftPaths = await listAutoresearchDeepInterviewDraftPaths(repo);
+			const draftPath = draftPaths.find((path) => /deep-interview-autoresearch-\d{8}T\d{6}Z-ux-eval\.md$/.test(path));
+			assert.ok(draftPath);
+			const draftContent = await readFile(draftPath, "utf-8");
 			const resultContent = await readFile(result.resultPath, "utf-8");
 			const missionContent = await readFile(
 				result.missionArtifactPath,
@@ -461,15 +504,10 @@ describe("runAutoresearchNoviceBridge", () => {
 				),
 			);
 
-			const draftContent = await readFile(
-				join(
-					repo,
-					".omx",
-					"specs",
-					"deep-interview-autoresearch-seeded-topic.md",
-				),
-				"utf-8",
-			);
+			const draftPaths = await listAutoresearchDeepInterviewDraftPaths(repo);
+			const draftPath = draftPaths.find((path) => /deep-interview-autoresearch-\d{8}T\d{6}Z-seeded-topic\.md$/.test(path));
+			assert.ok(draftPath);
+			const draftContent = await readFile(draftPath, "utf-8");
 			assert.equal(
 				result.resultPath,
 				join(repo, ".omx", "specs", "autoresearch-seeded-topic", "result.json"),

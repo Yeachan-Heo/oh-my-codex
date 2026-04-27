@@ -47,7 +47,7 @@ Most non-trivial software tasks require coordinated phases: understanding requir
    - Carry the approved context pack path into autopilot artifacts/state when one exists so all phases share grounded context.
 
 1. **Phase 0 - Expansion**: Turn the user's idea into a detailed spec
-   - If `.omx/specs/deep-interview-*.md` exists for this task: reuse it and skip redundant expansion work
+   - If `.omx/specs/deep-interview-<timestamp>-*.md` or legacy `.omx/specs/deep-interview-*.md` exists for this task: reuse it and skip redundant expansion work
    - If prompt is highly vague: route to `$deep-interview` for Socratic ambiguity-gated clarification
    - Analyst (THOROUGH tier): Extract requirements
    - Architect (THOROUGH tier): Create technical specification

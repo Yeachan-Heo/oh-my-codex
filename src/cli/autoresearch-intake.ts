@@ -2,6 +2,13 @@ import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { type AutoresearchKeepPolicy, parseSandboxContract, slugifyMissionName } from '../autoresearch/contracts.js';
+import {
+  comparePlanningArtifactPaths,
+  parsePlanningArtifactFileName,
+  planningArtifactSlug,
+  planningArtifactTimestamp,
+  selectLatestPlanningArtifactPath,
+} from '../planning/artifact-names.js';
 
 export interface AutoresearchSeedInputs {
   topic?: string;
@@ -107,7 +114,11 @@ function buildArtifactDir(repoRoot: string, slug: string): string {
   return join(repoRoot, '.omx', 'specs', `${AUTORESEARCH_ARTIFACT_DIR_PREFIX}${slug}`);
 }
 
-function buildDraftArtifactPath(repoRoot: string, slug: string): string {
+function buildDraftArtifactPath(repoRoot: string, slug: string, timestamp: string = planningArtifactTimestamp()): string {
+  return join(repoRoot, '.omx', 'specs', `${DEEP_INTERVIEW_DRAFT_PREFIX}${timestamp}-${slug}.md`);
+}
+
+function buildLegacyDraftArtifactPath(repoRoot: string, slug: string): string {
   return join(repoRoot, '.omx', 'specs', `${DEEP_INTERVIEW_DRAFT_PREFIX}${slug}.md`);
 }
 
@@ -339,7 +350,7 @@ async function readPersistedResult(resultPath: string): Promise<AutoresearchDeep
   };
   const draftArtifactPath = isUsableAbsolutePath(parsed.draftArtifactPath)
     ? parsed.draftArtifactPath
-    : buildDraftArtifactPath(repoRoot, compileTarget.slug);
+    : buildLegacyDraftArtifactPath(repoRoot, compileTarget.slug);
   const missionArtifactPath = isUsableAbsolutePath(parsed.missionArtifactPath)
     ? parsed.missionArtifactPath
     : join(buildArtifactDir(repoRoot, compileTarget.slug), 'mission.md');
@@ -371,7 +382,9 @@ export async function listAutoresearchDeepInterviewDraftPaths(repoRoot: string):
   const entries = await readdir(specsDir, { withFileTypes: true });
   return entries
     .filter((entry) => entry.isFile() && entry.name.startsWith(DEEP_INTERVIEW_DRAFT_PREFIX) && entry.name.endsWith('.md'))
-    .map((entry) => join(specsDir, entry.name));
+    .map((entry) => join(specsDir, entry.name))
+    .filter((path) => parsePlanningArtifactFileName(path)?.kind === 'deep-interview-autoresearch')
+    .sort(comparePlanningArtifactPaths);
 }
 
 export async function listAutoresearchDeepInterviewResultPaths(repoRoot: string): Promise<string[]> {
@@ -424,8 +437,14 @@ export async function resolveAutoresearchDeepInterviewResult(
       }
     }
 
-    const draftArtifactPath = buildDraftArtifactPath(repoRoot, slug);
-    if (existsSync(draftArtifactPath)) {
+    const matchingDraftPaths = await filterRecentPaths(
+      (await listAutoresearchDeepInterviewDraftPaths(repoRoot))
+        .filter((path) => planningArtifactSlug(path, 'deep-interview-autoresearch') === slug),
+      options.newerThanMs,
+      options.excludeDraftPaths,
+    );
+    const draftArtifactPath = selectLatestPlanningArtifactPath(matchingDraftPaths);
+    if (draftArtifactPath && existsSync(draftArtifactPath)) {
       const metadata = await stat(draftArtifactPath).catch(() => null);
       if (!metadata || options.newerThanMs == null || metadata.mtimeMs >= options.newerThanMs) {
         const draftContent = await readFile(draftArtifactPath, 'utf-8');
@@ -451,8 +470,7 @@ export async function resolveAutoresearchDeepInterviewResult(
     options.newerThanMs,
     options.excludeDraftPaths,
   );
-  const draftEntries = await Promise.all(draftPaths.map(async (path) => ({ path, metadata: await stat(path) })));
-  const newestDraftPath = draftEntries.sort((left, right) => right.metadata.mtimeMs - left.metadata.mtimeMs)[0]?.path;
+  const newestDraftPath = selectLatestPlanningArtifactPath(draftPaths);
   if (!newestDraftPath) {
     return null;
   }

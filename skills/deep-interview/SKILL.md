@@ -83,7 +83,7 @@ If no flag is provided, use **Standard**.
    - Decision-boundary unknowns
    - Likely codebase touchpoints
    - Prompt-safe initial-context summary status (`not_needed`, `needed`, or `recorded`)
-4. Persist the interview output under `.omx/specs/deep-interview-{slug}.md`; if the result becomes an implementation handoff, planning must create or refresh `.omx/context/context-<timestamp>-<slug>.json` as the canonical context pack.
+4. Persist the interview output under `.omx/specs/deep-interview-<timestamp>-<slug>.md`; legacy `.omx/specs/deep-interview-<slug>.md` specs remain readable. If the result becomes an implementation handoff, planning must create or refresh `.omx/context/context-<timestamp>-<slug>.json` as the canonical context pack.
 
 ## Phase 1: Initialize
 
@@ -293,10 +293,10 @@ Track used modes in state to prevent repetition.
 When threshold is met (or user exits with warning / hard cap):
 
 1. Write interview transcript summary to:
-   - `.omx/interviews/{slug}-{timestamp}.md`
+   - `.omx/interviews/deep-interview-<timestamp>-<slug>.md`
      (kept for ralph PRD compatibility)
 2. Write execution-ready spec to:
-   - `.omx/specs/deep-interview-{slug}.md`
+   - `.omx/specs/deep-interview-<timestamp>-<slug>.md`
 
 Spec should include:
 - Metadata (profile, rounds, final ambiguity, threshold, context type)
@@ -322,7 +322,7 @@ When the clarified task is specifically about `$autoresearch`, or the skill is i
 
 - **Accepted seed inputs:** `topic`, `evaluator`, `keep-policy`, `slug`, existing mission draft text, and prior evaluator examples/templates
 - **Required interview focus:** mission clarity, evaluator readiness, keep policy, slug/session naming, and whether the draft is ready to launch now or should refine further
-- **Canonical artifact path:** `.omx/specs/deep-interview-autoresearch-{slug}.md`
+- **Canonical artifact path:** `.omx/specs/deep-interview-autoresearch-<timestamp>-<slug>.md`; legacy `.omx/specs/deep-interview-autoresearch-<slug>.md` drafts remain readable
 - **Launch artifact bundle:** `.omx/specs/autoresearch-{slug}/mission.md`, `.omx/specs/autoresearch-{slug}/sandbox.md`, and `.omx/specs/autoresearch-{slug}/result.json`
 - **Launch artifact directory:** `.omx/specs/autoresearch-{slug}/`
 - **Required artifact sections:**
@@ -345,16 +345,16 @@ When the clarified task is specifically about `$autoresearch`, or the skill is i
 Present execution options after artifact generation using explicit handoff contracts. Treat the deep-interview spec as the current requirements source of truth and preserve intent, non-goals, decision boundaries, acceptance criteria, and any residual-risk warnings across the handoff.
 
 ### 1. **`$ralplan` (Recommended)**
-- **Input Artifact:** `.omx/specs/deep-interview-{slug}.md` (optionally accompanied by the interview transcript for traceability)
+- **Input Artifact:** `.omx/specs/deep-interview-<timestamp>-<slug>.md` (optionally accompanied by the interview transcript for traceability; legacy `.omx/specs/deep-interview-<slug>.md` remains readable)
 - **Invocation:** `$plan --consensus --direct <spec-path>`
 - **Consumer Behavior:** Treat the deep-interview spec as the requirements source of truth. Do not repeat the interview by default; refine architecture/feasibility around the clarified intent and boundaries instead.
 - **Skipped / Already-Satisfied Stages:** Requirements discovery, ambiguity clarification, and early intent-boundary elicitation
-- **Expected Output:** Canonical planning artifacts under `.omx/plans/`, especially `prd-*.md` and `test-spec-*.md`
+- **Expected Output:** Canonical planning artifacts under `.omx/plans/`, especially timestamped `prd-<timestamp>-<slug>.md` and `test-spec-<timestamp>-<slug>.md` files; legacy `prd-<slug>.md` / `test-spec-<slug>.md` remain readable
 - **Best When:** Requirements are clear enough to stop interviewing, but architectural validation / consensus planning is still desirable
 - **Next Recommended Step:** Use the approved planning artifacts with `$autopilot`, `$ralph`, or `$team` depending on the desired execution style
 
 ### 2. **`$autopilot`**
-- **Input Artifact:** `.omx/specs/deep-interview-{slug}.md`
+- **Input Artifact:** `.omx/specs/deep-interview-<timestamp>-<slug>.md`
 - **Invocation:** `$autopilot <spec-path>`
 - **Consumer Behavior:** Use the deep-interview spec as the clarified execution brief. Preserve intent, non-goals, decision boundaries, and acceptance criteria as binding context for planning/execution.
 - **Skipped / Already-Satisfied Stages:** Initial requirement discovery and ambiguity reduction
@@ -363,7 +363,7 @@ Present execution options after artifact generation using explicit handoff contr
 - **Next Recommended Step:** Continue through autopilot's execution/QA/validation flow; if coordination-heavy execution emerges, prefer a follow-up `$team` or `$ralph` lane as appropriate
 
 ### 3. **`$ralph`**
-- **Input Artifact:** `.omx/specs/deep-interview-{slug}.md`
+- **Input Artifact:** `.omx/specs/deep-interview-<timestamp>-<slug>.md`
 - **Invocation:** `$ralph <spec-path>`
 - **Consumer Behavior:** Use the spec's acceptance criteria and boundary constraints as the persistence target. Do not reopen requirements discovery unless the user explicitly asks to refine further.
 - **Skipped / Already-Satisfied Stages:** Requirement interview, ambiguity clarification, and initial scope-definition work
@@ -372,7 +372,7 @@ Present execution options after artifact generation using explicit handoff contr
 - **Next Recommended Step:** Continue Ralph's persistence loop; if work expands into coordination-heavy lanes, hand off to `$team` and keep Ralph for verification continuity
 
 ### 4. **`$team`**
-- **Input Artifact:** `.omx/specs/deep-interview-{slug}.md`
+- **Input Artifact:** `.omx/specs/deep-interview-<timestamp>-<slug>.md`
 - **Invocation:** `$team <spec-path>`
 - **Consumer Behavior:** Treat the spec as shared execution context for coordinated parallel work. Preserve the clarified intent, non-goals, decision boundaries, and acceptance criteria as common lane constraints.
 - **Skipped / Already-Satisfied Stages:** Requirement clarification and early ambiguity reduction
@@ -423,8 +423,8 @@ Present execution options after artifact generation using explicit handoff contr
 - [ ] At least one explicit assumption probe happened before crystallization
 - [ ] At least one persistent follow-up / pressure pass deepened a prior answer
 - [ ] Challenge modes triggered at thresholds (when applicable)
-- [ ] Transcript written to `.omx/interviews/{slug}-{timestamp}.md`
-- [ ] Spec written to `.omx/specs/deep-interview-{slug}.md`
+- [ ] Transcript written to `.omx/interviews/deep-interview-<timestamp>-<slug>.md`
+- [ ] Spec written to `.omx/specs/deep-interview-<timestamp>-<slug>.md`
 - [ ] Brownfield questions use evidence-backed confirmation when applicable
 - [ ] Handoff options provided (`$ralplan`, `$autopilot`, `$ralph`, `$team`)
 - [ ] No direct implementation performed in this mode
