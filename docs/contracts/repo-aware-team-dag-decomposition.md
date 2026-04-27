@@ -25,7 +25,7 @@ Each imported node should validate to a bounded data shape:
 - stable symbolic `id`
 - `subject` and `description`
 - optional `role`
-- `lane`
+- optional `lane`
 - optional `filePaths` and `domains`
 - optional symbolic `depends_on`
 - optional `requires_code_change`
@@ -52,7 +52,7 @@ Preflight should keep rich planning data out of the claim lifecycle task payload
 
 | Data | Expected storage |
 | --- | --- |
-| `decomposition_source`, `dag_artifact_path`, `fallback_reason`, `worker_count_requested`, `worker_count_effective`, `worker_count_source`, `ready_lane_count` | team manifest/config metadata, e.g. a `team_decomposition` policy block |
+| `decomposition_source`, `dag_artifact_path`, `fallback_reason`, `worker_count_requested`, `worker_count_effective`, `worker_count_source`, `ready_lane_count` | team manifest/config metadata, via the top-level `team_decomposition` manifest block |
 | node-to-task mapping, allocation reasons, file/domain/lane hints, warnings | `.omx/state/team/<team>/decomposition-report.json` and optional markdown summary |
 | runtime dependencies | `TeamTask.depends_on` / `blocked_by` with concrete task IDs |
 | `requires_code_change` | thread into `TeamTask` only through supported schema/API fields; otherwise reject or drop with an explicit validation warning |

@@ -2003,7 +2003,7 @@ async function writeDecompositionArtifacts(
   if (manifest) {
     await writeFile(
       join(root, 'manifest.v2.json'),
-      JSON.stringify({ ...manifest, policy: { ...manifest.policy, team_decomposition: metadata } }, null, 2),
+      JSON.stringify({ ...manifest, team_decomposition: metadata }, null, 2),
       'utf8',
     );
   }

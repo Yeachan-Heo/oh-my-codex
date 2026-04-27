@@ -317,6 +317,7 @@ describe('team state', () => {
       policy.delegation_only = true;
       policy.nested_teams_allowed = true;
       policy.cleanup_requires_all_workers_inactive = false;
+      policy.team_decomposition = { decomposition_source: 'dag_sidecar' };
       manifest.policy = policy;
       delete manifest.governance;
       await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
@@ -330,6 +331,8 @@ describe('team state', () => {
       assert.equal('delegation_only' in (loaded?.policy ?? {}), false);
       assert.equal('nested_teams_allowed' in (loaded?.policy ?? {}), false);
       assert.equal('cleanup_requires_all_workers_inactive' in (loaded?.policy ?? {}), false);
+      assert.equal('team_decomposition' in (loaded?.policy ?? {}), false);
+      assert.deepEqual(loaded?.team_decomposition, { decomposition_source: 'dag_sidecar' });
 
       const freshCwd = await mkdtemp(join(tmpdir(), 'omx-team-manifest-policy-default-'));
       try {

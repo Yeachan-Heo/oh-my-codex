@@ -171,10 +171,15 @@ function assertDagMatchesPlan(dag: TeamDagHandoff, slug: string, prdPath: string
   }
 }
 
+function matchesSidecarSlug(file: string, slug: string): boolean {
+  const prefix = `team-dag-${slug}`;
+  return (file === `${prefix}.json` || file.startsWith(`${prefix}-`)) && file.endsWith('.json');
+}
+
 function readSidecar(plansDir: string, slug: string, prdPath: string): Omit<TeamDagResolution, 'planSlug'> | null {
   if (!existsSync(plansDir)) return null;
   const candidates = readdirSync(plansDir)
-    .filter((file) => file.startsWith(`team-dag-${slug}`) && file.endsWith('.json'))
+    .filter((file) => matchesSidecarSlug(file, slug))
     .sort((a, b) => a.localeCompare(b))
     .map((file) => join(plansDir, file));
   if (candidates.length === 0) return null;

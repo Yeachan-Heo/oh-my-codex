@@ -276,6 +276,22 @@ describe('planning artifacts', () => {
     assert.equal(result.dag?.nodes[0]?.id, 'impl');
   });
 
+  it('does not overmatch sidecars for a different slug prefix', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-foo.md'), '# Foo\n');
+    await writeFile(join(plansDir, 'test-spec-foo.md'), '# Foo Test\n');
+    await writeFile(join(plansDir, 'team-dag-foobar.json'), JSON.stringify({
+      schema_version: 1,
+      nodes: [{ id: 'wrong', subject: 'Wrong slug', description: 'Must not match foo' }],
+    }));
+
+    const result = readTeamDagHandoffForLatestPlan(tempDir);
+    assert.equal(result.source, 'none');
+    assert.equal(result.planSlug, 'foo');
+    assert.equal(result.dag, null);
+  });
+
   it('prefers sidecar DAG over embedded PRD Team DAG Handoff block', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
