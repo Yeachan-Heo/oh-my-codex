@@ -219,7 +219,7 @@ describe('MCP stdio lifecycle runtime regression (built entrypoints)', () => {
       ...process.env,
       OMX_MCP_PARENT_WATCHDOG_INTERVAL_MS: '250',
       OMX_MCP_DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS: '250',
-      OMX_MCP_DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS: '750',
+      OMX_MCP_DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS: '500',
     };
     const older = spawn(process.execPath, [join(process.cwd(), 'dist', 'mcp', entrypoint.file)], {
       cwd: process.cwd(),
@@ -253,7 +253,7 @@ describe('MCP stdio lifecycle runtime regression (built entrypoints)', () => {
 
       await waitForCondition(
         () => !isChildAlive(older),
-        2_500,
+        4_000,
         `older duplicate failed to self-exit: ${formatFailureContext(entrypoint, stderr, stdout)}`,
       );
 
@@ -274,7 +274,7 @@ describe('MCP stdio lifecycle runtime regression (built entrypoints)', () => {
       ...process.env,
       OMX_MCP_PARENT_WATCHDOG_INTERVAL_MS: '250',
       OMX_MCP_DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS: '250',
-      OMX_MCP_DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS: '750',
+      OMX_MCP_DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS: '500',
     };
     const older = spawn(process.execPath, [join(process.cwd(), 'dist', 'mcp', entrypoint.file)], {
       cwd: process.cwd(),
