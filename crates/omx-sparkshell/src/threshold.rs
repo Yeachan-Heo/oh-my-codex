@@ -22,6 +22,7 @@ pub fn combined_visible_lines(stdout: &[u8], stderr: &[u8]) -> usize {
 }
 
 #[cfg(test)]
+#[allow(unused_unsafe)]
 mod tests {
     use super::{
         combined_visible_lines, count_visible_lines, read_line_threshold, DEFAULT_MAX_VISIBLE_LINES,

@@ -151,6 +151,11 @@ import {
   type EnsureWorktreeResult,
   type WorktreeMode,
 } from './worktree.js';
+import {
+  cleanupOmxMcpProcesses,
+  findLaunchSafeCleanupCandidates,
+  type CleanupResult,
+} from '../cli/cleanup.js';
 
 /** Snapshot of the team state at a point in time */
 export interface TeamSnapshot {
@@ -384,6 +389,31 @@ export function shouldPrekillInteractiveShutdownProcessTrees(sessionName: string
   return true;
 }
 
+export async function cleanupTeamWorkerLaunchOrphanedMcpProcesses(
+  dependencies: {
+    cleanup?: () => Promise<CleanupResult>;
+    writeWarning?: (message: string) => void;
+  } = {},
+): Promise<void> {
+  const cleanup = dependencies.cleanup ?? (() =>
+    cleanupOmxMcpProcesses([], {
+      selectCandidates: findLaunchSafeCleanupCandidates,
+      writeLine: () => {},
+    }));
+  const writeWarning = dependencies.writeWarning ?? ((message: string) => process.stderr.write(`${message}\n`));
+
+  try {
+    const result = await cleanup();
+    if (result.failedPids.length > 0) {
+      writeWarning(
+        `[team/runtime] Failed to reap ${result.failedPids.length} orphaned OMX MCP process(es); continuing worker launch.`,
+      );
+    }
+  } catch (err) {
+    writeWarning(`[team/runtime] pre-launch MCP cleanup failed: ${err}; continuing worker launch.`);
+  }
+}
+
 async function logRuntimeDispatchOutcome(params: {
   cwd: string;
   teamName: string;
@@ -593,6 +623,25 @@ async function recordIntegrationFailure(
     `INTEGRATION FAILED: ${details.operation} for ${worker.name} reported success, but leader HEAD stayed at ${leaderShort}. Not emitting INTEGRATED; retry or inspect leader branch state before continuing.`,
     cwd,
   );
+}
+
+async function emitCanonicalWorkerEvent(
+  cwd: string,
+  eventName: 'worker.assigned' | 'worker.stalled' | 'worker.recovered',
+  context: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const { buildNativeHookEvent } = await import('../hooks/extensibility/events.js');
+    const { dispatchHookEvent } = await import('../hooks/extensibility/dispatcher.js');
+    const event = buildNativeHookEvent(eventName, {
+      normalized_event: eventName,
+      scope: 'team-runtime',
+      ...context,
+    });
+    await dispatchHookEvent(event, { cwd });
+  } catch {
+    // best effort only
+  }
 }
 
 function autoCommitDirtyWorktree(
@@ -1182,6 +1231,8 @@ export interface TeamStartOptions {
   worktreeMode?: WorktreeMode;
   confirmStaleCleanup?: (summary: StaleTeamSummary) => Promise<boolean>;
   approvedExecution?: ApprovedTeamExecutionBinding | null;
+  cleanupLaunchOrphanedMcpProcesses?: () => Promise<CleanupResult>;
+  writeCleanupWarning?: (message: string) => void;
 }
 
 interface ShutdownGateCounts {
@@ -1295,6 +1346,8 @@ const previousModelInstructionsFileByTeam = new Map<string, string | undefined>(
 const PROMPT_WORKER_SIGTERM_WAIT_MS = 3_000;
 const PROMPT_WORKER_SIGKILL_WAIT_MS = 2_000;
 const PROMPT_WORKER_EXIT_POLL_MS = 100;
+const STARTUP_DISPATCH_RETRIES = 3;
+const STARTUP_DISPATCH_RETRY_DELAY_S = 3;
 const PROMPT_MODE_CODEX_UNSUPPORTED_REASON = 'prompt_mode_codex_requires_tty';
 // Test-only escape hatch for fake prompt workers that intentionally do not require a real TTY.
 const PROMPT_MODE_CODEX_TEST_ALLOW_ENV = 'OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT';
@@ -1331,6 +1384,18 @@ function resolveWorkerStartupEvidenceTimeoutMs(
     STARTUP_EVIDENCE_TIMEOUT_MS,
     Math.min(workerReadyTimeoutMs, STARTUP_EVIDENCE_LAUNCH_TIMEOUT_MS),
   );
+}
+
+function resolveStartupDispatchRetries(env: NodeJS.ProcessEnv): number {
+  const parsed = Number.parseInt(String(env.OMX_TEAM_STARTUP_DISPATCH_RETRIES ?? ''), 10);
+  if (!Number.isFinite(parsed)) return STARTUP_DISPATCH_RETRIES;
+  return Math.max(1, Math.min(STARTUP_DISPATCH_RETRIES, Math.floor(parsed)));
+}
+
+function resolveStartupDispatchRetryDelayS(env: NodeJS.ProcessEnv): number {
+  const parsed = Number.parseInt(String(env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS ?? ''), 10);
+  if (!Number.isFinite(parsed)) return STARTUP_DISPATCH_RETRY_DELAY_S;
+  return Math.max(0, Math.min(STARTUP_DISPATCH_RETRY_DELAY_S, Math.floor(parsed) / 1000));
 }
 
 function parseTeamWorkerContext(raw: string | undefined): { teamName: string; workerName: string } | null {
@@ -2089,6 +2154,8 @@ export async function startTeam(
     process.env,
     workerReadyTimeoutMs,
   );
+  const startupDispatchRetries = resolveStartupDispatchRetries(process.env);
+  const startupRetryDelayS = resolveStartupDispatchRetryDelayS(process.env);
   const skipWorkerReadyWait = shouldSkipWorkerReadyWait(process.env);
   const approvedHint = approvedExecution
     ? hydrateApprovedTeamExecutionHintFromBinding(leaderCwd, approvedExecution) ?? selectedApprovedHint
@@ -2315,6 +2382,10 @@ export async function startTeam(
     };
 
     // 6. Create worker runtime (interactive tmux panes or prompt-mode child processes)
+    await cleanupTeamWorkerLaunchOrphanedMcpProcesses({
+      cleanup: options.cleanupLaunchOrphanedMcpProcesses,
+      writeWarning: options.writeCleanupWarning,
+    });
     if (workerLaunchMode === 'interactive') {
       const createdSession = createTeamSession(sanitized, workerCount, leaderCwd, sharedWorkerLaunchArgs, workerStartups);
       sessionName = createdSession.name;
@@ -2403,13 +2474,11 @@ export async function startTeam(
       // Queue inbox via MCP/state then notify worker via tmux transport.
       // Retry dispatch up to 3 times to handle Codex trust prompts that may
       // block the worker pane during startup (fixes #393).
-      const maxStartupDispatchRetries = 3;
-      const startupRetryDelayS = 3;
       let dispatchOutcome: DispatchOutcome = initialPrompt
         ? { ok: true, transport: 'none', reason: 'startup_prompt_delivered_at_launch' }
         : { ok: false, transport: 'none', reason: 'not_attempted' };
       if (!initialPrompt) {
-        for (let attempt = 1; attempt <= maxStartupDispatchRetries; attempt++) {
+        for (let attempt = 1; attempt <= startupDispatchRetries; attempt++) {
           dispatchOutcome = await dispatchCriticalInboxInstruction({
             teamName: sanitized,
             config: config!,
@@ -2427,7 +2496,7 @@ export async function startTeam(
             startupEvidenceTimeoutMs: workerStartupEvidenceTimeoutMs,
           });
           if (dispatchOutcome.ok) break;
-          if (attempt < maxStartupDispatchRetries) {
+          if (attempt < startupDispatchRetries) {
             // Check for trust prompt blocking the worker and dismiss it before retry
             if (workerLaunchMode === 'interactive') {
               if (dismissTrustPromptIfPresent(sessionName, i, paneId)) {
@@ -3544,6 +3613,12 @@ async function emitMonitorDerivedEvents(
         },
         cwd
       );
+       await emitCanonicalWorkerEvent(cwd, 'worker.stalled', {
+        worker: worker.name,
+        task_id: worker.status.current_task_id,
+        reason: worker.status.reason || 'worker_stopped',
+        status: 'worker.stalled',
+      });
     }
 
     const prevState = previous?.workerStateByName[worker.name];
@@ -3561,6 +3636,15 @@ async function emitMonitorDerivedEvents(
         },
         cwd
       );
+       if (worker.status.state === 'working' && (prevState === 'blocked' || prevState === 'failed' || prevState === 'unknown')) {
+        await emitCanonicalWorkerEvent(cwd, 'worker.recovered', {
+          worker: worker.name,
+          task_id: worker.status.current_task_id,
+          reason: worker.status.reason || `state_transition:${prevState}->${worker.status.state}`,
+          recovery: 'state_transition',
+          status: 'worker.recovered',
+        });
+      }
     }
 
     if (prevState && prevState !== 'idle' && worker.status.state === 'idle') {

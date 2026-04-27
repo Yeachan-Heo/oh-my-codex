@@ -98,6 +98,54 @@ fn summary_mode_uses_codex_exec_and_model_override() {
 }
 
 #[test]
+fn summary_mode_injects_model_instructions_file_override() {
+    let temp = unique_temp_dir("codex-instructions-file");
+    let codex = temp.join("codex");
+    let args_log = temp.join("args.log");
+    let instructions_file = temp.join("sparkshell-lightweight-AGENTS.md");
+    write_executable(
+        &codex,
+        &format!(
+            "#!/bin/sh\nprintf '%s\n' \"$@\" > '{}'\nprintf '%s\n' '- summary: command produced long output'\n",
+            args_log.display()
+        ),
+    );
+    fs::write(&instructions_file, "# sparkshell instructions\n").expect("write instructions file");
+
+    let path = format!(
+        "{}:{}",
+        temp.display(),
+        env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new(sparkshell_bin())
+        .env("PATH", path)
+        .env("OMX_SPARKSHELL_LINES", "1")
+        .env(
+            "OMX_SPARKSHELL_MODEL_INSTRUCTIONS_FILE",
+            instructions_file.display().to_string(),
+        )
+        .arg("sh")
+        .arg("-c")
+        .arg("printf 'one\ntwo\n'")
+        .output()
+        .expect("run sparkshell");
+
+    assert!(output.status.success());
+    let args = fs::read_to_string(args_log).expect("args log");
+    assert!(args.contains("model_reasoning_effort=\"low\""));
+    assert!(args.contains(&format!(
+        "model_instructions_file=\"{}\"",
+        instructions_file
+            .display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    )));
+
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
 fn summary_failure_falls_back_to_raw_output_with_notice() {
     let temp = unique_temp_dir("codex-fail");
     let codex = temp.join("codex");

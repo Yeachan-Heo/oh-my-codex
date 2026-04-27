@@ -26,6 +26,7 @@ struct Args {
     cwd: PathBuf,
     prompt: String,
     prompt_file: PathBuf,
+    instructions_file: PathBuf,
     spark_model: String,
     fallback_model: String,
 }
@@ -155,6 +156,7 @@ where
     let mut cwd: Option<PathBuf> = None;
     let mut prompt: Option<String> = None;
     let mut prompt_file: Option<PathBuf> = None;
+    let mut instructions_file: Option<PathBuf> = None;
     let mut spark_model: Option<String> = None;
     let mut fallback_model: Option<String> = None;
 
@@ -165,6 +167,12 @@ where
             "--prompt" => prompt = Some(next_required(&mut args, "--prompt")?),
             "--prompt-file" => {
                 prompt_file = Some(PathBuf::from(next_required(&mut args, "--prompt-file")?))
+            }
+            "--instructions-file" => {
+                instructions_file = Some(PathBuf::from(next_required(
+                    &mut args,
+                    "--instructions-file",
+                )?))
             }
             "--model-spark" => spark_model = Some(next_required(&mut args, "--model-spark")?),
             "--model-fallback" => {
@@ -179,6 +187,8 @@ where
         cwd: cwd.ok_or_else(|| format!("missing --cwd\n{}", usage()))?,
         prompt: prompt.ok_or_else(|| format!("missing --prompt\n{}", usage()))?,
         prompt_file: prompt_file.ok_or_else(|| format!("missing --prompt-file\n{}", usage()))?,
+        instructions_file: instructions_file
+            .ok_or_else(|| format!("missing --instructions-file\n{}", usage()))?,
         spark_model: spark_model.ok_or_else(|| format!("missing --model-spark\n{}", usage()))?,
         fallback_model: fallback_model
             .ok_or_else(|| format!("missing --model-fallback\n{}", usage()))?,
@@ -198,12 +208,14 @@ where
 }
 
 fn usage() -> &'static str {
-    "Usage: omx-explore --cwd <dir> --prompt <text> --prompt-file <explore-prompt.md> --model-spark <model> --model-fallback <model>"
+    "Usage: omx-explore --cwd <dir> --prompt <text> --prompt-file <explore-prompt.md> --instructions-file <AGENTS.md> --model-spark <model> --model-fallback <model>"
 }
 
+#[allow(unknown_lints, clippy::io_other_error)]
 fn invoke_codex(args: &Args, model: &str, prompt_contract: &str) -> io::Result<AttemptResult> {
     let codex_launch = resolve_codex_launch();
-    let allowlist = prepare_allowlist_environment().map_err(io::Error::other)?;
+    let allowlist =
+        prepare_allowlist_environment().map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
     let output_path = temp_output_path();
     let final_prompt = compose_exec_prompt(&args.prompt, prompt_contract);
     let mut command = Command::new(&codex_launch.program);
@@ -219,6 +231,11 @@ fn invoke_codex(args: &Args, model: &str, prompt_contract: &str) -> io::Result<A
         .arg("read-only")
         .arg("-c")
         .arg("model_reasoning_effort=\"low\"")
+        .arg("-c")
+        .arg(format!(
+            "model_instructions_file=\"{}\"",
+            escape_toml_string(&args.instructions_file.display().to_string())
+        ))
         .arg("-c")
         .arg("shell_environment_policy.inherit=all")
         .arg("--skip-git-repo-check")
@@ -238,6 +255,10 @@ fn invoke_codex(args: &Args, model: &str, prompt_contract: &str) -> io::Result<A
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         output_markdown: markdown,
     })
+}
+
+fn escape_toml_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -726,7 +747,7 @@ fn validate_shell_invocation(args: &[String]) -> Result<String, String> {
 
     let tokens: Vec<String> = command
         .split_whitespace()
-        .map(|token| token.trim_matches(['"', '\'']).to_string())
+        .map(|token| token.trim_matches(|ch| ch == '"' || ch == '\'').to_string())
         .filter(|token| !token.is_empty())
         .collect();
     let first = tokens
@@ -865,19 +886,28 @@ fn validate_repo_paths(command_name: &str, args: &[String]) -> Result<(), String
     let candidate_paths = command_path_operands(command_name, args);
     for operand in candidate_paths {
         let normalized = normalize_candidate_path(&repo_root, operand);
-        if !normalized.starts_with(&repo_root) {
+        let canonical_candidate = canonicalize_existing_prefix(&normalized);
+        let is_textually_inside = normalized.starts_with(&repo_root);
+        let is_canonically_inside = match (&canonical_candidate, &canonical_repo_root) {
+            (Some(candidate), Some(root)) => candidate.starts_with(root),
+            _ => false,
+        };
+
+        if !is_textually_inside && !is_canonically_inside {
             return Err(format!(
                 "path `{operand}` escapes the omx explore repository root {}",
                 repo_root.display()
             ));
         }
-        if let Some(canonical_candidate) = canonicalize_existing_prefix(&normalized) {
-            if let Some(canonical_repo_root) = &canonical_repo_root {
-                if !canonical_candidate.starts_with(canonical_repo_root) {
-                    return Err(format!(
-                        "path `{operand}` resolves outside the omx explore repository root {}",
-                        canonical_repo_root.display()
-                    ));
+        if is_textually_inside {
+            if let Some(canonical_candidate) = canonical_candidate {
+                if let Some(canonical_repo_root) = &canonical_repo_root {
+                    if !canonical_candidate.starts_with(canonical_repo_root) {
+                        return Err(format!(
+                            "path `{operand}` resolves outside the omx explore repository root {}",
+                            canonical_repo_root.display()
+                        ));
+                    }
                 }
             }
         }
@@ -952,6 +982,7 @@ fn canonicalize_existing_prefix(path: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
+#[allow(unused_unsafe)]
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
@@ -982,10 +1013,12 @@ mod tests {
                 "find auth",
                 "--prompt-file",
                 "/tmp/explore.md",
+                "--instructions-file",
+                "/tmp/explore-agents.md",
                 "--model-spark",
                 "gpt-5.3-codex-spark",
                 "--model-fallback",
-                "gpt-5.4",
+                "gpt-5.5",
             ]
             .into_iter()
             .map(OsString::from),
@@ -995,8 +1028,9 @@ mod tests {
         assert_eq!(args.cwd, Path::new("/tmp/repo"));
         assert_eq!(args.prompt, "find auth");
         assert_eq!(args.prompt_file, Path::new("/tmp/explore.md"));
+        assert_eq!(args.instructions_file, Path::new("/tmp/explore-agents.md"));
         assert_eq!(args.spark_model, "gpt-5.3-codex-spark");
-        assert_eq!(args.fallback_model, "gpt-5.4");
+        assert_eq!(args.fallback_model, "gpt-5.5");
     }
 
     #[test]
@@ -1140,7 +1174,7 @@ exec node "$basedir/../@openai/codex/bin/codex.js" "$@"
         create_dir_all(&good_bin).expect("create good bin");
 
         let blocked_directory = bad_bin.join("node");
-        create_dir_all(&blocked_directory).expect("create blocked directory");
+        create_dir_all(blocked_directory).expect("create blocked directory");
 
         let blocked_node = blocked_file_bin.join("node");
         write(&blocked_node, "#!/bin/sh\nexit 0\n").expect("write blocked file node");
@@ -1618,6 +1652,8 @@ exit 17
                 "find tests",
                 "--prompt-file",
                 prompt_file.to_str().expect("prompt path"),
+                "--instructions-file",
+                prompt_file.to_str().expect("instructions path"),
                 "--model-spark",
                 "spark-model",
                 "--model-fallback",
@@ -1675,6 +1711,7 @@ printf '# Answer\nok\n' > "$output_path"
                 cwd: repo.clone(),
                 prompt: "find tests".to_string(),
                 prompt_file,
+                instructions_file: repo.join("AGENTS.md"),
                 spark_model: "spark-model".to_string(),
                 fallback_model: "fallback-model".to_string(),
             },
@@ -1697,6 +1734,74 @@ printf '# Answer\nok\n' > "$output_path"
     }
 
     #[test]
+    fn invoke_codex_injects_model_instructions_file_override() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let repo = root.path.join("repo");
+        create_dir_all(&repo).expect("create repo");
+        let prompt_file = root.path.join("prompt.md");
+        write(&prompt_file, "contract").expect("write prompt");
+        let capture_path = root.path.join("argv.txt");
+        let fake_codex = root.path.join("codex-stub");
+        write_executable(
+            &fake_codex,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+output_path=""
+capture={}
+printf '' > "$capture"
+while [ "$#" -gt 0 ]; do
+  printf '%s\n' "$1" >> "$capture"
+  if [ "$1" = "-o" ]; then
+    shift
+    output_path="$1"
+  fi
+  shift
+done
+printf '# Answer\nok\n' > "$output_path"
+"#,
+                shell_quote(&capture_path.display().to_string())
+            ),
+        )
+        .expect("write fake codex");
+
+        unsafe {
+            env::set_var(CODEX_BIN_ENV, &fake_codex);
+        }
+        let instructions_path = repo.join("custom instructions.md");
+        let attempt = invoke_codex(
+            &Args {
+                cwd: repo.clone(),
+                prompt: "find tests".to_string(),
+                prompt_file,
+                instructions_file: instructions_path.clone(),
+                spark_model: "spark-model".to_string(),
+                fallback_model: "fallback-model".to_string(),
+            },
+            "spark-model",
+            "contract",
+        )
+        .expect("invoke codex");
+        unsafe {
+            env::remove_var(CODEX_BIN_ENV);
+        }
+
+        assert_eq!(attempt.status_code, 0);
+        let captured = read_to_string(&capture_path).expect("read capture");
+        let expected = format!(
+            "model_instructions_file=\"{}\"",
+            escape_toml_string(&instructions_path.display().to_string())
+        );
+        assert!(
+            captured.contains(&expected),
+            "expected {:?} in {:?}",
+            expected,
+            captured
+        );
+    }
+
+    #[test]
     fn sanitize_explore_subprocess_env_blocks_bash_env_startup_hooks() {
         let _guard = env_lock();
         let root = temp_allowlist_dir().expect("temp root");
@@ -1715,7 +1820,7 @@ printf '# Answer\nok\n' > "$output_path"
         unsafe {
             env::set_var("BASH_ENV", &bash_env);
         }
-        let mut child = Command::new(&bash_path);
+        let mut child = Command::new(bash_path);
         child
             .arg("--noprofile")
             .arg("--norc")

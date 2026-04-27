@@ -5,9 +5,18 @@ import {
   markQuestionPrompting,
   waitForQuestionTerminalState,
 } from '../question/state.js';
-import { launchQuestionRenderer } from '../question/renderer.js';
+import { isQuestionRendererAlive, launchQuestionRenderer } from '../question/renderer.js';
 import { normalizeQuestionInput } from '../question/types.js';
 import { runQuestionUi } from '../question/ui.js';
+
+const DEFAULT_QUESTION_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
+
+function parseQuestionWaitTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = String(env.OMX_QUESTION_WAIT_TIMEOUT_MS ?? '').trim();
+  if (!raw) return DEFAULT_QUESTION_WAIT_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_QUESTION_WAIT_TIMEOUT_MS;
+}
 
 export const QUESTION_HELP = `omx question - OMX-owned blocking user question entrypoint
 
@@ -105,6 +114,17 @@ function extractErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function createJsonSafeInlineQuestionOutput(): { isTTY?: boolean; write(chunk: string): boolean } {
+  return {
+    get isTTY() {
+      return process.stdout.isTTY;
+    },
+    write(chunk: string): boolean {
+      return process.stderr.write(chunk);
+    },
+  };
+}
+
 export async function questionCommand(args: string[]): Promise<void> {
   const parsed = parseQuestionArgs(args);
   if (parsed.help || args.length === 0) {
@@ -152,7 +172,19 @@ export async function questionCommand(args: string[]): Promise<void> {
       sessionId: policy.sessionId,
     });
     await markQuestionPrompting(recordPath, renderer);
-    finalRecord = await waitForQuestionTerminalState(recordPath);
+    if (renderer.renderer === 'inline-tty') {
+      await runQuestionUi(
+        recordPath,
+        parsed.json ? { output: createJsonSafeInlineQuestionOutput() } : {},
+      );
+    }
+    finalRecord = await waitForQuestionTerminalState(recordPath, {
+      timeoutMs: parseQuestionWaitTimeoutMs(),
+      rendererAlive: (currentRecord) => isQuestionRendererAlive(currentRecord.renderer),
+      rendererDeathMessage: (currentRecord) => (
+        `Question renderer ${currentRecord.renderer?.renderer ?? renderer.renderer} ${currentRecord.renderer?.target ?? renderer.target} exited before answering.`
+      ),
+    });
   } catch (error) {
     const message = extractErrorMessage(error);
     await markQuestionTerminalError(

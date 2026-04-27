@@ -72,11 +72,13 @@ export function buildHudWatchCommand(omxBin: string, preset?: string, sessionId?
 
 export function listCurrentWindowPanes(
   execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
+  currentPaneId?: string,
 ): TmuxPaneSnapshot[] {
   try {
     return parseTmuxPaneSnapshot(
       execTmuxSync([
         'list-panes',
+        ...(currentPaneId ? ['-t', currentPaneId] : []),
         '-F',
         '#{pane_id}\t#{pane_current_command}\t#{pane_start_command}',
       ]),
@@ -90,14 +92,20 @@ export function listCurrentWindowHudPaneIds(
   currentPaneId?: string,
   execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
 ): string[] {
-  return findHudWatchPaneIds(listCurrentWindowPanes(execTmuxSync), currentPaneId);
+  return findHudWatchPaneIds(listCurrentWindowPanes(execTmuxSync, currentPaneId), currentPaneId);
 }
 
 export function readCurrentWindowSize(
   execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
+  currentPaneId?: string,
 ): { width: number | null; height: number | null } {
   try {
-    const raw = execTmuxSync(['display-message', '-p', '#{window_width}\t#{window_height}']);
+    const raw = execTmuxSync([
+      'display-message',
+      '-p',
+      ...(currentPaneId ? ['-t', currentPaneId] : []),
+      '#{window_width}\t#{window_height}',
+    ]);
     const [widthRaw = '', heightRaw = ''] = raw.split('\t');
     const width = Number.parseInt(widthRaw.trim(), 10);
     const height = Number.parseInt(heightRaw.trim(), 10);
@@ -116,6 +124,7 @@ export function createHudWatchPane(
   options: {
     heightLines?: number;
     fullWidth?: boolean;
+    targetPaneId?: string;
   } = {},
   execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
 ): string | null {
@@ -129,6 +138,7 @@ export function createHudWatchPane(
     '-l',
     String(heightLines),
     '-d',
+    ...(options.targetPaneId ? ['-t', options.targetPaneId] : []),
     '-c',
     cwd,
     '-P',

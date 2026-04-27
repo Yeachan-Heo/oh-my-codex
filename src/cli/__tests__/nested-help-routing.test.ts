@@ -31,6 +31,7 @@ describe('nested help routing', () => {
     [['hud', '--help'], /Usage:\s*\n\s*omx hud\s+Show current HUD state/i],
     [['hooks', '--help'], /Usage:\s*\n\s*omx hooks init/i],
     [['state', '--help'], /Usage:\s*omx state <read\|write\|clear\|list-active\|get-status>/i],
+    [['mcp-serve', '--help'], /Usage:\s*omx mcp-serve <target>/i],
     [['tmux-hook', '--help'], /Usage:\s*\n\s*omx tmux-hook init/i],
     [['ralph', '--help'], /omx ralph - Launch Codex with ralph persistence mode active/i],
   ] satisfies Array<[string[], RegExp]>) {

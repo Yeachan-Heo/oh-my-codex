@@ -94,6 +94,16 @@ const SKILL_PATTERNS = [
   rx('user says `continue`'),
 ];
 
+const ULTRAWORK_SKILL_PATTERNS = [
+  ...SKILL_PATTERNS,
+  rx('Gather enough context before implementation'),
+  rx('Define pass/fail acceptance criteria before launching execution lanes'),
+  rx('run a direct-tool lane and one or more background evidence lanes'),
+  rx('Choose self vs delegate deliberately'),
+  rx('Manual QA notes are recorded when the task needs a human-visible or behavior-level check'),
+  rx('Ralph owns persistence, architect verification, deslop, and the full verified-completion promise'),
+];
+
 export const ROOT_TEMPLATE_CONTRACTS: GuidanceSurfaceContract[] = [
   { id: 'agents-template', path: 'templates/AGENTS.md', requiredPatterns: ROOT_TEMPLATE_PATTERNS },
 ];
@@ -202,18 +212,25 @@ export const SPECIALIZED_PROMPT_CONTRACTS: GuidanceSurfaceContract[] = [
 ];
 
 export const SKILL_CONTRACTS: GuidanceSurfaceContract[] = [
-  'analyze',
-  'autopilot',
-  'build-fix',
-  'code-review',
-  'plan',
-  'ralph',
-  'ralplan',
-  'security-review',
-  'team',
-  'ultraqa',
-].map((name) => ({
-  id: name,
-  path: `skills/${name}/SKILL.md`,
-  requiredPatterns: SKILL_PATTERNS,
-}));
+  ...[
+    'analyze',
+    'autopilot',
+    'build-fix',
+    'code-review',
+    'plan',
+    'ralph',
+    'ralplan',
+    'security-review',
+    'team',
+    'ultraqa',
+  ].map((name) => ({
+    id: name,
+    path: `skills/${name}/SKILL.md`,
+    requiredPatterns: SKILL_PATTERNS,
+  })),
+  {
+    id: 'ultrawork',
+    path: 'skills/ultrawork/SKILL.md',
+    requiredPatterns: ULTRAWORK_SKILL_PATTERNS,
+  },
+];

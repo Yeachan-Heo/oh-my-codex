@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isSessionStateUsable, readSessionState, readUsableSessionState } from '../hooks/session.js';
 import { getSkillActiveStatePaths, listActiveSkills, readSkillActiveState } from '../state/skill-active.js';
+import { readRunState } from '../runtime/run-state.js';
 import {
   readSubagentSessionSummary,
   type SubagentSessionSummary,
@@ -37,6 +38,7 @@ export interface SessionStatusDeps {
   readSubagentSessionSummaryImpl?: typeof readSubagentSessionSummary;
   getSkillActiveStatePathsImpl?: typeof getSkillActiveStatePaths;
   readSkillActiveStateImpl?: typeof readSkillActiveState;
+  readRunStateImpl?: typeof readRunState;
 }
 
 export function isDiscordStatusCommand(input: string): boolean {
@@ -84,12 +86,13 @@ async function readRelevantSkillState(
   sessionId: string,
   deps: Pick<
     SessionStatusDeps,
-    'existsSyncImpl' | 'getSkillActiveStatePathsImpl' | 'readSkillActiveStateImpl'
+    'existsSyncImpl' | 'getSkillActiveStatePathsImpl' | 'readSkillActiveStateImpl' | 'readRunStateImpl'
   >,
 ): Promise<SkillStateSummary | null> {
   const existsSyncImpl = deps.existsSyncImpl ?? existsSync;
   const getSkillActiveStatePathsImpl = deps.getSkillActiveStatePathsImpl ?? getSkillActiveStatePaths;
   const readSkillActiveStateImpl = deps.readSkillActiveStateImpl ?? readSkillActiveState;
+  const readRunStateImpl = deps.readRunStateImpl ?? readRunState;
   const { rootPath, sessionPath } = getSkillActiveStatePathsImpl(projectPath, sessionId);
   const candidatePaths = [sessionPath, rootPath].filter((value): value is string => typeof value === 'string');
 
@@ -99,18 +102,36 @@ async function readRelevantSkillState(
     if (!state) continue;
 
     const stateSessionId = typeof state.session_id === 'string' ? state.session_id.trim() : '';
-    if (candidatePath === rootPath && stateSessionId && stateSessionId !== sessionId) {
+    const entries = listActiveSkills(state);
+    const visibleEntries = entries.filter((entry) => {
+      const entrySessionId = typeof entry.session_id === 'string' ? entry.session_id.trim() : '';
+      return entrySessionId.length === 0 || entrySessionId === sessionId;
+    });
+
+    if (candidatePath === rootPath && (
+      (stateSessionId && stateSessionId !== sessionId)
+      || (entries.length > 0 && visibleEntries.length === 0)
+    )) {
       continue;
     }
 
-    const primary = listActiveSkills(state)[0];
+    const primary = visibleEntries[0];
     const skill = primary?.skill || (typeof state.skill === 'string' ? state.skill.trim() : '');
     const phase = primary?.phase || (typeof state.phase === 'string' ? state.phase.trim() : '');
     const updatedAt = typeof state.updated_at === 'string' ? state.updated_at.trim() : '';
+    const requiresDurableRuntime = candidatePath === sessionPath && skill.length > 0;
+    const runState = requiresDurableRuntime ? await readRunStateImpl(projectPath, sessionId) : null;
+    const hasDurableRuntime = !requiresDurableRuntime || (
+      runState?.active === true
+      && typeof runState.mode === 'string'
+      && runState.mode.trim() === skill
+    );
 
     return {
-      ...(skill ? { skill } : {}),
-      ...(phase ? { phase } : {}),
+      ...(hasDurableRuntime && skill ? { skill } : {}),
+      ...(hasDurableRuntime
+        ? { phase: (runState?.current_phase?.trim() || phase || undefined) }
+        : {}),
       ...(updatedAt ? { updatedAt } : {}),
     };
   }

@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-04-18T08:54:56.317Z",
+  "generatedAt": "2026-04-24T07:34:27.399Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 40,
+    "skillCount": 42,
     "promptCount": 30,
-    "activeSkillCount": 26,
+    "activeSkillCount": 27,
     "activeAgentCount": 18
   },
   "coreSkills": [
@@ -60,6 +60,13 @@
     },
     {
       "name": "autoresearch",
+      "category": "execution",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "pipeline",
       "category": "execution",
       "status": "active",
       "core": false,
@@ -160,8 +167,16 @@
     {
       "name": "web-clone",
       "category": "shortcut",
+      "status": "merged",
+      "canonical": "visual-ralph",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "visual-ralph",
+      "category": "shortcut",
       "status": "active",
-      "canonical": "vision",
+      "canonical": "designer",
       "core": false,
       "internalRequired": false
     },
@@ -496,6 +511,10 @@
     {
       "name": "build-fix",
       "canonical": "build-fixer"
+    },
+    {
+      "name": "web-clone",
+      "canonical": "visual-ralph"
     },
     {
       "name": "frontend-ui-ux",

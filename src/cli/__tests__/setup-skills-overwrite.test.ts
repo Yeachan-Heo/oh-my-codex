@@ -73,8 +73,10 @@ describe('omx setup skills overwrite behavior', () => {
       assert.equal(installed.has('ecomode'), false);
       assert.equal(installed.has('ultraqa'), true);
       assert.equal(installed.has('ralph-init'), false);
+      assert.equal(installed.has('visual-ralph'), true);
+      assert.equal(installed.has('web-clone'), false);
       assert.equal(installed.has('frontend-ui-ux'), false);
-      assert.equal(installed.has('pipeline'), false);
+      assert.equal(installed.has('pipeline'), true);
       assert.equal(installed.has('configure-notifications'), true);
       assert.equal(installed.has('wiki'), true);
       assert.equal(installed.has('configure-discord'), false);
@@ -89,6 +91,33 @@ describe('omx setup skills overwrite behavior', () => {
         await readFile(join(skillsDir, 'autoresearch', 'SKILL.md'), 'utf-8'),
         /^---\nname: autoresearch/m,
       );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('removes stale web-clone installs during normal hard-deprecation refresh', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-'));
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+
+      await setup({ scope: 'project' });
+
+      const staleWebCloneDir = join(wd, '.codex', 'skills', 'web-clone');
+      await mkdir(staleWebCloneDir, { recursive: true });
+      await writeFile(
+        join(staleWebCloneDir, 'SKILL.md'),
+        '---\nname: web-clone\ndescription: old standalone pipeline\n---\n\nClone a target website from its URL.\n',
+      );
+      assert.equal(existsSync(staleWebCloneDir), true);
+
+      await setup({ scope: 'project' });
+
+      assert.equal(existsSync(staleWebCloneDir), false);
+      assert.equal(existsSync(join(wd, '.codex', 'skills', 'visual-ralph', 'SKILL.md')), true);
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
@@ -124,7 +153,7 @@ describe('omx setup skills overwrite behavior', () => {
     }
   });
 
-  it('removes stale unlisted shipped skill directories on --force', async () => {
+  it('keeps newly cataloged pipeline skill fresh on --force', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-'));
     const previousCwd = process.cwd();
     try {
@@ -133,15 +162,12 @@ describe('omx setup skills overwrite behavior', () => {
 
       await setup({ scope: 'project' });
 
-      const staleSkill = 'pipeline';
-      const staleDir = join(wd, '.codex', 'skills', staleSkill);
-      await mkdir(staleDir, { recursive: true });
-      await writeFile(join(staleDir, 'SKILL.md'), `# stale ${staleSkill}\n`);
-      assert.equal(existsSync(staleDir), true);
+      const pipelinePath = join(wd, '.codex', 'skills', 'pipeline', 'SKILL.md');
+      await writeFile(pipelinePath, '# stale pipeline\n');
 
       await setup({ scope: 'project', force: true });
 
-      assert.equal(existsSync(join(wd, '.codex', 'skills', staleSkill)), false);
+      assert.match(await readFile(pipelinePath, 'utf-8'), /^---\nname: pipeline/m);
       assert.equal(existsSync(join(wd, '.codex', 'skills', 'team')), true);
     } finally {
       process.chdir(previousCwd);
@@ -149,7 +175,7 @@ describe('omx setup skills overwrite behavior', () => {
     }
   });
 
-  it('retains wiki on --force while still removing unrelated stale unlisted skills', async () => {
+  it('retains wiki on --force while still removing unrelated stale alias skills', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-'));
     const previousCwd = process.cwd();
     try {
@@ -159,17 +185,17 @@ describe('omx setup skills overwrite behavior', () => {
       await setup({ scope: 'project' });
 
       const wikiDir = join(wd, '.codex', 'skills', 'wiki');
-      const stalePipelineDir = join(wd, '.codex', 'skills', 'pipeline');
+      const staleSwarmDir = join(wd, '.codex', 'skills', 'swarm');
       assert.equal(existsSync(wikiDir), true);
 
-      await mkdir(stalePipelineDir, { recursive: true });
-      await writeFile(join(stalePipelineDir, 'SKILL.md'), '# stale pipeline\n');
+      await mkdir(staleSwarmDir, { recursive: true });
+      await writeFile(join(staleSwarmDir, 'SKILL.md'), '# stale swarm\n');
 
       await setup({ scope: 'project', force: true });
 
       assert.equal(existsSync(wikiDir), true);
       assert.equal(existsSync(join(wikiDir, 'SKILL.md')), true);
-      assert.equal(existsSync(stalePipelineDir), false);
+      assert.equal(existsSync(staleSwarmDir), false);
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });

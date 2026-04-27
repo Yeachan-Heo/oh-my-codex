@@ -1,6 +1,6 @@
 {
   "name": "oh-my-codex",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Multi-agent orchestration layer for OpenAI Codex CLI",
   "type": "module",
   "main": "dist/index.js",
@@ -15,8 +15,9 @@
     "check:no-unused": "tsc -p tsconfig.no-unused.json",
     "clean:native-package-assets": "node dist/scripts/cleanup-explore-harness.js",
     "dev": "tsc --watch",
-    "lint": "biome lint src bin",
-    "prepack": "npm run build && npm run clean:native-package-assets",
+    "lint": "biome lint src",
+    "prepack": "npm run build && npm run verify:native-agents && npm run sync:plugin && npm run verify:plugin-bundle && npm run clean:native-package-assets",
+    "postinstall": "node src/scripts/postinstall-bootstrap.js",
     "setup": "node dist/cli/omx.js setup",
     "doctor": "node dist/cli/omx.js doctor",
     "ask:claude": "./src/scripts/ask-claude.sh",
@@ -30,10 +31,11 @@
     "test:context-pack:compiled": "node --test dist/reference/__tests__/launch-lifecycle-model.test.js dist/reference/__tests__/context-pack-handoff-state-machine.test.js dist/planning/__tests__/context-pack-smoke.test.js dist/planning/__tests__/context-packs.test.js dist/planning/__tests__/context-tool.test.js dist/planning/__tests__/artifacts.test.js dist/planning/__tests__/path-utils.test.js dist/pipeline/__tests__/stages.test.js dist/team/__tests__/approved-execution.test.js dist/team/__tests__/runtime-cli.test.js dist/cli/__tests__/ralph.test.js dist/ralplan/__tests__/runtime.test.js dist/hooks/__tests__/keyword-detector.test.js dist/hooks/__tests__/pre-context-gate-skills.test.js dist/hooks/__tests__/consensus-execution-handoff.test.js dist/adapt/__tests__/foundation.test.js && node --test --test-name-pattern \"parseTeamStartArgs|passes the bound approved execution into startTeam for short team follow-ups|keeps the bound approved execution authoritative for short follow-ups with staffing overrides|drops rejected bound approved execution when a short team follow-up falls back to a generic launch|keeps explicit team launches generic even when an exact-task approved handoff is non-ready|keeps explicit team launches generic even when an exact-task approved handoff is ready|keeps short team follow-ups generic on legacy plan-only handoffs while preserving task continuity\" dist/cli/__tests__/team.test.js",
     "test:recent-bug-regressions": "npm run build && npm run test:recent-bug-regressions:compiled",
     "test:recent-bug-regressions:compiled": "node --test dist/hooks/__tests__/keyword-detector.test.js dist/scripts/__tests__/codex-native-hook.test.js dist/cli/__tests__/launch-fallback.test.js dist/team/__tests__/runtime.test.js dist/team/__tests__/hardening-e2e.test.js",
+    "test:plugin-boundaries:compiled": "node --test dist/cli/__tests__/codex-plugin-layout.test.js dist/cli/__tests__/package-bin-contract.test.js dist/cli/__tests__/setup-hooks-shared-ownership.test.js dist/catalog/__tests__/plugin-bundle-ssot.test.js",
     "test:node": "node dist/scripts/run-test-files.js dist",
     "test:node:cross-platform": "npm run test:node",
-    "test": "npm run build && npm run test:node && node dist/scripts/generate-catalog-docs.js --check",
-    "test:ci:compiled": "npm run test:node && node dist/scripts/generate-catalog-docs.js --check",
+    "test": "npm run build && npm run verify:native-agents && npm run verify:plugin-bundle && npm run test:node && node dist/scripts/generate-catalog-docs.js --check",
+    "test:ci:compiled": "npm run verify:native-agents && npm run verify:plugin-bundle && npm run test:node && node dist/scripts/generate-catalog-docs.js --check",
     "coverage:team-critical": "npm run build && c8 --all --src dist/team --src dist/state --include 'dist/team/**/*.js' --include 'dist/state/**/*.js' --exclude '**/__tests__/**' --reporter=text-summary --reporter=lcov --reporter=json-summary --report-dir coverage/team --check-coverage --lines=78 --functions=90 --branches=70 --statements=78 node dist/scripts/run-test-files.js dist/team/__tests__ dist/state/__tests__",
     "coverage:team-critical:compiled": "c8 --all --src dist/team --src dist/state --include 'dist/team/**/*.js' --include 'dist/state/**/*.js' --exclude '**/__tests__/**' --reporter=text-summary --reporter=lcov --reporter=json-summary --report-dir coverage/team --check-coverage --lines=78 --functions=90 --branches=70 --statements=78 node dist/scripts/run-test-files.js dist/team/__tests__ dist/state/__tests__",
     "coverage:team-critical:cross-platform": "npm run build && c8 --all --src dist/team --src dist/state --include 'dist/team/**/*.js' --include 'dist/state/**/*.js' --exclude '**/__tests__/**' --reporter=text-summary --reporter=lcov --reporter=json-summary --report-dir coverage/team --check-coverage --lines=78 --functions=90 --branches=70 --statements=78 node dist/scripts/run-test-files.js dist/team/__tests__ dist/state/__tests__",
@@ -49,7 +51,11 @@
     "smoke:packed-install": "node dist/scripts/smoke-packed-install.js",
     "test:sparkshell": "node dist/scripts/test-sparkshell.js",
     "test:reply-listener:live": "node dist/scripts/test-reply-listener-live.js",
-    "postpack": "npm run clean:native-package-assets"
+    "postpack": "npm run clean:native-package-assets",
+    "sync:plugin": "node dist/scripts/sync-plugin-mirror.js",
+    "sync:plugin:check": "node dist/scripts/sync-plugin-mirror.js --check",
+    "verify:plugin-bundle": "node dist/scripts/sync-plugin-mirror.js --check",
+    "verify:native-agents": "node dist/scripts/verify-native-agents.js"
   },
   "engines": {
     "node": ">=20"
@@ -59,11 +65,12 @@
     "Cargo.lock",
     "dist/",
     "crates/",
-    "agents/",
     "skills/",
     "prompts/",
     "templates/",
-    "src/scripts/"
+    "src/scripts/",
+    "plugins/",
+    ".agents/plugins/marketplace.json"
   ],
   "keywords": [
     "codex",
@@ -92,7 +99,7 @@
     "@biomejs/biome": "^2.4.4",
     "@types/node": "^25.5.0",
     "c8": "^11.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^6.0.3"
   },
   "overrides": {
     "ajv": ">=8.18.0",

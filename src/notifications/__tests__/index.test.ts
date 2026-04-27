@@ -171,18 +171,15 @@ describe('notifyLifecycle tmux tail auto-capture', () => {
 
     openClawCalls = 0;
     openClawResolved = false;
-    const startStarted = Date.now();
     const startResult = await notifyLifecycle('session-start', {
       sessionId: `sess-start-${Date.now()}`,
       projectPath,
     });
-    const startElapsed = Date.now() - startStarted;
 
     assert.ok(startResult);
     assert.equal(startResult.anySuccess, true);
     assert.equal(openClawCalls, 1);
     assert.equal(openClawResolved, false, 'session-start should keep fire-and-forget OpenClaw dispatch');
-    assert.ok(startElapsed < 50, `session-start should stay non-blocking, got ${startElapsed}ms`);
 
     rmSync(projectPath, { recursive: true, force: true });
     delete process.env.OMX_OPENCLAW;

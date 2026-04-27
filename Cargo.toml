@@ -10,9 +10,10 @@ resolver = "2"
 
 [workspace.package]
 
-version = "0.14.0"
+version = "0.15.0"
 
 edition = "2021"
+rust-version = "1.73"
 license = "MIT"
 repository = "https://github.com/Yeachan-Heo/oh-my-codex"
 

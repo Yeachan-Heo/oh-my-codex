@@ -120,6 +120,15 @@ async function emitOperationalHookEvent(cwd, eventName, context) {
   }
 }
 
+function mapDispatchFailureToCanonicalEvent(reason) {
+  const normalized = safeString(reason).toLowerCase();
+  if (!normalized) return 'run.blocked_on_system';
+  if (normalized.includes('missing') || normalized.includes('deferred') || normalized.includes('rejected')) {
+    return 'run.blocked_on_user';
+  }
+  return 'run.blocked_on_system';
+}
+
 function resolveIssueDispatchCooldownMs(env = process.env) {
   const raw = safeString(env[ISSUE_DISPATCH_COOLDOWN_ENV]).trim();
   if (raw === '') return DEFAULT_ISSUE_DISPATCH_COOLDOWN_MS;

@@ -80,6 +80,9 @@ const TMUX_COPY_MODE_STYLE_OPTIONS = [
   'mode-style',
   'copy-mode-selection-style',
 ] as const;
+const TMUX_PANE_STABILITY_POLL_MS = 60;
+const TMUX_PANE_STABILITY_POLLS_REQUIRED = 2;
+const TMUX_PANE_STABILITY_TIMEOUT_MS = 750;
 
 export type TeamWorkerCli = 'codex' | 'claude' | 'gemini';
 type TeamWorkerCliMode = 'auto' | TeamWorkerCli;
@@ -233,6 +236,38 @@ export function listPaneIds(target: string): string[] {
   return listPanes(target).map((pane) => pane.paneId);
 }
 
+function paneExistsInTarget(target: string, paneId: string): boolean {
+  if (!paneId.startsWith('%')) return false;
+  return listPaneIds(target).includes(paneId);
+}
+
+function waitForPaneToRemainPresent(
+  target: string,
+  paneId: string,
+  timeoutMs: number = TMUX_PANE_STABILITY_TIMEOUT_MS,
+): boolean {
+  if (!paneId.startsWith('%')) return false;
+
+  const stablePollsRequired = Math.max(1, TMUX_PANE_STABILITY_POLLS_REQUIRED);
+  const startedAt = Date.now();
+  let stablePolls = 0;
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    if (paneExistsInTarget(target, paneId)) {
+      stablePolls += 1;
+      if (stablePolls >= stablePollsRequired) return true;
+    } else {
+      stablePolls = 0;
+    }
+
+    const remaining = timeoutMs - (Date.now() - startedAt);
+    if (remaining <= 0) break;
+    sleepFractionalSeconds(Math.max(0, Math.min(TMUX_PANE_STABILITY_POLL_MS, remaining)) / 1000);
+  }
+
+  return false;
+}
+
 function isHudWatchPane(pane: TmuxPaneInfo): boolean {
   const start = pane.startCommand || '';
   return /\bomx\b.*\bhud\b.*--watch/i.test(start);
@@ -348,6 +383,30 @@ function quotePowerShellArg(value: string): string {
 
 function encodePowerShellCommand(commandText: string): string {
   return Buffer.from(commandText, 'utf16le').toString('base64');
+}
+
+function resolveNativeWindowsPowerShellPath(env: NodeJS.ProcessEnv = process.env): string {
+  const rootCandidates = [
+    env.SystemRoot,
+    env.SYSTEMROOT,
+    env.windir,
+    env.WINDIR,
+  ]
+    .map((value) => (typeof value === 'string' ? value.trim() : ''))
+    .filter((value, index, values) => value !== '' && values.indexOf(value) === index);
+  const systemPowerShellCandidates = rootCandidates.map(
+    (root) => `${root.replace(/[\\/]+$/, '')}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
+  );
+  const resolvedFromPath = resolveCommandPathForPlatform('powershell', process.platform, env);
+  const existingCandidates = [
+    ...systemPowerShellCandidates,
+    resolvedFromPath,
+  ].filter((candidate): candidate is string => Boolean(candidate && existsSync(candidate)));
+
+  return existingCandidates.find((candidate) => !/\s/.test(candidate))
+    ?? existingCandidates[0]
+    ?? resolvedFromPath
+    ?? 'powershell.exe';
 }
 
 function normalizeTmuxHookToken(value: string): string {
@@ -804,6 +863,7 @@ export function buildWorkerStartupCommand(
     ? resolvedLeaderNodePath.replace(/[\\/][^\\/]+$/, '')
     : '';
   if (isNativeWindows()) {
+    const powershellPath = resolveNativeWindowsPowerShellPath();
     const pathBootstrap = leaderNodeDir
       ? `$env:PATH = ${quotePowerShellArg(`${leaderNodeDir};`)} + $env:PATH`
       : '';
@@ -819,7 +879,7 @@ export function buildWorkerStartupCommand(
         invocation,
       ].filter(Boolean).join('; '),
     );
-    return `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}`;
+    return `${powershellPath} -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}`;
   }
 
   const launchSpec = buildWorkerLaunchSpec(process.env.SHELL);
@@ -1042,8 +1102,11 @@ export function createTeamSession(
       if (!paneId || !paneId.startsWith('%')) {
         throw new Error(`failed to capture worker pane id for worker ${i}`);
       }
-      workerPaneIds.push(paneId);
       rollbackPaneIds.push(paneId);
+      if (isNativeWindows() && !waitForPaneToRemainPresent(teamTarget, paneId)) {
+        throw new Error(`worker pane ${i} did not remain present after tmux split-window returned ${paneId}`);
+      }
+      workerPaneIds.push(paneId);
       if (i === 1) rightStackRootPaneId = paneId;
     }
 
@@ -1078,8 +1141,11 @@ export function createTeamSession(
       if (hudResult.ok) {
         const id = hudResult.stdout.split('\n')[0]?.trim() ?? '';
         if (id.startsWith('%')) {
+          rollbackPaneIds.push(id);
+          if (isNativeWindows() && !waitForPaneToRemainPresent(teamTarget, id)) {
+            throw new Error(`HUD pane did not remain present after tmux split-window returned ${id}`);
+          }
           hudPaneId = id;
-          rollbackPaneIds.push(hudPaneId);
 
           if (isNativeWindows()) {
             // Native Windows tmux support may flow through psmux; issuing a

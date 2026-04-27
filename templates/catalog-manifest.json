@@ -53,6 +53,13 @@
       "internalRequired": false
     },
     {
+      "name": "pipeline",
+      "category": "execution",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
       "name": "swarm",
       "category": "execution",
       "status": "alias",
@@ -147,8 +154,16 @@
     {
       "name": "web-clone",
       "category": "shortcut",
+      "status": "merged",
+      "canonical": "visual-ralph",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "visual-ralph",
+      "category": "shortcut",
       "status": "active",
-      "canonical": "vision",
+      "canonical": "designer",
       "core": false,
       "internalRequired": false
     },

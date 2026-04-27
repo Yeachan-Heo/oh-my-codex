@@ -48,6 +48,45 @@ describe('CLI session-scoped state parity', () => {
     }
   });
 
+  it('status does not report a root fallback mode as active after current-session clear', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-session-clear-fallback-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-clear';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(stateDir, 'deep-interview-state.json'), JSON.stringify({
+        active: true,
+        mode: 'deep-interview',
+        current_phase: 'legacy-root',
+      }));
+      await writeFile(join(sessionDir, 'deep-interview-state.json'), JSON.stringify({
+        active: true,
+        mode: 'deep-interview',
+        current_phase: 'session-active',
+      }));
+
+      const clearResult = runOmx(
+        wd,
+        'state',
+        'clear',
+        '--input',
+        '{"mode":"deep-interview"}',
+        '--json',
+      );
+      assert.equal(clearResult.status, 0, clearResult.stderr || clearResult.stdout);
+      assert.match(clearResult.stdout, /"cleared":true/);
+
+      const statusResult = runOmx(wd, 'status');
+      assert.equal(statusResult.status, 0, statusResult.stderr || statusResult.stdout);
+      assert.doesNotMatch(statusResult.stdout, /deep-interview: ACTIVE/);
+      assert.match(statusResult.stdout, /deep-interview: inactive \(phase: cleared\)/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('cancels linked ultrawork when Ralph is active', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralph-link-'));
     try {

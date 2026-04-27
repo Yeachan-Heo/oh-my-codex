@@ -3,12 +3,15 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { fileURLToPath } from 'url';
 import {
   loadRolePrompt,
   isKnownRole,
   listAvailableRoles,
   routeTaskToRole,
 } from '../role-router.js';
+
+const repoRoot = join(fileURLToPath(new URL('../../../', import.meta.url)));
 
 describe('role-router', () => {
   // ─── Layer 1: Prompt Loading ──────────────────────────────────────
@@ -87,6 +90,11 @@ describe('role-router', () => {
     it('returns empty array for missing directory', async () => {
       const roles = await listAvailableRoles('/tmp/nonexistent-dir-' + Date.now());
       assert.deepEqual(roles, []);
+    });
+
+    it('does not expose command-specific AGENTS instruction files as roles from the repo prompts directory', async () => {
+      const roles = await listAvailableRoles(join(repoRoot, 'prompts'));
+      assert.equal(roles.some((role) => role.endsWith('-AGENTS')), false);
     });
   });
 

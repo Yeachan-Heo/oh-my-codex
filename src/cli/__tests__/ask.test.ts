@@ -39,6 +39,11 @@ function runProviderAdvisorScript(
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '', error: r.error?.message };
 }
 
+
+function normalizeDarwinTmpPath(value: string): string {
+  return process.platform === 'darwin' ? value.replaceAll('/private/var/', '/var/') : value;
+}
+
 function shouldSkipForSpawnPermissions(err?: string): boolean {
   return typeof err === 'string' && /(EPERM|EACCES)/i.test(err);
 }
@@ -170,7 +175,7 @@ describe('omx ask', () => {
 
       assert.equal(res.status, 0, res.stderr || res.stdout);
       const artifactPath = res.stdout.trim();
-      assert.ok(artifactPath.startsWith(join(wd, '.omx', 'artifacts', 'claude-')));
+      assert.ok(normalizeDarwinTmpPath(artifactPath).startsWith(normalizeDarwinTmpPath(join(wd, '.omx', 'artifacts', 'claude-'))));
       assert.equal(existsSync(artifactPath), true);
       const artifact = await readFile(artifactPath, 'utf-8');
       assert.match(artifact, /NONROOT_DEFAULT_OK/);

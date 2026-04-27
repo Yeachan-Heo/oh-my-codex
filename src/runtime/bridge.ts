@@ -11,6 +11,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveCanonicalTeamStateRoot } from '../team/state-root.js';
+import { safeJsonParse } from '../utils/safe-json.js';
 
 const __bridge_dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -107,6 +108,28 @@ export interface MailboxRecord {
 // Bridge class
 // ---------------------------------------------------------------------------
 
+/**
+ * Raised when the omx-runtime binary returns output that fails JSON decoding.
+ *
+ * Distinguishing parse failure from spawn failure (which `run()` already wraps
+ * in a generic `Error`) lets callers — e.g. dispatch loops in
+ * `team/state/dispatch.ts` — react with a typed `instanceof` check instead of
+ * inspecting error messages, and to mark the affected command failed without
+ * tearing down the surrounding watcher loop.
+ */
+export class RuntimeBridgeError extends Error {
+  readonly context: { command?: string; stdoutPreview?: string; cause?: unknown };
+
+  constructor(
+    message: string,
+    context: { command?: string; stdoutPreview?: string; cause?: unknown } = {},
+  ) {
+    super(message);
+    this.name = 'RuntimeBridgeError';
+    this.context = context;
+  }
+}
+
 let schemaValidated = false;
 
 export interface RuntimeBinaryDiscoveryOptions {
@@ -158,7 +181,18 @@ export class RuntimeBridge {
     if (this.stateDir) args.push(`--state-dir=${this.stateDir}`);
     if (options?.compact) args.push('--compact');
     const stdout = this.run(args);
-    return JSON.parse(stdout) as RuntimeEvent;
+    // Non-JSON stdout means the runtime contract was violated (truncated pipe,
+    // schema drift, panic before flush). Surface a typed error so dispatch
+    // callers can mark the command failed instead of bubbling SyntaxError up
+    // through unrelated layers.
+    try {
+      return JSON.parse(stdout) as RuntimeEvent;
+    } catch (cause) {
+      throw new RuntimeBridgeError(
+        `omx-runtime exec returned non-JSON output for ${cmd.command}`,
+        { command: cmd.command, stdoutPreview: stdout.slice(0, 200), cause },
+      );
+    }
   }
 
   /** Read the current RuntimeSnapshot. */
@@ -166,7 +200,17 @@ export class RuntimeBridge {
     const args = ['snapshot', '--json'];
     if (this.stateDir) args.push(`--state-dir=${this.stateDir}`);
     const stdout = this.run(args);
-    return JSON.parse(stdout) as RuntimeSnapshot;
+    // Same parse hazard as execCommand: a partial snapshot pipe surfaces
+    // here as a SyntaxError that the caller almost never expects.
+    try {
+      return JSON.parse(stdout) as RuntimeSnapshot;
+    } catch (cause) {
+      throw new RuntimeBridgeError('omx-runtime snapshot returned non-JSON output', {
+        command: 'snapshot',
+        stdoutPreview: stdout.slice(0, 200),
+        cause,
+      });
+    }
   }
 
   /** Initialize a fresh state directory. */
@@ -180,8 +224,19 @@ export class RuntimeBridge {
     if (!this.stateDir) return null;
     const filePath = join(this.stateDir, filename);
     if (!existsSync(filePath)) return null;
-    const content = readFileSync(filePath, 'utf-8');
-    return JSON.parse(content) as T;
+    // Compat files cross a Rust→JS boundary and can be observed mid-rename
+    // (`writeAtomic` swaps a tmp file into place) or empty (truncate-then-write).
+    // The only sane recovery is to return null so HUD/dispatch fall through to
+    // their JS-inferred state for this tick — throwing here would abort the
+    // entire query path. `readFileSync` itself can also raise EACCES/EISDIR
+    // on edge cases; treat those identically.
+    let content: string;
+    try {
+      content = readFileSync(filePath, 'utf-8');
+    } catch {
+      return null;
+    }
+    return safeJsonParse<T | null>(content, null);
   }
 
   /** Read authority snapshot from compatibility file. */

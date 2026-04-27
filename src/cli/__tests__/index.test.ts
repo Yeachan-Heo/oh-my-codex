@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import {
+  HELP,
   normalizeCodexLaunchArgs,
   buildTmuxShellCommand,
   buildTmuxPaneCommand,
@@ -27,6 +28,7 @@ import {
   resolveTeamWorkerLaunchArgsEnv,
   injectModelInstructionsBypassArgs,
   resolveWorkerSparkModel,
+  resolveSetupInstallModeArg,
   resolveSetupScopeArg,
   readPersistedSetupPreferences,
   readPersistedSetupScope,
@@ -60,6 +62,7 @@ import { ensureReusableNodeModules } from "../../utils/repo-deps.js";
 import { readAllState } from "../../hud/state.js";
 import { generateOverlay } from "../../hooks/agents-overlay.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../../hud/constants.js";
+import { createHudWatchPane as createSharedHudWatchPane, listCurrentWindowHudPaneIds } from "../../hud/tmux.js";
 import {
   DEFAULT_FRONTIER_MODEL,
   getTeamLowComplexityModel,
@@ -68,6 +71,14 @@ import type { ProcessEntry } from "../cleanup.js";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(testDir, "..", "..", "..");
+
+function normalizeDarwinTmpPath(value: string): string {
+  return process.platform === "darwin" ? value.replaceAll("/private/var/", "/var/") : value;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 function expectedLowComplexityModel(codexHomeOverride?: string): string {
   return getTeamLowComplexityModel(codexHomeOverride);
@@ -902,7 +913,7 @@ describe("commandOwnsLocalHelp", () => {
   });
 
   it("returns false for top-level help-only commands", () => {
-    for (const command of ["help", "launch", "version"]) {
+    for (const command of ["help", "launch", "version", "update"]) {
       assert.equal(
         commandOwnsLocalHelp(command),
         false,
@@ -981,6 +992,13 @@ describe("resolveCliInvocation", () => {
     );
   });
 
+  it("resolves update to update command", () => {
+    assert.deepEqual(resolveCliInvocation(["update"]), {
+      command: "update",
+      launchArgs: [],
+    });
+  });
+
   it("resolves hooks to hooks command", () => {
     assert.deepEqual(resolveCliInvocation(["hooks"]), {
       command: "hooks",
@@ -1029,6 +1047,21 @@ describe("resolveCliInvocation", () => {
       launchArgs: ["--model", "gpt-5"],
     });
   });
+
+  it("advertises the explicit update command in top-level help", () => {
+    assert.match(HELP, /omx update\s+Check npm now, update the global install immediately, then refresh setup/);
+  });
+});
+
+describe("resolveSetupInstallModeArg", () => {
+  it("maps --plugin to plugin install mode", () => {
+    assert.equal(resolveSetupInstallModeArg(["--dry-run"]), undefined);
+    assert.equal(resolveSetupInstallModeArg(["--plugin"]), "plugin");
+    assert.equal(
+      resolveSetupInstallModeArg(["--scope", "project", "--plugin"]),
+      "plugin",
+    );
+  });
 });
 
 describe("resolveSetupScopeArg", () => {
@@ -1076,16 +1109,17 @@ describe("project launch scope helpers", () => {
     }
   });
 
-  it("reads persisted setup preferences when skill target is present", async () => {
+  it("reads persisted setup preferences when install mode is present", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-launch-scope-"));
     try {
       await mkdir(join(wd, ".omx"), { recursive: true });
       await writeFile(
         join(wd, ".omx", "setup-scope.json"),
-        JSON.stringify({ scope: "user" }),
+        JSON.stringify({ scope: "user", installMode: "plugin" }),
       );
       assert.deepEqual(readPersistedSetupPreferences(wd), {
         scope: "user",
+        installMode: "plugin",
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -1112,6 +1146,26 @@ describe("project launch scope helpers", () => {
         JSON.stringify({ scope: "project" }),
       );
       assert.equal(resolveCodexHomeForLaunch(wd, {}), join(wd, ".codex"));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("uses project CODEX_HOME when persisted scope is project even if HOME is unusable", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-launch-scope-"));
+    try {
+      const badHome = join(wd, "home-as-file");
+      await writeFile(badHome, "not-a-directory");
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+      assert.equal(resolveCodexHomeForLaunch(wd, { HOME: badHome }), join(wd, ".codex"));
+      assert.equal(
+        resolveCodexConfigPathForLaunch(wd, { HOME: badHome }),
+        join(wd, ".codex", "config.toml"),
+      );
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -1394,6 +1448,56 @@ describe("tmux HUD pane helpers", () => {
   it("buildHudPaneCleanupTargets is a no-op guard when leaderPaneId is absent", () => {
     assert.deepEqual(buildHudPaneCleanupTargets(["%3"], "%4"), ["%3", "%4"]);
   });
+
+  it("listCurrentWindowHudPaneIds scopes tmux pane listing to the emitting pane", () => {
+    const calls: string[][] = [];
+    const panes = listCurrentWindowHudPaneIds("%leader", (args) => {
+      calls.push(args);
+      return [
+        "%leader\tcodex\tcodex",
+        "%hud\tnode\tnode /tmp/bin/omx.js hud --watch",
+      ].join("\n");
+    });
+
+    assert.deepEqual(panes, ["%hud"]);
+    assert.deepEqual(calls[0], [
+      "list-panes",
+      "-t",
+      "%leader",
+      "-F",
+      "#{pane_id}\t#{pane_current_command}\t#{pane_start_command}",
+    ]);
+  });
+
+  it("createHudWatchPane splits from the emitting pane target when provided", () => {
+    const calls: string[][] = [];
+    const paneId = createSharedHudWatchPane(
+      "/repo",
+      "node /repo/dist/cli/omx.js hud --watch",
+      { heightLines: 3, targetPaneId: "%leader" },
+      (args) => {
+        calls.push(args);
+        return "%hud\n";
+      },
+    );
+
+    assert.equal(paneId, "%hud");
+    assert.deepEqual(calls[0], [
+      "split-window",
+      "-v",
+      "-l",
+      "3",
+      "-d",
+      "-t",
+      "%leader",
+      "-c",
+      "/repo",
+      "-P",
+      "-F",
+      "#{pane_id}",
+      "node /repo/dist/cli/omx.js hud --watch",
+    ]);
+  });
 });
 
 describe("detached tmux new-session sequencing", () => {
@@ -1460,6 +1564,27 @@ describe("detached tmux new-session sequencing", () => {
     assert.equal(
       newSession!.args.includes("-e") &&
         newSession!.args.some((arg) => arg === "OMX_SESSION_ID=sess-detached-managed"),
+      true,
+    );
+  });
+
+  it("buildDetachedSessionBootstrapSteps forwards CODEX_HOME override to detached tmux session", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-demo",
+      "/tmp/project",
+      "'codex' '--model' 'gpt-5'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      null,
+      "/tmp/project/.codex",
+      null,
+      false,
+      "sess-detached-managed",
+    );
+    const newSession = steps.find((step) => step.name === "new-session");
+    assert.ok(newSession);
+    assert.equal(
+      newSession!.args.includes("-e") &&
+        newSession!.args.some((arg) => arg === "CODEX_HOME=/tmp/project/.codex"),
       true,
     );
   });
@@ -1669,8 +1794,8 @@ exit 0
       const log = await readFile(logPath, "utf-8");
       assert.match(log, /codex:--dangerously-bypass-approvals-and-sandbox/);
       assert.match(
-        log,
-        new RegExp(`codex-pwd:${cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+        normalizeDarwinTmpPath(log),
+        new RegExp(`codex-pwd:${escapeRegExp(normalizeDarwinTmpPath(cwd))}`),
       );
       assert.match(log, /tmux:display-message -p #\{socket_path\}/);
       assert.match(log, /tmux:show-options -sv extended-keys/);
@@ -1734,7 +1859,7 @@ exit 0
       const leaderCmd = steps[0]?.args.at(-1);
       assert.equal(typeof leaderCmd, "string");
 
-      const result = (await import("node:child_process")).spawnSync("/bin/sh", ["-lc", leaderCmd!], {
+      const result = (await import("node:child_process")).spawnSync("/bin/sh", ["-c", leaderCmd!], {
         cwd,
         env: {
           ...process.env,
@@ -1814,7 +1939,7 @@ exit 0
       });
 
       try {
-        for (let i = 0; i < 20; i += 1) {
+        for (let i = 0; i < 50; i += 1) {
           if (existsSync(pidFile)) break;
           await new Promise((resolve) => setTimeout(resolve, 100));
         }

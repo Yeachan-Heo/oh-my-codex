@@ -23,6 +23,8 @@ interface QuestionUiOutput {
 interface QuestionUiDeps {
   input?: QuestionUiInput;
   output?: QuestionUiOutput;
+  env?: NodeJS.ProcessEnv;
+  injectAnswerToPane?: (paneId: string, answer: QuestionAnswer) => boolean;
 }
 
 interface InteractiveSelectionState {
@@ -110,12 +112,22 @@ function buildAnswer(record: QuestionRecord, selections: number[], otherText?: s
   };
 }
 
-function maybeInjectAnswer(record: QuestionRecord, answer: QuestionAnswer): void {
-  const target = record.renderer?.return_target;
-  const transport = record.renderer?.return_transport;
+function safeString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function maybeInjectAnswer(
+  record: QuestionRecord,
+  answer: QuestionAnswer,
+  deps: Pick<QuestionUiDeps, 'env' | 'injectAnswerToPane'> = {},
+): void {
+  const env = deps.env ?? process.env;
+  const envTransport = safeString(env.OMX_QUESTION_RETURN_TRANSPORT).trim();
+  const target = record.renderer?.return_target ?? safeString(env.OMX_QUESTION_RETURN_TARGET).trim();
+  const transport = record.renderer?.return_transport ?? (envTransport === 'tmux-send-keys' ? envTransport : undefined);
   if (!target || transport !== 'tmux-send-keys') return;
   try {
-    injectQuestionAnswerToPane(target, answer);
+    (deps.injectAnswerToPane ?? injectQuestionAnswerToPane)(target, answer);
   } catch {
     // Best-effort continuation nudge only; stdout return path remains canonical.
   }
@@ -385,8 +397,11 @@ export async function runQuestionUi(recordPath: string, deps: QuestionUiDeps = {
     }
 
     const answer = buildAnswer(record, selections, otherText);
-    await markQuestionAnswered(recordPath, answer);
-    maybeInjectAnswer(record, answer);
+    const answeredRecord = await markQuestionAnswered(recordPath, answer);
+    maybeInjectAnswer(answeredRecord, answer, {
+      env: deps.env,
+      injectAnswerToPane: deps.injectAnswerToPane,
+    });
   } catch (error) {
     await markQuestionTerminalError(
       recordPath,

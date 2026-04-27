@@ -5,10 +5,26 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { AgentDefinition } from "../definitions.js";
+import type { CatalogManifest } from "../../catalog/schema.js";
 import {
   generateAgentToml,
   installNativeAgentConfigs,
 } from "../native-config.js";
+
+function manifestWithAgents(names: string[]): CatalogManifest {
+  return {
+    schemaVersion: 1,
+    catalogVersion: "test",
+    skills: [
+      { name: "ralplan", category: "planning", status: "active", core: true },
+      { name: "team", category: "execution", status: "active", core: true },
+      { name: "ralph", category: "execution", status: "active", core: true },
+      { name: "ultrawork", category: "execution", status: "active", core: true },
+      { name: "autopilot", category: "execution", status: "active", core: true },
+    ],
+    agents: names.map((name) => ({ name, category: "build", status: "active" })),
+  };
+}
 
 const originalStandardModel = process.env.OMX_DEFAULT_STANDARD_MODEL;
 
@@ -41,7 +57,7 @@ describe("agents/native-config", () => {
     const toml = generateAgentToml(agent, prompt);
 
     assert.match(toml, /# oh-my-codex agent: executor/);
-    assert.match(toml, /model = "gpt-5\.4"/);
+    assert.match(toml, /model = "gpt-5\.5"/);
     assert.match(toml, /model_reasoning_effort = "medium"/);
     assert.ok(!toml.includes("title: demo"));
     assert.ok(toml.includes("Instruction line"));
@@ -73,7 +89,7 @@ describe("agents/native-config", () => {
       env: { OMX_DEFAULT_STANDARD_MODEL: "gpt-5.4-mini" } as NodeJS.ProcessEnv,
     });
     const frontierToml = generateAgentToml(agent, prompt, {
-      env: { OMX_DEFAULT_STANDARD_MODEL: "gpt-5.4" } as NodeJS.ProcessEnv,
+      env: { OMX_DEFAULT_STANDARD_MODEL: "gpt-5.5" } as NodeJS.ProcessEnv,
     });
     const tunedToml = generateAgentToml(agent, prompt, {
       env: { OMX_DEFAULT_STANDARD_MODEL: "gpt-5.4-mini-tuned" } as NodeJS.ProcessEnv,
@@ -86,7 +102,7 @@ describe("agents/native-config", () => {
     assert.doesNotMatch(tunedToml, /exact gpt-5\.4-mini model/);
   });
 
-  it("installs only agents with prompt files and skips existing files without force", async () => {
+  it("installs only catalog-installable agents and skips existing files without force", async () => {
     const root = await mkdtemp(join(tmpdir(), "omx-native-config-"));
     const promptsDir = join(root, "prompts");
     const outDir = join(root, "agents-out");
@@ -95,23 +111,27 @@ describe("agents/native-config", () => {
       await mkdir(promptsDir, { recursive: true });
       await writeFile(join(promptsDir, "executor.md"), "executor prompt");
       await writeFile(join(promptsDir, "planner.md"), "planner prompt");
+      await writeFile(join(promptsDir, "style-reviewer.md"), "merged prompt");
 
       const created = await installNativeAgentConfigs(root, {
         agentsDir: outDir,
+        catalogManifest: manifestWithAgents(["executor", "planner"]),
       });
       assert.equal(created, 2);
       assert.equal(existsSync(join(outDir, "executor.toml")), true);
       assert.equal(existsSync(join(outDir, "planner.toml")), true);
+      assert.equal(existsSync(join(outDir, "style-reviewer.toml")), false);
 
       const executorToml = await readFile(
         join(outDir, "executor.toml"),
         "utf8",
       );
-      assert.match(executorToml, /model = "gpt-5\.4"/);
-      assert.match(executorToml, /model_reasoning_effort = "high"/);
+      assert.match(executorToml, /model = "gpt-5\.5"/);
+      assert.match(executorToml, /model_reasoning_effort = "medium"/);
 
       const skipped = await installNativeAgentConfigs(root, {
         agentsDir: outDir,
+        catalogManifest: manifestWithAgents(["executor", "planner"]),
       });
       assert.equal(skipped, 0);
     } finally {
@@ -119,7 +139,7 @@ describe("agents/native-config", () => {
     }
   });
 
-  it("keeps standard agents off a custom gpt-5.2 root model", async () => {
+  it("inherits a custom root model for standard agents when no standard override exists", async () => {
     const root = await mkdtemp(join(tmpdir(), "omx-native-config-root-model-"));
     const codexHome = join(root, ".codex");
     const promptsDir = join(root, "prompts");
@@ -134,7 +154,40 @@ describe("agents/native-config", () => {
       await writeFile(join(codexHome, "config.toml"), 'model = "gpt-5.2"\n');
       await writeFile(join(promptsDir, "debugger.md"), "debugger prompt");
 
-      await installNativeAgentConfigs(root, { agentsDir: outDir });
+      await installNativeAgentConfigs(root, {
+        agentsDir: outDir,
+        catalogManifest: manifestWithAgents(["debugger"]),
+      });
+      const debuggerToml = await readFile(join(outDir, "debugger.toml"), "utf8");
+      assert.match(debuggerToml, /model = "gpt-5\.2"/);
+      assert.doesNotMatch(debuggerToml, /model = "gpt-5\.4-mini"/);
+    } finally {
+      if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
+      else delete process.env.CODEX_HOME;
+      process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.4-mini";
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves explicit standard model override for standard agents", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-native-config-standard-override-"));
+    const codexHome = join(root, ".codex");
+    const promptsDir = join(root, "prompts");
+    const outDir = join(codexHome, "agents");
+    const previousCodexHome = process.env.CODEX_HOME;
+
+    try {
+      process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.4-mini";
+      process.env.CODEX_HOME = codexHome;
+      await mkdir(promptsDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await writeFile(join(codexHome, "config.toml"), 'model = "gpt-5.2"\n');
+      await writeFile(join(promptsDir, "debugger.md"), "debugger prompt");
+
+      await installNativeAgentConfigs(root, {
+        agentsDir: outDir,
+        catalogManifest: manifestWithAgents(["debugger"]),
+      });
       const debuggerToml = await readFile(join(outDir, "debugger.toml"), "utf8");
       assert.match(debuggerToml, /model = "gpt-5\.4-mini"/);
       assert.doesNotMatch(debuggerToml, /model = "gpt-5\.2"/);
@@ -161,7 +214,10 @@ describe("agents/native-config", () => {
       await writeFile(join(codexHome, "config.toml"), 'model = "gpt-5.2"\n');
       await writeFile(join(promptsDir, "executor.md"), "executor prompt");
 
-      await installNativeAgentConfigs(root, { agentsDir: outDir });
+      await installNativeAgentConfigs(root, {
+        agentsDir: outDir,
+        catalogManifest: manifestWithAgents(["executor"]),
+      });
       const executorToml = await readFile(join(outDir, "executor.toml"), "utf8");
       assert.match(executorToml, /model = "gpt-5\.2"/);
     } finally {

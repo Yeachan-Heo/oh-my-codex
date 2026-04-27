@@ -130,6 +130,19 @@ async function forceCleanup(child: ChildProcess): Promise<void> {
   await once(child, 'exit').catch(() => {});
 }
 
+async function waitForCondition(
+  predicate: () => boolean,
+  timeoutMs: number,
+  message: string,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await delay(25);
+  }
+  if (!predicate()) throw new Error(message);
+}
+
 describe('MCP stdio lifecycle runtime regression (built entrypoints)', () => {
   for (const entrypoint of IDLE_ENTRYPOINTS) {
     const label = 'caveat' in entrypoint
@@ -199,4 +212,64 @@ describe('MCP stdio lifecycle runtime regression (built entrypoints)', () => {
       }
     });
   }
+
+  it('older duplicate entrypoints self-exit after post-duplicate idle while the newest sibling survives', async () => {
+    const entrypoint = IDLE_ENTRYPOINTS[0];
+    const sharedEnv = {
+      ...process.env,
+      OMX_MCP_PARENT_WATCHDOG_INTERVAL_MS: '250',
+      OMX_MCP_DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS: '250',
+      OMX_MCP_DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS: '750',
+    };
+    const older = spawn(process.execPath, [join(process.cwd(), 'dist', 'mcp', entrypoint.file)], {
+      cwd: process.cwd(),
+      env: sharedEnv,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let newer: ChildProcess | null = null;
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const attachLogs = (child: ChildProcess) => {
+      child.stdout?.setEncoding('utf8');
+      child.stderr?.setEncoding('utf8');
+      child.stdout?.on('data', (chunk: string) => stdout.push(chunk));
+      child.stderr?.on('data', (chunk: string) => stderr.push(chunk));
+    };
+    attachLogs(older);
+
+    try {
+      await waitForSpawn(older, entrypoint, stderr, stdout);
+      await assertChildAliveBeforeTeardown(older, entrypoint, stderr, stdout);
+
+      older.stdin?.write('pre-duplicate-traffic');
+      await delay(100);
+
+      newer = spawn(process.execPath, [join(process.cwd(), 'dist', 'mcp', entrypoint.file)], {
+        cwd: process.cwd(),
+        env: sharedEnv,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      attachLogs(newer);
+      await waitForSpawn(newer, entrypoint, stderr, stdout);
+      await assertChildAliveBeforeTeardown(newer, entrypoint, stderr, stdout);
+
+      await delay(400);
+      older.stdin?.write('post-duplicate-traffic');
+      await waitForCondition(
+        () => !isChildAlive(older),
+        2_500,
+        `older duplicate failed to self-exit: ${formatFailureContext(entrypoint, stderr, stdout)}`,
+      );
+
+      assert.equal(isChildAlive(newer), true, `newest duplicate should survive: ${formatFailureContext(entrypoint, stderr, stdout)}`);
+      const olderExit = await waitForExit(older, entrypoint, stderr, stdout);
+      assert.notEqual(olderExit.signal, 'SIGKILL');
+    } finally {
+      await forceCleanup(older);
+      if (newer) {
+        await forceCleanup(newer);
+      }
+    }
+  });
 });

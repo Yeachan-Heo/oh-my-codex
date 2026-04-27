@@ -247,11 +247,17 @@ function buildSnippet(text: string, query: string, context: number, caseSensitiv
   return `${prefix}${text.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`;
 }
 
+function normalizeDarwinPathAlias(value: string): string {
+  return process.platform === 'darwin' ? value.replaceAll('/private/var/', '/var/') : value;
+}
+
 function matchesFilter(value: string | null, filter: string | undefined, caseSensitive: boolean): boolean {
   if (!filter) return true;
   if (!value) return false;
-  if (caseSensitive) return value.includes(filter);
-  return value.toLowerCase().includes(filter.toLowerCase());
+  const normalizedValue = normalizeDarwinPathAlias(value);
+  const normalizedFilter = normalizeDarwinPathAlias(filter);
+  if (caseSensitive) return normalizedValue.includes(normalizedFilter);
+  return normalizedValue.toLowerCase().includes(normalizedFilter.toLowerCase());
 }
 
 async function searchRolloutFile(

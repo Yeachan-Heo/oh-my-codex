@@ -2035,6 +2035,8 @@ describe('teamCommand api', () => {
       assert.match(logs[0] ?? '', /omx team api <operation>/);
       assert.match(logs[0] ?? '', /dedicated worktrees automatically by default/);
       assert.match(logs[0] ?? '', /--worktree is deprecated/);
+      assert.match(logs[0] ?? '', /tmux-runtime surface by default/);
+      assert.match(logs[0] ?? '', /Codex App or plain outside-tmux sessions/);
       assert.match(logs[0] ?? '', /native Codex subagents for small in-session fanout/);
     } finally {
       console.log = originalLog;
@@ -2052,6 +2054,8 @@ describe('teamCommand api', () => {
       assert.match(logs[0] ?? '', /omx team api <operation>/);
       assert.match(logs[0] ?? '', /dedicated worktrees automatically by default/);
       assert.match(logs[0] ?? '', /--worktree is deprecated/);
+      assert.match(logs[0] ?? '', /tmux-runtime surface by default/);
+      assert.match(logs[0] ?? '', /Codex App or plain outside-tmux sessions/);
     } finally {
       console.log = originalLog;
     }
@@ -2945,6 +2949,9 @@ describe('teamCommand status', () => {
           }>;
         };
       };
+      const expectedWd = process.platform === 'darwin' && wd.startsWith('/var/')
+        ? `/private${wd}`
+        : wd;
       assert.equal(payload.schema_version, '1.0');
       assert.equal(typeof payload.timestamp, 'string');
       assert.equal(payload.command, 'omx team status');
@@ -2997,24 +3004,24 @@ describe('teamCommand status', () => {
       assert.deepEqual(payload.panes?.recommended_inspect_state_reasons, { 'worker-1': 'recovering progress' });
       assert.deepEqual(payload.panes?.recommended_inspect_tasks, { 'worker-1': '1' });
       assert.deepEqual(payload.panes?.recommended_inspect_subjects, { 'worker-1': 'Recover worker-1 progress' });
-      assert.deepEqual(payload.panes?.recommended_inspect_task_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/tasks/task-1.json` });
-      assert.deepEqual(payload.panes?.recommended_inspect_approval_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/approvals/task-1.json` });
-      assert.deepEqual(payload.panes?.recommended_inspect_worker_state_dirs, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/workers/worker-1` });
-      assert.deepEqual(payload.panes?.recommended_inspect_worker_status_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/workers/worker-1/status.json` });
-      assert.deepEqual(payload.panes?.recommended_inspect_worker_heartbeat_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/workers/worker-1/heartbeat.json` });
-      assert.deepEqual(payload.panes?.recommended_inspect_worker_identity_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/workers/worker-1/identity.json` });
-      assert.deepEqual(payload.panes?.recommended_inspect_worker_inbox_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/workers/worker-1/inbox.md` });
-      assert.deepEqual(payload.panes?.recommended_inspect_worker_mailbox_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/mailbox/worker-1.json` });
-      assert.deepEqual(payload.panes?.recommended_inspect_worker_shutdown_request_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/workers/worker-1/shutdown-request.json` });
-      assert.deepEqual(payload.panes?.recommended_inspect_worker_shutdown_ack_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/workers/worker-1/shutdown-ack.json` });
-      assert.deepEqual(payload.panes?.recommended_inspect_team_dir_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team` });
-      assert.deepEqual(payload.panes?.recommended_inspect_team_config_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/config.json` });
-      assert.deepEqual(payload.panes?.recommended_inspect_team_manifest_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/manifest.v2.json` });
-      assert.deepEqual(payload.panes?.recommended_inspect_team_events_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/events/events.ndjson` });
-      assert.deepEqual(payload.panes?.recommended_inspect_team_dispatch_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/dispatch/requests.json` });
-      assert.deepEqual(payload.panes?.recommended_inspect_team_phase_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/phase.json` });
-      assert.deepEqual(payload.panes?.recommended_inspect_team_monitor_snapshot_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/monitor-snapshot.json` });
-      assert.deepEqual(payload.panes?.recommended_inspect_team_summary_snapshot_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/summary-snapshot.json` });
+      assert.deepEqual(payload.panes?.recommended_inspect_task_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/tasks/task-1.json` });
+      assert.deepEqual(payload.panes?.recommended_inspect_approval_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/approvals/task-1.json` });
+      assert.deepEqual(payload.panes?.recommended_inspect_worker_state_dirs, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/workers/worker-1` });
+      assert.deepEqual(payload.panes?.recommended_inspect_worker_status_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/workers/worker-1/status.json` });
+      assert.deepEqual(payload.panes?.recommended_inspect_worker_heartbeat_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/workers/worker-1/heartbeat.json` });
+      assert.deepEqual(payload.panes?.recommended_inspect_worker_identity_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/workers/worker-1/identity.json` });
+      assert.deepEqual(payload.panes?.recommended_inspect_worker_inbox_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/workers/worker-1/inbox.md` });
+      assert.deepEqual(payload.panes?.recommended_inspect_worker_mailbox_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/mailbox/worker-1.json` });
+      assert.deepEqual(payload.panes?.recommended_inspect_worker_shutdown_request_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/workers/worker-1/shutdown-request.json` });
+      assert.deepEqual(payload.panes?.recommended_inspect_worker_shutdown_ack_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/workers/worker-1/shutdown-ack.json` });
+      assert.deepEqual(payload.panes?.recommended_inspect_team_dir_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team` });
+      assert.deepEqual(payload.panes?.recommended_inspect_team_config_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/config.json` });
+      assert.deepEqual(payload.panes?.recommended_inspect_team_manifest_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/manifest.v2.json` });
+      assert.deepEqual(payload.panes?.recommended_inspect_team_events_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/events/events.ndjson` });
+      assert.deepEqual(payload.panes?.recommended_inspect_team_dispatch_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/dispatch/requests.json` });
+      assert.deepEqual(payload.panes?.recommended_inspect_team_phase_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/phase.json` });
+      assert.deepEqual(payload.panes?.recommended_inspect_team_monitor_snapshot_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/monitor-snapshot.json` });
+      assert.deepEqual(payload.panes?.recommended_inspect_team_summary_snapshot_paths, { 'worker-1': `${expectedWd}/.omx/state/team/pane-json-team/summary-snapshot.json` });
       assert.deepEqual(payload.panes?.recommended_inspect_panes, { 'worker-1': '%41' });
       assert.equal(payload.panes?.recommended_inspect_command, 'omx sparkshell --tmux-pane %41 --tail-lines 400');
       assert.deepEqual(payload.panes?.recommended_inspect_commands, ['omx sparkshell --tmux-pane %41 --tail-lines 400']);
@@ -3050,7 +3057,7 @@ describe('teamCommand status', () => {
         task_claim_owner: 'worker-1',
         task_claim_token: 'claim-token-1',
         task_claim_leased_until: '2026-03-11T00:11:00.000Z',
-        task_claim_lock_path: `${wd}/.omx/state/team/pane-json-team/claims/task-1.lock`,
+        task_claim_lock_path: `${expectedWd}/.omx/state/team/pane-json-team/claims/task-1.lock`,
         approval_required: true,
         requires_code_change: true,
         task_description: 'Inspect worker-1 pane',
@@ -3067,24 +3074,24 @@ describe('teamCommand status', () => {
         state_reason: 'recovering progress',
         task_id: '1',
         task_subject: 'Recover worker-1 progress',
-        task_path: `${wd}/.omx/state/team/pane-json-team/tasks/task-1.json`,
-        approval_path: `${wd}/.omx/state/team/pane-json-team/approvals/task-1.json`,
-        worker_state_dir: `${wd}/.omx/state/team/pane-json-team/workers/worker-1`,
-        worker_status_path: `${wd}/.omx/state/team/pane-json-team/workers/worker-1/status.json`,
-        worker_heartbeat_path: `${wd}/.omx/state/team/pane-json-team/workers/worker-1/heartbeat.json`,
-        worker_identity_path: `${wd}/.omx/state/team/pane-json-team/workers/worker-1/identity.json`,
-        worker_inbox_path: `${wd}/.omx/state/team/pane-json-team/workers/worker-1/inbox.md`,
-        worker_mailbox_path: `${wd}/.omx/state/team/pane-json-team/mailbox/worker-1.json`,
-        worker_shutdown_request_path: `${wd}/.omx/state/team/pane-json-team/workers/worker-1/shutdown-request.json`,
-        worker_shutdown_ack_path: `${wd}/.omx/state/team/pane-json-team/workers/worker-1/shutdown-ack.json`,
-        team_dir_path: `${wd}/.omx/state/team/pane-json-team`,
-        team_config_path: `${wd}/.omx/state/team/pane-json-team/config.json`,
-        team_manifest_path: `${wd}/.omx/state/team/pane-json-team/manifest.v2.json`,
-        team_events_path: `${wd}/.omx/state/team/pane-json-team/events/events.ndjson`,
-        team_dispatch_path: `${wd}/.omx/state/team/pane-json-team/dispatch/requests.json`,
-        team_phase_path: `${wd}/.omx/state/team/pane-json-team/phase.json`,
-        team_monitor_snapshot_path: `${wd}/.omx/state/team/pane-json-team/monitor-snapshot.json`,
-        team_summary_snapshot_path: `${wd}/.omx/state/team/pane-json-team/summary-snapshot.json`,
+        task_path: `${expectedWd}/.omx/state/team/pane-json-team/tasks/task-1.json`,
+        approval_path: `${expectedWd}/.omx/state/team/pane-json-team/approvals/task-1.json`,
+        worker_state_dir: `${expectedWd}/.omx/state/team/pane-json-team/workers/worker-1`,
+        worker_status_path: `${expectedWd}/.omx/state/team/pane-json-team/workers/worker-1/status.json`,
+        worker_heartbeat_path: `${expectedWd}/.omx/state/team/pane-json-team/workers/worker-1/heartbeat.json`,
+        worker_identity_path: `${expectedWd}/.omx/state/team/pane-json-team/workers/worker-1/identity.json`,
+        worker_inbox_path: `${expectedWd}/.omx/state/team/pane-json-team/workers/worker-1/inbox.md`,
+        worker_mailbox_path: `${expectedWd}/.omx/state/team/pane-json-team/mailbox/worker-1.json`,
+        worker_shutdown_request_path: `${expectedWd}/.omx/state/team/pane-json-team/workers/worker-1/shutdown-request.json`,
+        worker_shutdown_ack_path: `${expectedWd}/.omx/state/team/pane-json-team/workers/worker-1/shutdown-ack.json`,
+        team_dir_path: `${expectedWd}/.omx/state/team/pane-json-team`,
+        team_config_path: `${expectedWd}/.omx/state/team/pane-json-team/config.json`,
+        team_manifest_path: `${expectedWd}/.omx/state/team/pane-json-team/manifest.v2.json`,
+        team_events_path: `${expectedWd}/.omx/state/team/pane-json-team/events/events.ndjson`,
+        team_dispatch_path: `${expectedWd}/.omx/state/team/pane-json-team/dispatch/requests.json`,
+        team_phase_path: `${expectedWd}/.omx/state/team/pane-json-team/phase.json`,
+        team_monitor_snapshot_path: `${expectedWd}/.omx/state/team/pane-json-team/monitor-snapshot.json`,
+        team_summary_snapshot_path: `${expectedWd}/.omx/state/team/pane-json-team/summary-snapshot.json`,
         command: 'omx sparkshell --tmux-pane %41 --tail-lines 400',
       }]);
       assert.equal(payload.panes?.leader_pane_id, '%30');
@@ -3354,12 +3361,17 @@ process.on('SIGTERM', () => process.exit(0));
 
       await withMockPromptModeCodexAllowed(() =>
         withoutTeamTestWorkerEnv(() => teamCommand(['1:executor', teamTask])));
-      await new Promise((resolve) => setTimeout(resolve, 500));
 
-      logs.length = 0;
-      stderr.length = 0;
-      await withoutTeamTestWorkerEnv(() => teamCommand(['status', teamName]));
-      assert.match(logs.join('\n'), /phase=failed/);
+      let statusOutput = '';
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        logs.length = 0;
+        stderr.length = 0;
+        await withoutTeamTestWorkerEnv(() => teamCommand(['status', teamName]));
+        statusOutput = logs.join('\n');
+        if (/phase=failed/.test(statusOutput)) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.match(statusOutput, /phase=failed/);
       assert.doesNotMatch(stderr.join('\n'), /ESRCH/);
 
       logs.length = 0;

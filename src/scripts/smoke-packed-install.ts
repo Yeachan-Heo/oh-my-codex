@@ -110,6 +110,15 @@ function npmBinName(name: string): string {
   return process.platform === 'win32' ? `${name}.cmd` : name;
 }
 
+export function parseNpmPackJsonOutput(stdout: string): Array<{ filename: string }> {
+  const start = stdout.lastIndexOf('\n[');
+  const jsonText = (start >= 0 ? stdout.slice(start + 1) : stdout).trim();
+  if (!jsonText.startsWith('[')) {
+    throw new Error(`npm pack did not return JSON output: ${stdout.trim()}`);
+  }
+  return JSON.parse(jsonText) as Array<{ filename: string }>;
+}
+
 async function main(): Promise<void> {
   parseArgs(process.argv.slice(2));
 
@@ -125,7 +134,7 @@ async function main(): Promise<void> {
     });
 
     const pack = run('npm', ['pack', '--json'], { cwd: repoRoot });
-    const packOutput = JSON.parse((pack.stdout as string).slice((pack.stdout as string).indexOf('['))) as Array<{ filename: string }>;
+    const packOutput = parseNpmPackJsonOutput(pack.stdout as string);
     const tarballName = packOutput[0]?.filename;
     if (!tarballName) throw new Error('npm pack did not return a tarball filename');
     tarballPath = join(repoRoot, tarballName);

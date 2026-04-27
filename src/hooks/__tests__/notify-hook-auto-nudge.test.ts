@@ -1375,7 +1375,7 @@ shift || true
   exit 0
 fi
 if [[ "$cmd" == "capture-pane" ]]; then
-  printf "› keep going\\n\\n• keep going\\n\\n› Implement {feature}\\n\\n  gpt-5.4 high · dev · 98%% left\\n"
+  printf "› keep going\\n\\n• keep going\\n\\n› Implement {feature}\\n\\n  gpt-5.5 high · dev · 98%% left\\n"
   exit 0
 fi
 if [[ "$cmd" == "send-keys" ]]; then

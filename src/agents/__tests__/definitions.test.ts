@@ -70,7 +70,7 @@ describe('agents/definitions', () => {
       'dependency-expert',
     ] as const) {
       assert.equal(AGENT_DEFINITIONS[name].modelClass, 'standard');
-      assert.equal(AGENT_DEFINITIONS[name].reasoningEffort, 'high');
+      assert.equal(AGENT_DEFINITIONS[name].reasoningEffort, name === 'executor' ? 'medium' : 'high');
     }
   });
 });

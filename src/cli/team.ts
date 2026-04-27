@@ -262,6 +262,7 @@ Usage: omx team [N:agent-type] "<task description>"
 Notes:
   team workers use dedicated worktrees automatically by default.
   --worktree is deprecated for omx team and is now only a backward-compatible no-op override.
+  omx team is a tmux-runtime surface by default; in Codex App or plain outside-tmux sessions, launch OMX CLI from shell first instead of treating team as directly available.
   use native Codex subagents for small in-session fanout; use omx team for durable tmux/state/worktree coordination.
 
 Examples:
@@ -558,8 +559,185 @@ function buildDeadWorkerAwaitEvent(teamName: string, snapshot: TeamSnapshot): Te
 }
 
 
+type TeamPaneStatus = Awaited<ReturnType<typeof readTeamPaneStatus>>;
+type TeamInspectItem = TeamPaneStatus['recommended_inspect_items'][number];
+
+function logInspectEntries<T>(
+  prefix: string,
+  entries: Record<string, T>,
+  shouldLog: (value: T) => boolean,
+  formatValue: (value: T) => string = (value) => String(value),
+): void {
+  for (const [target, value] of Object.entries(entries)) {
+    if (shouldLog(value)) {
+      console.log(`${prefix}_${target}: ${formatValue(value)}`);
+    }
+  }
+}
+
+type InspectEntryDescriptor<T> = {
+  prefix: string;
+  entries: Record<string, T>;
+  shouldLog: (value: T) => boolean;
+  formatValue?: (value: T) => string;
+};
+
+function logInspectEntryDescriptors(descriptors: InspectEntryDescriptor<unknown>[]): void {
+  for (const descriptor of descriptors) {
+    logInspectEntries(descriptor.prefix, descriptor.entries, descriptor.shouldLog, descriptor.formatValue);
+  }
+}
+
+function inspectEntryDescriptors(paneStatus: TeamPaneStatus): InspectEntryDescriptor<unknown>[] {
+  const isPresentString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
+  const isNumber = (value: unknown): value is number => typeof value === 'number';
+  const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
+  const hasItems = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0;
+  const joinSpace = (value: unknown): string => Array.isArray(value) ? value.join(' ') : String(value);
+
+  return [
+    { prefix: 'inspect_reason', entries: paneStatus.recommended_inspect_reasons, shouldLog: isPresentString },
+    { prefix: 'inspect_cli', entries: paneStatus.recommended_inspect_clis, shouldLog: isPresentString },
+    { prefix: 'inspect_role', entries: paneStatus.recommended_inspect_roles, shouldLog: isPresentString },
+    { prefix: 'inspect_index', entries: paneStatus.recommended_inspect_indexes, shouldLog: isNumber },
+    { prefix: 'inspect_alive', entries: paneStatus.recommended_inspect_alive, shouldLog: isBoolean },
+    { prefix: 'inspect_turn_count', entries: paneStatus.recommended_inspect_turn_counts, shouldLog: isNumber },
+    { prefix: 'inspect_turns_without_progress', entries: paneStatus.recommended_inspect_turns_without_progress, shouldLog: isNumber },
+    { prefix: 'inspect_last_turn_at', entries: paneStatus.recommended_inspect_last_turn_at, shouldLog: isPresentString },
+    { prefix: 'inspect_status_updated_at', entries: paneStatus.recommended_inspect_status_updated_at, shouldLog: isPresentString },
+    { prefix: 'inspect_pid', entries: paneStatus.recommended_inspect_pids, shouldLog: isNumber },
+    { prefix: 'inspect_worktree_path', entries: paneStatus.recommended_inspect_worktree_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_worktree_repo_root', entries: paneStatus.recommended_inspect_worktree_repo_roots, shouldLog: isPresentString },
+    { prefix: 'inspect_worktree_branch', entries: paneStatus.recommended_inspect_worktree_branches, shouldLog: isPresentString },
+    { prefix: 'inspect_worktree_detached', entries: paneStatus.recommended_inspect_worktree_detached, shouldLog: isBoolean },
+    { prefix: 'inspect_worktree_created', entries: paneStatus.recommended_inspect_worktree_created, shouldLog: isBoolean },
+    { prefix: 'inspect_team_state_root', entries: paneStatus.recommended_inspect_team_state_roots, shouldLog: isPresentString },
+    { prefix: 'inspect_workdir', entries: paneStatus.recommended_inspect_workdirs, shouldLog: isPresentString },
+    { prefix: 'inspect_assigned_tasks', entries: paneStatus.recommended_inspect_assigned_tasks, shouldLog: hasItems, formatValue: joinSpace },
+    { prefix: 'inspect_task_status', entries: paneStatus.recommended_inspect_task_statuses, shouldLog: isPresentString },
+    { prefix: 'inspect_task_result', entries: paneStatus.recommended_inspect_task_results, shouldLog: isPresentString },
+    { prefix: 'inspect_task_error', entries: paneStatus.recommended_inspect_task_errors, shouldLog: isPresentString },
+    { prefix: 'inspect_task_version', entries: paneStatus.recommended_inspect_task_versions, shouldLog: isNumber },
+    { prefix: 'inspect_task_created_at', entries: paneStatus.recommended_inspect_task_created_at, shouldLog: isPresentString },
+    { prefix: 'inspect_task_completed_at', entries: paneStatus.recommended_inspect_task_completed_at, shouldLog: isPresentString },
+    { prefix: 'inspect_task_depends_on', entries: paneStatus.recommended_inspect_task_depends_on, shouldLog: hasItems, formatValue: joinSpace },
+    { prefix: 'inspect_task_claim_present', entries: paneStatus.recommended_inspect_task_claim_present, shouldLog: isBoolean },
+    { prefix: 'inspect_task_claim_owner', entries: paneStatus.recommended_inspect_task_claim_owners, shouldLog: isPresentString },
+    { prefix: 'inspect_task_claim_token', entries: paneStatus.recommended_inspect_task_claim_tokens, shouldLog: isPresentString },
+    { prefix: 'inspect_task_claim_leased_until', entries: paneStatus.recommended_inspect_task_claim_leases, shouldLog: isPresentString },
+    { prefix: 'inspect_task_claim_lock_path', entries: paneStatus.recommended_inspect_task_claim_lock_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_approval_required', entries: paneStatus.recommended_inspect_approval_required, shouldLog: isBoolean },
+    { prefix: 'inspect_requires_code_change', entries: paneStatus.recommended_inspect_requires_code_change, shouldLog: isBoolean },
+    { prefix: 'inspect_description', entries: paneStatus.recommended_inspect_descriptions, shouldLog: isPresentString },
+    { prefix: 'inspect_blocked_by', entries: paneStatus.recommended_inspect_blocked_by, shouldLog: hasItems, formatValue: joinSpace },
+    { prefix: 'inspect_task_role', entries: paneStatus.recommended_inspect_task_roles, shouldLog: isPresentString },
+    { prefix: 'inspect_task_owner', entries: paneStatus.recommended_inspect_task_owners, shouldLog: isPresentString },
+    { prefix: 'inspect_approval_status', entries: paneStatus.recommended_inspect_approval_statuses, shouldLog: isPresentString },
+    { prefix: 'inspect_approval_reviewer', entries: paneStatus.recommended_inspect_approval_reviewers, shouldLog: isPresentString },
+    { prefix: 'inspect_approval_reason', entries: paneStatus.recommended_inspect_approval_reasons, shouldLog: isPresentString },
+    { prefix: 'inspect_approval_decided_at', entries: paneStatus.recommended_inspect_approval_decided_at, shouldLog: isPresentString },
+    { prefix: 'inspect_approval_record_present', entries: paneStatus.recommended_inspect_approval_record_present, shouldLog: isBoolean },
+    { prefix: 'inspect_state', entries: paneStatus.recommended_inspect_states, shouldLog: isPresentString },
+    { prefix: 'inspect_state_reason', entries: paneStatus.recommended_inspect_state_reasons, shouldLog: isPresentString },
+    { prefix: 'inspect_task', entries: paneStatus.recommended_inspect_tasks, shouldLog: isPresentString },
+    { prefix: 'inspect_subject', entries: paneStatus.recommended_inspect_subjects, shouldLog: isPresentString },
+    { prefix: 'inspect_task_path', entries: paneStatus.recommended_inspect_task_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_approval_path', entries: paneStatus.recommended_inspect_approval_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_worker_state_dir', entries: paneStatus.recommended_inspect_worker_state_dirs, shouldLog: isPresentString },
+    { prefix: 'inspect_worker_status_path', entries: paneStatus.recommended_inspect_worker_status_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_worker_heartbeat_path', entries: paneStatus.recommended_inspect_worker_heartbeat_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_worker_identity_path', entries: paneStatus.recommended_inspect_worker_identity_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_worker_inbox_path', entries: paneStatus.recommended_inspect_worker_inbox_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_worker_mailbox_path', entries: paneStatus.recommended_inspect_worker_mailbox_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_worker_shutdown_request_path', entries: paneStatus.recommended_inspect_worker_shutdown_request_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_worker_shutdown_ack_path', entries: paneStatus.recommended_inspect_worker_shutdown_ack_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_team_dir_path', entries: paneStatus.recommended_inspect_team_dir_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_team_config_path', entries: paneStatus.recommended_inspect_team_config_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_team_manifest_path', entries: paneStatus.recommended_inspect_team_manifest_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_team_events_path', entries: paneStatus.recommended_inspect_team_events_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_team_dispatch_path', entries: paneStatus.recommended_inspect_team_dispatch_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_team_phase_path', entries: paneStatus.recommended_inspect_team_phase_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_team_monitor_snapshot_path', entries: paneStatus.recommended_inspect_team_monitor_snapshot_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_team_summary_snapshot_path', entries: paneStatus.recommended_inspect_team_summary_snapshot_paths, shouldLog: isPresentString },
+    { prefix: 'inspect_pane', entries: paneStatus.recommended_inspect_panes, shouldLog: isPresentString },
+  ];
+}
+
+function formatInspectItemLine(index: number, item: TeamInspectItem): string {
+  const parts = [
+    `inspect_item_${index + 1}:`,
+    `target=${item.target}`,
+    item.pane_id ? `pane=${item.pane_id}` : '',
+    item.worker_cli ? `cli=${item.worker_cli}` : '',
+    item.role ? `role=${item.role}` : '',
+    typeof item.index === 'number' ? `index=${item.index}` : '',
+    typeof item.alive === 'boolean' ? `alive=${item.alive}` : '',
+    typeof item.turn_count === 'number' ? `turn_count=${item.turn_count}` : '',
+    typeof item.turns_without_progress === 'number' ? `turns_without_progress=${item.turns_without_progress}` : '',
+    item.last_turn_at ? `last_turn_at=${item.last_turn_at}` : '',
+    item.status_updated_at ? `status_updated_at=${item.status_updated_at}` : '',
+    typeof item.pid === 'number' ? `pid=${item.pid}` : '',
+    item.worktree_repo_root ? `worktree_repo_root=${item.worktree_repo_root}` : '',
+    item.worktree_path ? `worktree_path=${item.worktree_path}` : '',
+    item.worktree_branch ? `worktree_branch=${item.worktree_branch}` : '',
+    typeof item.worktree_detached === 'boolean' ? `worktree_detached=${item.worktree_detached}` : '',
+    typeof item.worktree_created === 'boolean' ? `worktree_created=${item.worktree_created}` : '',
+    item.team_state_root ? `team_state_root=${item.team_state_root}` : '',
+    item.working_dir ? `workdir=${item.working_dir}` : '',
+    item.assigned_tasks.length > 0 ? `assigned_tasks=${item.assigned_tasks.join(',')}` : '',
+    item.task_status ? `task_status=${item.task_status}` : '',
+    item.task_result ? `task_result=${item.task_result}` : '',
+    item.task_error ? `task_error=${item.task_error}` : '',
+    typeof item.task_version === 'number' ? `task_version=${item.task_version}` : '',
+    item.task_created_at ? `task_created_at=${item.task_created_at}` : '',
+    item.task_completed_at ? `task_completed_at=${item.task_completed_at}` : '',
+    item.task_depends_on.length > 0 ? `task_depends_on=${item.task_depends_on.join(',')}` : '',
+    typeof item.task_claim_present === 'boolean' ? `task_claim_present=${item.task_claim_present}` : '',
+    item.task_claim_owner ? `task_claim_owner=${item.task_claim_owner}` : '',
+    item.task_claim_token ? `task_claim_token=${item.task_claim_token}` : '',
+    item.task_claim_leased_until ? `task_claim_leased_until=${item.task_claim_leased_until}` : '',
+    item.task_claim_lock_path ? `task_claim_lock_path=${item.task_claim_lock_path}` : '',
+    typeof item.approval_required === 'boolean' ? `approval_required=${item.approval_required}` : '',
+    typeof item.requires_code_change === 'boolean' ? `requires_code_change=${item.requires_code_change}` : '',
+    item.task_description ? `description=${item.task_description}` : '',
+    item.blocked_by.length > 0 ? `blocked_by=${item.blocked_by.join(',')}` : '',
+    item.task_role ? `task_role=${item.task_role}` : '',
+    item.task_owner ? `task_owner=${item.task_owner}` : '',
+    item.approval_status ? `approval_status=${item.approval_status}` : '',
+    item.approval_reviewer ? `approval_reviewer=${item.approval_reviewer}` : '',
+    item.approval_reason ? `approval_reason=${item.approval_reason}` : '',
+    item.approval_decided_at ? `approval_decided_at=${item.approval_decided_at}` : '',
+    typeof item.approval_record_present === 'boolean' ? `approval_record_present=${item.approval_record_present}` : '',
+    item.state_reason ? `state_reason=${item.state_reason}` : '',
+    item.task_id ? `task=${item.task_id}` : '',
+    item.task_subject ? `subject=${item.task_subject}` : '',
+    item.task_path ? `task_path=${item.task_path}` : '',
+    item.approval_path ? `approval_path=${item.approval_path}` : '',
+    item.worker_state_dir ? `worker_state_dir=${item.worker_state_dir}` : '',
+    item.worker_status_path ? `worker_status_path=${item.worker_status_path}` : '',
+    item.worker_heartbeat_path ? `worker_heartbeat_path=${item.worker_heartbeat_path}` : '',
+    item.worker_identity_path ? `worker_identity_path=${item.worker_identity_path}` : '',
+    item.worker_inbox_path ? `worker_inbox_path=${item.worker_inbox_path}` : '',
+    item.worker_mailbox_path ? `worker_mailbox_path=${item.worker_mailbox_path}` : '',
+    item.worker_shutdown_request_path ? `worker_shutdown_request_path=${item.worker_shutdown_request_path}` : '',
+    item.worker_shutdown_ack_path ? `worker_shutdown_ack_path=${item.worker_shutdown_ack_path}` : '',
+    item.team_dir_path ? `team_dir_path=${item.team_dir_path}` : '',
+    item.team_config_path ? `team_config_path=${item.team_config_path}` : '',
+    item.team_manifest_path ? `team_manifest_path=${item.team_manifest_path}` : '',
+    item.team_events_path ? `team_events_path=${item.team_events_path}` : '',
+    item.team_dispatch_path ? `team_dispatch_path=${item.team_dispatch_path}` : '',
+    item.team_phase_path ? `team_phase_path=${item.team_phase_path}` : '',
+    item.team_monitor_snapshot_path ? `team_monitor_snapshot_path=${item.team_monitor_snapshot_path}` : '',
+    item.team_summary_snapshot_path ? `team_summary_snapshot_path=${item.team_summary_snapshot_path}` : '',
+    `reason=${item.reason}`,
+    item.state ? `state=${item.state}` : '',
+    `command=${item.command}`,
+  ];
+  return parts.filter(Boolean).join(' ');
+}
+
 function renderTeamPaneStatus(
-  paneStatus: Awaited<ReturnType<typeof readTeamPaneStatus>>,
+  paneStatus: TeamPaneStatus,
 ): void {
   if (paneStatus.leader_pane_id || paneStatus.hud_pane_id) {
     console.log(`panes: leader=${paneStatus.leader_pane_id || '-'} hud=${paneStatus.hud_pane_id || '-'}`);
@@ -577,324 +755,9 @@ function renderTeamPaneStatus(
   if (paneStatus.recommended_inspect_targets.length > 0) {
     console.log(`recommended_inspect_targets: ${paneStatus.recommended_inspect_targets.join(' ')}`);
   }
-  for (const [target, reason] of Object.entries(paneStatus.recommended_inspect_reasons)) {
-    console.log(`inspect_reason_${target}: ${reason}`);
-  }
-  for (const [target, workerCli] of Object.entries(paneStatus.recommended_inspect_clis)) {
-    if (workerCli) {
-      console.log(`inspect_cli_${target}: ${workerCli}`);
-    }
-  }
-  for (const [target, role] of Object.entries(paneStatus.recommended_inspect_roles)) {
-    if (role) {
-      console.log(`inspect_role_${target}: ${role}`);
-    }
-  }
-  for (const [target, index] of Object.entries(paneStatus.recommended_inspect_indexes)) {
-    if (typeof index === 'number') {
-      console.log(`inspect_index_${target}: ${index}`);
-    }
-  }
-  for (const [target, alive] of Object.entries(paneStatus.recommended_inspect_alive)) {
-    if (typeof alive === 'boolean') {
-      console.log(`inspect_alive_${target}: ${alive}`);
-    }
-  }
-  for (const [target, turnCount] of Object.entries(paneStatus.recommended_inspect_turn_counts)) {
-    if (typeof turnCount === 'number') {
-      console.log(`inspect_turn_count_${target}: ${turnCount}`);
-    }
-  }
-  for (const [target, turnsWithoutProgress] of Object.entries(paneStatus.recommended_inspect_turns_without_progress)) {
-    if (typeof turnsWithoutProgress === 'number') {
-      console.log(`inspect_turns_without_progress_${target}: ${turnsWithoutProgress}`);
-    }
-  }
-  for (const [target, lastTurnAt] of Object.entries(paneStatus.recommended_inspect_last_turn_at)) {
-    if (lastTurnAt) {
-      console.log(`inspect_last_turn_at_${target}: ${lastTurnAt}`);
-    }
-  }
-  for (const [target, statusUpdatedAt] of Object.entries(paneStatus.recommended_inspect_status_updated_at)) {
-    if (statusUpdatedAt) {
-      console.log(`inspect_status_updated_at_${target}: ${statusUpdatedAt}`);
-    }
-  }
-  for (const [target, pid] of Object.entries(paneStatus.recommended_inspect_pids)) {
-    if (typeof pid === 'number') {
-      console.log(`inspect_pid_${target}: ${pid}`);
-    }
-  }
-  for (const [target, worktreePath] of Object.entries(paneStatus.recommended_inspect_worktree_paths)) {
-    if (worktreePath) {
-      console.log(`inspect_worktree_path_${target}: ${worktreePath}`);
-    }
-  }
-  for (const [target, worktreeRepoRoot] of Object.entries(paneStatus.recommended_inspect_worktree_repo_roots)) {
-    if (worktreeRepoRoot) {
-      console.log(`inspect_worktree_repo_root_${target}: ${worktreeRepoRoot}`);
-    }
-  }
-  for (const [target, worktreeBranch] of Object.entries(paneStatus.recommended_inspect_worktree_branches)) {
-    if (worktreeBranch) {
-      console.log(`inspect_worktree_branch_${target}: ${worktreeBranch}`);
-    }
-  }
-  for (const [target, worktreeDetached] of Object.entries(paneStatus.recommended_inspect_worktree_detached)) {
-    if (typeof worktreeDetached === 'boolean') {
-      console.log(`inspect_worktree_detached_${target}: ${worktreeDetached}`);
-    }
-  }
-  for (const [target, worktreeCreated] of Object.entries(paneStatus.recommended_inspect_worktree_created)) {
-    if (typeof worktreeCreated === 'boolean') {
-      console.log(`inspect_worktree_created_${target}: ${worktreeCreated}`);
-    }
-  }
-  for (const [target, teamStateRoot] of Object.entries(paneStatus.recommended_inspect_team_state_roots)) {
-    if (teamStateRoot) {
-      console.log(`inspect_team_state_root_${target}: ${teamStateRoot}`);
-    }
-  }
-  for (const [target, workdir] of Object.entries(paneStatus.recommended_inspect_workdirs)) {
-    if (workdir) {
-      console.log(`inspect_workdir_${target}: ${workdir}`);
-    }
-  }
-  for (const [target, assignedTasks] of Object.entries(paneStatus.recommended_inspect_assigned_tasks)) {
-    if (assignedTasks.length > 0) {
-      console.log(`inspect_assigned_tasks_${target}: ${assignedTasks.join(' ')}`);
-    }
-  }
-  for (const [target, taskStatus] of Object.entries(paneStatus.recommended_inspect_task_statuses)) {
-    if (taskStatus) {
-      console.log(`inspect_task_status_${target}: ${taskStatus}`);
-    }
-  }
-  for (const [target, taskResult] of Object.entries(paneStatus.recommended_inspect_task_results)) {
-    if (taskResult) {
-      console.log(`inspect_task_result_${target}: ${taskResult}`);
-    }
-  }
-  for (const [target, taskError] of Object.entries(paneStatus.recommended_inspect_task_errors)) {
-    if (taskError) {
-      console.log(`inspect_task_error_${target}: ${taskError}`);
-    }
-  }
-  for (const [target, taskVersion] of Object.entries(paneStatus.recommended_inspect_task_versions)) {
-    if (typeof taskVersion === 'number') {
-      console.log(`inspect_task_version_${target}: ${taskVersion}`);
-    }
-  }
-  for (const [target, taskCreatedAt] of Object.entries(paneStatus.recommended_inspect_task_created_at)) {
-    if (taskCreatedAt) {
-      console.log(`inspect_task_created_at_${target}: ${taskCreatedAt}`);
-    }
-  }
-  for (const [target, taskCompletedAt] of Object.entries(paneStatus.recommended_inspect_task_completed_at)) {
-    if (taskCompletedAt) {
-      console.log(`inspect_task_completed_at_${target}: ${taskCompletedAt}`);
-    }
-  }
-  for (const [target, taskDependsOn] of Object.entries(paneStatus.recommended_inspect_task_depends_on)) {
-    if (taskDependsOn.length > 0) {
-      console.log(`inspect_task_depends_on_${target}: ${taskDependsOn.join(' ')}`);
-    }
-  }
-  for (const [target, taskClaimPresent] of Object.entries(paneStatus.recommended_inspect_task_claim_present)) {
-    if (typeof taskClaimPresent === 'boolean') {
-      console.log(`inspect_task_claim_present_${target}: ${taskClaimPresent}`);
-    }
-  }
-  for (const [target, taskClaimOwner] of Object.entries(paneStatus.recommended_inspect_task_claim_owners)) {
-    if (taskClaimOwner) {
-      console.log(`inspect_task_claim_owner_${target}: ${taskClaimOwner}`);
-    }
-  }
-  for (const [target, taskClaimToken] of Object.entries(paneStatus.recommended_inspect_task_claim_tokens)) {
-    if (taskClaimToken) {
-      console.log(`inspect_task_claim_token_${target}: ${taskClaimToken}`);
-    }
-  }
-  for (const [target, taskClaimLease] of Object.entries(paneStatus.recommended_inspect_task_claim_leases)) {
-    if (taskClaimLease) {
-      console.log(`inspect_task_claim_leased_until_${target}: ${taskClaimLease}`);
-    }
-  }
-  for (const [target, taskClaimLockPath] of Object.entries(paneStatus.recommended_inspect_task_claim_lock_paths)) {
-    if (taskClaimLockPath) {
-      console.log(`inspect_task_claim_lock_path_${target}: ${taskClaimLockPath}`);
-    }
-  }
-  for (const [target, approvalRequired] of Object.entries(paneStatus.recommended_inspect_approval_required)) {
-    if (typeof approvalRequired === 'boolean') {
-      console.log(`inspect_approval_required_${target}: ${approvalRequired}`);
-    }
-  }
-  for (const [target, requiresCodeChange] of Object.entries(paneStatus.recommended_inspect_requires_code_change)) {
-    if (typeof requiresCodeChange === 'boolean') {
-      console.log(`inspect_requires_code_change_${target}: ${requiresCodeChange}`);
-    }
-  }
-  for (const [target, description] of Object.entries(paneStatus.recommended_inspect_descriptions)) {
-    if (description) {
-      console.log(`inspect_description_${target}: ${description}`);
-    }
-  }
-  for (const [target, blockedBy] of Object.entries(paneStatus.recommended_inspect_blocked_by)) {
-    if (blockedBy.length > 0) {
-      console.log(`inspect_blocked_by_${target}: ${blockedBy.join(' ')}`);
-    }
-  }
-  for (const [target, taskRole] of Object.entries(paneStatus.recommended_inspect_task_roles)) {
-    if (taskRole) {
-      console.log(`inspect_task_role_${target}: ${taskRole}`);
-    }
-  }
-  for (const [target, taskOwner] of Object.entries(paneStatus.recommended_inspect_task_owners)) {
-    if (taskOwner) {
-      console.log(`inspect_task_owner_${target}: ${taskOwner}`);
-    }
-  }
-  for (const [target, approvalStatus] of Object.entries(paneStatus.recommended_inspect_approval_statuses)) {
-    if (approvalStatus) {
-      console.log(`inspect_approval_status_${target}: ${approvalStatus}`);
-    }
-  }
-  for (const [target, approvalReviewer] of Object.entries(paneStatus.recommended_inspect_approval_reviewers)) {
-    if (approvalReviewer) {
-      console.log(`inspect_approval_reviewer_${target}: ${approvalReviewer}`);
-    }
-  }
-  for (const [target, approvalReason] of Object.entries(paneStatus.recommended_inspect_approval_reasons)) {
-    if (approvalReason) {
-      console.log(`inspect_approval_reason_${target}: ${approvalReason}`);
-    }
-  }
-  for (const [target, approvalDecidedAt] of Object.entries(paneStatus.recommended_inspect_approval_decided_at)) {
-    if (approvalDecidedAt) {
-      console.log(`inspect_approval_decided_at_${target}: ${approvalDecidedAt}`);
-    }
-  }
-  for (const [target, approvalRecordPresent] of Object.entries(paneStatus.recommended_inspect_approval_record_present)) {
-    if (typeof approvalRecordPresent === 'boolean') {
-      console.log(`inspect_approval_record_present_${target}: ${approvalRecordPresent}`);
-    }
-  }
-  for (const [target, state] of Object.entries(paneStatus.recommended_inspect_states)) {
-    if (state) {
-      console.log(`inspect_state_${target}: ${state}`);
-    }
-  }
-  for (const [target, stateReason] of Object.entries(paneStatus.recommended_inspect_state_reasons)) {
-    if (stateReason) {
-      console.log(`inspect_state_reason_${target}: ${stateReason}`);
-    }
-  }
-  for (const [target, taskId] of Object.entries(paneStatus.recommended_inspect_tasks)) {
-    if (taskId) {
-      console.log(`inspect_task_${target}: ${taskId}`);
-    }
-  }
-  for (const [target, subject] of Object.entries(paneStatus.recommended_inspect_subjects)) {
-    if (subject) {
-      console.log(`inspect_subject_${target}: ${subject}`);
-    }
-  }
-  for (const [target, taskPath] of Object.entries(paneStatus.recommended_inspect_task_paths)) {
-    if (taskPath) {
-      console.log(`inspect_task_path_${target}: ${taskPath}`);
-    }
-  }
-  for (const [target, approvalPath] of Object.entries(paneStatus.recommended_inspect_approval_paths)) {
-    if (approvalPath) {
-      console.log(`inspect_approval_path_${target}: ${approvalPath}`);
-    }
-  }
-  for (const [target, workerStateDir] of Object.entries(paneStatus.recommended_inspect_worker_state_dirs)) {
-    if (workerStateDir) {
-      console.log(`inspect_worker_state_dir_${target}: ${workerStateDir}`);
-    }
-  }
-  for (const [target, workerStatusPath] of Object.entries(paneStatus.recommended_inspect_worker_status_paths)) {
-    if (workerStatusPath) {
-      console.log(`inspect_worker_status_path_${target}: ${workerStatusPath}`);
-    }
-  }
-  for (const [target, workerHeartbeatPath] of Object.entries(paneStatus.recommended_inspect_worker_heartbeat_paths)) {
-    if (workerHeartbeatPath) {
-      console.log(`inspect_worker_heartbeat_path_${target}: ${workerHeartbeatPath}`);
-    }
-  }
-  for (const [target, workerIdentityPath] of Object.entries(paneStatus.recommended_inspect_worker_identity_paths)) {
-    if (workerIdentityPath) {
-      console.log(`inspect_worker_identity_path_${target}: ${workerIdentityPath}`);
-    }
-  }
-  for (const [target, workerInboxPath] of Object.entries(paneStatus.recommended_inspect_worker_inbox_paths)) {
-    if (workerInboxPath) {
-      console.log(`inspect_worker_inbox_path_${target}: ${workerInboxPath}`);
-    }
-  }
-  for (const [target, workerMailboxPath] of Object.entries(paneStatus.recommended_inspect_worker_mailbox_paths)) {
-    if (workerMailboxPath) {
-      console.log(`inspect_worker_mailbox_path_${target}: ${workerMailboxPath}`);
-    }
-  }
-  for (const [target, workerShutdownRequestPath] of Object.entries(paneStatus.recommended_inspect_worker_shutdown_request_paths)) {
-    if (workerShutdownRequestPath) {
-      console.log(`inspect_worker_shutdown_request_path_${target}: ${workerShutdownRequestPath}`);
-    }
-  }
-  for (const [target, workerShutdownAckPath] of Object.entries(paneStatus.recommended_inspect_worker_shutdown_ack_paths)) {
-    if (workerShutdownAckPath) {
-      console.log(`inspect_worker_shutdown_ack_path_${target}: ${workerShutdownAckPath}`);
-    }
-  }
-  for (const [target, teamDirPath] of Object.entries(paneStatus.recommended_inspect_team_dir_paths)) {
-    if (teamDirPath) {
-      console.log(`inspect_team_dir_path_${target}: ${teamDirPath}`);
-    }
-  }
-  for (const [target, teamConfigPath] of Object.entries(paneStatus.recommended_inspect_team_config_paths)) {
-    if (teamConfigPath) {
-      console.log(`inspect_team_config_path_${target}: ${teamConfigPath}`);
-    }
-  }
-  for (const [target, teamManifestPath] of Object.entries(paneStatus.recommended_inspect_team_manifest_paths)) {
-    if (teamManifestPath) {
-      console.log(`inspect_team_manifest_path_${target}: ${teamManifestPath}`);
-    }
-  }
-  for (const [target, teamEventsPath] of Object.entries(paneStatus.recommended_inspect_team_events_paths)) {
-    if (teamEventsPath) {
-      console.log(`inspect_team_events_path_${target}: ${teamEventsPath}`);
-    }
-  }
-  for (const [target, teamDispatchPath] of Object.entries(paneStatus.recommended_inspect_team_dispatch_paths)) {
-    if (teamDispatchPath) {
-      console.log(`inspect_team_dispatch_path_${target}: ${teamDispatchPath}`);
-    }
-  }
-  for (const [target, teamPhasePath] of Object.entries(paneStatus.recommended_inspect_team_phase_paths)) {
-    if (teamPhasePath) {
-      console.log(`inspect_team_phase_path_${target}: ${teamPhasePath}`);
-    }
-  }
-  for (const [target, teamMonitorSnapshotPath] of Object.entries(paneStatus.recommended_inspect_team_monitor_snapshot_paths)) {
-    if (teamMonitorSnapshotPath) {
-      console.log(`inspect_team_monitor_snapshot_path_${target}: ${teamMonitorSnapshotPath}`);
-    }
-  }
-  for (const [target, teamSummarySnapshotPath] of Object.entries(paneStatus.recommended_inspect_team_summary_snapshot_paths)) {
-    if (teamSummarySnapshotPath) {
-      console.log(`inspect_team_summary_snapshot_path_${target}: ${teamSummarySnapshotPath}`);
-    }
-  }
-  for (const [target, paneId] of Object.entries(paneStatus.recommended_inspect_panes)) {
-    if (paneId) {
-      console.log(`inspect_pane_${target}: ${paneId}`);
-    }
-  }
+
+  logInspectEntryDescriptors(inspectEntryDescriptors(paneStatus));
+
   if (paneStatus.recommended_inspect_command) {
     console.log(`inspect_next: ${paneStatus.recommended_inspect_command}`);
   }
@@ -905,82 +768,7 @@ function renderTeamPaneStatus(
     console.log(`inspect_priority_${index + 1}: ${command}`);
   }
   for (const [index, item] of paneStatus.recommended_inspect_items.entries()) {
-    const panePart = item.pane_id ? ` pane=${item.pane_id}` : '';
-    const cliPart = item.worker_cli ? ` cli=${item.worker_cli}` : '';
-    const rolePart = item.role ? ` role=${item.role}` : '';
-    const indexPart = typeof item.index === 'number' ? ` index=${item.index}` : '';
-    const alivePart = typeof item.alive === 'boolean' ? ` alive=${item.alive}` : '';
-    const turnCountPart = typeof item.turn_count === 'number' ? ` turn_count=${item.turn_count}` : '';
-    const turnsWithoutProgressPart = typeof item.turns_without_progress === 'number'
-      ? ` turns_without_progress=${item.turns_without_progress}`
-      : '';
-    const lastTurnPart = item.last_turn_at ? ` last_turn_at=${item.last_turn_at}` : '';
-    const statusUpdatedPart = item.status_updated_at ? ` status_updated_at=${item.status_updated_at}` : '';
-    const pidPart = typeof item.pid === 'number' ? ` pid=${item.pid}` : '';
-    const worktreeRepoRootPart = item.worktree_repo_root ? ` worktree_repo_root=${item.worktree_repo_root}` : '';
-    const worktreePathPart = item.worktree_path ? ` worktree_path=${item.worktree_path}` : '';
-    const worktreeBranchPart = item.worktree_branch ? ` worktree_branch=${item.worktree_branch}` : '';
-    const worktreeDetachedPart = typeof item.worktree_detached === 'boolean'
-      ? ` worktree_detached=${item.worktree_detached}`
-      : '';
-    const worktreeCreatedPart = typeof item.worktree_created === 'boolean'
-      ? ` worktree_created=${item.worktree_created}`
-      : '';
-    const teamStateRootPart = item.team_state_root ? ` team_state_root=${item.team_state_root}` : '';
-    const workdirPart = item.working_dir ? ` workdir=${item.working_dir}` : '';
-    const assignedTasksPart = item.assigned_tasks.length > 0 ? ` assigned_tasks=${item.assigned_tasks.join(',')}` : '';
-    const taskStatusPart = item.task_status ? ` task_status=${item.task_status}` : '';
-    const taskResultPart = item.task_result ? ` task_result=${item.task_result}` : '';
-    const taskErrorPart = item.task_error ? ` task_error=${item.task_error}` : '';
-    const taskVersionPart = typeof item.task_version === 'number' ? ` task_version=${item.task_version}` : '';
-    const taskCreatedAtPart = item.task_created_at ? ` task_created_at=${item.task_created_at}` : '';
-    const taskCompletedAtPart = item.task_completed_at ? ` task_completed_at=${item.task_completed_at}` : '';
-    const taskDependsOnPart = item.task_depends_on.length > 0 ? ` task_depends_on=${item.task_depends_on.join(',')}` : '';
-    const taskClaimPresentPart = typeof item.task_claim_present === 'boolean'
-      ? ` task_claim_present=${item.task_claim_present}`
-      : '';
-    const taskClaimOwnerPart = item.task_claim_owner ? ` task_claim_owner=${item.task_claim_owner}` : '';
-    const taskClaimTokenPart = item.task_claim_token ? ` task_claim_token=${item.task_claim_token}` : '';
-    const taskClaimLeasePart = item.task_claim_leased_until ? ` task_claim_leased_until=${item.task_claim_leased_until}` : '';
-    const taskClaimLockPathPart = item.task_claim_lock_path ? ` task_claim_lock_path=${item.task_claim_lock_path}` : '';
-    const approvalRequiredPart = typeof item.approval_required === 'boolean' ? ` approval_required=${item.approval_required}` : '';
-    const requiresCodeChangePart = typeof item.requires_code_change === 'boolean'
-      ? ` requires_code_change=${item.requires_code_change}`
-      : '';
-    const taskDescriptionPart = item.task_description ? ` description=${item.task_description}` : '';
-    const blockedByPart = item.blocked_by.length > 0 ? ` blocked_by=${item.blocked_by.join(',')}` : '';
-    const taskRolePart = item.task_role ? ` task_role=${item.task_role}` : '';
-    const taskOwnerPart = item.task_owner ? ` task_owner=${item.task_owner}` : '';
-    const approvalStatusPart = item.approval_status ? ` approval_status=${item.approval_status}` : '';
-    const approvalReviewerPart = item.approval_reviewer ? ` approval_reviewer=${item.approval_reviewer}` : '';
-    const approvalReasonPart = item.approval_reason ? ` approval_reason=${item.approval_reason}` : '';
-    const approvalDecidedAtPart = item.approval_decided_at ? ` approval_decided_at=${item.approval_decided_at}` : '';
-    const approvalRecordPresentPart = typeof item.approval_record_present === 'boolean'
-      ? ` approval_record_present=${item.approval_record_present}`
-      : '';
-    const statePart = item.state ? ` state=${item.state}` : '';
-    const stateReasonPart = item.state_reason ? ` state_reason=${item.state_reason}` : '';
-    const taskPart = item.task_id ? ` task=${item.task_id}` : '';
-    const subjectPart = item.task_subject ? ` subject=${item.task_subject}` : '';
-    const taskPathPart = item.task_path ? ` task_path=${item.task_path}` : '';
-    const approvalPathPart = item.approval_path ? ` approval_path=${item.approval_path}` : '';
-    const workerStateDirPart = item.worker_state_dir ? ` worker_state_dir=${item.worker_state_dir}` : '';
-    const workerStatusPathPart = item.worker_status_path ? ` worker_status_path=${item.worker_status_path}` : '';
-    const workerHeartbeatPathPart = item.worker_heartbeat_path ? ` worker_heartbeat_path=${item.worker_heartbeat_path}` : '';
-    const workerIdentityPathPart = item.worker_identity_path ? ` worker_identity_path=${item.worker_identity_path}` : '';
-    const workerInboxPathPart = item.worker_inbox_path ? ` worker_inbox_path=${item.worker_inbox_path}` : '';
-    const workerMailboxPathPart = item.worker_mailbox_path ? ` worker_mailbox_path=${item.worker_mailbox_path}` : '';
-    const workerShutdownRequestPathPart = item.worker_shutdown_request_path ? ` worker_shutdown_request_path=${item.worker_shutdown_request_path}` : '';
-    const workerShutdownAckPathPart = item.worker_shutdown_ack_path ? ` worker_shutdown_ack_path=${item.worker_shutdown_ack_path}` : '';
-    const teamDirPathPart = item.team_dir_path ? ` team_dir_path=${item.team_dir_path}` : '';
-    const teamConfigPathPart = item.team_config_path ? ` team_config_path=${item.team_config_path}` : '';
-    const teamManifestPathPart = item.team_manifest_path ? ` team_manifest_path=${item.team_manifest_path}` : '';
-    const teamEventsPathPart = item.team_events_path ? ` team_events_path=${item.team_events_path}` : '';
-    const teamDispatchPathPart = item.team_dispatch_path ? ` team_dispatch_path=${item.team_dispatch_path}` : '';
-    const teamPhasePathPart = item.team_phase_path ? ` team_phase_path=${item.team_phase_path}` : '';
-    const teamMonitorSnapshotPathPart = item.team_monitor_snapshot_path ? ` team_monitor_snapshot_path=${item.team_monitor_snapshot_path}` : '';
-    const teamSummarySnapshotPathPart = item.team_summary_snapshot_path ? ` team_summary_snapshot_path=${item.team_summary_snapshot_path}` : '';
-    console.log(`inspect_item_${index + 1}: target=${item.target}${panePart}${cliPart}${rolePart}${indexPart}${alivePart}${turnCountPart}${turnsWithoutProgressPart}${lastTurnPart}${statusUpdatedPart}${pidPart}${worktreeRepoRootPart}${worktreePathPart}${worktreeBranchPart}${worktreeDetachedPart}${worktreeCreatedPart}${teamStateRootPart}${workdirPart}${assignedTasksPart}${taskStatusPart}${taskResultPart}${taskErrorPart}${taskVersionPart}${taskCreatedAtPart}${taskCompletedAtPart}${taskDependsOnPart}${taskClaimPresentPart}${taskClaimOwnerPart}${taskClaimTokenPart}${taskClaimLeasePart}${taskClaimLockPathPart}${approvalRequiredPart}${requiresCodeChangePart}${taskDescriptionPart}${blockedByPart}${taskRolePart}${taskOwnerPart}${approvalStatusPart}${approvalReviewerPart}${approvalReasonPart}${approvalDecidedAtPart}${approvalRecordPresentPart}${stateReasonPart}${taskPart}${subjectPart}${taskPathPart}${approvalPathPart}${workerStateDirPart}${workerStatusPathPart}${workerHeartbeatPathPart}${workerIdentityPathPart}${workerInboxPathPart}${workerMailboxPathPart}${workerShutdownRequestPathPart}${workerShutdownAckPathPart}${teamDirPathPart}${teamConfigPathPart}${teamManifestPathPart}${teamEventsPathPart}${teamDispatchPathPart}${teamPhasePathPart}${teamMonitorSnapshotPathPart}${teamSummarySnapshotPathPart} reason=${item.reason}${statePart} command=${item.command}`);
+    console.log(formatInspectItemLine(index, item));
   }
 
   for (const [target, command] of Object.entries(paneStatus.sparkshell_commands)) {

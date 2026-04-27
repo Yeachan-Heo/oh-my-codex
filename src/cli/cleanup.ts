@@ -170,12 +170,27 @@ function listWindowsOmxProcesses(
   return parseWindowsProcessOutput(output);
 }
 
+function isBusyBoxPsCommandFieldError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /bad -o argument ['"]command['"]|unsupported arguments:.*\bargs\b/i.test(error.message);
+}
+
 export function listOmxProcesses(
   runCommand: ProcessListCommandRunner = defaultProcessListCommandRunner,
 ): ProcessEntry[] {
   if (process.platform === 'win32') return listWindowsOmxProcesses(runCommand);
-  const output = runCommand('ps', ['axww', '-o', 'pid=,ppid=,command='], PROCESS_LIST_COMMAND_OPTIONS);
-  return parsePsOutput(output);
+
+  try {
+    const output = runCommand('ps', ['axww', '-o', 'pid=,ppid=,command='], PROCESS_LIST_COMMAND_OPTIONS);
+    return parsePsOutput(output);
+  } catch (err) {
+    if (!isBusyBoxPsCommandFieldError(err)) throw err;
+    // BusyBox ps (Alpine's default) rejects the procps `command` field name
+    // but accepts the equivalent `args` field. Retry only that exact
+    // incompatibility so unrelated ps failures still surface normally.
+    const output = runCommand('ps', ['axww', '-o', 'pid=,ppid=,args='], PROCESS_LIST_COMMAND_OPTIONS);
+    return parsePsOutput(output);
+  }
 }
 
 function isCodexSessionProcess(command: string): boolean {

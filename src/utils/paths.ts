@@ -53,11 +53,18 @@ export function resolveOmxEntryPath(
     env?: NodeJS.ProcessEnv;
   } = {},
 ): string | null {
-  const { argv1 = process.argv[1], cwd = process.cwd(), env = process.env } = options;
+  const { cwd = process.cwd(), env = process.env } = options;
+  const hasExplicitArgv1 = Object.prototype.hasOwnProperty.call(options, "argv1");
+  const argv1 = hasExplicitArgv1 ? options.argv1 : process.argv[1];
+  const rawPath = typeof argv1 === "string" ? argv1.trim() : "";
+  if (hasExplicitArgv1 && rawPath !== "") {
+    const startupCwd = String(env[OMX_STARTUP_CWD_ENV] ?? "").trim() || cwd;
+    return resolveLauncherPath(rawPath, startupCwd);
+  }
+
   const fromEnv = String(env[OMX_ENTRY_PATH_ENV] ?? "").trim();
   if (fromEnv !== "") return fromEnv;
 
-  const rawPath = typeof argv1 === "string" ? argv1.trim() : "";
   if (rawPath === "") return null;
 
   const startupCwd = String(env[OMX_STARTUP_CWD_ENV] ?? "").trim() || cwd;
@@ -99,11 +106,16 @@ export function rememberOmxLaunchContext(
   }
   if (String(env[OMX_ENTRY_PATH_ENV] ?? "").trim() !== "") return;
 
-  const resolved = resolveOmxEntryPath({
-    argv1: options.argv1,
-    cwd,
-    env,
-  });
+  const resolved = Object.prototype.hasOwnProperty.call(options, "argv1")
+    ? resolveOmxEntryPath({
+      argv1: options.argv1,
+      cwd,
+      env,
+    })
+    : resolveOmxEntryPath({
+      cwd,
+      env,
+    });
   if (resolved) {
     env[OMX_ENTRY_PATH_ENV] = resolved;
   }
@@ -304,6 +316,11 @@ export function omxAdaptersDir(projectRoot?: string): string {
 /** oh-my-codex logs directory (.omx/logs/) */
 export function omxLogsDir(projectRoot?: string): string {
   return join(projectRoot || process.cwd(), ".omx", "logs");
+}
+
+/** User-scope install/update stamp path ($CODEX_HOME/.omx/install-state.json) */
+export function omxUserInstallStampPath(codexHomeDir?: string): string {
+  return join(codexHomeDir || codexHome(), ".omx", "install-state.json");
 }
 
 /** Get the package root directory (where agents/, skills/, prompts/ live) */

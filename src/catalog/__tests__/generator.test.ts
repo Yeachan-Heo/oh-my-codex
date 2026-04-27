@@ -45,6 +45,12 @@ describe('catalog reader/contract', () => {
     assert.ok(contract.skills.some((s) => s.name === 'ask-claude' && s.status === 'active'));
     assert.ok(contract.skills.some((s) => s.name === 'ask-gemini' && s.status === 'active'));
     assert.ok(contract.skills.some((s) => s.name === 'ai-slop-cleaner' && s.status === 'active'));
+    assert.ok(contract.skills.some((s) => s.name === 'visual-ralph' && s.status === 'active'));
+    assert.ok(
+      contract.skills.some(
+        (s) => s.name === 'web-clone' && s.status === 'merged' && s.canonical === 'visual-ralph',
+      ),
+    );
   });
 
   it('template manifest can be synced from source manifest', async () => {

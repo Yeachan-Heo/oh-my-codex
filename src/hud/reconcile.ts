@@ -28,11 +28,11 @@ export interface ReconcileHudForPromptSubmitResult {
 export interface ReconcileHudForPromptSubmitDeps {
   env?: NodeJS.ProcessEnv;
   sessionId?: string;
-  listCurrentWindowPanes?: () => TmuxPaneSnapshot[];
+  listCurrentWindowPanes?: (currentPaneId?: string) => TmuxPaneSnapshot[];
   createHudWatchPane?: (
     cwd: string,
     hudCmd: string,
-    options?: { heightLines?: number; fullWidth?: boolean },
+    options?: { heightLines?: number; fullWidth?: boolean; targetPaneId?: string },
   ) => string | null;
   killTmuxPane?: (paneId: string) => boolean;
   resizeTmuxPane?: (paneId: string, heightLines: number) => boolean;
@@ -65,13 +65,13 @@ export async function reconcileHudForPromptSubmit(
     };
   }
 
-  const listPanes = deps.listCurrentWindowPanes ?? (() => listCurrentWindowPanes());
+  const listPanes = deps.listCurrentWindowPanes ?? ((paneId) => listCurrentWindowPanes(undefined, paneId));
   const createPane = deps.createHudWatchPane ?? ((hudCwd, hudCmd, options) => createHudWatchPane(hudCwd, hudCmd, options));
   const killPane = deps.killTmuxPane ?? ((paneId) => killTmuxPane(paneId));
   const resizePane = deps.resizeTmuxPane ?? ((paneId, lines) => resizeTmuxPane(paneId, lines));
 
-  const panes = listPanes();
   const currentPaneId = env.TMUX_PANE?.trim();
+  const panes = listPanes(currentPaneId);
   const hudPaneIds = findHudWatchPaneIds(panes, currentPaneId);
   const duplicateCount = Math.max(0, hudPaneIds.length - 1);
   const nonHudPaneCount = panes.filter((pane) => !isHudWatchPane(pane)).length;
@@ -100,6 +100,7 @@ export async function reconcileHudForPromptSubmit(
   const paneId = createPane(cwd, hudCmd, {
     heightLines: desiredHeight,
     fullWidth: nonHudPaneCount > 1,
+    targetPaneId: currentPaneId,
   });
   if (!paneId) {
     return {

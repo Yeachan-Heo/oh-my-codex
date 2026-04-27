@@ -253,4 +253,30 @@ describe('team/state/events', () => {
       await cleanup();
     }
   });
+
+  it('keeps newly proposed canonical worker event names readable through appendTeamEvent', async () => {
+    const { cwd, cleanup } = await setupTeam('canonical-worker-events');
+    try {
+      await appendTeamEvent('canonical-worker-events', {
+        type: 'worker_state_changed',
+        worker: 'worker-1',
+        metadata: {
+          canonical_event: 'worker.assigned',
+        },
+      }, cwd);
+      await appendTeamEvent('canonical-worker-events', {
+        type: 'worker_stale_stdout',
+        worker: 'worker-1',
+        metadata: {
+          canonical_event: 'worker.stalled',
+        },
+      }, cwd);
+      const events = await readTeamEvents('canonical-worker-events', cwd, { wakeableOnly: false });
+      assert.equal(events[0]?.metadata?.canonical_event, 'worker.assigned');
+      assert.equal(events[1]?.metadata?.canonical_event, 'worker.stalled');
+    } finally {
+      await cleanup();
+    }
+  });
+
 });

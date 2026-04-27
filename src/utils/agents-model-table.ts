@@ -2,13 +2,11 @@ import { AGENT_DEFINITIONS, type AgentDefinition } from '../agents/definitions.j
 import { getRootModelName } from '../config/generator.js';
 import {
   DEFAULT_FRONTIER_MODEL,
-  DEFAULT_STANDARD_MODEL,
   DEFAULT_SPARK_MODEL,
   getEnvConfiguredSparkDefaultModel,
   getEnvConfiguredMainDefaultModel,
   getEnvConfiguredStandardDefaultModel,
   getSparkDefaultModel,
-  getStandardDefaultModel,
 } from '../config/models.js';
 
 export const OMX_MODELS_START_MARKER = '<!-- OMX:MODELS:START -->';
@@ -80,8 +78,7 @@ export function resolveAgentsModelTableContext(
     DEFAULT_SPARK_MODEL;
   const subagentDefaultModel =
     getEnvConfiguredStandardDefaultModel(env, codexHomeOverride) ??
-    getStandardDefaultModel(codexHomeOverride) ??
-    DEFAULT_STANDARD_MODEL;
+    frontierModel;
 
   return {
     frontierModel,

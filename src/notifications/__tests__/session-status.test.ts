@@ -53,6 +53,14 @@ describe('session-status helper', () => {
         updated_at: '2026-03-20T00:04:30.000Z',
         session_id: 'sess-1',
       });
+      await writeJson(join(wd, '.omx', 'state', 'sessions', 'sess-1', 'run-state.json'), {
+        version: 1,
+        mode: 'ralph',
+        active: true,
+        outcome: 'continue',
+        current_phase: 'executing',
+        updated_at: '2026-03-20T00:04:30.000Z',
+      });
 
       let tracking = createSubagentTrackingState();
       for (const [threadId, turnId] of [
@@ -84,6 +92,31 @@ describe('session-status helper', () => {
       assert.match(status, /Updated: 2026-03-20T00:04:30.000Z/);
       assert.match(status, /Freshness: Fresh/);
       assert.match(status, /Subagents: 4 active \(a1b2c3, d4e5f6, g7h8i9, \+1 more\)/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report prompt-seeded ralph skill-active state as running without a live run-state', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-session-status-prompt-seeded-'));
+    try {
+      await writeSessionStart(wd, 'sess-seeded', { nativeSessionId: 'native-seeded' });
+      await writeJson(join(wd, '.omx', 'state', 'sessions', 'sess-seeded', 'skill-active-state.json'), {
+        active: true,
+        skill: 'ralph',
+        phase: 'planning',
+        updated_at: '2026-03-20T00:04:30.000Z',
+        session_id: 'sess-seeded',
+      });
+
+      const status = await buildDiscordSessionStatusReply(createMapping(wd, 'sess-seeded'), {
+        now: '2026-03-20T00:05:00.000Z',
+      });
+
+      assert.match(status, /Session: sess-seeded/);
+      assert.match(status, /Native: native-seeded/);
+      assert.match(status, /State: running$/m);
+      assert.doesNotMatch(status, /ralph\/planning/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -182,4 +215,68 @@ describe('session-status helper', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('filters root skill-active fallback to entries visible to the requested session', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-session-status-foreign-root-'));
+    try {
+      await writeJson(join(wd, '.omx', 'state', 'skill-active-state.json'), {
+        active: true,
+        skill: 'team',
+        phase: 'running',
+        updated_at: '2026-03-20T00:04:30.000Z',
+        active_skills: [
+          {
+            skill: 'ralph',
+            phase: 'executing',
+            active: true,
+            session_id: 'sess-foreign',
+            updated_at: '2026-03-20T00:04:30.000Z',
+          },
+          {
+            skill: 'team',
+            phase: 'running',
+            active: true,
+            updated_at: '2026-03-20T00:04:30.000Z',
+          },
+        ],
+      });
+
+      const status = await buildDiscordSessionStatusReply(createMapping(wd, 'sess-main'), {
+        now: '2026-03-20T00:05:00.000Z',
+      });
+
+      assert.match(status, /State: team\/running/);
+      assert.doesNotMatch(status, /ralph\/executing/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores root skill-active fallback when all active entries belong to another session', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-session-status-root-only-foreign-'));
+    try {
+      await writeJson(join(wd, '.omx', 'state', 'skill-active-state.json'), {
+        active: true,
+        skill: 'ralph',
+        phase: 'executing',
+        updated_at: '2026-03-20T00:04:30.000Z',
+        active_skills: [{
+          skill: 'ralph',
+          phase: 'executing',
+          active: true,
+          session_id: 'sess-foreign',
+          updated_at: '2026-03-20T00:04:30.000Z',
+        }],
+      });
+
+      const status = await buildDiscordSessionStatusReply(createMapping(wd, 'sess-main'), {
+        now: '2026-03-20T00:05:00.000Z',
+      });
+
+      assert.equal(status, STATUS_DATA_UNAVAILABLE_MESSAGE);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 });

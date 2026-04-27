@@ -87,6 +87,26 @@ export function resolvePreviousTag(cwd: string, currentTag: string, explicit?: s
   return tags.find((tag) => tag !== currentTag);
 }
 
+function verifyGitCommitRef(cwd: string, ref: string, label: string): void {
+  if (!runGit(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd, true)) {
+    throw new Error(`unable to verify ${label} ref for release compare: ${ref}`);
+  }
+}
+
+export function verifyCompareRange(cwd: string, currentTag: string, previousTag?: string): void {
+  if (!previousTag) return;
+  verifyGitCommitRef(cwd, previousTag, 'previous tag');
+  verifyGitCommitRef(cwd, currentTag, 'current tag');
+  const mergeBase = spawnSync('git', ['merge-base', '--is-ancestor', previousTag, currentTag], {
+    cwd,
+    encoding: 'utf-8',
+    stdio: 'pipe',
+  });
+  if (mergeBase.status !== 0) {
+    throw new Error(`invalid release compare range: ${previousTag} is not an ancestor of ${currentTag}`);
+  }
+}
+
 function normalizeContributors(contributors: Contributor[]): Contributor[] {
   const deduped = new Map<string, Contributor>();
   for (const contributor of contributors) {
@@ -256,6 +276,7 @@ export async function generateReleaseBody(options: GenerateReleaseBodyOptions): 
   const outPath = resolve(cwd, options.outPath);
   const currentTag = resolveCurrentTag(cwd, options.currentTag);
   const previousTag = resolvePreviousTag(cwd, currentTag, options.previousTag);
+  verifyCompareRange(cwd, currentTag, previousTag);
   const repo = options.repo || process.env.GITHUB_REPOSITORY || resolveRepositoryFromRemote(cwd);
   const contributors = await resolveContributors({
     cwd,

@@ -17,25 +17,39 @@ describe('config generator', () => {
       const notifyIdx = toml.indexOf('notify =');
       const reasoningIdx = toml.indexOf('model_reasoning_effort =');
       const devInstrIdx = toml.indexOf('developer_instructions =');
-      const modelIdx = toml.indexOf('model = "gpt-5.4"');
-      const contextIdx = toml.indexOf('model_context_window = 1000000');
-      const compactIdx = toml.indexOf('model_auto_compact_token_limit = 900000');
+      const modelIdx = toml.indexOf('model = "gpt-5.5"');
+      const seededStartIdx = toml.indexOf(
+        '# oh-my-codex seeded behavioral defaults (uninstall removes unchanged defaults)',
+      );
+      const contextIdx = toml.indexOf('model_context_window = 250000');
+      const compactIdx = toml.indexOf('model_auto_compact_token_limit = 200000');
+      const seededEndIdx = toml.indexOf('# End oh-my-codex seeded behavioral defaults');
       const featuresIdx = toml.indexOf('[features]');
 
       assert.ok(notifyIdx >= 0, 'notify not found');
       assert.ok(reasoningIdx >= 0, 'model_reasoning_effort not found');
       assert.ok(devInstrIdx >= 0, 'developer_instructions not found');
       assert.ok(modelIdx >= 0, 'model not found');
+      assert.ok(seededStartIdx >= 0, 'seeded defaults start marker not found');
       assert.ok(contextIdx >= 0, 'model_context_window not found');
       assert.ok(compactIdx >= 0, 'model_auto_compact_token_limit not found');
+      assert.ok(seededEndIdx >= 0, 'seeded defaults end marker not found');
       assert.ok(featuresIdx >= 0, '[features] not found');
 
       assert.ok(notifyIdx < featuresIdx, 'notify must come before [features]');
       assert.ok(reasoningIdx < featuresIdx, 'model_reasoning_effort must come before [features]');
       assert.ok(devInstrIdx < featuresIdx, 'developer_instructions must come before [features]');
       assert.ok(modelIdx < featuresIdx, 'model must come before [features]');
+      assert.ok(
+        seededStartIdx < featuresIdx,
+        'seeded defaults start marker must come before [features]',
+      );
       assert.ok(contextIdx < featuresIdx, 'model_context_window must come before [features]');
       assert.ok(compactIdx < featuresIdx, 'model_auto_compact_token_limit must come before [features]');
+      assert.ok(
+        seededEndIdx < featuresIdx,
+        'seeded defaults end marker must come before [features]',
+      );
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -55,16 +69,21 @@ describe('config generator', () => {
     }
   });
 
-  it('seeds gpt-5.4 model and context defaults for fresh configs', async () => {
+  it('seeds gpt-5.5 model and context defaults for fresh configs', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
     try {
       const configPath = join(wd, 'config.toml');
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, 'utf-8');
 
-      assert.match(toml, /^model = "gpt-5\.4"$/m);
-      assert.match(toml, /^model_context_window = 1000000$/m);
-      assert.match(toml, /^model_auto_compact_token_limit = 900000$/m);
+      assert.match(toml, /^model = "gpt-5\.5"$/m);
+      assert.match(
+        toml,
+        /^# oh-my-codex seeded behavioral defaults \(uninstall removes unchanged defaults\)$/m,
+      );
+      assert.match(toml, /^model_context_window = 250000$/m);
+      assert.match(toml, /^model_auto_compact_token_limit = 200000$/m);
+      assert.match(toml, /^# End oh-my-codex seeded behavioral defaults$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -77,11 +96,16 @@ describe('config generator', () => {
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, 'utf-8');
 
-      assert.match(toml, /^model = "gpt-5\.4"$/m);
-      assert.match(toml, /^model_context_window = 1000000$/m);
-      assert.match(toml, /^model_auto_compact_token_limit = 900000$/m);
+      assert.match(toml, /^model = "gpt-5\.5"$/m);
+      assert.match(
+        toml,
+        /^# oh-my-codex seeded behavioral defaults \(uninstall removes unchanged defaults\)$/m,
+      );
+      assert.match(toml, /^model_context_window = 250000$/m);
+      assert.match(toml, /^model_auto_compact_token_limit = 200000$/m);
+      assert.match(toml, /^# End oh-my-codex seeded behavioral defaults$/m);
 
-      const modelIdx = toml.indexOf('model = "gpt-5.4"');
+      const modelIdx = toml.indexOf('model = "gpt-5.5"');
       const featuresIdx = toml.indexOf('[features]');
       assert.ok(modelIdx >= 0 && modelIdx < featuresIdx, 'seeded model must come before [features]');
     } finally {
@@ -96,7 +120,7 @@ describe('config generator', () => {
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, 'utf-8');
 
-      assert.match(toml, /^model_reasoning_effort = "high"$/m);
+      assert.match(toml, /^model_reasoning_effort = "medium"$/m);
       assert.match(toml, /^developer_instructions = "You have oh-my-codex installed/m);
       assert.match(toml, /AGENTS\.md is your orchestration brain and the main orchestration surface/);
       assert.match(toml, /Use skill\/keyword routing like \$name plus spawned role-specialized subagents for specialized work/);
@@ -145,7 +169,7 @@ describe('config generator', () => {
         (rerun.match(/# oh-my-codex \(OMX\) Configuration/g) ?? []).length,
         1
       );
-      assert.equal((rerun.match(/# End oh-my-codex/g) ?? []).length, 1);
+      assert.equal((rerun.match(/^# End oh-my-codex$/gm) ?? []).length, 1);
 
       // Features correct
       assert.equal((rerun.match(/^\[features\]$/gm) ?? []).length, 1);
@@ -159,7 +183,7 @@ describe('config generator', () => {
       // Top-level keys present and before [features]
       assert.match(rerun, /^notify = \["node", ".*notify-hook\.js"\]$/m);
       assert.match(rerun, /^codex_hooks = true$/m);
-      assert.match(rerun, /^model_reasoning_effort = "high"$/m);
+      assert.match(rerun, /^model_reasoning_effort = "medium"$/m);
       const notifyIdx = rerun.indexOf('notify =');
       const featuresIdx = rerun.indexOf('[features]');
       assert.ok(notifyIdx < featuresIdx, 'notify must come before [features]');
@@ -168,7 +192,27 @@ describe('config generator', () => {
     }
   });
 
-  it('does not seed 1M context keys for non-gpt-5.4 models', async () => {
+  it('seeds only the missing gpt-5.5 context key while preserving an existing partner value', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
+    try {
+      const configPath = join(wd, 'config.toml');
+      await writeFile(
+        configPath,
+        ['model = "gpt-5.5"', 'model_context_window = 640000', ''].join('\n'),
+      );
+
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, 'utf-8');
+
+      assert.match(toml, /^model = "gpt-5\.5"$/m);
+      assert.match(toml, /^model_context_window = 640000$/m);
+      assert.match(toml, /^model_auto_compact_token_limit = 200000$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not seed 250k context keys for non-gpt-5.5 models', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
     try {
       const configPath = join(wd, 'config.toml');
@@ -178,8 +222,8 @@ describe('config generator', () => {
       const toml = await readFile(configPath, 'utf-8');
 
       assert.match(toml, /^model = "o3"$/m);
-      assert.doesNotMatch(toml, /^model_context_window = 1000000$/m);
-      assert.doesNotMatch(toml, /^model_auto_compact_token_limit = 900000$/m);
+      assert.doesNotMatch(toml, /^model_context_window = 250000$/m);
+      assert.doesNotMatch(toml, /^model_auto_compact_token_limit = 200000$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -208,7 +252,7 @@ describe('config generator', () => {
 
       // OMX keys added
       assert.match(toml, /^notify = \[/m);
-      assert.match(toml, /^model_reasoning_effort = "high"$/m);
+      assert.match(toml, /^model_reasoning_effort = "medium"$/m);
 
       // User's feature flag preserved
       assert.match(toml, /^web_search = true$/m);

@@ -186,6 +186,39 @@ describe('listOmxProcesses', () => {
     }
   });
 
+  it('falls back to BusyBox-compatible args field when command field is unsupported', () => {
+    const calls: Array<{ file: string; args: readonly string[] }> = [];
+    const processes = listOmxProcesses((file, args) => {
+      calls.push({ file, args });
+      if (args.join(' ') === 'axww -o pid=,ppid=,command=') {
+        throw new Error("ps: bad -o argument 'command'");
+      }
+      assert.deepEqual(args, ['axww', '-o', 'pid=,ppid=,args=']);
+      return [
+        '  800     1 node /tmp/oh-my-codex/dist/mcp/memory-server.js',
+        '  810    42 node /tmp/oh-my-codex/dist/mcp/trace-server.js --verbose',
+      ].join('\n');
+    });
+
+    assert.deepEqual(processes, [
+      { pid: 800, ppid: 1, command: 'node /tmp/oh-my-codex/dist/mcp/memory-server.js' },
+      { pid: 810, ppid: 42, command: 'node /tmp/oh-my-codex/dist/mcp/trace-server.js --verbose' },
+    ]);
+    assert.deepEqual(calls, [
+      { file: 'ps', args: ['axww', '-o', 'pid=,ppid=,command='] },
+      { file: 'ps', args: ['axww', '-o', 'pid=,ppid=,args='] },
+    ]);
+  });
+
+  it('rethrows unrelated ps failures without masking them behind the BusyBox fallback', () => {
+    assert.throws(
+      () => listOmxProcesses(() => {
+        throw new Error('spawn ps ENOENT');
+      }),
+      /spawn ps ENOENT/,
+    );
+  });
+
   it('feeds parsed Windows rows through existing cleanup candidate selection unchanged', () => {
     const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });

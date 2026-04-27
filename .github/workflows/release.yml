@@ -109,8 +109,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@v1
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - name: Install Linux musl toolchain
         if: runner.os == 'Linux'
@@ -164,7 +165,9 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
       - name: Install cargo-dist
         run: cargo install cargo-dist --locked --version "$CARGO_DIST_VERSION"
       - name: Generate release manifest from cargo-dist plan

@@ -20,6 +20,7 @@ import {
 import { getPackageRoot } from '../utils/package.js';
 import { hasLegacyOmxTeamRunTable } from '../config/generator.js';
 import { getMissingManagedCodexHookEvents } from '../config/codex-hooks.js';
+import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from '../config/omx-first-party-mcp.js';
 import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
 import { OMX_EXPLORE_CMD_ENV, isExploreCommandRoutingEnabled } from '../hooks/explore-routing.js';
 import { isLeaderRuntimeStale } from '../team/leader-activity.js';
@@ -904,7 +905,7 @@ async function checkMcpServers(configPath: string): Promise<Check> {
           message: `${mcpCount} servers configured, but retired [mcp_servers.omx_team_run] is not supported; run "omx setup --force" to repair the config`,
         };
       }
-      const hasOmx = content.includes('omx_state') || content.includes('omx_memory');
+      const hasOmx = OMX_FIRST_PARTY_MCP_SERVER_NAMES.some((name) => content.includes(name));
       if (hasOmx) {
         return { name: 'MCP Servers', status: 'pass', message: `${mcpCount} servers configured (OMX present)` };
       }

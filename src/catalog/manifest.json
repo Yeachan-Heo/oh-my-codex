@@ -43,6 +43,12 @@
       "status": "active"
     },
     {
+      "name": "pipeline",
+      "category": "execution",
+      "status": "active",
+      "core": false
+    },
+    {
       "name": "swarm",
       "category": "execution",
       "status": "alias",
@@ -114,8 +120,14 @@
     {
       "name": "web-clone",
       "category": "shortcut",
+      "status": "merged",
+      "canonical": "visual-ralph"
+    },
+    {
+      "name": "visual-ralph",
+      "category": "shortcut",
       "status": "active",
-      "canonical": "vision"
+      "canonical": "designer"
     },
     {
       "name": "frontend-ui-ux",

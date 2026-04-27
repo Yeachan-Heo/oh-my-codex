@@ -1,13 +1,26 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 
-function readInstalledVersion(pkg: string): string {
-  const pkgJson = JSON.parse(
-    readFileSync(join('node_modules', pkg, 'package.json'), 'utf8'),
-  ) as { version: string };
-  return pkgJson.version;
+function readInstalledVersions(pkg: string): string[] {
+  const manifests = new Set<string>();
+  const directManifest = join('node_modules', pkg, 'package.json');
+  if (existsSync(directManifest)) manifests.add(directManifest);
+
+  const pnpmStoreDir = join('node_modules', '.pnpm');
+  if (existsSync(pnpmStoreDir)) {
+    const manifestSuffix = join('node_modules', pkg, 'package.json');
+    for (const entry of readdirSync(pnpmStoreDir)) {
+      const manifestPath = join(pnpmStoreDir, entry, manifestSuffix);
+      if (existsSync(manifestPath)) manifests.add(manifestPath);
+    }
+  }
+
+  return [...manifests]
+    .map((manifestPath) => JSON.parse(readFileSync(manifestPath, 'utf8')) as { version: string })
+    .map((pkgJson) => pkgJson.version)
+    .sort();
 }
 
 function semverGte(version: string, minimum: string): boolean {
@@ -21,18 +34,20 @@ function semverGte(version: string, minimum: string): boolean {
 
 describe('transitive dependency minimum safe versions (issue #170)', () => {
   it('ajv is at least 8.18.0 (fixes GHSA-2g4f-4pwh-qvx6 ReDoS)', () => {
-    const version = readInstalledVersion('ajv');
+    const versions = readInstalledVersions('ajv');
+    assert.ok(versions.length > 0, 'expected to find at least one installed ajv version');
     assert.ok(
-      semverGte(version, '8.18.0'),
-      `ajv@${version} is below the minimum safe version 8.18.0`,
+      versions.every((version) => semverGte(version, '8.18.0')),
+      `ajv versions [${versions.join(', ')}] include a version below the minimum safe version 8.18.0`,
     );
   });
 
   it('hono is at least 4.11.10 (fixes GHSA-gq3j-xvxp-8hrf timing attack)', () => {
-    const version = readInstalledVersion('hono');
+    const versions = readInstalledVersions('hono');
+    assert.ok(versions.length > 0, 'expected to find at least one installed hono version');
     assert.ok(
-      semverGte(version, '4.11.10'),
-      `hono@${version} is below the minimum safe version 4.11.10`,
+      versions.every((version) => semverGte(version, '4.11.10')),
+      `hono versions [${versions.join(', ')}] include a version below the minimum safe version 4.11.10`,
     );
   });
 });

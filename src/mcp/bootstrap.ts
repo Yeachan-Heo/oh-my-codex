@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { resolveOmxFirstPartyMcpEntrypointForPluginTarget } from '../config/omx-first-party-mcp.js';
 
 export type McpServerName = 'state' | 'memory' | 'code_intel' | 'trace' | 'wiki';
 
@@ -13,11 +14,17 @@ const SERVER_DISABLE_ENV: Record<McpServerName, string> = {
 
 const GLOBAL_DISABLE_ENV = 'OMX_MCP_SERVER_DISABLE_AUTO_START';
 const LIFECYCLE_DEBUG_ENV = 'OMX_MCP_TRANSPORT_DEBUG';
-const PARENT_WATCHDOG_INTERVAL_MS = 25;
-const DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS = 5_000;
-const DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS = 2_000;
-const DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS = 300_000;
+const PARENT_WATCHDOG_INTERVAL_ENV = 'OMX_MCP_PARENT_WATCHDOG_INTERVAL_MS';
+const DUPLICATE_SIBLING_WATCHDOG_INTERVAL_ENV = 'OMX_MCP_DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS';
+const DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_ENV = 'OMX_MCP_DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS';
+const DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_ENV = 'OMX_MCP_DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS';
+export const MCP_ENTRYPOINT_MARKER_ENV = 'OMX_MCP_ENTRYPOINT_MARKER';
+const DEFAULT_PARENT_WATCHDOG_INTERVAL_MS = 1_000;
+const DEFAULT_DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS = 5_000;
+const DEFAULT_DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS = 2_000;
+const DEFAULT_DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS = 60_000;
 const MCP_ENTRYPOINT_PATTERN = /\b([a-z0-9-]+-server\.(?:[cm]?js|ts))\b/i;
+const MCP_SERVE_TARGET_PATTERN = /(?:^|\s)mcp-serve\s+([^\s]+)/i;
 
 interface StdioLifecycleServer {
   connect(transport: StdioServerTransport): Promise<unknown>;
@@ -37,13 +44,35 @@ export interface DuplicateSiblingObservation {
   newerSiblingPids: number[];
 }
 
+interface LifecycleTimingConfig {
+  parentWatchdogIntervalMs: number;
+  duplicateSiblingWatchdogIntervalMs: number;
+  duplicateSiblingPreTrafficGraceMs: number;
+  duplicateSiblingPostTrafficIdleMs: number;
+}
+
 function normalizeCommand(command: string): string {
   return command.replace(/\\+/g, '/').trim();
 }
 
 export function extractMcpEntrypointMarker(command: string): string | null {
-  const match = normalizeCommand(command).match(MCP_ENTRYPOINT_PATTERN);
-  return match?.[1]?.toLowerCase() ?? null;
+  const normalizedCommand = normalizeCommand(command);
+  const entrypointMatch = normalizedCommand.match(MCP_ENTRYPOINT_PATTERN);
+  if (entrypointMatch?.[1]) return entrypointMatch[1].toLowerCase();
+
+  const mcpServeMatch = normalizedCommand.match(MCP_SERVE_TARGET_PATTERN);
+  return resolveOmxFirstPartyMcpEntrypointForPluginTarget(mcpServeMatch?.[1]);
+}
+
+export function resolveCurrentMcpEntrypointMarker(
+  env: Record<string, string | undefined> = process.env,
+  argv1: string | undefined = process.argv[1],
+): string | null {
+  const explicitMarker = extractMcpEntrypointMarker(
+    env[MCP_ENTRYPOINT_MARKER_ENV] ?? '',
+  );
+  if (explicitMarker) return explicitMarker;
+  return extractMcpEntrypointMarker(argv1 ?? '');
 }
 
 export function parseProcessTable(output: string): ProcessTableEntry[] {
@@ -153,13 +182,51 @@ export function analyzeDuplicateSiblingState(
   };
 }
 
+function readPositiveIntegerEnv(
+  env: Record<string, string | undefined>,
+  name: string,
+  fallback: number,
+): number {
+  const raw = env[name];
+  if (typeof raw !== 'string' || raw.trim() === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function resolveLifecycleTimingConfig(
+  env: Record<string, string | undefined>,
+): LifecycleTimingConfig {
+  return {
+    parentWatchdogIntervalMs: readPositiveIntegerEnv(
+      env,
+      PARENT_WATCHDOG_INTERVAL_ENV,
+      DEFAULT_PARENT_WATCHDOG_INTERVAL_MS,
+    ),
+    duplicateSiblingWatchdogIntervalMs: readPositiveIntegerEnv(
+      env,
+      DUPLICATE_SIBLING_WATCHDOG_INTERVAL_ENV,
+      DEFAULT_DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS,
+    ),
+    duplicateSiblingPreTrafficGraceMs: readPositiveIntegerEnv(
+      env,
+      DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_ENV,
+      DEFAULT_DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS,
+    ),
+    duplicateSiblingPostTrafficIdleMs: readPositiveIntegerEnv(
+      env,
+      DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_ENV,
+      DEFAULT_DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS,
+    ),
+  };
+}
+
 export function shouldSelfExitForDuplicateSibling(
   observation: DuplicateSiblingObservation,
   nowMs: number,
   duplicateObservedAtMs: number | null,
   lastTrafficAtMs: number | null,
-  preTrafficGraceMs = DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS,
-  postTrafficIdleMs = DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS,
+  preTrafficGraceMs = DEFAULT_DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS,
+  postTrafficIdleMs = DEFAULT_DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS,
 ): boolean {
   if (observation.status !== 'older_duplicate') {
     return false;
@@ -168,16 +235,14 @@ export function shouldSelfExitForDuplicateSibling(
     return false;
   }
 
-  if (lastTrafficAtMs === null) {
-    return nowMs - duplicateObservedAtMs >= preTrafficGraceMs;
-  }
-
-  if (!Number.isFinite(lastTrafficAtMs) || lastTrafficAtMs > nowMs) {
+  if (lastTrafficAtMs !== null && (!Number.isFinite(lastTrafficAtMs) || lastTrafficAtMs > nowMs)) {
     return false;
   }
 
-  const safeIdleAnchorMs = Math.max(lastTrafficAtMs, duplicateObservedAtMs);
-  return nowMs - safeIdleAnchorMs >= postTrafficIdleMs;
+  if (lastTrafficAtMs === null || lastTrafficAtMs <= duplicateObservedAtMs) {
+    return nowMs - duplicateObservedAtMs >= preTrafficGraceMs;
+  }
+  return nowMs - lastTrafficAtMs >= postTrafficIdleMs;
 }
 
 export function isParentProcessAlive(
@@ -217,8 +282,12 @@ export function autoStartStdioMcpServer(
   const transport = new StdioServerTransport();
   let shuttingDown = false;
   const lifecycleDebugEnabled = env[LIFECYCLE_DEBUG_ENV] === '1';
+  const lifecycleTiming = resolveLifecycleTimingConfig(env);
   const trackedParentPid = Number.isInteger(process.ppid) ? process.ppid : 0;
-  const trackedEntrypoint = extractMcpEntrypointMarker(process.argv[1] ?? '');
+  const trackedEntrypoint = resolveCurrentMcpEntrypointMarker(
+    env,
+    process.argv[1] ?? '',
+  );
   let lastTrafficAtMs: number | null = null;
   let duplicateObservedAtMs: number | null = null;
 
@@ -233,7 +302,7 @@ export function autoStartStdioMcpServer(
       if (!isParentProcessAlive(trackedParentPid)) {
         void shutdown('parent_gone');
       }
-    }, PARENT_WATCHDOG_INTERVAL_MS)
+    }, lifecycleTiming.parentWatchdogIntervalMs)
     : null;
   parentWatchdog?.unref();
   const duplicateSiblingWatchdog = trackedParentPid > 1 && trackedEntrypoint
@@ -262,15 +331,18 @@ export function autoStartStdioMcpServer(
         Date.now(),
         duplicateObservedAtMs,
         lastTrafficAtMs,
+        lifecycleTiming.duplicateSiblingPreTrafficGraceMs,
+        lifecycleTiming.duplicateSiblingPostTrafficIdleMs,
       )) {
         return;
       }
 
-      const reason = lastTrafficAtMs === null
-        ? 'superseded_duplicate_before_traffic'
-        : 'superseded_duplicate_idle';
-      void shutdown(reason);
-    }, DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS)
+      void shutdown(
+        lastTrafficAtMs !== null && lastTrafficAtMs > duplicateObservedAtMs
+          ? 'superseded_duplicate_after_idle'
+          : 'superseded_duplicate_before_traffic',
+      );
+    }, lifecycleTiming.duplicateSiblingWatchdogIntervalMs)
     : null;
   duplicateSiblingWatchdog?.unref();
 

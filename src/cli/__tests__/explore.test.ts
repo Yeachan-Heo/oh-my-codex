@@ -19,6 +19,7 @@ import {
   repoBuiltExploreHarnessCommand,
   resolveExploreHarnessCommand,
   resolveExploreHarnessCommandWithHydration,
+  resolveExploreEnv,
   resolveExploreSparkShellRoute,
   resolvePackagedExploreHarnessCommand,
 } from '../explore.js';
@@ -44,6 +45,11 @@ function runOmx(
     env: { ...process.env, ...envOverrides },
   });
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '', error: r.error?.message };
+}
+
+
+function normalizeDarwinTmpPath(value: string): string {
+  return process.platform === 'darwin' ? value.replaceAll('/private/var/', '/var/') : value;
 }
 
 function shouldSkipForSpawnPermissions(err?: string): boolean {
@@ -534,7 +540,8 @@ describe('resolveExploreHarnessCommand', () => {
       await writeFile(binaryPath, '#!/bin/sh\necho hydrated-explore\n');
       await chmod(binaryPath, 0o755);
 
-      const archivePath = join(assetRoot, 'omx-explore-harness-x86_64-unknown-linux-musl.tar.gz');
+      const archiveName = `omx-explore-harness-${process.platform}-${process.arch}.tar.gz`;
+      const archivePath = join(assetRoot, archiveName);
       const archive = spawnSync('tar', ['-czf', archivePath, '-C', stagingDir, packagedExploreHarnessBinaryName()], { encoding: 'utf-8' });
       assert.equal(archive.status, 0, archive.stderr || archive.stdout);
       const archiveBuffer = await readFile(archivePath);
@@ -568,14 +575,14 @@ describe('resolveExploreHarnessCommand', () => {
           assets: [{
             product: 'omx-explore-harness',
             version: '0.8.15',
-            platform: 'linux',
-            arch: 'x64',
-            archive: 'omx-explore-harness-x86_64-unknown-linux-musl.tar.gz',
+            platform: process.platform,
+            arch: process.arch,
+            archive: archiveName,
             binary: 'omx-explore-harness',
             binary_path: 'omx-explore-harness',
             sha256: checksum,
             size: archiveBuffer.length,
-            download_url: `${server.baseUrl}/omx-explore-harness-x86_64-unknown-linux-musl.tar.gz`,
+            download_url: `${server.baseUrl}/${archiveName}`,
           }],
         }, null, 2));
 
@@ -644,11 +651,76 @@ describe('buildExploreHarnessArgs', () => {
     assert.deepEqual(args.slice(4), [
       '--prompt-file',
       '/pkg/prompts/explore-harness.md',
+      '--instructions-file',
+      '/pkg/templates/model-instructions/explore-lightweight-AGENTS.md',
       '--model-spark',
       'spark-model',
       '--model-fallback',
-      'gpt-5.4',
+      'gpt-5.5',
     ]);
+  });
+
+  it('honors configured env overrides for fallback model and instructions file', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-explore-config-env-'));
+    await writeFile(join(codexHome, '.omx-config.json'), JSON.stringify({
+      env: {
+        OMX_DEFAULT_STANDARD_MODEL: 'standard-local',
+        OMX_DEFAULT_SPARK_MODEL: 'spark-local',
+        OMX_EXPLORE_MODEL_INSTRUCTIONS_FILE: '/config/explore-instructions.md',
+      },
+    }));
+
+    try {
+      const wd = join(tmpdir(), 'omx-explore-arg-test');
+      const args = buildExploreHarnessArgs('find auth', wd, {
+        CODEX_HOME: codexHome,
+      } as NodeJS.ProcessEnv, '/pkg');
+      assert.deepEqual(args.slice(4), [
+        '--prompt-file',
+        '/pkg/prompts/explore-harness.md',
+        '--instructions-file',
+        '/config/explore-instructions.md',
+        '--model-spark',
+        'spark-local',
+        '--model-fallback',
+        'standard-local',
+      ]);
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
+  it('applies persisted project CODEX_HOME fallback before reading explore config overrides', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-explore-project-codex-home-'));
+    const badHome = join(wd, 'home-as-file');
+    await writeFile(badHome, 'not-a-directory');
+    await mkdir(join(wd, '.omx'), { recursive: true });
+    await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+    await mkdir(join(wd, '.codex'), { recursive: true });
+    await writeFile(join(wd, '.codex', '.omx-config.json'), JSON.stringify({
+      env: {
+        OMX_DEFAULT_STANDARD_MODEL: 'standard-project',
+        OMX_DEFAULT_SPARK_MODEL: 'spark-project',
+      },
+    }));
+
+    try {
+      const env = resolveExploreEnv(wd, { HOME: badHome } as NodeJS.ProcessEnv);
+      assert.equal(env.CODEX_HOME, join(wd, '.codex'));
+      const args = buildExploreHarnessArgs('find auth', wd, env, '/pkg');
+      assert.deepEqual(args.slice(4), [
+        '--prompt-file',
+        '/pkg/prompts/explore-harness.md',
+        '--instructions-file',
+        '/pkg/templates/model-instructions/explore-lightweight-AGENTS.md',
+        '--model-spark',
+        'spark-project',
+        '--model-fallback',
+        'standard-project',
+      ]);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
   });
 });
 
@@ -834,6 +906,34 @@ describe('exploreCommand', () => {
     }
   });
 
+  it('passes project-local CODEX_HOME to the harness when persisted setup scope is project', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-explore-project-codex-home-e2e-'));
+    try {
+      const stub = join(wd, 'explore-stub.sh');
+      const capturePath = join(wd, 'capture.txt');
+      const badHome = join(wd, 'home-as-file');
+      await writeFile(badHome, 'not-a-directory');
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+      await writeFile(
+        stub,
+        `#!/bin/sh\nprintf 'CODEX_HOME=%s\\n' \"$CODEX_HOME\" > ${JSON.stringify(capturePath)}\nprintf '# Answer\\nReady to proceed\\n'\n`,
+      );
+      await chmod(stub, 0o755);
+
+      const result = runOmx(wd, ['explore', '--prompt', 'find auth'], {
+        HOME: badHome,
+        OMX_EXPLORE_BIN: stub,
+      });
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.stdout, '# Answer\nReady to proceed\n');
+      assert.equal(normalizeDarwinTmpPath(await readFile(capturePath, 'utf-8')), `CODEX_HOME=${normalizeDarwinTmpPath(join(wd, '.codex'))}\n`);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('launches an env-node codex binary while keeping model shell commands allowlisted', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-explore-harness-e2e-'));
     try {
@@ -853,11 +953,12 @@ describe('exploreCommand', () => {
         const captured = await readFile(capturePath, 'utf-8');
         assert.match(captured, /PATH=.*omx-explore-allowlist-/);
         assert.match(captured, /SHELL=.*omx-explore-allowlist-.*\/bin\/bash$/m);
-        assert.match(captured, /ALLOWED_STATUS=0/);
-        assert.match(captured, /BLOCKED_STATUS=(?!0)\d+/);
-        assert.match(captured, /--ARGV--[\s\S]*\nexec\n/);
-        assert.match(captured, /--ALLOWED_STDOUT--[\s\S]*ripgrep/i);
-        assert.match(captured, /--BLOCKED_STDERR--[\s\S]*not on the omx explore allowlist/);
+      assert.match(captured, /ALLOWED_STATUS=0/);
+      assert.match(captured, /BLOCKED_STATUS=(?!0)\d+/);
+      assert.match(captured, /--ARGV--[\s\S]*\nexec\n/);
+      assert.match(captured, /model_instructions_file=.*explore-lightweight-AGENTS\.md/);
+      assert.match(captured, /--ALLOWED_STDOUT--[\s\S]*ripgrep/i);
+      assert.match(captured, /--BLOCKED_STDERR--[\s\S]*not on the omx explore allowlist/);
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -994,7 +1095,7 @@ exit 0
         const harnessStub = await writeExploreHarnessScenarioStub(
           wd,
           `
-printf '[omx explore] spark model \`%s\` unavailable or failed (exit 17). Falling back to \`gpt-5.4\`.\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
+printf '[omx explore] spark model \`%s\` unavailable or failed (exit 17). Falling back to \`gpt-5.5\`.\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
 printf '[omx explore] spark stderr: spark timed out; retry with the frontier fallback\n' >&2
 printf '%s\n' '# Answer' '- recovered with fallback model' '- MUST: actionable recovery path remained available'
 `,
@@ -1023,9 +1124,9 @@ printf '%s\n' '# Answer' '- recovered with fallback model' '- MUST: actionable r
         const harnessStub = await writeExploreHarnessScenarioStub(
           wd,
           `
-printf '[omx explore] spark model \`%s\` unavailable or failed (exit 23). Falling back to \`gpt-5.4\`.\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
+printf '[omx explore] spark model \`%s\` unavailable or failed (exit 23). Falling back to \`gpt-5.5\`.\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
 printf '[omx explore] spark stderr: spark backend unavailable; install the fallback runtime\n' >&2
-printf '[omx explore] both spark (\`%s\`) and fallback (\`gpt-5.4\`) attempts failed (codes 23 / 29). Last stderr: fallback backend unavailable; set OMX_EXPLORE_BIN to a working harness\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
+printf '[omx explore] both spark (\`%s\`) and fallback (\`gpt-5.5\`) attempts failed (codes 23 / 29). Last stderr: fallback backend unavailable; set OMX_EXPLORE_BIN to a working harness\n' "\${OMX_EXPLORE_SPARK_MODEL:-spark-test-model}" >&2
 exit 1
 `,
         );
@@ -1040,7 +1141,7 @@ exit 1
         assert.match(result.stderr, /spark stderr: spark backend unavailable; install the fallback runtime/);
         assert.match(
           result.stderr,
-          /both spark \(`spark-test-model`\) and fallback \(`gpt-5\.4`\) attempts failed \(codes 23 \/ 29\)\. Last stderr: fallback backend unavailable; set OMX_EXPLORE_BIN to a working harness/,
+          /both spark \(`spark-test-model`\) and fallback \(`gpt-5\.5`\) attempts failed \(codes 23 \/ 29\)\. Last stderr: fallback backend unavailable; set OMX_EXPLORE_BIN to a working harness/,
         );
       });
     } finally {

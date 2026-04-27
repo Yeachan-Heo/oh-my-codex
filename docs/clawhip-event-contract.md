@@ -43,8 +43,14 @@ When available, OMX includes these fields in `context`:
 | --- | --- | --- | --- |
 | `started` | `session-start` | native | Session launch began. |
 | `blocked` | `session-idle`, `blocked` | native/derived | Session is waiting on input or another dependency. |
+| `run.heartbeat` | `run.heartbeat` | native/derived | Runtime heartbeat proving the active run is still alive. |
+| `run.blocked_on_user` | `run.blocked_on_user` | native/derived | Runtime is paused pending user input or approval. |
+| `run.blocked_on_system` | `run.blocked_on_system` | native/derived | Runtime is paused pending tool/system/environment repair. |
 | `finished` | `session-end`, `finished` | native/derived | Session or turn finished successfully. |
 | `failed` | `session-end`, `failed` | native/derived | Session, dispatch, or turn failed. |
+| `worker.assigned` | `worker.assigned` | native/derived | Team runtime assigned a worker to a concrete task. |
+| `worker.stalled` | `worker.stalled` | native/derived | Team runtime detected a worker that now needs supervisor intervention. |
+| `worker.recovered` | `worker.recovered` | native/derived | A stalled/interrupted worker successfully resumed or was relaunched. |
 | `retry-needed` | `retry-needed` | native/derived | Retryable delivery or execution follow-up is needed. |
 | `pr-created` | `pr-created` | derived | Derived from successful `gh pr create` command output. |
 | `test-started` | `test-started` | derived | Derived from test command invocation. |
@@ -54,7 +60,8 @@ When available, OMX includes these fields in `context`:
 
 ## Lifecycle ownership
 
-- native session lifecycle events are the canonical source for `started`, `blocked`, `finished`, and `failed`
+- native session lifecycle events are the canonical source for `started`, `blocked`, `run.heartbeat`, `run.blocked_on_user`, `run.blocked_on_system`, `finished`, and `failed`
+- team/runtime operational events add canonical worker-state signals for `worker.assigned`, `worker.stalled`, and `worker.recovered`
 - derived operational events add follow-up detail for `retry-needed`, `pr-created`, `test-*`, and `handoff-needed`
 - operational contexts resolve `session_name` from the OMX session id + worktree so session metadata stays stable across native and derived events
 

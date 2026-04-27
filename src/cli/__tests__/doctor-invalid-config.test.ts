@@ -37,7 +37,7 @@ describe('omx doctor invalid config detection', () => {
       await writeFile(
         join(codexDir, 'config.toml'),
         `
-model = "gpt-5.4"
+model = "gpt-5.5"
 
 [tui]
 status_line = ["model-with-reasoning"]

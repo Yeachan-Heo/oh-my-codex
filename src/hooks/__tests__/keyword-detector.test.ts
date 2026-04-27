@@ -121,6 +121,66 @@ describe('keyword detector swarm/team compatibility', () => {
     assert.equal(primary, null);
   });
 
+  it('recognizes plugin-prefixed explicit skill tokens', () => {
+    const matches = detectKeywords('$oh-my-codex:ralplan implement issue #1307');
+    assert.deepEqual(matches.map((m) => m.skill), ['ralplan']);
+    assert.equal(matches[0]?.keyword, '$oh-my-codex:ralplan');
+  });
+
+  it('supports mixed-form explicit multi-skill invocation ordering and dedupe', () => {
+    const matches = detectKeywords('$oh-my-codex:ralplan $ralph $oh-my-codex:ralplan ship this');
+    assert.deepEqual(matches.map((m) => m.skill), ['ralplan', 'ralph']);
+    assert.deepEqual(matches.map((m) => m.keyword), ['$oh-my-codex:ralplan', '$ralph']);
+  });
+
+  it('keeps recognized tokens on both sides of an unknown plugin-prefixed token in the same contiguous block', () => {
+    const matches = detectKeywords('$oh-my-codex:ralplan $oh-my-codex:unknown $ralph');
+    assert.deepEqual(matches.map((m) => m.skill), ['ralplan', 'ralph']);
+    assert.deepEqual(matches.map((m) => m.keyword), ['$oh-my-codex:ralplan', '$ralph']);
+  });
+
+  it('limits mixed-form explicit invocation to the first contiguous block', () => {
+    const matches = detectKeywords('$oh-my-codex:ralplan text $ralph');
+    assert.deepEqual(matches.map((m) => m.skill), ['ralplan']);
+  });
+
+  it('normalizes plugin-prefixed alias tokens', () => {
+    const swarm = detectPrimaryKeyword('$oh-my-codex:swarm handle this');
+    assert.ok(swarm);
+    assert.equal(swarm.skill, 'team');
+    assert.equal(swarm.keyword, '$oh-my-codex:swarm');
+
+    const ulw = detectPrimaryKeyword('$oh-my-codex:ulw continue');
+    assert.ok(ulw);
+    assert.equal(ulw.skill, 'ultrawork');
+    assert.equal(ulw.keyword, '$oh-my-codex:ulw');
+  });
+
+  it('supports plugin-prefixed hyphenated workflow tokens', () => {
+    const deepInterview = detectPrimaryKeyword('$oh-my-codex:deep-interview gather requirements');
+    assert.ok(deepInterview);
+    assert.equal(deepInterview.skill, 'deep-interview');
+    assert.equal(deepInterview.keyword, '$oh-my-codex:deep-interview');
+
+    const codeReview = detectPrimaryKeyword('$oh-my-codex:code-review before merge');
+    assert.ok(codeReview);
+    assert.equal(codeReview.skill, 'code-review');
+    assert.equal(codeReview.keyword, '$oh-my-codex:code-review');
+  });
+
+  it('does not fall back to implicit keyword detection when an unknown plugin-prefixed $token is present', () => {
+    const matches = detectKeywords('$oh-my-codex:maer-thinking 다시 설명해봐 keep going');
+    assert.deepEqual(matches, []);
+    const primary = detectPrimaryKeyword('$oh-my-codex:maer-thinking 다시 설명해봐 keep going');
+    assert.equal(primary, null);
+  });
+
+  it('suppresses implicit detection when an unknown plugin-prefixed token is present with other keyword text', () => {
+    const matches = detectKeywords('$oh-my-codex:unknown analyze this issue');
+    assert.deepEqual(matches, []);
+    assert.equal(detectPrimaryKeyword('$oh-my-codex:unknown analyze this issue'), null);
+  });
+
   it('does not auto-detect keywords for explicit /prompts invocation without $skills', () => {
     const matches = detectKeywords('/prompts:architect analyze this issue');
     assert.deepEqual(matches, []);
@@ -253,6 +313,12 @@ describe('keyword detector swarm/team compatibility', () => {
     assert.equal(match.keyword.toLowerCase(), 'deep interview');
   });
 
+  it('does not trigger deep-interview from cleanup or state-management mentions', () => {
+    assert.equal(detectPrimaryKeyword('clear deep interview state before continuing'), null);
+    assert.equal(detectPrimaryKeyword('cleanup stale deep-interview state after session clear'), null);
+    assert.equal(detectPrimaryKeyword('remove the stale deep interview lock from .omx/state'), null);
+  });
+
   it('maps "gather requirements" to deep-interview skill', () => {
     const match = detectPrimaryKeyword('let us gather requirements first');
 
@@ -317,6 +383,21 @@ describe('keyword detector swarm/team compatibility', () => {
   it('does not trigger ultrawork from incidental parallel test-log prose', () => {
     assert.equal(detectPrimaryKeyword('PASS runs assertions in parallel when sharding is enabled'), null);
     assert.equal(detectPrimaryKeyword('running 8 tests in parallel across 4 workers'), null);
+  });
+
+  it('normalizes the Korean keyboard typo for ulw to ultrawork only', () => {
+    const match = detectPrimaryKeyword('ㅕㅣㅈ로 이 작업 처리해줘');
+
+    assert.ok(match);
+    assert.equal(match.skill, 'ultrawork');
+    assert.equal(match.keyword, 'ulw');
+
+    const explicitMatch = detectPrimaryKeyword('$ㅕㅣㅈ로 이 작업 처리해줘');
+    assert.ok(explicitMatch);
+    assert.equal(explicitMatch.skill, 'ultrawork');
+    assert.equal(explicitMatch.keyword, '$ulw');
+
+    assert.equal(detectPrimaryKeyword('ㅁㅔㅔ로 처리해줘'), null);
   });
 });
 
@@ -625,6 +706,37 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
+  it('activates ultrawork mode from the Korean keyboard typo for ulw', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ulw-ko-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(stateDir, { recursive: true });
+      const result = await recordSkillActivation({
+        stateDir,
+        text: 'ㅕㅣㅈ로 병렬 처리해줘',
+        sessionId: 'sess-ulw-ko',
+        threadId: 'thread-ulw-ko',
+        turnId: 'turn-ulw-ko',
+        nowIso: '2026-04-21T00:00:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'ultrawork');
+      assert.equal(result.keyword, 'ulw');
+      assert.equal(result.initialized_mode, 'ultrawork');
+      assert.equal(result.initialized_state_path, '.omx/state/sessions/sess-ulw-ko/ultrawork-state.json');
+
+      const modeState = JSON.parse(
+        await readFile(join(stateDir, 'sessions', 'sess-ulw-ko', 'ultrawork-state.json'), 'utf-8'),
+      ) as { mode: string; active: boolean; current_phase: string };
+      assert.equal(modeState.mode, 'ultrawork');
+      assert.equal(modeState.active, true);
+      assert.equal(modeState.current_phase, 'planning');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('seeds executing state for autoresearch prompt-submit activation', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-autoresearch-'));
     const stateDir = join(cwd, '.omx', 'state');
@@ -674,6 +786,100 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(existsSync(join(stateDir, 'sessions', 'sess-autoresearch-precedence', 'ralplan-state.json')), true);
       assert.equal(existsSync(join(stateDir, 'sessions', 'sess-autoresearch-precedence', 'autoresearch-state.json')), false);
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('captures tmux_pane_id in seeded ralplan prompt-submit state when TMUX_PANE is present', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ralplan-pane-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const previousPane = process.env.TMUX_PANE;
+    try {
+      await mkdir(stateDir, { recursive: true });
+      process.env.TMUX_PANE = '%88';
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$ralplan tighten the plan',
+        sessionId: 'sess-ralplan-pane',
+        nowIso: '2026-02-25T00:00:00.000Z',
+      });
+
+      assert.ok(result);
+      const modeState = JSON.parse(
+        await readFile(join(stateDir, 'sessions', 'sess-ralplan-pane', 'ralplan-state.json'), 'utf-8'),
+      ) as { tmux_pane_id?: string };
+      assert.equal(modeState.tmux_pane_id, '%88');
+    } finally {
+      if (typeof previousPane === 'string') process.env.TMUX_PANE = previousPane;
+      else delete process.env.TMUX_PANE;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('captures tmux_pane_id in deep-interview prompt-submit state when TMUX_PANE is present', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-deep-interview-pane-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const previousPane = process.env.TMUX_PANE;
+    try {
+      await mkdir(stateDir, { recursive: true });
+      process.env.TMUX_PANE = '%89';
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$deep-interview tighten the requirements',
+        sessionId: 'sess-deep-interview-pane',
+        nowIso: '2026-02-25T00:00:00.000Z',
+      });
+
+      assert.ok(result);
+      const modeState = JSON.parse(
+        await readFile(join(stateDir, 'sessions', 'sess-deep-interview-pane', 'deep-interview-state.json'), 'utf-8'),
+      ) as { tmux_pane_id?: string };
+      assert.equal(modeState.tmux_pane_id, '%89');
+    } finally {
+      if (typeof previousPane === 'string') process.env.TMUX_PANE = previousPane;
+      else delete process.env.TMUX_PANE;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves an existing deep-interview tmux_pane_id when prompt-submit re-seeds state without TMUX_PANE', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-deep-interview-preserve-pane-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'sess-deep-interview-preserve-pane';
+    const previousPane = process.env.TMUX_PANE;
+    try {
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+      delete process.env.TMUX_PANE;
+      await writeFile(
+        join(stateDir, 'sessions', sessionId, 'deep-interview-state.json'),
+        JSON.stringify({
+          active: true,
+          mode: 'deep-interview',
+          current_phase: 'intent-first',
+          started_at: '2026-02-25T00:00:00.000Z',
+          updated_at: '2026-02-25T00:00:00.000Z',
+          session_id: sessionId,
+          tmux_pane_id: '%89',
+          tmux_pane_set_at: '2026-02-25T00:00:00.000Z',
+        }, null, 2),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$deep-interview tighten the requirements',
+        sessionId,
+        nowIso: '2026-02-25T00:05:00.000Z',
+      });
+
+      assert.ok(result);
+      const modeState = JSON.parse(
+        await readFile(join(stateDir, 'sessions', sessionId, 'deep-interview-state.json'), 'utf-8'),
+      ) as { tmux_pane_id?: string; tmux_pane_set_at?: string };
+      assert.equal(modeState.tmux_pane_id, '%89');
+      assert.equal(modeState.tmux_pane_set_at, '2026-02-25T00:00:00.000Z');
+    } finally {
+      if (typeof previousPane === 'string') process.env.TMUX_PANE = previousPane;
+      else delete process.env.TMUX_PANE;
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -1379,6 +1585,86 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
+  it('keeps Korean ulw typo first in mixed explicit workflow persistence', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ulw-ko-mixed-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(stateDir, { recursive: true });
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$ㅕㅣㅈ $autopilot 병렬 작업으로 처리해줘',
+        sessionId: 'sess-ulw-ko-mixed',
+        nowIso: '2026-04-21T00:20:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'ultrawork');
+      assert.equal(result.keyword, '$ulw');
+      assert.deepEqual(result.requested_skills, ['ultrawork', 'autopilot']);
+      assert.deepEqual(result.active_skills?.map((entry) => entry.skill), ['ultrawork', 'autopilot']);
+      assert.equal(
+        existsSync(join(stateDir, 'sessions', 'sess-ulw-ko-mixed', 'ultrawork-state.json')),
+        true,
+      );
+      assert.equal(
+        existsSync(join(stateDir, 'sessions', 'sess-ulw-ko-mixed', 'autopilot-state.json')),
+        true,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('lets an explicit Korean ulw typo override an active workflow continuation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ulw-ko-explicit-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(join(stateDir, 'sessions', 'sess-ulw-ko-explicit'), { recursive: true });
+      await writeFile(
+        join(stateDir, 'sessions', 'sess-ulw-ko-explicit', SKILL_ACTIVE_STATE_FILE),
+        JSON.stringify({
+          version: 1,
+          active: true,
+          skill: 'autopilot',
+          keyword: '$autopilot',
+          phase: 'executing',
+          activated_at: '2026-04-21T00:00:00.000Z',
+          updated_at: '2026-04-21T00:05:00.000Z',
+          source: 'keyword-detector',
+          session_id: 'sess-ulw-ko-explicit',
+          active_skills: [
+            {
+              skill: 'autopilot',
+              phase: 'executing',
+              active: true,
+              activated_at: '2026-04-21T00:00:00.000Z',
+              updated_at: '2026-04-21T00:05:00.000Z',
+              session_id: 'sess-ulw-ko-explicit',
+            },
+          ],
+        }, null, 2),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$ㅕㅣㅈ continue',
+        sessionId: 'sess-ulw-ko-explicit',
+        nowIso: '2026-04-21T00:10:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'ultrawork');
+      assert.equal(result.keyword, '$ulw');
+      assert.deepEqual(result.active_skills?.map((entry) => entry.skill), ['autopilot', 'ultrawork']);
+      assert.equal(
+        existsSync(join(stateDir, 'sessions', 'sess-ulw-ko-explicit', 'ultrawork-state.json')),
+        true,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('routes bare keep-going continuation to the active autopilot skill instead of generic ralph continuation', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-autopilot-bare-continuation-'));
     const stateDir = join(cwd, '.omx', 'state');
@@ -1503,6 +1789,50 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(modeState.current_phase, 'verifying');
       assert.equal(modeState.iteration, 7);
       assert.equal(modeState.max_iterations, 50);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not reuse active workflow continuation when prompt contains an unknown plugin-prefixed explicit token', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-unknown-prefixed-explicit-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(join(stateDir, 'sessions', 'sess-unknown-prefixed'), { recursive: true });
+      await writeFile(
+        join(stateDir, 'sessions', 'sess-unknown-prefixed', SKILL_ACTIVE_STATE_FILE),
+        JSON.stringify({
+          version: 1,
+          active: true,
+          skill: 'ralph',
+          keyword: '$ralph',
+          phase: 'executing',
+          activated_at: '2026-04-19T00:00:00.000Z',
+          updated_at: '2026-04-19T00:10:00.000Z',
+          source: 'keyword-detector',
+          session_id: 'sess-unknown-prefixed',
+          active_skills: [
+            {
+              skill: 'ralph',
+              phase: 'executing',
+              active: true,
+              activated_at: '2026-04-19T00:00:00.000Z',
+              updated_at: '2026-04-19T00:10:00.000Z',
+              session_id: 'sess-unknown-prefixed',
+            },
+          ],
+        }, null, 2),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$oh-my-codex:unknown continue',
+        sessionId: 'sess-unknown-prefixed',
+        nowIso: '2026-04-19T00:15:00.000Z',
+      });
+
+      assert.equal(result, null);
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-unknown-prefixed', 'ralph-state.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

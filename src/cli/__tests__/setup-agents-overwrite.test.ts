@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -36,6 +36,10 @@ function setMockHome(home: string): () => void {
   };
 }
 
+function normalizeDarwinTmpPath(value: string): string {
+  return process.platform === 'darwin' ? value.replaceAll('/private/var/', '/var/') : value;
+}
+
 async function runSetupWithCapturedLogs(
   cwd: string,
   options: Parameters<typeof setup>[0]
@@ -49,6 +53,7 @@ async function runSetupWithCapturedLogs(
   };
   try {
     await setup({
+      installModePrompt: async (defaultMode) => defaultMode,
       modelUpgradePrompt: async () => false,
       ...options,
     });
@@ -101,7 +106,7 @@ describe('omx setup AGENTS refresh behavior', () => {
     }
   });
 
-  it('overwrites existing AGENTS.md in TTY after confirmation and creates a backup first', async () => {
+  it('overwrites existing AGENTS.md in TTY after confirmation and moves the old file to a deterministic sibling backup', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agents-'));
     const restoreTty = setMockTty(true);
     const home = join(wd, 'home');
@@ -117,18 +122,44 @@ describe('omx setup AGENTS refresh behavior', () => {
       });
 
       const agentsContent = await readFile(join(wd, 'AGENTS.md'), 'utf-8');
+      const backupPath = join(wd, '.AGENTS.md.bkup');
       assert.match(output, /Generated AGENTS\.md in project root\./);
+      assert.match(normalizeDarwinTmpPath(output), new RegExp(`Backed up existing AGENTS\\.md to ${normalizeDarwinTmpPath(backupPath).replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\.`));
       assert.match(output, /agents_md: updated=1, unchanged=0, backed_up=1, skipped=0, removed=0/);
       assert.match(agentsContent, /^<!-- AUTONOMY DIRECTIVE — DO NOT REMOVE -->/);
       assert.match(agentsContent, /# oh-my-codex - Intelligent Multi-Agent Orchestration/);
       assert.doesNotMatch(agentsContent, /User-owned guidance\./);
-
-      const backupsRoot = join(wd, '.omx', 'backups', 'setup');
-      assert.equal(existsSync(backupsRoot), true);
-      const timestamps = await readdir(backupsRoot);
-      assert.equal(timestamps.length, 1);
-      const backupContent = await readFile(join(backupsRoot, timestamps[0], 'AGENTS.md'), 'utf-8');
+      assert.equal(existsSync(backupPath), true);
+      assert.equal(existsSync(join(wd, '.omx', 'backups', 'setup')), false);
+      const backupContent = await readFile(backupPath, 'utf-8');
       assert.equal(backupContent, existing);
+    } finally {
+      restoreHome();
+      restoreTty();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('increments the deterministic sibling backup name when prior AGENTS backups already exist', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agents-'));
+    const restoreTty = setMockTty(true);
+    const home = join(wd, 'home');
+    const restoreHome = setMockHome(home);
+    const existing = '# keep me\n';
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await writeFile(join(wd, 'AGENTS.md'), existing);
+      await writeFile(join(wd, '.AGENTS.md.bkup'), 'older backup\n');
+      await writeFile(join(wd, '.AGENTS.md.bkup1'), 'older backup 1\n');
+
+      const output = await runSetupWithCapturedLogs(wd, {
+        scope: 'project',
+        agentsOverwritePrompt: async () => true,
+      });
+
+      const backupPath = join(wd, '.AGENTS.md.bkup2');
+      assert.match(normalizeDarwinTmpPath(output), new RegExp(`Backed up existing AGENTS\\.md to ${normalizeDarwinTmpPath(backupPath).replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\.`));
+      assert.equal(await readFile(backupPath, 'utf-8'), existing);
     } finally {
       restoreHome();
       restoreTty();
@@ -176,7 +207,7 @@ describe('omx setup AGENTS refresh behavior', () => {
       );
       assert.match(
         agentsContent,
-        new RegExp(String.raw`\| \`executor\` \| \`${expectedContext.frontierModel}\` \| high \| Code implementation, refactoring, feature work`),
+        new RegExp(String.raw`\| \`executor\` \| \`${expectedContext.frontierModel}\` \| medium \| Code implementation, refactoring, feature work`),
       );
       assert.doesNotMatch(agentsContent, /legacy-frontier/);
       assert.doesNotMatch(agentsContent, /legacy-spark/);

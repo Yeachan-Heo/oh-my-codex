@@ -19,6 +19,7 @@ import {
 } from './native-assets.js';
 
 const OMX_SPARKSHELL_BIN_ENV = SPARKSHELL_BIN_ENV_SHARED;
+const OMX_SPARKSHELL_INSTRUCTIONS_FILE_ENV = 'OMX_SPARKSHELL_MODEL_INSTRUCTIONS_FILE';
 
 export const SPARKSHELL_USAGE = [
   'Usage: omx sparkshell <command> [args...]',
@@ -189,9 +190,18 @@ export function runSparkShellBinary(
   } = options;
 
   const configEnvOverrides = readConfiguredEnvOverrides(env.CODEX_HOME);
+  const mergedEnv = {
+    ...configEnvOverrides,
+    ...env,
+  };
+  const instructionsFile = mergedEnv[OMX_SPARKSHELL_INSTRUCTIONS_FILE_ENV]?.trim()
+    || join(getPackageRoot(), 'templates', 'model-instructions', 'sparkshell-lightweight-AGENTS.md');
   const spawnOptions: SpawnSyncOptionsWithStringEncoding = {
     cwd,
-    env: { ...configEnvOverrides, ...env },
+    env: {
+      ...mergedEnv,
+      [OMX_SPARKSHELL_INSTRUCTIONS_FILE_ENV]: instructionsFile,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf-8',
   };

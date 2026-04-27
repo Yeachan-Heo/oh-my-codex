@@ -38,6 +38,7 @@ interface OmxConfigFile {
 }
 
 interface CodexConfigFile {
+  model?: unknown;
   model_provider?: unknown;
   model_providers?: Record<string, unknown>;
 }
@@ -82,7 +83,7 @@ function readModelsBlock(codexHomeOverride?: string): ModelsConfig | null {
   return null;
 }
 
-export const DEFAULT_FRONTIER_MODEL = 'gpt-5.4';
+export const DEFAULT_FRONTIER_MODEL = 'gpt-5.5';
 export const DEFAULT_STANDARD_MODEL = 'gpt-5.4-mini';
 export const DEFAULT_SPARK_MODEL = 'gpt-5.3-codex-spark';
 
@@ -159,6 +160,10 @@ export function getEnvConfiguredMainDefaultModel(
     ?? readConfigEnvValue(OMX_DEFAULT_FRONTIER_MODEL_ENV, codexHomeOverride);
 }
 
+function getCodexConfigRootModel(codexHomeOverride?: string): string | undefined {
+  return normalizeConfiguredValue(readCodexConfigFile(codexHomeOverride)?.model);
+}
+
 export function getEnvConfiguredStandardDefaultModel(
   env: NodeJS.ProcessEnv = process.env,
   codexHomeOverride?: string,
@@ -179,20 +184,27 @@ export function getEnvConfiguredSparkDefaultModel(
 
 /**
  * Get the envvar-backed main/default model.
- * Resolution: OMX_DEFAULT_FRONTIER_MODEL > DEFAULT_FRONTIER_MODEL
+ * Resolution: OMX_DEFAULT_FRONTIER_MODEL > config.toml model > DEFAULT_FRONTIER_MODEL
  */
 export function getMainDefaultModel(codexHomeOverride?: string): string {
   return getEnvConfiguredMainDefaultModel(process.env, codexHomeOverride)
+    ?? getCodexConfigRootModel(codexHomeOverride)
     ?? DEFAULT_FRONTIER_MODEL;
 }
 
 /**
  * Get the envvar-backed standard/default subagent model.
- * Resolution: OMX_DEFAULT_STANDARD_MODEL > DEFAULT_STANDARD_MODEL
+ *
+ * Standard-role subagents inherit the configured main/default model unless an
+ * explicit standard-lane override is configured. This keeps spawned agents in
+ * sync with the leader model while preserving OMX_DEFAULT_STANDARD_MODEL as the
+ * opt-in escape hatch for cheaper/specialized standard workers.
+ *
+ * Resolution: OMX_DEFAULT_STANDARD_MODEL > OMX_DEFAULT_FRONTIER_MODEL > config.toml model > DEFAULT_FRONTIER_MODEL
  */
 export function getStandardDefaultModel(codexHomeOverride?: string): string {
   return getEnvConfiguredStandardDefaultModel(process.env, codexHomeOverride)
-    ?? DEFAULT_STANDARD_MODEL;
+    ?? getMainDefaultModel(codexHomeOverride);
 }
 
 /**

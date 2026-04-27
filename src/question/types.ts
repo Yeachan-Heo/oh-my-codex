@@ -18,7 +18,7 @@ export interface QuestionInput {
   session_id?: string;
 }
 
-export type QuestionRendererKind = 'tmux-pane' | 'tmux-session';
+export type QuestionRendererKind = 'tmux-pane' | 'tmux-session' | 'inline-tty' | 'windows-console';
 
 export interface QuestionAnswer {
   kind: 'option' | 'other' | 'multi';
@@ -36,6 +36,7 @@ export interface QuestionRendererState {
   launched_at: string;
   return_target?: string;
   return_transport?: 'tmux-send-keys';
+  pid?: number;
 }
 
 export interface QuestionRecord {

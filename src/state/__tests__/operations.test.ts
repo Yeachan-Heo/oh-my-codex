@@ -197,6 +197,29 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('lists active modes from the explicit session scope without leaking a sibling Ralph session', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-foreign-ralph-scope-'));
+    try {
+      const currentSessionDir = join(wd, '.omx', 'state', 'sessions', 'sess-current');
+      const foreignSessionDir = join(wd, '.omx', 'state', 'sessions', 'sess-foreign');
+      await mkdir(currentSessionDir, { recursive: true });
+      await mkdir(foreignSessionDir, { recursive: true });
+      await writeFile(
+        join(foreignSessionDir, 'ralph-state.json'),
+        JSON.stringify({ active: true, current_phase: 'executing' }, null, 2),
+      );
+
+      const response = await executeStateOperation('state_list_active', {
+        workingDirectory: wd,
+        session_id: 'sess-current',
+      });
+
+      assert.deepEqual(response.payload, { active_modes: [] });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('creates session-scoped state directory when session_id is provided', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-session-'));
     try {
@@ -236,6 +259,64 @@ describe('state operations directory initialization', () => {
       for (let i = 0; i < 16; i++) {
         assert.equal(state[`k${i}`], i);
       }
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report a legacy root mode active after clearing the current session scope', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-clear-root-fallback-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-clear';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }, null, 2));
+      await writeFile(
+        join(stateDir, 'deep-interview-state.json'),
+        JSON.stringify({ active: true, mode: 'deep-interview', current_phase: 'legacy-root' }, null, 2),
+      );
+      await writeFile(
+        join(sessionDir, 'deep-interview-state.json'),
+        JSON.stringify({ active: true, mode: 'deep-interview', current_phase: 'session-active' }, null, 2),
+      );
+
+      await executeStateOperation('state_clear', {
+        workingDirectory: wd,
+        mode: 'deep-interview',
+      });
+
+      assert.equal(existsSync(join(sessionDir, 'deep-interview-state.json')), true);
+      assert.equal(existsSync(join(stateDir, 'deep-interview-state.json')), true);
+
+      const sessionState = JSON.parse(
+        await readFile(join(sessionDir, 'deep-interview-state.json'), 'utf-8'),
+      ) as Record<string, unknown>;
+      assert.equal(sessionState.active, false);
+      assert.equal(sessionState.current_phase, 'cleared');
+
+      const activeResponse = await executeStateOperation('state_list_active', {
+        workingDirectory: wd,
+      });
+      assert.deepEqual(activeResponse.payload, { active_modes: [] });
+
+      const statusResponse = await executeStateOperation('state_get_status', {
+        workingDirectory: wd,
+        mode: 'deep-interview',
+      });
+      const statuses = (statusResponse.payload as {
+        statuses?: Record<string, { active?: boolean; phase?: string }>;
+      }).statuses || {};
+      assert.equal(statuses['deep-interview']?.active, false);
+      assert.equal(statuses['deep-interview']?.phase, 'cleared');
+
+      const readResponse = await executeStateOperation('state_read', {
+        workingDirectory: wd,
+        mode: 'deep-interview',
+      });
+      const readBody = readResponse.payload as Record<string, unknown>;
+      assert.equal(readBody.active, false);
+      assert.equal(readBody.current_phase, 'cleared');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

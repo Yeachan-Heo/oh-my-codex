@@ -106,16 +106,16 @@ describe('team model contract', () => {
 
   it('maps worker roles to default reasoning effort tiers', () => {
     assert.equal(resolveAgentReasoningEffort('explore'), 'low');
-    assert.equal(resolveAgentReasoningEffort('executor'), 'high');
+    assert.equal(resolveAgentReasoningEffort('executor'), 'medium');
     assert.equal(resolveAgentReasoningEffort('architect'), 'high');
     assert.equal(resolveAgentReasoningEffort('does-not-exist'), undefined);
   });
 
-  it('maps worker roles to explicit default model lanes', () => {
+  it('maps worker roles to configured default model lanes', () => {
     assert.equal(resolveAgentDefaultModel('explore'), expectedLowComplexityModel());
-    assert.equal(resolveAgentDefaultModel('writer'), 'gpt-5.4-mini');
-    assert.equal(resolveAgentDefaultModel('executor'), 'gpt-5.4');
-    assert.equal(resolveAgentDefaultModel('architect'), 'gpt-5.4');
+    assert.equal(resolveAgentDefaultModel('writer'), 'gpt-5.5');
+    assert.equal(resolveAgentDefaultModel('executor'), 'gpt-5.5');
+    assert.equal(resolveAgentDefaultModel('architect'), 'gpt-5.5');
     assert.equal(resolveAgentDefaultModel('does-not-exist'), undefined);
   });
 

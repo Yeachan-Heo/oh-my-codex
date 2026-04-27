@@ -1,8 +1,10 @@
 import {
   classifyRunOutcome,
   inferRunOutcome,
+  inferTerminalLifecycleOutcome,
   isTerminalRunOutcome,
   type RunOutcome,
+  type TerminalLifecycleOutcome,
   type TerminalRunOutcome,
 } from './run-outcome.js';
 
@@ -33,6 +35,9 @@ export interface RunUntilTerminalOptions<TState> {
 export interface RunContinuationStateLike {
   current_phase?: unknown;
   run_outcome?: unknown;
+  lifecycle_outcome?: unknown;
+  terminal_outcome?: unknown;
+  question_enforcement?: unknown;
   active?: unknown;
   completed_at?: unknown;
   [key: string]: unknown;
@@ -40,6 +45,7 @@ export interface RunContinuationStateLike {
 
 export interface RunContinuationSnapshot {
   outcome: RunOutcome;
+  lifecycleOutcome?: TerminalLifecycleOutcome;
   terminal: boolean;
   phase: string;
 }
@@ -88,11 +94,16 @@ export function getRunContinuationSnapshot(
   options: { phaseFallback?: string } = {},
 ): RunContinuationSnapshot | null {
   if (!candidate || typeof candidate !== 'object') return null;
-  const outcome = inferRunOutcome(candidate as Record<string, unknown>);
+  const record = candidate as Record<string, unknown>;
+  const outcome = inferRunOutcome(record);
+  const lifecycleOutcome = inferTerminalLifecycleOutcome(record, {
+    includeQuestionEnforcement: true,
+  });
   const phase = safeString(candidate.current_phase) || options.phaseFallback || 'active';
   return {
     outcome,
-    terminal: isTerminalRunOutcome(outcome),
+    lifecycleOutcome,
+    terminal: lifecycleOutcome !== undefined || isTerminalRunOutcome(outcome),
     phase,
   };
 }

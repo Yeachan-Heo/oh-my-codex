@@ -33,6 +33,12 @@ This document defines the Rust-owned runtime contract used by the first greenfie
 | `dispatch-failed` | `request_id`, `reason` | The request completed with failure. |
 | `replay-requested` | `cursor` | Replay or recovery work was requested. |
 | `snapshot-captured` | none | A snapshot was emitted for observers. |
+| `run.heartbeat` | `owner`, `phase` | The active runtime is alive and still making forward-progress observations. |
+| `run.blocked_on_user` | `owner`, `reason` | The runtime is explicitly waiting for user input or approval. |
+| `run.blocked_on_system` | `owner`, `reason` | The runtime is blocked on tooling, environment, or system repair. |
+| `worker.assigned` | `worker`, `task_id` | A worker received an authoritative task assignment. |
+| `worker.stalled` | `worker`, `reason` | A worker crossed the supervisor intervention threshold and needs recovery attention. |
+| `worker.recovered` | `worker`, `recovery` | A stalled or interrupted worker recovered, resumed, or was relaunched. |
 
 ## Snapshot fields
 
@@ -80,6 +86,12 @@ Events use `#[serde(tag = "event")]` — the variant name becomes the `"event"` 
 {"event":"DispatchFailed","request_id":"req-1","reason":"timeout"}
 {"event":"ReplayRequested","cursor":"cursor-1"}
 {"event":"SnapshotCaptured"}
+{"event":"run.heartbeat","owner":"leader","phase":"execute"}
+{"event":"run.blocked_on_user","owner":"leader","reason":"needs-user-clarification"}
+{"event":"run.blocked_on_system","owner":"leader","reason":"sandbox-denied"}
+{"event":"worker.assigned","worker":"worker-2","task_id":"17"}
+{"event":"worker.stalled","worker":"worker-2","reason":"stdout-stale"}
+{"event":"worker.recovered","worker":"worker-2","recovery":"relaunch"}
 ```
 
 Snapshot fields are flat JSON at the top level, with nested objects for each section:

@@ -300,7 +300,9 @@ describe('runSparkShellBinary', () => {
     await writeFile(join(codexHome, '.omx-config.json'), JSON.stringify({
       env: {
         OMX_DEFAULT_FRONTIER_MODEL: 'frontier-local',
+        OMX_DEFAULT_STANDARD_MODEL: 'standard-local',
         OMX_DEFAULT_SPARK_MODEL: 'spark-local',
+        OMX_SPARKSHELL_MODEL_INSTRUCTIONS_FILE: '/config/sparkshell-instructions.md',
       },
     }));
 
@@ -326,10 +328,36 @@ describe('runSparkShellBinary', () => {
       });
 
       assert.equal(invokedEnv?.OMX_DEFAULT_FRONTIER_MODEL, 'frontier-shell');
+      assert.equal(invokedEnv?.OMX_DEFAULT_STANDARD_MODEL, 'standard-local');
       assert.equal(invokedEnv?.OMX_DEFAULT_SPARK_MODEL, 'spark-local');
+      assert.equal(invokedEnv?.OMX_SPARKSHELL_MODEL_INSTRUCTIONS_FILE, '/config/sparkshell-instructions.md');
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
+  });
+
+  it('defaults to packaged lightweight instructions outside the role prompts directory', () => {
+    let invokedEnv: NodeJS.ProcessEnv | undefined;
+    runSparkShellBinary('/fake/omx-sparkshell', ['git', 'status'], {
+      cwd: '/tmp/example',
+      env: {},
+      spawnImpl: ((_: string, __: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
+        invokedEnv = options.env;
+        return {
+          pid: 1,
+          output: [],
+          stdout: null,
+          stderr: null,
+          status: 0,
+          signal: null,
+        };
+      }) as unknown as typeof spawnSync,
+    });
+
+    assert.match(
+      invokedEnv?.OMX_SPARKSHELL_MODEL_INSTRUCTIONS_FILE || '',
+      /templates[\\/]+model-instructions[\\/]+sparkshell-lightweight-AGENTS\.md$/,
+    );
   });
 });
 

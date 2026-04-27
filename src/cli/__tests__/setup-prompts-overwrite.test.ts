@@ -5,6 +5,8 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setup } from '../setup.js';
+import { readCatalogManifest } from '../../catalog/reader.js';
+import { getInstallableNativeAgentNames } from '../../agents/policy.js';
 
 describe('omx setup prompt/native-agent overwrite behavior', () => {
   const obsoleteNativeAgentField = ['skill', 'ref'].join('_');
@@ -37,9 +39,14 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
       assert.equal(installedPrompts.has('sisyphus-lite.md'), false);
       assert.equal(installedPrompts.has('code-simplifier.md'), true);
 
-      assert.equal(installedNativeAgents.has('executor.toml'), true);
-      assert.equal(installedNativeAgents.has('team-executor.toml'), true);
-      assert.equal(installedNativeAgents.has('code-reviewer.toml'), true);
+      const installableNativeAgents = getInstallableNativeAgentNames(readCatalogManifest());
+      for (const agentName of installableNativeAgents) {
+        assert.equal(
+          installedNativeAgents.has(`${agentName}.toml`),
+          true,
+          `expected setup to install native agent ${agentName}.toml`,
+        );
+      }
       assert.equal(installedNativeAgents.has('code-review.toml'), false);
       assert.equal(installedNativeAgents.has('plan.toml'), false);
       assert.equal(installedNativeAgents.has('style-reviewer.toml'), false);
@@ -50,7 +57,6 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
       assert.equal(installedNativeAgents.has('ux-researcher.toml'), false);
       assert.equal(installedNativeAgents.has('information-architect.toml'), false);
       assert.equal(installedNativeAgents.has('product-analyst.toml'), false);
-      assert.equal(installedNativeAgents.has('code-simplifier.toml'), true);
 
       const codeReviewerToml = await readFile(join(wd, '.codex', 'agents', 'code-reviewer.toml'), 'utf-8');
       assert.match(codeReviewerToml, /^name = "code-reviewer"$/m);

@@ -4,6 +4,108 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-04-25
+
+Minor release focused on making OMX easier to install, ship, and operate across Codex CLI, Codex App, plugin, native-agent, tmux, and Rust-backed execution surfaces. This release prepares the plugin delivery train, Visual Ralph, setup install-mode selection, native agent/model routing, hook/runtime hardening, Windows/tmux question reliability, CI hang protection, Rust compatibility fixes, and release collateral for the `0.15.0` cut.
+
+### Added
+- **First-party Codex plugin packaging** — OMX now ships a mirrored `plugins/oh-my-codex` bundle, plugin marketplace metadata, Codex App compatibility descriptors, plugin bundle SSOT checks, and install-mode setup coverage.
+- **Visual Ralph workflow** — `visual-ralph` is now a first-class workflow skill with routing, metadata validation, generated docs, and regression coverage.
+- **Native-agent policy/model routing** — native subagent definitions, model table generation, and setup overwrite tests now preserve the `gpt-5.5` frontier, `gpt-5.4-mini` standard, and `gpt-5.3-codex-spark` fast-lane contract.
+- **Document refresh enforcement and first-party MCP surfaces** — setup/config paths now include the new refresh-enforcer and first-party MCP configuration coverage.
+
+### Changed
+- **Setup can choose plugin or legacy skill delivery** — project setup now preserves persisted install mode, reports plugin cleanup/backups, keeps managed hooks/runtime assets aligned, and makes next steps clearer for Codex App and CLI users.
+- **Plugin and generated assets are checked from one source of truth** — native-agent verification, plugin mirror sync, generated catalog docs, and package bin/layout tests now guard release packaging drift.
+- **Team/runtime prompts are more explicit about safe execution** — worker, team, Ralph, doctor, help, and setup guidance now better describe plugin mode, runtime ownership, and action-first execution boundaries.
+- **Release base handling is explicit** — `v0.14.4` exists but is not an ancestor of the current `dev` candidate; this release uses `v0.14.3` as the verified reachable compare base and records that range caveat in release collateral.
+
+### Fixed
+- **Codex App and plugin hook compatibility** — App sessions avoid tmux-only runtime paths, plugin-prefixed skills route correctly, scoped plugin content stays aligned with canonical sources, and setup avoids overwriting local ignore state.
+- **Windows/tmux question reliability** — Windows/non-attached question rendering and console behavior have stronger fallbacks and regression coverage.
+- **Hook and watcher hardening** — notification fallback watchers, derived watchers, stale tmux sockets, Stop-hook parseability, and setup plugin fixes are covered by targeted regressions.
+- **CI and Rust compatibility** — Node test execution has bounded silence handling, and the explore harness remains compatible with Cargo/Rust 1.73-era constraints.
+- **Release metadata drift** — Node/Cargo metadata, lockfiles, changelog, release body, release notes, and release-readiness collateral are aligned to `0.15.0`.
+
+## [0.14.4] - 2026-04-24
+
+Patch release focused on promoting the default frontier lane from `gpt-5.4` to `gpt-5.5` while preserving the exact `gpt-5.4-mini` standard/mini seam and the `gpt-5.3-codex-spark` spark lane. Docs, setup/config guidance, templates, regression coverage, and release metadata are aligned to that contract.
+
+### Changed
+- **Frontier defaults now target `gpt-5.5`** — runtime defaults, Codex agent defaults, and `omx explore` fallback behavior now use `gpt-5.5` instead of `gpt-5.4`.
+- **Setup/config guidance matches the new frontier default** — config seeding docs and regression coverage now describe `gpt-5.5` while preserving the same `250000 / 200000` context recommendations.
+- **Setup and executor reasoning default to medium** — generated setup config and executor worker launch defaults now use medium reasoning instead of high.
+- **Mini and spark lanes remain exact** — `gpt-5.4-mini` and `gpt-5.3-codex-spark` behavior remains unchanged, with prompt guidance and tests still enforcing exact-match semantics.
+
+### Fixed
+- **Release metadata drift** — Node/Cargo metadata, lockfiles, changelog, release body, release notes, and release-readiness collateral are aligned to `0.14.4`.
+
+## [0.14.3] - 2026-04-22
+
+Patch release focused on the latest `dev` hardening train after `0.14.2`: question/deep-interview return-pane reliability, project-local explore launch context, setup TOML repair safety, HUD reconcile window targeting, ultrawork protocol alignment, BusyBox cleanup compatibility, stale Stop/autopilot state handling, canonical runtime supervisor events, Docker-host tmux question rendering, and native Windows psmux worker pane bootstrap hardening.
+
+### Added
+- **Canonical supervisor runtime events** — runtime command-event contracts now include canonical event types for supervisor control and downstream dispatch/readiness decisions.
+- **Deep-interview summary gates** — oversized interview flows now require compact summaries before continuing.
+- **Docker-host tmux question bridge** — question rendering can bridge docker-host tmux detection for visible operator prompts.
+
+### Changed
+- **Question replies preserve the leader pane** — tool-launched `omx question` flows retain and reuse the correct return pane across prompt reseeding and renderer metadata races.
+- **Explore respects project-local Codex homes** — launch/session helpers honor persisted project setup scope by resolving `CODEX_HOME` to the project `.codex` directory when appropriate.
+- **Setup config repair is safer** — multiline root TOML strings are parsed as root entries so setup refreshes no longer orphan fragments or corrupt `developer_instructions`-style values.
+- **HUD reconciliation stays window-local** — hook-driven HUD resize/reconcile work targets the emitting tmux window.
+- **Ultrawork protocol stays aligned upstream** — the shipped ultrawork skill incorporates the upstream protocol refresh used by oh-my-openagent.
+- **Native Windows worker panes are more robust** — psmux worker bootstrap avoids stale pane/startup assumptions.
+
+### Fixed
+- **Answered deep-interview rounds no longer re-prompt** — stale question state is reconciled against answered records before enforcement asks again.
+- **Question answers no longer stall on renderer metadata races** — renderer return-target metadata is stabilized so answers can be injected back to the invoking pane.
+- **Detached/hidden question prompts remain operator-visible** — question rendering fails closed or bridges to visible tmux contexts instead of leaving prompts hidden from the operator.
+- **BusyBox cleanup compatibility** — cleanup retries process discovery with the BusyBox-compatible `args` field when `ps` rejects `command`.
+- **Native Stop no longer loops on stale autopilot planning state** — stale planning state is cleared/reconciled before Stop handling repeats.
+- **Release metadata drift** — Node/Cargo metadata, lockfiles, changelog, release body, release notes, and release-readiness collateral are aligned to `0.14.3`.
+
+## [0.14.2] - 2026-04-21
+
+Patch release focused on fast-follow operator reliability after `0.14.1`: safer `omx question` renderer behavior outside attached tmux panes, leak-resistant MCP duplicate cleanup, tighter deep-interview session-state handling, Korean IME drift handling for the `ulw` ultrawork shorthand, shared tmux answer-submit semantics for `omx question`, clearer deep-interview background-question guidance, TypeScript/Biome baseline refresh, and release collateral alignment.
+
+### Added
+- **Korean `ulw` keyboard drift handling** — prompts typed as `ㅕㅣㅈ` on a Korean 2-set keyboard normalize to the existing `ulw` ultrawork shorthand before workflow activation.
+- **Background `omx question` guidance** — deep-interview skill/template/native-hook guidance now instructs agents to wait for background question terminals to finish and read the JSON answer before continuing.
+
+### Changed
+- **Question answer injection now reuses shared tmux submit semantics** — `src/question/renderer.ts` delegates to `buildSendPaneArgvs`, keeping literal text delivery, newline sanitization, and isolated `C-m` submits aligned with the reply-listener pane-send path.
+- **Question renderer now fails closed outside attached tmux** — `omx question` now refuses to create a detached tmux session when no visible attached pane exists, surfacing a clear operator-facing error instead of launching an unseen renderer.
+- **Deep-interview keyword intent is narrower** — cleanup/state-management mentions of “deep interview” no longer trigger the workflow unless activation intent is explicit.
+- **TypeScript baseline refreshed** — TypeScript is updated to `6.0.3`, Biome lockfile metadata is refreshed to `2.4.12`, and `tsconfig.json` pins Node ambient types for the TS 6 build path.
+
+### Fixed
+- **Stale duplicate MCP siblings** — older duplicate stdio servers now self-exit after a safe post-traffic idle window instead of lingering indefinitely after seeing traffic.
+- **Session-scoped clear fallback leaks** — clearing a tracked mode in an active session now writes an inactive session tombstone when needed so legacy root fallback state does not immediately report the mode active again.
+- **Failed question launches clear deep-interview obligations** — deep-interview no longer leaves a pending question obligation behind when the renderer cannot launch.
+- **Release metadata drift** — Node/Cargo metadata, lockfiles, changelog, release body, release notes, and release-readiness collateral are aligned to `0.14.2`.
+
+## [0.14.1] - 2026-04-21
+
+Patch release focused on hardening the new interactive orchestration surfaces shipped in `0.14.0`: question-pane reliability across tmux environments, deep-interview Stop enforcement and reused-session bridging, setup/update refresh resilience, lifecycle contract deduplication, and code-review / lightweight fallback guidance polish.
+
+### Added
+- **Deep-interview bridge guidance for reused sessions** — prompt-side context now includes a concrete current-session CLI bridge command when bare `omx question` is unavailable.
+- **Detached question renderer liveness coverage** — regression tests now assert that detached tmux question sessions survive launch and fail closed when they disappear immediately.
+
+### Changed
+- **Code-review workflow guidance is stronger** — the shipped code-review skill now requires a more comprehensive, dual-perspective review posture.
+- **Lightweight native fallback lanes are leaner** — `omx explore` / `omx sparkshell` fallback guidance stays on mini/spark lanes without polluting the general role roster.
+- **Lifecycle normalization now delegates to the shared contract** — terminal lifecycle compatibility helpers reuse the centralized run-outcome contract instead of carrying a divergent copy.
+
+### Fixed
+- **Pending deep-interview questions now keep Stop blocked even after the mode marks itself inactive**.
+- **Question panes stay alive under non-POSIX tmux shells and fail closed when panes/sessions disappear during launch**.
+- **Accepted setup refreshes no longer destroy managed `AGENTS.md`, and postinstall/setup refresh stays rooted to npm's install prefix**.
+- **Explicit `omx update` now reruns setup refresh when the installed code is current but the setup stamp is stale, and update-check state write failures no longer block explicit updates**.
+- **Stale Ralph / skill-active / ultrawork Stop state no longer leaks across sessions or floods Stop handling**.
+- **Release metadata drift** — Node/Cargo metadata, lockfiles, changelog, release body, release notes, and release-readiness collateral are aligned to `0.14.1`.
+
 ## [0.14.0] - 2026-04-19
 
 Minor release centered on interactive orchestration changes: the new `omx question` blocking-question entrypoint, deep-interview and autoresearch flow tightening, advisory triage routing, explicit runtime run outcomes, specialist-routing cleanup, and release-proof hardening for the shipped package.
@@ -699,7 +801,7 @@ Generated from the latest merged `dev` runtime/model-default work and validated 
 
 ### Added
 - **Additive team event-query APIs** — `omx team api` now exposes dedicated event-query operations so team runtime signals can be consumed more structurally. (PR [#714](https://github.com/Yeachan-Heo/oh-my-codex/pull/714))
-- **Explicit model-default contract** — runtime/docs/tests now align around the intended main/spark default model behavior (`gpt-5.4` / `gpt-5.3-codex-spark`). (PR [#718](https://github.com/Yeachan-Heo/oh-my-codex/pull/718))
+- **Explicit model-default contract** — runtime/docs/tests now align around the intended main/spark default model behavior (`gpt-5.5` / `gpt-5.3-codex-spark`). (PR [#718](https://github.com/Yeachan-Heo/oh-my-codex/pull/718))
 
 ### Changed
 - **Team prompt decomposition is less brittle for prose prompts** — natural-language task prompts are no longer fragmented into pathological subtasks as easily. (PR [#712](https://github.com/Yeachan-Heo/oh-my-codex/pull/712))
@@ -808,7 +910,7 @@ Generated from `v0.8.3..dev` (non-merge commits) and release validation on `dev`
 - Setup refresh coverage for managed artifact replacement, scope-aware updates, and uninstall compatibility paths.
 
 ### Fixed
-- Setup now prompts before upgrading managed Codex model references from `gpt-5.3-codex` to `gpt-5.4`, reducing surprise config churn during refreshes.
+- Setup now prompts before upgrading managed Codex model references from `gpt-5.3-codex` to `gpt-5.5`, reducing surprise config churn during refreshes.
 - Config generation and setup refresh flows are more idempotent and resilient across repeated runs and scoped installs.
 
 ### Docs
@@ -839,7 +941,7 @@ Generated from `v0.8.1..main` (non-merge commits) and release validation on `mai
 
 ### Added
 - Gemini CLI worker support for OMX team mode, including mixed CLI maps and `--model` passthrough (`#576`, `#579`, related issue `#573`).
-- Default frontier-model fallback is now centralized through `DEFAULT_FRONTIER_MODEL` (currently `gpt-5.4`) instead of hardcoded references (`#583`).
+- Default frontier-model fallback is now centralized through `DEFAULT_FRONTIER_MODEL` (currently `gpt-5.5`) instead of hardcoded references (`#583`).
 - `configure-notifications` is now the canonical shipped notification-setup skill, with catalog/setup behavior aligned to match docs (`#584`).
 
 ### Changed

@@ -17,6 +17,7 @@ import TOML from "@iarna/toml";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { DEFAULT_FRONTIER_MODEL } from "./models.js";
 import type { UnifiedMcpRegistryServer } from "./mcp-registry.js";
+import { getOmxFirstPartySetupMcpServers } from "./omx-first-party-mcp.js";
 
 interface MergeOptions {
   includeTui?: boolean;
@@ -42,15 +43,22 @@ const OMX_TOP_LEVEL_KEYS = [
 ] as const;
 
 const DEFAULT_SETUP_MODEL = DEFAULT_FRONTIER_MODEL;
-const DEFAULT_SETUP_MODEL_CONTEXT_WINDOW = 1000000;
-const DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT = 900000;
+const DEFAULT_SETUP_MODEL_CONTEXT_WINDOW = 250000;
+const DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT = 200000;
+const OMX_SEEDED_BEHAVIORAL_DEFAULTS_START_MARKER =
+  "# oh-my-codex seeded behavioral defaults (uninstall removes unchanged defaults)";
+const OMX_SEEDED_BEHAVIORAL_DEFAULTS_END_MARKER =
+  "# End oh-my-codex seeded behavioral defaults";
+
+export const OMX_DEVELOPER_INSTRUCTIONS =
+  "You have oh-my-codex installed. AGENTS.md is your orchestration brain and the main orchestration surface. Use skill/keyword routing like $name plus spawned role-specialized subagents for specialized work. Codex native subagents are available via .codex/agents and may be used for independent parallel subtasks within a single session or team pane. Skills are loaded from installed SKILL.md files under .codex/skills, not from native agent TOMLs. Use workflow skills via $name when explicitly invoked or clearly routed by AGENTS.md. Treat installed prompts as narrower internal execution surfaces under AGENTS.md authority, even when user-facing docs prefer $name keywords.";
 const SHARED_MCP_REGISTRY_MARKER = "oh-my-codex (OMX) Shared MCP Registry Sync";
 const SHARED_MCP_REGISTRY_END_MARKER =
   "# End oh-my-codex shared MCP registry sync";
 const OMX_AGENTS_MAX_THREADS = 6;
 const OMX_AGENTS_MAX_DEPTH = 2;
-const OMX_EXPLORE_ROUTING_DEFAULT = '1';
-const OMX_EXPLORE_CMD_ENV = 'USE_OMX_EXPLORE_CMD';
+const OMX_EXPLORE_ROUTING_DEFAULT = "1";
+const OMX_EXPLORE_CMD_ENV = "USE_OMX_EXPLORE_CMD";
 const DEFAULT_LAUNCHER_MCP_STARTUP_TIMEOUT_SEC = 15;
 const OMX_TUI_STATUS_LINE =
   'status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"]';
@@ -69,15 +77,70 @@ export function getRootModelName(config: string): string | undefined {
   return unwrapTomlString(parseRootKeyValues(config).get("model"));
 }
 
+const ROOT_TABLE_HEADER_PATTERN = /^\s*\[\[?[^\]]+\]?\]\s*$/;
+const ROOT_KEY_ASSIGNMENT_PATTERN = /^\s*([A-Za-z0-9_-]+)\s*=\s*(.*)$/;
+
+type RootLevelEntry = {
+  key?: string;
+  lines: string[];
+};
+
+function parseStandaloneToml(snippet: string): boolean {
+  try {
+    TOML.parse(snippet);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function splitRootLevelEntries(config: string): {
+  entries: RootLevelEntry[];
+  remainder: string[];
+} {
+  const lines = config.split(/\r?\n/);
+  const entries: RootLevelEntry[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (ROOT_TABLE_HEADER_PATTERN.test(line)) break;
+
+    const match = line.match(ROOT_KEY_ASSIGNMENT_PATTERN);
+    if (!match) {
+      entries.push({ lines: [line] });
+      index += 1;
+      continue;
+    }
+
+    const entryLines = [line];
+    while (
+      !parseStandaloneToml(entryLines.join("\n")) &&
+      index + entryLines.length < lines.length
+    ) {
+      entryLines.push(lines[index + entryLines.length]);
+    }
+
+    entries.push({ key: match[1], lines: entryLines });
+    index += entryLines.length;
+  }
+
+  return { entries, remainder: lines.slice(index) };
+}
+
 function parseRootKeyValues(config: string): Map<string, string> {
   const values = new Map<string, string>();
-  const lines = config.split(/\r?\n/);
-  for (const line of lines) {
-    if (/^\s*\[/.test(line)) break;
-    const match = line.match(/^\s*([A-Za-z0-9_-]+)\s*=\s*(.+?)\s*$/);
+  const { entries } = splitRootLevelEntries(config);
+
+  for (const entry of entries) {
+    if (!entry.key) continue;
+    const [firstLine, ...rest] = entry.lines;
+    const match = firstLine.match(ROOT_KEY_ASSIGNMENT_PATTERN);
     if (!match) continue;
-    values.set(match[1], match[2]);
+    const value = [match[2], ...rest].join("\n").trim();
+    values.set(entry.key, value);
   }
+
   return values;
 }
 
@@ -93,8 +156,8 @@ function getOmxTopLevelLines(
   const lines = [
     "# oh-my-codex top-level settings (must be before any [table])",
     `notify = ["node", "${escapedPath}"]`,
-    'model_reasoning_effort = "high"',
-    `developer_instructions = "You have oh-my-codex installed. AGENTS.md is your orchestration brain and the main orchestration surface. Use skill/keyword routing like $name plus spawned role-specialized subagents for specialized work. Codex native subagents are available via .codex/agents and may be used for independent parallel subtasks within a single session or team pane. Skills are loaded from installed SKILL.md files under .codex/skills, not from native agent TOMLs. Use workflow skills via $name when explicitly invoked or clearly routed by AGENTS.md. Treat installed prompts as narrower internal execution surfaces under AGENTS.md authority, even when user-facing docs prefer $name keywords."`,
+    'model_reasoning_effort = "medium"',
+    `developer_instructions = "${escapeTomlString(OMX_DEVELOPER_INSTRUCTIONS)}"`,
   ];
 
   const existingModel = rootValues.get("model");
@@ -107,47 +170,115 @@ function getOmxTopLevelLines(
     lines.push(`model = "${selectedModel}"`);
   }
 
-  if (
-    selectedModel === DEFAULT_SETUP_MODEL &&
-    !existingContextWindow &&
-    !existingAutoCompact
-  ) {
-    lines.push(`model_context_window = ${DEFAULT_SETUP_MODEL_CONTEXT_WINDOW}`);
-    lines.push(
-      `model_auto_compact_token_limit = ${DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT}`,
-    );
+  if (selectedModel === DEFAULT_SETUP_MODEL) {
+    const seededBehavioralDefaults: string[] = [];
+    if (!existingContextWindow) {
+      seededBehavioralDefaults.push(
+        `model_context_window = ${DEFAULT_SETUP_MODEL_CONTEXT_WINDOW}`,
+      );
+    }
+    if (!existingAutoCompact) {
+      seededBehavioralDefaults.push(
+        `model_auto_compact_token_limit = ${DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT}`,
+      );
+    }
+    if (seededBehavioralDefaults.length > 0) {
+      lines.push(OMX_SEEDED_BEHAVIORAL_DEFAULTS_START_MARKER);
+      lines.push(...seededBehavioralDefaults);
+      lines.push(OMX_SEEDED_BEHAVIORAL_DEFAULTS_END_MARKER);
+    }
   }
 
   return lines;
 }
 
-function stripRootLevelKeys(config: string, keys: readonly string[]): string {
-  let lines = config.split(/\r?\n/);
+function isUnchangedOmxSeededBehavioralDefaultsBlock(lines: string[]): boolean {
+  const relevant = lines.filter((line) => {
+    const trimmed = line.trim();
+    return trimmed.length > 0 && !trimmed.startsWith("#");
+  });
+  if (relevant.length !== 2) return false;
 
-  if (
-    keys.some((key) =>
-      OMX_TOP_LEVEL_KEYS.includes(key as (typeof OMX_TOP_LEVEL_KEYS)[number]),
-    )
-  ) {
-    lines = lines.filter(
-      (l) =>
-        l.trim() !==
-        "# oh-my-codex top-level settings (must be before any [table])",
-    );
+  const parsed = parseRootKeyValues(relevant.join("\n"));
+  return (
+    parsed.size === 2 &&
+    parsed.get("model_context_window") ===
+      String(DEFAULT_SETUP_MODEL_CONTEXT_WINDOW) &&
+    parsed.get("model_auto_compact_token_limit") ===
+      String(DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT)
+  );
+}
+
+export function stripOmxSeededBehavioralDefaults(config: string): string {
+  const lines = config.split(/\r?\n/);
+  const firstTable = lines.findIndex((line) => /^\s*\[/.test(line));
+  const boundary = firstTable >= 0 ? firstTable : lines.length;
+  const result: string[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+
+    if (
+      index < boundary &&
+      trimmed === OMX_SEEDED_BEHAVIORAL_DEFAULTS_START_MARKER
+    ) {
+      const endIndex = lines.findIndex(
+        (line, candidateIndex) =>
+          candidateIndex > index &&
+          candidateIndex < boundary &&
+          line.trim() === OMX_SEEDED_BEHAVIORAL_DEFAULTS_END_MARKER,
+      );
+
+      if (endIndex < 0) {
+        continue;
+      }
+
+      const blockLines = lines.slice(index + 1, endIndex);
+      if (!isUnchangedOmxSeededBehavioralDefaultsBlock(blockLines)) {
+        result.push(...blockLines);
+      }
+      index = endIndex;
+      continue;
+    }
+
+    if (
+      index < boundary &&
+      trimmed === OMX_SEEDED_BEHAVIORAL_DEFAULTS_END_MARKER
+    ) {
+      continue;
+    }
+
+    result.push(lines[index]);
   }
 
-  const firstTable = lines.findIndex((l) => /^\s*\[/.test(l));
-  const boundary = firstTable >= 0 ? firstTable : lines.length;
+  return result.join("\n");
+}
 
-  const result: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (i < boundary) {
-      const isManagedKey = keys.some((key) =>
-        new RegExp(`^\\s*${key}\\s*=`).test(lines[i]),
-      );
-      if (isManagedKey) continue;
+function stripRootLevelKeys(config: string, keys: readonly string[]): string {
+  const { entries, remainder } = splitRootLevelEntries(config);
+
+  const filteredEntries = entries.filter((entry) => {
+    if (
+      keys.some((key) =>
+        OMX_TOP_LEVEL_KEYS.includes(key as (typeof OMX_TOP_LEVEL_KEYS)[number]),
+      ) &&
+      entry.lines.length === 1 &&
+      entry.lines[0].trim() ===
+        "# oh-my-codex top-level settings (must be before any [table])"
+    ) {
+      return false;
     }
-    result.push(lines[i]);
+
+    return !entry.key || !keys.includes(entry.key);
+  });
+
+  const result = [
+    ...filteredEntries.flatMap((entry) => entry.lines),
+    ...remainder,
+  ];
+
+  if (result.length === 0) {
+    return "";
   }
 
   return result.join("\n");
@@ -239,6 +370,46 @@ function upsertFeatureFlags(config: string): string {
   } else {
     lines.splice(sectionEnd, 0, "child_agents_md = true");
     sectionEnd += 1;
+  }
+
+  if (codexHooksIdx >= 0) {
+    lines[codexHooksIdx] = "codex_hooks = true";
+  } else {
+    lines.splice(sectionEnd, 0, "codex_hooks = true");
+  }
+
+  return lines.join("\n");
+}
+
+export function upsertCodexHooksFeatureFlag(config: string): string {
+  const lines = config.split(/\r?\n/);
+  const featuresStart = lines.findIndex((line) =>
+    /^\s*\[features\]\s*$/.test(line),
+  );
+
+  if (featuresStart < 0) {
+    const base = config.trimEnd();
+    const featureBlock = ["[features]", "codex_hooks = true", ""].join("\n");
+    if (base.length === 0) {
+      return featureBlock;
+    }
+    return `${base}\n${featureBlock}`;
+  }
+
+  let sectionEnd = lines.length;
+  for (let i = featuresStart + 1; i < lines.length; i++) {
+    if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(lines[i])) {
+      sectionEnd = i;
+      break;
+    }
+  }
+
+  let codexHooksIdx = -1;
+  for (let i = featuresStart + 1; i < sectionEnd; i++) {
+    if (/^\s*codex_hooks\s*=/.test(lines[i])) {
+      codexHooksIdx = i;
+      break;
+    }
   }
 
   if (codexHooksIdx >= 0) {
@@ -409,15 +580,17 @@ export function stripOmxEnvSettings(config: string): string {
   const filtered: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     if (i > envStart && i < sectionEnd) {
-      const isOmxEnvKey = new RegExp(
-        `^\\s*${OMX_EXPLORE_CMD_ENV}\\s*=`,
-      ).test(lines[i]);
+      const isOmxEnvKey = new RegExp(`^\\s*${OMX_EXPLORE_CMD_ENV}\\s*=`).test(
+        lines[i],
+      );
       if (isOmxEnvKey) continue;
     }
     filtered.push(lines[i]);
   }
 
-  const newEnvStart = filtered.findIndex((line) => /^\s*\[env\]\s*$/.test(line));
+  const newEnvStart = filtered.findIndex((line) =>
+    /^\s*\[env\]\s*$/.test(line),
+  );
   if (newEnvStart >= 0) {
     let newSectionEnd = filtered.length;
     for (let i = newEnvStart + 1; i < filtered.length; i++) {
@@ -679,7 +852,9 @@ function configHasMcpServer(config: string, name: string): boolean {
 }
 
 function launcherCommandBasename(command: string): string {
-  return command.replace(/\\/g, "/").trim().split("/").pop()?.toLowerCase() ?? "";
+  return (
+    command.replace(/\\/g, "/").trim().split("/").pop()?.toLowerCase() ?? ""
+  );
 }
 
 function isLauncherBackedMcpCommand(
@@ -727,7 +902,12 @@ function findLauncherTimeoutRepairTargets(
     const mcpServers = (parsed as { mcp_servers?: Record<string, unknown> })
       .mcp_servers;
     const [name, value] = Object.entries(mcpServers ?? {})[0] ?? [];
-    if (!name || name.startsWith("omx_") || typeof value !== "object" || !value) {
+    if (
+      !name ||
+      name.startsWith("omx_") ||
+      typeof value !== "object" ||
+      !value
+    ) {
       start = end - 1;
       continue;
     }
@@ -741,15 +921,16 @@ function findLauncherTimeoutRepairTargets(
         ? (section.args as string[])
         : [];
     const hasStartupTimeout =
-      (
-        typeof section.startup_timeout_sec === "number" &&
-        Number.isFinite(section.startup_timeout_sec)
-      ) || (
-        typeof section.startupTimeoutSec === "number" &&
-        Number.isFinite(section.startupTimeoutSec)
-      );
+      (typeof section.startup_timeout_sec === "number" &&
+        Number.isFinite(section.startup_timeout_sec)) ||
+      (typeof section.startupTimeoutSec === "number" &&
+        Number.isFinite(section.startupTimeoutSec));
 
-    if (!command || hasStartupTimeout || !isLauncherBackedMcpCommand(command, args)) {
+    if (
+      !command ||
+      hasStartupTimeout ||
+      !isLauncherBackedMcpCommand(command, args)
+    ) {
       start = end - 1;
       continue;
     }
@@ -832,63 +1013,31 @@ function getSharedMcpRegistryBlock(
  * Contains ONLY [table] sections — no bare keys.
  */
 function getOmxTablesBlock(pkgRoot: string, includeTui = true): string {
-  const stateServerPath = escapeTomlString(
-    join(pkgRoot, "dist", "mcp", "state-server.js"),
-  );
-  const memoryServerPath = escapeTomlString(
-    join(pkgRoot, "dist", "mcp", "memory-server.js"),
-  );
-  const codeIntelServerPath = escapeTomlString(
-    join(pkgRoot, "dist", "mcp", "code-intel-server.js"),
-  );
-  const traceServerPath = escapeTomlString(
-    join(pkgRoot, "dist", "mcp", "trace-server.js"),
-  );
-  const wikiServerPath = escapeTomlString(
-    join(pkgRoot, "dist", "mcp", "wiki-server.js"),
-  );
-
-  return [
+  const lines = [
     "",
     "# ============================================================",
     "# oh-my-codex (OMX) Configuration",
     "# Managed by omx setup - manual edits preserved on next setup",
     "# ============================================================",
-    "",
-    "# OMX State Management MCP Server",
-    "[mcp_servers.omx_state]",
-    'command = "node"',
-    `args = ["${stateServerPath}"]`,
-    "enabled = true",
-    "startup_timeout_sec = 5",
-    "",
-    "# OMX Project Memory MCP Server",
-    "[mcp_servers.omx_memory]",
-    'command = "node"',
-    `args = ["${memoryServerPath}"]`,
-    "enabled = true",
-    "startup_timeout_sec = 5",
-    "",
-    "# OMX Code Intelligence MCP Server (LSP diagnostics, AST search)",
-    "[mcp_servers.omx_code_intel]",
-    'command = "node"',
-    `args = ["${codeIntelServerPath}"]`,
-    "enabled = true",
-    "startup_timeout_sec = 10",
-    "",
-    "# OMX Trace MCP Server (agent flow timeline & statistics)",
-    "[mcp_servers.omx_trace]",
-    'command = "node"',
-    `args = ["${traceServerPath}"]`,
-    "enabled = true",
-    "startup_timeout_sec = 5",
-    "",
-    "# OMX Wiki MCP Server (persistent project knowledge base)",
-    "[mcp_servers.omx_wiki]",
-    'command = "node"',
-    `args = ["${wikiServerPath}"]`,
-    "enabled = true",
-    "startup_timeout_sec = 5",
+  ];
+
+  for (const server of getOmxFirstPartySetupMcpServers(pkgRoot)) {
+    lines.push("");
+    lines.push(server.title);
+    lines.push(`[mcp_servers.${server.name}]`);
+    lines.push('command = "node"');
+    lines.push(
+      `args = [${server.args
+        .map((arg) => `"${escapeTomlString(arg)}"`)
+        .join(", ")}]`,
+    );
+    lines.push(`enabled = ${server.enabled ? "true" : "false"}`);
+    if (typeof server.startupTimeoutSec === "number") {
+      lines.push(`startup_timeout_sec = ${server.startupTimeoutSec}`);
+    }
+  }
+
+  lines.push(
     ...(includeTui
       ? [
           "",
@@ -897,11 +1046,12 @@ function getOmxTablesBlock(pkgRoot: string, includeTui = true): string {
           OMX_TUI_STATUS_LINE,
           "",
         ]
-      : []),
-    "# ============================================================",
-    "# End oh-my-codex",
-    "",
-  ].join("\n");
+      : [""]),
+  );
+  lines.push("# ============================================================");
+  lines.push("# End oh-my-codex");
+  lines.push("");
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -996,8 +1146,10 @@ export async function repairConfigIfNeeded(
   const content = await readFile(configPath, "utf-8");
   const tuiCount = (content.match(/^\s*\[tui\]\s*$/gm) || []).length;
   const hasLegacyTeamRunTable = hasLegacyOmxTeamRunTable(content);
-  const hasLauncherTimeoutGap = findLauncherTimeoutRepairTargets(content).length > 0;
-  if (tuiCount <= 1 && !hasLegacyTeamRunTable && !hasLauncherTimeoutGap) return false;
+  const hasLauncherTimeoutGap =
+    findLauncherTimeoutRepairTargets(content).length > 0;
+  if (tuiCount <= 1 && !hasLegacyTeamRunTable && !hasLauncherTimeoutGap)
+    return false;
 
   // Managed config compatibility issue detected — run full merge to repair
   const repaired = buildMergedConfig(content, pkgRoot, options);

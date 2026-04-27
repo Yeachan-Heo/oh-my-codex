@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import { once } from 'node:events';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -392,6 +392,20 @@ function buildCleanNotifyEnv(
 }
 
 describe('notify-fallback watcher', () => {
+  it('uses offset-bounded rollout reads instead of re-reading whole tracked files', async () => {
+    const source = await readFile(new URL('../../scripts/notify-fallback-watcher.js', import.meta.url), 'utf-8');
+
+    assert.match(source, /async function readFileDelta/);
+    assert.match(source, /while \(totalBytesRead < length\)/);
+    assert.match(source, /nextOffset: offset \+ totalBytesRead/);
+    assert.match(source, /new StringDecoder\('utf8'\)/);
+    assert.match(source, /decoder\.write\(bytes\)/);
+    assert.match(source, /const fileStat = await stat\(path\)\.catch\(\(\) => null\);\s*if \(!fileStat\)\s*continue;/);
+    assert.match(source, /if \(currentSize < meta\.offset\) \{\s*meta\.offset = 0;\s*meta\.partial = '';/);
+    assert.doesNotMatch(source, /const content = await readFile\(path, 'utf-8'\)[\s\S]*const delta = content\.slice\(meta\.offset\)/);
+    assert.doesNotMatch(source, /stat\(path\)\.catch\(\(\) => \(\{ size: 0 \}\)\)/);
+  });
+
   it('one-shot mode forwards only recent task_complete events', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-once-'));
     const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-home-'));
@@ -596,6 +610,94 @@ describe('notify-fallback watcher', () => {
       const turnLines = await readLines(turnLog);
       assert.equal(turnLines.length, 1);
       assert.match(turnLines[0], new RegExp(partialTurn));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(tempHome, { recursive: true, force: true });
+      await rm(rolloutPath, { force: true });
+    }
+  });
+
+  it('streaming mode preserves multibyte text split across polling reads', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-stream-utf8-'));
+    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-home-'));
+    const sid = randomUUID();
+    const sessionDir = todaySessionDir(tempHome);
+    const rolloutPath = join(sessionDir, `rollout-test-fallback-stream-utf8-${sid}.jsonl`);
+
+    try {
+      await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await mkdir(sessionDir, { recursive: true });
+
+      const nowIso = new Date().toISOString();
+      const threadId = `thread-${sid}`;
+      const utf8Turn = `turn-utf8-${sid}`;
+      const emojiMessage = 'split emoji 🧪 preserved';
+
+      await writeFile(
+        rolloutPath,
+        `${JSON.stringify({
+          timestamp: nowIso,
+          type: 'session_meta',
+          payload: { id: threadId, cwd: wd },
+        })}\n`
+      );
+
+      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+      const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
+      const turnLog = join(wd, '.omx', 'logs', `turns-${new Date().toISOString().split('T')[0]}.jsonl`);
+      const child = spawn(
+        process.execPath,
+        [watcherScript, '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '75'],
+        { cwd: wd, stdio: 'ignore', env: buildCleanNotifyEnv({ HOME: tempHome }) }
+      );
+
+      await waitFor(async () => {
+        try {
+          const state = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+          return state.tracked_files === 1;
+        } catch {
+          return false;
+        }
+      });
+
+      const eventLine = `${JSON.stringify({
+        timestamp: new Date(Date.now() + 500).toISOString(),
+        type: 'event_msg',
+        payload: {
+          type: 'task_complete',
+          turn_id: utf8Turn,
+          last_agent_message: emojiMessage,
+        },
+      })}\n`;
+      const bytes = Buffer.from(eventLine, 'utf8');
+      const emojiOffset = bytes.indexOf(Buffer.from('🧪', 'utf8'));
+      assert.ok(emojiOffset > 0, 'expected test payload to contain emoji bytes');
+
+      await appendFile(rolloutPath, bytes.subarray(0, emojiOffset + 1));
+      await sleep(250);
+      assert.equal((await readLines(turnLog)).length, 0, 'incomplete UTF-8 and JSON line should not emit');
+
+      const hiddenRolloutPath = `${rolloutPath}.missing`;
+      await rename(rolloutPath, hiddenRolloutPath);
+      await sleep(250);
+      assert.equal((await readLines(turnLog)).length, 0, 'transient missing file should preserve buffered bytes');
+      await rename(hiddenRolloutPath, rolloutPath);
+
+      await appendFile(rolloutPath, bytes.subarray(emojiOffset + 1));
+      await waitFor(async () => {
+        const turnLines = await readLines(turnLog);
+        return turnLines.length === 1 && turnLines[0]!.includes(utf8Turn) && turnLines[0]!.includes(emojiMessage);
+      }, 4000, 75);
+
+      child.kill('SIGTERM');
+      await once(child, 'exit');
+
+      const turnLines = await readLines(turnLog);
+      assert.equal(turnLines.length, 1);
+      assert.match(turnLines[0], new RegExp(utf8Turn));
+      assert.match(turnLines[0], /split emoji 🧪 preserved/);
     } finally {
       await rm(wd, { recursive: true, force: true });
       await rm(tempHome, { recursive: true, force: true });

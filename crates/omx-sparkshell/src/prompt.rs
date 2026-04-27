@@ -270,6 +270,7 @@ fn shell_join(command: &[String]) -> String {
 }
 
 #[cfg(test)]
+#[allow(unused_unsafe)]
 mod tests {
     use super::{build_summary_prompt, select_command_family};
     use crate::exec::CommandOutput;

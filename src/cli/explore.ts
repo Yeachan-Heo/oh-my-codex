@@ -8,7 +8,15 @@ import {
   resolveSparkShellBinaryPathWithHydration,
   runSparkShellBinary,
 } from './sparkshell.js';
-import { getMainDefaultModel, getSparkDefaultModel } from '../config/models.js';
+import {
+  DEFAULT_SPARK_MODEL,
+  DEFAULT_STANDARD_MODEL,
+  getEnvConfiguredSparkDefaultModel,
+  getEnvConfiguredStandardDefaultModel,
+  getSparkDefaultModel,
+  getStandardDefaultModel,
+  readConfiguredEnvOverrides,
+} from '../config/models.js';
 import {
   EXPLORE_BIN_ENV as EXPLORE_BIN_ENV_SHARED,
   hydrateNativeBinary,
@@ -17,6 +25,7 @@ import {
   getPackageVersion,
 } from './native-assets.js';
 import { getWikiDir, queryWiki } from '../wiki/index.js';
+import { resolveCodexHomeForLaunch } from './codex-home.js';
 
 export const EXPLORE_USAGE = [
   'Usage: omx explore --prompt "<prompt>"',
@@ -27,6 +36,7 @@ const PROMPT_FLAG = '--prompt';
 const PROMPT_FILE_FLAG = '--prompt-file';
 export const EXPLORE_BIN_ENV = EXPLORE_BIN_ENV_SHARED;
 const EXPLORE_SPARK_MODEL_ENV = 'OMX_EXPLORE_SPARK_MODEL';
+const EXPLORE_INSTRUCTIONS_FILE_ENV = 'OMX_EXPLORE_MODEL_INSTRUCTIONS_FILE';
 const WINDOWS_BUILTIN_EXPLORE_HARNESS_REASON =
   'the built-in explore harness is not ready on Windows because its allowlist runtime relies on POSIX sh/bash wrappers. Set OMX_EXPLORE_BIN to a compatible custom harness, prefer `omx sparkshell` for shell-native read-only lookups, or run `omx doctor` for readiness details.';
 
@@ -399,15 +409,39 @@ export function buildExploreHarnessArgs(
   env: NodeJS.ProcessEnv = process.env,
   packageRoot = getPackageRoot(),
 ): string[] {
-  const sparkModel = env[EXPLORE_SPARK_MODEL_ENV]?.trim() || getSparkDefaultModel();
+  const configuredEnvOverrides = readConfiguredEnvOverrides(env.CODEX_HOME);
+  const mergedEnv = {
+    ...configuredEnvOverrides,
+    ...env,
+  };
+  const sparkModel = mergedEnv[EXPLORE_SPARK_MODEL_ENV]?.trim()
+    || getEnvConfiguredSparkDefaultModel(mergedEnv, mergedEnv.CODEX_HOME)
+    || getSparkDefaultModel(mergedEnv.CODEX_HOME)
+    || DEFAULT_SPARK_MODEL;
+  const instructionsFile = mergedEnv[EXPLORE_INSTRUCTIONS_FILE_ENV]?.trim()
+    || join(packageRoot, 'templates', 'model-instructions', 'explore-lightweight-AGENTS.md');
+  const fallbackModel = getEnvConfiguredStandardDefaultModel(mergedEnv, mergedEnv.CODEX_HOME)
+    || getStandardDefaultModel(mergedEnv.CODEX_HOME)
+    || DEFAULT_STANDARD_MODEL;
   const promptWithWikiContext = buildExplorePromptWithWikiContext(prompt, cwd);
   return [
     '--cwd', cwd,
     '--prompt', promptWithWikiContext,
     '--prompt-file', join(packageRoot, 'prompts', 'explore-harness.md'),
+    '--instructions-file', instructionsFile,
     '--model-spark', sparkModel,
-    '--model-fallback', getMainDefaultModel(),
+    '--model-fallback', fallbackModel,
   ];
+}
+
+export function resolveExploreEnv(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const codexHomeOverride = resolveCodexHomeForLaunch(cwd, env);
+  return codexHomeOverride
+    ? { ...env, CODEX_HOME: codexHomeOverride }
+    : env;
 }
 
 export async function loadExplorePrompt(parsed: ParsedExploreArgs): Promise<string> {
@@ -422,10 +456,12 @@ export async function loadExplorePrompt(parsed: ParsedExploreArgs): Promise<stri
 export async function exploreCommand(args: string[]): Promise<void> {
   const parsed = parseExploreArgs(args);
   const prompt = await loadExplorePrompt(parsed);
+  const cwd = process.cwd();
+  const exploreEnv = resolveExploreEnv(cwd, process.env);
   const sparkShellRoute = resolveExploreSparkShellRoute(prompt);
   if (sparkShellRoute) {
     try {
-      await runExploreViaSparkShell(sparkShellRoute, process.env);
+      await runExploreViaSparkShell(sparkShellRoute, exploreEnv);
       return;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -434,13 +470,13 @@ export async function exploreCommand(args: string[]): Promise<void> {
   }
 
   const packageRoot = getPackageRoot();
-  assertBuiltinExploreHarnessSupported(process.platform, process.env);
-  const harness = await resolveExploreHarnessCommandWithHydration(packageRoot, process.env);
-  const harnessArgs = [...harness.args, ...buildExploreHarnessArgs(prompt, process.cwd(), process.env, packageRoot)];
+  assertBuiltinExploreHarnessSupported(process.platform, exploreEnv);
+  const harness = await resolveExploreHarnessCommandWithHydration(packageRoot, exploreEnv);
+  const harnessArgs = [...harness.args, ...buildExploreHarnessArgs(prompt, cwd, exploreEnv, packageRoot)];
 
   const { result } = spawnPlatformCommandSync(harness.command, harnessArgs, {
-    cwd: process.cwd(),
-    env: process.env,
+    cwd,
+    env: exploreEnv,
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });

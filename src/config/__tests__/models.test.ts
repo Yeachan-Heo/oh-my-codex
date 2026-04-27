@@ -5,7 +5,6 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   DEFAULT_FRONTIER_MODEL,
-  DEFAULT_STANDARD_MODEL,
   DEFAULT_SPARK_MODEL,
   getEnvConfiguredStandardDefaultModel,
   getMainDefaultModel,
@@ -134,6 +133,14 @@ describe('getModelForMode', () => {
     assert.equal(getModelForMode('team'), 'frontier-local');
   });
 
+  it('uses config.toml root model as the main and standard default when env overrides are absent', async () => {
+    await writeFile(join(tempDir, 'config.toml'), 'model = "frontier-config"\n');
+
+    assert.equal(getMainDefaultModel(), 'frontier-config');
+    assert.equal(getStandardDefaultModel(), 'frontier-config');
+    assert.equal(getModelForMode('team'), 'frontier-config');
+  });
+
   it('uses OMX_DEFAULT_STANDARD_MODEL when configured in shell env', () => {
     process.env.OMX_DEFAULT_STANDARD_MODEL = 'gpt-5.4-mini-tuned';
     assert.equal(getEnvConfiguredStandardDefaultModel(), 'gpt-5.4-mini-tuned');
@@ -216,9 +223,15 @@ describe('getModelForMode', () => {
     assert.equal(getTeamLowComplexityModel(), 'gpt-4.1-mini');
   });
 
+  it('inherits the main default for standard agents when no standard override is configured', async () => {
+    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-5.5-custom';
+    await writeConfig({ models: { team: 'gpt-4.1' } });
+    assert.equal(getStandardDefaultModel(), 'gpt-5.5-custom');
+  });
+
   it('returns canonical spark fallback when not configured', async () => {
     await writeConfig({ models: { team: 'gpt-4.1' } });
-    assert.equal(getStandardDefaultModel(), DEFAULT_STANDARD_MODEL);
+    assert.equal(getStandardDefaultModel(), DEFAULT_FRONTIER_MODEL);
     assert.equal(getSparkDefaultModel(), DEFAULT_SPARK_MODEL);
     assert.equal(getTeamLowComplexityModel(), DEFAULT_SPARK_MODEL);
   });

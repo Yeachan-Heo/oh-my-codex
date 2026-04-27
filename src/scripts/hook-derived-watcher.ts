@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 import { existsSync } from 'fs';
-import { appendFile, mkdir, readFile, readdir, stat, writeFile } from 'fs/promises';
+import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from 'fs/promises';
 import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
+import { StringDecoder } from 'string_decoder';
 import {
   buildOperationalContext,
   classifyExecCommand,
@@ -40,6 +41,7 @@ interface FileMeta {
   partial: string;
   dispatched: number;
   currentTurnId: string;
+  decoder: StringDecoder;
 }
 
 interface PendingCall {
@@ -415,7 +417,9 @@ async function ensureTrackedFiles(): Promise<void> {
     const firstLine = await readFirstLine(path).catch(() => '');
     const meta = shouldTrackSessionMeta(firstLine);
     if (!meta) continue;
-    const size = (await stat(path).catch(() => ({ size: 0 }))).size || 0;
+    const fileStat = await stat(path).catch(() => null);
+    if (!fileStat) continue;
+    const size = fileStat.size || 0;
     const offset = runOnce ? 0 : size;
     fileState.set(path, {
       ...meta,
@@ -423,6 +427,7 @@ async function ensureTrackedFiles(): Promise<void> {
       partial: '',
       dispatched: 0,
       currentTurnId: '',
+      decoder: new StringDecoder('utf8'),
     });
   }
 }
@@ -504,16 +509,54 @@ async function processLine(meta: FileMeta, line: string): Promise<void> {
   meta.dispatched += 1;
 }
 
+async function readFileDelta(
+  path: string,
+  offset: number,
+  currentSize: number,
+): Promise<{ bytes: Buffer; nextOffset: number }> {
+  const length = currentSize - offset;
+  if (length <= 0) return { bytes: Buffer.alloc(0), nextOffset: offset };
+  const handle = await open(path, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(length);
+    let totalBytesRead = 0;
+    while (totalBytesRead < length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        totalBytesRead,
+        length - totalBytesRead,
+        offset + totalBytesRead,
+      );
+      if (bytesRead === 0) break;
+      totalBytesRead += bytesRead;
+    }
+    return {
+      bytes: buffer.subarray(0, totalBytesRead),
+      nextOffset: offset + totalBytesRead,
+    };
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
 async function pollFiles(): Promise<void> {
   for (const [path, meta] of fileState.entries()) {
-    const currentSize = (await stat(path).catch(() => ({ size: 0 }))).size || 0;
+    const fileStat = await stat(path).catch(() => null);
+    if (!fileStat) continue;
+    const currentSize = fileStat.size || 0;
+    if (currentSize < meta.offset) {
+      meta.offset = 0;
+      meta.partial = '';
+      meta.decoder = new StringDecoder('utf8');
+    }
     if (currentSize <= meta.offset) continue;
 
-    const content = await readFile(path, 'utf-8').catch(() => '');
-    if (!content) continue;
-
-    const delta = content.slice(meta.offset);
-    meta.offset = currentSize;
+    const read = await readFileDelta(path, meta.offset, currentSize).catch(() => null);
+    if (!read || read.bytes.length === 0) continue;
+    const { bytes, nextOffset } = read;
+    meta.offset = nextOffset;
+    const delta = meta.decoder.write(bytes);
+    if (!delta) continue;
     const merged = meta.partial + delta;
     const lines = merged.split('\n');
     meta.partial = lines.pop() || '';

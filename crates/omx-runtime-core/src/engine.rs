@@ -236,7 +236,7 @@ impl RuntimeEngine {
         std::fs::create_dir_all(dir)?;
 
         let lock_file = std::fs::File::create(dir.join("engine.lock"))?;
-        lock_file.lock_exclusive()?;
+        FileExt::lock_exclusive(&lock_file)?;
 
         let snapshot_json = serde_json::to_string_pretty(&self.snapshot())?;
         std::fs::write(dir.join("snapshot.json"), snapshot_json)?;
@@ -291,7 +291,7 @@ impl RuntimeEngine {
         let lock_path = dir.join("engine.lock");
         let lock_file =
             std::fs::File::open(&lock_path).or_else(|_| std::fs::File::create(&lock_path))?;
-        lock_file.lock_shared()?;
+        FileExt::lock_shared(&lock_file)?;
 
         let events_json = std::fs::read_to_string(dir.join("events.json"))?;
         let mut events: Vec<RuntimeEvent> = serde_json::from_str(&events_json)?;

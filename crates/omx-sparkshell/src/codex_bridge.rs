@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 pub const DEFAULT_SUMMARY_TIMEOUT_MS: u64 = 60_000;
 pub const DEFAULT_SPARK_MODEL: &str = "gpt-5.3-codex-spark";
-pub const DEFAULT_FRONTIER_MODEL: &str = "gpt-5.4";
+pub const DEFAULT_STANDARD_MODEL: &str = "gpt-5.4-mini";
 
 pub fn resolve_model() -> String {
     env::var("OMX_SPARKSHELL_MODEL")
@@ -33,11 +33,18 @@ pub fn resolve_fallback_model() -> String {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| {
-            env::var("OMX_DEFAULT_FRONTIER_MODEL")
+            env::var("OMX_DEFAULT_STANDARD_MODEL")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
         })
-        .unwrap_or_else(|| DEFAULT_FRONTIER_MODEL.to_string())
+        .unwrap_or_else(|| DEFAULT_STANDARD_MODEL.to_string())
+}
+
+pub fn resolve_instructions_file() -> Option<String> {
+    env::var("OMX_SPARKSHELL_MODEL_INSTRUCTIONS_FILE")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 pub fn read_summary_timeout_ms() -> u64 {
@@ -125,6 +132,12 @@ fn run_codex_exec(
         .arg("read-only")
         .arg("-c")
         .arg("model_reasoning_effort=\"low\"")
+        .args(resolve_instructions_file().into_iter().flat_map(|path| {
+            [
+                "-c".to_string(),
+                format!("model_instructions_file=\"{}\"", escape_toml_string(&path)),
+            ]
+        }))
         .arg("--skip-git-repo-check")
         .arg("--color")
         .arg("never")
@@ -189,6 +202,10 @@ fn run_codex_exec(
         String::from_utf8_lossy(&stderr_bytes).into_owned(),
         status.success(),
     ))
+}
+
+fn escape_toml_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn normalize_summary(raw: &str) -> Option<String> {
@@ -269,10 +286,12 @@ fn render_section(name: &str, entries: &[String]) -> String {
 }
 
 #[cfg(test)]
+#[allow(unused_unsafe)]
 mod tests {
     use super::{
-        normalize_summary, read_summary_timeout_ms, resolve_fallback_model, resolve_model,
-        DEFAULT_FRONTIER_MODEL, DEFAULT_SPARK_MODEL, DEFAULT_SUMMARY_TIMEOUT_MS,
+        normalize_summary, read_summary_timeout_ms, resolve_fallback_model,
+        resolve_instructions_file, resolve_model, DEFAULT_SPARK_MODEL, DEFAULT_STANDARD_MODEL,
+        DEFAULT_SUMMARY_TIMEOUT_MS,
     };
     use crate::test_support::env_lock;
     use std::env;
@@ -293,23 +312,23 @@ mod tests {
     }
 
     #[test]
-    fn fallback_model_resolution_prefers_override_then_default_frontier() {
+    fn fallback_model_resolution_prefers_override_then_default_standard() {
         let _guard = env_lock();
         unsafe {
             env::remove_var("OMX_SPARKSHELL_FALLBACK_MODEL");
-            env::remove_var("OMX_DEFAULT_FRONTIER_MODEL");
+            env::remove_var("OMX_DEFAULT_STANDARD_MODEL");
         }
-        assert_eq!(resolve_fallback_model(), DEFAULT_FRONTIER_MODEL);
+        assert_eq!(resolve_fallback_model(), DEFAULT_STANDARD_MODEL);
 
         unsafe {
-            env::set_var("OMX_DEFAULT_FRONTIER_MODEL", "frontier-a");
+            env::set_var("OMX_DEFAULT_STANDARD_MODEL", "standard-a");
         }
-        assert_eq!(resolve_fallback_model(), "frontier-a");
+        assert_eq!(resolve_fallback_model(), "standard-a");
 
         unsafe {
-            env::set_var("OMX_SPARKSHELL_FALLBACK_MODEL", "frontier-b");
+            env::set_var("OMX_SPARKSHELL_FALLBACK_MODEL", "standard-b");
         }
-        assert_eq!(resolve_fallback_model(), "frontier-b");
+        assert_eq!(resolve_fallback_model(), "standard-b");
     }
 
     #[test]
@@ -344,6 +363,35 @@ mod tests {
             env::remove_var("OMX_SPARKSHELL_MODEL");
             env::remove_var("OMX_DEFAULT_SPARK_MODEL");
             env::remove_var("OMX_SPARK_MODEL");
+        }
+    }
+
+    #[test]
+    fn instructions_file_resolution_prefers_override_and_ignores_blank() {
+        let _guard = env_lock();
+        unsafe {
+            env::remove_var("OMX_SPARKSHELL_MODEL_INSTRUCTIONS_FILE");
+        }
+        assert_eq!(resolve_instructions_file(), None);
+
+        unsafe {
+            env::set_var(
+                "OMX_SPARKSHELL_MODEL_INSTRUCTIONS_FILE",
+                " /tmp/sparkshell-agents.md ",
+            );
+        }
+        assert_eq!(
+            resolve_instructions_file(),
+            Some("/tmp/sparkshell-agents.md".to_string())
+        );
+
+        unsafe {
+            env::set_var("OMX_SPARKSHELL_MODEL_INSTRUCTIONS_FILE", "   ");
+        }
+        assert_eq!(resolve_instructions_file(), None);
+
+        unsafe {
+            env::remove_var("OMX_SPARKSHELL_MODEL_INSTRUCTIONS_FILE");
         }
     }
 
