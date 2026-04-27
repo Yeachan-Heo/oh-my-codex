@@ -48,6 +48,40 @@ function shouldSkipForSpawnPermissions(err: string): boolean {
   return typeof err === 'string' && /(EPERM|EACCES)/i.test(err);
 }
 
+async function writeExecutable(path: string, content: string): Promise<void> {
+  await writeFile(path, content);
+  await chmod(path, 0o755);
+}
+
+async function createLaunchFixture(
+  wd: string,
+  tmuxScript: (tmuxLogPath: string) => string,
+): Promise<{ env: Record<string, string>; tmuxLogPath: string }> {
+  const home = join(wd, 'home');
+  const fakeBin = join(wd, 'bin');
+  const tmuxLogPath = join(wd, 'tmux.log');
+
+  await mkdir(home, { recursive: true });
+  await mkdir(fakeBin, { recursive: true });
+  await writeExecutable(
+    join(fakeBin, 'codex'),
+    '#!/bin/sh\nprintf \'fake-codex:%s\\n\' "$*"\n',
+  );
+  await writeExecutable(join(fakeBin, 'ps'), '#!/bin/sh\nexit 0\n');
+  await writeExecutable(join(fakeBin, 'tmux'), tmuxScript(tmuxLogPath));
+
+  return {
+    tmuxLogPath,
+    env: {
+      HOME: home,
+      PATH: `${fakeBin}:/usr/bin:/bin`,
+      OMX_AUTO_UPDATE: '0',
+      OMX_NOTIFY_FALLBACK: '0',
+      OMX_HOOK_DERIVED_SIGNALS: '0',
+    },
+  };
+}
+
 describe('omx launch fallback when tmux is unavailable', () => {
   it('launches codex directly without tmux ENOENT noise', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-fallback-'));
@@ -158,6 +192,7 @@ exit 0
           OMX_AUTO_UPDATE: '0',
           OMX_NOTIFY_FALLBACK: '0',
           OMX_HOOK_DERIVED_SIGNALS: '0',
+          OMX_LAUNCH_POLICY: 'direct',
           TMUX: '',
           TMUX_PANE: '',
         },
@@ -169,6 +204,253 @@ exit 0
       assert.match(tmuxLog, /tmux:new-session .* -s /);
       assert.match(tmuxLog, new RegExp(`tmux:split-window -v -l ${HUD_TMUX_HEIGHT_LINES} .* -t `));
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('launches directly with --direct and skips detached tmux bootstrap', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-direct-'));
+    try {
+      const { env, tmuxLogPath } = await createLaunchFixture(
+        wd,
+        (tmuxLogPath) => `#!/bin/sh
+printf 'tmux:%s\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V|list-sessions)
+    exit 0
+    ;;
+esac
+exit 0
+`,
+      );
+
+      const result = runOmx(
+        wd,
+        ['--direct', '--madmax'],
+        {
+          ...env,
+          TMUX: '',
+          TMUX_PANE: '',
+        },
+      );
+
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:.*--dangerously-bypass-approvals-and-sandbox/);
+      assert.doesNotMatch(tmuxLog, /new-session|split-window|attach-session/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('launches directly from OMX_LAUNCH_POLICY=direct and skips detached tmux bootstrap', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-env-direct-'));
+    try {
+      const { env, tmuxLogPath } = await createLaunchFixture(
+        wd,
+        (tmuxLogPath) => `#!/bin/sh
+printf 'tmux:%s\n' "$*" >> "${tmuxLogPath}"
+exit 0
+`,
+      );
+
+      const result = runOmx(
+        wd,
+        ['--madmax'],
+        {
+          ...env,
+          OMX_LAUNCH_POLICY: 'direct',
+          TMUX: '',
+          TMUX_PANE: '',
+        },
+      );
+
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:.*--dangerously-bypass-approvals-and-sandbox/);
+      assert.doesNotMatch(tmuxLog, /new-session|split-window|attach-session/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('launches directly inside tmux with --direct and skips HUD/mouse/extended-key tmux calls', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-inside-tmux-direct-'));
+    try {
+      const { env, tmuxLogPath } = await createLaunchFixture(
+        wd,
+        (tmuxLogPath) => `#!/bin/sh
+printf 'tmux:%s\n' "$*" >> "${tmuxLogPath}"
+exit 0
+`,
+      );
+
+      const result = runOmx(
+        wd,
+        ['--direct', '--madmax'],
+        {
+          ...env,
+          TMUX: '/tmp/tmux-1000/default,123,0',
+          TMUX_PANE: '%1',
+        },
+      );
+
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8').catch(() => '');
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:.*--dangerously-bypass-approvals-and-sandbox/);
+      assert.doesNotMatch(tmuxLog, /split-window|show-options|extended-keys|mouse on/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves HUD split behavior inside tmux when no direct override is present', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-inside-tmux-managed-'));
+    try {
+      const { env, tmuxLogPath } = await createLaunchFixture(
+        wd,
+        (tmuxLogPath) => `#!/bin/sh
+printf 'tmux:%s\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  list-panes)
+    exit 0
+    ;;
+  split-window)
+    printf '%s\n' '%hud'
+    exit 0
+    ;;
+  display-message)
+    case "$*" in
+      *'#{socket_path}'*) printf '/tmp/tmux-test.sock\n' ;;
+      *'#S'*) printf 'managed-session\n' ;;
+      *) printf '0\n' ;;
+    esac
+    exit 0
+    ;;
+  show-options)
+    printf 'off\n'
+    exit 0
+    ;;
+  set-option|kill-pane)
+    exit 0
+    ;;
+esac
+exit 0
+`,
+      );
+
+      const result = runOmx(
+        wd,
+        ['--madmax'],
+        {
+          ...env,
+          TMUX: '/tmp/tmux-1000/default,123,0',
+          TMUX_PANE: '%1',
+        },
+      );
+
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:.*--dangerously-bypass-approvals-and-sandbox/);
+      assert.match(tmuxLog, new RegExp(`tmux:split-window -v -l ${HUD_TMUX_HEIGHT_LINES}`));
+      assert.match(tmuxLog, /tmux:set-option -t managed-session mouse on/);
+      assert.match(tmuxLog, /tmux:set-option -sq extended-keys always/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('treats a missing tmux server socket as safe for detached tmux startup', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-tmux-missing-socket-'));
+    try {
+      const home = join(wd, 'home');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const fakePsPath = join(fakeBin, 'ps');
+      const fakeTmuxPath = join(fakeBin, 'tmux');
+      const tmuxLogPath = join(wd, 'tmux.log');
+
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(
+        fakeCodexPath,
+        '#!/bin/sh\nprintf \'fake-codex:%s\\n\' "$*"\n',
+      );
+      await chmod(fakeCodexPath, 0o755);
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+      await writeFile(
+        fakeTmuxPath,
+        `#!/bin/sh
+printf 'tmux:%s\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V)
+    printf 'tmux 3.6a\n'
+    exit 0
+    ;;
+  list-sessions)
+    printf 'error connecting to /private/tmp/tmux-501/default (No such file or directory)\n' >&2
+    exit 1
+    ;;
+  new-session)
+    printf 'leader-pane\n'
+    exit 0
+    ;;
+  split-window)
+    printf 'hud-pane\n'
+    exit 0
+    ;;
+  display-message)
+    if [ "$2" = '-p' ] && [ "$3" = '#{socket_path}' ]; then
+      printf '/tmp/tmux-test.sock\n'
+    else
+      printf '0\n'
+    fi
+    exit 0
+    ;;
+  show-options)
+    printf 'off\n'
+    exit 0
+    ;;
+  set-option|set-hook|attach-session|kill-session|run-shell|resize-pane|select-pane)
+    exit 0
+    ;;
+esac
+exit 0
+`,
+      );
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runOmx(
+        wd,
+        ['--madmax', '--tmux'],
+        {
+          HOME: home,
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+          OMX_AUTO_UPDATE: '0',
+          OMX_NOTIFY_FALLBACK: '0',
+          OMX_HOOK_DERIVED_SIGNALS: '0',
+          TMUX: '',
+          TMUX_PANE: '',
+        },
+      );
+
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(tmuxLog, /tmux:list-sessions/);
+      assert.match(tmuxLog, /tmux:new-session .* -s /);
+      assert.doesNotMatch(result.stderr, /server\/socket is unusable/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

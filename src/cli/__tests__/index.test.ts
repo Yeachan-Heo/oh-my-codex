@@ -16,6 +16,8 @@ import {
   resolveCliInvocation,
   commandOwnsLocalHelp,
   resolveCodexLaunchPolicy,
+  resolveEffectiveLeaderLaunchPolicyOverride,
+  resolveEnvLaunchPolicyOverride,
   resolveLeaderLaunchPolicyOverride,
   classifyCodexExecFailure,
   resolveSignalExitCode,
@@ -238,10 +240,24 @@ describe("normalizeCodexLaunchArgs", () => {
     ]);
   });
 
+  it("strips --direct from leader codex args", () => {
+    assert.deepEqual(normalizeCodexLaunchArgs(["--direct", "--yolo"]), [
+      "--yolo",
+    ]);
+  });
+
   it("preserves literal --tmux after -- in leader codex args", () => {
     assert.deepEqual(normalizeCodexLaunchArgs(["--", "--tmux", "--yolo"]), [
       "--",
       "--tmux",
+      "--yolo",
+    ]);
+  });
+
+  it("preserves literal --direct after -- in leader codex args", () => {
+    assert.deepEqual(normalizeCodexLaunchArgs(["--", "--direct", "--yolo"]), [
+      "--",
+      "--direct",
       "--yolo",
     ]);
   });
@@ -252,6 +268,24 @@ describe("resolveLeaderLaunchPolicyOverride", () => {
     assert.equal(
       resolveLeaderLaunchPolicyOverride(["--tmux", "--model", "gpt-5"]),
       "detached-tmux",
+    );
+  });
+
+  it("detects explicit direct launch requests", () => {
+    assert.equal(
+      resolveLeaderLaunchPolicyOverride(["--direct", "--model", "gpt-5"]),
+      "direct",
+    );
+  });
+
+  it("uses the last CLI launch policy flag before --", () => {
+    assert.equal(
+      resolveLeaderLaunchPolicyOverride(["--direct", "--tmux"]),
+      "detached-tmux",
+    );
+    assert.equal(
+      resolveLeaderLaunchPolicyOverride(["--tmux", "--direct"]),
+      "direct",
     );
   });
 
@@ -266,6 +300,68 @@ describe("resolveLeaderLaunchPolicyOverride", () => {
     assert.equal(
       resolveLeaderLaunchPolicyOverride(["--", "--tmux", "--model", "gpt-5"]),
       undefined,
+    );
+  });
+
+  it("stops scanning for --direct after the end-of-options marker", () => {
+    assert.equal(
+      resolveLeaderLaunchPolicyOverride(["--", "--direct", "--model", "gpt-5"]),
+      undefined,
+    );
+  });
+});
+
+describe("resolveEnvLaunchPolicyOverride", () => {
+  it("accepts direct, tmux, detached-tmux, auto, and empty policy values", () => {
+    assert.equal(resolveEnvLaunchPolicyOverride({ OMX_LAUNCH_POLICY: "direct" }), "direct");
+    assert.equal(
+      resolveEnvLaunchPolicyOverride({ OMX_LAUNCH_POLICY: "tmux" }),
+      "detached-tmux",
+    );
+    assert.equal(
+      resolveEnvLaunchPolicyOverride({ OMX_LAUNCH_POLICY: "detached-tmux" }),
+      "detached-tmux",
+    );
+    assert.equal(resolveEnvLaunchPolicyOverride({ OMX_LAUNCH_POLICY: "auto" }), undefined);
+    assert.equal(resolveEnvLaunchPolicyOverride({ OMX_LAUNCH_POLICY: "" }), undefined);
+  });
+
+  it("warns once for invalid OMX_LAUNCH_POLICY and falls back to auto", () => {
+    const warn = mock.method(console, "warn", () => {});
+    assert.equal(
+      resolveEnvLaunchPolicyOverride({ OMX_LAUNCH_POLICY: "banana" }),
+      undefined,
+    );
+    assert.equal(
+      resolveEnvLaunchPolicyOverride({ OMX_LAUNCH_POLICY: "banana" }),
+      undefined,
+    );
+    assert.equal(warn.mock.callCount(), 1);
+  });
+});
+
+describe("resolveEffectiveLeaderLaunchPolicyOverride", () => {
+  it("uses env policy when no CLI policy flag is present", () => {
+    assert.equal(
+      resolveEffectiveLeaderLaunchPolicyOverride(["--yolo"], {
+        OMX_LAUNCH_POLICY: "direct",
+      }),
+      "direct",
+    );
+  });
+
+  it("lets CLI policy flags override OMX_LAUNCH_POLICY", () => {
+    assert.equal(
+      resolveEffectiveLeaderLaunchPolicyOverride(["--tmux", "--yolo"], {
+        OMX_LAUNCH_POLICY: "direct",
+      }),
+      "detached-tmux",
+    );
+    assert.equal(
+      resolveEffectiveLeaderLaunchPolicyOverride(["--direct", "--yolo"], {
+        OMX_LAUNCH_POLICY: "tmux",
+      }),
+      "direct",
     );
   });
 });
@@ -1051,6 +1147,15 @@ describe("resolveCliInvocation", () => {
   it("advertises the explicit update command in top-level help", () => {
     assert.match(HELP, /omx update\s+Check npm now, update the global install immediately, then refresh setup/);
   });
+
+  it("advertises direct launch policy controls in top-level help", () => {
+    assert.match(HELP, /--direct\s+Launch the interactive leader directly/);
+    assert.match(HELP, /OMX_LAUNCH_POLICY=direct\|tmux\|detached-tmux\|auto/);
+    assert.match(HELP, /unset OMX_LAUNCH_POLICY/);
+    assert.match(HELP, /omx --direct --yolo/);
+    assert.match(HELP, /OMX_LAUNCH_POLICY=direct omx --tmux --yolo/);
+    assert.match(HELP, /Config files are intentionally not used/);
+  });
 });
 
 describe("resolveSetupInstallModeArg", () => {
@@ -1323,6 +1428,66 @@ describe("resolveCodexLaunchPolicy", () => {
         "detached-tmux",
       ),
       "detached-tmux",
+    );
+  });
+
+  it("honors explicit direct launch requests outside tmux", () => {
+    assert.equal(
+      resolveCodexLaunchPolicy(
+        {},
+        "linux",
+        true,
+        false,
+        true,
+        true,
+        "direct",
+      ),
+      "direct",
+    );
+  });
+
+  it("honors explicit direct launch requests inside tmux", () => {
+    assert.equal(
+      resolveCodexLaunchPolicy(
+        { TMUX: "/tmp/tmux-1000/default,123,0" },
+        "linux",
+        true,
+        false,
+        true,
+        true,
+        "direct",
+      ),
+      "direct",
+    );
+  });
+
+  it("keeps explicit tmux policy tmux-aware inside tmux", () => {
+    assert.equal(
+      resolveCodexLaunchPolicy(
+        { TMUX: "/tmp/tmux-1000/default,123,0" },
+        "linux",
+        true,
+        false,
+        true,
+        true,
+        "detached-tmux",
+      ),
+      "inside-tmux",
+    );
+  });
+
+  it("falls back directly for explicit tmux requests when tmux is unavailable", () => {
+    assert.equal(
+      resolveCodexLaunchPolicy(
+        {},
+        "linux",
+        false,
+        false,
+        true,
+        true,
+        "detached-tmux",
+      ),
+      "direct",
     );
   });
 

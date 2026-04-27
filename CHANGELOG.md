@@ -4,6 +4,9 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Direct leader launch controls** — `omx --direct` and `OMX_LAUNCH_POLICY=direct|tmux|detached-tmux|auto` now let operators opt out of OMX tmux/HUD management without changing the default detached-tmux startup behavior.
+
 ## [0.15.0] - 2026-04-25
 
 Minor release focused on making OMX easier to install, ship, and operate across Codex CLI, Codex App, plugin, native-agent, tmux, and Rust-backed execution surfaces. This release prepares the plugin delivery train, Visual Ralph, setup install-mode selection, native agent/model routing, hook/runtime hardening, Windows/tmux question reliability, CI hang protection, Rust compatibility fixes, and release collateral for the `0.15.0` cut.
