@@ -3219,6 +3219,28 @@ esac
     }
   });
 
+  it("stays silent when Bash stdout only contains failure-like source text", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-failure-source-text-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-source-text",
+          tool_input: { command: "sed -n '1,40p' hook-source.ts" },
+          tool_response: "const text = 'bash: foo: command not found';\nconst detail = 'permission denied';",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("stays silent for rc-zero build logs that mention missing grep paths", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-build-log-"));
     try {
@@ -3232,6 +3254,32 @@ esac
           tool_response: JSON.stringify({
             exit_code: 0,
             stdout: "build passed\nnote: grep fixture says no such file or directory",
+            stderr: "",
+          }),
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not treat Bash output containing MCP transport text as MCP transport death", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-mcp-source-text-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-mcp-source-text",
+          tool_input: { command: "sed -n '580,620p' codex-native-pre-post.ts" },
+          tool_response: JSON.stringify({
+            exit_code: 0,
+            stdout: "reason: 'MCP transport closed before response over stdio pipe closed'",
             stderr: "",
           }),
         },

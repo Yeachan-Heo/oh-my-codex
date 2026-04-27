@@ -765,10 +765,17 @@ function containsHardFailure(text: string): boolean {
   return /command not found|permission denied|no such file or directory/i.test(text);
 }
 
+function hasActionableBashHardFailure(normalized: NormalizedPostToolUsePayload): boolean {
+  if (containsHardFailure(normalized.stderrText)) return true;
+  if (normalized.exitCode === null || normalized.exitCode === 0) return false;
+  return containsHardFailure(`${normalized.stderrText}\n${normalized.stdoutText}`);
+}
+
 export function buildNativePostToolUseOutput(
   payload: CodexHookPayload,
 ): Record<string, unknown> | null {
-  const mcpTransportFailure = detectMcpTransportFailure(payload);
+  const normalized = normalizePostToolUsePayload(payload);
+  const mcpTransportFailure = normalized.isBash ? null : detectMcpTransportFailure(payload);
   if (mcpTransportFailure) {
     const fallbackCommand = buildOmxParityFallbackCommand(payload, mcpTransportFailure.toolName);
     const fallbackText = fallbackCommand
@@ -785,16 +792,10 @@ export function buildNativePostToolUseOutput(
     };
   }
 
-  const normalized = normalizePostToolUsePayload(payload);
   if (!normalized.isBash) return null;
 
   const combined = `${normalized.stderrText}\n${normalized.stdoutText}`.trim();
-  if (normalized.exitCode === 0) return null;
-  if (
-    normalized.exitCode !== null
-    && normalized.exitCode !== 0
-    && containsHardFailure(combined)
-  ) {
+  if (hasActionableBashHardFailure(normalized)) {
     return {
       decision: "block",
       reason: "The Bash output indicates a command/setup failure that should be fixed before retrying.",
