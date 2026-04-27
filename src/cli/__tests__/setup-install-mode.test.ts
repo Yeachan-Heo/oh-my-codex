@@ -919,6 +919,61 @@ describe("omx setup install mode behavior", () => {
     }
   });
 
+  it("archives stale legacy prompts and generated native agents when plugin mode refreshes", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        await withTempCwd(wd, async () => {
+          await setup({ scope: "user", installMode: "legacy" });
+
+          const promptPath = join(codexHomeDir, "prompts", "executor.md");
+          const agentPath = join(codexHomeDir, "agents", "planner.toml");
+          await writeFile(
+            promptPath,
+            "---\ndescription: stale legacy executor prompt\n---\n\nold executor body\n",
+          );
+          await writeFile(
+            agentPath,
+            [
+              "# oh-my-codex agent: planner",
+              'name = "planner"',
+              'description = "stale legacy generated planner"',
+              'developer_instructions = """old planner body"""',
+              "",
+            ].join("\n"),
+          );
+
+          const output = await captureConsoleOutput(async () => {
+            await setup({ scope: "user", installMode: "plugin" });
+          });
+
+          assert.equal(existsSync(promptPath), false);
+          assert.equal(existsSync(agentPath), false);
+          assert.match(output, /Archived and removed .* legacy OMX-managed prompt file/);
+          assert.match(output, /Archived and removed .* legacy OMX-managed native agent config/);
+
+          const backupRoot = join(wd, "home", ".omx", "backups", "setup");
+          const backupRuns = await readdir(backupRoot);
+          assert.ok(backupRuns.length > 0);
+          assert.equal(
+            backupRuns.some((entry) =>
+              existsSync(join(backupRoot, entry, ".codex", "prompts", "executor.md")),
+            ),
+            true,
+          );
+          assert.equal(
+            backupRuns.some((entry) =>
+              existsSync(join(backupRoot, entry, ".codex", "agents", "planner.toml")),
+            ),
+            true,
+          );
+        });
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("counts plugin cleanup skill directory backups in the setup summary", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
     try {

@@ -1078,23 +1078,8 @@ async function cleanupPluginModeLegacyPrompts(
     const promptName = file.slice(0, -3);
     if (manifest && !isSetupPromptAssetName(promptName, manifest)) continue;
 
-    const src = join(srcDir, file);
     const dst = join(dstDir, file);
     if (!existsSync(dst)) continue;
-
-    const [srcContent, dstContent] = await Promise.all([
-      readFile(src, "utf-8"),
-      readFile(dst, "utf-8"),
-    ]);
-    if (srcContent !== dstContent) {
-      summary.skipped += 1;
-      if (options.verbose) {
-        console.log(
-          `  skipped legacy prompt cleanup for ${file}: installed content differs from OMX-managed content`,
-        );
-      }
-      continue;
-    }
 
     if (await ensureBackup(dst, true, backupContext, options)) {
       summary.backedUp += 1;
@@ -1105,7 +1090,7 @@ async function cleanupPluginModeLegacyPrompts(
     summary.removed += 1;
     if (options.verbose) {
       console.log(
-        `  ${options.dryRun ? "would remove" : "removed"} legacy prompt ${file}`,
+        `  ${options.dryRun ? "would archive and remove" : "archived and removed"} legacy prompt ${file}`,
       );
     }
   }
@@ -1141,11 +1126,14 @@ async function cleanupPluginModeLegacyNativeAgents(
       codexHomeOverride: join(agentsDir, ".."),
     });
     const installedToml = await readFile(dst, "utf-8");
-    if (installedToml !== expectedToml) {
+    if (
+      installedToml !== expectedToml &&
+      !isGeneratedOmxNativeAgentToml(installedToml, name)
+    ) {
       summary.skipped += 1;
       if (options.verbose) {
         console.log(
-          `  skipped legacy native agent cleanup for ${name}.toml: installed content differs from OMX-managed content`,
+          `  skipped legacy native agent cleanup for ${name}.toml: installed content is not an OMX-generated native agent`,
         );
       }
       continue;
@@ -1160,7 +1148,7 @@ async function cleanupPluginModeLegacyNativeAgents(
     summary.removed += 1;
     if (options.verbose) {
       console.log(
-        `  ${options.dryRun ? "would remove" : "removed"} legacy native agent ${name}.toml`,
+        `  ${options.dryRun ? "would archive and remove" : "archived and removed"} legacy native agent ${name}.toml`,
       );
     }
   }
@@ -1598,7 +1586,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
       );
       console.log(
         summary.prompts.removed > 0
-          ? `  ${dryRun ? "Would remove" : "Removed"} ${summary.prompts.removed} legacy OMX-managed prompt file(s).\n`
+          ? `  ${dryRun ? "Would archive and remove" : "Archived and removed"} ${summary.prompts.removed} legacy OMX-managed prompt file(s).\n`
           : "  Prompt refresh skipped; no legacy OMX-managed prompt files found.\n",
       );
     } else {
@@ -1698,7 +1686,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     );
     console.log(
       summary.nativeAgents.removed > 0
-        ? `  ${dryRun ? "Would remove" : "Removed"} ${summary.nativeAgents.removed} legacy OMX-managed native agent config(s).\n`
+        ? `  ${dryRun ? "Would archive and remove" : "Archived and removed"} ${summary.nativeAgents.removed} legacy OMX-managed native agent config(s).\n`
         : "  Native agent refresh skipped; no legacy OMX-managed native agent configs found.\n",
     );
   } else {

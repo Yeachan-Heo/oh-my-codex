@@ -8,7 +8,7 @@ The repository keeps one canonical authoring surface for each plugin/setup asset
 - **Plugin skill membership:** `templates/catalog-manifest.json` controls which catalog skills are installable. Active/internal skills, plus setup-only policy additions, must have canonical root skill directories and plugin mirrors.
 - **Plugin MCP metadata:** `src/config/omx-first-party-mcp.ts` is canonical. `plugins/oh-my-codex/.mcp.json` must match `buildOmxPluginMcpManifest()`.
 - **Plugin manifest version and paths:** `package.json` is canonical for the plugin version. The plugin manifest must point to `./skills/`, `./.mcp.json`, and `./.app.json`.
-- **Native agents and prompts:** root `prompts/` plus `src/agents/definitions.ts` are setup-owned canonical sources. The official plugin intentionally does not ship plugin-scoped `agents`, `prompts`, or hooks.
+- **Native agents and prompts:** root `prompts/` plus `src/agents/definitions.ts` are setup-owned canonical sources for legacy setup mode. The official plugin intentionally does not ship plugin-scoped `agents`, `prompts`, or hooks; plugin setup archives/removes legacy OMX-managed prompt and native-agent files so users do not keep stale mixed surfaces.
 
 ## Commands
 
@@ -49,4 +49,4 @@ The verifier fails when installable catalog agents are missing definitions or pr
 
 `omx setup` converges generated native-agent TOMLs safely: normal setup removes stale non-installable TOMLs only when they carry the exact `# oh-my-codex agent: <name>` generated marker for the same cataloged agent name. User-authored or ambiguous TOMLs are preserved during normal setup; `--force` remains the explicit destructive cleanup path for stale non-installable native-agent files. Prompt cleanup uses the prompt asset policy, so cataloged prompt files and explicit setup prompt assets are preserved even when they are not installable native-agent TOMLs.
 
-The official plugin manifest must continue to omit `agents`, `prompts`, and `hooks`; those remain installed by `omx setup`, not by the plugin bundle.
+The official plugin manifest must continue to omit `agents`, `prompts`, and `hooks`; legacy setup mode installs prompts/native agents, while plugin setup mode removes archived legacy copies instead of refreshing plugin-scoped prompt or agent assets.
