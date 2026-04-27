@@ -905,16 +905,37 @@ Ambient env is not a valid substitute once a Team is already running.
 
 ## 11. Diagnostic confidence
 
-Confidence is diagnostic only. It is not an execution threshold.
+Confidence is diagnostic only. It is derived from categorical resolution state;
+it must never be used to upgrade a non-launchable state. Its purpose is to tell
+operators how the selected approved identity was found and how much provenance
+was preserved.
 
 ```text
 ConfidenceClass(result) :=
   100 if result = reusable exact strong identity
+        (explicit or persisted Binding rehydrates the exact approved PRD/task,
+         command identity when present, and ready context)
+
    85 if result = reusable same-lineage fallback
+        (latest same-lineage hint is non-ready, but an older hint in the same
+         Task or TeamLaunchSignature lineage is ExecutionReusable)
+
    40 if result = surfaced non-ready lineage anchor
+        (a concrete PRD/task lineage exists, but HandoffState is
+         missing-baseline, incomplete, or invalid)
+
     0 if result = blocked | ambiguous | stale | malformed | noncanonical
 
-Execution launch states must never be produced from ConfidenceClass < 85.
+ConfidenceClass < 85 -> no execution launch state.
+ConfidenceClass >= 85 is necessary but not sufficient: categorical handoff,
+binding, selector, and runtime-start gates still decide whether launch proceeds.
+
+Launch projection:
+  100 -> launchable; existing strong binding may be carried forward
+   85 -> launchable; use the selected older same-lineage hint and build or
+         refresh binding from that hint, do not pretend it is the latest PRD
+   40 -> diagnostic-only; surface lineage and repair issue, do not launch
+    0 -> blocked/fail-closed
 ```
 
 ## 12. Strict invariants

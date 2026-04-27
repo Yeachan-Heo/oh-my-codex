@@ -25,6 +25,15 @@ type ScaleUpBindingState = 'no-binding-file' | 'binding-valid' | 'binding-stale'
 type RequestedApprovedExecutionState = 'absent' | 'explicit-null' | 'explicit-binding';
 type BindingFileState = 'missing' | 'malformed' | 'valid';
 type BindingHydrationState = 'reusable' | 'surfaced-nonready' | 'stale' | 'ambiguous';
+type DiagnosticConfidenceState =
+  | 'reusable-exact-strong-identity'
+  | 'reusable-same-lineage-fallback'
+  | 'surfaced-nonready-lineage-anchor'
+  | 'blocked'
+  | 'ambiguous'
+  | 'stale'
+  | 'malformed'
+  | 'noncanonical';
 type MarkdownScanState = 'normal' | 'fenced' | 'indented-code';
 type PlanningArtifactsAuthorityState = 'none' | 'structural' | 'approved-authoritative';
 type PipelineTeamExecLaunchState = 'structured-generic' | 'structured-approved' | 'blocked';
@@ -526,15 +535,36 @@ function launchHintVisibleInMarkdownModel(line: string, activeFence: boolean): b
   return markdownScanStateModel(line, activeFence) === 'normal';
 }
 
-function confidenceClassModel(state: BindingHydrationState): 100 | 40 | 0 {
+function confidenceClassModel(state: DiagnosticConfidenceState): 100 | 85 | 40 | 0 {
   switch (state) {
-    case 'reusable':
+    case 'reusable-exact-strong-identity':
       return 100;
-    case 'surfaced-nonready':
+    case 'reusable-same-lineage-fallback':
+      return 85;
+    case 'surfaced-nonready-lineage-anchor':
       return 40;
+    case 'blocked':
     case 'stale':
     case 'ambiguous':
+    case 'malformed':
+    case 'noncanonical':
       return 0;
+  }
+}
+
+function diagnosticConfidenceProjectionModel(state: DiagnosticConfidenceState): 'launchable' | 'diagnostic-only' | 'blocked' {
+  switch (state) {
+    case 'reusable-exact-strong-identity':
+    case 'reusable-same-lineage-fallback':
+      return 'launchable';
+    case 'surfaced-nonready-lineage-anchor':
+      return 'diagnostic-only';
+    case 'blocked':
+    case 'stale':
+    case 'ambiguous':
+    case 'malformed':
+    case 'noncanonical':
+      return 'blocked';
   }
 }
 
@@ -727,6 +757,10 @@ describe('launch-lifecycle-state-machine reference', () => {
     assert.match(MODEL_DOC, /BindingHydrationState\(b\) ∈ \{/);
     assert.match(MODEL_DOC, /MarkdownScanState\(line\) ∈ \{/);
     assert.match(MODEL_DOC, /ConfidenceClass\(result\) :=/);
+    assert.match(MODEL_DOC, /100 if result = reusable exact strong identity/);
+    assert.match(MODEL_DOC, /85 if result = reusable same-lineage fallback/);
+    assert.match(MODEL_DOC, /40 if result = surfaced non-ready lineage anchor/);
+    assert.match(MODEL_DOC, /ConfidenceClass < 85 -> no execution launch state/);
     assert.match(MODEL_DOC, /ResolveApprovedHint\(cwd, m, sel\)/);
     assert.match(MODEL_DOC, /TeamCliFollowupState\(cwd, raw_task, parsed_task\) ∈ \{/);
     assert.match(MODEL_DOC, /blocked\(reason\)/);
@@ -1280,6 +1314,16 @@ describe('launch-lifecycle-state-machine reference', () => {
     const requestedStates: RequestedApprovedExecutionState[] = ['absent', 'explicit-null', 'explicit-binding'];
     const bindingFileStates: BindingFileState[] = ['missing', 'malformed', 'valid'];
     const hydrationStates: BindingHydrationState[] = ['reusable', 'surfaced-nonready', 'stale', 'ambiguous'];
+    const confidenceStates: DiagnosticConfidenceState[] = [
+      'reusable-exact-strong-identity',
+      'reusable-same-lineage-fallback',
+      'surfaced-nonready-lineage-anchor',
+      'blocked',
+      'ambiguous',
+      'stale',
+      'malformed',
+      'noncanonical',
+    ];
 
     for (const requested of requestedStates) {
       for (const persisted of bindingFileStates) {
@@ -1298,16 +1342,34 @@ describe('launch-lifecycle-state-machine reference', () => {
       const projection = bindingHydrationProjectionModel(state);
       if (state === 'reusable') {
         assert.equal(projection, 'launchable');
-        assert.equal(confidenceClassModel(state), 100);
         assert.equal(boundWorkerLaunchProjectionModel(state), 'carry-binding');
       } else if (state === 'surfaced-nonready') {
         assert.equal(projection, 'diagnostic-only');
-        assert.equal(confidenceClassModel(state), 40);
         assert.equal(boundWorkerLaunchProjectionModel(state), 'drop-binding');
       } else {
         assert.equal(projection, 'blocked');
-        assert.equal(confidenceClassModel(state), 0);
         assert.equal(boundWorkerLaunchProjectionModel(state), 'drop-binding');
+      }
+    }
+
+    for (const state of confidenceStates) {
+      const confidence = confidenceClassModel(state);
+      const projection = diagnosticConfidenceProjectionModel(state);
+      if (state === 'reusable-exact-strong-identity') {
+        assert.equal(confidence, 100);
+        assert.equal(projection, 'launchable');
+      } else if (state === 'reusable-same-lineage-fallback') {
+        assert.equal(confidence, 85);
+        assert.equal(projection, 'launchable');
+      } else if (state === 'surfaced-nonready-lineage-anchor') {
+        assert.equal(confidence, 40);
+        assert.equal(projection, 'diagnostic-only');
+      } else {
+        assert.equal(confidence, 0);
+        assert.equal(projection, 'blocked');
+      }
+      if (confidence < 85) {
+        assert.notEqual(projection, 'launchable');
       }
     }
   });
