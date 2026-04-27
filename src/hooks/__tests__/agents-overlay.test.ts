@@ -336,6 +336,41 @@ describe("generateOverlay", () => {
     assert.match(overlay, /\*\*Ralph Ralplan-First Gate:\*\* UNLOCKED/);
     assert.match(overlay, /Planning artifacts present: PRD \+ test spec/);
   });
+
+  it("surfaces context-pack blockers when the latest PRD baseline exists but the declared pack is incomplete", async () => {
+    const sessionId = "ralph-gate-context-pack-blocked";
+    const sessionDir = join(tempDir, ".omx", "state", "sessions", sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(sessionDir, "ralph-state.json"),
+      JSON.stringify({
+        active: true,
+        iteration: 1,
+        max_iterations: 50,
+        current_phase: "starting",
+      }),
+    );
+    const plansDir = join(tempDir, ".omx", "plans");
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, "prd-issue-260.md"),
+      [
+        "# PRD",
+        "",
+        "## Context Pack Outcome",
+        "- pack: created `.omx/context/context-20260420T000000Z-issue-260.json`",
+        "",
+        'Launch via omx ralph "Execute issue 260"',
+      ].join("\n"),
+    );
+    await writeFile(join(plansDir, "test-spec-issue-260.md"), "# Test Spec\n");
+
+    const overlay = await generateOverlay(tempDir, sessionId);
+    assert.match(overlay, /\*\*Ralph Ralplan-First Gate:\*\* BLOCKED/);
+    assert.match(overlay, /Context-pack blocker:/);
+    assert.match(overlay, /Declared context pack file is missing/i);
+    assert.doesNotMatch(overlay, /Planning artifacts present: PRD \+ test spec/);
+  });
 });
 
 describe("resolveSessionOrchestrationMode", () => {

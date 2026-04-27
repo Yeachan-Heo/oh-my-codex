@@ -1,5 +1,9 @@
 import { cancelMode, readModeState, startMode, updateModeState } from '../modes/base.js';
-import { readPlanningArtifacts } from '../planning/artifacts.js';
+import {
+  hasApprovedPlanBaseline,
+  hasRequiredContextPacks,
+  readPlanningArtifacts,
+} from '../planning/artifacts.js';
 
 export const RALPLAN_ACTIVE_PHASES = [
   'draft',
@@ -189,7 +193,33 @@ export async function runRalplanConsensus(
 
       if (criticReview.verdict === 'approve') {
         const planningArtifacts = readPlanningArtifacts(cwd);
-        const planningComplete = planningArtifacts.prdPaths.length > 0 && planningArtifacts.testSpecPaths.length > 0;
+        const planningComplete = hasApprovedPlanBaseline(planningArtifacts, latestPlanPath)
+          && hasRequiredContextPacks(planningArtifacts, latestPlanPath);
+        if (!planningComplete) {
+          const error = 'ralplan_handoff_not_ready';
+          await updateRalplanState(cwd, {
+            active: false,
+            iteration,
+            current_phase: 'failed',
+            completed_at: new Date().toISOString(),
+            planning_complete: false,
+            latest_plan_path: latestPlanPath,
+            error,
+            review_history: reviewHistory,
+          });
+          return {
+            status: 'failed',
+            iteration,
+            phase: 'failed',
+            planningComplete: false,
+            drafts,
+            architectReviews,
+            criticReviews,
+            latestPlanPath,
+            artifacts: aggregatedArtifacts,
+            error,
+          };
+        }
         await updateRalplanState(cwd, {
           active: false,
           iteration,

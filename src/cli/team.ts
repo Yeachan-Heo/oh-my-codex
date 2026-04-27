@@ -7,9 +7,24 @@ import { DEFAULT_MAX_WORKERS } from '../team/state.js';
 import { sanitizeTeamName } from '../team/tmux-session.js';
 import { readTeamEvents, waitForTeamEvent } from '../team/state/events.js';
 import type { TeamEvent } from '../team/state.js';
+import {
+  buildApprovedTeamExecutionBinding,
+  hydrateApprovedTeamExecutionHintFromBinding,
+  readBoundApprovedTeamExecutionState,
+  readPersistedApprovedTeamExecutionBindingState,
+  readPersistedApprovedTeamExecutionHint,
+  type ApprovedTeamExecutionBinding,
+  type PersistedTeamFollowupState,
+} from '../team/approved-execution.js';
 import { parseWorktreeMode, type WorktreeMode } from '../team/worktree.js';
 import { classifyTaskSize } from '../hooks/task-size-detector.js';
-import { readApprovedExecutionLaunchHint } from '../planning/artifacts.js';
+import {
+  isApprovedExecutionContextReadyStatus,
+  isApprovedExecutionFollowupReadyStatus,
+  readApprovedExecutionLaunchHint,
+  readApprovedExecutionLaunchHintOutcome,
+  type ApprovedExecutionLaunchHint,
+} from '../planning/artifacts.js';
 import { routeTaskToRole } from '../team/role-router.js';
 import { allocateTasksToWorkers } from '../team/allocation-policy.js';
 import {
@@ -38,15 +53,34 @@ interface ParsedTeamArgs {
   explicitWorkerCount: boolean;
   task: string;
   teamName: string;
+  followupState: TeamCliFollowupState;
 }
 
+type TeamCliFollowupState =
+  | { status: 'generic' }
+  | { status: 'approved-unbound'; approvedHint: ApprovedExecutionLaunchHint }
+  | { status: 'approved-bound'; approvedHint: ApprovedExecutionLaunchHint; approvedExecution: ApprovedTeamExecutionBinding }
+  | { status: 'rejected-bound' };
 
 interface TeamFollowupContext {
   task: string;
-  workerCount: number;
-  explicitWorkerCount: boolean;
+  workerCount?: number;
+  explicitWorkerCount?: boolean;
   agentType?: string;
   explicitAgentType?: boolean;
+  followupState: TeamCliFollowupState;
+}
+
+interface ApprovedExecutionModeStateUpdates {
+  approved_plan_path: string | undefined;
+  approved_test_spec_paths: string[];
+  approved_deep_interview_spec_paths: string[];
+  approved_context_pack: ApprovedExecutionLaunchHint['contextPack'] | null;
+  approved_context_pack_status: ApprovedExecutionLaunchHint['contextPackStatus'] | undefined;
+  approved_missing_context_pack_roles: ApprovedExecutionLaunchHint['missingRequiredContextPackRoles'];
+  approved_context_pack_issues: ApprovedExecutionLaunchHint['contextPackIssues'];
+  approved_context_refs: ApprovedExecutionLaunchHint['contextRefs'];
+  approved_context_ref_issues: ApprovedExecutionLaunchHint['contextRefIssues'];
 }
 
 function persistExactTeamModeState(
@@ -66,43 +100,18 @@ function persistExactTeamModeState(
   }
 }
 
-function readPersistedTeamFollowupState(cwd: string): {
-  task?: string;
-  task_description?: string;
-  workerCount?: number;
-  agent_count?: number;
-  agentType?: string;
-  agent_types?: string;
-  linkedRalph?: boolean;
-} | null {
-  const path = join(cwd, '.omx', 'state', 'team-state.json');
-  if (!existsSync(path)) return null;
-  try {
-    return JSON.parse(readFileSync(path, 'utf-8')) as {
-      task?: string;
-      workerCount?: number;
-      agentType?: string;
-      linkedRalph?: boolean;
-      task_description?: string;
-      agent_count?: number;
-      agent_types?: string;
-    };
-  } catch {
-    return null;
-  }
+function resolveApprovedTeamExecutionHint(
+  cwd: string,
+  task: string,
+): ApprovedExecutionLaunchHint | null {
+  return readApprovedExecutionLaunchHint(cwd, 'team', { task });
 }
 
-function resolveApprovedTeamFollowupContext(cwd: string, task: string): TeamFollowupContext | null {
-  const normalizedTask = task.trim();
-  if (!normalizedTask) return null;
-
-  const existingTeamState = readPersistedTeamFollowupState(cwd);
-  const shortFollowup = ['team', 'team으로 해줘', 'team으로 해주세요'].includes(normalizedTask);
-  if (!shortFollowup) return null;
-
-  const approvedHint = readApprovedExecutionLaunchHint(cwd, 'team');
-  if (!approvedHint) return null;
-
+function buildApprovedTeamFollowupContext(
+  approvedHint: ApprovedExecutionLaunchHint,
+  existingTeamState: PersistedTeamFollowupState | null,
+  followupState: TeamCliFollowupState,
+): TeamFollowupContext {
   const persistedTask = typeof existingTeamState?.task_description === 'string'
     ? existingTeamState.task_description
     : typeof existingTeamState?.task === 'string'
@@ -120,6 +129,7 @@ function resolveApprovedTeamFollowupContext(cwd: string, task: string): TeamFoll
       explicitWorkerCount: true,
       agentType: approvedHint.agentType,
       explicitAgentType: approvedHint.agentType != null,
+      followupState,
     };
   }
 
@@ -129,6 +139,105 @@ function resolveApprovedTeamFollowupContext(cwd: string, task: string): TeamFoll
     explicitWorkerCount: approvedHint.workerCount != null,
     agentType: approvedHint.agentType,
     explicitAgentType: approvedHint.agentType != null,
+    followupState,
+  };
+}
+
+function resolveApprovedTeamFollowupContext(cwd: string, task: string): TeamFollowupContext | null {
+  const normalizedTask = task.trim();
+  if (!normalizedTask) return null;
+
+  const shortFollowup = ['team', 'team으로 해줘', 'team으로 해주세요'].includes(normalizedTask);
+  if (!shortFollowup) return null;
+
+  const boundExecution = readBoundApprovedTeamExecutionState(cwd);
+  if (boundExecution.bindingConfigured) {
+    if (boundExecution.bindingState === 'malformed') {
+      throw new Error(`approved_execution_binding_malformed:${boundExecution.teamName}`);
+    }
+    const approvedHint = boundExecution.approvedHint;
+    if (boundExecution.approvedExecution && !approvedHint) {
+      throw new Error(
+        `approved_execution_binding_stale:${boundExecution.approvedExecution.prd_path}:${boundExecution.approvedExecution.task}`,
+      );
+    }
+    if (approvedHint && isApprovedExecutionContextReadyStatus(approvedHint.contextPackStatus)) {
+      return buildApprovedTeamFollowupContext(
+        approvedHint,
+        boundExecution.teamState,
+        boundExecution.approvedExecution
+          ? {
+            status: 'approved-bound',
+            approvedHint,
+            approvedExecution: boundExecution.approvedExecution,
+          }
+          : {
+            status: 'approved-unbound',
+            approvedHint,
+          },
+      );
+    }
+    if (approvedHint && isApprovedExecutionFollowupReadyStatus(approvedHint.contextPackStatus)) {
+      return buildApprovedTeamFollowupContext(
+        approvedHint,
+        boundExecution.teamState,
+        { status: 'rejected-bound' },
+      );
+    }
+    if (!approvedHint) {
+      return {
+        task: normalizedTask,
+        followupState: { status: 'rejected-bound' },
+      };
+    }
+    return {
+      task: normalizedTask,
+      followupState: { status: 'rejected-bound' },
+    };
+  }
+
+  const approvedHintOutcome = readApprovedExecutionLaunchHintOutcome(cwd, 'team');
+  if (approvedHintOutcome.status === 'ambiguous') {
+    throw new Error('approved_execution_hint_ambiguous:team');
+  }
+  if (approvedHintOutcome.status !== 'resolved') return null;
+  const approvedHint = approvedHintOutcome.hint;
+  if (isApprovedExecutionContextReadyStatus(approvedHint.contextPackStatus)) {
+    return buildApprovedTeamFollowupContext(
+      approvedHint,
+      boundExecution.teamState,
+      {
+        status: 'approved-unbound',
+        approvedHint,
+      },
+    );
+  }
+  if (isApprovedExecutionFollowupReadyStatus(approvedHint.contextPackStatus)) {
+    return buildApprovedTeamFollowupContext(
+      approvedHint,
+      boundExecution.teamState,
+      { status: 'generic' },
+    );
+  }
+  if (!isApprovedExecutionFollowupReadyStatus(approvedHint.contextPackStatus)) {
+    return null;
+  }
+  return null;
+}
+
+function buildApprovedExecutionModeStateUpdates(
+  approvedHint: ApprovedExecutionLaunchHint | null | undefined,
+): ApprovedExecutionModeStateUpdates {
+  return {
+    approved_plan_path: approvedHint?.sourcePath,
+    approved_test_spec_paths: approvedHint?.testSpecPaths ?? [],
+    approved_deep_interview_spec_paths: approvedHint?.deepInterviewSpecPaths ?? [],
+    approved_context_pack: approvedHint?.contextPack ?? null,
+    approved_context_pack_status: approvedHint?.contextPackStatus,
+    approved_missing_context_pack_roles: approvedHint?.missingRequiredContextPackRoles ?? [],
+    approved_context_pack_issues: approvedHint?.contextPackIssues ?? [],
+    approved_context_refs: approvedHint?.contextRefs ?? [],
+    approved_context_ref_issues: approvedHint?.contextRefIssues ?? [],
   };
 }
 
@@ -415,13 +524,17 @@ function parseTeamApiArgs(args: string[]): {
   return { operation, input, json };
 }
 
-function slugifyTask(task: string): string {
+export function slugifyTask(task: string): string {
   return task
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 30) || 'team-task';
+}
+
+export function deriveTeamNameFromTask(task: string): string {
+  return sanitizeTeamName(slugifyTask(task));
 }
 
 function snapshotHasDeadWorkerStall(snapshot: TeamSnapshot): boolean {
@@ -910,9 +1023,9 @@ function parseTeamArgs(args: string[], cwd: string = process.cwd()): ParsedTeamA
   const followupContext = resolveApprovedTeamFollowupContext(cwd, task);
   const effectiveTask = followupContext?.task ?? task;
   if (followupContext) {
-    if (!explicitWorkerCount) {
+    if (!explicitWorkerCount && typeof followupContext.workerCount === 'number') {
       workerCount = followupContext.workerCount;
-      explicitWorkerCount = followupContext.explicitWorkerCount;
+      explicitWorkerCount = followupContext.explicitWorkerCount === true;
     }
     if (!explicitAgentType && followupContext.agentType) {
       agentType = followupContext.agentType;
@@ -920,8 +1033,16 @@ function parseTeamArgs(args: string[], cwd: string = process.cwd()): ParsedTeamA
     }
   }
 
-  const teamName = sanitizeTeamName(slugifyTask(effectiveTask));
-  return { workerCount, agentType, explicitAgentType, explicitWorkerCount, task: effectiveTask, teamName };
+  const teamName = deriveTeamNameFromTask(effectiveTask);
+  return {
+    workerCount,
+    agentType,
+    explicitAgentType,
+    explicitWorkerCount,
+    task: effectiveTask,
+    teamName,
+    followupState: followupContext?.followupState ?? { status: 'generic' },
+  };
 }
 
 export function parseTeamStartArgs(args: string[]): ParsedTeamStartArgs {
@@ -1202,11 +1323,30 @@ function distributeTasksToWorkers(
 async function ensureTeamModeState(
   parsed: ParsedTeamArgs,
   tasks?: Array<{ role?: string }>,
+  approvedHint?: ApprovedExecutionLaunchHint | null,
+  teamStateRoot?: string,
 ): Promise<void> {
+  const existing = await readModeState('team');
+  const effectiveTeamStateRoot = typeof teamStateRoot === 'string' && teamStateRoot.trim() !== ''
+    ? teamStateRoot.trim()
+    : typeof existing?.team_state_root === 'string' && existing.team_state_root.trim() !== ''
+      ? existing.team_state_root.trim()
+      : undefined;
   const fallbackRole = resolveImplicitTeamFallbackRole(parsed.agentType, parsed.explicitAgentType);
   const roleDistribution = tasks && tasks.length > 0
     ? [...new Set(tasks.map(t => t.role ?? parsed.agentType))].join(',')
     : parsed.agentType;
+  const persistedApprovedExecutionState = approvedHint
+    ? { status: 'missing' as const }
+    : await readPersistedApprovedTeamExecutionBindingState(parsed.teamName, process.cwd(), effectiveTeamStateRoot);
+  const persistedApprovedExecution = persistedApprovedExecutionState.status === 'valid'
+    ? persistedApprovedExecutionState.binding
+    : null;
+  const persistedApprovedHint = approvedHint || persistedApprovedExecutionState.status !== 'valid'
+    ? null
+    : hydrateApprovedTeamExecutionHintFromBinding(process.cwd(), persistedApprovedExecution);
+  const matchedApprovedHint = approvedHint
+    ?? (persistedApprovedExecution ? persistedApprovedHint : null);
 
   const availableAgentTypes = await resolveAvailableAgentTypes(process.cwd());
   const staffingPlan = buildFollowupStaffingPlan('team', parsed.task, availableAgentTypes, {
@@ -1218,20 +1358,20 @@ async function ensureTeamModeState(
     : 'team-exec';
   const active = !isTerminalModePhase(currentPhase);
   const completionStamp = active ? undefined : new Date().toISOString();
-
-  const existing = await readModeState('team');
   if (existing?.active) {
     await updateModeState('team', {
       active,
       task_description: parsed.task,
       current_phase: currentPhase,
       team_name: parsed.teamName,
+      ...(effectiveTeamStateRoot ? { team_state_root: effectiveTeamStateRoot } : {}),
       agent_count: parsed.workerCount,
       agent_types: roleDistribution,
       available_agent_types: availableAgentTypes,
       staffing_summary: staffingPlan.staffingSummary,
       staffing_allocations: staffingPlan.allocations,
       completed_at: completionStamp,
+      ...buildApprovedExecutionModeStateUpdates(matchedApprovedHint),
     });
     return;
   }
@@ -1241,12 +1381,14 @@ async function ensureTeamModeState(
     active,
     current_phase: currentPhase,
     team_name: parsed.teamName,
+    ...(effectiveTeamStateRoot ? { team_state_root: effectiveTeamStateRoot } : {}),
     agent_count: parsed.workerCount,
     agent_types: roleDistribution,
     available_agent_types: availableAgentTypes,
     staffing_summary: staffingPlan.staffingSummary,
     staffing_allocations: staffingPlan.allocations,
     completed_at: completionStamp,
+    ...buildApprovedExecutionModeStateUpdates(matchedApprovedHint),
   });
 
 }
@@ -1311,6 +1453,7 @@ async function persistTeamShutdownModeState(
         explicitAgentType: false,
         explicitWorkerCount: false,
         teamName,
+        followupState: { status: 'generic' },
       });
     } else {
       await startMode('team', `shutdown team ${teamName}`, 50, cwd);
@@ -1600,7 +1743,8 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
       explicitAgentType: false,
       explicitWorkerCount: false,
       teamName: runtime.teamName,
-    });
+      followupState: { status: 'generic' },
+    }, undefined, undefined, runtime.config.team_state_root);
     const availableAgentTypes = await resolveAvailableAgentTypes(cwd);
     const staffingPlan = buildFollowupStaffingPlan('team', runtime.config.task, availableAgentTypes, {
       workerCount: runtime.config.worker_count,
@@ -1658,6 +1802,15 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     workerCount: executionPlan.workerCount,
     fallbackRole: resolveImplicitTeamFallbackRole(parsed.agentType, parsed.explicitAgentType),
   });
+  const approvedHint = parsed.followupState.status === 'approved-bound'
+    || parsed.followupState.status === 'approved-unbound'
+    ? parsed.followupState.approvedHint
+    : null;
+  const approvedExecution = parsed.followupState.status === 'approved-bound'
+    ? parsed.followupState.approvedExecution
+    : parsed.followupState.status === 'approved-unbound'
+      ? buildApprovedTeamExecutionBinding(parsed.followupState.approvedHint)
+      : null;
   const runtime = await startTeam(
     parsed.teamName,
     parsed.task,
@@ -1665,9 +1818,13 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     executionPlan.workerCount,
     tasks,
     cwd,
-    { worktreeMode },
+    { worktreeMode, approvedExecution },
   );
-
-  await ensureTeamModeState(effectiveParsed, tasks);
+  const persistedApprovedHint = await readPersistedApprovedTeamExecutionHint(
+    runtime.teamName,
+    cwd,
+    runtime.config.team_state_root,
+  );
+  await ensureTeamModeState(effectiveParsed, tasks, persistedApprovedHint ?? approvedHint, runtime.config.team_state_root);
   await renderStartSummary(runtime, staffingPlan);
 }

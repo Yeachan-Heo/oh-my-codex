@@ -28,6 +28,10 @@ describe('pre-context gate guidance in planning/execution-heavy skills', () => {
     assert.match(ralplanSkill, /Pre-context Intake/i);
     assert.match(ralplanSkill, /\.omx\/context\/\{slug\}-\{timestamp\}\.md/);
     assert.match(ralplanSkill, /\$deep-interview\s+--quick/i);
+    assert.match(ralplanSkill, /omx-context-pack-v1/i);
+    assert.match(ralplanSkill, /Reuse before rebuild/i);
+    assert.match(ralplanSkill, /planning note only/i);
+    assert.match(ralplanSkill, /run pack `sync` once/i);
   });
 
   it('team documents required context snapshot gate before launch', () => {
@@ -35,6 +39,8 @@ describe('pre-context gate guidance in planning/execution-heavy skills', () => {
     assert.match(teamSkill, /\.omx\/context\/\{slug\}-\{timestamp\}\.md/);
     assert.match(teamSkill, /\$deep-interview\s+--quick/i);
     assert.match(teamSkill, /initialize\/sync it from canonical team runtime state before proceeding/i);
+    assert.match(teamSkill, /canonical pack index plus approved refs/i);
+    assert.match(teamSkill, /do not create a second freeform/i);
   });
 
   it('autopilot documents required pre-context intake before expansion', () => {
@@ -48,5 +54,7 @@ describe('pre-context gate guidance in planning/execution-heavy skills', () => {
     assert.match(ralphSkill, /Pre-context intake/i);
     assert.match(ralphSkill, /\.omx\/context\/\{task-slug\}-\{timestamp\}\.md/);
     assert.match(ralphSkill, /\$deep-interview\s+--quick/i);
+    assert.match(ralphSkill, /canonical pack index plus approved refs/i);
+    assert.match(ralphSkill, /do not create a second freeform/i);
   });
 });

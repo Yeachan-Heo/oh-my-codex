@@ -14,7 +14,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { classifyTaskSize, isHeavyMode, type TaskSizeResult, type TaskSizeThresholds } from './task-size-detector.js';
 import { isApprovedExecutionFollowupShortcut, type FollowupMode } from '../team/followup-planner.js';
-import { isPlanningComplete, readPlanningArtifacts } from '../planning/artifacts.js';
+import { isApprovedExecutionFollowupReadyStatus, readApprovedExecutionLaunchHint } from '../planning/artifacts.js';
+import { readBoundApprovedTeamExecutionState } from '../team/approved-execution.js';
 import { KEYWORD_TRIGGER_DEFINITIONS, compareKeywordMatches } from './keyword-registry.js';
 import {
   SKILL_ACTIVE_STATE_FILE,
@@ -1051,10 +1052,24 @@ export function applyRalplanGate(
     return { keywords, gateApplied: false, gatedKeywords: [] };
   }
 
-  const planningComplete = isPlanningComplete(readPlanningArtifacts(options.cwd ?? process.cwd()));
   const shortFollowupBypasses = executionKeywords.filter((keyword) => {
     const normalizedKeyword = keyword === 'swarm' ? 'team' : keyword;
     if (normalizedKeyword !== 'team' && normalizedKeyword !== 'ralph') return false;
+    const cwd = options.cwd ?? process.cwd();
+    const planningComplete = normalizedKeyword === 'team'
+      ? (() => {
+        const boundExecution = readBoundApprovedTeamExecutionState(cwd);
+        if (boundExecution.bindingConfigured) {
+          return boundExecution.approvedHint != null
+            && isApprovedExecutionFollowupReadyStatus(boundExecution.approvedHint.contextPackStatus);
+        }
+        const approvedHint = readApprovedExecutionLaunchHint(cwd, 'team');
+        return approvedHint != null && isApprovedExecutionFollowupReadyStatus(approvedHint.contextPackStatus);
+      })()
+      : (() => {
+        const approvedHint = readApprovedExecutionLaunchHint(cwd, 'ralph');
+        return approvedHint != null && isApprovedExecutionFollowupReadyStatus(approvedHint.contextPackStatus);
+      })();
     return isApprovedExecutionFollowupShortcut(
       normalizedKeyword as FollowupMode,
       text,

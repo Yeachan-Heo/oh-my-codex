@@ -4,6 +4,8 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { readContextPackDocument, writeContextPackDocument } from '../../planning/context-packs.js';
+import { writePersistedApprovedTeamExecutionBinding } from '../../team/approved-execution.js';
 import {
   detectKeywords,
   detectPrimaryKeyword,
@@ -16,6 +18,80 @@ import {
 import { SKILL_ACTIVE_STATE_FILE } from '../../state/skill-active.js';
 import { isUnderspecifiedForExecution, applyRalplanGate } from '../keyword-detector.js';
 import { KEYWORD_TRIGGER_DEFINITIONS } from '../keyword-registry.js';
+
+async function writeApprovedTeamHandoffFiles(
+  cwd: string,
+  slug: string,
+  task: string,
+): Promise<{ prdPath: string; packPath: string }> {
+  const plansDir = join(cwd, '.omx', 'plans');
+  const contextDir = join(cwd, '.omx', 'context');
+  const docsDir = join(cwd, 'docs');
+  await mkdir(plansDir, { recursive: true });
+  await mkdir(contextDir, { recursive: true });
+  await mkdir(docsDir, { recursive: true });
+
+  await writeFile(join(docsDir, `${slug}-scope.md`), '# Scope\n\nScope context.\n');
+  await writeFile(join(docsDir, `${slug}-build.md`), '# Build\n\nBuild context.\n');
+  await writeFile(join(docsDir, `${slug}-verify.md`), '# Verify\n\nVerify context.\n');
+
+  const packPath = join(contextDir, `context-20260423T000000Z-${slug}.json`);
+  writeContextPackDocument(packPath, {
+    schema: 'omx-context-pack-v1',
+    slug,
+    entries: [
+      {
+        label: 'scope',
+        path: `docs/${slug}-scope.md`,
+        roles: ['scope'],
+        tags: [],
+        relationPath: [
+          { tag: 'plan', target: slug },
+          { tag: 'bounds', target: `docs/${slug}-scope.md` },
+        ],
+      },
+      {
+        label: 'build',
+        path: `docs/${slug}-build.md`,
+        roles: ['build'],
+        tags: [],
+        relationPath: [
+          { tag: 'plan', target: slug },
+          { tag: 'implements', target: `docs/${slug}-build.md` },
+        ],
+      },
+      {
+        label: 'verify',
+        path: `docs/${slug}-verify.md`,
+        roles: ['verify'],
+        tags: [],
+        relationPath: [
+          { tag: 'plan', target: slug },
+          { tag: 'verifies', target: `docs/${slug}-verify.md` },
+        ],
+      },
+    ],
+  }, { refreshBasis: true });
+
+  const prdPath = join(plansDir, `prd-${slug}.md`);
+  await writeFile(
+    prdPath,
+    [
+      '# Approved plan',
+      '',
+      '## Context Pack Outcome',
+      `- pack: created \`.omx/context/context-20260423T000000Z-${slug}.json\``,
+      '',
+      `Launch via omx team 2:executor ${JSON.stringify(task)}`,
+    ].join('\n'),
+  );
+  await writeFile(join(plansDir, `test-spec-${slug}.md`), '# Test spec\n');
+  const document = readContextPackDocument(packPath);
+  assert.ok(document);
+  writeContextPackDocument(packPath, document, { refreshBasis: true });
+
+  return { prdPath, packPath };
+}
 
 describe('keyword detector swarm/team compatibility', () => {
   it('keeps explicit $skill order in detectKeywords results (left-to-right)', () => {
@@ -1609,6 +1685,223 @@ describe('applyRalplanGate', () => {
     }
   });
 
+  it('does not re-enter ralplan for a short bound team follow-up when the active team state is session-scoped', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-session-bound-'));
+    const approvedTask = 'Execute approved session-scoped plan';
+    const sessionId = 'sess-team-keyword-followup';
+    try {
+      const { prdPath } = await writeApprovedTeamHandoffFiles(cwd, 'session-bound', approvedTask);
+      await mkdir(join(cwd, '.omx', 'state', 'sessions', sessionId), { recursive: true });
+      await writeFile(
+        join(cwd, '.omx', 'state', 'session.json'),
+        `${JSON.stringify({
+          session_id: sessionId,
+          cwd,
+          started_at: new Date().toISOString(),
+        }, null, 2)}\n`,
+      );
+      await writeFile(
+        join(cwd, '.omx', 'state', 'sessions', sessionId, 'team-state.json'),
+        `${JSON.stringify({
+          active: true,
+          team_name: 'bound-team-session',
+          task_description: approvedTask,
+          agent_count: 2,
+        }, null, 2)}\n`,
+      );
+      await writePersistedApprovedTeamExecutionBinding('bound-team-session', cwd, {
+        prd_path: prdPath,
+        task: approvedTask,
+      });
+
+      const result = applyRalplanGate(['team'], 'team', { cwd });
+      assert.equal(result.gateApplied, false);
+      assert.deepEqual(result.keywords, ['team']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not re-enter ralplan for a short bound team follow-up when the active mode state points at a custom team_state_root', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-bound-team-custom-root-'));
+    const customStateRoot = join(cwd, 'custom-team-state');
+    const approvedTask = 'Execute approved custom-root plan';
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    try {
+      delete process.env.OMX_TEAM_STATE_ROOT;
+      const { prdPath } = await writeApprovedTeamHandoffFiles(cwd, 'custom-root', approvedTask);
+      const stateDir = join(cwd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        join(stateDir, 'team-state.json'),
+        `${JSON.stringify({
+          active: true,
+          team_name: 'bound-team-custom-root',
+          team_state_root: customStateRoot,
+          task_description: approvedTask,
+          agent_count: 2,
+        }, null, 2)}\n`,
+      );
+      await writePersistedApprovedTeamExecutionBinding('bound-team-custom-root', cwd, {
+        prd_path: prdPath,
+        task: approvedTask,
+      }, customStateRoot);
+
+      const result = applyRalplanGate(['team'], 'team', { cwd });
+      assert.equal(result.gateApplied, false);
+      assert.deepEqual(result.keywords, ['team']);
+    } finally {
+      if (typeof previousTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not re-enter ralplan for a short bound team follow-up when session-scoped team state is inactive but root team state is active', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-bound-team-inactive-session-'));
+    const approvedTask = 'Execute approved root fallback plan';
+    const sessionId = 'sess-team-gate-inactive';
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      const contextDir = join(cwd, '.omx', 'context');
+      const stateDir = join(cwd, '.omx', 'state');
+      await mkdir(plansDir, { recursive: true });
+      await mkdir(contextDir, { recursive: true });
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+      await mkdir(join(cwd, 'docs'), { recursive: true });
+      await writeFile(join(cwd, 'docs', 'inactive-session-fallback-scope.md'), '# Scope\n\nScope context.\n');
+      await writeFile(join(cwd, 'docs', 'inactive-session-fallback-build.md'), '# Build\n\nBuild context.\n');
+      await writeFile(join(cwd, 'docs', 'inactive-session-fallback-verify.md'), '# Verify\n\nVerify context.\n');
+      writeContextPackDocument(join(contextDir, 'context-20260420T000000Z-inactive-session-fallback.json'), {
+        schema: 'omx-context-pack-v1',
+        slug: 'inactive-session-fallback',
+        entries: [
+          {
+            label: 'scope',
+            path: 'docs/inactive-session-fallback-scope.md',
+            roles: ['scope'],
+            tags: [],
+            relationPath: [
+              { tag: 'plan', target: 'inactive-session-fallback' },
+              { tag: 'bounds', target: 'docs/inactive-session-fallback-scope.md' },
+            ],
+          },
+          {
+            label: 'build',
+            path: 'docs/inactive-session-fallback-build.md',
+            roles: ['build'],
+            tags: [],
+            relationPath: [
+              { tag: 'plan', target: 'inactive-session-fallback' },
+              { tag: 'implements', target: 'docs/inactive-session-fallback-build.md' },
+            ],
+          },
+          {
+            label: 'verify',
+            path: 'docs/inactive-session-fallback-verify.md',
+            roles: ['verify'],
+            tags: [],
+            relationPath: [
+              { tag: 'plan', target: 'inactive-session-fallback' },
+              { tag: 'verifies', target: 'docs/inactive-session-fallback-verify.md' },
+            ],
+          },
+        ],
+      }, { refreshBasis: true });
+      await writeFile(
+        join(plansDir, 'prd-inactive-session-fallback.md'),
+        [
+          '# Approved plan',
+          '',
+          '## Context Pack Outcome',
+          '- pack: created `.omx/context/context-20260420T000000Z-inactive-session-fallback.json`',
+          '',
+          `Launch hint: omx team 6:executor ${JSON.stringify(approvedTask)}`,
+        ].join('\n'),
+      );
+      await writeFile(join(plansDir, 'test-spec-inactive-session-fallback.md'), '# Test spec\n');
+      const packPath = join(contextDir, 'context-20260420T000000Z-inactive-session-fallback.json');
+      const packDocument = readContextPackDocument(packPath);
+      assert.ok(packDocument);
+      writeContextPackDocument(packPath, packDocument, { refreshBasis: true });
+      await writeFile(
+        join(stateDir, 'session.json'),
+        `${JSON.stringify({
+          session_id: sessionId,
+          cwd,
+          started_at: new Date().toISOString(),
+        }, null, 2)}\n`,
+      );
+      await writeFile(
+        join(stateDir, 'sessions', sessionId, 'team-state.json'),
+        `${JSON.stringify({
+          active: false,
+          team_name: 'inactive-session-team',
+          task_description: 'Cancelled session team',
+          current_phase: 'cancelled',
+        }, null, 2)}\n`,
+      );
+      await writeFile(
+        join(stateDir, 'team-state.json'),
+        `${JSON.stringify({
+          active: true,
+          team_name: 'bound-team-root-fallback',
+          task_description: approvedTask,
+          agent_count: 6,
+        }, null, 2)}\n`,
+      );
+      await writePersistedApprovedTeamExecutionBinding('bound-team-root-fallback', cwd, {
+        prd_path: join(plansDir, 'prd-inactive-session-fallback.md'),
+        task: approvedTask,
+      });
+
+      const result = applyRalplanGate(['team'], 'team', { cwd });
+      assert.equal(result.gateApplied, false);
+      assert.deepEqual(result.keywords, ['team']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not re-enter ralplan for a short bound team follow-up when session-scoped team state is malformed but root team state is active', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-bound-team-malformed-session-'));
+    const approvedTask = 'Execute approved malformed-session fallback plan';
+    const sessionId = 'sess-team-gate-malformed';
+    try {
+      const { prdPath } = await writeApprovedTeamHandoffFiles(cwd, 'malformed-session-fallback', approvedTask);
+      const stateDir = join(cwd, '.omx', 'state');
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+      await writeFile(
+        join(stateDir, 'session.json'),
+        `${JSON.stringify({
+          session_id: sessionId,
+          cwd,
+          started_at: new Date().toISOString(),
+        }, null, 2)}\n`,
+      );
+      await writeFile(join(stateDir, 'sessions', sessionId, 'team-state.json'), '{ not-json', 'utf-8');
+      await writeFile(
+        join(stateDir, 'team-state.json'),
+        `${JSON.stringify({
+          active: true,
+          team_name: 'bound-team-root-malformed-fallback',
+          task_description: approvedTask,
+          agent_count: 7,
+        }, null, 2)}\n`,
+      );
+      await writePersistedApprovedTeamExecutionBinding('bound-team-root-malformed-fallback', cwd, {
+        prd_path: prdPath,
+        task: approvedTask,
+      });
+
+      const result = applyRalplanGate(['team'], 'team', { cwd });
+      assert.equal(result.gateApplied, false);
+      assert.deepEqual(result.keywords, ['team']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('does not re-enter ralplan for a short approved Korean team follow-up', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-ko-'));
     try {
@@ -1628,6 +1921,31 @@ describe('applyRalplanGate', () => {
     }
   });
 
+  it('re-enters ralplan for a short team follow-up when the selected PRD lists multiple team launch hints', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-team-ambiguous-'));
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      await writeFile(
+        join(plansDir, 'prd-issue-831-ambiguous.md'),
+        [
+          '# Approved plan',
+          '',
+          'Launch hint: omx team 3:executor "Execute approved issue 831 plan"',
+          'Launch hint: omx team 5:debugger "Execute alternate issue 831 plan"',
+        ].join('\n'),
+      );
+      await writeFile(join(plansDir, 'test-spec-issue-831-ambiguous.md'), '# Test spec\n');
+
+      const result = applyRalplanGate(['team'], 'team', { cwd });
+      assert.equal(result.gateApplied, true);
+      assert.ok(result.keywords.includes('ralplan'));
+      assert.ok(!result.keywords.includes('team'));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('does not re-enter ralplan for a short approved ralph follow-up', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-ralph-'));
     try {
@@ -1642,6 +1960,599 @@ describe('applyRalplanGate', () => {
       const result = applyRalplanGate(['ralph'], 'ralph please', { cwd, priorSkill: 'ralplan' });
       assert.equal(result.gateApplied, false);
       assert.deepEqual(result.keywords, ['ralph']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not re-enter ralplan for a short bare ralph follow-up when an older same-task handoff is still ready', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-ralph-bare-ready-'));
+    const sharedTask = 'Execute approved shared bare ralph plan';
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      const contextDir = join(cwd, '.omx', 'context');
+      await mkdir(plansDir, { recursive: true });
+      await mkdir(contextDir, { recursive: true });
+      await mkdir(join(cwd, 'docs'), { recursive: true });
+      await writeFile(join(cwd, 'docs', 'alpha-build.md'), '# Alpha\n\nAlpha context.\n');
+      await writeFile(join(cwd, 'docs', 'zeta-scope.md'), '# Zeta\n\nZeta context.\n');
+      await writeFile(
+        join(plansDir, 'prd-alpha-bare.md'),
+        [
+          '# Approved plan',
+          '',
+          '## Context Pack Outcome',
+          '- pack: created `.omx/context/context-20260423T000000Z-alpha-bare.json`',
+          '',
+          `Launch hint: omx ralph ${JSON.stringify(sharedTask)}`,
+        ].join('\n'),
+      );
+      await writeFile(join(plansDir, 'test-spec-alpha-bare.md'), '# Test spec\n');
+      await writeFile(
+        join(plansDir, 'prd-zeta-bare.md'),
+        [
+          '# Approved plan',
+          '',
+          '## Context Pack Outcome',
+          '- pack: created `.omx/context/context-20260423T000000Z-zeta-bare.json`',
+          '',
+          `Launch hint: omx ralph ${JSON.stringify(sharedTask)}`,
+        ].join('\n'),
+      );
+      await writeFile(join(plansDir, 'test-spec-zeta-bare.md'), '# Test spec\n');
+      writeContextPackDocument(join(contextDir, 'context-20260423T000000Z-alpha-bare.json'), {
+        schema: 'omx-context-pack-v1',
+        slug: 'alpha-bare',
+        entries: [
+          {
+            label: 'build',
+            path: 'docs/alpha-build.md',
+            roles: ['scope', 'build', 'verify'],
+            tags: [],
+            relationPath: [
+              { tag: 'plan', target: 'alpha-bare' },
+              { tag: 'implements', target: 'docs/alpha-build.md' },
+            ],
+          },
+        ],
+      }, { refreshBasis: true });
+      writeContextPackDocument(join(contextDir, 'context-20260423T000000Z-zeta-bare.json'), {
+        schema: 'omx-context-pack-v1',
+        slug: 'zeta-bare',
+        entries: [
+          {
+            label: 'scope',
+            path: 'docs/zeta-scope.md',
+            roles: ['scope'],
+            tags: [],
+            relationPath: [
+              { tag: 'plan', target: 'zeta-bare' },
+              { tag: 'bounds', target: 'docs/zeta-scope.md' },
+            ],
+          },
+        ],
+      }, { refreshBasis: true });
+
+      const result = applyRalplanGate(['ralph'], 'ralph please', { cwd, priorSkill: 'ralplan' });
+      assert.equal(result.gateApplied, false);
+      assert.deepEqual(result.keywords, ['ralph']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('re-enters ralplan for a bare ralph follow-up when the selected PRD lists multiple Ralph launch hints', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-ralph-ambiguous-'));
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      await writeFile(
+        join(plansDir, 'prd-issue-832-ambiguous.md'),
+        [
+          '# Approved plan',
+          '',
+          'Launch hint: omx ralph "Execute approved issue 832 plan"',
+          'Launch hint: omx ralph "Execute alternate issue 832 plan"',
+        ].join('\n'),
+      );
+      await writeFile(join(plansDir, 'test-spec-issue-832-ambiguous.md'), '# Test spec\n');
+
+      const result = applyRalplanGate(['ralph'], 'ralph please', { cwd, priorSkill: 'ralplan' });
+      assert.equal(result.gateApplied, true);
+      assert.ok(result.keywords.includes('ralplan'));
+      assert.ok(!result.keywords.includes('ralph'));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps selector-backed approved follow-up checks read-only', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-selector-pack-'));
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      const contextDir = join(cwd, '.omx', 'context');
+      const docsDir = join(cwd, 'docs');
+      const packRelativePath = '.omx/context/context-20260420T000000Z-issue-835.json';
+      await mkdir(plansDir, { recursive: true });
+      await mkdir(contextDir, { recursive: true });
+      await mkdir(docsDir, { recursive: true });
+      await writeFile(join(docsDir, 'issue-835-boundary.md'), '# boundary\n\nStay inside the approved slice.\n');
+      await writeFile(
+        join(docsDir, 'runtime.md'),
+        `# Runtime\n\n## Runtime Contract\n\n${Array.from({ length: 80 }, () => 'Execution detail stays intentionally compact when excerpted.').join(' ')}\n`,
+      );
+      await writeFile(join(docsDir, 'issue-835-acceptance.md'), '# acceptance\n\nVerify the approved slice.\n');
+      await writeFile(
+        join(plansDir, 'prd-issue-835.md'),
+        [
+          '# Approved plan',
+          '',
+          '## Context Pack Outcome',
+          `- pack: created \`${packRelativePath}\``,
+          '',
+          'Launch hint: omx ralph "Execute approved issue 835 plan"',
+        ].join('\n'),
+      );
+      await writeFile(join(plansDir, 'test-spec-issue-835.md'), '# Test spec\n');
+      writeContextPackDocument(join(cwd, packRelativePath), {
+        schema: 'omx-context-pack-v1',
+        slug: 'issue-835',
+        entries: [
+          {
+            label: 'boundary',
+            path: 'docs/issue-835-boundary.md',
+            roles: ['scope'],
+            tags: [],
+            relationPath: [
+              { tag: 'plan', target: 'issue-835' },
+              { tag: 'bounds', target: 'docs/issue-835-boundary.md' },
+            ],
+          },
+          {
+            label: 'runtime',
+            path: 'docs/runtime.md',
+            roles: ['build'],
+            tags: ['runtime'],
+            selector: {
+              type: 'heading',
+              value: '## Runtime Contract',
+              maxWords: 120,
+            },
+            relationPath: [
+              { tag: 'plan', target: 'issue-835' },
+              { tag: 'implements', target: 'docs/runtime.md#runtime-contract' },
+            ],
+          },
+          {
+            label: 'acceptance',
+            path: 'docs/issue-835-acceptance.md',
+            roles: ['verify'],
+            tags: [],
+            relationPath: [
+              { tag: 'plan', target: 'issue-835' },
+              { tag: 'verifies', target: 'docs/issue-835-acceptance.md' },
+            ],
+            },
+          ],
+      }, { refreshBasis: true });
+
+      const result = applyRalplanGate(['ralph'], 'ralph please', { cwd, priorSkill: 'ralplan' });
+      assert.equal(result.gateApplied, false);
+      assert.deepEqual(result.keywords, ['ralph']);
+      assert.equal(
+        existsSync(join(cwd, '.omx', 'context', 'excerpts', 'context-20260420T000000Z-issue-835')),
+        false,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('re-enters ralplan for a short follow-up when declared context packs are invalid', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-invalid-pack-'));
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      const contextDir = join(cwd, '.omx', 'context');
+      await mkdir(plansDir, { recursive: true });
+      await mkdir(contextDir, { recursive: true });
+      await writeFile(
+        join(contextDir, 'context-20260420T000000Z-issue-833.json'),
+        `${JSON.stringify({
+          schema: 'wrong-schema',
+          slug: 'issue-833',
+          entries: [
+            {
+              label: 'boundary',
+              path: 'docs/issue-833-boundary.md',
+              roles: ['scope'],
+            },
+          ],
+        }, null, 2)}\n`,
+      );
+      await mkdir(join(cwd, 'docs'), { recursive: true });
+      await writeFile(join(cwd, 'docs', 'issue-833-boundary.md'), '# boundary\n\nscope context\n');
+      await writeFile(
+        join(plansDir, 'prd-issue-833.md'),
+        [
+          '# Approved plan',
+          '',
+          '## Context Pack Outcome',
+          '- pack: created `.omx/context/context-20260420T000000Z-issue-833.json`',
+          '',
+          'Launch hint: omx ralph "Execute approved issue 833 plan"',
+        ].join('\n'),
+      );
+      await writeFile(join(plansDir, 'test-spec-issue-833.md'), '# Test spec\n');
+
+      const result = applyRalplanGate(['ralph'], 'ralph please', { cwd, priorSkill: 'ralplan' });
+      assert.equal(result.gateApplied, true);
+      assert.ok(result.keywords.includes('ralplan'));
+      assert.ok(!result.keywords.includes('ralph'));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('re-enters ralplan for a short follow-up when declared context packs are missing', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-missing-pack-'));
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      await writeFile(
+        join(plansDir, 'prd-issue-834.md'),
+        [
+          '# Approved plan',
+          '',
+          '## Context Pack Outcome',
+          '- pack: created `.omx/context/context-20260420T000000Z-issue-834.json`',
+          '',
+          'Launch hint: omx ralph "Execute approved issue 834 plan"',
+        ].join('\n'),
+      );
+      await writeFile(join(plansDir, 'test-spec-issue-834.md'), '# Test spec\n');
+
+      const result = applyRalplanGate(['ralph'], 'ralph please', { cwd, priorSkill: 'ralplan' });
+      assert.equal(result.gateApplied, true);
+      assert.ok(result.keywords.includes('ralplan'));
+      assert.ok(!result.keywords.includes('ralph'));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps team short-followup bypass on an older ready bare handoff when the latest same-task PRD is incomplete', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-bare-team-ready-'));
+    const sharedTask = 'Execute approved shared bare team plan';
+    try {
+      await writeApprovedTeamHandoffFiles(cwd, 'alpha-bare', sharedTask);
+      await mkdir(join(cwd, '.omx', 'context'), { recursive: true });
+      await mkdir(join(cwd, 'docs'), { recursive: true });
+      await writeFile(join(cwd, 'docs', 'zeta-bare-scope.md'), '# Scope\n\nScope context.\n');
+      writeContextPackDocument(join(cwd, '.omx', 'context', 'context-20260423T000000Z-zeta-bare.json'), {
+        schema: 'omx-context-pack-v1',
+        slug: 'zeta-bare',
+        entries: [
+          {
+            label: 'scope',
+            path: 'docs/zeta-bare-scope.md',
+            roles: ['scope'],
+            tags: [],
+            relationPath: [
+              { tag: 'plan', target: 'zeta-bare' },
+              { tag: 'bounds', target: 'docs/zeta-bare-scope.md' },
+            ],
+          },
+        ],
+      }, { refreshBasis: true });
+      await writeFile(
+        join(cwd, '.omx', 'plans', 'prd-zeta-bare.md'),
+        [
+          '# Approved plan',
+          '',
+          '## Context Pack Outcome',
+          '- pack: created `.omx/context/context-20260423T000000Z-zeta-bare.json`',
+          '',
+          `Launch via omx team 2:executor ${JSON.stringify(sharedTask)}`,
+        ].join('\n'),
+      );
+      await writeFile(join(cwd, '.omx', 'plans', 'test-spec-zeta-bare.md'), '# Test spec\n');
+      const packDocument = readContextPackDocument(join(cwd, '.omx', 'context', 'context-20260423T000000Z-zeta-bare.json'));
+      assert.ok(packDocument);
+      writeContextPackDocument(
+        join(cwd, '.omx', 'context', 'context-20260423T000000Z-zeta-bare.json'),
+        packDocument,
+        { refreshBasis: true },
+      );
+
+      const result = applyRalplanGate(['team'], 'team', { cwd });
+      assert.equal(result.gateApplied, false);
+      assert.deepEqual(result.keywords, ['team']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps team short-followup bypass on the bound ready handoff when a newer PRD is incomplete', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-bound-team-ready-'));
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      const contextDir = join(cwd, '.omx', 'context');
+      await mkdir(plansDir, { recursive: true });
+      await mkdir(contextDir, { recursive: true });
+      await mkdir(join(cwd, 'docs'), { recursive: true });
+      await writeFile(join(cwd, 'docs', 'alpha-boundary.md'), '# boundary\n\nscope context\n');
+      await writeFile(join(cwd, 'docs', 'alpha-build.md'), '# build\n\nbuild context\n');
+      await writeFile(join(cwd, 'docs', 'alpha-verify.md'), '# verify\n\nverify context\n');
+      writeContextPackDocument(join(contextDir, 'context-20260420T000000Z-alpha.json'), {
+        schema: 'omx-context-pack-v1',
+        slug: 'alpha',
+        entries: [
+          {
+            label: 'boundary',
+            path: 'docs/alpha-boundary.md',
+            roles: ['scope'],
+            tags: [],
+            relationPath: [
+              { tag: 'plan', target: 'alpha' },
+              { tag: 'bounds', target: 'docs/alpha-boundary.md' },
+            ],
+          },
+          {
+            label: 'build',
+            path: 'docs/alpha-build.md',
+            roles: ['build'],
+            tags: [],
+            relationPath: [
+              { tag: 'plan', target: 'alpha' },
+              { tag: 'implements', target: 'docs/alpha-build.md' },
+            ],
+          },
+          {
+            label: 'verify',
+            path: 'docs/alpha-verify.md',
+            roles: ['verify'],
+            tags: [],
+            relationPath: [
+              { tag: 'plan', target: 'alpha' },
+              { tag: 'verifies', target: 'docs/alpha-verify.md' },
+            ],
+          },
+        ],
+      }, { refreshBasis: true });
+      await writeFile(
+        join(plansDir, 'prd-alpha.md'),
+        [
+          '# Approved plan',
+          '',
+          '## Context Pack Outcome',
+          '- pack: created `.omx/context/context-20260420T000000Z-alpha.json`',
+          '',
+          'Launch hint: omx team 2:executor "Execute approved alpha plan"',
+        ].join('\n'),
+      );
+      await writeFile(join(plansDir, 'test-spec-alpha.md'), '# Test spec\n');
+      const alphaPackPath = join(contextDir, 'context-20260420T000000Z-alpha.json');
+      const alphaDocument = readContextPackDocument(alphaPackPath);
+      assert.ok(alphaDocument);
+      writeContextPackDocument(alphaPackPath, alphaDocument, { refreshBasis: true });
+      await writeFile(
+        join(plansDir, 'prd-zeta.md'),
+        [
+          '# Approved plan',
+          '',
+          '## Context Pack Outcome',
+          '- pack: created `.omx/context/context-20260420T000000Z-zeta.json`',
+          '',
+          'Launch hint: omx team 5:reviewer "Execute approved zeta plan"',
+        ].join('\n'),
+      );
+      await writeFile(join(plansDir, 'test-spec-zeta.md'), '# Test spec\n');
+      await mkdir(join(cwd, '.omx', 'state'), { recursive: true });
+      await writeFile(
+        join(cwd, '.omx', 'state', 'team-state.json'),
+        `${JSON.stringify({
+          active: true,
+          team_name: 'bound-team',
+          task_description: 'Execute approved alpha plan',
+          agent_count: 2,
+        }, null, 2)}\n`,
+      );
+      await writePersistedApprovedTeamExecutionBinding('bound-team', cwd, {
+        prd_path: join(plansDir, 'prd-alpha.md'),
+        task: 'Execute approved alpha plan',
+      });
+
+      const result = applyRalplanGate(['team'], 'team', { cwd });
+      assert.equal(result.gateApplied, false);
+      assert.deepEqual(result.keywords, ['team']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps bound team short-followup bypass read-only when the approved pack uses selectors', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-bound-team-selector-'));
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      const contextDir = join(cwd, '.omx', 'context');
+      const stateDir = join(cwd, '.omx', 'state');
+      const docsDir = join(cwd, 'docs');
+      await mkdir(plansDir, { recursive: true });
+      await mkdir(contextDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(docsDir, { recursive: true });
+      await writeFile(join(docsDir, 'scope.md'), '# boundary\n\nStay inside the approved slice.\n');
+      await writeFile(
+        join(docsDir, 'runtime.md'),
+        `# Runtime\n\n## Runtime Contract\n\n${Array.from({ length: 80 }, () => 'Execution detail stays intentionally compact when excerpted.').join(' ')}\n`,
+      );
+      await writeFile(join(docsDir, 'verify.md'), '# acceptance\n\nVerify the approved slice.\n');
+      writeContextPackDocument(join(contextDir, 'context-20260422T000000Z-bound-selector.json'), {
+        schema: 'omx-context-pack-v1',
+        slug: 'bound-selector',
+        entries: [
+          {
+            label: 'scope',
+            path: 'docs/scope.md',
+            roles: ['scope'],
+            tags: [],
+            relationPath: [
+              { tag: 'plan', target: 'bound-selector' },
+              { tag: 'bounds', target: 'docs/scope.md' },
+            ],
+          },
+          {
+            label: 'runtime',
+            path: 'docs/runtime.md',
+            roles: ['build'],
+            tags: ['runtime'],
+            selector: {
+              type: 'heading',
+              value: '## Runtime Contract',
+              maxWords: 120,
+            },
+            relationPath: [
+              { tag: 'plan', target: 'bound-selector' },
+              { tag: 'implements', target: 'docs/runtime.md#runtime-contract' },
+            ],
+          },
+          {
+            label: 'verify',
+            path: 'docs/verify.md',
+            roles: ['verify'],
+            tags: [],
+            relationPath: [
+              { tag: 'plan', target: 'bound-selector' },
+              { tag: 'verifies', target: 'docs/verify.md' },
+            ],
+          },
+        ],
+      }, { refreshBasis: true });
+      await writeFile(
+        join(plansDir, 'prd-bound-selector.md'),
+        [
+          '# Approved plan',
+          '',
+          '## Context Pack Outcome',
+          '- pack: created `.omx/context/context-20260422T000000Z-bound-selector.json`',
+          '',
+          'Launch via omx team 2:executor "Execute approved selector handoff"',
+        ].join('\n'),
+      );
+      await writeFile(join(plansDir, 'test-spec-bound-selector.md'), '# Test spec\n');
+      await writeFile(
+        join(stateDir, 'team-state.json'),
+        `${JSON.stringify({
+          active: true,
+          team_name: 'bound-team',
+          task_description: 'Execute approved selector handoff',
+          agent_count: 2,
+        }, null, 2)}\n`,
+      );
+      await writePersistedApprovedTeamExecutionBinding('bound-team', cwd, {
+        prd_path: join(plansDir, 'prd-bound-selector.md'),
+        task: 'Execute approved selector handoff',
+      });
+
+      const document = readContextPackDocument(join(contextDir, 'context-20260422T000000Z-bound-selector.json'));
+      assert.ok(document);
+      writeContextPackDocument(
+        join(contextDir, 'context-20260422T000000Z-bound-selector.json'),
+        document,
+        { refreshBasis: true },
+      );
+
+      const result = applyRalplanGate(['team'], 'team', { cwd });
+      assert.equal(result.gateApplied, false);
+      assert.deepEqual(result.keywords, ['team']);
+      assert.equal(
+        existsSync(join(cwd, '.omx', 'context', 'excerpts', 'context-20260422T000000Z-bound-selector')),
+        false,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('re-enters ralplan for a short team follow-up when the bound handoff is stale even if a newer PRD is ready', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-bound-team-stale-'));
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      const contextDir = join(cwd, '.omx', 'context');
+      await mkdir(plansDir, { recursive: true });
+      await mkdir(contextDir, { recursive: true });
+      await mkdir(join(cwd, 'docs'), { recursive: true });
+      await writeFile(join(cwd, 'docs', 'zeta-boundary.md'), '# boundary\n\nscope context\n');
+      await writeFile(join(cwd, 'docs', 'zeta-build.md'), '# build\n\nbuild context\n');
+      await writeFile(join(cwd, 'docs', 'zeta-verify.md'), '# verify\n\nverify context\n');
+      writeContextPackDocument(join(contextDir, 'context-20260420T000000Z-zeta.json'), {
+        schema: 'omx-context-pack-v1',
+        slug: 'zeta',
+        entries: [
+          {
+            label: 'boundary',
+            path: 'docs/zeta-boundary.md',
+            roles: ['scope'],
+            tags: [],
+            relationPath: [
+              { tag: 'plan', target: 'zeta' },
+              { tag: 'bounds', target: 'docs/zeta-boundary.md' },
+            ],
+          },
+          {
+            label: 'build',
+            path: 'docs/zeta-build.md',
+            roles: ['build'],
+            tags: [],
+            relationPath: [
+              { tag: 'plan', target: 'zeta' },
+              { tag: 'implements', target: 'docs/zeta-build.md' },
+            ],
+          },
+          {
+            label: 'verify',
+            path: 'docs/zeta-verify.md',
+            roles: ['verify'],
+            tags: [],
+            relationPath: [
+              { tag: 'plan', target: 'zeta' },
+              { tag: 'verifies', target: 'docs/zeta-verify.md' },
+            ],
+          },
+        ],
+      }, { refreshBasis: true });
+      await writeFile(
+        join(plansDir, 'prd-zeta.md'),
+        [
+          '# Approved plan',
+          '',
+          '## Context Pack Outcome',
+          '- pack: created `.omx/context/context-20260420T000000Z-zeta.json`',
+          '',
+          'Launch hint: omx team 5:reviewer "Execute approved zeta plan"',
+        ].join('\n'),
+      );
+      await writeFile(join(plansDir, 'test-spec-zeta.md'), '# Test spec\n');
+      await mkdir(join(cwd, '.omx', 'state'), { recursive: true });
+      await writeFile(
+        join(cwd, '.omx', 'state', 'team-state.json'),
+        `${JSON.stringify({
+          active: true,
+          team_name: 'bound-team',
+          task_description: 'Execute approved alpha plan',
+          agent_count: 2,
+        }, null, 2)}\n`,
+      );
+      const stalePrdPath = join(plansDir, 'prd-alpha.md');
+      await writePersistedApprovedTeamExecutionBinding('bound-team', cwd, {
+        prd_path: stalePrdPath,
+        task: 'Execute approved alpha plan',
+      });
+
+      const result = applyRalplanGate(['team'], 'team', { cwd });
+      assert.equal(result.gateApplied, true);
+      assert.ok(result.keywords.includes('ralplan'));
+      assert.ok(!result.keywords.includes('team'));
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

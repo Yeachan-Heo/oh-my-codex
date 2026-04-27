@@ -328,6 +328,17 @@ describe('Planner prompt follow-up staffing guidance', () => {
     assert.match(plannerPrompt, /launch hints?/i);
     assert.match(plannerPrompt, /team verification path/i);
   });
+
+  it('should require the canonical v1 context-pack handoff contract', () => {
+    assert.match(plannerPrompt, /Context Pack Outcome/i);
+    assert.match(plannerPrompt, /`scope`.*`build`.*`verify`/s);
+    assert.match(plannerPrompt, /usually 3-6 total refs/i);
+    assert.match(plannerPrompt, /query role\/tag views before materializing excerpts/i);
+    assert.match(plannerPrompt, /pack `sync` once as the final handoff-ready gate/i);
+    assert.match(plannerPrompt, /Use tags only for optional topical cross-cuts/i);
+    assert.match(plannerPrompt, /View Notes.*concrete question/i);
+    assert.match(plannerPrompt, /execution authority remains the canonical JSON pack/i);
+  });
 });
 
 describe('Critic prompt RALPLAN-DR sections', () => {

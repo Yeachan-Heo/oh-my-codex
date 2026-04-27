@@ -1,8 +1,17 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { startMode, updateModeState } from '../modes/base.js';
-import { readApprovedExecutionLaunchHint, type ApprovedExecutionLaunchHint } from '../planning/artifacts.js';
+import {
+  isApprovedExecutionFollowupReadyStatus,
+  readApprovedExecutionLaunchHint,
+  type ApprovedExecutionLaunchHint,
+} from '../planning/artifacts.js';
+import {
+  contextPackIndexPath,
+  describeContextRef,
+  groupContextRefsByRole,
+} from '../planning/context-packs.js';
 import { ensureCanonicalRalphArtifacts } from '../ralph/persistence.js';
 import {
   buildFollowupStaffingPlan,
@@ -136,8 +145,43 @@ export function extractRalphTaskDescription(args: readonly string[], fallbackTas
   return words.join(' ') || fallbackTask || 'ralph-cli-launch';
 }
 
-function buildRalphApprovedContextLines(approvedHint: ApprovedExecutionLaunchHint | null): string[] {
+export function resolveApprovedRalphExecutionHint(
+  candidate: ApprovedExecutionLaunchHint | null,
+  explicitTask: string,
+): ApprovedExecutionLaunchHint | null {
+  if (!candidate) return null;
+  if (explicitTask === 'ralph-cli-launch') {
+    return isApprovedExecutionFollowupReadyStatus(candidate.contextPackStatus) ? candidate : null;
+  }
+  return candidate.task.trim() === explicitTask.trim() ? candidate : null;
+}
+
+export function readMatchedApprovedRalphExecutionHint(
+  cwd: string,
+  explicitTask: string,
+): ApprovedExecutionLaunchHint | null {
+  const matchedApprovedHint = resolveApprovedRalphExecutionHint(
+    readApprovedExecutionLaunchHint(cwd, 'ralph', explicitTask === 'ralph-cli-launch' ? {} : { task: explicitTask }),
+    explicitTask,
+  );
+  if (!matchedApprovedHint || matchedApprovedHint.contextPackStatus !== 'ready') {
+    return matchedApprovedHint;
+  }
+  return readApprovedExecutionLaunchHint(cwd, 'ralph', {
+    prdPath: matchedApprovedHint.sourcePath,
+    task: matchedApprovedHint.task,
+    materializeContextRefs: true,
+  }) ?? matchedApprovedHint;
+}
+
+function buildRalphApprovedExecutionLines(approvedHint: ApprovedExecutionLaunchHint | null): string[] {
   if (!approvedHint) return [];
+  const contextRefs = approvedHint.contextRefs;
+  const groupedRefs = groupContextRefsByRole(contextRefs);
+  const contextPackIndex = approvedHint.contextPack
+    ? contextPackIndexPath(approvedHint.contextPack.path)
+    : null;
+  const hasContextPackIndex = contextPackIndex != null && (!isAbsolute(contextPackIndex) || existsSync(contextPackIndex));
   const lines = [
     'Approved planning handoff context:',
     `- approved plan: ${approvedHint.sourcePath}`,
@@ -148,6 +192,52 @@ function buildRalphApprovedContextLines(approvedHint: ApprovedExecutionLaunchHin
   if (approvedHint.deepInterviewSpecPaths.length > 0) {
     lines.push(`- deep-interview specs: ${approvedHint.deepInterviewSpecPaths.join(', ')}`);
     lines.push('- Carry forward the approved deep-interview requirements and constraints during Ralph execution and final verification.');
+  }
+  if (approvedHint.contextPack) {
+    lines.push(`- context pack: ${approvedHint.contextPack.path}`);
+  }
+  if (approvedHint.contextPackStatus === 'ready') {
+    if (hasContextPackIndex) {
+      lines.push(`- context pack index: ${contextPackIndex}`);
+    }
+    if ((groupedRefs.build?.length ?? 0) > 0) {
+      lines.push(`- build context refs (read first): ${groupedRefs.build!.map(describeContextRef).join(', ')}`);
+    }
+    if ((groupedRefs.verify?.length ?? 0) > 0) {
+      lines.push(`- verify context refs: ${groupedRefs.verify!.map(describeContextRef).join(', ')}`);
+    }
+    if ((groupedRefs.scope?.length ?? 0) > 0) {
+      lines.push(`- scope context refs: ${groupedRefs.scope!.map(describeContextRef).join(', ')}`);
+    }
+    if (contextRefs.length > 0) {
+      lines.push(hasContextPackIndex
+        ? '- Read the listed build context refs before opening broader source files; if they are insufficient, open the pack index or query the canonical pack by role/tag/label to inspect alternate views and relation paths before broadening context.'
+        : '- Read the listed build context refs before opening broader source files; if they are insufficient, query the canonical pack by role/tag/label to inspect alternate views and relation paths before broadening context.');
+    } else {
+      if (hasContextPackIndex) {
+        lines.push('- Start from the approved pack index for implementation work and keep the verify refs it exposes available when proving completion.');
+        lines.push('- No generated context refs were declared for this handoff, so use the pack index directly before broadening context.');
+      } else {
+        lines.push('- The approved pack index is unavailable in this checkout, so query the canonical pack by role/tag/label before broadening context.');
+        lines.push('- No generated context refs were declared for this handoff, so use the canonical pack query results directly before broadening context.');
+      }
+    }
+  } else if (approvedHint.contextPackStatus === 'incomplete') {
+    if (approvedHint.contextPackIssues.length > 0) {
+      lines.push(`- incomplete context-pack issues: ${approvedHint.contextPackIssues.join(' | ')}`);
+    } else {
+      lines.push(`- missing required context roles: ${approvedHint.missingRequiredContextPackRoles.join(', ')}`);
+    }
+    lines.push('- Incomplete-pack fallback: use the approved plan, matching test specs, and any deep-interview artifacts as the brief; recreate the missing pack file or role coverage locally before broadening context.');
+  } else if (approvedHint.contextPackStatus === 'invalid') {
+    lines.push(`- invalid context pack issues: ${approvedHint.contextPackIssues.join(' | ')}`);
+    lines.push('- Invalid-pack fallback: use the approved plan, matching test specs, and any deep-interview artifacts as the brief; repair or recreate the execution snapshot before broadening context.');
+  } else if (approvedHint.contextPackStatus === 'missing-baseline') {
+    lines.push(`- missing-baseline issues: ${approvedHint.contextPackIssues.join(' | ')}`);
+    lines.push('- Missing-baseline fallback: the latest approved plan is missing its matching test spec, so use the surfaced plan as lineage guidance only and restore the missing baseline before broadening context or continuing execution.');
+  } else {
+    lines.push('- context pack: not declared in the approved plan; using the plan-only handoff baseline.');
+    lines.push('- Plan-only fallback: start from the approved plan, matching test specs, and any deep-interview artifacts, then create or refresh a local execution snapshot before broadening context.');
   }
   return lines;
 }
@@ -214,7 +304,7 @@ export function buildRalphAppendInstructions(
     '- Treat `.omx/state/subagent-tracking.json` as the native subagent activity ledger for this session.',
     '- Do not declare the task complete, and do not transition into final verification/completion, while active native subagent threads are still running.',
     '- Before closing a verification wave, confirm that active native subagent threads have drained.',
-    ...buildRalphApprovedContextLines(options.approvedHint ?? null),
+    ...buildRalphApprovedExecutionLines(options.approvedHint ?? null),
     'Final deslop guidance:',
     options.noDeslop
       ? '- `--no-deslop` is active for this Ralph run, so skip the mandatory ai-slop-cleaner final pass and use the latest successful pre-deslop verification evidence.'
@@ -255,8 +345,8 @@ export async function ralphCommand(args: string[]): Promise<void> {
   }
   assertRequiredRalphPrdJson(cwd, args);
   const artifacts = await ensureCanonicalRalphArtifacts(cwd);
-  const approvedHint = readApprovedExecutionLaunchHint(cwd, 'ralph');
   const explicitTask = extractRalphTaskDescription(normalizedArgs);
+  const approvedHint = readMatchedApprovedRalphExecutionHint(cwd, explicitTask);
   const task = explicitTask === 'ralph-cli-launch' ? approvedHint?.task ?? explicitTask : explicitTask;
   const noDeslop = normalizedArgs.some((arg) => arg.toLowerCase() === '--no-deslop');
   const availableAgentTypes = await resolveAvailableAgentTypes(cwd);
@@ -279,6 +369,12 @@ export async function ralphCommand(args: string[]): Promise<void> {
     approved_plan_path: approvedHint?.sourcePath,
     approved_test_spec_paths: approvedHint?.testSpecPaths ?? [],
     approved_deep_interview_spec_paths: approvedHint?.deepInterviewSpecPaths ?? [],
+    approved_context_pack: approvedHint?.contextPack ?? null,
+    approved_context_pack_status: approvedHint?.contextPackStatus,
+    approved_missing_context_pack_roles: approvedHint?.missingRequiredContextPackRoles ?? [],
+    approved_context_pack_issues: approvedHint?.contextPackIssues ?? [],
+    approved_context_refs: approvedHint?.contextRefs ?? [],
+    approved_context_ref_issues: approvedHint?.contextRefIssues ?? [],
     ...(artifacts.canonicalPrdPath ? { canonical_prd_path: artifacts.canonicalPrdPath } : {}),
   });
   if (artifacts.migratedPrd) {

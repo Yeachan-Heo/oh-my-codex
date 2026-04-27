@@ -6,11 +6,20 @@
  * canonical OMX execution surface.
  */
 
+import { join } from 'node:path';
 import type { PipelineStage, StageContext, StageResult } from '../types.js';
+import { buildTeamExecutionPlan, deriveTeamNameFromTask } from '../../cli/team.js';
 import {
   buildFollowupStaffingPlan,
   resolveAvailableAgentTypes,
 } from '../../team/followup-planner.js';
+import { buildApprovedTeamExecutionBinding, type ApprovedTeamExecutionBinding } from '../../team/approved-execution.js';
+import {
+  isApprovedExecutionContextReadyStatus,
+  isApprovedExecutionFollowupReadyStatus,
+  readApprovedExecutionLaunchHint,
+} from '../../planning/artifacts.js';
+import { packageRoot } from '../../utils/paths.js';
 
 export interface TeamExecStageOptions {
   /** Number of Codex CLI workers to launch. Defaults to 2. */
@@ -26,13 +35,50 @@ export interface TeamExecStageOptions {
   extraEnv?: Record<string, string>;
 }
 
+function shellSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\"'\"'`)}'`;
+}
+
+function resolveApprovedExecutionForTeamExec(
+  cwd: string,
+  approvedTask: string,
+  planningArtifacts?: Record<string, unknown>,
+): ApprovedTeamExecutionBinding | null {
+  if (!planningArtifacts) {
+    return null;
+  }
+  const latestPlanPath = typeof planningArtifacts.latestPlanPath === 'string' && planningArtifacts.latestPlanPath.trim() !== ''
+    ? planningArtifacts.latestPlanPath
+    : undefined;
+  if (!latestPlanPath) {
+    return null;
+  }
+  const approvedHint = readApprovedExecutionLaunchHint(cwd, 'team', {
+    task: approvedTask,
+    prdPath: latestPlanPath,
+  });
+  if (!approvedHint) {
+    throw new Error(`team_exec_approved_handoff_missing:${approvedTask}`);
+  }
+  if (isApprovedExecutionContextReadyStatus(approvedHint.contextPackStatus)) {
+    return buildApprovedTeamExecutionBinding(approvedHint);
+  }
+  if (isApprovedExecutionFollowupReadyStatus(approvedHint.contextPackStatus)) {
+    return null;
+  }
+  if (!isApprovedExecutionFollowupReadyStatus(approvedHint.contextPackStatus)) {
+    throw new Error(`team_exec_approved_handoff_not_ready:${approvedHint.contextPackStatus}:${approvedHint.sourcePath}`);
+  }
+  return null;
+}
+
 /**
  * Create a team-exec pipeline stage.
  *
  * This stage delegates to the existing `omx team` infrastructure, which
- * starts real Codex CLI workers in tmux panes. The stage collects the
- * plan artifacts from the previous RALPLAN stage and passes them as
- * the team task description.
+ * starts real Codex CLI workers in tmux panes. The execution task remains
+ * the approved task text; upstream planning artifacts ride alongside it as
+ * descriptor metadata rather than being injected into the runnable command.
  */
 export function createTeamExecStage(options: TeamExecStageOptions = {}): PipelineStage {
   const workerCount = options.workerCount ?? 2;
@@ -45,20 +91,23 @@ export function createTeamExecStage(options: TeamExecStageOptions = {}): Pipelin
       const startTime = Date.now();
 
       try {
-        // Extract plan context from previous stage artifacts
         const ralplanArtifacts = ctx.artifacts['ralplan'] as Record<string, unknown> | undefined;
-        const planContext = ralplanArtifacts
-          ? `Plan from RALPLAN stage:\n${JSON.stringify(ralplanArtifacts, null, 2)}\n\nTask: ${ctx.task}`
+        const approvedTask = typeof ralplanArtifacts?.task === 'string' && ralplanArtifacts.task.trim() !== ''
+          ? ralplanArtifacts.task
           : ctx.task;
+        const executionPlan = buildTeamExecutionPlan(approvedTask, workerCount, agentType, true, true);
+        const approvedExecution = resolveApprovedExecutionForTeamExec(ctx.cwd, approvedTask, ralplanArtifacts);
         const availableAgentTypes = await resolveAvailableAgentTypes(ctx.cwd);
-        const staffingPlan = buildFollowupStaffingPlan('team', ctx.task, availableAgentTypes, {
+        const staffingPlan = buildFollowupStaffingPlan('team', approvedTask, availableAgentTypes, {
           workerCount,
           fallbackRole: agentType,
         });
 
         // Build team execution descriptor
         const teamDescriptor: TeamExecDescriptor = {
-          task: planContext,
+          teamName: deriveTeamNameFromTask(approvedTask),
+          task: approvedTask,
+          tasks: executionPlan.tasks,
           workerCount,
           agentType,
           availableAgentTypes,
@@ -66,6 +115,8 @@ export function createTeamExecStage(options: TeamExecStageOptions = {}): Pipelin
           useWorktrees: options.useWorktrees ?? false,
           cwd: ctx.cwd,
           extraEnv: options.extraEnv,
+          approvedExecution,
+          planningArtifacts: ralplanArtifacts,
         };
 
         return {
@@ -101,7 +152,9 @@ export function createTeamExecStage(options: TeamExecStageOptions = {}): Pipelin
  * Descriptor for a team execution run, consumed by the team runtime.
  */
 export interface TeamExecDescriptor {
+  teamName: string;
   task: string;
+  tasks: Array<{ subject: string; description: string; owner: string; role?: string }>;
   workerCount: number;
   agentType: string;
   availableAgentTypes: string[];
@@ -109,12 +162,52 @@ export interface TeamExecDescriptor {
   useWorktrees: boolean;
   cwd: string;
   extraEnv?: Record<string, string>;
+  approvedExecution: ApprovedTeamExecutionBinding | null;
+  planningArtifacts?: Record<string, unknown>;
+}
+
+interface TeamRuntimeCliTaskInput {
+  subject: string;
+  description: string;
+  owner: string;
+  role?: string;
+}
+
+interface TeamRuntimeCliLaunchInput {
+  teamName: string;
+  task: string;
+  workerCount: number;
+  agentType: string;
+  tasks: TeamRuntimeCliTaskInput[];
+  cwd: string;
+  approvedExecution: ApprovedTeamExecutionBinding | null;
+  useWorktrees: boolean;
+}
+
+function buildTeamRuntimeCliLaunchInput(descriptor: TeamExecDescriptor): TeamRuntimeCliLaunchInput {
+  return {
+    teamName: descriptor.teamName,
+    task: descriptor.task,
+    workerCount: descriptor.workerCount,
+    agentType: descriptor.agentType,
+    tasks: descriptor.tasks.map(({ subject, description, owner, role }) => ({
+      subject,
+      description,
+      owner,
+      ...(role ? { role } : {}),
+    })),
+    cwd: descriptor.cwd,
+    approvedExecution: descriptor.approvedExecution,
+    useWorktrees: descriptor.useWorktrees,
+  };
 }
 
 /**
  * Build the `omx team` CLI instruction from a descriptor.
  */
 export function buildTeamInstruction(descriptor: TeamExecDescriptor): string {
-  const launchCommand = `omx team ${descriptor.workerCount}:${descriptor.agentType} ${JSON.stringify(descriptor.task)}`;
+  const runtimeCliInput = buildTeamRuntimeCliLaunchInput(descriptor);
+  const runtimeCliPath = join(packageRoot(), 'dist', 'team', 'runtime-cli.js');
+  const launchCommand = `${shellSingleQuote(process.execPath)} ${shellSingleQuote(runtimeCliPath)} --input-json ${shellSingleQuote(JSON.stringify(runtimeCliInput))}`;
   return `${launchCommand} # staffing=${descriptor.staffingPlan.staffingSummary} # verify=${descriptor.staffingPlan.verificationPlan.summary}`;
 }

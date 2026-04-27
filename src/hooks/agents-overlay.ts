@@ -26,6 +26,7 @@ import {
 } from "../utils/paths.js";
 import {
   isPlanningComplete,
+  readLatestPlanningArtifacts,
   readPlanningArtifacts,
 } from "../planning/artifacts.js";
 import {
@@ -191,12 +192,25 @@ async function isRalphActive(
 
 async function readRalphPlanningArtifacts(
   cwd: string,
-): Promise<{ hasPrd: boolean; hasTestSpec: boolean; complete: boolean }> {
+): Promise<{ hasPrd: boolean; hasTestSpec: boolean; complete: boolean; blocker: string | null }> {
   const artifacts = readPlanningArtifacts(cwd);
+  const selection = readLatestPlanningArtifacts(cwd);
+  const hasPrd = artifacts.prdPaths.length > 0;
+  const hasMatchingTestSpec = selection.testSpecPaths.length > 0;
+  const blocker = !hasPrd
+    ? "Missing: `prd-*.md`"
+    : !hasMatchingTestSpec
+      ? "Missing: `test-spec-*.md` matching the latest PRD slug"
+      : selection.contextPackStatus === "incomplete"
+        ? `Context-pack blocker: ${(selection.contextPackIssues.length > 0 ? selection.contextPackIssues.join(" | ") : `missing required roles ${selection.missingRequiredContextPackRoles.join(", ")}`)}`
+        : selection.contextPackStatus === "invalid"
+          ? `Context-pack blocker: ${selection.contextPackIssues.join(" | ")}`
+          : null;
   return {
-    hasPrd: artifacts.prdPaths.length > 0,
-    hasTestSpec: artifacts.testSpecPaths.length > 0,
+    hasPrd,
+    hasTestSpec: hasMatchingTestSpec,
     complete: isPlanningComplete(artifacts),
+    blocker,
   };
 }
 
@@ -459,6 +473,8 @@ export async function generateOverlay(
     const details =
       missing.length > 0
         ? `Missing: ${missing.join(", ")}`
+        : planningArtifacts.blocker
+          ? planningArtifacts.blocker
         : "Planning artifacts present: PRD + test spec";
 
     sections.push({

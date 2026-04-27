@@ -9,12 +9,33 @@ import { createRalplanStage } from '../stages/ralplan.js';
 import { createTeamExecStage, buildTeamInstruction } from '../stages/team-exec.js';
 import { createRalphVerifyStage, buildRalphInstruction } from '../stages/ralph-verify.js';
 import { buildFollowupStaffingPlan } from '../../team/followup-planner.js';
+import { packageRoot } from '../../utils/paths.js';
+import {
+  REQUIRED_CONTEXT_PACK_ROLES,
+  readContextPackDocument,
+  writeContextPackDocument,
+  type ContextPackRole,
+} from '../../planning/context-packs.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 let tempDir: string;
+const CONTEXT_PACK_SCHEMA = 'omx-context-pack-v1';
+
+function defaultReadFirstRef(
+  slug: string,
+  role: ContextPackRole,
+): { label: string; path: string; relationTag: string } {
+  if (role === 'scope') {
+    return { label: 'boundary', path: `docs/${slug}-boundary.md`, relationTag: 'bounds' };
+  }
+  if (role === 'verify') {
+    return { label: 'acceptance', path: `docs/${slug}-acceptance.md`, relationTag: 'verifies' };
+  }
+  return { label: 'implementation', path: `docs/${slug}-implementation.md`, relationTag: 'implements' };
+}
 
 function makeCtx(overrides: Partial<StageContext> = {}): StageContext {
   return {
@@ -34,6 +55,62 @@ async function cleanup(): Promise<void> {
   if (tempDir && existsSync(tempDir)) {
     await rm(tempDir, { recursive: true, force: true });
   }
+}
+
+async function writeContextPacks(
+  slug: string,
+  roles: readonly ContextPackRole[] = REQUIRED_CONTEXT_PACK_ROLES,
+): Promise<string> {
+  const contextDir = join(tempDir, '.omx', 'context');
+  await mkdir(contextDir, { recursive: true });
+
+  for (const role of roles) {
+    const readFirstRef = defaultReadFirstRef(slug, role);
+    await mkdir(join(tempDir, 'docs'), { recursive: true });
+    await writeFile(
+      join(tempDir, readFirstRef.path),
+      `# ${readFirstRef.label}\n\n${role} context for ${slug}.\n`,
+    );
+  }
+
+  const relativePath = `.omx/context/context-20260420T000000Z-${slug}.json`;
+  writeContextPackDocument(join(tempDir, relativePath), {
+    schema: CONTEXT_PACK_SCHEMA,
+    slug,
+    entries: roles.map((role) => {
+      const readFirstRef = defaultReadFirstRef(slug, role);
+      return {
+        label: readFirstRef.label,
+        path: readFirstRef.path,
+        roles: [role],
+        tags: [],
+        relationPath: [
+          { tag: 'plan', target: slug },
+          { tag: readFirstRef.relationTag, target: readFirstRef.path },
+        ],
+      };
+    }),
+  }, { refreshBasis: true });
+
+  return relativePath;
+}
+
+function refreshContextPackBasis(relativePath: string): void {
+  const absolutePath = join(tempDir, relativePath);
+  const document = readContextPackDocument(absolutePath);
+  assert.ok(document, `expected context pack at ${absolutePath}`);
+  writeContextPackDocument(absolutePath, document, { refreshBasis: true });
+}
+
+function buildContextPackOutcome(relativePath: string): string {
+  return [
+    '## Context Pack Outcome',
+    `- pack: created \`${relativePath}\``,
+  ].join('\n');
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // ---------------------------------------------------------------------------
@@ -80,11 +157,23 @@ describe('RALPLAN Stage', () => {
     assert.equal(stage.canSkip!(makeCtx()), false);
   });
 
-  it('canSkip returns true when both prd and test spec plan files exist', async () => {
+  it('canSkip returns true for legacy PRD/test-spec handoffs without context packs', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
-    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'prd-legacy-feature.md'), '# Legacy Plan\n');
+    await writeFile(join(plansDir, 'test-spec-legacy-feature.md'), '# Legacy Test Spec\n');
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx()), true);
+  });
+
+  it('canSkip returns true when prd, test spec, and required context packs exist', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const contextPacks = await writeContextPacks('my-feature');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), `# Plan\n\n${buildContextPackOutcome(contextPacks)}\n`);
     await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+    refreshContextPackBasis(contextPacks);
 
     const stage = createRalplanStage();
     assert.equal(stage.canSkip!(makeCtx()), true);
@@ -108,10 +197,12 @@ describe('RALPLAN Stage', () => {
       executor: {
         async draft() {
           const plansDir = join(tempDir, '.omx', 'plans');
+          const contextPacks = await writeContextPacks('runtime');
           await mkdir(plansDir, { recursive: true });
           const prdPath = join(plansDir, 'prd-runtime.md');
-          await writeFile(prdPath, '# Runtime Plan\n');
+          await writeFile(prdPath, `# Runtime Plan\n\n${buildContextPackOutcome(contextPacks)}\n`);
           await writeFile(join(plansDir, 'test-spec-runtime.md'), '# Runtime Tests\n');
+          refreshContextPackBasis(contextPacks);
           return { summary: 'drafted', planPath: prdPath, artifacts: { runtimeDrafted: true } };
         },
         async architectReview() {
@@ -130,6 +221,37 @@ describe('RALPLAN Stage', () => {
     assert.equal(artifacts.runtime, true);
     assert.equal(artifacts.planningComplete, true);
     assert.equal(artifacts.iteration, 1);
+    assert.equal(artifacts.runtimeDrafted, true);
+  });
+
+  it('fails the runtime-backed stage when the approved handoff is not pack-ready', async () => {
+    const stage = createRalplanStage({
+      executor: {
+        async draft() {
+          const plansDir = join(tempDir, '.omx', 'plans');
+          const contextPackPath = await writeContextPacks('runtime-pack-gate');
+          await mkdir(plansDir, { recursive: true });
+          const prdPath = join(plansDir, 'prd-runtime-pack-gate.md');
+          await writeFile(prdPath, `# Runtime Plan\n\n${buildContextPackOutcome(contextPackPath)}\n`);
+          await writeFile(join(plansDir, 'test-spec-runtime-pack-gate.md'), '# Runtime Tests\n');
+          return { summary: 'drafted', planPath: prdPath, artifacts: { runtimeDrafted: true } };
+        },
+        async architectReview() {
+          return { verdict: 'approve', summary: 'architect ok' };
+        },
+        async criticReview() {
+          return { verdict: 'approve', summary: 'critic ok' };
+        },
+      },
+    });
+
+    const result = await stage.run(makeCtx({ task: 'live ralplan run without synced pack basis' }));
+    const artifacts = result.artifacts as Record<string, unknown>;
+
+    assert.equal(result.status, 'failed');
+    assert.equal(result.error, 'ralplan_handoff_not_ready');
+    assert.equal(artifacts.runtime, true);
+    assert.equal(artifacts.planningComplete, false);
     assert.equal(artifacts.runtimeDrafted, true);
   });
 
@@ -175,20 +297,159 @@ describe('Team Exec Stage', () => {
     assert.equal(arts.agentType, 'architect');
   });
 
-  it('includes ralplan artifacts in team task when available', async () => {
+  it('keeps the approved task text intact and keeps plan-only ralplan artifacts on the generic path', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    const prdPath = join(plansDir, 'prd-approved-exact-task.md');
+    await writeFile(
+      prdPath,
+      [
+        '# Approved plan',
+        '',
+        'Launch via omx team 2:executor "approved exact task"',
+      ].join('\n'),
+      'utf-8',
+    );
+    await writeFile(join(plansDir, 'test-spec-approved-exact-task.md'), '# Test spec\n', 'utf-8');
+
     const stage = createTeamExecStage();
     const ctx = makeCtx({
+      task: 'approved exact task',
       artifacts: {
-        ralplan: { data: 'plan-content', stage: 'ralplan' },
+        ralplan: {
+          task: 'approved exact task',
+          data: 'plan-content',
+          stage: 'ralplan',
+          latestPlanPath: prdPath,
+        },
       },
     });
     const result = await stage.run(ctx);
 
     const descriptor = (result.artifacts as Record<string, unknown>).teamDescriptor as Record<string, unknown>;
-    assert.ok((descriptor.task as string).includes('plan-content'));
+    assert.equal(descriptor.task, 'approved exact task');
+    assert.equal(descriptor.teamName, 'approved-exact-task');
+    assert.ok(Array.isArray(descriptor.tasks));
+    assert.equal(descriptor.approvedExecution, null);
+    assert.deepEqual(descriptor.planningArtifacts, {
+      task: 'approved exact task',
+      data: 'plan-content',
+      stage: 'ralplan',
+      latestPlanPath: prdPath,
+    });
     assert.ok(Array.isArray(descriptor.availableAgentTypes));
     assert.ok((descriptor.availableAgentTypes as unknown[]).length > 0);
     assert.equal(typeof (descriptor.staffingPlan as Record<string, unknown>).staffingSummary, 'string');
+    assert.match((result.artifacts as Record<string, unknown>).instruction as string, /runtime-cli\.js/);
+    assert.match((result.artifacts as Record<string, unknown>).instruction as string, /--input-json/);
+    assert.match((result.artifacts as Record<string, unknown>).instruction as string, /"approvedExecution":null/);
+    assert.match(
+      (result.artifacts as Record<string, unknown>).instruction as string,
+      new RegExp(escapeRegExp(join(packageRoot(), 'dist', 'team', 'runtime-cli.js'))),
+    );
+    assert.doesNotMatch(
+      (result.artifacts as Record<string, unknown>).instruction as string,
+      new RegExp(escapeRegExp(join(tempDir, 'dist', 'team', 'runtime-cli.js'))),
+    );
+    assert.doesNotMatch((result.artifacts as Record<string, unknown>).instruction as string, /plan-content/);
+  });
+
+  it('carries an exact approved binding on the team-exec path only when the handoff is ready', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await writeContextPacks('approved-exact-task-ready');
+    const relativePackPath = '.omx/context/context-20260420T000000Z-approved-exact-task-ready.json';
+    await mkdir(plansDir, { recursive: true });
+    const prdPath = join(plansDir, 'prd-approved-exact-task-ready.md');
+    await writeFile(
+      prdPath,
+      [
+        '# Approved plan',
+        '',
+        buildContextPackOutcome(relativePackPath),
+        '',
+        'Launch via omx team 2:executor "approved exact task ready"',
+      ].join('\n'),
+      'utf-8',
+    );
+    await writeFile(join(plansDir, 'test-spec-approved-exact-task-ready.md'), '# Test spec\n', 'utf-8');
+    refreshContextPackBasis(relativePackPath);
+
+    const stage = createTeamExecStage();
+    const ctx = makeCtx({
+      task: 'approved exact task ready',
+      artifacts: {
+        ralplan: {
+          task: 'approved exact task ready',
+          data: 'plan-content',
+          stage: 'ralplan',
+          latestPlanPath: prdPath,
+        },
+      },
+    });
+    const result = await stage.run(ctx);
+
+    const descriptor = (result.artifacts as Record<string, unknown>).teamDescriptor as Record<string, unknown>;
+    assert.deepEqual(descriptor.approvedExecution, {
+      prd_path: prdPath,
+      task: 'approved exact task ready',
+      command: 'omx team 2:executor "approved exact task ready"',
+    });
+    assert.match((result.artifacts as Record<string, unknown>).instruction as string, /approvedExecution/);
+  });
+
+  it('keeps structural ralplan artifacts on the generic team-exec path', async () => {
+    const stage = createTeamExecStage();
+    const result = await stage.run(makeCtx({
+      task: 'structural pipeline task',
+      artifacts: {
+        ralplan: {
+          task: 'structural pipeline task',
+          stage: 'ralplan',
+          plansDir: join(tempDir, '.omx', 'plans'),
+          specsDir: join(tempDir, '.omx', 'specs'),
+          prdPaths: [],
+          testSpecPaths: [],
+          deepInterviewSpecPaths: [],
+          planningComplete: false,
+        },
+      },
+    }));
+
+    assert.equal(result.status, 'completed');
+    const descriptor = (result.artifacts as Record<string, unknown>).teamDescriptor as Record<string, unknown>;
+    assert.equal(descriptor.task, 'structural pipeline task');
+    assert.equal(descriptor.approvedExecution, null);
+    assert.match((result.artifacts as Record<string, unknown>).instruction as string, /"approvedExecution":null/);
+  });
+
+  it('fails closed when ralplan artifacts do not resolve to a reusable approved handoff', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    const prdPath = join(plansDir, 'prd-approved-missing-baseline.md');
+    await writeFile(
+      prdPath,
+      [
+        '# Approved plan',
+        '',
+        'Launch via omx team 2:executor "approved missing baseline task"',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const stage = createTeamExecStage();
+    const result = await stage.run(makeCtx({
+      task: 'approved missing baseline task',
+      artifacts: {
+        ralplan: {
+          task: 'approved missing baseline task',
+          stage: 'ralplan',
+          latestPlanPath: prdPath,
+        },
+      },
+    }));
+
+    assert.equal(result.status, 'failed');
+    assert.match(result.error ?? '', /team_exec_approved_handoff_not_ready:missing-baseline/);
   });
 
   it('falls back to raw task when no ralplan artifacts exist', async () => {
@@ -206,17 +467,39 @@ describe('Team Exec Stage', () => {
         workerCount: 3,
       });
       const instruction = buildTeamInstruction({
+        teamName: 'implement-feature',
         task: 'implement feature',
+        tasks: [{
+          subject: 'implement feature',
+          description: 'implement feature',
+          owner: 'worker-1',
+          role: 'writer',
+        }],
         workerCount: 3,
         agentType: 'executor',
         availableAgentTypes: ['executor', 'test-engineer'],
         staffingPlan,
         useWorktrees: false,
         cwd: '/tmp/test',
+        approvedExecution: {
+          prd_path: '/tmp/test/.omx/plans/prd-implement-feature.md',
+          task: 'implement feature',
+          command: 'omx team 3:executor "implement feature"',
+        },
       });
 
-      assert.match(instruction, /^omx team 3:executor /);
+      assert.match(instruction, /runtime-cli\.js/);
+      assert.match(instruction, /--input-json/);
       assert.match(instruction, /implement feature/);
+      assert.match(instruction, /approvedExecution/);
+      assert.match(instruction, /"owner":"worker-1"/);
+      assert.match(instruction, /"role":"writer"/);
+      assert.match(instruction, /"useWorktrees":false/);
+      assert.match(instruction, /"agentType":"executor"/);
+      assert.equal(instruction.includes(join('/tmp/test', 'dist', 'team', 'runtime-cli.js')), false);
+      assert.equal(instruction.includes(join(packageRoot(), 'dist', 'team', 'runtime-cli.js')), true);
+      assert.doesNotMatch(instruction, /"agentTypes":\["executor"\]/);
+      assert.doesNotMatch(instruction, /printf '%s'/);
       assert.match(instruction, /staffing=/);
       assert.match(instruction, /verify=/);
     });
@@ -227,16 +510,22 @@ describe('Team Exec Stage', () => {
         workerCount: 1,
       });
       const instruction = buildTeamInstruction({
+        teamName: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         task: longTask,
+        tasks: [{ subject: longTask, description: longTask, owner: 'worker-1' }],
         workerCount: 1,
         agentType: 'executor',
         availableAgentTypes: ['executor', 'test-engineer'],
         staffingPlan,
         useWorktrees: false,
         cwd: '/tmp',
+        approvedExecution: null,
       });
 
-      assert.match(instruction, /^omx team 1:executor /);
+      assert.match(instruction, /runtime-cli\.js/);
+      assert.match(instruction, /--input-json/);
+      assert.match(instruction, /"approvedExecution":null/);
+      assert.doesNotMatch(instruction, /printf '%s'/);
       assert.match(instruction, /staffing=/);
     });
   });
