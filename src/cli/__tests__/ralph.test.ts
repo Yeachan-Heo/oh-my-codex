@@ -652,7 +652,7 @@ describe('ralph deslop launch wiring', () => {
     }
   });
 
-  it('documents the legacy fallback when approved context packs are unavailable', () => {
+  it('documents the plan-only fallback when approved context packs are unavailable', () => {
     const instructions = buildRalphAppendInstructions('Execute approved legacy plan', {
       changedFilesPath: '.omx/ralph/changed-files.txt',
       noDeslop: false,
@@ -672,8 +672,28 @@ describe('ralph deslop launch wiring', () => {
       },
     });
     assert.match(instructions, /approved plan: \.omx\/plans\/prd-legacy\.md/i);
-    assert.match(instructions, /context pack: not declared in the approved plan; using the plan-only handoff baseline/i);
-    assert.match(instructions, /Plan-only fallback: start from the approved plan, matching test specs/i);
+    assert.match(instructions, /context pack: not declared in the approved plan; using the pre-context-pack plan-only handoff baseline/i);
+    assert.match(instructions, /Plan-only fallback: start from the approved plan, matching test specs, and any deep-interview artifacts as repair inputs/i);
+    assert.match(instructions, /create or refresh the canonical context pack and sync it before broadening context/i);
+  });
+
+  it('documents incomplete context-pack fallback as repair-only', () => {
+    const instructions = buildRalphAppendInstructions('Execute approved incomplete plan', {
+      changedFilesPath: '.omx/ralph/changed-files.txt',
+      noDeslop: false,
+      approvedHint: {
+        ...approvedHint,
+        contextPackStatus: 'incomplete',
+        missingRequiredContextPackRoles: ['build', 'verify'],
+        contextPackIssues: [],
+        contextRefs: [],
+        contextRefIssues: [],
+      },
+    });
+    assert.match(instructions, /missing required context roles: build, verify/i);
+    assert.match(instructions, /only as repair inputs/i);
+    assert.match(instructions, /repair or recreate the canonical context pack with required role coverage, then sync it before broadening context/i);
+    assert.doesNotMatch(instructions, /as the brief/i);
   });
 
   it('documents invalid context-pack fallback when approved packs fail validation', () => {
@@ -696,7 +716,7 @@ describe('ralph deslop launch wiring', () => {
       },
     });
     assert.match(instructions, /invalid context pack issues:/i);
-    assert.match(instructions, /repair or recreate the execution snapshot/i);
+    assert.match(instructions, /repair or recreate the canonical context pack, then sync it before broadening context/i);
   });
 
   it('seeds the changed-files artifact with bounded-scope guidance', () => {

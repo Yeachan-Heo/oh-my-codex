@@ -497,13 +497,13 @@ export function buildApprovedTeamHandoffSection(
     } else {
       lines.push(`- Missing required context roles: ${approvedHint.missingRequiredContextPackRoles.join(', ')}`);
     }
-    lines.push('- Fallback: use the approved plan, matching test specs, and any deep-interview artifacts as the brief; recreate the missing pack file or role coverage before broader context loading.');
+    lines.push('- Fallback: use the approved plan, matching test specs, and any deep-interview artifacts only as repair inputs; repair or recreate the canonical context pack with required role coverage, then sync it before broader context loading.');
     return lines.join('\n');
   }
 
   if (approvedHint.contextPackStatus === 'invalid') {
     lines.push(`- Invalid context pack issues: ${approvedHint.contextPackIssues.join(' | ')}`);
-    lines.push('- Fallback: use the approved plan, matching test specs, and any deep-interview artifacts as the brief; repair or recreate the execution snapshot before broader context loading.');
+    lines.push('- Fallback: use the approved plan, matching test specs, and any deep-interview artifacts only as repair inputs; repair or recreate the canonical context pack, then sync it before broader context loading.');
     return lines.join('\n');
   }
 
@@ -513,6 +513,6 @@ export function buildApprovedTeamHandoffSection(
     return lines.join('\n');
   }
 
-  lines.push('- Plan-only fallback: context packs were not declared in the approved plan, so use the approved plan, matching test specs, and any deep-interview artifacts as the brief before broadening context.');
+  lines.push('- Plan-only fallback: context packs were not declared in the approved plan, so use the approved plan, matching test specs, and any deep-interview artifacts as pre-context-pack repair inputs, then create or refresh the canonical context pack and sync it before broadening context.');
   return lines.join('\n');
 }

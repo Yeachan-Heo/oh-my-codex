@@ -228,16 +228,16 @@ function buildRalphApprovedExecutionLines(approvedHint: ApprovedExecutionLaunchH
     } else {
       lines.push(`- missing required context roles: ${approvedHint.missingRequiredContextPackRoles.join(', ')}`);
     }
-    lines.push('- Incomplete-pack fallback: use the approved plan, matching test specs, and any deep-interview artifacts as the brief; recreate the missing pack file or role coverage locally before broadening context.');
+    lines.push('- Incomplete-pack fallback: use the approved plan, matching test specs, and any deep-interview artifacts only as repair inputs; repair or recreate the canonical context pack with required role coverage, then sync it before broadening context.');
   } else if (approvedHint.contextPackStatus === 'invalid') {
     lines.push(`- invalid context pack issues: ${approvedHint.contextPackIssues.join(' | ')}`);
-    lines.push('- Invalid-pack fallback: use the approved plan, matching test specs, and any deep-interview artifacts as the brief; repair or recreate the execution snapshot before broadening context.');
+    lines.push('- Invalid-pack fallback: use the approved plan, matching test specs, and any deep-interview artifacts only as repair inputs; repair or recreate the canonical context pack, then sync it before broadening context.');
   } else if (approvedHint.contextPackStatus === 'missing-baseline') {
     lines.push(`- missing-baseline issues: ${approvedHint.contextPackIssues.join(' | ')}`);
     lines.push('- Missing-baseline fallback: the latest approved plan is missing its matching test spec, so use the surfaced plan as lineage guidance only and restore the missing baseline before broadening context or continuing execution.');
   } else {
-    lines.push('- context pack: not declared in the approved plan; using the plan-only handoff baseline.');
-    lines.push('- Plan-only fallback: start from the approved plan, matching test specs, and any deep-interview artifacts, then create or refresh a local execution snapshot before broadening context.');
+    lines.push('- context pack: not declared in the approved plan; using the pre-context-pack plan-only handoff baseline.');
+    lines.push('- Plan-only fallback: start from the approved plan, matching test specs, and any deep-interview artifacts as repair inputs, then create or refresh the canonical context pack and sync it before broadening context.');
   }
   return lines;
 }

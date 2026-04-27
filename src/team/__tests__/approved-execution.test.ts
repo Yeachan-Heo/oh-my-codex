@@ -14,6 +14,7 @@ import {
   readPersistedApprovedTeamExecutionHint,
   resolvePersistedApprovedTeamExecutionContinuityState,
   resolveApprovedTeamExecutionHint,
+  buildApprovedTeamHandoffSection,
   writePersistedApprovedTeamExecutionBinding,
 } from '../approved-execution.js';
 import { readContextPackDocument, writeContextPackDocument } from '../../planning/context-packs.js';
@@ -474,7 +475,7 @@ describe('approved team execution integration', () => {
 
   it('treats persisted plan-only bindings as nonready for approved-context continuity', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-approved-plan-only-continuity-'));
-    const approvedTask = 'Execute approved legacy plan-only task';
+    const approvedTask = 'Execute approved plan-only task';
     const prdPath = join(cwd, '.omx', 'plans', 'prd-legacy-plan-only.md');
     try {
       await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
@@ -503,6 +504,28 @@ describe('approved team execution integration', () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+
+  it('documents incomplete context-pack handoffs as repair-only', () => {
+    const section = buildApprovedTeamHandoffSection({
+      mode: 'team',
+      command: 'omx team 1:executor "Execute approved incomplete plan"',
+      task: 'Execute approved incomplete plan',
+      sourcePath: '.omx/plans/prd-incomplete.md',
+      testSpecPaths: ['.omx/plans/test-spec-incomplete.md'],
+      deepInterviewSpecPaths: ['.omx/specs/deep-interview-incomplete.md'],
+      contextPack: { path: '.omx/context/context-20260420T000000Z-incomplete.json', action: 'created' },
+      contextPackStatus: 'incomplete',
+      missingRequiredContextPackRoles: ['build', 'verify'],
+      contextPackIssues: [],
+      contextRefs: [],
+      contextRefIssues: [],
+    });
+
+    assert.match(section ?? '', /Missing required context roles: build, verify/i);
+    assert.match(section ?? '', /only as repair inputs/i);
+    assert.match(section ?? '', /repair or recreate the canonical context pack with required role coverage, then sync it before broader context loading/i);
+    assert.doesNotMatch(section ?? '', /as the brief/i);
   });
 
   it('resolves approved handoff context inside startTeam and persists it for resume', async () => {
