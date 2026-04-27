@@ -33,6 +33,31 @@ describe('team model contract', () => {
     );
   });
 
+
+  it('collects only safe model_provider config overrides for worker inheritance', () => {
+    assert.deepEqual(
+      collectInheritableTeamWorkerArgs([
+        '-c',
+        'sandbox_mode="danger-full-access"',
+        '-c',
+        'model_provider="cheapRouter"',
+        '--model',
+        'gpt-5.5',
+      ]),
+      ['-c', 'model_provider="cheapRouter"', '--model', 'gpt-5.5'],
+    );
+  });
+
+  it('keeps exactly one model_provider override with precedence env > inherited', () => {
+    assert.deepEqual(
+      resolveTeamWorkerLaunchArgs({
+        existingRaw: '-c model_provider="envRouter" --no-alt-screen',
+        inheritedArgs: ['-c', 'model_provider="leaderRouter"', '--model', 'gpt-5.5'],
+      }),
+      ['--no-alt-screen', '-c', 'model_provider="envRouter"', '--model', 'gpt-5.5'],
+    );
+  });
+
   it('keeps exactly one canonical model flag with precedence env > inherited > fallback', () => {
     assert.deepEqual(
       resolveTeamWorkerLaunchArgs({

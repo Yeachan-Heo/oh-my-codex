@@ -2803,6 +2803,21 @@ describe("team worker launch arg inheritance helpers", () => {
     );
   });
 
+
+  it("collectInheritableTeamWorkerArgs preserves only safe model_provider config overrides", () => {
+    assert.deepEqual(
+      collectInheritableTeamWorkerArgs([
+        "-c",
+        'sandbox_mode="danger-full-access"',
+        "-c",
+        'model_provider="cheapRouter"',
+        "--model",
+        "gpt-5.5",
+      ]),
+      ["-c", 'model_provider="cheapRouter"', "--model", "gpt-5.5"],
+    );
+  });
+
   it("resolveTeamWorkerLaunchArgsEnv merges and normalizes with de-dupe + last reasoning/model wins", () => {
     assert.equal(
       resolveTeamWorkerLaunchArgsEnv(

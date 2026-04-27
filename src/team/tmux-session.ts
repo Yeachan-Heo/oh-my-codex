@@ -21,6 +21,7 @@ import {
   paneLooksReady as sharedPaneLooksReady,
 } from '../scripts/tmux-hook-engine.js';
 import { readActiveProviderEnvOverrides } from '../config/models.js';
+import { extractModelProviderOverrideValue } from './model-contract.js';
 import { sleep, sleepSync } from '../utils/sleep.js';
 import {
   buildPlatformCommandSpec,
@@ -925,10 +926,14 @@ export function buildWorkerProcessLaunchSpec(
     ? buildPlatformCommandSpec(workerCli, effectiveCliLaunchArgs, process.platform, effectiveEnv)
     : { command: resolvedCliPath, args: effectiveCliLaunchArgs };
   const resolvedLauncherPath = platformSpec.resolvedPath || resolvedCliPath;
+  const modelProviderOverride = workerCli === 'codex'
+    ? extractModelProviderOverrideValue(effectiveCliLaunchArgs)
+    : undefined;
   const codexProviderEnv = workerCli === 'codex'
     ? readActiveProviderEnvOverrides(
         effectiveEnv,
         providerLookupCodexHome,
+        modelProviderOverride,
       )
     : {};
   const workerEnv: Record<string, string> = {

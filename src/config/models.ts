@@ -130,11 +130,12 @@ export function readConfiguredEnvOverrides(codexHomeOverride?: string): NodeJS.P
 export function readActiveProviderEnvOverrides(
   env: NodeJS.ProcessEnv = process.env,
   codexHomeOverride?: string,
+  activeProviderOverride?: string,
 ): NodeJS.ProcessEnv {
   const config = readCodexConfigFile(codexHomeOverride);
   if (!config) return {};
 
-  const activeProvider = normalizeConfiguredValue(config.model_provider);
+  const activeProvider = normalizeConfiguredValue(activeProviderOverride) ?? normalizeConfiguredValue(config.model_provider);
   if (!activeProvider) return {};
 
   const providers = config.model_providers;

@@ -2144,6 +2144,62 @@ describe('team worker launch mode helpers', () => {
     }
   });
 
+  it('buildWorkerProcessLaunchSpec uses CLI model_provider override for Codex provider env injection', async () => {
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const prevCodexHome = process.env.CODEX_HOME;
+    const prevDefaultProviderEnv = process.env.DEFAULT_PROVIDER_API_KEY;
+    const prevCheapProviderEnv = process.env.CHEAP_PROVIDER_API_KEY;
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-team-provider-cli-override-'));
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    process.env.CODEX_HOME = codexHome;
+    process.env.DEFAULT_PROVIDER_API_KEY = 'default-secret';
+    process.env.CHEAP_PROVIDER_API_KEY = 'cheap-secret';
+
+    try {
+      await writeFile(join(codexHome, 'config.toml'), [
+        'model_provider = "default_provider"',
+        '',
+        '[model_providers.default_provider]',
+        'name = "default_provider"',
+        'base_url = "http://localhost:3000/v1"',
+        'wire_api = "responses"',
+        'requires_openai_auth = true',
+        'env_key = "DEFAULT_PROVIDER_API_KEY"',
+        '',
+        '[model_providers.cheapRouter]',
+        'name = "cheapRouter"',
+        'base_url = "http://localhost:4000/v1"',
+        'wire_api = "responses"',
+        'requires_openai_auth = true',
+        'env_key = "CHEAP_PROVIDER_API_KEY"',
+        '',
+      ].join('\n'));
+
+      const spec = buildWorkerProcessLaunchSpec(
+        'provider-override-team',
+        1,
+        ['-c', 'model_provider="cheapRouter"', '--model', 'gpt-5.5'],
+        '/tmp/workspace',
+        {},
+        'codex',
+      );
+
+      assert.equal(spec.env.CHEAP_PROVIDER_API_KEY, 'cheap-secret');
+      assert.equal(spec.env.DEFAULT_PROVIDER_API_KEY, undefined);
+      assert.deepEqual(spec.args.slice(0, 4), ['-c', 'model_provider="cheapRouter"', '--model', 'gpt-5.5']);
+    } finally {
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof prevCodexHome === 'string') process.env.CODEX_HOME = prevCodexHome;
+      else delete process.env.CODEX_HOME;
+      if (typeof prevDefaultProviderEnv === 'string') process.env.DEFAULT_PROVIDER_API_KEY = prevDefaultProviderEnv;
+      else delete process.env.DEFAULT_PROVIDER_API_KEY;
+      if (typeof prevCheapProviderEnv === 'string') process.env.CHEAP_PROVIDER_API_KEY = prevCheapProviderEnv;
+      else delete process.env.CHEAP_PROVIDER_API_KEY;
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
   it('buildWorkerProcessLaunchSpec does not inject the active provider env_key for non-codex workers', async () => {
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     const prevCodexHome = process.env.CODEX_HOME;
