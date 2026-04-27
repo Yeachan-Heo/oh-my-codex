@@ -207,9 +207,9 @@ Example:
 1. Run deep-interview in quick mode before creating PRD artifacts:
    - Execute: `$deep-interview --quick <task>`
    - Complete a compact requirements pass (context, goals, scope, constraints, validation)
-   - Persist interview output to `.omx/interviews/{slug}-{timestamp}.md`
+   - Persist interview output to `.omx/interviews/deep-interview-<timestamp>-<slug>.md`
 2. Create canonical PRD/progress artifacts:
-   - PRD: `.omx/plans/prd-{slug}.md`
+   - PRD: `.omx/plans/prd-<timestamp>-{slug}.md`
    - Progress ledger: `.omx/state/{scope}/ralph-progress.json` (session scope when available, else root scope)
 3. Parse the task (everything after `--prd` flag)
 4. Break down into user stories:
@@ -238,12 +238,12 @@ Example:
 
 ### Example
 User input: `--prd build a todo app with React and TypeScript`
-Workflow: Detect flag, extract task, create `.omx/plans/prd-{slug}.md`, create `.omx/state/{scope}/ralph-progress.json`, begin ralph loop.
+Workflow: Detect flag, extract task, create `.omx/plans/prd-<timestamp>-{slug}.md`, create `.omx/state/{scope}/ralph-progress.json`, begin ralph loop.
 
 ### Legacy compatibility
 - During the compatibility window, Ralph `--prd` startup still validates machine-readable story state from `.omx/prd.json`.
-- `.omx/plans/prd-{slug}.md` remains the canonical storage/documentation artifact, but it is not yet the startup validation source.
-- If `.omx/prd.json` exists and canonical PRD is absent, migrate one-way into `.omx/plans/prd-{slug}.md`.
+- `.omx/plans/prd-<timestamp>-{slug}.md` remains the canonical storage/documentation artifact, but it is not yet the startup validation source. Legacy `.omx/plans/prd-{slug}.md` files remain readable.
+- If `.omx/prd.json` exists and canonical PRD is absent, migrate one-way into `.omx/plans/prd-<timestamp>-{slug}.md`.
 - If `.omx/progress.txt` exists and canonical progress ledger is absent, import one-way into `.omx/state/{scope}/ralph-progress.json`.
 - Keep legacy files unchanged for one release cycle.
 
