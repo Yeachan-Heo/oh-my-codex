@@ -292,8 +292,9 @@ describe("omx setup refresh summary and dry-run behavior", () => {
 
       const refreshedAgents = await readFile(agentsPath, "utf-8");
       assert.match(refreshedAgents, /## OMX planning context packs/);
-      assert.match(refreshedAgents, /Compatibility fallback for upgraded repos/i);
-      assert.match(refreshedAgents, /Legacy upgraded repos may fall back to PRD\/test-spec handoff/i);
+      assert.match(refreshedAgents, /Compatibility for pre-context-pack handoffs/i);
+      assert.match(refreshedAgents, /Fallback for incomplete handoffs/i);
+      assert.match(refreshedAgents, /repair or recreate the canonical typed pack/i);
       assert.match(refreshedAgents, /omx-context-pack-v1/i);
       assert.match(refreshedAgents, /Do not rebuild packs blindly/i);
     } finally {

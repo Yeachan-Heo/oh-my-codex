@@ -231,6 +231,22 @@ function applyScopePathRewritesToAgentsTemplate(
 	return content.replaceAll("~/.codex", "./.codex");
 }
 
+const REQUIRED_AGENTS_LIFECYCLE_GUIDANCE = [
+	"## OMX planning context packs",
+	"Context Pack Outcome",
+	"omx-context-pack-v1",
+	"Do not rebuild packs blindly",
+	"Compatibility for pre-context-pack handoffs",
+	"Fallback for incomplete handoffs",
+	"repair or recreate the canonical typed pack",
+] as const;
+
+function needsGeneratedAgentsLifecycleRefresh(content: string): boolean {
+	return REQUIRED_AGENTS_LIFECYCLE_GUIDANCE.some(
+		(pattern) => !content.includes(pattern),
+	);
+}
+
 interface ResolvedSetupScope {
 	scope: SetupScope;
 	source: "cli" | "persisted" | "prompt" | "default";
@@ -2006,6 +2022,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			let changed = true;
 			let canApplyManagedModelRefresh = false;
 			let managedRefreshContent = "";
+			let canApplyManagedLifecycleRefresh = false;
 			let canApplyManagedAgentsMerge = false;
 			let mergedAgentsContent = "";
 			if (agentsMdExists) {
@@ -2021,6 +2038,9 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 							modelTableContext,
 						);
 						canApplyManagedModelRefresh = managedRefreshContent !== existing;
+						canApplyManagedLifecycleRefresh =
+							isOmxGeneratedAgentsMd(existing) &&
+							needsGeneratedAgentsLifecycleRefresh(existing);
 					}
 				}
 			}
@@ -2029,7 +2049,10 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				resolvedScope.scope === "project" &&
 				sessionIsActive &&
 				agentsMdExists &&
-				(changed || canApplyManagedAgentsMerge || canApplyManagedModelRefresh)
+				(changed ||
+					canApplyManagedAgentsMerge ||
+					canApplyManagedModelRefresh ||
+					canApplyManagedLifecycleRefresh)
 			) {
 				summary.agentsMd.skipped += 1;
 				console.log(
@@ -2065,6 +2088,20 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 					resolvedScope.scope === "project"
 						? "  Merged OMX-managed AGENTS.md sections into project root."
 						: `  Merged OMX-managed AGENTS.md sections into ${scopeDirs.codexHomeDir}.`,
+				);
+			} else if (canApplyManagedLifecycleRefresh) {
+				await syncManagedContent(
+					rewritten,
+					agentsMdDst,
+					summary.agentsMd,
+					backupContext,
+					{ dryRun, verbose },
+					`AGENTS lifecycle guidance ${agentsMdDst}`,
+				);
+				console.log(
+					resolvedScope.scope === "project"
+						? "  Refreshed AGENTS.md lifecycle guidance in project root."
+						: `  Refreshed AGENTS.md lifecycle guidance in ${scopeDirs.codexHomeDir}.`,
 				);
 			} else if (canApplyManagedModelRefresh) {
 				await syncManagedContent(
