@@ -4,7 +4,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isPlanningComplete, readApprovedExecutionLaunchHint, readPlanningArtifacts } from '../artifacts.js';
+import { isPlanningComplete, readApprovedExecutionLaunchHint, readPlanningArtifacts, readTeamDagArtifactResolution } from '../artifacts.js';
+import { readTeamDagHandoffForLatestPlan } from '../../team/dag-schema.js';
 
 let tempDir: string;
 
@@ -33,6 +34,57 @@ describe('planning artifacts', () => {
     assert.equal(artifacts.testSpecPaths.length, 0);
   });
 
+
+
+
+  it('resolves matching Team DAG sidecar before markdown handoff', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-repo-aware.md'),
+      '# PRD\n\n## Team DAG Handoff\n```json\n{"source":"markdown"}\n```\n',
+    );
+    await writeFile(join(plansDir, 'test-spec-repo-aware.md'), '# Test Spec\n');
+    await writeFile(join(plansDir, 'team-dag-repo-aware.json'), '{"source":"sidecar"}\n');
+
+    const resolution = readTeamDagArtifactResolution(tempDir);
+
+    assert.equal(resolution.source, 'json-sidecar');
+    assert.equal(resolution.planSlug, 'repo-aware');
+    assert.equal(resolution.artifactPath, join(plansDir, 'team-dag-repo-aware.json'));
+    assert.equal(resolution.content, '{"source":"sidecar"}\n');
+    assert.deepEqual(resolution.warnings, []);
+  });
+
+  it('falls back to embedded Team DAG handoff when sidecar is absent', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-repo-aware.md'),
+      '# PRD\n\n## Team DAG Handoff\n```json\n{"nodes":[]}\n```\n',
+    );
+    await writeFile(join(plansDir, 'test-spec-repo-aware.md'), '# Test Spec\n');
+
+    const resolution = readTeamDagArtifactResolution(tempDir);
+
+    assert.equal(resolution.source, 'markdown-handoff');
+    assert.equal(resolution.planSlug, 'repo-aware');
+    assert.equal(resolution.content, '{"nodes":[]}');
+    assert.equal(resolution.artifactPath, undefined);
+  });
+
+  it('returns none for Team DAG resolution when planning is incomplete', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-repo-aware.md'), '# PRD\n');
+
+    const resolution = readTeamDagArtifactResolution(tempDir);
+
+    assert.equal(resolution.source, 'none');
+    assert.equal(resolution.prdPath, null);
+    assert.equal(resolution.planSlug, null);
+    assert.deepEqual(resolution.warnings, ['planning_incomplete']);
+  });
 
 
   it('parses $ralph aliases with single-quoted task text for approved launch hints', async () => {
@@ -183,4 +235,68 @@ describe('planning artifacts', () => {
       ['deep-interview-issue-827.md'],
     );
   });
+
+  it('loads a matching Team DAG sidecar for the latest PRD slug', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-alpha.md'), '# Alpha\n');
+    await writeFile(join(plansDir, 'test-spec-alpha.md'), '# Alpha Test\n');
+    await writeFile(join(plansDir, 'team-dag-alpha.json'), JSON.stringify({
+      schema_version: 1,
+      nodes: [{ id: 'impl', subject: 'Implement alpha', description: 'Implement alpha DAG' }],
+    }));
+
+    const result = readTeamDagHandoffForLatestPlan(tempDir);
+    assert.equal(result.source, 'sidecar');
+    assert.equal(result.planSlug, 'alpha');
+    assert.equal(result.dag?.nodes[0]?.id, 'impl');
+  });
+
+  it('prefers sidecar DAG over embedded PRD Team DAG Handoff block', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-beta.md'), '# Beta\n\n## Team DAG Handoff\n```json\n{"schema_version":1,"nodes":[{"id":"markdown","subject":"Markdown"}]}\n```\n');
+    await writeFile(join(plansDir, 'test-spec-beta.md'), '# Beta Test\n');
+    await writeFile(join(plansDir, 'team-dag-beta.json'), JSON.stringify({
+      schema_version: 1,
+      nodes: [{ id: 'sidecar', subject: 'Sidecar wins', description: 'Sidecar DAG' }],
+    }));
+
+    const result = readTeamDagHandoffForLatestPlan(tempDir);
+    assert.equal(result.source, 'sidecar');
+    assert.equal(result.dag?.nodes[0]?.id, 'sidecar');
+  });
+
+  it('reports multiple matching sidecars and chooses the lexicographically latest', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-gamma.md'), '# Gamma\n');
+    await writeFile(join(plansDir, 'test-spec-gamma.md'), '# Gamma Test\n');
+    await writeFile(join(plansDir, 'team-dag-gamma-a.json'), JSON.stringify({
+      schema_version: 1,
+      nodes: [{ id: 'old', subject: 'Old', description: 'Old DAG' }],
+    }));
+    await writeFile(join(plansDir, 'team-dag-gamma-z.json'), JSON.stringify({
+      schema_version: 1,
+      nodes: [{ id: 'new', subject: 'New', description: 'New DAG' }],
+    }));
+
+    const result = readTeamDagHandoffForLatestPlan(tempDir);
+    assert.equal(result.warning, 'multiple_matches');
+    assert.equal(result.dag?.nodes[0]?.id, 'new');
+  });
+
+  it('fails open with explicit parse error metadata for malformed DAG sidecars', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-delta.md'), '# Delta\n');
+    await writeFile(join(plansDir, 'test-spec-delta.md'), '# Delta Test\n');
+    await writeFile(join(plansDir, 'team-dag-delta.json'), '{bad json');
+
+    const result = readTeamDagHandoffForLatestPlan(tempDir);
+    assert.equal(result.source, 'sidecar');
+    assert.equal(result.dag, null);
+    assert.match(result.error ?? '', /JSON|property/i);
+  });
+
 });

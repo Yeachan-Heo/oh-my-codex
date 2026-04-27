@@ -278,6 +278,37 @@ describe("worker bootstrap", () => {
     assert.match(inbox, /Fix-Verify Loop/);
   });
 
+
+  it("generateInitialInbox includes repo-aware decomposition ownership hints", () => {
+    const inbox = generateInitialInbox(
+      "worker-1",
+      "team-dag",
+      "executor",
+      [
+        {
+          id: "1",
+          subject: "Implement DAG importer",
+          description: "Implement repo-aware decomposition",
+          status: "pending",
+          owner: "worker-1",
+          role: "executor",
+          created_at: "2026-04-27T00:00:00.000Z",
+          depends_on: ["0"],
+          filePaths: ["src/team/repo-aware-decomposition.ts"],
+          domains: ["team decomposition"],
+          lane: "implementation",
+          allocation_reason: "preserves low-overlap file/domain ownership",
+        } as TeamTask,
+      ],
+    );
+
+    assert.match(inbox, /Depends on: 0/);
+    assert.match(inbox, /File paths: src\/team\/repo-aware-decomposition\.ts/);
+    assert.match(inbox, /Domains: team decomposition/);
+    assert.match(inbox, /Lane: implementation/);
+    assert.match(inbox, /Allocation reason: preserves low-overlap file\/domain ownership/);
+  });
+
   it("generateInitialInbox shows blocked_by info for blocked tasks", () => {
     const tasks: TeamTask[] = [
       {

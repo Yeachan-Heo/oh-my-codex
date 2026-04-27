@@ -45,6 +45,14 @@ To keep the upgrade incremental and reversible, separate **signal collection** f
 - Preserve `.omx/state/team/...` storage and `omx team api` contracts.
 - Make every allocation/rebalance decision explainable with a reason string suitable for logs, snapshots, and tests.
 
+## Repo-aware DAG handoff seam
+
+The repo-aware RALPLAN -> Team handoff should enter before `startTeam()` and before worker inbox generation. Keep the decomposition gate as a bounded preflight module that returns normalized startup tasks, an effective worker count, and an inspectable metadata/report payload. Runtime dispatch should remain unchanged: workers still receive tasks through inboxes and must claim through the existing lifecycle APIs.
+
+Preflight allocation may use DAG `filePaths`, `domains`, `lane`, and symbolic dependency metadata to improve owner assignment, but only concrete runtime task IDs should reach `blocked_by` / `depends_on`. Rich metadata belongs in a decomposition report or manifest policy block unless the Team task schema intentionally supports it.
+
+See `docs/contracts/repo-aware-team-dag-decomposition.md` for the detailed artifact precedence, worker-count provenance, dependency remap, and worker-inbox UX contract.
+
 ## Review notes
 - The code already has good low-level claim primitives; the main gap is decision logic, not transport.
 - The clearest review risk is letting new heuristics bypass `assignTask()`/claim safety. Any rebalance helper should return a decision, not perform ad-hoc mutation.

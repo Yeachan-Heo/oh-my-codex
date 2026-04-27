@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { updateModeState, startMode, readModeState } from '../modes/base.js';
 import { getStatePath, validateSessionId } from '../mcp/state-paths.js';
 import { monitorTeam, resumeTeam, shutdownTeam, startTeam, type TeamRuntime, type TeamSnapshot } from '../team/runtime.js';
+import { buildRepoAwareTeamExecutionPlan } from '../team/repo-aware-decomposition.js';
 import { DEFAULT_MAX_WORKERS } from '../team/state.js';
 import { sanitizeTeamName } from '../team/tmux-session.js';
 import { readTeamEvents, waitForTeamEvent } from '../team/state/events.js';
@@ -1430,13 +1431,15 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
   }
 
   const parsed = parseTeamArgs(teamArgs, cwd);
-  const executionPlan = buildTeamExecutionPlan(
-    parsed.task,
-    parsed.workerCount,
-    parsed.agentType,
-    parsed.explicitAgentType,
-    parsed.explicitWorkerCount,
-  );
+  const executionPlan = buildRepoAwareTeamExecutionPlan({
+    task: parsed.task,
+    workerCount: parsed.workerCount,
+    agentType: parsed.agentType,
+    explicitAgentType: parsed.explicitAgentType,
+    explicitWorkerCount: parsed.explicitWorkerCount,
+    cwd,
+    buildLegacyPlan: buildTeamExecutionPlan,
+  });
   const tasks = executionPlan.tasks;
   const effectiveParsed = executionPlan.workerCount === parsed.workerCount
     ? parsed
@@ -1453,7 +1456,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     executionPlan.workerCount,
     tasks,
     cwd,
-    { worktreeMode },
+    { worktreeMode, decompositionMetadata: executionPlan.metadata },
   );
 
   await ensureTeamModeState(effectiveParsed, tasks);

@@ -35,6 +35,15 @@ export interface LatestPlanningArtifactSelection {
   deepInterviewSpecPaths: string[];
 }
 
+export interface TeamDagArtifactResolution {
+  source: 'json-sidecar' | 'markdown-handoff' | 'none';
+  prdPath: string | null;
+  planSlug: string | null;
+  artifactPath?: string;
+  content?: string;
+  warnings: string[];
+}
+
 function readMatchingPaths(dir: string, pattern: RegExp): string[] {
   if (!existsSync(dir)) {
     return [];
@@ -141,6 +150,66 @@ export function selectLatestPlanningArtifacts(
 
 export function readLatestPlanningArtifacts(cwd: string): LatestPlanningArtifactSelection {
   return selectLatestPlanningArtifacts(readPlanningArtifacts(cwd));
+}
+
+function extractTeamDagMarkdownHandoff(content: string): string | null {
+  const fencePattern = /```(?:json)?\s*\n(?<body>[\s\S]*?)```/gi;
+  let searchFrom = 0;
+  while (searchFrom < content.length) {
+    const headingIndex = content.toLowerCase().indexOf('team dag handoff', searchFrom);
+    if (headingIndex < 0) return null;
+    fencePattern.lastIndex = headingIndex;
+    const match = fencePattern.exec(content);
+    if (match?.groups?.body) {
+      return match.groups.body.trim();
+    }
+    searchFrom = headingIndex + 'team dag handoff'.length;
+  }
+  return null;
+}
+
+export function readTeamDagArtifactResolution(cwd: string): TeamDagArtifactResolution {
+  const artifacts = readPlanningArtifacts(cwd);
+  if (!isPlanningComplete(artifacts)) {
+    return { source: 'none', prdPath: null, planSlug: null, warnings: ['planning_incomplete'] };
+  }
+
+  const selection = selectLatestPlanningArtifacts(artifacts);
+  const prdPath = selection.prdPath;
+  const planSlug = prdPath ? artifactSlug(prdPath, /^prd-(?<slug>.*)\.md$/i) : null;
+  if (!prdPath || !planSlug) {
+    return { source: 'none', prdPath, planSlug, warnings: ['missing_prd_slug'] };
+  }
+
+  const sidecarName = `team-dag-${planSlug}.json`;
+  const sidecarPath = join(artifacts.plansDir, sidecarName);
+  if (existsSync(sidecarPath)) {
+    try {
+      return {
+        source: 'json-sidecar',
+        prdPath,
+        planSlug,
+        artifactPath: sidecarPath,
+        content: readFileSync(sidecarPath, 'utf-8'),
+        warnings: [],
+      };
+    } catch {
+      return { source: 'none', prdPath, planSlug, artifactPath: sidecarPath, warnings: ['sidecar_unreadable'] };
+    }
+  }
+
+
+  try {
+    const prdContent = readFileSync(prdPath, 'utf-8');
+    const markdownHandoff = extractTeamDagMarkdownHandoff(prdContent);
+    if (markdownHandoff) {
+      return { source: 'markdown-handoff', prdPath, planSlug, content: markdownHandoff, warnings: [] };
+    }
+  } catch {
+    return { source: 'none', prdPath, planSlug, warnings: ['prd_unreadable'] };
+  }
+
+  return { source: 'none', prdPath, planSlug, warnings: [] };
 }
 
 export function readApprovedExecutionLaunchHint(

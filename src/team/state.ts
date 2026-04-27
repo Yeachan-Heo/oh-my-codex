@@ -156,6 +156,10 @@ export interface TeamTask {
   error?: string; // failure reason
   blocked_by?: string[]; // task IDs
   depends_on?: string[]; // task IDs
+  filePaths?: string[];
+  domains?: string[];
+  lane?: string;
+  allocation_reason?: string;
   version?: number;
   claim?: TeamTaskClaim;
   created_at: string;

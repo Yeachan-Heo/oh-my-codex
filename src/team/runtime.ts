@@ -89,6 +89,7 @@ import {
 } from './mcp-comm.js';
 import { appendTeamDeliveryLogForCwd } from './delivery-log.js';
 import type { TeamReminderIntent } from './reminder-intents.js';
+import type { TeamDecompositionMetadata } from './repo-aware-decomposition.js';
 import {
   generateWorkerOverlay,
   writeTeamWorkerInstructionsFile,
@@ -1221,6 +1222,7 @@ export interface StaleTeamSummary {
 
 export interface TeamStartOptions {
   worktreeMode?: WorktreeMode;
+  decompositionMetadata?: TeamDecompositionMetadata;
   confirmStaleCleanup?: (summary: StaleTeamSummary) => Promise<boolean>;
   cleanupLaunchOrphanedMcpProcesses?: () => Promise<CleanupResult>;
   writeCleanupWarning?: (message: string) => void;
@@ -1987,6 +1989,26 @@ function resolveEffectiveWorkerCliForStartupLog(
   return resolveTeamWorkerCli(resolvedLaunchArgs, env);
 }
 
+
+async function writeDecompositionArtifacts(
+  teamName: string,
+  cwd: string,
+  metadata: TeamDecompositionMetadata,
+): Promise<void> {
+  const root = join(resolveCanonicalTeamStateRoot(cwd), 'team', teamName);
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, 'decomposition-report.json'), JSON.stringify(metadata, null, 2), 'utf8');
+
+  const manifest = await readTeamManifestV2(teamName, cwd);
+  if (manifest) {
+    await writeFile(
+      join(root, 'manifest.v2.json'),
+      JSON.stringify({ ...manifest, policy: { ...manifest.policy, team_decomposition: metadata } }, null, 2),
+      'utf8',
+    );
+  }
+}
+
 /**
  * Start a new team: init state, create tmux session, bootstrap workers.
  */
@@ -2020,7 +2042,7 @@ export async function startTeam(
   task: string,
   agentType: string,
   workerCount: number,
-  tasks: Array<{ subject: string; description: string; owner?: string; blocked_by?: string[]; role?: string; delegation?: TeamTask['delegation'] }>,
+  tasks: Array<{ subject: string; description: string; owner?: string; blocked_by?: string[]; depends_on?: string[]; role?: string; delegation?: TeamTask['delegation']; requires_code_change?: boolean; filePaths?: string[]; domains?: string[]; lane?: string; allocation_reason?: string; symbolic_id?: string }>,
   cwd: string,
   options: TeamStartOptions = {},
 ): Promise<TeamRuntime> {
@@ -2148,9 +2170,15 @@ export async function startTeam(
         description: t.description,
         status: 'pending',
         owner: t.owner,
-        blocked_by: t.blocked_by,
+        blocked_by: t.blocked_by ?? t.depends_on,
+        depends_on: t.depends_on ?? t.blocked_by,
         role: t.role,
         delegation: t.delegation ?? synthesizeDelegationPlan(t),
+        requires_code_change: t.requires_code_change,
+        filePaths: t.filePaths,
+        domains: t.domains,
+        lane: t.lane,
+        allocation_reason: t.allocation_reason,
       }, leaderCwd);
     }
 
@@ -2161,6 +2189,9 @@ export async function startTeam(
     }
 
     const allTasks = await listTasks(sanitized, leaderCwd);
+    if (options.decompositionMetadata) {
+      await writeDecompositionArtifacts(sanitized, leaderCwd, options.decompositionMetadata);
+    }
     const workerBootstrapPlans = [] as Array<{
       workerName: string;
       workerWorkspace: {
@@ -2228,6 +2259,7 @@ export async function startTeam(
         workerRole: runtimeRole,
         rolePromptContent: rawRolePromptContent ?? undefined,
         worktreeRootAgentsCanonical: Boolean(workerWorkspace.worktreePath),
+        taskHints: options.decompositionMetadata?.task_hints,
       });
       const triggerDirective = buildTriggerDirective(
         workerName,

@@ -10,6 +10,7 @@ import {
 import { codexHome, listInstalledSkillDirectories } from "../utils/paths.js";
 import { sleep } from "../utils/sleep.js";
 import type { TeamReminderDirective } from "./reminder-intents.js";
+import type { TaskHintSummary } from "./repo-aware-decomposition.js";
 
 const TEAM_OVERLAY_START = "<!-- OMX:TEAM:WORKER:START -->";
 const TEAM_OVERLAY_END = "<!-- OMX:TEAM:WORKER:END -->";
@@ -691,6 +692,7 @@ export function generateInitialInbox(
     workerRole?: string;
     rolePromptContent?: string;
     worktreeRootAgentsCanonical?: boolean;
+    taskHints?: Record<string, TaskHintSummary>;
   } = {},
 ): string {
   const taskList = tasks
@@ -699,8 +701,28 @@ export function generateInitialInbox(
       if (t.blocked_by && t.blocked_by.length > 0) {
         entry += `\n  Blocked by: ${t.blocked_by.join(", ")}`;
       }
+      if (t.depends_on && t.depends_on.length > 0 && !t.blocked_by?.length) {
+        entry += `\n  Depends on: ${t.depends_on.join(", ")}`;
+      }
       if (t.role) {
         entry += `\n  Role: ${t.role}`;
+      }
+      const hint = options.taskHints?.[t.id];
+      const filePaths = hint?.filePaths ?? t.filePaths;
+      const domains = hint?.domains ?? t.domains;
+      const lane = hint?.lane ?? t.lane;
+      const allocationReason = hint?.allocation_reason ?? t.allocation_reason;
+      if (filePaths?.length) {
+        entry += `\n  File paths: ${filePaths.join(", ")}`;
+      }
+      if (domains?.length) {
+        entry += `\n  Domains: ${domains.join(", ")}`;
+      }
+      if (lane) {
+        entry += `\n  Lane: ${lane}`;
+      }
+      if (allocationReason) {
+        entry += `\n  Allocation reason: ${allocationReason}`;
       }
       return entry;
     })
