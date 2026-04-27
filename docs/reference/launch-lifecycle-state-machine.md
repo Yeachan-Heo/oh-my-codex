@@ -276,6 +276,26 @@ OutcomeState(p) = absent
   regardless of provisional pack sync artifacts
 ```
 
+Context-pack write transition invariant:
+
+```text
+StoredBasisBefore(k) ∈ {absent, present}
+RefreshMode ∈ {disabled, enabled}
+ResolvedBasis(p, k) ∈ {unresolved, resolved}
+
+StoredBasisAfterUpsert(k) =
+  present              when RefreshMode = enabled ∧ ResolvedBasis(p, k) = resolved
+  StoredBasisBefore(k) otherwise
+
+RefreshMode = disabled
+  -> StoredBasisAfterUpsert(k) = StoredBasisBefore(k)
+
+BasisState(k, p) ∈ {stale-prd, stale-test-spec, unexpected-test-spec}
+  ∧ RefreshMode = disabled
+  -> the stored basis remains present so the read-side classifier preserves the
+     specific stale basis state instead of collapsing it to absent
+```
+
 The read-only context-tool status command is a diagnostic projection of this
 same classifier:
 

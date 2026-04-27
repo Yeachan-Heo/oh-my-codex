@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
+import { readContextPackHandoffStatus } from '../artifacts.js';
 import {
   CONTEXT_PACK_SCHEMA,
   buildContextPackBasis,
@@ -405,6 +406,169 @@ describe('context-packs', () => {
     const withRefresh = readContextPackDocument(packPath);
     assert.ok(withRefresh?.basis);
     assert.equal(withRefresh?.basis?.prd.path, '.omx/plans/prd-issue-basis-write.md');
+  });
+
+  it('preserves stored basis across non-refreshing entry upserts', async () => {
+    const slug = 'issue-upsert-basis';
+    const packPath = packAbsolutePath(slug);
+    await mkdir(join(tempDir, '.omx', 'plans'), { recursive: true });
+    await writeFile(join(tempDir, '.omx', 'plans', `prd-${slug}.md`), '# PRD\n');
+    await writeFile(join(tempDir, '.omx', 'plans', `test-spec-${slug}.md`), '# Test Spec\n');
+    await writeRepoFile('docs/runtime.md', '# Runtime\n\nBuild the approved slice.\n');
+    await writeRepoFile('docs/boundary.md', '# Boundary\n\nStay inside the approved slice.\n');
+    await writeRepoFile('docs/verify.md', '# Verify\n\nCheck the approved slice.\n');
+
+    writeContextPackDocument(packPath, {
+      schema: CONTEXT_PACK_SCHEMA,
+      slug,
+      entries: [
+        {
+          label: 'runtime',
+          path: 'docs/runtime.md',
+          roles: ['build'],
+          tags: [],
+          relationPath: [
+            { tag: 'plan', target: slug },
+            { tag: 'implements', target: 'docs/runtime.md' },
+          ],
+        },
+        {
+          label: 'boundary',
+          path: 'docs/boundary.md',
+          roles: ['scope'],
+          tags: [],
+          relationPath: [
+            { tag: 'plan', target: slug },
+            { tag: 'bounds', target: 'docs/boundary.md' },
+          ],
+        },
+        {
+          label: 'verify',
+          path: 'docs/verify.md',
+          roles: ['verify'],
+          tags: [],
+          relationPath: [
+            { tag: 'plan', target: slug },
+            { tag: 'verifies', target: 'docs/verify.md' },
+          ],
+        },
+      ],
+    }, { refreshBasis: true });
+    const before = readContextPackDocument(packPath);
+    assert.ok(before?.basis);
+
+    upsertContextPackEntries(
+      packPath,
+      [{ path: 'docs/runtime.md', label: 'runtime', tags: ['patched'] }],
+      { repoRoot: tempDir },
+    );
+
+    const after = readContextPackDocument(packPath);
+    assert.deepEqual(after?.basis, before.basis);
+    assert.deepEqual(after?.entries.find((entry) => entry.label === 'runtime')?.tags, ['patched']);
+  });
+
+  it('keeps handoff basis states meaningful across upsert and refresh transitions', async () => {
+    const slug = 'issue-upsert-handoff';
+    const packPath = packAbsolutePath(slug);
+    await mkdir(join(tempDir, '.omx', 'plans'), { recursive: true });
+    await writeFile(
+      join(tempDir, '.omx', 'plans', `prd-${slug}.md`),
+      [
+        '# PRD',
+        '',
+        'Initial approved basis.',
+        '',
+        '## Context Pack Outcome',
+        `- pack: created \`${packRelativePath(slug)}\``,
+        '',
+      ].join('\n'),
+    );
+    await writeFile(join(tempDir, '.omx', 'plans', `test-spec-${slug}.md`), '# Test Spec\n');
+    await writeRepoFile('docs/runtime.md', '# Runtime\n\nBuild the approved slice.\n');
+    await writeRepoFile('docs/boundary.md', '# Boundary\n\nStay inside the approved slice.\n');
+    await writeRepoFile('docs/verify.md', '# Verify\n\nCheck the approved slice.\n');
+
+    writeContextPackDocument(packPath, {
+      schema: CONTEXT_PACK_SCHEMA,
+      slug,
+      entries: [
+        {
+          label: 'runtime',
+          path: 'docs/runtime.md',
+          roles: ['build'],
+          tags: [],
+          relationPath: [
+            { tag: 'plan', target: slug },
+            { tag: 'implements', target: 'docs/runtime.md' },
+          ],
+        },
+        {
+          label: 'boundary',
+          path: 'docs/boundary.md',
+          roles: ['scope'],
+          tags: [],
+          relationPath: [
+            { tag: 'plan', target: slug },
+            { tag: 'bounds', target: 'docs/boundary.md' },
+          ],
+        },
+        {
+          label: 'verify',
+          path: 'docs/verify.md',
+          roles: ['verify'],
+          tags: [],
+          relationPath: [
+            { tag: 'plan', target: slug },
+            { tag: 'verifies', target: 'docs/verify.md' },
+          ],
+        },
+      ],
+    }, { refreshBasis: true });
+
+    let status = readContextPackHandoffStatus(tempDir, packPath);
+    assert.equal(status.handoffState, 'ready');
+    assert.equal(status.basisState, 'fresh');
+
+    upsertContextPackEntries(
+      packPath,
+      [{ path: 'docs/runtime.md', label: 'runtime', tags: ['non-refresh'] }],
+      { repoRoot: tempDir },
+    );
+    status = readContextPackHandoffStatus(tempDir, packPath);
+    assert.equal(status.handoffState, 'ready');
+    assert.equal(status.basisState, 'fresh');
+
+    await writeFile(
+      join(tempDir, '.omx', 'plans', `prd-${slug}.md`),
+      [
+        '# PRD',
+        '',
+        'Changed approved basis.',
+        '',
+        '## Context Pack Outcome',
+        `- pack: created \`${packRelativePath(slug)}\``,
+        '',
+      ].join('\n'),
+    );
+    upsertContextPackEntries(
+      packPath,
+      [{ path: 'docs/verify.md', label: 'verify', tags: ['stale-preserved'] }],
+      { repoRoot: tempDir },
+    );
+    status = readContextPackHandoffStatus(tempDir, packPath);
+    assert.equal(status.handoffState, 'invalid');
+    assert.equal(status.basisState, 'stale-prd');
+    assert.ok(status.issues.some((issue) => issue.includes('basis prd hash')));
+
+    upsertContextPackEntries(
+      packPath,
+      [{ path: 'docs/boundary.md', label: 'boundary', tags: ['refreshed'] }],
+      { repoRoot: tempDir, refreshBasis: true },
+    );
+    status = readContextPackHandoffStatus(tempDir, packPath);
+    assert.equal(status.handoffState, 'ready');
+    assert.equal(status.basisState, 'fresh');
   });
 
   it('keeps runtime materialization valid without the generated index while explicit readiness validation can still require it', async () => {

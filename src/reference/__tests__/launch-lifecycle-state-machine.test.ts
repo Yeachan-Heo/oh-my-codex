@@ -47,6 +47,9 @@ type PackState = 'missing' | 'unreadable' | 'schema-invalid' | 'valid';
 type RoleCoverageState = 'missing-required-roles' | 'covered';
 type BasisState = 'absent' | 'stale-prd' | 'stale-test-spec' | 'unexpected-test-spec' | 'fresh';
 type IndexState = 'missing' | 'invalid' | 'fresh';
+type StoredBasisState = 'absent' | 'present';
+type BasisRefreshMode = 'disabled' | 'enabled';
+type ResolvedBasisState = 'unresolved' | 'resolved';
 
 interface Candidate {
   id: string;
@@ -135,6 +138,17 @@ function handoffStateModel(input: {
     return 'incomplete';
   }
   return 'ready';
+}
+
+function storedBasisAfterUpsertModel(input: {
+  stored: StoredBasisState;
+  refresh: BasisRefreshMode;
+  resolved: ResolvedBasisState;
+}): StoredBasisState {
+  if (input.refresh === 'enabled' && input.resolved === 'resolved') {
+    return 'present';
+  }
+  return input.stored;
 }
 
 function artifactSlug(path: string, prefixPattern: RegExp): string | null {
@@ -922,6 +936,25 @@ describe('launch-lifecycle-state-machine reference', () => {
       }),
       'plan-only',
     );
+  });
+
+  it('exhaustively model-checks context-pack upsert basis preservation', () => {
+    const storedStates: StoredBasisState[] = ['absent', 'present'];
+    const refreshModes: BasisRefreshMode[] = ['disabled', 'enabled'];
+    const resolvedStates: ResolvedBasisState[] = ['unresolved', 'resolved'];
+
+    for (const stored of storedStates) {
+      for (const refresh of refreshModes) {
+        for (const resolved of resolvedStates) {
+          const after = storedBasisAfterUpsertModel({ stored, refresh, resolved });
+          if (refresh === 'enabled' && resolved === 'resolved') {
+            assert.equal(after, 'present');
+            continue;
+          }
+          assert.equal(after, stored);
+        }
+      }
+    }
   });
 
   it('exhaustively model-checks generic mode reads fail closed on malformed higher-precedence state', () => {

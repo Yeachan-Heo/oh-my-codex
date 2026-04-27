@@ -1177,6 +1177,7 @@ export function upsertContextPackEntries(
   const candidateDocument = normalizeDocument({
     schema: CONTEXT_PACK_SCHEMA,
     slug: baseDocument.slug,
+    ...(baseDocument.basis ? { basis: baseDocument.basis } : {}),
     entries: nextEntries,
   }, packPath);
   if (options.repoRoot) {
