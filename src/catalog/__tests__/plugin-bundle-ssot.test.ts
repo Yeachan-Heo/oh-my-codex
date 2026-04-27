@@ -3,9 +3,13 @@ import assert from "node:assert/strict";
 import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { getSetupInstallableSkillNames } from "../installable.js";
 import { readCatalogManifest } from "../reader.js";
-import { syncPluginMirror } from "../../scripts/sync-plugin-mirror.js";
+import {
+	isDirectCliInvocation,
+	syncPluginMirror,
+} from "../../scripts/sync-plugin-mirror.js";
 
 const root = process.cwd();
 
@@ -25,6 +29,28 @@ async function copyBundleFixture(): Promise<string> {
 }
 
 describe("plugin bundle SSOT contract", () => {
+	it("detects direct CLI execution when repo paths contain spaces", () => {
+		const scriptPath = join(
+			tmpdir(),
+			"Manual Library",
+			"repo",
+			"dist",
+			"scripts",
+			"sync-plugin-mirror.js",
+		);
+		const importMetaUrl = pathToFileURL(scriptPath).href;
+
+		assert.equal(isDirectCliInvocation(importMetaUrl, scriptPath), true);
+		assert.equal(isDirectCliInvocation(importMetaUrl, undefined), false);
+		assert.equal(
+			isDirectCliInvocation(
+				importMetaUrl,
+				join(tmpdir(), "other", "sync-plugin-mirror.js"),
+			),
+			false,
+		);
+	});
+
 	it("verifies the checked-in plugin bundle mirrors canonical roots", async () => {
 		const result = await syncPluginMirror({ root, check: true });
 		const expectedSkillNames = [
