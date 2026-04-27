@@ -1,14 +1,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
+  assertCleanLeaderWorkspaceForWorkerWorktrees,
   parseWorktreeMode,
   planWorktreeTarget,
   ensureWorktree,
+  readWorkspaceStatusLines,
   rollbackProvisionedWorktrees,
 } from '../worktree.js';
 
@@ -87,6 +89,29 @@ describe('worktree parser', () => {
     const parsed = parseWorktreeMode(['-w']);
     assert.deepEqual(parsed.mode, { enabled: true, detached: true, name: null });
     assert.deepEqual(parsed.remainingArgs, []);
+  });
+});
+
+describe('worktree cleanliness', () => {
+  it('ignores legacy repo-local context-pack excerpt cache files', async () => {
+    const repo = await initRepo();
+    try {
+      const excerptPath = join(
+        repo,
+        '.omx',
+        'context',
+        'excerpts',
+        'context-20260420T000000Z-issue-legacy',
+        '01-runtime.md',
+      );
+      await mkdir(dirname(excerptPath), { recursive: true });
+      await writeFile(excerptPath, 'legacy cache\n', 'utf-8');
+
+      assert.deepEqual(readWorkspaceStatusLines(repo), []);
+      assert.doesNotThrow(() => assertCleanLeaderWorkspaceForWorkerWorktrees(repo));
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
   });
 });
 

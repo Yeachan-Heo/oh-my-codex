@@ -6,6 +6,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { existsSync } from 'fs';
 import { HUD_TMUX_TEAM_HEIGHT_LINES } from '../../hud/constants.js';
+import { contextPackExcerptPath, readContextPackDocument, writeContextPackDocument } from '../../planning/context-packs.js';
 import {
   initTeamState,
   createTask,
@@ -58,6 +59,12 @@ async function addWorktree(repo: string, branchName: string, pathPrefix: string)
   const worktreePath = await mkdtemp(join(tmpdir(), pathPrefix));
   execFileSync('git', ['worktree', 'add', '-b', branchName, worktreePath, 'HEAD'], { cwd: repo, stdio: 'ignore' });
   return worktreePath;
+}
+
+function refreshContextPackBasis(packPath: string): void {
+  const document = readContextPackDocument(packPath);
+  assert.ok(document, `expected context pack at ${packPath}`);
+  writeContextPackDocument(packPath, document, { refreshBasis: true });
 }
 
 async function attachDirtyWorkerRepo(teamName: string, cwd: string, repoName: string): Promise<void> {
@@ -1778,6 +1785,142 @@ process.on('SIGTERM', () => process.exit(0));
     } finally {
       if (typeof prevLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = prevLaunchMode;
       else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('startTeam keeps selector-backed approved handoffs behind the clean-worktree gate', async () => {
+    const repo = await initRepo();
+    const binDir = await mkdtemp(join(tmpdir(), 'omx-runtime-gemini-approved-worktree-'));
+    const fakeGeminiPath = join(binDir, 'gemini');
+    const approvedTask = 'Execute selector-backed approved handoff';
+    const prevPath = process.env.PATH;
+    const prevTmux = process.env.TMUX;
+    const prevLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevLaunchArgs = process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+    let runtime: TeamRuntime | null = null;
+
+    try {
+      await mkdir(join(repo, '.omx', 'plans'), { recursive: true });
+      await mkdir(join(repo, '.omx', 'context'), { recursive: true });
+      await mkdir(join(repo, 'docs'), { recursive: true });
+      await writeFile(join(repo, 'docs', 'scope.md'), '# Scope\n\nStay inside the approved slice.\n', 'utf-8');
+      await writeFile(
+        join(repo, 'docs', 'runtime.md'),
+        `# Runtime\n\n## Runtime Contract\n\n${Array.from({ length: 90 }, () => 'Execution detail stays compact when excerpted.').join(' ')}\n`,
+        'utf-8',
+      );
+      await writeFile(join(repo, 'docs', 'verify.md'), '# Verify\n\nCheck the approved slice.\n', 'utf-8');
+
+      const packPath = join(repo, '.omx', 'context', 'context-20260422T000000Z-issue-selector.json');
+      writeContextPackDocument(packPath, {
+        schema: 'omx-context-pack-v1',
+        slug: 'issue-selector',
+        entries: [
+          {
+            label: 'scope',
+            path: 'docs/scope.md',
+            roles: ['scope'],
+            tags: ['scope'],
+            relationPath: [
+              { tag: 'plan', target: 'issue-selector' },
+              { tag: 'bounds', target: 'docs/scope.md' },
+            ],
+          },
+          {
+            label: 'runtime',
+            path: 'docs/runtime.md',
+            roles: ['build'],
+            tags: ['runtime'],
+            selector: { type: 'heading', value: '## Runtime Contract', maxWords: 120 },
+            relationPath: [
+              { tag: 'plan', target: 'issue-selector' },
+              { tag: 'implements', target: 'docs/runtime.md#runtime-contract' },
+            ],
+          },
+          {
+            label: 'verify',
+            path: 'docs/verify.md',
+            roles: ['verify'],
+            tags: ['verify'],
+            relationPath: [
+              { tag: 'plan', target: 'issue-selector' },
+              { tag: 'verifies', target: 'docs/verify.md' },
+            ],
+          },
+        ],
+      }, { refreshBasis: true });
+      await writeFile(
+        join(repo, '.omx', 'plans', 'prd-issue-selector.md'),
+        [
+          '# Approved plan',
+          '',
+          '## Context Pack Outcome',
+          '- pack: created `.omx/context/context-20260422T000000Z-issue-selector.json`',
+          '',
+          `Launch via omx team 1:executor ${JSON.stringify(approvedTask)}`,
+        ].join('\n'),
+        'utf-8',
+      );
+      await writeFile(join(repo, '.omx', 'plans', 'test-spec-issue-selector.md'), '# Test spec\n', 'utf-8');
+      refreshContextPackBasis(packPath);
+      execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'seed selector approved handoff'], { cwd: repo, stdio: 'ignore' });
+
+      await writeFile(
+        fakeGeminiPath,
+        '#!/usr/bin/env bash\nsleep 5\n',
+        { mode: 0o755 },
+      );
+
+      process.env.PATH = `${binDir}:${prevPath ?? ''}`;
+      delete process.env.TMUX;
+      process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
+      process.env.OMX_TEAM_WORKER_CLI = 'gemini';
+      delete process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+
+      runtime = await withoutTeamWorkerEnv(() =>
+        startTeam(
+          'team-approved-selector-worktree',
+          approvedTask,
+          'executor',
+          1,
+          [{ subject: 'Implement approved selector handoff', description: 'Implement approved selector handoff', owner: 'worker-1' }],
+          repo,
+          { worktreeMode: { enabled: true, detached: true, name: null } },
+        ));
+
+      const excerptPath = contextPackExcerptPath(packPath, 0, 'runtime');
+      assert.equal(existsSync(excerptPath), true);
+      assert.equal(excerptPath.startsWith(join(repo, '.omx', 'context')), false);
+      const inbox = await readFile(
+        join(repo, '.omx', 'state', 'team', runtime.teamName, 'workers', 'worker-1', 'inbox.md'),
+        'utf-8',
+      );
+      assert.match(inbox, new RegExp(`Build refs \\(read first\\): runtime=${excerptPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\[excerpt\\]`));
+      assert.match(inbox, /Scope refs: scope=docs\/scope\.md \[file\]/);
+      assert.match(inbox, /Verify refs: verify=docs\/verify\.md \[file\]/);
+      assert.doesNotMatch(inbox, new RegExp(`${repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/docs/scope\\.md`));
+      assert.doesNotMatch(inbox, new RegExp(`${repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/docs/verify\\.md`));
+
+      await shutdownTeam(runtime.teamName, repo, { force: true });
+      runtime = null;
+    } finally {
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, repo, { force: true }).catch(() => {});
+      }
+      if (typeof prevPath === 'string') process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
+      else delete process.env.TMUX;
+      if (typeof prevLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = prevLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevLaunchArgs === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = prevLaunchArgs;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+      await rm(binDir, { recursive: true, force: true });
       await rm(repo, { recursive: true, force: true });
     }
   });

@@ -130,6 +130,17 @@ import {
   type TeamOperationalCommitEntry,
 } from './commit-hygiene.js';
 import {
+  buildApprovedTeamExecutionBinding,
+  buildApprovedTeamHandoffSection,
+  hydrateApprovedTeamExecutionHintFromBinding,
+  normalizeApprovedTeamExecutionBinding,
+  readApprovedTeamExecutionHintFromBinding,
+  resolvePersistedApprovedTeamExecutionContinuityState,
+  writePersistedApprovedTeamExecutionBinding,
+  type ApprovedTeamExecutionBinding,
+} from './approved-execution.js';
+import { isApprovedExecutionContextReadyStatus } from '../planning/artifacts.js';
+import {
   assertCleanLeaderWorkspaceForWorkerWorktrees,
   ensureWorktree,
   isGitRepository,
@@ -1170,6 +1181,7 @@ export interface StaleTeamSummary {
 export interface TeamStartOptions {
   worktreeMode?: WorktreeMode;
   confirmStaleCleanup?: (summary: StaleTeamSummary) => Promise<boolean>;
+  approvedExecution?: ApprovedTeamExecutionBinding | null;
 }
 
 interface ShutdownGateCounts {
@@ -1971,6 +1983,65 @@ export async function startTeam(
 
   await detectAndCleanStaleTeam(sanitized, leaderCwd, workerCount, options.confirmStaleCleanup);
 
+  const hasExplicitApprovedExecution = Object.prototype.hasOwnProperty.call(options, 'approvedExecution');
+  const explicitApprovedExecution = hasExplicitApprovedExecution
+    ? normalizeApprovedTeamExecutionBinding(options.approvedExecution)
+    : null;
+  const explicitApprovedExecutionOptOut = hasExplicitApprovedExecution && options.approvedExecution === null;
+  const persistedApprovedExecutionState = !hasExplicitApprovedExecution
+    ? await resolvePersistedApprovedTeamExecutionContinuityState(
+      sanitized,
+      leaderCwd,
+      teamStateRoot,
+    )
+    : { status: 'missing' as const };
+  const requestedApprovedExecution = explicitApprovedExecutionOptOut
+    ? null
+    : explicitApprovedExecution
+      ? explicitApprovedExecution
+      : persistedApprovedExecutionState.status === 'valid'
+        ? persistedApprovedExecutionState.binding
+        : null;
+  const selectedApprovedHint = explicitApprovedExecutionOptOut
+    ? null
+    : explicitApprovedExecution
+      ? readApprovedTeamExecutionHintFromBinding(leaderCwd, explicitApprovedExecution)
+      : persistedApprovedExecutionState.status === 'valid'
+        ? persistedApprovedExecutionState.approvedHint
+        : requestedApprovedExecution
+          ? readApprovedTeamExecutionHintFromBinding(leaderCwd, requestedApprovedExecution)
+          : null;
+  if (!hasExplicitApprovedExecution && persistedApprovedExecutionState.status === 'malformed') {
+    throw new Error(`approved_execution_binding_malformed:${sanitized}`);
+  }
+  if (!hasExplicitApprovedExecution && persistedApprovedExecutionState.status === 'stale') {
+    throw new Error(
+      `approved_execution_binding_stale:${persistedApprovedExecutionState.binding.prd_path}:${persistedApprovedExecutionState.binding.task}`,
+    );
+  }
+  if (!hasExplicitApprovedExecution && persistedApprovedExecutionState.status === 'nonready') {
+    throw new Error(
+      `approved_execution_binding_nonready:${persistedApprovedExecutionState.binding.prd_path}:${persistedApprovedExecutionState.binding.task}:${persistedApprovedExecutionState.approvedHint.contextPackStatus}`,
+    );
+  }
+  if (requestedApprovedExecution && !selectedApprovedHint) {
+    throw new Error(
+      `approved_execution_binding_stale:${requestedApprovedExecution.prd_path}:${requestedApprovedExecution.task}`,
+    );
+  }
+  if (
+    requestedApprovedExecution
+    && selectedApprovedHint
+    && !isApprovedExecutionContextReadyStatus(selectedApprovedHint.contextPackStatus)
+  ) {
+    throw new Error(
+      `approved_execution_binding_nonready:${requestedApprovedExecution.prd_path}:${requestedApprovedExecution.task}:${selectedApprovedHint.contextPackStatus}`,
+    );
+  }
+  const approvedExecution = selectedApprovedHint
+    ? buildApprovedTeamExecutionBinding(selectedApprovedHint)
+    : null;
+
   if (activeWorktreeMode) {
     assertCleanLeaderWorkspaceForWorkerWorktrees(leaderCwd);
     for (let i = 1; i <= workerCount; i++) {
@@ -2019,6 +2090,9 @@ export async function startTeam(
     workerReadyTimeoutMs,
   );
   const skipWorkerReadyWait = shouldSkipWorkerReadyWait(process.env);
+  const approvedHint = approvedExecution
+    ? hydrateApprovedTeamExecutionHintFromBinding(leaderCwd, approvedExecution) ?? selectedApprovedHint
+    : selectedApprovedHint;
 
   try {
     // 3. Init state directory + config
@@ -2045,6 +2119,7 @@ export async function startTeam(
     config.team_state_root = teamStateRoot;
     config.workspace_mode = workspaceMode;
     config.worktree_mode = effectiveWorktreeMode;
+    await writePersistedApprovedTeamExecutionBinding(sanitized, leaderCwd, approvedExecution, teamStateRoot);
 
     // 4. Create tasks
     for (const t of tasks) {
@@ -2132,6 +2207,10 @@ export async function startTeam(
         workerRole: runtimeRole,
         rolePromptContent: rawRolePromptContent ?? undefined,
         worktreeRootAgentsCanonical: Boolean(workerWorkspace.worktreePath),
+        approvedContextSection: buildApprovedTeamHandoffSection(
+          approvedHint,
+          workerWorkspace.worktreeRepoRoot,
+        ),
       });
       const triggerDirective = buildTriggerDirective(
         workerName,
@@ -2804,7 +2883,32 @@ export async function assignTask(
 
   try {
     // Retry dispatch up to 2 times to handle trust prompts during assignment (fixes #393).
-    const inbox = generateTaskAssignmentInbox(workerName, sanitized, taskId, task.description);
+    const teamStateRoot = config.team_state_root ?? resolveCanonicalTeamStateRoot(cwd);
+    const approvedExecutionState = await resolvePersistedApprovedTeamExecutionContinuityState(
+      sanitized,
+      cwd,
+      teamStateRoot,
+    );
+    let approvedContextSection: string | undefined;
+    if (approvedExecutionState.status === 'malformed') {
+      throw new Error(`approved_execution_binding_malformed:${sanitized}`);
+    }
+    if (approvedExecutionState.status === 'stale') {
+      throw new Error(`approved_execution_binding_stale:${approvedExecutionState.binding.prd_path}:${approvedExecutionState.binding.task}`);
+    }
+    if (approvedExecutionState.status === 'nonready') {
+      throw new Error(`approved_execution_binding_nonready:${approvedExecutionState.binding.prd_path}:${approvedExecutionState.binding.task}:${approvedExecutionState.approvedHint.contextPackStatus}`);
+    }
+    if (approvedExecutionState.status === 'valid') {
+      approvedContextSection = buildApprovedTeamHandoffSection(
+        approvedExecutionState.approvedHint,
+        workerInfo.worktree_repo_root ?? undefined,
+      ) ?? undefined;
+    }
+
+    const inbox = generateTaskAssignmentInbox(workerName, sanitized, taskId, task.description, {
+      approvedContextSection,
+    });
     const maxAssignRetries = 2;
     const assignRetryDelayS = 2;
     let outcome: DispatchOutcome = { ok: false, transport: 'none', reason: 'not_attempted' };

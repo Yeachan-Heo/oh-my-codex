@@ -146,7 +146,11 @@ export function readWorkspaceStatusLines(cwd: string): string[] {
   return (result.stdout || '')
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((line) => {
+      const repoRelativePath = line.slice(3).replaceAll('\\', '/');
+      return !repoRelativePath.startsWith('.omx/context/excerpts/');
+    });
 }
 
 export function assertCleanLeaderWorkspaceForWorkerWorktrees(cwd: string): void {

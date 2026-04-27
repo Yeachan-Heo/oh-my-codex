@@ -4,7 +4,7 @@
  */
 
 import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
 import {
   assertWorkflowTransitionAllowed,
@@ -20,6 +20,7 @@ import {
   getBaseStateDir,
   getReadScopedStateDirs,
   getReadScopedStatePaths,
+  getReadScopedStatePathsSync,
   getStatePath,
   resolveStateScope,
 } from '../mcp/state-paths.js';
@@ -167,6 +168,16 @@ export async function readModeState(mode: string, projectRoot?: string): Promise
   return readModeStateFromPaths(paths);
 }
 
+export function readModeStateSync(mode: string, projectRoot?: string): ModeState | null {
+  const paths = getReadScopedStatePathsSync(mode, projectRoot);
+  return readModeStateFromPathsSync(paths);
+}
+
+export function readActiveModeStateSync(mode: string, projectRoot?: string): ModeState | null {
+  const paths = getReadScopedStatePathsSync(mode, projectRoot);
+  return readActiveModeStateFromPathsSync(paths);
+}
+
 async function readModeStateFromPaths(paths: string[]): Promise<ModeState | null> {
   for (const path of paths) {
     if (!existsSync(path)) continue;
@@ -174,6 +185,33 @@ async function readModeStateFromPaths(paths: string[]): Promise<ModeState | null
       return JSON.parse(await readFile(path, 'utf-8'));
     } catch {
       return null;
+    }
+  }
+  return null;
+}
+
+function readModeStateFromPathsSync(paths: string[]): ModeState | null {
+  for (const path of paths) {
+    if (!existsSync(path)) continue;
+    try {
+      return JSON.parse(readFileSync(path, 'utf-8'));
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function readActiveModeStateFromPathsSync(paths: string[]): ModeState | null {
+  for (const path of paths) {
+    if (!existsSync(path)) continue;
+    try {
+      const state = JSON.parse(readFileSync(path, 'utf-8')) as ModeState;
+      if (state?.active === true) {
+        return state;
+      }
+    } catch {
+      continue;
     }
   }
   return null;

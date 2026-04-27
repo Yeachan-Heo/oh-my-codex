@@ -66,6 +66,12 @@ import {
   resolveAgentReasoningEffort,
   type TeamReasoningEffort,
 } from './model-contract.js';
+import {
+  buildApprovedTeamExecutionBinding,
+  buildApprovedTeamHandoffSection,
+  resolvePersistedApprovedTeamExecutionContinuityState,
+  writePersistedApprovedTeamExecutionBinding,
+} from './approved-execution.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
 import {
   ensureWorktree,
@@ -234,6 +240,49 @@ export async function scaleUp(
       display_mode: manifest?.policy?.display_mode === 'split_pane' ? 'split_pane' : 'auto',
       worker_launch_mode: config.worker_launch_mode,
     });
+    const persistedApprovedExecutionState = await resolvePersistedApprovedTeamExecutionContinuityState(
+      sanitized,
+      leaderCwd,
+      teamStateRoot,
+    );
+    if (persistedApprovedExecutionState.status === 'malformed') {
+      return {
+        ok: false,
+        error: `approved_execution_binding_malformed:${sanitized}`,
+      };
+    }
+    if (persistedApprovedExecutionState.status === 'stale') {
+      return {
+        ok: false,
+        error: `approved_execution_binding_stale:${persistedApprovedExecutionState.binding.prd_path}:${persistedApprovedExecutionState.binding.task}`,
+      };
+    }
+    if (persistedApprovedExecutionState.status === 'nonready') {
+      return {
+        ok: false,
+        error: `approved_execution_binding_nonready:${persistedApprovedExecutionState.binding.prd_path}:${persistedApprovedExecutionState.binding.task}:${persistedApprovedExecutionState.approvedHint.contextPackStatus}`,
+      };
+    }
+
+    const persistedApprovedExecution = persistedApprovedExecutionState.status === 'valid'
+      ? persistedApprovedExecutionState.binding
+      : null;
+    const approvedHint = persistedApprovedExecutionState.status === 'valid'
+      ? persistedApprovedExecutionState.approvedHint
+      : null;
+    const approvedExecution = approvedHint
+      ? buildApprovedTeamExecutionBinding(approvedHint)
+      : null;
+    if (
+      persistedApprovedExecution
+      && (
+      (persistedApprovedExecution?.prd_path ?? null) !== (approvedExecution?.prd_path ?? null)
+      || (persistedApprovedExecution?.task ?? null) !== (approvedExecution?.task ?? null)
+      || (persistedApprovedExecution?.command ?? null) !== (approvedExecution?.command ?? null)
+      )
+    ) {
+      await writePersistedApprovedTeamExecutionBinding(sanitized, leaderCwd, approvedExecution, teamStateRoot);
+    }
     const effectiveWorktreeMode = config.worktree_mode ?? resolveScaleUpWorktreeMode(config);
     if (!config.worktree_mode && effectiveWorktreeMode.enabled) {
       config.worktree_mode = effectiveWorktreeMode;
@@ -469,6 +518,10 @@ export async function scaleUp(
         workerRole: runtimeRole,
         rolePromptContent: rawRolePromptContent ?? undefined,
         worktreeRootAgentsCanonical: Boolean(workerWorkspace?.worktreePath),
+        approvedContextSection: buildApprovedTeamHandoffSection(
+          approvedHint,
+          workerWorkspace?.repoRoot,
+        ),
       });
 
       const triggerDirective = buildTriggerDirective(

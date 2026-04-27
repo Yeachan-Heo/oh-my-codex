@@ -98,6 +98,10 @@ describe("worker bootstrap", () => {
       overlay,
       /do not pass workingDirectory unless the lead explicitly tells you to/,
     );
+    assert.match(
+      overlay,
+      /When your inbox includes an Approved Handoff Context section, read those context refs before broader repo exploration/i,
+    );
     assert.doesNotMatch(overlay, /tasks\/\{id\}\.json/);
   });
 
@@ -299,6 +303,36 @@ describe("worker bootstrap", () => {
     assert.match(inbox, /Blocked by: 1, 2/);
   });
 
+  it("generateInitialInbox includes approved handoff context when provided", () => {
+    const tasks: TeamTask[] = [
+      {
+        id: "1",
+        subject: "Implement runtime lane",
+        description: "Use the approved execution brief",
+        status: "pending",
+        created_at: new Date().toISOString(),
+      },
+    ];
+
+    const inbox = generateInitialInbox(
+      "worker-1",
+      "team-context",
+      "executor",
+      tasks,
+      {
+        approvedContextSection: [
+          "- Approved plan: .omx/plans/prd-issue-906.md",
+          "- Build refs (read first): runtime=.omx/context/excerpts/context-20260420T000001Z-issue-906/01-runtime.md [excerpt]",
+        ].join("\n"),
+      },
+    );
+
+    assert.match(inbox, /## Approved Handoff Context/);
+    assert.match(inbox, /Approved plan: \.omx\/plans\/prd-issue-906\.md/);
+    assert.match(inbox, /Build refs \(read first\): runtime=\.omx\/context\/excerpts\/context-20260420T000001Z-issue-906\/01-runtime\.md \[excerpt\]/);
+    assert.match(inbox, /read those context refs before opening broader repo sources/i);
+  });
+
   it("generateInitialInbox uses workerRole when provided", () => {
     const tasks: TeamTask[] = [
       {
@@ -411,6 +445,26 @@ describe("worker bootstrap", () => {
     );
     assert.match(inbox, /Verification Requirements/);
     assert.match(inbox, /PASS\/FAIL/);
+  });
+
+  it("generateTaskAssignmentInbox preserves approved handoff context when provided", () => {
+    const inbox = generateTaskAssignmentInbox(
+      "worker-3",
+      "team-followup",
+      "42",
+      "Implement parser update",
+      {
+        approvedContextSection: [
+          "- Approved plan: .omx/plans/prd-issue-906.md",
+          "- Build refs (read first): runtime=/tmp/context-pack-cache/context-issue-906/01-runtime.md [excerpt]",
+        ].join("\n"),
+      },
+    );
+
+    assert.match(inbox, /## Approved Handoff Context/);
+    assert.match(inbox, /Approved plan: \.omx\/plans\/prd-issue-906\.md/);
+    assert.match(inbox, /Build refs \(read first\): runtime=\/tmp\/context-pack-cache\/context-issue-906\/01-runtime\.md \[excerpt\]/);
+    assert.match(inbox, /read those context refs before broader repo exploration/i);
   });
 
   it("generateShutdownInbox contains exit instruction and concrete ack path", () => {

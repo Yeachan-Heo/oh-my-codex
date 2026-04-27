@@ -1,7 +1,7 @@
 import { delimiter, isAbsolute, join, relative, resolve as resolvePath } from 'path';
 import { existsSync } from 'fs';
 import { readdir } from 'fs/promises';
-import { readUsableSessionState } from '../hooks/session.js';
+import { readUsableSessionState, readUsableSessionStateSync } from '../hooks/session.js';
 
 export const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 export const STATE_MODE_SEGMENT_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -211,6 +211,17 @@ export async function readCurrentSessionId(workingDirectory?: string): Promise<s
   return (await readUsableSessionState(cwd))?.session_id;
 }
 
+export function readCurrentSessionIdSync(workingDirectory?: string): string | undefined {
+  const cwd = resolveWorkingDirectoryForState(workingDirectory);
+  const envSessionId = readSessionIdFromEnvironment();
+  if (envSessionId) {
+    const envScopedDir = getStateDir(cwd, envSessionId);
+    if (existsSync(envScopedDir)) return envSessionId;
+  }
+
+  return readUsableSessionStateSync(cwd)?.session_id;
+}
+
 export async function resolveStateScope(
   workingDirectory?: string,
   explicitSessionId?: string,
@@ -258,12 +269,41 @@ export async function getReadScopedStateDirs(
   return [scope.stateDir, getBaseStateDir(workingDirectory)];
 }
 
+export function getReadScopedStateDirsSync(
+  workingDirectory?: string,
+  explicitSessionId?: string,
+): string[] {
+  const validatedExplicit = validateSessionId(explicitSessionId);
+  if (validatedExplicit) {
+    const explicitStateDir = getStateDir(workingDirectory, validatedExplicit);
+    if (existsSync(explicitStateDir)) return [explicitStateDir];
+    return [explicitStateDir, getBaseStateDir(workingDirectory)];
+  }
+
+  const currentSessionId = readCurrentSessionIdSync(workingDirectory);
+  if (currentSessionId) {
+    return [getStateDir(workingDirectory, currentSessionId), getBaseStateDir(workingDirectory)];
+  }
+
+  return [getBaseStateDir(workingDirectory)];
+}
+
 export async function getReadScopedStatePaths(
   mode: string,
   workingDirectory?: string,
   explicitSessionId?: string,
 ): Promise<string[]> {
   const dirs = await getReadScopedStateDirs(workingDirectory, explicitSessionId);
+  const fileName = getStateFilename(mode);
+  return dirs.map((dir) => join(dir, fileName));
+}
+
+export function getReadScopedStatePathsSync(
+  mode: string,
+  workingDirectory?: string,
+  explicitSessionId?: string,
+): string[] {
+  const dirs = getReadScopedStateDirsSync(workingDirectory, explicitSessionId);
   const fileName = getStateFilename(mode);
   return dirs.map((dir) => join(dir, fileName));
 }

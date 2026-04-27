@@ -107,6 +107,18 @@ export async function readSessionState(cwd: string): Promise<SessionState | null
   }
 }
 
+export function readSessionStateSync(cwd: string): SessionState | null {
+  const path = sessionPath(cwd);
+  if (!existsSync(path)) return null;
+
+  try {
+    const content = readFileSync(path, 'utf-8');
+    return JSON.parse(content) as SessionState;
+  } catch {
+    return null;
+  }
+}
+
 export function isSessionStateAuthoritativeForCwd(state: SessionState, cwd: string): boolean {
   if (!SESSION_ID_PATTERN.test(state.session_id)) return false;
 
@@ -139,6 +151,15 @@ export async function readUsableSessionState(
   options: SessionStaleCheckOptions = {},
 ): Promise<SessionState | null> {
   const state = await readSessionState(cwd);
+  if (!state) return null;
+  return isSessionStateUsable(state, cwd, options) ? state : null;
+}
+
+export function readUsableSessionStateSync(
+  cwd: string,
+  options: SessionStaleCheckOptions = {},
+): SessionState | null {
+  const state = readSessionStateSync(cwd);
   if (!state) return null;
   return isSessionStateUsable(state, cwd, options) ? state : null;
 }

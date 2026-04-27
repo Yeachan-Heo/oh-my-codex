@@ -1,6 +1,6 @@
 /**
  * CLI entry point for team runtime.
- * Reads JSON config from stdin, runs startTeam/monitorTeam/shutdownTeam,
+ * Reads JSON config from --input-json or stdin, runs startTeam/monitorTeam/shutdownTeam,
  * writes structured JSON result to stdout.
  *
  * Spawned by OMX team orchestration entrypoints when a background team run starts.
@@ -13,6 +13,7 @@ import { join } from 'path';
 import { startTeam, monitorTeam, shutdownTeam } from './runtime.js';
 import type { TeamRuntime, TeamShutdownSummary, StaleTeamSummary } from './runtime.js';
 import { teamReadConfig as readTeamConfig } from './team-ops.js';
+import type { ApprovedTeamExecutionBinding } from './approved-execution.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
 
 async function promptStaleCleanup(summary: StaleTeamSummary): Promise<boolean> {
@@ -36,12 +37,19 @@ async function promptStaleCleanup(summary: StaleTeamSummary): Promise<boolean> {
 
 interface CliInput {
   teamName: string;
+  task?: string;
   workerCount?: number;
-  agentTypes: string[];
-  tasks: Array<{ subject: string; description: string }>;
+  agentType?: string;
+  agentTypes?: string[];
+  workerProviders?: string[];
+  useWorktrees?: boolean;
+  tasks: Array<{ subject: string; description: string; owner?: string; role?: string }>;
   cwd: string;
   pollIntervalMs?: number;
+  approvedExecution?: ApprovedTeamExecutionBinding | null;
 }
+
+const RUNTIME_CLI_INPUT_JSON_FLAG = '--input-json';
 
 type TeamWorkerProvider = 'codex' | 'claude' | 'gemini';
 
@@ -198,15 +206,35 @@ export function normalizeAgentTypes(raw: string[], workerCount: number): TeamWor
   return providers as TeamWorkerProvider[];
 }
 
-async function main(): Promise<void> {
-  const startTime = Date.now();
+export function resolveRuntimeCliInlineInput(argv: readonly string[]): string | null {
+  const index = argv.indexOf(RUNTIME_CLI_INPUT_JSON_FLAG);
+  if (index === -1) {
+    return null;
+  }
+  const payload = argv[index + 1];
+  if (typeof payload !== 'string' || payload.trim() === '') {
+    throw new Error(`Missing JSON payload for ${RUNTIME_CLI_INPUT_JSON_FLAG}`);
+  }
+  return payload;
+}
 
-  // Read stdin
+async function readRuntimeCliRawInput(argv: readonly string[]): Promise<string> {
+  const inlineInput = resolveRuntimeCliInlineInput(argv);
+  if (inlineInput != null) {
+    return inlineInput.trim();
+  }
+
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) {
     chunks.push(chunk as Buffer);
   }
-  const rawInput = Buffer.concat(chunks).toString('utf-8').trim();
+  return Buffer.concat(chunks).toString('utf-8').trim();
+}
+
+async function main(): Promise<void> {
+  const startTime = Date.now();
+
+  const rawInput = await readRuntimeCliRawInput(process.argv.slice(2));
 
   let input: CliInput;
   try {
@@ -219,7 +247,6 @@ async function main(): Promise<void> {
   // Validate required fields
   const missing: string[] = [];
   if (!input.teamName) missing.push('teamName');
-  if (!input.agentTypes || !Array.isArray(input.agentTypes) || input.agentTypes.length === 0) missing.push('agentTypes');
   if (!input.tasks || !Array.isArray(input.tasks) || input.tasks.length === 0) missing.push('tasks');
   if (!input.cwd) missing.push('cwd');
   if (missing.length > 0) {
@@ -229,13 +256,17 @@ async function main(): Promise<void> {
 
   const {
     teamName,
-    agentTypes,
     tasks,
     cwd,
     pollIntervalMs = 5000,
   } = input;
 
-  const workerCount = input.workerCount ?? agentTypes.length;
+  const providerEntries = Array.isArray(input.workerProviders) && input.workerProviders.length > 0
+    ? input.workerProviders
+    : Array.isArray(input.agentTypes) && input.agentTypes.length > 0
+      ? input.agentTypes
+      : [];
+  const workerCount = input.workerCount ?? (providerEntries.length > 0 ? providerEntries.length : 1);
   const stateRoot = resolveRuntimeCliStateRoot(cwd);
 
   let runtime: TeamRuntime | null = null;
@@ -301,20 +332,45 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 
   // Start the team — OMX's startTeam takes individual parameters
-  const agentType = 'executor';
+  const agentType = typeof input.agentType === 'string' && input.agentType.trim() !== ''
+    ? input.agentType.trim()
+    : 'executor';
   try {
-    const providers = normalizeAgentTypes(agentTypes, workerCount);
+    const providers = providerEntries.length > 0
+      ? normalizeAgentTypes(providerEntries, workerCount)
+      : null;
+    const task = typeof input.task === 'string' && input.task.trim() !== ''
+      ? input.task.trim()
+      : input.tasks.map((item) => item.subject).join('; ');
+    const normalizedTasks = input.tasks.map((item, index) => ({
+      subject: item.subject,
+      description: item.description,
+      owner: typeof item.owner === 'string' && item.owner.trim() !== ''
+        ? item.owner.trim()
+        : `worker-${(index % workerCount) + 1}`,
+      ...(typeof item.role === 'string' && item.role.trim() !== '' ? { role: item.role.trim() } : {}),
+    }));
     const previousCliMap = process.env.OMX_TEAM_WORKER_CLI_MAP;
     try {
-      process.env.OMX_TEAM_WORKER_CLI_MAP = providers.join(',');
+      if (providers) {
+        process.env.OMX_TEAM_WORKER_CLI_MAP = providers.join(',');
+      }
       runtime = await startTeam(
         teamName,
-        tasks.map(t => t.subject).join('; '),
+        task,
         agentType,
         workerCount,
-        tasks,
+        normalizedTasks,
         cwd,
-        { confirmStaleCleanup: promptStaleCleanup },
+        {
+          confirmStaleCleanup: promptStaleCleanup,
+          worktreeMode: input.useWorktrees
+            ? { enabled: true, detached: true, name: null }
+            : { enabled: false },
+          ...(Object.prototype.hasOwnProperty.call(input, 'approvedExecution')
+            ? { approvedExecution: input.approvedExecution ?? null }
+            : {}),
+        },
       );
     } finally {
       if (typeof previousCliMap === 'string') process.env.OMX_TEAM_WORKER_CLI_MAP = previousCliMap;

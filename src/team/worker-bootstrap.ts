@@ -102,6 +102,7 @@ This file is generated for a live OMX team worker run and is disposable.
    - \`omx team api mailbox-mark-delivered --input "{\"team_name\":\"${options.teamName}\",\"worker\":\"${options.workerName}\",\"message_id\":\"<MESSAGE_ID>\"}" --json\`
 8. Preserve leader steering via inbox/mailbox nudges; task payload stays in inbox/task JSON, not this file.
 9. Do not pass \`workingDirectory\` to legacy team_* MCP tools; use \`omx team api\` CLI interop.
+10. When your inbox includes an Approved Handoff Context section, read those context refs before broader repo exploration. If they are insufficient, open the named pack index or query the canonical pack by role/tag/label next.
 
 ## Message Protocol
 - Always include \`from_worker: "${options.workerName}"\`
@@ -324,6 +325,7 @@ You are a team worker in team "${teamName}". Your identity and assigned tasks ar
 13. Wait for new instructions (the lead will send them via your terminal)
 14. Check your mailbox for messages at <team_state_root>/team/${teamName}/mailbox/{your-name}.json
 15. For legacy team_* MCP tools (hard-deprecated), switch to \`omx team api\` CLI interop; do not pass workingDirectory unless the lead explicitly tells you to
+16. When your inbox includes an Approved Handoff Context section, read those context refs before broader repo exploration. If they are insufficient, open the named pack index or query the canonical pack by role/tag/label next.
 
 ## Message Protocol
 When calling \`omx team api send-message\`, you MUST always include:
@@ -647,6 +649,7 @@ export function generateInitialInbox(
     workerRole?: string;
     rolePromptContent?: string;
     worktreeRootAgentsCanonical?: boolean;
+    approvedContextSection?: string;
   } = {},
 ): string {
   const taskList = tasks
@@ -665,6 +668,9 @@ export function generateInitialInbox(
   const teamStateRoot = options.teamStateRoot || "<team_state_root>";
   const leaderCwd = options.leaderCwd || "<leader_cwd>";
   const displayRole = options.workerRole ?? agentType;
+  const approvedContextSection = options.approvedContextSection
+    ? `\n## Approved Handoff Context\n\n${options.approvedContextSection}\n`
+    : "";
 
   const specializationSection = options.worktreeRootAgentsCanonical === true
     ? ""
@@ -681,6 +687,7 @@ export function generateInitialInbox(
 ## Your Assigned Tasks
 
 ${taskList}
+${approvedContextSection}
 
 ## Instructions
 
@@ -707,6 +714,7 @@ ${taskList}
 12. Write \`{"state": "idle", "updated_at": "<current ISO timestamp>"}\` to \`${teamStateRoot}/team/${teamName}/workers/${workerName}/status.json\`
 13. Wait for the next instruction from the lead
 14. For legacy team_* MCP tools (hard-deprecated), use \`omx team api\`; do not pass \`workingDirectory\` unless the lead explicitly asks (if resolution fails, use leader cwd: \`${leaderCwd}\`)
+15. When the inbox includes an **Approved Handoff Context** section, read those context refs before opening broader repo sources. If they are insufficient, open the named pack index or query the canonical pack by role/tag/label next.
 
 ## Mailbox Delivery Protocol (Required)
 When you are notified about mailbox messages, always follow this exact flow:
@@ -745,7 +753,13 @@ export function generateTaskAssignmentInbox(
   teamName: string,
   taskId: string,
   taskDescription: string,
+  options: {
+    approvedContextSection?: string;
+  } = {},
 ): string {
+  const approvedContextSection = options.approvedContextSection
+    ? `\n## Approved Handoff Context\n\n${options.approvedContextSection}\n`
+    : "";
   return `# New Task Assignment
 
 **Worker:** ${workerName}
@@ -754,6 +768,7 @@ export function generateTaskAssignmentInbox(
 ## Task Description
 
 ${taskDescription}
+${approvedContextSection}
 
 ## Instructions
 
@@ -768,6 +783,7 @@ ${taskDescription}
 6. Complete/fail via lifecycle transition API (\`omx team api transition-task-status --json\`) from \`"in_progress"\` to \`"completed"\` or \`"failed"\` (include \`result\`/\`error\`)
 7. Use \`omx team api release-task-claim --json\` only for rollback to \`pending\`
 8. Write \`{"state": "idle", "updated_at": "<current ISO timestamp>"}\` to your status file
+9. When the inbox includes an **Approved Handoff Context** section, read those context refs before broader repo exploration. If they are insufficient, open the named pack index or query the canonical pack by role/tag/label next.
 
 ${buildVerificationSection(taskDescription)}
 `;
