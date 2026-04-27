@@ -157,7 +157,7 @@ describe('RALPLAN Stage', () => {
     assert.equal(stage.canSkip!(makeCtx()), false);
   });
 
-  it('canSkip returns true for legacy PRD/test-spec handoffs without context packs', async () => {
+  it('canSkip returns true for pre-context-pack PRD/test-spec handoffs without context packs', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     await writeFile(join(plansDir, 'prd-legacy-feature.md'), '# Legacy Plan\n');

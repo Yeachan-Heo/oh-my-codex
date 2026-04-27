@@ -301,9 +301,16 @@ Follow-up reuse allowed    := ExecutionReusable
 Ralplan consensus allowed  := AuthoringReady
 
 ready      -> approved-context-bearing execution allowed
-plan-only  -> generic compatibility only; no approved binding/context projection
+plan-only  -> pre-context-pack compatibility path only; no approved binding/context projection
 others     -> approved-context-bearing execution forbidden
 ```
+
+Pre-context-pack compatibility means an approved PRD/test-spec pair with no real
+`Context Pack Outcome`. This state exists for repos or plans created before
+context-pack handoff enforcement, and it also classifies current
+PRD/test-spec-only drafts until they are repaired. It may seed repair of a
+canonical typed pack, but new implementation handoffs SHOULD NOT intentionally
+stop here and it MUST NOT be treated as approved context-bearing execution.
 
 ## 4. Launch-hint selection
 

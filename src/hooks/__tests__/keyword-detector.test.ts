@@ -1481,7 +1481,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
           started_at: '2026-02-25T00:00:00.000Z',
           updated_at: '2026-02-25T00:10:00.000Z',
           session_id: 'sess-autopilot',
-          state: { context_snapshot_path: '.omx/context/existing.md' },
+          state: { context_pack_path: '.omx/context/context-20260420T000000Z-existing.json' },
         }),
       );
 
@@ -1498,10 +1498,10 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(result.transition_error, undefined);
       const modeState = JSON.parse(
         await readFile(join(stateDir, 'sessions', 'sess-autopilot', 'autopilot-state.json'), 'utf-8'),
-      ) as { current_phase: string; started_at: string; state?: { context_snapshot_path?: string } };
+      ) as { current_phase: string; started_at: string; state?: { context_pack_path?: string } };
       assert.equal(modeState.current_phase, 'execution');
       assert.equal(modeState.started_at, '2026-02-25T00:00:00.000Z');
-      assert.equal(modeState.state?.context_snapshot_path, '.omx/context/existing.md');
+      assert.equal(modeState.state?.context_pack_path, '.omx/context/context-20260420T000000Z-existing.json');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1703,7 +1703,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
           started_at: '2026-04-19T00:00:00.000Z',
           updated_at: '2026-04-19T00:10:00.000Z',
           session_id: 'sess-autopilot-bare',
-          state: { context_snapshot_path: '.omx/context/autopilot.md' },
+          state: { context_pack_path: '.omx/context/context-20260420T000000Z-autopilot.json' },
         }, null, 2),
       );
 
@@ -1720,9 +1720,9 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(result.transition_error, undefined);
       const modeState = JSON.parse(
         await readFile(join(stateDir, 'sessions', 'sess-autopilot-bare', 'autopilot-state.json'), 'utf-8'),
-      ) as { current_phase: string; state?: { context_snapshot_path?: string } };
+      ) as { current_phase: string; state?: { context_pack_path?: string } };
       assert.equal(modeState.current_phase, 'execution');
-      assert.equal(modeState.state?.context_snapshot_path, '.omx/context/autopilot.md');
+      assert.equal(modeState.state?.context_pack_path, '.omx/context/context-20260420T000000Z-autopilot.json');
       assert.equal(existsSync(join(stateDir, 'sessions', 'sess-autopilot-bare', 'ralph-state.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });

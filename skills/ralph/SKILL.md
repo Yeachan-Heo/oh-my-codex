@@ -40,20 +40,12 @@ Complex tasks often fail silently: partial implementations get declared "done", 
 
 <Steps>
 0. **Pre-context intake (required before planning/execution loop starts)**:
-   - If there is no approved implementation handoff yet, assemble or load a context snapshot at `.omx/context/{task-slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`).
-   - Minimum snapshot fields:
-     - task statement
-     - desired outcome
-     - known facts/evidence
-     - constraints
-     - unknowns/open questions
-     - likely codebase touchpoints
-   - If an existing relevant snapshot is available, reuse it and record the path in Ralph state.
    - When Ralph is entered from an approved implementation plan, the canonical pack index plus approved refs are the grounding context. Load the approved context refs first, treat the generated `build` refs (excerpts or short direct-file refs) as the default implementation brief, keep the generated `verify` refs as the proof checklist, and open `scope` refs only when boundaries or guardrails become unclear; use the markdown index only as a view map.
-   - In that approved-handoff flow, do not create a second freeform `.omx/context/*.md` brief beside the canonical pack.
+   - In that approved-handoff flow, do not create a second `.omx/context/*.md` brief beside the canonical pack.
+   - When Ralph is entered without an approved implementation handoff, gather the minimum task facts inline and route underspecified work back through planning instead of writing an ad hoc context artifact.
    - If request ambiguity is high, gather brownfield facts first. When session guidance enables `USE_OMX_EXPLORE_CMD`, prefer `omx explore` for simple read-only repository lookups with narrow, concrete prompts; otherwise use the richer normal explore path. Then run `$deep-interview --quick <task>` to close critical gaps.
-   - If an approved implementation handoff exists but the required context pack or its ref manifests are missing, stale, invalid, or not referenced, use compatibility fallback: start from the approved plan, matching test specs, and any deep-interview artifact, then recreate a local execution snapshot before widening context. Prefer returning to planning only when the newer plan itself is still being authored and should be fixed before handoff.
-   - Do not begin Ralph execution work (delegation, implementation, or verification loops) until snapshot grounding exists. If forced to proceed quickly, note explicit risk tradeoffs.
+   - If an approved implementation handoff exists but the required context pack or its generated materials are missing, stale, invalid, or not referenced, use fallback only as a repair path: start from the approved plan, matching test specs, and any deep-interview artifact, then repair or recreate the canonical typed pack before widening context. Prefer returning to planning when the newer plan itself is still being authored and should be fixed before handoff.
+   - Do not begin Ralph execution work (delegation, implementation, or verification loops) until approved pack grounding exists or the direct task is concrete enough to execute from inline repo facts. If forced to proceed quickly, note explicit risk tradeoffs.
 1. **Review progress**: Check TODO list and any prior iteration state
 2. **Continue from where you left off**: Pick up incomplete tasks
 3. **Delegate in parallel**: Route tasks to specialist agents at appropriate tiers
@@ -97,15 +89,17 @@ Complex tasks often fail silently: partial implementations get declared "done", 
 - Skip Codex consultation for simple feature additions, well-tested changes, or time-critical verification
 - If ToolSearch finds no MCP tools or Codex is unavailable, proceed with architect agent verification alone -- never block on external tools
 - Use `state_write` / `state_read` for ralph mode state persistence between iterations
-- Persist context snapshot path in Ralph mode state so later phases and agents share the same grounding context
+- Persist approved context pack path in Ralph mode state when execution starts from an approved handoff so later phases and agents share the same grounding context
 </Tool_Usage>
 
 ## State Management
 
 Use the `omx_state` MCP server tools (`state_write`, `state_read`, `state_clear`) for Ralph lifecycle state.
 
-- **On start**:
-  `state_write({mode: "ralph", active: true, iteration: 1, max_iterations: 10, current_phase: "executing", started_at: "<now>", state: {context_snapshot_path: "<snapshot-path>"}})`
+- **On start from an approved implementation handoff**:
+  `state_write({mode: "ralph", active: true, iteration: 1, max_iterations: 10, current_phase: "executing", started_at: "<now>", state: {context_pack_path: ".omx/context/context-<timestamp>-<slug>.json"}})`
+- **On direct start without an approved implementation handoff**:
+  `state_write({mode: "ralph", active: true, iteration: 1, max_iterations: 10, current_phase: "executing", started_at: "<now>", state: {context_pack_path: null}})`
 - **On each iteration**:
   `state_write({mode: "ralph", iteration: <current>, current_phase: "executing"})`
 - **On verification/fix transition**:

@@ -71,9 +71,8 @@ If no flag is provided, use **Standard**.
 ## Phase 0: Preflight Context Intake
 
 1. Parse `{{ARGUMENTS}}` and derive a short task slug.
-2. Attempt to load the latest relevant context snapshot from `.omx/context/{slug}-*.md`.
-3. Check whether the provided initial context or loaded snapshot is too large for safe prompt use. If it is oversized, the first interview round must ask for a concise prompt-safe summary instead of scoring ambiguity or continuing to downstream handoff.
-4. If no snapshot exists, create a minimum context snapshot with:
+2. Check whether the provided initial context is too large for safe prompt use. If it is oversized, the first interview round must ask for a concise prompt-safe summary instead of scoring ambiguity or continuing to downstream handoff.
+3. Gather the minimum intake facts inline:
    - Task statement
    - Desired outcome
    - Stated solution (what the user asked for)
@@ -84,7 +83,7 @@ If no flag is provided, use **Standard**.
    - Decision-boundary unknowns
    - Likely codebase touchpoints
    - Prompt-safe initial-context summary status (`not_needed`, `needed`, or `recorded`)
-5. Save snapshot to `.omx/context/{slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`) and reference it in mode state.
+4. Persist the interview output under `.omx/specs/deep-interview-{slug}.md`; if the result becomes an implementation handoff, planning must create or refresh `.omx/context/context-<timestamp>-<slug>.json` as the canonical context pack.
 
 ## Phase 1: Initialize
 
@@ -111,7 +110,7 @@ If no flag is provided, use **Standard**.
     "codebase_context": null,
     "current_stage": "intent-first",
     "current_focus": "intent",
-    "context_snapshot_path": ".omx/context/<slug>-<timestamp>.md"
+    "context_pack_path": null
   }
 }
 ```
@@ -301,7 +300,7 @@ When threshold is met (or user exits with warning / hard cap):
 
 Spec should include:
 - Metadata (profile, rounds, final ambiguity, threshold, context type)
-- Context snapshot reference/path (for ralplan/team reuse)
+- Canonical context-pack recommendation when the spec is intended for implementation handoff
 - Prompt-safe initial-context summary when oversized context was provided, plus references to any full source documents
 - Clarity breakdown table
 - Intent (why the user wants this)
@@ -346,7 +345,7 @@ When the clarified task is specifically about `$autoresearch`, or the skill is i
 Present execution options after artifact generation using explicit handoff contracts. Treat the deep-interview spec as the current requirements source of truth and preserve intent, non-goals, decision boundaries, acceptance criteria, and any residual-risk warnings across the handoff.
 
 ### 1. **`$ralplan` (Recommended)**
-- **Input Artifact:** `.omx/specs/deep-interview-{slug}.md` (optionally accompanied by the transcript/context snapshot for traceability)
+- **Input Artifact:** `.omx/specs/deep-interview-{slug}.md` (optionally accompanied by the interview transcript for traceability)
 - **Invocation:** `$plan --consensus --direct <spec-path>`
 - **Consumer Behavior:** Treat the deep-interview spec as the requirements source of truth. Do not repeat the interview by default; refine architecture/feasibility around the clarified intent and boundaries instead.
 - **Skipped / Already-Satisfied Stages:** Requirements discovery, ambiguity clarification, and early intent-boundary elicitation
@@ -382,7 +381,7 @@ Present execution options after artifact generation using explicit handoff contr
 - **Next Recommended Step:** Follow the team verification path when the coordinated execution phase finishes; escalate to a separate Ralph loop only when a later persistent verification/fix owner is still needed
 
 ### 5. **Refine further**
-- **Input Artifact:** Existing transcript, context snapshot, and current spec draft
+- **Input Artifact:** Existing transcript and current spec draft
 - **Invocation:** Continue the interview loop
 - **Consumer Behavior:** Re-enter questioning to resolve the highest-leverage remaining uncertainty
 - **Skipped / Already-Satisfied Stages:** None beyond already-captured context
@@ -403,7 +402,7 @@ Present execution options after artifact generation using explicit handoff contr
 - If the current runtime is outside tmux and cannot render `omx question`, use native structured input when available; otherwise ask exactly one concise plain-text question and wait for the answer
 - Use `state_write` / `state_read` for resumable mode state
 - If the interview cannot ask a required `omx question` round, persist the blocker as terminal state with `active: false` and `current_phase: "blocked"`; do not write a terminal blocked phase with `active: true`
-- Read/write context snapshots under `.omx/context/`
+- Do not write non-pack lifecycle context files under `.omx/context/`; implementation handoffs use canonical typed packs at `.omx/context/context-<timestamp>-<slug>.json`
 - Record whether the oversized-context summary gate is not needed, pending, or satisfied before any scoring or handoff step
 - Save transcript/spec artifacts under `.omx/interviews/` and `.omx/specs/`
 </Tool_Usage>
@@ -416,7 +415,7 @@ Present execution options after artifact generation using explicit handoff contr
 </Escalation_And_Stop_Conditions>
 
 <Final_Checklist>
-- [ ] Preflight context snapshot exists under `.omx/context/{slug}-{timestamp}.md`
+- [ ] Preflight intake facts are captured in the interview state/spec, and any implementation handoff uses `.omx/context/context-<timestamp>-<slug>.json`
 - [ ] Oversized initial context, if present, has a prompt-safe summary recorded before ambiguity scoring or downstream handoff
 - [ ] Ambiguity score shown each round
 - [ ] Intent-first stage priority used before implementation detail

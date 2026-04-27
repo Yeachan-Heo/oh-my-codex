@@ -774,7 +774,8 @@ describe('launch-lifecycle-state-machine reference', () => {
     assert.match(MODEL_DOC, /No identity degradation/);
     assert.match(MODEL_DOC, /No ambiguity laundering/);
     assert.match(MODEL_DOC, /TeamLaunchSignature\(h\) := <Task\(h\), workerCount, agentType\?, linkedRalph>/);
-    assert.match(MODEL_DOC, /plan-only  -> generic compatibility only; no approved binding\/context projection/);
+    assert.match(MODEL_DOC, /plan-only  -> pre-context-pack compatibility path only; no approved binding\/context projection/);
+    assert.match(MODEL_DOC, /Pre-context-pack compatibility means an approved PRD\/test-spec pair with no real/);
     assert.match(MODEL_DOC, /canonical_path is the source of slug and sibling-artifact correlation/);
     assert.match(MODEL_DOC, /launch-hint-like command lines are ignored/);
     assert.match(MODEL_DOC, /LaunchBindingWriteRoot\(cwd\) := resolveCanonicalTeamStateRoot\(cwd\)/);

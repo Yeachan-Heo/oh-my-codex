@@ -125,7 +125,7 @@ Parallelizing before the task is grounded:
 delegate(role="executor", tier="STANDARD", task="Implement whatever seems necessary", model="...")
 delegate(role="test-engineer", tier="STANDARD", task="Figure out how to test it later", model="...")
 ```
-Why bad: No context snapshot, no pass/fail target, and delegation starts before the work is shaped.
+Why bad: No canonical context pack or pass/fail target, and delegation starts before the work is shaped.
 </Bad>
 
 <Bad>

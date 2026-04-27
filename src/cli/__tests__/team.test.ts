@@ -1107,7 +1107,7 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
-  it('keeps short team follow-ups generic on legacy plan-only handoffs while preserving task continuity', async () => {
+  it('keeps short team follow-ups generic on plan-only handoffs while preserving task continuity', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-short-generic-plan-only-'));
     const binDir = join(wd, 'bin');
     const fakeCodexPath = join(binDir, 'codex');
@@ -1116,7 +1116,7 @@ process.on('SIGTERM', () => process.exit(0));
     const previousTmux = process.env.TMUX;
     const previousLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
     const previousWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
-    const approvedTask = 'Execute legacy compatibility handoff';
+    const approvedTask = 'Execute plan-only handoff';
 
     await mkdir(binDir, { recursive: true });
     await writeFile(
@@ -1138,10 +1138,10 @@ process.on('SIGTERM', () => process.exit(0));
 
       await mkdir(join(wd, '.omx', 'plans'), { recursive: true });
       await writeFile(
-        join(wd, '.omx', 'plans', 'prd-legacy-plan-only.md'),
+        join(wd, '.omx', 'plans', 'prd-plan-only.md'),
         `# Approved plan\n\nLaunch via omx team 3:executor ${JSON.stringify(approvedTask)}\n`,
       );
-      await writeFile(join(wd, '.omx', 'plans', 'test-spec-legacy-plan-only.md'), '# Test spec\n');
+      await writeFile(join(wd, '.omx', 'plans', 'test-spec-plan-only.md'), '# Test spec\n');
 
       await withMockPromptModeCodexAllowed(() =>
         withoutTeamTestWorkerEnv(() => teamCommand(['team'])));

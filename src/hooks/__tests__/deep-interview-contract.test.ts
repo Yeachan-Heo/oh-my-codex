@@ -289,9 +289,9 @@ describe("deep-interview Ouroboros contract", () => {
 		);
 		assert.match(
 			deepInterviewSkill,
-			/\.omx\/context\/\{slug\}-\{timestamp\}\.md/,
+			/\.omx\/context\/context-<timestamp>-<slug>\.json/,
 		);
-		assert.match(deepInterviewSkill, /context_snapshot_path/i);
+		assert.match(deepInterviewSkill, /context_pack_path/i);
 	});
 
 	it("documents the autoresearch specialization contract", () => {

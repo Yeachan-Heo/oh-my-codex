@@ -64,30 +64,23 @@ Follow the Plan skill's full documentation for consensus mode details.
 
 ## Pre-context Intake
 
-Before consensus planning or execution handoff, ensure a grounded context snapshot exists:
+Before consensus planning or execution handoff, ground the plan in canonical artifacts:
 
 1. Derive a task slug from the request.
-2. Reuse the latest relevant snapshot in `.omx/context/{slug}-*.md` when available.
-3. If none exists, create `.omx/context/{slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`) with:
-   - task statement
-   - desired outcome
-   - known facts/evidence
-   - constraints
-   - unknowns/open questions
-   - likely codebase touchpoints
-4. If ambiguity remains high, gather brownfield facts first. When session guidance enables `USE_OMX_EXPLORE_CMD`, prefer `omx explore` for simple read-only repository lookups with narrow, concrete prompts; otherwise use the richer normal explore path. Then run `$deep-interview --quick <task>` before continuing.
-5. If the plan depends on official docs, version-aware framework guidance, best practices, or external dependency behavior, auto-delegate `researcher` before finalizing the planning handoff so execution does not start from repo-local recall alone.
-6. For planning-for-implementation, do not stop at the generic snapshot alone. Treat that snapshot as a planning note only. The final approved plan MUST create, refresh, or explicitly revalidate one typed context pack in `.omx/context/` and record it in a `Context Pack Outcome` section.
-7. Keep the role meanings crisp and fixed in v1: `scope` for boundary/guardrail refs, `build` for implementation refs, and `verify` for proof refs. Do not invent extra roles; use tags only for optional topical cross-cuts.
-8. Reuse before rebuild: if the latest pack for the same slug still matches the approved PRD/test-spec and the refs remain sufficient, revalidate it instead of regenerating it. Refresh only the stale entries.
-9. Keep typed packs compact and machine-checkable: schema `omx-context-pack-v1`, JSON-first, with `schema`, `slug`, tool-generated `basis`, and `entries`. Each entry is ref-first: `path` and `roles` required; `label`, `selector`, `relationPath`, and `tags` optional when the internal context-tool can infer them.
-10. Build the smallest useful pack first: usually 3-6 total refs covering `scope`, `build`, and `verify`, but widen the pack whenever the approved slice genuinely needs more grounding. Prefer shared multi-role entries over duplicated refs.
-11. Use the internal planning context-tool to generate or update packs instead of hand-crafting JSON when possible. Add a `selector` only when the source should be excerpted instead of loaded whole; short sources stay direct file refs. Let default relation paths follow `plan -> bounds/implements/verifies` unless a custom path is more informative.
-12. Minimal pack creation loop: choose `context-<timestamp>-<slug>.json`, add the smallest useful refs, use pack `query` to inspect role/tag views without materializing excerpts, use `view` once to verify selectors and excerpt sizing, save the approved `prd-*` plus matching `test-spec-*`, record the exact pack path in `Context Pack Outcome`, then run pack `sync` once as the final handoff-ready gate.
-13. Use pack `status` as the read-only diagnostic when readiness is unclear; it must report the canonical lifecycle state without refreshing `basis`, indexes, or excerpts.
-14. Use tags only when they create a useful alternate view such as `auth`, `migration`, or `api-contract`. Tags are optional cross-cuts across roles, and multiple tag filters intersect. Do not mirror a role or label into tags.
-15. `sync` is the final gate: it refreshes `basis`, rewrites the markdown index, and fails until the pack covers `scope`, `build`, and `verify` against the current approved PRD/test-spec including the `Context Pack Outcome`. If the PRD, test spec, or outcome section changes after sync, rerun sync before handoff.
-16. The generated markdown sibling is human-facing index output only. The tool generates it from the JSON pack as a scaffold with the pack summary, role views, tag views, ref index, query/view hints, and one optional `View Notes` block. It includes derived facts such as role counts, tag counts, selector-backed entry counts, and direct-file entry counts so executors can scan the pack before querying it. Planners may extend only `View Notes` when concise notes add value, especially for tag-driven cross-cuts. It is not a second contract and must not turn into a second brief or carry embedded excerpts.
+2. Gather the smallest necessary brownfield facts before planning. When session guidance enables `USE_OMX_EXPLORE_CMD`, prefer `omx explore` for simple read-only repository lookups with narrow, concrete prompts; otherwise use the richer normal explore path.
+3. If ambiguity remains high after fact-gathering, run `$deep-interview --quick <task>` before continuing.
+4. If the plan depends on official docs, version-aware framework guidance, best practices, or external dependency behavior, auto-delegate `researcher` before finalizing the planning handoff so execution does not start from repo-local recall alone.
+5. For planning-for-implementation, the final approved plan MUST create, refresh, or explicitly revalidate one typed context pack at `.omx/context/context-<timestamp>-<slug>.json` and record it in a `Context Pack Outcome` section.
+6. Keep the role meanings crisp and fixed in v1: `scope` for boundary/guardrail refs, `build` for implementation refs, and `verify` for proof refs. Do not invent extra roles; use tags only for optional topical cross-cuts.
+7. Reuse before rebuild: if the latest pack for the same slug still matches the approved PRD/test-spec and the refs remain sufficient, revalidate it instead of regenerating it. Refresh only the stale entries.
+8. Keep typed packs compact and machine-checkable: schema `omx-context-pack-v1`, JSON-first, with `schema`, `slug`, tool-generated `basis`, and `entries`. Each entry is ref-first: `path` and `roles` required; `label`, `selector`, `relationPath`, and `tags` optional when the internal context-tool can infer them.
+9. Build the smallest useful pack first: usually 3-6 total refs covering `scope`, `build`, and `verify`, but widen the pack whenever the approved slice genuinely needs more grounding. Prefer shared multi-role entries over duplicated refs.
+10. Use the internal planning context-tool to generate or update packs instead of hand-crafting JSON when possible. Add a `selector` only when the source should be excerpted instead of loaded whole; short sources stay direct file refs. Let default relation paths follow `plan -> bounds/implements/verifies` unless a custom path is more informative.
+11. Minimal pack creation loop: choose `context-<timestamp>-<slug>.json`, add the smallest useful refs, use pack `query` to inspect role/tag views without materializing excerpts, use `view` once to verify selectors and excerpt sizing, save the approved `prd-*` plus matching `test-spec-*`, record the exact pack path in `Context Pack Outcome`, then run pack `sync` once as the final handoff-ready gate.
+12. Use pack `status` as the read-only diagnostic when readiness is unclear; it must report the canonical lifecycle state without refreshing `basis`, indexes, or excerpts.
+13. Use tags only when they create a useful alternate view such as `auth`, `migration`, or `api-contract`. Tags are optional cross-cuts across roles, and multiple tag filters intersect. Do not mirror a role or label into tags.
+14. `sync` is the final gate: it refreshes `basis`, rewrites the markdown index, and fails until the pack covers `scope`, `build`, and `verify` against the current approved PRD/test-spec including the `Context Pack Outcome`. If the PRD, test spec, or outcome section changes after sync, rerun sync before handoff.
+15. The generated markdown sibling is human-facing index output only. The tool generates it from the JSON pack as a scaffold with the pack summary, role views, tag views, ref index, query/view hints, and one optional `View Notes` block. It includes derived facts such as role counts, tag counts, selector-backed entry counts, and direct-file entry counts so executors can scan the pack before querying it. Planners may extend only `View Notes` when concise notes add value, especially for tag-driven cross-cuts. It is not a second contract and must not turn into a second brief or carry embedded excerpts.
 
 Do not hand off to execution modes until this intake is complete; if urgency forces progress, explicitly document the risk tradeoffs.
 
@@ -100,7 +93,7 @@ Execution modes (ralph, autopilot, team, ultrawork) spin up heavy multi-agent or
 The ralplan-first gate intercepts underspecified execution requests and redirects them through the ralplan consensus planning workflow. This ensures:
 - **Explicit scope**: A PRD defines exactly what will be built
 - **Test specification**: Acceptance criteria are testable before code is written
-- **Execution context**: the approved plan points execution at the exact `.omx/context/` pack to load first
+- **Execution context**: the approved plan points execution at the exact `.omx/context/context-<timestamp>-<slug>.json` pack to load first
 - **Consensus**: Planner, Architect, and Critic agree on the approach
 - **No wasted execution**: Agents start with a clear, bounded task
 

@@ -133,7 +133,7 @@ Jumping into code without understanding requirements leads to rework, scope cree
 0. Treat review as a reviewer-only pass. The context that wrote the plan, cleanup proposal, or diff MUST NOT be the context that approves it.
 1. Read plan file from `.omx/plans/`
 2. Evaluate via Critic using `ask_codex` with `agent_role: "critic"`
-3. For implementation-handoff plans, verify that a `Context Pack Outcome` section exists and references the required `.omx/context/` pack and that the pack is a valid `omx-context-pack-v1` JSON artifact whose entries cover `scope`, `build`, and `verify`. Use pack `status` for read-only diagnostics and reject packless, stale, or invalid handoffs.
+3. For implementation-handoff plans, verify that a `Context Pack Outcome` section exists and references the required `.omx/context/context-<timestamp>-<slug>.json` pack and that the pack is a valid `omx-context-pack-v1` JSON artifact whose entries cover `scope`, `build`, and `verify`. Use pack `status` for read-only diagnostics and reject packless, stale, or invalid handoffs.
 4. For cleanup/refactor/anti-slop work, verify that the artifact includes a cleanup plan, regression tests or an explicit test gap, smell-by-smell passes, and quality gates.
 5. Return verdict: APPROVED, REVISE (with specific feedback), or REJECT (replanning required)
 6. If the current context authored the artifact, hand the review to `/review`, `critic`, `quality-reviewer`, `security-reviewer`, or `verifier` as appropriate.
@@ -147,8 +147,8 @@ Every plan includes:
 - Adaptive step count sized to the actual scope (not a fixed five-step template)
 - Risks and Mitigations
 - Verification Steps
-- Context Pack Outcome (exact `.omx/context/` pack path for implementation handoff)
-- Context Pack (`omx-context-pack-v1` JSON with `schema`, `slug`, tool-generated `basis`, and ref-first `entries`, plus the generated markdown index of role/tag views when helpful for human review)
+- Context Pack Outcome (exact `.omx/context/context-<timestamp>-<slug>.json` pack path for implementation handoff)
+- Context Pack artifact reference (the external `omx-context-pack-v1` JSON and generated markdown index exist under `.omx/context/`; do not paste the pack JSON into the PRD)
 - For consensus/ralplan: **RALPLAN-DR summary** (Principles, Decision Drivers, Options)
 - For consensus/ralplan final output: **ADR** (Decision, Drivers, Alternatives considered, Why chosen, Consequences, Follow-ups)
 - For consensus/ralplan execution handoff: **Available-Agent-Types Roster**, **Follow-up Staffing Guidance** (including suggested reasoning levels by lane), explicit `omx team` / `$team` **Launch Hints**, and **Team Verification Path**
@@ -246,7 +246,7 @@ Why bad: Decision fatigue. Present one option with trade-offs, get reaction, the
 - [ ] All risks have mitigations identified
 - [ ] No vague terms without metrics ("fast" -> "p99 < 200ms")
 - [ ] Plan saved to `.omx/plans/`
-- [ ] Implementation handoff plans include a `Context Pack Outcome` section with the required `.omx/context/` pack ref
+- [ ] Implementation handoff plans include a `Context Pack Outcome` section with the required `.omx/context/context-<timestamp>-<slug>.json` pack ref
 - [ ] The handoff pack is a valid `omx-context-pack-v1` JSON artifact, its entries cover `scope`, `build`, and `verify`, and any generated markdown sibling stays index-only
 - [ ] In consensus mode: RALPLAN-DR summary includes 3-5 principles, top 3 drivers, and >=2 viable options (or explicit invalidation rationale)
 - [ ] In consensus mode final output: ADR section included (Decision / Drivers / Alternatives considered / Why chosen / Consequences / Follow-ups)

@@ -17,7 +17,7 @@ The walkthrough below checks the four required axes:
 It also rechecks preserved invariants:
 - ambiguity gating remains present in the skill contract
 - readiness gates still require explicit `Non-goals` and `Decision Boundaries`
-- context snapshot / transcript / spec artifacts still exist
+- transcript / spec artifacts still exist, and implementation handoffs use canonical context packs
 - execution handoff contracts still exist
 - brownfield confirmation still cites discovered evidence
 
@@ -105,7 +105,7 @@ It also rechecks preserved invariants:
 |---|---|---|
 | Ambiguity scoring | `skills/deep-interview/SKILL.md` retains the greenfield/brownfield weighting formulas | PASS |
 | Readiness gates | `Non-goals` and `Decision Boundaries` remain mandatory | PASS |
-| Snapshot / transcript / spec artifacts | `.omx/context/`, `.omx/interviews/`, `.omx/specs/` outputs remain required | PASS |
+| Transcript / spec artifacts | `.omx/interviews/` and `.omx/specs/` outputs remain required; implementation handoffs proceed through typed context packs created or refreshed during planning | PASS |
 | Handoff contracts | `$ralplan`, `$autopilot`, `$ralph`, `$team`, `Refine further` remain present | PASS |
 | Brownfield evidence-backed confirmation | Execution policy + pressure ladder still require cited evidence before confirmation | PASS |
 

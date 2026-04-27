@@ -880,7 +880,7 @@ describe("codex native hook dispatch", () => {
           "Preserve durable project guidance.",
           "",
           "## WORKING MEMORY",
-          "[2026-04-06T00:33:44Z] stale UI rework context snapshot .omx/context/ui-rework-plan-01-20260406T003344Z.md",
+          "[2026-04-06T00:33:44Z] stale UI rework planning note .omx/specs/deep-interview-ui-rework-plan-01.md",
         ].join("\n"),
       );
 
@@ -909,7 +909,7 @@ describe("codex native hook dispatch", () => {
       assert.match(additionalContext, /native-hook \/ Codex App outside tmux/);
       assert.match(additionalContext, /\[Priority notes\]/);
       assert.match(additionalContext, /Preserve durable project guidance/);
-      assert.doesNotMatch(additionalContext, /stale UI rework context snapshot/);
+      assert.doesNotMatch(additionalContext, /stale UI rework planning note/);
       assert.doesNotMatch(additionalContext, /\[Subagents\]/);
       assert.doesNotMatch(additionalContext, /ralph phase: executing/);
     } finally {

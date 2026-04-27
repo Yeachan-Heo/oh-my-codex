@@ -41,16 +41,10 @@ Most non-trivial software tasks require coordinated phases: understanding requir
 <Steps>
 0. **Pre-context Intake (required before Phase 0 starts)**:
    - Derive a task slug from the request.
-   - Load the latest relevant snapshot from `.omx/context/{slug}-*.md` when available.
-   - If no snapshot exists, create `.omx/context/{slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`) with:
-     - Task statement
-     - Desired outcome
-     - Known facts/evidence
-     - Constraints
-     - Unknowns/open questions
-     - Likely codebase touchpoints
+   - If autopilot is continuing from an approved implementation handoff, load the canonical context pack at `.omx/context/context-<timestamp>-<slug>.json` plus its generated index and refs before Phase 0.
+   - If no approved handoff exists, gather the minimum task facts inline; do not create ad hoc `.omx/context/*.md` lifecycle briefs.
    - If ambiguity remains high, run `explore` first for brownfield facts, then run `$deep-interview --quick <task>` before proceeding.
-   - Carry the snapshot path into autopilot artifacts/state so all phases share grounded context.
+   - Carry the approved context pack path into autopilot artifacts/state when one exists so all phases share grounded context.
 
 1. **Phase 0 - Expansion**: Turn the user's idea into a detailed spec
    - If `.omx/specs/deep-interview-*.md` exists for this task: reuse it and skip redundant expansion work
@@ -102,8 +96,10 @@ Most non-trivial software tasks require coordinated phases: understanding requir
 
 Use `omx_state` MCP tools for autopilot lifecycle state.
 
-- **On start**:
-  `state_write({mode: "autopilot", active: true, current_phase: "expansion", started_at: "<now>", state: {context_snapshot_path: "<snapshot-path>"}})`
+- **On start from an approved implementation handoff**:
+  `state_write({mode: "autopilot", active: true, current_phase: "expansion", started_at: "<now>", state: {context_pack_path: ".omx/context/context-<timestamp>-<slug>.json"}})`
+- **On direct start without an approved implementation handoff**:
+  `state_write({mode: "autopilot", active: true, current_phase: "expansion", started_at: "<now>", state: {context_pack_path: null}})`
 - **On phase transitions**:
   `state_write({mode: "autopilot", current_phase: "planning"})`
   `state_write({mode: "autopilot", current_phase: "execution"})`

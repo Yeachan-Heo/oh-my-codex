@@ -16,4 +16,10 @@ describe('execution-heavy skill guidance contract', () => {
     assert.doesNotMatch(content, /\boracle\b|\blibrarian\b|\bartistry\b|\bPrometheus\b/i);
     assert.match(content, /Ralph owns persistence, architect verification, deslop, and the full verified-completion promise/i);
   });
+
+  it('execution-heavy skill guidance contract no longer accepts snapshot-grounding wording', () => {
+    const contractSource = loadSurface('src/hooks/prompt-guidance-contract.ts');
+    assert.doesNotMatch(contractSource, /snapshot grounding/i);
+    assert.match(contractSource, /pre-context intake\|canonical pack\|canonical context pack/i);
+  });
 });

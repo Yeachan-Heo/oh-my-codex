@@ -173,18 +173,18 @@ describe("adapt foundation", () => {
 		assert.match(envelope.planning.summary, /context pack/i);
 	});
 
-	it("keeps the plan-only execution baseline visible for upgraded repos without context packs", async () => {
+	it("keeps the plan-only execution baseline visible when the approved plan has no context pack", async () => {
 		const plansDir = join(tempDir, ".omx", "plans");
 		await mkdir(plansDir, { recursive: true });
-		await writeFile(join(plansDir, "prd-legacy.md"), "# Legacy\n");
-		await writeFile(join(plansDir, "test-spec-legacy.md"), "# Legacy Test Spec\n");
+		await writeFile(join(plansDir, "prd-plan-only.md"), "# Plan-only\n");
+		await writeFile(join(plansDir, "test-spec-plan-only.md"), "# Plan-only Test Spec\n");
 
 		const envelope = buildAdaptEnvelope(
 			tempDir,
 			"openclaw",
 			new Date("2026-04-14T00:00:00.000Z"),
 		);
-		assert.equal(envelope.planning.prdPath, join(plansDir, "prd-legacy.md"));
+		assert.equal(envelope.planning.prdPath, join(plansDir, "prd-plan-only.md"));
 		assert.equal(envelope.planning.contextPackStatus, "plan-only");
 		assert.equal(envelope.planning.contextPack, null);
 		assert.match(envelope.planning.summary, /plan-only execution baseline remains available/i);

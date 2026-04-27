@@ -285,7 +285,7 @@ export const PROMPT_REFACTOR_INVARIANT_CONTRACTS: GuidanceSurfaceContract[] = [
     path: 'skills/ralph/SKILL.md',
     requiredPatterns: [
       rx('PRD'),
-      rx('snapshot grounding|pre-context intake'),
+      rx('pre-context intake|canonical pack|canonical context pack'),
       rx('Do not begin Ralph execution work|do not begin implementation|must not implement|no implementation'),
     ],
   },

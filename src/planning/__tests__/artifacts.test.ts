@@ -117,7 +117,7 @@ describe('planning artifacts', () => {
     assert.equal(artifacts.testSpecPaths.length, 0);
   });
 
-  it('keeps legacy PRD/test-spec execution compatible and treats planning as execution-compatible', async () => {
+  it('keeps pre-context-pack PRD/test-spec execution compatible and treats planning as execution-compatible', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     await writeFile(
