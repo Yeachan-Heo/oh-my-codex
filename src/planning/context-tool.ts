@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   buildContextPackBasis,
   CONTEXT_PACK_ROLES,
+  describeContextPackBasisResolutionIssues,
   filterContextPackEntries,
   findMissingContextPackRoles,
   formatRelationPath,
@@ -546,7 +547,12 @@ async function runSync(cwd: string, args: readonly string[]): Promise<void> {
   const repoRoot = resolveContextPackRepoRoot(packPath, workspaceRoot);
   const basis = buildContextPackBasis(repoRoot, document.slug);
   if (!basis) {
-    throw new Error(`Could not resolve approved PRD/test-spec basis for slug ${document.slug}. Save the approved prd-* and matching test-spec-* files first.`);
+    const basisIssues = describeContextPackBasisResolutionIssues(repoRoot, document.slug);
+    throw new Error(
+      basisIssues.length > 0
+        ? `Could not resolve approved PRD/test-spec basis for slug ${document.slug}. ${basisIssues.join(' ')}`
+        : `Could not resolve approved PRD/test-spec basis for slug ${document.slug}. Save the approved prd-* and matching test-spec-* files first.`,
+    );
   }
   const missingRoles = findMissingContextPackRoles(document, REQUIRED_CONTEXT_PACK_ROLES);
   if (missingRoles.length > 0) {

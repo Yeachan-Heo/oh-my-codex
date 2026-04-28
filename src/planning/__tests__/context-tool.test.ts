@@ -470,10 +470,23 @@ describe('context-tool', () => {
     await mkdir(join(tempDir, '.omx', 'plans'), { recursive: true });
     await writeFile(join(tempDir, '.omx', 'plans', `prd-20260427T153100Z-${slug}.md`), '# PRD\n\nApproved context basis.\n');
     await writeFile(join(tempDir, '.omx', 'plans', `test-spec-${slug}.md`), '# Legacy Test Spec\n\nApproved test basis.\n');
+    await writeFile(join(tempDir, '.omx', 'plans', `testspec-20260427T153100Z-${slug}.md`), '# Deprecated Timestamped Alias\n\nApproved test basis.\n');
 
     await assert.rejects(
       () => contextToolMain(['sync', packRelativePath(slug)], tempDir),
-      /Could not resolve approved PRD\/test-spec basis for slug issue-950-timestamped\./,
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /Could not resolve approved PRD\/test-spec basis for slug issue-950-timestamped\./);
+        assert.match(
+          error.message,
+          /Approved timestamped plan requires test spec `test-spec-20260427T153100Z-issue-950-timestamped\.md`\./,
+        );
+        assert.match(
+          error.message,
+          /Found non-matching test-spec files: `test-spec-issue-950-timestamped\.md`, `testspec-20260427T153100Z-issue-950-timestamped\.md`\./,
+        );
+        return true;
+      },
     );
   });
 

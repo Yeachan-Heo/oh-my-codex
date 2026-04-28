@@ -400,6 +400,7 @@ describe('context-packs', () => {
       ].join('\n'),
     );
     await writeFile(join(tempDir, '.omx', 'plans', `test-spec-${slug}.md`), '# Legacy Test Spec\n');
+    await writeFile(join(tempDir, '.omx', 'plans', `testspec-20260427T153000Z-${slug}.md`), '# Deprecated Timestamped Alias\n');
     await writeRepoFile('docs/scope.md', '# Scope\n\nStay inside the approved slice.\n');
     await writeRepoFile('docs/runtime.md', '# Runtime\n\nBuild the approved slice.\n');
     await writeRepoFile('docs/verify.md', '# Verify\n\nCheck the approved slice.\n');
@@ -449,6 +450,63 @@ describe('context-packs', () => {
     assert.deepEqual(status.testSpecPaths, []);
     assert.ok(status.issues.includes(
       `Approved timestamped plan requires test spec \`test-spec-20260427T153000Z-${slug}.md\`.`,
+    ));
+    assert.ok(status.issues.includes(
+      `Found non-matching test-spec files: \`test-spec-${slug}.md\`, \`testspec-20260427T153000Z-${slug}.md\`.`,
+    ));
+    assert.equal(
+      status.issues.filter((issue) => issue === `Approved timestamped plan requires test spec \`test-spec-20260427T153000Z-${slug}.md\`.`).length,
+      1,
+    );
+  });
+
+  it('surfaces timestamped basis guidance during fresh-basis validation', async () => {
+    const slug = 'issue-timestamped-fresh-basis';
+    const packPath = packAbsolutePath(slug);
+    await mkdir(join(tempDir, '.omx', 'plans'), { recursive: true });
+    await writeFile(join(tempDir, '.omx', 'plans', `prd-20260427T153000Z-${slug}.md`), '# PRD\n');
+    await writeFile(join(tempDir, '.omx', 'plans', `test-spec-${slug}.md`), '# Legacy Test Spec\n');
+    await writeFile(join(tempDir, '.omx', 'plans', `testspec-20260427T153000Z-${slug}.md`), '# Deprecated Timestamped Alias\n');
+    await writeRepoFile('docs/runtime.md', '# Runtime\n\nBuild the approved slice.\n');
+
+    writeContextPackDocument(packPath, {
+      schema: CONTEXT_PACK_SCHEMA,
+      slug,
+      basis: {
+        prd: { path: `.omx/plans/prd-20260427T153000Z-${slug}.md`, sha1: validSha1('a') },
+        testSpecs: [
+          { path: `.omx/plans/test-spec-${slug}.md`, sha1: validSha1('b') },
+        ],
+      },
+      entries: [
+        {
+          label: 'runtime',
+          path: 'docs/runtime.md',
+          roles: ['build'],
+          tags: [],
+          relationPath: [
+            { tag: 'plan', target: slug },
+            { tag: 'implements', target: 'docs/runtime.md' },
+          ],
+        },
+      ],
+    });
+
+    const issues = validateContextPackManifest({
+      packPath,
+      repoRoot: tempDir,
+      expectedSlug: slug,
+      requireFreshBasis: true,
+    });
+
+    assert.ok(issues.includes(
+      `context-20260420T000000Z-${slug}.json could not resolve the approved PRD/test-spec basis for slug ${slug}.`,
+    ));
+    assert.ok(issues.includes(
+      `Approved timestamped plan requires test spec \`test-spec-20260427T153000Z-${slug}.md\`.`,
+    ));
+    assert.ok(issues.includes(
+      `Found non-matching test-spec files: \`test-spec-${slug}.md\`, \`testspec-20260427T153000Z-${slug}.md\`.`,
     ));
   });
 

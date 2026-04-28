@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   contextPackIndexPath,
+  describeContextPackBasisResolutionIssues,
   findMissingContextPackRoles,
   inspectContextPackBasis,
   inspectContextPackGeneratedIndex,
@@ -794,11 +795,12 @@ export function readContextPackHandoffStatus(repoRoot: string, packPath: string)
     issues.push(slug ? `Approved PRD is missing for slug ${slug}.` : 'Could not infer a context-pack slug for approved PRD lookup.');
   } else if (baselineState === 'missing-test-spec') {
     issues.push(`Approved plan is missing a matching test spec for slug ${slug}.`);
-    const timestampedTestSpecRequirement = describeTimestampedTestSpecRequirement(
-      selectMatchingTestSpecsForPrd(selection.canonicalPrdPath, artifacts.testSpecPaths),
-    );
-    if (timestampedTestSpecRequirement) {
-      issues.push(timestampedTestSpecRequirement);
+    if (slug) {
+      for (const issue of describeContextPackBasisResolutionIssues(repoRoot, slug)) {
+        if (!issues.includes(issue)) {
+          issues.push(issue);
+        }
+      }
     }
   }
 

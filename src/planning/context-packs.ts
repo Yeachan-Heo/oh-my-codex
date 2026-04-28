@@ -583,13 +583,17 @@ function normalizeBasis(
   return { prd, testSpecs };
 }
 
-function selectPlanningArtifactFileNames(
+interface PlanningArtifactFileSelection {
+  prdFileName: string;
+  testSpecFileNames: string[];
+  requiredTimestampedFileName: string | null;
+  nonMatchingTestSpecFileNames: string[];
+}
+
+function resolvePlanningArtifactFileSelection(
   planFileNames: readonly string[],
   slug: string,
-): {
-    prdFileName: string;
-    testSpecFileNames: string[];
-  } | null {
+): PlanningArtifactFileSelection | null {
   const matchingPrdFileNames = planFileNames
     .filter((fileName) => planningArtifactSlug(fileName, 'prd') === slug);
   const timestampedPrdFileNames = matchingPrdFileNames
@@ -603,12 +607,56 @@ function selectPlanningArtifactFileNames(
     return null;
   }
 
-  const testSpecFileNames = selectMatchingTestSpecsForPrd(prdFileName, planFileNames).paths;
-  if (testSpecFileNames.length === 0) {
-    return null;
+  const testSpecSelection = selectMatchingTestSpecsForPrd(prdFileName, planFileNames);
+  const matchingTestSpecFileNames = testSpecSelection.paths;
+  const matchingTestSpecPaths = new Set(matchingTestSpecFileNames);
+  const nonMatchingTestSpecFileNames = planFileNames
+    .filter((fileName) => planningArtifactSlug(fileName, 'test-spec') === slug)
+    .sort(comparePlanningArtifactPaths)
+    .filter((fileName) => !matchingTestSpecPaths.has(fileName));
+
+  return {
+    prdFileName,
+    testSpecFileNames: matchingTestSpecFileNames,
+    requiredTimestampedFileName: testSpecSelection.requiredTimestampedFileName,
+    nonMatchingTestSpecFileNames,
+  };
+}
+
+function formatContextPackBasisFileNames(fileNames: readonly string[]): string {
+  return fileNames.map((fileName) => `\`${fileName}\``).join(', ');
+}
+
+function describeContextPackBasisResolutionIssuesForPlanFileNames(
+  planFileNames: readonly string[],
+  slug: string,
+): string[] {
+  const selection = resolvePlanningArtifactFileSelection(planFileNames, slug);
+  if (!selection || selection.testSpecFileNames.length > 0 || !selection.requiredTimestampedFileName) {
+    return [];
   }
 
-  return { prdFileName, testSpecFileNames };
+  const issues = [`Approved timestamped plan requires test spec \`${selection.requiredTimestampedFileName}\`.`];
+  if (selection.nonMatchingTestSpecFileNames.length > 0) {
+    issues.push(`Found non-matching test-spec files: ${formatContextPackBasisFileNames(selection.nonMatchingTestSpecFileNames)}.`);
+  }
+  return issues;
+}
+
+export function describeContextPackBasisResolutionIssues(
+  repoRoot: string,
+  slug: string,
+): string[] {
+  const plansDir = join(repoRoot, '.omx', 'plans');
+  if (!existsSync(plansDir)) {
+    return [];
+  }
+
+  try {
+    return describeContextPackBasisResolutionIssuesForPlanFileNames(readdirSync(plansDir), slug);
+  } catch {
+    return [];
+  }
 }
 
 export function buildContextPackBasis(repoRoot: string, slug: string): ContextPackBasis | null {
@@ -617,20 +665,20 @@ export function buildContextPackBasis(repoRoot: string, slug: string): ContextPa
     return null;
   }
 
-  let artifactFileNames: ReturnType<typeof selectPlanningArtifactFileNames>;
+  let artifactFileSelection: ReturnType<typeof resolvePlanningArtifactFileSelection>;
   try {
-    artifactFileNames = selectPlanningArtifactFileNames(readdirSync(plansDir), slug);
+    artifactFileSelection = resolvePlanningArtifactFileSelection(readdirSync(plansDir), slug);
   } catch {
     return null;
   }
 
-  if (!artifactFileNames) {
+  if (!artifactFileSelection || artifactFileSelection.testSpecFileNames.length === 0) {
     return null;
   }
 
-  const prdRelativePath = normalizePlanningRepoRelativePath(join('.omx', 'plans', artifactFileNames.prdFileName));
+  const prdRelativePath = normalizePlanningRepoRelativePath(join('.omx', 'plans', artifactFileSelection.prdFileName));
   const prdAbsolutePath = join(repoRoot, prdRelativePath);
-  const testSpecRelativePaths = artifactFileNames.testSpecFileNames
+  const testSpecRelativePaths = artifactFileSelection.testSpecFileNames
     .map((fileName) => normalizePlanningRepoRelativePath(join('.omx', 'plans', fileName)));
 
   return {
@@ -1489,7 +1537,10 @@ export function inspectContextPackBasis(
   if (!expectedBasis) {
     return {
       status: 'absent',
-      issues: [`${file} could not resolve the approved PRD/test-spec basis for slug ${slug}.`],
+      issues: [
+        `${file} could not resolve the approved PRD/test-spec basis for slug ${slug}.`,
+        ...describeContextPackBasisResolutionIssues(repoRoot, slug),
+      ],
     };
   }
 
