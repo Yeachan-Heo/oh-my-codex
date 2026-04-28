@@ -2395,7 +2395,7 @@ esac
     }
   });
 
-  it("blocks PreToolUse git commit when the inline message is not Lore-compliant", async () => {
+  it("blocks PreToolUse git commit with supported response shape when the inline message is not Lore-compliant", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-git-commit-invalid-"));
     try {
       const result = await dispatchCodexNativeHook(
@@ -2416,13 +2416,6 @@ esac
           "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
-          additionalContext: [
-            "Lore-format git commit enforcement triggered.",
-            "- Add a blank line after the subject before the narrative body.",
-            "- Add a narrative body paragraph explaining the decision context.",
-            "- Add at least one Lore trailer such as `Constraint:`, `Confidence:`, or `Tested:`.",
-            "- Add the required co-author trailer: `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
-          ].join("\n"),
         },
         systemMessage: [
           "git commit is blocked until the inline commit message follows the Lore protocol and includes `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
@@ -2432,6 +2425,9 @@ esac
           "- Add the required co-author trailer: `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
         ].join("\n"),
       });
+      const hookSpecificOutput = (result.outputJson as { hookSpecificOutput?: Record<string, unknown> })
+        .hookSpecificOutput ?? {};
+      assert.equal("additionalContext" in hookSpecificOutput, false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -2521,13 +2517,6 @@ esac
           "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
-          additionalContext: [
-            "Lore-format git commit enforcement triggered.",
-            "- Add a blank line after the subject before the narrative body.",
-            "- Add a narrative body paragraph explaining the decision context.",
-            "- Add at least one Lore trailer such as `Constraint:`, `Confidence:`, or `Tested:`.",
-            "- Add the required co-author trailer: `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
-          ].join("\n"),
         },
         systemMessage: [
           "git commit is blocked until the inline commit message follows the Lore protocol and includes `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
@@ -2563,13 +2552,6 @@ esac
           "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
-          additionalContext: [
-            "Lore-format git commit enforcement triggered.",
-            "- Add a blank line after the subject before the narrative body.",
-            "- Add a narrative body paragraph explaining the decision context.",
-            "- Add at least one Lore trailer such as `Constraint:`, `Confidence:`, or `Tested:`.",
-            "- Add the required co-author trailer: `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
-          ].join("\n"),
         },
         systemMessage: [
           "git commit is blocked until the inline commit message follows the Lore protocol and includes `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
@@ -2605,13 +2587,6 @@ esac
           "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
-          additionalContext: [
-            "Lore-format git commit enforcement triggered.",
-            "- Add a blank line after the subject before the narrative body.",
-            "- Add a narrative body paragraph explaining the decision context.",
-            "- Add at least one Lore trailer such as `Constraint:`, `Confidence:`, or `Tested:`.",
-            "- Add the required co-author trailer: `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
-          ].join("\n"),
         },
         systemMessage: [
           "git commit is blocked until the inline commit message follows the Lore protocol and includes `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
@@ -2647,13 +2622,6 @@ esac
           "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
-          additionalContext: [
-            "Lore-format git commit enforcement triggered.",
-            "- Add a blank line after the subject before the narrative body.",
-            "- Add a narrative body paragraph explaining the decision context.",
-            "- Add at least one Lore trailer such as `Constraint:`, `Confidence:`, or `Tested:`.",
-            "- Add the required co-author trailer: `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
-          ].join("\n"),
         },
         systemMessage: [
           "git commit is blocked until the inline commit message follows the Lore protocol and includes `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
@@ -2689,13 +2657,6 @@ esac
           "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
-          additionalContext: [
-            "Lore-format git commit enforcement triggered.",
-            "- Add a blank line after the subject before the narrative body.",
-            "- Add a narrative body paragraph explaining the decision context.",
-            "- Add at least one Lore trailer such as `Constraint:`, `Confidence:`, or `Tested:`.",
-            "- Add the required co-author trailer: `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
-          ].join("\n"),
         },
         systemMessage: [
           "git commit is blocked until the inline commit message follows the Lore protocol and includes `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
@@ -2731,13 +2692,6 @@ esac
           "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
-          additionalContext: [
-            "Lore-format git commit enforcement triggered.",
-            "- Add a blank line after the subject before the narrative body.",
-            "- Add a narrative body paragraph explaining the decision context.",
-            "- Add at least one Lore trailer such as `Constraint:`, `Confidence:`, or `Tested:`.",
-            "- Add the required co-author trailer: `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
-          ].join("\n"),
         },
         systemMessage: [
           "git commit is blocked until the inline commit message follows the Lore protocol and includes `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
@@ -2773,13 +2727,6 @@ esac
           "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
-          additionalContext: [
-            "Lore-format git commit enforcement triggered.",
-            "- Add a blank line after the subject before the narrative body.",
-            "- Add a narrative body paragraph explaining the decision context.",
-            "- Add at least one Lore trailer such as `Constraint:`, `Confidence:`, or `Tested:`.",
-            "- Add the required co-author trailer: `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
-          ].join("\n"),
         },
         systemMessage: [
           "git commit is blocked until the inline commit message follows the Lore protocol and includes `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
@@ -2815,13 +2762,6 @@ esac
           "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
-          additionalContext: [
-            "Lore-format git commit enforcement triggered.",
-            "- Add a blank line after the subject before the narrative body.",
-            "- Add a narrative body paragraph explaining the decision context.",
-            "- Add at least one Lore trailer such as `Constraint:`, `Confidence:`, or `Tested:`.",
-            "- Add the required co-author trailer: `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
-          ].join("\n"),
         },
         systemMessage: [
           "git commit is blocked until the inline commit message follows the Lore protocol and includes `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
@@ -2857,13 +2797,6 @@ esac
           "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
-          additionalContext: [
-            "Lore-format git commit enforcement triggered.",
-            "- Add a blank line after the subject before the narrative body.",
-            "- Add a narrative body paragraph explaining the decision context.",
-            "- Add at least one Lore trailer such as `Constraint:`, `Confidence:`, or `Tested:`.",
-            "- Add the required co-author trailer: `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
-          ].join("\n"),
         },
         systemMessage: [
           "git commit is blocked until the inline commit message follows the Lore protocol and includes `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
@@ -2899,10 +2832,6 @@ esac
           "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
-          additionalContext: [
-            "Lore-format git commit enforcement triggered.",
-            "- Use inline `git commit -m ...` paragraphs for Lore-format commits in this path; file/editor/reuse/fixup message sources are not inspectable safely from pre-tool-use enforcement.",
-          ].join("\n"),
         },
         systemMessage: [
           "git commit is blocked until the inline commit message follows the Lore protocol and includes `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
@@ -2943,10 +2872,6 @@ esac
           "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
-          additionalContext: [
-            "Lore-format git commit enforcement triggered.",
-            "- Add the required co-author trailer: `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
-          ].join("\n"),
         },
         systemMessage: [
           "git commit is blocked until the inline commit message follows the Lore protocol and includes `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",
