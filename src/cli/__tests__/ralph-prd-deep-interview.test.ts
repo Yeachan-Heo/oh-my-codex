@@ -12,7 +12,7 @@ describe('ralph PRD mode deep interview gate', () => {
   it('requires deep-interview --quick before PRD artifact creation', () => {
     assert.match(ralphSkill, /Run deep-interview in quick mode before creating PRD artifacts/i);
     assert.match(ralphSkill, /\$deep-interview\s+--quick/i);
-    assert.match(ralphSkill, /\.omx\/interviews\/\{slug\}-\{timestamp\}\.md/);
+    assert.match(ralphSkill, /\.omx\/interviews\/deep-interview-<timestamp>-<slug>\.md/);
   });
 
   it('documents --no-deslop as a PRD-mode opt-out for the final deslop pass', () => {
