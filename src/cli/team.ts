@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { updateModeState, startMode, readModeState } from '../modes/base.js';
 import { getStatePath, validateSessionId } from '../mcp/state-paths.js';
 import { monitorTeam, resumeTeam, shutdownTeam, startTeam, type TeamRuntime, type TeamSnapshot } from '../team/runtime.js';
+import { buildRepoAwareTeamExecutionPlan } from '../team/repo-aware-decomposition.js';
 import { DEFAULT_MAX_WORKERS } from '../team/state.js';
 import { sanitizeTeamName } from '../team/tmux-session.js';
 import { readTeamEvents, waitForTeamEvent } from '../team/state/events.js';
@@ -53,6 +54,7 @@ interface ParsedTeamArgs {
   task: string;
   teamName: string;
   followupState: TeamCliFollowupState;
+  allowRepoAwareDagHandoff: boolean;
 }
 
 type TeamCliFollowupState =
@@ -256,6 +258,7 @@ Notes:
   --worktree is deprecated for omx team and is now only a backward-compatible no-op override.
   omx team is a tmux-runtime surface by default; in Codex App or plain outside-tmux sessions, launch OMX CLI from shell first instead of treating team as directly available.
   use native Codex subagents for small in-session fanout; use omx team for durable tmux/state/worktree coordination.
+  repo-aware DAG handoff is opt-in: Team only imports a DAG when the invocation matches the latest approved PRD/test-spec launch hint (or a short approved follow-up like \`omx team team\`).
 
 Examples:
   omx team 3:executor "fix failing tests"
@@ -814,6 +817,15 @@ function parseTeamArgs(args: string[], cwd: string = process.cwd()): ParsedTeamA
   }
 
   const teamName = deriveTeamNameFromTask(effectiveTask);
+  const latestApprovedHintOutcome = readApprovedExecutionLaunchHintOutcome(cwd, 'team');
+  const latestApprovedHint = latestApprovedHintOutcome.status === 'resolved'
+    ? latestApprovedHintOutcome.hint
+    : null;
+  const matchesApprovedLaunchHint = latestApprovedHint?.task.trim() === effectiveTask.trim()
+    && (latestApprovedHint.workerCount == null || latestApprovedHint.workerCount === workerCount)
+    && (latestApprovedHint.agentType == null || latestApprovedHint.agentType === agentType);
+  const allowRepoAwareDagHandoff = followupContext != null || matchesApprovedLaunchHint;
+
   return {
     workerCount,
     agentType,
@@ -822,6 +834,7 @@ function parseTeamArgs(args: string[], cwd: string = process.cwd()): ParsedTeamA
     task: effectiveTask,
     teamName,
     followupState: followupContext?.followupState ?? { status: 'generic' },
+    allowRepoAwareDagHandoff,
   };
 }
 
@@ -1234,6 +1247,7 @@ async function persistTeamShutdownModeState(
         explicitWorkerCount: false,
         teamName,
         followupState: { status: 'generic' },
+        allowRepoAwareDagHandoff: false,
       });
     } else {
       await startMode('team', `shutdown team ${teamName}`, 50, cwd);
@@ -1524,6 +1538,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
       explicitWorkerCount: false,
       teamName: runtime.teamName,
       followupState: { status: 'generic' },
+      allowRepoAwareDagHandoff: false,
     }, undefined, undefined, runtime.config.team_state_root);
     const availableAgentTypes = await resolveAvailableAgentTypes(cwd);
     const staffingPlan = buildFollowupStaffingPlan('team', runtime.config.task, availableAgentTypes, {
@@ -1566,13 +1581,16 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
   }
 
   const parsed = parseTeamArgs(teamArgs, cwd);
-  const executionPlan = buildTeamExecutionPlan(
-    parsed.task,
-    parsed.workerCount,
-    parsed.agentType,
-    parsed.explicitAgentType,
-    parsed.explicitWorkerCount,
-  );
+  const executionPlan = buildRepoAwareTeamExecutionPlan({
+    task: parsed.task,
+    workerCount: parsed.workerCount,
+    agentType: parsed.agentType,
+    explicitAgentType: parsed.explicitAgentType,
+    explicitWorkerCount: parsed.explicitWorkerCount,
+    cwd,
+    buildLegacyPlan: buildTeamExecutionPlan,
+    allowDagHandoff: parsed.allowRepoAwareDagHandoff,
+  });
   const tasks = executionPlan.tasks;
   const effectiveParsed = executionPlan.workerCount === parsed.workerCount
     ? parsed
@@ -1598,7 +1616,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     executionPlan.workerCount,
     tasks,
     cwd,
-    { worktreeMode, approvedExecution },
+    { worktreeMode, approvedExecution, decompositionMetadata: executionPlan.metadata },
   );
   const persistedApprovedHint = await readPersistedApprovedTeamExecutionHint(
     runtime.teamName,

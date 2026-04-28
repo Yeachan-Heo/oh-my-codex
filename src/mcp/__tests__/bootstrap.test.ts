@@ -9,6 +9,7 @@ import {
   isParentProcessAlive,
   parseProcessTable,
   resolveCurrentMcpEntrypointMarker,
+  resolveDuplicateSiblingWatchdogInitialDelayMs,
   shouldAutoStartMcpServer,
   shouldSelfExitForDuplicateSibling,
   type McpServerName,
@@ -89,6 +90,24 @@ describe('mcp parent watchdog liveness checks', () => {
 });
 
 describe('mcp shared stdio lifecycle contract', () => {
+  it('keeps server connection immediate and duplicate process-table scans delayed', async () => {
+    const src = await readFile(join(process.cwd(), 'src/mcp/bootstrap.ts'), 'utf8');
+    const connectIndex = src.indexOf('server.connect(transport)');
+    const duplicateDelayIndex = src.indexOf('duplicateSiblingInitialDelayTimer = setTimeout');
+
+    assert.ok(connectIndex > 0, 'bootstrap should still connect the MCP transport');
+    assert.ok(duplicateDelayIndex > 0, 'bootstrap should delay duplicate-sibling process scans');
+    assert.ok(
+      connectIndex > duplicateDelayIndex,
+      'duplicate-sibling scan delay must not wrap or delay server.connect',
+    );
+    assert.match(
+      src,
+      /const transport = new StdioServerTransport\(\);/,
+      'transport construction should remain eager',
+    );
+  });
+
   it('keeps shared stdio lifecycle wiring in bootstrap', async () => {
     const src = await readFile(join(process.cwd(), 'src/mcp/bootstrap.ts'), 'utf8');
 
@@ -128,6 +147,41 @@ describe('mcp shared stdio lifecycle contract', () => {
 });
 
 describe('mcp duplicate sibling detection', () => {
+  it('resolves deterministic bounded initial duplicate scan delays', () => {
+    const stateDelay = resolveDuplicateSiblingWatchdogInitialDelayMs(
+      'state',
+      'state-server.js',
+      { duplicateSiblingInitialDelayMs: null, duplicateSiblingInitialDelayMaxMs: 1000 },
+    );
+    const memoryDelay = resolveDuplicateSiblingWatchdogInitialDelayMs(
+      'memory',
+      'memory-server.js',
+      { duplicateSiblingInitialDelayMs: null, duplicateSiblingInitialDelayMaxMs: 1000 },
+    );
+
+    assert.equal(
+      stateDelay,
+      resolveDuplicateSiblingWatchdogInitialDelayMs(
+        'state',
+        'state-server.js',
+        { duplicateSiblingInitialDelayMs: null, duplicateSiblingInitialDelayMaxMs: 1000 },
+      ),
+      'delay should be stable for a server/entrypoint',
+    );
+    assert.ok(stateDelay >= 0 && stateDelay <= 1000);
+    assert.ok(memoryDelay >= 0 && memoryDelay <= 1000);
+    assert.notEqual(stateDelay, memoryDelay, 'first-party servers should be staggered by default');
+    assert.equal(
+      resolveDuplicateSiblingWatchdogInitialDelayMs(
+        'state',
+        'state-server.js',
+        { duplicateSiblingInitialDelayMs: 0, duplicateSiblingInitialDelayMaxMs: 1000 },
+      ),
+      0,
+      'explicit zero delay should remain available for tests/operators',
+    );
+  });
+
   it('extracts same-entrypoint markers from command lines', () => {
     assert.equal(
       extractMcpEntrypointMarker('node /tmp/oh-my-codex/dist/mcp/state-server.js'),

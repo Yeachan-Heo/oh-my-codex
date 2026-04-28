@@ -8,7 +8,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import TOML from "@iarna/toml";
-import { buildMergedConfig, mergeConfig, repairConfigIfNeeded } from "../generator.js";
+import { buildMergedConfig, cleanCodexModelAvailabilityNuxIfNeeded, mergeConfig, repairConfigIfNeeded } from "../generator.js";
 
 /** Count occurrences of a pattern in text */
 function count(text: string, pattern: RegExp): number {
@@ -95,6 +95,68 @@ function assertSingleOmxBlock(toml: string): void {
     "USE_OMX_EXPLORE_CMD should appear once",
   );
 }
+
+describe("Codex transient TUI NUX cleanup", () => {
+  it("removes only model availability NUX counters from project-local config", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-codex-nux-cleanup-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      await writeFile(configPath, [
+        'model = "gpt-5.5"',
+        'status_line = ["model-with-reasoning", "git-branch"]',
+        "",
+        "[tui]",
+        'theme = "dark"',
+        "notifications = true",
+        "",
+        "[tui.model_availability_nux]",
+        '"gpt-5.5" = 4',
+        '"gpt-5.4" = 1',
+        "",
+        "[mcp_servers.user]",
+        'command = "node"',
+        'args = ["server.js"]',
+        "",
+      ].join("\n"));
+
+      const cleaned = await cleanCodexModelAvailabilityNuxIfNeeded(configPath);
+      const toml = await readFile(configPath, "utf-8");
+
+      assert.equal(cleaned, true);
+      assert.doesNotMatch(toml, /^\[tui\.model_availability_nux\]$/m);
+      assert.doesNotMatch(toml, /gpt-5\.5" = 4/);
+      assert.match(toml, /^status_line = \["model-with-reasoning", "git-branch"\]$/m);
+      assert.match(toml, /^\[tui\]$/m);
+      assert.match(toml, /^theme = "dark"$/m);
+      assert.match(toml, /^notifications = true$/m);
+      assert.match(toml, /^\[mcp_servers\.user\]$/m);
+      assert.match(toml, /^command = "node"$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("is a no-op when project config has no Codex NUX counters", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-codex-nux-noop-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      const original = [
+        'model = "gpt-5.5"',
+        "",
+        "[tui]",
+        'theme = "dark"',
+        "",
+      ].join("\n");
+      await writeFile(configPath, original);
+
+      const cleaned = await cleanCodexModelAvailabilityNuxIfNeeded(configPath);
+      assert.equal(cleaned, false);
+      assert.equal(await readFile(configPath, "utf-8"), original);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("config generator idempotency (#384)", () => {
   it("first run creates config with all current OMX sections", async () => {

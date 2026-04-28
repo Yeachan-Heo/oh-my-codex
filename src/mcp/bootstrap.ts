@@ -18,11 +18,14 @@ const PARENT_WATCHDOG_INTERVAL_ENV = 'OMX_MCP_PARENT_WATCHDOG_INTERVAL_MS';
 const DUPLICATE_SIBLING_WATCHDOG_INTERVAL_ENV = 'OMX_MCP_DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS';
 const DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_ENV = 'OMX_MCP_DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS';
 const DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_ENV = 'OMX_MCP_DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS';
+const DUPLICATE_SIBLING_INITIAL_DELAY_ENV = 'OMX_MCP_DUPLICATE_SIBLING_INITIAL_DELAY_MS';
+const DUPLICATE_SIBLING_INITIAL_DELAY_MAX_ENV = 'OMX_MCP_DUPLICATE_SIBLING_INITIAL_DELAY_MAX_MS';
 export const MCP_ENTRYPOINT_MARKER_ENV = 'OMX_MCP_ENTRYPOINT_MARKER';
 const DEFAULT_PARENT_WATCHDOG_INTERVAL_MS = 1_000;
 const DEFAULT_DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS = 5_000;
 const DEFAULT_DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS = 2_000;
 const DEFAULT_DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS = 60_000;
+const DEFAULT_DUPLICATE_SIBLING_INITIAL_DELAY_MAX_MS = 1_000;
 const MCP_ENTRYPOINT_PATTERN = /\b([a-z0-9-]+-server\.(?:[cm]?js|ts))\b/i;
 const MCP_SERVE_TARGET_PATTERN = /(?:^|\s)mcp-serve\s+([^\s]+)/i;
 
@@ -49,6 +52,8 @@ interface LifecycleTimingConfig {
   duplicateSiblingWatchdogIntervalMs: number;
   duplicateSiblingPreTrafficGraceMs: number;
   duplicateSiblingPostTrafficIdleMs: number;
+  duplicateSiblingInitialDelayMs: number | null;
+  duplicateSiblingInitialDelayMaxMs: number;
 }
 
 function normalizeCommand(command: string): string {
@@ -182,6 +187,17 @@ export function analyzeDuplicateSiblingState(
   };
 }
 
+function readNonNegativeIntegerEnv(
+  env: Record<string, string | undefined>,
+  name: string,
+  fallback: number | null,
+): number | null {
+  const raw = env[name];
+  if (typeof raw !== 'string' || raw.trim() === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 function readPositiveIntegerEnv(
   env: Record<string, string | undefined>,
   name: string,
@@ -217,7 +233,39 @@ function resolveLifecycleTimingConfig(
       DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_ENV,
       DEFAULT_DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS,
     ),
+    duplicateSiblingInitialDelayMs: readNonNegativeIntegerEnv(
+      env,
+      DUPLICATE_SIBLING_INITIAL_DELAY_ENV,
+      null,
+    ),
+    duplicateSiblingInitialDelayMaxMs: readPositiveIntegerEnv(
+      env,
+      DUPLICATE_SIBLING_INITIAL_DELAY_MAX_ENV,
+      DEFAULT_DUPLICATE_SIBLING_INITIAL_DELAY_MAX_MS,
+    ),
   };
+}
+
+function stableStringHash(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = ((hash * 31) + value.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
+export function resolveDuplicateSiblingWatchdogInitialDelayMs(
+  serverName: McpServerName,
+  entrypoint: string | null,
+  config: Pick<LifecycleTimingConfig, 'duplicateSiblingInitialDelayMs' | 'duplicateSiblingInitialDelayMaxMs'>,
+): number {
+  if (typeof config.duplicateSiblingInitialDelayMs === 'number') {
+    return Math.max(0, config.duplicateSiblingInitialDelayMs);
+  }
+
+  const maxMs = Math.max(0, config.duplicateSiblingInitialDelayMaxMs);
+  if (maxMs <= 0) return 0;
+  return stableStringHash(`${serverName}:${entrypoint ?? 'unknown'}`) % (maxMs + 1);
 }
 
 export function shouldSelfExitForDuplicateSibling(
@@ -311,46 +359,64 @@ export function autoStartStdioMcpServer(
     }, lifecycleTiming.parentWatchdogIntervalMs)
     : null;
   parentWatchdog?.unref();
-  const duplicateSiblingWatchdog = trackedParentPid > 1 && trackedEntrypoint
-    ? setInterval(() => {
-      const processes = listProcessTable();
-      if (!processes) {
-        duplicateObservedAtMs = null;
-        return;
-      }
+  let duplicateSiblingWatchdog: ReturnType<typeof setInterval> | null = null;
+  let duplicateSiblingInitialDelayTimer: ReturnType<typeof setTimeout> | null = null;
 
-      const observation = analyzeDuplicateSiblingState(
-        processes,
-        process.pid,
-        trackedParentPid,
-        trackedEntrypoint,
+  const runDuplicateSiblingWatchdog = () => {
+    const processes = listProcessTable();
+    if (!processes) {
+      duplicateObservedAtMs = null;
+      return;
+    }
+
+    const observation = analyzeDuplicateSiblingState(
+      processes,
+      process.pid,
+      trackedParentPid,
+      trackedEntrypoint,
+    );
+
+    if (observation.status !== 'older_duplicate') {
+      duplicateObservedAtMs = null;
+      return;
+    }
+
+    duplicateObservedAtMs ??= Date.now();
+    if (!shouldSelfExitForDuplicateSibling(
+      observation,
+      Date.now(),
+      duplicateObservedAtMs,
+      lastTrafficAtMs,
+      lifecycleTiming.duplicateSiblingPreTrafficGraceMs,
+      lifecycleTiming.duplicateSiblingPostTrafficIdleMs,
+    )) {
+      return;
+    }
+
+    void shutdown(
+      lastTrafficAtMs !== null && lastTrafficAtMs > duplicateObservedAtMs
+        ? 'superseded_duplicate_after_idle'
+        : 'superseded_duplicate_before_traffic',
+    );
+  };
+
+  if (trackedParentPid > 1 && trackedEntrypoint) {
+    const initialDelayMs = resolveDuplicateSiblingWatchdogInitialDelayMs(
+      serverName,
+      trackedEntrypoint,
+      lifecycleTiming,
+    );
+    duplicateSiblingInitialDelayTimer = setTimeout(() => {
+      duplicateSiblingInitialDelayTimer = null;
+      runDuplicateSiblingWatchdog();
+      duplicateSiblingWatchdog = setInterval(
+        runDuplicateSiblingWatchdog,
+        lifecycleTiming.duplicateSiblingWatchdogIntervalMs,
       );
-
-      if (observation.status !== 'older_duplicate') {
-        duplicateObservedAtMs = null;
-        return;
-      }
-
-      duplicateObservedAtMs ??= Date.now();
-      if (!shouldSelfExitForDuplicateSibling(
-        observation,
-        Date.now(),
-        duplicateObservedAtMs,
-        lastTrafficAtMs,
-        lifecycleTiming.duplicateSiblingPreTrafficGraceMs,
-        lifecycleTiming.duplicateSiblingPostTrafficIdleMs,
-      )) {
-        return;
-      }
-
-      void shutdown(
-        lastTrafficAtMs !== null && lastTrafficAtMs > duplicateObservedAtMs
-          ? 'superseded_duplicate_after_idle'
-          : 'superseded_duplicate_before_traffic',
-      );
-    }, lifecycleTiming.duplicateSiblingWatchdogIntervalMs)
-    : null;
-  duplicateSiblingWatchdog?.unref();
+      duplicateSiblingWatchdog.unref();
+    }, initialDelayMs);
+    duplicateSiblingInitialDelayTimer.unref();
+  }
 
   const shutdown = async (reason: string) => {
     if (shuttingDown) {
@@ -360,6 +426,9 @@ export function autoStartStdioMcpServer(
     logLifecycle(`transport shutdown: ${reason}`);
     if (parentWatchdog) {
       clearInterval(parentWatchdog);
+    }
+    if (duplicateSiblingInitialDelayTimer) {
+      clearTimeout(duplicateSiblingInitialDelayTimer);
     }
     if (duplicateSiblingWatchdog) {
       clearInterval(duplicateSiblingWatchdog);

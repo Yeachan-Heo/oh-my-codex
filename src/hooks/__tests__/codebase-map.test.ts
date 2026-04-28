@@ -7,7 +7,7 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, mkdir, writeFile } from 'fs/promises';
+import { mkdtemp, rm, mkdir, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { execSync } from 'child_process';
@@ -130,6 +130,74 @@ describe('generateCodebaseMap', () => {
       assert.ok(!map.includes('secret-wip'), 'must not expose untracked filename');
     } finally {
       await rm(secDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses a durable cache for unchanged git index state', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'omx-codebase-cache-'));
+    try {
+      execSync('git init', { cwd: cacheDir, stdio: 'ignore' });
+      execSync('git config user.email "test@test.com"', { cwd: cacheDir, stdio: 'ignore' });
+      execSync('git config user.name "Test"', { cwd: cacheDir, stdio: 'ignore' });
+      await mkdir(join(cacheDir, 'src'), { recursive: true });
+      await writeFile(join(cacheDir, 'src', 'tracked.ts'), 'export function tracked() {}');
+      execSync('git add src/tracked.ts', { cwd: cacheDir, stdio: 'ignore' });
+
+      const map = await generateCodebaseMap(cacheDir);
+      assert.ok(map.includes('tracked'));
+
+      const cachePath = join(cacheDir, '.omx', 'cache', 'codebase-map.json');
+      const cache = JSON.parse(await readFile(cachePath, 'utf-8'));
+      cache.map = '  src/: cached-only';
+      await writeFile(cachePath, JSON.stringify(cache, null, 2));
+
+      assert.equal(await generateCodebaseMap(cacheDir), '  src/: cached-only');
+    } finally {
+      await rm(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it('invalidates stale and corrupt durable cache entries safely', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'omx-codebase-cache-stale-'));
+    try {
+      execSync('git init', { cwd: cacheDir, stdio: 'ignore' });
+      execSync('git config user.email "test@test.com"', { cwd: cacheDir, stdio: 'ignore' });
+      execSync('git config user.name "Test"', { cwd: cacheDir, stdio: 'ignore' });
+      await mkdir(join(cacheDir, 'src'), { recursive: true });
+      await writeFile(join(cacheDir, 'src', 'first.ts'), 'export function first() {}');
+      execSync('git add src/first.ts', { cwd: cacheDir, stdio: 'ignore' });
+
+      assert.ok((await generateCodebaseMap(cacheDir)).includes('first'));
+      const cachePath = join(cacheDir, '.omx', 'cache', 'codebase-map.json');
+      await writeFile(cachePath, '{not-json');
+      assert.ok((await generateCodebaseMap(cacheDir)).includes('first'), 'corrupt cache should regenerate');
+
+      await writeFile(join(cacheDir, 'src', 'second.ts'), 'export function second() {}');
+      execSync('git add src/second.ts', { cwd: cacheDir, stdio: 'ignore' });
+      const updated = await generateCodebaseMap(cacheDir);
+      assert.ok(updated.includes('first'));
+      assert.ok(updated.includes('second'), 'index change should invalidate stale cache');
+      assert.ok(!updated.includes('secret-wip'), 'cache regeneration must not leak untracked names');
+    } finally {
+      await rm(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it('caches empty tracked-source results without exposing .omx paths', async () => {
+    const emptyDir = await mkdtemp(join(tmpdir(), 'omx-codebase-empty-cache-'));
+    try {
+      execSync('git init', { cwd: emptyDir, stdio: 'ignore' });
+      await writeFile(join(emptyDir, 'README.md'), '# empty source set\n');
+      execSync('git add README.md', { cwd: emptyDir, stdio: 'ignore' });
+      await mkdir(join(emptyDir, '.omx', 'cache'), { recursive: true });
+      await writeFile(join(emptyDir, '.omx', 'cache', 'secret.ts'), 'export const secret = true;');
+
+      assert.equal(await generateCodebaseMap(emptyDir), '');
+      const cache = JSON.parse(await readFile(join(emptyDir, '.omx', 'cache', 'codebase-map.json'), 'utf-8'));
+      assert.equal(cache.map, '');
+      assert.doesNotMatch(JSON.stringify(cache), /secret\.ts/);
+    } finally {
+      await rm(emptyDir, { recursive: true, force: true });
     }
   });
 

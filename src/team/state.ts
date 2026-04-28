@@ -156,6 +156,10 @@ export interface TeamTask {
   error?: string; // failure reason
   blocked_by?: string[]; // task IDs
   depends_on?: string[]; // task IDs
+  filePaths?: string[];
+  domains?: string[];
+  lane?: string;
+  allocation_reason?: string;
   version?: number;
   claim?: TeamTaskClaim;
   created_at: string;
@@ -254,6 +258,7 @@ export interface TeamManifestV2 {
   governance: TeamGovernance;
   lifecycle_profile: 'default';
   permissions_snapshot: PermissionsSnapshot;
+  team_decomposition?: Record<string, unknown>;
   tmux_session: string;
   worker_count: number;
   workers: WorkerInfo[];
@@ -984,6 +989,10 @@ export async function readTeamManifestV2(teamName: string, cwd: string): Promise
       policy?: Partial<TeamPolicy> & Partial<TeamGovernance>;
       governance?: Partial<TeamGovernance>;
     };
+    const legacyPolicy = parsedManifest.policy as (Partial<TeamPolicy> & Partial<TeamGovernance> & {
+      team_decomposition?: unknown;
+    }) | undefined;
+    const legacyTeamDecomposition = legacyPolicy?.team_decomposition;
     return {
       ...parsedManifest,
       policy: normalizeTeamPolicy(parsedManifest.policy, {
@@ -991,6 +1000,10 @@ export async function readTeamManifestV2(teamName: string, cwd: string): Promise
         worker_launch_mode: parsedManifest.policy?.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive',
       }),
       governance: normalizeTeamGovernance(parsedManifest.governance, parsedManifest.policy),
+      team_decomposition: parsedManifest.team_decomposition
+        ?? (legacyTeamDecomposition && typeof legacyTeamDecomposition === 'object' && !Array.isArray(legacyTeamDecomposition)
+          ? legacyTeamDecomposition as Record<string, unknown>
+          : undefined),
       lifecycle_profile: 'default',
     };
   } catch {

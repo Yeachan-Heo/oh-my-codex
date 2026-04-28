@@ -182,6 +182,7 @@ export interface TeamManifestV2 {
   governance: TeamGovernance;
   lifecycle_profile: 'default';
   permissions_snapshot: PermissionsSnapshot;
+  team_decomposition?: Record<string, unknown>;
   tmux_session: string;
   worker_count: number;
   workers: WorkerInfo[];

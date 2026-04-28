@@ -34,6 +34,7 @@ import {
   readPersistedSetupScope,
   resolveCodexConfigPathForLaunch,
   resolveCodexHomeForLaunch,
+  resolveProjectLocalCodexHomeForLaunch,
   buildDetachedSessionBootstrapSteps,
   buildDetachedTmuxSessionName,
   buildDetachedSessionFinalizeSteps,
@@ -1188,6 +1189,39 @@ describe("project launch scope helpers", () => {
     }
   });
 
+  it("marks only persisted project CODEX_HOME as project-local cleanup target", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-launch-scope-"));
+    try {
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+      assert.equal(resolveProjectLocalCodexHomeForLaunch(wd, {}), join(wd, ".codex"));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not mark explicit CODEX_HOME as project-local cleanup target", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-launch-scope-"));
+    try {
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+      assert.equal(
+        resolveProjectLocalCodexHomeForLaunch(wd, {
+          CODEX_HOME: "/tmp/user-global-codex-home",
+        }),
+        undefined,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("keeps explicit CODEX_HOME override from env", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-launch-scope-"));
     try {
@@ -1593,7 +1627,7 @@ describe("detached tmux new-session sequencing", () => {
     const source = await readFile(join(repoRoot, 'src', 'cli', 'index.ts'), 'utf-8');
     assert.match(
       source,
-      /buildTmuxPaneCommand\("env", \[`OMX_SESSION_ID=\$\{sessionId\}`, "node", omxBin, "hud", "--watch"\]\)/,
+      /buildTmuxPaneCommand\("env",\s*\[\s*`OMX_SESSION_ID=\$\{sessionId\}`,\s*"node",\s*omxBin,\s*"hud",\s*"--watch",?\s*\]\)/,
     );
   });
 

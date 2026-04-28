@@ -592,10 +592,6 @@ function buildGitCommitEnforcementOutput(commandText: string): Record<string, un
       "git commit is blocked until the inline commit message satisfies the Lore format and includes the required OmX co-author trailer.",
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
-      additionalContext: [
-        "Lore-format git commit enforcement triggered.",
-        ...errors.map((error) => `- ${error}`),
-      ].join("\n"),
     },
     systemMessage: [
       "git commit is blocked until the inline commit message follows the Lore protocol and includes `Co-authored-by: OmX <omx@oh-my-codex.dev>`.",

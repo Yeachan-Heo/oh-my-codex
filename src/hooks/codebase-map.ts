@@ -13,8 +13,11 @@
  * - Safe: all errors return empty string (never blocks session start)
  */
 
-import { extname, basename } from 'path';
-import { execSync } from 'child_process';
+import { statSync } from 'node:fs';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { basename, extname, join } from 'node:path';
+import { execSync } from 'node:child_process';
+import { findGitLayout } from '../utils/git-layout.js';
 
 /** Max chars for the whole map output. */
 const MAX_MAP_CHARS = 1000;
@@ -27,6 +30,74 @@ const MAX_DIRS = 14;
 
 /** Source extensions whose exports are worth scanning. */
 const SOURCE_EXTS = new Set(['.ts', '.tsx', '.js', '.mjs']);
+const CACHE_VERSION = 1;
+
+interface CodebaseMapCacheFile {
+  version: number;
+  worktreeRoot: string;
+  gitDir: string;
+  indexMtimeMs: number;
+  indexSize: number;
+  map: string;
+  createdAt: string;
+}
+
+function cachePathForWorktree(worktreeRoot: string): string {
+  return join(worktreeRoot, '.omx', 'cache', 'codebase-map.json');
+}
+
+function readGitIndexSignature(gitDir: string): { mtimeMs: number; size: number } | null {
+  try {
+    const stat = statSync(join(gitDir, 'index'));
+    return { mtimeMs: stat.mtimeMs, size: stat.size };
+  } catch {
+    return null;
+  }
+}
+
+async function readCachedCodebaseMap(
+  worktreeRoot: string,
+  gitDir: string,
+  indexSignature: { mtimeMs: number; size: number },
+): Promise<string | null> {
+  try {
+    const parsed = JSON.parse(await readFile(cachePathForWorktree(worktreeRoot), 'utf-8')) as Partial<CodebaseMapCacheFile>;
+    if (parsed.version !== CACHE_VERSION) return null;
+    if (parsed.worktreeRoot !== worktreeRoot) return null;
+    if (parsed.gitDir !== gitDir) return null;
+    if (parsed.indexMtimeMs !== indexSignature.mtimeMs) return null;
+    if (parsed.indexSize !== indexSignature.size) return null;
+    return typeof parsed.map === 'string' ? parsed.map : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCachedCodebaseMap(
+  worktreeRoot: string,
+  gitDir: string,
+  indexSignature: { mtimeMs: number; size: number },
+  map: string,
+): Promise<void> {
+  const targetPath = cachePathForWorktree(worktreeRoot);
+  const tempPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await mkdir(join(worktreeRoot, '.omx', 'cache'), { recursive: true });
+    const payload: CodebaseMapCacheFile = {
+      version: CACHE_VERSION,
+      worktreeRoot,
+      gitDir,
+      indexMtimeMs: indexSignature.mtimeMs,
+      indexSize: indexSignature.size,
+      map,
+      createdAt: new Date().toISOString(),
+    };
+    await writeFile(tempPath, JSON.stringify(payload, null, 2));
+    await rename(tempPath, targetPath);
+  } catch {
+    await rm(tempPath, { force: true }).catch(() => {});
+  }
+}
 
 /**
  * Return git-tracked source files relative to cwd.
@@ -44,7 +115,7 @@ function getTrackedSourceFiles(cwd: string): string[] {
     return out
       .trim()
       .split('\n')
-      .filter((f) => f && SOURCE_EXTS.has(extname(f)));
+      .filter((f) => f && !f.split('/').includes('.omx') && SOURCE_EXTS.has(extname(f)));
   } catch {
     return [];
   }
@@ -112,8 +183,20 @@ function buildDirLine(dir: string, files: string[]): string {
  */
 export async function generateCodebaseMap(cwd: string): Promise<string> {
   try {
+    const layout = findGitLayout(cwd);
+    const indexSignature = layout ? readGitIndexSignature(layout.gitDir) : null;
+    if (layout && indexSignature) {
+      const cached = await readCachedCodebaseMap(layout.worktreeRoot, layout.gitDir, indexSignature);
+      if (cached !== null) return cached;
+    }
+
     const files = getTrackedSourceFiles(cwd);
-    if (files.length === 0) return '';
+    if (files.length === 0) {
+      if (layout && indexSignature) {
+        await writeCachedCodebaseMap(layout.worktreeRoot, layout.gitDir, indexSignature, '');
+      }
+      return '';
+    }
 
     const grouped = groupByTopDir(files);
     const sortedDirs = sortDirs([...grouped.keys()]);
@@ -145,10 +228,21 @@ export async function generateCodebaseMap(cwd: string): Promise<string> {
       }
     }
 
-    if (lines.length === 0) return '';
+    if (lines.length === 0) {
+      if (layout && indexSignature) {
+        await writeCachedCodebaseMap(layout.worktreeRoot, layout.gitDir, indexSignature, '');
+      }
+      return '';
+    }
 
     const body = lines.join('\n');
-    return body.length > MAX_MAP_CHARS ? body.slice(0, MAX_MAP_CHARS - 3) + '...' : body;
+    const map = body.length <= MAX_MAP_CHARS
+      ? body
+      : body.slice(0, MAX_MAP_CHARS - 3) + '...';
+    if (layout && indexSignature) {
+      await writeCachedCodebaseMap(layout.worktreeRoot, layout.gitDir, indexSignature, map);
+    }
+    return map;
   } catch {
     return '';
   }

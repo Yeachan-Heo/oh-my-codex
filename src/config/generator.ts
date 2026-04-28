@@ -122,6 +122,44 @@ const LEGACY_OMX_TEAM_RUN_TABLE_PATTERN =
 const OMX_CONFIG_MARKER = "oh-my-codex (OMX) Configuration";
 const OMX_CONFIG_END_MARKER = "# End oh-my-codex";
 
+const CODEX_MODEL_AVAILABILITY_NUX_TABLE_PATTERN = /^\s*\[tui\.model_availability_nux\]\s*(?:#.*)?$/;
+const TOML_TABLE_HEADER_PATTERN = /^\s*\[\[?[^\]]+\]?\]\s*(?:#.*)?$/;
+
+export function stripCodexModelAvailabilityNux(config: string): string {
+  const lines = config.split(/\r?\n/);
+  const result: string[] = [];
+  let removed = false;
+
+  for (let i = 0; i < lines.length;) {
+    if (CODEX_MODEL_AVAILABILITY_NUX_TABLE_PATTERN.test(lines[i])) {
+      removed = true;
+      i += 1;
+      while (i < lines.length && !TOML_TABLE_HEADER_PATTERN.test(lines[i])) {
+        i += 1;
+      }
+      continue;
+    }
+
+    result.push(lines[i]);
+    i += 1;
+  }
+
+  return removed ? result.join("\n") : config;
+}
+
+export async function cleanCodexModelAvailabilityNuxIfNeeded(
+  configPath: string,
+): Promise<boolean> {
+  if (!existsSync(configPath)) return false;
+
+  const content = await readFile(configPath, "utf-8");
+  const cleaned = stripCodexModelAvailabilityNux(content);
+  if (cleaned === content) return false;
+
+  await writeFile(configPath, cleaned);
+  return true;
+}
+
 export function hasLegacyOmxTeamRunTable(config: string): boolean {
   return LEGACY_OMX_TEAM_RUN_TABLE_PATTERN.test(config);
 }
