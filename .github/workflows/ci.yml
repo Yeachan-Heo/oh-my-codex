@@ -328,6 +328,32 @@ jobs:
       - name: Run Ralph persistence verification matrix
         run: npm run test:ralph-persistence:compiled
 
+  context-pack-contract:
+    name: Context Pack Contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs: [build-dist]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download prebuilt dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-dist-node20
+          path: dist
+      - name: Run context-pack lifecycle suite
+        run: npm run test:context-pack
+      - name: Run full npm test suite
+        run: npm test
+      - name: Verify plugin bundle mirrors
+        run: npm run verify:plugin-bundle
+      - name: Verify native agents
+        run: npm run verify:native-agents
+
   build:
     name: Build (Full Source Build)
     runs-on: ubuntu-latest
@@ -357,7 +383,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [rustfmt, clippy, lint, typecheck, test, coverage-team-critical, coverage-ts-full, coverage-rust, ralph-persistence-gate, build]
+    needs: [rustfmt, clippy, lint, typecheck, test, coverage-team-critical, coverage-ts-full, coverage-rust, ralph-persistence-gate, context-pack-contract, build]
     steps:
       - name: Check required job results
         run: |
@@ -370,6 +396,7 @@ jobs:
              [[ "${{ needs.coverage-ts-full.result }}" != "success" ]] ||
              [[ "${{ needs.coverage-rust.result }}" != "success" ]] ||
              [[ "${{ needs.ralph-persistence-gate.result }}" != "success" ]] ||
+             [[ "${{ needs.context-pack-contract.result }}" != "success" ]] ||
              [[ "${{ needs.build.result }}" != "success" ]]; then
             echo "::error::One or more required CI jobs failed"
             echo "  rustfmt: ${{ needs.rustfmt.result }}"
@@ -381,6 +408,7 @@ jobs:
             echo "  coverage-ts-full: ${{ needs.coverage-ts-full.result }}"
             echo "  coverage-rust: ${{ needs.coverage-rust.result }}"
             echo "  ralph-persistence-gate: ${{ needs.ralph-persistence-gate.result }}"
+            echo "  context-pack-contract: ${{ needs.context-pack-contract.result }}"
             echo "  build: ${{ needs.build.result }}"
             exit 1
           fi
