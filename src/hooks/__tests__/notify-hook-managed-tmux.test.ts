@@ -124,6 +124,63 @@ describe('notify-hook managed tmux windows fallback', () => {
     }
   });
 
+  it('uses authoritative tmux session metadata before recomputing branch-based names', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-managed-tmux-authoritative-'));
+    try {
+      const sessionId = 'omx-authoritative-session';
+      const tmuxSessionName = 'omx-authoritative-without-git';
+      await writeSessionStart(cwd, sessionId, { tmuxSessionName });
+
+      await withFakeTmux(cwd, `#!/usr/bin/env bash
+if [[ "$1" == "display-message" ]]; then
+  echo "${tmuxSessionName}"
+  exit 0
+fi
+exit 1
+`, async () => {
+        process.env.TMUX = '1';
+        delete process.env.TMUX_PANE;
+        process.env.OMX_TEAM_WORKER = '';
+
+        const result = await resolveManagedSessionContext(cwd, { session_id: sessionId }, { allowTeamWorker: false });
+        assert.equal(result.managed, true);
+        assert.equal(result.reason, 'tmux_session_match');
+        assert.equal(result.expectedTmuxSessionName, tmuxSessionName);
+        assert.equal(result.currentTmuxSessionName, tmuxSessionName);
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when authoritative tmux metadata disagrees with the active tmux session', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-managed-tmux-authoritative-mismatch-'));
+    try {
+      const sessionId = 'omx-authoritative-session';
+      await writeSessionStart(cwd, sessionId, { tmuxSessionName: 'omx-expected-session' });
+
+      await withFakeTmux(cwd, `#!/usr/bin/env bash
+if [[ "$1" == "display-message" ]]; then
+  echo "omx-other-session"
+  exit 0
+fi
+exit 1
+`, async () => {
+        process.env.TMUX = '1';
+        delete process.env.TMUX_PANE;
+        process.env.OMX_TEAM_WORKER = '';
+
+        const result = await resolveManagedSessionContext(cwd, { session_id: sessionId }, { allowTeamWorker: false });
+        assert.equal(result.managed, false);
+        assert.equal(result.reason, 'tmux_session_mismatch');
+        assert.equal(result.expectedTmuxSessionName, 'omx-expected-session');
+        assert.equal(result.currentTmuxSessionName, 'omx-other-session');
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('accepts symlinked cwd aliases for the same managed session', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-managed-tmux-cwd-alias-'));
     const aliasCwd = `${cwd}-alias`;

@@ -30,6 +30,7 @@ import {
   writeTeamPhase,
 } from "../team/state.js";
 import { omxNotepadPath, omxProjectMemoryPath } from "../utils/paths.js";
+import { findGitLayout } from "../utils/git-layout.js";
 import { getStateFilePath, getStatePath } from "../mcp/state-paths.js";
 import {
   detectKeywords,
@@ -616,6 +617,22 @@ function tryReadGitValue(cwd: string, args: string[]): string | null {
   }
 }
 
+
+function localExcludeAlreadyIgnoresOmx(cwd: string): boolean {
+  const layout = findGitLayout(cwd);
+  if (!layout) return false;
+  const excludePath = join(layout.gitDir, "info", "exclude");
+  try {
+    const lines = readFileSync(excludePath, "utf-8")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#"));
+    return lines.includes(".omx/") || lines.includes(".omx");
+  } catch {
+    return false;
+  }
+}
+
 function isPathIgnoredByGit(cwd: string, path: string): boolean {
   try {
     execFileSync("git", ["check-ignore", "-q", path], {
@@ -632,7 +649,7 @@ function isPathIgnoredByGit(cwd: string, path: string): boolean {
 async function ensureOmxLocalIgnoreEntry(cwd: string): Promise<{ changed: boolean; excludePath?: string }> {
   const repoRoot = tryReadGitValue(cwd, ["rev-parse", "--show-toplevel"]);
   if (!repoRoot) return { changed: false };
-  if (isPathIgnoredByGit(repoRoot, ".omx/")) {
+  if (localExcludeAlreadyIgnoresOmx(repoRoot) || isPathIgnoredByGit(repoRoot, ".omx/")) {
     return { changed: false };
   }
 

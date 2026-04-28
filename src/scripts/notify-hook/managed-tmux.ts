@@ -61,6 +61,10 @@ function readNativeSessionId(sessionState: { native_session_id?: unknown; codex_
   return safeString(sessionState.native_session_id || sessionState.codex_session_id || '').trim();
 }
 
+function readAuthoritativeTmuxSessionName(sessionState: { tmux_session_name?: unknown; tmuxSessionName?: unknown }): string {
+  return safeString(sessionState.tmux_session_name || sessionState.tmuxSessionName || '').trim();
+}
+
 function readCurrentTmuxSessionName(): string {
   if (!process.env.TMUX) return '';
   try {
@@ -154,15 +158,29 @@ export async function resolveManagedSessionContext(cwd: string, payload: any, { 
     }
 
     const authoritativeSessionCwd = safeString(sessionState.cwd || cwd).trim() || cwd;
-    const expectedTmuxSessionName = buildExpectedManagedTmuxSessionName(
-      authoritativeSessionCwd,
-      canonicalSessionId || invocationSessionId,
-    );
+    const authoritativeTmuxSessionName = readAuthoritativeTmuxSessionName(sessionState);
+    const expectedTmuxSessionName = authoritativeTmuxSessionName
+      || buildExpectedManagedTmuxSessionName(
+        authoritativeSessionCwd,
+        canonicalSessionId || invocationSessionId,
+      );
     const currentTmuxSessionName = readCurrentTmuxSessionName();
     if (currentTmuxSessionName && currentTmuxSessionName === expectedTmuxSessionName) {
       return {
         managed: true,
         reason: 'tmux_session_match',
+        invocationSessionId,
+        canonicalSessionId,
+        nativeSessionId,
+        sessionState,
+        expectedTmuxSessionName,
+        currentTmuxSessionName,
+      };
+    }
+    if (authoritativeTmuxSessionName && currentTmuxSessionName) {
+      return {
+        managed: false,
+        reason: 'tmux_session_mismatch',
         invocationSessionId,
         canonicalSessionId,
         nativeSessionId,

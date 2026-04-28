@@ -2737,6 +2737,10 @@ function runCodex(
       ? buildWindowsPromptCommand("codex", launchArgs)
       : null;
     const sessionName = buildDetachedTmuxSessionName(cwd, sessionId);
+    void writeSessionStart(cwd, sessionId, { tmuxSessionName: sessionName }).catch((err) => {
+      logCliOperationFailure(err);
+      // Non-fatal: managed tmux recovery can still use compatibility fallback.
+    });
     let createdDetachedSession = false;
     let registeredHookTarget: string | null = null;
     let registeredHookName: string | null = null;
