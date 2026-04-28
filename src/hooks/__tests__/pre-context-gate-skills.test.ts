@@ -49,4 +49,10 @@ describe('pre-context gate guidance in planning/execution-heavy skills', () => {
     assert.match(ralphSkill, /\.omx\/context\/\{task-slug\}-\{timestamp\}\.md/);
     assert.match(ralphSkill, /\$deep-interview\s+--quick/i);
   });
+
+  it('ralph documents state CLI retry guidance when the MCP channel is unavailable', () => {
+    assert.match(ralphSkill, /do \*\*not\*\* retry the same MCP call/i);
+    assert.match(ralphSkill, /omx state write --input '<json>' --json/i);
+    assert.match(ralphSkill, /preserving `workingDirectory` and `session_id`/i);
+  });
 });

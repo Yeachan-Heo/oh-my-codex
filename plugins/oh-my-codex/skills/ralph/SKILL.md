@@ -95,6 +95,7 @@ Complex tasks often fail silently: partial implementations get declared "done", 
 - If ToolSearch finds no MCP tools or Codex is unavailable, proceed with architect agent verification alone -- never block on external tools
 - Use `state_write` / `state_read` for ralph mode state persistence between iterations
 - Persist context snapshot path in Ralph mode state so later phases and agents share the same grounding context
+- If an `omx_state` MCP tool call reports that its stdio transport is unavailable/closed, do **not** retry the same MCP call. Retry once through the supported CLI parity surface with the same payload, preserving `workingDirectory` and `session_id`: `omx state write --input '<json>' --json`, `omx state read --input '<json>' --json`, or `omx state clear --input '<json>' --json`. If the CLI path also fails, continue with `.omx/context` / `.omx/plans` file-backed artifacts and report the state persistence blocker.
 </Tool_Usage>
 
 ## State Management
