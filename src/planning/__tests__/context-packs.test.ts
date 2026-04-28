@@ -919,6 +919,51 @@ describe('context-packs', () => {
     assert.doesNotMatch(excerpt, /## Later Section/);
   });
 
+  it('truncates an over-budget first excerpt line to the heading word budget', async () => {
+    const packPath = packAbsolutePath('issue-heading-first-line');
+    const headingTitle = [
+      ...Array.from({ length: 44 }, (_, index) => String.fromCharCode(97 + (index % 26))),
+      'tailword',
+    ].join(' ');
+    await writeRepoFile(
+      'docs/runtime-first-line.md',
+      [
+        '# Runtime',
+        '',
+        `## ${headingTitle}`,
+        '',
+        'This body should not fit after the over-budget heading.',
+        '',
+      ].join('\n'),
+    );
+    upsertContextPackEntries(
+      packPath,
+      [
+        {
+          label: 'runtime',
+          path: 'docs/runtime-first-line.md',
+          roles: ['build'],
+          selector: { type: 'heading', value: headingTitle, maxWords: 40 },
+        },
+      ],
+      { repoRoot: tempDir },
+    );
+
+    const resolution = materializeContextPackRefs({
+      packPath,
+      repoRoot: tempDir,
+    });
+    assert.deepEqual(resolution.issues, []);
+    assert.equal(resolution.refs.length, 1);
+
+    const excerpt = await readFile(resolution.refs[0]!.path, 'utf-8');
+    const excerptBody = excerpt.split('## Excerpt\n')[1]!.split('\n\n[excerpt truncated')[0]!;
+    assert.equal(excerptBody.trim().split(/\s+/).length, 40);
+    assert.doesNotMatch(excerptBody, /tailword/);
+    assert.doesNotMatch(excerptBody, /This body should not fit/);
+    assert.match(excerpt, /\[excerpt truncated after 40 words\]/);
+  });
+
   it('ignores fenced code blocks when resolving heading selectors', async () => {
     const packPath = packAbsolutePath('issue-heading-fence');
     await writeRepoFile(

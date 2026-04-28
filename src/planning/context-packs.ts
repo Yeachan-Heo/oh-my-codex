@@ -1309,7 +1309,7 @@ function truncateExcerptByWords(text: string, maxWords: number): string {
       kept.push(line);
       continue;
     }
-    if (kept.length === 0 || words + lineWords <= maxWords) {
+    if (words + lineWords <= maxWords) {
       kept.push(line);
       words += lineWords;
       if (words >= maxWords) {
