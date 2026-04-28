@@ -10,8 +10,24 @@ export interface PlanningArtifactNameInfo {
   timestamp?: string;
 }
 
+export interface PlanningArtifactTestSpecSelection {
+  paths: string[];
+  requiredTimestampedFileName: string | null;
+}
+
 export function planningArtifactTimestamp(date: Date = new Date()): string {
   return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+function legacyTestSpecSlug(fileNameOrPath: string): string | null {
+  const match = basename(fileNameOrPath).match(/^test-?spec-(?<slug>.+)\.md$/i);
+  return match?.groups?.slug ?? null;
+}
+
+function requiredTimestampedTestSpecFileName(prdArtifact: PlanningArtifactNameInfo): string | null {
+  return prdArtifact.kind === 'prd' && prdArtifact.timestamp
+    ? `test-spec-${prdArtifact.timestamp}-${prdArtifact.slug}.md`
+    : null;
 }
 
 function splitTimestampPrefix(rawSlug: string): { slug: string; timestamp?: string } {
@@ -92,6 +108,37 @@ export function comparePlanningArtifactPaths(left: string, right: string): numbe
     return -1;
   }
   return left.localeCompare(right);
+}
+
+export function selectMatchingTestSpecsForPrd(
+  prdPath: string | null,
+  testSpecPaths: readonly string[],
+): PlanningArtifactTestSpecSelection {
+  if (!prdPath) {
+    return {
+      paths: [],
+      requiredTimestampedFileName: null,
+    };
+  }
+
+  const prdArtifact = parsePlanningArtifactFileName(prdPath);
+  if (prdArtifact?.kind !== 'prd') {
+    return {
+      paths: [],
+      requiredTimestampedFileName: null,
+    };
+  }
+
+  const requiredTimestampedFileName = requiredTimestampedTestSpecFileName(prdArtifact);
+  const matchingTestSpecPaths = (requiredTimestampedFileName
+    ? testSpecPaths.filter((path) => basename(path) === requiredTimestampedFileName)
+    : testSpecPaths.filter((path) => legacyTestSpecSlug(path) === prdArtifact.slug))
+    .sort(comparePlanningArtifactPaths);
+
+  return {
+    paths: matchingTestSpecPaths,
+    requiredTimestampedFileName,
+  };
 }
 
 export function selectLatestPlanningArtifactPath(paths: readonly string[]): string | null {

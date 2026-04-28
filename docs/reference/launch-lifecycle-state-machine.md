@@ -97,7 +97,7 @@ Repository artifact domains:
 
 ```text
 PRDs(cwd)               ::= ordered canonical discovered .omx/plans/prd-<timestamp>-<slug>.md and legacy .omx/plans/prd-<slug>.md
-TestSpecs(cwd)          ::= ordered canonical discovered .omx/plans/test-spec-<timestamp>-<slug>.md and legacy .omx/plans/test-spec-<slug>.md
+TestSpecs(cwd)          ::= ordered discovered canonical .omx/plans/test-spec-<timestamp>-<slug>.md and legacy-compatible .omx/plans/test-?spec-<slug>.md
 DeepInterviewSpecs(cwd) ::= ordered canonical discovered .omx/specs/deep-interview-<timestamp>-<slug>.md and legacy .omx/specs/deep-interview-<slug>.md
 Packs(cwd)              ::= ordered canonical discovered .omx/context/context-<timestamp>-<slug>.json
 
@@ -106,9 +106,12 @@ LatestPRD(cwd) ::= last(PRDs(cwd)) when |PRDs(cwd)| > 0 else ⊥
 
 Timestamped PRD/test-spec names use the same timestamp token shape as context
 packs, but their timestamps are artifact identity/order metadata, not update
-timestamps. PRD/test-spec matching remains slug-based for compatibility, except
-that an exact timestamped `test-spec-<timestamp>-<slug>.md` is preferred when
-the selected PRD is `prd-<timestamp>-<slug>.md`.
+timestamps. Legacy PRD/test-spec matching remains raw-slug-based for
+compatibility, so a non-timestamped `prd-<slug>.md` may match both
+`test-spec-<slug>.md` and deprecated `testspec-<slug>.md` when present. When
+the selected PRD is `prd-<timestamp>-<slug>.md`, baseline selection only
+accepts the exact canonical `test-spec-<timestamp>-<slug>.md`; legacy slug-only
+files and timestamped `testspec-*` aliases do not satisfy the baseline.
 Deep-interview spec matching is slug-based after stripping an optional leading
 timestamp, with timestamped specs naturally ordered after legacy specs.
 

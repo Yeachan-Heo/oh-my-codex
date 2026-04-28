@@ -282,6 +282,65 @@ describe('planning artifacts', () => {
     ]);
   });
 
+  it('keeps legacy test-spec compatibility aliases without matching timestamped variants', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-alpha.md'),
+      '# Alpha\n\nLaunch via omx ralph "Execute alpha"\n',
+    );
+    await writeFile(join(plansDir, 'test-spec-alpha.md'), '# Alpha Test Spec\n');
+    await writeFile(join(plansDir, 'testspec-alpha.md'), '# Alpha Compatibility Test Spec\n');
+    await writeFile(join(plansDir, 'test-spec-20260427T153100Z-alpha.md'), '# Alpha Timestamped Test Spec\n');
+    await writeFile(join(plansDir, 'testspec-20260427T153100Z-alpha.md'), '# Alpha Timestamped Compatibility Test Spec\n');
+
+    const selection = readLatestPlanningArtifacts(tempDir);
+    assert.equal(selection.prdPath, join(plansDir, 'prd-alpha.md'));
+    assert.deepEqual(selection.testSpecPaths, [
+      join(plansDir, 'test-spec-alpha.md'),
+      join(plansDir, 'testspec-alpha.md'),
+    ]);
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
+    assert.ok(hint);
+    assert.deepEqual(hint?.testSpecPaths, [
+      join(plansDir, 'test-spec-alpha.md'),
+      join(plansDir, 'testspec-alpha.md'),
+    ]);
+  });
+
+  it('treats the latest timestamped PRD as missing-baseline when only legacy slug test specs exist', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-20260427T153100Z-alpha.md'),
+      '# Alpha\n\nLaunch via omx ralph "Execute alpha"\n',
+    );
+    await writeFile(join(plansDir, 'test-spec-alpha.md'), '# Alpha Legacy Test Spec\n');
+    await writeFile(join(plansDir, 'testspec-20260427T153100Z-alpha.md'), '# Alpha Invalid Timestamped Compatibility Test Spec\n');
+
+    const selection = readLatestPlanningArtifacts(tempDir);
+    assert.equal(selection.prdPath, join(plansDir, 'prd-20260427T153100Z-alpha.md'));
+    assert.deepEqual(selection.testSpecPaths, []);
+    assert.equal(selection.contextPackStatus, 'missing-baseline');
+    assert.ok(selection.contextPackIssues.includes('Approved plan is missing a matching test spec.'));
+    assert.ok(selection.contextPackIssues.includes(
+      'Approved timestamped plan requires test spec `test-spec-20260427T153100Z-alpha.md`.',
+    ));
+
+    const artifacts = readPlanningArtifacts(tempDir);
+    assert.equal(isPlanningComplete(artifacts), false);
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
+    assert.ok(hint);
+    assert.equal(hint?.task, 'Execute alpha');
+    assert.equal(hint?.contextPackStatus, 'missing-baseline');
+    assert.deepEqual(hint?.testSpecPaths, []);
+    assert.ok(hint?.contextPackIssues.includes(
+      'Approved timestamped plan requires test spec `test-spec-20260427T153100Z-alpha.md`.',
+    ));
+  });
+
   it('uses compatibility fallback when the approved plan declares context packs but required roles are missing', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     const existingContextPacks = await writeContextPacks('issue-902', ['scope']);
@@ -1985,6 +2044,30 @@ describe('planning artifacts', () => {
     assert.equal(result.dagState, 'valid');
     assert.equal(result.planSlug, 'alpha');
     assert.equal(result.dag?.plan_slug, 'alpha');
+  });
+
+  it('does not load a Team DAG sidecar for a timestamped PRD when the same-timestamp test spec is missing', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-20260427T153100Z-alpha.md'), '# Alpha\n');
+    await writeFile(join(plansDir, 'test-spec-alpha.md'), '# Alpha Legacy Test\n');
+    await writeFile(join(plansDir, 'team-dag-alpha.json'), JSON.stringify({
+      schema_version: 1,
+      plan_slug: 'alpha',
+      source_prd: 'prd-20260427T153100Z-alpha.md',
+      nodes: [{ id: 'impl', subject: 'Implement alpha', description: 'Implement timestamped alpha DAG' }],
+    }));
+
+    const artifact = readTeamDagArtifactResolution(tempDir);
+    assert.equal(artifact.source, 'none');
+    assert.equal(artifact.prdPath, join(plansDir, 'prd-20260427T153100Z-alpha.md'));
+    assert.equal(artifact.planSlug, 'alpha');
+    assert.deepEqual(artifact.warnings, ['missing_matching_test_spec']);
+
+    const result = readTeamDagHandoffForLatestPlan(tempDir);
+    assert.equal(result.source, 'none');
+    assert.equal(result.planSlug, 'alpha');
+    assert.equal(result.error, 'missing_matching_test_spec');
   });
 
   it('does not overmatch sidecars for a different slug prefix', async () => {

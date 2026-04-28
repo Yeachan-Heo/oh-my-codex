@@ -7,6 +7,7 @@ import {
   comparePlanningArtifactPaths,
   parsePlanningArtifactFileName,
   planningArtifactSlug,
+  selectMatchingTestSpecsForPrd,
 } from './artifact-names.js';
 import { advanceMarkdownFenceState, isIndentedMarkdownCodeLine, type MarkdownFenceState } from './markdown-structure.js';
 import { isCanonicalContextPackPath, normalizePlanningRepoRelativePath } from './path-utils.js';
@@ -602,15 +603,7 @@ function selectPlanningArtifactFileNames(
     return null;
   }
 
-  const prdArtifact = parsePlanningArtifactFileName(prdFileName);
-  const exactTimestampedTestSpecFileName = prdArtifact?.timestamp
-    ? `test-spec-${prdArtifact.timestamp}-${slug}.md`
-    : null;
-  const testSpecFileNames = exactTimestampedTestSpecFileName && planFileNames.includes(exactTimestampedTestSpecFileName)
-    ? [exactTimestampedTestSpecFileName]
-    : planFileNames
-      .filter((fileName) => planningArtifactSlug(fileName, 'test-spec') === slug)
-      .sort(comparePlanningArtifactPaths);
+  const testSpecFileNames = selectMatchingTestSpecsForPrd(prdFileName, planFileNames).paths;
   if (testSpecFileNames.length === 0) {
     return null;
   }

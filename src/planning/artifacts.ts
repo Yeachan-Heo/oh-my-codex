@@ -26,6 +26,7 @@ import {
   comparePlanningArtifactPaths,
   parsePlanningArtifactFileName,
   planningArtifactSlug,
+  selectMatchingTestSpecsForPrd,
   selectLatestPlanningArtifactPath,
 } from './artifact-names.js';
 import { omxPlansDir } from '../utils/paths.js';
@@ -207,7 +208,8 @@ function selectPlanningArtifactsForPrdPath(
   const slug = canonicalPrdPath
     ? planningArtifactSlug(canonicalPrdPath, 'prd')
     : null;
-  const testSpecPaths = selectTestSpecPathsForPrd(artifacts.testSpecPaths, canonicalPrdPath, slug);
+  const testSpecSelection = selectMatchingTestSpecsForPrd(canonicalPrdPath, artifacts.testSpecPaths);
+  const testSpecPaths = testSpecSelection.paths;
   const deepInterviewSpecPaths = selectDeepInterviewSpecPathsForSlug(artifacts.deepInterviewSpecPaths, slug);
   const contextPackResolution = readContextPackResolution(
     artifacts,
@@ -215,8 +217,12 @@ function selectPlanningArtifactsForPrdPath(
     slug,
   );
   const missingBaseline = !canonicalPrdPath || !existsSync(canonicalPrdPath) || testSpecPaths.length === 0;
+  const timestampedTestSpecRequirement = describeTimestampedTestSpecRequirement(testSpecSelection);
   const baselineIssues = testSpecPaths.length === 0 && resolvedPrdPath
-    ? ['Approved plan is missing a matching test spec.']
+    ? [
+      'Approved plan is missing a matching test spec.',
+      ...(timestampedTestSpecRequirement ? [timestampedTestSpecRequirement] : []),
+    ]
     : [];
 
   return {
@@ -324,21 +330,13 @@ function decodeQuotedValue(raw: string): string | null {
   }
 }
 
-function selectTestSpecPathsForPrd(
-  testSpecPaths: readonly string[],
-  prdPath: string | null,
-  slug: string | null,
-): string[] {
-  if (!prdPath || !slug) return [];
-  const prdArtifact = parsePlanningArtifactFileName(prdPath);
-  if (prdArtifact?.kind === 'prd' && prdArtifact.timestamp) {
-    const exactFileName = `test-spec-${prdArtifact.timestamp}-${slug}.md`;
-    const exactPath = testSpecPaths.find((path) => basename(path) === exactFileName);
-    if (exactPath) return [exactPath];
+function describeTimestampedTestSpecRequirement(
+  selection: ReturnType<typeof selectMatchingTestSpecsForPrd>,
+): string | null {
+  if (!selection.requiredTimestampedFileName) {
+    return null;
   }
-  return testSpecPaths
-    .filter((path) => planningArtifactSlug(path, 'test-spec') === slug)
-    .sort(comparePlanningArtifactPaths);
+  return `Approved timestamped plan requires test spec \`${selection.requiredTimestampedFileName}\`.`;
 }
 
 function selectDeepInterviewSpecPathsForSlug(
@@ -796,6 +794,12 @@ export function readContextPackHandoffStatus(repoRoot: string, packPath: string)
     issues.push(slug ? `Approved PRD is missing for slug ${slug}.` : 'Could not infer a context-pack slug for approved PRD lookup.');
   } else if (baselineState === 'missing-test-spec') {
     issues.push(`Approved plan is missing a matching test spec for slug ${slug}.`);
+    const timestampedTestSpecRequirement = describeTimestampedTestSpecRequirement(
+      selectMatchingTestSpecsForPrd(selection.canonicalPrdPath, artifacts.testSpecPaths),
+    );
+    if (timestampedTestSpecRequirement) {
+      issues.push(timestampedTestSpecRequirement);
+    }
   }
 
   let outcomeState: ContextPackOutcomeState = 'absent';

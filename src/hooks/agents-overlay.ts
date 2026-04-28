@@ -200,7 +200,7 @@ async function readRalphPlanningArtifacts(
   const blocker = !hasPrd
     ? "Missing: `prd-*.md`"
     : !hasMatchingTestSpec
-      ? "Missing: `test-spec-*.md` matching the latest PRD slug"
+      ? "Missing: `test-spec-*.md` matching the latest approved PRD baseline"
       : selection.contextPackStatus === "incomplete"
         ? `Context-pack blocker: ${(selection.contextPackIssues.length > 0 ? selection.contextPackIssues.join(" | ") : `missing required roles ${selection.missingRequiredContextPackRoles.join(", ")}`)}`
         : selection.contextPackStatus === "invalid"

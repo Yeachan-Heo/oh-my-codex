@@ -59,7 +59,7 @@ export function buildAdaptPlanningLink(cwd: string): AdaptPlanningLink {
 
 	const summary =
 		selection.testSpecPaths.length === 0
-			? "PRD detected, but no matching test spec artifact was found for its slug."
+			? "PRD detected, but no matching test spec artifact was found for its approved baseline."
 			: selection.contextPackStatus === "plan-only"
 				? "PRD/test-spec artifacts are present and the plan-only execution baseline remains available because the approved plan does not yet declare context packs."
 				: selection.contextPackStatus === "incomplete"

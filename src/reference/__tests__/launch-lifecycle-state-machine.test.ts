@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { readApprovedExecutionLaunchHint, resolveContextPackHandoffState } from '../../planning/artifacts.js';
 import {
@@ -223,6 +223,19 @@ function artifactName(path: string): { kind: 'prd' | 'test-spec'; slug: string; 
   };
 }
 
+function legacyTestSpecSlugModel(path: string): string | null {
+  const match = basename(path).match(/^test-?spec-(?<slug>.+)\.md$/i);
+  return match?.groups?.slug ?? null;
+}
+
+function requiredTimestampedTestSpecFileNameModel(
+  prdArtifact: { kind: 'prd' | 'test-spec'; slug: string; timestamp?: string } | null,
+): string | null {
+  return prdArtifact?.kind === 'prd' && prdArtifact.timestamp
+    ? `test-spec-${prdArtifact.timestamp}-${prdArtifact.slug}.md`
+    : null;
+}
+
 function comparePlanningArtifactPathModel(left: string, right: string): number {
   const leftArtifact = artifactName(left);
   const rightArtifact = artifactName(right);
@@ -241,18 +254,14 @@ function latestPlanningSelectionModel(
   const prd = [...prds].sort(comparePlanningArtifactPathModel).at(-1) ?? null;
   const prdArtifact = prd ? artifactName(prd) : null;
   const slug = prdArtifact?.kind === 'prd' ? prdArtifact.slug : null;
-  const exactTestSpec = slug && prdArtifact?.timestamp
-    ? testSpecs.find((path) => (path.split('/').pop() ?? path) === `test-spec-${prdArtifact.timestamp}-${slug}.md`)
-    : null;
+  const requiredTimestampedTestSpecFileName = requiredTimestampedTestSpecFileNameModel(prdArtifact);
   return {
     prd,
-    testSpecs: exactTestSpec
-      ? [exactTestSpec]
-      : slug
-        ? testSpecs.filter((path) => {
-          const artifact = artifactName(path);
-          return artifact?.kind === 'test-spec' && artifact.slug === slug;
-        })
+    testSpecs: slug
+      ? (requiredTimestampedTestSpecFileName
+        ? testSpecs.filter((path) => basename(path) === requiredTimestampedTestSpecFileName)
+        : testSpecs.filter((path) => legacyTestSpecSlugModel(path) === slug))
+        .sort(comparePlanningArtifactPathModel)
       : [],
   };
 }
@@ -947,6 +956,47 @@ describe('launch-lifecycle-state-machine reference', () => {
       {
         prd: '/repo/.omx/plans/prd-20260427T153100Z-alpha.md',
         testSpecs: ['/repo/.omx/plans/test-spec-20260427T153100Z-alpha.md'],
+      },
+    );
+
+    assert.deepEqual(
+      latestPlanningSelectionModel(
+        ['/repo/.omx/plans/prd-alpha.md'],
+        [
+          '/repo/.omx/plans/test-spec-alpha.md',
+          '/repo/.omx/plans/testspec-alpha.md',
+          '/repo/.omx/plans/test-spec-20260427T153100Z-alpha.md',
+          '/repo/.omx/plans/testspec-20260427T153100Z-alpha.md',
+        ],
+      ),
+      {
+        prd: '/repo/.omx/plans/prd-alpha.md',
+        testSpecs: [
+          '/repo/.omx/plans/test-spec-alpha.md',
+          '/repo/.omx/plans/testspec-alpha.md',
+        ],
+      },
+    );
+
+    assert.deepEqual(
+      latestPlanningSelectionModel(
+        ['/repo/.omx/plans/prd-20260427T153100Z-alpha.md'],
+        ['/repo/.omx/plans/testspec-20260427T153100Z-alpha.md'],
+      ),
+      {
+        prd: '/repo/.omx/plans/prd-20260427T153100Z-alpha.md',
+        testSpecs: [],
+      },
+    );
+
+    assert.deepEqual(
+      latestPlanningSelectionModel(
+        ['/repo/.omx/plans/prd-20260427T153100Z-alpha.md'],
+        ['/repo/.omx/plans/test-spec-alpha.md'],
+      ),
+      {
+        prd: '/repo/.omx/plans/prd-20260427T153100Z-alpha.md',
+        testSpecs: [],
       },
     );
 

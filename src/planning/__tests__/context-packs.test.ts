@@ -203,6 +203,8 @@ describe('context-packs', () => {
     await writeFile(join(tempDir, '.omx', 'plans', 'prd-issue-basis.md'), '# PRD\n');
     await writeFile(join(tempDir, '.omx', 'plans', 'testspec-issue-basis.md'), '# Test Spec B\n');
     await writeFile(join(tempDir, '.omx', 'plans', 'test-spec-issue-basis.md'), '# Test Spec A\n');
+    await writeFile(join(tempDir, '.omx', 'plans', 'test-spec-20260427T153000Z-issue-basis.md'), '# Timestamped Test Spec A\n');
+    await writeFile(join(tempDir, '.omx', 'plans', 'testspec-20260427T153000Z-issue-basis.md'), '# Timestamped Test Spec B\n');
 
     const basis = buildContextPackBasis(tempDir, 'issue-basis');
     assert.ok(basis);
@@ -233,7 +235,18 @@ describe('context-packs', () => {
     );
   });
 
-  it('falls back to slug-matched test specs when a timestamped PRD has no exact test-spec pair', async () => {
+  it('rejects same-timestamp testspec compatibility aliases for timestamped PRDs', async () => {
+    await mkdir(join(tempDir, '.omx', 'plans'), { recursive: true });
+    await writeFile(join(tempDir, '.omx', 'plans', 'prd-20260427T153000Z-issue-timestamped-alias.md'), '# PRD\n');
+    await writeFile(join(tempDir, '.omx', 'plans', 'testspec-20260427T153000Z-issue-timestamped-alias.md'), '# Test Spec Alias\n');
+    await writeFile(join(tempDir, '.omx', 'plans', 'test-spec-issue-timestamped-alias.md'), '# Legacy Test Spec\n');
+
+    const basis = buildContextPackBasis(tempDir, 'issue-timestamped-alias');
+
+    assert.equal(basis, null);
+  });
+
+  it('returns null when a timestamped PRD has no exact same-timestamp test-spec pair', async () => {
     await mkdir(join(tempDir, '.omx', 'plans'), { recursive: true });
     await writeFile(join(tempDir, '.omx', 'plans', 'prd-20260427T153000Z-issue-fallback.md'), '# PRD\n');
     await writeFile(join(tempDir, '.omx', 'plans', 'test-spec-issue-fallback.md'), '# Test Spec A\n');
@@ -241,15 +254,7 @@ describe('context-packs', () => {
 
     const basis = buildContextPackBasis(tempDir, 'issue-fallback');
 
-    assert.ok(basis);
-    assert.equal(basis?.prd.path, '.omx/plans/prd-20260427T153000Z-issue-fallback.md');
-    assert.deepEqual(
-      basis?.testSpecs.map((entry) => entry.path),
-      [
-        '.omx/plans/test-spec-issue-fallback.md',
-        '.omx/plans/testspec-issue-fallback.md',
-      ],
-    );
+    assert.equal(basis, null);
   });
 
   it('preserves mixed-case approved artifact names in fresh basis validation', async () => {
@@ -376,6 +381,75 @@ describe('context-packs', () => {
     assert.equal(status.basisState, 'fresh');
     assert.equal(status.prdPath, join(tempDir, '.omx', 'plans', `prd-20260427T153000Z-${slug}.md`));
     assert.deepEqual(status.testSpecPaths, [join(tempDir, '.omx', 'plans', `test-spec-20260427T153000Z-${slug}.md`)]);
+  });
+
+  it('treats timestamped PRDs without same-timestamp test specs as missing baseline', async () => {
+    const slug = 'issue-timestamped-missing-baseline';
+    const packPath = packAbsolutePath(slug);
+    await mkdir(join(tempDir, '.omx', 'plans'), { recursive: true });
+    await writeFile(
+      join(tempDir, '.omx', 'plans', `prd-20260427T153000Z-${slug}.md`),
+      [
+        '# PRD',
+        '',
+        'Approved context basis.',
+        '',
+        '## Context Pack Outcome',
+        `- pack: created \`${packRelativePath(slug)}\``,
+        '',
+      ].join('\n'),
+    );
+    await writeFile(join(tempDir, '.omx', 'plans', `test-spec-${slug}.md`), '# Legacy Test Spec\n');
+    await writeRepoFile('docs/scope.md', '# Scope\n\nStay inside the approved slice.\n');
+    await writeRepoFile('docs/runtime.md', '# Runtime\n\nBuild the approved slice.\n');
+    await writeRepoFile('docs/verify.md', '# Verify\n\nCheck the approved slice.\n');
+
+    writeContextPackDocument(packPath, {
+      schema: CONTEXT_PACK_SCHEMA,
+      slug,
+      entries: [
+        {
+          label: 'scope',
+          path: 'docs/scope.md',
+          roles: ['scope'],
+          tags: [],
+          relationPath: [
+            { tag: 'plan', target: slug },
+            { tag: 'bounds', target: 'docs/scope.md' },
+          ],
+        },
+        {
+          label: 'runtime',
+          path: 'docs/runtime.md',
+          roles: ['build'],
+          tags: [],
+          relationPath: [
+            { tag: 'plan', target: slug },
+            { tag: 'implements', target: 'docs/runtime.md' },
+          ],
+        },
+        {
+          label: 'verify',
+          path: 'docs/verify.md',
+          roles: ['verify'],
+          tags: [],
+          relationPath: [
+            { tag: 'plan', target: slug },
+            { tag: 'verifies', target: 'docs/verify.md' },
+          ],
+        },
+      ],
+    }, { refreshBasis: true });
+
+    const status = readContextPackHandoffStatus(tempDir, packPath);
+
+    assert.equal(status.handoffState, 'missing-baseline');
+    assert.equal(status.baselineState, 'missing-test-spec');
+    assert.equal(status.prdPath, join(tempDir, '.omx', 'plans', `prd-20260427T153000Z-${slug}.md`));
+    assert.deepEqual(status.testSpecPaths, []);
+    assert.ok(status.issues.includes(
+      `Approved timestamped plan requires test spec \`test-spec-20260427T153000Z-${slug}.md\`.`,
+    ));
   });
 
   it('returns null when reading invalid JSON or structurally invalid pack manifests', async () => {

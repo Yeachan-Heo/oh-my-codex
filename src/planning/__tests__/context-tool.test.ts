@@ -456,6 +456,27 @@ describe('context-tool', () => {
     });
   });
 
+  it('sync rejects timestamped PRDs that do not have the same-timestamp test spec baseline', async () => {
+    const slug = 'issue-950-timestamped';
+    await mkdir(join(tempDir, 'docs'), { recursive: true });
+    await writeFile(join(tempDir, 'docs', 'quickstart.md'), '# Quickstart\n\nStart here.\n');
+    await writeFile(join(tempDir, 'docs', 'boundary.md'), '# Boundary\n\nStay inside the approved slice.\n');
+    await writeFile(join(tempDir, 'docs', 'acceptance.md'), '# Acceptance\n\nVerify the approved slice.\n');
+
+    await contextToolMain(['add', packRelativePath(slug), 'docs/quickstart.md'], tempDir);
+    await contextToolMain(['add', packRelativePath(slug), 'docs/boundary.md', '--role', 'scope'], tempDir);
+    await contextToolMain(['add', packRelativePath(slug), 'docs/acceptance.md', '--role', 'verify'], tempDir);
+
+    await mkdir(join(tempDir, '.omx', 'plans'), { recursive: true });
+    await writeFile(join(tempDir, '.omx', 'plans', `prd-20260427T153100Z-${slug}.md`), '# PRD\n\nApproved context basis.\n');
+    await writeFile(join(tempDir, '.omx', 'plans', `test-spec-${slug}.md`), '# Legacy Test Spec\n\nApproved test basis.\n');
+
+    await assert.rejects(
+      () => contextToolMain(['sync', packRelativePath(slug)], tempDir),
+      /Could not resolve approved PRD\/test-spec basis for slug issue-950-timestamped\./,
+    );
+  });
+
   it('sync rejects packs that are still missing required handoff roles', async () => {
     await mkdir(join(tempDir, 'docs'), { recursive: true });
     await mkdir(join(tempDir, '.omx', 'plans'), { recursive: true });
