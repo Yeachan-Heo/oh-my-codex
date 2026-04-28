@@ -79,6 +79,7 @@ describe('omx question CLI', () => {
     let stderr = '';
     child.stdout.on('data', (chunk) => { stdout += String(chunk); });
     child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    const closePromise = new Promise<number | null>((resolve) => child.on('close', resolve));
 
     const questionsDir = join(cwd, '.omx', 'state', 'sessions', 'sess-q', 'questions');
     let recordFile = '';
@@ -111,7 +112,7 @@ describe('omx question CLI', () => {
       other_text: 'free text answer',
     });
 
-    const exitCode = await new Promise<number | null>((resolve) => child.on('close', resolve));
+    const exitCode = await closePromise;
     assert.equal(exitCode, 0, stderr || stdout);
     const payload = JSON.parse(stdout);
     assert.equal(payload.ok, true);
@@ -480,6 +481,7 @@ esac
     let stderr = '';
     child.stdout.on('data', (chunk) => { stdout += String(chunk); });
     child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    const closePromise = new Promise<number | null>((resolve) => child.on('close', resolve));
 
     const questionsDir = join(cwd, '.omx', 'state', 'sessions', 'sess-q', 'questions');
     let recordFile = '';
@@ -510,7 +512,7 @@ esac
       selected_values: ['a'],
     });
 
-    const exitCode = await new Promise<number | null>((resolve) => child.on('close', resolve));
+    const exitCode = await closePromise;
     assert.equal(exitCode, 0, stderr || stdout);
     const payload = JSON.parse(stdout);
     assert.equal(payload.ok, true);
