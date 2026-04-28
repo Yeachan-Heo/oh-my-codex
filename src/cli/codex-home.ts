@@ -8,16 +8,24 @@ import {
 export const readPersistedSetupPreferences = readPersistedSetupPreferencesSync;
 export const readPersistedSetupScope = readPersistedSetupScopeSync;
 
-export function resolveCodexHomeForLaunch(
+export function resolveProjectLocalCodexHomeForLaunch(
 	cwd: string,
 	env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-	if (env.CODEX_HOME && env.CODEX_HOME.trim() !== "") return env.CODEX_HOME;
+	if (env.CODEX_HOME && env.CODEX_HOME.trim() !== "") return undefined;
 	const persistedScope = readPersistedSetupScope(cwd);
 	if (persistedScope === "project") {
 		return join(cwd, ".codex");
 	}
 	return undefined;
+}
+
+export function resolveCodexHomeForLaunch(
+	cwd: string,
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	if (env.CODEX_HOME && env.CODEX_HOME.trim() !== "") return env.CODEX_HOME;
+	return resolveProjectLocalCodexHomeForLaunch(cwd, env);
 }
 
 export function resolveCodexConfigPathForLaunch(

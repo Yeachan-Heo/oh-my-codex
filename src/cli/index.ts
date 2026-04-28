@@ -54,6 +54,7 @@ import {
 import {
   resolveCodexConfigPathForLaunch,
   resolveCodexHomeForLaunch,
+  resolveProjectLocalCodexHomeForLaunch,
 } from "./codex-home.js";
 
 export {
@@ -61,6 +62,7 @@ export {
   readPersistedSetupScope,
   resolveCodexConfigPathForLaunch,
   resolveCodexHomeForLaunch,
+  resolveProjectLocalCodexHomeForLaunch,
 } from "./codex-home.js";
 import { SKILL_ACTIVE_STATE_MODE, syncCanonicalSkillStateForMode } from "../state/skill-active.js";
 import { isTrackedWorkflowMode } from "../state/workflow-transition.js";
@@ -97,7 +99,7 @@ import {
 } from "../team/tmux-session.js";
 import { getPackageRoot } from "../utils/package.js";
 import { codexConfigPath, rememberOmxLaunchContext, resolveOmxEntryPath } from "../utils/paths.js";
-import { repairConfigIfNeeded } from "../config/generator.js";
+import { cleanCodexModelAvailabilityNuxIfNeeded, repairConfigIfNeeded } from "../config/generator.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../hud/constants.js";
 import {
   createHudWatchPane as createSharedHudWatchPane,
@@ -1012,6 +1014,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
     notifyTempResult.passthroughArgs,
   );
   const codexHomeOverride = resolveCodexHomeForLaunch(launchCwd, process.env);
+  const projectLocalCodexHomeForCleanup = resolveProjectLocalCodexHomeForLaunch(launchCwd, process.env);
   const { launchPolicy, effectiveExplicitLaunchPolicy } =
     resolveTmuxAwareLaunchPolicy(explicitLaunchPolicy, isNativeWindows());
   const enableNotifyFallbackAuthority = launchPolicy === "direct";
@@ -1106,7 +1109,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
     );
   } finally {
     // ── Phase 3: postLaunch ─────────────────────────────────────────────
-    await postLaunch(cwd, sessionId, codexHomeOverride, enableNotifyFallbackAuthority);
+    await postLaunch(cwd, sessionId, codexHomeOverride, enableNotifyFallbackAuthority, projectLocalCodexHomeForCleanup);
   }
 }
 
@@ -1118,6 +1121,7 @@ export async function execWithOverlay(args: string[]): Promise<void> {
     process.env,
   );
   const codexHomeOverride = resolveCodexHomeForLaunch(launchCwd, process.env);
+  const projectLocalCodexHomeForCleanup = resolveProjectLocalCodexHomeForLaunch(launchCwd, process.env);
   const normalizedArgs = normalizeCodexLaunchArgs(
     notifyTempResult.passthroughArgs,
   );
@@ -1204,7 +1208,7 @@ export async function execWithOverlay(args: string[]): Promise<void> {
       : codexEnvBase;
     runCodexBlocking(cwd, codexArgs, codexEnv);
   } finally {
-    await postLaunch(cwd, sessionId, codexHomeOverride, true);
+    await postLaunch(cwd, sessionId, codexHomeOverride, true, projectLocalCodexHomeForCleanup);
   }
 }
 
@@ -2999,6 +3003,7 @@ async function postLaunch(
   sessionId: string,
   codexHomeOverride?: string,
   enableNotifyFallbackAuthority: boolean = false,
+  projectLocalCodexHomeForCleanup?: string,
 ): Promise<void> {
   // Capture session start time before cleanup (writeSessionEnd deletes session.json)
   let sessionStartedAt: string | undefined;
@@ -3043,6 +3048,19 @@ async function postLaunch(
   } catch (err) {
     logCliOperationFailure(err);
     // Non-fatal
+  }
+
+  // 0.5. Remove Codex transient TUI NUX counters from project-local config only.
+  try {
+    if (projectLocalCodexHomeForCleanup) {
+      await cleanCodexModelAvailabilityNuxIfNeeded(
+        join(projectLocalCodexHomeForCleanup, "config.toml"),
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[omx] postLaunch: project config transient NUX cleanup failed: ${err instanceof Error ? err.message : err}`,
+    );
   }
 
   // 1. Remove session-scoped model instructions file
