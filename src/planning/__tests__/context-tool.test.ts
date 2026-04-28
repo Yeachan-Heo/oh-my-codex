@@ -121,6 +121,7 @@ describe('context-tool', () => {
       assert.match(stdout, /node dist\/planning\/context-tool\.js add/);
       assert.match(stdout, /node dist\/planning\/context-tool\.js status/);
       assert.match(stdout, /node dist\/planning\/context-tool\.js view/);
+      assert.match(stdout, /--path <repo\/path>/);
     }
   });
 
@@ -191,6 +192,7 @@ describe('context-tool', () => {
       { args: ['view'], pattern: /view requires <pack\.json>\./ },
       { args: ['query', packRelativePath(), '--role'], pattern: /--role requires a value\./ },
       { args: ['view', packRelativePath(), '--tag'], pattern: /--tag requires a value\./ },
+      { args: ['query', packRelativePath(), '--path'], pattern: /--path requires a value\./ },
       { args: ['query', packRelativePath(), '--label'], pattern: /--label requires a value\./ },
       { args: ['query', packRelativePath(), '--oops'], pattern: /Unknown query option: --oops/ },
       { args: ['view', packRelativePath(), '--oops'], pattern: /Unknown view option: --oops/ },
@@ -268,7 +270,7 @@ describe('context-tool', () => {
     assert.match(index, /when a role\/tag view helps answer a concrete implementation question/i);
     assert.match(index, /query `--role build`/);
     assert.match(index, /build \(1\): quickstart \| query=--role build/);
-    assert.match(index, /quickstart: docs\/quickstart\.md \| roles=build/);
+    assert.match(index, /docs\/quickstart\.md \| label=quickstart \| roles=build/);
   });
 
   it('stores canonical repo-relative paths and inferred relation targets', async () => {
@@ -618,7 +620,75 @@ describe('context-tool', () => {
     assert.match(index, /direct-file-entries: 1/);
     assert.match(index, /query `--tag <tag>` first to narrow the ref set/i);
     assert.match(index, /runtime \(1\): runtime \| roles=build \| query=--tag runtime/);
+    assert.match(index, /docs\/runtime\.md \| label=runtime \| roles=build/);
     assert.match(index, /## View Notes/);
+  });
+
+  it('filters query and view results by exact normalized source paths', async () => {
+    await mkdir(join(tempDir, 'docs'), { recursive: true });
+    await writeFile(join(tempDir, 'docs', 'runtime.md'), '# Runtime\n\nStart here.\n');
+    await writeFile(join(tempDir, 'docs', 'quickstart.md'), '# Quickstart\n\nStart here.\n');
+    await writeFile(join(tempDir, 'docs', 'acceptance.md'), '# Acceptance\n\nVerify this.\n');
+
+    await contextToolMain(['add', packRelativePath('issue-path-filter'), 'docs/runtime.md', '--tag', 'runtime'], tempDir);
+    await contextToolMain(['add', packRelativePath('issue-path-filter'), 'docs/quickstart.md', '--tag', 'runtime'], tempDir);
+    await contextToolMain(['add', packRelativePath('issue-path-filter'), 'docs/acceptance.md', '--role', 'verify'], tempDir);
+
+    const queryStdout = await captureStdout(() =>
+      contextToolMain([
+        'query',
+        packRelativePath('issue-path-filter'),
+        '--path', './docs/runtime.md',
+        '--path', 'docs/acceptance.md',
+        '--json',
+      ], tempDir),
+    );
+    const queryPayload = JSON.parse(queryStdout) as {
+      paths: string[];
+      entries: Array<{ label: string; path: string }>;
+    };
+    assert.deepEqual(queryPayload.paths, ['docs/runtime.md', 'docs/acceptance.md']);
+    assert.deepEqual(
+      queryPayload.entries.map((entry) => [entry.label, entry.path]),
+      [
+        ['runtime', 'docs/runtime.md'],
+        ['acceptance', 'docs/acceptance.md'],
+      ],
+    );
+
+    const narrowedStdout = await captureStdout(() =>
+      contextToolMain([
+        'query',
+        packRelativePath('issue-path-filter'),
+        '--path', 'docs/runtime.md',
+        '--tag', 'runtime',
+        '--json',
+      ], tempDir),
+    );
+    const narrowedPayload = JSON.parse(narrowedStdout) as {
+      entries: Array<{ label: string; path: string }>;
+    };
+    assert.deepEqual(
+      narrowedPayload.entries.map((entry) => [entry.label, entry.path]),
+      [['runtime', 'docs/runtime.md']],
+    );
+
+    const viewStdout = await captureStdout(() =>
+      contextToolMain([
+        'view',
+        packRelativePath('issue-path-filter'),
+        '--path', 'docs/quickstart.md',
+        '--json',
+      ], tempDir),
+    );
+    const viewPayload = JSON.parse(viewStdout) as {
+      paths: string[];
+      refs: Array<{ label: string; sourcePath: string }>;
+    };
+    assert.deepEqual(viewPayload.paths, ['docs/quickstart.md']);
+    assert.equal(viewPayload.refs.length, 1);
+    assert.equal(viewPayload.refs[0]?.label, 'quickstart');
+    assert.equal(viewPayload.refs[0]?.sourcePath, join(tempDir, 'docs', 'quickstart.md'));
   });
 
   it('returns empty query and view results for unmatched filters without materializing excerpts', async () => {
@@ -1314,6 +1384,48 @@ describe('context-tool', () => {
     assert.equal(viewPayload.refs.length, 1);
     assert.equal(viewPayload.refs[0]?.label, 'runtime-contract');
     assert.equal(viewPayload.refs[0]?.delivery, 'file');
+  });
+
+  it('normalizes Unicode label filters the same way as add', async () => {
+    await mkdir(join(tempDir, 'docs'), { recursive: true });
+    await writeFile(join(tempDir, 'docs', 'café-runtime.md'), '# Runtime\n\nStart here.\n');
+
+    await contextToolMain([
+      'add',
+      packRelativePath('issue-unicode-filters'),
+      'docs/café-runtime.md',
+      '--label', 'Café Runtime',
+    ], tempDir);
+
+    const queryStdout = await captureStdout(() =>
+      contextToolMain([
+        'query',
+        packRelativePath('issue-unicode-filters'),
+        '--label', 'Café Runtime',
+        '--json',
+      ], tempDir),
+    );
+    const queryPayload = JSON.parse(queryStdout) as {
+      entries: Array<{ label: string; path: string }>;
+    };
+    assert.equal(queryPayload.entries.length, 1);
+    assert.equal(queryPayload.entries[0]?.label, 'café-runtime');
+    assert.equal(queryPayload.entries[0]?.path, 'docs/café-runtime.md');
+
+    const viewStdout = await captureStdout(() =>
+      contextToolMain([
+        'view',
+        packRelativePath('issue-unicode-filters'),
+        '--label', 'café-runtime',
+        '--json',
+      ], tempDir),
+    );
+    const viewPayload = JSON.parse(viewStdout) as {
+      refs: Array<{ label: string; sourcePath: string }>;
+    };
+    assert.equal(viewPayload.refs.length, 1);
+    assert.equal(viewPayload.refs[0]?.label, 'café-runtime');
+    assert.equal(viewPayload.refs[0]?.sourcePath, join(tempDir, 'docs', 'café-runtime.md'));
   });
 
   it('rejects source paths that escape the repo root', async () => {

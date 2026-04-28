@@ -10,6 +10,8 @@ import {
   formatRelationPath,
   materializeContextPackRefs,
   normalizeContextPackCompactToken,
+  normalizeContextPackLabel,
+  normalizeContextPackSourcePath,
   readContextPackDocument,
   REQUIRED_CONTEXT_PACK_ROLES,
   resolveContextPackRepoRoot,
@@ -28,8 +30,8 @@ Usage:
   node dist/planning/context-tool.js add <pack.json> <repo/path> [--label <label>] [--role <role>]... [--tag <tag>]... [--heading <heading>] [--max-words <n>] [--lines <start:end>] [--relation <tag>:<target>] [--json]
   node dist/planning/context-tool.js sync <pack.json> [--json]
   node dist/planning/context-tool.js status <pack.json> [--json]
-  node dist/planning/context-tool.js query <pack.json> [--role <role>]... [--tag <tag>]... [--label <label>]... [--json]
-  node dist/planning/context-tool.js view <pack.json> [--role <role>]... [--tag <tag>]... [--label <label>]... [--json]
+  node dist/planning/context-tool.js query <pack.json> [--role <role>]... [--path <repo/path>]... [--tag <tag>]... [--label <label>]... [--json]
+  node dist/planning/context-tool.js view <pack.json> [--role <role>]... [--path <repo/path>]... [--tag <tag>]... [--label <label>]... [--json]
 
 Notes:
   The tool is internal to planning/execution workflows. It generates canonical JSON packs and a markdown index sibling.
@@ -55,6 +57,7 @@ interface ParsedAddArgs {
 interface ParsedViewArgs {
   packPath: string;
   roles: ContextPackRole[];
+  paths: string[];
   tags: string[];
   labels: string[];
   json: boolean;
@@ -293,6 +296,7 @@ function parseFilterArgs(command: 'query' | 'view', args: readonly string[]): Pa
 
   const [packPath, ...rest] = args;
   const roles: ContextPackRole[] = [];
+  const paths: string[] = [];
   const tags: string[] = [];
   const labels: string[] = [];
   let json = false;
@@ -316,9 +320,15 @@ function parseFilterArgs(command: 'query' | 'view', args: readonly string[]): Pa
       index += 1;
       continue;
     }
+    if (token === '--path') {
+      if (!next) throw new Error('--path requires a value.');
+      paths.push(normalizeContextPackSourcePath(next, 'Context pack path filters must use repo-relative paths.'));
+      index += 1;
+      continue;
+    }
     if (token === '--label') {
       if (!next) throw new Error('--label requires a value.');
-      labels.push(normalizeContextPackCompactToken(next, 'Context pack label filters must use compact values.'));
+      labels.push(normalizeContextPackLabel(next, 'Context pack label filters must use compact values.'));
       index += 1;
       continue;
     }
@@ -328,6 +338,7 @@ function parseFilterArgs(command: 'query' | 'view', args: readonly string[]): Pa
   return {
     packPath,
     roles,
+    paths,
     tags,
     labels,
     json,
@@ -354,6 +365,7 @@ function buildViewText(params: {
   packPath: string;
   slug: string;
   roles: readonly string[];
+  paths: readonly string[];
   tags: readonly string[];
   labels: readonly string[];
   refs: ReturnType<typeof materializeContextPackRefs>['refs'];
@@ -366,6 +378,9 @@ function buildViewText(params: {
   if (params.roles.length > 0) {
     lines.push(`- roles: ${params.roles.join(', ')}`);
   }
+  if (params.paths.length > 0) {
+    lines.push(`- paths: ${params.paths.join(', ')}`);
+  }
   if (params.tags.length > 0) {
     lines.push(`- tags: ${params.tags.join(', ')}`);
   }
@@ -373,7 +388,7 @@ function buildViewText(params: {
     lines.push(`- labels: ${params.labels.join(', ')}`);
   }
   for (const ref of params.refs) {
-    const details = [`${ref.label}: ${ref.path} [${ref.delivery}]`];
+    const details = [ref.path, `label=${ref.label}`, `[${ref.delivery}]`];
     if (ref.tags.length > 0) {
       details.push(`tags=${ref.tags.join(', ')}`);
     }
@@ -388,6 +403,7 @@ function buildQueryText(params: {
   packPath: string;
   slug: string;
   roles: readonly string[];
+  paths: readonly string[];
   tags: readonly string[];
   labels: readonly string[];
   entries: Array<{
@@ -407,6 +423,9 @@ function buildQueryText(params: {
   if (params.roles.length > 0) {
     lines.push(`- roles: ${params.roles.join(', ')}`);
   }
+  if (params.paths.length > 0) {
+    lines.push(`- paths: ${params.paths.join(', ')}`);
+  }
   if (params.tags.length > 0) {
     lines.push(`- tags: ${params.tags.join(', ')}`);
   }
@@ -414,7 +433,7 @@ function buildQueryText(params: {
     lines.push(`- labels: ${params.labels.join(', ')}`);
   }
   for (const entry of params.entries) {
-    const details = [`${entry.label}: ${entry.path}`, `roles=${entry.roles.join(', ')}`];
+    const details = [entry.path, `label=${entry.label}`, `roles=${entry.roles.join(', ')}`];
     if (entry.tags.length > 0) {
       details.push(`tags=${entry.tags.join(', ')}`);
     }
@@ -601,6 +620,7 @@ async function runView(cwd: string, args: readonly string[]): Promise<void> {
     expectedSlug: document.slug,
     repoRoot,
     ...(parsed.roles.length > 0 ? { roles: parsed.roles } : {}),
+    ...(parsed.paths.length > 0 ? { paths: parsed.paths } : {}),
     ...(parsed.tags.length > 0 ? { tags: parsed.tags } : {}),
     ...(parsed.labels.length > 0 ? { labels: parsed.labels } : {}),
   });
@@ -613,6 +633,7 @@ async function runView(cwd: string, args: readonly string[]): Promise<void> {
       packPath,
       slug: document.slug,
       roles: parsed.roles,
+      paths: parsed.paths,
       tags: parsed.tags,
       labels: parsed.labels,
       refs: resolution.refs,
@@ -624,6 +645,7 @@ async function runView(cwd: string, args: readonly string[]): Promise<void> {
     packPath,
     slug: document.slug,
     roles: parsed.roles,
+    paths: parsed.paths,
     tags: parsed.tags,
     labels: parsed.labels,
     refs: resolution.refs,
@@ -642,6 +664,7 @@ async function runQuery(cwd: string, args: readonly string[]): Promise<void> {
 
   const entries = filterContextPackEntries(document, {
     roles: parsed.roles,
+    paths: parsed.paths,
     labels: parsed.labels,
     tags: parsed.tags,
   });
@@ -651,6 +674,7 @@ async function runQuery(cwd: string, args: readonly string[]): Promise<void> {
       packPath,
       slug: document.slug,
       roles: parsed.roles,
+      paths: parsed.paths,
       tags: parsed.tags,
       labels: parsed.labels,
       entries,
@@ -662,6 +686,7 @@ async function runQuery(cwd: string, args: readonly string[]): Promise<void> {
     packPath,
     slug: document.slug,
     roles: parsed.roles,
+    paths: parsed.paths,
     tags: parsed.tags,
     labels: parsed.labels,
     entries,

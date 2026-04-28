@@ -1175,6 +1175,14 @@ describe('context-packs', () => {
       filterContextPackEntries(document, { roles: ['build', 'verify'], tags: ['api'] }).map((entry) => entry.label),
       ['runtime'],
     );
+    assert.deepEqual(
+      filterContextPackEntries(document, { paths: ['docs/acceptance.md'] }).map((entry) => entry.label),
+      ['acceptance'],
+    );
+    assert.deepEqual(
+      filterContextPackEntries(document, { roles: ['build'], paths: ['docs/acceptance.md'] }).map((entry) => entry.label),
+      [],
+    );
     assert.deepEqual(listContextPackRoles(document), ['build', 'verify']);
     assert.deepEqual(findMissingContextPackRoles(document), ['scope']);
   });
@@ -1302,6 +1310,70 @@ describe('context-packs', () => {
     assert.equal(collidingEntry?.path, 'guides/quickstart.md');
     assert.deepEqual(runtimeEntry?.selector, { type: 'lines', start: 1, end: 3 });
     assert.equal(existsSync(contextPackIndexPath(packAbsolutePath('issue-upsert'))), true);
+  });
+
+  it('infers compact labels for numeric-leading source paths', async () => {
+    await writeRepoFile('docs/123-runtime.md', '# Runtime\n\nStart here.\n');
+
+    const result = upsertContextPackEntries(
+      packAbsolutePath('issue-numeric-label'),
+      [{ path: 'docs/123-runtime.md' }],
+      { repoRoot: tempDir },
+    );
+    assert.deepEqual(result.addedLabels, ['123-runtime']);
+
+    const document = readContextPackDocument(packAbsolutePath('issue-numeric-label'));
+    assert.ok(document);
+    assert.equal(document?.entries[0]?.label, '123-runtime');
+    assert.equal(document?.entries[0]?.path, 'docs/123-runtime.md');
+  });
+
+  it('infers Unicode labels from international source filenames', async () => {
+    await writeRepoFile('docs/café-runtime.md', '# Runtime\n\nStart here.\n');
+    await writeRepoFile('docs/运行时.md', '# Runtime\n\nStart here.\n');
+
+    const result = upsertContextPackEntries(
+      packAbsolutePath('issue-unicode-label'),
+      [
+        { path: 'docs/café-runtime.md' },
+        { path: 'docs/运行时.md' },
+      ],
+      { repoRoot: tempDir },
+    );
+    assert.deepEqual(result.addedLabels, ['café-runtime', '运行时']);
+
+    const document = readContextPackDocument(packAbsolutePath('issue-unicode-label'));
+    assert.ok(document);
+    assert.deepEqual(
+      document?.entries.map((entry) => [entry.label, entry.path]),
+      [
+        ['café-runtime', 'docs/café-runtime.md'],
+        ['运行时', 'docs/运行时.md'],
+      ],
+    );
+  });
+
+  it('infers selector-aware labels for same-path selector entries', async () => {
+    await writeRepoFile('docs/runtime.md', '# Runtime\n\n## Deferred Work\n\nLater.\n');
+
+    const result = upsertContextPackEntries(
+      packAbsolutePath('issue-selector-labels'),
+      [
+        { path: 'docs/runtime.md' },
+        { path: 'docs/runtime.md', selector: { type: 'heading', value: 'Deferred Work' } },
+      ],
+      { repoRoot: tempDir },
+    );
+    assert.deepEqual(result.addedLabels, ['runtime', 'runtime-deferred-work']);
+
+    const document = readContextPackDocument(packAbsolutePath('issue-selector-labels'));
+    assert.deepEqual(
+      document?.entries.map((entry) => [entry.label, entry.path, entry.selector]),
+      [
+        ['runtime', 'docs/runtime.md', undefined],
+        ['runtime-deferred-work', 'docs/runtime.md', { type: 'heading', value: 'Deferred Work', maxWords: undefined }],
+      ],
+    );
   });
 
   it('preserves selectors on same-path updates but clears them when repointing an entry', async () => {

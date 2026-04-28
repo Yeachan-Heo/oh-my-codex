@@ -14,6 +14,7 @@ import { isCanonicalContextPackPath, normalizePlanningRepoRelativePath } from '.
 export const CONTEXT_PACK_SCHEMA = 'omx-context-pack-v1';
 const CONTEXT_PACK_FILE_PATTERN = /^context-(?<timestamp>\d{8}T\d{6}Z)-(?<slug>.+)\.json$/i;
 const COMPACT_TOKEN_PATTERN = /^[a-z][a-z0-9-]*$/;
+const LABEL_TOKEN_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}\p{M}-]*$/u;
 const HEADING_PATTERN = /^(?<level>#{1,6})\s+(?<title>.+?)\s*$/;
 const SHORT_SOURCE_MAX_WORDS = 240;
 const SHORT_SOURCE_MAX_NON_EMPTY_LINES = 28;
@@ -150,6 +151,7 @@ interface ValidateContextPackManifestOptions {
 
 interface MaterializeContextPackRefsOptions extends ValidateContextPackManifestOptions {
   roles?: readonly ContextPackRole[];
+  paths?: readonly string[];
   labels?: readonly string[];
   tags?: readonly string[];
 }
@@ -180,6 +182,25 @@ function slugifyToken(raw: string): string {
   return compactToken(raw).slice(0, MAX_LABEL_LENGTH);
 }
 
+function labelToken(raw: string): string {
+  return Array.from(
+    raw
+      .normalize('NFKC')
+      .trim()
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\p{M}]+/gu, '-')
+      .replace(/^-+|-+$/g, ''),
+  )
+    .slice(0, MAX_LABEL_LENGTH)
+    .join('')
+    .replace(/-+$/g, '');
+}
+
+function labelTokenOrNull(raw: string): string | null {
+  const normalized = labelToken(raw);
+  return LABEL_TOKEN_PATTERN.test(normalized) ? normalized : null;
+}
+
 function compactTokenOrThrow(raw: unknown, message: string): string {
   if (typeof raw !== 'string') {
     throw new Error(message);
@@ -193,6 +214,21 @@ function compactTokenOrThrow(raw: unknown, message: string): string {
 
 export function normalizeContextPackCompactToken(raw: unknown, message: string): string {
   return compactTokenOrThrow(raw, message);
+}
+
+export function normalizeContextPackLabel(raw: unknown, message: string): string {
+  if (typeof raw !== 'string') {
+    throw new Error(message);
+  }
+  const normalized = labelToken(raw);
+  if (!LABEL_TOKEN_PATTERN.test(normalized)) {
+    throw new Error(message);
+  }
+  return normalized;
+}
+
+export function normalizeContextPackSourcePath(rawPath: unknown, message: string): string {
+  return normalizeSourcePath(rawPath, message);
 }
 
 function normalizeSourcePath(rawPath: unknown, message: string): string {
@@ -699,12 +735,44 @@ function normalizeRelationPath(
   });
 }
 
-function inferLabelFromPath(path: string, reservedLabels: ReadonlySet<string>): string {
-  const base = slugifyToken(basename(path, extname(path))) || slugifyToken(path.replace(/\//g, '-')) || 'entry';
+function selectorLabelSuffix(selector: ContextPackSelector | undefined): string | null {
+  if (!selector) {
+    return null;
+  }
+  if (selector.type === 'lines') {
+    return `lines-${selector.start}-${selector.end}`;
+  }
+  return labelTokenOrNull(selector.value);
+}
+
+function selectorAwareLabel(base: string, selector: ContextPackSelector | undefined): string | null {
+  const suffix = selectorLabelSuffix(selector);
+  if (!suffix) {
+    return null;
+  }
+  if (suffix === base) {
+    return base;
+  }
+  if (suffix.startsWith(`${base}-`)) {
+    return labelTokenOrNull(suffix);
+  }
+  return labelTokenOrNull(`${base}-${suffix}`);
+}
+
+function inferLabelFromPath(
+  path: string,
+  reservedLabels: ReadonlySet<string>,
+  selector?: ContextPackSelector,
+): string {
+  const base = labelTokenOrNull(basename(path, extname(path))) ?? labelTokenOrNull(path.replace(/\//g, '-')) ?? 'entry';
   if (!reservedLabels.has(base)) {
     return base;
   }
-  const pathLabel = slugifyToken(path.replace(/[/.]+/g, '-')) || base;
+  const selectorLabel = selectorAwareLabel(base, selector);
+  if (selectorLabel && !reservedLabels.has(selectorLabel)) {
+    return selectorLabel;
+  }
+  const pathLabel = labelTokenOrNull(path.replace(/[/.]+/g, '-')) ?? base;
   if (!reservedLabels.has(pathLabel)) {
     return pathLabel;
   }
@@ -768,14 +836,16 @@ function normalizeEntry(
   ensureAllowedKeys(raw, ['label', 'path', 'roles', 'tags', 'selector', 'relationPath'], `${manifestFile} entry uses an unsupported key`);
 
   const path = normalizeSourcePath(raw.path, `${manifestFile} entries must provide a repo-relative path.`);
-  const label = raw.label == null
-    ? inferLabelFromPath(path, reservedLabels)
-    : compactTokenOrThrow(raw.label, `${manifestFile} entry path "${path}" must use a compact label.`);
+  const explicitLabel = raw.label == null
+    ? null
+    : normalizeContextPackLabel(raw.label, `${manifestFile} entry path "${path}" must use a compact label.`);
+  const provisionalLabel = explicitLabel ?? labelTokenOrNull(basename(path, extname(path))) ?? 'entry';
+  const selector = normalizeSelector(raw.selector, manifestFile, provisionalLabel) ?? undefined;
+  const label = explicitLabel ?? inferLabelFromPath(path, reservedLabels, selector);
   if (reservedLabels.has(label)) {
     throw new Error(`${manifestFile} entry label "${label}" is repeated.`);
   }
 
-  const selector = normalizeSelector(raw.selector, manifestFile, label) ?? undefined;
   const roles = normalizeRoles(raw.roles ?? defaultRoles, manifestFile, label);
   const relationPath = normalizeRelationPath(raw.relationPath, manifestFile, label) ?? inferRelationPath(
     slug,
@@ -904,7 +974,7 @@ function renderRoleIndex(entries: readonly ContextPackEntry[]): string[] {
 }
 
 function renderEntryLine(entry: ContextPackEntry): string {
-  const parts = [`${entry.label}: ${entry.path}`];
+  const parts = [entry.path, `label=${entry.label}`];
   parts.push(`roles=${entry.roles.join(',')}`);
   if (entry.selector) {
     parts.push(`selector=${formatSelector(entry.selector)}`);
@@ -1116,7 +1186,7 @@ export function upsertContextPackEntries(
   for (const input of inputs) {
     const explicitLabel = input.label == null
       ? null
-      : compactTokenOrThrow(input.label, 'Context pack entries must use compact labels.');
+      : normalizeContextPackLabel(input.label, 'Context pack entries must use compact labels.');
     const normalizedPath = normalizeSourcePath(input.path, 'Context pack entries must provide a repo-relative path.');
     const normalizedSelector = input.selector ?? undefined;
     const existingIndex = explicitLabel
@@ -1361,12 +1431,16 @@ function matchesFilters(
   entry: ContextPackEntry,
   options: {
     roles?: readonly ContextPackRole[];
+    paths?: readonly string[];
     labels?: readonly string[];
     tags?: readonly string[];
   },
 ): boolean {
-  const { roles, labels, tags } = options;
+  const { roles, paths, labels, tags } = options;
   if (roles && roles.length > 0 && !roles.some((role) => entry.roles.includes(role))) {
+    return false;
+  }
+  if (paths && paths.length > 0 && !paths.includes(entry.path)) {
     return false;
   }
   if (labels && labels.length > 0 && !labels.includes(entry.label)) {
@@ -1382,6 +1456,7 @@ export function filterContextPackEntries(
   document: ContextPackDocument,
   options: {
     roles?: readonly ContextPackRole[];
+    paths?: readonly string[];
     labels?: readonly string[];
     tags?: readonly string[];
   } = {},
@@ -1576,6 +1651,7 @@ export function materializeContextPackRefs(
   const refs: ContextPackExecutionRef[] = [];
   const filteredEntries = filterContextPackEntries(loadedContextPack.document, {
     roles: options.roles,
+    paths: options.paths,
     labels: options.labels,
     tags: options.tags,
   });
