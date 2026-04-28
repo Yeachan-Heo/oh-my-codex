@@ -514,6 +514,55 @@ describe('context-tool', () => {
     assert.equal(await readFile(indexPath, 'utf-8'), indexBefore);
   });
 
+  it('resolves absolute pack status against the pack repo root', async () => {
+    const ownerRoot = join(tempDir, 'owner');
+    const callerRoot = join(tempDir, 'caller');
+    const slug = 'issue-status-absolute-owner';
+    const { relativePackPath, packPath } = await writeReadyPack(ownerRoot, slug);
+    await writeFile(
+      join(ownerRoot, '.omx', 'plans', `prd-${slug}.md`),
+      [
+        '# PRD',
+        '',
+        'Approved context basis.',
+        '',
+        '## Context Pack Outcome',
+        `- pack: created \`${relativePackPath}\``,
+        '',
+      ].join('\n'),
+    );
+    await contextToolMain(['sync', relativePackPath], ownerRoot);
+
+    await mkdir(join(callerRoot, '.omx', 'plans'), { recursive: true });
+    await writeFile(join(callerRoot, '.omx', 'plans', `prd-${slug}.md`), '# PRD\n\nWrong repo basis.\n');
+    await writeFile(join(callerRoot, '.omx', 'plans', `test-spec-${slug}.md`), '# Test Spec\n\nWrong repo basis.\n');
+
+    const stdout = await captureStdout(() => contextToolMain(['status', packPath, '--json'], callerRoot));
+    const status = JSON.parse(stdout) as {
+      handoffState: string;
+      baselineState: string;
+      outcomeState: string;
+      packState: string;
+      roleCoverage: string;
+      basisState: string;
+      indexState: string;
+      prdPath: string | null;
+      testSpecPaths: string[];
+      issues: string[];
+    };
+
+    assert.equal(status.handoffState, 'ready');
+    assert.equal(status.baselineState, 'present');
+    assert.equal(status.outcomeState, 'single');
+    assert.equal(status.packState, 'valid');
+    assert.equal(status.roleCoverage, 'covered');
+    assert.equal(status.basisState, 'fresh');
+    assert.equal(status.indexState, 'fresh');
+    assert.equal(status.prdPath, join(ownerRoot, '.omx', 'plans', `prd-${slug}.md`));
+    assert.deepEqual(status.testSpecPaths, [join(ownerRoot, '.omx', 'plans', `test-spec-${slug}.md`)]);
+    assert.deepEqual(status.issues, []);
+  });
+
   it('status keeps provisional synced packs plan-only until Context Pack Outcome declares them', async () => {
     const { relativePackPath } = await writeReadyPack(tempDir, 'issue-status-plan-only');
 

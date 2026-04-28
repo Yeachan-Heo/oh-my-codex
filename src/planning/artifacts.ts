@@ -715,9 +715,8 @@ function classifyGeneratedIndexState(
   return inspection.status === 'ready' ? 'fresh' : inspection.status;
 }
 
-export function readContextPackHandoffStatus(cwd: string, packPath: string): ContextPackHandoffStatusSnapshot {
-  const artifacts = readPlanningArtifacts(cwd);
-  const repoRoot = dirname(dirname(artifacts.plansDir));
+export function readContextPackHandoffStatus(repoRoot: string, packPath: string): ContextPackHandoffStatusSnapshot {
+  const artifacts = readPlanningArtifacts(repoRoot);
   const indexPath = contextPackIndexPath(packPath);
   const pathInfo = parseContextPackPathInfo(packPath);
   const issues: string[] = [];

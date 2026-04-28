@@ -596,7 +596,8 @@ async function runStatus(cwd: string, args: readonly string[]): Promise<void> {
 
   const workspaceRoot = resolveWorkspaceRootForPack(cwd, rawPackPath);
   const packPath = resolvePackPathFromWorkspaceRoot(workspaceRoot, rawPackPath);
-  const status = readContextPackHandoffStatus(workspaceRoot, packPath);
+  const repoRoot = resolveContextPackRepoRoot(packPath, workspaceRoot);
+  const status = readContextPackHandoffStatus(repoRoot, packPath);
   if (json) {
     console.log(JSON.stringify(status, null, 2));
     return;
