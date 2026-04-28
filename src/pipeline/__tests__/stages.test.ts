@@ -113,6 +113,12 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function decodeRuntimeCliInstructionPayload(instruction: string): Record<string, unknown> {
+  const match = instruction.match(/--input-json-base64\s+([A-Za-z0-9_-]+)/);
+  assert.ok(match?.[1], 'expected --input-json-base64 payload');
+  return JSON.parse(Buffer.from(match[1], 'base64url').toString('utf-8')) as Record<string, unknown>;
+}
+
 // ---------------------------------------------------------------------------
 // RALPLAN stage tests
 // ---------------------------------------------------------------------------
@@ -340,18 +346,21 @@ describe('Team Exec Stage', () => {
     assert.ok(Array.isArray(descriptor.availableAgentTypes));
     assert.ok((descriptor.availableAgentTypes as unknown[]).length > 0);
     assert.equal(typeof (descriptor.staffingPlan as Record<string, unknown>).staffingSummary, 'string');
-    assert.match((result.artifacts as Record<string, unknown>).instruction as string, /runtime-cli\.js/);
-    assert.match((result.artifacts as Record<string, unknown>).instruction as string, /--input-json/);
-    assert.match((result.artifacts as Record<string, unknown>).instruction as string, /"approvedExecution":null/);
+    const instruction = (result.artifacts as Record<string, unknown>).instruction as string;
+    const runtimeCliInput = decodeRuntimeCliInstructionPayload(instruction);
+    assert.match(instruction, /runtime-cli\.js/);
+    assert.match(instruction, /--input-json-base64/);
+    assert.equal(runtimeCliInput.approvedExecution, null);
+    assert.equal(runtimeCliInput.task, 'approved refined task');
     assert.match(
-      (result.artifacts as Record<string, unknown>).instruction as string,
+      instruction,
       new RegExp(escapeRegExp(join(packageRoot(), 'dist', 'team', 'runtime-cli.js'))),
     );
     assert.doesNotMatch(
-      (result.artifacts as Record<string, unknown>).instruction as string,
+      instruction,
       new RegExp(escapeRegExp(join(tempDir, 'dist', 'team', 'runtime-cli.js'))),
     );
-    assert.doesNotMatch((result.artifacts as Record<string, unknown>).instruction as string, /plan-content/);
+    assert.doesNotMatch(instruction, /plan-content/);
   });
 
   it('derives the ready team-exec binding from the approved PRD handoff instead of the original request task', async () => {
@@ -395,7 +404,10 @@ describe('Team Exec Stage', () => {
       task: 'approved refined task ready',
       command: 'omx team 2:executor "approved refined task ready"',
     });
-    assert.match((result.artifacts as Record<string, unknown>).instruction as string, /approvedExecution/);
+    const runtimeCliInput = decodeRuntimeCliInstructionPayload(
+      (result.artifacts as Record<string, unknown>).instruction as string,
+    );
+    assert.deepEqual(runtimeCliInput.approvedExecution, descriptor.approvedExecution);
   });
 
   it('keeps structural ralplan artifacts on the generic team-exec path', async () => {
@@ -420,7 +432,10 @@ describe('Team Exec Stage', () => {
     const descriptor = (result.artifacts as Record<string, unknown>).teamDescriptor as Record<string, unknown>;
     assert.equal(descriptor.task, 'structural pipeline task');
     assert.equal(descriptor.approvedExecution, null);
-    assert.match((result.artifacts as Record<string, unknown>).instruction as string, /"approvedExecution":null/);
+    const runtimeCliInput = decodeRuntimeCliInstructionPayload(
+      (result.artifacts as Record<string, unknown>).instruction as string,
+    );
+    assert.equal(runtimeCliInput.approvedExecution, null);
   });
 
   it('fails closed when ralplan artifacts do not resolve to a reusable approved handoff', async () => {
@@ -488,21 +503,87 @@ describe('Team Exec Stage', () => {
           command: 'omx team 3:executor "implement feature"',
         },
       });
+      const runtimeCliInput = decodeRuntimeCliInstructionPayload(instruction);
+      const tasks = runtimeCliInput.tasks as Array<Record<string, unknown>>;
 
       assert.match(instruction, /runtime-cli\.js/);
-      assert.match(instruction, /--input-json/);
-      assert.match(instruction, /implement feature/);
-      assert.match(instruction, /approvedExecution/);
-      assert.match(instruction, /"owner":"worker-1"/);
-      assert.match(instruction, /"role":"writer"/);
-      assert.match(instruction, /"useWorktrees":false/);
-      assert.match(instruction, /"agentType":"executor"/);
+      assert.match(instruction, /--input-json-base64/);
+      assert.equal(runtimeCliInput.task, 'implement feature');
+      assert.deepEqual(runtimeCliInput.approvedExecution, {
+        prd_path: '/tmp/test/.omx/plans/prd-implement-feature.md',
+        task: 'implement feature',
+        command: 'omx team 3:executor "implement feature"',
+      });
+      assert.equal(tasks[0]?.owner, 'worker-1');
+      assert.equal(tasks[0]?.role, 'writer');
+      assert.equal(runtimeCliInput.useWorktrees, false);
+      assert.equal(runtimeCliInput.agentType, 'executor');
       assert.equal(instruction.includes(join('/tmp/test', 'dist', 'team', 'runtime-cli.js')), false);
       assert.equal(instruction.includes(join(packageRoot(), 'dist', 'team', 'runtime-cli.js')), true);
       assert.doesNotMatch(instruction, /"agentTypes":\["executor"\]/);
+      assert.doesNotMatch(instruction, /"owner":"worker-1"/);
       assert.doesNotMatch(instruction, /printf '%s'/);
       assert.match(instruction, /staffing=/);
       assert.match(instruction, /verify=/);
+    });
+
+    it('keeps Windows instructions free of POSIX payload quoting', () => {
+      const task = `fix "quoted" paths, keep it's 100% safe & support café 运行时`;
+      const staffingPlan = buildFollowupStaffingPlan('team', task, ['executor', 'test-engineer'], {
+        workerCount: 1,
+      });
+      const instruction = buildTeamInstruction({
+        teamName: 'windows-safe',
+        task,
+        tasks: [{ subject: task, description: task, owner: 'worker-1' }],
+        workerCount: 1,
+        agentType: 'executor',
+        availableAgentTypes: ['executor', 'test-engineer'],
+        staffingPlan,
+        useWorktrees: false,
+        cwd: 'C:\\repo with spaces',
+        approvedExecution: null,
+      }, { platform: 'win32' });
+      const runtimeCliInput = decodeRuntimeCliInstructionPayload(instruction);
+      const commandPrefix = instruction.split('--input-json-base64')[0] ?? '';
+      const encodedPayload = instruction.match(/--input-json-base64\s+([A-Za-z0-9_-]+)/)?.[1] ?? '';
+
+      assert.match(instruction, /^"[^"]+"\s+"[^"]*runtime-cli\.js"\s+--input-json-base64\s+[A-Za-z0-9_-]+/);
+      assert.equal(commandPrefix.includes("'"), false);
+      assert.doesNotMatch(encodedPayload, /[%&|<>"'\s]/);
+      assert.doesNotMatch(instruction, /# staffing=/);
+      assert.doesNotMatch(instruction, /# verify=/);
+      assert.equal(runtimeCliInput.task, task);
+    });
+
+    it('emits POSIX-safe instructions for Linux and macOS', () => {
+      const task = `ship "quoted" paths and keep it's safe on café 运行时`;
+      const staffingPlan = buildFollowupStaffingPlan('team', task, ['executor', 'test-engineer'], {
+        workerCount: 1,
+      });
+
+      for (const platform of ['linux', 'darwin'] as const) {
+        const instruction = buildTeamInstruction({
+          teamName: `posix-safe-${platform}`,
+          task,
+          tasks: [{ subject: task, description: task, owner: 'worker-1' }],
+          workerCount: 1,
+          agentType: 'executor',
+          availableAgentTypes: ['executor', 'test-engineer'],
+          staffingPlan,
+          useWorktrees: false,
+          cwd: '/tmp/repo with spaces',
+          approvedExecution: null,
+        }, { platform });
+        const runtimeCliInput = decodeRuntimeCliInstructionPayload(instruction);
+        const encodedPayload = instruction.match(/--input-json-base64\s+([A-Za-z0-9_-]+)/)?.[1] ?? '';
+
+        assert.match(instruction, /^'[^']+'\s+'[^']*runtime-cli\.js'\s+--input-json-base64\s+[A-Za-z0-9_-]+/);
+        assert.doesNotMatch(encodedPayload, /[%&|<>"'\s]/);
+        assert.match(instruction, /# staffing=/);
+        assert.match(instruction, /# verify=/);
+        assert.equal(runtimeCliInput.task, task);
+      }
     });
 
     it('still emits a launch instruction for long task descriptions', () => {
@@ -522,10 +603,12 @@ describe('Team Exec Stage', () => {
         cwd: '/tmp',
         approvedExecution: null,
       });
+      const runtimeCliInput = decodeRuntimeCliInstructionPayload(instruction);
 
       assert.match(instruction, /runtime-cli\.js/);
-      assert.match(instruction, /--input-json/);
-      assert.match(instruction, /"approvedExecution":null/);
+      assert.match(instruction, /--input-json-base64/);
+      assert.equal(runtimeCliInput.approvedExecution, null);
+      assert.equal(runtimeCliInput.task, longTask);
       assert.doesNotMatch(instruction, /printf '%s'/);
       assert.match(instruction, /staffing=/);
     });

@@ -35,8 +35,16 @@ export interface TeamExecStageOptions {
   extraEnv?: Record<string, string>;
 }
 
-function shellSingleQuote(value: string): string {
+function quotePosixShellArg(value: string): string {
   return `'${value.replaceAll("'", `'\"'\"'`)}'`;
+}
+
+function quoteWindowsCmdArg(value: string): string {
+  return `"${value.replaceAll('%', '%%').replaceAll('"', '""')}"`;
+}
+
+function quoteShellArg(value: string, platform: NodeJS.Platform): string {
+  return platform === 'win32' ? quoteWindowsCmdArg(value) : quotePosixShellArg(value);
 }
 
 function resolveApprovedExecutionForTeamExec(
@@ -192,6 +200,10 @@ interface TeamRuntimeCliLaunchInput {
   useWorktrees: boolean;
 }
 
+interface BuildTeamInstructionOptions {
+  platform?: NodeJS.Platform;
+}
+
 function buildTeamRuntimeCliLaunchInput(descriptor: TeamExecDescriptor): TeamRuntimeCliLaunchInput {
   return {
     teamName: descriptor.teamName,
@@ -213,9 +225,17 @@ function buildTeamRuntimeCliLaunchInput(descriptor: TeamExecDescriptor): TeamRun
 /**
  * Build the `omx team` CLI instruction from a descriptor.
  */
-export function buildTeamInstruction(descriptor: TeamExecDescriptor): string {
+export function buildTeamInstruction(
+  descriptor: TeamExecDescriptor,
+  options: BuildTeamInstructionOptions = {},
+): string {
   const runtimeCliInput = buildTeamRuntimeCliLaunchInput(descriptor);
   const runtimeCliPath = join(packageRoot(), 'dist', 'team', 'runtime-cli.js');
-  const launchCommand = `${shellSingleQuote(process.execPath)} ${shellSingleQuote(runtimeCliPath)} --input-json ${shellSingleQuote(JSON.stringify(runtimeCliInput))}`;
+  const platform = options.platform ?? process.platform;
+  const encodedInput = Buffer.from(JSON.stringify(runtimeCliInput), 'utf-8').toString('base64url');
+  const launchCommand = `${quoteShellArg(process.execPath, platform)} ${quoteShellArg(runtimeCliPath, platform)} --input-json-base64 ${encodedInput}`;
+  if (platform === 'win32') {
+    return launchCommand;
+  }
   return `${launchCommand} # staffing=${descriptor.staffingPlan.staffingSummary} # verify=${descriptor.staffingPlan.verificationPlan.summary}`;
 }

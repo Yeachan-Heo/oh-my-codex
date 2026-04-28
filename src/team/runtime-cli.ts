@@ -1,6 +1,6 @@
 /**
  * CLI entry point for team runtime.
- * Reads JSON config from --input-json or stdin, runs startTeam/monitorTeam/shutdownTeam,
+ * Reads JSON config from --input-json, --input-json-base64, or stdin, runs startTeam/monitorTeam/shutdownTeam,
  * writes structured JSON result to stdout.
  *
  * Spawned by OMX team orchestration entrypoints when a background team run starts.
@@ -50,6 +50,7 @@ interface CliInput {
 }
 
 const RUNTIME_CLI_INPUT_JSON_FLAG = '--input-json';
+const RUNTIME_CLI_INPUT_JSON_BASE64_FLAG = '--input-json-base64';
 
 type TeamWorkerProvider = 'codex' | 'claude' | 'gemini';
 
@@ -208,14 +209,23 @@ export function normalizeAgentTypes(raw: string[], workerCount: number): TeamWor
 
 export function resolveRuntimeCliInlineInput(argv: readonly string[]): string | null {
   const index = argv.indexOf(RUNTIME_CLI_INPUT_JSON_FLAG);
-  if (index === -1) {
+  if (index !== -1) {
+    const payload = argv[index + 1];
+    if (typeof payload !== 'string' || payload.trim() === '') {
+      throw new Error(`Missing JSON payload for ${RUNTIME_CLI_INPUT_JSON_FLAG}`);
+    }
+    return payload;
+  }
+
+  const base64Index = argv.indexOf(RUNTIME_CLI_INPUT_JSON_BASE64_FLAG);
+  if (base64Index === -1) {
     return null;
   }
-  const payload = argv[index + 1];
+  const payload = argv[base64Index + 1];
   if (typeof payload !== 'string' || payload.trim() === '') {
-    throw new Error(`Missing JSON payload for ${RUNTIME_CLI_INPUT_JSON_FLAG}`);
+    throw new Error(`Missing JSON payload for ${RUNTIME_CLI_INPUT_JSON_BASE64_FLAG}`);
   }
-  return payload;
+  return Buffer.from(payload.trim(), 'base64url').toString('utf-8');
 }
 
 async function readRuntimeCliRawInput(argv: readonly string[]): Promise<string> {
