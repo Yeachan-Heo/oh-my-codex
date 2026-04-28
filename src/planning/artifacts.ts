@@ -660,16 +660,19 @@ function readContextPackResolution(
     }
 
     const validationIssues = validateContextPackFile(ref.path, slug ?? '', repoRoot);
+    const document = readContextPackDocument(ref.path);
+    const missingRequiredContextPackRoles = document
+      ? findMissingContextPackRoles(document, REQUIRED_CONTEXT_PACK_ROLES)
+      : [...REQUIRED_CONTEXT_PACK_ROLES];
     if (validationIssues.length > 0) {
       return {
         contextPack: ref,
         contextPackStatus: 'invalid',
-        missingRequiredContextPackRoles: [...REQUIRED_CONTEXT_PACK_ROLES],
+        missingRequiredContextPackRoles,
         contextPackIssues: validationIssues,
       };
     }
 
-    const document = readContextPackDocument(ref.path);
     if (!document) {
       return {
         contextPack: ref,
@@ -679,7 +682,6 @@ function readContextPackResolution(
       };
     }
 
-    const missingRequiredContextPackRoles = findMissingContextPackRoles(document, REQUIRED_CONTEXT_PACK_ROLES);
     const missingCoverageIssues = missingRequiredContextPackRoles.length > 0
       ? [`Declared context pack is missing required roles: ${missingRequiredContextPackRoles.join(', ')}.`]
       : [];

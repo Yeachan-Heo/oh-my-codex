@@ -1803,6 +1803,7 @@ describe('planning artifacts', () => {
     const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
     assert.ok(hint);
     assert.equal(hint?.contextPackStatus, 'invalid');
+    assert.deepEqual(hint?.missingRequiredContextPackRoles, []);
     assert.ok(
       hint?.contextPackIssues.some((issue) => issue.includes('basis test-spec hash')),
     );
@@ -1838,6 +1839,7 @@ describe('planning artifacts', () => {
     const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
     assert.ok(hint);
     assert.equal(hint?.contextPackStatus, 'invalid');
+    assert.deepEqual(hint?.missingRequiredContextPackRoles, []);
     assert.ok(
       hint?.contextPackIssues.some((issue) => issue.includes('basis prd hash')),
     );

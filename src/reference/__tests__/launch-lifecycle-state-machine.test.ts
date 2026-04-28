@@ -140,6 +140,20 @@ function handoffStateModel(input: {
   return 'ready';
 }
 
+function diagnosticMissingRolesModel(input: {
+  outcome: OutcomeState;
+  pack: PackState;
+  roles: RoleCoverageState;
+}): 'none' | 'actual-missing' | 'unknown-all' {
+  if (input.outcome === 'absent') {
+    return 'none';
+  }
+  if (input.pack === 'valid') {
+    return input.roles === 'covered' ? 'none' : 'actual-missing';
+  }
+  return 'unknown-all';
+}
+
 function storedBasisAfterUpsertModel(input: {
   stored: StoredBasisState;
   refresh: BasisRefreshMode;
@@ -984,6 +998,29 @@ describe('launch-lifecycle-state-machine reference', () => {
       }),
       'plan-only',
     );
+  });
+
+  it('exhaustively model-checks context-pack diagnostic role projection', () => {
+    const outcomes: OutcomeState[] = ['absent', 'malformed', 'ambiguous', 'single-other', 'single'];
+    const packs: PackState[] = ['missing', 'unreadable', 'schema-invalid', 'valid'];
+    const roleCoverageStates: RoleCoverageState[] = ['missing-required-roles', 'covered'];
+
+    for (const outcome of outcomes) {
+      for (const pack of packs) {
+        for (const roles of roleCoverageStates) {
+          const projection = diagnosticMissingRolesModel({ outcome, pack, roles });
+          if (outcome === 'absent') {
+            assert.equal(projection, 'none');
+            continue;
+          }
+          if (pack === 'valid') {
+            assert.equal(projection, roles === 'covered' ? 'none' : 'actual-missing');
+            continue;
+          }
+          assert.equal(projection, 'unknown-all');
+        }
+      }
+    }
   });
 
   it('exhaustively model-checks context-pack upsert basis preservation', () => {

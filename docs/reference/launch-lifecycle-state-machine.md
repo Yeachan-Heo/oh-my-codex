@@ -266,6 +266,19 @@ HandoffState(p, k) =
   ready             otherwise
 ```
 
+Diagnostic role projection is separate from readiness classification. It reports
+what role repair is actually needed without masking stale basis, invalid index,
+or malformed manifest causes:
+
+```text
+MissingRequiredRoles(p, k) =
+  ∅                       when OutcomeState(p) = absent
+  ActualMissingRoles(k)   when PackState(k) = valid
+  {scope, build, verify}  otherwise
+
+ActualMissingRoles(k) = {r ∈ {scope, build, verify} | r ∉ Roles(k)}
+```
+
 Authoring-order invariant:
 
 ```text
