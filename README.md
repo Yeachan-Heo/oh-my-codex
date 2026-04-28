@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/yeachan-heo-oh-my-codex-badge.png)](https://mseep.ai/app/yeachan-heo-oh-my-codex)
+
 # oh-my-codex (OMX)
 
 <p align="center">
