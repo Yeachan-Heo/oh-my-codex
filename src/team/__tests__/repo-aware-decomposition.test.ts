@@ -51,6 +51,42 @@ describe('buildRepoAwareTeamExecutionPlan', () => {
     assert.match(plan.tasks[0].description, /File scope: src\/team\/runtime.ts/);
   });
 
+  it('keeps DAG advisory and falls back when the context-pack lifecycle is not follow-up ready', () => {
+    const cwd = repo();
+    writeFileSync(
+      join(cwd, '.omx', 'plans', 'prd-demo.md'),
+      [
+        '# Demo',
+        '',
+        '## Context Pack Outcome',
+        '- pack: created `.omx/context/context-20260420T000000Z-demo.json`',
+      ].join('\n'),
+    );
+    writeFileSync(join(cwd, '.omx', 'plans', 'team-dag-demo.json'), JSON.stringify({
+      schema_version: 1,
+      nodes: [{ id: 'impl', subject: 'Implement', description: 'Implement from DAG' }],
+    }));
+
+    const plan = buildRepoAwareTeamExecutionPlan({
+      task: 'team', workerCount: 3, agentType: 'executor', explicitAgentType: false, explicitWorkerCount: false, cwd, buildLegacyPlan: legacy, allowDagHandoff: true,
+    });
+    assert.equal(plan.metadata?.decomposition_source, 'legacy_text');
+    assert.equal(plan.metadata?.fallback_reason, 'context_pack_not_followup_ready:incomplete');
+    assert.equal(plan.tasks[0].subject, 'legacy');
+  });
+
+  it('keeps DAG advisory and falls back with explicit metadata when the opted-in DAG is invalid', () => {
+    const cwd = repo();
+    writeFileSync(join(cwd, '.omx', 'plans', 'team-dag-demo.json'), '{bad json');
+
+    const plan = buildRepoAwareTeamExecutionPlan({
+      task: 'team', workerCount: 3, agentType: 'executor', explicitAgentType: false, explicitWorkerCount: false, cwd, buildLegacyPlan: legacy, allowDagHandoff: true,
+    });
+    assert.equal(plan.metadata?.decomposition_source, 'legacy_text');
+    assert.match(plan.metadata?.fallback_reason ?? '', /JSON|property/i);
+    assert.equal(plan.tasks[0].subject, 'legacy');
+  });
+
 
   it('does not import a stale DAG sidecar unless the approved launch gate opts in', () => {
     const cwd = repo();

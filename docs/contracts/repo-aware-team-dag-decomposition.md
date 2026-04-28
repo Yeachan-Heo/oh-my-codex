@@ -6,17 +6,19 @@ This contract documents the repo-aware Team decomposition gate planned by `.omx/
 
 - `omx team` may preflight the latest approved PRD/test-spec pair and a matching DAG handoff artifact before `startTeam()` launches workers only when the invocation is approved for that pair: either the CLI input matches the PRD's approved Team launch hint, or the user uses a short approved follow-up such as `omx team team` that resolves to that hint. Normal `omx team [N[:role]] "task"` startup must not consume ambient/stale `team-dag-*.json` files.
 - The preflight output may change the startup task list, worker count, owner assignment, inbox text, and observability metadata.
+- DAG is optional execution topology. Context-pack remains the only source of approved context refs; a valid DAG must not make a plan context-ready.
 - Runtime task mutation remains owned by the Team state APIs. Preflight must not bypass `assignTask()`, `claimTask()`, `transitionTaskStatus()`, or `update-task` lifecycle constraints.
 - Existing `omx team [N[:role]] "task"` behavior remains the fallback when no valid approved DAG handoff exists.
 
 ## Artifact resolution
 
-1. Select the latest PRD using the same slug semantics as `selectLatestPlanningArtifacts()`, then require at least one matching `test-spec-<slug>.md`/`testspec-<slug>.md`; a PRD without its matching test spec is not an approved pair for DAG activation.
-2. Prefer `.omx/plans/team-dag-<slug>.json` over embedded markdown handoff JSON after the approved invocation gate passes.
+1. Select the latest PRD using the same slug semantics as `selectLatestPlanningArtifacts()`, including timestamp stripping for `prd-<timestamp>-<slug>.md`, then require at least one matching test spec. A PRD without its matching test spec is not an approved pair for DAG activation.
+2. Prefer `.omx/plans/team-dag-<slug>.json` or `.omx/plans/team-dag-<slug>-*.json` over embedded markdown handoff JSON after the approved invocation gate passes. Timestamped PRDs still resolve the canonical slug form, e.g. `prd-20260427T153100Z-alpha.md` uses `team-dag-alpha.json`.
 3. If multiple matching JSON candidates are possible, choose the lexicographically latest path and record a `multiple_matches` warning in preflight metadata.
-4. If the sidecar exists but is invalid, fall back to legacy text decomposition in v1 and persist the fallback reason. Do not silently ignore the invalid artifact.
-5. If no valid sidecar exists, parse an optional fenced `Team DAG Handoff` block from the selected PRD.
-6. If no valid handoff is found, set `decomposition_source=legacy_text` and use the existing `buildTeamExecutionPlan()` path.
+4. If context-pack state is not follow-up-ready (`plan-only` or `ready`), do not activate DAG. This keeps invalid/stale context-pack handoffs from widening into approved execution topology.
+5. If the sidecar exists but is invalid, fall back to legacy text decomposition in v1 and persist the fallback reason. Do not silently ignore the invalid artifact.
+6. If no valid sidecar exists, parse an optional fenced `Team DAG Handoff` block from the selected PRD.
+7. If no valid handoff is found, set `decomposition_source=legacy_text` and use the existing `buildTeamExecutionPlan()` path.
 
 ## DAG node requirements
 

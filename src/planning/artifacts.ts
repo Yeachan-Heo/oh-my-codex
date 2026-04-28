@@ -159,6 +159,11 @@ export interface TeamDagArtifactResolution {
   warnings: string[];
 }
 
+function matchesTeamDagSidecarSlug(fileName: string, slug: string): boolean {
+  const prefix = `team-dag-${slug}`;
+  return (fileName === `${prefix}.json` || fileName.startsWith(`${prefix}-`)) && fileName.endsWith('.json');
+}
+
 function readMatchingPaths(dir: string, pattern: RegExp): string[] {
   if (!existsSync(dir)) {
     return [];
@@ -910,10 +915,6 @@ function extractTeamDagMarkdownHandoff(content: string): string | null {
 
 export function readTeamDagArtifactResolution(cwd: string): TeamDagArtifactResolution {
   const artifacts = readPlanningArtifacts(cwd);
-  if (!isPlanningComplete(artifacts)) {
-    return { source: 'none', prdPath: null, planSlug: null, warnings: ['planning_incomplete'] };
-  }
-
   const selection = selectLatestPlanningArtifacts(artifacts);
   const prdPath = selection.prdPath;
   const planSlug = prdPath ? planningArtifactSlug(prdPath, 'prd') : null;
@@ -923,10 +924,16 @@ export function readTeamDagArtifactResolution(cwd: string): TeamDagArtifactResol
   if (selection.testSpecPaths.length === 0) {
     return { source: 'none', prdPath, planSlug, warnings: ['missing_matching_test_spec'] };
   }
+  if (!isApprovedExecutionFollowupReadyStatus(selection.contextPackStatus)) {
+    return { source: 'none', prdPath, planSlug, warnings: [`context_pack_not_followup_ready:${selection.contextPackStatus}`] };
+  }
 
-  const sidecarName = `team-dag-${planSlug}.json`;
-  const sidecarPath = join(artifacts.plansDir, sidecarName);
-  if (existsSync(sidecarPath)) {
+  const sidecarPaths = readMatchingPaths(
+    artifacts.plansDir,
+    new RegExp(`^team-dag-${planSlug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:-.+)?\\.json$`, 'i'),
+  ).filter((path) => matchesTeamDagSidecarSlug(basename(path), planSlug));
+  if (sidecarPaths.length > 0) {
+    const sidecarPath = sidecarPaths.at(-1)!;
     try {
       return {
         source: 'json-sidecar',
@@ -934,7 +941,7 @@ export function readTeamDagArtifactResolution(cwd: string): TeamDagArtifactResol
         planSlug,
         artifactPath: sidecarPath,
         content: readFileSync(sidecarPath, 'utf-8'),
-        warnings: [],
+        warnings: sidecarPaths.length > 1 ? ['multiple_matches'] : [],
       };
     } catch {
       return { source: 'none', prdPath, planSlug, artifactPath: sidecarPath, warnings: ['sidecar_unreadable'] };

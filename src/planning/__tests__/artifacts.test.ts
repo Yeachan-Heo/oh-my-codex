@@ -189,9 +189,9 @@ describe('planning artifacts', () => {
     const resolution = readTeamDagArtifactResolution(tempDir);
 
     assert.equal(resolution.source, 'none');
-    assert.equal(resolution.prdPath, null);
-    assert.equal(resolution.planSlug, null);
-    assert.deepEqual(resolution.warnings, ['planning_incomplete']);
+    assert.equal(resolution.prdPath, join(plansDir, 'prd-repo-aware.md'));
+    assert.equal(resolution.planSlug, 'repo-aware');
+    assert.deepEqual(resolution.warnings, ['missing_matching_test_spec']);
   });
 
 
@@ -219,8 +219,8 @@ describe('planning artifacts', () => {
     const resolution = readTeamDagArtifactResolution(tempDir);
 
     assert.equal(resolution.source, 'none');
-    assert.equal(resolution.planSlug, null);
-    assert.deepEqual(resolution.warnings, ['planning_incomplete']);
+    assert.equal(resolution.planSlug, 'repo-aware');
+    assert.deepEqual(resolution.warnings, ['missing_matching_test_spec']);
   });
 
 
@@ -1961,6 +1961,30 @@ describe('planning artifacts', () => {
     assert.equal(result.source, 'sidecar');
     assert.equal(result.planSlug, 'alpha');
     assert.equal(result.dag?.nodes[0]?.id, 'impl');
+  });
+
+  it('loads a Team DAG sidecar for a timestamped PRD using the canonical artifact slug', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-20260427T153100Z-alpha.md'), '# Alpha\n');
+    await writeFile(join(plansDir, 'test-spec-20260427T153100Z-alpha.md'), '# Alpha Test\n');
+    await writeFile(join(plansDir, 'team-dag-alpha.json'), JSON.stringify({
+      schema_version: 1,
+      plan_slug: 'alpha',
+      source_prd: 'prd-20260427T153100Z-alpha.md',
+      nodes: [{ id: 'impl', subject: 'Implement alpha', description: 'Implement timestamped alpha DAG' }],
+    }));
+
+    const artifact = readTeamDagArtifactResolution(tempDir);
+    assert.equal(artifact.source, 'json-sidecar');
+    assert.equal(artifact.planSlug, 'alpha');
+    assert.equal(artifact.artifactPath, join(plansDir, 'team-dag-alpha.json'));
+
+    const result = readTeamDagHandoffForLatestPlan(tempDir);
+    assert.equal(result.source, 'sidecar');
+    assert.equal(result.dagState, 'valid');
+    assert.equal(result.planSlug, 'alpha');
+    assert.equal(result.dag?.plan_slug, 'alpha');
   });
 
   it('does not overmatch sidecars for a different slug prefix', async () => {

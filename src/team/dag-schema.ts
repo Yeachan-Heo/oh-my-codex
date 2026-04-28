@@ -1,6 +1,5 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { basename, join } from 'node:path';
-import { readLatestPlanningArtifacts } from '../planning/artifacts.js';
+import { basename } from 'node:path';
+import { readTeamDagArtifactResolution } from '../planning/artifacts.js';
 
 export type TeamDagWorkerCountSource = 'cli-explicit' | 'plan-suggested' | 'default-derived';
 
@@ -36,16 +35,11 @@ export interface TeamDagHandoff {
 export interface TeamDagResolution {
   dag: TeamDagHandoff | null;
   source: 'sidecar' | 'markdown' | 'none';
+  dagState: 'disabled' | 'absent' | 'invalid' | 'valid';
   path?: string;
   planSlug?: string;
   warning?: string;
   error?: string;
-}
-
-function planningSlugFromPrdPath(prdPath: string | null): string | null {
-  if (!prdPath) return null;
-  const match = basename(prdPath).match(/^prd-(?<slug>.*)\.md$/i);
-  return match?.groups?.slug ?? null;
 }
 
 function asStringArray(value: unknown): string[] | undefined {
@@ -171,81 +165,43 @@ function assertDagMatchesPlan(dag: TeamDagHandoff, slug: string, prdPath: string
   }
 }
 
-function matchesSidecarSlug(file: string, slug: string): boolean {
-  const prefix = `team-dag-${slug}`;
-  return (file === `${prefix}.json` || file.startsWith(`${prefix}-`)) && file.endsWith('.json');
-}
-
-function readSidecar(plansDir: string, slug: string, prdPath: string): Omit<TeamDagResolution, 'planSlug'> | null {
-  if (!existsSync(plansDir)) return null;
-  const candidates = readdirSync(plansDir)
-    .filter((file) => matchesSidecarSlug(file, slug))
-    .sort((a, b) => a.localeCompare(b))
-    .map((file) => join(plansDir, file));
-  if (candidates.length === 0) return null;
-  const selected = candidates.at(-1)!;
-  try {
-    return {
-      dag: (() => {
-        const dag = parseJsonText(readFileSync(selected, 'utf-8'));
-        assertDagMatchesPlan(dag, slug, prdPath);
-        return dag;
-      })(),
-      source: 'sidecar',
-      path: selected,
-      warning: candidates.length > 1 ? 'multiple_matches' : undefined,
-    };
-  } catch (error) {
-    return {
-      dag: null,
-      source: 'sidecar',
-      path: selected,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
-function extractMarkdownHandoff(content: string): string | null {
-  const heading = content.search(/^#{1,6}\s+Team DAG Handoff\s*$/im);
-  const searchFrom = heading >= 0 ? heading : 0;
-  const fenced = content.slice(searchFrom).match(/```(?:json)?\s*\n([\s\S]*?)\n```/i);
-  return fenced?.[1]?.trim() || null;
-}
-
 export function readTeamDagHandoffForLatestPlan(cwd: string): TeamDagResolution {
-  const selection = readLatestPlanningArtifacts(cwd);
-  const prdPath = selection.prdPath;
-  const planSlug = planningSlugFromPrdPath(prdPath);
-  if (!prdPath || !planSlug) return { dag: null, source: 'none' };
-
-  const plansDir = join(cwd, '.omx', 'plans');
-  if (selection.testSpecPaths.length === 0) {
-    return { dag: null, source: 'none', planSlug, error: 'missing_matching_test_spec' };
-  }
-
-  const sidecar = readSidecar(plansDir, planSlug, prdPath);
-  if (sidecar?.dag) return { ...sidecar, planSlug };
-  if (sidecar?.error) return { ...sidecar, planSlug };
-
-  try {
-    const markdownJson = extractMarkdownHandoff(readFileSync(prdPath, 'utf-8'));
-    if (!markdownJson) return { dag: null, source: 'none', planSlug };
+  const artifact = readTeamDagArtifactResolution(cwd);
+  const source = artifact.source === 'json-sidecar'
+    ? 'sidecar'
+    : artifact.source === 'markdown-handoff'
+      ? 'markdown'
+      : 'none';
+  if (!artifact.content || !artifact.prdPath || !artifact.planSlug) {
     return {
-      dag: (() => {
-        const dag = parseJsonText(markdownJson);
-        assertDagMatchesPlan(dag, planSlug, prdPath);
-        return dag;
-      })(),
-      source: 'markdown',
-      path: prdPath,
-      planSlug,
+      dag: null,
+      source,
+      dagState: 'absent',
+      path: artifact.artifactPath,
+      planSlug: artifact.planSlug ?? undefined,
+      warning: artifact.warnings[0],
+      error: artifact.warnings[0],
+    };
+  }
+  try {
+    const dag = parseJsonText(artifact.content);
+    assertDagMatchesPlan(dag, artifact.planSlug, artifact.prdPath);
+    return {
+      dag,
+      source,
+      dagState: 'valid',
+      path: artifact.artifactPath ?? artifact.prdPath,
+      planSlug: artifact.planSlug,
+      warning: artifact.warnings[0],
     };
   } catch (error) {
     return {
       dag: null,
-      source: 'none',
-      path: prdPath,
-      planSlug,
+      source,
+      dagState: 'invalid',
+      path: artifact.artifactPath ?? artifact.prdPath,
+      planSlug: artifact.planSlug,
+      warning: artifact.warnings[0],
       error: error instanceof Error ? error.message : String(error),
     };
   }

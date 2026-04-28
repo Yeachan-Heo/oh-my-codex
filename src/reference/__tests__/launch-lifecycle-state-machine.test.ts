@@ -50,6 +50,10 @@ type IndexState = 'missing' | 'invalid' | 'fresh';
 type StoredBasisState = 'absent' | 'present';
 type BasisRefreshMode = 'disabled' | 'enabled';
 type ResolvedBasisState = 'unresolved' | 'resolved';
+type DagState = 'disabled' | 'absent' | 'invalid' | 'valid';
+type InvocationState = 'generic' | 'approved-match' | 'short-followup' | 'bound-followup';
+type ContextBindingState = 'none' | 'rejected' | 'bound';
+type ExecutionTopology = 'legacy' | 'dag';
 
 interface Candidate {
   id: string;
@@ -163,6 +167,44 @@ function storedBasisAfterUpsertModel(input: {
     return 'present';
   }
   return input.stored;
+}
+
+function approvedInvocationModel(invocation: InvocationState): boolean {
+  return invocation === 'approved-match' || invocation === 'short-followup' || invocation === 'bound-followup';
+}
+
+function contextBindingModel(input: {
+  baseline: BaselineState;
+  handoff: HandoffState;
+  invocation: InvocationState;
+}): ContextBindingState {
+  if (input.baseline !== 'present') {
+    return input.invocation === 'bound-followup' ? 'rejected' : 'none';
+  }
+  if (contextReady(input.handoff) && (input.invocation === 'short-followup' || input.invocation === 'bound-followup')) {
+    return 'bound';
+  }
+  if (input.invocation === 'bound-followup') {
+    return 'rejected';
+  }
+  return 'none';
+}
+
+function executionTopologyModel(input: {
+  baseline: BaselineState;
+  handoff: HandoffState;
+  dag: DagState;
+  invocation: InvocationState;
+}): ExecutionTopology {
+  if (
+    input.baseline === 'present'
+    && executionReusable(input.handoff)
+    && approvedInvocationModel(input.invocation)
+    && input.dag === 'valid'
+  ) {
+    return 'dag';
+  }
+  return 'legacy';
 }
 
 function artifactName(path: string): { kind: 'prd' | 'test-spec'; slug: string; timestamp?: string } | null {
@@ -846,6 +888,10 @@ describe('launch-lifecycle-state-machine reference', () => {
     assert.match(MODEL_DOC, /PackState\(k\) ∈ \{/);
     assert.match(MODEL_DOC, /BasisState\(k, p\) ∈ \{/);
     assert.match(MODEL_DOC, /SyncBeforeOutcomeThenOutcomeAdded\(p, k\)/);
+    assert.match(MODEL_DOC, /DagState\(p\) ∈ \{/);
+    assert.match(MODEL_DOC, /DAG facet is optional\s+execution topology/);
+    assert.match(MODEL_DOC, /DagUsable\(B, C, D, I\) :=/);
+    assert.match(MODEL_DOC, /DAG optionality/);
   });
 
   it('exhaustively model-checks planning completeness, latest artifact selection, and compatibility hint projection', () => {
@@ -1040,6 +1086,61 @@ describe('launch-lifecycle-state-machine reference', () => {
         }
       }
     }
+  });
+
+  it('exhaustively model-checks DAG and context-pack lifecycle separation', () => {
+    const baselines: BaselineState[] = ['missing-prd', 'missing-test-spec', 'present'];
+    const handoffs: HandoffState[] = ['missing-baseline', 'plan-only', 'incomplete', 'invalid', 'ready'];
+    const dags: DagState[] = ['disabled', 'absent', 'invalid', 'valid'];
+    const invocations: InvocationState[] = ['generic', 'approved-match', 'short-followup', 'bound-followup'];
+    const seenBindings = new Set<ContextBindingState>();
+    const seenTopologies = new Set<ExecutionTopology>();
+
+    for (const baseline of baselines) {
+      for (const handoff of handoffs) {
+        for (const dag of dags) {
+          for (const invocation of invocations) {
+            const binding = contextBindingModel({ baseline, handoff, invocation });
+            const topology = executionTopologyModel({ baseline, handoff, dag, invocation });
+            seenBindings.add(binding);
+            seenTopologies.add(topology);
+
+            if (binding === 'bound') {
+              assert.equal(baseline, 'present');
+              assert.equal(handoff, 'ready');
+              assert.ok(invocation === 'short-followup' || invocation === 'bound-followup');
+            }
+            if (dag !== 'valid') {
+              assert.equal(topology, 'legacy');
+            }
+            if (baseline !== 'present') {
+              assert.notEqual(binding, 'bound');
+              assert.equal(topology, 'legacy');
+            }
+            if (invocation === 'generic') {
+              assert.equal(topology, 'legacy');
+            }
+            if (handoff === 'plan-only' && baseline === 'present' && dag === 'valid' && approvedInvocationModel(invocation)) {
+              assert.equal(topology, 'dag');
+              assert.notEqual(binding, 'bound');
+            }
+            if (handoff === 'incomplete' || handoff === 'invalid') {
+              assert.notEqual(binding, 'bound');
+              assert.equal(topology, 'legacy');
+            }
+            if (topology === 'dag') {
+              assert.equal(baseline, 'present');
+              assert.ok(executionReusable(handoff));
+              assert.equal(dag, 'valid');
+              assert.equal(approvedInvocationModel(invocation), true);
+            }
+          }
+        }
+      }
+    }
+
+    assert.deepEqual([...seenBindings].sort(), ['bound', 'none', 'rejected']);
+    assert.deepEqual([...seenTopologies].sort(), ['dag', 'legacy']);
   });
 
   it('exhaustively model-checks generic mode reads fail closed on malformed higher-precedence state', () => {

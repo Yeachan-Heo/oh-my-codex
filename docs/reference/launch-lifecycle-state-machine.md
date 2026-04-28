@@ -317,6 +317,72 @@ BasisState(k, p) ∈ {stale-prd, stale-test-spec, unexpected-test-spec}
      specific stale basis state instead of collapsing it to absent
 ```
 
+Team DAG is a separate approved-baseline facet. The DAG facet is optional
+execution topology: it can influence startup decomposition, worker count,
+ownership hints, lanes, and concrete task dependencies, but it never creates or
+validates approved context refs.
+
+```text
+DagState(p) ∈ {
+  disabled,
+  absent,
+  invalid,
+  valid
+}
+
+DagState = disabled iff the invocation gate did not allow DAG handoff.
+DagState = absent  iff the gate allowed DAG handoff but no selected DAG content reached parsing.
+DagState = invalid iff selected DAG content failed parse, validation, or approved-plan matching.
+DagState = valid   iff selected DAG content parsed, validated, and matched the approved baseline.
+
+InvocationState(args, p) ∈ {
+  generic,
+  approved-match,
+  short-followup,
+  bound-followup
+}
+
+ContextBindingState ∈ {
+  none,
+  rejected,
+  bound
+}
+
+ExecutionTopology ∈ {
+  legacy,
+  dag
+}
+
+ApprovedInvocation(I) := I ∈ {approved-match, short-followup, bound-followup}
+DagUsable(B, C, D, I) :=
+  B = present
+  ∧ ExecutionReusable(C)
+  ∧ ApprovedInvocation(I)
+  ∧ D = valid
+
+ExecutionTopology = dag    iff DagUsable(B, C, D, I)
+ExecutionTopology = legacy otherwise
+```
+
+DAG facet invariants:
+
+```text
+ContextBindingState = bound
+  -> B = present ∧ C = ready
+
+DAG optionality:
+  D ∈ {disabled, absent, invalid} -> ExecutionTopology = legacy
+
+B ≠ present -> ContextBindingState ≠ bound ∧ ExecutionTopology = legacy
+I = generic -> ExecutionTopology = legacy
+
+C = plan-only ∧ D = valid ∧ ApprovedInvocation(I)
+  -> ExecutionTopology = dag ∧ ContextBindingState ≠ bound
+
+C ∈ {incomplete, invalid}
+  -> ContextBindingState ≠ bound ∧ ExecutionTopology = legacy
+```
+
 The read-only context-tool status command is a diagnostic projection of this
 same classifier:
 
@@ -568,7 +634,7 @@ Main Team launch:
 LaunchTeamCLI(args, cwd):
   parsed
   -> execution-planned
-      via buildTeamExecutionPlan(parsed.task, parsed.workerCount, ...)
+      via buildRepoAwareTeamExecutionPlan(parsed.task, parsed.workerCount, allowDagHandoff)
   -> runtime-started
       via startTeam(parsed.teamName,
                     parsed.task,
