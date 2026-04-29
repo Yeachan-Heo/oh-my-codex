@@ -5,6 +5,8 @@ import { readSessionState, isSessionStale } from '../../hooks/session.js';
 import { runProcess } from './process-runner.js';
 import { safeString } from './utils.js';
 
+const OMX_INSTANCE_OPTION = '@omx_instance_id';
+
 function sanitizeTmuxToken(value: string): string {
   const cleaned = safeString(value)
     .toLowerCase()
@@ -66,6 +68,33 @@ function readCurrentTmuxSessionName(): string {
   } catch {
     return '';
   }
+}
+
+async function readTmuxSessionInstanceId(sessionTarget: string): Promise<string> {
+  const target = safeString(sessionTarget).trim();
+  if (!target) return '';
+  try {
+    const result = await runProcess('tmux', ['show-option', '-qv', '-t', target, OMX_INSTANCE_OPTION], 2000);
+    return safeString(result.stdout).trim();
+  } catch {
+    return '';
+  }
+}
+
+export async function resolveTmuxSessionForInstance(instanceId: string): Promise<string> {
+  const expected = safeString(instanceId).trim();
+  if (!expected) return '';
+  try {
+    const result = await runProcess('tmux', ['list-sessions', '-F', `#{session_name}\t#{${OMX_INSTANCE_OPTION}}`], 2000);
+    const rows = safeString(result.stdout).split('\n').map(line => line.trim()).filter(Boolean);
+    for (const row of rows) {
+      const [sessionName = '', taggedInstanceId = ''] = row.split('\t');
+      if (sessionName && taggedInstanceId === expected) return sessionName;
+    }
+  } catch {
+    // best effort only
+  }
+  return '';
 }
 
 function readParentPid(pid: number): number | null {
@@ -140,11 +169,50 @@ export async function resolveManagedSessionContext(cwd: string, payload: any, { 
       return { managed: false, reason: 'session_id_mismatch', invocationSessionId, sessionState, expectedTmuxSessionName: '', currentTmuxSessionName: '' };
     }
     if (isSessionStale(sessionState)) {
-      return { managed: false, reason: 'stale_session', invocationSessionId, sessionState, expectedTmuxSessionName: '', currentTmuxSessionName: '' };
+      return { managed: false, reason: 'stale_session', invocationSessionId, sessionState, expectedTmuxSessionName: '', currentTmuxSessionName: '', taggedTmuxSessionName: '' };
     }
 
     const expectedTmuxSessionName = buildExpectedManagedTmuxSessionName(cwd, invocationSessionId);
     const currentTmuxSessionName = readCurrentTmuxSessionName();
+    const currentTmuxInstanceId = currentTmuxSessionName ? await readTmuxSessionInstanceId(currentTmuxSessionName) : '';
+    if (currentTmuxInstanceId && currentTmuxInstanceId !== invocationSessionId) {
+      return {
+        managed: false,
+        reason: 'tmux_instance_mismatch',
+        invocationSessionId,
+        sessionState,
+        expectedTmuxSessionName,
+        currentTmuxSessionName,
+        currentTmuxInstanceId,
+        taggedTmuxSessionName: '',
+      };
+    }
+    if (currentTmuxInstanceId === invocationSessionId) {
+      return {
+        managed: true,
+        reason: 'tmux_instance_match',
+        invocationSessionId,
+        sessionState,
+        expectedTmuxSessionName,
+        currentTmuxSessionName,
+        currentTmuxInstanceId,
+        taggedTmuxSessionName: currentTmuxSessionName,
+      };
+    }
+
+    const taggedTmuxSessionName = await resolveTmuxSessionForInstance(invocationSessionId);
+    if (taggedTmuxSessionName) {
+      return {
+        managed: true,
+        reason: 'tmux_instance_tag_match',
+        invocationSessionId,
+        sessionState,
+        expectedTmuxSessionName,
+        currentTmuxSessionName,
+        taggedTmuxSessionName,
+      };
+    }
+
     if (currentTmuxSessionName && currentTmuxSessionName === expectedTmuxSessionName) {
       return {
         managed: true,
@@ -153,6 +221,7 @@ export async function resolveManagedSessionContext(cwd: string, payload: any, { 
         sessionState,
         expectedTmuxSessionName,
         currentTmuxSessionName,
+        taggedTmuxSessionName: '',
       };
     }
 
@@ -164,6 +233,7 @@ export async function resolveManagedSessionContext(cwd: string, payload: any, { 
         sessionState,
         expectedTmuxSessionName,
         currentTmuxSessionName: '',
+        taggedTmuxSessionName: '',
       };
     }
 
@@ -174,6 +244,7 @@ export async function resolveManagedSessionContext(cwd: string, payload: any, { 
       sessionState,
       expectedTmuxSessionName,
       currentTmuxSessionName,
+      taggedTmuxSessionName: '',
     };
   } catch {
     return {
@@ -183,6 +254,7 @@ export async function resolveManagedSessionContext(cwd: string, payload: any, { 
       sessionState: null,
       expectedTmuxSessionName: '',
       currentTmuxSessionName: '',
+      taggedTmuxSessionName: '',
     };
   }
 }
@@ -218,10 +290,18 @@ export async function verifyManagedPaneTarget(paneId: string, cwd: string, paylo
     if (!paneSessionName) {
       return { ok: false, reason: 'pane_session_missing', paneTarget, managedContext };
     }
+    const paneInstanceId = await readTmuxSessionInstanceId(paneSessionName);
+    if (paneInstanceId && paneInstanceId !== managedContext.invocationSessionId) {
+      return { ok: false, reason: 'pane_instance_mismatch', paneTarget, paneSessionName, paneInstanceId, managedContext };
+    }
     if (paneSessionName !== expectedSession) {
+      const taggedSession = safeString(managedContext.taggedTmuxSessionName).trim();
+      if (taggedSession && paneSessionName === taggedSession) {
+        return { ok: true, reason: 'ok', paneTarget, paneSessionName, paneInstanceId, managedContext };
+      }
       return { ok: false, reason: 'pane_not_managed_session', paneTarget, paneSessionName, managedContext };
     }
-    return { ok: true, reason: 'ok', paneTarget, paneSessionName, managedContext };
+    return { ok: true, reason: 'ok', paneTarget, paneSessionName, paneInstanceId, managedContext };
   } catch {
     return { ok: false, reason: 'pane_session_lookup_failed', paneTarget, managedContext };
   }
@@ -244,7 +324,7 @@ async function readManagedPaneCommandState(paneTarget: string): Promise<{ curren
 }
 
 function paneLooksLikeManagedAgent({ currentCommand, startCommand }: { currentCommand: string; startCommand: string }): boolean {
-  if (/omx.*hud.*--watch/i.test(startCommand)) return false;
+  if (/\bomx\b.*\bhud\b.*--watch/i.test(startCommand)) return false;
   if (startCommand.includes('codex')) return true;
   return currentCommand === 'codex' || currentCommand === 'node' || currentCommand === 'npx';
 }
@@ -260,7 +340,7 @@ export async function resolveManagedCurrentPane(cwd: string, payload: any, { all
 export async function resolveManagedSessionPane(cwd: string, payload: any): Promise<string> {
   const managedContext = await resolveManagedSessionContext(cwd, payload, { allowTeamWorker: false });
   if (!managedContext.managed) return '';
-  const expectedSession = safeString(managedContext.expectedTmuxSessionName).trim();
+  const expectedSession = safeString(managedContext.taggedTmuxSessionName || managedContext.expectedTmuxSessionName).trim();
   if (!expectedSession) return '';
 
   try {
