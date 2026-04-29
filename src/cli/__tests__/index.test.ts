@@ -1791,12 +1791,21 @@ describe("detached tmux new-session sequencing", () => {
       "sess-detached-managed",
     );
     const newSession = steps.find((step) => step.name === "new-session");
+    const tagSession = steps.find((step) => step.name === "tag-session");
     assert.ok(newSession);
+    assert.ok(tagSession);
     assert.equal(
       newSession!.args.includes("-e") &&
         newSession!.args.some((arg) => arg === "OMX_SESSION_ID=sess-detached-managed"),
       true,
     );
+    assert.deepEqual(tagSession!.args, [
+      "set-option",
+      "-t",
+      "omx-demo",
+      "@omx_instance_id",
+      "sess-detached-managed",
+    ]);
   });
 
   it("buildDetachedSessionBootstrapSteps forwards CODEX_HOME override to detached tmux session", () => {

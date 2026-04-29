@@ -211,6 +211,28 @@ export async function resolvePaneTarget(target: any, expectedCwd: any, modePane:
     return { paneTarget: null, reason: managedContext.reason || 'unmanaged_session' };
   }
 
+  const taggedSessionTarget = safeString(managedContext.taggedTmuxSessionName).trim();
+  if (taggedSessionTarget) {
+    try {
+      const paneId = await resolveSessionToPane(taggedSessionTarget);
+      if (paneId) {
+        const resolved = await finalizeResolvedPane(paneId, 'managed_instance_target', expectedCwd);
+        if (!resolved.paneTarget) return resolved;
+        const ownership = await verifyManagedPaneTarget(resolved.paneTarget, cwd, payload, { allowTeamWorker: false });
+        if (ownership.ok) {
+          return {
+            ...resolved,
+            source: 'managed_instance',
+            healTarget: true,
+          };
+        }
+        return { paneTarget: null, reason: ownership.reason || 'pane_not_managed_session' };
+      }
+    } catch {
+      // Fall through to legacy pane/session targets.
+    }
+  }
+
   const canonicalModePane = safeString(modePane).trim();
   if (canonicalModePane) {
     try {
@@ -262,7 +284,7 @@ export async function resolvePaneTarget(target: any, expectedCwd: any, modePane:
   try {
     if (!requiresManagedOwnership) return { paneTarget: null, reason: 'target_session_requires_managed_context' };
     const explicitSessionTarget = safeString(target.value).trim();
-    const expectedSessionTarget = safeString(managedContext.expectedTmuxSessionName).trim();
+    const expectedSessionTarget = safeString(managedContext.taggedTmuxSessionName || managedContext.expectedTmuxSessionName).trim();
     const sessionIdTarget = safeString(managedContext.invocationSessionId).trim();
     const stateSessionTarget = safeString(managedContext.sessionState?.session_id).trim();
     const nativeSessionTarget = safeString(managedContext.nativeSessionId).trim();

@@ -34,6 +34,8 @@ import { resolveOmxCliEntryPath } from '../utils/paths.js';
 const execFileAsync = promisify(execFile);
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../hud/constants.js';
 
+const OMX_INSTANCE_OPTION = '@omx_instance_id';
+
 export interface TeamSession {
   name: string; // tmux target in "session:window" form
   workerCount: number;
@@ -1061,6 +1063,13 @@ export function createTeamSession(
       throw new Error(`failed to parse current tmux target: ${context.stdout}`);
     }
     const teamTarget = `${sessionName}:${windowIndex}`;
+    const instanceId = (process.env.OMX_SESSION_ID || '').trim();
+    if (instanceId) {
+      const tagResult = runTmux(['set-option', '-t', sessionName, OMX_INSTANCE_OPTION, instanceId]);
+      if (!tagResult.ok) {
+        throw new Error(`failed to tag tmux session ${sessionName}: ${tagResult.stderr}`);
+      }
+    }
     const panes = listPanes(teamTarget);
     const leaderPaneId = chooseTeamLeaderPaneId(panes, detectedLeaderPaneId);
     const initialHudPaneIds = findHudPaneIds(teamTarget, leaderPaneId);
