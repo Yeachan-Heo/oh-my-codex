@@ -225,7 +225,7 @@ export async function resolveManagedSessionContext(
     if (currentTmuxPaneInstanceId && currentTmuxPaneInstanceId !== invocationSessionId) {
       return {
         managed: false,
-        reason: 'tmux_pane_instance_mismatch',
+        reason: 'pane_instance_mismatch',
         invocationSessionId,
         sessionState,
         expectedTmuxSessionName,
