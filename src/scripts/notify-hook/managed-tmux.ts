@@ -7,6 +7,7 @@ import { safeString } from './utils.js';
 import { sameFilePath } from '../../utils/paths.js';
 
 const OMX_INSTANCE_OPTION = '@omx_instance_id';
+const OMX_PANE_INSTANCE_OPTION = '@omx_pane_instance_id';
 
 function sanitizeTmuxToken(value: string): string {
   const cleaned = safeString(value)
@@ -80,14 +81,35 @@ function readCurrentTmuxSessionName(): string {
   }
 }
 
-async function readTmuxSessionInstanceId(sessionTarget: string): Promise<string> {
-  const target = safeString(sessionTarget).trim();
+async function readTmuxOption(targetValue: string, optionName: string, { pane = false } = {}): Promise<string> {
+  const target = safeString(targetValue).trim();
   if (!target) return '';
+  const args = ['show-option', '-qv'];
+  if (pane) args.push('-p');
+  args.push('-t', target, optionName);
   try {
-    const result = await runProcess('tmux', ['show-option', '-qv', '-t', target, OMX_INSTANCE_OPTION], 2000);
+    const result = await runProcess('tmux', args, 2000);
     return safeString(result.stdout).trim();
   } catch {
     return '';
+  }
+}
+
+async function readTmuxSessionInstanceId(sessionTarget: string): Promise<string> {
+  return readTmuxOption(sessionTarget, OMX_INSTANCE_OPTION);
+}
+
+async function readTmuxPaneInstanceId(paneTarget: string): Promise<string> {
+  return readTmuxOption(paneTarget, OMX_PANE_INSTANCE_OPTION, { pane: true });
+}
+
+function warnPaneInstanceFallback(paneTarget: string): void {
+  const target = safeString(paneTarget).trim();
+  if (!target) return;
+  try {
+    console.warn(`[omx] missing ${OMX_PANE_INSTANCE_OPTION} on ${target}; falling back to ${OMX_INSTANCE_OPTION}`);
+  } catch {
+    // warning is best effort only
   }
 }
 
@@ -144,7 +166,11 @@ function processHasAncestorPid(targetPid: number, currentPid = process.pid): boo
   return false;
 }
 
-export async function resolveManagedSessionContext(cwd: string, payload: any, { allowTeamWorker = true } = {}): Promise<any> {
+export async function resolveManagedSessionContext(
+  cwd: string,
+  payload: any,
+  { allowTeamWorker = true, paneTarget = '' }: { allowTeamWorker?: boolean; paneTarget?: string } = {},
+): Promise<any> {
   if (allowTeamWorker && safeString(process.env.OMX_TEAM_WORKER || '').trim() !== '') {
     return {
       managed: true,
@@ -194,6 +220,35 @@ export async function resolveManagedSessionContext(cwd: string, payload: any, { 
         canonicalSessionId || invocationSessionId,
       );
     const currentTmuxSessionName = readCurrentTmuxSessionName();
+    const currentTmuxPaneTarget = safeString(paneTarget || process.env.TMUX_PANE || '').trim();
+    const currentTmuxPaneInstanceId = currentTmuxPaneTarget ? await readTmuxPaneInstanceId(currentTmuxPaneTarget) : '';
+    if (currentTmuxPaneInstanceId && currentTmuxPaneInstanceId !== invocationSessionId) {
+      return {
+        managed: false,
+        reason: 'tmux_pane_instance_mismatch',
+        invocationSessionId,
+        sessionState,
+        expectedTmuxSessionName,
+        currentTmuxSessionName,
+        currentTmuxPaneTarget,
+        currentTmuxPaneInstanceId,
+        taggedTmuxSessionName: '',
+      };
+    }
+    if (currentTmuxPaneInstanceId === invocationSessionId) {
+      return {
+        managed: true,
+        reason: 'tmux_pane_instance_match',
+        invocationSessionId,
+        sessionState,
+        expectedTmuxSessionName,
+        currentTmuxSessionName,
+        currentTmuxPaneTarget,
+        currentTmuxPaneInstanceId,
+        taggedTmuxSessionName: currentTmuxSessionName,
+      };
+    }
+
     const currentTmuxInstanceId = currentTmuxSessionName ? await readTmuxSessionInstanceId(currentTmuxSessionName) : '';
     if (currentTmuxInstanceId && currentTmuxInstanceId !== invocationSessionId) {
       return {
@@ -208,6 +263,7 @@ export async function resolveManagedSessionContext(cwd: string, payload: any, { 
       };
     }
     if (currentTmuxInstanceId === invocationSessionId) {
+      if (currentTmuxPaneTarget) warnPaneInstanceFallback(currentTmuxPaneTarget);
       return {
         managed: true,
         reason: 'tmux_instance_match',
@@ -216,6 +272,8 @@ export async function resolveManagedSessionContext(cwd: string, payload: any, { 
         expectedTmuxSessionName,
         currentTmuxSessionName,
         currentTmuxInstanceId,
+        currentTmuxPaneTarget,
+        paneInstanceWarning: 'missing_pane_instance_tag_session_fallback',
         taggedTmuxSessionName: currentTmuxSessionName,
       };
     }
@@ -308,7 +366,7 @@ export async function verifyManagedPaneTarget(paneId: string, cwd: string, paylo
     return { ok: false, reason: 'missing_pane_target', paneTarget: '' };
   }
 
-  const managedContext = await resolveManagedSessionContext(cwd, payload, { allowTeamWorker });
+  const managedContext = await resolveManagedSessionContext(cwd, payload, { allowTeamWorker, paneTarget });
   if (!managedContext.managed) {
     return { ok: false, reason: managedContext.reason || 'unmanaged_session', paneTarget, managedContext };
   }
@@ -328,18 +386,49 @@ export async function verifyManagedPaneTarget(paneId: string, cwd: string, paylo
     if (!paneSessionName) {
       return { ok: false, reason: 'pane_session_missing', paneTarget, managedContext };
     }
-    const paneInstanceId = await readTmuxSessionInstanceId(paneSessionName);
+    const paneInstanceId = await readTmuxPaneInstanceId(paneTarget);
+    const sessionInstanceId = paneInstanceId ? '' : await readTmuxSessionInstanceId(paneSessionName);
     if (paneInstanceId && paneInstanceId !== managedContext.invocationSessionId) {
       return { ok: false, reason: 'pane_instance_mismatch', paneTarget, paneSessionName, paneInstanceId, managedContext };
+    }
+    if (!paneInstanceId && sessionInstanceId) {
+      warnPaneInstanceFallback(paneTarget);
+      if (sessionInstanceId !== managedContext.invocationSessionId) {
+        return {
+          ok: false,
+          reason: 'pane_instance_mismatch',
+          paneTarget,
+          paneSessionName,
+          paneInstanceId: sessionInstanceId,
+          paneInstanceWarning: 'missing_pane_instance_tag_session_fallback',
+          managedContext,
+        };
+      }
     }
     if (paneSessionName !== expectedSession) {
       const taggedSession = safeString(managedContext.taggedTmuxSessionName).trim();
       if (taggedSession && paneSessionName === taggedSession) {
-        return { ok: true, reason: 'ok', paneTarget, paneSessionName, paneInstanceId, managedContext };
+        return {
+          ok: true,
+          reason: 'ok',
+          paneTarget,
+          paneSessionName,
+          paneInstanceId: paneInstanceId || sessionInstanceId,
+          paneInstanceWarning: paneInstanceId ? '' : 'missing_pane_instance_tag_session_fallback',
+          managedContext,
+        };
       }
       return { ok: false, reason: 'pane_not_managed_session', paneTarget, paneSessionName, managedContext };
     }
-    return { ok: true, reason: 'ok', paneTarget, paneSessionName, paneInstanceId, managedContext };
+    return {
+      ok: true,
+      reason: 'ok',
+      paneTarget,
+      paneSessionName,
+      paneInstanceId: paneInstanceId || sessionInstanceId,
+      paneInstanceWarning: paneInstanceId ? '' : 'missing_pane_instance_tag_session_fallback',
+      managedContext,
+    };
   } catch {
     return { ok: false, reason: 'pane_session_lookup_failed', paneTarget, managedContext };
   }
