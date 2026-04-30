@@ -48,7 +48,10 @@ import {
   waitForWorkerReady,
   waitForWorkerReadyAsync,
   paneIsBootstrapping,
+  classifyWorkerStartupInjectSafety,
+  checkWorkerStartupInjectSafety,
   dismissTrustPromptIfPresent,
+  evaluateStartupDirectTriggerSafetyCapture,
   mitigateCopyModeUnderlineArtifacts,
 } from '../tmux-session.js';
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../../hud/constants.js';
@@ -337,6 +340,32 @@ describe('HUD resize hook command builders', () => {
   });
 });
 
+
+describe('evaluateStartupDirectTriggerSafetyCapture', () => {
+  it('allows startup direct triggers on a ready prompt or Codex viewport', () => {
+    assert.deepEqual(evaluateStartupDirectTriggerSafetyCapture(READY_HELPER_CAPTURE, 'codex'), {
+      safe: true,
+      reason: 'ready_prompt',
+    });
+    assert.deepEqual(evaluateStartupDirectTriggerSafetyCapture(VIEWPORT_WITHOUT_VISIBLE_PROMPT_CAPTURE, 'codex'), {
+      safe: true,
+      reason: 'codex_viewport',
+    });
+  });
+
+  it('blocks startup direct triggers through trust and Claude bypass prompts', () => {
+    assert.deepEqual(evaluateStartupDirectTriggerSafetyCapture(`Do you trust the contents of this directory?
+Press enter to continue`, 'codex'), {
+      safe: false,
+      reason: 'trust_prompt',
+    });
+    assert.deepEqual(evaluateStartupDirectTriggerSafetyCapture(CLAUDE_BYPASS_PROMPT_CAPTURE, 'claude'), {
+      safe: false,
+      reason: 'claude_bypass_prompt',
+    });
+  });
+});
+
 describe('sendToWorker validation', () => {
   it('rejects text over 200 chars', async () => {
     await assert.rejects(
@@ -574,6 +603,52 @@ esac
           enterCount >= 4,
           `expected repeated submit nudges before failing closed on stuck queued banner:\n${log}`,
         );
+      },
+    );
+  });
+});
+
+describe('startup direct trigger safety', () => {
+  it('classifies ready panes as safe and blocks trust, bypass, bootstrapping, and active-task captures', () => {
+    assert.equal(classifyWorkerStartupInjectSafety(READY_HELPER_CAPTURE), 'safe');
+    assert.equal(
+      classifyWorkerStartupInjectSafety('Do you trust the contents of this directory?\nPress enter to continue'),
+      'trust_prompt',
+    );
+    assert.equal(classifyWorkerStartupInjectSafety(CLAUDE_BYPASS_PROMPT_CAPTURE), 'claude_bypass_prompt');
+    assert.equal(classifyWorkerStartupInjectSafety('OpenAI Codex\nmodel: loading'), 'bootstrapping');
+    assert.equal(
+      classifyWorkerStartupInjectSafety('OpenAI Codex\nmodel: test\n• Running tests (esc to interrupt)'),
+      'active_task',
+    );
+  });
+
+  it('checks visible pane first and refuses direct injection through a trust prompt', async () => {
+    await withMockTmuxFixture(
+      'omx-tmux-startup-direct-trust-',
+      (logPath) => `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${logPath}"
+case "$1" in
+  capture-pane)
+    cat <<'EOF'
+Do you trust the contents of this directory?
+Press enter to continue
+EOF
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+      async ({ logPath }) => {
+        assert.deepEqual(
+          await checkWorkerStartupInjectSafety('omx-team-x', 1),
+          { safe: false, reason: 'trust_prompt' },
+        );
+        const log = await readFile(logPath, 'utf-8');
+        assert.doesNotMatch(log, /send-keys/);
       },
     );
   });
