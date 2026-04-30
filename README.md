@@ -228,6 +228,7 @@ These are operator/support surfaces:
   - `omx uninstall` removes OMX-managed wrappers from `.codex/hooks.json` but keeps the file when user hooks remain
 - `omx update` checks npm immediately, installs the newest global OMX build, then reruns the same interactive setup refresh path
 - fresh OMX-managed `gpt-5.5` config seeding now recommends `model_context_window = 250000` and `model_auto_compact_token_limit = 200000`, but only when those keys are missing
+- `.omx-config.json` model/env routing is documented in [the model/env routing reference](./docs/reference/omx-config-schema-routing.md); only edit keys supported by your installed OMX version
 - `omx doctor` verifies the install when something seems wrong; it does not prove that the active Codex profile can make an authenticated model call
 - `omx hud --watch` is a monitoring/status surface, not the primary user workflow
 
