@@ -1898,6 +1898,24 @@ describe("detached tmux new-session sequencing", () => {
     assert.match(leaderCmd!, /exit \$status/);
   });
 
+  it("buildDetachedSessionBootstrapSteps finalizes postLaunch inside the detached leader when a session id is available", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-demo",
+      "/tmp/project",
+      "'codex' '--model' 'gpt-5'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      null,
+      undefined,
+      null,
+      false,
+      "omx-session-123",
+    );
+    const leaderCmd = steps[0]?.args.at(-1);
+    assert.equal(typeof leaderCmd, "string");
+    assert.match(leaderCmd!, /runDetachedSessionPostLaunch/);
+    assert.match(leaderCmd!, /omx-session-123/);
+  });
+
   it("detached leader command keeps stdin open for the Codex child", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-detached-leader-stdin-"));
     const fakeBin = join(cwd, "bin");
