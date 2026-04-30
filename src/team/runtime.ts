@@ -4016,7 +4016,6 @@ async function dispatchCriticalInboxInstruction(params: {
   inboxCorrelationKey: string;
   requireWorkerStartupEvidence?: boolean;
   startupEvidenceTimeoutMs?: number;
-  startupElapsedMs?: number;
   startupTiming?: StartupTimingRecorder;
 }): Promise<DispatchOutcome> {
   const {
@@ -4034,7 +4033,6 @@ async function dispatchCriticalInboxInstruction(params: {
     inboxCorrelationKey,
     requireWorkerStartupEvidence,
     startupEvidenceTimeoutMs,
-    startupElapsedMs,
     startupTiming,
   } = params;
   const noteTiming = (phase: StartupTimingPhase, details?: Omit<StartupTimingEvent, 'phase' | 'at' | 'elapsed_ms'>) => {
