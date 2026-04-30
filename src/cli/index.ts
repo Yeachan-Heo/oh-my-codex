@@ -1220,6 +1220,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
       codexHomeOverride,
       notifyTempContractRaw,
       effectiveExplicitLaunchPolicy,
+      projectLocalCodexHomeForCleanup,
     );
     postLaunchHandledExternally = launchResult.postLaunchHandledExternally;
   } finally {
@@ -1987,9 +1988,11 @@ function buildDetachedSessionLeaderCommand(
   sessionName: string,
   codexCmd: string,
   sessionId?: string,
+  codexHomeOverride?: string,
+  projectLocalCodexHomeForCleanup?: string,
 ): string {
   const detachedPostLaunchHelper = sessionId
-    ? `${buildDetachedSessionPostLaunchHelperCommand(cwd, sessionId)} >/dev/null 2>&1 || true;`
+    ? `${buildDetachedSessionPostLaunchHelperCommand(cwd, sessionId, codexHomeOverride, projectLocalCodexHomeForCleanup)} >/dev/null 2>&1 || true;`
     : "";
   const wrapped = [
     buildTmuxExtendedKeysAcquireShellSnippet(cwd),
@@ -2004,8 +2007,8 @@ function buildDetachedSessionLeaderCommand(
     "fi;",
     'exec 3<&- 2>/dev/null || true;',
     buildTmuxExtendedKeysReleaseShellSnippet(cwd),
-    'if [ "$status" -lt 128 ]; then',
     detachedPostLaunchHelper,
+    'if [ "$status" -lt 128 ]; then',
     `tmux kill-session -t "${escapeShellDoubleQuotedValue(sessionName)}" >/dev/null 2>&1 || true;`,
     "fi;",
     "exit $status;",
@@ -2021,13 +2024,24 @@ function buildDetachedSessionLeaderCommand(
 function buildDetachedSessionPostLaunchHelperCommand(
   cwd: string,
   sessionId: string,
+  codexHomeOverride?: string,
+  projectLocalCodexHomeForCleanup?: string,
 ): string {
   const cwdLiteral = JSON.stringify(cwd);
   const sessionIdLiteral = JSON.stringify(sessionId);
+  const codexHomeLiteral =
+    typeof codexHomeOverride === "string" && codexHomeOverride.length > 0
+      ? JSON.stringify(codexHomeOverride)
+      : "undefined";
+  const projectLocalCleanupLiteral =
+    typeof projectLocalCodexHomeForCleanup === "string" &&
+    projectLocalCodexHomeForCleanup.length > 0
+      ? JSON.stringify(projectLocalCodexHomeForCleanup)
+      : "undefined";
   const moduleUrlLiteral = JSON.stringify(import.meta.url);
   const script = [
     `const mod = await import(${moduleUrlLiteral});`,
-    `await mod.runDetachedSessionPostLaunch(${cwdLiteral}, ${sessionIdLiteral}, process.env.CODEX_HOME);`,
+    `await mod.runDetachedSessionPostLaunch(${cwdLiteral}, ${sessionIdLiteral}, ${codexHomeLiteral}, ${projectLocalCleanupLiteral});`,
   ].join(" ");
   return `${quoteShellArg(process.execPath)} --input-type=module -e ${quoteShellArg(script)}`;
 }
@@ -2195,10 +2209,18 @@ export function buildDetachedSessionBootstrapSteps(
   notifyTempContractRaw?: string | null,
   nativeWindows = false,
   sessionId?: string,
+  projectLocalCodexHomeForCleanup?: string,
 ): DetachedSessionTmuxStep[] {
   const detachedLeaderCmd = nativeWindows
     ? "powershell.exe"
-    : buildDetachedSessionLeaderCommand(cwd, sessionName, codexCmd, sessionId);
+    : buildDetachedSessionLeaderCommand(
+        cwd,
+        sessionName,
+        codexCmd,
+        sessionId,
+        codexHomeOverride,
+        projectLocalCodexHomeForCleanup,
+      );
   const newSessionArgs: string[] = [
     "new-session",
     "-d",
@@ -2802,6 +2824,7 @@ function runCodex(
   codexHomeOverride?: string,
   notifyTempContractRaw?: string | null,
   explicitLaunchPolicy?: CodexLaunchPolicy,
+  projectLocalCodexHomeForCleanup?: string,
 ): { postLaunchHandledExternally: boolean } {
   const launchArgs = injectModelInstructionsBypassArgs(
     cwd,
@@ -2935,6 +2958,7 @@ function runCodex(
         notifyTempContractRaw,
         nativeWindows,
         sessionId,
+        projectLocalCodexHomeForCleanup,
       );
       for (const step of bootstrapSteps) {
         const output = execTmuxFileSync(step.args, {
@@ -3021,7 +3045,7 @@ function runCodex(
           }
         }
       }
-      return { postLaunchHandledExternally: true };
+      return { postLaunchHandledExternally: !nativeWindows };
     } catch (err) {
       logCliOperationFailure(err);
       if (createdDetachedSession) {
@@ -3338,13 +3362,14 @@ export async function runDetachedSessionPostLaunch(
   cwd: string,
   sessionId: string,
   codexHomeOverride?: string,
+  projectLocalCodexHomeForCleanup?: string,
 ): Promise<void> {
   await postLaunch(
     cwd,
     sessionId,
     codexHomeOverride,
     false,
-    resolveProjectLocalCodexHomeForLaunch(cwd, process.env),
+    projectLocalCodexHomeForCleanup,
   );
 }
 
