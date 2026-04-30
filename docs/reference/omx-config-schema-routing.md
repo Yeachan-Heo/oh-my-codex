@@ -6,7 +6,7 @@ Do not add or edit keys unless your installed OMX version recognizes them. Unkno
 
 ## Where the file is read
 
-OMX resolves `.omx-config.json` through the active Codex home:
+Most `.omx-config.json` readers resolve through the active Codex home:
 
 | Setup shape | Config file | Notes |
 | --- | --- | --- |
@@ -14,6 +14,8 @@ OMX resolves `.omx-config.json` through the active Codex home:
 | Project scope | `./.codex/.omx-config.json` | Used by OMX launch paths when `./.omx/setup-scope.json` says `project` and `CODEX_HOME` is not already set. |
 
 Project-scoped setup also writes `./.codex/config.toml`, `./.codex/hooks.json`, and project-local skills/prompts/agents. User-scoped setup writes the corresponding files under `${CODEX_HOME:-~/.codex}`.
+
+The wiki lifecycle reader is a project-root exception because it runs from hook payload `cwd`: it checks `<root>/.omx-config.json` first, then `${CODEX_HOME:-~/.codex}/.omx-config.json`, and falls back to built-in wiki defaults if neither file has a valid `wiki` object. The project-scope Codex-home file `./.codex/.omx-config.json` still applies when `CODEX_HOME` resolves to `./.codex`; it is not an extra wiki-only lookup path.
 
 `omx setup --scope project` persists the project-scope choice in `./.omx/setup-scope.json`; `omx doctor` prints the resolved setup scope and the Codex home/config paths it is checking.
 
@@ -142,16 +144,16 @@ For team low-complexity helpers, the exact order depends on the call path: `getS
 
 ## Role/category routing examples
 
-Native agent TOML generation and team model-contract logic use agent definitions with `modelClass` and `reasoningEffort` metadata.
+Native agent TOML generation and team model-contract logic use agent definitions with `modelClass` and `reasoningEffort` metadata. Native-agent generation has one important frontier-lane precedence detail: for frontier roles and the `executor` special case, it reads the active Codex `config.toml` root `model` first, then falls back to `getMainDefaultModel()` if that root model is absent. Because `getMainDefaultModel()` is only the fallback in this path, `.omx-config.json` `env.OMX_DEFAULT_FRONTIER_MODEL` does not override an explicit `config.toml` root `model` for generated native-agent TOML.
 
 Examples:
 
 | Role/category | Examples | Model class behavior |
 | --- | --- | --- |
-| Frontier orchestration | `planner`, `architect`, `critic`, `code-reviewer`, `security-reviewer`, `team-executor`, `vision` | Uses the main/frontier default. |
+| Frontier orchestration | `planner`, `architect`, `critic`, `code-reviewer`, `security-reviewer`, `team-executor`, `vision` | Native-agent generation uses active `config.toml` root `model` first, then the main/frontier default fallback. |
 | Standard worker/review | `debugger`, `quality-reviewer`, `api-reviewer`, `performance-reviewer`, `dependency-expert`, `writer`, `researcher` | Uses the standard-lane default, which inherits main/frontier unless `OMX_DEFAULT_STANDARD_MODEL` is set. |
 | Fast/low-complexity | `explore`, `style-reviewer` | Uses the spark/low-complexity default. |
-| Executor special case | `executor` | Uses the main/frontier default in native-agent generation and team fallback routing. |
+| Executor special case | `executor` | Native-agent generation uses active `config.toml` root `model` first, then the main/frontier default fallback; team fallback routing keeps it on the frontier lane. |
 
 Team worker launches add another layer:
 
