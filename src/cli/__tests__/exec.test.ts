@@ -26,6 +26,7 @@ function runOmx(
     encoding: 'utf-8',
     env: {
       ...process.env,
+      CODEX_HOME: '',
       OMX_MODEL_INSTRUCTIONS_FILE: '',
       OMX_TEAM_WORKER: '',
       OMX_TEAM_STATE_ROOT: '',

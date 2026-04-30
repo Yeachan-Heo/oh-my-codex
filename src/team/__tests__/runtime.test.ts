@@ -87,6 +87,62 @@ function expectedLowComplexityModel(codexHomeOverride?: string): string {
   return resolveTeamLowComplexityDefaultModel(codexHomeOverride);
 }
 
+function withIsolatedDefaultModelEnv<T>(run: () => T): T {
+  const savedEnv = new Map<string, string | undefined>();
+  for (const key of [
+    'CODEX_HOME',
+    'OMX_DEFAULT_FRONTIER_MODEL',
+    'OMX_DEFAULT_STANDARD_MODEL',
+    'OMX_DEFAULT_SPARK_MODEL',
+    'OMX_SPARK_MODEL',
+  ] as const) {
+    savedEnv.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  process.env.CODEX_HOME = join(
+    tmpdir(),
+    `omx-runtime-defaults-${process.pid}-${Date.now()}`,
+  );
+
+  try {
+    return run();
+  } finally {
+    for (const [key, value] of savedEnv.entries()) {
+      if (typeof value === 'string') process.env[key] = value;
+      else delete process.env[key];
+    }
+  }
+}
+
+async function withIsolatedDefaultModelEnvAsync<T>(
+  run: () => Promise<T>,
+): Promise<T> {
+  const savedEnv = new Map<string, string | undefined>();
+  for (const key of [
+    'CODEX_HOME',
+    'OMX_DEFAULT_FRONTIER_MODEL',
+    'OMX_DEFAULT_STANDARD_MODEL',
+    'OMX_DEFAULT_SPARK_MODEL',
+    'OMX_SPARK_MODEL',
+  ] as const) {
+    savedEnv.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  process.env.CODEX_HOME = join(
+    tmpdir(),
+    `omx-runtime-defaults-${process.pid}-${Date.now()}`,
+  );
+
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of savedEnv.entries()) {
+      if (typeof value === 'string') process.env[key] = value;
+      else delete process.env[key];
+    }
+  }
+}
+
 async function readTeamDeliveryLog(cwd: string): Promise<Array<Record<string, unknown>>> {
   const path = join(cwd, '.omx', 'logs', `team-delivery-${new Date().toISOString().slice(0, 10)}.jsonl`);
   const raw = await readFile(path, 'utf-8').catch(() => '');
@@ -410,43 +466,49 @@ describe('runtime', () => {
   });
 
   it('resolveWorkerLaunchArgsFromEnv reads low-complexity model from config when present', async () => {
-    const previousCodexHome = process.env.CODEX_HOME;
-    const tempCodexHome = await mkdtemp(join(tmpdir(), 'omx-codex-home-'));
-    await writeFile(
-      join(tempCodexHome, '.omx-config.json'),
-      JSON.stringify({ models: { team_low_complexity: 'gpt-4.1-mini' } }),
-    );
-    process.env.CODEX_HOME = tempCodexHome;
-    try {
-      const args = resolveWorkerLaunchArgsFromEnv(
-        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
-        'explore',
+    await withIsolatedDefaultModelEnvAsync(async () => {
+      const previousCodexHome = process.env.CODEX_HOME;
+      const tempCodexHome = await mkdtemp(join(tmpdir(), 'omx-codex-home-'));
+      await writeFile(
+        join(tempCodexHome, '.omx-config.json'),
+        JSON.stringify({ models: { team_low_complexity: 'gpt-4.1-mini' } }),
       );
-      assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-4.1-mini']);
-    } finally {
-      if (typeof previousCodexHome === 'string') process.env.CODEX_HOME = previousCodexHome;
-      else delete process.env.CODEX_HOME;
-      await rm(tempCodexHome, { recursive: true, force: true });
-    }
+      process.env.CODEX_HOME = tempCodexHome;
+      try {
+        const args = resolveWorkerLaunchArgsFromEnv(
+          { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
+          'explore',
+        );
+        assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-4.1-mini']);
+      } finally {
+        if (typeof previousCodexHome === 'string') process.env.CODEX_HOME = previousCodexHome;
+        else delete process.env.CODEX_HOME;
+        await rm(tempCodexHome, { recursive: true, force: true });
+      }
+    });
   });
 
   it('resolveWorkerLaunchArgsFromEnv injects the frontier default model for executor workers', () => {
-    const args = resolveWorkerLaunchArgsFromEnv(
-      { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
-      'executor',
-    );
-    assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-5.5']);
+    withIsolatedDefaultModelEnv(() => {
+      const args = resolveWorkerLaunchArgsFromEnv(
+        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
+        'executor',
+      );
+      assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-5.5']);
+    });
   });
 
   it('resolveWorkerLaunchArgsFromEnv uses medium reasoning for executor launch defaults', () => {
-    const args = resolveWorkerLaunchArgsFromEnv(
-      { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
-      'executor',
-      undefined,
-      resolveAgentReasoningEffort('executor'),
-      'codex',
-    );
-    assert.deepEqual(args, ['--no-alt-screen', '-c', 'model_reasoning_effort="medium"', '--model', 'gpt-5.5']);
+    withIsolatedDefaultModelEnv(() => {
+      const args = resolveWorkerLaunchArgsFromEnv(
+        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
+        'executor',
+        undefined,
+        resolveAgentReasoningEffort('executor'),
+        'codex',
+      );
+      assert.deepEqual(args, ['--no-alt-screen', '-c', 'model_reasoning_effort="medium"', '--model', 'gpt-5.5']);
+    });
   });
 
   it('resolveWorkerLaunchArgsFromEnv treats *-low aliases as low complexity', () => {
@@ -498,22 +560,24 @@ describe('runtime', () => {
     const originalLog = console.log;
     console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
     try {
-      const lowArgs = resolveWorkerLaunchArgsFromEnv(
-        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
-        'executor',
-        undefined,
-        'low',
-        'codex',
-      );
-      const highArgs = resolveWorkerLaunchArgsFromEnv(
-        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
-        'executor',
-        undefined,
-        'high',
-        'codex',
-      );
-      assert.deepEqual(lowArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="low"', '--model', 'gpt-5.5']);
-      assert.deepEqual(highArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="high"', '--model', 'gpt-5.5']);
+      withIsolatedDefaultModelEnv(() => {
+        const lowArgs = resolveWorkerLaunchArgsFromEnv(
+          { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
+          'executor',
+          undefined,
+          'low',
+          'codex',
+        );
+        const highArgs = resolveWorkerLaunchArgsFromEnv(
+          { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
+          'executor',
+          undefined,
+          'high',
+          'codex',
+        );
+        assert.deepEqual(lowArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="low"', '--model', 'gpt-5.5']);
+        assert.deepEqual(highArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="high"', '--model', 'gpt-5.5']);
+      });
     } finally {
       console.log = originalLog;
     }
@@ -613,13 +677,16 @@ describe('runtime', () => {
     const originalLog = console.log;
     console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
     try {
-      const codexArgs = resolveWorkerLaunchArgsFromEnv(
-        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
-        'executor',
-        undefined,
-        'high',
-        'codex',
-      );
+      let codexArgs: string[] = [];
+      withIsolatedDefaultModelEnv(() => {
+        codexArgs = resolveWorkerLaunchArgsFromEnv(
+          { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
+          'executor',
+          undefined,
+          'high',
+          'codex',
+        );
+      });
       const claudeArgs = resolveWorkerLaunchArgsFromEnv(
         { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen --model claude-3-7-sonnet' },
         'executor',
@@ -2959,19 +3026,20 @@ process.on('SIGTERM', () => process.exit(0));
 
     let runtime: TeamRuntime | null = null;
     try {
-      runtime = await withMockPromptModeCodexAllowed(() =>
-        withoutTeamWorkerEnv(() =>
-          startTeam(
-            'team-role-routing',
-            'heuristic routing handoff',
-            'executor',
-            2,
-            [
-              { subject: 'test routing report only', description: 'test routing report only', owner: 'worker-1', role: 'test-engineer' },
-              { subject: 'document routing report only', description: 'document routing report only', owner: 'worker-2', role: 'writer' },
-            ],
-            cwd,
-          )));
+      runtime = await withIsolatedDefaultModelEnvAsync(async () =>
+        await withMockPromptModeCodexAllowed(() =>
+          withoutTeamWorkerEnv(() =>
+            startTeam(
+              'team-role-routing',
+              'heuristic routing handoff',
+              'executor',
+              2,
+              [
+                { subject: 'test routing report only', description: 'test routing report only', owner: 'worker-1', role: 'test-engineer' },
+                { subject: 'document routing report only', description: 'document routing report only', owner: 'worker-2', role: 'writer' },
+              ],
+              cwd,
+            ))));
 
       assert.equal(runtime.config.worker_launch_mode, 'prompt');
       assert.equal(runtime.config.workers[0]?.role, 'test-engineer');

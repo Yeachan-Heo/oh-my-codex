@@ -26,17 +26,49 @@ function manifestWithAgents(names: string[]): CatalogManifest {
   };
 }
 
+const originalCodexHome = process.env.CODEX_HOME;
+const originalFrontierModel = process.env.OMX_DEFAULT_FRONTIER_MODEL;
 const originalStandardModel = process.env.OMX_DEFAULT_STANDARD_MODEL;
+const originalSparkModel = process.env.OMX_DEFAULT_SPARK_MODEL;
+const originalLegacySparkModel = process.env.OMX_SPARK_MODEL;
+const isolatedCodexHome = join(
+  tmpdir(),
+  `omx-native-config-empty-codex-home-${process.pid}`,
+);
 
 beforeEach(() => {
+  process.env.CODEX_HOME = isolatedCodexHome;
+  delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
   process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.4-mini";
+  delete process.env.OMX_DEFAULT_SPARK_MODEL;
+  delete process.env.OMX_SPARK_MODEL;
 });
 
 afterEach(() => {
+  if (typeof originalCodexHome === "string") {
+    process.env.CODEX_HOME = originalCodexHome;
+  } else {
+    delete process.env.CODEX_HOME;
+  }
+  if (typeof originalFrontierModel === "string") {
+    process.env.OMX_DEFAULT_FRONTIER_MODEL = originalFrontierModel;
+  } else {
+    delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
+  }
   if (typeof originalStandardModel === "string") {
     process.env.OMX_DEFAULT_STANDARD_MODEL = originalStandardModel;
   } else {
     delete process.env.OMX_DEFAULT_STANDARD_MODEL;
+  }
+  if (typeof originalSparkModel === "string") {
+    process.env.OMX_DEFAULT_SPARK_MODEL = originalSparkModel;
+  } else {
+    delete process.env.OMX_DEFAULT_SPARK_MODEL;
+  }
+  if (typeof originalLegacySparkModel === "string") {
+    process.env.OMX_SPARK_MODEL = originalLegacySparkModel;
+  } else {
+    delete process.env.OMX_SPARK_MODEL;
   }
 });
 
