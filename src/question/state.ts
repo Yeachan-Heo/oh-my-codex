@@ -4,9 +4,10 @@ import { dirname, join } from 'node:path';
 import { getStateDir } from '../mcp/state-paths.js';
 import { writeAtomic } from '../team/state.js';
 import { sleep } from '../utils/sleep.js';
-import { getNormalizedQuestionType } from './types.js';
+import { getNormalizedQuestionType, normalizeQuestionInput } from './types.js';
 import type {
   QuestionAnswer,
+  QuestionAnswerEntry,
   QuestionInput,
   QuestionRecord,
   QuestionRendererState,
@@ -45,6 +46,7 @@ export async function createQuestionRecord(
   sessionId?: string,
   now = new Date(),
 ): Promise<{ recordPath: string; record: QuestionRecord }> {
+  const normalizedInput = normalizeQuestionInput(input);
   const questionId = buildQuestionId(now);
   const nowIso = now.toISOString();
   const record: QuestionRecord = {
@@ -54,14 +56,15 @@ export async function createQuestionRecord(
     created_at: nowIso,
     updated_at: nowIso,
     status: 'pending',
-    ...(input.header ? { header: input.header } : {}),
-    question: input.question,
-    options: input.options,
-    allow_other: input.allow_other,
-    other_label: input.other_label,
-    multi_select: input.multi_select,
-    type: getNormalizedQuestionType(input),
-    ...(input.source ? { source: input.source } : {}),
+    ...(normalizedInput.header ? { header: normalizedInput.header } : {}),
+    question: normalizedInput.question,
+    options: normalizedInput.options,
+    allow_other: normalizedInput.allow_other,
+    other_label: normalizedInput.other_label,
+    multi_select: normalizedInput.multi_select,
+    type: getNormalizedQuestionType(normalizedInput),
+    questions: normalizedInput.questions,
+    ...(normalizedInput.source ? { source: normalizedInput.source } : {}),
   };
   const recordPath = getQuestionRecordPath(cwd, questionId, sessionId);
   await writeQuestionRecord(recordPath, record);
@@ -93,15 +96,22 @@ export async function markQuestionPrompting(
 
 export async function markQuestionAnswered(
   recordPath: string,
-  answer: QuestionAnswer,
+  answerOrAnswers: QuestionAnswer | QuestionAnswerEntry[],
 ): Promise<QuestionRecord> {
-  return updateQuestionRecord(recordPath, (record) => ({
-    ...record,
-    status: 'answered',
-    updated_at: new Date().toISOString(),
-    answer,
-    error: undefined,
-  }));
+  return updateQuestionRecord(recordPath, (record) => {
+    const answers = Array.isArray(answerOrAnswers)
+      ? answerOrAnswers
+      : [{ question_id: record.questions?.[0]?.id ?? 'q-1', index: 0, answer: answerOrAnswers }];
+    const firstAnswer = answers[0]?.answer;
+    return {
+      ...record,
+      status: 'answered',
+      updated_at: new Date().toISOString(),
+      ...(firstAnswer ? { answer: firstAnswer } : {}),
+      answers,
+      error: undefined,
+    };
+  });
 }
 
 export async function markQuestionTerminalError(

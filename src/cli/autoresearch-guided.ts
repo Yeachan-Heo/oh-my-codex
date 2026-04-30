@@ -54,6 +54,12 @@ export type AutoresearchStructuredQuestionAsker = (
 	input: AutoresearchStructuredQuestionInput,
 ) => Promise<OmxQuestionSuccessPayload>;
 
+function primaryStructuredAnswer(response: OmxQuestionSuccessPayload): OmxQuestionSuccessPayload["answers"][number]["answer"] {
+	const answer = response.answers[0]?.answer ?? response.answer;
+	if (!answer) throw new Error("Structured question returned no answer.");
+	return answer;
+}
+
 function createQuestionIO(): AutoresearchQuestionIO {
 	const rl = createInterface({ input: process.stdin, output: process.stdout });
 	return {
@@ -92,8 +98,9 @@ async function promptWithDefault(
 				: "Enter your response",
 			source: "deep-interview",
 		});
-		const answerValue = response.answer.other_text?.trim()
-			|| (typeof response.answer.value === "string" ? response.answer.value.trim() : "");
+		const answer = primaryStructuredAnswer(response);
+		const answerValue = answer.other_text?.trim()
+			|| (typeof answer.value === "string" ? answer.value.trim() : "");
 		return answerValue || trimmedCurrentValue || "";
 	}
 
@@ -126,8 +133,9 @@ async function promptAction(
 			allow_other: false,
 			source: "deep-interview",
 		});
-		const answerValue = typeof response.answer.value === "string"
-			? response.answer.value.trim().toLowerCase()
+		const answer = primaryStructuredAnswer(response);
+		const answerValue = typeof answer.value === "string"
+			? answer.value.trim().toLowerCase()
 			: "";
 		if (answerValue === "launch") return "launch";
 		if (answerValue === "refine") return "refine";

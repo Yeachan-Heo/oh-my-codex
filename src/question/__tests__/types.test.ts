@@ -48,6 +48,35 @@ describe('normalizeQuestionInput', () => {
     );
   });
 
+
+
+  it('normalizes batch questions with stable unique ids', () => {
+    const result = normalizeQuestionInput({
+      header: 'Batch',
+      questions: [
+        { id: 'first', question: 'Pick first', options: ['A'], allow_other: false },
+        { id: 'second', question: 'Pick second', options: ['B'], allow_other: false, type: 'multi-answerable' },
+      ],
+    });
+
+    assert.equal(result.question, 'Pick first');
+    assert.equal(result.questions?.length, 2);
+    assert.equal(result.questions?.[0]?.id, 'first');
+    assert.equal(result.questions?.[1]?.multi_select, true);
+  });
+
+  it('rejects duplicate batch question ids', () => {
+    assert.throws(
+      () => normalizeQuestionInput({
+        questions: [
+          { id: 'same', question: 'One', options: ['A'], allow_other: false },
+          { id: 'same', question: 'Two', options: ['B'], allow_other: false },
+        ],
+      }),
+      /questions id must be unique: same/,
+    );
+  });
+
   it('rejects empty options when allow_other is false', () => {
     assert.throws(
       () => normalizeQuestionInput({ question: 'Pick one', options: [], allow_other: false }),

@@ -30,6 +30,25 @@ describe('runOmxQuestion', () => {
           ok: true,
           question_id: 'q-1',
           session_id: 'sess-1',
+          questions: [{
+            id: 'q-1',
+            question: 'What next?',
+            options: [{ label: 'Launch', value: 'launch' }],
+            allow_other: true,
+            other_label: 'Other',
+            type: 'single-answerable',
+            multi_select: false,
+          }],
+          answers: [{
+            question_id: 'q-1',
+            index: 0,
+            answer: {
+              kind: 'option',
+              value: 'launch',
+              selected_labels: ['Launch'],
+              selected_values: ['launch'],
+            },
+          }],
           prompt: {
             question: 'What next?',
             options: [{ label: 'Launch', value: 'launch' }],
@@ -50,9 +69,10 @@ describe('runOmxQuestion', () => {
     );
 
     assert.equal(result.ok, true);
-    assert.equal(result.answer.value, 'launch');
-    assert.equal(result.prompt.source, 'deep-interview');
-    assert.equal(result.prompt.type, 'single-answerable');
+    assert.equal(result.answers[0]?.answer.value, 'launch');
+    assert.equal(result.answer?.value, 'launch');
+    assert.equal(result.prompt?.source, 'deep-interview');
+    assert.equal(result.prompt?.type, 'single-answerable');
   });
 
   it('throws explicit question errors from stdout payloads', async () => {

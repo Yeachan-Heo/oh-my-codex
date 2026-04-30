@@ -6,12 +6,16 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createQuestionRecord, markQuestionPrompting, readQuestionRecord } from '../state.js';
+import { normalizeQuestionInput } from '../types.js';
 import { formatQuestionAnswerForInjection } from '../renderer.js';
 import {
   applyInteractiveSelectionKey,
+  applyQuestionWizardKey,
   createInitialInteractiveSelectionState,
+  createInitialQuestionWizardState,
   promptForSelectionsWithArrows,
   renderInteractiveQuestionFrame,
+  renderQuestionWizardFrame,
   runQuestionUi,
 } from '../ui.js';
 import type { QuestionRecord } from '../types.js';
@@ -296,8 +300,8 @@ describe('question ui arrow navigation', () => {
       const runPromise = runQuestionUi(recordPath, {
         input,
         output,
-        injectAnswerToPane: (paneId, answer) => {
-          injected.push({ paneId, value: answer.value });
+        injectAnswersToPane: (paneId, answers) => {
+          injected.push({ paneId, value: answers[0]!.answer.value });
           return true;
         },
       });
@@ -352,8 +356,8 @@ describe('question ui arrow navigation', () => {
           OMX_QUESTION_RETURN_TARGET: '%11',
           OMX_QUESTION_RETURN_TRANSPORT: 'tmux-send-keys',
         } as NodeJS.ProcessEnv,
-        injectAnswerToPane: (paneId, answer) => {
-          injected.push({ paneId, value: answer.value });
+        injectAnswersToPane: (paneId, answers) => {
+          injected.push({ paneId, value: answers[0]!.answer.value });
           return true;
         },
       });
@@ -398,8 +402,8 @@ describe('question ui arrow navigation', () => {
           OMX_QUESTION_RETURN_TARGET: '%11',
           OMX_QUESTION_RETURN_TRANSPORT: 'tmux-send-keys',
         } as NodeJS.ProcessEnv,
-        injectAnswerToPane: (paneId, answer) => {
-          injected.push({ paneId, value: answer.value });
+        injectAnswersToPane: (paneId, answers) => {
+          injected.push({ paneId, value: answers[0]!.answer.value });
           return true;
         },
       });
@@ -416,6 +420,121 @@ describe('question ui arrow navigation', () => {
       const loaded = await readQuestionRecord(recordPath);
       assert.equal(loaded?.status, 'answered');
       assert.deepEqual(loaded?.answer?.selected_values, ['a', 'b']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe('question ui batch wizard', () => {
+  it('renders a review frame for Other selections before free-text collection', () => {
+    const record = makeRecord({
+      questions: [
+        {
+          id: 'first',
+          question: 'First?',
+          options: [{ label: 'A', value: 'a' }],
+          allow_other: true,
+          other_label: 'Custom',
+          multi_select: false,
+          type: 'single-answerable',
+        },
+      ],
+    });
+    let state = createInitialQuestionWizardState(record);
+    state = applyQuestionWizardKey(record, state, { name: 'down' }).state;
+    state = applyQuestionWizardKey(record, state, { name: 'enter' }).state;
+
+    assert.equal(state.mode, 'review');
+    assert.match(renderQuestionWizardFrame(record, state), /Custom/);
+  });
+
+  it('submits a batch after navigating back and editing an earlier answer', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-question-ui-batch-'));
+    try {
+      const { recordPath } = await createQuestionRecord(
+        cwd,
+        normalizeQuestionInput({
+          header: 'Batch prompt',
+          questions: [
+            { id: 'first', question: 'First?', options: [{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }], allow_other: false },
+            { id: 'second', question: 'Second?', options: [{ label: 'C', value: 'c' }, { label: 'D', value: 'd' }], allow_other: false },
+          ],
+        }),
+        'sess-ui-batch',
+      );
+
+      const input = new FakeTtyInput();
+      const output = new FakeTtyOutput();
+      const runPromise = runQuestionUi(recordPath, { input, output });
+
+      setTimeout(() => {
+        input.emit('keypress', '', { name: 'enter' });
+        input.emit('keypress', '', { name: 'down' });
+        input.emit('keypress', '', { name: 'enter' });
+        input.emit('keypress', '', { name: 'left' });
+        input.emit('keypress', '', { name: 'left' });
+        input.emit('keypress', '', { name: 'down' });
+        input.emit('keypress', '', { name: 'enter' });
+        input.emit('keypress', '', { name: 'enter' });
+        input.emit('keypress', '', { name: 'enter' });
+      }, 25);
+
+      await runPromise;
+      const loaded = await readQuestionRecord(recordPath);
+      assert.equal(loaded?.status, 'answered');
+      assert.deepEqual(loaded?.answers?.map((entry) => entry.answer.value), ['b', 'd']);
+      assert.match(output.toString(), /Question 2 of 2/);
+      assert.match(output.toString(), /Press Enter to submit/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('injects every batch answer into the return pane', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-question-ui-batch-inject-'));
+    try {
+      const { recordPath } = await createQuestionRecord(
+        cwd,
+        normalizeQuestionInput({
+          header: 'Batch prompt',
+          questions: [
+            { id: 'first', question: 'First?', options: [{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }], allow_other: false },
+            { id: 'second', question: 'Second?', options: [{ label: 'C', value: 'c' }, { label: 'D', value: 'd' }], allow_other: false },
+          ],
+        }),
+        'sess-ui-batch-inject',
+      );
+      await markQuestionPrompting(recordPath, {
+        renderer: 'tmux-pane',
+        target: '%42',
+        launched_at: '2026-04-19T00:00:00.000Z',
+        return_target: '%11',
+        return_transport: 'tmux-send-keys',
+      });
+
+      const injected: Array<{ paneId: string; values: Array<string | string[]> }> = [];
+      const input = new FakeTtyInput();
+      const output = new FakeTtyOutput();
+      const runPromise = runQuestionUi(recordPath, {
+        input,
+        output,
+        injectAnswersToPane: (paneId, answers) => {
+          injected.push({ paneId, values: answers.map((entry) => entry.answer.value) });
+          return true;
+        },
+      });
+
+      setTimeout(() => {
+        input.emit('keypress', '', { name: 'enter' });
+        input.emit('keypress', '', { name: 'down' });
+        input.emit('keypress', '', { name: 'enter' });
+        input.emit('keypress', '', { name: 'enter' });
+      }, 25);
+
+      await runPromise;
+      assert.deepEqual(injected, [{ paneId: '%11', values: ['a', 'd'] }]);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -64,9 +64,26 @@ function makeFakeStructuredQuestionAsker(
 		const next = queue.shift() ?? "";
 		const matchingOption = input.options.find((option) => option.value === next);
 		if (matchingOption) {
+			const answer = {
+				kind: "option" as const,
+				value: matchingOption.value,
+				selected_labels: [matchingOption.label],
+				selected_values: [matchingOption.value],
+			};
 			return {
 				ok: true,
 				question_id: `q-${questions.length}`,
+				questions: [{
+					id: "q-1",
+					header: input.header,
+					question: input.question,
+					options: input.options,
+					allow_other: input.allow_other,
+					other_label: input.other_label ?? "Other",
+					multi_select: input.multi_select ?? false,
+					type: input.type ?? (input.multi_select ? "multi-answerable" : "single-answerable"),
+				}],
+				answers: [{ question_id: "q-1", index: 0, answer }],
 				prompt: {
 					header: input.header,
 					question: input.question,
@@ -76,18 +93,31 @@ function makeFakeStructuredQuestionAsker(
 					multi_select: input.multi_select ?? false,
 					source: input.source,
 				},
-				answer: {
-					kind: "option",
-					value: matchingOption.value,
-					selected_labels: [matchingOption.label],
-					selected_values: [matchingOption.value],
-				},
+				answer,
 			};
 		}
 
+		const answer = {
+			kind: "other" as const,
+			value: next,
+			selected_labels: [input.other_label ?? "Other"],
+			selected_values: [next],
+			other_text: next,
+		};
 		return {
 			ok: true,
 			question_id: `q-${questions.length}`,
+			questions: [{
+				id: "q-1",
+				header: input.header,
+				question: input.question,
+				options: input.options,
+				allow_other: input.allow_other,
+				other_label: input.other_label ?? "Other",
+				multi_select: input.multi_select ?? false,
+				type: input.type ?? (input.multi_select ? "multi-answerable" : "single-answerable"),
+			}],
+			answers: [{ question_id: "q-1", index: 0, answer }],
 			prompt: {
 				header: input.header,
 				question: input.question,
@@ -97,13 +127,7 @@ function makeFakeStructuredQuestionAsker(
 				multi_select: input.multi_select ?? false,
 				source: input.source,
 			},
-			answer: {
-				kind: "other",
-				value: next,
-				selected_labels: [input.other_label ?? "Other"],
-				selected_values: [next],
-				other_text: next,
-			},
+			answer,
 		};
 	};
 }

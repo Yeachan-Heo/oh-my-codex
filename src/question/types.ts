@@ -6,6 +6,24 @@ export interface QuestionOption {
 
 export type QuestionType = 'single-answerable' | 'multi-answerable';
 
+export interface QuestionItem {
+  id?: string;
+  header?: string;
+  question: string;
+  options: QuestionOption[];
+  allow_other: boolean;
+  other_label: string;
+  multi_select: boolean;
+  type?: QuestionType;
+}
+
+export interface NormalizedQuestionItem extends QuestionItem {
+  id: string;
+  source?: string;
+  type: QuestionType;
+  multi_select: boolean;
+}
+
 export interface QuestionInput {
   header?: string;
   question: string;
@@ -16,9 +34,8 @@ export interface QuestionInput {
   type?: QuestionType;
   source?: string;
   session_id?: string;
+  questions?: NormalizedQuestionItem[];
 }
-
-export type QuestionRendererKind = 'tmux-pane' | 'tmux-session' | 'inline-tty' | 'windows-console';
 
 export interface QuestionAnswer {
   kind: 'option' | 'other' | 'multi';
@@ -27,6 +44,14 @@ export interface QuestionAnswer {
   selected_values: string[];
   other_text?: string;
 }
+
+export interface QuestionAnswerEntry {
+  question_id: string;
+  index: number;
+  answer: QuestionAnswer;
+}
+
+export type QuestionRendererKind = 'tmux-pane' | 'tmux-session' | 'inline-tty' | 'windows-console';
 
 export type QuestionStatus = 'pending' | 'prompting' | 'answered' | 'aborted' | 'error';
 
@@ -53,9 +78,11 @@ export interface QuestionRecord {
   other_label: string;
   multi_select: boolean;
   type?: QuestionType;
+  questions?: NormalizedQuestionItem[];
   source?: string;
   renderer?: QuestionRendererState;
   answer?: QuestionAnswer;
+  answers?: QuestionAnswerEntry[];
   error?: {
     code: string;
     message: string;
@@ -106,49 +133,84 @@ export function isMultiAnswerableQuestion(input: {
   return getNormalizedQuestionType(input) === 'multi-answerable';
 }
 
+function normalizeQuestionItem(raw: unknown, index: number, inheritedHeader?: string): NormalizedQuestionItem {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(`questions[${index}] must be a JSON object`);
+  }
+  const input = raw as Record<string, unknown>;
+  const question = safeString(input.question).trim();
+  const header = safeString(input.header).trim() || (index === 0 ? inheritedHeader : undefined);
+  const other_label = safeString(input.other_label).trim() || 'Other';
+  const allow_other = input.allow_other !== false;
+  const rawMultiSelect = input.multi_select;
+  const parsedType = parseQuestionType(input.type);
+  const rawOptions = Array.isArray(input.options) ? input.options : [];
+  const id = safeString(input.id).trim() || `q-${index + 1}`;
+
+  if (!question) throw new Error(`questions[${index}].question must be a non-empty string`);
+  if (!id) throw new Error(`questions[${index}].id must be a non-empty string`);
+  if (rawOptions.length === 0 && !allow_other) {
+    throw new Error(`questions[${index}].options must be a non-empty array unless allow_other is true`);
+  }
+  if (parsedType === 'single-answerable' && rawMultiSelect === true) {
+    throw new Error(`questions[${index}] type=single-answerable conflicts with multi_select=true`);
+  }
+  if (parsedType === 'multi-answerable' && rawMultiSelect === false) {
+    throw new Error(`questions[${index}] type=multi-answerable conflicts with multi_select=false`);
+  }
+
+  const type = getNormalizedQuestionType({
+    type: parsedType,
+    multi_select: rawMultiSelect === true,
+  });
+  return {
+    id,
+    ...(header ? { header } : {}),
+    question,
+    options: rawOptions.map((option, optionIndex) => normalizeOption(option, optionIndex)),
+    allow_other,
+    other_label,
+    multi_select: type === 'multi-answerable',
+    type,
+  };
+}
+
+function normalizeLegacyQuestion(raw: Record<string, unknown>, header?: string): NormalizedQuestionItem {
+  return normalizeQuestionItem({ ...raw, id: safeString(raw.id).trim() || 'q-1', header }, 0, header);
+}
+
 export function normalizeQuestionInput(raw: unknown): QuestionInput {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error('question input must be a JSON object');
   }
 
   const input = raw as Record<string, unknown>;
-  const question = safeString(input.question).trim();
   const header = safeString(input.header).trim() || undefined;
   const source = safeString(input.source).trim() || undefined;
   const session_id = safeString(input.session_id).trim() || undefined;
-  const other_label = safeString(input.other_label).trim() || 'Other';
-  const allow_other = input.allow_other !== false;
-  const rawMultiSelect = input.multi_select;
-  const parsedType = parseQuestionType(input.type);
-  const rawOptions = Array.isArray(input.options) ? input.options : [];
+  const rawQuestions = Array.isArray(input.questions) ? input.questions : undefined;
 
-  if (!question) throw new Error('question must be a non-empty string');
-  if (rawOptions.length === 0 && !allow_other) {
-    throw new Error('options must be a non-empty array unless allow_other is true');
+  const questions = rawQuestions
+    ? rawQuestions.map((item, index) => normalizeQuestionItem(item, index, header))
+    : [normalizeLegacyQuestion(input, header)];
+
+  if (questions.length === 0) throw new Error('questions must be a non-empty array');
+  const seenIds = new Set<string>();
+  for (const question of questions) {
+    if (seenIds.has(question.id)) throw new Error(`questions id must be unique: ${question.id}`);
+    seenIds.add(question.id);
   }
 
-  if (parsedType === 'single-answerable' && rawMultiSelect === true) {
-    throw new Error('type=single-answerable conflicts with multi_select=true');
-  }
-  if (parsedType === 'multi-answerable' && rawMultiSelect === false) {
-    throw new Error('type=multi-answerable conflicts with multi_select=false');
-  }
-
-  const options = rawOptions.map(normalizeOption);
-  const type = getNormalizedQuestionType({
-    type: parsedType,
-    multi_select: rawMultiSelect === true,
-  });
-  const multi_select = type === 'multi-answerable';
-
+  const first = questions[0]!;
   return {
     ...(header ? { header } : {}),
-    question,
-    options,
-    allow_other,
-    other_label,
-    multi_select,
-    type,
+    question: first.question,
+    options: first.options,
+    allow_other: first.allow_other,
+    other_label: first.other_label,
+    multi_select: first.multi_select,
+    type: first.type,
+    questions,
     ...(source ? { source } : {}),
     ...(session_id ? { session_id } : {}),
   };

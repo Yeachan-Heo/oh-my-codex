@@ -1,13 +1,16 @@
 import { spawn } from 'node:child_process';
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
-import type { QuestionAnswer, QuestionInput } from './types.js';
+import type { QuestionAnswer, QuestionAnswerEntry, QuestionInput, NormalizedQuestionItem } from './types.js';
 
 export interface OmxQuestionSuccessPayload {
   ok: true;
   question_id: string;
   session_id?: string;
-  prompt: QuestionInput;
-  answer: QuestionAnswer;
+  questions: NormalizedQuestionItem[];
+  answers: QuestionAnswerEntry[];
+  prompt?: QuestionInput | NormalizedQuestionItem;
+  question?: QuestionInput | NormalizedQuestionItem;
+  answer?: QuestionAnswer;
 }
 
 export interface OmxQuestionErrorPayload {
@@ -115,7 +118,7 @@ function parseQuestionStdout(stdout: string, stderr: string, exitCode: number | 
 }
 
 export async function runOmxQuestion(
-  input: Partial<QuestionInput> & { question: string },
+  input: (Partial<QuestionInput> & { question: string }) | { questions: Array<Partial<QuestionInput> & { question: string }>; header?: string; source?: string; session_id?: string },
   options: OmxQuestionClientOptions = {},
 ): Promise<OmxQuestionSuccessPayload> {
   const cwd = options.cwd ?? process.cwd();

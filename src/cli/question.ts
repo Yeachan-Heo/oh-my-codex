@@ -36,6 +36,9 @@ Input schema:
   {
     "header": "Optional short heading",
     "question": "What should OMX do next?",
+    "questions": [
+      {"id":"next-step","question":"What should OMX do next?","options":[{"label":"Proceed","value":"proceed"}],"allow_other":false}
+    ],
     "options": [
       {"label": "Proceed", "value": "proceed", "description": "Continue"},
       {"label": "Revise", "value": "revise"}
@@ -52,7 +55,9 @@ Notes:
   - 'type' accepts 'single-answerable' or 'multi-answerable'; legacy 'multi_select' is still accepted.
   - options may be [] only when allow_other is true, for a free-text-only prompt.
   - machine callers should use --json and read stdout; the command does not return
-    until the user selected a predefined option or submitted Other text.
+    until the user submitted all answers. Success payloads include primary
+    batch fields 'questions' and 'answers'; one-question calls may also include
+    transitional 'prompt' and 'answer' projections.
 `;
 
 interface ParsedQuestionArgs {
@@ -223,16 +228,24 @@ export async function questionCommand(args: string[]): Promise<void> {
     ok: true,
     question_id: finalRecord.question_id,
     session_id: finalRecord.session_id,
-    prompt: {
-      header: finalRecord.header,
-      question: finalRecord.question,
-      options: finalRecord.options,
-      allow_other: finalRecord.allow_other,
-      other_label: finalRecord.other_label,
-      type: finalRecord.type,
-      multi_select: finalRecord.multi_select,
-      source: finalRecord.source,
-    },
-    answer: finalRecord.answer,
+    questions: finalRecord.questions,
+    answers: finalRecord.answers ?? (finalRecord.answer ? [{
+      question_id: finalRecord.questions?.[0]?.id ?? 'q-1',
+      index: 0,
+      answer: finalRecord.answer,
+    }] : []),
+    ...(finalRecord.answer ? {
+      prompt: {
+        header: finalRecord.header,
+        question: finalRecord.question,
+        options: finalRecord.options,
+        allow_other: finalRecord.allow_other,
+        other_label: finalRecord.other_label,
+        type: finalRecord.type,
+        multi_select: finalRecord.multi_select,
+        source: finalRecord.source,
+      },
+      answer: finalRecord.answer,
+    } : {}),
   }, parsed.json);
 }
