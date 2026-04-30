@@ -709,6 +709,16 @@ function tmuxFailureMessage(error: unknown): string {
   return detail.replace(/\s+/g, " ");
 }
 
+function isUnsupportedTmuxExtendedKeysFailure(error: unknown): boolean {
+  const message = tmuxFailureMessage(error).toLowerCase();
+  return (
+    message.includes("extended-keys") &&
+    /(?:invalid|unknown|unsupported) (?:option|flag|argument)|no such option|unknown option/.test(
+      message,
+    )
+  );
+}
+
 function isBenignMissingTmuxServerMessage(message: string): boolean {
   return (
     /no server running/i.test(message) ||
@@ -2203,7 +2213,9 @@ export function acquireTmuxExtendedKeysLease(
     });
     return `${socketPath}\t${leaseId}`;
   } catch (err) {
-    logCliOperationFailure(err);
+    if (!isUnsupportedTmuxExtendedKeysFailure(err)) {
+      logCliOperationFailure(err);
+    }
     return null;
   }
 }
@@ -2256,7 +2268,9 @@ export function releaseTmuxExtendedKeysLease(
       rmSync(leasePath, { force: true });
     });
   } catch (err) {
-    logCliOperationFailure(err);
+    if (!isUnsupportedTmuxExtendedKeysFailure(err)) {
+      logCliOperationFailure(err);
+    }
   }
 }
 

@@ -2434,6 +2434,72 @@ exit 0
     ]);
   });
 
+  it("withTmuxExtendedKeys ignores tmux versions without the extended-keys option", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-tmux-lease-unsupported-"));
+    const calls: string[][] = [];
+    const stderrWrite = mock.method(process.stderr, "write", () => true);
+    try {
+      const result = withTmuxExtendedKeys(
+        cwd,
+        () => {
+          calls.push(["run"]);
+          return "ok";
+        },
+        (_file, args) => {
+          calls.push([...args]);
+          if (args[0] === "display-message") return "/tmp/tmux-3-0.sock\n";
+          if (args[0] === "show-options") {
+            throw Object.assign(new Error("Command failed: tmux show-options -sv extended-keys"), {
+              status: 1,
+              stderr: Buffer.from("invalid option: extended-keys\n"),
+              stdout: Buffer.from(""),
+            });
+          }
+          return "";
+        },
+      );
+
+      assert.equal(result, "ok");
+      assert.deepEqual(calls, [
+        ["display-message", "-p", "#{socket_path}"],
+        ["show-options", "-sv", "extended-keys"],
+        ["run"],
+      ]);
+      assert.equal(stderrWrite.mock.callCount(), 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("acquireTmuxExtendedKeysLease returns no lease when extended-keys is unsupported", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-tmux-acquire-unsupported-"));
+    const calls: string[][] = [];
+    const stderrWrite = mock.method(process.stderr, "write", () => true);
+    try {
+      const lease = acquireTmuxExtendedKeysLease(cwd, (_file, args) => {
+        calls.push([...args]);
+        if (args[0] === "display-message") return "/tmp/tmux-3-0.sock\n";
+        if (args[0] === "show-options") {
+          throw Object.assign(new Error("Command failed: tmux show-options -sv extended-keys"), {
+            status: 1,
+            stderr: Buffer.from("invalid option: extended-keys\n"),
+            stdout: Buffer.from(""),
+          });
+        }
+        return "";
+      });
+
+      assert.equal(lease, null);
+      assert.deepEqual(calls, [
+        ["display-message", "-p", "#{socket_path}"],
+        ["show-options", "-sv", "extended-keys"],
+      ]);
+      assert.equal(stderrWrite.mock.callCount(), 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("reapStaleNotifyFallbackWatcher skips kill when process identity does not match a watcher", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-reap-pid-identity-"));
     const pidPath = join(cwd, "watcher.pid");
