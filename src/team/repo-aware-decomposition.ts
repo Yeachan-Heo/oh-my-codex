@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { relative } from 'node:path';
 import { allocateTasksToWorkers } from './allocation-policy.js';
+import type { ApprovedRepositoryContextSummary } from '../planning/artifacts.js';
 import { readTeamDagHandoffForLatestPlan, type TeamDagHandoff, type TeamDagNode, type TeamDagResolution, type TeamDagWorkerCountSource } from './dag-schema.js';
 
 export interface LegacyTeamExecutionPlanInput {
@@ -12,6 +13,7 @@ export interface LegacyTeamExecutionPlanInput {
   cwd: string;
   buildLegacyPlan: (task: string, workerCount: number, agentType: string, explicitAgentType: boolean, explicitWorkerCount: boolean) => RepoAwareTeamExecutionPlan;
   allowDagHandoff?: boolean;
+  approvedRepositoryContextSummary?: ApprovedRepositoryContextSummary;
 }
 
 export interface RepoAwareTask {
@@ -44,6 +46,7 @@ export interface TeamDecompositionMetadata {
   node_dependencies?: Record<string, string[]>;
   node_id_to_task_id?: Record<string, string>;
   task_hints?: Record<string, TaskHintSummary>;
+  approved_context_summary?: ApprovedRepositoryContextSummary;
 }
 
 export interface TaskHintSummary {
@@ -238,6 +241,7 @@ function buildFromDag(input: LegacyTeamExecutionPlanInput, resolution: TeamDagRe
       useful_lane_count: useful,
       allocation_reasons: allocationReasons,
       node_dependencies: nodeDependencies,
+      ...(input.approvedRepositoryContextSummary ? { approved_context_summary: input.approvedRepositoryContextSummary } : {}),
     },
   };
 }
@@ -296,6 +300,7 @@ export function buildRepoAwareTeamExecutionPlan(input: LegacyTeamExecutionPlanIn
       ready_lane_count: legacy.workerCount,
       useful_lane_count: legacy.workerCount,
       allocation_reasons: {},
+      ...(input.approvedRepositoryContextSummary ? { approved_context_summary: input.approvedRepositoryContextSummary } : {}),
     },
   };
 }

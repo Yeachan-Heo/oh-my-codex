@@ -149,6 +149,11 @@ function buildRalphApprovedContextLines(approvedHint: ApprovedExecutionLaunchHin
     lines.push(`- deep-interview specs: ${approvedHint.deepInterviewSpecPaths.join(', ')}`);
     lines.push('- Carry forward the approved deep-interview requirements and constraints during Ralph execution and final verification.');
   }
+  if (approvedHint.repositoryContextSummary) {
+    lines.push(`- approved repository context summary: ${approvedHint.repositoryContextSummary.sourcePath}${approvedHint.repositoryContextSummary.truncated ? ' (bounded/truncated)' : ''}`);
+    lines.push('Approved repository context summary (bounded, inspectable):');
+    lines.push(approvedHint.repositoryContextSummary.content);
+  }
   return lines;
 }
 
@@ -255,9 +260,12 @@ export async function ralphCommand(args: string[]): Promise<void> {
   }
   assertRequiredRalphPrdJson(cwd, args);
   const artifacts = await ensureCanonicalRalphArtifacts(cwd);
-  const approvedHint = readApprovedExecutionLaunchHint(cwd, 'ralph');
+  const rawApprovedHint = readApprovedExecutionLaunchHint(cwd, 'ralph');
   const explicitTask = extractRalphTaskDescription(normalizedArgs);
-  const task = explicitTask === 'ralph-cli-launch' ? approvedHint?.task ?? explicitTask : explicitTask;
+  const task = explicitTask === 'ralph-cli-launch' ? rawApprovedHint?.task ?? explicitTask : explicitTask;
+  const approvedHint = rawApprovedHint && (explicitTask === 'ralph-cli-launch' || rawApprovedHint.task.trim() === task.trim())
+    ? rawApprovedHint
+    : null;
   const noDeslop = normalizedArgs.some((arg) => arg.toLowerCase() === '--no-deslop');
   const availableAgentTypes = await resolveAvailableAgentTypes(cwd);
   const staffingPlan = buildFollowupStaffingPlan('ralph', task, availableAgentTypes);

@@ -2383,6 +2383,7 @@ export async function startTeam(
         rolePromptContent: rawRolePromptContent ?? undefined,
         worktreeRootAgentsCanonical: Boolean(workerWorkspace.worktreePath),
         taskHints: effectiveDecompositionMetadata?.task_hints,
+        approvedContextSummary: effectiveDecompositionMetadata?.approved_context_summary,
       });
       const triggerDirective = buildTriggerDirective(
         workerName,

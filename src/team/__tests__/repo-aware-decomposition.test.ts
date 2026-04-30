@@ -87,6 +87,53 @@ describe('buildRepoAwareTeamExecutionPlan', () => {
     assert.equal(plan.tasks[0].subject, 'legacy');
   });
 
+
+
+  it('carries approved repository context summary only when the launch gate supplies it', () => {
+    const cwd = repo();
+    writeFileSync(join(cwd, '.omx', 'plans', 'team-dag-demo.json'), JSON.stringify({
+      schema_version: 1,
+      nodes: [{ id: 'impl', subject: 'Implement', description: 'Implement from DAG' }],
+    }));
+    const plan = buildRepoAwareTeamExecutionPlan({
+      task: 'team',
+      workerCount: 3,
+      agentType: 'executor',
+      explicitAgentType: false,
+      explicitWorkerCount: false,
+      cwd,
+      buildLegacyPlan: legacy,
+      allowDagHandoff: true,
+      approvedRepositoryContextSummary: {
+        sourcePath: join(cwd, '.omx', 'plans', 'repo-context-demo.md'),
+        content: 'Approved context: runtime lives in src/team/runtime.ts',
+        truncated: false,
+      },
+    });
+
+    assert.equal(plan.metadata?.approved_context_summary?.content, 'Approved context: runtime lives in src/team/runtime.ts');
+  });
+
+  it('does not consume ambient repository context summary without an approved launch match', () => {
+    const cwd = repo();
+    writeFileSync(join(cwd, '.omx', 'plans', 'team-dag-demo.json'), JSON.stringify({
+      schema_version: 1,
+      nodes: [{ id: 'stale', subject: 'Stale', description: 'Stale DAG' }],
+    }));
+    const plan = buildRepoAwareTeamExecutionPlan({
+      task: 'fix unrelated tests',
+      workerCount: 3,
+      agentType: 'executor',
+      explicitAgentType: false,
+      explicitWorkerCount: false,
+      cwd,
+      buildLegacyPlan: legacy,
+    });
+
+    assert.equal(plan.metadata?.approved_context_summary, undefined);
+    assert.equal(plan.metadata?.fallback_reason, 'dag_handoff_not_approved_for_invocation');
+  });
+
   it('honors CLI-explicit worker count beyond ready lanes', () => {
     const cwd = repo();
     writeFileSync(join(cwd, '.omx', 'plans', 'team-dag-demo.json'), JSON.stringify({

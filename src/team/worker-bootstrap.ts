@@ -9,6 +9,7 @@ import {
 } from "../verification/verifier.js";
 import { codexHome, listInstalledSkillDirectories } from "../utils/paths.js";
 import { sleep } from "../utils/sleep.js";
+import type { ApprovedRepositoryContextSummary } from "../planning/artifacts.js";
 import type { TeamReminderDirective } from "./reminder-intents.js";
 import type { TaskHintSummary } from "./repo-aware-decomposition.js";
 
@@ -699,6 +700,7 @@ export function generateInitialInbox(
     rolePromptContent?: string;
     worktreeRootAgentsCanonical?: boolean;
     taskHints?: Record<string, TaskHintSummary>;
+    approvedContextSummary?: ApprovedRepositoryContextSummary;
   } = {},
 ): string {
   const taskList = tasks
@@ -739,6 +741,16 @@ export function generateInitialInbox(
   const displayRole = options.workerRole ?? agentType;
   const delegationSection = renderDelegationContracts(tasks);
 
+  const approvedContextSection = options.approvedContextSummary
+    ? `
+## Approved Repository Context Summary
+
+Source: ${options.approvedContextSummary.sourcePath}${options.approvedContextSummary.truncated ? ' (bounded/truncated)' : ''}
+
+${options.approvedContextSummary.content}
+`
+    : "";
+
   const specializationSection = options.worktreeRootAgentsCanonical === true
     ? ""
     : options.rolePromptContent
@@ -754,7 +766,7 @@ export function generateInitialInbox(
 ## Your Assigned Tasks
 
 ${taskList}
-
+${approvedContextSection}
 ## Instructions
 
 1. Load and follow the worker skill from the first existing path:

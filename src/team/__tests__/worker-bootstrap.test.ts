@@ -979,4 +979,26 @@ describe("worker bootstrap", () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it("generateInitialInbox includes approved repository context summary when provided", () => {
+    const inbox = generateInitialInbox(
+      "worker-1",
+      "context-team",
+      "executor",
+      [{ id: "1", subject: "Implement", description: "Do task", status: "pending", owner: "worker-1", created_at: "2026-04-30T00:00:00.000Z" }],
+      {
+        approvedContextSummary: {
+          sourcePath: ".omx/plans/repo-context-issue-2039.md",
+          content: "Key boundary: preserve approved context only for matching launches.",
+          truncated: false,
+        },
+      },
+    );
+
+    assert.match(inbox, /## Approved Repository Context Summary/);
+    assert.match(inbox, /Source: \.omx\/plans\/repo-context-issue-2039\.md/);
+    assert.match(inbox, /preserve approved context only for matching launches/);
+  });
+
 });
+

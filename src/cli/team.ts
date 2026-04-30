@@ -10,7 +10,7 @@ import { readTeamEvents, waitForTeamEvent } from '../team/state/events.js';
 import type { TeamEvent } from '../team/state.js';
 import { parseWorktreeMode, type WorktreeMode } from '../team/worktree.js';
 import { classifyTaskSize } from '../hooks/task-size-detector.js';
-import { readApprovedExecutionLaunchHint } from '../planning/artifacts.js';
+import { readApprovedExecutionLaunchHint, type ApprovedRepositoryContextSummary } from '../planning/artifacts.js';
 import { routeTaskToRole } from '../team/role-router.js';
 import { allocateTasksToWorkers } from '../team/allocation-policy.js';
 import {
@@ -40,6 +40,7 @@ interface ParsedTeamArgs {
   task: string;
   teamName: string;
   allowRepoAwareDagHandoff: boolean;
+  approvedRepositoryContextSummary?: ApprovedRepositoryContextSummary;
 }
 
 
@@ -755,10 +756,23 @@ function parseTeamArgs(args: string[], cwd: string = process.cwd()): ParsedTeamA
     && (approvedHint.workerCount == null || approvedHint.workerCount === workerCount)
     && (approvedHint.agentType == null || approvedHint.agentType === agentType);
   const allowRepoAwareDagHandoff = followupContext != null || matchesApprovedLaunchHint;
+  const approvedRepositoryContextSummary = allowRepoAwareDagHandoff
+    ? approvedHint?.repositoryContextSummary
+    : undefined;
 
   const teamName = sanitizeTeamName(slugifyTask(effectiveTask));
-  return { workerCount, agentType, explicitAgentType, explicitWorkerCount, task: effectiveTask, teamName, allowRepoAwareDagHandoff };
+  return {
+    workerCount,
+    agentType,
+    explicitAgentType,
+    explicitWorkerCount,
+    task: effectiveTask,
+    teamName,
+    allowRepoAwareDagHandoff,
+    ...(approvedRepositoryContextSummary ? { approvedRepositoryContextSummary } : {}),
+  };
 }
+
 
 export function parseTeamStartArgs(args: string[]): ParsedTeamStartArgs {
   const parsedWorktree = parseWorktreeMode(args);
@@ -1490,6 +1504,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     cwd,
     buildLegacyPlan: buildTeamExecutionPlan,
     allowDagHandoff: parsed.allowRepoAwareDagHandoff,
+    approvedRepositoryContextSummary: parsed.approvedRepositoryContextSummary,
   });
   const tasks = executionPlan.tasks;
   const effectiveParsed = executionPlan.workerCount === parsed.workerCount

@@ -35,8 +35,6 @@ describe('planning artifacts', () => {
   });
 
 
-
-
   it('resolves matching Team DAG sidecar before markdown handoff', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
@@ -221,8 +219,6 @@ describe('planning artifacts', () => {
     assert.deepEqual(hint?.deepInterviewSpecPaths, [join(specsDir, 'deep-interview-zeta.md')]);
   });
 
-
-
   it('binds approved handoff context to the selected PRD slug in multi-plan repos', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     const specsDir = join(tempDir, '.omx', 'specs');
@@ -241,6 +237,58 @@ describe('planning artifacts', () => {
     assert.equal(hint?.sourcePath, join(plansDir, 'prd-zeta.md'));
     assert.deepEqual(hint?.testSpecPaths, [join(plansDir, 'test-spec-zeta.md')]);
     assert.deepEqual(hint?.deepInterviewSpecPaths, [join(specsDir, 'deep-interview-zeta.md')]);
+  });
+
+
+  it('attaches bounded approved repository context from a matching latest-plan sidecar', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-issue-2039.md'),
+      '# PRD\n\nLaunch via omx team 3:executor "Execute approved issue 2039 plan"\n',
+    );
+    await writeFile(join(plansDir, 'test-spec-issue-2039.md'), '# Test Spec\n');
+    await writeFile(join(plansDir, 'repo-context-issue-2039.md'), 'Key files: src/planning/artifacts.ts\n'.repeat(120));
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'team');
+
+    assert.ok(hint?.repositoryContextSummary);
+    assert.equal(hint.repositoryContextSummary.sourcePath, join(plansDir, 'repo-context-issue-2039.md'));
+    assert.match(hint.repositoryContextSummary.content, /Key files: src\/planning\/artifacts\.ts/);
+    assert.equal(hint.repositoryContextSummary.truncated, true);
+    assert.ok(hint.repositoryContextSummary.content.split('\n').length <= 80);
+  });
+
+  it('does not attach stale repository context from a different PRD slug', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-alpha.md'), '# Alpha\n\nLaunch via omx team 2:executor "Execute alpha"\n');
+    await writeFile(join(plansDir, 'test-spec-alpha.md'), '# Alpha Test Spec\n');
+    await writeFile(join(plansDir, 'repo-context-alpha.md'), 'stale alpha context\n');
+    await writeFile(join(plansDir, 'prd-zeta.md'), '# Zeta\n\nLaunch via omx team 3:executor "Execute zeta"\n');
+    await writeFile(join(plansDir, 'test-spec-zeta.md'), '# Zeta Test Spec\n');
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'team');
+
+    assert.ok(hint);
+    assert.equal(hint.task, 'Execute zeta');
+    assert.equal(hint.repositoryContextSummary, undefined);
+  });
+
+  it('falls back to an inline approved repository context section when no sidecar exists', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-inline.md'),
+      '# PRD\n\nLaunch via omx ralph "Execute inline"\n\n## Approved Repository Context Summary\n\n- Reuse src/cli/ralph.ts.\n\n## Verification\nRun tests.\n',
+    );
+    await writeFile(join(plansDir, 'test-spec-inline.md'), '# Inline Test Spec\n');
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
+
+    assert.ok(hint?.repositoryContextSummary);
+    assert.equal(hint.repositoryContextSummary.sourcePath, join(plansDir, 'prd-inline.md'));
+    assert.equal(hint.repositoryContextSummary.content, '- Reuse src/cli/ralph.ts.');
   });
 
   it('surfaces deep-interview specs for downstream traceability', async () => {

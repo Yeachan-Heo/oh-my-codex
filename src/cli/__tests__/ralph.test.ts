@@ -86,6 +86,11 @@ const approvedHint: ApprovedExecutionLaunchHint = {
   sourcePath: '.omx/plans/prd-issue-1072.md',
   testSpecPaths: ['.omx/plans/test-spec-issue-1072.md'],
   deepInterviewSpecPaths: ['.omx/specs/deep-interview-issue-1072.md'],
+  repositoryContextSummary: {
+    sourcePath: '.omx/plans/repo-context-issue-1072.md',
+    content: 'Key files: src/cli/ralph.ts and src/planning/artifacts.ts',
+    truncated: false,
+  },
 };
 
 describe('assertRequiredRalphPrdJson', () => {
@@ -225,6 +230,8 @@ describe('ralph deslop launch wiring', () => {
     assert.match(instructions, /test specs: \.omx\/plans\/test-spec-issue-1072\.md/i);
     assert.match(instructions, /deep-interview specs: \.omx\/specs\/deep-interview-issue-1072\.md/i);
     assert.match(instructions, /Carry forward the approved deep-interview requirements/i);
+    assert.match(instructions, /approved repository context summary: \.omx\/plans\/repo-context-issue-1072\.md/i);
+    assert.match(instructions, /Key files: src\/cli\/ralph\.ts and src\/planning\/artifacts\.ts/i);
   });
 
   it('seeds the changed-files artifact with bounded-scope guidance', () => {
