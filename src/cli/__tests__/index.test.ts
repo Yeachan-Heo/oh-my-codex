@@ -1,7 +1,7 @@
 import { afterEach, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, utimesSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -37,6 +37,8 @@ import {
   resolveCodexConfigPathForLaunch,
   resolveCodexHomeForLaunch,
   resolveProjectLocalCodexHomeForLaunch,
+  prepareCodexHomeForLaunch,
+  runtimeCodexHomePath,
   buildDetachedSessionBootstrapSteps,
   buildDetachedTmuxSessionName,
   buildDetachedSessionFinalizeSteps,
@@ -1359,6 +1361,78 @@ describe("project launch scope helpers", () => {
     }
   });
 
+  it("uses a session-scoped CODEX_HOME mirror for project launch config writes", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-launch-runtime-codex-home-"));
+    try {
+      const projectCodexHome = join(wd, ".codex");
+      const configPath = join(projectCodexHome, "config.toml");
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await mkdir(join(projectCodexHome, "agents"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+      const originalConfig = [
+        'model = "gpt-5.5"',
+        "",
+        "[tui]",
+        'status_line = ["model-with-reasoning", "git-branch"]',
+        "",
+      ].join("\n");
+      await writeFile(configPath, originalConfig);
+      await writeFile(join(projectCodexHome, "agents", "planner.toml"), 'name = "planner"\n');
+      const beforeStat = await stat(configPath);
+
+      const prepared = await prepareCodexHomeForLaunch(wd, "session-2033", {});
+      const runtimeCodexHome = runtimeCodexHomePath(wd, "session-2033");
+
+      assert.equal(prepared.codexHomeOverride, runtimeCodexHome);
+      assert.equal(prepared.projectLocalCodexHomeForCleanup, projectCodexHome);
+      assert.equal(prepared.runtimeCodexHomeForCleanup, runtimeCodexHome);
+      assert.equal(await readFile(join(runtimeCodexHome, "config.toml"), "utf-8"), originalConfig);
+      assert.equal(
+        await readFile(join(runtimeCodexHome, "agents", "planner.toml"), "utf-8"),
+        'name = "planner"\n',
+      );
+
+      await writeFile(
+        join(runtimeCodexHome, "config.toml"),
+        `${originalConfig}\n[tui.model_availability_nux]\n"gpt-5.5" = 1\n`,
+      );
+
+      assert.equal(await readFile(configPath, "utf-8"), originalConfig);
+      assert.doesNotMatch(await readFile(configPath, "utf-8"), /model_availability_nux/);
+      assert.equal((await stat(configPath)).mtimeMs, beforeStat.mtimeMs);
+
+      await prepareCodexHomeForLaunch(wd, "session-2033-repeat", {});
+      assert.equal(await readFile(configPath, "utf-8"), originalConfig);
+      assert.equal((await stat(configPath)).mtimeMs, beforeStat.mtimeMs);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps explicit CODEX_HOME persistent instead of creating a runtime mirror", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-launch-runtime-codex-home-"));
+    try {
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+
+      const prepared = await prepareCodexHomeForLaunch(wd, "session-explicit", {
+        CODEX_HOME: "/tmp/explicit-codex-home",
+      });
+
+      assert.equal(prepared.codexHomeOverride, "/tmp/explicit-codex-home");
+      assert.equal(prepared.projectLocalCodexHomeForCleanup, undefined);
+      assert.equal(prepared.runtimeCodexHomeForCleanup, undefined);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("keeps explicit CODEX_HOME override from env", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-launch-scope-"));
     try {
@@ -1910,6 +1984,7 @@ describe("detached tmux new-session sequencing", () => {
       false,
       "omx-session-123",
       "/tmp/project/.codex-project",
+      "/tmp/project/.omx/runtime/codex-home/omx-session-123",
     );
     const leaderCmd = steps[0]?.args.at(-1);
     assert.equal(typeof leaderCmd, "string");
@@ -1917,6 +1992,7 @@ describe("detached tmux new-session sequencing", () => {
     assert.match(leaderCmd!, /omx-session-123/);
     assert.match(leaderCmd!, /\/tmp\/codex-home/);
     assert.match(leaderCmd!, /\/tmp\/project\/\.codex-project/);
+    assert.match(leaderCmd!, /\/tmp\/project\/\.omx\/runtime\/codex-home\/omx-session-123/);
     const helperIndex = leaderCmd!.indexOf("runDetachedSessionPostLaunch");
     const signalGateIndex = leaderCmd!.indexOf('if [ "$status" -lt 128 ]');
     assert.ok(helperIndex >= 0);

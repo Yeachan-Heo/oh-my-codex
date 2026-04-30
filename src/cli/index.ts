@@ -6,6 +6,7 @@
 import { execFileSync, spawn } from "child_process";
 import { basename, dirname, join } from "path";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { copyFile, cp, lstat, mkdir, readdir, rm, symlink } from "fs/promises";
 import { constants as osConstants } from "os";
 import { setup, SETUP_SCOPES, type SetupInstallMode, type SetupScope } from "./setup.js";
 import { uninstall } from "./uninstall.js";
@@ -580,6 +581,90 @@ function resolveTmuxExecutableForLaunch(): string {
   return resolveTmuxBinaryForPlatform() || "tmux";
 }
 
+
+export interface PreparedCodexHomeForLaunch {
+  codexHomeOverride?: string;
+  projectLocalCodexHomeForCleanup?: string;
+  runtimeCodexHomeForCleanup?: string;
+}
+
+export function runtimeCodexHomePath(cwd: string, sessionId: string): string {
+  return join(cwd, ".omx", "runtime", "codex-home", sessionId);
+}
+
+async function linkOrCopyCodexHomeEntry(source: string, destination: string): Promise<void> {
+  const stat = await lstat(source);
+  try {
+    await symlink(source, destination, stat.isDirectory() && process.platform === "win32" ? "junction" : undefined);
+  } catch {
+    if (stat.isDirectory()) {
+      await cp(source, destination, { recursive: true, force: true, verbatimSymlinks: true });
+      return;
+    }
+    await copyFile(source, destination);
+  }
+}
+
+/**
+ * Project-scope setup keeps durable Codex config under <repo>/.codex, but the
+ * Codex TUI also stores model-availability NUX counters in CODEX_HOME/config.toml.
+ * Launch against a session mirror so those runtime writes never dirty the
+ * durable project config while preserving the project config as the launch input.
+ */
+export async function prepareRuntimeCodexHomeForProjectLaunch(
+  cwd: string,
+  sessionId: string,
+  projectCodexHome: string,
+): Promise<string> {
+  const runtimeCodexHome = runtimeCodexHomePath(cwd, sessionId);
+  await rm(runtimeCodexHome, { recursive: true, force: true });
+  await mkdir(runtimeCodexHome, { recursive: true });
+
+  if (!existsSync(projectCodexHome)) return runtimeCodexHome;
+
+  for (const entry of await readdir(projectCodexHome, { withFileTypes: true })) {
+    const source = join(projectCodexHome, entry.name);
+    const destination = join(runtimeCodexHome, entry.name);
+    if (entry.name === "config.toml") {
+      await copyFile(source, destination);
+      continue;
+    }
+    await linkOrCopyCodexHomeEntry(source, destination);
+  }
+
+  return runtimeCodexHome;
+}
+
+export async function prepareCodexHomeForLaunch(
+  cwd: string,
+  sessionId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<PreparedCodexHomeForLaunch> {
+  const projectLocalCodexHomeForCleanup = resolveProjectLocalCodexHomeForLaunch(cwd, env);
+  if (projectLocalCodexHomeForCleanup) {
+    const runtimeCodexHome = await prepareRuntimeCodexHomeForProjectLaunch(
+      cwd,
+      sessionId,
+      projectLocalCodexHomeForCleanup,
+    );
+    return {
+      codexHomeOverride: runtimeCodexHome,
+      projectLocalCodexHomeForCleanup,
+      runtimeCodexHomeForCleanup: runtimeCodexHome,
+    };
+  }
+
+  return {
+    codexHomeOverride: resolveCodexHomeForLaunch(cwd, env),
+    projectLocalCodexHomeForCleanup,
+  };
+}
+
+async function cleanupRuntimeCodexHome(runtimeCodexHomeForCleanup?: string): Promise<void> {
+  if (!runtimeCodexHomeForCleanup) return;
+  await rm(runtimeCodexHomeForCleanup, { recursive: true, force: true });
+}
+
 function execTmuxFileSync(
   args: string[],
   options?: Parameters<typeof execFileSync>[2],
@@ -1126,14 +1211,13 @@ export async function launchWithHud(args: string[]): Promise<void> {
     notifyTempResult.passthroughArgs,
     process.env,
   );
-  const codexHomeOverride = resolveCodexHomeForLaunch(launchCwd, process.env);
-  const projectLocalCodexHomeForCleanup = resolveProjectLocalCodexHomeForLaunch(launchCwd, process.env);
+  const persistentCodexHomeForLaunch = resolveCodexHomeForLaunch(launchCwd, process.env);
   const { launchPolicy, effectiveExplicitLaunchPolicy } =
     resolveTmuxAwareLaunchPolicy(explicitLaunchPolicy, isNativeWindows());
   const enableNotifyFallbackAuthority = launchPolicy === "direct";
   const workerSparkModel = resolveWorkerSparkModel(
     notifyTempResult.passthroughArgs,
-    codexHomeOverride,
+    persistentCodexHomeForLaunch,
   );
   const normalizedArgs = normalizeCodexLaunchArgs(
     notifyTempResult.passthroughArgs,
@@ -1165,7 +1249,6 @@ export async function launchWithHud(args: string[]): Promise<void> {
     }
   }
   const sessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
   try {
     await maybeCheckAndPromptUpdate(cwd);
   } catch (err) {
@@ -1196,6 +1279,10 @@ export async function launchWithHud(args: string[]): Promise<void> {
     // Non-fatal: repair failure must not block launch
   }
 
+  const preparedCodexHome = await prepareCodexHomeForLaunch(launchCwd, sessionId, process.env);
+  const codexHomeOverride = preparedCodexHome.codexHomeOverride;
+  const projectLocalCodexHomeForCleanup = preparedCodexHome.projectLocalCodexHomeForCleanup;
+
   // ── Phase 1: preLaunch ──────────────────────────────────────────────────
   try {
     await preLaunch(cwd, sessionId, notifyTempResult.contract, codexHomeOverride, enableNotifyFallbackAuthority, worktreeDirty);
@@ -1221,12 +1308,14 @@ export async function launchWithHud(args: string[]): Promise<void> {
       notifyTempContractRaw,
       effectiveExplicitLaunchPolicy,
       projectLocalCodexHomeForCleanup,
+      preparedCodexHome.runtimeCodexHomeForCleanup,
     );
     postLaunchHandledExternally = launchResult.postLaunchHandledExternally;
   } finally {
     // ── Phase 3: postLaunch ─────────────────────────────────────────────
     if (!postLaunchHandledExternally) {
       await postLaunch(cwd, sessionId, codexHomeOverride, enableNotifyFallbackAuthority, projectLocalCodexHomeForCleanup);
+      await cleanupRuntimeCodexHome(preparedCodexHome.runtimeCodexHomeForCleanup).catch(logCliOperationFailure);
     }
   }
 }
@@ -1238,8 +1327,6 @@ export async function execWithOverlay(args: string[]): Promise<void> {
     parsedWorktree.remainingArgs,
     process.env,
   );
-  const codexHomeOverride = resolveCodexHomeForLaunch(launchCwd, process.env);
-  const projectLocalCodexHomeForCleanup = resolveProjectLocalCodexHomeForLaunch(launchCwd, process.env);
   const normalizedArgs = normalizeCodexLaunchArgs(
     notifyTempResult.passthroughArgs,
   );
@@ -1297,6 +1384,10 @@ export async function execWithOverlay(args: string[]): Promise<void> {
     // Non-fatal
   }
 
+  const preparedCodexHome = await prepareCodexHomeForLaunch(launchCwd, sessionId, process.env);
+  const codexHomeOverride = preparedCodexHome.codexHomeOverride;
+  const projectLocalCodexHomeForCleanup = preparedCodexHome.projectLocalCodexHomeForCleanup;
+
   try {
     await preLaunch(cwd, sessionId, notifyTempResult.contract, codexHomeOverride, true, worktreeDirty);
   } catch (err) {
@@ -1327,6 +1418,7 @@ export async function execWithOverlay(args: string[]): Promise<void> {
     runCodexBlocking(cwd, codexArgs, codexEnv);
   } finally {
     await postLaunch(cwd, sessionId, codexHomeOverride, true, projectLocalCodexHomeForCleanup);
+    await cleanupRuntimeCodexHome(preparedCodexHome.runtimeCodexHomeForCleanup).catch(logCliOperationFailure);
   }
 }
 
@@ -1990,9 +2082,10 @@ function buildDetachedSessionLeaderCommand(
   sessionId?: string,
   codexHomeOverride?: string,
   projectLocalCodexHomeForCleanup?: string,
+  runtimeCodexHomeForCleanup?: string,
 ): string {
   const detachedPostLaunchHelper = sessionId
-    ? `${buildDetachedSessionPostLaunchHelperCommand(cwd, sessionId, codexHomeOverride, projectLocalCodexHomeForCleanup)} >/dev/null 2>&1 || true;`
+    ? `${buildDetachedSessionPostLaunchHelperCommand(cwd, sessionId, codexHomeOverride, projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup)} >/dev/null 2>&1 || true;`
     : "";
   const wrapped = [
     buildTmuxExtendedKeysAcquireShellSnippet(cwd),
@@ -2026,6 +2119,7 @@ function buildDetachedSessionPostLaunchHelperCommand(
   sessionId: string,
   codexHomeOverride?: string,
   projectLocalCodexHomeForCleanup?: string,
+  runtimeCodexHomeForCleanup?: string,
 ): string {
   const cwdLiteral = JSON.stringify(cwd);
   const sessionIdLiteral = JSON.stringify(sessionId);
@@ -2038,10 +2132,15 @@ function buildDetachedSessionPostLaunchHelperCommand(
     projectLocalCodexHomeForCleanup.length > 0
       ? JSON.stringify(projectLocalCodexHomeForCleanup)
       : "undefined";
+  const runtimeCodexHomeCleanupLiteral =
+    typeof runtimeCodexHomeForCleanup === "string" &&
+    runtimeCodexHomeForCleanup.length > 0
+      ? JSON.stringify(runtimeCodexHomeForCleanup)
+      : "undefined";
   const moduleUrlLiteral = JSON.stringify(import.meta.url);
   const script = [
     `const mod = await import(${moduleUrlLiteral});`,
-    `await mod.runDetachedSessionPostLaunch(${cwdLiteral}, ${sessionIdLiteral}, ${codexHomeLiteral}, ${projectLocalCleanupLiteral});`,
+    `await mod.runDetachedSessionPostLaunch(${cwdLiteral}, ${sessionIdLiteral}, ${codexHomeLiteral}, ${projectLocalCleanupLiteral}, ${runtimeCodexHomeCleanupLiteral});`,
   ].join(" ");
   return `${quoteShellArg(process.execPath)} --input-type=module -e ${quoteShellArg(script)}`;
 }
@@ -2210,6 +2309,7 @@ export function buildDetachedSessionBootstrapSteps(
   nativeWindows = false,
   sessionId?: string,
   projectLocalCodexHomeForCleanup?: string,
+  runtimeCodexHomeForCleanup?: string,
 ): DetachedSessionTmuxStep[] {
   const detachedLeaderCmd = nativeWindows
     ? "powershell.exe"
@@ -2220,6 +2320,7 @@ export function buildDetachedSessionBootstrapSteps(
         sessionId,
         codexHomeOverride,
         projectLocalCodexHomeForCleanup,
+        runtimeCodexHomeForCleanup,
       );
   const newSessionArgs: string[] = [
     "new-session",
@@ -2825,6 +2926,7 @@ function runCodex(
   notifyTempContractRaw?: string | null,
   explicitLaunchPolicy?: CodexLaunchPolicy,
   projectLocalCodexHomeForCleanup?: string,
+  runtimeCodexHomeForCleanup?: string,
 ): { postLaunchHandledExternally: boolean } {
   const launchArgs = injectModelInstructionsBypassArgs(
     cwd,
@@ -2959,6 +3061,7 @@ function runCodex(
         nativeWindows,
         sessionId,
         projectLocalCodexHomeForCleanup,
+        runtimeCodexHomeForCleanup,
       );
       for (const step of bootstrapSteps) {
         const output = execTmuxFileSync(step.args, {
@@ -3363,6 +3466,7 @@ export async function runDetachedSessionPostLaunch(
   sessionId: string,
   codexHomeOverride?: string,
   projectLocalCodexHomeForCleanup?: string,
+  runtimeCodexHomeForCleanup?: string,
 ): Promise<void> {
   await postLaunch(
     cwd,
@@ -3371,6 +3475,7 @@ export async function runDetachedSessionPostLaunch(
     false,
     projectLocalCodexHomeForCleanup,
   );
+  await cleanupRuntimeCodexHome(runtimeCodexHomeForCleanup).catch(logCliOperationFailure);
 }
 
 async function emitNativeHookEvent(
