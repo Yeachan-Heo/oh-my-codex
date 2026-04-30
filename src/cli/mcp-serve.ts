@@ -13,6 +13,7 @@ type McpServeLoaderMap = Record<McpServeEntrypoint, McpServeLoader>;
 interface McpServeCommandOptions {
   env?: Record<string, string | undefined>;
   loaders?: McpServeLoaderMap;
+  keepProcessAlive?: boolean;
 }
 
 const MCP_SERVE_USAGE = [
@@ -84,4 +85,12 @@ export async function mcpServeCommand(
   const loaders = options.loaders ?? MCP_SERVE_LOADERS;
   env[MCP_ENTRYPOINT_MARKER_ENV] = target;
   await loaders[target]();
+  if (options.keepProcessAlive === false) return;
+
+  // MCP server modules start their stdio lifecycle as a top-level import side
+  // effect. Keep the CLI command from returning after that import so the MCP
+  // client can complete initialize and continue using the inherited stdio
+  // transport. The server bootstrap owns shutdown when stdin closes, the parent
+  // exits, or the transport disconnects.
+  await new Promise<never>(() => undefined);
 }

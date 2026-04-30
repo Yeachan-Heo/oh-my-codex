@@ -10,6 +10,7 @@ describe("mcp-serve command", () => {
 
 		await mcpServeCommand(["trace"], {
 			env,
+			keepProcessAlive: false,
 			loaders: {
 				"state-server.js": async () => {
 					loaded.push("state-server.js");
@@ -37,10 +38,42 @@ describe("mcp-serve command", () => {
 		const env: Record<string, string | undefined> = {};
 
 		await assert.rejects(
-			mcpServeCommand(["unknown-entrypoint"], { env }),
+			mcpServeCommand(["unknown-entrypoint"], { env, keepProcessAlive: false }),
 			/Unknown MCP target: unknown-entrypoint/,
 		);
 
 		assert.equal(env[MCP_ENTRYPOINT_MARKER_ENV], undefined);
+	});
+
+	it("keeps the stdio server process alive after loading the target module", async () => {
+		const env: Record<string, string | undefined> = {};
+		let loaded = false;
+		let settled = false;
+
+		const commandPromise = mcpServeCommand(["state"], {
+			env,
+			loaders: {
+				"state-server.js": async () => {
+					loaded = true;
+				},
+				"memory-server.js": async () => {},
+				"code-intel-server.js": async () => {},
+				"trace-server.js": async () => {},
+				"wiki-server.js": async () => {},
+			},
+		});
+		void commandPromise.then(
+			() => {
+				settled = true;
+			},
+			() => {
+				settled = true;
+			},
+		);
+
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		assert.equal(loaded, true);
+		assert.equal(settled, false);
 	});
 });
