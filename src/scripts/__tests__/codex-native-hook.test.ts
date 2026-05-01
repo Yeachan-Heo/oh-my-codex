@@ -4789,6 +4789,100 @@ esac
     }
   });
 
+  it("does not block on stale ralplan skill-active when canonical run-state is terminal", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-terminal-ralplan-run-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-stop-terminal-ralplan";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: sessionId,
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: sessionId,
+        }],
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: sessionId,
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "run-state.json"), {
+        version: 1,
+        mode: "ralplan",
+        active: false,
+        outcome: "finish",
+        lifecycle_outcome: "finished",
+        current_phase: "complete",
+        completed_at: "2026-05-01T00:00:00.000Z",
+        updated_at: "2026-05-01T00:00:00.000Z",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block on stale ralplan skill-active when pinned mode state belongs to another session", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-foreign-ralplan-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-stop-current-ralplan";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: sessionId,
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: sessionId,
+        }],
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-other-ralplan",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not block on active ralplan skill when subagents are still active", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-skill-subagent-"));
     try {

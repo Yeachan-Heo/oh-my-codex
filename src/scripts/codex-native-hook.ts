@@ -107,7 +107,7 @@ export interface NativeHookDispatchResult {
   outputJson: Record<string, unknown> | null;
 }
 
-const TERMINAL_MODE_PHASES = new Set(["complete", "failed", "cancelled"]);
+const TERMINAL_MODE_PHASES = new Set(["complete", "completed", "failed", "cancelled"]);
 const SKILL_STOP_BLOCKERS = new Set(["ralplan"]);
 const TEAM_TERMINAL_TASK_STATUSES = new Set(["completed", "failed"]);
 const NATIVE_STOP_STATE_FILE = "native-stop-state.json";
@@ -1431,6 +1431,36 @@ function matchesSkillStopContext(
   return true;
 }
 
+function modeStateMatchesSkillStopContext(
+  state: Record<string, unknown>,
+  cwd: string,
+  sessionId: string,
+): boolean {
+  const stateSessionId = safeString(
+    state.owner_omx_session_id
+      ?? state.session_id
+      ?? state.codex_session_id
+      ?? state.owner_codex_session_id,
+  ).trim();
+  if (sessionId && stateSessionId && stateSessionId !== sessionId) return false;
+
+  const stateCwd = safeString(
+    state.cwd
+      ?? state.workingDirectory
+      ?? state.working_directory
+      ?? state.project_path,
+  ).trim();
+  if (stateCwd) {
+    try {
+      if (resolve(stateCwd) !== resolve(cwd)) return false;
+    } catch {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 async function readBlockingSkillForStop(
   cwd: string,
   sessionId: string,
@@ -1444,8 +1474,15 @@ async function readBlockingSkillForStop(
     : [...SKILL_STOP_BLOCKERS];
 
   for (const skill of candidateSkills) {
+    const terminalRunState = await readCanonicalTerminalRunStateForStop(cwd, sessionId, skill);
+    if (terminalRunState) continue;
+
     const modeState = await readStopSessionPinnedState(`${skill}-state.json`, cwd, sessionId);
     if (!modeState || modeState.active !== true) continue;
+    if (!modeStateMatchesSkillStopContext(modeState, cwd, sessionId)) continue;
+
+    const modeSnapshot = getRunContinuationSnapshot(modeState);
+    if (modeSnapshot?.terminal === true) continue;
 
     const phase = formatPhase(
       modeState.current_phase,

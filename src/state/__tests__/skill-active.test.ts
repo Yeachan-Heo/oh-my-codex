@@ -140,4 +140,57 @@ describe('skill-active state helpers', () => {
       );
     });
   });
+
+  it('clears only the matching terminal session entry and preserves unrelated active skills', async () => {
+    await withTempRepo('omx-skill-active-terminal-clear-', async (cwd) => {
+      await mkdir(join(cwd, '.omx', 'state'), { recursive: true });
+      await writeSkillActiveStateCopies(cwd, {
+        active: true,
+        skill: 'custom-skill',
+        phase: 'running',
+        active_skills: [{ skill: 'custom-skill', phase: 'running', active: true }],
+      });
+      await syncCanonicalSkillStateForMode({
+        cwd,
+        mode: 'ralplan',
+        active: true,
+        currentPhase: 'planning',
+        sessionId: 'sess-terminal',
+        nowIso: '2026-05-01T00:00:00.000Z',
+      });
+
+      await syncCanonicalSkillStateForMode({
+        cwd,
+        mode: 'ralplan',
+        active: false,
+        currentPhase: 'complete',
+        sessionId: 'sess-terminal',
+        nowIso: '2026-05-01T00:01:00.000Z',
+      });
+
+      const sessionState = await readVisibleSkillActiveState(cwd, 'sess-terminal');
+      assert.ok(sessionState);
+      assert.deepEqual(
+        listActiveSkills(sessionState).map(({ skill, phase, session_id }) => ({
+          skill,
+          phase,
+          session_id,
+        })),
+        [{ skill: 'custom-skill', phase: 'running', session_id: undefined }],
+      );
+
+      const rootState = JSON.parse(
+        await readFile(join(cwd, '.omx', 'state', 'skill-active-state.json'), 'utf-8'),
+      ) as { active?: boolean; active_skills?: Array<{ skill: string; phase?: string; session_id?: string }> };
+      assert.equal(rootState.active, true);
+      assert.deepEqual(
+        rootState.active_skills?.map(({ skill, phase, session_id }) => ({
+          skill,
+          phase,
+          session_id,
+        })),
+        [{ skill: 'custom-skill', phase: 'running', session_id: undefined }],
+      );
+    });
+  });
 });
