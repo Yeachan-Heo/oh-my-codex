@@ -2043,12 +2043,7 @@ async function buildStopHookOutput(
           workerContext: teamWorkerDecision.workerContext,
         });
       } catch (err) {
-        appendToLog(
-          join(cwd, ".omx", "logs", "native-hook.log"),
-          `[${new Date().toISOString()}] worker Stop leader nudge failed: ${
-            err instanceof Error ? err.message : String(err)
-          }\n`,
-        );
+        void err;
       }
       return null;
     }

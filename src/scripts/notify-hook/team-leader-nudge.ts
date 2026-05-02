@@ -78,8 +78,8 @@ export function resolveLeaderStalenessThresholdMs() {
 export function resolveFallbackProgressStallThresholdMs() {
   const raw = safeString(process.env.OMX_TEAM_PROGRESS_STALL_MS || '');
   const parsed = asNumber(raw);
-  // Fallback-only threshold used when worker turn-count signals are unavailable.
-  // Default: 2 minutes. Guard against unreasonable values.
+  // Deprecated compatibility parser. Worker-stall leader nudges are no longer
+  // driven by this threshold; native worker Stop events own that lifecycle.
   if (parsed !== null && parsed >= 10_000 && parsed <= 60 * 60_000) return parsed;
   return 120_000;
 }
@@ -87,7 +87,8 @@ export function resolveFallbackProgressStallThresholdMs() {
 export function resolveWorkerTurnStallThresholdMs() {
   const raw = safeString(process.env.OMX_TEAM_WORKER_TURN_STALL_MS || '');
   const parsed = asNumber(raw);
-  // Default: 30 seconds. Guard against unreasonable values.
+  // Deprecated compatibility parser. Worker-turn stalls no longer trigger
+  // visible leader nudges.
   if (parsed !== null && parsed >= 10_000 && parsed <= 10 * 60_000) return parsed;
   return 30_000;
 }
@@ -588,8 +589,6 @@ export async function maybeNudgeTeamLeader({
 }) {
   const intervalMs = resolveLeaderNudgeIntervalMs();
   const idleCooldownMs = resolveLeaderAllIdleNudgeCooldownMs();
-  const fallbackProgressStallThresholdMs = resolveFallbackProgressStallThresholdMs();
-  const workerTurnStallThresholdMs = resolveWorkerTurnStallThresholdMs();
   const nowMs = Date.now();
   const nowIso = new Date().toISOString();
   const omxDir = join(cwd, '.omx');
@@ -725,17 +724,12 @@ export async function maybeNudgeTeamLeader({
       ? Math.max(effectiveProgressAtMs, extraProgressEvidenceMs)
       : effectiveProgressAtMs;
     const effectiveProgressAtIso = new Date(latestProgressEvidenceMs).toISOString();
-    const stalledForMs = Math.max(0, nowMs - latestProgressEvidenceMs);
-    const stallThresholdMs = hasTrackableTurnSignals ? workerTurnStallThresholdMs : fallbackProgressStallThresholdMs;
-    const teamProgressStalled =
-      progressSnapshot.workRemaining
-      && paneStatus.alive
-      && !allWorkersIdle
-      && !progressChanged
-      && stalledForMs >= stallThresholdMs;
+    const teamProgressStalled = false;
     const hasFreshProgressEvidence =
       progressSnapshot.workRemaining
-      && stalledForMs < stallThresholdMs;
+      && (progressChanged
+        || (Number.isFinite(extraProgressEvidenceMs)
+          && (nowMs - extraProgressEvidenceMs) < resolveLeaderStalenessThresholdMs()));
     const leaderActionState = classifyLeaderActionState({
       allWorkersIdle,
       workerPanesAlive: paneStatus.alive,
@@ -773,8 +767,6 @@ export async function maybeNudgeTeamLeader({
     // Stale-leader follow-up is the only periodic visible nudge path.
     // This keeps the leader pane quieter when the leader is not actually stale.
     const stalePanesNudge = paneStatus.alive && leaderStale && !hasFreshProgressEvidence;
-    const previousStalledTeamNudge = prevReason === 'stuck_waiting_on_leader';
-    const stalledTeamNudge = teamProgressStalled && (dueByTime || !previousStalledTeamNudge);
     const staleFollowupDue = stalePanesNudge && dueByTime;
     const hasActionableNewMessage = hasNewMessage && (allowFreshMailboxNudges || leaderStale);
 
@@ -800,12 +792,6 @@ export async function maybeNudgeTeamLeader({
         `Team ${teamName}: ${ackWithoutStartEvidence.worker} said "${ackWithoutStartEvidence.body}" `
         + `but has no start evidence (status: ${ackWithoutStartEvidence.statusState}). `
         + buildWorkerStartEvidenceReminder(teamName, ackWithoutStartEvidence.worker);
-    } else if (stalledTeamNudge) {
-      nudgeReason = 'stuck_waiting_on_leader';
-      const stallPrefix = leaderStale ? 'leader stale, ' : 'worker panes stalled, ';
-      text =
-        `Team ${teamName}: ${stallPrefix}no progress ${formatDurationMs(stalledForMs)}. `
-        + leaderActionGuidance;
     } else if (stalePanesNudge && hasActionableNewMessage) {
       nudgeReason = 'stale_leader_with_messages';
       text =
