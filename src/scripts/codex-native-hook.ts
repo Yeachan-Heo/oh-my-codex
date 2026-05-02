@@ -110,6 +110,7 @@ export interface NativeHookDispatchResult {
 const TERMINAL_MODE_PHASES = new Set(["complete", "completed", "failed", "cancelled"]);
 const SKILL_STOP_BLOCKERS = new Set(["ralplan"]);
 const TEAM_TERMINAL_TASK_STATUSES = new Set(["completed", "failed"]);
+const TEAM_WORKER_STOP_ACTIVE_STATES = new Set(["working", "blocked"]);
 const NATIVE_STOP_STATE_FILE = "native-stop-state.json";
 const STABLE_FINAL_RECOMMENDATION_PATTERNS = [
   /^\s*(?:launch|release|ship)-?ready\s*:\s*(?:yes|no)\b[^\n\r]*/im,
@@ -1206,6 +1207,9 @@ async function buildTeamWorkerStopOutput(
     readJsonIfExists(join(workerRoot, "identity.json")),
     readJsonIfExists(join(workerRoot, "status.json")),
   ]);
+
+  const workerState = safeString(status?.state).trim().toLowerCase();
+  if (!TEAM_WORKER_STOP_ACTIVE_STATES.has(workerState)) return null;
 
   const candidateTaskIds = new Set<string>();
   const currentTaskId = safeString(status?.current_task_id).trim();

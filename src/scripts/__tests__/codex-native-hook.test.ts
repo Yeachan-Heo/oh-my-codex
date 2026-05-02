@@ -4087,7 +4087,7 @@ esac
         team_state_root: join(cwd, ".omx", "state"),
       });
       await writeJson(join(workerDir, "status.json"), {
-        state: "idle",
+        state: "working",
         current_task_id: "1",
         updated_at: new Date().toISOString(),
       });
@@ -4131,6 +4131,72 @@ esac
     }
   });
 
+  it("does not block Stop as a team-worker task failure when worker status is already terminal", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-terminal-stale-"));
+    const prevTeamWorker = process.env.OMX_TEAM_WORKER;
+    const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const prevLeaderCwd = process.env.OMX_TEAM_LEADER_CWD;
+    try {
+      await initTeamState(
+        "worker-stale-team",
+        "worker stale stop fallback",
+        "executor",
+        1,
+        cwd,
+        undefined,
+        { ...process.env, OMX_SESSION_ID: "sess-stop-team-worker-stale" },
+      );
+      const stateDir = join(cwd, ".omx", "state");
+      const workerCwd = join(cwd, ".omx", "team", "worker-stale-team", "worktrees", "worker-1");
+      const workerDir = join(stateDir, "team", "worker-stale-team", "workers", "worker-1");
+      await mkdir(workerCwd, { recursive: true });
+      await writeJson(join(workerDir, "identity.json"), {
+        name: "worker-1",
+        index: 1,
+        role: "executor",
+        assigned_tasks: ["1"],
+        worktree_path: workerCwd,
+        team_state_root: stateDir,
+      });
+      await writeJson(join(workerDir, "status.json"), {
+        state: "done",
+        current_task_id: "1",
+        updated_at: new Date().toISOString(),
+      });
+      await writeJson(join(stateDir, "team", "worker-stale-team", "tasks", "task-1.json"), {
+        id: "1",
+        subject: "stale hook task",
+        description: "stale task should not trap terminal worker Stop",
+        status: "in_progress",
+        owner: "worker-1",
+        created_at: new Date().toISOString(),
+      });
+
+      process.env.OMX_TEAM_WORKER = "worker-stale-team/worker-1";
+      process.env.OMX_TEAM_STATE_ROOT = stateDir;
+      process.env.OMX_TEAM_LEADER_CWD = cwd;
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd: workerCwd,
+          session_id: "sess-stop-team-worker-stale",
+        },
+        { cwd: workerCwd },
+      );
+
+      assert.equal((result.outputJson as { stopReason?: string } | null)?.stopReason, "team_team-exec");
+    } finally {
+      if (typeof prevTeamWorker === "string") process.env.OMX_TEAM_WORKER = prevTeamWorker;
+      else delete process.env.OMX_TEAM_WORKER;
+      if (typeof prevTeamStateRoot === "string") process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      if (typeof prevLeaderCwd === "string") process.env.OMX_TEAM_LEADER_CWD = prevLeaderCwd;
+      else delete process.env.OMX_TEAM_LEADER_CWD;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("suppresses identical team worker Stop replays but re-blocks fresh turns and task state changes", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-repeat-"));
     try {
@@ -4157,7 +4223,7 @@ esac
         team_state_root: stateDir,
       });
       await writeJson(join(workerDir, "status.json"), {
-        state: "idle",
+        state: "working",
         current_task_id: "1",
         updated_at: new Date().toISOString(),
       });
