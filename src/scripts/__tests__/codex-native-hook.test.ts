@@ -4542,6 +4542,7 @@ esac
   it("does not treat failed or ambiguous worker task state as completed Stop evidence", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-failed-"));
     const prevTeamWorker = process.env.OMX_TEAM_WORKER;
+    const prevInternalTeamWorker = process.env.OMX_TEAM_INTERNAL_WORKER;
     const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
     const prevPath = process.env.PATH;
     try {
@@ -4584,6 +4585,7 @@ esac
       });
 
       process.env.OMX_TEAM_WORKER = "worker-stop-failed-task/worker-1";
+      delete process.env.OMX_TEAM_INTERNAL_WORKER;
       process.env.OMX_TEAM_STATE_ROOT = stateDir;
       process.env.PATH = `${fakeBinDir}:${prevPath || ""}`;
 
@@ -4599,6 +4601,7 @@ esac
       );
 
       assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.stopReason || ""), /non_completed_task_1_failed/);
       assert.match(JSON.stringify(result.outputJson), /team/i);
       assert.equal(existsSync(join(workerDir, "worker-stop-nudge.json")), false);
       const tmuxLog = existsSync(tmuxLogPath) ? await readFile(tmuxLogPath, "utf-8") : "";
@@ -4606,6 +4609,200 @@ esac
     } finally {
       if (typeof prevTeamWorker === "string") process.env.OMX_TEAM_WORKER = prevTeamWorker;
       else delete process.env.OMX_TEAM_WORKER;
+      if (typeof prevInternalTeamWorker === "string") process.env.OMX_TEAM_INTERNAL_WORKER = prevInternalTeamWorker;
+      else delete process.env.OMX_TEAM_INTERNAL_WORKER;
+      if (typeof prevTeamStateRoot === "string") process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      if (typeof prevPath === "string") process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks worker Stop on missing task assignment without relying on generic team state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-missing-assignment-"));
+    const prevTeamWorker = process.env.OMX_TEAM_WORKER;
+    const prevInternalTeamWorker = process.env.OMX_TEAM_INTERNAL_WORKER;
+    const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const workerDir = join(stateDir, "team", "worker-missing-assignment", "workers", "worker-1");
+      await mkdir(workerDir, { recursive: true });
+      await writeJson(join(workerDir, "identity.json"), {
+        name: "worker-1",
+        assigned_tasks: [],
+        team_state_root: stateDir,
+      });
+      await writeJson(join(workerDir, "status.json"), {
+        state: "idle",
+        updated_at: new Date().toISOString(),
+      });
+
+      process.env.OMX_TEAM_WORKER = "worker-missing-assignment/worker-1";
+      delete process.env.OMX_TEAM_INTERNAL_WORKER;
+      process.env.OMX_TEAM_STATE_ROOT = stateDir;
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-team-worker-missing-assignment",
+          thread_id: "thread-stop-team-worker-missing-assignment",
+          turn_id: "turn-stop-team-worker-missing-assignment",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.equal(result.outputJson?.stopReason, "team_worker_worker-1_missing_task_assignment");
+      assert.equal(existsSync(join(workerDir, "worker-stop-nudge.json")), false);
+    } finally {
+      if (typeof prevTeamWorker === "string") process.env.OMX_TEAM_WORKER = prevTeamWorker;
+      else delete process.env.OMX_TEAM_WORKER;
+      if (typeof prevInternalTeamWorker === "string") process.env.OMX_TEAM_INTERNAL_WORKER = prevInternalTeamWorker;
+      else delete process.env.OMX_TEAM_INTERNAL_WORKER;
+      if (typeof prevTeamStateRoot === "string") process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers canonical internal worker identity over public worker identity for Stop nudges", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-internal-env-"));
+    const prevTeamWorker = process.env.OMX_TEAM_WORKER;
+    const prevInternalTeamWorker = process.env.OMX_TEAM_INTERNAL_WORKER;
+    const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const prevPath = process.env.PATH;
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const fakeBinDir = join(cwd, "fake-bin");
+      const tmuxLogPath = join(cwd, "tmux.log");
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, "tmux"), buildWorkerStopFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, "tmux"), 0o755);
+      const workerDir = join(stateDir, "team", "internal-stop-team", "workers", "worker-1");
+      await writeJson(join(stateDir, "team", "internal-stop-team", "config.json"), {
+        name: "internal-stop-team",
+        tmux_session: "omx-team-worker-stop",
+        leader_pane_id: "%42",
+        workers: [{ name: "worker-1", index: 1, pane_id: "%10" }],
+      });
+      await writeJson(join(workerDir, "identity.json"), {
+        name: "worker-1",
+        assigned_tasks: ["1"],
+        team_state_root: stateDir,
+      });
+      await writeJson(join(workerDir, "status.json"), {
+        state: "done",
+        current_task_id: "1",
+        updated_at: new Date().toISOString(),
+      });
+      await writeJson(join(stateDir, "team", "internal-stop-team", "tasks", "task-1.json"), {
+        id: "1",
+        status: "completed",
+        owner: "worker-1",
+      });
+
+      process.env.OMX_TEAM_WORKER = "public-stop-team/worker-1";
+      process.env.OMX_TEAM_INTERNAL_WORKER = "internal-stop-team/worker-1";
+      process.env.OMX_TEAM_STATE_ROOT = stateDir;
+      process.env.PATH = `${fakeBinDir}:${prevPath || ""}`;
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-team-worker-internal-env",
+          thread_id: "thread-stop-team-worker-internal-env",
+          turn_id: "turn-stop-team-worker-internal-env",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson, null);
+      const tmuxLog = await readFile(tmuxLogPath, "utf-8");
+      assert.match(tmuxLog, /send-keys -t %42 -l \[OMX\] worker-1 native Stop allowed/);
+      assert.equal(existsSync(join(workerDir, "worker-stop-nudge.json")), true);
+    } finally {
+      if (typeof prevTeamWorker === "string") process.env.OMX_TEAM_WORKER = prevTeamWorker;
+      else delete process.env.OMX_TEAM_WORKER;
+      if (typeof prevInternalTeamWorker === "string") process.env.OMX_TEAM_INTERNAL_WORKER = prevInternalTeamWorker;
+      else delete process.env.OMX_TEAM_INTERNAL_WORKER;
+      if (typeof prevTeamStateRoot === "string") process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      if (typeof prevPath === "string") process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks worker Stop when canonical task ownership has a newer non-terminal task", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-owned-task-"));
+    const prevTeamWorker = process.env.OMX_TEAM_WORKER;
+    const prevInternalTeamWorker = process.env.OMX_TEAM_INTERNAL_WORKER;
+    const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const prevPath = process.env.PATH;
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const fakeBinDir = join(cwd, "fake-bin");
+      const tmuxLogPath = join(cwd, "tmux.log");
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, "tmux"), buildWorkerStopFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, "tmux"), 0o755);
+      const workerDir = join(stateDir, "team", "worker-owned-task", "workers", "worker-1");
+      await writeJson(join(stateDir, "team", "worker-owned-task", "config.json"), {
+        name: "worker-owned-task",
+        tmux_session: "omx-team-worker-stop",
+        leader_pane_id: "%42",
+        workers: [{ name: "worker-1", index: 1, pane_id: "%10" }],
+      });
+      await writeJson(join(workerDir, "identity.json"), {
+        name: "worker-1",
+        assigned_tasks: ["1"],
+        team_state_root: stateDir,
+      });
+      await writeJson(join(workerDir, "status.json"), {
+        state: "done",
+        current_task_id: "1",
+        updated_at: new Date().toISOString(),
+      });
+      await writeJson(join(stateDir, "team", "worker-owned-task", "tasks", "task-1.json"), {
+        id: "1",
+        status: "completed",
+        owner: "worker-1",
+      });
+      await writeJson(join(stateDir, "team", "worker-owned-task", "tasks", "task-2.json"), {
+        id: "2",
+        status: "in_progress",
+        owner: "worker-1",
+      });
+
+      process.env.OMX_TEAM_WORKER = "worker-owned-task/worker-1";
+      delete process.env.OMX_TEAM_INTERNAL_WORKER;
+      process.env.OMX_TEAM_STATE_ROOT = stateDir;
+      process.env.PATH = `${fakeBinDir}:${prevPath || ""}`;
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-team-worker-owned-task",
+          thread_id: "thread-stop-team-worker-owned-task",
+          turn_id: "turn-stop-team-worker-owned-task",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.equal(result.outputJson?.stopReason, "team_worker_worker-1_2_in_progress");
+      assert.equal(existsSync(join(workerDir, "worker-stop-nudge.json")), false);
+      const tmuxLog = existsSync(tmuxLogPath) ? await readFile(tmuxLogPath, "utf-8") : "";
+      assert.doesNotMatch(tmuxLog, /native Stop allowed/);
+    } finally {
+      if (typeof prevTeamWorker === "string") process.env.OMX_TEAM_WORKER = prevTeamWorker;
+      else delete process.env.OMX_TEAM_WORKER;
+      if (typeof prevInternalTeamWorker === "string") process.env.OMX_TEAM_INTERNAL_WORKER = prevInternalTeamWorker;
+      else delete process.env.OMX_TEAM_INTERNAL_WORKER;
       if (typeof prevTeamStateRoot === "string") process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
       else delete process.env.OMX_TEAM_STATE_ROOT;
       if (typeof prevPath === "string") process.env.PATH = prevPath;
