@@ -2069,17 +2069,16 @@ exit 0
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /Team stalled-progress: leader stale, no progress 3m(?:\d+s)?\./);
-      assert.match(tmuxLog, /Next: omx team status stalled-progress; read worker messages; unblock\/reassign or shutdown\./);
+      assert.doesNotMatch(tmuxLog, /worker panes stalled/);
+      assert.doesNotMatch(tmuxLog, /no progress 3m/);
       assert.doesNotMatch(tmuxLog, /keep polling/);
       assert.doesNotMatch(tmuxLog, /\[OMX_INTENT:/);
-      assert.match(tmuxLog, /\[OMX_TMUX_INJECT\]/);
 
       const eventsPath = join(teamDir, 'events', 'events.ndjson');
-      const events = (await readFile(eventsPath, 'utf-8')).trim().split('\n').map(line => JSON.parse(line));
+      const eventsRaw = await readFile(eventsPath, 'utf-8').catch(() => '');
+      const events = eventsRaw.trim() ? eventsRaw.trim().split('\n').map(line => JSON.parse(line)) : [];
       const nudgeEvent = events.find((e: { type?: string }) => e.type === 'team_leader_nudge');
-      assert.equal(nudgeEvent?.reason, 'stuck_waiting_on_leader');
-      assert.equal(nudgeEvent?.orchestration_intent, 'stalled-unblock');
+      assert.equal(nudgeEvent, undefined);
     });
   });
 
@@ -2197,15 +2196,16 @@ exit 0
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /Team stalled-before-stale: worker panes stalled, no progress 3m(?:\d+s)?\./);
-      assert.match(tmuxLog, /Next: omx team status stalled-before-stale; read worker messages; unblock\/reassign or shutdown\./);
+      assert.doesNotMatch(tmuxLog, /worker panes stalled/);
+      assert.doesNotMatch(tmuxLog, /no progress 3m/);
       assert.doesNotMatch(tmuxLog, /keep polling/);
       assert.doesNotMatch(tmuxLog, /leader stale/);
 
       const eventsPath = join(teamDir, 'events', 'events.ndjson');
-      const events = (await readFile(eventsPath, 'utf-8')).trim().split('\n').map(line => JSON.parse(line));
+      const eventsRaw = await readFile(eventsPath, 'utf-8').catch(() => '');
+      const events = eventsRaw.trim() ? eventsRaw.trim().split('\n').map(line => JSON.parse(line)) : [];
       const nudgeEvent = events.find((e: { type?: string }) => e.type === 'team_leader_nudge');
-      assert.equal(nudgeEvent?.reason, 'stuck_waiting_on_leader');
+      assert.equal(nudgeEvent, undefined);
     });
   });
 
@@ -2309,7 +2309,8 @@ exit 0
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /Team worker-turn-stall-threshold: worker panes stalled, no progress 45s\./);
+      assert.doesNotMatch(tmuxLog, /worker panes stalled/);
+      assert.doesNotMatch(tmuxLog, /no progress 45s/);
     });
   });
 
@@ -2547,8 +2548,8 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       const sends = tmuxLog.match(/send-keys -t %88 -l Team stalled-before-stale-bounded: worker panes stalled, no progress/g) || [];
-      assert.equal(sends.length, 1, 'cooldown should keep repeated stalled-team nudges bounded');
-      assert.match(tmuxLog, /Next: omx team status stalled-before-stale-bounded; read worker messages; unblock\/reassign or shutdown\./);
+      assert.equal(sends.length, 0, 'stall/progress heuristics should not produce leader nudges');
+      assert.doesNotMatch(tmuxLog, /worker panes stalled/);
     });
   });
 

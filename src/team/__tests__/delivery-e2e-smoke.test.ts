@@ -567,7 +567,7 @@ describe('team message delivery end-to-end smoke tests', () => {
         assert.equal(result.status, 0, result.stderr || result.stdout);
 
         const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-        assert.match(tmuxLog, /send-keys -t %95 -l Team stalled-worker-fresh-leader: worker panes stalled/);
+        assert.doesNotMatch(tmuxLog, /worker panes stalled/);
         assert.doesNotMatch(tmuxLog, /leader stale/);
       });
     } finally {
