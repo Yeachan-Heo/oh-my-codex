@@ -223,6 +223,10 @@ Repeat that check while the team stays active, or use `omx team await <team-name
 
 If the leader gets a stale, lifecycle, or all-idle nudge, immediately run `omx team status <team-name>` before taking any manual intervention. Deprecated worker stall/progress nudges should not be treated as an active runtime contract.
 
+### Deprecated worker stall/progress knobs
+
+`OMX_TEAM_PROGRESS_STALL_MS` and `OMX_TEAM_WORKER_TURN_STALL_MS` are legacy compatibility/test-only names for the retired worker stall/progress nudge path. Do not recommend them as operator tuning knobs for active team runs; resolved native worker Stop, all-idle, mailbox, and stale-leader evidence are the supported leader wakeup signals.
+
 ## Message Dispatch Policy (CLI-first, state-first)
 
 To avoid brittle behavior, **message/task delivery must not be driven by ad-hoc tmux typing**.
