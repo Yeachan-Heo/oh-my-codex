@@ -1191,7 +1191,16 @@ async function resolveTeamStateDirForWorkerContext(
   cwd: string,
   workerContext: { teamName: string; workerName: string },
 ): Promise<string | null> {
-  return resolveWorkerNotifyTeamStateRootPath(cwd, workerContext, process.env);
+  const resolved = await resolveWorkerNotifyTeamStateRootPath(cwd, workerContext, process.env).catch(() => null);
+  if (resolved) return resolved;
+  const explicit = safeString(process.env.OMX_TEAM_STATE_ROOT).trim();
+  if (explicit) {
+    const candidate = resolve(cwd, explicit);
+    const workerRoot = join(candidate, "team", workerContext.teamName, "workers", workerContext.workerName);
+    if (existsSync(workerRoot)) return candidate;
+    return candidate;
+  }
+  return null;
 }
 
 
@@ -1215,7 +1224,9 @@ type TeamWorkerStopDecision =
 async function resolveTeamWorkerStopDecision(
   cwd: string,
 ): Promise<TeamWorkerStopDecision> {
-  const workerContext = parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER || process.env.OMX_TEAM_WORKER));
+  const workerContext =
+    parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER))
+    || parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER));
   if (!workerContext) return { kind: "unresolved", reason: "missing_worker_context" };
 
   const stateDir = await resolveTeamStateDirForWorkerContext(cwd, workerContext);
@@ -1225,6 +1236,9 @@ async function resolveTeamWorkerStopDecision(
     readJsonIfExists(join(workerRoot, "identity.json")),
     readJsonIfExists(join(workerRoot, "status.json")),
   ]);
+  if (!identity && !status && !existsSync(workerRoot)) {
+    return { kind: "unresolved", reason: "missing_worker_state" };
+  }
 
   const workerState = safeString(status?.state).trim().toLowerCase();
   if (!TEAM_WORKER_STOP_ACTIVE_STATES.has(workerState)) return null;
@@ -1263,7 +1277,10 @@ async function resolveTeamWorkerStopDecision(
 }
 
 function hasTeamWorkerContext(): boolean {
-  return parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER || process.env.OMX_TEAM_WORKER)) !== null;
+  return (
+    parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER))
+    || parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER))
+  ) !== null;
 }
 
 function isStopExempt(payload: CodexHookPayload): boolean {
@@ -2035,11 +2052,15 @@ async function buildStopHookOutput(
       );
     }
     if (teamWorkerDecision.kind === "allowed") {
-      await maybeNudgeLeaderForAllowedWorkerStop({
-        stateDir: teamWorkerDecision.stateDir,
-        logsDir: join(cwd, ".omx", "logs"),
-        workerContext: teamWorkerDecision.workerContext,
-      }).catch(() => {});
+      try {
+        await maybeNudgeLeaderForAllowedWorkerStop({
+          stateDir: teamWorkerDecision.stateDir,
+          logsDir: join(cwd, ".omx", "logs"),
+          workerContext: teamWorkerDecision.workerContext,
+        });
+      } catch (err) {
+        void err;
+      }
       return null;
     }
 
