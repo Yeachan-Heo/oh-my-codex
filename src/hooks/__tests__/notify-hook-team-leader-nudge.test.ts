@@ -1956,7 +1956,7 @@ exit 0
     });
   });
 
-  it('nudges when team progress is stalled even if timing signals are fresh or missing (fallback threshold)', async () => {
+  it('does not nudge when only team progress-stall heuristics fire (former fallback threshold)', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
       const stateDir = join(omxDir, 'state');
@@ -2063,7 +2063,6 @@ exit 0
       await chmod(fakeTmuxPath, 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, {
-        OMX_TEAM_PROGRESS_STALL_MS: '60000',
         OMX_TEAM_LEADER_NUDGE_MS: '30000',
       });
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
@@ -2082,7 +2081,7 @@ exit 0
     });
   });
 
-  it('nudges when team progress is stalled before the leader becomes stale (fallback threshold)', async () => {
+  it('does not nudge on progress-stall heuristics before the leader becomes stale', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
       const stateDir = join(omxDir, 'state');
@@ -2189,7 +2188,6 @@ exit 0
       await chmod(fakeTmuxPath, 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, {
-        OMX_TEAM_PROGRESS_STALL_MS: '60000',
         OMX_TEAM_LEADER_NUDGE_MS: '30000',
         OMX_TEAM_LEADER_STALE_MS: '60000',
       });
@@ -2211,7 +2209,7 @@ exit 0
 
 
 
-  it('nudges stalled team after configurable worker turn stall window elapses (primary threshold)', async () => {
+  it('does not nudge after the deprecated worker-turn stall window elapses', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');
       const stateDir = join(omxDir, 'state');
@@ -2301,8 +2299,6 @@ exit 0
       await chmod(fakeTmuxPath, 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, {
-        OMX_TEAM_PROGRESS_STALL_MS: '120000',
-        OMX_TEAM_WORKER_TURN_STALL_MS: '30000',
         OMX_TEAM_LEADER_NUDGE_MS: '30000',
         OMX_TEAM_LEADER_STALE_MS: '60000',
       });
@@ -2421,7 +2417,6 @@ exit 0
       await chmod(fakeTmuxPath, 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, {
-        OMX_TEAM_PROGRESS_STALL_MS: '60000',
         OMX_TEAM_LEADER_NUDGE_MS: '30000',
         OMX_TEAM_LEADER_STALE_MS: '60000',
       });
@@ -2533,14 +2528,12 @@ exit 0
       await chmod(fakeTmuxPath, 0o755);
 
       const first = runNotifyHook(cwd, fakeBinDir, {
-        OMX_TEAM_PROGRESS_STALL_MS: '60000',
         OMX_TEAM_LEADER_NUDGE_MS: '30000',
         OMX_TEAM_LEADER_STALE_MS: '60000',
       });
       assert.equal(first.status, 0, `notify-hook failed: ${first.stderr || first.stdout}`);
 
       const second = runNotifyHook(cwd, fakeBinDir, {
-        OMX_TEAM_PROGRESS_STALL_MS: '60000',
         OMX_TEAM_LEADER_NUDGE_MS: '30000',
         OMX_TEAM_LEADER_STALE_MS: '60000',
       });
@@ -2804,7 +2797,6 @@ exit 0
       await chmod(fakeTmuxPath, 0o755);
 
       const result = runNotifyHook(cwd, fakeBinDir, {
-        OMX_TEAM_PROGRESS_STALL_MS: '60000',
         OMX_TEAM_LEADER_NUDGE_MS: '30000',
         OMX_TEAM_LEADER_STALE_MS: '60000',
       });

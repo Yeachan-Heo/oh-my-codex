@@ -561,7 +561,6 @@ describe('team message delivery end-to-end smoke tests', () => {
         const result = spawnSync(process.execPath, [watcherScript, '--once', '--cwd', cwd, '--notify-script', notifyHook], {
           encoding: 'utf-8',
           env: buildCleanNotifyEnv({
-            OMX_TEAM_WORKER_TURN_STALL_MS: '10000',
           }),
         });
         assert.equal(result.status, 0, result.stderr || result.stdout);
