@@ -23,6 +23,7 @@ import {
   isRepositoryCheckout,
   resolveCachedNativeBinaryCandidatePaths,
   getPackageVersion,
+  resolveNativeCacheRoot,
 } from './native-assets.js';
 import { getWikiDir, queryWiki } from '../wiki/index.js';
 import { resolveCodexHomeForLaunch } from './codex-home.js';
@@ -368,7 +369,15 @@ export function resolveExploreHarnessCommand(
 
   return {
     command: 'cargo',
-    args: ['run', '--quiet', '--manifest-path', manifestPath, '--'],
+    args: [
+      'run',
+      '--quiet',
+      '--target-dir',
+      join(resolveNativeCacheRoot(env), 'cargo-target', 'omx-explore-harness'),
+      '--manifest-path',
+      manifestPath,
+      '--',
+    ],
   };
 }
 

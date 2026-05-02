@@ -226,7 +226,7 @@ export function resolveNativeReleaseAssetCandidates(
 }
 
 export function isRepositoryCheckout(packageRoot = getPackageRoot()): boolean {
-  return existsSync(join(packageRoot, '.git')) || existsSync(join(packageRoot, 'src'));
+  return existsSync(join(packageRoot, '.git'));
 }
 
 export async function loadNativeReleaseManifest(
