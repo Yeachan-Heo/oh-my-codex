@@ -4334,7 +4334,7 @@ esac
     }
   });
 
-  it("does not block Stop for a team worker when assigned task is terminal", async () => {
+  it("allows Stop for a team worker when assigned task is terminal and bypasses generic team blocking", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-terminal-"));
     const prevTeamWorker = process.env.OMX_TEAM_WORKER;
     const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
@@ -4375,13 +4375,7 @@ esac
         { cwd },
       );
 
-      assert.deepEqual(result.outputJson, {
-        decision: "block",
-        reason:
-          `OMX team pipeline is still active (worker-stop-team-terminal) at phase team-exec; continue coordinating until the team reaches a terminal phase.${TEAM_STOP_COMMIT_GUIDANCE}`,
-        stopReason: "team_team-exec",
-        systemMessage: "OMX team pipeline is still active at phase team-exec.",
-      });
+      assert.deepEqual(result.outputJson, null);
     } finally {
       if (typeof prevTeamWorker === "string") process.env.OMX_TEAM_WORKER = prevTeamWorker;
       else delete process.env.OMX_TEAM_WORKER;
