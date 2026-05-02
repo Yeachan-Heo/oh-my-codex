@@ -50,6 +50,7 @@ import {
   detectMcpTransportFailure,
 } from "./codex-native-pre-post.js";
 import { handleTeamWorkerPostToolUseSuccess } from "./notify-hook/team-worker-posttooluse.js";
+import { maybeNudgeLeaderForAllowedWorkerStop } from "./notify-hook/team-worker-stop.js";
 import {
   resolveCodexExecutionSurface,
   type CodexLauncherKind,
@@ -1194,14 +1195,31 @@ async function resolveTeamStateDirForWorkerContext(
 }
 
 
-async function buildTeamWorkerStopOutput(
+type TeamWorkerStopDecision =
+  | {
+      kind: "blocked";
+      stateDir: string;
+      workerContext: { teamName: string; workerName: string };
+      output: Record<string, unknown>;
+    }
+  | {
+      kind: "allowed";
+      stateDir: string;
+      workerContext: { teamName: string; workerName: string };
+    }
+  | {
+      kind: "unresolved";
+      reason: string;
+    };
+
+async function resolveTeamWorkerStopDecision(
   cwd: string,
-): Promise<Record<string, unknown> | null> {
+): Promise<TeamWorkerStopDecision> {
   const workerContext = parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER || process.env.OMX_TEAM_WORKER));
-  if (!workerContext) return null;
+  if (!workerContext) return { kind: "unresolved", reason: "missing_worker_context" };
 
   const stateDir = await resolveTeamStateDirForWorkerContext(cwd, workerContext);
-  if (!stateDir) return null;
+  if (!stateDir) return { kind: "unresolved", reason: "missing_state_dir" };
   const workerRoot = join(stateDir, "team", workerContext.teamName, "workers", workerContext.workerName);
   const [identity, status] = await Promise.all([
     readJsonIfExists(join(workerRoot, "identity.json")),
@@ -1227,16 +1245,21 @@ async function buildTeamWorkerStopOutput(
     const statusValue = safeString(task?.status).trim().toLowerCase();
     if (!statusValue || TEAM_TERMINAL_TASK_STATUSES.has(statusValue)) continue;
     return {
-      decision: "block",
-      reason:
-        `OMX team worker ${workerContext.workerName} is still assigned non-terminal task ${taskId} (${statusValue}); continue the current assigned task or report a concrete blocker before stopping.`,
-      stopReason: `team_worker_${workerContext.workerName}_${taskId}_${statusValue}`,
-      systemMessage:
-        `OMX team worker ${workerContext.workerName} is still assigned task ${taskId} (${statusValue}).`,
+      kind: "blocked",
+      stateDir,
+      workerContext,
+      output: {
+        decision: "block",
+        reason:
+          `OMX team worker ${workerContext.workerName} is still assigned non-terminal task ${taskId} (${statusValue}); continue the current assigned task or report a concrete blocker before stopping.`,
+        stopReason: `team_worker_${workerContext.workerName}_${taskId}_${statusValue}`,
+        systemMessage:
+          `OMX team worker ${workerContext.workerName} is still assigned task ${taskId} (${statusValue}).`,
+      },
     };
   }
 
-  return null;
+  return { kind: "allowed", stateDir, workerContext };
 }
 
 function hasTeamWorkerContext(): boolean {
@@ -1999,17 +2022,35 @@ async function buildStopHookOutput(
       }
     }
 
-    const teamWorkerOutput = await buildTeamWorkerStopOutput(cwd);
-    if (hasTeamWorkerContext() && teamWorkerOutput) {
+    const teamWorkerDecision = await resolveTeamWorkerStopDecision(cwd);
+    if (teamWorkerDecision.kind === "blocked") {
       return await returnPersistentStopBlock(
         payload,
         stateDir,
         "team-worker-stop",
-        safeString(teamWorkerOutput.stopReason),
-        teamWorkerOutput,
+        safeString(teamWorkerDecision.output.stopReason),
+        teamWorkerDecision.output,
         canonicalSessionId,
         { allowRepeatDuringStopHook: false },
       );
+    }
+    if (teamWorkerDecision.kind === "allowed") {
+      try {
+        await maybeNudgeLeaderForAllowedWorkerStop({
+          cwd,
+          stateDir: teamWorkerDecision.stateDir,
+          logsDir: join(cwd, ".omx", "logs"),
+          workerContext: teamWorkerDecision.workerContext,
+        });
+      } catch (err) {
+        appendToLog(
+          join(cwd, ".omx", "logs", "native-hook.log"),
+          `[${new Date().toISOString()}] worker Stop leader nudge failed: ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
+      return null;
     }
 
     const autopilotOutput = await buildModeBasedStopOutput("autopilot", cwd, canonicalSessionId);
