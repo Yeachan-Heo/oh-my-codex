@@ -2022,8 +2022,9 @@ async function buildStopHookOutput(
       }
     }
 
-    const teamWorkerDecision = await resolveTeamWorkerStopDecision(cwd);
-    if (teamWorkerDecision.kind === "blocked") {
+    const inTeamWorkerContext = hasTeamWorkerContext();
+    const teamWorkerOutput = await buildTeamWorkerStopOutput(cwd);
+    if (inTeamWorkerContext && teamWorkerOutput) {
       return await returnPersistentStopBlock(
         payload,
         stateDir,
@@ -2034,17 +2035,7 @@ async function buildStopHookOutput(
         { allowRepeatDuringStopHook: false },
       );
     }
-    if (teamWorkerDecision.kind === "allowed") {
-      try {
-        await maybeNudgeLeaderForAllowedWorkerStop({
-          cwd,
-          stateDir: teamWorkerDecision.stateDir,
-          logsDir: join(cwd, ".omx", "logs"),
-          workerContext: teamWorkerDecision.workerContext,
-        });
-      } catch (err) {
-        void err;
-      }
+    if (inTeamWorkerContext) {
       return null;
     }
 
@@ -2418,7 +2409,10 @@ export async function dispatchCodexNativeHook(
         mode: safeString(payload.mode).trim() || undefined,
       },
     );
-    await dispatchHookEventRuntime({ cwd, event });
+    await dispatchHookEvent(event, {
+      cwd,
+      allowTeamWorkerSideEffects: hookEventName === "Stop" && hasTeamWorkerContext(),
+    });
   }
 
   if ((hookEventName === "SessionStart" && !skipCanonicalSessionStartContext) || hookEventName === "UserPromptSubmit") {
