@@ -1,0 +1,6 @@
+[run-test-files] running 7 test file(s) from dist/scripts/__tests__/codex-native-hook.test.js, dist/hooks/__tests__/notify-hook-auto-nudge.test.js, dist/hooks/__tests__/notify-hook-team-leader-nudge.test.js, dist/hooks/__tests__/notify-hook-team-dispatch.test.js, dist/hooks/__tests__/notify-fallback-watcher.test.js, dist/team/__tests__/idle-nudge.test.js, dist/scripts/notify-hook/__tests__/operational-events.test.js with per-test timeout disabled and runner timeout 1800000ms
+▶ notify-fallback watcher
+  ✔ uses offset-bounded rollout reads instead of re-reading whole tracked files (84.538041ms)
+  ✔ one-shot mode forwards only recent task_complete events (2562.841416ms)
+  ✔ rotates notify-fallback logs when the size cap is exceeded (4090.93475ms)
+  ✔ streaming mode buffers partial JSON lines until the newline arrives (3243.649917ms)
