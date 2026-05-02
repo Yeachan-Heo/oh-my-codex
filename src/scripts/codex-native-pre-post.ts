@@ -617,7 +617,7 @@ function buildDocumentRefreshPreToolUseOutput(
 }
 
 
-const SLOPPY_FALLBACK_PHRASE_PATTERNS = [
+export const SLOPPY_FALLBACK_PHRASE_PATTERNS = [
   /\bquick hack\b/i,
   /\bhacky\b/i,
   /\bworkaround for now\b/i,
@@ -631,7 +631,7 @@ const SLOPPY_FALLBACK_PHRASE_PATTERNS = [
   /\bbypass (?:the )?(?:failing )?(?:test|validation|checks?)\b/i,
 ] as const;
 
-const SLOPPY_FALLBACK_IMPLEMENTATION_CONTEXT_PATTERNS = [
+export const SLOPPY_FALLBACK_IMPLEMENTATION_CONTEXT_PATTERNS = [
   /\badd\b/i,
   /\bimplement\b/i,
   /\bpatch\b/i,
@@ -645,7 +645,7 @@ const SLOPPY_FALLBACK_IMPLEMENTATION_CONTEXT_PATTERNS = [
   /\bdisable\b/i,
 ] as const;
 
-const SLOPPY_FALLBACK_GROUNDING_PATTERNS = [
+export const SLOPPY_FALLBACK_GROUNDING_PATTERNS = [
   /\btested\b/i,
   /\btests? pass(?:ed)?\b/i,
   /\bnpm (?:run )?test\b/i,
@@ -709,7 +709,7 @@ function commandHasWriteLikeIntent(command: string): boolean {
     || /<<['"]?[A-Za-z0-9_ -]+['"]?[\s\S]*(?:^|\n)(?:\+\+\+\s|---\s|import\s|export\s|function\s|const\s|class\s|interface\s)/m.test(command);
 }
 
-function hasAnyPattern(text: string, patterns: readonly RegExp[]): boolean {
+export function hasAnyPattern(text: string, patterns: readonly RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
 

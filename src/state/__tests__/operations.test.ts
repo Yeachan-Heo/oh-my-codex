@@ -123,6 +123,38 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('does not treat root fallback as active for explicit session list-active decisions', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-active-scope-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        join(stateDir, 'ralph-state.json'),
+        JSON.stringify({
+          active: true,
+          mode: 'ralph',
+          current_phase: 'executing',
+        }, null, 2),
+      );
+
+      const activeResponse = await executeStateOperation('state_list_active', {
+        workingDirectory: wd,
+        session_id: 'missing-session',
+      });
+
+      assert.deepEqual(activeResponse.payload, { active_modes: [] });
+
+      const readResponse = await executeStateOperation('state_read', {
+        workingDirectory: wd,
+        session_id: 'missing-session',
+        mode: 'ralph',
+      });
+      assert.equal((readResponse.payload as { active?: unknown }).active, true);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('keeps missing state_read side-effect-free without setup', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-readonly-missing-'));
     try {

@@ -36,6 +36,7 @@ Complex tasks often fail silently: partial implementations get declared "done", 
 - Read `docs/shared/agent-tiers.md` before first delegation to select correct agent tiers
 - Deliver the full implementation: no scope reduction, no partial completion, no deleting tests to make them pass
 - Apply the shared workflow guidance pattern: outcome-first framing, concise visible updates for multi-step execution, local overrides for the active workflow branch, validation proportional to risk, explicit stop rules, and automatic continuation for safe reversible steps. Ask only for material, destructive, credentialed, external-production, or preference-dependent branches.
+- Integrate with Codex goal mode when goal tools are available: inspect the active thread goal with `get_goal`, preserve it as the top-level stop condition, and only call `update_goal({status: "complete"})` after a Ralph completion audit proves the objective is actually achieved.
 </Execution_Policy>
 
 <Steps>
@@ -66,6 +67,7 @@ Complex tasks often fail silently: partial implementations get declared "done", 
    - Default pass threshold: `score >= 90`.
    - **URL-based visual cloning tasks**: When the task description contains a target URL (e.g., "clone https://example.com"), route the work through `$visual-ralph`. `$web-clone` is hard-deprecated; Visual Ralph owns the migrated live-URL visual implementation use case and uses `$visual-verdict` for measured visual scoring.
 6. **Verify completion with fresh evidence**:
+   - If Codex goal mode is available, call `get_goal` before final verification to restate the active objective and include it in the evidence checklist.
    a. Identify what command proves the task is complete
    b. Run verification (test, build, lint)
    c. Read the output -- confirm it actually passed
@@ -84,7 +86,7 @@ Complex tasks often fail silently: partial implementations get declared "done", 
    - After the deslop pass, re-run all tests/build/lint and read the output to confirm they still pass.
    - If post-deslop regression fails, roll back cleaner changes or fix and retry. Then rerun Step 7.5 and Step 7.6 until the regression is green.
    - Do not proceed to completion until post-deslop regression is green (unless `--no-deslop` explicitly skipped the deslop pass).
-8. **On approval**: Run `/cancel` to cleanly exit and clean up all state files
+8. **On approval**: If Codex goal mode is active, call `update_goal({status: "complete"})` before `/cancel`; report final elapsed time and token-budget usage when the tool returns it. Then run `/cancel` to cleanly exit and clean up all state files.
 9. **On rejection**: Fix the issues raised, then re-verify at the same tier
 </Steps>
 
@@ -94,9 +96,25 @@ Complex tasks often fail silently: partial implementations get declared "done", 
 - Skip Codex consultation for simple feature additions, well-tested changes, or time-critical verification
 - If ToolSearch finds no MCP tools or Codex is unavailable, proceed with architect agent verification alone -- never block on external tools
 - Use `state_write` / `state_read` for ralph mode state persistence between iterations
+- Use Codex goal tools when present: `get_goal` to discover or re-check the active objective, `create_goal` only when the user/system explicitly requested a new goal and no active goal exists, and `update_goal` only after the audited objective is fully achieved.
 - Persist context snapshot path in Ralph mode state so later phases and agents share the same grounding context
 - If an `omx_state` MCP tool call reports that its stdio transport is unavailable/closed, do **not** retry the same MCP call. Retry once through the supported CLI parity surface with the same payload, preserving `workingDirectory` and `session_id`: `omx state write --input '<json>' --json`, `omx state read --input '<json>' --json`, or `omx state clear --input '<json>' --json`. If the CLI path also fails, continue with `.omx/context` / `.omx/plans` file-backed artifacts and report the state persistence blocker.
 </Tool_Usage>
+
+## Goal Mode Integration
+
+Codex goal mode is the thread-level completion contract for long-running Ralph work. Ralph state tracks workflow mechanics; goal mode tracks whether the user objective is truly done. When the goal tools are available:
+
+1. Call `get_goal` during intake or before the first execution loop when the prompt/hook says an active thread goal exists.
+2. If no goal exists, call `create_goal` only when the user or system explicitly asked for goal tracking; otherwise continue with Ralph state alone.
+3. Treat `goal.objective` as binding acceptance scope. Newer user updates can refine the current branch, but do not silently narrow the goal.
+4. Before completion, perform a prompt-to-artifact checklist and completion audit against real evidence:
+   - restate the objective as deliverables/success criteria
+   - map every prompt requirement, named workflow (`$ralplan`, `$ralph`), file, command, test, gate, and deliverable to evidence
+   - inspect the actual files, command output, state, and tests behind each checklist item
+   - identify missing, weakly verified, or uncovered requirements and continue if any remain
+5. Call `update_goal({status: "complete"})` only when the audit shows no required work remains. Do not use passing tests, Ralph state, or architect approval as proxy proof unless they cover the whole goal.
+6. If goal tools are unavailable, keep working through Ralph state and mention the missing goal-mode evidence in the final report.
 
 ## State Management
 
@@ -177,6 +195,7 @@ Why bad: These are independent tasks that should run in parallel, not sequential
 - [ ] Fresh build output shows success
 - [ ] lsp_diagnostics shows 0 errors on affected files
 - [ ] Architect verification passed (STANDARD tier minimum)
+- [ ] Codex goal-mode completion audit passed, and `update_goal({status: "complete"})` was called when an active goal exists
 - [ ] ai-slop-cleaner pass completed on changed files (or --no-deslop specified)
 - [ ] Post-deslop regression tests pass
 - [ ] `/cancel` run for clean state cleanup

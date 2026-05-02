@@ -39,7 +39,7 @@ import {
 	stripOmxEnvSettings,
 	stripOmxFeatureFlags,
 	stripOmxSeededBehavioralDefaults,
-	upsertCodexHooksFeatureFlag,
+	upsertPluginModeRuntimeFeatureFlags,
 	OMX_DEVELOPER_INSTRUCTIONS,
 } from "../config/generator.js";
 import { mergeManagedCodexHooksConfig } from "../config/codex-hooks.js";
@@ -1280,7 +1280,7 @@ async function applyPluginModeHooksConfig(
 		? await readFile(configPath, "utf-8")
 		: "";
 	const nextConfig =
-		upsertCodexHooksFeatureFlag(existingConfig).trimEnd() + "\n";
+		upsertPluginModeRuntimeFeatureFlags(existingConfig).trimEnd() + "\n";
 	if (nextConfig !== existingConfig) {
 		if (
 			await ensureBackup(
@@ -1317,11 +1317,11 @@ async function applyPluginModeHooksConfig(
 		`native hooks ${hooksPath}`,
 	);
 
-	if (options.verbose) {
-		console.log(
-			`  ${options.dryRun ? "would configure" : "configured"} plugin-mode native hooks at ${hooksPath}`,
-		);
-	}
+		if (options.verbose) {
+			console.log(
+				`  ${options.dryRun ? "would configure" : "configured"} plugin-mode native hooks and runtime feature flags at ${hooksPath}`,
+			);
+		}
 }
 
 async function applyPluginDeveloperInstructionsDefault(
@@ -1775,12 +1775,12 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				`  Local Codex plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} already registered (${pkgRoot}).`,
 			);
 		}
-		resolvedConfig = existsSync(scopeDirs.codexConfigFile)
-			? await readFile(scopeDirs.codexConfigFile, "utf-8")
-			: "";
-		console.log(
-			`  Native Codex hooks refresh complete (${scopeDirs.codexHooksFile}).\n`,
-		);
+			resolvedConfig = existsSync(scopeDirs.codexConfigFile)
+				? await readFile(scopeDirs.codexConfigFile, "utf-8")
+				: "";
+			console.log(
+				`  Native Codex hooks and runtime feature flags refresh complete (${scopeDirs.codexHooksFile}; codex_hooks, goals).\n`,
+			);
 
 		if (usePluginDeveloperInstructionsDefault) {
 			const developerInstructionsResult =

@@ -9,6 +9,7 @@ import { spawnSync } from 'node:child_process';
 import {
   hydrateNativeBinary,
   inferNativeAssetLibc,
+  isRepositoryCheckout,
   resolveCachedNativeBinaryCandidatePaths,
   resolveCachedNativeBinaryPath,
   type NativeReleaseManifest,
@@ -41,6 +42,33 @@ async function startStaticServer(root: string): Promise<{ baseUrl: string; close
 function sha256(buffer: Buffer): string {
   return createHash('sha256').update(buffer).digest('hex');
 }
+
+describe('repository checkout detection', () => {
+  it('does not treat an installed npm package that ships src/scripts as a source checkout', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-native-installed-'));
+    try {
+      const packageRoot = join(wd, 'node_modules', 'oh-my-codex');
+      await mkdir(join(packageRoot, 'src', 'scripts'), { recursive: true });
+      await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: 'oh-my-codex' }));
+
+      assert.equal(isRepositoryCheckout(packageRoot), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('recognizes a git working tree as a source checkout', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-native-checkout-'));
+    try {
+      await mkdir(join(wd, '.git'), { recursive: true });
+      await mkdir(join(wd, 'src'), { recursive: true });
+
+      assert.equal(isRepositoryCheckout(wd), true);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('native asset helpers', () => {
   it('infers Linux libc variants from manifest metadata', () => {

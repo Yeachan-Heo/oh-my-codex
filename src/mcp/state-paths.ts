@@ -244,6 +244,11 @@ export async function resolveStateScope(
  * - explicit session_id => session path only
  * - implicit current session => session path first, root as compatibility fallback
  * - no session => root path only
+ *
+ * This is a compatibility read surface. Do not use it for active-mode
+ * decisions that drive Stop hooks or runtime continuation; use
+ * getAuthoritativeActiveStateDirs instead so stale root state cannot
+ * reactivate an explicitly session-scoped turn.
  */
 export async function getReadScopedStateDirs(
   workingDirectory?: string,
@@ -256,6 +261,34 @@ export async function getReadScopedStateDirs(
     return [scope.stateDir, getBaseStateDir(workingDirectory)];
   }
   return [scope.stateDir, getBaseStateDir(workingDirectory)];
+}
+
+/**
+ * Active-decision scope precedence:
+ * - explicit/current session => that session path only, even if it is missing
+ * - no session => root path only
+ *
+ * Stop hooks, list-active, and other continuation gates should use this path
+ * instead of compatibility reads. A missing session directory means no active
+ * state for that session; root fallback remains available only to explicit
+ * read/status compatibility surfaces.
+ */
+export async function getAuthoritativeActiveStateDirs(
+  workingDirectory?: string,
+  explicitSessionId?: string,
+): Promise<string[]> {
+  const scope = await resolveStateScope(workingDirectory, explicitSessionId);
+  return [scope.stateDir];
+}
+
+export async function getAuthoritativeActiveStatePaths(
+  mode: string,
+  workingDirectory?: string,
+  explicitSessionId?: string,
+): Promise<string[]> {
+  const dirs = await getAuthoritativeActiveStateDirs(workingDirectory, explicitSessionId);
+  const fileName = getStateFilename(mode);
+  return dirs.map((dir) => join(dir, fileName));
 }
 
 export async function getReadScopedStatePaths(

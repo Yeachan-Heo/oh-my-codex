@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
-import { getReadScopedStatePaths } from '../mcp/state-paths.js';
+import { getAuthoritativeActiveStatePaths, getReadScopedStatePaths } from '../mcp/state-paths.js';
 
 export type AutoresearchValidationMode = 'mission-validator-script' | 'prompt-architect-artifact';
 
@@ -171,11 +171,9 @@ export async function assessAutoresearchCompletionState(
   return { complete: true, reason: 'architect_approved', validationMode, artifactPath, outputArtifactPath };
 }
 
-export async function readAutoresearchModeState(
-  cwd: string,
-  sessionId?: string,
+async function readAutoresearchModeStateFromPaths(
+  candidates: string[],
 ): Promise<Record<string, unknown> | null> {
-  const candidates = await getReadScopedStatePaths('autoresearch', cwd, sessionId);
   for (const candidatePath of candidates) {
     if (!existsSync(candidatePath)) continue;
     try {
@@ -185,6 +183,22 @@ export async function readAutoresearchModeState(
     }
   }
   return null;
+}
+
+export async function readAutoresearchModeState(
+  cwd: string,
+  sessionId?: string,
+): Promise<Record<string, unknown> | null> {
+  const candidates = await getReadScopedStatePaths('autoresearch', cwd, sessionId);
+  return readAutoresearchModeStateFromPaths(candidates);
+}
+
+export async function readAutoresearchModeStateForActiveDecision(
+  cwd: string,
+  sessionId?: string,
+): Promise<Record<string, unknown> | null> {
+  const candidates = await getAuthoritativeActiveStatePaths('autoresearch', cwd, sessionId);
+  return readAutoresearchModeStateFromPaths(candidates);
 }
 
 export async function readAutoresearchCompletionStatus(

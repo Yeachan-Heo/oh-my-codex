@@ -17,6 +17,7 @@ import { validateAndNormalizeRalphState } from '../ralph/contract.js';
 import { applyRunOutcomeContract } from '../runtime/run-outcome.js';
 import { syncRunStateFromModeState } from '../runtime/run-state.js';
 import {
+  getAuthoritativeActiveStatePaths,
   getBaseStateDir,
   getReadScopedStateDirs,
   getReadScopedStatePaths,
@@ -187,6 +188,20 @@ export async function readModeStateForSession(
   let paths: string[];
   try {
     paths = await getReadScopedStatePaths(mode, projectRoot, sessionId);
+  } catch {
+    return null;
+  }
+  return readModeStateFromPaths(paths);
+}
+
+export async function readModeStateForActiveDecision(
+  mode: string,
+  sessionId: string | undefined,
+  projectRoot?: string,
+): Promise<ModeState | null> {
+  let paths: string[];
+  try {
+    paths = await getAuthoritativeActiveStatePaths(mode, projectRoot, sessionId);
   } catch {
     return null;
   }

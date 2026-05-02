@@ -513,10 +513,13 @@ describe('resolveExploreHarnessCommand', () => {
       await writeFile(join(wd, 'package.json'), '{}\n');
       await writeFile(join(crateDir, 'Cargo.toml'), '[package]\nname = "omx-explore-harness"\nversion = "0.0.0"\n');
 
-      const resolved = resolveExploreHarnessCommand(wd, {} as NodeJS.ProcessEnv);
+      const cacheDir = join(wd, 'native-cache');
+      const resolved = resolveExploreHarnessCommand(wd, { OMX_NATIVE_CACHE_DIR: cacheDir } as NodeJS.ProcessEnv);
       assert.equal(resolved.command, 'cargo');
       assert.ok(resolved.args.includes('--manifest-path'));
       assert.ok(resolved.args.includes(join(wd, 'crates', 'omx-explore', 'Cargo.toml')));
+      assert.ok(resolved.args.includes('--target-dir'));
+      assert.ok(resolved.args.includes(join(cacheDir, 'cargo-target', 'omx-explore-harness')));
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -534,6 +537,10 @@ describe('resolveExploreHarnessCommand', () => {
         version: '0.8.15',
         repository: { url: 'git+https://github.com/Yeachan-Heo/oh-my-codex.git' },
       }));
+      // Published packages intentionally ship src/scripts for postinstall, but
+      // that must not make them look like writable source checkouts.
+      await mkdir(join(wd, 'src', 'scripts'), { recursive: true });
+      await writeFile(join(wd, 'src', 'scripts', 'postinstall-bootstrap.js'), '');
       await mkdir(join(wd, 'crates', 'omx-explore'), { recursive: true });
       await writeFile(join(wd, 'crates', 'omx-explore', 'Cargo.toml'), '[package]\nname=\"omx-explore-harness\"\nversion=\"0.8.15\"\n');
       const binaryPath = join(stagingDir, packagedExploreHarnessBinaryName());

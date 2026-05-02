@@ -76,6 +76,7 @@ async function assertProjectPluginModeArtifacts(wd: string): Promise<void> {
 	assert.match(hooks, /codex-native-hook\.js/);
 	const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
 	assert.match(config, /^codex_hooks = true$/m);
+	assert.match(config, /^goals = true$/m);
 	assert.doesNotMatch(config, /developer_instructions|notify-hook|mcp_servers/);
 	assert.equal(
 		existsSync(join(wd, ".codex", "skills", "help", "SKILL.md")),
@@ -674,11 +675,12 @@ describe("omx setup install mode behavior", () => {
 					const config = await readFile(
 						join(codexHomeDir, "config.toml"),
 						"utf-8",
-					);
-					assert.match(config, /^codex_hooks = true$/m);
-					assert.doesNotMatch(
-						config,
-						/developer_instructions|notify-hook|mcp_servers/,
+						);
+						assert.match(config, /^codex_hooks = true$/m);
+						assert.match(config, /^goals = true$/m);
+						assert.doesNotMatch(
+							config,
+							/developer_instructions|notify-hook|mcp_servers/,
 					);
 					assert.equal(
 						existsSync(join(codexHomeDir, "skills", "help", "SKILL.md")),
@@ -997,6 +999,10 @@ describe("omx setup install mode behavior", () => {
 						await setup({ scope: "project", installMode: "plugin" });
 					});
 					assert.match(pluginOutput, /Using setup install mode: plugin/);
+					assert.match(
+						pluginOutput,
+						/Native Codex hooks and runtime feature flags refresh complete .*codex_hooks, goals/,
+					);
 					assert.doesNotMatch(pluginOutput, /user-scope skill delivery mode/);
 					assert.doesNotMatch(
 						pluginOutput,

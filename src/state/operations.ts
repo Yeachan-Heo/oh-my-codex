@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { withModeRuntimeContext } from './mode-state-context.js';
 import {
   getAllScopedStatePaths,
+  getAuthoritativeActiveStateDirs,
   getReadScopedStateDirs,
   getReadScopedStatePaths,
   getStateDir,
@@ -148,8 +149,11 @@ export async function listStateStatuses(
   cwd: string,
   explicitSessionId?: string,
   mode?: string,
+  options: { authoritativeActiveDecision?: boolean } = {},
 ): Promise<Record<string, unknown>> {
-  const stateDirs = await getReadScopedStateDirs(cwd, explicitSessionId);
+  const stateDirs = options.authoritativeActiveDecision
+    ? await getAuthoritativeActiveStateDirs(cwd, explicitSessionId)
+    : await getReadScopedStateDirs(cwd, explicitSessionId);
   const statuses: Record<string, unknown> = {};
   const seenModes = new Set<string>();
 
@@ -187,7 +191,9 @@ export async function listActiveStateModes(
 ): Promise<string[]> {
   const cwd = resolveWorkingDirectoryForState(workingDirectory);
   const sessionId = validateSessionId(explicitSessionId);
-  const statuses = await listStateStatuses(cwd, sessionId);
+  const statuses = await listStateStatuses(cwd, sessionId, undefined, {
+    authoritativeActiveDecision: true,
+  });
   return Object.entries(statuses)
     .filter(([, status]) => Boolean((status as { active?: unknown }).active))
     .map(([mode]) => mode);

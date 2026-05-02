@@ -181,6 +181,15 @@ describe('omx ralph --prd smoke gate', () => {
         .filter((line) => line.length > 0);
       assert.equal(launches.length, 1, `expected exactly one Codex launch, got ${launches.length}`);
       assert.match(launches[0], /ship release checklist/);
+
+      const ralphState = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(ralphState.goal_mode_integration, 'codex-goal-tools');
+      assert.match(String(ralphState.goal_mode_policy ?? ''), /get_goal/);
+      assert.match(String(ralphState.goal_mode_policy ?? ''), /update_goal/);
+
+      const instructions = await readFile(join(cwd, '.omx', 'ralph', 'session-instructions.md'), 'utf-8');
+      assert.match(instructions, /Goal mode guidance/);
+      assert.match(instructions, /prompt-to-artifact checklist/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

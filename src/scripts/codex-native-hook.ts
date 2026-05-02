@@ -1,9 +1,9 @@
 import { execFileSync } from "child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync } from "fs";
 import { mkdir, readFile, readdir, writeFile } from "fs/promises";
-import { join, relative, resolve } from "path";
+import { extname, join, relative, resolve } from "path";
 import { pathToFileURL } from "url";
-import { readModeState, readModeStateForSession, updateModeState } from "../modes/base.js";
+import { readModeState, readModeStateForActiveDecision, readModeStateForSession, updateModeState } from "../modes/base.js";
 import {
   listActiveSkills,
   readVisibleSkillActiveState,
@@ -45,9 +45,13 @@ import {
   resolveEffectiveAutoNudgeResponse,
 } from "./notify-hook/auto-nudge.js";
 import {
+  SLOPPY_FALLBACK_GROUNDING_PATTERNS,
+  SLOPPY_FALLBACK_IMPLEMENTATION_CONTEXT_PATTERNS,
+  SLOPPY_FALLBACK_PHRASE_PATTERNS,
   buildNativePostToolUseOutput,
   buildNativePreToolUseOutput,
   detectMcpTransportFailure,
+  hasAnyPattern,
 } from "./codex-native-pre-post.js";
 import { handleTeamWorkerPostToolUseSuccess } from "./notify-hook/team-worker-posttooluse.js";
 import { maybeNudgeLeaderForAllowedWorkerStop } from "./notify-hook/team-worker-stop.js";
@@ -63,7 +67,7 @@ import type { HookEventEnvelope } from "../hooks/extensibility/types.js";
 import { dispatchHookEventRuntime } from "../hooks/extensibility/runtime.js";
 import { reconcileHudForPromptSubmit } from "../hud/reconcile.js";
 import { onSessionStart as buildWikiSessionStartContext } from "../wiki/lifecycle.js";
-import { readAutoresearchCompletionStatus, readAutoresearchModeState } from "../autoresearch/skill-validation.js";
+import { readAutoresearchCompletionStatus, readAutoresearchModeStateForActiveDecision } from "../autoresearch/skill-validation.js";
 import { readRunState } from "../runtime/run-state.js";
 import { getRunContinuationSnapshot, shouldContinueRun } from "../runtime/run-loop.js";
 import { triagePrompt } from "../hooks/triage-heuristic.js";
@@ -260,6 +264,26 @@ async function nativeSubagentSessionStartBelongsToCanonicalSession(
   return summary.allThreadIds.includes(parentThreadId);
 }
 
+async function isNativeSubagentPromptSubmit(
+  cwd: string,
+  canonicalSessionId: string,
+  nativeSessionId: string,
+  threadId: string,
+): Promise<boolean> {
+  const sessionId = canonicalSessionId.trim();
+  if (!sessionId) return false;
+
+  const summary = await readSubagentSessionSummary(cwd, sessionId).catch(() => null);
+  if (!summary) return false;
+
+  const candidateIds = [nativeSessionId, threadId]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (candidateIds.length === 0) return false;
+
+  return candidateIds.some((id) => summary.allSubagentThreadIds.includes(id));
+}
+
 async function recordIgnoredNativeSubagentSessionStart(
   cwd: string,
   canonicalSessionId: string,
@@ -434,7 +458,7 @@ async function readActiveAutoresearchState(
 ): Promise<Record<string, unknown> | null> {
   const normalizedSessionId = sessionId?.trim() || undefined;
   if (!normalizedSessionId) return null;
-  const state = await readAutoresearchModeState(cwd, normalizedSessionId);
+  const state = await readAutoresearchModeStateForActiveDecision(cwd, normalizedSessionId);
   if (state?.active !== true) return null;
   if (!isNonTerminalPhase(state.current_phase ?? state.currentPhase ?? 'executing')) return null;
   return state;
@@ -709,6 +733,192 @@ function tryReadGitValue(cwd: string, args: string[]): string | null {
   }
 }
 
+interface SloppyFallbackDiffFinding {
+  path: string;
+  line: string;
+  source: "staged" | "unstaged" | "untracked";
+}
+
+const SOURCE_DIFF_EXTENSIONS = new Set([
+  ".c",
+  ".cc",
+  ".cjs",
+  ".cpp",
+  ".cs",
+  ".cts",
+  ".go",
+  ".h",
+  ".hpp",
+  ".java",
+  ".js",
+  ".jsx",
+  ".kt",
+  ".mjs",
+  ".mts",
+  ".php",
+  ".py",
+  ".rb",
+  ".rs",
+  ".sh",
+  ".swift",
+  ".ts",
+  ".tsx",
+]);
+
+function gitOutput(cwd: string, args: string[]): string {
+  try {
+    return execFileSync("git", args, {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+  } catch {
+    return "";
+  }
+}
+
+function normalizeGitPath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function isDiffAuditableSourcePath(path: string): boolean {
+  const normalized = normalizeGitPath(path).toLowerCase();
+  if (!normalized || normalized.startsWith(".git/") || normalized.startsWith(".omx/")) return false;
+  if (/(^|\/)(?:docs?|documentation|changelog|changeset|\.github)(?:\/|$)/i.test(normalized)) return false;
+  if (/(^|\/)(?:__tests__|__test__|test|tests|spec|specs|fixtures?|mocks?)(?:\/|$)/i.test(normalized)) return false;
+  if (/(?:^|\/)[^\/]+\.(?:test|spec)\.[^.\/]+$/i.test(normalized)) return false;
+  if (/(?:^|\/)(?:readme|changelog|changes|license|notice)(?:\.[^\/]*)?$/i.test(normalized)) return false;
+  if (/\.(?:md|mdx|markdown|txt|rst|adoc|ya?ml|json|lock)$/i.test(normalized)) return false;
+  return SOURCE_DIFF_EXTENSIONS.has(extname(normalized));
+}
+
+function isDiffHeaderLine(line: string): boolean {
+  return line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@") || line.startsWith("diff --git ");
+}
+
+function isSuspiciousSloppyFallbackAddedLine(line: string, nearbyContext: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  if (!hasAnyPattern(trimmed, SLOPPY_FALLBACK_PHRASE_PATTERNS)) return false;
+  if (!hasAnyPattern(trimmed, SLOPPY_FALLBACK_IMPLEMENTATION_CONTEXT_PATTERNS)) return false;
+  if (hasAnyPattern(nearbyContext, SLOPPY_FALLBACK_GROUNDING_PATTERNS)) return false;
+  if (/compatib(?:le|ility)|fail-?safe|tested|regression|coverage|because|issue|PR\s*#?\d|#\d/i.test(nearbyContext)) return false;
+  return true;
+}
+
+interface SloppyFallbackCandidateLine {
+  text: string;
+  added: boolean;
+}
+
+function collectFindingsFromCandidateLines(
+  path: string,
+  lines: SloppyFallbackCandidateLine[],
+  source: SloppyFallbackDiffFinding["source"],
+): SloppyFallbackDiffFinding[] {
+  if (!path || !isDiffAuditableSourcePath(path)) return [];
+  const findings: SloppyFallbackDiffFinding[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const candidate = lines[index];
+    if (!candidate?.added) continue;
+    const nearbyContext = lines
+      .slice(Math.max(0, index - 2), Math.min(lines.length, index + 3))
+      .map((line) => line.text)
+      .join("\n");
+    if (isSuspiciousSloppyFallbackAddedLine(candidate.text, nearbyContext)) {
+      findings.push({ path, line: candidate.text.trim(), source });
+    }
+  }
+  return findings;
+}
+
+function collectSloppyFallbackFindingsFromPatch(
+  patch: string,
+  source: SloppyFallbackDiffFinding["source"],
+): SloppyFallbackDiffFinding[] {
+  const findings: SloppyFallbackDiffFinding[] = [];
+  let currentPath = "";
+  let hunkLines: SloppyFallbackCandidateLine[] = [];
+
+  const flushHunk = () => {
+    findings.push(...collectFindingsFromCandidateLines(currentPath, hunkLines, source));
+    hunkLines = [];
+  };
+
+  for (const rawLine of patch.split(/\r?\n/)) {
+    const fileMatch = rawLine.match(/^diff --git a\/(.*?) b\/(.*)$/);
+    if (fileMatch) {
+      flushHunk();
+      currentPath = normalizeGitPath(fileMatch[2] || fileMatch[1] || "");
+      continue;
+    }
+    const renameMatch = rawLine.match(/^\+\+\+ b\/(.*)$/);
+    if (renameMatch) {
+      currentPath = normalizeGitPath(renameMatch[1] || currentPath);
+      continue;
+    }
+    if (rawLine.startsWith("@@")) {
+      flushHunk();
+      continue;
+    }
+    if (!currentPath || !isDiffAuditableSourcePath(currentPath) || isDiffHeaderLine(rawLine)) continue;
+    if (rawLine.startsWith("+")) {
+      hunkLines.push({ text: rawLine.slice(1), added: true });
+    } else if (rawLine.startsWith(" ")) {
+      hunkLines.push({ text: rawLine.slice(1), added: false });
+    }
+  }
+  flushHunk();
+  return findings;
+}
+
+function collectSloppyFallbackFindingsFromUntracked(cwd: string): SloppyFallbackDiffFinding[] {
+  const output = gitOutput(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]);
+  if (!output) return [];
+  const findings: SloppyFallbackDiffFinding[] = [];
+  for (const rawPath of output.split("\0")) {
+    const path = normalizeGitPath(rawPath.trim());
+    if (!path || !isDiffAuditableSourcePath(path)) continue;
+    let content = "";
+    try {
+      content = readFileSync(join(cwd, path), "utf-8");
+    } catch {
+      continue;
+    }
+    findings.push(...collectFindingsFromCandidateLines(path, content.split(/\r?\n/).map((text) => ({ text, added: true })), "untracked"));
+  }
+  return findings;
+}
+
+function findSloppyFallbackDiffFindings(cwd: string): SloppyFallbackDiffFinding[] {
+  const layout = findGitLayout(cwd);
+  if (!layout) return [];
+  const auditRoot = layout.worktreeRoot;
+  return [
+    ...collectSloppyFallbackFindingsFromPatch(gitOutput(auditRoot, ["diff", "--cached", "--no-ext-diff", "--unified=3"]), "staged"),
+    ...collectSloppyFallbackFindingsFromPatch(gitOutput(auditRoot, ["diff", "--no-ext-diff", "--unified=3"]), "unstaged"),
+    ...collectSloppyFallbackFindingsFromUntracked(auditRoot),
+  ];
+}
+
+function buildSloppyFallbackDiffStopOutput(findings: SloppyFallbackDiffFinding[]): Record<string, unknown> | null {
+  if (findings.length === 0) return null;
+  const preview = findings
+    .slice(0, 3)
+    .map((finding) => `${finding.path} (${finding.source}): ${finding.line}`)
+    .join("; ");
+  const systemMessage =
+    `Sloppy fallback/workaround diff audit detected ungrounded fallback code in added source lines: ${preview}. `
+    + "Continue by replacing the bypass/workaround with a grounded design, or add explicit compatibility/fail-safe/tested/issue rationale near the code if the fallback is intentional.";
+  return {
+    decision: "block",
+    reason: systemMessage,
+    stopReason: "sloppy_fallback_diff_audit",
+    systemMessage,
+  };
+}
 
 function localExcludeAlreadyIgnoresOmx(cwd: string): boolean {
   const layout = findGitLayout(cwd);
@@ -1354,9 +1564,7 @@ async function buildModeBasedStopOutput(
   cwd: string,
   sessionId?: string,
 ): Promise<Record<string, unknown> | null> {
-  const state = sessionId
-    ? await readModeStateForSession(mode, sessionId, cwd)
-    : await readModeState(mode, cwd);
+  const state = await readModeStateForActiveDecision(mode, sessionId?.trim() || undefined, cwd);
   if (!state || !shouldContinueRun(state)) return null;
   const phase = formatPhase(state.current_phase);
   return {
@@ -2246,6 +2454,20 @@ async function buildStopHookOutput(
       );
     }
 
+    const sloppyFallbackDiffFindings = findSloppyFallbackDiffFindings(cwd);
+    const sloppyFallbackDiffOutput = buildSloppyFallbackDiffStopOutput(sloppyFallbackDiffFindings);
+    if (sloppyFallbackDiffOutput) {
+      return await returnPersistentStopBlock(
+        payload,
+        stateDir,
+        "sloppy-fallback-diff-stop",
+        JSON.stringify(sloppyFallbackDiffFindings),
+        sloppyFallbackDiffOutput,
+        canonicalSessionId,
+        { allowRepeatDuringStopHook: true },
+      );
+    }
+
     if (isFinalHandoffDocumentRefreshCandidate(lastAssistantMessage)) {
       const documentRefreshWarning = evaluateFinalHandoffDocumentRefresh(cwd, lastAssistantMessage);
       if (documentRefreshWarning) {
@@ -2369,10 +2591,13 @@ export async function dispatchCodexNativeHook(
   const eventSessionId = canonicalSessionId || nativeSessionId || undefined;
   const sessionIdForState = canonicalSessionId || nativeSessionId;
   let outputJson: Record<string, unknown> | null = null;
+  const isSubagentPromptSubmit = hookEventName === "UserPromptSubmit"
+    ? await isNativeSubagentPromptSubmit(cwd, canonicalSessionId, nativeSessionId, threadId)
+    : false;
 
   if (hookEventName === "UserPromptSubmit") {
     const prompt = readPromptText(payload);
-    if (prompt) {
+    if (prompt && !isSubagentPromptSubmit) {
       skillState = buildNativeOutsideTmuxTeamPromptBlockState(
         prompt,
         cwd,
@@ -2389,7 +2614,7 @@ export async function dispatchCodexNativeHook(
       });
     }
     // --- Triage classifier (advisory-only, non-keyword prompts) ---
-    if (prompt && skillState === null) {
+    if (prompt && skillState === null && !isSubagentPromptSubmit) {
       try {
         if (readTriageConfig().enabled) {
           const normalized = prompt.trim().toLowerCase();
@@ -2496,7 +2721,9 @@ export async function dispatchCodexNativeHook(
         canonicalSessionId,
         nativeSessionId: resolvedNativeSessionId || nativeSessionId,
       })
-      : (buildAdditionalContextMessage(readPromptText(payload), skillState, cwd, payload) ?? triageAdditionalContext);
+      : isSubagentPromptSubmit
+        ? null
+        : (buildAdditionalContextMessage(readPromptText(payload), skillState, cwd, payload) ?? triageAdditionalContext);
     if (additionalContext) {
       outputJson = {
         hookSpecificOutput: {

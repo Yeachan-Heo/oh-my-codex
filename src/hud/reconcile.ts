@@ -12,10 +12,17 @@ import {
 } from './tmux.js';
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
 
+export const OMX_TMUX_HUD_OWNER_ENV = 'OMX_TMUX_HUD_OWNER';
+
+function isExplicitOmxOwnedTmuxEnv(env: NodeJS.ProcessEnv): boolean {
+  return env[OMX_TMUX_HUD_OWNER_ENV] === '1';
+}
+
 export interface ReconcileHudForPromptSubmitResult {
   status:
     | 'skipped_not_tmux'
     | 'skipped_no_entry'
+    | 'skipped_not_omx_owned_tmux'
     | 'resized'
     | 'recreated'
     | 'replaced_duplicates'
@@ -48,6 +55,15 @@ export async function reconcileHudForPromptSubmit(
   if (!env.TMUX) {
     return {
       status: 'skipped_not_tmux',
+      paneId: null,
+      desiredHeight: null,
+      duplicateCount: 0,
+    };
+  }
+
+  if (!isExplicitOmxOwnedTmuxEnv(env)) {
+    return {
+      status: 'skipped_not_omx_owned_tmux',
       paneId: null,
       desiredHeight: null,
       duplicateCount: 0,

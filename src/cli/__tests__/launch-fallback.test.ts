@@ -607,6 +607,73 @@ exit 0
     }
   });
 
+  it('rolls back with guidance when WSL Windows Terminal attach exits without attaching', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-tmux-attach-noop-'));
+    try {
+      const { env, tmuxLogPath } = await createLaunchFixture(
+        wd,
+        (tmuxLogPath) => `#!/bin/sh
+printf 'tmux:%s\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V|list-sessions)
+    exit 0
+    ;;
+  new-session)
+    printf 'leader-pane\n'
+    exit 0
+    ;;
+  split-window)
+    printf 'hud-pane\n'
+    exit 0
+    ;;
+  display-message)
+    if [ "$2" = '-p' ] && [ "$3" = '#{socket_path}' ]; then
+      printf '/tmp/tmux-test.sock\n'
+    else
+      printf '0\n'
+    fi
+    exit 0
+    ;;
+  show-options)
+    printf 'off\n'
+    exit 0
+    ;;
+  set-option|set-hook|attach-session|kill-session|run-shell|resize-pane|select-pane)
+    exit 0
+    ;;
+esac
+exit 0
+`,
+      );
+
+      const result = runOmx(
+        wd,
+        ['--madmax', '--tmux'],
+        {
+          ...env,
+          TMUX: '',
+          TMUX_PANE: '',
+          WSL_DISTRO_NAME: 'Ubuntu',
+          WSL_INTEROP: '/run/WSL/1_interop',
+          WT_SESSION: 'windows-terminal-session',
+        },
+      );
+
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:.*--dangerously-bypass-approvals-and-sandbox/);
+      assert.match(result.stderr, /attach-session returned immediately without attaching a client/i);
+      assert.match(result.stderr, /Falling back to direct Codex launch/i);
+      assert.match(tmuxLog, /tmux:attach-session -t /);
+      assert.match(tmuxLog, /tmux:display-message -p -t .* #\{session_attached\}/);
+      assert.match(tmuxLog, /tmux:kill-session -t /);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('preserves the requested cwd through detached tmux launch when an unsupported SHELL value falls back away from rc-driven cwd drift', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-tmux-cwd-'));
     try {

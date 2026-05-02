@@ -217,6 +217,7 @@ describe("omx setup scope behavior", () => {
       assert.match(configToml, /^\[shell_environment_policy\.set\]$/m);
       assert.match(configToml, /^USE_OMX_EXPLORE_CMD = "1"$/m);
       assert.match(configToml, /^codex_hooks = true$/m);
+      assert.match(configToml, /^goals = true$/m);
       const hooksJson = JSON.parse(await readFile(localHooks, "utf-8")) as {
         hooks?: Record<string, unknown>;
       };

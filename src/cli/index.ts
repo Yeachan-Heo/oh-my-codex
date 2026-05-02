@@ -102,6 +102,7 @@ import { getPackageRoot } from "../utils/package.js";
 import { codexConfigPath, rememberOmxLaunchContext, resolveOmxEntryPath } from "../utils/paths.js";
 import { cleanCodexModelAvailabilityNuxIfNeeded, repairConfigIfNeeded } from "../config/generator.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../hud/constants.js";
+import { OMX_TMUX_HUD_OWNER_ENV } from "../hud/reconcile.js";
 import {
   createHudWatchPane as createSharedHudWatchPane,
   killTmuxPane as killSharedTmuxPane,
@@ -751,6 +752,55 @@ function warnDetachedTmuxFallback(reason?: string): void {
   const suffix = reason ? ` (${reason})` : "";
   console.warn(
     `[omx] warning: tmux is installed but its server/socket is unusable${suffix}. Falling back to direct Codex launch.`,
+  );
+}
+
+const QUICK_ATTACH_NOOP_THRESHOLD_MS = 2_000;
+
+function isWslWindowsTerminalEnvironment(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(
+    env.WT_SESSION?.trim() &&
+      (env.WSL_INTEROP?.trim() ||
+        env.WSL_DISTRO_NAME?.trim() ||
+        env.WSLENV?.trim()),
+  );
+}
+
+function readDetachedSessionAttachedClientCount(sessionName: string): number | null {
+  try {
+    const output = execTmuxFileSync(
+      ["display-message", "-p", "-t", sessionName, "#{session_attached}"],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        encoding: "utf-8",
+      },
+    ).trim();
+    const parsed = Number.parseInt(output, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch (err) {
+    logCliOperationFailure(err);
+    return null;
+  }
+}
+
+function assertDetachedAttachDidNotNoop(
+  sessionName: string,
+  elapsedMs: number,
+  env: NodeJS.ProcessEnv,
+): void {
+  if (!isWslWindowsTerminalEnvironment(env)) return;
+  if (elapsedMs >= QUICK_ATTACH_NOOP_THRESHOLD_MS) return;
+
+  const attachedClients = readDetachedSessionAttachedClientCount(sessionName);
+  if (attachedClients === null || attachedClients > 0) return;
+
+  throw new Error(
+    [
+      "tmux attach-session returned immediately without attaching a client",
+      `(session=${sessionName}).`,
+      "This can happen on WSL2 under Windows Terminal.",
+      "Falling back to direct Codex launch.",
+    ].join(" "),
   );
 }
 
@@ -2350,6 +2400,7 @@ export function buildDetachedSessionBootstrapSteps(
       ? ["-e", `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`]
       : []),
     ...(sessionId ? ["-e", `OMX_SESSION_ID=${sessionId}`] : []),
+    ...(sessionId ? ["-e", `${OMX_TMUX_HUD_OWNER_ENV}=1`] : []),
     ...(codexHomeOverride ? ["-e", `CODEX_HOME=${codexHomeOverride}`] : []),
     ...(notifyTempContractRaw
       ? ["-e", `${OMX_NOTIFY_TEMP_CONTRACT_ENV}=${notifyTempContractRaw}`]
@@ -2955,7 +3006,7 @@ function runCodex(
   }
   const hudCmd = nativeWindows
     ? buildWindowsPromptCommand("node", [omxBin, "hud", "--watch"])
-    : buildTmuxPaneCommand("env", [`OMX_SESSION_ID=${sessionId}`, "node", omxBin, "hud", "--watch"]);
+    : buildTmuxPaneCommand("env", [`OMX_SESSION_ID=${sessionId}`, `${OMX_TMUX_HUD_OWNER_ENV}=1`, "node", omxBin, "hud", "--watch"]);
   const inheritLeaderFlags = process.env[TEAM_INHERIT_LEADER_FLAGS_ENV] !== "0";
   const workerLaunchArgs = resolveTeamWorkerLaunchArgsEnv(
     process.env[TEAM_WORKER_LAUNCH_ARGS_ENV],
@@ -2966,7 +3017,11 @@ function runCodex(
   const codexBaseEnv = codexHomeOverride
     ? { ...process.env, CODEX_HOME: codexHomeOverride }
     : process.env;
-  const codexEnvWithSession = { ...codexBaseEnv, OMX_SESSION_ID: sessionId };
+  const codexEnvWithSession = {
+    ...codexBaseEnv,
+    OMX_SESSION_ID: sessionId,
+    [OMX_TMUX_HUD_OWNER_ENV]: "1",
+  };
   const codexEnv = workerLaunchArgs
     ? { ...codexEnvWithSession, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }
     : codexEnvWithSession;
@@ -3138,7 +3193,15 @@ function runCodex(
             const stdio =
               finalizeStep.name === "attach-session" ? "inherit" : "ignore";
             try {
+              const startedAtMs = Date.now();
               execTmuxFileSync(finalizeStep.args, { stdio });
+              if (finalizeStep.name === "attach-session") {
+                assertDetachedAttachDidNotNoop(
+                  sessionName,
+                  Date.now() - startedAtMs,
+                  process.env,
+                );
+              }
             } catch (err) {
               logCliOperationFailure(err);
               if (finalizeStep.name === "attach-session")
