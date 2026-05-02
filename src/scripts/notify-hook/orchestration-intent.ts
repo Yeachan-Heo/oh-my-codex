@@ -34,7 +34,6 @@ export function classifyLeaderActionState({
   allWorkersIdle = false,
   workerPanesAlive = false,
   taskCounts = {},
-  teamProgressStalled = false,
 } = {}) {
   const pending = Number.isFinite(taskCounts.pending) ? taskCounts.pending : 0;
   const blocked = Number.isFinite(taskCounts.blocked) ? taskCounts.blocked : 0;
@@ -43,10 +42,9 @@ export function classifyLeaderActionState({
   const pendingFollowUpTasks = allWorkersIdle && pending > 0 && blocked === 0 && inProgress === 0;
   const blockedWaitingOnLeader = allWorkersIdle && blocked > 0 && pending === 0 && inProgress === 0;
   const terminalWaitingOnLeader = allWorkersIdle && tasksComplete && workerPanesAlive;
-  const stalledWaitingOnLeader = blockedWaitingOnLeader || teamProgressStalled;
 
   if (terminalWaitingOnLeader) return 'done_waiting_on_leader';
-  if (stalledWaitingOnLeader) return 'stuck_waiting_on_leader';
+  if (blockedWaitingOnLeader) return 'stuck_waiting_on_leader';
   if (pendingFollowUpTasks) return 'still_actionable';
   return 'still_actionable';
 }

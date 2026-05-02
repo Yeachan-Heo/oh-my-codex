@@ -2430,7 +2430,7 @@ export async function dispatchCodexNativeHook(
     await dispatchHookEventRuntime({
       event,
       cwd,
-      allowTeamWorkerSideEffects: hookEventName === "Stop" && hasTeamWorkerContext(),
+      allowTeamWorkerSideEffects: false,
     });
   }
 

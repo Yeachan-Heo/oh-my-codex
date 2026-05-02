@@ -199,29 +199,34 @@ export async function readWorkerStatusState(stateDir, teamName, workerName) {
 }
 
 export async function readTeamWorkersForIdleCheck(stateDir, teamName) {
-  // Try manifest.v2.json first (preferred), then config.json
+  // Try manifest.v2.json first (preferred), then config.json. Some older or
+  // synthetic team states have a partial manifest plus the usable worker pane
+  // metadata in config.json, so fall through when a candidate is incomplete.
   const manifestPath = join(stateDir, 'team', teamName, 'manifest.v2.json');
   const configPath = join(stateDir, 'team', teamName, 'config.json');
-  const srcPath = existsSync(manifestPath) ? manifestPath : existsSync(configPath) ? configPath : null;
-  if (!srcPath) return null;
+  const candidatePaths = [manifestPath, configPath].filter((path) => existsSync(path));
+  let fallback = null;
 
-  try {
-    const raw = await readFile(srcPath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return null;
-    const workers = parsed.workers;
-    if (!Array.isArray(workers) || workers.length === 0) return null;
-    let config = null;
-    if (srcPath === manifestPath && existsSync(configPath)) {
-      config = await readJsonIfExists(configPath, null);
+  for (const srcPath of candidatePaths) {
+    try {
+      const raw = await readFile(srcPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') continue;
+      const workers = parsed.workers;
+      if (!Array.isArray(workers) || workers.length === 0) continue;
+      const tmuxSession = safeString(parsed.tmux_session || '').trim();
+      const leaderPaneId = safeString(parsed.leader_pane_id || '').trim();
+      const result = { workers, tmuxSession, leaderPaneId };
+      if (leaderPaneId) return result;
+      if (!fallback) fallback = result;
+    } catch {
+      // Try the next state source.
     }
-    const tmuxSession = safeString(parsed.tmux_session || config?.tmux_session || '').trim();
-    const leaderPaneId = safeString(parsed.leader_pane_id || config?.leader_pane_id || '').trim();
-    return { workers, tmuxSession, leaderPaneId };
-  } catch {
-    return null;
   }
+
+  return fallback;
 }
+
 
 async function readTeamTaskCounts(stateDir, teamName) {
   const tasksDir = join(stateDir, 'team', teamName, 'tasks');

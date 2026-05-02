@@ -105,27 +105,6 @@ function buildWorkerStartEvidenceReminder(teamName, workerName) {
   return `Next: check ${workerName} msg/output, confirm task in omx team status ${teamName}, then reassign/nudge.`;
 }
 
-function classifyLeaderActionState({
-  allWorkersIdle = false,
-  workerPanesAlive = false,
-  taskCounts = {},
-  teamProgressStalled = false,
-} = {}) {
-  const pending = Number.isFinite(taskCounts.pending) ? taskCounts.pending : 0;
-  const blocked = Number.isFinite(taskCounts.blocked) ? taskCounts.blocked : 0;
-  const inProgress = Number.isFinite(taskCounts.in_progress) ? taskCounts.in_progress : 0;
-  const tasksComplete = pending === 0 && blocked === 0 && inProgress === 0;
-  const pendingFollowUpTasks = allWorkersIdle && pending > 0 && blocked === 0 && inProgress === 0;
-  const blockedWaitingOnLeader = allWorkersIdle && blocked > 0 && pending === 0 && inProgress === 0;
-  const terminalWaitingOnLeader = allWorkersIdle && tasksComplete && workerPanesAlive;
-  const stalledWaitingOnLeader = blockedWaitingOnLeader || teamProgressStalled;
-
-  if (terminalWaitingOnLeader) return 'done_waiting_on_leader';
-  if (stalledWaitingOnLeader) return 'stuck_waiting_on_leader';
-  if (pendingFollowUpTasks) return 'still_actionable';
-  return 'still_actionable';
-}
-
 function buildLeaderActionGuidance(teamName, {
   allWorkersIdle = false,
   workerPanesAlive = false,
@@ -723,7 +702,6 @@ export async function maybeNudgeTeamLeader({
       ? Math.max(effectiveProgressAtMs, extraProgressEvidenceMs)
       : effectiveProgressAtMs;
     const effectiveProgressAtIso = new Date(latestProgressEvidenceMs).toISOString();
-    const teamProgressStalled = false;
     const hasFreshProgressEvidence =
       progressSnapshot.workRemaining
       && (progressChanged
@@ -733,7 +711,6 @@ export async function maybeNudgeTeamLeader({
       allWorkersIdle,
       workerPanesAlive: paneStatus.alive,
       taskCounts: progressSnapshot.taskCounts,
-      teamProgressStalled,
     });
     const leaderActionGuidance = buildLeaderActionGuidance(teamName, {
       allWorkersIdle,
