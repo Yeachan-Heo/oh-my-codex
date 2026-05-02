@@ -4209,7 +4209,7 @@ esac
     }
   });
 
-  it("does not block Stop as a team-worker task failure when worker status is already terminal", async () => {
+  it("blocks Stop as a team-worker task failure when worker status is terminal but task evidence is not completed", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-terminal-stale-"));
     const prevTeamWorker = process.env.OMX_TEAM_WORKER;
     const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
@@ -4244,7 +4244,7 @@ esac
       await writeJson(join(stateDir, "team", "worker-stale-team", "tasks", "task-1.json"), {
         id: "1",
         subject: "stale hook task",
-        description: "stale task should not trap terminal worker Stop",
+        description: "non-completed task should still block terminal worker Stop",
         status: "in_progress",
         owner: "worker-1",
         created_at: new Date().toISOString(),
@@ -4263,7 +4263,10 @@ esac
         { cwd: workerCwd },
       );
 
-      assert.equal((result.outputJson as { stopReason?: string } | null)?.stopReason, "team_team-exec");
+      assert.equal(
+        (result.outputJson as { stopReason?: string } | null)?.stopReason,
+        "team_worker_worker-1_1_in_progress",
+      );
     } finally {
       if (typeof prevTeamWorker === "string") process.env.OMX_TEAM_WORKER = prevTeamWorker;
       else delete process.env.OMX_TEAM_WORKER;
