@@ -57,6 +57,44 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, JSON.stringify(value, null, 2));
 }
 
+function buildWorkerStopFakeTmux(tmuxLogPath: string, options: { failSend?: boolean } = {}): string {
+  return `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  fmt=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -p) ;;
+      -t) shift ;;
+      *) fmt="$1" ;;
+    esac
+    shift || true
+  done
+  case "$fmt" in
+    "#{pane_in_mode}") echo "0" ;;
+    "#{pane_id}") echo "%42" ;;
+    "#{pane_current_path}") pwd ;;
+    "#{pane_start_command}") echo "codex" ;;
+    "#{pane_current_command}") echo "codex" ;;
+    "#S") echo "omx-team-worker-stop" ;;
+    *) ;;
+  esac
+  exit 0
+fi
+if [[ "$cmd" == "capture-pane" ]]; then
+  echo "› ready"
+  exit 0
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  ${options.failSend ? "exit 1" : "exit 0"}
+fi
+exit 0
+`;
+}
+
 async function writeActiveAutopilotSession(cwd: string, sessionId: string): Promise<void> {
   await writeJson(join(cwd, ".omx", "state", "session.json"), {
     session_id: sessionId,
