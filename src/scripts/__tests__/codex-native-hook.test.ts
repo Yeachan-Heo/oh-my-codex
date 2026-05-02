@@ -4667,6 +4667,55 @@ esac
     }
   });
 
+  it("blocks unresolved worker Stop before generic auto-nudge can bypass it", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-missing-state-"));
+    const prevTeamWorker = process.env.OMX_TEAM_WORKER;
+    const prevInternalTeamWorker = process.env.OMX_TEAM_INTERNAL_WORKER;
+    const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const prevPath = process.env.PATH;
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const fakeBinDir = join(cwd, "fake-bin");
+      const tmuxLogPath = join(cwd, "tmux.log");
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, "tmux"), buildWorkerStopFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, "tmux"), 0o755);
+
+      process.env.OMX_TEAM_WORKER = "worker-missing-state/worker-1";
+      delete process.env.OMX_TEAM_INTERNAL_WORKER;
+      process.env.OMX_TEAM_STATE_ROOT = stateDir;
+      process.env.PATH = `${fakeBinDir}:${prevPath || ""}`;
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-team-worker-missing-state",
+          thread_id: "thread-stop-team-worker-missing-state",
+          turn_id: "turn-stop-team-worker-missing-state",
+          last_assistant_message: "Should I proceed?",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.equal(result.outputJson?.stopReason, "team_worker_worker-1_missing_worker_state");
+      assert.doesNotMatch(JSON.stringify(result.outputJson), /auto_nudge/);
+      const tmuxLog = existsSync(tmuxLogPath) ? await readFile(tmuxLogPath, "utf-8") : "";
+      assert.doesNotMatch(tmuxLog, /native Stop allowed/);
+    } finally {
+      if (typeof prevTeamWorker === "string") process.env.OMX_TEAM_WORKER = prevTeamWorker;
+      else delete process.env.OMX_TEAM_WORKER;
+      if (typeof prevInternalTeamWorker === "string") process.env.OMX_TEAM_INTERNAL_WORKER = prevInternalTeamWorker;
+      else delete process.env.OMX_TEAM_INTERNAL_WORKER;
+      if (typeof prevTeamStateRoot === "string") process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      if (typeof prevPath === "string") process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("prefers canonical internal worker identity over public worker identity for Stop nudges", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-internal-env-"));
     const prevTeamWorker = process.env.OMX_TEAM_WORKER;
