@@ -49,6 +49,8 @@ import {
 	resolvePackagedOmxMarketplace,
 } from "./plugin-marketplace.js";
 
+const OFFICIAL_OMX_GIT_SOURCE = "https://github.com/Yeachan-Heo/oh-my-codex";
+
 interface DoctorOptions {
 	verbose?: boolean;
 	force?: boolean;
@@ -1065,6 +1067,29 @@ function getParsedMarketplaceRegistration(
 	return parsed.marketplaces?.[OMX_LOCAL_MARKETPLACE_NAME] ?? null;
 }
 
+function normalizeMarketplaceGitSource(source: unknown): string | null {
+	if (typeof source !== "string") return null;
+	let normalized = source.trim();
+	if (normalized.startsWith("git+")) {
+		normalized = normalized.slice(4);
+	}
+	if (normalized.endsWith(".git")) {
+		normalized = normalized.slice(0, -4);
+	}
+	return normalized.replace(/\/+$/, "").toLowerCase();
+}
+
+function isOfficialGitMarketplaceRegistration(registration: {
+	source_type?: unknown;
+	source?: unknown;
+}): boolean {
+	return (
+		registration.source_type === "git" &&
+		normalizeMarketplaceGitSource(registration.source) ===
+			OFFICIAL_OMX_GIT_SOURCE.toLowerCase()
+	);
+}
+
 async function checkPluginMarketplaceRegistration(
 	configPath: string,
 ): Promise<Check> {
@@ -1097,11 +1122,18 @@ async function checkPluginMarketplaceRegistration(
 				message: `plugin mode selected, but Codex marketplace ${OMX_LOCAL_MARKETPLACE_NAME} is not registered; run "omx setup --plugin --force"`,
 			};
 		}
+		if (isOfficialGitMarketplaceRegistration(registration)) {
+			return {
+				name: "Skills",
+				status: "pass",
+				message: `plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} registered from official Git source; OMX skills are supplied by ${packagedMarketplace.pluginRoot}`,
+			};
+		}
 		if (registration.source_type !== "local") {
 			return {
 				name: "Skills",
 				status: "warn",
-				message: `Codex marketplace ${OMX_LOCAL_MARKETPLACE_NAME} has source_type=${String(registration.source_type)} (expected local); run "omx setup --plugin --force"`,
+				message: `Codex marketplace ${OMX_LOCAL_MARKETPLACE_NAME} has source_type=${String(registration.source_type)} (expected local or official Git source); run "omx setup --plugin --force"`,
 			};
 		}
 		if (registration.source !== getPackageRoot()) {

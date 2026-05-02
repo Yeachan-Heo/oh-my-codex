@@ -224,6 +224,53 @@ command = "node"
 		}
 	});
 
+	it("accepts official Git-backed plugin marketplace registration", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-git-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(join(wd, ".omx"), { recursive: true });
+			await mkdir(codexDir, { recursive: true });
+			await writeFile(
+				join(wd, ".omx", "setup-scope.json"),
+				JSON.stringify({ scope: "user", installMode: "plugin" }, null, 2) +
+					"\n",
+			);
+			await writeFile(
+				join(codexDir, "config.toml"),
+				[
+					"codex_hooks = true",
+					"",
+					"[marketplaces.oh-my-codex-local]",
+					'source_type = "git"',
+					'source = "https://github.com/Yeachan-Heo/oh-my-codex.git"',
+					"",
+					'[plugins."oh-my-codex@oh-my-codex-local"]',
+					"enabled = true",
+					"",
+				].join("\n"),
+			);
+
+			const res = runOmx(wd, ["doctor"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(res.stdout, /Resolved setup install mode: plugin/);
+			assert.match(
+				res.stdout,
+				/Skills: plugin marketplace oh-my-codex-local registered from official Git source; OMX skills are supplied by/,
+			);
+			assert.doesNotMatch(
+				res.stdout,
+				/Codex marketplace oh-my-codex-local has source_type=git \(expected local\)/,
+			);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("warns about retired omx_team_run config left behind after upgrade", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-copy-"));
 		try {
