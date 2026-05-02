@@ -4539,6 +4539,81 @@ esac
     }
   });
 
+  it("does not treat failed or ambiguous worker task state as completed Stop evidence", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-failed-"));
+    const prevTeamWorker = process.env.OMX_TEAM_WORKER;
+    const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const prevPath = process.env.PATH;
+    try {
+      await initTeamState(
+        "worker-stop-failed-task",
+        "worker stop failed task",
+        "executor",
+        1,
+        cwd,
+        undefined,
+        { ...process.env, OMX_SESSION_ID: "sess-stop-team-worker-failed" },
+      );
+      const fakeBinDir = join(cwd, "fake-bin");
+      const tmuxLogPath = join(cwd, "tmux.log");
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, "tmux"), buildWorkerStopFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, "tmux"), 0o755);
+      const stateDir = join(cwd, ".omx", "state");
+      const workerDir = join(stateDir, "team", "worker-stop-failed-task", "workers", "worker-1");
+      await writeJson(join(stateDir, "team", "worker-stop-failed-task", "config.json"), {
+        name: "worker-stop-failed-task",
+        tmux_session: "omx-team-worker-stop",
+        leader_pane_id: "%42",
+        workers: [{ name: "worker-1", index: 1, pane_id: "%10" }],
+      });
+      await writeJson(join(workerDir, "identity.json"), {
+        name: "worker-1",
+        assigned_tasks: ["1"],
+        team_state_root: stateDir,
+      });
+      await writeJson(join(workerDir, "status.json"), {
+        state: "failed",
+        current_task_id: "1",
+        updated_at: new Date().toISOString(),
+      });
+      await writeJson(join(stateDir, "team", "worker-stop-failed-task", "tasks", "task-1.json"), {
+        id: "1",
+        status: "failed",
+        owner: "worker-1",
+      });
+
+      process.env.OMX_TEAM_WORKER = "worker-stop-failed-task/worker-1";
+      process.env.OMX_TEAM_STATE_ROOT = stateDir;
+      process.env.PATH = `${fakeBinDir}:${prevPath || ""}`;
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-team-worker-failed",
+          thread_id: "thread-stop-team-worker-failed",
+          turn_id: "turn-stop-team-worker-failed",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /team/i);
+      assert.equal(existsSync(join(workerDir, "worker-stop-nudge.json")), false);
+      const tmuxLog = existsSync(tmuxLogPath) ? await readFile(tmuxLogPath, "utf-8") : "";
+      assert.doesNotMatch(tmuxLog, /native Stop allowed/);
+    } finally {
+      if (typeof prevTeamWorker === "string") process.env.OMX_TEAM_WORKER = prevTeamWorker;
+      else delete process.env.OMX_TEAM_WORKER;
+      if (typeof prevTeamStateRoot === "string") process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      if (typeof prevPath === "string") process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns Stop continuation output from canonical team state when coarse mode state is missing", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-canonical-"));
     try {
