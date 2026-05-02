@@ -59,7 +59,7 @@ import {
   buildNativeHookEvent,
 } from "../hooks/extensibility/events.js";
 import type { HookEventEnvelope } from "../hooks/extensibility/types.js";
-import { dispatchHookEvent } from "../hooks/extensibility/dispatcher.js";
+import { dispatchHookEventRuntime } from "../hooks/extensibility/runtime.js";
 import { reconcileHudForPromptSubmit } from "../hud/reconcile.js";
 import { onSessionStart as buildWikiSessionStartContext } from "../wiki/lifecycle.js";
 import { readAutoresearchCompletionStatus, readAutoresearchModeState } from "../autoresearch/skill-validation.js";
@@ -2382,7 +2382,7 @@ export async function dispatchCodexNativeHook(
         mode: safeString(payload.mode).trim() || undefined,
       },
     );
-    await dispatchHookEvent(event, { cwd });
+    await dispatchHookEventRuntime({ cwd, event });
   }
 
   if ((hookEventName === "SessionStart" && !skipCanonicalSessionStartContext) || hookEventName === "UserPromptSubmit") {

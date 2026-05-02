@@ -4020,6 +4020,46 @@ esac
     }
   });
 
+  it("marks leader-owned team attention during native Stop dispatch without a polling watcher", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-attention-"));
+    try {
+      await initTeamState(
+        "stop-attention-team",
+        "native stop attention",
+        "executor",
+        1,
+        cwd,
+        undefined,
+        { ...process.env, OMX_SESSION_ID: "sess-stop-team-attention" },
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-team-attention",
+        },
+        { cwd },
+      );
+
+      const attention = await readTeamLeaderAttention("stop-attention-team", cwd);
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(attention?.source, "native_stop");
+      assert.equal(attention?.leader_session_active, false);
+      assert.equal(attention?.leader_session_id, "sess-stop-team-attention");
+      assert.match(attention?.leader_session_stopped_at ?? "", /^\d{4}-\d{2}-\d{2}T/);
+      assert.deepEqual(result.outputJson, {
+        decision: "block",
+        reason:
+          `OMX team pipeline is still active (stop-attention-team) at phase team-exec; continue coordinating until the team reaches a terminal phase.${TEAM_STOP_COMMIT_GUIDANCE}`,
+        stopReason: "team_team-exec",
+        systemMessage: "OMX team pipeline is still active at phase team-exec.",
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns Stop continuation output while team phase is non-terminal", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-"));
     try {
