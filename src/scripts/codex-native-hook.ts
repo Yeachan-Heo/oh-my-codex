@@ -2035,7 +2035,7 @@ async function buildStopHookOutput(
         { allowRepeatDuringStopHook: false },
       );
     }
-    if (inTeamWorkerContext) {
+    if (teamWorkerDecision.kind === "allowed") {
       return null;
     }
 
