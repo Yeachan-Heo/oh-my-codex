@@ -7,7 +7,7 @@
  */
 
 import { appendFile, mkdir, rename, writeFile } from 'fs/promises';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { DEFAULT_MARKER } from '../tmux-hook-engine.js';
 import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
 import { safeString, asNumber } from './utils.js';
@@ -50,14 +50,13 @@ async function appendWorkerStopEvent(stateDir, teamName, event) {
 }
 
 async function writeStopNudgeState(statePath, state) {
-  await mkdir(join(statePath, '..'), { recursive: true }).catch(() => {});
+  await mkdir(dirname(statePath), { recursive: true }).catch(() => {});
   const tmpPath = `${statePath}.tmp.${process.pid}`;
   await writeFile(tmpPath, JSON.stringify(state, null, 2));
   await rename(tmpPath, statePath);
 }
 
 async function recordDeferred({
-  cwd,
   stateDir,
   logsDir,
   teamName,
@@ -113,7 +112,6 @@ async function recordDeferred({
 }
 
 export async function maybeNudgeLeaderForAllowedWorkerStop({
-  cwd,
   stateDir,
   logsDir,
   workerContext,
