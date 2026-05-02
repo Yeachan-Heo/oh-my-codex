@@ -274,7 +274,7 @@ export function shouldSelfExitForDuplicateSibling(
   duplicateObservedAtMs: number | null,
   lastTrafficAtMs: number | null,
   preTrafficGraceMs = DEFAULT_DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS,
-  _postTrafficIdleMs = DEFAULT_DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS,
+  postTrafficIdleMs = DEFAULT_DUPLICATE_SIBLING_POST_TRAFFIC_IDLE_MS,
 ): boolean {
   if (observation.status !== 'older_duplicate') {
     return false;
@@ -288,12 +288,14 @@ export function shouldSelfExitForDuplicateSibling(
   }
 
   if (lastTrafficAtMs !== null) {
-    // Any stdin traffic means a client has already initialized or otherwise owns
-    // this stdio transport. In Codex App native subagent sessions, leader and
-    // subagent MCP servers can share a parent process and entrypoint while both
-    // transports remain active, so PID age alone is not safe proof that the
-    // older process is a stale duplicate.
-    return false;
+    // Stdio traffic means a client initialized or otherwise owned this transport.
+    // Keep that protection, but do not make it permanent: Codex.app can reuse a
+    // long-lived parent across sessions, leaving initialized older siblings alive
+    // after a newer server for the same first-party entrypoint has taken over.
+    // Require a conservative idle window after both the duplicate observation and
+    // the most recent traffic before self-exiting.
+    const idleSinceMs = Math.max(duplicateObservedAtMs, lastTrafficAtMs);
+    return nowMs - idleSinceMs >= postTrafficIdleMs;
   }
 
   return nowMs - duplicateObservedAtMs >= preTrafficGraceMs;

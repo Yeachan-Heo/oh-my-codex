@@ -305,7 +305,7 @@ describe('mcp duplicate sibling detection', () => {
     );
   });
 
-  it('does not self-exit after any client traffic even when a newer sibling appears', () => {
+  it('lets post-traffic older duplicates self-exit only after the conservative idle window', () => {
     const observation = {
       status: 'older_duplicate' as const,
       entrypoint: 'state-server.js',
@@ -319,7 +319,7 @@ describe('mcp duplicate sibling detection', () => {
     );
     assert.equal(
       shouldSelfExitForDuplicateSibling(observation, 311_000, 1_000, 10_000),
-      false,
+      true,
     );
   });
 
@@ -338,6 +338,36 @@ describe('mcp duplicate sibling detection', () => {
     assert.equal(
       shouldSelfExitForDuplicateSibling(observation, 11_100, 9_000, 1_000),
       false,
+    );
+    assert.equal(
+      shouldSelfExitForDuplicateSibling(observation, 70_000, 9_000, 1_000),
+      true,
+    );
+  });
+
+  it('uses the later of duplicate observation and last traffic for post-traffic idle', () => {
+    const observation = {
+      status: 'older_duplicate' as const,
+      entrypoint: 'state-server.js',
+      matchingPids: [101, 140],
+      newerSiblingPids: [140],
+    };
+
+    assert.equal(
+      shouldSelfExitForDuplicateSibling(observation, 13_999, 10_000, 12_000, 1_000, 2_000),
+      false,
+    );
+    assert.equal(
+      shouldSelfExitForDuplicateSibling(observation, 14_000, 10_000, 12_000, 1_000, 2_000),
+      true,
+    );
+    assert.equal(
+      shouldSelfExitForDuplicateSibling(observation, 13_999, 12_000, 10_000, 1_000, 2_000),
+      false,
+    );
+    assert.equal(
+      shouldSelfExitForDuplicateSibling(observation, 14_000, 12_000, 10_000, 1_000, 2_000),
+      true,
     );
   });
 

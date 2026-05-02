@@ -4,7 +4,9 @@ import {
   cleanupCommand,
   cleanupOmxMcpProcesses,
   cleanupStaleTmpDirectories,
+  extractOmxMcpEntrypoint,
   findCleanupCandidates,
+  findDuplicateSiblingCleanupCandidates,
   findLaunchSafeCleanupCandidates,
   isOmxMcpProcess,
   listOmxProcesses,
@@ -61,6 +63,18 @@ describe('findCleanupCandidates', () => {
     assert.equal(isOmxMcpProcess('node /tmp/worktree/dist/mcp/team-server.js'), false);
   });
 
+  it('extracts first-party MCP entrypoints for duplicate grouping', () => {
+    assert.equal(
+      extractOmxMcpEntrypoint('node /repo/oh-my-codex/dist/mcp/state-server.js'),
+      'state-server.js',
+    );
+    assert.equal(
+      extractOmxMcpEntrypoint('node C:\\repo\\oh-my-codex\\dist\\mcp\\code-intel-server.cjs'),
+      'code-intel-server.cjs',
+    );
+    assert.equal(extractOmxMcpEntrypoint('node /tmp/worktree/dist/mcp/team-server.js'), null);
+  });
+
   it('selects orphaned OMX MCP processes while preserving the current session tree', () => {
     assert.deepEqual(
       findCleanupCandidates(CURRENT_SESSION_PROCESSES, 701),
@@ -111,6 +125,74 @@ describe('findCleanupCandidates', () => {
         },
       ],
     );
+  });
+
+  it('selects older duplicate siblings under a reused current Codex parent', () => {
+    const reusedParentProcesses: ProcessEntry[] = [
+      { pid: 700, ppid: 500, command: 'codex app-server' },
+      { pid: 701, ppid: 700, command: 'node /repo/bin/omx.js cleanup --dry-run' },
+      {
+        pid: 710,
+        ppid: 700,
+        command: 'node /repo/oh-my-codex/dist/mcp/state-server.js',
+      },
+      {
+        pid: 730,
+        ppid: 700,
+        command: 'node /repo/oh-my-codex/dist/mcp/state-server.js',
+      },
+      {
+        pid: 740,
+        ppid: 700,
+        command: 'node /repo/oh-my-codex/dist/mcp/memory-server.js',
+      },
+    ];
+
+    assert.deepEqual(findDuplicateSiblingCleanupCandidates(reusedParentProcesses), [
+      {
+        pid: 710,
+        ppid: 700,
+        command: 'node /repo/oh-my-codex/dist/mcp/state-server.js',
+        reason: 'duplicate-sibling',
+      },
+    ]);
+    assert.deepEqual(findCleanupCandidates(reusedParentProcesses, 701), [
+      {
+        pid: 710,
+        ppid: 700,
+        command: 'node /repo/oh-my-codex/dist/mcp/state-server.js',
+        reason: 'duplicate-sibling',
+      },
+    ]);
+    assert.deepEqual(findLaunchSafeCleanupCandidates(reusedParentProcesses, 701), [
+      {
+        pid: 710,
+        ppid: 700,
+        command: 'node /repo/oh-my-codex/dist/mcp/state-server.js',
+        reason: 'duplicate-sibling',
+      },
+    ]);
+  });
+
+  it('keeps non-duplicate live-session MCPs protected while allowing duplicate siblings', () => {
+    const processes: ProcessEntry[] = [
+      { pid: 700, ppid: 500, command: 'codex app-server' },
+      { pid: 701, ppid: 700, command: 'node /repo/bin/omx.js cleanup --dry-run' },
+      { pid: 710, ppid: 700, command: 'node /repo/dist/mcp/state-server.js' },
+      { pid: 711, ppid: 700, command: 'node /repo/dist/mcp/state-server.js' },
+      { pid: 720, ppid: 700, command: 'node /repo/dist/mcp/wiki-server.js' },
+      { pid: 900, ppid: 800, command: 'codex --model gpt-5' },
+      { pid: 901, ppid: 900, command: 'node /repo/dist/mcp/trace-server.js' },
+    ];
+
+    assert.deepEqual(findLaunchSafeCleanupCandidates(processes, 701), [
+      {
+        pid: 710,
+        ppid: 700,
+        command: 'node /repo/dist/mcp/state-server.js',
+        reason: 'duplicate-sibling',
+      },
+    ]);
   });
 
   it('keeps detached MCP candidates whose ancestor chain is live but unrelated to Codex or OMX launchers', () => {
