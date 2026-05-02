@@ -75,6 +75,24 @@ export function resolveLeaderStalenessThresholdMs() {
   return 180_000;
 }
 
+export function resolveFallbackProgressStallThresholdMs() {
+  const raw = safeString(process.env.OMX_TEAM_PROGRESS_STALL_MS || '');
+  const parsed = asNumber(raw);
+  // Deprecated compatibility parser. Worker-stall leader nudges are no longer
+  // driven by this threshold; native worker Stop events own that lifecycle.
+  if (parsed !== null && parsed >= 10_000 && parsed <= 60 * 60_000) return parsed;
+  return 120_000;
+}
+
+export function resolveWorkerTurnStallThresholdMs() {
+  const raw = safeString(process.env.OMX_TEAM_WORKER_TURN_STALL_MS || '');
+  const parsed = asNumber(raw);
+  // Deprecated compatibility parser. Worker-turn stalls no longer trigger
+  // visible leader nudges.
+  if (parsed !== null && parsed >= 10_000 && parsed <= 10 * 60_000) return parsed;
+  return 30_000;
+}
+
 function buildStatusCheckReminder(teamName) {
   return `Next: check messages; keep orchestrating; if done, gracefully shut down: omx team shutdown ${teamName}.`;
 }
@@ -684,6 +702,7 @@ export async function maybeNudgeTeamLeader({
       ? Math.max(effectiveProgressAtMs, extraProgressEvidenceMs)
       : effectiveProgressAtMs;
     const effectiveProgressAtIso = new Date(latestProgressEvidenceMs).toISOString();
+    const teamProgressStalled = false;
     const hasFreshProgressEvidence =
       progressSnapshot.workRemaining
       && (progressChanged
