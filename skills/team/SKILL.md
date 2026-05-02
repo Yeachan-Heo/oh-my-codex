@@ -156,7 +156,7 @@ Important:
 - Worker panes are independent full Codex/Claude CLI sessions
 - Workers may run in separate git worktrees (`omx team --worktree[=<name>]`) while sharing one team state root
 - Worker ACKs go to `mailbox/leader-fixed.json`
-- Notify hook updates worker heartbeat and nudges leader during active team mode
+- Notify hook updates worker heartbeat and sends lifecycle-driven leader nudges (for example resolved native worker Stop/all-idle or stale-leader evidence) during active team mode; deprecated worker stall/progress heuristics are not operator-facing guidance.
 - Submit routing uses this CLI resolution order per worker trigger:
   1) explicit worker CLI provided by runtime state (persisted on worker identity/config),
   2) `OMX_TEAM_WORKER_CLI_MAP` entry for that worker index,
@@ -221,7 +221,7 @@ sleep 30 && omx team status <team-name>
 
 Repeat that check while the team stays active, or use `omx team await <team-name> --timeout-ms 30000 --json` when event-driven waiting is a better fit.
 
-If the leader gets a stale/team-stalled nudge, immediately run `omx team status <team-name>` before taking any manual intervention.
+If the leader gets a stale, lifecycle, or all-idle nudge, immediately run `omx team status <team-name>` before taking any manual intervention. Deprecated worker stall/progress nudges should not be treated as an active runtime contract.
 
 ## Message Dispatch Policy (CLI-first, state-first)
 
