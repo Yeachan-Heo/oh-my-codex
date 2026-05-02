@@ -211,8 +211,12 @@ export async function readTeamWorkersForIdleCheck(stateDir, teamName) {
     if (!parsed || typeof parsed !== 'object') return null;
     const workers = parsed.workers;
     if (!Array.isArray(workers) || workers.length === 0) return null;
-    const tmuxSession = safeString(parsed.tmux_session || '').trim();
-    const leaderPaneId = safeString(parsed.leader_pane_id || '').trim();
+    let config = null;
+    if (srcPath === manifestPath && existsSync(configPath)) {
+      config = await readJsonIfExists(configPath, null);
+    }
+    const tmuxSession = safeString(parsed.tmux_session || config?.tmux_session || '').trim();
+    const leaderPaneId = safeString(parsed.leader_pane_id || config?.leader_pane_id || '').trim();
     return { workers, tmuxSession, leaderPaneId };
   } catch {
     return null;
