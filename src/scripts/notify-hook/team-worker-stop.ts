@@ -144,7 +144,6 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
 
   if (!tmuxTarget) {
     await recordDeferred({
-      cwd,
       stateDir,
       logsDir,
       teamName,
@@ -166,7 +165,6 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
   });
   if (!paneGuard.ok) {
     await recordDeferred({
-      cwd,
       stateDir,
       logsDir,
       teamName,
@@ -233,7 +231,6 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
     return { ok: true, result: 'sent' };
   } catch (err) {
     await recordDeferred({
-      cwd,
       stateDir,
       logsDir,
       teamName,
