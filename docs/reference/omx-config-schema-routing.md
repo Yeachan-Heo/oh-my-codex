@@ -45,7 +45,7 @@ Current code recognizes these top-level `.omx-config.json` keys:
 - `reply` supports `enabled`, `authorizedDiscordUserIds`, `pollIntervalMs`, `rateLimitPerMinute`, `maxMessageLength`, and `includePrefix`.
 - `notifications.openclaw` supports `enabled`, `gateways`, and `hooks`. Gateway entries are HTTP (`type`, `url`, `headers`, `method`, `timeout`) or command (`type`, `command`, `timeout`). Hook entries use `gateway`, `instruction`, and `enabled`.
 
-Use [`docs/openclaw-integration.md`](../openclaw-integration.md) for full notification/OpenClaw examples. Keep credentials in environment variables where possible.
+Use [`docs/discord-integration.md`](../discord-integration.md) for Discord webhook-vs-bot setup and [`docs/openclaw-integration.md`](../openclaw-integration.md) for full notification/OpenClaw examples. Keep credentials in environment variables where possible.
 
 ## Supported model/env keys
 
