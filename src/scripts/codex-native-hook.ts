@@ -1276,13 +1276,6 @@ async function resolveTeamWorkerStopDecision(
   return { kind: "allowed", stateDir, workerContext };
 }
 
-function hasTeamWorkerContext(): boolean {
-  return (
-    parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER))
-    || parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER))
-  ) !== null;
-}
-
 function isStopExempt(payload: CodexHookPayload): boolean {
   const candidates = [
     payload.stop_reason,
