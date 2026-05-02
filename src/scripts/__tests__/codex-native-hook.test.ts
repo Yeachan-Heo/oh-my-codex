@@ -5264,13 +5264,12 @@ exit 0
       );
 
       assert.equal(result.omxEventName, "stop");
-      assert.deepEqual(result.outputJson, {
-        decision: "block",
-        reason:
-          "OMX skill ralplan is still active (phase: planning); continue until the current ralplan workflow reaches a terminal state.",
-        stopReason: "skill_ralplan_planning",
-        systemMessage: "OMX skill ralplan is still active (phase: planning).",
-      });
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /Status: continue_from_artifact/);
+      assert.match(String(result.outputJson?.reason ?? ""), /ralplan is still active \(phase: planning\)/);
+      assert.match(String(result.outputJson?.reason ?? ""), /continue from the current ralplan artifact/i);
+      assert.equal(result.outputJson?.stopReason, "skill_ralplan_planning_continue_artifact");
+      assert.match(String(result.outputJson?.systemMessage ?? ""), /complete, paused for review, waiting for input, or still continuing/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -5405,7 +5404,7 @@ exit 0
     }
   });
 
-  it("does not block on active ralplan skill when subagents are still active", async () => {
+  it("returns an explicit ralplan waiting status while subagents are still active", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-skill-subagent-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -5457,7 +5456,11 @@ exit 0
       );
 
       assert.equal(result.omxEventName, "stop");
-      assert.equal(result.outputJson, null);
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /Status: waiting/);
+      assert.match(String(result.outputJson?.reason ?? ""), /waiting for 1 active native subagent thread/);
+      assert.match(String(result.outputJson?.reason ?? ""), /then continue from the current ralplan artifact/i);
+      assert.equal(result.outputJson?.stopReason, "skill_ralplan_planning_waiting_subagent");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -7674,13 +7677,10 @@ exit 0
       );
 
       assert.equal(repeated.omxEventName, "stop");
-      assert.deepEqual(repeated.outputJson, {
-        decision: "block",
-        reason:
-          "OMX skill ralplan is still active (phase: planning); continue until the current ralplan workflow reaches a terminal state.",
-        stopReason: "skill_ralplan_planning",
-        systemMessage: "OMX skill ralplan is still active (phase: planning).",
-      });
+      assert.equal(repeated.outputJson?.decision, "block");
+      assert.match(String(repeated.outputJson?.reason ?? ""), /Status: continue_from_artifact/);
+      assert.match(String(repeated.outputJson?.reason ?? ""), /continue from the current ralplan artifact/i);
+      assert.equal(repeated.outputJson?.stopReason, "skill_ralplan_planning_continue_artifact");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

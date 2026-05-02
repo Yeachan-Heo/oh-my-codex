@@ -78,6 +78,7 @@ interface RalplanModeUpdates {
   latest_architect_summary?: string;
   latest_critic_verdict?: RalplanReviewVerdict;
   latest_critic_summary?: string;
+  status_message?: string;
   review_history?: Array<Record<string, unknown>>;
   [key: string]: unknown;
 }
@@ -197,6 +198,9 @@ export async function runRalplanConsensus(
           completed_at: new Date().toISOString(),
           planning_complete: planningComplete,
           latest_plan_path: latestPlanPath,
+          status_message: planningComplete
+            ? 'Status: complete — ralplan consensus approved and planning artifacts are ready for handoff.'
+            : 'Status: paused_for_review — ralplan consensus approved, but expected planning artifacts are missing; continue from the current artifact and emit the final handoff once artifacts are written.',
           review_history: reviewHistory,
         });
         return {
@@ -224,6 +228,7 @@ export async function runRalplanConsensus(
           latest_critic_verdict: criticReview.verdict,
           latest_critic_summary: criticReview.summary,
           review_history: reviewHistory,
+          status_message: `Status: paused_for_review — ralplan reached the ${maxIterations}-iteration review limit without approval; continue from the best current artifact or ask the user how to proceed.`,
           error,
         });
         return {
@@ -252,6 +257,7 @@ export async function runRalplanConsensus(
       planning_complete: false,
       latest_plan_path: latestPlanPath,
       review_history: buildReviewHistory(drafts, architectReviews, criticReviews),
+      status_message: 'Status: failed — ralplan encountered an error and cannot continue without inspecting the failure.',
       error: message,
     });
     return {
@@ -275,6 +281,7 @@ export async function runRalplanConsensus(
     current_phase: 'failed',
     completed_at: new Date().toISOString(),
     planning_complete: false,
+    status_message: 'Status: failed — ralplan reached an unexpected runtime state.',
     error: unreachableError,
   });
   return {

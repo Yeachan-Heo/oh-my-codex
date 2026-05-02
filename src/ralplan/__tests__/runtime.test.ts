@@ -67,6 +67,7 @@ describe('ralplan runtime', () => {
       assert.equal(finalState?.current_phase, 'complete');
       assert.equal(finalState?.iteration, 1);
       assert.equal(finalState?.planning_complete, true);
+      assert.match(String(finalState?.status_message || ''), /Status: complete/);
       assert.equal(finalState?.latest_architect_verdict, 'approve');
       assert.equal(finalState?.latest_critic_verdict, 'approve');
       assert.equal(Array.isArray(finalState?.review_history), true);
@@ -153,6 +154,7 @@ describe('ralplan runtime', () => {
       const finalState = await readModeState('ralplan', cwd);
       assert.equal(finalState?.active, false);
       assert.equal(finalState?.current_phase, 'failed');
+      assert.match(String(finalState?.status_message || ''), /Status: failed/);
       assert.match(String(finalState?.error || ''), /architect blew up/);
     } finally {
       await rm(cwd, { recursive: true, force: true });

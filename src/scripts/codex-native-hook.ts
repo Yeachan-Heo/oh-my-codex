@@ -1678,7 +1678,7 @@ async function readBlockingSkillForStop(
   sessionId: string,
   threadId: string,
   requiredSkill?: string,
-): Promise<{ skill: string; phase: string } | null> {
+): Promise<{ skill: string; phase: string; latestPlanPath?: string; planningComplete?: boolean; runOutcome?: string } | null> {
   const canonicalState = await readVisibleSkillActiveState(cwd, sessionId);
   const visibleEntries = canonicalState ? listActiveSkills(canonicalState) : [];
   const candidateSkills = requiredSkill
@@ -1708,7 +1708,13 @@ async function readBlockingSkillForStop(
     }
 
     if (!canonicalState) {
-      return { skill, phase };
+      return {
+        skill,
+        phase,
+        latestPlanPath: safeString(modeState.latest_plan_path ?? modeState.latestPlanPath).trim() || undefined,
+        planningComplete: modeState.planning_complete === true || modeState.planningComplete === true,
+        runOutcome: safeString(modeState.run_outcome ?? modeState.outcome).trim() || undefined,
+      };
     }
 
     const blocker = visibleEntries.find((entry) => (
@@ -1720,10 +1726,63 @@ async function readBlockingSkillForStop(
     return {
       skill,
       phase: formatPhase(modeState.current_phase ?? blocker.phase ?? canonicalState.phase, "planning"),
+      latestPlanPath: safeString(modeState.latest_plan_path ?? modeState.latestPlanPath).trim() || undefined,
+      planningComplete: modeState.planning_complete === true || modeState.planningComplete === true,
+      runOutcome: safeString(modeState.run_outcome ?? modeState.outcome).trim() || undefined,
     };
   }
 
   return null;
+}
+
+function buildRalplanContinuationStatus(
+  blocker: { phase: string; latestPlanPath?: string; planningComplete?: boolean; runOutcome?: string },
+  activeSubagentCount: number,
+): { reason: string; systemMessage: string; stopReasonSuffix: string } {
+  const phase = blocker.phase || "planning";
+  const artifact = blocker.latestPlanPath
+    ? ` Artifact: ${blocker.latestPlanPath}.`
+    : " Artifact: use the latest `.omx/plans/` ralplan artifact if present.";
+
+  if (activeSubagentCount > 0) {
+    return {
+      reason:
+        `Status: waiting — ralplan is waiting for ${activeSubagentCount} active native subagent thread(s) to finish (phase: ${phase}). Do not stop silently; wait for the subagent result, then continue from the current ralplan artifact and proceed to the next planning/review step.${artifact}`,
+      stopReasonSuffix: "waiting_subagent",
+      systemMessage:
+        `OMX ralplan status: waiting for ${activeSubagentCount} active native subagent thread(s) at phase ${phase}; after they finish, continue from the current ralplan artifact and state the next status explicitly.`,
+    };
+  }
+
+  const normalizedPhase = phase.toLowerCase();
+  const normalizedOutcome = (blocker.runOutcome ?? "").toLowerCase();
+  const waitingForInput =
+    normalizedOutcome === "blocked_on_user"
+    || normalizedPhase.includes("blocked")
+    || normalizedPhase.includes("input")
+    || normalizedPhase.includes("question");
+
+  if (waitingForInput) {
+    return {
+      reason:
+        `Status: waiting_for_input — ralplan is paused for required user/operator input (phase: ${phase}). Ask the missing question or present the review choice explicitly before stopping.${artifact}`,
+      stopReasonSuffix: "waiting_input",
+      systemMessage:
+        `OMX ralplan status: waiting for input at phase ${phase}; ask the required question or present the explicit review choice before stopping.`,
+    };
+  }
+
+  const completeHint = blocker.planningComplete
+    ? " The planning artifacts are present; if consensus is approved, emit the final complete/approved handoff instead of stopping here."
+    : "";
+
+  return {
+    reason:
+      `Status: continue_from_artifact — ralplan is still active (phase: ${phase}) and has not emitted a terminal complete/paused/waiting status. Continue from the current ralplan artifact, resolve any review ambiguity conservatively or ask the user if needed, and proceed to the next planning/review step before stopping.${artifact}${completeHint}`,
+    stopReasonSuffix: "continue_artifact",
+    systemMessage:
+      `OMX ralplan status: continue_from_artifact at phase ${phase}; continue from the current ralplan artifact and finish by stating whether ralplan is complete, paused for review, waiting for input, or still continuing.`,
+  };
 }
 
 async function readStopAutoNudgePhase(
@@ -2048,7 +2107,19 @@ async function buildSkillStopOutput(
   if (!blocker) return null;
 
   const subagentSummary = await readSubagentSessionSummary(cwd, sessionId).catch(() => null);
-  if (subagentSummary && subagentSummary.activeSubagentThreadIds.length > 0) {
+  const activeSubagentCount = subagentSummary?.activeSubagentThreadIds.length ?? 0;
+
+  if (blocker.skill === "ralplan") {
+    const status = buildRalplanContinuationStatus(blocker, activeSubagentCount);
+    return {
+      decision: "block",
+      reason: status.reason,
+      stopReason: `skill_${blocker.skill}_${blocker.phase}_${status.stopReasonSuffix}`,
+      systemMessage: status.systemMessage,
+    };
+  }
+
+  if (activeSubagentCount > 0) {
     return null;
   }
 
