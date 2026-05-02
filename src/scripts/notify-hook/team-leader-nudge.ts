@@ -702,7 +702,6 @@ export async function maybeNudgeTeamLeader({
       ? Math.max(effectiveProgressAtMs, extraProgressEvidenceMs)
       : effectiveProgressAtMs;
     const effectiveProgressAtIso = new Date(latestProgressEvidenceMs).toISOString();
-    const teamProgressStalled = false;
     const hasFreshProgressEvidence =
       progressSnapshot.workRemaining
       && (progressChanged
