@@ -1,4 +1,0 @@
-
-> oh-my-codex@0.15.2 build
-> node -e "const fs=require('fs'); fs.rmSync('dist',{recursive:true,force:true});" && tsc && node -e "require('fs').chmodSync('dist/cli/omx.js', 0o755)"
-
