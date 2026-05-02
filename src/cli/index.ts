@@ -754,6 +754,55 @@ function warnDetachedTmuxFallback(reason?: string): void {
   );
 }
 
+const QUICK_ATTACH_NOOP_THRESHOLD_MS = 2_000;
+
+function isWslWindowsTerminalEnvironment(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(
+    env.WT_SESSION?.trim() &&
+      (env.WSL_INTEROP?.trim() ||
+        env.WSL_DISTRO_NAME?.trim() ||
+        env.WSLENV?.trim()),
+  );
+}
+
+function readDetachedSessionAttachedClientCount(sessionName: string): number | null {
+  try {
+    const output = execTmuxFileSync(
+      ["display-message", "-p", "-t", sessionName, "#{session_attached}"],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        encoding: "utf-8",
+      },
+    ).trim();
+    const parsed = Number.parseInt(output, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch (err) {
+    logCliOperationFailure(err);
+    return null;
+  }
+}
+
+function assertDetachedAttachDidNotNoop(
+  sessionName: string,
+  elapsedMs: number,
+  env: NodeJS.ProcessEnv,
+): void {
+  if (!isWslWindowsTerminalEnvironment(env)) return;
+  if (elapsedMs >= QUICK_ATTACH_NOOP_THRESHOLD_MS) return;
+
+  const attachedClients = readDetachedSessionAttachedClientCount(sessionName);
+  if (attachedClients === null || attachedClients > 0) return;
+
+  throw new Error(
+    [
+      "tmux attach-session returned immediately without attaching a client",
+      `(session=${sessionName}).`,
+      "This can happen on WSL2 under Windows Terminal.",
+      "Falling back to direct Codex launch.",
+    ].join(" "),
+  );
+}
+
 function resolveTmuxAwareLaunchPolicy(
   explicitLaunchPolicy: CodexLaunchPolicy | undefined,
   nativeWindows: boolean,
@@ -3138,7 +3187,15 @@ function runCodex(
             const stdio =
               finalizeStep.name === "attach-session" ? "inherit" : "ignore";
             try {
+              const startedAtMs = Date.now();
               execTmuxFileSync(finalizeStep.args, { stdio });
+              if (finalizeStep.name === "attach-session") {
+                assertDetachedAttachDidNotNoop(
+                  sessionName,
+                  Date.now() - startedAtMs,
+                  process.env,
+                );
+              }
             } catch (err) {
               logCliOperationFailure(err);
               if (finalizeStep.name === "attach-session")
