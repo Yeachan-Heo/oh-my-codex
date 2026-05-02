@@ -164,17 +164,10 @@ describe('findCleanupCandidates', () => {
         reason: 'duplicate-sibling',
       },
     ]);
-    assert.deepEqual(findLaunchSafeCleanupCandidates(reusedParentProcesses, 701), [
-      {
-        pid: 710,
-        ppid: 700,
-        command: 'node /repo/oh-my-codex/dist/mcp/state-server.js',
-        reason: 'duplicate-sibling',
-      },
-    ]);
+    assert.deepEqual(findLaunchSafeCleanupCandidates(reusedParentProcesses, 701), []);
   });
 
-  it('keeps non-duplicate live-session MCPs protected while allowing duplicate siblings', () => {
+  it('keeps live-session MCPs protected, including duplicate siblings', () => {
     const processes: ProcessEntry[] = [
       { pid: 700, ppid: 500, command: 'codex app-server' },
       { pid: 701, ppid: 700, command: 'node /repo/bin/omx.js cleanup --dry-run' },
@@ -185,14 +178,35 @@ describe('findCleanupCandidates', () => {
       { pid: 901, ppid: 900, command: 'node /repo/dist/mcp/trace-server.js' },
     ];
 
-    assert.deepEqual(findLaunchSafeCleanupCandidates(processes, 701), [
+    assert.deepEqual(findLaunchSafeCleanupCandidates(processes, 701), []);
+  });
+
+  it('preserves same-parent first-party MCP siblings under live Codex and OMX ancestors during launch-safe cleanup', () => {
+    const processes: ProcessEntry[] = [
+      { pid: 100, ppid: 1, command: 'codex app-server' },
+      { pid: 110, ppid: 100, command: 'node /repo/bin/omx.js launch' },
+      { pid: 111, ppid: 110, command: 'node /repo/bin/omx.js cleanup --launch-safe' },
+      { pid: 120, ppid: 100, command: 'node /repo/dist/mcp/state-server.js' },
+      { pid: 121, ppid: 100, command: 'node /repo/dist/mcp/state-server.js' },
+      { pid: 130, ppid: 110, command: 'node /repo/dist/mcp/memory-server.js' },
+      { pid: 131, ppid: 110, command: 'node /repo/dist/mcp/memory-server.js' },
+    ];
+
+    assert.deepEqual(findCleanupCandidates(processes, 111), [
       {
-        pid: 710,
-        ppid: 700,
+        pid: 120,
+        ppid: 100,
         command: 'node /repo/dist/mcp/state-server.js',
         reason: 'duplicate-sibling',
       },
+      {
+        pid: 130,
+        ppid: 110,
+        command: 'node /repo/dist/mcp/memory-server.js',
+        reason: 'duplicate-sibling',
+      },
     ]);
+    assert.deepEqual(findLaunchSafeCleanupCandidates(processes, 111), []);
   });
 
   it('keeps detached MCP candidates whose ancestor chain is live but unrelated to Codex or OMX launchers', () => {

@@ -339,8 +339,13 @@ export function findLaunchSafeCleanupCandidates(
   );
 
   return findCleanupCandidates(processes, currentPid).filter((candidate) => {
-    if (candidate.reason === 'duplicate-sibling') return true;
     if (candidate.ppid <= 1) return true;
+
+    // Launch-safe cleanup runs automatically before starting Codex/OMX work.
+    // Preserve every MCP process still attached to a live Codex or OMX launch
+    // ancestor, including older same-parent duplicate siblings. Destructive
+    // duplicate-sibling reaping remains available through manual cleanup via
+    // findCleanupCandidates/default cleanupOmxMcpProcesses selection.
     return (
       !hasAncestorMatching(processByPid, candidate.pid, isCodexSessionProcess) &&
       !hasAncestorMatching(processByPid, candidate.pid, isOmxLaunchProcess)
