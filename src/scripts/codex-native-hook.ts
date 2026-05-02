@@ -2023,8 +2023,8 @@ async function buildStopHookOutput(
     }
 
     const inTeamWorkerContext = hasTeamWorkerContext();
-    const teamWorkerOutput = await buildTeamWorkerStopOutput(cwd);
-    if (inTeamWorkerContext && teamWorkerOutput) {
+    const teamWorkerDecision = await resolveTeamWorkerStopDecision(cwd);
+    if (teamWorkerDecision.kind === "blocked") {
       return await returnPersistentStopBlock(
         payload,
         stateDir,
@@ -2409,8 +2409,9 @@ export async function dispatchCodexNativeHook(
         mode: safeString(payload.mode).trim() || undefined,
       },
     );
-    await dispatchHookEvent(event, {
+    await dispatchHookEventRuntime({
       cwd,
+      event,
       allowTeamWorkerSideEffects: hookEventName === "Stop" && hasTeamWorkerContext(),
     });
   }
