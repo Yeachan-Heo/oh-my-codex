@@ -4376,6 +4376,7 @@ esac
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-terminal-"));
     const prevTeamWorker = process.env.OMX_TEAM_WORKER;
     const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const prevPath = process.env.PATH;
     try {
       await initTeamState(
         "worker-stop-team-terminal",
@@ -4386,7 +4387,26 @@ esac
         undefined,
         { ...process.env, OMX_SESSION_ID: "sess-stop-team-worker-terminal" },
       );
+      const fakeBinDir = join(cwd, "fake-bin");
+      const tmuxLogPath = join(cwd, "tmux.log");
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, "tmux"), buildWorkerStopFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, "tmux"), 0o755);
       const workerDir = join(cwd, ".omx", "state", "team", "worker-stop-team-terminal", "workers", "worker-1");
+      await writeJson(join(cwd, ".omx", "state", "team", "worker-stop-team-terminal", "config.json"), {
+        name: "worker-stop-team-terminal",
+        tmux_session: "omx-team-worker-stop",
+        leader_pane_id: "%42",
+        workers: [{ name: "worker-1", index: 1, pane_id: "%10" }],
+      });
+      await writeJson(join(workerDir, "identity.json"), {
+        name: "worker-1",
+        index: 1,
+        role: "executor",
+        assigned_tasks: ["1"],
+        worktree_path: cwd,
+        team_state_root: join(cwd, ".omx", "state"),
+      });
       await writeJson(join(workerDir, "status.json"), {
         state: "done",
         current_task_id: "1",
@@ -4403,6 +4423,7 @@ esac
 
       process.env.OMX_TEAM_WORKER = "worker-stop-team-terminal/worker-1";
       process.env.OMX_TEAM_STATE_ROOT = join(cwd, ".omx", "state");
+      process.env.PATH = `${fakeBinDir}:${prevPath || ""}`;
 
       const result = await dispatchCodexNativeHook(
         {
@@ -4412,13 +4433,96 @@ esac
         },
         { cwd },
       );
+      const replay = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-team-worker-terminal",
+          turn_id: "turn-worker-stop-terminal-replay",
+        },
+        { cwd },
+      );
 
-      assert.deepEqual(result.outputJson, null);
+      assert.equal(result.outputJson, null);
+      assert.equal(replay.outputJson, null);
+      const tmuxLog = await readFile(tmuxLogPath, "utf-8");
+      const stopNudges = tmuxLog.match(/send-keys -t %42 -l \\[OMX\\] worker-1 native Stop allowed/g) || [];
+      assert.equal(stopNudges.length, 1, "allowed worker Stop should nudge leader exactly once inside cooldown");
+      const nudgeState = JSON.parse(await readFile(join(workerDir, "worker-stop-nudge.json"), "utf-8"));
+      assert.equal(nudgeState.delivery, "sent");
     } finally {
       if (typeof prevTeamWorker === "string") process.env.OMX_TEAM_WORKER = prevTeamWorker;
       else delete process.env.OMX_TEAM_WORKER;
       if (typeof prevTeamStateRoot === "string") process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
       else delete process.env.OMX_TEAM_STATE_ROOT;
+      if (typeof prevPath === "string") process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows worker Stop when the Stop nudge helper cannot deliver", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-helper-fail-"));
+    const prevTeamWorker = process.env.OMX_TEAM_WORKER;
+    const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const prevPath = process.env.PATH;
+    try {
+      await initTeamState(
+        "worker-stop-helper-fail",
+        "worker stop helper failure",
+        "executor",
+        1,
+        cwd,
+        undefined,
+        { ...process.env, OMX_SESSION_ID: "sess-stop-team-worker-helper-fail" },
+      );
+      const fakeBinDir = join(cwd, "fake-bin");
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, "tmux"), buildWorkerStopFakeTmux(join(cwd, "tmux.log"), { failSend: true }));
+      await chmod(join(fakeBinDir, "tmux"), 0o755);
+      const stateDir = join(cwd, ".omx", "state");
+      const workerDir = join(stateDir, "team", "worker-stop-helper-fail", "workers", "worker-1");
+      await writeJson(join(stateDir, "team", "worker-stop-helper-fail", "config.json"), {
+        name: "worker-stop-helper-fail",
+        tmux_session: "omx-team-worker-stop",
+        leader_pane_id: "%42",
+        workers: [{ name: "worker-1", index: 1, pane_id: "%10" }],
+      });
+      await writeJson(join(workerDir, "identity.json"), {
+        name: "worker-1",
+        assigned_tasks: ["1"],
+        team_state_root: stateDir,
+      });
+      await writeJson(join(workerDir, "status.json"), {
+        state: "done",
+        current_task_id: "1",
+        updated_at: new Date().toISOString(),
+      });
+      await writeJson(join(stateDir, "team", "worker-stop-helper-fail", "tasks", "task-1.json"), {
+        id: "1",
+        status: "completed",
+        owner: "worker-1",
+      });
+
+      process.env.OMX_TEAM_WORKER = "worker-stop-helper-fail/worker-1";
+      process.env.OMX_TEAM_STATE_ROOT = stateDir;
+      process.env.PATH = `${fakeBinDir}:${prevPath || ""}`;
+
+      const result = await dispatchCodexNativeHook(
+        { hook_event_name: "Stop", cwd, session_id: "sess-stop-team-worker-helper-fail" },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson, null);
+      const nudgeState = JSON.parse(await readFile(join(workerDir, "worker-stop-nudge.json"), "utf-8"));
+      assert.equal(nudgeState.delivery, "deferred");
+    } finally {
+      if (typeof prevTeamWorker === "string") process.env.OMX_TEAM_WORKER = prevTeamWorker;
+      else delete process.env.OMX_TEAM_WORKER;
+      if (typeof prevTeamStateRoot === "string") process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      if (typeof prevPath === "string") process.env.PATH = prevPath;
+      else delete process.env.PATH;
       await rm(cwd, { recursive: true, force: true });
     }
   });
