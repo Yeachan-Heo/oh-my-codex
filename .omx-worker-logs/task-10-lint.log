@@ -1,0 +1,5 @@
+
+> oh-my-codex@0.15.2 lint
+> biome lint src
+
+Checked 589 files in 387ms. No fixes applied.
