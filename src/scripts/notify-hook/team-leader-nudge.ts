@@ -714,7 +714,6 @@ export async function maybeNudgeTeamLeader({
     const previousProgressAtMs = previousProgressAtIso ? Date.parse(previousProgressAtIso) : NaN;
     const previousTurnCounts = readPreviousWorkerTurnCounts(previousSignature);
     const workerTurnProgress = hasWorkerTurnProgress(progressSnapshot.workerSnapshot, previousTurnCounts);
-    const hasTrackableTurnSignals = hasTrackableActiveWorkerTurns(progressSnapshot.workerSnapshot, previousTurnCounts);
     const progressChanged = !previousSignature || previousSignature !== progressSnapshot.signature || workerTurnProgress;
     const extraProgressEvidenceMs = await readLatestTeamProgressEvidenceMs(cwd, teamName).catch(() => Number.NaN);
     const effectiveProgressAtMs = progressChanged || !Number.isFinite(previousProgressAtMs)
@@ -824,7 +823,7 @@ export async function maybeNudgeTeamLeader({
         + (progressSnapshot.taskCounts.blocked || 0)
         + (progressSnapshot.taskCounts.in_progress || 0),
       unread_leader_message_count: unreadLeaderMessageCount,
-      stalled_for_ms: teamProgressStalled ? stalledForMs : null,
+      stalled_for_ms: null,
       source: source === 'notify_fallback_watcher' ? 'notify_hook' : source,
     };
     await writeTeamLeaderAttention(teamName, {
@@ -841,7 +840,7 @@ export async function maybeNudgeTeamLeader({
       leader_session_stopped_at: null,
       unread_leader_message_count: unreadLeaderMessageCount,
       work_remaining: progressSnapshot.workRemaining,
-      stalled_for_ms: teamProgressStalled ? stalledForMs : null,
+      stalled_for_ms: null,
     }, cwd).catch(() => {});
 
     if (!nudgeReason) continue;
@@ -987,7 +986,7 @@ export async function maybeNudgeTeamLeader({
           pane_count: paneStatus.paneCount,
           leader_stale: leaderStale,
           message_count: messages.length,
-          stalled_for_ms: teamProgressStalled ? stalledForMs : undefined,
+          stalled_for_ms: undefined,
           missing_signal_workers: progressSnapshot.missingSignalWorkers,
           visible_injection_suppressed: true,
           suppression_reason: LEADER_PANE_SAME_CLASSIFIED_STATE_SUPPRESSED_REASON,
@@ -1045,7 +1044,7 @@ export async function maybeNudgeTeamLeader({
           pane_count: paneStatus.paneCount,
           leader_stale: leaderStale,
           message_count: messages.length,
-          stalled_for_ms: teamProgressStalled ? stalledForMs : undefined,
+          stalled_for_ms: undefined,
           missing_signal_workers: progressSnapshot.missingSignalWorkers,
         });
       } catch { /* ignore */ }
