@@ -4399,6 +4399,12 @@ esac
         leader_pane_id: "%42",
         workers: [{ name: "worker-1", index: 1, pane_id: "%10" }],
       });
+      await writeJson(join(cwd, ".omx", "state", "team", "worker-stop-team-terminal", "manifest.v2.json"), {
+        name: "worker-stop-team-terminal",
+        tmux_session: "omx-team-worker-stop",
+        leader_pane_id: "%42",
+        workers: [{ name: "worker-1", index: 1, pane_id: "%10" }],
+      });
       await writeJson(join(workerDir, "identity.json"), {
         name: "worker-1",
         index: 1,
@@ -4483,6 +4489,12 @@ esac
       const stateDir = join(cwd, ".omx", "state");
       const workerDir = join(stateDir, "team", "worker-stop-helper-fail", "workers", "worker-1");
       await writeJson(join(stateDir, "team", "worker-stop-helper-fail", "config.json"), {
+        name: "worker-stop-helper-fail",
+        tmux_session: "omx-team-worker-stop",
+        leader_pane_id: "%42",
+        workers: [{ name: "worker-1", index: 1, pane_id: "%10" }],
+      });
+      await writeJson(join(stateDir, "team", "worker-stop-helper-fail", "manifest.v2.json"), {
         name: "worker-stop-helper-fail",
         tmux_session: "omx-team-worker-stop",
         leader_pane_id: "%42",
