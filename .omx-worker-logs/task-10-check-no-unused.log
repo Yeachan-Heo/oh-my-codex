@@ -1,0 +1,4 @@
+
+> oh-my-codex@0.15.2 check:no-unused
+> tsc -p tsconfig.no-unused.json
+
