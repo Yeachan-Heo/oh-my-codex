@@ -521,7 +521,7 @@ exit 1
     }
   });
 
-  it('rolls back and falls back directly when attaching the detached tmux session fails', async () => {
+  it('preserves the detached tmux session when attach fails but the session still exists', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-tmux-attach-fail-'));
     try {
       const home = join(wd, 'home');
@@ -572,6 +572,9 @@ case "$1" in
     printf 'error connecting to /tmp/tmux-1000/default (Operation not permitted)\n' >&2
     exit 1
     ;;
+  has-session)
+    exit 0
+    ;;
   set-option|set-hook|kill-session|run-shell|resize-pane|select-pane)
     exit 0
     ;;
@@ -599,8 +602,78 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.doesNotMatch(result.stdout, /fake-codex:/);
+      assert.match(tmuxLog, /tmux:attach-session -t /);
+      assert.match(tmuxLog, /tmux:has-session -t /);
+      assert.doesNotMatch(tmuxLog, /tmux:kill-session -t /);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rolls back and falls back directly when attach fails and the detached session is gone', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-tmux-attach-gone-'));
+    try {
+      const { env, tmuxLogPath } = await createLaunchFixture(
+        wd,
+        (tmuxLogPath) => `#!/bin/sh
+printf 'tmux:%s\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V|list-sessions)
+    exit 0
+    ;;
+  new-session)
+    printf 'leader-pane\n'
+    exit 0
+    ;;
+  split-window)
+    printf 'hud-pane\n'
+    exit 0
+    ;;
+  display-message)
+    if [ "$2" = '-p' ] && [ "$3" = '#{socket_path}' ]; then
+      printf '/tmp/tmux-test.sock\n'
+    else
+      printf '0\n'
+    fi
+    exit 0
+    ;;
+  show-options)
+    printf 'off\n'
+    exit 0
+    ;;
+  attach-session)
+    printf 'lost detached session\n' >&2
+    exit 1
+    ;;
+  has-session)
+    exit 1
+    ;;
+  set-option|set-hook|kill-session|run-shell|resize-pane|select-pane)
+    exit 0
+    ;;
+esac
+exit 0
+`,
+      );
+
+      const result = runOmx(
+        wd,
+        ['--madmax', '--tmux'],
+        {
+          ...env,
+          TMUX: '',
+          TMUX_PANE: '',
+        },
+      );
+
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
       assert.match(result.stdout, /fake-codex:.*--dangerously-bypass-approvals-and-sandbox/);
       assert.match(tmuxLog, /tmux:attach-session -t /);
+      assert.match(tmuxLog, /tmux:has-session -t /);
       assert.match(tmuxLog, /tmux:kill-session -t /);
     } finally {
       await rm(wd, { recursive: true, force: true });

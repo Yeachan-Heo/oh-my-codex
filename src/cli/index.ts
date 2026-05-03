@@ -804,6 +804,26 @@ function assertDetachedAttachDidNotNoop(
   );
 }
 
+function detachedTmuxSessionExists(sessionName: string): boolean {
+  try {
+    execTmuxFileSync(["has-session", "-t", sessionName], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function warnDetachedAttachPreserved(sessionName: string, error: unknown): void {
+  const detail = tmuxFailureMessage(error);
+  console.warn(
+    [
+      `[omx] tmux attach-session failed, but detached session "${sessionName}" is still running.`,
+      `Reattach with: tmux attach-session -t ${sessionName}`,
+      detail ? `Detail: ${detail}` : "",
+    ].filter(Boolean).join("\n"),
+  );
+}
+
 function resolveTmuxAwareLaunchPolicy(
   explicitLaunchPolicy: CodexLaunchPolicy | undefined,
   nativeWindows: boolean,
@@ -2150,10 +2170,11 @@ function buildDetachedSessionLeaderCommand(
   const wrapped = [
     buildTmuxExtendedKeysAcquireShellSnippet(cwd),
     'exec 3<&0;',
+    "trap '' HUP;",
     'omx_codex_pid="";',
     "omx_detached_session_cleanup() {",
     "status=$?;",
-    "trap - 0 INT TERM HUP;",
+    "trap - 0 INT TERM;",
     'if [ -n "$omx_codex_pid" ] && kill -0 "$omx_codex_pid" 2>/dev/null; then',
     'kill -TERM "$omx_codex_pid" 2>/dev/null || true;',
     'wait "$omx_codex_pid" 2>/dev/null || true;',
@@ -2166,7 +2187,7 @@ function buildDetachedSessionLeaderCommand(
     "fi;",
     "exit $status;",
     "};",
-    "trap omx_detached_session_cleanup 0 INT TERM HUP;",
+    "trap omx_detached_session_cleanup 0 INT TERM;",
     `${codexCmd} <&3 &`,
     "omx_codex_pid=$!;",
     'wait "$omx_codex_pid";',
@@ -3192,21 +3213,28 @@ function runCodex(
             }
             const stdio =
               finalizeStep.name === "attach-session" ? "inherit" : "ignore";
+            let attachStartedAtMs = 0;
             try {
-              const startedAtMs = Date.now();
+              attachStartedAtMs = Date.now();
               execTmuxFileSync(finalizeStep.args, { stdio });
-              if (finalizeStep.name === "attach-session") {
-                assertDetachedAttachDidNotNoop(
-                  sessionName,
-                  Date.now() - startedAtMs,
-                  process.env,
-                );
-              }
             } catch (err) {
-              logCliOperationFailure(err);
-              if (finalizeStep.name === "attach-session")
+              if (finalizeStep.name === "attach-session") {
+                if (detachedTmuxSessionExists(sessionName)) {
+                  warnDetachedAttachPreserved(sessionName, err);
+                  return { postLaunchHandledExternally: !nativeWindows };
+                }
+                logCliOperationFailure(err);
                 throw new Error("failed to attach detached tmux session");
+              }
+              logCliOperationFailure(err);
               continue;
+            }
+            if (finalizeStep.name === "attach-session") {
+              assertDetachedAttachDidNotNoop(
+                sessionName,
+                Date.now() - attachStartedAtMs,
+                process.env,
+              );
             }
             if (
               finalizeStep.name === "register-resize-hook" &&

@@ -120,7 +120,9 @@ omx --madmax --high
 
 On macOS/Linux interactive terminals with `tmux` available, this starts the
 leader in OMX-managed detached tmux by default so the HUD/runtime panes can be
-created and recovered.
+created and recovered. If an SSH client or tmux attach command disconnects after
+startup while the managed session still exists, OMX leaves that detached session
+running; use `tmux ls` and `tmux attach-session -t <session>` to reattach.
 
 If you want a one-off launch with no OMX tmux/HUD management, use `--direct`:
 

@@ -1965,7 +1965,9 @@ describe("detached tmux new-session sequencing", () => {
     assert.doesNotMatch(leaderCmd!, /^\/bin\/sh -lc '/);
     assert.match(leaderCmd!, /acquireTmuxExtendedKeysLease/);
     assert.match(leaderCmd!, /omx_detached_session_cleanup\(\)/);
-    assert.match(leaderCmd!, /trap omx_detached_session_cleanup 0 INT TERM HUP;/);
+    assert.match(leaderCmd!, /trap .* HUP;/);
+    assert.match(leaderCmd!, /trap omx_detached_session_cleanup 0 INT TERM;/);
+    assert.doesNotMatch(leaderCmd!, /trap omx_detached_session_cleanup 0 INT TERM HUP;/);
     assert.match(leaderCmd!, /exec 3<&0;/);
     assert.match(leaderCmd!, /omx_codex_pid=\$!;/);
     assert.match(leaderCmd!, /<\&3 &/);
@@ -2233,7 +2235,7 @@ exit 0
     }
   });
 
-  it("detached leader command terminates codex child on external SIGHUP", async () => {
+  it("detached leader command preserves codex child on external SIGHUP", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-detached-leader-hup-"));
     const fakeBin = join(cwd, "bin");
     const pidFile = join(cwd, "codex.pid");
@@ -2299,12 +2301,18 @@ exit 0
         assert.ok(codexPid > 0, "codex pid must be positive");
         assert.doesNotThrow(() => process.kill(codexPid, 0), "codex must be alive before signal");
 
-        const leaderExit = once(child, "exit");
         process.kill(child.pid!, "SIGHUP");
+
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        assert.doesNotThrow(() => process.kill(child.pid!, 0), "leader must ignore external SIGHUP");
+        assert.doesNotThrow(() => process.kill(codexPid, 0), "codex child must survive leader SIGHUP");
+
+        const leaderExit = once(child, "exit");
+        process.kill(child.pid!, "SIGTERM");
         await Promise.race([
           leaderExit,
           new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("leader did not exit after SIGHUP")), 3000),
+            setTimeout(() => reject(new Error("leader did not exit after SIGTERM")), 3000),
           ),
         ]);
         assert.throws(
@@ -2314,7 +2322,7 @@ exit 0
             err !== null &&
             "code" in err &&
             (err as NodeJS.ErrnoException).code === "ESRCH",
-          "codex child must be terminated after leader SIGHUP",
+          "codex child must still be cleaned up after leader SIGTERM",
         );
       } finally {
         try {
