@@ -6,6 +6,7 @@ use std::fs::{
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -17,6 +18,8 @@ const INTERNAL_SHELL_WRAPPER_FLAG: &str = "--internal-allowlist-shell";
 const TEMP_ALLOWLIST_DIR_PREFIX: &str = "omx-explore-allowlist-";
 const DEFAULT_CODEX_TIMEOUT_MS: u64 = 180_000;
 const PROCESS_TERMINATION_GRACE_MS: u64 = 500;
+const PIPE_READER_READY_GRACE_MS: u64 = 25;
+const PIPE_READER_JOIN_GRACE_MS: u64 = 500;
 const SHELL_STARTUP_ENV_VARS: &[&str] = &["BASH_ENV", "ENV", "PROMPT_COMMAND"];
 const WINDOWS_UNSUPPORTED_ALLOWLIST_MESSAGE: &str =
     "omx explore built-in harness is not ready on Windows because its allowlist runtime relies on POSIX sh/bash wrappers. Set OMX_EXPLORE_BIN to a compatible custom harness, prefer `omx sparkshell` for shell-native read-only lookups, or run `omx doctor` for readiness details.";
@@ -356,16 +359,19 @@ fn run_command_with_timeout(
     configure_process_group(&mut command);
     let mut child = command.spawn()?;
 
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let stdout_reader = thread::spawn(move || read_pipe_to_end(stdout));
-    let stderr_reader = thread::spawn(move || read_pipe_to_end(stderr));
+    let stdout_reader = spawn_pipe_reader(child.stdout.take());
+    let stderr_reader = spawn_pipe_reader(child.stderr.take());
 
     let deadline = Instant::now() + timeout;
     loop {
         if let Some(status) = child.try_wait()? {
-            let stdout = join_pipe_reader(stdout_reader)?;
-            let stderr = join_pipe_reader(stderr_reader)?;
+            let (stdout, stderr) = collect_completed_output(
+                &mut child,
+                &stdout_reader,
+                &stderr_reader,
+                Duration::from_millis(PIPE_READER_READY_GRACE_MS),
+                Duration::from_millis(PIPE_READER_JOIN_GRACE_MS),
+            )?;
             return Ok(TimedCommandOutput::Completed(Output {
                 status,
                 stdout,
@@ -376,8 +382,9 @@ fn run_command_with_timeout(
         if Instant::now() >= deadline {
             terminate_child_process_tree(&mut child);
             let _ = child.wait();
-            let _ = join_pipe_reader(stdout_reader);
-            let stderr = join_pipe_reader(stderr_reader).unwrap_or_default();
+            let reader_timeout = Duration::from_millis(PIPE_READER_JOIN_GRACE_MS);
+            let _ = receive_pipe_reader(&stdout_reader, reader_timeout);
+            let stderr = receive_pipe_reader(&stderr_reader, reader_timeout).unwrap_or_default();
             return Ok(TimedCommandOutput::TimedOut {
                 stderr: String::from_utf8_lossy(&stderr).into_owned(),
             });
@@ -385,6 +392,14 @@ fn run_command_with_timeout(
 
         thread::sleep(Duration::from_millis(25));
     }
+}
+
+fn spawn_pipe_reader<R: Read + Send + 'static>(pipe: Option<R>) -> Receiver<io::Result<Vec<u8>>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = sender.send(read_pipe_to_end(pipe));
+    });
+    receiver
 }
 
 fn read_pipe_to_end<R: Read + Send + 'static>(pipe: Option<R>) -> io::Result<Vec<u8>> {
@@ -395,10 +410,58 @@ fn read_pipe_to_end<R: Read + Send + 'static>(pipe: Option<R>) -> io::Result<Vec
     Ok(bytes)
 }
 
-fn join_pipe_reader(handle: thread::JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
-    handle
-        .join()
-        .unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::Other, "pipe reader panicked")))
+fn collect_completed_output(
+    child: &mut Child,
+    stdout_reader: &Receiver<io::Result<Vec<u8>>>,
+    stderr_reader: &Receiver<io::Result<Vec<u8>>>,
+    ready_timeout: Duration,
+    cleanup_timeout: Duration,
+) -> io::Result<(Vec<u8>, Vec<u8>)> {
+    let stdout = receive_pipe_reader_if_ready(stdout_reader, ready_timeout)?;
+    let stderr = receive_pipe_reader_if_ready(stderr_reader, ready_timeout)?;
+
+    if stdout.is_none() || stderr.is_none() {
+        terminate_child_process_tree(child);
+    }
+
+    let stdout = match stdout {
+        Some(stdout) => stdout,
+        None => receive_pipe_reader(stdout_reader, cleanup_timeout)?,
+    };
+    let stderr = match stderr {
+        Some(stderr) => stderr,
+        None => receive_pipe_reader(stderr_reader, cleanup_timeout)?,
+    };
+
+    Ok((stdout, stderr))
+}
+
+fn receive_pipe_reader_if_ready(
+    receiver: &Receiver<io::Result<Vec<u8>>>,
+    timeout: Duration,
+) -> io::Result<Option<Vec<u8>>> {
+    match receive_pipe_reader(receiver, timeout) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(err) if err.kind() == io::ErrorKind::TimedOut => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+fn receive_pipe_reader(
+    receiver: &Receiver<io::Result<Vec<u8>>>,
+    timeout: Duration,
+) -> io::Result<Vec<u8>> {
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "timed out waiting for subprocess output pipe to close",
+        )),
+        Err(RecvTimeoutError::Disconnected) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            "subprocess output reader disconnected",
+        )),
+    }
 }
 
 #[cfg(unix)]
@@ -417,12 +480,10 @@ fn terminate_child_process_tree(child: &mut Child) {
         let _ = libc::kill(-pgid, libc::SIGTERM);
     }
     thread::sleep(Duration::from_millis(PROCESS_TERMINATION_GRACE_MS));
-    if child.try_wait().ok().flatten().is_none() {
-        unsafe {
-            let _ = libc::kill(-pgid, libc::SIGKILL);
-        }
-        let _ = child.kill();
+    unsafe {
+        let _ = libc::kill(-pgid, libc::SIGKILL);
     }
+    let _ = child.kill();
 }
 
 #[cfg(not(unix))]
@@ -2334,6 +2395,38 @@ sleep 30
             panic!("expected timeout");
         };
         assert_eq!(read_to_string(&term_file).unwrap_or_default(), "term");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_with_timeout_closes_inherited_stdio_after_parent_exit() {
+        let root = temp_allowlist_dir().expect("temp root");
+        let script = root.path.join("inherited-stdio.sh");
+        write_executable(
+            &script,
+            r#"#!/bin/sh
+(sleep 30) &
+printf 'parent stdout\n'
+printf 'parent stderr\n' >&2
+exit 0
+"#,
+        )
+        .expect("write script");
+
+        let started = Instant::now();
+        let result = run_command_with_timeout(Command::new(&script), Duration::from_secs(10))
+            .expect("run with inherited stdio descendant");
+
+        let TimedCommandOutput::Completed(output) = result else {
+            panic!("expected parent completion");
+        };
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "reader cleanup should not wait for the descendant sleep"
+        );
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "parent stdout\n");
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "parent stderr\n");
     }
 
     fn fallback_test_event() -> FallbackEvent {
