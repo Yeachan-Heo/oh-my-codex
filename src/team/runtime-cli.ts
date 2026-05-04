@@ -16,6 +16,7 @@ import type { TeamRuntime, TeamShutdownSummary, StaleTeamSummary } from './runti
 import type { TeamDecompositionMetadata } from './repo-aware-decomposition.js';
 import { teamReadConfig as readTeamConfig } from './team-ops.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
+import { resolveCodexHomeForLaunch } from '../cli/codex-home.js';
 
 async function promptStaleCleanup(summary: StaleTeamSummary): Promise<boolean> {
   process.stderr.write(
@@ -393,6 +394,7 @@ async function main(): Promise<void> {
         tasks,
         cwd,
         {
+          codexHomeOverride: resolveCodexHomeForLaunch(cwd, process.env),
           confirmStaleCleanup: promptStaleCleanup,
           ...(decompositionMetadata ? { decompositionMetadata } : {}),
         },
