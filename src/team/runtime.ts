@@ -2049,13 +2049,20 @@ function spawnPromptWorker(
     initialPrompt,
     workerRole,
   );
+  const childEnv = { ...process.env, ...processSpec.env };
+  // Prompt workers are external CLI processes, not in-process runtime code.
+  // Keeping c8's NODE_V8_COVERAGE in their environment makes coverage runs
+  // track long-lived fake worker descendants and can keep node --test alive
+  // after the runtime test itself has completed.
+  delete childEnv.NODE_V8_COVERAGE;
+
   const child = spawn(
     processSpec.command,
     processSpec.args,
     {
       cwd: workerCwd,
       detached: process.platform !== 'win32',
-      env: { ...process.env, ...processSpec.env },
+      env: childEnv,
       stdio: ['pipe', 'ignore', 'ignore'],
     },
   );

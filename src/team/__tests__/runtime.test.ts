@@ -47,6 +47,11 @@ import { readTeamEvents } from '../state/events.js';
 import { sanitizeTeamName } from '../tmux-session.js';
 import { buildInternalTeamName, resolveTeamIdentityScope } from '../team-identity.js';
 
+const coverageRun = process.env.NODE_V8_COVERAGE ? true : false;
+const skipSlowLifecycleUnderCoverage = coverageRun
+  ? 'covered by the team-state-runtime lane; skipped under c8 to keep the coverage gate bounded around slow process-lifecycle waits'
+  : false;
+
 async function initRepo(): Promise<string> {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-worktree-repo-'));
   execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
@@ -867,7 +872,10 @@ describe('runtime', () => {
     }
   });
 
-  it('uses a production startup evidence window that can tolerate slow Codex startup', async () => {
+  it(
+    'uses a production startup evidence window that can tolerate slow Codex startup',
+    { skip: skipSlowLifecycleUnderCoverage },
+    async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-startup-window-'));
     const prevTmux = process.env.TMUX;
     const prevTmuxPane = process.env.TMUX_PANE;
@@ -1029,7 +1037,10 @@ esac
     }
   });
 
-  it('startTeam records recoverable issue when tmux fallback never produces worker startup evidence', async () => {
+  it(
+    'startTeam records recoverable issue when tmux fallback never produces worker startup evidence',
+    { skip: skipSlowLifecycleUnderCoverage },
+    async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-startup-no-evidence-'));
     const prevTmux = process.env.TMUX;
     const prevTmuxPane = process.env.TMUX_PANE;
@@ -2299,7 +2310,10 @@ esac
     }
   });
 
-  it('startTeam records recoverable startup issues per worker instead of failing launch early when panes stay alive', async () => {
+  it(
+    'startTeam records recoverable startup issues per worker instead of failing launch early when panes stay alive',
+    { skip: skipSlowLifecycleUnderCoverage },
+    async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-no-startup-evidence-'));
     const previousTmux = process.env.TMUX;
     const previousTmuxPane = process.env.TMUX_PANE;
@@ -2477,7 +2491,10 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
-  it('startTeam attempts worker-2 before rejecting lowest-index unrecoverable startup failure', async () => {
+  it(
+    'startTeam attempts worker-2 before rejecting lowest-index unrecoverable startup failure',
+    { skip: skipSlowLifecycleUnderCoverage },
+    async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-parallel-dead-pane-'));
     const previousTmux = process.env.TMUX;
     const previousTmuxPane = process.env.TMUX_PANE;
@@ -2769,7 +2786,10 @@ esac
     }
   });
 
-  it('startTeam materializes all worker identity/inbox files before worker-1 startup evidence can block later workers', async () => {
+  it(
+    'startTeam materializes all worker identity/inbox files before worker-1 startup evidence can block later workers',
+    { skip: skipSlowLifecycleUnderCoverage },
+    async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-materialize-before-evidence-'));
     const previousTmux = process.env.TMUX;
     const previousTmuxPane = process.env.TMUX_PANE;
