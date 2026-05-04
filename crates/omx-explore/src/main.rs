@@ -1279,6 +1279,13 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn process_tree_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn parse_args_requires_all_fields() {
         let result = parse_args(vec![OsString::from("--cwd")].into_iter());
@@ -2374,6 +2381,8 @@ printf 'fake codex started
     #[cfg(unix)]
     #[test]
     fn run_command_with_timeout_kills_process_group_children() {
+        let _env_guard = env_lock();
+        let _process_guard = process_tree_lock();
         let root = temp_allowlist_dir().expect("temp root");
         let term_file = root.path.join("grandchild.term");
         let script = root.path.join("spawn-grandchild.sh");
@@ -2400,6 +2409,8 @@ sleep 30
     #[cfg(unix)]
     #[test]
     fn run_command_with_timeout_closes_inherited_stdio_after_parent_exit() {
+        let _env_guard = env_lock();
+        let _process_guard = process_tree_lock();
         let root = temp_allowlist_dir().expect("temp root");
         let script = root.path.join("inherited-stdio.sh");
         write_executable(
