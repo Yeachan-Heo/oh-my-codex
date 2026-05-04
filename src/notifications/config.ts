@@ -709,6 +709,7 @@ function parseIntegerInput(value: unknown): number | undefined {
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (!trimmed) return undefined;
+    if (!/^[+-]?\d+$/.test(trimmed)) return undefined;
     const parsed = Number.parseInt(trimmed, 10);
     if (Number.isFinite(parsed)) return parsed;
   }

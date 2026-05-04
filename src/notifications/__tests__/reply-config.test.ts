@@ -57,6 +57,21 @@ describe('getReplyConfig validation', () => {
     assert.equal(config.rateLimitPerMinute, 1);
   });
 
+  it('ignores env integer values with trailing units', async () => {
+    process.env.OMX_DISCORD_NOTIFIER_BOT_TOKEN = 'bot-token';
+    process.env.OMX_DISCORD_NOTIFIER_CHANNEL = 'channel-id';
+    process.env.OMX_REPLY_ENABLED = 'true';
+    process.env.OMX_REPLY_DISCORD_USER_IDS = '12345678901234567';
+    process.env.OMX_REPLY_POLL_INTERVAL_MS = '1000ms';
+    process.env.OMX_REPLY_RATE_LIMIT = '5/min';
+
+    const { getReplyConfig } = await importConfigFresh();
+    const config = getReplyConfig();
+    assert.ok(config);
+    assert.equal(config.pollIntervalMs, 3000);
+    assert.equal(config.rateLimitPerMinute, 10);
+  });
+
   it('normalizes invalid config file reply values', async () => {
     const configFile = join(codexHomeDir, '.omx-config.json');
     const raw = {
