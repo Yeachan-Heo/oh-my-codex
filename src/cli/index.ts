@@ -17,6 +17,7 @@ import { hudCommand } from "../hud/index.js";
 import { sidecarCommand } from "../sidecar/index.js";
 import { teamCommand } from "./team.js";
 import { ralphCommand } from "./ralph.js";
+import { ultragoalCommand } from "./ultragoal.js";
 import { askCommand } from "./ask.js";
 import { questionCommand } from "./question.js";
 import { stateCommand } from "./state.js";
@@ -185,6 +186,7 @@ Usage:
                 Alias for agents-init (lightweight AGENTS bootstrap only)
   omx team      Spawn parallel worker panes in tmux and bootstrap inbox/task state
   omx ralph     Launch Codex with ralph persistence mode active
+  omx ultragoal Create, resume, and checkpoint durable multi-goal plans over Codex goal mode
   omx autoresearch [DEPRECATED] Use $autoresearch; direct CLI launch removed
   omx version   Show version information
   omx tmux-hook Manage tmux prompt injection workaround (init|status|validate|test)
@@ -353,6 +355,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "wiki",
   "mcp-serve",
   "ralph",
+  "ultragoal",
   "resume",
   "session",
   "sparkshell",
@@ -1088,6 +1091,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "ralph":
         await ralphCommand(args.slice(1));
+        break;
+      case "ultragoal":
+        await ultragoalCommand(args.slice(1));
         break;
       case "version":
         version();

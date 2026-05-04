@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-04-24T07:34:27.399Z",
+  "generatedAt": "2026-05-04T09:59:26.287Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 42,
+    "skillCount": 43,
     "promptCount": 30,
-    "activeSkillCount": 27,
+    "activeSkillCount": 28,
     "activeAgentCount": 18
   },
   "coreSkills": [
@@ -67,6 +67,13 @@
     },
     {
       "name": "pipeline",
+      "category": "execution",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "ultragoal",
       "category": "execution",
       "status": "active",
       "core": false,

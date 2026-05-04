@@ -60,6 +60,13 @@
       "internalRequired": false
     },
     {
+      "name": "ultragoal",
+      "category": "execution",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
       "name": "swarm",
       "category": "execution",
       "status": "alias",
