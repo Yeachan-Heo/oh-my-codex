@@ -474,13 +474,6 @@ function findCommandStart(tokens: ShellToken[], tokenIndex: number): number {
   return index;
 }
 
-function findCommandEnd(tokens: ShellToken[], tokenIndex: number): number {
-  let index = tokenIndex + 1;
-  while (index < tokens.length && !tokenStartsCommand(tokens, index)) {
-    index += 1;
-  }
-  return index;
-}
 
 interface InlineEnvironmentRead {
   inlineEnvironment: NodeJS.ProcessEnv;
