@@ -6,6 +6,7 @@ import {
   readPlanningArtifacts,
   type ApprovedExecutionLaunchHint,
 } from '../planning/artifacts.js';
+import { TEAM_NAME_SAFE_PATTERN } from './contracts.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
 import { sameFilePath } from '../utils/paths.js';
 
@@ -65,11 +66,18 @@ export function buildApprovedTeamExecutionBinding(
   };
 }
 
+function assertSafeTeamName(teamName: string): void {
+  if (!TEAM_NAME_SAFE_PATTERN.test(teamName)) {
+    throw new Error(`invalid_team_name:${teamName}`);
+  }
+}
+
 function approvedTeamExecutionBindingPath(
   teamName: string,
   cwd: string,
   teamStateRoot?: string | null,
 ): string {
+  assertSafeTeamName(teamName);
   const stateRoot = resolve(teamStateRoot ?? resolveCanonicalTeamStateRoot(cwd));
   return join(stateRoot, 'team', teamName, 'approved-execution.json');
 }

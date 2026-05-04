@@ -106,4 +106,27 @@ describe('approved execution binding', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it('rejects unsafe team names before resolving approved binding paths', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-approved-execution-unsafe-team-'));
+    try {
+      await assert.rejects(
+        () => writePersistedApprovedTeamExecutionBinding('../escape', cwd, {
+          prd_path: join(cwd, '.omx', 'plans', 'prd-alpha.md'),
+          task: 'Execute approved alpha plan',
+        }),
+        /invalid_team_name:\.\.\/escape/,
+      );
+      assert.equal(
+        existsSync(join(cwd, '.omx', 'state', 'escape', 'approved-execution.json')),
+        false,
+      );
+      assert.throws(
+        () => readPersistedApprovedTeamExecutionBindingStateSync('../escape', cwd),
+        /invalid_team_name:\.\.\/escape/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

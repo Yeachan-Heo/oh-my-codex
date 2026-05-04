@@ -3726,10 +3726,11 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
   const config = await readTeamConfig(sanitized, cwd);
   if (!config) return null;
   config.lifecycle_profile = 'default';
+  const leaderCwd = config.leader_cwd ?? cwd;
   const approvedExecutionState = await resolvePersistedApprovedTeamExecutionContinuityState(
     sanitized,
-    cwd,
-    config.team_state_root ?? resolveCanonicalTeamStateRoot(cwd),
+    leaderCwd,
+    config.team_state_root ?? resolveCanonicalTeamStateRoot(leaderCwd),
   );
   if (approvedExecutionState.status === 'malformed') {
     throw new Error(`approved_execution_binding_malformed:${sanitized}`);

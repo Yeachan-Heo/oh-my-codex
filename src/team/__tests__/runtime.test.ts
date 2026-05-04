@@ -7,6 +7,7 @@ import { tmpdir } from 'os';
 import { existsSync } from 'fs';
 import { HUD_TMUX_TEAM_HEIGHT_LINES } from '../../hud/constants.js';
 import {
+  DEFAULT_MAX_WORKERS,
   initTeamState,
   createTask,
   writeWorkerIdentity,
@@ -5982,6 +5983,58 @@ esac
       );
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('resumeTeam resolves approved binding continuity against the persisted leader cwd', async () => {
+    const teamName = 'team-approved-shared-root';
+    const leaderCwd = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-leader-'));
+    const resumeCwd = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-resume-alt-'));
+    const sharedStateRoot = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-state-'));
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    process.env.OMX_TEAM_STATE_ROOT = sharedStateRoot;
+
+    try {
+      await initTeamState(
+        teamName,
+        'approved resume shared-root test',
+        'executor',
+        1,
+        leaderCwd,
+        DEFAULT_MAX_WORKERS,
+        process.env,
+        {
+          leader_cwd: leaderCwd,
+          team_state_root: sharedStateRoot,
+        },
+      );
+      const plansDir = join(leaderCwd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      const prdPath = join(plansDir, 'prd-issue-2110.md');
+      await writeFile(
+        prdPath,
+        '# Approved plan\n\nLaunch via omx team 1:executor "Execute approved issue 2110 plan"\n',
+      );
+      await writeFile(join(plansDir, 'test-spec-issue-2110.md'), '# Test spec\n');
+      await writePersistedApprovedTeamExecutionBinding(
+        teamName,
+        leaderCwd,
+        {
+          prd_path: prdPath,
+          task: 'Execute approved issue 2110 plan',
+          command: 'omx team 1:executor "Execute approved issue 2110 plan"',
+        },
+        sharedStateRoot,
+      );
+
+      const resumed = await resumeTeam(teamName, resumeCwd);
+      assert.equal(resumed, null);
+    } finally {
+      if (typeof previousTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(leaderCwd, { recursive: true, force: true });
+      await rm(resumeCwd, { recursive: true, force: true });
+      await rm(sharedStateRoot, { recursive: true, force: true });
     }
   });
 
