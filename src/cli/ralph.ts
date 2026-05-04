@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { startMode, updateModeState } from '../modes/base.js';
 import { readApprovedExecutionLaunchHint, type ApprovedExecutionLaunchHint } from '../planning/artifacts.js';
 import { ensureCanonicalRalphArtifacts } from '../ralph/persistence.js';
+import { resolveCodexHomeForLaunch } from './codex-home.js';
 import {
   buildFollowupStaffingPlan,
   resolveAvailableAgentTypes,
@@ -296,7 +297,10 @@ export async function ralphCommand(args: string[]): Promise<void> {
   const task = explicitTask === 'ralph-cli-launch' ? approvedHint?.task ?? explicitTask : explicitTask;
   const noDeslop = normalizedArgs.some((arg) => arg.toLowerCase() === '--no-deslop');
   const availableAgentTypes = await resolveAvailableAgentTypes(cwd);
-  const staffingPlan = buildFollowupStaffingPlan('ralph', task, availableAgentTypes);
+  const codexHomeOverride = resolveCodexHomeForLaunch(cwd, process.env);
+  const staffingPlan = buildFollowupStaffingPlan('ralph', task, availableAgentTypes, {
+    codexHomeOverride,
+  });
   await startMode('ralph', task, 50);
   const sessionFiles = await writeRalphSessionFiles(cwd, task, { noDeslop, approvedHint });
   await updateModeState('ralph', {

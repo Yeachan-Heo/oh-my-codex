@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -163,6 +164,22 @@ describe('team model contract', () => {
     assert.equal(resolveAgentReasoningEffort('executor'), 'medium');
     assert.equal(resolveAgentReasoningEffort('architect'), 'high');
     assert.equal(resolveAgentReasoningEffort('does-not-exist'), undefined);
+  });
+
+  it('maps worker roles through configured per-agent reasoning overrides', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-model-contract-reasoning-'));
+    try {
+      await writeFile(join(codexHome, '.omx-config.json'), JSON.stringify({
+        agentReasoning: {
+          architect: 'xhigh',
+        },
+      }));
+
+      assert.equal(resolveAgentReasoningEffort('architect', codexHome), 'xhigh');
+      assert.equal(resolveAgentReasoningEffort('critic', codexHome), 'high');
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
   });
 
   it('maps worker roles to configured default model lanes', () => {

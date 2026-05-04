@@ -1,6 +1,7 @@
 import { getAgent } from '../agents/definitions.js';
 import {
   DEFAULT_SPARK_MODEL,
+  getAgentReasoningOverride,
   getMainDefaultModel,
   getSparkDefaultModel,
   getStandardDefaultModel,
@@ -204,9 +205,13 @@ export function resolveTeamWorkerLaunchArgs(options: ResolveTeamWorkerLaunchArgs
   return normalizeTeamWorkerLaunchArgs(allArgs, selectedModel, options.preferredReasoning, selectedModelProvider);
 }
 
-export function resolveAgentReasoningEffort(agentType?: string): TeamReasoningEffort | undefined {
+export function resolveAgentReasoningEffort(
+  agentType?: string,
+  codexHomeOverride?: string,
+): TeamReasoningEffort | undefined {
   if (typeof agentType !== 'string' || agentType.trim() === '') return undefined;
-  return normalizeOptionalReasoning(getAgent(agentType)?.reasoningEffort);
+  return normalizeOptionalReasoning(getAgentReasoningOverride(agentType, codexHomeOverride))
+    ?? normalizeOptionalReasoning(getAgent(agentType)?.reasoningEffort);
 }
 
 export function resolveAgentDefaultModel(
