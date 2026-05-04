@@ -285,9 +285,91 @@ function tokenizeShellCommand(commandText: string): string[] | null {
   return tokens.length > 0 ? tokens : null;
 }
 
+interface ShellToken {
+  value: string;
+  startsCommand: boolean;
+}
+
+function tokenizeShellCommandWithBoundaries(commandText: string): ShellToken[] | null {
+  const trimmed = commandText.trim();
+  if (!trimmed) return null;
+
+  const tokens: ShellToken[] = [];
+  let current = "";
+  let quote: "'" | "\"" | null = null;
+  let escaping = false;
+  let nextTokenStartsCommand = false;
+
+  const pushCurrent = () => {
+    if (!current) return;
+    tokens.push({ value: current, startsCommand: tokens.length === 0 || nextTokenStartsCommand });
+    current = "";
+    nextTokenStartsCommand = false;
+  };
+
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const char = trimmed[index] ?? "";
+
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+
+    if (quote === "'") {
+      if (char === "'") {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (quote === "\"") {
+      if (char === "\"") quote = null;
+      else if (char === "\\") {
+        if (isDoubleQuotedShellEscapeTarget(trimmed[index + 1])) escaping = true;
+        else current += char;
+      }
+      else current += char;
+      continue;
+    }
+
+    if (char === "\n" || char === ";" || char === "&" || char === "|") {
+      pushCurrent();
+      nextTokenStartsCommand = true;
+      if ((char === "&" || char === "|") && trimmed[index + 1] === char) index += 1;
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      pushCurrent();
+      continue;
+    }
+
+    if (char === "'" || char === "\"") {
+      quote = char;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaping = true;
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (escaping || quote) return null;
+  pushCurrent();
+  return tokens.length > 0 ? tokens : null;
+}
+
 interface GitCommitCommandParseResult {
   isGitCommit: boolean;
   inlineEnvironment: NodeJS.ProcessEnv;
+  environmentStartsClean: boolean;
+  unsetEnvironmentNames: string[];
   inlineMessage: string | null;
   repositorySelection: GitRepositorySelection;
   requiresExternalMessageSource: boolean;
@@ -324,38 +406,166 @@ function envOptionConsumesNextValue(token: string): boolean {
     || token === "--split-string";
 }
 
-function findGitCommandTokenIndex(tokens: string[]): number {
-  let index = 0;
+function tokenStartsCommand(tokens: ShellToken[], index: number): boolean {
+  return index <= 0 || (tokens[index]?.startsCommand ?? false);
+}
 
-  while (index < tokens.length && isInlineShellEnvAssignment(tokens[index] ?? "")) {
+function nextCommandStart(tokens: ShellToken[], startIndex: number): number {
+  let index = startIndex + 1;
+  while (index < tokens.length && !tokenStartsCommand(tokens, index)) {
+    index += 1;
+  }
+  return index;
+}
+
+function findGitCommandTokenIndex(tokens: ShellToken[]): number {
+  for (let commandStart = 0; commandStart < tokens.length; commandStart = nextCommandStart(tokens, commandStart)) {
+    let index = commandStart;
+    const commandEnd = nextCommandStart(tokens, commandStart);
+
+    while (index < commandEnd && isInlineShellEnvAssignment(tokens[index]?.value ?? "")) {
+      index += 1;
+    }
+
+    while (index < commandEnd && isEnvExecutableToken(tokens[index]?.value ?? "")) {
+      index += 1;
+      while (index < commandEnd) {
+        const token = tokens[index]?.value ?? "";
+        if (token === "--") {
+          index += 1;
+          break;
+        }
+        if (isInlineShellEnvAssignment(token)) {
+          index += 1;
+          continue;
+        }
+        if (token === "-i" || token === "--ignore-environment" || token.startsWith("--unset=")) {
+          index += 1;
+          continue;
+        }
+        if (token.startsWith("-")) {
+          index += envOptionConsumesNextValue(token) ? 2 : 1;
+          continue;
+        }
+        break;
+      }
+      while (index < commandEnd && isInlineShellEnvAssignment(tokens[index]?.value ?? "")) {
+        index += 1;
+      }
+    }
+
+    if (index < commandEnd && isGitExecutableToken(tokens[index]?.value ?? "")) return index;
+    if (commandEnd <= commandStart) break;
+    commandStart = commandEnd - 1;
+  }
+
+  return -1;
+}
+
+function tokenValues(tokens: ShellToken[]): string[] {
+  return tokens.map((token) => token.value);
+}
+
+function findCommandStart(tokens: ShellToken[], tokenIndex: number): number {
+  let index = tokenIndex;
+  while (index > 0 && !tokenStartsCommand(tokens, index)) {
+    index -= 1;
+  }
+  return index;
+}
+
+function findCommandEnd(tokens: ShellToken[], tokenIndex: number): number {
+  let index = tokenIndex + 1;
+  while (index < tokens.length && !tokenStartsCommand(tokens, index)) {
+    index += 1;
+  }
+  return index;
+}
+
+interface InlineEnvironmentRead {
+  inlineEnvironment: NodeJS.ProcessEnv;
+  environmentStartsClean: boolean;
+  unsetEnvironmentNames: string[];
+}
+
+function readUnsetEnvNameFromOption(token: string, nextToken: string | undefined): {
+  name: string | null;
+  consumedNext: boolean;
+} {
+  if (token === "-u" || token === "--unset") {
+    return { name: nextToken ?? null, consumedNext: true };
+  }
+  if (token.startsWith("--unset=")) {
+    return { name: token.slice("--unset=".length), consumedNext: false };
+  }
+  return { name: null, consumedNext: false };
+}
+
+function readInlineEnvironmentAssignments(tokens: ShellToken[], gitTokenIndex: number): InlineEnvironmentRead {
+  const inlineEnvironment: NodeJS.ProcessEnv = {};
+  const unsetEnvironmentNames = new Set<string>();
+  let environmentStartsClean = false;
+  const commandStart = findCommandStart(tokens, gitTokenIndex);
+  const recordAssignment = (token: string) => {
+    const separatorIndex = token.indexOf("=");
+    const name = token.slice(0, separatorIndex);
+    inlineEnvironment[name] = token.slice(separatorIndex + 1);
+    unsetEnvironmentNames.delete(name);
+  };
+  const recordUnset = (name: string | null) => {
+    if (!name) return;
+    delete inlineEnvironment[name];
+    unsetEnvironmentNames.add(name);
+  };
+
+  let index = commandStart;
+  while (index < gitTokenIndex && isInlineShellEnvAssignment(tokens[index]?.value ?? "")) {
+    recordAssignment(tokens[index]?.value ?? "");
     index += 1;
   }
 
-  while (index < tokens.length && isEnvExecutableToken(tokens[index] ?? "")) {
+  while (index < gitTokenIndex && isEnvExecutableToken(tokens[index]?.value ?? "")) {
     index += 1;
-    while (index < tokens.length) {
-      const token = tokens[index] ?? "";
+    while (index < gitTokenIndex) {
+      const token = tokens[index]?.value ?? "";
       if (token === "--") {
         index += 1;
         break;
       }
-      if (isInlineShellEnvAssignment(token) || token.startsWith("-")) {
-        if (envOptionConsumesNextValue(token)) {
-          index += 1;
-        }
+      if (isInlineShellEnvAssignment(token)) {
+        recordAssignment(token);
         index += 1;
+        continue;
+      }
+      if (token === "-i" || token === "--ignore-environment") {
+        environmentStartsClean = true;
+        unsetEnvironmentNames.clear();
+        index += 1;
+        continue;
+      }
+      const unset = readUnsetEnvNameFromOption(token, tokens[index + 1]?.value);
+      if (unset.name !== null || unset.consumedNext) {
+        recordUnset(unset.name);
+        index += unset.consumedNext ? 2 : 1;
+        continue;
+      }
+      if (token.startsWith("-")) {
+        index += envOptionConsumesNextValue(token) ? 2 : 1;
         continue;
       }
       break;
     }
-    while (index < tokens.length && isInlineShellEnvAssignment(tokens[index] ?? "")) {
+    while (index < gitTokenIndex && isInlineShellEnvAssignment(tokens[index]?.value ?? "")) {
+      recordAssignment(tokens[index]?.value ?? "");
       index += 1;
     }
   }
 
-  return index < tokens.length && isGitExecutableToken(tokens[index] ?? "")
-    ? index
-    : -1;
+  return {
+    inlineEnvironment,
+    environmentStartsClean,
+    unsetEnvironmentNames: [...unsetEnvironmentNames],
+  };
 }
 
 function gitOptionConsumesNextValue(token: string): boolean {
@@ -421,65 +631,28 @@ function readGitRepositorySelection(tokens: string[], gitTokenIndex: number, sub
   return "current-cwd";
 }
 
-function readInlineEnvironmentAssignments(tokens: string[], gitTokenIndex: number): NodeJS.ProcessEnv {
-  const inlineEnvironment: NodeJS.ProcessEnv = {};
-  const recordAssignment = (token: string) => {
-    const separatorIndex = token.indexOf("=");
-    const name = token.slice(0, separatorIndex);
-    inlineEnvironment[name] = token.slice(separatorIndex + 1);
-  };
-
-  let index = 0;
-  while (index < gitTokenIndex && isInlineShellEnvAssignment(tokens[index] ?? "")) {
-    recordAssignment(tokens[index] ?? "");
-    index += 1;
-  }
-
-  while (index < gitTokenIndex && isEnvExecutableToken(tokens[index] ?? "")) {
-    index += 1;
-    while (index < gitTokenIndex) {
-      const token = tokens[index] ?? "";
-      if (token === "--") {
-        index += 1;
-        break;
-      }
-      if (isInlineShellEnvAssignment(token)) {
-        recordAssignment(token);
-        index += 1;
-        continue;
-      }
-      if (token.startsWith("-")) {
-        index += envOptionConsumesNextValue(token) ? 2 : 1;
-        continue;
-      }
-      break;
-    }
-    while (index < gitTokenIndex && isInlineShellEnvAssignment(tokens[index] ?? "")) {
-      recordAssignment(tokens[index] ?? "");
-      index += 1;
-    }
-  }
-
-  return inlineEnvironment;
-}
-
 export function parseGitCommitCommand(commandText: string): GitCommitCommandParseResult {
-  const tokens = tokenizeShellCommand(commandText);
+  const shellTokens = tokenizeShellCommandWithBoundaries(commandText);
+  const tokens = shellTokens ? tokenValues(shellTokens) : null;
   if (!tokens) {
     return {
       isGitCommit: false,
       inlineEnvironment: {},
+      environmentStartsClean: false,
+      unsetEnvironmentNames: [],
       inlineMessage: null,
       repositorySelection: "current-cwd",
       requiresExternalMessageSource: false,
     };
   }
 
-  const gitTokenIndex = findGitCommandTokenIndex(tokens);
+  const gitTokenIndex = findGitCommandTokenIndex(shellTokens ?? []);
   if (gitTokenIndex < 0 || !isGitExecutableToken(tokens[gitTokenIndex] ?? "")) {
     return {
       isGitCommit: false,
       inlineEnvironment: {},
+      environmentStartsClean: false,
+      unsetEnvironmentNames: [],
       inlineMessage: null,
       repositorySelection: "current-cwd",
       requiresExternalMessageSource: false,
@@ -491,6 +664,8 @@ export function parseGitCommitCommand(commandText: string): GitCommitCommandPars
     return {
       isGitCommit: false,
       inlineEnvironment: {},
+      environmentStartsClean: false,
+      unsetEnvironmentNames: [],
       inlineMessage: null,
       repositorySelection: "current-cwd",
       requiresExternalMessageSource: false,
@@ -498,7 +673,7 @@ export function parseGitCommitCommand(commandText: string): GitCommitCommandPars
   }
 
   const repositorySelection = readGitRepositorySelection(tokens, gitTokenIndex, subcommandIndex);
-  const inlineEnvironment = readInlineEnvironmentAssignments(tokens, gitTokenIndex);
+  const { inlineEnvironment, environmentStartsClean, unsetEnvironmentNames } = readInlineEnvironmentAssignments(shellTokens ?? [], gitTokenIndex);
   const messageParts: string[] = [];
   let requiresExternalMessageSource = false;
   const args = tokens.slice(subcommandIndex + 1);
@@ -541,10 +716,23 @@ export function parseGitCommitCommand(commandText: string): GitCommitCommandPars
   return {
     isGitCommit: true,
     inlineEnvironment,
+    environmentStartsClean,
+    unsetEnvironmentNames,
     inlineMessage: messageParts.length > 0 ? messageParts.join("\n\n").trim() : null,
     repositorySelection,
     requiresExternalMessageSource,
   };
+}
+
+function buildEffectiveLoreCommitGuardEnv(parsed: GitCommitCommandParseResult): NodeJS.ProcessEnv {
+  const effectiveEnvironment: NodeJS.ProcessEnv = parsed.environmentStartsClean ? {} : { ...process.env };
+  for (const name of parsed.unsetEnvironmentNames) {
+    delete effectiveEnvironment[name];
+  }
+  for (const [name, value] of Object.entries(parsed.inlineEnvironment)) {
+    if (typeof value === "string") effectiveEnvironment[name] = value;
+  }
+  return effectiveEnvironment;
 }
 
 function isLoreTrailerLine(line: string): boolean {
@@ -627,7 +815,7 @@ function buildGitCommitEnforcementOutput(commandText: string): Record<string, un
   const parsed = parseGitCommitCommand(commandText);
   if (!parsed.isGitCommit) return null;
 
-  if (!isLoreCommitGuardEnabled({ ...process.env, ...parsed.inlineEnvironment })) return null;
+  if (!isLoreCommitGuardEnabled(buildEffectiveLoreCommitGuardEnv(parsed))) return null;
 
   const errors = parsed.requiresExternalMessageSource
     ? [
