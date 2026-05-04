@@ -69,4 +69,50 @@ describe('run-test-files diagnostics', () => {
       rmSync(wd, { recursive: true, force: true });
     }
   });
+
+  it('serializes test files by default in CI to avoid cross-file child-process leaks', () => {
+    const wd = mkdtempSync(join(tmpdir(), 'omx-run-test-files-'));
+    try {
+      const testsDir = join(wd, '__tests__');
+      mkdirSync(testsDir, { recursive: true });
+      writeFileSync(
+        join(testsDir, 'pass.test.js'),
+        [
+          "import { test } from 'node:test';",
+          "test('passes', () => {});",
+          '',
+        ].join('\n'),
+      );
+
+      const result = runCompiledRunner(wd, { CI: 'true' });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stderr, /test concurrency 1/);
+    } finally {
+      rmSync(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('honors an explicit test concurrency override in CI', () => {
+    const wd = mkdtempSync(join(tmpdir(), 'omx-run-test-files-'));
+    try {
+      const testsDir = join(wd, '__tests__');
+      mkdirSync(testsDir, { recursive: true });
+      writeFileSync(
+        join(testsDir, 'pass.test.js'),
+        [
+          "import { test } from 'node:test';",
+          "test('passes', () => {});",
+          '',
+        ].join('\n'),
+      );
+
+      const result = runCompiledRunner(wd, { CI: 'true', OMX_NODE_TEST_CONCURRENCY: '2' });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stderr, /test concurrency 2/);
+    } finally {
+      rmSync(wd, { recursive: true, force: true });
+    }
+  });
 });
