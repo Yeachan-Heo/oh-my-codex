@@ -2461,7 +2461,8 @@ export async function startTeam(
       const runtimeRole = workerRole;
       const rawRolePromptContent = await loadRolePrompt(runtimeRole, join(leaderCwd, '.codex', 'prompts'))
         ?? await loadRolePrompt(runtimeRole, codexPromptsDir());
-      const preferredReasoning = resolveAgentReasoningEffort(runtimeRole) ?? resolveAgentReasoningEffort(agentType);
+      const preferredReasoning = resolveAgentReasoningEffort(runtimeRole, process.env.CODEX_HOME)
+        ?? resolveAgentReasoningEffort(agentType, process.env.CODEX_HOME);
       const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(
         process.env,
         runtimeRole,

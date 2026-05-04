@@ -103,6 +103,7 @@ function withIsolatedDefaultModelEnv<T>(run: () => T): T {
     'OMX_DEFAULT_STANDARD_MODEL',
     'OMX_DEFAULT_SPARK_MODEL',
     'OMX_SPARK_MODEL',
+    'OMX_TEAM_WORKER_LAUNCH_ARGS',
   ] as const) {
     savedEnv.set(key, process.env[key]);
     delete process.env[key];
@@ -132,6 +133,7 @@ async function withIsolatedDefaultModelEnvAsync<T>(
     'OMX_DEFAULT_STANDARD_MODEL',
     'OMX_DEFAULT_SPARK_MODEL',
     'OMX_SPARK_MODEL',
+    'OMX_TEAM_WORKER_LAUNCH_ARGS',
   ] as const) {
     savedEnv.set(key, process.env[key]);
     delete process.env[key];
@@ -3249,7 +3251,7 @@ process.exit(0);
   });
 
 
-  it('startTeam preserves routed task roles into team state and worker launch args', async () => {
+  it('startTeam preserves routed task roles into team state and override-aware worker launch args', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-role-routing-'));
     const binDir = join(cwd, 'bin');
     const fakeCodexPath = join(binDir, 'codex');
@@ -3291,8 +3293,16 @@ process.on('SIGTERM', () => process.exit(0));
 
     let runtime: TeamRuntime | null = null;
     try {
-      runtime = await withIsolatedDefaultModelEnvAsync(async () =>
-        await withMockPromptModeCodexAllowed(() =>
+      runtime = await withIsolatedDefaultModelEnvAsync(async () => {
+        assert.ok(process.env.CODEX_HOME, 'isolated CODEX_HOME should be set');
+        await mkdir(process.env.CODEX_HOME, { recursive: true });
+        await writeFile(join(process.env.CODEX_HOME, '.omx-config.json'), JSON.stringify({
+          agentReasoning: {
+            writer: 'xhigh',
+          },
+        }));
+
+        return await withMockPromptModeCodexAllowed(() =>
           withoutTeamWorkerEnv(() =>
             startTeam(
               'team-role-routing',
@@ -3304,7 +3314,8 @@ process.on('SIGTERM', () => process.exit(0));
                 { subject: 'document routing report only', description: 'document routing report only', owner: 'worker-2', role: 'writer' },
               ],
               cwd,
-            ))));
+            )));
+      });
 
       assert.equal(runtime.config.worker_launch_mode, 'prompt');
       assert.equal(runtime.config.workers[0]?.role, 'test-engineer');
@@ -3349,7 +3360,7 @@ process.on('SIGTERM', () => process.exit(0));
       assert.match(worker1Joined, /model_reasoning_effort="medium"/);
       assert.match(worker1Joined, /model_instructions_file=.*worker-1\/AGENTS\.md/);
       assert.match(worker1Joined, /--model gpt-5\.5/);
-      assert.match(worker2Joined, /model_reasoning_effort="high"/);
+      assert.match(worker2Joined, /model_reasoning_effort="xhigh"/);
       assert.match(worker2Joined, /model_instructions_file=.*worker-2\/AGENTS\.md/);
       assert.match(worker2Joined, /--model gpt-5\.5/);
 

@@ -25,6 +25,7 @@ Current code recognizes these top-level `.omx-config.json` keys:
 
 | Top-level key | Supported shape | Primary use |
 | --- | --- | --- |
+| `agentReasoning` | Object mapping agent names to `low`, `medium`, `high`, or `xhigh` | Optional per-agent reasoning overrides for generated native agent TOML and role-based worker/Ralph staffing guidance. |
 | `env` | Object of non-empty string values | Fallback environment values for model routing and helper launch paths. Model-related supported keys are listed below. |
 | `models` | Object of non-empty string values | Mode defaults and low-complexity model aliases. Supported model-routing keys are listed below. |
 | `notifications` | Object | Notification transports, profiles, templates, cooldowns, replies, and OpenClaw/custom aliases. See the notification summary below and the OpenClaw guide for full examples. |
@@ -49,10 +50,14 @@ Use [`docs/discord-integration.md`](../discord-integration.md) for Discord webho
 
 ## Supported model/env keys
 
-The model-routing reader supports two top-level objects: `env` and `models`.
+The model-routing reader supports `env`, `models`, and the role-reasoning override map `agentReasoning`.
 
 ```json
 {
+  "agentReasoning": {
+    "architect": "xhigh",
+    "critic": "xhigh"
+  },
   "env": {
     "OMX_DEFAULT_FRONTIER_MODEL": "gpt-5.5",
     "OMX_DEFAULT_STANDARD_MODEL": "gpt-5.4-mini",
@@ -97,6 +102,21 @@ Supported model-routing keys:
 | `teamLowComplexity` | Alias for `team_low_complexity`. |
 
 Do not invent per-role maps such as `models.executor`, `models.architect`, or `models.roles` unless your installed version documents that exact key. Current role routing is based on agent definitions and model class, not arbitrary per-role JSON maps.
+
+### `agentReasoning`
+
+`agentReasoning` is the supported per-agent reasoning override map. Keys are agent names and values must be one of `low`, `medium`, `high`, or `xhigh`.
+
+```json
+{
+  "agentReasoning": {
+    "architect": "xhigh",
+    "critic": "xhigh"
+  }
+}
+```
+
+These overrides do not change built-in defaults in source. They are user/project configuration that applies when OMX resolves role reasoning for generated native agent TOML and role-based team/Ralph staffing/worker guidance. Rerun `omx setup` after changing this map so setup-managed native agent TOML files are regenerated. Malformed agent names, empty values, and unsupported effort values are ignored.
 
 ## Effective model precedence
 
@@ -166,7 +186,7 @@ Use `omx team status <team-name> --model-inspect` when you need inspect hints fo
 
 ## Reasoning effort: supported places only
 
-`.omx-config.json` is **not** the general place to configure `model_reasoning_effort`. Do not add keys such as `reasoningEffort`, `modelReasoningEffort`, `reasoning`, or per-role reasoning maps to `.omx-config.json`.
+`.omx-config.json` is **not** the general place to configure root `model_reasoning_effort`. Do not add arbitrary keys such as `reasoningEffort`, `modelReasoningEffort`, `reasoning`, or undeclared per-role reasoning maps. The supported per-agent override map is exactly `agentReasoning`.
 
 Supported reasoning-effort surfaces are:
 
@@ -174,6 +194,7 @@ Supported reasoning-effort surfaces are:
 - `omx reasoning <low|medium|high|xhigh>`, which edits the active Codex `config.toml`.
 - `omx --high` and `omx --xhigh`, which pass `-c model_reasoning_effort="high|xhigh"` to Codex launch.
 - Generated native agent TOML files, where OMX writes each role's built-in `reasoningEffort` metadata.
+- `.omx-config.json` `agentReasoning`, which overrides selected role defaults for generated native agent TOML and role-based team/Ralph reasoning allocation without changing built-in defaults.
 - Team worker launch args, for example:
 
 ```bash
@@ -181,7 +202,7 @@ OMX_TEAM_WORKER_LAUNCH_ARGS='-c model_reasoning_effort="low" --model gpt-5.3-cod
   omx team 3:explore "map the config surfaces"
 ```
 
-Team runtime can also inject role-default reasoning for Codex workers when no explicit reasoning override is present. Explicit launch args win.
+Team runtime can also inject role-default or `agentReasoning`-overridden reasoning for Codex workers when no explicit reasoning override is present. Explicit launch args win.
 
 ## Starter configs
 
@@ -212,6 +233,10 @@ This keeps standard agents inheriting the frontier model by omitting `OMX_DEFAUL
 
 ```json
 {
+  "agentReasoning": {
+    "architect": "xhigh",
+    "critic": "xhigh"
+  },
   "env": {
     "OMX_DEFAULT_FRONTIER_MODEL": "gpt-5.5",
     "OMX_DEFAULT_SPARK_MODEL": "gpt-5.3-codex-spark"

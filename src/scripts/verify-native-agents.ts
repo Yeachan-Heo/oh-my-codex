@@ -188,7 +188,9 @@ export async function verifyNativeAgents(
     const promptContent = options.promptNames
       ? `${name} prompt fixture`
       : await readFile(promptPath, "utf-8");
-    const toml = generateAgentToml(agent, promptContent);
+    const toml = generateAgentToml(agent, promptContent, {
+      codexHomeOverride: join(root, ".omx", "verify-native-agents-codex-home"),
+    });
     assertTomlStructure(name, agent, toml);
   }
 

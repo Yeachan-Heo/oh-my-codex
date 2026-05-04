@@ -104,6 +104,33 @@ describe("agents/native-config", () => {
     );
   });
 
+  it("applies per-agent reasoning overrides when generating native TOML", async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), "omx-native-config-reasoning-"));
+    try {
+      await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
+        agentReasoning: {
+          architect: "xhigh",
+        },
+      }));
+      const agent: AgentDefinition = {
+        name: "architect",
+        description: "System design",
+        reasoningEffort: "high",
+        posture: "frontier-orchestrator",
+        modelClass: "frontier",
+        routingRole: "leader",
+        tools: "read-only",
+        category: "build",
+      };
+
+      const toml = generateAgentToml(agent, "Architect prompt", { codexHomeOverride: codexHome });
+
+      assert.match(toml, /model_reasoning_effort = "xhigh"/);
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
   it("applies exact-model mini guidance only for resolved gpt-5.4-mini standard roles", () => {
     const agent: AgentDefinition = {
       name: "debugger",
@@ -166,6 +193,34 @@ describe("agents/native-config", () => {
         catalogManifest: manifestWithAgents(["executor", "planner"]),
       });
       assert.equal(skipped, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("installs native agent TOML with configured per-agent reasoning overrides", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-native-config-install-reasoning-"));
+    const codexHome = join(root, ".codex");
+    const promptsDir = join(root, "prompts");
+    const outDir = join(codexHome, "agents");
+
+    try {
+      await mkdir(promptsDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
+        agentReasoning: {
+          architect: "xhigh",
+        },
+      }));
+      await writeFile(join(promptsDir, "architect.md"), "architect prompt");
+
+      await installNativeAgentConfigs(root, {
+        agentsDir: outDir,
+        catalogManifest: manifestWithAgents(["architect"]),
+      });
+
+      const architectToml = await readFile(join(outDir, "architect.toml"), "utf8");
+      assert.match(architectToml, /model_reasoning_effort = "xhigh"/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -355,7 +355,8 @@ export async function scaleUp(
       // Build startup command and create tmux pane
       const rawRolePromptContent = await loadRolePrompt(runtimeRole, join(leaderCwd, '.codex', 'prompts'))
         ?? await loadRolePrompt(runtimeRole, codexPromptsDir());
-      const preferredReasoning = resolveAgentReasoningEffort(runtimeRole) ?? resolveAgentReasoningEffort(agentType);
+      const preferredReasoning = resolveAgentReasoningEffort(runtimeRole, env.CODEX_HOME)
+        ?? resolveAgentReasoningEffort(agentType, env.CODEX_HOME);
       const workerLaunchArgs = resolveWorkerLaunchArgsForScaling(env, runtimeRole, preferredReasoning);
       const resolvedWorkerModel = parseTeamWorkerLaunchArgs(workerLaunchArgs).modelOverride ?? undefined;
       const rolePromptContent = rawRolePromptContent
