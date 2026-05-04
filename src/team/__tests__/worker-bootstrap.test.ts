@@ -26,6 +26,49 @@ import {
 import { composeRoleInstructionsForRole } from "../../agents/native-config.js";
 import type { TeamTask } from "../state.js";
 
+function assertUnattendedWorkerContractTerms(
+  content: string,
+  options: { full?: boolean } = {},
+): void {
+  assert.match(content, /Unattended Worker Operating Contract/);
+  assert.match(content, /ACK/);
+  assert.match(content, /inbox\/mailbox\/task/);
+  assert.match(content, /claim/);
+  assert.match(content, /verify\/report/);
+  assert.match(content, /transition complete\/fail/);
+  assert.match(content, /status\/idle|update status/);
+  assert.match(content, /Conclusion/);
+  assert.match(content, /Evidence/);
+  assert.match(content, /Changed files/);
+  assert.match(content, /Verification:/);
+  assert.match(content, /PASS\/FAIL/);
+  assert.match(content, /commit_status/);
+  assert.match(content, /committed:<sha>/);
+  assert.match(content, /dirty:auto-commit-expected/);
+  assert.match(content, /not-needed/);
+  assert.match(content, /blocked:<reason>/);
+  assert.match(content, /Blocker/);
+  assert.match(content, /Next action/);
+  assert.match(content, /shared-file conflicts?/);
+  assert.match(content, /scope expansion/);
+  assert.match(content, /self-verification|Self-verification|Self-verify/);
+  assert.match(content, /validation gap/);
+  assert.match(content, /low-noise|Low-noise/);
+  assert.match(content, /durable state\/mailbox\/task evidence/);
+  assert.match(content, /existing `result`/);
+  assert.match(content, /`error`/);
+  assert.match(content, /mailbox/);
+  assert.match(content, /status/);
+  assert.match(content, /not a new runtime schema\/API/);
+
+  if (options.full) {
+    assert.match(
+      content,
+      /lifecycle transition `result` must include `Verification:` plus PASS\/FAIL evidence/,
+    );
+  }
+}
+
 function setMockCodexHome(codexHomePath: string): () => void {
   const previous = process.env.CODEX_HOME;
   process.env.CODEX_HOME = codexHomePath;
@@ -58,6 +101,7 @@ describe("worker bootstrap", () => {
       workerSkill,
       /`?\{"status":"failed","error":"\.\.\."\}`?/,
     );
+    assertUnattendedWorkerContractTerms(workerSkill);
   });
 
   it("generateWorkerOverlay produces markdown with correct start/end markers", () => {
@@ -98,6 +142,7 @@ describe("worker bootstrap", () => {
       overlay,
       /do not pass workingDirectory unless the lead explicitly tells you to/,
     );
+    assertUnattendedWorkerContractTerms(overlay);
     assert.doesNotMatch(overlay, /tasks\/\{id\}\.json/);
   });
 
@@ -276,6 +321,7 @@ describe("worker bootstrap", () => {
     );
     assert.match(inbox, /Verification Requirements/);
     assert.match(inbox, /Fix-Verify Loop/);
+    assertUnattendedWorkerContractTerms(inbox);
   });
 
 
@@ -495,6 +541,7 @@ describe("worker bootstrap", () => {
     );
     assert.match(inbox, /Verification Requirements/);
     assert.match(inbox, /PASS\/FAIL/);
+    assertUnattendedWorkerContractTerms(inbox);
   });
 
 
@@ -786,6 +833,15 @@ describe("worker bootstrap", () => {
     assert.match(content, /Worker: worker-3/);
     assert.match(content, /Inbox path: \/tmp\/state\/team\/root-team\/workers\/worker-3\/inbox\.md/);
     assert.match(content, /mailbox\/worker-3\.json/);
+    assertUnattendedWorkerContractTerms(content, { full: true });
+    assert.ok(
+      content.indexOf("## Unattended Worker Operating Contract") <
+        content.indexOf("## Protocol"),
+    );
+    assert.ok(
+      content.indexOf("## Unattended Worker Operating Contract") <
+        content.indexOf("<!-- OMX:TEAM:ROLE:START -->"),
+    );
     assert.match(content, /<identity>You are Writer\.<\/identity>/);
     assert.doesNotMatch(content, /# Project Instructions/);
     assert.doesNotMatch(content, /# User Instructions/);

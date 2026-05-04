@@ -101,6 +101,17 @@ Worker sessions should treat team state + CLI interop as the source of truth.
 - Do **not** rely on ad-hoc tmux keystrokes as a primary delivery channel.
 - If a manual trigger arrives (for example `tmux send-keys` nudge), treat it only as a prompt to re-check state and continue through the normal claim-safe lifecycle.
 
+## Unattended Worker Operating Contract
+
+Most team workers are supervised through state files and leader/runtime checks, not direct human pane watching. Keep every report durable and leader-readable.
+
+1. **Lifecycle:** ACK -> read inbox/mailbox/task -> claim -> execute assigned scope -> verify/report -> transition complete/fail -> update status/idle.
+2. **Report fields:** Use existing `result`, `error`, mailbox, or status text to include `Conclusion`, `Evidence`, `Changed files`, `Verification:`, `commit_status`, `Blocker`, and `Next action` when applicable. These are text guidance for existing payloads, not a new runtime schema/API.
+3. **Self-verification:** Completed code-change task `result` text should include `Verification:` plus PASS/FAIL command evidence. If validation cannot run, report the validation gap.
+4. **Commit status:** Report one of `committed:<sha>`, `dirty:auto-commit-expected`, `not-needed`, or `blocked:<reason>`.
+5. **Ownership:** Stay inside assigned files/tasks; escalate shared-file conflicts, scope expansion, missing authority, and ambiguous instructions upward.
+6. **Low-noise communication:** Prefer durable state/mailbox/task evidence over pane narrative; keep ACKs and progress terse.
+
 ## Shutdown
 
 If the lead sends a shutdown request, follow the shutdown inbox instructions exactly, write your shutdown ack file, then exit the Codex session.

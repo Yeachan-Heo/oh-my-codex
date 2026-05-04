@@ -22,6 +22,9 @@ const LOCK_TIMEOUT_MS = 5000;
 const LOCK_POLL_INTERVAL_MS = 100;
 const LOCK_STALE_MS = 30_000;
 
+const UNATTENDED_WORKER_CONTRACT_ANCHOR =
+  "Unattended Worker Operating Contract";
+
 interface WorkerRootAgentsOptions {
   teamName: string;
   workerName: string;
@@ -83,6 +86,8 @@ This file is generated for a live OMX team worker run and is disposable.
 - Worker status path: ${options.teamStateRoot}/team/${options.teamName}/workers/${options.workerName}/status.json
 - Worker identity path: ${options.teamStateRoot}/team/${options.teamName}/workers/${options.workerName}/identity.json
 
+${buildUnattendedWorkerOperatingContract("full")}
+
 ## Protocol
 1. Read your inbox at \`${options.teamStateRoot}/team/${options.teamName}/workers/${options.workerName}/inbox.md\`.
 2. Load the worker skill from the first existing path:
@@ -121,6 +126,34 @@ ${options.rolePromptContent.trim()}
 </team_worker_role>
 <!-- OMX:TEAM:ROLE:END -->
 `;
+}
+
+function buildUnattendedWorkerOperatingContract(
+  depth: "full" | "compact",
+): string {
+  if (depth === "compact") {
+    return `## ${UNATTENDED_WORKER_CONTRACT_ANCHOR} (Compact Reminder)
+
+- Follow the lifecycle: ACK -> read inbox/mailbox/task -> claim -> execute assigned scope -> verify/report -> transition complete/fail -> update status/idle.
+- Put leader-readable text in existing \`result\`, \`error\`, mailbox, or status payloads only; this is guidance for existing text fields, not a new runtime schema/API.
+- Completion/failure reports should include: \`Conclusion\`, \`Evidence\`, \`Changed files\`, \`Verification:\` with PASS/FAIL command evidence, \`commit_status\`, \`Blocker\`, and \`Next action\`.
+- Use \`commit_status\` values such as \`committed:<sha>\`, \`dirty:auto-commit-expected\`, \`not-needed\`, or \`blocked:<reason>\`.
+- Stay inside assigned ownership; escalate shared-file conflicts, scope expansion, missing authority, or ambiguous instructions upward.
+- Self-verify with the smallest useful validation before completion, or explicitly report a validation gap.
+- Keep communication low-noise: prefer durable state/mailbox/task evidence over pane narrative.`;
+  }
+
+  return `## ${UNATTENDED_WORKER_CONTRACT_ANCHOR}
+
+You are usually not watched directly by a human. Leave durable, leader-readable evidence in existing team state and mailbox text so the leader/runtime can integrate your work without pane inspection.
+
+1. **State-machine lifecycle:** ACK -> read inbox/mailbox/task -> claim -> execute assigned scope -> verify/report -> transition complete/fail -> update status/idle.
+2. **Leader-readable reports:** Shape existing \`result\`, \`error\`, mailbox, and status text with these fields when applicable: \`Conclusion\`, \`Evidence\`, \`Changed files\`, \`Verification:\`, \`commit_status\`, \`Blocker\`, and \`Next action\`. These fields are text guidance for existing payloads, not a new runtime schema/API.
+3. **Verification-gate compatibility:** For completed code-change tasks, the lifecycle transition \`result\` must include \`Verification:\` plus PASS/FAIL evidence and commands when available, so the existing team verification gate can recognize self-verification.
+4. **Commit status clarity:** Report exactly one clear \`commit_status\`: \`committed:<sha>\`, \`dirty:auto-commit-expected\`, \`not-needed\`, or \`blocked:<reason>\`.
+5. **Bounded ownership:** Stay inside assigned files/tasks. Escalate shared-file conflicts, scope expansion, missing authority, and ambiguous instructions upward instead of silently broadening scope.
+6. **Self-verification:** Run the smallest useful validation before completion; if validation cannot run, explicitly report the validation gap and why.
+7. **Low-noise communication:** Keep ACKs/progress short and prefer durable state/mailbox/task evidence over pane narrative.`;
 }
 
 function tryReadGitValue(cwd: string, args: string[]): string | null {
@@ -282,9 +315,10 @@ ${verification}
 
 ${fixLoop}
 
-When marking completion, include structured verification evidence in your task result:
+When marking completion, include plain-text evidence in your task result without changing the lifecycle result schema/API:
 - \`Verification:\`
-- One or more PASS/FAIL checks with command/output references
+- One or more \`PASS\`/\`FAIL\` lines with command/output references for each required check
+- \`commit_status:\` with either the committed short SHA or a clear not-committed reason
 `;
 }
 
@@ -345,6 +379,8 @@ When your mailbox receives a message, process delivery explicitly:
 1. Read: \`omx team api mailbox-list --input "{\"team_name\":\"${teamName}\",\"worker\":\"<your-worker-name>\"}" --json\`
 2. Mark delivered: \`omx team api mailbox-mark-delivered --input "{\"team_name\":\"${teamName}\",\"worker\":\"<your-worker-name>\",\"message_id\":\"<MESSAGE_ID>\"}" --json\`
 3. If you reply, include concrete progress and keep executing your assigned work or the next feasible task after replying.
+
+${buildUnattendedWorkerOperatingContract("compact")}
 
 ## Rules
 - Do NOT edit files outside the paths listed in your task description
@@ -811,6 +847,8 @@ When using \`omx team api send-message\`, ALWAYS include from_worker with YOUR w
 
 Example: omx team api send-message --input "{\"team_name\":\"${teamName}\",\"from_worker\":\"${workerName}\",\"to_worker\":\"leader-fixed\",\"body\":\"ACK: initialized\"}" --json
 
+${buildUnattendedWorkerOperatingContract("compact")}
+
 ${delegationSection}
 ${buildVerificationSection("each assigned task")}
 
@@ -872,6 +910,8 @@ ${taskDescription}
 6. Complete/fail via lifecycle transition API (\`omx team api transition-task-status --json\`) from \`"in_progress"\` to \`"completed"\` or \`"failed"\` (include \`result\`/\`error\`)
 7. Use \`omx team api release-task-claim --json\` only for rollback to \`pending\`
 8. Write \`{"state": "idle", "updated_at": "<current ISO timestamp>"}\` to your status file
+
+${buildUnattendedWorkerOperatingContract("compact")}
 
 ${delegationSection}
 ${buildVerificationSection(taskDescription)}
