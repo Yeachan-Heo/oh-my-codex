@@ -20,7 +20,8 @@ const DEFAULT_CODEX_TIMEOUT_MS: u64 = 180_000;
 const PROCESS_TERMINATION_GRACE_MS: u64 = 500;
 const PIPE_READER_READY_GRACE_MS: u64 = 25;
 const PIPE_READER_JOIN_GRACE_MS: u64 = 500;
-const SHELL_STARTUP_ENV_VARS: &[&str] = &["BASH_ENV", "ENV", "PROMPT_COMMAND"];
+const EXPLORE_SUBPROCESS_ENV_VARS_TO_SCRUB: &[&str] =
+    &["BASH_ENV", "ENV", "PROMPT_COMMAND", "NODE_OPTIONS"];
 const WINDOWS_UNSUPPORTED_ALLOWLIST_MESSAGE: &str =
     "omx explore built-in harness is not ready on Windows because its allowlist runtime relies on POSIX sh/bash wrappers. Set OMX_EXPLORE_BIN to a compatible custom harness, prefer `omx sparkshell` for shell-native read-only lookups, or run `omx doctor` for readiness details.";
 
@@ -938,7 +939,7 @@ fn shell_quote(value: &str) -> String {
 }
 
 fn sanitize_explore_subprocess_env(command: &mut Command) {
-    for key in SHELL_STARTUP_ENV_VARS {
+    for key in EXPLORE_SUBPROCESS_ENV_VARS_TO_SCRUB {
         command.env_remove(key);
     }
 }
@@ -2101,6 +2102,69 @@ printf '# Answer\nok\n' > "$output_path"
         assert_eq!(
             read_to_string(&capture_path).expect("read capture"),
             "BASH_ENV=\nENV=\nPROMPT_COMMAND=\n"
+        );
+    }
+
+    #[test]
+    fn invoke_codex_scrubs_node_options_before_node_shebang_launch() {
+        let _guard = env_lock();
+        if resolve_host_command("node").is_none() {
+            return;
+        }
+
+        let root = temp_allowlist_dir().expect("temp root");
+        let repo = root.path.join("repo");
+        create_dir_all(&repo).expect("create repo");
+        let prompt_file = root.path.join("prompt.md");
+        write(&prompt_file, "contract").expect("write prompt");
+        let capture_path = root.path.join("node-options.txt");
+        let fake_codex = root.path.join("codex-node-stub");
+        write(
+            &fake_codex,
+            format!(
+                r#"#!/usr/bin/env node
+const fs = require('fs');
+let outputPath = '';
+for (let index = 2; index < process.argv.length; index += 1) {{
+  if (process.argv[index] === '-o') {{
+    outputPath = process.argv[index + 1];
+    index += 1;
+  }}
+}}
+fs.writeFileSync({}, `NODE_OPTIONS=${{process.env.NODE_OPTIONS || ''}}\n`);
+fs.writeFileSync(outputPath, '# Answer\nok\n');
+"#,
+                shell_quote(&capture_path.display().to_string())
+            ),
+        )
+        .expect("write fake codex");
+
+        unsafe {
+            env::set_var(CODEX_BIN_ENV, &fake_codex);
+            env::set_var("NODE_OPTIONS", "--disable-warning=");
+        }
+        let attempt = invoke_codex(
+            &Args {
+                cwd: repo.clone(),
+                prompt: "find tests".to_string(),
+                prompt_file,
+                instructions_file: repo.join("AGENTS.md"),
+                spark_model: "spark-model".to_string(),
+                fallback_model: "fallback-model".to_string(),
+            },
+            "spark-model",
+            "contract",
+        )
+        .expect("invoke codex");
+        unsafe {
+            env::remove_var(CODEX_BIN_ENV);
+            env::remove_var("NODE_OPTIONS");
+        }
+
+        assert_eq!(attempt.status_code, 0);
+        assert_eq!(
+            read_to_string(&capture_path).expect("read capture"),
+            "NODE_OPTIONS=\n"
         );
     }
 
