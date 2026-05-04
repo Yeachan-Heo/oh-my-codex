@@ -78,6 +78,33 @@ describe('followup-planner', () => {
     assert.equal(plan.verificationPlan.checkpoints.length, 3);
   });
 
+  it('applies per-agent reasoning overrides to Ralph sign-off staffing guidance', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-followup-reasoning-'));
+    try {
+      await writeFile(join(codexHome, '.omx-config.json'), JSON.stringify({
+        agentReasoning: {
+          architect: 'xhigh',
+        },
+      }));
+
+      const plan = buildFollowupStaffingPlan(
+        'ralph',
+        'Investigate auth regression and verify the fix',
+        ['architect', 'debugger', 'executor', 'test-engineer'],
+        { codexHomeOverride: codexHome },
+      );
+
+      assert.ok(
+        plan.allocations.some(
+          (allocation) => allocation.role === 'architect' && allocation.reasoningEffort === 'xhigh',
+        ),
+      );
+      assert.match(plan.staffingSummary, /architect x1 .*xhigh reasoning/);
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
   it('allocates explore plus researcher lanes for mixed local+official-doc follow-up', () => {
     const plan = buildFollowupStaffingPlan(
       'team',

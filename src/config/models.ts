@@ -13,6 +13,9 @@
  *   "models": {
  *     "default": "o4-mini",
  *     "team": "gpt-4.1"
+ *   },
+ *   "agentReasoning": {
+ *     "architect": "xhigh"
  *   }
  * }
  *
@@ -32,7 +35,10 @@ export interface OmxConfigEnv {
   [key: string]: string | undefined;
 }
 
+export type ConfiguredAgentReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+
 interface OmxConfigFile {
+  agentReasoning?: Record<string, unknown>;
   env?: OmxConfigEnv;
   models?: ModelsConfig;
 }
@@ -95,6 +101,24 @@ function normalizeConfiguredValue(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function normalizeAgentReasoningEffort(value: unknown): ConfiguredAgentReasoningEffort | undefined {
+  const normalized = normalizeConfiguredValue(value)?.toLowerCase();
+  if (
+    normalized === 'low' ||
+    normalized === 'medium' ||
+    normalized === 'high' ||
+    normalized === 'xhigh'
+  ) {
+    return normalized;
+  }
+  return undefined;
+}
+
+function normalizeAgentName(value: unknown): string | undefined {
+  const normalized = normalizeConfiguredValue(value)?.toLowerCase();
+  return normalized && /^[a-z0-9][a-z0-9_-]*$/.test(normalized) ? normalized : undefined;
+}
+
 function readConfigEnvValue(key: string, codexHomeOverride?: string): string | undefined {
   const config = readOmxConfigFile(codexHomeOverride);
   if (!config || !config.env || typeof config.env !== 'object' || Array.isArray(config.env)) {
@@ -125,6 +149,31 @@ export function readConfiguredEnvOverrides(codexHomeOverride?: string): NodeJS.P
     if (normalized) resolved[key] = normalized;
   }
   return resolved;
+}
+
+export function readAgentReasoningOverrides(
+  codexHomeOverride?: string,
+): Record<string, ConfiguredAgentReasoningEffort> {
+  const config = readOmxConfigFile(codexHomeOverride);
+  const raw = config?.agentReasoning;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+
+  const resolved: Record<string, ConfiguredAgentReasoningEffort> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const role = normalizeAgentName(key);
+    const effort = normalizeAgentReasoningEffort(value);
+    if (role && effort) resolved[role] = effort;
+  }
+  return resolved;
+}
+
+export function getAgentReasoningOverride(
+  agentName: string | undefined,
+  codexHomeOverride?: string,
+): ConfiguredAgentReasoningEffort | undefined {
+  const normalized = normalizeAgentName(agentName);
+  if (!normalized) return undefined;
+  return readAgentReasoningOverrides(codexHomeOverride)[normalized];
 }
 
 export function readActiveProviderEnvOverrides(

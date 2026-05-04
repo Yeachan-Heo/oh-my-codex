@@ -7,6 +7,7 @@ import {
   DEFAULT_FRONTIER_MODEL,
   DEFAULT_SPARK_MODEL,
   DEFAULT_TEAM_CHILD_MODEL,
+  getAgentReasoningOverride,
   getEnvConfiguredStandardDefaultModel,
   getMainDefaultModel,
   getModelForMode,
@@ -14,6 +15,7 @@ import {
   getStandardDefaultModel,
   getTeamChildModel,
   getTeamLowComplexityModel,
+  readAgentReasoningOverrides,
   readConfiguredEnvOverrides,
 } from '../models.js';
 
@@ -243,6 +245,25 @@ describe('getModelForMode', () => {
       OMX_DEFAULT_STANDARD_MODEL: 'standard-local',
       OMX_DEFAULT_SPARK_MODEL: 'spark-local',
     });
+  });
+
+  it('reads normalized per-agent reasoning overrides from .omx-config.json', async () => {
+    await writeConfig({
+      agentReasoning: {
+        Architect: ' xhigh ',
+        critic: 'high',
+        executor: 'invalid',
+        'bad role': 'low',
+        empty: '   ',
+      },
+    });
+
+    assert.deepEqual(readAgentReasoningOverrides(), {
+      architect: 'xhigh',
+      critic: 'high',
+    });
+    assert.equal(getAgentReasoningOverride('ARCHITECT'), 'xhigh');
+    assert.equal(getAgentReasoningOverride('executor'), undefined);
   });
 
   it('keeps explicit low-complexity config ahead of OMX_DEFAULT_SPARK_MODEL', async () => {
