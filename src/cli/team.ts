@@ -38,6 +38,7 @@ import {
   resolvePersistedApprovedTeamExecutionContinuityStateSync,
   type ApprovedTeamExecutionBinding,
 } from '../team/approved-execution.js';
+import { resolveCodexHomeForLaunch } from './codex-home.js';
 
 interface TeamCliOptions {
   verbose?: boolean;
@@ -1309,6 +1310,7 @@ export function buildLeaderMonitoringHints(teamName: string): string[] {
 
 export async function teamCommand(args: string[], _options: TeamCliOptions = {}): Promise<void> {
   const cwd = process.cwd();
+  const codexHomeOverride = resolveCodexHomeForLaunch(cwd, process.env);
   const parsedWorktree = parseWorktreeMode(args);
   const worktreeMode = resolveDefaultTeamWorktreeMode(parsedWorktree.mode);
   const teamArgs = parsedWorktree.remainingArgs;
@@ -1559,6 +1561,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     const staffingPlan = buildFollowupStaffingPlan('team', runtime.config.task, availableAgentTypes, {
       workerCount: runtime.config.worker_count,
       fallbackRole: resolveImplicitTeamFallbackRole(runtime.config.agent_type, false),
+      codexHomeOverride,
     });
     await renderStartSummary(runtime, staffingPlan);
     return;
@@ -1616,6 +1619,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
   const staffingPlan = buildFollowupStaffingPlan('team', parsed.task, availableAgentTypes, {
     workerCount: executionPlan.workerCount,
     fallbackRole: resolveImplicitTeamFallbackRole(parsed.agentType, parsed.explicitAgentType),
+    codexHomeOverride,
   });
   const runtime = await startTeam(
     parsed.teamName,
@@ -1625,6 +1629,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     tasks,
     cwd,
     {
+      codexHomeOverride,
       worktreeMode,
       decompositionMetadata: executionPlan.metadata,
       approvedExecution: parsed.approvedExecution ?? null,

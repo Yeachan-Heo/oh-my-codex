@@ -12,6 +12,7 @@ import { readModeState } from '../../modes/base.js';
 import { readApprovedExecutionLaunchHint } from '../../planning/artifacts.js';
 import { DEFAULT_MAX_WORKERS } from '../../team/state.js';
 import { sameFilePath } from '../../utils/paths.js';
+import { shutdownTeam } from '../../team/runtime.js';
 import {
   appendTeamEvent,
   createTask,
@@ -2275,6 +2276,115 @@ describe('teamCommand status', () => {
 });
 
 describe('teamCommand await', () => {
+  it('applies project-scope agentReasoning overrides when CODEX_HOME is unset', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-project-reasoning-'));
+    const binDir = join(wd, 'bin');
+    const fakeCodexPath = join(binDir, 'codex');
+    const captureDir = join(wd, 'captures');
+    const previousCwd = process.cwd();
+    const previousPath = process.env.PATH;
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousTmux = process.env.TMUX;
+    const previousLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const previousWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const previousCaptureDir = process.env.OMX_ARGV_CAPTURE_DIR;
+    const previousLaunchArgs = process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+    const previousSkipReadyWait = process.env.OMX_TEAM_SKIP_READY_WAIT;
+    const logs: string[] = [];
+    const originalLog = console.log;
+    const teamTask = 'project scoped architect reasoning override';
+    let displayTeamName = '';
+
+    await mkdir(binDir, { recursive: true });
+    await mkdir(captureDir, { recursive: true });
+    await mkdir(join(wd, '.omx'), { recursive: true });
+    await mkdir(join(wd, '.codex', 'prompts'), { recursive: true });
+    await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }, null, 2));
+    await writeFile(join(wd, '.codex', '.omx-config.json'), JSON.stringify({
+      agentReasoning: {
+        architect: 'xhigh',
+      },
+    }, null, 2));
+    await writeFile(join(wd, '.codex', 'prompts', 'architect.md'), '<identity>You are Architect.</identity>');
+    await writeFile(
+      fakeCodexPath,
+      `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const worker = String(process.env.OMX_TEAM_WORKER || 'unknown').replace(/[^a-zA-Z0-9_-]+/g, '__');
+const out = path.join(process.env.OMX_ARGV_CAPTURE_DIR, worker + '.json');
+fs.writeFileSync(out, JSON.stringify({
+  argv: process.argv.slice(2),
+  codexHome: process.env.CODEX_HOME || null,
+  worker,
+}, null, 2));
+process.stdin.resume();
+setTimeout(() => process.exit(0), 5000);
+process.on('SIGTERM', () => process.exit(0));
+`,
+      { mode: 0o755 },
+    );
+
+    let runtimeTeamName: string | null = null;
+    try {
+      process.chdir(wd);
+      process.env.PATH = `${binDir}:${previousPath ?? ''}`;
+      delete process.env.CODEX_HOME;
+      delete process.env.TMUX;
+      delete process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+      process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
+      process.env.OMX_TEAM_WORKER_CLI = 'codex';
+      process.env.OMX_ARGV_CAPTURE_DIR = captureDir;
+      process.env.OMX_TEAM_SKIP_READY_WAIT = '1';
+      console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
+      displayTeamName = parseTeamStartArgs(['1:architect', teamTask]).parsed.teamName;
+
+      await withMockPromptModeCodexAllowed(() =>
+        withoutTeamTestWorkerEnv(() => teamCommand(['1:architect', teamTask])));
+
+      const startedState = await readModeState('team', wd);
+      runtimeTeamName = String(startedState?.team_name ?? parseTeamStartArgs(['1:architect', teamTask]).parsed.teamName);
+
+      let captured: { argv: string[]; codexHome: string | null } | null = null;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const capturePath = join(captureDir, `${displayTeamName}__worker-1.json`);
+        if (existsSync(capturePath)) {
+          captured = JSON.parse(await readFile(capturePath, 'utf-8')) as { argv: string[]; codexHome: string | null };
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      assert.ok(captured, 'worker argv capture file should be written');
+      assert.equal(captured!.codexHome, join(process.cwd(), '.codex'));
+      assert.match(captured!.argv.join(' '), /model_reasoning_effort="xhigh"/);
+      assert.match(logs.join('\n'), /architect x1 .*xhigh reasoning/);
+    } finally {
+      console.log = originalLog;
+      if (runtimeTeamName) {
+        await shutdownTeam(runtimeTeamName, wd, { force: true }).catch(() => {});
+      }
+      process.chdir(previousCwd);
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      if (typeof previousCodexHome === 'string') process.env.CODEX_HOME = previousCodexHome;
+      else delete process.env.CODEX_HOME;
+      if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
+      else delete process.env.TMUX;
+      if (typeof previousLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = previousLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof previousWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = previousWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof previousCaptureDir === 'string') process.env.OMX_ARGV_CAPTURE_DIR = previousCaptureDir;
+      else delete process.env.OMX_ARGV_CAPTURE_DIR;
+      if (typeof previousLaunchArgs === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_ARGS = previousLaunchArgs;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_ARGS;
+      if (typeof previousSkipReadyWait === 'string') process.env.OMX_TEAM_SKIP_READY_WAIT = previousSkipReadyWait;
+      else delete process.env.OMX_TEAM_SKIP_READY_WAIT;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('returns next canonical event for a team in JSON mode', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-await-'));
     const previousCwd = process.cwd();

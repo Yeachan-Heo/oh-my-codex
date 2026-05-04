@@ -1261,6 +1261,7 @@ export interface StaleTeamSummary {
 }
 
 export interface TeamStartOptions {
+  codexHomeOverride?: string;
   worktreeMode?: WorktreeMode;
   decompositionMetadata?: TeamDecompositionMetadata;
   confirmStaleCleanup?: (summary: StaleTeamSummary) => Promise<boolean>;
@@ -2210,12 +2211,20 @@ export async function startTeam(
   options: TeamStartOptions = {},
 ): Promise<TeamRuntime> {
   const leaderCwd = resolve(cwd);
+  const codexHomeOverride = typeof options.codexHomeOverride === 'string' && options.codexHomeOverride.trim() !== ''
+    ? options.codexHomeOverride.trim()
+    : (typeof process.env.CODEX_HOME === 'string' && process.env.CODEX_HOME.trim() !== ''
+        ? process.env.CODEX_HOME.trim()
+        : undefined);
+  const launchEnv = codexHomeOverride
+    ? { ...process.env, CODEX_HOME: codexHomeOverride }
+    : process.env;
   await assertNestedTeamAllowed(leaderCwd);
   const effectiveWorktreeMode = resolveEffectiveTeamWorktreeMode(leaderCwd, options.worktreeMode);
   const displayName = sanitizeTeamName(teamName);
-  const workerLaunchMode = resolveTeamWorkerLaunchMode(process.env);
+  const workerLaunchMode = resolveTeamWorkerLaunchMode(launchEnv);
   const displayMode = workerLaunchMode === 'interactive' ? 'split_pane' : 'auto';
-  const rawIdentityScope = resolveTeamIdentityScope(process.env);
+  const rawIdentityScope = resolveTeamIdentityScope(launchEnv);
   const resolvedLeaderSessionId = await resolveLeaderSessionId(leaderCwd);
   const identityScope = rawIdentityScope.source === 'run-id'
     ? (resolvedLeaderSessionId
@@ -2313,21 +2322,21 @@ export async function startTeam(
   let createdLeaderPaneId: string | undefined;
   let config: TeamConfig | null = null;
   const sharedWorkerLaunchArgs = resolveTeamWorkerLaunchArgs({
-    existingRaw: process.env.OMX_TEAM_WORKER_LAUNCH_ARGS,
-    fallbackModel: resolveAgentDefaultModel(agentType, process.env.CODEX_HOME),
+    existingRaw: launchEnv.OMX_TEAM_WORKER_LAUNCH_ARGS,
+    fallbackModel: resolveAgentDefaultModel(agentType, codexHomeOverride),
   });
-  const workerCliPlan = resolveTeamWorkerCliPlan(workerCount, sharedWorkerLaunchArgs, process.env);
+  const workerCliPlan = resolveTeamWorkerCliPlan(workerCount, sharedWorkerLaunchArgs, launchEnv);
   if (workerLaunchMode === 'prompt') {
     assertPromptModeWorkerCliSupported(workerCliPlan);
   }
-  const workerReadyTimeoutMs = resolveWorkerReadyTimeoutMs(process.env);
+  const workerReadyTimeoutMs = resolveWorkerReadyTimeoutMs(launchEnv);
   const workerStartupEvidenceTimeoutMs = resolveWorkerStartupEvidenceTimeoutMs(
-    process.env,
+    launchEnv,
     workerReadyTimeoutMs,
   );
-  const startupDispatchRetries = resolveStartupDispatchRetries(process.env);
-  const startupRetryDelayS = resolveStartupDispatchRetryDelayS(process.env);
-  const skipWorkerReadyWait = shouldSkipWorkerReadyWait(process.env);
+  const startupDispatchRetries = resolveStartupDispatchRetries(launchEnv);
+  const startupRetryDelayS = resolveStartupDispatchRetryDelayS(launchEnv);
+  const skipWorkerReadyWait = shouldSkipWorkerReadyWait(launchEnv);
 
   try {
     // 3. Init state directory + config
@@ -2339,7 +2348,7 @@ export async function startTeam(
       leaderCwd,
       DEFAULT_MAX_WORKERS,
       {
-        ...process.env,
+        ...launchEnv,
         OMX_SESSION_ID: leaderSessionId,
         OMX_TEAM_DISPLAY_MODE: displayMode,
         OMX_TEAM_WORKER_LAUNCH_MODE: workerLaunchMode,
@@ -2460,10 +2469,10 @@ export async function startTeam(
       const runtimeRole = workerRole;
       const rawRolePromptContent = await loadRolePrompt(runtimeRole, join(leaderCwd, '.codex', 'prompts'))
         ?? await loadRolePrompt(runtimeRole, codexPromptsDir());
-      const preferredReasoning = resolveAgentReasoningEffort(runtimeRole, process.env.CODEX_HOME)
-        ?? resolveAgentReasoningEffort(agentType, process.env.CODEX_HOME);
+      const preferredReasoning = resolveAgentReasoningEffort(runtimeRole, codexHomeOverride)
+        ?? resolveAgentReasoningEffort(agentType, codexHomeOverride);
       const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(
-        process.env,
+        launchEnv,
         runtimeRole,
         undefined,
         preferredReasoning,
@@ -2529,6 +2538,7 @@ export async function startTeam(
         [TEAM_LEADER_CWD_ENV]: leaderCwd,
         [MODEL_INSTRUCTIONS_FILE_ENV]: plan.instructionsFilePath,
         OMX_TEAM_DISPLAY_NAME: displayName,
+        ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
       };
       if (plan.workerWorkspace.worktreePath) {
         env.OMX_TEAM_WORKTREE_PATH = plan.workerWorkspace.worktreePath;
