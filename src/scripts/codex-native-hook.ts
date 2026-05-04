@@ -266,7 +266,7 @@ async function nativeSubagentSessionStartBelongsToCanonicalSession(
   return summary.allThreadIds.includes(parentThreadId);
 }
 
-async function isNativeSubagentPromptSubmit(
+async function isNativeSubagentHook(
   cwd: string,
   canonicalSessionId: string,
   nativeSessionId: string,
@@ -2355,6 +2355,7 @@ async function buildStopHookOutput(
   payload: CodexHookPayload,
   cwd: string,
   stateDir: string,
+  options: { skipRalphStopBlock?: boolean } = {},
 ): Promise<Record<string, unknown> | null> {
   if (isStopExempt(payload)) {
     return null;
@@ -2365,11 +2366,13 @@ async function buildStopHookOutput(
   const threadId = readPayloadThreadId(payload);
   const execFollowupOutput = await buildExecFollowupStopOutput(cwd, canonicalSessionId);
   if (execFollowupOutput) return execFollowupOutput;
-  const ralphState = await readActiveRalphState(stateDir, canonicalSessionId, {
-    payloadSessionId: sessionId,
-    threadId,
-    tmuxPaneId: safeString(process.env.TMUX_PANE).trim(),
-  });
+  const ralphState = options.skipRalphStopBlock === true
+    ? null
+    : await readActiveRalphState(stateDir, canonicalSessionId, {
+      payloadSessionId: sessionId,
+      threadId,
+      tmuxPaneId: safeString(process.env.TMUX_PANE).trim(),
+    });
   if (!ralphState) {
     const autoresearchState = await readActiveAutoresearchState(cwd, canonicalSessionId);
     if (autoresearchState) {
@@ -2691,7 +2694,16 @@ export async function dispatchCodexNativeHook(
   const sessionIdForState = canonicalSessionId || nativeSessionId;
   let outputJson: Record<string, unknown> | null = null;
   const isSubagentPromptSubmit = hookEventName === "UserPromptSubmit"
-    ? await isNativeSubagentPromptSubmit(cwd, canonicalSessionId, nativeSessionId, threadId)
+    ? await isNativeSubagentHook(cwd, canonicalSessionId, nativeSessionId, threadId)
+    : false;
+  const isSubagentStop = hookEventName === "Stop"
+    ? (await Promise.all(
+      [...new Set([
+        canonicalSessionId,
+        safeString(currentSessionState?.session_id).trim(),
+      ].filter(Boolean))]
+        .map((candidateSessionId) => isNativeSubagentHook(cwd, candidateSessionId, nativeSessionId, threadId)),
+    )).some(Boolean)
     : false;
 
   if (hookEventName === "UserPromptSubmit") {
@@ -2840,7 +2852,9 @@ export async function dispatchCodexNativeHook(
     outputJson = buildNativePostToolUseOutput(payload);
     await handleTeamWorkerPostToolUseSuccess(payload, cwd);
   } else if (hookEventName === "Stop") {
-    outputJson = await buildStopHookOutput(payload, cwd, stateDir);
+    outputJson = await buildStopHookOutput(payload, cwd, stateDir, {
+      skipRalphStopBlock: isSubagentStop,
+    });
   }
 
   return {

@@ -7100,6 +7100,98 @@ exit 0
     }
   });
 
+  it("allows native verifier subagent Stop to complete while leader Ralph remains active", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-ralph-subagent-verdict-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const omxSessionId = "sess-ralph-leader-verifier";
+      const leaderNativeSessionId = "codex-ralph-leader-verifier";
+      const childNativeSessionId = "codex-verifier-child";
+      await mkdir(join(stateDir, "sessions", omxSessionId), { recursive: true });
+      await writeSessionStart(cwd, omxSessionId, {
+        nativeSessionId: leaderNativeSessionId,
+      });
+      await writeJson(join(stateDir, "sessions", omxSessionId, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "verifying",
+        session_id: omxSessionId,
+        owner_omx_session_id: omxSessionId,
+        owner_codex_session_id: leaderNativeSessionId,
+      });
+
+      const transcriptPath = join(cwd, "verifier-subagent-rollout.jsonl");
+      await writeFile(
+        transcriptPath,
+        `${JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: childNativeSessionId,
+            source: {
+              subagent: {
+                thread_spawn: {
+                  parent_thread_id: leaderNativeSessionId,
+                  depth: 1,
+                  agent_nickname: "Verifier",
+                  agent_role: "verifier",
+                },
+              },
+            },
+            agent_nickname: "Verifier",
+            agent_role: "verifier",
+          },
+        })}\n`,
+      );
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: childNativeSessionId,
+          transcript_path: transcriptPath,
+        },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+
+      const childStop = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: childNativeSessionId,
+          thread_id: childNativeSessionId,
+          last_assistant_message: "Verdict: APPROVED. Evidence is sufficient.",
+        },
+        { cwd },
+      );
+
+      assert.equal(childStop.omxEventName, "stop");
+      assert.equal(childStop.outputJson, null);
+
+      const leaderStop = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: leaderNativeSessionId,
+          thread_id: leaderNativeSessionId,
+          last_assistant_message: "Waiting on verification integration.",
+        },
+        { cwd },
+      );
+
+      assert.equal(leaderStop.omxEventName, "stop");
+      assert.deepEqual(leaderStop.outputJson, {
+        decision: "block",
+        reason:
+          "OMX Ralph is still active (phase: verifying; state: .omx/state/sessions/sess-ralph-leader-verifier/ralph-state.json); continue the task and gather fresh verification evidence before stopping.",
+        stopReason: "ralph_verifying",
+        systemMessage:
+          "OMX Ralph is still active (phase: verifying; state: .omx/state/sessions/sess-ralph-leader-verifier/ralph-state.json); continue the task and gather fresh verification evidence before stopping.",
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("prefers canonical run-state terminal lifecycle before stale session Ralph state during Stop", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-canonical-run-state-ralph-"));
     try {
