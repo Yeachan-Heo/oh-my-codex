@@ -3023,6 +3023,108 @@ exit 0
     }
   });
 
+  it("allows non-Lore git commit messages when the Lore commit guard is explicitly disabled", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-git-commit-lore-disabled-"));
+    const original = process.env.OMX_LORE_COMMIT_GUARD;
+    try {
+      process.env.OMX_LORE_COMMIT_GUARD = "0";
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-lore-disabled",
+          tool_input: { command: 'git commit -m "fix: use conventional commit"' },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      if (original === undefined) delete process.env.OMX_LORE_COMMIT_GUARD;
+      else process.env.OMX_LORE_COMMIT_GUARD = original;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("treats Lore commit guard disabled values as trim and case tolerant", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-git-commit-lore-off-"));
+    const original = process.env.OMX_LORE_COMMIT_GUARD;
+    try {
+      process.env.OMX_LORE_COMMIT_GUARD = " OFF ";
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-lore-off",
+          tool_input: { command: 'git commit -m "chore: conventional commit"' },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      if (original === undefined) delete process.env.OMX_LORE_COMMIT_GUARD;
+      else process.env.OMX_LORE_COMMIT_GUARD = original;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps Lore commit enforcement enabled for unknown guard values", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-git-commit-lore-unknown-"));
+    const original = process.env.OMX_LORE_COMMIT_GUARD;
+    try {
+      process.env.OMX_LORE_COMMIT_GUARD = "maybe";
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-lore-unknown",
+          tool_input: { command: 'git commit -m "fix tests"' },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /Lore protocol/);
+    } finally {
+      if (original === undefined) delete process.env.OMX_LORE_COMMIT_GUARD;
+      else process.env.OMX_LORE_COMMIT_GUARD = original;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("continues to later PreToolUse checks when Lore commit guard is disabled", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-lore-disabled-destructive-"));
+    const original = process.env.OMX_LORE_COMMIT_GUARD;
+    try {
+      process.env.OMX_LORE_COMMIT_GUARD = "false";
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-lore-disabled-destructive",
+          tool_input: { command: "rm -rf dist" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.doesNotMatch(JSON.stringify(result.outputJson), /Lore protocol/);
+      assert.match(JSON.stringify(result.outputJson), /Destructive Bash command detected/);
+    } finally {
+      if (original === undefined) delete process.env.OMX_LORE_COMMIT_GUARD;
+      else process.env.OMX_LORE_COMMIT_GUARD = original;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("stays silent on PreToolUse for `git help commit`", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-git-help-commit-"));
     try {

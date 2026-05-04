@@ -2,6 +2,7 @@ import {
   buildDocumentRefreshAdvisoryOutput,
   evaluateStagedDocumentRefresh,
 } from "../document-refresh/enforcer.js";
+import { isLoreCommitGuardEnabled } from "../config/commit-lore-guard.js";
 import { resolveCodexExecutionSurface } from "./codex-execution-surface.js";
 
 type CodexHookPayload = Record<string, unknown>;
@@ -575,6 +576,8 @@ function buildGitCommitComplianceErrors(message: string | null): string[] {
 }
 
 function buildGitCommitEnforcementOutput(commandText: string): Record<string, unknown> | null {
+  if (!isLoreCommitGuardEnabled()) return null;
+
   const parsed = parseGitCommitCommand(commandText);
   if (!parsed.isGitCommit) return null;
 

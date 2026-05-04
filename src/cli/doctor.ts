@@ -37,6 +37,10 @@ import {
 	OMX_EXPLORE_CMD_ENV,
 	isExploreCommandRoutingEnabled,
 } from "../hooks/explore-routing.js";
+import {
+	OMX_LORE_COMMIT_GUARD_ENV,
+	isLoreCommitGuardEnabled,
+} from "../config/commit-lore-guard.js";
 import { isLeaderRuntimeStale } from "../team/leader-activity.js";
 import { triagePrompt } from "../hooks/triage-heuristic.js";
 import { readTriageConfig } from "../hooks/triage-config.js";
@@ -169,6 +173,9 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
 	// Check 4.5: Explore routing default
 	checks.push(await checkExploreRouting(paths.configPath));
+
+	// Check 4.6: Lore commit guard default
+	checks.push(await checkLoreCommitGuard(paths.configPath));
 
 	// Check 5: Prompts installed
 	checks.push(
@@ -903,6 +910,66 @@ async function checkExploreRouting(configPath: string): Promise<Check> {
 			name: "Explore routing",
 			status: "fail",
 			message: "cannot read config.toml for explore routing check",
+		};
+	}
+}
+
+async function checkLoreCommitGuard(configPath: string): Promise<Check> {
+	const envValue = process.env[OMX_LORE_COMMIT_GUARD_ENV];
+	if (
+		typeof envValue === "string" &&
+		!isLoreCommitGuardEnabled(process.env)
+	) {
+		return {
+			name: "Lore commit guard",
+			status: "warn",
+			message:
+				"disabled by environment override; enable with OMX_LORE_COMMIT_GUARD=1 (or remove the explicit opt-out)",
+		};
+	}
+
+	if (!existsSync(configPath)) {
+		return {
+			name: "Lore commit guard",
+			status: "pass",
+			message: "enabled by default (config.toml not found yet)",
+		};
+	}
+
+	try {
+		const content = await readFile(configPath, "utf-8");
+		const parsed = parseToml(content) as {
+			env?: Record<string, unknown>;
+			shell_environment_policy?: { set?: Record<string, unknown> };
+		};
+		const configuredValue =
+			parsed?.shell_environment_policy?.set?.[OMX_LORE_COMMIT_GUARD_ENV] ??
+			parsed?.env?.[OMX_LORE_COMMIT_GUARD_ENV];
+
+		if (
+			typeof configuredValue === "string" &&
+			!isLoreCommitGuardEnabled({
+				[OMX_LORE_COMMIT_GUARD_ENV]: configuredValue,
+			})
+		) {
+			return {
+				name: "Lore commit guard",
+				status: "warn",
+				message:
+					'disabled in config.toml; set OMX_LORE_COMMIT_GUARD = "1" under [shell_environment_policy.set] to restore default Lore commit enforcement',
+			};
+		}
+
+		return {
+			name: "Lore commit guard",
+			status: "pass",
+			message: "enabled by default",
+		};
+	} catch {
+		return {
+			name: "Lore commit guard",
+			status: "fail",
+			message: "cannot read config.toml for Lore commit guard check",
 		};
 	}
 }

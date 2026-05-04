@@ -31,7 +31,7 @@ OMX only owns the wrapper entries that invoke `dist/scripts/codex-native-hook.js
 | `session-start` | `SessionStart` | `session-start` | native | Native adapter refreshes leader session bookkeeping, preserves the canonical leader scope when a native subagent `SessionStart` is detected from rollout `session_meta`, restores startup developer context, and ensures `.omx/` is gitignored at the repo root |
 | wiki startup context | `SessionStart` | `session-start` | native | Wiki session-start context can append a compact `.omx/wiki/` summary when wiki pages exist; startup writes stay config-gated |
 | `keyword-detector` | `UserPromptSubmit` | `keyword-detector` | native | Persists skill activation state and can add prompt-side developer context for top-level prompts; native subagent prompt text is treated as delegated task text, so literal workflow keywords inside a child prompt do not activate nested workflow state; `$ralph` prompt routing seeds workflow state only and does not launch `omx ralph --prd ...` |
-| `pre-tool-use` | `PreToolUse` (`Bash`) | `pre-tool-use` | native-partial | Current native scope is Bash-only; built-in native behavior cautions on `rm -rf dist`, blocks inspectable inline `git commit` commands until Lore-format structure + the required `Co-authored-by: OmX <omx@oh-my-codex.dev>` trailer are present, and emits non-blocking document-refresh warnings for mapped staged commit changes that lack rule-scoped docs/spec refresh evidence |
+| `pre-tool-use` | `PreToolUse` (`Bash`) | `pre-tool-use` | native-partial | Current native scope is Bash-only; built-in native behavior cautions on `rm -rf dist`, blocks inspectable inline `git commit` commands until Lore-format structure + the required `Co-authored-by: OmX <omx@oh-my-codex.dev>` trailer are present unless explicitly opted out with `OMX_LORE_COMMIT_GUARD=0`, and emits non-blocking document-refresh warnings for mapped staged commit changes that lack rule-scoped docs/spec refresh evidence |
 | `post-tool-use` | `PostToolUse` (`Bash`) | `post-tool-use` | native-partial | Current native scope is Bash-only; built-in native behavior covers command-not-found / permission-denied / missing-path guidance only from stderr or non-zero Bash results, ignores failure-looking strings from successful source/log reads, and keeps MCP transport-death guidance scoped to MCP-like tool calls; document-refresh commit warnings use PreToolUse advisory output, with PostToolUse reserved as a future fallback if Codex advisory semantics change |
 | Ralph/persistence stop handling | `Stop` | `stop` | native-partial | Native adapter uses the documented native Stop continuation contract (`decision: "block"` + `reason`) for active Ralph runs, emits a single JSON object on Stop stdout even for no-op Stop decisions, and emits deterministic JSON continuation output if Stop dispatch fails before normal handling |
 | Autopilot continuation | `Stop` | `stop` | native-partial | Native adapter continues non-terminal autopilot sessions from active session/root mode state |
@@ -58,7 +58,26 @@ The native hook adapter includes an agent-only document-refresh warning MVP for
 spec-driven development hygiene. It does **not** install a generic CI gate, does
 **not** add a repo-wide pre-commit framework, and must not hard-block `git
 commit` for document-refresh reasons. Existing Lore commit blocking remains
-separate and still wins when an inline commit message is not Lore-compliant.
+separate and still wins when an inline commit message is not Lore-compliant,
+unless the Lore commit guard is explicitly disabled.
+
+## Lore commit guard opt-out
+
+Lore commit enforcement is enabled by default. To use conventional commits or
+another local commit policy while keeping OMX-managed native hooks installed,
+set `OMX_LORE_COMMIT_GUARD` to `0`, `false`, `no`, or `off`.
+
+For persistent Codex CLI usage, place the opt-out in `config.toml`:
+
+```toml
+[shell_environment_policy.set]
+OMX_LORE_COMMIT_GUARD = "0"
+```
+
+The opt-out disables only the Lore-style `git commit` blocking guard. Other
+native `PreToolUse` checks, including document-refresh warnings and command
+safety checks, still run. `omx doctor` reports when the guard is explicitly
+disabled by environment or config.
 
 Warning scope is intentionally narrow and rule-scoped:
 
