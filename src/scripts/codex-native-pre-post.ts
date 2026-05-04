@@ -287,6 +287,7 @@ function tokenizeShellCommand(commandText: string): string[] | null {
 
 interface GitCommitCommandParseResult {
   isGitCommit: boolean;
+  inlineEnvironment: NodeJS.ProcessEnv;
   inlineMessage: string | null;
   repositorySelection: GitRepositorySelection;
   requiresExternalMessageSource: boolean;
@@ -420,11 +421,54 @@ function readGitRepositorySelection(tokens: string[], gitTokenIndex: number, sub
   return "current-cwd";
 }
 
+function readInlineEnvironmentAssignments(tokens: string[], gitTokenIndex: number): NodeJS.ProcessEnv {
+  const inlineEnvironment: NodeJS.ProcessEnv = {};
+  const recordAssignment = (token: string) => {
+    const separatorIndex = token.indexOf("=");
+    const name = token.slice(0, separatorIndex);
+    inlineEnvironment[name] = token.slice(separatorIndex + 1);
+  };
+
+  let index = 0;
+  while (index < gitTokenIndex && isInlineShellEnvAssignment(tokens[index] ?? "")) {
+    recordAssignment(tokens[index] ?? "");
+    index += 1;
+  }
+
+  while (index < gitTokenIndex && isEnvExecutableToken(tokens[index] ?? "")) {
+    index += 1;
+    while (index < gitTokenIndex) {
+      const token = tokens[index] ?? "";
+      if (token === "--") {
+        index += 1;
+        break;
+      }
+      if (isInlineShellEnvAssignment(token)) {
+        recordAssignment(token);
+        index += 1;
+        continue;
+      }
+      if (token.startsWith("-")) {
+        index += envOptionConsumesNextValue(token) ? 2 : 1;
+        continue;
+      }
+      break;
+    }
+    while (index < gitTokenIndex && isInlineShellEnvAssignment(tokens[index] ?? "")) {
+      recordAssignment(tokens[index] ?? "");
+      index += 1;
+    }
+  }
+
+  return inlineEnvironment;
+}
+
 export function parseGitCommitCommand(commandText: string): GitCommitCommandParseResult {
   const tokens = tokenizeShellCommand(commandText);
   if (!tokens) {
     return {
       isGitCommit: false,
+      inlineEnvironment: {},
       inlineMessage: null,
       repositorySelection: "current-cwd",
       requiresExternalMessageSource: false,
@@ -435,6 +479,7 @@ export function parseGitCommitCommand(commandText: string): GitCommitCommandPars
   if (gitTokenIndex < 0 || !isGitExecutableToken(tokens[gitTokenIndex] ?? "")) {
     return {
       isGitCommit: false,
+      inlineEnvironment: {},
       inlineMessage: null,
       repositorySelection: "current-cwd",
       requiresExternalMessageSource: false,
@@ -445,6 +490,7 @@ export function parseGitCommitCommand(commandText: string): GitCommitCommandPars
   if (subcommandIndex < 0 || tokens[subcommandIndex]?.toLowerCase() !== "commit") {
     return {
       isGitCommit: false,
+      inlineEnvironment: {},
       inlineMessage: null,
       repositorySelection: "current-cwd",
       requiresExternalMessageSource: false,
@@ -452,6 +498,7 @@ export function parseGitCommitCommand(commandText: string): GitCommitCommandPars
   }
 
   const repositorySelection = readGitRepositorySelection(tokens, gitTokenIndex, subcommandIndex);
+  const inlineEnvironment = readInlineEnvironmentAssignments(tokens, gitTokenIndex);
   const messageParts: string[] = [];
   let requiresExternalMessageSource = false;
   const args = tokens.slice(subcommandIndex + 1);
@@ -493,6 +540,7 @@ export function parseGitCommitCommand(commandText: string): GitCommitCommandPars
 
   return {
     isGitCommit: true,
+    inlineEnvironment,
     inlineMessage: messageParts.length > 0 ? messageParts.join("\n\n").trim() : null,
     repositorySelection,
     requiresExternalMessageSource,
@@ -576,10 +624,10 @@ function buildGitCommitComplianceErrors(message: string | null): string[] {
 }
 
 function buildGitCommitEnforcementOutput(commandText: string): Record<string, unknown> | null {
-  if (!isLoreCommitGuardEnabled()) return null;
-
   const parsed = parseGitCommitCommand(commandText);
   if (!parsed.isGitCommit) return null;
+
+  if (!isLoreCommitGuardEnabled({ ...process.env, ...parsed.inlineEnvironment })) return null;
 
   const errors = parsed.requiresExternalMessageSource
     ? [
