@@ -10,6 +10,7 @@ Resolved setup scope: user
   [!!] Config: config.toml exists but no OMX entries yet (expected before first setup; run "omx setup --force" once)
   [OK] Native hooks: hooks.json not found yet (expected before first setup)
   [OK] Explore routing: enabled by default
+  [OK] Lore commit guard: enabled by default
   [!!] Prompts: prompts directory not found
   [!!] Skills: skills directory not found
   [OK] Legacy skill roots: no ~/.agents/skills overlap detected
