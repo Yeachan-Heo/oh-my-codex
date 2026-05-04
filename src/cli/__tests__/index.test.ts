@@ -1455,6 +1455,39 @@ describe("project launch scope helpers", () => {
     }
   });
 
+  it("uses boxed runtime root for project-scope CODEX_HOME mirrors", async () => {
+    const source = await mkdtemp(join(tmpdir(), "omx-launch-boxed-source-"));
+    const boxedRoot = await mkdtemp(join(tmpdir(), "omx-launch-boxed-root-"));
+    const prevOmxRoot = process.env.OMX_ROOT;
+    try {
+      process.env.OMX_ROOT = boxedRoot;
+      const projectCodexHome = join(source, ".codex");
+      await mkdir(join(source, ".omx"), { recursive: true });
+      await mkdir(projectCodexHome, { recursive: true });
+      await writeFile(
+        join(source, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+      await writeFile(join(projectCodexHome, "config.toml"), 'model = "gpt-5.5"\n');
+
+      const prepared = await prepareCodexHomeForLaunch(source, "session-boxed", {});
+      const runtimeCodexHome = runtimeCodexHomePath(source, "session-boxed");
+
+      assert.equal(
+        runtimeCodexHome,
+        join(boxedRoot, ".omx", "runtime", "codex-home", "session-boxed"),
+      );
+      assert.equal(prepared.codexHomeOverride, runtimeCodexHome);
+      assert.equal(prepared.runtimeCodexHomeForCleanup, runtimeCodexHome);
+      assert.equal(await readFile(join(runtimeCodexHome, "config.toml"), "utf-8"), 'model = "gpt-5.5"\n');
+    } finally {
+      if (typeof prevOmxRoot === "string") process.env.OMX_ROOT = prevOmxRoot;
+      else delete process.env.OMX_ROOT;
+      await rm(source, { recursive: true, force: true });
+      await rm(boxedRoot, { recursive: true, force: true });
+    }
+  });
+
   it("keeps explicit CODEX_HOME persistent instead of creating a runtime mirror", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-launch-runtime-codex-home-"));
     try {
@@ -1972,6 +2005,40 @@ describe("detached tmux new-session sequencing", () => {
     assert.equal(
       newSession!.args.includes("-e") &&
         newSession!.args.some((arg) => arg === "OMX_ROOT=/tmp/omx-root"),
+      true,
+    );
+  });
+
+  it("buildDetachedSessionBootstrapSteps forwards boxed env to detached tmux session", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-demo",
+      "/tmp/boxed-runtime",
+      "'codex' '--model' 'gpt-5'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      null,
+      undefined,
+      null,
+      false,
+      "sess-detached-managed",
+      undefined,
+      undefined,
+      "/tmp/boxed-runtime",
+      {
+        OMXBOX_ACTIVE: "1",
+        OMX_SOURCE_CWD: "/tmp/source-project",
+        OMX_STATE_ROOT: "/tmp/boxed-state-root",
+      },
+    );
+    const newSession = steps.find((step) => step.name === "new-session");
+    assert.ok(newSession);
+    assert.equal(newSession.args.some((arg) => arg === "OMX_ROOT=/tmp/boxed-runtime"), true);
+    assert.equal(
+      newSession.args.some((arg) => arg === "OMX_STATE_ROOT=/tmp/boxed-state-root"),
+      true,
+    );
+    assert.equal(newSession.args.some((arg) => arg === "OMXBOX_ACTIVE=1"), true);
+    assert.equal(
+      newSession.args.some((arg) => arg === "OMX_SOURCE_CWD=/tmp/source-project"),
       true,
     );
   });

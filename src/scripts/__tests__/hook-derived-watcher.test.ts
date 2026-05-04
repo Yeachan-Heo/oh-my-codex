@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync } from 'node:fs';
-import { appendFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -45,6 +45,50 @@ describe('hook-derived-watcher', () => {
     assert.match(source, /if \(currentSize < meta\.offset\) \{\s*meta\.offset = 0;\s*meta\.partial = '';/);
     assert.doesNotMatch(source, /const content = await readFile\(path, 'utf-8'\)[\s\S]*const delta = content\.slice\(meta\.offset\)/);
     assert.doesNotMatch(source, /stat\(path\)\.catch\(\(\) => \(\{ size: 0 \}\)\)/);
+  });
+
+  it('stores watcher state and logs under boxed runtime root when OMX_ROOT is set', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'omx-hook-derived-boxed-'));
+    const homeDir = join(base, 'home');
+    const cwd = join(base, 'cwd');
+    const boxedRoot = join(base, 'boxed-runtime');
+
+    try {
+      await mkdir(todaySessionDir(homeDir), { recursive: true });
+      await mkdir(cwd, { recursive: true });
+      const watcherScript = new URL('../hook-derived-watcher.js', import.meta.url).pathname;
+      const result = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', cwd, '--poll-ms', '250'],
+        {
+          cwd,
+          env: {
+            ...process.env,
+            HOME: homeDir,
+            OMX_ROOT: boxedRoot,
+            OMXBOX_ACTIVE: '1',
+            OMX_SOURCE_CWD: cwd,
+            OMX_HOOK_DERIVED_SIGNALS: '1',
+          },
+          encoding: 'utf8',
+        },
+      );
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(
+        existsSync(join(boxedRoot, '.omx', 'state', 'hook-derived-watcher-state.json')),
+        true,
+      );
+      assert.equal(
+        existsSync(join(cwd, '.omx', 'state', 'hook-derived-watcher-state.json')),
+        false,
+      );
+      const logDir = join(boxedRoot, '.omx', 'logs');
+      const logNames = await readdir(logDir);
+      assert.equal(logNames.some((name) => name.startsWith('hook-derived-watcher-')), true);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 
   it('dispatches needs-input for assistant_message content arrays', async () => {

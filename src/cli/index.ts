@@ -592,8 +592,11 @@ export interface PreparedCodexHomeForLaunch {
   runtimeCodexHomeForCleanup?: string;
 }
 
-export function runtimeCodexHomePath(cwd: string, sessionId: string): string {
-  return join(cwd, ".omx", "runtime", "codex-home", sessionId);
+export function runtimeCodexHomePath(
+  cwd: string,
+  sessionId: string,
+): string {
+  return join(omxRoot(cwd), "runtime", "codex-home", sessionId);
 }
 
 async function linkOrCopyCodexHomeEntry(source: string, destination: string): Promise<void> {
@@ -2448,6 +2451,7 @@ export function buildDetachedSessionBootstrapSteps(
   projectLocalCodexHomeForCleanup?: string,
   runtimeCodexHomeForCleanup?: string,
   omxRootOverride?: string,
+  env: NodeJS.ProcessEnv = process.env,
 ): DetachedSessionTmuxStep[] {
   const detachedLeaderCmd = nativeWindows
     ? "powershell.exe"
@@ -2477,6 +2481,9 @@ export function buildDetachedSessionBootstrapSteps(
     ...(sessionId ? ["-e", `${OMX_TMUX_HUD_OWNER_ENV}=1`] : []),
     ...(codexHomeOverride ? ["-e", `CODEX_HOME=${codexHomeOverride}`] : []),
     ...(omxRootOverride ? ["-e", `OMX_ROOT=${omxRootOverride}`] : []),
+    ...(env.OMX_STATE_ROOT ? ["-e", `OMX_STATE_ROOT=${env.OMX_STATE_ROOT}`] : []),
+    ...(env.OMXBOX_ACTIVE ? ["-e", `OMXBOX_ACTIVE=${env.OMXBOX_ACTIVE}`] : []),
+    ...(env.OMX_SOURCE_CWD ? ["-e", `OMX_SOURCE_CWD=${env.OMX_SOURCE_CWD}`] : []),
     ...(notifyTempContractRaw
       ? ["-e", `${OMX_NOTIFY_TEMP_CONTRACT_ENV}=${notifyTempContractRaw}`]
       : []),
@@ -3212,6 +3219,7 @@ function runCodex(
         projectLocalCodexHomeForCleanup,
         runtimeCodexHomeForCleanup,
         omxRootOverride,
+        process.env,
       );
       for (const step of bootstrapSteps) {
         const output = execTmuxFileSync(step.args, {
@@ -3996,7 +4004,7 @@ async function startHookDerivedWatcher(cwd: string): Promise<void> {
     }
   }
 
-  await mkdir(join(cwd, ".omx", "state"), { recursive: true }).catch(
+  await mkdir(join(omxRoot(cwd), "state"), { recursive: true }).catch(
     (error: unknown) => {
       console.warn(
         "[omx] warning: failed to create hook-derived watcher state directory",
