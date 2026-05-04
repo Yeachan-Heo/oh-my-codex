@@ -76,13 +76,17 @@ export function resolveOmxFirstPartyMcpEntrypointForPluginTarget(
   return spec?.entrypoint ?? null;
 }
 
+export function getCurrentNodeExecutablePath(): string {
+  return process.execPath;
+}
+
 export function getOmxFirstPartySetupMcpServers(
   pkgRoot: string,
 ): Array<UnifiedMcpRegistryServer & { title: string }> {
   return OMX_FIRST_PARTY_MCP_SPECS.map((spec) => ({
     name: spec.name,
     title: spec.title,
-    command: "node",
+    command: getCurrentNodeExecutablePath(),
     args: [join(pkgRoot, "dist", "mcp", spec.entrypoint)],
     enabled: true,
     startupTimeoutSec: spec.startupTimeoutSec,

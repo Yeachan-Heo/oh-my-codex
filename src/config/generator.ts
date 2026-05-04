@@ -1402,7 +1402,7 @@ function getOmxTablesBlock(
     lines.push("");
     lines.push(server.title);
     lines.push(`[mcp_servers.${server.name}]`);
-    lines.push('command = "node"');
+    lines.push(`command = "${escapeTomlString(server.command)}"`);
     lines.push(
       `args = [${server.args
         .map((arg) => `"${escapeTomlString(arg)}"`)

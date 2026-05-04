@@ -6,9 +6,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import TOML from "@iarna/toml";
 import { buildMergedConfig, cleanCodexModelAvailabilityNuxIfNeeded, mergeConfig, repairConfigIfNeeded } from "../generator.js";
+import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../omx-first-party-mcp.js";
 
 /** Count occurrences of a pattern in text */
 function count(text: string, pattern: RegExp): number {
@@ -99,6 +100,28 @@ function assertSingleOmxBlock(toml: string): void {
     1,
     "USE_OMX_EXPLORE_CMD should appear once",
   );
+
+  const parsed = TOML.parse(toml) as {
+    mcp_servers?: Record<string, { command?: unknown }>;
+  };
+  for (const name of OMX_FIRST_PARTY_MCP_SERVER_NAMES) {
+    const command = parsed.mcp_servers?.[name]?.command;
+    assert.equal(
+      command,
+      process.execPath,
+      `[mcp_servers.${name}] should use the Node executable that ran setup`,
+    );
+    assert.notEqual(
+      command,
+      "node",
+      `[mcp_servers.${name}] should not depend on PATH lookup for node`,
+    );
+    assert.equal(
+      typeof command === "string" && isAbsolute(command),
+      true,
+      `[mcp_servers.${name}] command should be absolute`,
+    );
+  }
 }
 
 describe("Codex transient TUI NUX cleanup", () => {
