@@ -158,10 +158,10 @@ function resolveApprovedTeamFollowupContext(cwd: string, task: string): TeamFoll
   const normalizedTask = task.trim();
   if (!normalizedTask) return null;
 
-  const existingTeamState = readPersistedTeamFollowupState(cwd);
   const shortFollowup = ['team', 'team으로 해줘', 'team으로 해주세요'].includes(normalizedTask);
   if (!shortFollowup) return null;
 
+  const existingTeamState = readPersistedTeamFollowupState(cwd);
   const persistedTeamName = typeof existingTeamState?.team_name === 'string'
     ? existingTeamState.team_name.trim()
     : '';
