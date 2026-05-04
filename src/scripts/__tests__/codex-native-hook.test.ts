@@ -1141,6 +1141,39 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("records ultragoal prompt skill activation with goal-tool handoff guidance", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-ultragoal-1",
+          thread_id: "thread-ultragoal-1",
+          turn_id: "turn-ultragoal-1",
+          prompt: "$ultragoal split this launch into durable goals",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.skill, "ultragoal");
+      assert.equal(result.skillState?.initialized_mode, undefined);
+      const message = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(message, /"\$ultragoal" -> ultragoal/);
+      assert.match(message, /Ultragoal protocol:/);
+      assert.match(message, /get_goal/);
+      assert.match(message, /create_goal/);
+      assert.match(message, /update_goal/);
+      assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", "sess-ultragoal-1", "ultragoal-state.json")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("normalizes the Korean keyboard typo for ulw during UserPromptSubmit activation", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ulw-ko-"));
     try {

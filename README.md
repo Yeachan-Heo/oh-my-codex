@@ -74,6 +74,7 @@ $deep-interview "clarify the authentication change"
 $ralplan "approve the auth plan and review tradeoffs"
 $ralph "carry the approved plan to completion"
 $team 3:executor "execute the approved plan in parallel"
+$ultragoal "turn this launch into durable Codex goals"
 ```
 
 That is the main path.
@@ -84,6 +85,7 @@ Start OMX strongly, clarify first when needed, approve the plan, then choose `$t
 
 Use OMX if you already like Codex and want a better day-to-day runtime around it:
 - a standard workflow built around `$deep-interview`, `$ralplan`, `$team`, and `$ralph`
+- durable multi-goal handoffs with `$ultragoal` and `.omx/ultragoal` artifacts when a launch needs sequential Codex goals
 - specialist roles and supporting skills when the task needs them
 - project guidance through scoped `AGENTS.md`
 - durable state under `.omx/` for plans, logs, memory, and mode tracking

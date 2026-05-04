@@ -83,4 +83,13 @@ describe('catalog schema', () => {
     assert.equal(autoresearch?.category, 'execution');
     assert.equal(autoresearch?.status, 'active');
   });
+
+  it('includes ultragoal as a core execution skill', () => {
+    const parsed = validateCatalogManifest(readSourceManifest());
+    const ultragoal = parsed.skills.find((skill) => skill.name === 'ultragoal');
+
+    assert.equal(ultragoal?.category, 'execution');
+    assert.equal(ultragoal?.status, 'active');
+    assert.equal(ultragoal?.core, true);
+  });
 });

@@ -52,7 +52,7 @@
       "name": "ultragoal",
       "category": "execution",
       "status": "active",
-      "core": false
+      "core": true
     },
     {
       "name": "swarm",

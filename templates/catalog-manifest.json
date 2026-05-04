@@ -63,7 +63,7 @@
       "name": "ultragoal",
       "category": "execution",
       "status": "active",
-      "core": false,
+      "core": true,
       "internalRequired": false
     },
     {

@@ -443,9 +443,9 @@ const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> =
   priority: entry.priority,
 }));
 
-const KEYWORDS_REQUIRING_INTENT = new Set(['ralph', 'team', 'swarm', 'stop', 'abort', 'parallel', 'autoresearch']);
+const KEYWORDS_REQUIRING_INTENT = new Set(['ralph', 'team', 'swarm', 'stop', 'abort', 'parallel', 'autoresearch', 'ultragoal']);
 
-type IntentKeyword = 'ralph' | 'team' | 'swarm' | 'stop' | 'abort' | 'parallel' | 'autoresearch';
+type IntentKeyword = 'ralph' | 'team' | 'swarm' | 'stop' | 'abort' | 'parallel' | 'autoresearch' | 'ultragoal';
 
 const DEEP_INTERVIEW_ACTIVATION_PATTERNS: RegExp[] = [
   /(?:^|[^\w])\$(?:deep-interview)\b/i,
@@ -519,6 +519,12 @@ const KEYWORD_INTENT_PATTERNS: Record<IntentKeyword, RegExp[]> = {
     /\/autoresearch\b/i,
     /\b(?:use|run|start|enable|launch|invoke|activate)\s+(?:the\s+)?autoresearch\b/i,
     /\bautoresearch\s+(?:mode|workflow|skill|loop)\b/i,
+  ],
+  ultragoal: [
+    /(?:^|[^\w])\$(?:ultragoal)\b/i,
+    /^\s*\/ultragoal\b/i,
+    /\b(?:use|run|start|enable|launch|invoke|activate|resume|continue)\s+(?:the\s+)?ultragoal\b/i,
+    /\bultragoal\s+(?:mode|workflow|skill|loop|plan|goals?)\b/i,
   ],
 };
 

@@ -401,7 +401,7 @@ describe('task-size-detector', () => {
 
   describe('HEAVY_MODE_KEYWORDS set', () => {
     it('contains expected heavy modes', () => {
-      const expected = ['ralph', 'autopilot', 'team', 'ultrawork', 'swarm', 'ralplan', 'ccg'];
+      const expected = ['ralph', 'autopilot', 'team', 'ultrawork', 'ultragoal', 'swarm', 'ralplan', 'ccg'];
       for (const mode of expected) {
         assert.ok(HEAVY_MODE_KEYWORDS.has(mode), `Expected HEAVY_MODE_KEYWORDS to contain "${mode}"`);
       }

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-05-04T09:59:26.287Z",
+  "generatedAt": "2026-05-04T11:42:48.831Z",
   "version": "2026.02.28.1",
   "counts": {
     "skillCount": 43,
@@ -12,6 +12,7 @@
     "ralph",
     "ultrawork",
     "team",
+    "ultragoal",
     "ralplan"
   ],
   "skills": [
@@ -76,7 +77,7 @@
       "name": "ultragoal",
       "category": "execution",
       "status": "active",
-      "core": false,
+      "core": true,
       "internalRequired": false
     },
     {
