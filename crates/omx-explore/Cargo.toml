@@ -9,3 +9,6 @@ repository.workspace = true
 [[bin]]
 name = "omx-explore-harness"
 path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"

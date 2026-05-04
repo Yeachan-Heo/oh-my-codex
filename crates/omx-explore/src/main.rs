@@ -3,16 +3,20 @@ use std::ffi::OsString;
 use std::fs::{
     canonicalize, create_dir_all, read_to_string, remove_dir_all, remove_file, write, File,
 };
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Child, Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const CODEX_BIN_ENV: &str = "OMX_EXPLORE_CODEX_BIN";
 const HARNESS_ROOT_ENV: &str = "OMX_EXPLORE_ROOT";
+const CODEX_TIMEOUT_MS_ENV: &str = "OMX_EXPLORE_CODEX_TIMEOUT_MS";
 const INTERNAL_DIRECT_WRAPPER_FLAG: &str = "--internal-allowlist-direct";
 const INTERNAL_SHELL_WRAPPER_FLAG: &str = "--internal-allowlist-shell";
 const TEMP_ALLOWLIST_DIR_PREFIX: &str = "omx-explore-allowlist-";
+const DEFAULT_CODEX_TIMEOUT_MS: u64 = 180_000;
+const PROCESS_TERMINATION_GRACE_MS: u64 = 500;
 const SHELL_STARTUP_ENV_VARS: &[&str] = &["BASH_ENV", "ENV", "PROMPT_COMMAND"];
 const WINDOWS_UNSUPPORTED_ALLOWLIST_MESSAGE: &str =
     "omx explore built-in harness is not ready on Windows because its allowlist runtime relies on POSIX sh/bash wrappers. Set OMX_EXPLORE_BIN to a compatible custom harness, prefer `omx sparkshell` for shell-native read-only lookups, or run `omx doctor` for readiness details.";
@@ -301,15 +305,129 @@ fn invoke_codex(args: &Args, model: &str, prompt_contract: &str) -> io::Result<A
         )
         .env("SHELL", &allowlist.shell_path);
     sanitize_explore_subprocess_env(&mut command);
-    let output = command.output()?;
+    let timeout = codex_timeout();
+    let output = run_command_with_timeout(command, timeout)?;
 
     let markdown = read_to_string(&output_path).ok();
     let _ = remove_file(&output_path);
-    Ok(AttemptResult {
-        status_code: output.status.code().unwrap_or(1),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        output_markdown: markdown,
-    })
+    match output {
+        TimedCommandOutput::Completed(output) => Ok(AttemptResult {
+            status_code: output.status.code().unwrap_or(1),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            output_markdown: markdown,
+        }),
+        TimedCommandOutput::TimedOut { stderr } => Ok(AttemptResult {
+            status_code: 124,
+            stderr: format!(
+                "[omx explore] codex exec timed out after {}ms; terminated process tree{}{}",
+                timeout.as_millis(),
+                if stderr.trim().is_empty() {
+                    ""
+                } else {
+                    ". stderr before timeout: "
+                },
+                stderr.trim()
+            ),
+            output_markdown: None,
+        }),
+    }
+}
+
+#[derive(Debug)]
+enum TimedCommandOutput {
+    Completed(Output),
+    TimedOut { stderr: String },
+}
+
+fn codex_timeout() -> Duration {
+    let timeout_ms = env::var(CODEX_TIMEOUT_MS_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_CODEX_TIMEOUT_MS);
+    Duration::from_millis(timeout_ms)
+}
+
+fn run_command_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+) -> io::Result<TimedCommandOutput> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    configure_process_group(&mut command);
+    let mut child = command.spawn()?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_reader = thread::spawn(move || read_pipe_to_end(stdout));
+    let stderr_reader = thread::spawn(move || read_pipe_to_end(stderr));
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            let stdout = join_pipe_reader(stdout_reader)?;
+            let stderr = join_pipe_reader(stderr_reader)?;
+            return Ok(TimedCommandOutput::Completed(Output {
+                status,
+                stdout,
+                stderr,
+            }));
+        }
+
+        if Instant::now() >= deadline {
+            terminate_child_process_tree(&mut child);
+            let _ = child.wait();
+            let _ = join_pipe_reader(stdout_reader);
+            let stderr = join_pipe_reader(stderr_reader).unwrap_or_default();
+            return Ok(TimedCommandOutput::TimedOut {
+                stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            });
+        }
+
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn read_pipe_to_end<R: Read + Send + 'static>(pipe: Option<R>) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    if let Some(mut pipe) = pipe {
+        pipe.read_to_end(&mut bytes)?;
+    }
+    Ok(bytes)
+}
+
+fn join_pipe_reader(handle: thread::JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
+    handle
+        .join()
+        .unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::Other, "pipe reader panicked")))
+}
+
+#[cfg(unix)]
+fn configure_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_command: &mut Command) {}
+
+#[cfg(unix)]
+fn terminate_child_process_tree(child: &mut Child) {
+    let pgid = child.id() as libc::pid_t;
+    unsafe {
+        let _ = libc::kill(-pgid, libc::SIGTERM);
+    }
+    thread::sleep(Duration::from_millis(PROCESS_TERMINATION_GRACE_MS));
+    if child.try_wait().ok().flatten().is_none() {
+        unsafe {
+            let _ = libc::kill(-pgid, libc::SIGKILL);
+        }
+        let _ = child.kill();
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_child_process_tree(child: &mut Child) {
+    let _ = child.kill();
 }
 
 fn escape_toml_string(value: &str) -> String {
@@ -764,6 +882,13 @@ fn sanitize_explore_subprocess_env(command: &mut Command) {
     }
 }
 
+fn shell_supports_bash_startup_suppression(shell_path: &str) -> bool {
+    Path::new(shell_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "bash")
+}
+
 fn run_internal_direct_wrapper<I>(mut args: I) -> Result<(), String>
 where
     I: Iterator<Item = OsString>,
@@ -796,17 +921,22 @@ where
     let forwarded: Vec<String> = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
     let command = validate_shell_invocation(&forwarded)?;
 
-    let mut child = Command::new(&real_shell);
-    if real_shell.ends_with("bash") {
+    let status_code = execute_validated_shell(&real_shell, &command)?;
+    std::process::exit(status_code);
+}
+
+fn execute_validated_shell(real_shell: &str, command: &str) -> Result<i32, String> {
+    let mut child = Command::new(real_shell);
+    if shell_supports_bash_startup_suppression(real_shell) {
         child.arg("--noprofile").arg("--norc");
     }
     sanitize_explore_subprocess_env(&mut child);
     let status = child
-        .arg("-lc")
-        .arg(&command)
+        .arg("-c")
+        .arg(command)
         .status()
         .map_err(|err| format!("failed to execute validated shell command: {err}"))?;
-    std::process::exit(status.code().unwrap_or(1));
+    Ok(status.code().unwrap_or(1))
 }
 
 fn validate_shell_invocation(args: &[String]) -> Result<String, String> {
@@ -2007,6 +2137,203 @@ printf '# Answer\nok\n' > "$output_path"
 
         assert!(status.success());
         assert_eq!(read_to_string(&bash_env_log).unwrap_or_default(), "");
+    }
+
+    #[test]
+    fn execute_validated_shell_drops_login_flag_and_startup_env() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let fake_shell = root.path.join("fake-sh");
+        let argv_log = root.path.join("argv.log");
+        let startup_log = root.path.join("startup.log");
+        let bash_env = root.path.join("bash-env.sh");
+        write(
+            &bash_env,
+            format!(
+                "grep -qsi '^COLOR.*none' /etc/GREP_COLORS || true\nprintf startup >> {}\n",
+                shell_quote(&startup_log.display().to_string())
+            ),
+        )
+        .expect("write fake startup hook");
+        write_executable(
+            &fake_shell,
+            &format!(
+                r#"#!/bin/sh
+printf '%s
+' "$@" > {}
+if [ "${{BASH_ENV:-}}" ]; then
+  . "$BASH_ENV"
+fi
+if [ "$1" = "-lc" ]; then
+  grep -qsi '^COLOR.*none' /etc/GREP_COLORS
+fi
+if [ "$1" = "-c" ]; then
+  shift
+  exec /bin/sh -c "$1"
+fi
+exit 64
+"#,
+                shell_quote(&argv_log.display().to_string())
+            ),
+        )
+        .expect("write fake shell");
+
+        unsafe {
+            env::set_var("BASH_ENV", &bash_env);
+            env::set_var("ENV", &bash_env);
+            env::set_var(
+                "PROMPT_COMMAND",
+                "grep -qsi '^COLOR.*none' /etc/GREP_COLORS",
+            );
+        }
+        let status = execute_validated_shell(
+            &fake_shell.display().to_string(),
+            "printf shell-ok >/dev/null",
+        )
+        .expect("execute fake shell");
+        unsafe {
+            env::remove_var("BASH_ENV");
+            env::remove_var("ENV");
+            env::remove_var("PROMPT_COMMAND");
+        }
+
+        assert_eq!(status, 0);
+        assert_eq!(
+            read_to_string(&argv_log).expect("read argv"),
+            "-c\nprintf shell-ok >/dev/null\n"
+        );
+        assert_eq!(read_to_string(&startup_log).unwrap_or_default(), "");
+    }
+
+    #[test]
+    fn sanitize_explore_subprocess_env_blocks_fedora_grep_colors_startup_hook() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let repo = root.path.join("repo");
+        create_dir_all(&repo).expect("create repo");
+        let startup_log = root.path.join("startup.log");
+        let bash_env = root.path.join("bash-env.sh");
+        write(
+            &bash_env,
+            format!(
+                "grep -qsi '^COLOR.*none' /etc/GREP_COLORS || true\nprintf 'fedora-startup-ran\n' >> {}\n",
+                shell_quote(&startup_log.display().to_string())
+            ),
+        )
+        .expect("write bash env");
+        let allowlist = prepare_allowlist_environment().expect("allowlist environment");
+        let bash_path = resolve_host_command("bash").expect("host bash path");
+
+        unsafe {
+            env::set_var("BASH_ENV", &bash_env);
+            env::set_var("ENV", &bash_env);
+            env::set_var(
+                "PROMPT_COMMAND",
+                "grep -qsi '^COLOR.*none' /etc/GREP_COLORS",
+            );
+        }
+        let mut child = Command::new(bash_path);
+        child
+            .arg("--noprofile")
+            .arg("--norc")
+            .arg("-c")
+            .arg("true")
+            .env(HARNESS_ROOT_ENV, &repo)
+            .env(
+                "PATH",
+                build_codex_path(&allowlist.bin_dir, allowlist.sandbox_bin_dir.as_deref())
+                    .expect("restricted path"),
+            );
+        sanitize_explore_subprocess_env(&mut child);
+        let output = child.output().expect("run bash");
+        unsafe {
+            env::remove_var("BASH_ENV");
+            env::remove_var("ENV");
+            env::remove_var("PROMPT_COMMAND");
+        }
+
+        assert!(output.status.success());
+        assert_eq!(read_to_string(&startup_log).unwrap_or_default(), "");
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("/etc/GREP_COLORS"),
+            "stderr should not contain Fedora GREP_COLORS repo escape: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn invoke_codex_times_out_and_returns_bounded_failure() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let repo = root.path.join("repo");
+        create_dir_all(&repo).expect("create repo");
+        let prompt_file = root.path.join("prompt.md");
+        write(&prompt_file, "contract").expect("write prompt");
+        let fake_codex = root.path.join("codex-sleep");
+        write_executable(
+            &fake_codex,
+            r#"#!/bin/sh
+printf 'fake codex started
+' >&2
+/bin/sleep 5
+"#,
+        )
+        .expect("write fake codex");
+
+        unsafe {
+            env::set_var(CODEX_BIN_ENV, &fake_codex);
+            env::set_var(CODEX_TIMEOUT_MS_ENV, "100");
+        }
+        let started = Instant::now();
+        let attempt = invoke_codex(
+            &Args {
+                cwd: repo.clone(),
+                prompt: "find tests".to_string(),
+                prompt_file,
+                instructions_file: repo.join("AGENTS.md"),
+                spark_model: "spark-model".to_string(),
+                fallback_model: "fallback-model".to_string(),
+            },
+            "spark-model",
+            "contract",
+        )
+        .expect("invoke codex");
+        unsafe {
+            env::remove_var(CODEX_BIN_ENV);
+            env::remove_var(CODEX_TIMEOUT_MS_ENV);
+        }
+
+        assert_eq!(attempt.status_code, 124);
+        assert!(attempt.stderr.contains("timed out after 100ms"));
+        assert!(attempt.stderr.contains("terminated process tree"));
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(attempt.output_markdown.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_with_timeout_kills_process_group_children() {
+        let root = temp_allowlist_dir().expect("temp root");
+        let term_file = root.path.join("grandchild.term");
+        let script = root.path.join("spawn-grandchild.sh");
+        write_executable(
+            &script,
+            &format!(
+                r#"#!/bin/sh
+(trap 'printf term > {}; exit 0' TERM; sleep 30) &
+sleep 30
+"#,
+                shell_quote(&term_file.display().to_string())
+            ),
+        )
+        .expect("write script");
+
+        let result = run_command_with_timeout(Command::new(&script), Duration::from_millis(100))
+            .expect("run with timeout");
+        let TimedCommandOutput::TimedOut { .. } = result else {
+            panic!("expected timeout");
+        };
+        assert_eq!(read_to_string(&term_file).unwrap_or_default(), "term");
     }
 
     fn fallback_test_event() -> FallbackEvent {
