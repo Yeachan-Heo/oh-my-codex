@@ -33,6 +33,7 @@ import { teamReadConfig as readTeamConfig, teamReadPhase as readTeamPhase } from
 import { resolveTeamNameForCurrentContext } from '../team/team-identity.js';
 import { recordLeaderRuntimeActivity } from '../team/leader-activity.js';
 import { readTeamPaneStatus } from '../team/pane-status.js';
+import { resolveCodexHomeForLaunch } from './codex-home.js';
 
 interface TeamCliOptions {
   verbose?: boolean;
@@ -1224,6 +1225,7 @@ export function buildLeaderMonitoringHints(teamName: string): string[] {
 
 export async function teamCommand(args: string[], _options: TeamCliOptions = {}): Promise<void> {
   const cwd = process.cwd();
+  const codexHomeOverride = resolveCodexHomeForLaunch(cwd, process.env);
   const parsedWorktree = parseWorktreeMode(args);
   const worktreeMode = resolveDefaultTeamWorktreeMode(parsedWorktree.mode);
   const teamArgs = parsedWorktree.remainingArgs;
@@ -1474,6 +1476,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     const staffingPlan = buildFollowupStaffingPlan('team', runtime.config.task, availableAgentTypes, {
       workerCount: runtime.config.worker_count,
       fallbackRole: resolveImplicitTeamFallbackRole(runtime.config.agent_type, false),
+      codexHomeOverride,
     });
     await renderStartSummary(runtime, staffingPlan);
     return;
@@ -1531,6 +1534,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
   const staffingPlan = buildFollowupStaffingPlan('team', parsed.task, availableAgentTypes, {
     workerCount: executionPlan.workerCount,
     fallbackRole: resolveImplicitTeamFallbackRole(parsed.agentType, parsed.explicitAgentType),
+    codexHomeOverride,
   });
   const runtime = await startTeam(
     parsed.teamName,
@@ -1539,7 +1543,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     executionPlan.workerCount,
     tasks,
     cwd,
-    { worktreeMode, decompositionMetadata: executionPlan.metadata },
+    { codexHomeOverride, worktreeMode, decompositionMetadata: executionPlan.metadata },
   );
 
   await ensureTeamModeState({ ...effectiveParsed, teamName: runtime.teamName, displayName: runtime.config.display_name ?? effectiveParsed.displayName }, tasks);
