@@ -22,6 +22,7 @@ import {
   listInstalledSkillDirectories,
   omxNotepadPath,
   omxProjectMemoryPath,
+  omxStateDir,
   packageRoot,
 } from "../utils/paths.js";
 import {
@@ -56,7 +57,7 @@ const SKILL_REFERENCE_PATTERN = /\/skills\/([^/\s`]+)\/SKILL\.md\b/g;
 // ── Lock helpers ─────────────────────────────────────────────────────────────
 
 function lockPath(cwd: string): string {
-  return join(cwd, ".omx", "state", "agents-md.lock");
+  return join(omxStateDir(cwd), "agents-md.lock");
 }
 
 async function acquireLock(

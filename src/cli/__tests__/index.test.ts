@@ -37,6 +37,8 @@ import {
   resolveCodexConfigPathForLaunch,
   resolveCodexHomeForLaunch,
   resolveProjectLocalCodexHomeForLaunch,
+  shouldAutoIsolateMadmaxLaunch,
+  createMadmaxIsolatedRoot,
   prepareCodexHomeForLaunch,
   runtimeCodexHomePath,
   buildDetachedSessionBootstrapSteps,
@@ -91,6 +93,46 @@ function expectedLowComplexityModel(codexHomeOverride?: string): string {
 
 afterEach(() => {
   mock.restoreAll();
+});
+
+describe("madmax state isolation", () => {
+  it("auto-isolates only madmax launch and exec invocations", () => {
+    assert.equal(shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], {}), true);
+    assert.equal(shouldAutoIsolateMadmaxLaunch("exec", ["--madmax-spark"], {}), true);
+    assert.equal(shouldAutoIsolateMadmaxLaunch("team", ["--madmax"], {}), false);
+    assert.equal(shouldAutoIsolateMadmaxLaunch("launch", ["--yolo"], {}), false);
+    assert.equal(
+      shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], { OMX_ROOT: "/already/boxed" }),
+      false,
+    );
+    assert.equal(
+      shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], { OMXBOX_ACTIVE: "1" }),
+      false,
+    );
+    assert.equal(
+      shouldAutoIsolateMadmaxLaunch("launch", ["--madmax"], { OMX_NO_BOX: "1" }),
+      false,
+    );
+  });
+
+  it("creates a per-run OMX_ROOT registry entry without touching source .omx", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-madmax-source-"));
+    const runs = await mkdtemp(join(tmpdir(), "omx-madmax-runs-"));
+    try {
+      const runDir = createMadmaxIsolatedRoot(wd, ["--madmax"], { OMX_RUNS_DIR: runs });
+      assert.equal(runDir.startsWith(runs), true);
+      assert.equal(existsSync(join(wd, ".omx")), false);
+      const metadata = JSON.parse(await readFile(join(runDir, ".omxbox-run.json"), "utf-8"));
+      assert.equal(metadata.source_cwd, wd);
+      assert.equal(metadata.cwd, runDir);
+      assert.deepEqual(metadata.argv, ["--madmax"]);
+      const registry = await readFile(join(runs, "registry.jsonl"), "utf-8");
+      assert.match(registry, /"launcher":"omx --madmax"/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(runs, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("normalizeCodexLaunchArgs", () => {
@@ -737,10 +779,11 @@ describe("buildNotifyFallbackWatcherEnv", () => {
   it("enables watcher authority and propagates CODEX_HOME override when requested", () => {
     const env = buildNotifyFallbackWatcherEnv(
       { HOME: "/tmp/home", OMX_HUD_AUTHORITY: "0", TMUX: "sock,1,0", TMUX_PANE: "%2" },
-      { codexHomeOverride: "/tmp/codex-home", enableAuthority: true },
+      { codexHomeOverride: "/tmp/codex-home", omxRootOverride: "/tmp/omx-root", enableAuthority: true },
     );
     assert.equal(env.OMX_HUD_AUTHORITY, "1");
     assert.equal(env.CODEX_HOME, "/tmp/codex-home");
+    assert.equal(env.OMX_ROOT, "/tmp/omx-root");
     assert.equal(env.HOME, "/tmp/home");
     assert.equal(env.TMUX, undefined);
     assert.equal(env.TMUX_PANE, undefined);
@@ -1905,6 +1948,30 @@ describe("detached tmux new-session sequencing", () => {
     assert.equal(
       newSession!.args.includes("-e") &&
         newSession!.args.some((arg) => arg === "CODEX_HOME=/tmp/project/.codex"),
+      true,
+    );
+  });
+
+  it("buildDetachedSessionBootstrapSteps forwards OMX_ROOT override to detached tmux session", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-demo",
+      "/tmp/project",
+      "'codex' '--model' 'gpt-5'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      null,
+      undefined,
+      null,
+      false,
+      "sess-detached-managed",
+      undefined,
+      undefined,
+      "/tmp/omx-root",
+    );
+    const newSession = steps.find((step) => step.name === "new-session");
+    assert.ok(newSession);
+    assert.equal(
+      newSession!.args.includes("-e") &&
+        newSession!.args.some((arg) => arg === "OMX_ROOT=/tmp/omx-root"),
       true,
     );
   });

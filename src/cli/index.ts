@@ -7,7 +7,7 @@ import { execFileSync, spawn } from "child_process";
 import { basename, dirname, join } from "path";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { copyFile, cp, lstat, mkdir, readdir, rm, symlink } from "fs/promises";
-import { constants as osConstants } from "os";
+import { constants as osConstants, homedir } from "os";
 import { setup, SETUP_SCOPES, type SetupInstallMode, type SetupScope } from "./setup.js";
 import { uninstall } from "./uninstall.js";
 import { version } from "./version.js";
@@ -100,7 +100,7 @@ import {
   mitigateCopyModeUnderlineArtifacts,
 } from "../team/tmux-session.js";
 import { getPackageRoot } from "../utils/package.js";
-import { codexConfigPath, rememberOmxLaunchContext, resolveOmxEntryPath } from "../utils/paths.js";
+import { codexConfigPath, omxRoot, rememberOmxLaunchContext, resolveOmxEntryPath } from "../utils/paths.js";
 import { cleanCodexModelAvailabilityNuxIfNeeded, repairConfigIfNeeded } from "../config/generator.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../hud/constants.js";
 import { OMX_TMUX_HUD_OWNER_ENV } from "../hud/reconcile.js";
@@ -957,6 +957,68 @@ export function buildHudPaneCleanupTargets(
   return [...targets];
 }
 
+export function resolveOmxRootForLaunch(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const raw = env.OMX_ROOT || env.OMX_STATE_ROOT;
+  if (typeof raw !== "string" || raw.trim() === "") return undefined;
+  return raw.startsWith("/") ? raw : join(cwd, raw);
+}
+
+export function shouldAutoIsolateMadmaxLaunch(
+  command: string,
+  launchArgs: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (command !== "launch" && command !== "exec") return false;
+  if (env.OMX_NO_BOX === "1" || env.OMXBOX_ACTIVE === "1") return false;
+  if (env.OMX_ROOT || env.OMX_STATE_ROOT) return false;
+  return launchArgs.some((arg) => arg === MADMAX_FLAG || arg === MADMAX_SPARK_FLAG);
+}
+
+function sanitizeRunIdSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+}
+
+export function createMadmaxIsolatedRoot(
+  sourceCwd: string,
+  argv: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const runsRoot = env.OMX_RUNS_DIR || join(homedir(), ".omx-runs");
+  mkdirSync(runsRoot, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  const suffix = Math.random().toString(16).slice(2, 6);
+  const runDir = join(runsRoot, sanitizeRunIdSegment(`run-${stamp}-${suffix}`));
+  mkdirSync(runDir, { recursive: false });
+
+  const metadata = {
+    launcher: "omx --madmax",
+    created_at: new Date().toISOString(),
+    cwd: runDir,
+    source_cwd: sourceCwd,
+    argv,
+  };
+  writeFileSync(join(runDir, ".omxbox-run.json"), `${JSON.stringify(metadata, null, 2)}\n`);
+  writeFileSync(join(runsRoot, "registry.jsonl"), `${JSON.stringify(metadata)}\n`, { flag: "a" });
+  return runDir;
+}
+
+function activateMadmaxIsolationIfNeeded(
+  command: string,
+  launchArgs: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if (!shouldAutoIsolateMadmaxLaunch(command, launchArgs, env)) return;
+  const runDir = createMadmaxIsolatedRoot(cwd, launchArgs, env);
+  env.OMX_ROOT = runDir;
+  env.OMXBOX_ACTIVE = "1";
+  env.OMX_SOURCE_CWD = cwd;
+  process.stderr.write(`[omx] madmax isolated state: ${runDir} (source: ${cwd})\n`);
+}
+
 export async function main(args: string[]): Promise<void> {
   const knownCommands = new Set([
     "launch",
@@ -1007,6 +1069,8 @@ export async function main(args: string[]): Promise<void> {
     console.log(HELP);
     return;
   }
+
+  activateMadmaxIsolationIfNeeded(command, launchArgs, process.cwd(), process.env);
 
   try {
     switch (command) {
@@ -1472,9 +1536,12 @@ export async function execWithOverlay(args: string[]): Promise<void> {
       process.env,
       sessionModelInstructionsPath(cwd, sessionId),
     );
-    const codexEnvBase = codexHomeOverride
-      ? { ...process.env, CODEX_HOME: codexHomeOverride }
-      : process.env;
+    const omxRootOverride = resolveOmxRootForLaunch(cwd, process.env);
+    const codexEnvBase = {
+      ...process.env,
+      ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
+      ...(omxRootOverride ? { OMX_ROOT: omxRootOverride } : {}),
+    };
     const codexEnv = notifyTempContractRaw
       ? {
           ...codexEnvBase,
@@ -1930,7 +1997,7 @@ function blockMs(ms: number): void {
 }
 
 function tmuxExtendedKeysLeaseRoot(cwd: string): string {
-  return join(cwd, ".omx", "state", TMUX_EXTENDED_KEYS_LEASE_DIR);
+  return join(omxRoot(cwd), "state", TMUX_EXTENDED_KEYS_LEASE_DIR);
 }
 
 function resolveTmuxSocketPath(
@@ -2380,6 +2447,7 @@ export function buildDetachedSessionBootstrapSteps(
   sessionId?: string,
   projectLocalCodexHomeForCleanup?: string,
   runtimeCodexHomeForCleanup?: string,
+  omxRootOverride?: string,
 ): DetachedSessionTmuxStep[] {
   const detachedLeaderCmd = nativeWindows
     ? "powershell.exe"
@@ -2408,6 +2476,7 @@ export function buildDetachedSessionBootstrapSteps(
     ...(sessionId ? ["-e", `OMX_SESSION_ID=${sessionId}`] : []),
     ...(sessionId ? ["-e", `${OMX_TMUX_HUD_OWNER_ENV}=1`] : []),
     ...(codexHomeOverride ? ["-e", `CODEX_HOME=${codexHomeOverride}`] : []),
+    ...(omxRootOverride ? ["-e", `OMX_ROOT=${omxRootOverride}`] : []),
     ...(notifyTempContractRaw
       ? ["-e", `${OMX_NOTIFY_TEMP_CONTRACT_ENV}=${notifyTempContractRaw}`]
       : []),
@@ -2582,6 +2651,7 @@ export function buildNotifyFallbackWatcherEnv(
   env: NodeJS.ProcessEnv = process.env,
   options: {
     codexHomeOverride?: string;
+    omxRootOverride?: string;
     enableAuthority?: boolean;
     sessionId?: string;
   } = {},
@@ -2592,6 +2662,7 @@ export function buildNotifyFallbackWatcherEnv(
   return {
     ...nextEnv,
     ...(options.codexHomeOverride ? { CODEX_HOME: options.codexHomeOverride } : {}),
+    ...(options.omxRootOverride ? { OMX_ROOT: options.omxRootOverride } : {}),
     ...(options.sessionId ? { OMX_SESSION_ID: options.sessionId } : {}),
     OMX_HUD_AUTHORITY: options.enableAuthority ? "1" : "0",
   };
@@ -3020,9 +3091,12 @@ function runCodex(
     inheritLeaderFlags,
     workerDefaultModel,
   );
-  const codexBaseEnv = codexHomeOverride
-    ? { ...process.env, CODEX_HOME: codexHomeOverride }
-    : process.env;
+  const omxRootOverride = resolveOmxRootForLaunch(cwd, process.env);
+  const codexBaseEnv = {
+    ...process.env,
+    ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
+    ...(omxRootOverride ? { OMX_ROOT: omxRootOverride } : {}),
+  };
   const codexEnvWithSession = {
     ...codexBaseEnv,
     OMX_SESSION_ID: sessionId,
@@ -3137,6 +3211,7 @@ function runCodex(
         sessionId,
         projectLocalCodexHomeForCleanup,
         runtimeCodexHomeForCleanup,
+        omxRootOverride,
       );
       for (const step of bootstrapSteps) {
         const output = execTmuxFileSync(step.args, {
@@ -3587,11 +3662,11 @@ async function emitNativeHookEvent(
 }
 
 function notifyFallbackPidPath(cwd: string): string {
-  return join(cwd, ".omx", "state", "notify-fallback.pid");
+  return join(omxRoot(cwd), "state", "notify-fallback.pid");
 }
 
 function hookDerivedWatcherPidPath(cwd: string): string {
-  return join(cwd, ".omx", "state", "hook-derived-watcher.pid");
+  return join(omxRoot(cwd), "state", "hook-derived-watcher.pid");
 }
 
 export function shouldDetachBackgroundHelper(
@@ -3826,7 +3901,7 @@ async function startNotifyFallbackWatcher(
   const notifyScript = resolveNotifyHookScript(pkgRoot);
   if (!existsSync(watcherScript) || !existsSync(notifyScript)) return;
 
-  await mkdir(join(cwd, ".omx", "state"), { recursive: true }).catch(
+  await mkdir(join(omxRoot(cwd), "state"), { recursive: true }).catch(
     (error: unknown) => {
       console.warn(
         "[omx] warning: failed to create notify fallback watcher state directory",
@@ -3839,6 +3914,7 @@ async function startNotifyFallbackWatcher(
   );
   const watcherEnv = buildNotifyFallbackWatcherEnv(process.env, {
     codexHomeOverride: options.codexHomeOverride,
+    omxRootOverride: resolveOmxRootForLaunch(cwd, process.env),
     enableAuthority: options.enableAuthority === true,
     sessionId: options.sessionId,
   });
