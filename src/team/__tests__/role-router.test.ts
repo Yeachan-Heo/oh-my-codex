@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm, mkdir } from 'fs/promises';
+import { mkdtemp, readFile, writeFile, rm, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
@@ -101,6 +101,11 @@ describe('role-router', () => {
   // ─── Layer 2: Heuristic Role Routing ──────────────────────────────
 
   describe('routeTaskToRole', () => {
+    it('does not contain literal control characters in regex word boundaries', async () => {
+      const source = await readFile(join(repoRoot, 'src/team/role-router.ts'), 'utf-8');
+      assert.equal(source.includes('\b'), false);
+    });
+
     it('routes test-related tasks to test-engineer with high confidence', () => {
       const result = routeTaskToRole('Write unit tests', 'Add jest test coverage for the auth module', 'team-exec', 'executor');
       assert.equal(result.role, 'test-engineer');

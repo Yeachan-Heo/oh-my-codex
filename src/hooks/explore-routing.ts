@@ -2,6 +2,8 @@ export const OMX_EXPLORE_CMD_ENV = 'USE_OMX_EXPLORE_CMD';
 
 const DISABLED_VALUES = new Set(['0', 'false', 'no', 'off']);
 
+const KOREAN_LOCAL_CODE_EXPLORATION_PATTERN = /(?=.*(?:찾아줘|어디\s*(?:있|구현)))(?:이\s*레포|현재\s*레포|로컬\s*코드베이스|코드|파일|심볼|구현\s*위치|구현|우리\s*구현)/i;
+
 const SIMPLE_EXPLORATION_PATTERNS: RegExp[] = [
   /\b(where|find|locate|search|grep|ripgrep)\b/i,
   /\b(file|files|path|paths|symbol|symbols|usage|usages|reference|references)\b/i,
@@ -9,7 +11,7 @@ const SIMPLE_EXPLORATION_PATTERNS: RegExp[] = [
   /\bhow does\b/i,
   /\bwhich\b.*\b(contain|contains|define|defines|use|uses)\b/i,
   /\b(read[- ]only|explor(e|ation)|inspect|lookup|look up|map)\b/i,
-  /(?:이\s*레포|현재\s*레포|로컬\s*코드베이스|어디\s*(?:있|구현)|찾아줘)/i,
+  KOREAN_LOCAL_CODE_EXPLORATION_PATTERN,
 ];
 
 const NON_EXPLORATION_PATTERNS: RegExp[] = [

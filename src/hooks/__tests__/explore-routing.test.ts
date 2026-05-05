@@ -26,6 +26,14 @@ describe('explore-routing', () => {
     assert.equal(isSimpleExplorationPrompt('map the relationship between team runtime and tmux session helpers'), true);
     assert.equal(isSimpleExplorationPrompt('look up which symbols use resolveCliInvocation'), true);
     assert.equal(isSimpleExplorationPrompt('이 레포에서 auth middleware 구현 어디 있어?'), true);
+    assert.equal(isSimpleExplorationPrompt('현재 레포에서 auth 코드 찾아줘'), true);
+    assert.equal(isSimpleExplorationPrompt('resolveCliInvocation 구현 위치 찾아줘'), true);
+  });
+
+  it('does not treat generic Korean lookup requests as repo-local exploration', () => {
+    assert.equal(isSimpleExplorationPrompt('맛집 찾아줘'), false);
+    assert.equal(isSimpleExplorationPrompt('근처 주차장 찾아줘'), false);
+    assert.equal(isSimpleExplorationPrompt('서울 날씨 찾아줘'), false);
   });
 
   it('keeps external docs and GitHub precedent requests out of local explore routing', () => {
