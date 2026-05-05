@@ -138,6 +138,7 @@ import {
   type ParseNotifyTempContractResult,
 } from "../notifications/temp-contract.js";
 import { execInjectCommand } from "../exec/followup.js";
+import { imagegenCommand } from "../imagegen/continuation.js";
 
 export function resolveNotifyFallbackWatcherScript(pkgRoot = getPackageRoot()): string {
   return resolveDistScript(pkgRoot, "notify-fallback-watcher.js");
@@ -163,6 +164,8 @@ Usage:
   omx exec      Run codex exec non-interactively with OMX AGENTS/overlay injection
   omx exec inject <session-id> --prompt <text>
                 Queue audited follow-up instructions for a running non-interactive exec job
+  omx imagegen continuation <session-id> --artifact <name>
+                Queue a Stop-hook continuation for built-in image generation turns
   omx setup     Install skills, prompts, MCP servers, and scope-specific AGENTS.md
                 (user scope prompts for legacy vs plugin skill delivery when needed)
   omx update    Check npm now, update the global install immediately, then refresh setup
@@ -303,6 +306,7 @@ const TMUX_EXTENDED_KEYS_LOCK_STALE_MS = 30_000;
 type CliCommand =
   | "launch"
   | "exec"
+  | "imagegen"
   | "setup"
   | "update"
   | "list"
@@ -344,6 +348,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "agents-init",
   "deepinit",
   "exec",
+  "imagegen",
   "hooks",
   "list",
   "hud",
@@ -908,6 +913,7 @@ export async function main(args: string[]): Promise<void> {
   const knownCommands = new Set([
     "launch",
     "exec",
+    "imagegen",
     "setup",
     "update",
     "list",
@@ -1026,6 +1032,9 @@ export async function main(args: string[]): Promise<void> {
         } else {
           await execWithOverlay(launchArgs);
         }
+        break;
+      case "imagegen":
+        await imagegenCommand(args.slice(1));
         break;
       case "sparkshell":
         await sparkshellCommand(args.slice(1));

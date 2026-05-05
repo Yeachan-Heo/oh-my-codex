@@ -26,6 +26,7 @@ export interface InjectExecFollowupOptions {
   prompt: string;
   actor?: string;
   nowIso?: string;
+  allowInactiveSession?: boolean;
 }
 
 export interface InjectExecFollowupResult {
@@ -221,14 +222,22 @@ export async function injectExecFollowup(
   const nowIso = options.nowIso ?? new Date().toISOString();
 
   const active = await readUsableSessionState(options.cwd);
-  if (!active || !isSessionStateUsable(active, options.cwd)) {
+  const activeUsable = active && isSessionStateUsable(active, options.cwd);
+  if (!activeUsable && !options.allowInactiveSession) {
     throw new Error("job_not_input_accepting:no_active_exec_session");
   }
-  if (active.session_id !== sessionId && active.native_session_id !== sessionId) {
+  if (
+    activeUsable
+    && active.session_id !== sessionId
+    && active.native_session_id !== sessionId
+    && !options.allowInactiveSession
+  ) {
     throw new Error(`job_not_input_accepting:session_mismatch:${active.session_id}`);
   }
 
-  const canonicalSessionId = active.session_id;
+  const canonicalSessionId = activeUsable && (active.session_id === sessionId || active.native_session_id === sessionId)
+    ? active.session_id
+    : sessionId;
   const queuePath = sessionQueuePath(options.cwd, canonicalSessionId);
   const queued: ExecFollowupRecord = {
     id: randomUUID(),
