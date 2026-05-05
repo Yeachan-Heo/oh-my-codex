@@ -4,7 +4,7 @@
 
 import { existsSync } from "fs";
 import { readdir, readFile } from "fs/promises";
-import { join } from "path";
+import { isAbsolute, join } from "path";
 import {
 	codexHome,
 	codexConfigPath,
@@ -58,6 +58,7 @@ interface DoctorOptions {
 	force?: boolean;
 	dryRun?: boolean;
 	team?: boolean;
+	runtime?: boolean;
 }
 
 interface Check {
@@ -209,6 +210,10 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
 	// Check 10: Prompt triage
 	checks.push(checkPromptTriage());
+
+	if (options.runtime) {
+		checks.push(...(await checkRuntimeReadiness(paths, scopeResolution.installMode)));
+	}
 
 	// Print results
 	let passCount = 0;
@@ -558,6 +563,117 @@ function listTeamTmuxSessions(): Set<string> | null {
 		.map((s) => s.trim())
 		.filter((s) => s.startsWith("omx-team-"));
 	return new Set(sessions);
+}
+
+async function checkRuntimeReadiness(
+	paths: DoctorPaths,
+	installMode?: SetupInstallMode,
+): Promise<Check[]> {
+	const checks: Check[] = [];
+
+	checks.push({
+		name: "Runtime mode",
+		status: "pass",
+		message:
+			"explicit runtime readiness checks enabled; default omx doctor remains install-only",
+	});
+
+	const hasApiKey =
+		typeof process.env.OPENAI_API_KEY === "string" &&
+		process.env.OPENAI_API_KEY.trim() !== "";
+	const authPath = join(paths.codexHomeDir, "auth.json");
+	const authStatusPath = join(paths.codexHomeDir, "auth-status.json");
+	if (hasApiKey || existsSync(authPath) || existsSync(authStatusPath)) {
+		checks.push({
+			name: "Runtime auth",
+			status: "pass",
+			message: hasApiKey
+				? "OPENAI_API_KEY is present for Codex runtime use"
+				: `Codex auth artifact found in ${paths.codexHomeDir}`,
+		});
+	} else {
+		checks.push({
+			name: "Runtime auth",
+			status: "warn",
+			message: `no OPENAI_API_KEY or Codex auth artifact found in ${paths.codexHomeDir}; run codex login or provide runtime credentials before real model smoke`,
+		});
+	}
+
+	if (!existsSync(paths.configPath)) {
+		checks.push({
+			name: "Runtime config",
+			status: "warn",
+			message: `config.toml not found at ${paths.configPath}; run omx setup before runtime smoke`,
+		});
+	} else {
+		checks.push({
+			name: "Runtime config",
+			status: "pass",
+			message: `config.toml resolved at ${paths.configPath}`,
+		});
+	}
+
+	const mcpCheck = await checkMcpServers(paths.configPath, installMode);
+	checks.push({
+		...mcpCheck,
+		name: "Runtime MCP",
+	});
+
+	const hooksCheck = await checkNativeHooks(paths.hooksPath, paths.configPath);
+	checks.push({
+		...hooksCheck,
+		name: "Runtime hooks",
+	});
+
+	if (!hasApiKey && !existsSync(authPath) && !existsSync(authStatusPath)) {
+		checks.push({
+			name: "Runtime smoke",
+			status: "warn",
+			message:
+				"bounded Codex execution smoke skipped because runtime auth was not detected",
+		});
+	} else {
+		const { result } = spawnPlatformCommandSync(
+			"codex",
+			[
+				"exec",
+				"--skip-git-repo-check",
+				"Reply with exactly OMX-EXEC-OK",
+			],
+			{
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "pipe"],
+				timeout: 30_000,
+			},
+		);
+		if (result.error) {
+			const kind = classifySpawnError(result.error as NodeJS.ErrnoException);
+			checks.push({
+				name: "Runtime smoke",
+				status: kind === "missing" ? "fail" : "warn",
+				message: `bounded codex exec smoke could not run (${result.error.message})`,
+			});
+		} else if (result.status === 0 && (result.stdout || "").includes("OMX-EXEC-OK")) {
+			checks.push({
+				name: "Runtime smoke",
+				status: "pass",
+				message: "bounded codex exec smoke returned OMX-EXEC-OK",
+			});
+		} else {
+			const stderr = (result.stderr || "").trim();
+			const stdout = (result.stdout || "").trim();
+			checks.push({
+				name: "Runtime smoke",
+				status: "warn",
+				message:
+					stderr !== ""
+						? `bounded codex exec smoke exited ${result.status}: ${stderr}`
+						: `bounded codex exec smoke exited ${result.status} without OMX-EXEC-OK${stdout ? ` (stdout: ${stdout})` : ""}`,
+			});
+		}
+	}
+
+	return checks;
 }
 
 function checkCodexCli(): Check {
@@ -1375,6 +1491,23 @@ async function checkMcpServers(
 			};
 		}
 		if (mcpCount > 0) {
+			const parsed = parseToml(content) as {
+				mcp_servers?: Record<string, { command?: unknown }>;
+			};
+			const staleOmxCommands = OMX_FIRST_PARTY_MCP_SERVER_NAMES.filter((name) => {
+				const command = parsed.mcp_servers?.[name]?.command;
+				return (
+					typeof command === "string" &&
+					(command === "node" || !isAbsolute(command))
+				);
+			});
+			if (staleOmxCommands.length > 0) {
+				return {
+					name: "MCP Servers",
+					status: "warn",
+					message: `OMX MCP servers ${staleOmxCommands.join(", ")} use PATH-dependent node commands; run "omx setup --force" so setup writes the stable Node executable path`,
+				};
+			}
 			const hasOmx = OMX_FIRST_PARTY_MCP_SERVER_NAMES.some((name) =>
 				content.includes(name),
 			);
@@ -1382,7 +1515,7 @@ async function checkMcpServers(
 				return {
 					name: "MCP Servers",
 					status: "pass",
-					message: `${mcpCount} servers configured (OMX present)`,
+					message: `${mcpCount} servers configured (OMX present; first-party commands use stable Node executable paths)`,
 				};
 			}
 			return {

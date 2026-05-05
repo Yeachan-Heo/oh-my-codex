@@ -173,6 +173,7 @@ Usage:
   omx list      List packaged OMX skills and native agent prompts (--json)
   omx cleanup   Kill orphaned OMX MCP server processes and remove stale OMX /tmp directories
   omx doctor --team  Check team/swarm runtime health diagnostics
+  omx doctor --runtime  Run explicit bounded Codex runtime readiness checks
   omx ask       Ask local provider CLI (claude|gemini) and write artifact output
   omx question  OMX-owned blocking question UI entrypoint for agent-invoked user questions
   omx adapt     Scaffold OMX-owned adapter foundations for persistent external targets
@@ -1066,6 +1067,7 @@ export async function main(args: string[]): Promise<void> {
     dryRun: flags.has("--dry-run"),
     verbose: flags.has("--verbose"),
     team: flags.has("--team"),
+    runtime: flags.has("--runtime") || flags.has("--smoke"),
   };
 
   if (flags.has("--help") && !commandOwnsLocalHelp(command)) {

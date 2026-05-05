@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
 	mkdir,
 	mkdtemp,
+	chmod,
 	readFile,
 	rm,
 	symlink,
@@ -52,6 +53,91 @@ function shouldSkipForSpawnPermissions(err?: string): boolean {
 }
 
 describe("omx doctor onboarding warning copy", () => {
+
+	it("keeps runtime readiness behind explicit --runtime", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-runtime-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			const fakeBin = join(wd, "bin");
+			await mkdir(codexDir, { recursive: true });
+			await mkdir(fakeBin, { recursive: true });
+			await writeFile(join(codexDir, "config.toml"), "codex_hooks = true\n");
+			const fakeCodex = join(fakeBin, "codex");
+			await writeFile(
+				fakeCodex,
+				`#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "codex 0.999.0"
+  exit 0
+fi
+if [ "$1" = "exec" ]; then
+  echo "OMX-EXEC-OK"
+  exit 0
+fi
+echo "unexpected codex args: $*" >&2
+exit 2
+`,
+			);
+			await chmod(fakeCodex, 0o755);
+
+			const env = {
+				HOME: home,
+				CODEX_HOME: codexDir,
+				OPENAI_API_KEY: "test-key",
+				PATH: `${fakeBin}:${process.env.PATH || ""}`,
+			};
+			const defaultRes = runOmx(wd, ["doctor"], env);
+			if (shouldSkipForSpawnPermissions(defaultRes.error)) return;
+			assert.equal(defaultRes.status, 0, defaultRes.stderr || defaultRes.stdout);
+			assert.doesNotMatch(defaultRes.stdout, /Runtime mode:/);
+			assert.doesNotMatch(defaultRes.stdout, /Runtime smoke:/);
+
+			const runtimeRes = runOmx(wd, ["doctor", "--runtime"], env);
+			if (shouldSkipForSpawnPermissions(runtimeRes.error)) return;
+			assert.equal(runtimeRes.status, 0, runtimeRes.stderr || runtimeRes.stdout);
+			assert.match(
+				runtimeRes.stdout,
+				/Runtime mode: explicit runtime readiness checks enabled; default omx doctor remains install-only/,
+			);
+			assert.match(runtimeRes.stdout, /Runtime auth: OPENAI_API_KEY is present/);
+			assert.match(runtimeRes.stdout, /Runtime config: config\.toml resolved/);
+			assert.match(runtimeRes.stdout, /Runtime smoke: bounded codex exec smoke returned OMX-EXEC-OK/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("warns when first-party MCP config still uses PATH-dependent node commands", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-mcp-node-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(codexDir, { recursive: true });
+			await writeFile(
+				join(codexDir, "config.toml"),
+				`
+[mcp_servers.omx_state]
+command = "node"
+args = ["/repo/dist/mcp/state-server.js"]
+enabled = true
+`.trimStart(),
+			);
+
+			const res = runOmx(wd, ["doctor"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(
+				res.stdout,
+				/MCP Servers: OMX MCP servers omx_state use PATH-dependent node commands; run "omx setup --force" so setup writes the stable Node executable path/,
+			);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
 	it("warns that the built-in explore harness is not ready on Windows", () => {
 		const check = checkExploreHarness("win32", {} as NodeJS.ProcessEnv);
 
