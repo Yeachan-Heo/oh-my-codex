@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -12,7 +13,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..', '..', '..');
 const omxBin = join(repoRoot, 'dist', 'cli', 'omx.js');
 const tempDirs: string[] = [];
+const spawnedChildren = new Set<ChildProcess>();
 let originalProcessExitCode: string | number | null | undefined;
+
+const QUESTION_TEST_CHILD_TIMEOUT_MS = 15_000;
+const QUESTION_TEST_WAIT_TIMEOUT_MS = '10000';
+const QUESTION_TEST_RECORD_TIMEOUT_MS = 10_000;
+const QUESTION_TEST_POLL_INTERVAL_MS = 20;
 
 async function makeRepo(): Promise<string> {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-question-cli-'));
@@ -22,7 +29,152 @@ async function makeRepo(): Promise<string> {
   return cwd;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildQuestionChildEnv(
+  overrides: NodeJS.ProcessEnv = {},
+  deleteKeys: string[] = [],
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    OMX_AUTO_UPDATE: '0',
+    OMX_NOTIFY_FALLBACK: '0',
+    OMX_HOOK_DERIVED_SIGNALS: '0',
+    OMX_QUESTION_WAIT_TIMEOUT_MS: QUESTION_TEST_WAIT_TIMEOUT_MS,
+    ...overrides,
+  };
+  for (const key of deleteKeys) delete env[key];
+  return env;
+}
+
+function trackChild(child: ChildProcess): ChildProcess {
+  spawnedChildren.add(child);
+  child.once('close', () => {
+    spawnedChildren.delete(child);
+  });
+  return child;
+}
+
+function isChildClosed(child: ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+async function cleanupSpawnedChildren(): Promise<void> {
+  const children = [...spawnedChildren];
+  spawnedChildren.clear();
+  await Promise.all(children.map(async (child) => {
+    if (isChildClosed(child)) return;
+    child.kill('SIGTERM');
+    await Promise.race([
+      once(child, 'close').catch(() => undefined),
+      sleep(500),
+    ]);
+    if (!isChildClosed(child)) {
+      child.kill('SIGKILL');
+      await Promise.race([
+        once(child, 'close').catch(() => undefined),
+        sleep(500),
+      ]);
+    }
+  }));
+}
+
+interface SpawnedQuestionChild {
+  child: ChildProcess;
+  getStdout(): string;
+  getStderr(): string;
+  waitForClose(timeoutMs?: number): Promise<number | null>;
+}
+
+function spawnQuestionChild(
+  cwd: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): SpawnedQuestionChild {
+  const child = trackChild(spawn(process.execPath, [omxBin, 'question', ...args], {
+    cwd,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }));
+  let stdout = '';
+  let stderr = '';
+  child.stdout?.on('data', (chunk) => { stdout += String(chunk); });
+  child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
+  return {
+    child,
+    getStdout: () => stdout,
+    getStderr: () => stderr,
+    async waitForClose(timeoutMs = QUESTION_TEST_CHILD_TIMEOUT_MS): Promise<number | null> {
+      if (isChildClosed(child)) return child.exitCode;
+      let timeout: NodeJS.Timeout | undefined;
+      try {
+        return await Promise.race([
+          once(child, 'close').then(([code]) => code as number | null),
+          new Promise<number | null>((_, reject) => {
+            timeout = setTimeout(() => {
+              if (!isChildClosed(child)) child.kill('SIGTERM');
+              reject(new Error(
+                `omx question child did not exit within ${timeoutMs}ms`
+                  + `\nstdout=${stdout}\nstderr=${stderr}`,
+              ));
+            }, timeoutMs);
+          }),
+        ]);
+      } finally {
+        if (timeout) clearTimeout(timeout);
+      }
+    },
+  };
+}
+
+async function runQuestionChild(
+  cwd: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const child = spawnQuestionChild(cwd, args, env);
+  const code = await child.waitForClose();
+  return { code, stdout: child.getStdout(), stderr: child.getStderr() };
+}
+
+async function waitForQuestionRecordFile(
+  questionsDir: string,
+  getStderr: () => string,
+  label: string,
+): Promise<string> {
+  const deadline = Date.now() + QUESTION_TEST_RECORD_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const entries = await readdir(questionsDir);
+      const recordFile = entries.find((entry) => entry.endsWith('.json')) || '';
+      if (recordFile) return recordFile;
+    } catch {}
+    await sleep(QUESTION_TEST_POLL_INTERVAL_MS);
+  }
+
+  assert.fail(`${label}, stderr=${getStderr()}`);
+}
+
+async function waitForQuestionRecordStatus(
+  recordPath: string,
+  status: string,
+  getStderr: () => string,
+): Promise<Awaited<ReturnType<typeof readQuestionRecord>>> {
+  const deadline = Date.now() + QUESTION_TEST_RECORD_TIMEOUT_MS;
+  let record: Awaited<ReturnType<typeof readQuestionRecord>> = null;
+  while (Date.now() < deadline) {
+    record = await readQuestionRecord(recordPath);
+    if (record?.status === status) return record;
+    await sleep(QUESTION_TEST_POLL_INTERVAL_MS);
+  }
+
+  assert.fail(`expected ${status} question record, got ${record?.status ?? 'missing'}, stderr=${getStderr()}`);
+}
+
 afterEach(async () => {
+  await cleanupSpawnedChildren();
   process.exitCode = originalProcessExitCode;
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -35,22 +187,11 @@ describe('omx question CLI', () => {
 
   it('hard-fails worker contexts before UI launch', async () => {
     const cwd = await makeRepo();
-    const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
-      const child = spawn(process.execPath, [omxBin, 'question', '--input', JSON.stringify({
+    const result = await runQuestionChild(cwd, ['--input', JSON.stringify({
         question: 'Pick one',
         options: ['A'],
         allow_other: true,
-      }), '--json'], {
-        cwd,
-        env: { ...process.env, OMX_TEAM_WORKER: 'demo/worker-1', OMX_AUTO_UPDATE: '0' },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', (chunk) => { stdout += String(chunk); });
-      child.stderr.on('data', (chunk) => { stderr += String(chunk); });
-      child.on('close', (code) => resolve({ code, stdout, stderr }));
-    });
+      }), '--json'], buildQuestionChildEnv({ OMX_TEAM_WORKER: 'demo/worker-1' }));
 
     assert.equal(result.code, 1);
     const parsed = JSON.parse(result.stdout);
@@ -69,41 +210,22 @@ describe('omx question CLI', () => {
       session_id: 'sess-q',
     });
 
-    const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
+    const child = spawnQuestionChild(
       cwd,
-      env: { ...process.env, OMX_AUTO_UPDATE: '0', OMX_NOTIFY_FALLBACK: '0', OMX_HOOK_DERIVED_SIGNALS: '0', OMX_QUESTION_TEST_RENDERER: 'noop' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => { stdout += String(chunk); });
-    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
-    const closePromise = new Promise<number | null>((resolve) => child.on('close', resolve));
+      ['--input', input, '--json'],
+      buildQuestionChildEnv({ OMX_QUESTION_TEST_RENDERER: 'noop' }),
+    );
 
     const questionsDir = join(cwd, '.omx', 'state', 'sessions', 'sess-q', 'questions');
-    let recordFile = '';
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-      try {
-        const { readdir } = await import('node:fs/promises');
-        const entries = await readdir(questionsDir);
-        recordFile = entries.find((entry) => entry.endsWith('.json')) || '';
-        if (recordFile) break;
-      } catch {}
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-
-    assert.notEqual(recordFile, '', `expected question record file, stderr=${stderr}`);
+    const recordFile = await waitForQuestionRecordFile(
+      questionsDir,
+      child.getStderr,
+      'expected question record file',
+    );
     const recordPath = join(questionsDir, recordFile);
 
-    let record = null;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      record = await readQuestionRecord(recordPath);
-      if (record?.status === 'prompting') break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-
-    assert.equal(record?.status, 'prompting', `expected prompting question record, stderr=${stderr}`);
+    const record = await waitForQuestionRecordStatus(recordPath, 'prompting', child.getStderr);
+    assert.equal(record?.status, 'prompting');
     await markQuestionAnswered(recordPath, {
       kind: 'other',
       value: 'free text answer',
@@ -112,9 +234,9 @@ describe('omx question CLI', () => {
       other_text: 'free text answer',
     });
 
-    const exitCode = await closePromise;
-    assert.equal(exitCode, 0, stderr || stdout);
-    const payload = JSON.parse(stdout);
+    const exitCode = await child.waitForClose();
+    assert.equal(exitCode, 0, child.getStderr() || child.getStdout());
+    const payload = JSON.parse(child.getStdout());
     assert.equal(payload.ok, true);
     assert.equal(payload.answer.value, 'free text answer');
     assert.equal(payload.answers[0].answer.value, 'free text answer');
@@ -134,39 +256,27 @@ describe('omx question CLI', () => {
       session_id: 'sess-q',
     });
 
-    const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
+    const child = spawnQuestionChild(
       cwd,
-      env: { ...process.env, OMX_AUTO_UPDATE: '0', OMX_NOTIFY_FALLBACK: '0', OMX_HOOK_DERIVED_SIGNALS: '0', OMX_QUESTION_TEST_RENDERER: 'noop' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => { stdout += String(chunk); });
-    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
-    const closePromise = new Promise<number | null>((resolve) => child.on('close', resolve));
+      ['--input', input, '--json'],
+      buildQuestionChildEnv({ OMX_QUESTION_TEST_RENDERER: 'noop' }),
+    );
 
     const questionsDir = join(cwd, '.omx', 'state', 'sessions', 'sess-q', 'questions');
-    let recordFile = '';
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-      try {
-        const entries = await readdir(questionsDir);
-        recordFile = entries.find((entry) => entry.endsWith('.json')) || '';
-        if (recordFile) break;
-      } catch {}
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-
-    assert.notEqual(recordFile, '', `expected batch question record file, stderr=${stderr}`);
+    const recordFile = await waitForQuestionRecordFile(
+      questionsDir,
+      child.getStderr,
+      'expected batch question record file',
+    );
     const recordPath = join(questionsDir, recordFile);
     await markQuestionAnswered(recordPath, [
       { question_id: 'first', index: 0, answer: { kind: 'option', value: 'a', selected_labels: ['A'], selected_values: ['a'] } },
       { question_id: 'second', index: 1, answer: { kind: 'option', value: 'd', selected_labels: ['D'], selected_values: ['d'] } },
     ]);
 
-    const exitCode = await closePromise;
-    assert.equal(exitCode, 0, stderr || stdout);
-    const payload = JSON.parse(stdout);
+    const exitCode = await child.waitForClose();
+    assert.equal(exitCode, 0, child.getStderr() || child.getStdout());
+    const payload = JSON.parse(child.getStdout());
     assert.equal(payload.ok, true);
     assert.deepEqual(payload.answers.map((entry: any) => entry.answer.value), ['a', 'd']);
     assert.equal(Object.prototype.hasOwnProperty.call(payload, 'answer'), false);
@@ -207,28 +317,17 @@ esac
       session_id: 'sess-q',
     });
 
-    const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
-      const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
-        cwd,
-        env: {
-          ...process.env,
+    const result = await runQuestionChild(
+      cwd,
+      ['--input', input, '--json'],
+      buildQuestionChildEnv({
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
           TMUX: '/tmp/fake',
           TMUX_PANE: '%0',
           OMX_QUESTION_RETURN_PANE: '',
           OMX_LEADER_PANE_ID: '',
-          OMX_AUTO_UPDATE: '0',
-          OMX_NOTIFY_FALLBACK: '0',
-          OMX_HOOK_DERIVED_SIGNALS: '0',
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', (chunk) => { stdout += String(chunk); });
-      child.stderr.on('data', (chunk) => { stderr += String(chunk); });
-      child.on('close', (code) => resolve({ code, stdout, stderr }));
-    });
+      }),
+    );
 
     assert.equal(result.code, 1);
     const payload = JSON.parse(result.stdout);
@@ -282,29 +381,18 @@ esac
       session_id: 'sess-q',
     });
 
-    const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
-      const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
-        cwd,
-        env: {
-          ...process.env,
+    const result = await runQuestionChild(
+      cwd,
+      ['--input', input, '--json'],
+      buildQuestionChildEnv({
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
           TMUX: '/tmp/fake',
           TMUX_PANE: '%0',
           OMX_QUESTION_RETURN_PANE: '',
           OMX_LEADER_PANE_ID: '',
-          OMX_AUTO_UPDATE: '0',
-          OMX_NOTIFY_FALLBACK: '0',
-          OMX_HOOK_DERIVED_SIGNALS: '0',
           OMX_QUESTION_WAIT_TIMEOUT_MS: '5000',
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', (chunk) => { stdout += String(chunk); });
-      child.stderr.on('data', (chunk) => { stderr += String(chunk); });
-      child.on('close', (code) => resolve({ code, stdout, stderr }));
-    });
+      }),
+    );
 
     assert.equal(result.code, 1);
     const payload = JSON.parse(result.stdout);
@@ -330,25 +418,14 @@ esac
       session_id: 'sess-q',
     });
 
-    const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
-      const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
-        cwd,
-        env: {
-          ...process.env,
-          OMX_AUTO_UPDATE: '0',
-          OMX_NOTIFY_FALLBACK: '0',
-          OMX_HOOK_DERIVED_SIGNALS: '0',
+    const result = await runQuestionChild(
+      cwd,
+      ['--input', input, '--json'],
+      buildQuestionChildEnv({
           OMX_QUESTION_TEST_RENDERER: 'noop',
           OMX_QUESTION_WAIT_TIMEOUT_MS: '50',
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', (chunk) => { stdout += String(chunk); });
-      child.stderr.on('data', (chunk) => { stderr += String(chunk); });
-      child.on('close', (code) => resolve({ code, stdout, stderr }));
-    });
+      }),
+    );
 
     assert.equal(result.code, 1);
     const payload = JSON.parse(result.stdout);
@@ -374,31 +451,11 @@ exit 0
       session_id: 'sess-q',
     });
 
-    const childEnv: NodeJS.ProcessEnv = {
-      ...process.env,
+    const childEnv = buildQuestionChildEnv({
       PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
-      OMX_AUTO_UPDATE: '0',
-      OMX_NOTIFY_FALLBACK: '0',
-      OMX_HOOK_DERIVED_SIGNALS: '0',
-    };
-    delete childEnv.TMUX;
-    delete childEnv.TMUX_PANE;
-    delete childEnv.OMX_QUESTION_RETURN_PANE;
-    delete childEnv.OMX_LEADER_PANE_ID;
-    delete childEnv.OMX_QUESTION_TEST_RENDERER;
+    }, ['TMUX', 'TMUX_PANE', 'OMX_QUESTION_RETURN_PANE', 'OMX_LEADER_PANE_ID', 'OMX_QUESTION_TEST_RENDERER']);
 
-    const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
-      const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
-        cwd,
-        env: childEnv,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', (chunk) => { stdout += String(chunk); });
-      child.stderr.on('data', (chunk) => { stderr += String(chunk); });
-      child.on('close', (code) => resolve({ code, stdout, stderr }));
-    });
+    const result = await runQuestionChild(cwd, ['--input', input, '--json'], childEnv);
 
     assert.equal(result.code, 1);
     const payload = JSON.parse(result.stdout);
@@ -451,28 +508,17 @@ exit 0
       session_id: 'sess-q',
     });
 
-    const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
-      const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
-        cwd,
-        env: {
-          ...process.env,
+    const result = await runQuestionChild(
+      cwd,
+      ['--input', input, '--json'],
+      buildQuestionChildEnv({
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
           TMUX: '/tmp/fake',
           TMUX_PANE: '%0',
           OMX_QUESTION_RETURN_PANE: '',
           OMX_LEADER_PANE_ID: '',
-          OMX_AUTO_UPDATE: '0',
-          OMX_NOTIFY_FALLBACK: '0',
-          OMX_HOOK_DERIVED_SIGNALS: '0',
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', (chunk) => { stdout += String(chunk); });
-      child.stderr.on('data', (chunk) => { stderr += String(chunk); });
-      child.on('close', (code) => resolve({ code, stdout, stderr }));
-    });
+      }),
+    );
 
     assert.equal(result.code, 1);
     const payload = JSON.parse(result.stdout);
@@ -523,44 +569,24 @@ esac
       session_id: 'sess-q',
     });
 
-    const childEnv: NodeJS.ProcessEnv = {
-      ...process.env,
+    const childEnv = buildQuestionChildEnv({
       PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
       OMX_QUESTION_RETURN_PANE: '%44',
-      OMX_AUTO_UPDATE: '0',
-      OMX_NOTIFY_FALLBACK: '0',
-      OMX_HOOK_DERIVED_SIGNALS: '0',
-    };
-    delete childEnv.TMUX;
-    delete childEnv.TMUX_PANE;
-    delete childEnv.OMX_LEADER_PANE_ID;
-    delete childEnv.OMX_QUESTION_TEST_RENDERER;
+    }, ['TMUX', 'TMUX_PANE', 'OMX_LEADER_PANE_ID', 'OMX_QUESTION_TEST_RENDERER']);
 
-    const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
-      cwd,
-      env: childEnv,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => { stdout += String(chunk); });
-    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
-    const closePromise = new Promise<number | null>((resolve) => child.on('close', resolve));
+    const child = spawnQuestionChild(cwd, ['--input', input, '--json'], childEnv);
 
     const questionsDir = join(cwd, '.omx', 'state', 'sessions', 'sess-q', 'questions');
-    let recordFile = '';
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-      const entries = await readdir(questionsDir);
-      recordFile = entries.find((entry) => entry.endsWith('.json')) || '';
-      if (recordFile) break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    assert.notEqual(recordFile, '', `expected question record file, stderr=${stderr}`);
+    const recordFile = await waitForQuestionRecordFile(
+      questionsDir,
+      child.getStderr,
+      'expected question record file',
+    );
     const recordPath = join(questionsDir, recordFile);
 
     let record = await readQuestionRecord(recordPath);
     for (let attempt = 0; attempt < 100 && !record?.renderer; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await sleep(QUESTION_TEST_POLL_INTERVAL_MS);
       record = await readQuestionRecord(recordPath);
     }
     assert.equal(record?.renderer?.renderer, 'tmux-pane');
@@ -574,9 +600,9 @@ esac
       selected_values: ['a'],
     });
 
-    const exitCode = await closePromise;
-    assert.equal(exitCode, 0, stderr || stdout);
-    const payload = JSON.parse(stdout);
+    const exitCode = await child.waitForClose();
+    assert.equal(exitCode, 0, child.getStderr() || child.getStdout());
+    const payload = JSON.parse(child.getStdout());
     assert.equal(payload.ok, true);
     assert.equal(payload.answer.value, 'a');
 
