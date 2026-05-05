@@ -1,0 +1,11 @@
+# Backend API Design Rules
+
+1. API changes must update contract artifacts.
+2. Specs must include NFR section:
+   - latency targets
+   - idempotency declaration
+   - concurrency strategy
+   - degrade policy
+3. Error response shape should remain stable unless explicitly planned.
+4. Rollback path must be executable (code + config).
+

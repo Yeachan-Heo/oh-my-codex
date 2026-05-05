@@ -31,6 +31,47 @@ It keeps Codex as the execution engine and makes it easier to:
 - invoke the canonical skills with `$deep-interview`, `$ralplan`, `$team`, and `$ralph`
 - keep project guidance, plans, logs, and state in `.omx/`
 
+## Cursor AI IDE support (additive mode)
+
+OMX keeps Codex support as-is, and now can be used in a Cursor-driven control-plane mode via adapter files.
+
+- Run `omx cursor setup` to verify adapter assets.
+- Run `omx cursor doctor` to validate Cursor-ready structure.
+- Use `scripts/omc.sh` for a cursor-first flow:
+
+```bash
+scripts/omc.sh doctor
+scripts/omc.sh new <change-slug>
+scripts/omc.sh plan <change-slug>
+scripts/omc.sh apply <change-slug>
+scripts/omc.sh review <change-slug>
+scripts/omc.sh archive <change-slug>
+```
+
+If you want OMX to invoke Cursor CLI directly for implementation:
+
+```bash
+omx cursor apply <change-slug> --run
+# optional model/workspace override
+omx cursor apply <change-slug> --run --model gpt-5 --workspace .
+```
+
+Adapter reference: `adapters/cursor/README.md`
+
+### Mode switch (Codex + Cursor coexistence)
+
+OMX now supports explicit mode switching:
+
+```bash
+omx mode show
+omx mode cursor
+omx mode codex
+```
+
+- `codex` mode: original OMX/Codex-first workflow (default)
+- `cursor` mode: Cursor-driven control-plane workflow
+
+
 ## Core Maintainers
 
 | Role | Name | GitHub |

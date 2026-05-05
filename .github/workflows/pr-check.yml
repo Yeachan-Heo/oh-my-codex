@@ -3,6 +3,8 @@ name: PR Check
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, edited]
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
 
 jobs:
   size-label:
@@ -75,3 +77,45 @@ jobs:
             echo
             echo "$message"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  cursor-drift-gate:
+    name: Cursor Drift Gate
+    # Must run on pull_request (head code available), not on pull_request_target.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Parse change slug from PR body
+        id: parse
+        shell: bash
+        run: |
+          set -euo pipefail
+          BODY="${{ github.event.pull_request.body }}"
+          SLUG="$(echo "$BODY" | sed -n 's#.*openspec/changes/\([^/]*\)/.*#\1#p' | head -n1)"
+          if [[ -z "$SLUG" ]]; then
+            echo "Cannot parse change slug from PR body."
+            echo "Use template field: Change Path: \`openspec/changes/<change-slug>/\`"
+            exit 1
+          fi
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+
+      - name: Drift check
+        shell: bash
+        run: |
+          chmod +x scripts/check-drift.sh
+          ./scripts/check-drift.sh "${{ steps.parse.outputs.slug }}"
+
+      - name: Cursor adapter assets check
+        shell: bash
+        run: |
+          test -f adapters/cursor/control-plane.md
+          test -f adapters/cursor/model-routing.yaml
+          test -f .cursor/rules/global.mdc
+          test -f .cursor/rules/backend-api-design.mdc
+          test -f openspec/config.yaml

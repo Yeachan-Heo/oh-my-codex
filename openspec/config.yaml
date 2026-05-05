@@ -1,0 +1,21 @@
+schema: spec-driven
+
+context: |
+  Repo: oh-my-codex
+  Control plane: Cursor-driven for model decision steps
+  Runtime: OMX execution remains available
+  Required flow: clarify -> plan -> apply -> review -> archive
+
+rules:
+  proposal:
+    - Must include In_Scope and Out_Of_Scope
+    - Must include rollback strategy
+  specs:
+    - Must include Given/When/Then scenarios
+    - Must include NFR section
+  design:
+    - Must include module boundaries and dependency direction
+    - Must include Debate Resolution
+  tasks:
+    - Each task must include a verify command
+

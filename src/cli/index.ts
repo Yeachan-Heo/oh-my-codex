@@ -18,6 +18,8 @@ import { sidecarCommand } from "../sidecar/index.js";
 import { teamCommand } from "./team.js";
 import { ralphCommand } from "./ralph.js";
 import { askCommand } from "./ask.js";
+import { cursorCommand } from "./cursor.js";
+import { getCurrentMode, modeCommand } from "./mode.js";
 import { questionCommand } from "./question.js";
 import { stateCommand } from "./state.js";
 import {
@@ -199,6 +201,8 @@ Usage:
                 CLI parity for OMX code-intel MCP tools
   omx wiki      CLI parity for OMX wiki MCP tools
   omx mcp-serve Launch an OMX stdio MCP server target (plugin/runtime use)
+  omx cursor    Cursor control-plane workflow commands (setup|doctor|new|plan|apply|review|archive)
+  omx mode      Show or set OMX control mode (show|cursor|codex)
   omx sparkshell <command> [args...]
   omx sparkshell --tmux-pane <pane-id> [--tail-lines <100-1000>]
                 Run native sparkshell sidecar for direct command execution or explicit tmux-pane summarization
@@ -935,6 +939,8 @@ export async function main(args: string[]): Promise<void> {
     "mcp-serve",
     "status",
     "cancel",
+    "cursor",
+    "mode",
     "help",
     "--help",
     "-h",
@@ -958,9 +964,19 @@ export async function main(args: string[]): Promise<void> {
   try {
     switch (command) {
       case "launch":
+        if (getCurrentMode() === "cursor") {
+          console.log(
+            "[mode=cursor] tip: use `omx cursor ...` / `scripts/omc.sh ...` for cursor-driven flow.",
+          );
+        }
         await launchWithHud(launchArgs);
         break;
       case "resume":
+        if (getCurrentMode() === "cursor") {
+          console.log(
+            "[mode=cursor] tip: resuming via launch path; keep model decision steps in `omx cursor ...`.",
+          );
+        }
         await launchWithHud(["resume", ...launchArgs]);
         break;
       case "setup":
@@ -1081,6 +1097,12 @@ export async function main(args: string[]): Promise<void> {
       case "cancel":
         await cancelModes();
         break;
+      case "cursor":
+        await cursorCommand(args.slice(1));
+        break;
+      case "mode":
+        await modeCommand(args.slice(1));
+        break;
       case "reasoning":
         await reasoningCommand(args.slice(1));
         break;
@@ -1095,6 +1117,11 @@ export async function main(args: string[]): Promise<void> {
           firstArg.startsWith("-") &&
           !knownCommands.has(firstArg)
         ) {
+          if (getCurrentMode() === "cursor") {
+            console.log(
+              "[mode=cursor] tip: direct launch flags detected; cursor mode remains active for workflow decisions.",
+            );
+          }
           await launchWithHud(args);
           break;
         }
@@ -1111,6 +1138,19 @@ export async function main(args: string[]): Promise<void> {
 async function showStatus(): Promise<void> {
   const { readFile } = await import("fs/promises");
   const cwd = process.cwd();
+  const currentMode = getCurrentMode();
+  const cursorAdapterReady = [
+    "adapters/cursor/control-plane.md",
+    "adapters/cursor/model-routing.yaml",
+    ".cursor/rules/global.mdc",
+    ".cursor/rules/backend-api-design.mdc",
+    "openspec/config.yaml",
+    ".github/workflows/pr-check.yml",
+  ].every((p) => existsSync(join(cwd, p)));
+
+  console.log(`Mode: ${currentMode}`);
+  console.log(`Cursor adapter: ${cursorAdapterReady ? "READY" : "MISSING FILES"}`);
+
   try {
     const refs = await listModeStateFilesWithScopePreference(cwd);
     const states = refs.map((ref) => ref.path);

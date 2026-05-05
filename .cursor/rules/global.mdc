@@ -1,0 +1,8 @@
+# Global Cursor Rules
+
+1. No implementation starts without OpenSpec artifacts (proposal/specs/design/tasks).
+2. No scope extension beyond `In_Scope` without artifact update.
+3. Same test fails 3 consecutive fix attempts => pause and request human decision.
+4. Merge requires verification evidence.
+5. Post-merge must run sync/archive and at least one knowledge update.
+

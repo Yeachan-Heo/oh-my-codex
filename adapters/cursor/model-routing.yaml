@@ -1,0 +1,28 @@
+model_routing:
+  design:
+    purpose: "long-context architecture and tradeoffs"
+    primary: "reasoning-longctx"
+    fallback: "reasoning-high"
+  apply:
+    purpose: "implementation and refactor"
+    primary: "coding-specialist"
+    fallback: "coding-conservative"
+  review:
+    purpose: "spec alignment and risk detection"
+    primary: "critic-a"
+    secondary: "critic-b"
+
+policies:
+  force_heterogeneous_review: true
+  max_self_heal_attempts: 5
+  pause_on_same_test_failures: 3
+  block_if_out_of_scope_detected: true
+
+context_routing:
+  - match: "**/*.api.ts"
+    rules: [".cursor/rules/backend-api-design.mdc"]
+  - match: "**/migrations/**/*.sql"
+    rules: [".cursor/rules/backend-api-design.mdc"]
+  - match: "**/*"
+    rules: [".cursor/rules/global.mdc"]
+
