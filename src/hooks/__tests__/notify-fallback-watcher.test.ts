@@ -2122,6 +2122,156 @@ exit 0
     }
   });
 
+  it('allows Ralph continue steer for the matching workflow owner session', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-owner-match-'));
+    const fakeBinDir = join(wd, 'fake-bin');
+    const tmuxLogPath = join(wd, 'tmux.log');
+    const stateDir = join(wd, '.omx', 'state');
+    const sessionId = 'sess-owner';
+    const sessionStateDir = join(stateDir, 'sessions', sessionId);
+    try {
+      await mkdir(sessionStateDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+      await writeSessionStart(wd, sessionId);
+      await writeFile(join(sessionStateDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'executing',
+        owner_omx_session_id: sessionId,
+        tmux_pane_id: '%42',
+      }, null, 2));
+      await writeFile(join(sessionStateDir, 'hud-state.json'), JSON.stringify({
+        last_progress_at: new Date(Date.now() - 61_000).toISOString(),
+      }, null, 2));
+      await writeFile(join(stateDir, 'notify-fallback-state.json'), JSON.stringify({
+        ralph_continue_steer: {
+          last_sent_at: new Date(Date.now() - 61_000).toISOString(),
+        },
+      }, null, 2));
+
+      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+      const run = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
+        {
+          encoding: 'utf-8',
+          env: buildCleanNotifyEnv({ PATH: `${fakeBinDir}:${process.env.PATH || ''}` }),
+        },
+      );
+      assert.equal(run.status, 0, run.stderr || run.stdout);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
+      const sends = tmuxLog.match(/send-keys -t %42 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/g) || [];
+      assert.equal(sends.length, 1, 'matching owner session should allow Ralph continue steer');
+
+      const watcherState = JSON.parse(await readFile(join(stateDir, 'notify-fallback-state.json'), 'utf-8'));
+      assert.equal(watcherState.ralph_continue_steer?.last_reason, 'sent');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not Ralph-continue a child/non-owner session', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-owner-mismatch-'));
+    const fakeBinDir = join(wd, 'fake-bin');
+    const tmuxLogPath = join(wd, 'tmux.log');
+    const stateDir = join(wd, '.omx', 'state');
+    const sessionId = 'sess-child';
+    const sessionStateDir = join(stateDir, 'sessions', sessionId);
+    try {
+      await mkdir(sessionStateDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+      await writeSessionStart(wd, sessionId);
+      await writeFile(join(sessionStateDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'executing',
+        owner_omx_session_id: 'sess-leader',
+        tmux_pane_id: '%42',
+      }, null, 2));
+      await writeFile(join(sessionStateDir, 'hud-state.json'), JSON.stringify({
+        last_progress_at: new Date(Date.now() - 61_000).toISOString(),
+      }, null, 2));
+      await writeFile(join(stateDir, 'notify-fallback-state.json'), JSON.stringify({
+        ralph_continue_steer: {
+          last_sent_at: new Date(Date.now() - 61_000).toISOString(),
+        },
+      }, null, 2));
+
+      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+      const run = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
+        {
+          encoding: 'utf-8',
+          env: buildCleanNotifyEnv({ PATH: `${fakeBinDir}:${process.env.PATH || ''}` }),
+        },
+      );
+      assert.equal(run.status, 0, run.stderr || run.stdout);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
+      const sends = tmuxLog.match(/send-keys -t %42 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/g) || [];
+      assert.equal(sends.length, 0, 'non-owner child session must not receive Ralph continue steer');
+
+      const watcherState = JSON.parse(await readFile(join(stateDir, 'notify-fallback-state.json'), 'utf-8'));
+      assert.equal(watcherState.ralph_continue_steer?.last_reason, 'owner_mismatch');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed instead of Ralph-continuing when ownership is ambiguous', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-owner-ambiguous-'));
+    const fakeBinDir = join(wd, 'fake-bin');
+    const tmuxLogPath = join(wd, 'tmux.log');
+    const stateDir = join(wd, '.omx', 'state');
+    try {
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+      await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({
+        active: true,
+        current_phase: 'executing',
+        owner_omx_session_id: 'sess-leader',
+        tmux_pane_id: '%42',
+      }, null, 2));
+      await writeFile(join(stateDir, 'hud-state.json'), JSON.stringify({
+        last_progress_at: new Date(Date.now() - 61_000).toISOString(),
+      }, null, 2));
+      await writeFile(join(stateDir, 'notify-fallback-state.json'), JSON.stringify({
+        ralph_continue_steer: {
+          last_sent_at: new Date(Date.now() - 61_000).toISOString(),
+        },
+      }, null, 2));
+
+      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+      const run = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50'],
+        {
+          encoding: 'utf-8',
+          env: buildCleanNotifyEnv({ PATH: `${fakeBinDir}:${process.env.PATH || ''}` }),
+        },
+      );
+      assert.equal(run.status, 0, run.stderr || run.stdout);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8').catch(() => '');
+      const sends = tmuxLog.match(/send-keys -t %42 -l Ralph loop active continue \[OMX_TMUX_INJECT\]/g) || [];
+      assert.equal(sends.length, 0, 'ambiguous ownership must fail closed');
+
+      const watcherState = JSON.parse(await readFile(join(stateDir, 'notify-fallback-state.json'), 'utf-8'));
+      assert.equal(watcherState.ralph_continue_steer?.last_reason, 'owner_ambiguous');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('suppresses Ralph continue steer when hud progress is still fresh after cooldown', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-ralph-progress-fresh-'));
     const fakeBinDir = join(wd, 'fake-bin');

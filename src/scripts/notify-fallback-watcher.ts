@@ -39,6 +39,7 @@ import { sameFilePath } from '../utils/paths.js';
 import { validateSessionId } from '../mcp/state-paths.js';
 import { TEAM_NAME_SAFE_PATTERN } from '../team/contracts.js';
 import { shouldContinueRun } from '../runtime/run-loop.js';
+import { resolveWorkflowOwnerSnapshot } from '../state/workflow-owner-snapshot.js';
 
 function argValue(name: string, fallback = ''): string {
   const idx = process.argv.indexOf(name);
@@ -553,66 +554,67 @@ interface ActiveModeResult {
 }
 
 async function resolveActiveModeState(mode: string): Promise<ActiveModeResult> {
-  const candidateDirs: string[] = [];
   let currentSessionId = '';
+  let currentCodexSessionId = '';
   let currentSessionIsLive = false;
   const session = await readSessionState(cwd);
-  if (session?.session_id) {
-    if (isSessionStateAuthoritativeForCwd(session, cwd)) {
-      currentSessionId = normalizeValidSessionId(session.session_id);
-      currentSessionIsLive = currentSessionId !== '' && !isSessionStale(session);
-    }
-    if (currentSessionId && currentSessionIsLive) {
-      candidateDirs.push(join(stateDir, 'sessions', currentSessionId));
-    }
+  if (session?.session_id && isSessionStateAuthoritativeForCwd(session, cwd)) {
+    currentSessionId = normalizeValidSessionId(session.session_id);
+    currentCodexSessionId = safeString(session.native_session_id).trim();
+    currentSessionIsLive = currentSessionId !== '' && !isSessionStale(session);
   }
-  if (!candidateDirs.includes(stateDir)) candidateDirs.push(stateDir);
 
-  for (const dir of candidateDirs) {
-    if (mode === 'ralph' && dir === stateDir && currentSessionId) {
-      return {
-        active: false,
-        reason: currentSessionIsLive ? 'blocked_by_current_session' : 'stale_current_session',
-        path: '',
-        state: null,
-      };
-    }
-
-    const path = join(dir, `${mode}-state.json`);
-    if (!existsSync(path)) continue;
-    const parsed = await readFile(path, 'utf-8')
-      .then((content) => JSON.parse(content) as Record<string, unknown>)
-      .catch(() => null);
-    if (!parsed || typeof parsed !== 'object') continue;
-    if (mode === 'ralph' && dir !== stateDir && isStaleRalphStartingPhase(parsed)) {
-      return {
-        active: false,
-        reason: 'starting_stale',
-        path,
-        state: parsed,
-      };
-    }
-    if (hasRalphTerminalState(parsed)) {
-      return {
-        active: false,
-        reason: 'terminal',
-        path,
-        state: parsed,
-      };
-    }
+  if (currentSessionId && !currentSessionIsLive) {
     return {
-      active: true,
-      reason: 'active',
-      path,
-      state: parsed,
+      active: false,
+      reason: 'stale_current_session',
+      path: '',
+      state: null,
     };
   }
 
+  const snapshot = await resolveWorkflowOwnerSnapshot({
+    cwd,
+    mode,
+    currentOmxSessionId: currentSessionIsLive ? currentSessionId : undefined,
+    currentCodexSessionId: currentSessionIsLive ? currentCodexSessionId : undefined,
+    terminalPhases: mode === 'ralph' ? RALPH_TERMINAL_PHASES : undefined,
+    includeCompatibility: false,
+  });
+
+  if (!snapshot.active) {
+    return {
+      active: false,
+      reason: snapshot.reason,
+      path: snapshot.statePath,
+      state: snapshot.state,
+    };
+  }
+
+  if (mode === 'ralph' && snapshot.state) {
+    if (isStaleRalphStartingPhase(snapshot.state)) {
+      return {
+        active: false,
+        reason: snapshot.source === 'session' ? 'starting_stale' : 'terminal',
+        path: snapshot.statePath,
+        state: snapshot.state,
+      };
+    }
+    if (hasRalphTerminalState(snapshot.state)) {
+      return {
+        active: false,
+        reason: 'terminal',
+        path: snapshot.statePath,
+        state: snapshot.state,
+      };
+    }
+  }
+
   return {
-    active: false,
-    reason: 'cleared',
-    path: '',
-    state: null,
+    active: true,
+    reason: snapshot.reason,
+    path: snapshot.statePath,
+    state: snapshot.state,
   };
 }
 
