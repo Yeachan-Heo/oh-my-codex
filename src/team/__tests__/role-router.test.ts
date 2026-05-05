@@ -147,6 +147,18 @@ describe('role-router', () => {
       assert.equal(result.confidence, 'high');
     });
 
+    it('labels official-doc research with an external reference reason', () => {
+      const result = routeTaskToRole(
+        'Find docs',
+        'find official docs for Next.js middleware version compatibility',
+        'team-plan',
+        'executor',
+      );
+      assert.equal(result.role, 'researcher');
+      assert.equal(result.confidence, 'high');
+      assert.equal(result.reason, 'external_reference_research');
+    });
+
     it('routes chosen-technology usage questions to researcher even without explicit docs keywords', () => {
       const result = routeTaskToRole(
         'Best way to use framework feature',
@@ -167,6 +179,50 @@ describe('role-router', () => {
       );
       assert.equal(result.role, 'researcher');
       assert.equal(result.confidence, 'high');
+    });
+
+    it('labels GitHub and OSS implementation precedent research distinctly', () => {
+      const result = routeTaskToRole(
+        'Find references',
+        'find best OSS implementation examples for auth middleware',
+        'team-plan',
+        'executor',
+      );
+      assert.equal(result.role, 'researcher');
+      assert.equal(result.confidence, 'high');
+      assert.equal(result.reason, 'github_precedent_research');
+    });
+
+    it('routes Korean GitHub/reference examples to researcher librarian mode', () => {
+      const result = routeTaskToRole(
+        '레퍼런스 조사',
+        '비슷한 GitHub 구현 찾아줘 좋은 오픈소스 사례 위주로',
+        'team-plan',
+        'executor',
+      );
+      assert.equal(result.role, 'researcher');
+      assert.equal(result.confidence, 'high');
+      assert.equal(result.reason, 'github_precedent_research');
+    });
+
+    it('keeps this-repo examples and refs lookup on explore', () => {
+      const examples = routeTaskToRole('Find examples', 'find examples in this repo for auth middleware', 'team-plan', 'executor');
+      const refs = routeTaskToRole('Find refs', 'find refs in this repo for auth middleware', 'team-plan', 'executor');
+      assert.equal(examples.role, 'explore');
+      assert.equal(refs.role, 'explore');
+      assert.equal(examples.confidence, 'high');
+      assert.equal(refs.confidence, 'high');
+    });
+
+    it('keeps implementation-heavy migration with docs context on the implementation lane', () => {
+      const result = routeTaskToRole(
+        'Migrate auth middleware',
+        'implement the migration using official docs and update the code',
+        'team-exec',
+        'executor',
+      );
+      assert.equal(result.role, 'executor');
+      assert.equal(result.confidence, 'medium');
     });
 
     it('routes dependency evaluation tasks to dependency-expert', () => {

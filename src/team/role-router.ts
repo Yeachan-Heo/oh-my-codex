@@ -92,6 +92,7 @@ const ROLE_KEYWORDS: ReadonlyArray<{ role: string; keywords: readonly string[] }
 ];
 
 const IMPLEMENTATION_INTENT = /\b(?:add|build|create|fix|implement|make|migrate|repair|ship|support|update|wire)\b|(?:구현|추가|수정|업데이트|지원)/i;
+const IMPLEMENTATION_ACTION_INTENT = /\b(?:add|build|create|fix|implement|make|migrate|repair|ship|support|wire)\b|(?:구현(?:해|하|한다|하기|해줘)|추가|수정|지원)/i;
 const REVIEW_INTENT = /\b(?:audit|check|inspect|review|validate|verify)\b|(?:검토|리뷰|감사|확인|검증)/i;
 const PRIMARY_TEST_INTENT = /^(?:add|create|expand|improve|increase|write)\b.*\b(?:tests?|specs?|coverage)\b|^(?:테스트\s*(?:추가|작성)|커버리지\s*추가)/i;
 const DOCS_INTENT = /\b(?:docs?|documentation|readme|guide|changelog)\b|(?:문서|가이드|README|변경로그)/i;
@@ -101,8 +102,8 @@ const DESIGN_INTENT = /\b(?:design|layout|style)\b|\b(?:build|create)\b.*\b(?:ui
 const BUILD_FIX_INTENT = /\b(?:build|compile|tsc|type error|compilation)\b|(?:빌드|컴파일|타입 오류)/i;
 const CLEANUP_INTENT = /\b(?:clean up|consolidate|reduce complexity|refactor|simplify)\b|(?:정리|단순화|리팩터)/i;
 const SECURITY_DOMAIN = /\b(?:auth|authentication|authorization|cve|injection|owasp|security|vulnerability|xss)\b|(?:보안|인증|인가|취약점)/i;
-const LOCAL_EXPLORATION_VERB = /\b(?:check|find|inspect|locate|look up|lookup|map|review|search|trace|understand|where(?:\s+is|\s+are)?|which files?|what files?)\b/i;
-const LOCAL_EXPLORATION_SUBJECT = /\b(?:file|files|symbol|symbols|repo|repository|codebase|path|paths|usage|usages|reference|references|relationship|relationships|wiring|flow|implementation|local)\b/i;
+const LOCAL_EXPLORATION_VERB = /\b(?:check|find|inspect|locate|look up|lookup|map|review|search|trace|understand|where(?:\s+is|\s+are)?|which files?|what files?)\b|(?:찾아줘|어디\s*(?:있|구현))/i;
+const LOCAL_EXPLORATION_SUBJECT = /\b(?:file|files|symbol|symbols|repo|repository|codebase|path|paths|usage|usages|reference|references|relationship|relationships|wiring|flow|implementation|local)\b|(?:이\s*레포|현재\s*레포|로컬\s*코드베이스|우리\s*구현)/i;
 const LOCAL_USAGE_DISCOVERY = /\b(?:call sites?|current(?:ly)? use|how\s+we\s+use|integration points?|our usage|where\s+we\s+use)\b/i;
 const DEPENDENCY_EVALUATION_SIGNAL = /\b(?:dependency|dependencies|package|packages|sdk|sdks|library|libraries|framework|frameworks|crate|crates|npm|pypi|crates\.io|license|licenses|maintenance|download stats?|migration path|vendor)\b/i;
 const DEPENDENCY_EVALUATION_VERB = /\b(?:adopt|assess|choose|compare|evaluate|recommend|replace|select|swap|upgrade)\b/i;
@@ -114,8 +115,13 @@ const CHOSEN_TECH_RESEARCH_SIGNAL = /\b(?:api|apis|framework|frameworks|library|
 const CHOSEN_TECH_RESEARCH_NEED = /\b(?:behavior|best way|configuration|configure|example|examples|feature|features?|how(?:\s+do|\s+to)?|in the wild|lifecycle|option|options|parameter|parameters|usage|what(?:\s+does|\s+is)|when(?:\s+does|\s+should)|why(?:\s+does)?)\b/i;
 const DOCS_DELIVERABLE_VERB = /\b(?:add|document|draft|edit|prepare|publish|refresh|revise|update|write)\b/i;
 const DOCS_DELIVERABLE_NOUN = /\b(?:api docs?|changelog|comments?|documentation|docs?|guide|guides|readme|release notes?)\b/i;
+const DOCS_REFERENCE_RESEARCH_SIGNAL = /\b(?:official docs?|upstream docs?|vendor docs?|api docs?|api reference|reference docs?|release notes?|changelog|version(?:ing)?|compatib(?:ility|le))\b|(?:공식\s*문서|API\s*레퍼런스|릴리즈\s*노트|변경로그|버전\s*호환|호환성)/i;
+const GITHUB_PRECEDENT_RESEARCH_SIGNAL = /\b(?:github|oss|open[- ]source|similar projects?|reference implementation|implementation examples?|best implementation|production pattern|in the wild|precedent)\b|(?:깃허브|GitHub|오픈소스|OSS|비슷한\s*(?:프로젝트|구현)|구현\s*사례|레퍼런스|참고\s*구현|좋은\s*구현|사례)/i;
+const HISTORY_CONTEXT_RESEARCH_SIGNAL = /\b(?:upstream|issues?|pull requests?|\bpr\b|history|why did|behavior change|regression note)\b|(?:업스트림|이슈|\bPR\b|풀리퀘스트|히스토리|왜\s*바뀜|변경\s*이유)/i;
+const EXPLICIT_LOCAL_ANCHOR = /\b(?:current repo|local codebase|this repo|this repository|in this repo|our implementation|local)\b|(?:이\s*레포|현재\s*레포|로컬\s*코드베이스|우리\s*구현)/i;
 
 function isLocalExplorationTask(text: string): boolean {
+  if (GITHUB_PRECEDENT_RESEARCH_SIGNAL.test(text) && !EXPLICIT_LOCAL_ANCHOR.test(text)) return false;
   return (LOCAL_EXPLORATION_VERB.test(text) && LOCAL_EXPLORATION_SUBJECT.test(text))
     || (LOCAL_USAGE_DISCOVERY.test(text) && /\b(?:current|currently|dependency|existing|local|our|package|packages|repo|repository|sdk|sdks|library|libraries)\b/i.test(text));
 }
@@ -144,16 +150,32 @@ function isDependencyEvaluationTask(text: string): boolean {
     );
 }
 
-function isResearchTask(text: string): boolean {
-  const docsDrivenResearch = RESEARCH_SIGNAL.test(text)
-    && (RESEARCH_VERB.test(text) || /\b(?:compatib(?:ility|le)|official docs?|release notes?|upstream docs?|vendor docs?|version(?:ing)?)\b/i.test(text));
-  const chosenTechnologyGuidance = CHOSEN_TECH_RESEARCH_SIGNAL.test(text)
-    && CHOSEN_TECH_RESEARCH_NEED.test(text);
-
-  return (docsDrivenResearch || chosenTechnologyGuidance)
+function canRouteToResearcher(text: string): boolean {
+  return !IMPLEMENTATION_ACTION_INTENT.test(text)
     && !isDocumentationDeliverableTask(text)
     && !isLocalExplorationTask(text)
     && !isDependencyEvaluationTask(text);
+}
+
+function isGitHubPrecedentResearchTask(text: string): boolean {
+  return GITHUB_PRECEDENT_RESEARCH_SIGNAL.test(text) && canRouteToResearcher(text);
+}
+
+function isHistoryContextResearchTask(text: string): boolean {
+  return HISTORY_CONTEXT_RESEARCH_SIGNAL.test(text) && canRouteToResearcher(text);
+}
+
+function isDocsReferenceResearchTask(text: string): boolean {
+  return DOCS_REFERENCE_RESEARCH_SIGNAL.test(text) && canRouteToResearcher(text);
+}
+
+function isResearchTask(text: string): boolean {
+  const docsDrivenResearch = RESEARCH_SIGNAL.test(text)
+    && (RESEARCH_VERB.test(text) || /(?:compatib(?:ility|le)|official docs?|release notes?|upstream docs?|vendor docs?|version(?:ing)?)/i.test(text));
+  const chosenTechnologyGuidance = CHOSEN_TECH_RESEARCH_SIGNAL.test(text)
+    && CHOSEN_TECH_RESEARCH_NEED.test(text);
+
+  return (docsDrivenResearch || chosenTechnologyGuidance) && canRouteToResearcher(text);
 }
 
 function inferLaneIntent(text: string): LaneIntent {
@@ -201,6 +223,30 @@ export function routeTaskToRole(
     };
   }
 
+  if (isGitHubPrecedentResearchTask(text)) {
+    return {
+      role: 'researcher',
+      confidence: 'high',
+      reason: 'github_precedent_research',
+    };
+  }
+
+  if (isHistoryContextResearchTask(text)) {
+    return {
+      role: 'researcher',
+      confidence: 'high',
+      reason: 'history_context_research',
+    };
+  }
+
+  if (isDocsReferenceResearchTask(text)) {
+    return {
+      role: 'researcher',
+      confidence: 'high',
+      reason: 'external_reference_research',
+    };
+  }
+
   if (intent === 'debug') {
     return {
       role: 'debugger',
@@ -230,6 +276,14 @@ export function routeTaskToRole(
       role: 'dependency-expert',
       confidence: 'high',
       reason: 'primary intent is external dependency/package evaluation',
+    };
+  }
+
+  if (IMPLEMENTATION_ACTION_INTENT.test(text) && (DOCS_REFERENCE_RESEARCH_SIGNAL.test(text) || GITHUB_PRECEDENT_RESEARCH_SIGNAL.test(text))) {
+    return {
+      role: fallbackRole,
+      confidence: 'medium',
+      reason: 'implementation request mentions external docs/reference context, so using fallback implementation lane',
     };
   }
 

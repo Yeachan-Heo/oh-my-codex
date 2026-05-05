@@ -259,7 +259,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   },
   'researcher': {
     name: 'researcher',
-    description: 'External documentation and reference research',
+    description: 'External documentation, release history, and GitHub/OSS precedent research',
     reasoningEffort: 'high',
     posture: 'fast-lane',
     modelClass: 'standard',

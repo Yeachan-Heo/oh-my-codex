@@ -142,7 +142,7 @@ Rules:
 <model_routing>
 Match role to task shape:
 - Low complexity: `explore`, `style-reviewer`, `writer`
-- Research/discovery: `explore` for repo lookup, `researcher` for official docs/reference gathering, `dependency-expert` for SDK/API/package evaluation
+- Research/discovery: `explore` for repo-local lookup, `researcher` for official docs plus external GitHub/OSS precedent gathering, `dependency-expert` for SDK/API/package evaluation
 - Standard: `executor`, `debugger`, `test-engineer`
 - High complexity: `architect`, `executor`, `critic`
 
@@ -153,9 +153,10 @@ For Codex native child agents, model routing defaults to inheritance/current rep
 Leader/workflow routing contract:
 <!-- OMX:GUIDANCE:SPECIALIST-ROUTING:START -->
 - Route to `explore` for repo-local file / symbol / pattern / relationship lookup, current implementation discovery, or mapping how this repo currently uses a dependency. `explore` owns facts about this repo, not external docs or dependency recommendations.
-- Route to `researcher` when the main need is official docs, external API behavior, version-aware framework guidance, release-note history, or citation-backed reference gathering. The technology is already chosen; `researcher` answers “how does this chosen thing work?” and is not the default dependency-comparison role.
+- Route to `researcher` when the main need is official docs, external API behavior, version-aware framework guidance, release-note history, citation-backed reference gathering, or GitHub/OSS implementation precedents. The technology is already chosen; `researcher` answers “how does this chosen thing work?” and “what credible external projects show a good implementation?” It is not the default dependency-comparison role.
+- Treat `researcher` GitHub/OSS precedent work as Librarian Mode: candidate repos, credibility, stable source URLs or commit-pinned permalinks, implementation pattern extraction, copy/avoid notes, target-project fit, and evidence strength.
 - Route to `dependency-expert` when the main need is package / SDK selection or a comparative dependency decision: whether / which package, SDK, or framework to adopt, upgrade, replace, or migrate; candidate comparison; maintenance, license, security, or risk evaluation across options.
-- Use mixed routing deliberately: `explore` -> `researcher` for current local usage plus official-doc confirmation; `explore` -> `dependency-expert` for current dependency usage plus upgrade / replacement / migration evaluation; `researcher` -> `explore` when docs are clear but repo usage or impact still needs confirmation; `dependency-expert` -> `explore` when a dependency decision is clear but the local migration surface still needs mapping.
+- Use mixed routing deliberately: `explore` -> `researcher` for current local usage plus official-doc or OSS-precedent confirmation; `explore` -> `dependency-expert` for current dependency usage plus upgrade / replacement / migration evaluation; `researcher` -> `explore` when docs are clear but repo usage or impact still needs confirmation; `dependency-expert` -> `explore` when a dependency decision is clear but the local migration surface still needs mapping.
 - Specialists should report boundary crossings upward instead of silently absorbing adjacent work.
 - When external evidence materially affects the answer, do not keep the leader in the main lane on recall alone; route to the relevant specialist first, then return to planning or execution.
 <!-- OMX:GUIDANCE:SPECIALIST-ROUTING:END -->
@@ -168,7 +169,7 @@ Key roles: `explore` (repo search/mapping), `planner` (plans/sequencing), `archi
 
 Research/discovery specialists:
 - `explore` — first-stop repository lookup and symbol/file mapping
-- `researcher` — official docs, references, and external fact gathering
+- `researcher` — official docs, release history, source-backed references, and GitHub/OSS Librarian Mode precedents
 - `dependency-expert` — SDK/API/package evaluation before adopting or changing dependencies
 
 Specialists remain available through the role catalog and native child-agent surfaces when the task clearly benefits from them.
@@ -197,7 +198,7 @@ The keyword detector is the first and deterministic routing surface. Triage runs
 
 When active, triage emits **advisory prompt-routing context** — a developer-context string that the model may follow. It does not activate a skill or workflow by itself. It is a best-effort hint, not a guarantee.
 
-Note: `explore`, `executor`, `designer`, and `researcher` are agent role-prompt files under `prompts/`, not workflow skills. `researcher` is used for official-doc/reference/source-backed external lookup prompts only; local anchors and implementation-shaped prompts stay with `explore`/`executor`/HEAVY routing.
+Note: `explore`, `executor`, `designer`, and `researcher` are agent role-prompt files under `prompts/`, not workflow skills. `researcher` is used for official-doc/reference/source-backed external lookup prompts, including GitHub/OSS Librarian Mode precedent requests; local anchors and implementation-shaped prompts stay with `explore`/`executor`/HEAVY routing.
 
 Explicit keywords remain the deterministic control surface when you want explicit, guaranteed routing — use them whenever exact behavior matters.
 
