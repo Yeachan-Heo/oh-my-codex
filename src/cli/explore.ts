@@ -1,8 +1,7 @@
-import { readFile } from 'fs/promises';
-import { isAbsolute, join } from 'path';
+import { readFile, readdir, stat } from 'fs/promises';
+import { isAbsolute, join, relative, resolve, sep } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { getPackageRoot } from '../utils/package.js';
-import { spawnPlatformCommandSync } from '../utils/platform-command.js';
 import {
   isSparkShellNativeCompatibilityFailure,
   resolveSparkShellBinaryPathWithHydration,
@@ -27,6 +26,7 @@ import {
 } from './native-assets.js';
 import { getWikiDir, queryWiki } from '../wiki/index.js';
 import { resolveCodexHomeForLaunch } from './codex-home.js';
+import { runProcessTreeWithTimeout } from '../runtime/process-tree.js';
 
 export const EXPLORE_USAGE = [
   'Usage: omx explore --prompt "<prompt>"',
@@ -38,6 +38,11 @@ const PROMPT_FILE_FLAG = '--prompt-file';
 export const EXPLORE_BIN_ENV = EXPLORE_BIN_ENV_SHARED;
 const EXPLORE_SPARK_MODEL_ENV = 'OMX_EXPLORE_SPARK_MODEL';
 const EXPLORE_INSTRUCTIONS_FILE_ENV = 'OMX_EXPLORE_MODEL_INSTRUCTIONS_FILE';
+const EXPLORE_TIMEOUT_MS_ENV = 'OMX_EXPLORE_TIMEOUT_MS';
+const DEFAULT_EXPLORE_TIMEOUT_MS = 120_000;
+const LOCAL_FAST_PATH_MAX_FILES = 2_000;
+const LOCAL_FAST_PATH_MAX_MATCHES = 40;
+const LOCAL_FAST_PATH_EXCLUDED_DIRS = new Set(['.git', 'node_modules', 'dist', 'target', '.omx']);
 const WINDOWS_BUILTIN_EXPLORE_HARNESS_REASON =
   'the built-in explore harness is not ready on Windows because its allowlist runtime relies on POSIX sh/bash wrappers. Set OMX_EXPLORE_BIN to a compatible custom harness, prefer `omx sparkshell` for shell-native read-only lookups, or run `omx doctor` for readiness details.';
 
@@ -138,6 +143,115 @@ function formatWikiContextBlock(prompt: string, cwd: string): string | null {
 export function buildExplorePromptWithWikiContext(prompt: string, cwd: string): string {
   const wikiContext = formatWikiContextBlock(prompt, cwd);
   return wikiContext ?? prompt;
+}
+
+interface ExploreLocalFastPathResult {
+  kind: 'path' | 'text';
+  lines: string[];
+}
+
+function normalizeRelativeLookupPath(prompt: string): string | undefined {
+  const trimmed = prompt.trim();
+  const match = trimmed.match(/^(?:open|show|cat|read|find|locate)\s+([A-Za-z0-9._/@+-][A-Za-z0-9._/@+\-/]*)$/i);
+  const candidate = match?.[1] ?? (
+    /^[A-Za-z0-9._/@+-][A-Za-z0-9._/@+\-/]*$/.test(trimmed) ? trimmed : undefined
+  );
+  if (!candidate || candidate.startsWith('/') || candidate.includes('..')) return undefined;
+  return candidate;
+}
+
+function normalizeTextLookup(prompt: string): string | undefined {
+  const match = prompt.trim().match(/^(?:search(?:\s+for)?|grep|find\s+text)\s+(.+)$/i);
+  const term = match?.[1]?.trim().replace(/^["']|["']$/g, '');
+  if (!term || term.length < 2) return undefined;
+  if (/[|&;><`$()]/.test(term) || term.includes('\n')) return undefined;
+  return term;
+}
+
+async function collectRepositoryFiles(cwd: string): Promise<string[]> {
+  const files: string[] = [];
+  const pending = [cwd];
+
+  while (pending.length > 0 && files.length < LOCAL_FAST_PATH_MAX_FILES) {
+    const directory = pending.pop()!;
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (!LOCAL_FAST_PATH_EXCLUDED_DIRS.has(entry.name)) pending.push(fullPath);
+        continue;
+      }
+      if (entry.isFile()) files.push(fullPath);
+      if (files.length >= LOCAL_FAST_PATH_MAX_FILES) break;
+    }
+  }
+
+  return files;
+}
+
+async function resolveExploreLocalFastPath(prompt: string, cwd: string): Promise<ExploreLocalFastPathResult | undefined> {
+  const relativeLookupPath = normalizeRelativeLookupPath(prompt);
+  if (relativeLookupPath) {
+    const targetPath = resolve(cwd, relativeLookupPath);
+    const cwdRoot = resolve(cwd);
+    if ((targetPath === cwdRoot || targetPath.startsWith(`${cwdRoot}${sep}`)) && existsSync(targetPath)) {
+      const targetStat = await stat(targetPath);
+      const relativePath = relative(cwd, targetPath) || '.';
+      if (targetStat.isDirectory()) {
+        const entries = (await readdir(targetPath)).slice(0, LOCAL_FAST_PATH_MAX_MATCHES);
+        return {
+          kind: 'path',
+          lines: [
+            `${relativePath}/`,
+            ...entries.map((entry) => `${relativePath === '.' ? '' : `${relativePath}/`}${entry}`),
+          ],
+        };
+      }
+      if (targetStat.isFile()) {
+        return {
+          kind: 'path',
+          lines: [`${relativePath} (${targetStat.size} bytes)`],
+        };
+      }
+    }
+  }
+
+  const textLookup = normalizeTextLookup(prompt);
+  if (!textLookup) return undefined;
+  const needle = textLookup.toLowerCase();
+  const matches: string[] = [];
+  for (const filePath of await collectRepositoryFiles(cwd)) {
+    if (matches.length >= LOCAL_FAST_PATH_MAX_MATCHES) break;
+    const relativePath = relative(cwd, filePath);
+    if (relativePath.toLowerCase().includes(needle)) {
+      matches.push(relativePath);
+      continue;
+    }
+    let content: string;
+    try {
+      content = await readFile(filePath, 'utf-8');
+    } catch {
+      continue;
+    }
+    const line = content.split(/\r?\n/).findIndex((value) => value.toLowerCase().includes(needle));
+    if (line >= 0) matches.push(`${relativePath}:${line + 1}`);
+  }
+
+  if (matches.length === 0) return undefined;
+  return { kind: 'text', lines: matches };
+}
+
+function parseExploreTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = env[EXPLORE_TIMEOUT_MS_ENV]?.trim();
+  if (!raw) return DEFAULT_EXPLORE_TIMEOUT_MS;
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_EXPLORE_TIMEOUT_MS;
 }
 
 function tokenizeExploreShellCommand(commandText: string): string[] | undefined {
@@ -467,6 +581,16 @@ export async function exploreCommand(args: string[]): Promise<void> {
   const prompt = await loadExplorePrompt(parsed);
   const cwd = process.cwd();
   const exploreEnv = resolveExploreEnv(cwd, process.env);
+  const localFastPath = await resolveExploreLocalFastPath(prompt, cwd);
+  if (localFastPath) {
+    process.stdout.write([
+      `[omx explore] local fast-path used (${localFastPath.kind} lookup).`,
+      ...localFastPath.lines.map((line) => `- ${line}`),
+      '',
+    ].join('\n'));
+    return;
+  }
+
   const sparkShellRoute = resolveExploreSparkShellRoute(prompt);
   if (sparkShellRoute) {
     try {
@@ -483,15 +607,19 @@ export async function exploreCommand(args: string[]): Promise<void> {
   const harness = await resolveExploreHarnessCommandWithHydration(packageRoot, exploreEnv);
   const harnessArgs = [...harness.args, ...buildExploreHarnessArgs(prompt, cwd, exploreEnv, packageRoot)];
 
-  const { result } = spawnPlatformCommandSync(harness.command, harnessArgs, {
+  const result = await runProcessTreeWithTimeout(harness.command, harnessArgs, {
     cwd,
     env: exploreEnv,
     encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
+    timeoutMs: parseExploreTimeoutMs(exploreEnv),
   });
 
   if (result.stdout && result.stdout.length > 0) process.stdout.write(result.stdout);
   if (result.stderr && result.stderr.length > 0) process.stderr.write(result.stderr);
+
+  if (result.timedOut) {
+    throw new Error(`[explore] harness timed out after ${parseExploreTimeoutMs(exploreEnv)}ms; terminated the process tree to avoid runaway Codex sessions. Set ${EXPLORE_TIMEOUT_MS_ENV} to adjust the bound.`);
+  }
 
   if (result.error) {
     const errno = result.error as NodeJS.ErrnoException;
