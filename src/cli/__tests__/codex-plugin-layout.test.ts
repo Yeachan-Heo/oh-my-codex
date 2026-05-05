@@ -175,6 +175,7 @@ describe('official Codex plugin layout', () => {
 
     for (const [serverName, server] of Object.entries(mcpManifest.mcpServers ?? {})) {
       assert.equal(server.command, OMX_PLUGIN_MCP_COMMAND, `${serverName} should run via omx`);
+      assert.notEqual(server.command, 'node', `${serverName} should not depend on a bare node command`);
       assert.equal(server.enabled, true, `${serverName} should be enabled`);
       assert.equal(server.args?.length, 2, `${serverName} should have serve subcommand + public target args`);
       assert.equal(server.args?.[0], OMX_PLUGIN_MCP_SERVE_SUBCOMMAND, `${serverName} should launch through omx mcp-serve`);

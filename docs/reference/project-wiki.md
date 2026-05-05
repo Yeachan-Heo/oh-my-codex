@@ -17,13 +17,15 @@ It is intentionally **not** a literal OMC port.
 
 ```toml
 [mcp_servers.omx_wiki]
-command = "node"
+command = "<absolute Node executable used by omx setup>"
 args = ["<repo>/dist/mcp/wiki-server.js"]
 enabled = true
 ```
 
 The bootstrap/config path should treat `omx_wiki` as a first-party OMX server
 alongside the existing built-ins, while keeping the diff small and idempotent.
+Setup-managed first-party MCP blocks must use the stable absolute Node
+executable that ran `omx setup` rather than a PATH-dependent bare `node`.
 
 ## Storage contract
 
