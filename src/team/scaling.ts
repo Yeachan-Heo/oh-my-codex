@@ -59,6 +59,7 @@ import {
 import { loadRolePrompt } from './role-router.js';
 import { composeRoleInstructionsForRole } from '../agents/native-config.js';
 import { codexPromptsDir } from '../utils/paths.js';
+import { resolveCodexHomeForLaunch } from '../cli/codex-home.js';
 import {
   parseTeamWorkerLaunchArgs,
   resolveTeamWorkerLaunchArgs,
@@ -228,6 +229,10 @@ export async function scaleUp(
     }
 
     const teamStateRoot = config.team_state_root ?? resolveCanonicalTeamStateRoot(leaderCwd);
+    const codexHomeOverride = resolveCodexHomeForLaunch(leaderCwd, env);
+    const launchEnv = codexHomeOverride
+      ? { ...env, CODEX_HOME: codexHomeOverride }
+      : env;
     const sessionName = config.tmux_session;
     const manifest = await readTeamManifestV2(sanitized, leaderCwd);
     const dispatchPolicy = normalizeTeamPolicy(manifest?.policy, {
@@ -315,8 +320,8 @@ export async function scaleUp(
     const persistedTasks = await listTasks(sanitized, leaderCwd);
 
     // Resolve shared worker launch args for CLI selection.
-    const sharedWorkerLaunchArgs = resolveWorkerLaunchArgsForScaling(env, agentType);
-    const workerCliPlan = resolveTeamWorkerCliPlan(count, sharedWorkerLaunchArgs, env);
+    const sharedWorkerLaunchArgs = resolveWorkerLaunchArgsForScaling(launchEnv, agentType, undefined, codexHomeOverride);
+    const workerCliPlan = resolveTeamWorkerCliPlan(count, sharedWorkerLaunchArgs, launchEnv);
 
     for (let i = 0; i < count; i++) {
       const workerIndex = nextIndex;
@@ -354,9 +359,9 @@ export async function scaleUp(
       // Build startup command and create tmux pane
       const rawRolePromptContent = await loadRolePrompt(runtimeRole, join(leaderCwd, '.codex', 'prompts'))
         ?? await loadRolePrompt(runtimeRole, codexPromptsDir());
-      const preferredReasoning = resolveAgentReasoningEffort(runtimeRole, env.CODEX_HOME)
-        ?? resolveAgentReasoningEffort(agentType, env.CODEX_HOME);
-      const workerLaunchArgs = resolveWorkerLaunchArgsForScaling(env, runtimeRole, preferredReasoning);
+      const preferredReasoning = resolveAgentReasoningEffort(runtimeRole, codexHomeOverride)
+        ?? resolveAgentReasoningEffort(agentType, codexHomeOverride);
+      const workerLaunchArgs = resolveWorkerLaunchArgsForScaling(launchEnv, runtimeRole, preferredReasoning, codexHomeOverride);
       const resolvedWorkerModel = parseTeamWorkerLaunchArgs(workerLaunchArgs).modelOverride ?? undefined;
       const rolePromptContent = rawRolePromptContent
         ? composeRoleInstructionsForRole(runtimeRole, rawRolePromptContent, resolvedWorkerModel)
@@ -379,6 +384,7 @@ export async function scaleUp(
         OMX_TEAM_STATE_ROOT: teamStateRoot,
         OMX_TEAM_LEADER_CWD: leaderCwd,
         OMX_MODEL_INSTRUCTIONS_FILE: instructionsFilePath,
+        ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
       };
       if (workerWorkspace) {
         extraEnv.OMX_TEAM_WORKTREE_PATH = workerWorkspace.worktreePath;
@@ -813,9 +819,10 @@ function resolveWorkerLaunchArgsForScaling(
   env: NodeJS.ProcessEnv,
   agentType: string,
   preferredReasoning?: TeamReasoningEffort,
+  codexHomeOverride?: string,
 ): string[] {
   const inheritedArgs: string[] = [];
-  const fallbackModel = resolveAgentDefaultModel(agentType, env.CODEX_HOME);
+  const fallbackModel = resolveAgentDefaultModel(agentType, codexHomeOverride ?? env.CODEX_HOME);
 
   return resolveTeamWorkerLaunchArgs({
     existingRaw: env.OMX_TEAM_WORKER_LAUNCH_ARGS,

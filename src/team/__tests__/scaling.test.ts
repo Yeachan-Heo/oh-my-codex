@@ -397,6 +397,125 @@ describe('scaleUp', () => {
   });
 
 
+  it('uses project-scoped CODEX_HOME for scaled worker reasoning and model defaults', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-project-reasoning-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-project-reasoning-bin-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const tmuxStubPath = join(fakeBinDir, 'tmux');
+    const previousPath = process.env.PATH;
+    const previousStandardModel = process.env.OMX_DEFAULT_STANDARD_MODEL;
+    const previousFrontierModel = process.env.OMX_DEFAULT_FRONTIER_MODEL;
+    const previousCodeHome = process.env.CODEX_HOME;
+
+    try {
+      await writeFile(
+        tmuxStubPath,
+        [
+          '#!/bin/sh',
+          'set -eu',
+          `printf '%s\n' "$*" >> "${tmuxLogPath}"`,
+          'case "${1:-}" in',
+          '  -V)',
+          '    echo "tmux 3.2a"',
+          '    ;;',
+          '  split-window)',
+          '    echo "%31"',
+          '    ;;',
+          '  list-panes)',
+          '    echo "42424"',
+          '    ;;',
+          '  send-keys)',
+          '    ;;',
+          '  capture-pane)',
+          '    echo ""',
+          '    ;;',
+          'esac',
+          'exit 0',
+          '',
+        ].join('\n'),
+      );
+      await chmod(tmuxStubPath, 0o755);
+      await writeFile(tmuxLogPath, '');
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+      delete process.env.CODEX_HOME;
+      delete process.env.OMX_DEFAULT_STANDARD_MODEL;
+      delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
+
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+      await mkdir(join(cwd, '.codex'), { recursive: true });
+      await writeFile(join(cwd, '.codex', '.omx-config.json'), JSON.stringify({
+        env: {
+          OMX_DEFAULT_STANDARD_MODEL: 'project-standard-model',
+        },
+        agentReasoning: {
+          writer: 'xhigh',
+        },
+      }));
+      await mkdir(join(cwd, '.codex', 'prompts'), { recursive: true });
+      await writeFile(join(cwd, '.codex', 'prompts', 'writer.md'), '<identity>You are Writer.</identity>');
+      await mkdir(join(cwd, '.omx', 'state', 'team', 'scale-up-project-reasoning'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'state', 'team', 'scale-up-project-reasoning', 'worker-agents.md'), '# Base worker instructions\n');
+
+      await initTeamState('scale-up-project-reasoning', 'task', 'executor', 1, cwd);
+      await createTask('scale-up-project-reasoning', {
+        subject: 'existing task',
+        description: 'already persisted',
+        status: 'pending',
+        owner: 'worker-1',
+      }, cwd);
+
+      const config = await readTeamConfig('scale-up-project-reasoning', cwd);
+      assert.ok(config);
+      if (!config) return;
+      config.tmux_session = 'omx-team-scale-up-project-reasoning';
+      config.leader_pane_id = '%11';
+      config.workers[0]!.pane_id = '%21';
+      await saveTeamConfig(config, cwd);
+
+      const manifestPath = join(cwd, '.omx', 'state', 'team', 'scale-up-project-reasoning', 'manifest.v2.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as { policy?: Record<string, unknown> };
+      manifest.policy = {
+        ...(manifest.policy ?? {}),
+        dispatch_mode: 'transport_direct',
+      };
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const result = await scaleUp(
+        'scale-up-project-reasoning',
+        1,
+        'executor',
+        [{ subject: 'document routing report only', description: 'document routing report only', owner: 'worker-2', role: 'writer' }],
+        cwd,
+        { OMX_TEAM_SCALING_ENABLED: '1', OMX_TEAM_SKIP_READY_WAIT: '1' },
+      );
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /CODEX_HOME=.*\.codex/);
+      assert.match(tmuxLog, /model_reasoning_effort="xhigh"/);
+      assert.match(tmuxLog, /--model/);
+      assert.match(tmuxLog, /project-standard-model/);
+
+      const workerAgents = await readFile(join(cwd, '.omx', 'state', 'team', 'scale-up-project-reasoning', 'workers', 'worker-2', 'AGENTS.md'), 'utf-8');
+      assert.match(workerAgents, /You are operating as the \*\*writer\*\* role/);
+      assert.match(workerAgents, /resolved_model: project-standard-model/);
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      if (typeof previousStandardModel === 'string') process.env.OMX_DEFAULT_STANDARD_MODEL = previousStandardModel;
+      else delete process.env.OMX_DEFAULT_STANDARD_MODEL;
+      if (typeof previousFrontierModel === 'string') process.env.OMX_DEFAULT_FRONTIER_MODEL = previousFrontierModel;
+      else delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
+      if (typeof previousCodeHome === 'string') process.env.CODEX_HOME = previousCodeHome;
+      else delete process.env.CODEX_HOME;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+
   it('removes generated worktree-root AGENTS when scale-up rolls back', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-rollback-worktree-'));
     const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-rollback-worktree-bin-'));
