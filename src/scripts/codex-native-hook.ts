@@ -7,7 +7,9 @@ import { readModeState, readModeStateForActiveDecision, readModeStateForSession,
 import {
   extractSessionIdFromInitializedStatePath,
   listActiveSkills,
+  readSkillActiveState,
   readVisibleSkillActiveState,
+  type SkillActiveStateLike,
 } from "../state/skill-active.js";
 import {
   readSubagentSessionSummary,
@@ -1924,6 +1926,87 @@ async function readBlockingSkillForStop(
   return null;
 }
 
+function uniqueNonEmpty(values: Array<string | undefined>): string[] {
+  return [...new Set(values.map((value) => safeString(value).trim()).filter(Boolean))];
+}
+
+function isTerminalOrInactiveModeState(state: Record<string, unknown> | null): boolean {
+  if (!state) return true;
+  if (state.active !== true) return true;
+  if (getRunContinuationSnapshot(state)?.terminal === true) return true;
+  const phase = safeString(state.current_phase ?? state.currentPhase).trim().toLowerCase();
+  return phase !== "" && TERMINAL_MODE_PHASES.has(phase);
+}
+
+async function readSessionScopedModeStateForRootSkill(
+  cwd: string,
+  skill: string,
+  sessionIds: string[],
+): Promise<Record<string, unknown> | null> {
+  for (const sessionId of sessionIds) {
+    const state = await readJsonIfExists(join(cwd, ".omx", "state", "sessions", sessionId, `${skill}-state.json`));
+    if (state) return state;
+  }
+  return null;
+}
+
+async function reconcileStaleRootSkillActiveStateForStop(
+  cwd: string,
+  sessionId: string,
+): Promise<void> {
+  const rootPath = join(cwd, ".omx", "state", "skill-active-state.json");
+  const rootState = await readSkillActiveState(rootPath);
+  if (!rootState?.active) return;
+
+  const initializedSessionId = extractSessionIdFromInitializedStatePath(rootState.initialized_state_path);
+  const rootSessionIds = uniqueNonEmpty([
+    sessionId,
+    safeString(rootState.session_id),
+    initializedSessionId,
+    ...listActiveSkills(rootState).map((entry) => safeString(entry.session_id)),
+  ]);
+  if (rootSessionIds.length === 0) return;
+
+  const activeEntries = listActiveSkills(rootState);
+  let changed = false;
+  const keptEntries = [];
+  for (const entry of activeEntries) {
+    const skill = safeString(entry.skill).trim();
+    if (!skill) continue;
+    const entrySessionId = safeString(entry.session_id).trim();
+    const candidateSessionIds = uniqueNonEmpty([
+      entrySessionId,
+      sessionId,
+      initializedSessionId,
+      safeString(rootState.session_id),
+    ]);
+    const modeState = await readSessionScopedModeStateForRootSkill(cwd, skill, candidateSessionIds);
+    if (isTerminalOrInactiveModeState(modeState)) {
+      changed = true;
+      continue;
+    }
+    keptEntries.push(entry);
+  }
+
+  if (!changed) return;
+
+  const nowIso = new Date().toISOString();
+  const nextRoot: SkillActiveStateLike = {
+    ...rootState,
+    active: keptEntries.length > 0,
+    skill: keptEntries[0]?.skill ?? safeString(rootState.skill).trim(),
+    phase: keptEntries[0]?.phase ?? safeString(rootState.phase).trim(),
+    updated_at: nowIso,
+    active_skills: keptEntries,
+    reconciled_at: nowIso,
+    reconciliation_reason: "stop_hook_session_state_terminal",
+  };
+  if (keptEntries.length === 0) {
+    nextRoot.phase = "inactive";
+  }
+  await writeFile(rootPath, JSON.stringify(nextRoot, null, 2));
+}
+
 function buildRalplanContinuationStatus(
   blocker: { phase: string; latestPlanPath?: string; planningComplete?: boolean; runOutcome?: string },
   activeSubagentCount: number,
@@ -2446,6 +2529,9 @@ async function buildStopHookOutput(
   const sessionId = readPayloadSessionId(payload);
   const canonicalSessionId = await resolveInternalSessionIdForPayload(cwd, sessionId);
   const threadId = readPayloadThreadId(payload);
+  if (canonicalSessionId) {
+    await reconcileStaleRootSkillActiveStateForStop(cwd, canonicalSessionId);
+  }
   const execFollowupOutput = await buildExecFollowupStopOutput(cwd, canonicalSessionId);
   if (execFollowupOutput) return execFollowupOutput;
   const ralphState = options.skipRalphStopBlock === true

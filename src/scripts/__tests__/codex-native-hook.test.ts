@@ -188,6 +188,8 @@ const TEAM_ENV_KEYS = [
   "OMX_TEAM_STATE_ROOT",
   "OMX_TEAM_LEADER_CWD",
   "OMX_SESSION_ID",
+  "OMX_ROOT",
+  "OMX_STATE_ROOT",
   "SESSION_ID",
   "OMX_QUESTION_RETURN_PANE",
   "OMX_LEADER_PANE_ID",
@@ -8404,6 +8406,109 @@ exit 0
         systemMessage:
           "OMX native Stop detected a stall/permission-style handoff and continued the turn automatically.",
       });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("clears stale root skill-active state when current session ralplan is terminal", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-stale-root-skill-terminal-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-stop-terminal-ralplan";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
+        active: false,
+        mode: "ralplan",
+        current_phase: "completed",
+        lifecycle_outcome: "finished",
+        run_outcome: "finish",
+        final_artifact: "proposed_plan",
+      });
+      await writeJson(join(stateDir, "skill-active-state.json"), {
+        active: true,
+        skill: "ultrawork",
+        phase: "planning",
+        source: "keyword-detector",
+        active_skills: [
+          { skill: "ultrawork", phase: "planning", active: true },
+        ],
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-stop-terminal-ralplan",
+          turn_id: "turn-stop-terminal-ralplan-1",
+          last_assistant_message: "Done.",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+
+      const rootSkillState = JSON.parse(
+        await readFile(join(stateDir, "skill-active-state.json"), "utf-8"),
+      ) as { active?: boolean; active_skills?: unknown[]; reconciliation_reason?: string };
+      assert.equal(rootSkillState.active, false);
+      assert.deepEqual(rootSkillState.active_skills, []);
+      assert.equal(rootSkillState.reconciliation_reason, "stop_hook_session_state_terminal");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves legitimate session-scoped ultrawork blocking while reconciling root skill-active state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-active-root-skill-session-mode-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-stop-active-ultrawork";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "sessions", sessionId, "ultrawork-state.json"), {
+        active: true,
+        mode: "ultrawork",
+        current_phase: "executing",
+        session_id: sessionId,
+      });
+      await writeJson(join(stateDir, "skill-active-state.json"), {
+        active: true,
+        skill: "ultrawork",
+        phase: "planning",
+        source: "keyword-detector",
+        active_skills: [
+          { skill: "ultrawork", phase: "planning", active: true, session_id: sessionId },
+        ],
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-stop-active-ultrawork",
+          turn_id: "turn-stop-active-ultrawork-1",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.deepEqual(result.outputJson, {
+        decision: "block",
+        reason: "OMX ultrawork is still active (phase: executing); continue the task and gather fresh verification evidence before stopping.",
+        stopReason: "ultrawork_executing",
+        systemMessage: "OMX ultrawork is still active (phase: executing).",
+      });
+
+      const rootSkillState = JSON.parse(
+        await readFile(join(stateDir, "skill-active-state.json"), "utf-8"),
+      ) as { active?: boolean; active_skills?: Array<{ skill?: string }> };
+      assert.equal(rootSkillState.active, true);
+      assert.deepEqual(rootSkillState.active_skills?.map((entry) => entry.skill), ["ultrawork"]);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
