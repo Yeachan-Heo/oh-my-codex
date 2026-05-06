@@ -13,6 +13,7 @@ import {
   resolveDuplicateSiblingWatchdogInitialDelayMs,
   shouldAutoStartMcpServer,
   shouldBackoffWatchdog,
+  shouldEvaluateHardCap,
   shouldSelfExitForDuplicateSibling,
   shouldSelfExitForHardCap,
   type DuplicateSiblingObservation,
@@ -531,6 +532,47 @@ describe('mcp pre-traffic hard cap', () => {
       newerSiblingPids: [],
     };
     assert.equal(shouldSelfExitForHardCap(observation, [101], 4, 101), false);
+  });
+
+  describe('shouldEvaluateHardCap (gate that avoids ledger I/O at steady state)', () => {
+    it('returns false when cap is 0 (disabled)', () => {
+      assert.equal(shouldEvaluateHardCap([101, 102, 103, 104, 105], 0), false);
+    });
+
+    it('returns false when matchingPids.length is below cap', () => {
+      assert.equal(shouldEvaluateHardCap([101, 102, 103], 4), false);
+    });
+
+    it('returns false when matchingPids.length equals cap', () => {
+      assert.equal(shouldEvaluateHardCap([101, 102, 103, 104], 4), false);
+    });
+
+    it('returns true only when matchingPids.length exceeds cap', () => {
+      assert.equal(shouldEvaluateHardCap([101, 102, 103, 104, 105], 4), true);
+    });
+
+    it('returns false when cap is not a positive integer', () => {
+      assert.equal(shouldEvaluateHardCap([101, 102, 103, 104, 105], -1), false);
+      assert.equal(shouldEvaluateHardCap([101, 102, 103, 104, 105], Number.NaN), false);
+    });
+  });
+
+  it('the watchdog source gates the ledger read behind shouldEvaluateHardCap', async () => {
+    const src = await readFile(join(process.cwd(), 'src/mcp/bootstrap.ts'), 'utf8');
+    const runIdx = src.indexOf('const runDuplicateSiblingWatchdog =');
+    assert.ok(runIdx > 0);
+    const tail = src.slice(runIdx, runIdx + 4_096);
+    assert.match(
+      tail,
+      /shouldEvaluateHardCap\([\s\S]*?observation\.matchingPids[\s\S]*?maxSiblingsPerEntrypoint/,
+      'watchdog must gate ledger I/O behind shouldEvaluateHardCap before reading the ledger',
+    );
+    const hardCapBlock = tail.indexOf('shouldEvaluateHardCap(');
+    const ledgerRead = tail.indexOf('readPretrafficSiblingPids');
+    assert.ok(
+      hardCapBlock > 0 && ledgerRead > hardCapBlock,
+      'readPretrafficSiblingPids must appear after the shouldEvaluateHardCap gate',
+    );
   });
 
   describe('effectivePretrafficSiblings (in-memory authoritative override for self)', () => {

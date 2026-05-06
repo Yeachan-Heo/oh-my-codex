@@ -298,6 +298,18 @@ export function shouldBackoffWatchdog(
   return observation.matchingPids.length > maxSiblings;
 }
 
+// The hard cap can only fire when the entrypoint exceeds its configured maximum,
+// so steady-state ticks with cap >= count must skip the pretraffic ledger read
+// entirely — otherwise every tracked MCP child pays disk I/O on every poll for a
+// branch that cannot evict anyone.
+export function shouldEvaluateHardCap(
+  matchingPids: ReadonlyArray<number>,
+  maxSiblings: number,
+): boolean {
+  if (!Number.isInteger(maxSiblings) || maxSiblings <= 0) return false;
+  return matchingPids.length > maxSiblings;
+}
+
 // The in-memory `lastTrafficAtMs` on this process is authoritative for self even when
 // the corresponding `traffic` ledger append has not flushed to disk yet. Without this
 // override, the ledger's last-known event for self is still 'start', and the cap could
@@ -501,25 +513,27 @@ export function autoStartStdioMcpServer(
         applyBackoff();
       }
 
-      const pretrafficSiblingPids = await readPretrafficSiblingPids(
-        observation.matchingPids,
-        { entrypoint: telemetryEntrypoint, env },
-      );
-      const effectivePretraffic = effectivePretrafficSiblings(
-        pretrafficSiblingPids,
-        process.pid,
-        lastTrafficAtMs,
-      );
-      if (
-        shouldSelfExitForHardCap(
-          observation,
-          effectivePretraffic,
-          lifecycleTiming.maxSiblingsPerEntrypoint,
+      if (shouldEvaluateHardCap(observation.matchingPids, lifecycleTiming.maxSiblingsPerEntrypoint)) {
+        const pretrafficSiblingPids = await readPretrafficSiblingPids(
+          observation.matchingPids,
+          { entrypoint: telemetryEntrypoint, env },
+        );
+        const effectivePretraffic = effectivePretrafficSiblings(
+          pretrafficSiblingPids,
           process.pid,
-        )
-      ) {
-        void shutdown('superseded_hard_cap_pre_traffic');
-        return;
+          lastTrafficAtMs,
+        );
+        if (
+          shouldSelfExitForHardCap(
+            observation,
+            effectivePretraffic,
+            lifecycleTiming.maxSiblingsPerEntrypoint,
+            process.pid,
+          )
+        ) {
+          void shutdown('superseded_hard_cap_pre_traffic');
+          return;
+        }
       }
 
       if (observation.status !== 'older_duplicate') {
