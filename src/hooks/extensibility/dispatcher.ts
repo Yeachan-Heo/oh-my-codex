@@ -3,6 +3,7 @@ import { existsSync } from "fs";
 import { appendFile, mkdir } from "fs/promises";
 import { join } from "path";
 import { getPackageRoot } from "../../utils/package.js";
+import { omxRoot } from "../../utils/paths.js";
 import {
 	createLifecycleBroadcastFingerprint,
 	recordLifecycleHookBroadcastSent,
@@ -32,14 +33,14 @@ const RUNNER_SIGKILL_GRACE_MS = 250;
 
 function hooksLogPath(cwd: string): string {
 	const day = new Date().toISOString().slice(0, 10);
-	return join(cwd, ".omx", "logs", `hooks-${day}.jsonl`);
+	return join(omxRoot(cwd), "logs", `hooks-${day}.jsonl`);
 }
 
 async function appendHooksLog(
 	cwd: string,
 	payload: Record<string, unknown>,
 ): Promise<void> {
-	await mkdir(join(cwd, ".omx", "logs"), { recursive: true });
+	await mkdir(join(omxRoot(cwd), "logs"), { recursive: true });
 	await appendFile(
 		hooksLogPath(cwd),
 		`${JSON.stringify({ timestamp: new Date().toISOString(), ...payload })}\n`,
@@ -325,7 +326,7 @@ export async function dispatchHookEvent(
 	if (
 		dedupeFingerprint
 		&& !shouldSendLifecycleHookBroadcast(
-			join(cwd, ".omx", "state"),
+			join(omxRoot(cwd), "state"),
 			event.session_id,
 			event.event,
 			dedupeFingerprint,
@@ -379,7 +380,7 @@ export async function dispatchHookEvent(
 
 	if (dedupeFingerprint && summary.results.some((result) => result.ok)) {
 		recordLifecycleHookBroadcastSent(
-			join(cwd, ".omx", "state"),
+			join(omxRoot(cwd), "state"),
 			event.session_id,
 			event.event,
 			dedupeFingerprint,

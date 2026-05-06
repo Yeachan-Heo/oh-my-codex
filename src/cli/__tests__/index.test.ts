@@ -39,6 +39,7 @@ import {
   resolveProjectLocalCodexHomeForLaunch,
   shouldAutoIsolateMadmaxLaunch,
   createMadmaxIsolatedRoot,
+  resolveDisposableWorktreeOmxRootForLaunch,
   prepareCodexHomeForLaunch,
   runtimeCodexHomePath,
   buildDetachedSessionBootstrapSteps,
@@ -132,6 +133,43 @@ describe("madmax state isolation", () => {
       await rm(wd, { recursive: true, force: true });
       await rm(runs, { recursive: true, force: true });
     }
+  });
+});
+
+
+describe("disposable worktree state root resolution", () => {
+  it("uses the source repo root for launch worktrees when no explicit root is set", () => {
+    assert.equal(
+      resolveDisposableWorktreeOmxRootForLaunch(
+        { enabled: true, repoRoot: "/repo" },
+        {},
+      ),
+      "/repo",
+    );
+  });
+
+  it("preserves explicit OMX_ROOT and OMX_STATE_ROOT precedence", () => {
+    assert.equal(
+      resolveDisposableWorktreeOmxRootForLaunch(
+        { enabled: true, repoRoot: "/repo" },
+        { OMX_ROOT: "/explicit" },
+      ),
+      undefined,
+    );
+    assert.equal(
+      resolveDisposableWorktreeOmxRootForLaunch(
+        { enabled: true, repoRoot: "/repo" },
+        { OMX_STATE_ROOT: "/state-root" },
+      ),
+      undefined,
+    );
+  });
+
+  it("does not affect non-worktree launches", () => {
+    assert.equal(
+      resolveDisposableWorktreeOmxRootForLaunch({ enabled: false }, {}),
+      undefined,
+    );
   });
 });
 

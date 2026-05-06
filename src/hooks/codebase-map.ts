@@ -18,6 +18,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { findGitLayout } from '../utils/git-layout.js';
+import { omxRoot } from '../utils/paths.js';
 
 /** Max chars for the whole map output. */
 const MAX_MAP_CHARS = 1000;
@@ -43,7 +44,7 @@ interface CodebaseMapCacheFile {
 }
 
 function cachePathForWorktree(worktreeRoot: string): string {
-  return join(worktreeRoot, '.omx', 'cache', 'codebase-map.json');
+  return join(omxRoot(worktreeRoot), 'cache', 'codebase-map.json');
 }
 
 function readGitIndexSignature(gitDir: string): { mtimeMs: number; size: number } | null {
@@ -82,7 +83,7 @@ async function writeCachedCodebaseMap(
   const targetPath = cachePathForWorktree(worktreeRoot);
   const tempPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
   try {
-    await mkdir(join(worktreeRoot, '.omx', 'cache'), { recursive: true });
+    await mkdir(join(omxRoot(worktreeRoot), 'cache'), { recursive: true });
     const payload: CodebaseMapCacheFile = {
       version: CACHE_VERSION,
       worktreeRoot,

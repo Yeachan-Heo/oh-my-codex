@@ -1,9 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HUD_TMUX_HEIGHT_LINES } from '../../hud/constants.js';
 
@@ -46,6 +47,19 @@ function escapeRegExp(value: string): string {
 
 function shouldSkipForSpawnPermissions(err: string): boolean {
   return typeof err === 'string' && /(EPERM|EACCES)/i.test(err);
+}
+
+
+async function createGitRepo(wd: string): Promise<string> {
+  const repo = join(wd, 'repo');
+  await mkdir(repo, { recursive: true });
+  execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repo, stdio: 'ignore' });
+  await writeFile(join(repo, 'README.md'), 'fixture\n');
+  execFileSync('git', ['add', 'README.md'], { cwd: repo, stdio: 'ignore' });
+  execFileSync('git', ['commit', '-m', 'init'], { cwd: repo, stdio: 'ignore' });
+  return repo;
 }
 
 async function writeExecutable(path: string, content: string): Promise<void> {
@@ -119,6 +133,90 @@ describe('omx launch fallback when tmux is unavailable', () => {
       assert.match(result.stdout, /fake-codex:.*--dangerously-bypass-approvals-and-sandbox/);
       assert.match(result.stdout, /fake-codex:.*model_reasoning_effort="xhigh"/);
       assert.doesNotMatch(result.stderr, /spawnSync tmux ENOENT/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('omx --worktree disposable state root', () => {
+  it('keeps launch worktree state under the source repo root by default', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-worktree-state-'));
+    try {
+      const repo = await createGitRepo(wd);
+      const home = join(wd, 'home');
+      const fakeBin = join(wd, 'bin');
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeExecutable(
+        join(fakeBin, 'codex'),
+        `#!/bin/sh
+printf 'fake-codex-omx-root:%s\n' "$OMX_ROOT"
+printf 'fake-codex:%s\n' "$*"
+`,
+      );
+      await writeExecutable(join(fakeBin, 'ps'), '#!/bin/sh\nexit 0\n');
+
+      const result = runOmx(repo, ['--direct', '--worktree', '--version'], {
+        HOME: home,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+        OMX_ROOT: '',
+        OMX_STATE_ROOT: '',
+        TMUX: '',
+        TMUX_PANE: '',
+      });
+
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      const worktreePath = join(dirname(repo), `${basename(repo)}.omx-worktrees`, 'launch-detached');
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, new RegExp(`fake-codex-omx-root:${escapeRegExp(repo)}`));
+      assert.equal(existsSync(join(repo, '.omx', 'state')), true);
+      assert.equal(existsSync(join(worktreePath, '.omx')), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves explicit OMX_ROOT for launch worktree state', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-worktree-explicit-root-'));
+    try {
+      const repo = await createGitRepo(wd);
+      const explicitRoot = join(wd, 'explicit-root');
+      const home = join(wd, 'home');
+      const fakeBin = join(wd, 'bin');
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeExecutable(
+        join(fakeBin, 'codex'),
+        `#!/bin/sh
+printf 'fake-codex-omx-root:%s\n' "$OMX_ROOT"
+printf 'fake-codex:%s\n' "$*"
+`,
+      );
+      await writeExecutable(join(fakeBin, 'ps'), '#!/bin/sh\nexit 0\n');
+
+      const result = runOmx(repo, ['--direct', '--worktree', '--version'], {
+        HOME: home,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+        OMX_ROOT: explicitRoot,
+        OMX_STATE_ROOT: '',
+        TMUX: '',
+        TMUX_PANE: '',
+      });
+
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, new RegExp(`fake-codex-omx-root:${escapeRegExp(explicitRoot)}`));
+      assert.equal(existsSync(join(explicitRoot, '.omx', 'state')), true);
+      assert.equal(existsSync(join(repo, '.omx')), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

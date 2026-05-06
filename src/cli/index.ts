@@ -977,6 +977,33 @@ export function resolveOmxRootForLaunch(
   return raw.startsWith("/") ? raw : join(cwd, raw);
 }
 
+function hasExplicitOmxRootEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return [env.OMX_ROOT, env.OMX_STATE_ROOT].some(
+    (value) => typeof value === "string" && value.trim() !== "",
+  );
+}
+
+export function resolveDisposableWorktreeOmxRootForLaunch(
+  ensuredWorktree: { enabled: true; repoRoot: string } | { enabled: false } | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (!ensuredWorktree?.enabled) return undefined;
+  if (hasExplicitOmxRootEnv(env)) return undefined;
+  return ensuredWorktree.repoRoot;
+}
+
+function applyDisposableWorktreeOmxRootForLaunch(
+  ensuredWorktree: { enabled: true; repoRoot: string } | { enabled: false } | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const omxRootOverride = resolveDisposableWorktreeOmxRootForLaunch(
+    ensuredWorktree,
+    env,
+  );
+  if (!omxRootOverride) return;
+  env.OMX_ROOT = omxRootOverride;
+}
+
 export function shouldAutoIsolateMadmaxLaunch(
   command: string,
   launchArgs: string[],
@@ -1374,6 +1401,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
   );
   let cwd = launchCwd;
   let worktreeDirty = false;
+  let ensuredLaunchWorktree: ReturnType<typeof ensureWorktree> | undefined;
   if (parsedWorktree.mode.enabled) {
     const planned = planWorktreeTarget({
       cwd: launchCwd,
@@ -1381,6 +1409,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
       mode: parsedWorktree.mode,
     });
     const ensured = ensureWorktree(planned, { allowDirtyReuse: true });
+    ensuredLaunchWorktree = ensured;
     if (ensured.enabled) {
       cwd = ensured.worktreePath;
       if (ensured.dirty) {
@@ -1398,6 +1427,8 @@ export async function launchWithHud(args: string[]): Promise<void> {
       }
     }
   }
+  applyDisposableWorktreeOmxRootForLaunch(ensuredLaunchWorktree);
+
   const sessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
     await maybeCheckAndPromptUpdate(cwd);
@@ -1482,6 +1513,7 @@ export async function execWithOverlay(args: string[]): Promise<void> {
   );
   let cwd = launchCwd;
   let worktreeDirty = false;
+  let ensuredLaunchWorktree: ReturnType<typeof ensureWorktree> | undefined;
 
   if (parsedWorktree.mode.enabled) {
     const planned = planWorktreeTarget({
@@ -1490,6 +1522,7 @@ export async function execWithOverlay(args: string[]): Promise<void> {
       mode: parsedWorktree.mode,
     });
     const ensured = ensureWorktree(planned, { allowDirtyReuse: true });
+    ensuredLaunchWorktree = ensured;
     if (ensured.enabled) {
       cwd = ensured.worktreePath;
       if (ensured.dirty) {
@@ -1507,6 +1540,8 @@ export async function execWithOverlay(args: string[]): Promise<void> {
       }
     }
   }
+
+  applyDisposableWorktreeOmxRootForLaunch(ensuredLaunchWorktree);
 
   const sessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
