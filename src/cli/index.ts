@@ -2845,7 +2845,9 @@ export async function cleanupPostLaunchModeStateFiles(
     dependencies.writeFile ?? (await import("fs/promises")).writeFile;
   const writeWarn = dependencies.writeWarn ?? console.warn;
   const now = dependencies.now ?? (() => new Date());
-  const scopedDirs = [getBaseStateDir(cwd), getStateDir(cwd, sessionId)];
+  const scopedDirs = sessionId
+    ? [getStateDir(cwd, sessionId)]
+    : [getBaseStateDir(cwd)];
 
   for (const stateDir of scopedDirs) {
     const files = await readdir(stateDir).catch(() => [] as string[]);

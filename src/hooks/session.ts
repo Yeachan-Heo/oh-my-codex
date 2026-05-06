@@ -377,37 +377,47 @@ export async function reconcileNativeSessionStart(
 export async function writeSessionEnd(cwd: string, sessionId: string): Promise<void> {
   const state = await readSessionState(cwd);
   const endTime = new Date().toISOString();
+  const ownsCurrentSessionFile = state == null
+    || state.session_id === sessionId
+    || state.native_session_id === sessionId;
 
   // Archive to session history
   const logsDir = omxLogsDir(cwd);
   await mkdir(logsDir, { recursive: true });
 
   const historyEntry = {
-    session_id: state?.session_id || sessionId,
-    ...(state?.native_session_id ? { native_session_id: state.native_session_id } : {}),
-    started_at: state?.started_at || 'unknown',
+    session_id: ownsCurrentSessionFile ? state?.session_id || sessionId : sessionId,
+    ...(ownsCurrentSessionFile && state?.native_session_id ? { native_session_id: state.native_session_id } : {}),
+    started_at: ownsCurrentSessionFile ? state?.started_at || 'unknown' : 'unknown',
     ended_at: endTime,
     cwd,
-    pid: state?.pid || process.pid,
+    pid: ownsCurrentSessionFile ? state?.pid || process.pid : process.pid,
+    ...(!ownsCurrentSessionFile && state?.session_id
+      ? { preserved_active_session_id: state.session_id }
+      : {}),
   };
 
   await appendFile(historyPath(cwd), JSON.stringify(historyEntry) + '\n');
 
   await removeDeadSessionHudState(cwd, [
-    state?.session_id,
-    state?.native_session_id,
+    ...(ownsCurrentSessionFile ? [state?.session_id, state?.native_session_id] : []),
     sessionId,
   ]);
 
-  // Delete session.json
-  try {
-    await unlink(sessionPath(cwd));
-  } catch { /* already gone */ }
+  // Delete session.json only when this end event owns the current pointer.
+  if (ownsCurrentSessionFile) {
+    try {
+      await unlink(sessionPath(cwd));
+    } catch { /* already gone */ }
+  }
 
   await appendToLog(cwd, {
     event: 'session_end',
-    session_id: state?.session_id || sessionId,
-    ...(state?.native_session_id ? { native_session_id: state.native_session_id } : {}),
+    session_id: ownsCurrentSessionFile ? state?.session_id || sessionId : sessionId,
+    ...(ownsCurrentSessionFile && state?.native_session_id ? { native_session_id: state.native_session_id } : {}),
+    ...(!ownsCurrentSessionFile && state?.session_id
+      ? { preserved_active_session_id: state.session_id }
+      : {}),
     timestamp: endTime,
   });
 }

@@ -1,6 +1,6 @@
 import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
-import { getReadScopedStatePaths } from '../mcp/state-paths.js';
+import { getAuthoritativeActiveStatePaths } from '../mcp/state-paths.js';
 
 export const TRACKED_WORKFLOW_MODES = [
   'autopilot',
@@ -219,7 +219,7 @@ export async function readActiveWorkflowModes(
   const activeModes: TrackedWorkflowMode[] = [];
 
   for (const mode of TRACKED_WORKFLOW_MODES) {
-    const candidatePaths = await getReadScopedStatePaths(mode, cwd, sessionId);
+    const candidatePaths = await getAuthoritativeActiveStatePaths(mode, cwd, sessionId);
     for (const candidatePath of candidatePaths) {
       if (!existsSync(candidatePath)) continue;
       try {

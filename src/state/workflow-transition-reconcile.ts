@@ -63,7 +63,7 @@ async function visibleTrackedModes(cwd: string, sessionId?: string): Promise<Tra
   const visibleModes = new Set<TrackedWorkflowMode>(canonicalModes);
   for (const mode of TRACKED_WORKFLOW_MODES) {
     const candidatePaths = sessionId
-      ? [getStatePath(mode, cwd, sessionId), getStatePath(mode, cwd)]
+      ? [getStatePath(mode, cwd, sessionId)]
       : [getStatePath(mode, cwd)];
     for (const candidatePath of candidatePaths) {
       const state = await readJsonIfExists(candidatePath, {
@@ -89,7 +89,7 @@ async function completeSourceModeState(
 ): Promise<string[]> {
   const transitionMessage = `mode transiting: ${sourceMode} -> ${destinationMode}`;
   const candidatePaths = sessionId
-    ? [getStatePath(sourceMode, cwd, sessionId), getStatePath(sourceMode, cwd)]
+    ? [getStatePath(sourceMode, cwd, sessionId)]
     : [getStatePath(sourceMode, cwd)];
   const completedPaths: string[] = [];
 

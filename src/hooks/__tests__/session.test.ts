@@ -147,6 +147,43 @@ describe('session lifecycle manager', () => {
     }
   });
 
+  it('does not delete the current session pointer when ending a different session', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-end-owner-'));
+    try {
+      await writeSessionStart(cwd, 'sess-current');
+      const stateDir = join(cwd, '.omx', 'state');
+      const sessionPath = join(stateDir, 'session.json');
+      const currentHudPath = join(stateDir, 'sessions', 'sess-current', 'hud-state.json');
+      const endingHudPath = join(stateDir, 'sessions', 'sess-ending', 'hud-state.json');
+      await mkdir(join(stateDir, 'sessions', 'sess-current'), { recursive: true });
+      await mkdir(join(stateDir, 'sessions', 'sess-ending'), { recursive: true });
+      await writeFile(currentHudPath, JSON.stringify({ turn_count: 2 }), 'utf-8');
+      await writeFile(endingHudPath, JSON.stringify({ turn_count: 1 }), 'utf-8');
+
+      await writeSessionEnd(cwd, 'sess-ending');
+
+      const state = await readSessionState(cwd);
+      assert.equal(state?.session_id, 'sess-current');
+      assert.equal(existsSync(sessionPath), true);
+      assert.equal(existsSync(currentHudPath), true);
+      assert.equal(existsSync(endingHudPath), false);
+
+      const historyLines = (await readFile(join(cwd, '.omx', 'logs', 'session-history.jsonl'), 'utf-8'))
+        .trim()
+        .split('\n')
+        .filter(Boolean);
+      assert.equal(historyLines.length, 1);
+      const historyEntry = JSON.parse(historyLines[0]) as SessionHistoryEntry & {
+        preserved_active_session_id?: string;
+      };
+      assert.equal(historyEntry.session_id, 'sess-ending');
+      assert.equal(historyEntry.started_at, 'unknown');
+      assert.equal(historyEntry.preserved_active_session_id, 'sess-current');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('removes canonical and native session-scoped hud state on session end', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-end-hud-cleanup-'));
     const canonicalSessionId = 'omx-launch-hud';

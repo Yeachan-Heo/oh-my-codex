@@ -1,10 +1,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildWorkflowTransitionMessage,
   buildWorkflowTransitionError,
   evaluateWorkflowTransition,
+  readActiveWorkflowModes,
 } from '../workflow-transition.js';
+import { reconcileWorkflowTransition } from '../workflow-transition-reconcile.js';
 
 describe('workflow transition rules', () => {
   it('allows the approved overlap matrix and denies unsupported combinations', () => {
@@ -95,5 +101,60 @@ describe('workflow transition rules', () => {
       buildWorkflowTransitionMessage('ralplan', 'ralph'),
       'mode transiting: ralplan -> ralph',
     );
+  });
+
+  it('ignores stale root workflow state for session-scoped active decisions', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-workflow-active-scope-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', 'sess-current');
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(
+        join(stateDir, 'ralph-state.json'),
+        JSON.stringify({ active: true, mode: 'ralph', current_phase: 'executing' }, null, 2),
+        'utf-8',
+      );
+      await writeFile(
+        join(stateDir, 'session.json'),
+        JSON.stringify({ session_id: 'sess-current', cwd: wd }, null, 2),
+        'utf-8',
+      );
+
+      assert.deepEqual(await readActiveWorkflowModes(wd, 'sess-current'), []);
+      assert.deepEqual(await readActiveWorkflowModes(wd), []);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not auto-complete stale root workflow state during a session transition', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-workflow-reconcile-scope-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionDir = join(stateDir, 'sessions', 'sess-current');
+      const rootRalphPath = join(stateDir, 'ralph-state.json');
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(
+        rootRalphPath,
+        JSON.stringify({ active: true, mode: 'ralph', current_phase: 'executing' }, null, 2),
+        'utf-8',
+      );
+
+      const transition = await reconcileWorkflowTransition(wd, 'ralplan', {
+        action: 'start',
+        sessionId: 'sess-current',
+        source: 'test',
+      });
+
+      assert.equal(transition.decision.allowed, true);
+      assert.deepEqual(transition.decision.currentModes, []);
+      assert.deepEqual(transition.completedPaths, []);
+
+      const rootRalph = JSON.parse(await readFile(rootRalphPath, 'utf-8')) as { active?: unknown };
+      assert.equal(rootRalph.active, true);
+      assert.equal(existsSync(join(sessionDir, 'ralph-state.json')), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
   });
 });

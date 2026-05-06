@@ -587,11 +587,11 @@ describe("cleanupPostLaunchModeStateFiles", () => {
 
     await mkdir(sessionStateDir, { recursive: true });
     await writeFile(
-      join(stateDir, "autopilot-state.json"),
+      join(sessionStateDir, "autopilot-state.json"),
       JSON.stringify({ active: true, mode: "autopilot" }, null, 2),
       "utf-8",
     );
-    await writeFile(join(stateDir, "deep-interview-state.json"), "", "utf-8");
+    await writeFile(join(sessionStateDir, "deep-interview-state.json"), "", "utf-8");
     await writeFile(join(sessionStateDir, "ralph-state.json"), partialState, "utf-8");
 
     await cleanupPostLaunchModeStateFiles(wd, sessionId, {
@@ -599,10 +599,10 @@ describe("cleanupPostLaunchModeStateFiles", () => {
     });
 
     const autopilot = JSON.parse(
-      await readFile(join(stateDir, "autopilot-state.json"), "utf-8"),
+      await readFile(join(sessionStateDir, "autopilot-state.json"), "utf-8"),
     ) as Record<string, unknown>;
     const deepInterview = JSON.parse(
-      await readFile(join(stateDir, "deep-interview-state.json"), "utf-8"),
+      await readFile(join(sessionStateDir, "deep-interview-state.json"), "utf-8"),
     ) as Record<string, unknown>;
     const ralph = JSON.parse(
       await readFile(join(sessionStateDir, "ralph-state.json"), "utf-8"),
@@ -638,19 +638,54 @@ describe("cleanupPostLaunchModeStateFiles", () => {
     assert.deepEqual(warnings, []);
   });
 
+  it("does not cancel root mode state during session-scoped postLaunch cleanup", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-postlaunch-root-preserve-"));
+    const sessionId = "sess-postlaunch-root-preserve";
+    const stateDir = join(wd, ".omx", "state");
+    const sessionStateDir = join(stateDir, "sessions", sessionId);
+    await mkdir(sessionStateDir, { recursive: true });
+    await writeFile(
+      join(stateDir, "ralph-state.json"),
+      JSON.stringify({ active: true, mode: "ralph", current_phase: "executing" }, null, 2),
+      "utf-8",
+    );
+    await writeFile(
+      join(sessionStateDir, "ralplan-state.json"),
+      JSON.stringify({ active: true, mode: "ralplan", current_phase: "planning" }, null, 2),
+      "utf-8",
+    );
+
+    try {
+      await cleanupPostLaunchModeStateFiles(wd, sessionId);
+
+      const rootRalph = JSON.parse(
+        await readFile(join(stateDir, "ralph-state.json"), "utf-8"),
+      ) as Record<string, unknown>;
+      const sessionRalplan = JSON.parse(
+        await readFile(join(sessionStateDir, "ralplan-state.json"), "utf-8"),
+      ) as Record<string, unknown>;
+      assert.equal(rootRalph.active, true);
+      assert.equal(sessionRalplan.active, false);
+      assert.equal(sessionRalplan.current_phase, "cancelled");
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("retries a transient parse failure before cancelling the rewritten mode state", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-postlaunch-mode-retry-"));
     const sessionId = "sess-postlaunch-retry";
     const stateDir = join(wd, ".omx", "state");
-    const statePath = join(stateDir, "ralph-state.json");
+    const sessionStateDir = join(stateDir, "sessions", sessionId);
+    const statePath = join(sessionStateDir, "ralph-state.json");
     const writes: Array<{ path: string; content: string }> = [];
     const validState = JSON.stringify({ active: true, mode: "ralph" }, null, 2);
     let reads = 0;
 
-    await mkdir(stateDir, { recursive: true });
+    await mkdir(sessionStateDir, { recursive: true });
 
     const mockReaddir = (async (dir: unknown, _options: unknown) => (
-      String(dir) === stateDir ? ["ralph-state.json"] : []
+      String(dir) === sessionStateDir ? ["ralph-state.json"] : []
     )) as unknown as typeof fsReaddir;
     const mockReadFile = (async (path: unknown, _options: unknown) => {
         assert.equal(String(path), statePath);
@@ -685,13 +720,14 @@ describe("cleanupPostLaunchModeStateFiles", () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-postlaunch-mode-malformed-"));
     const sessionId = "sess-postlaunch-malformed";
     const stateDir = join(wd, ".omx", "state");
+    const sessionStateDir = join(stateDir, "sessions", sessionId);
     const warnings: string[] = [];
     const malformedState = '{\n  "active": true,\n}\n';
 
-    await mkdir(stateDir, { recursive: true });
-    await writeFile(join(stateDir, "ralph-state.json"), malformedState, "utf-8");
+    await mkdir(sessionStateDir, { recursive: true });
+    await writeFile(join(sessionStateDir, "ralph-state.json"), malformedState, "utf-8");
     await writeFile(
-      join(stateDir, "ultrawork-state.json"),
+      join(sessionStateDir, "ultrawork-state.json"),
       JSON.stringify({ active: true, mode: "ultrawork" }, null, 2),
       "utf-8",
     );
@@ -701,7 +737,7 @@ describe("cleanupPostLaunchModeStateFiles", () => {
     });
 
     const ultrawork = JSON.parse(
-      await readFile(join(stateDir, "ultrawork-state.json"), "utf-8"),
+      await readFile(join(sessionStateDir, "ultrawork-state.json"), "utf-8"),
     ) as Record<string, unknown>;
     assert.equal(ultrawork.active, false);
     assert.equal(typeof ultrawork.completed_at, "string");
@@ -713,7 +749,7 @@ describe("cleanupPostLaunchModeStateFiles", () => {
       assert.equal(canonical.active, false);
       assert.deepEqual(canonical.active_skills, []);
     }
-    assert.equal(await readFile(join(stateDir, "ralph-state.json"), "utf-8"), malformedState);
+    assert.equal(await readFile(join(sessionStateDir, "ralph-state.json"), "utf-8"), malformedState);
     assert.equal(warnings.length, 1);
     assert.match(warnings[0] ?? "", /skipped malformed mode state .*ralph-state\.json/);
   });

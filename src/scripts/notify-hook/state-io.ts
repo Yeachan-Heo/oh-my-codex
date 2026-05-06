@@ -52,18 +52,16 @@ export async function resolveScopedStateDir(
   baseStateDir: string,
   explicitSessionId?: string,
 ): Promise<string> {
+  const normalizedExplicit = safeString(explicitSessionId).trim();
+  if (SESSION_ID_PATTERN.test(normalizedExplicit)) {
+    return join(baseStateDir, 'sessions', normalizedExplicit);
+  }
+
   const currentSessionId = await readCurrentSessionId(baseStateDir);
   if (currentSessionId) {
     return join(baseStateDir, 'sessions', currentSessionId);
   }
 
-  const normalizedExplicit = safeString(explicitSessionId).trim();
-  if (SESSION_ID_PATTERN.test(normalizedExplicit)) {
-    const explicitDir = join(baseStateDir, 'sessions', normalizedExplicit);
-    if (existsSync(explicitDir)) {
-      return explicitDir;
-    }
-  }
   return baseStateDir;
 }
 
