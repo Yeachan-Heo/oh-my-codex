@@ -100,9 +100,9 @@ describe('anti-slop workflow surfaces', () => {
     const planSkill = read('skills/plan/SKILL.md');
 
     assertMatchesAll(reviewSkill, [
-      /reviewer-only\s+pass/i,
-      /never\s+write\s+and\s+approve\s+in\s+the\s+same\s+context/i,
-      /cleanup\/refactor\/anti-slop/i,
+      /Hard-deprecated/i,
+      /Do not invoke or route this skill/i,
+      /Use `\$code-review` directly/i,
     ]);
 
     assertMatchesAll(planSkill, [

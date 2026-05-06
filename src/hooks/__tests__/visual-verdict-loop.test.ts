@@ -9,22 +9,17 @@ const visualVerdictSkill = readFileSync(join(__dirname, '../../../skills/visual-
 const ralphSkill = readFileSync(join(__dirname, '../../../skills/ralph/SKILL.md'), 'utf-8');
 
 describe('visual-verdict skill contract', () => {
-  it('documents required JSON fields', () => {
-    for (const field of ['"score"', '"verdict"', '"category_match"', '"differences"', '"suggestions"', '"reasoning"']) {
-      assert.ok(visualVerdictSkill.includes(field), `missing field ${field}`);
-    }
-  });
-
-  it('documents threshold and pixel diff guidance', () => {
-    assert.match(visualVerdictSkill, /90\+/);
-    assert.match(visualVerdictSkill, /pixel diff/i);
-    assert.match(visualVerdictSkill, /pixelmatch/i);
+  it('hard-deprecates the standalone visual-verdict skill', () => {
+    assert.match(visualVerdictSkill, /^---\nname: visual-verdict/m);
+    assert.match(visualVerdictSkill, /Hard-deprecated/i);
+    assert.match(visualVerdictSkill, /Do not invoke or route this skill/i);
+    assert.match(visualVerdictSkill, /Use `\$visual-ralph`/i);
   });
 });
 
 describe('ralph visual loop integration guidance', () => {
-  it('requires running $visual-verdict before next edit', () => {
-    assert.match(ralphSkill, /\$visual-verdict/);
+  it('requires the built-in Visual Ralph verdict before next edit', () => {
+    assert.match(ralphSkill, /Visual Ralph verdict step/i);
     assert.match(ralphSkill, /before every next edit/i);
   });
 

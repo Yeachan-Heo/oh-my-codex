@@ -15,7 +15,7 @@ describe('visual-ralph skill contract', () => {
     assert.match(skill, /\$imagegen/);
     assert.match(skill, /explicit user approval|explicit user confirmation/i);
     assert.match(skill, /\$ralph/);
-    assert.match(skill, /\$visual-verdict/);
+    assert.match(skill, /built-in visual verdict|Visual Ralph verdict/i);
   });
 
   it('owns the migrated live URL cloning use case', () => {
@@ -28,10 +28,10 @@ describe('visual-ralph skill contract', () => {
     assert.doesNotMatch(skill, /The reference is a live URL; use `\$web-clone`/i);
   });
 
-  it('keeps visual-verdict authoritative and pixel diff secondary', () => {
+  it('keeps the built-in visual verdict authoritative and pixel diff secondary', () => {
     assert.match(skill, /score\s*>?=\s*90|90\+/i);
     assert.match(skill, /pixel diff|pixelmatch/i);
-    assert.match(skill, /does not replace \$visual-verdict|secondary debug evidence/i);
+    assert.match(skill, /does not replace the Visual Ralph verdict|secondary debug evidence/i);
   });
 
   it('requires reproducibility and repo-native design system artifacts', () => {

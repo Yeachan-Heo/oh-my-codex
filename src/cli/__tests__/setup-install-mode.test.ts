@@ -79,7 +79,7 @@ async function assertProjectPluginModeArtifacts(wd: string): Promise<void> {
 	assert.match(config, /^goals = true$/m);
 	assert.doesNotMatch(config, /developer_instructions|notify-hook|mcp_servers/);
 	assert.equal(
-		existsSync(join(wd, ".codex", "skills", "help", "SKILL.md")),
+		existsSync(join(wd, ".codex", "skills", "ask", "SKILL.md")),
 		false,
 	);
 	assert.equal(existsSync(join(wd, ".codex", "agents", "planner.toml")), false);
@@ -455,7 +455,7 @@ describe("omx setup install mode behavior", () => {
 					) as { scope: string; installMode?: string };
 					assert.deepEqual(persisted, { scope: "user", installMode: "plugin" });
 					assert.equal(
-						existsSync(join(codexHomeDir, "skills", "help", "SKILL.md")),
+						existsSync(join(codexHomeDir, "skills", "ask", "SKILL.md")),
 						false,
 					);
 					const hooks = await readFile(
@@ -508,7 +508,7 @@ describe("omx setup install mode behavior", () => {
 					) as { scope: string; installMode?: string };
 					assert.deepEqual(persisted, { scope: "project" });
 					assert.equal(
-						existsSync(join(wd, ".codex", "skills", "help", "SKILL.md")),
+						existsSync(join(wd, ".codex", "skills", "ask", "SKILL.md")),
 						true,
 					);
 
@@ -547,7 +547,7 @@ describe("omx setup install mode behavior", () => {
 					) as { scope: string; installMode?: string };
 					assert.deepEqual(persisted, { scope: "user", installMode: "legacy" });
 					assert.equal(
-						existsSync(join(codexHomeDir, "skills", "help", "SKILL.md")),
+						existsSync(join(codexHomeDir, "skills", "ask", "SKILL.md")),
 						true,
 					);
 					assert.equal(
@@ -615,7 +615,7 @@ describe("omx setup install mode behavior", () => {
 					assert.match(config, /^codex_hooks = true$/m);
 					assert.doesNotMatch(config, /\[mcp_servers\./);
 					assert.equal(
-						existsSync(join(codexHomeDir, "skills", "help", "SKILL.md")),
+						existsSync(join(codexHomeDir, "skills", "ask", "SKILL.md")),
 						false,
 					);
 					assert.equal(
@@ -683,7 +683,7 @@ describe("omx setup install mode behavior", () => {
 							/developer_instructions|notify-hook|mcp_servers/,
 					);
 					assert.equal(
-						existsSync(join(codexHomeDir, "skills", "help", "SKILL.md")),
+						existsSync(join(codexHomeDir, "skills", "ask", "SKILL.md")),
 						false,
 					);
 					assert.equal(
@@ -720,7 +720,7 @@ describe("omx setup install mode behavior", () => {
 					);
 					assert.match(hooks, /codex-native-hook\.js/);
 					assert.equal(
-						existsSync(join(codexHomeDir, "skills", "help", "SKILL.md")),
+						existsSync(join(codexHomeDir, "skills", "ask", "SKILL.md")),
 						false,
 					);
 					assert.equal(
@@ -920,7 +920,7 @@ describe("omx setup install mode behavior", () => {
 				await setup({ scope: "project" });
 
 				assert.equal(
-					existsSync(join(wd, ".codex", "skills", "help", "SKILL.md")),
+					existsSync(join(wd, ".codex", "skills", "ask", "SKILL.md")),
 					false,
 				);
 				assert.equal(
@@ -956,7 +956,7 @@ describe("omx setup install mode behavior", () => {
 				) as { scope: string; installMode?: string };
 				assert.deepEqual(persisted, { scope: "project" });
 				assert.equal(
-					existsSync(join(wd, ".codex", "skills", "help", "SKILL.md")),
+					existsSync(join(wd, ".codex", "skills", "ask", "SKILL.md")),
 					true,
 				);
 				assert.equal(
@@ -994,7 +994,7 @@ describe("omx setup install mode behavior", () => {
 						installMode: "legacy",
 					});
 					assert.equal(
-						existsSync(join(codexHomeDir, "skills", "help", "SKILL.md")),
+						existsSync(join(codexHomeDir, "skills", "ask", "SKILL.md")),
 						true,
 					);
 					assert.equal(
@@ -1119,10 +1119,10 @@ describe("omx setup install mode behavior", () => {
 				await withTempCwd(wd, async () => {
 					await setup({ scope: "user", installMode: "legacy" });
 
-					const helpSkillPath = join(
+					const askSkillPath = join(
 						codexHomeDir,
 						"skills",
-						"help",
+						"ask",
 						"SKILL.md",
 					);
 					const promptPath = join(codexHomeDir, "prompts", "executor.md");
@@ -1130,7 +1130,7 @@ describe("omx setup install mode behavior", () => {
 					const hooksPath = join(codexHomeDir, "hooks.json");
 					const configPath = join(codexHomeDir, "config.toml");
 					const agentsMdPath = join(codexHomeDir, "AGENTS.md");
-					assert.equal(existsSync(helpSkillPath), true);
+					assert.equal(existsSync(askSkillPath), true);
 					assert.equal(existsSync(promptPath), true);
 					assert.equal(existsSync(agentPath), true);
 					assert.equal(existsSync(hooksPath), true);
@@ -1139,7 +1139,7 @@ describe("omx setup install mode behavior", () => {
 
 					await setup({ scope: "user", installMode: "plugin" });
 
-					assert.equal(existsSync(helpSkillPath), false);
+					assert.equal(existsSync(askSkillPath), false);
 					assert.equal(existsSync(promptPath), false);
 					assert.equal(existsSync(agentPath), false);
 					assert.equal(existsSync(hooksPath), true);
@@ -1259,9 +1259,9 @@ describe("omx setup install mode behavior", () => {
 					await setup({ scope: "user", installMode: "legacy" });
 					await seedPluginCacheFromInstalledSkills(codexHomeDir);
 
-					const helpSkillDir = join(codexHomeDir, "skills", "help");
+					const askSkillDir = join(codexHomeDir, "skills", "ask");
 					const wikiSkillDir = join(codexHomeDir, "skills", "wiki");
-					assert.equal(existsSync(helpSkillDir), true);
+					assert.equal(existsSync(askSkillDir), true);
 					assert.equal(existsSync(wikiSkillDir), true);
 
 					const outputLines: string[] = [];
@@ -1276,7 +1276,7 @@ describe("omx setup install mode behavior", () => {
 					}
 
 					const setupOutput = outputLines.join("\n");
-					assert.equal(existsSync(helpSkillDir), false);
+					assert.equal(existsSync(askSkillDir), false);
 					assert.equal(existsSync(wikiSkillDir), false);
 					assert.match(
 						setupOutput,
@@ -1293,7 +1293,7 @@ describe("omx setup install mode behavior", () => {
 						"skills",
 					);
 					const backedUpSkillNames = await readdir(backupSkillsDir);
-					assert.ok(backedUpSkillNames.includes("help"));
+					assert.ok(backedUpSkillNames.includes("ask"));
 					assert.ok(backedUpSkillNames.includes("wiki"));
 					assert.match(
 						setupOutput,
@@ -1316,20 +1316,20 @@ describe("omx setup install mode behavior", () => {
 					await setup({ scope: "user", installMode: "legacy" });
 					await seedPluginCacheFromInstalledSkills(codexHomeDir);
 
-					const helpSkillPath = join(
+					const askSkillPath = join(
 						codexHomeDir,
 						"skills",
-						"help",
+						"ask",
 						"SKILL.md",
 					);
 					const wikiSkillDir = join(codexHomeDir, "skills", "wiki");
-					await writeFile(helpSkillPath, "# customized help\n");
+					await writeFile(askSkillPath, "# customized ask\n");
 
 					await setup({ scope: "user", installMode: "plugin" });
 
 					assert.equal(
-						await readFile(helpSkillPath, "utf-8"),
-						"# customized help\n",
+						await readFile(askSkillPath, "utf-8"),
+						"# customized ask\n",
 					);
 					assert.equal(existsSync(wikiSkillDir), false);
 				});
