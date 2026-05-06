@@ -1,4 +1,4 @@
-import { readFile, readdir, stat } from 'fs/promises';
+import { open as openFile, readFile, readdir, stat } from 'fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { getPackageRoot } from '../utils/package.js';
@@ -42,6 +42,8 @@ const EXPLORE_TIMEOUT_MS_ENV = 'OMX_EXPLORE_TIMEOUT_MS';
 const DEFAULT_EXPLORE_TIMEOUT_MS = 120_000;
 const LOCAL_FAST_PATH_MAX_FILES = 2_000;
 const LOCAL_FAST_PATH_MAX_MATCHES = 40;
+const LOCAL_FAST_PATH_FILE_MAX_BYTES = 16_384;
+const LOCAL_FAST_PATH_FILE_MAX_LINES = 240;
 const LOCAL_FAST_PATH_EXCLUDED_DIRS = new Set(['.git', 'node_modules', 'dist', 'target', '.omx']);
 const WINDOWS_BUILTIN_EXPLORE_HARNESS_REASON =
   'the built-in explore harness is not ready on Windows because its allowlist runtime relies on POSIX sh/bash wrappers. Set OMX_EXPLORE_BIN to a compatible custom harness, prefer `omx sparkshell` for shell-native read-only lookups, or run `omx doctor` for readiness details.';
@@ -146,18 +148,27 @@ export function buildExplorePromptWithWikiContext(prompt: string, cwd: string): 
 }
 
 interface ExploreLocalFastPathResult {
-  kind: 'path' | 'text';
+  kind: 'file' | 'path' | 'text';
   lines: string[];
 }
 
-function normalizeRelativeLookupPath(prompt: string): string | undefined {
+interface RelativeLookupPath {
+  path: string;
+  mode: 'content' | 'metadata';
+}
+
+function normalizeRelativeLookupPath(prompt: string): RelativeLookupPath | undefined {
   const trimmed = prompt.trim();
   const match = trimmed.match(/^(?:open|show|cat|read|find|locate)\s+([A-Za-z0-9._/@+-][A-Za-z0-9._/@+\-/]*)$/i);
   const candidate = match?.[1] ?? (
     /^[A-Za-z0-9._/@+-][A-Za-z0-9._/@+\-/]*$/.test(trimmed) ? trimmed : undefined
   );
   if (!candidate || candidate.startsWith('/') || candidate.includes('..')) return undefined;
-  return candidate;
+  const command = match?.[0].split(/\s+/, 1)[0]?.toLowerCase();
+  return {
+    path: candidate,
+    mode: command && ['cat', 'read', 'show'].includes(command) ? 'content' : 'metadata',
+  };
 }
 
 function normalizeTextLookup(prompt: string): string | undefined {
@@ -195,10 +206,31 @@ async function collectRepositoryFiles(cwd: string): Promise<string[]> {
   return files;
 }
 
+async function readBoundedTextFile(path: string, size: number): Promise<{ lines: string[]; truncated: boolean }> {
+  const bytesToRead = Math.min(size, LOCAL_FAST_PATH_FILE_MAX_BYTES + 1);
+  const buffer = Buffer.alloc(bytesToRead);
+  const handle = await openFile(path, 'r');
+  try {
+    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0);
+    const raw = buffer.subarray(0, bytesRead);
+    const truncatedByBytes = bytesRead > LOCAL_FAST_PATH_FILE_MAX_BYTES || size > LOCAL_FAST_PATH_FILE_MAX_BYTES;
+    const content = raw.subarray(0, LOCAL_FAST_PATH_FILE_MAX_BYTES).toString('utf-8').replace(/\r\n/g, '\n');
+    const allLines = content.split('\n');
+    const truncatedByLines = allLines.length > LOCAL_FAST_PATH_FILE_MAX_LINES;
+    const lines = allLines.slice(0, LOCAL_FAST_PATH_FILE_MAX_LINES);
+    return {
+      lines,
+      truncated: truncatedByBytes || truncatedByLines,
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
 async function resolveExploreLocalFastPath(prompt: string, cwd: string): Promise<ExploreLocalFastPathResult | undefined> {
-  const relativeLookupPath = normalizeRelativeLookupPath(prompt);
-  if (relativeLookupPath) {
-    const targetPath = resolve(cwd, relativeLookupPath);
+  const relativeLookup = normalizeRelativeLookupPath(prompt);
+  if (relativeLookup) {
+    const targetPath = resolve(cwd, relativeLookup.path);
     const cwdRoot = resolve(cwd);
     if ((targetPath === cwdRoot || targetPath.startsWith(`${cwdRoot}${sep}`)) && existsSync(targetPath)) {
       const targetStat = await stat(targetPath);
@@ -214,6 +246,18 @@ async function resolveExploreLocalFastPath(prompt: string, cwd: string): Promise
         };
       }
       if (targetStat.isFile()) {
+        if (relativeLookup.mode === 'content') {
+          const { lines, truncated } = await readBoundedTextFile(targetPath, targetStat.size);
+          return {
+            kind: 'file',
+            lines: [
+              `${relativePath} (${targetStat.size} bytes; showing up to ${LOCAL_FAST_PATH_FILE_MAX_BYTES} bytes / ${LOCAL_FAST_PATH_FILE_MAX_LINES} lines)`,
+              '---',
+              ...lines,
+              ...(truncated ? [`--- [truncated: file exceeds local fast-path limit of ${LOCAL_FAST_PATH_FILE_MAX_BYTES} bytes or ${LOCAL_FAST_PATH_FILE_MAX_LINES} lines]`] : []),
+            ],
+          };
+        }
         return {
           kind: 'path',
           lines: [`${relativePath} (${targetStat.size} bytes)`],
@@ -583,6 +627,14 @@ export async function exploreCommand(args: string[]): Promise<void> {
   const exploreEnv = resolveExploreEnv(cwd, process.env);
   const localFastPath = await resolveExploreLocalFastPath(prompt, cwd);
   if (localFastPath) {
+    if (localFastPath.kind === 'file') {
+      process.stdout.write([
+        `[omx explore] local fast-path used (file lookup).`,
+        ...localFastPath.lines,
+        '',
+      ].join('\n'));
+      return;
+    }
     process.stdout.write([
       `[omx explore] local fast-path used (${localFastPath.kind} lookup).`,
       ...localFastPath.lines.map((line) => `- ${line}`),
