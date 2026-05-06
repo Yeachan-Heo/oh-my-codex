@@ -17,7 +17,7 @@ describe('prompt guidance wave two contract', () => {
     assert.match(loadSurface('prompts/test-engineer.md'), /recommendation is grounded/i);
     assert.match(loadSurface('prompts/code-reviewer.md'), /review is grounded/i);
     assert.match(loadSurface('prompts/quality-reviewer.md'), /review is grounded/i);
-    assert.match(loadSurface('prompts/security-reviewer.md'), /security verdict is grounded/i);
+    assert.match(loadSurface('prompts/code-reviewer.md'), /review is grounded/i);
     assert.match(loadSurface('prompts/researcher.md'), /answer is grounded/i);
     assert.match(loadSurface('prompts/explore.md'), /answer is grounded/i);
   });
@@ -66,8 +66,8 @@ describe('prompt guidance wave two contract', () => {
     assert.match(codeReviewer, /fixing a controllable primary contract/i);
   });
 
-  it('security and verifier-adjacent prompts preserve merge-if-green as downstream context', () => {
-    assert.match(loadSurface('prompts/security-reviewer.md'), /merge if CI green/i);
+  it('code-review and verifier-adjacent prompts preserve merge-if-green as downstream context', () => {
+    assert.match(loadSurface('prompts/code-reviewer.md'), /merge if CI green/i);
     assert.match(loadSurface('prompts/critic.md'), /later workflow condition|downstream context/i);
     assert.match(loadSurface('prompts/test-engineer.md'), /merge if CI green/i);
   });

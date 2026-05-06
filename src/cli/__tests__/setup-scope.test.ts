@@ -23,16 +23,23 @@ function runOmx(
   const repoRoot = join(testDir, "..", "..", "..");
   const omxBin = join(repoRoot, "dist", "cli", "omx.js");
   const resolvedHome = envOverrides.HOME ?? process.env.HOME;
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...(resolvedHome && !envOverrides.CODEX_HOME
+      ? { CODEX_HOME: join(resolvedHome, ".codex") }
+      : {}),
+    ...envOverrides,
+  };
+  delete env.OMX_SESSION_ID;
+  delete env.OMX_RUN_ID;
+  delete env.OMX_ROOT;
+  delete env.OMX_STATE_ROOT;
+  delete env.OMX_ACTIVE_SESSION_PID;
+  delete env.TMUX_PANE;
   const result = spawnSync(process.execPath, [omxBin, ...argv], {
     cwd,
     encoding: "utf-8",
-    env: {
-      ...process.env,
-      ...(resolvedHome && !envOverrides.CODEX_HOME
-        ? { CODEX_HOME: join(resolvedHome, ".codex") }
-        : {}),
-      ...envOverrides,
-    },
+    env,
   });
   return {
     status: result.status,
@@ -196,12 +203,16 @@ describe("omx setup scope behavior", () => {
         true,
       );
       assert.equal(
-        existsSync(join(localSkills, "ask-claude", "SKILL.md")),
+        existsSync(join(localSkills, "ask", "SKILL.md")),
         true,
       );
       assert.equal(
+        existsSync(join(localSkills, "ask-claude", "SKILL.md")),
+        false,
+      );
+      assert.equal(
         existsSync(join(localSkills, "ask-gemini", "SKILL.md")),
-        true,
+        false,
       );
       assert.ok(
         (await readdir(localPrompts)).length > 0,

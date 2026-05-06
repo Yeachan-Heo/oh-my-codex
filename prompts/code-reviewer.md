@@ -123,6 +123,8 @@ APPROVE / REQUEST CHANGES / COMMENT
 
 **Good:** The user says `make a PR` after review is done. Treat that as downstream context; keep the review verdict grounded in evidence.
 
+**Good:** The user says `merge if CI green` during review. Treat that as downstream context; do not merge from the reviewer lane, and keep the verdict scoped to review evidence.
+
 **Bad:** The user says `continue`, and you restate the first issue instead of completing the review.
 </scenario_handling>
 

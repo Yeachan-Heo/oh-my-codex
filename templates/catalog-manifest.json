@@ -33,8 +33,7 @@
     {
       "name": "ecomode",
       "category": "execution",
-      "status": "merged",
-      "canonical": "ultrawork",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -83,8 +82,7 @@
     {
       "name": "swarm",
       "category": "execution",
-      "status": "alias",
-      "canonical": "team",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -120,24 +118,21 @@
     {
       "name": "deepsearch",
       "category": "shortcut",
-      "status": "alias",
-      "canonical": "explore",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
     {
       "name": "tdd",
       "category": "shortcut",
-      "status": "alias",
-      "canonical": "test-engineer",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
     {
       "name": "build-fix",
       "category": "shortcut",
-      "status": "alias",
-      "canonical": "build-fixer",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -159,24 +154,21 @@
     {
       "name": "security-review",
       "category": "shortcut",
-      "status": "active",
-      "canonical": "security-reviewer",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
     {
       "name": "visual-verdict",
       "category": "shortcut",
-      "status": "active",
-      "canonical": "vision",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
     {
       "name": "web-clone",
       "category": "shortcut",
-      "status": "merged",
-      "canonical": "visual-ralph",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -207,22 +199,28 @@
     {
       "name": "review",
       "category": "shortcut",
-      "status": "alias",
-      "canonical": "plan --review",
+      "status": "deprecated",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "ask",
+      "category": "shortcut",
+      "status": "active",
       "core": false,
       "internalRequired": false
     },
     {
       "name": "ask-claude",
       "category": "shortcut",
-      "status": "active",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
     {
       "name": "ask-gemini",
       "category": "shortcut",
-      "status": "active",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -243,21 +241,21 @@
     {
       "name": "help",
       "category": "utility",
-      "status": "active",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
     {
       "name": "note",
       "category": "utility",
-      "status": "active",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
     {
       "name": "trace",
       "category": "utility",
-      "status": "active",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -324,8 +322,7 @@
     {
       "name": "ralph-init",
       "category": "utility",
-      "status": "merged",
-      "canonical": "plan",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -399,7 +396,7 @@
     {
       "name": "security-reviewer",
       "category": "review",
-      "status": "active"
+      "status": "deprecated"
     },
     {
       "name": "performance-reviewer",
@@ -431,7 +428,7 @@
     {
       "name": "build-fixer",
       "category": "domain",
-      "status": "active"
+      "status": "deprecated"
     },
     {
       "name": "designer",

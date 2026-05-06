@@ -34,17 +34,17 @@ describe('omx setup skills overwrite behavior', () => {
 
       await setup({ scope: 'project' });
 
-      const installedHelpSkill = join(wd, '.codex', 'skills', 'help', 'SKILL.md');
+      const installedSetupSkill = join(wd, '.codex', 'skills', 'omx-setup', 'SKILL.md');
       const shippedHelpSkill = join(previousCwd, 'skills', 'help', 'SKILL.md');
 
       assert.ok(
-        (await readFile(installedHelpSkill, 'utf-8')).includes(
-          'description: "[OMX] Guide on using oh-my-codex plugin"',
+        (await readFile(installedSetupSkill, 'utf-8')).includes(
+          'description: "[OMX] Setup and configure oh-my-codex using current CLI behavior"',
         ),
       );
       assert.ok(
         (await readFile(shippedHelpSkill, 'utf-8')).includes(
-          'description: Guide on using oh-my-codex plugin',
+          'description: Help deprecated skill',
         ),
       );
     } finally {
@@ -53,7 +53,7 @@ describe('omx setup skills overwrite behavior', () => {
     }
   });
 
-  it('installs only active/internal catalog skills (skips alias/merged)', async () => {
+  it('installs only active/internal catalog skills (skips alias/merged/deprecated)', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-'));
     const previousCwd = process.cwd();
     try {
@@ -211,7 +211,7 @@ describe('omx setup skills overwrite behavior', () => {
 
       await setup({ scope: 'project' });
 
-      const skillPath = join(wd, '.codex', 'skills', 'help', 'SKILL.md');
+      const skillPath = join(wd, '.codex', 'skills', 'omx-setup', 'SKILL.md');
       assert.equal(existsSync(skillPath), true);
 
       const installed = await readFile(skillPath, 'utf-8');
@@ -267,9 +267,9 @@ describe('omx setup skills overwrite behavior', () => {
       await setup({ scope: 'project' });
       await setup({ scope: 'project' });
 
-      const installedHelpSkill = join(wd, '.codex', 'skills', 'help', 'SKILL.md');
-      const content = await readFile(installedHelpSkill, 'utf-8');
-      const matches = content.match(/\[OMX\] Guide on using oh-my-codex plugin/g) ?? [];
+      const installedSetupSkill = join(wd, '.codex', 'skills', 'omx-setup', 'SKILL.md');
+      const content = await readFile(installedSetupSkill, 'utf-8');
+      const matches = content.match(/\[OMX\] Setup and configure oh-my-codex using current CLI behavior/g) ?? [];
       assert.equal(matches.length, 1);
       assert.doesNotMatch(content, /\[OMX\] \[OMX\]/);
     } finally {
@@ -296,8 +296,8 @@ describe('omx setup skills overwrite behavior', () => {
       await setup({ scope: 'project', force: true, verbose: true });
 
       const output = logs.join('\n');
-      assert.match(output, /skipped swarm\/ \(status: alias\)/);
-      assert.match(output, /removed stale skill swarm\/ \(status: alias\)/);
+      assert.match(output, /skipped swarm\/ \(status: deprecated\)/);
+      assert.match(output, /removed stale skill swarm\/ \(status: deprecated\)/);
       assert.match(output, /skills: updated=/);
     } finally {
       console.log = originalLog;
@@ -319,8 +319,8 @@ describe('omx setup skills overwrite behavior', () => {
       process.env.HOME = home;
       process.env.CODEX_HOME = codexHome;
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
-      await mkdir(join(home, '.agents', 'skills', 'help'), { recursive: true });
-      await writeFile(join(home, '.agents', 'skills', 'help', 'SKILL.md'), '# legacy help\n');
+      await mkdir(join(home, '.agents', 'skills', 'omx-setup'), { recursive: true });
+      await writeFile(join(home, '.agents', 'skills', 'omx-setup', 'SKILL.md'), '# legacy omx-setup\n');
       process.chdir(wd);
       console.log = (...args: unknown[]) => {
         logs.push(args.map((arg) => String(arg)).join(' '));

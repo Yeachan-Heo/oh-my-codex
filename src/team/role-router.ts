@@ -83,11 +83,11 @@ type LaneIntent =
 const ROLE_KEYWORDS: ReadonlyArray<{ role: string; keywords: readonly string[] }> = [
   { role: 'test-engineer', keywords: ['test', 'spec', 'coverage', 'tdd', 'jest', 'vitest', 'mocha', 'pytest', 'unit test', 'integration test', 'e2e', '테스트', '커버리지'] },
   { role: 'designer', keywords: ['ui', 'component', 'layout', 'css', 'design', 'responsive', 'tailwind', 'react', 'frontend', 'styling', 'ux', '디자인', '레이아웃', '컴포넌트'] },
-  { role: 'build-fixer', keywords: ['build', 'compile', 'tsc', 'type error', 'typescript error', 'build error', 'compilation', '빌드', '컴파일', '타입 오류'] },
+  { role: 'debugger', keywords: ['build', 'compile', 'tsc', 'type error', 'typescript error', 'build error', 'compilation', '빌드', '컴파일', '타입 오류'] },
   { role: 'debugger', keywords: ['debug', 'investigate', 'root cause', 'regression', 'stack trace', 'bisect', 'diagnose', '디버그', '조사', '원인'] },
   { role: 'writer', keywords: ['doc', 'readme', 'migration guide', 'changelog', 'comment', 'documentation', 'api doc', '문서', '가이드', '변경로그'] },
   { role: 'quality-reviewer', keywords: ['review', 'audit', 'quality', 'lint', 'anti-pattern', 'code review', '검토', '리뷰'] },
-  { role: 'security-reviewer', keywords: ['security', 'owasp', 'xss', 'injection', 'cve', 'vulnerability', '보안', '취약점'] },
+  { role: 'code-reviewer', keywords: ['security', 'owasp', 'xss', 'injection', 'cve', 'vulnerability', '보안', '취약점'] },
   { role: 'code-simplifier', keywords: ['refactor', 'simplify', 'clean up', 'reduce complexity', 'consolidate', '리팩터', '단순화'] },
 ];
 
@@ -175,7 +175,7 @@ function inferLaneIntent(text: string): LaneIntent {
  */
 const PHASE_CONTEXT_LABELS: Partial<Record<TeamPhase, string>> = {
   'team-verify': 'verifier',
-  'team-fix': 'build-fixer',
+  'team-fix': 'debugger',
   'team-plan': 'planner',
   'team-prd': 'analyst',
 };
@@ -195,7 +195,7 @@ export function routeTaskToRole(
 
   if (intent === 'build-fix') {
     return {
-      role: 'build-fixer',
+      role: 'debugger',
       confidence: 'high',
       reason: 'primary intent is build/compile repair',
     };
@@ -267,7 +267,7 @@ export function routeTaskToRole(
 
   if (intent === 'review') {
     return {
-      role: SECURITY_DOMAIN.test(text) ? 'security-reviewer' : 'quality-reviewer',
+      role: SECURITY_DOMAIN.test(text) ? 'code-reviewer' : 'quality-reviewer',
       confidence: 'high',
       reason: SECURITY_DOMAIN.test(text)
         ? 'primary intent is security-focused review'

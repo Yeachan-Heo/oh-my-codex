@@ -130,9 +130,9 @@ export function getPhaseAgents(phase: TeamPhase): string[] {
     case 'team-exec':
       return ['executor', 'designer', 'test-engineer'];
     case 'team-verify':
-      return ['verifier', 'quality-reviewer', 'security-reviewer'];
+      return ['verifier', 'code-reviewer', 'quality-reviewer'];
     case 'team-fix':
-      return ['executor', 'build-fixer', 'debugger'];
+      return ['executor', 'debugger', 'test-engineer'];
     default: {
       const _exhaustive: never = phase;
       throw new Error(`Unknown team phase: ${_exhaustive}`);

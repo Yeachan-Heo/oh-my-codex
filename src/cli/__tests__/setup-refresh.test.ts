@@ -77,8 +77,8 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       await mkdir(join(wd, ".omx", "state"), { recursive: true });
       await runSetupInTempDir(wd, { scope: "project" });
 
-      const skillPath = join(wd, ".codex", "skills", "help", "SKILL.md");
-      await writeFile(skillPath, "# locally modified help\n");
+      const skillPath = join(wd, ".codex", "skills", "omx-setup", "SKILL.md");
+      await writeFile(skillPath, "# locally modified omx-setup\n");
 
       const output = await runSetupWithCapturedLogs(wd, {
         scope: "project",
@@ -90,7 +90,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       assert.match(output, /native_agents: updated=/);
       assert.match(output, /agents_md: updated=/);
       assert.match(output, /config: updated=/);
-      assert.match(output, /updated skill help\/SKILL\.md/);
+      assert.match(output, /updated skill omx-setup\/SKILL\.md/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -102,8 +102,8 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       await mkdir(join(wd, ".omx", "state"), { recursive: true });
       await runSetupInTempDir(wd, { scope: "project" });
 
-      const skillPath = join(wd, ".codex", "skills", "help", "SKILL.md");
-      const customized = "# locally modified help\n";
+      const skillPath = join(wd, ".codex", "skills", "omx-setup", "SKILL.md");
+      const customized = "# locally modified omx-setup\n";
       await writeFile(skillPath, customized);
 
       const output = await runSetupWithCapturedLogs(wd, {
@@ -124,7 +124,6 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     try {
       await runSetupInTempDir(wd, { scope: "project" });
 
-      assert.equal(existsSync(join(wd, ".omx", "state")), true);
       assert.equal(
         await readFile(join(wd, ".gitignore"), "utf-8"),
         EXPECTED_PROJECT_GITIGNORE,
@@ -236,7 +235,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
           ".codex/config.toml",
           ".codex/agents/local.toml",
           ".codex/prompts/local.md",
-          ".codex/skills/help/SKILL.md",
+          ".codex/skills/omx-setup/SKILL.md",
           ".codex/skills/.system/cache.json",
         ],
         { cwd: wd, encoding: "utf-8" },
@@ -245,7 +244,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       assert.match(status.stdout, /^!! \.codex\/config\.toml$/m);
       assert.match(status.stdout, /^\?\? \.codex\/agents\/local\.toml$/m);
       assert.match(status.stdout, /^\?\? \.codex\/prompts\/local\.md$/m);
-      assert.match(status.stdout, /^\?\? \.codex\/skills\/help\/SKILL\.md$/m);
+      assert.match(status.stdout, /^\?\? \.codex\/skills\/omx-setup\/SKILL\.md$/m);
       assert.match(status.stdout, /^!! \.codex\/skills\/\.system\/cache\.json$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });

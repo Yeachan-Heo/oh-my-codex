@@ -145,14 +145,14 @@ async function assertRootSkillCatalogConsistency(
 		.filter((skillName) => {
 			if (expectedSkillNames.has(skillName)) return false;
 			const status = manifestByName.get(skillName)?.status;
-			return status !== "alias" && status !== "merged";
+			return status !== "alias" && status !== "merged" && status !== "deprecated";
 		})
 		.sort();
 	if (nonInstallableRootSkillDirs.length > 0) {
 		throw new Error(
 			[
 				"canonical_skill_catalog_out_of_sync",
-				"message=root skill directories excluded from plugin must be alias or merged catalog entries",
+				"message=root skill directories excluded from plugin must be alias, merged, or deprecated catalog entries",
 				`skills=${JSON.stringify(nonInstallableRootSkillDirs)}`,
 			].join("\n"),
 		);

@@ -61,11 +61,11 @@ Complex tasks often fail silently: partial implementations get declared "done", 
    - When Ralph is entered as a ralplan follow-up, start from the approved **available-agent-types roster** and make the delegation plan explicit: implementation lane, evidence/regression lane, and final sign-off lane using only known agent types
 4. **Run long operations in background**: Builds, installs, test suites use `run_in_background: true`
 5. **Visual task gate (when screenshot/reference images are present)**:
-   - Run `$visual-verdict` **before every next edit**.
+   - Run the Visual Ralph verdict step **before every next edit**.
    - Require structured JSON output: `score`, `verdict`, `category_match`, `differences[]`, `suggestions[]`, `reasoning`.
    - Persist verdict to `.omx/state/{scope}/ralph-progress.json` including numeric + qualitative feedback.
    - Default pass threshold: `score >= 90`.
-   - **URL-based visual cloning tasks**: When the task description contains a target URL (e.g., "clone https://example.com"), route the work through `$visual-ralph`. `$web-clone` is hard-deprecated; Visual Ralph owns the migrated live-URL visual implementation use case and uses `$visual-verdict` for measured visual scoring.
+   - **URL-based visual cloning tasks**: When the task description contains a target URL (e.g., "clone https://example.com"), route the work through `$visual-ralph`. `$web-clone` is hard-deprecated; Visual Ralph owns the migrated live-URL visual implementation use case and uses its built-in visual verdict step for measured visual scoring.
 6. **Verify completion with fresh evidence**:
    - If Codex goal mode is available, call `get_goal` before final verification to restate the active objective and include it in the evidence checklist.
    a. Identify what command proves the task is complete

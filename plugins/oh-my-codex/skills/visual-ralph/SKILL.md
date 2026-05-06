@@ -1,6 +1,6 @@
 ---
 name: visual-ralph
-description: "Visual Ralph orchestration for frontend UI from generated references, static references, or live URL targets, using $ralph with $visual-verdict and pixel-diff evidence until the implementation matches and leaves a reproducible design system."
+description: "Visual Ralph orchestration for frontend UI from generated references, static references, or live URL targets, using $ralph with built-in visual verdict and pixel-diff evidence until the implementation matches and leaves a reproducible design system."
 ---
 
 # Visual Ralph Skill
@@ -11,7 +11,7 @@ Use this skill when the user wants Codex to build or restyle frontend UI through
 
 Create a measured frontend delivery loop from either a generated reference, a static reference, or a live URL:
 
-`user description / live URL -> approved visual reference -> $ralph implementation -> $visual-verdict + pixel diff -> reproducible design system`.
+`user description / live URL -> approved visual reference -> $ralph implementation -> Visual Ralph verdict + pixel diff -> reproducible design system`.
 
 For live URL cloning requests, Visual Ralph owns the migrated `$web-clone` use case. Do not route new URL-driven website cloning work to `$web-clone`; preserve the URL, viewport, fidelity requirements, and interaction notes inside the Visual Ralph loop.
 
@@ -29,7 +29,7 @@ This is an orchestration skill. It composes existing skills and must not add run
 
 - The user only wants design critique or general frontend advice; use `$frontend-ui-ux` or a designer lane.
 - The task is a non-visual backend/API implementation with no UI reference target.
-- The user already supplied a final static reference image and only needs comparison/fixes; hand directly to `$ralph` with `$visual-verdict` guidance.
+- The user already supplied a final static reference image and only needs comparison/fixes; hand directly to `$ralph` with Visual Ralph verdict guidance.
 - The requested output is a deterministic SVG/vector/code-native asset rather than a raster reference.
 
 ## Workflow
@@ -90,20 +90,20 @@ Invoke `$ralph` with:
 
 Ralph may iterate autonomously after approval. It should edit code, run the app, capture screenshots, and keep improving until the approved reference is matched or a real blocker exists.
 
-### 5. Use `$visual-verdict` before every next edit
+### 5. Use Visual Ralph verdict before every next edit
 
 For each visual iteration:
 1. Capture the current generated screenshot with recorded viewport/state.
-2. Run `$visual-verdict` comparing the approved reference and generated screenshot.
+2. Run the Visual Ralph verdict step comparing the approved reference and generated screenshot. Use the `vision` agent for image understanding when needed.
 3. Treat the JSON verdict as authoritative.
 4. If `score < 90`, convert `differences[]` and `suggestions[]` into the next edit plan.
 5. Rerun before the next edit.
 
-Required verdict shape is inherited from `$visual-verdict`: `score`, `verdict`, `category_match`, `differences[]`, `suggestions[]`, and `reasoning`.
+Required verdict shape: `score`, `verdict`, `category_match`, `differences[]`, `suggestions[]`, and `reasoning`.
 
 ### 6. Use pixel diff only as secondary debug evidence
 
-When mismatch diagnosis is hard, generate a pixel diff or pixelmatch overlay to locate hotspots. Pixel diff does not replace `$visual-verdict`; it only helps translate visual hotspots into concrete edits.
+When mismatch diagnosis is hard, generate a pixel diff or pixelmatch overlay to locate hotspots. Pixel diff does not replace the Visual Ralph verdict; it only helps translate visual hotspots into concrete edits.
 
 Record final diff evidence with the reference/screenshot artifacts so the result can be audited.
 
@@ -126,7 +126,7 @@ Prefer existing token/component patterns. Do not introduce a new design-system l
 Do not declare done until all are true:
 - Approved reference image or URL-derived reference artifact is saved in the workspace.
 - Screenshot reproduction command, viewport, route, seed/state, and output paths are documented.
-- `$visual-verdict` final score is `>= 90` against the approved reference.
+- Visual Ralph verdict final score is `>= 90` against the approved reference.
 - Pixel diff or overlay evidence is recorded as secondary debug evidence.
 - Design-system tokens/components are repo-native and reusable.
 - Build/lint/test or the repo's equivalent verification passes.
@@ -143,7 +143,7 @@ Viewport/content state: <viewport, route/state, seed/login assumptions>
 Interaction parity notes: <visible controls and known exclusions>
 Route/surface: <route or component>
 Screenshot command: <command and viewport>
-Use $visual-verdict before every next edit; pass threshold score >= 90.
+Use the Visual Ralph verdict step before every next edit; pass threshold score >= 90.
 Use pixel diff only as secondary debug evidence.
 Extract reusable design tokens/components for colors, spacing, typography, radii, shadows, and key variants.
 Run build/lint/test before completion.

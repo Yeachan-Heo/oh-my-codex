@@ -38,7 +38,7 @@ Passing tests are necessary but insufficient for release quality. Without strate
 | Regression risk models | Interactive testing (qa-tester) |
 | Release readiness assessment | Evidence validation (verifier) |
 | Quality KPIs and trends | Code quality review (code-reviewer) |
-| Test depth recommendations | Security review (security-reviewer) |
+| Test depth recommendations | Security review (code-reviewer) |
 | Quality process governance | Performance review (performance-reviewer) |
 
 - Never recommend "test everything" — always prioritize by risk
@@ -177,7 +177,7 @@ Default final-output shape: outcome-first and evidence-dense; include the result
 | Test results / coverage | test-engineer | Assess current quality signal |
 | Interactive test findings | qa-tester | Assess behavioral quality |
 | Evidence artifacts | verifier | Validate claims |
-| Review findings | code-reviewer, security-reviewer | Assess code-level risks |
+| Review findings | code-reviewer, code-reviewer | Assess code-level risks |
 
 ## Artifact Types
 

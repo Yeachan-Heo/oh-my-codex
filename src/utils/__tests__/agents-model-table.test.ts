@@ -80,7 +80,9 @@ describe('agents model table', () => {
     assert.match(table, /\| Standard \(subagent default\) \| `gpt-standard` \| high \|/);
     assert.match(table, /\| `explore` \| `gpt-spark` \| low \| Fast codebase search and file\/symbol mapping \(fast-lane, fast\) \|/);
     assert.match(table, /\| `architect` \| `gpt-frontier` \| high \| System design, boundaries, interfaces, long-horizon tradeoffs \(frontier-orchestrator, frontier\) \|/);
-    assert.match(table, /\| `security-reviewer` \| `gpt-frontier` \| medium \| Vulnerabilities, trust boundaries, authn\/authz \(frontier-orchestrator, frontier\) \|/);
+    assert.doesNotMatch(table, /\| `security-reviewer` \|/);
+    assert.doesNotMatch(table, /\| `build-fixer` \|/);
+    assert.match(table, /\| `code-reviewer` \| `gpt-frontier` \| high \| Comprehensive review across all concerns \(frontier-orchestrator, frontier\) \|/);
     assert.match(table, /\| `writer` \| `gpt-standard` \| high \| Documentation, migration notes, user guidance \(fast-lane, standard\) \|/);
     assert.match(table, /\| `executor` \| `gpt-frontier` \| medium \| Code implementation, refactoring, feature work \(deep-worker, standard\) \|/);
   });

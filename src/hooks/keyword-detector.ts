@@ -443,9 +443,9 @@ const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> =
   priority: entry.priority,
 }));
 
-const KEYWORDS_REQUIRING_INTENT = new Set(['ralph', 'team', 'swarm', 'stop', 'abort', 'parallel', 'autoresearch', 'ultragoal']);
+const KEYWORDS_REQUIRING_INTENT = new Set(['ralph', 'team', 'stop', 'abort', 'parallel', 'autoresearch', 'ultragoal']);
 
-type IntentKeyword = 'ralph' | 'team' | 'swarm' | 'stop' | 'abort' | 'parallel' | 'autoresearch' | 'ultragoal';
+type IntentKeyword = 'ralph' | 'team' | 'stop' | 'abort' | 'parallel' | 'autoresearch' | 'ultragoal';
 
 const DEEP_INTERVIEW_ACTIVATION_PATTERNS: RegExp[] = [
   /(?:^|[^\w])\$(?:deep-interview)\b/i,
@@ -461,7 +461,7 @@ const DEEP_INTERVIEW_MANAGEMENT_MENTION_PATTERN = /\b(?:clear|cleanup|clean\s+up
 /**
  * Per-keyword intent patterns used when a keyword is in KEYWORDS_REQUIRING_INTENT.
  *
- * "team" / "swarm" require explicit orchestration phrasing so a generic
+ * "team" requires explicit orchestration phrasing so a generic
  * reference in prose doesn't spin up the skill.
  *
  * "stop" / "abort" require a bare imperative or explicit OMX mode reference so
@@ -483,12 +483,6 @@ const KEYWORD_INTENT_PATTERNS: Record<IntentKeyword, RegExp[]> = {
     /\/prompts:team\b/i,
     /\b(?:use|run|start|enable|launch|invoke|activate|orchestrate|coordinate)\s+(?:a\s+|an\s+|the\s+)?team\b/i,
     /\bteam\s+(?:mode|orchestration|workflow|agents?)\b/i,
-  ],
-  swarm: [
-    /(?:^|[^\w])\$(?:swarm)\b/i,
-    /\/prompts:swarm\b/i,
-    /\b(?:use|run|start|enable|launch|invoke|activate|orchestrate|coordinate)\s+(?:a\s+|an\s+|the\s+)?swarm\b/i,
-    /\bswarm\s+(?:mode|orchestration|workflow|agents?)\b/i,
   ],
   stop: [
     /^(?:please\s+)?stop(?:\s+now)?\s*[.!]?\s*$/i,
@@ -549,7 +543,7 @@ interface ExplicitSkillParseResult {
 }
 
 function normalizeExplicitSkillToken(token: string): string {
-  return token === 'swarm' ? 'team' : token === 'ulw' ? 'ultrawork' : token;
+  return token === 'ulw' ? 'ultrawork' : token;
 }
 
 function parseExplicitSkillInvocations(text: string): ExplicitSkillParseResult {
@@ -1093,7 +1087,7 @@ export function isUnderspecifiedForExecution(text: string): boolean {
 
   // Strip mode keywords for effective word counting
   const stripped = trimmed
-    .replace(/\b(?:ralph|autopilot|team|ultrawork|ulw|swarm)\b/gi, '')
+    .replace(/\b(?:ralph|autopilot|team|ultrawork|ulw)\b/gi, '')
     .trim();
   const effectiveWords = stripped.split(/\s+/).filter(w => w.length > 0).length;
 
@@ -1146,10 +1140,9 @@ export function applyRalplanGate(
 
   const planningComplete = isPlanningComplete(readPlanningArtifacts(options.cwd ?? process.cwd()));
   const shortFollowupBypasses = executionKeywords.filter((keyword) => {
-    const normalizedKeyword = keyword === 'swarm' ? 'team' : keyword;
-    if (normalizedKeyword !== 'team' && normalizedKeyword !== 'ralph') return false;
+    if (keyword !== 'team' && keyword !== 'ralph') return false;
     return isApprovedExecutionFollowupShortcut(
-      normalizedKeyword as FollowupMode,
+      keyword as FollowupMode,
       text,
       {
         planningComplete,

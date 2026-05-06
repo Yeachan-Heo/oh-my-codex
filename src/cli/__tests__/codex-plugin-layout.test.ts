@@ -259,8 +259,8 @@ describe('official Codex plugin layout', () => {
     assert.ok(actualSkillNames.includes('performance-goal'), 'performance-goal should be available through setup/plugin skill delivery');
     assert.ok(actualSkillNames.includes('autoresearch-goal'), 'autoresearch-goal should be available through setup/plugin skill delivery');
     assert.ok(actualSkillNames.includes('ultragoal'), 'ultragoal should remain available through setup/plugin skill delivery');
-    assert.equal(actualSkillNames.includes('ecomode'), false, 'merged skills should not be mirrored');
-    assert.equal(actualSkillNames.includes('swarm'), false, 'alias skills should not be mirrored');
+    assert.equal(actualSkillNames.includes('ecomode'), false, 'deprecated skills should not be mirrored');
+    assert.equal(actualSkillNames.includes('swarm'), false, 'deprecated skills should not be mirrored');
     assert.equal(actualSkillNames.includes('configure-discord'), false, 'merged notification aliases should not be mirrored');
 
     for (const skillName of expectedSkillNames) {
@@ -295,7 +295,7 @@ describe('official Codex plugin layout', () => {
       'skills/doctor/SKILL.md',
       'skills/help/SKILL.md',
       'plugins/oh-my-codex/skills/doctor/SKILL.md',
-      'plugins/oh-my-codex/skills/help/SKILL.md',
+      'plugins/oh-my-codex/skills/omx-setup/SKILL.md',
     ];
 
     for (const docPath of docsToCheck) {
@@ -307,7 +307,7 @@ describe('official Codex plugin layout', () => {
     const combined = combinedDocs.join('\n');
     assert.match(combined, /plugins\/cache\/\$MARKETPLACE_NAME\/oh-my-codex\/\$VERSION\//);
     assert.match(combined, /not a replacement for `npm install -g oh-my-codex` plus `omx setup`/);
-    assert.match(combined, /legacy setup mode installs native agents\/prompts|plugin setup mode archives stale legacy prompt\/native-agent files/);
+    assert.match(combined, /legacy setup mode installs native agents(?:\/| and )prompts|plugin setup mode archives stale legacy prompt\/native-agent files/);
     assert.match(combined, /plugin-scoped companion metadata for MCP servers and apps/i);
     assert.match(combined, /hooks stay setup-owned|hooks remain setup-owned|native \.codex\/hooks\.json coverage/i);
   });

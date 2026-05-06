@@ -113,9 +113,9 @@ describe('role-router', () => {
       assert.equal(result.confidence, 'high');
     });
 
-    it('routes build error tasks to build-fixer', () => {
+    it('routes build error tasks to debugger', () => {
       const result = routeTaskToRole('Fix build', 'Resolve tsc type errors in the compile step', 'team-fix', 'executor');
-      assert.equal(result.role, 'build-fixer');
+      assert.equal(result.role, 'debugger');
       assert.equal(result.confidence, 'high');
     });
 
@@ -208,9 +208,9 @@ describe('role-router', () => {
       assert.equal(changelog.confidence, 'high');
     });
 
-    it('routes security tasks to security-reviewer', () => {
+    it('routes security tasks to code-reviewer', () => {
       const result = routeTaskToRole('Security audit', 'Check for XSS and injection vulnerabilities', 'team-verify', 'executor');
-      assert.equal(result.role, 'security-reviewer');
+      assert.equal(result.role, 'code-reviewer');
       assert.equal(result.confidence, 'high');
     });
 

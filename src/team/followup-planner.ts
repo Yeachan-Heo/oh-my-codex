@@ -250,13 +250,13 @@ function pickSpecialistRole(
   }
 
   if (/(security|auth|authorization|authentication|xss|injection|cve|vulnerability)/.test(normalizedTask)) {
-    return chooseDistinctAvailableRole(availableRoles, ['security-reviewer', 'architect'], fallbackRole, [primaryRole]);
+    return chooseDistinctAvailableRole(availableRoles, ['code-reviewer', 'architect'], fallbackRole, [primaryRole]);
   }
   if (/(debug|regression|root cause|stack trace|incident|flaky)/.test(normalizedTask)) {
     return chooseDistinctAvailableRole(availableRoles, ['debugger', 'architect'], fallbackRole, [primaryRole]);
   }
   if (/(build|compile|tsc|type error|lint)/.test(normalizedTask)) {
-    return chooseDistinctAvailableRole(availableRoles, ['build-fixer', 'debugger'], fallbackRole, [primaryRole]);
+    return chooseDistinctAvailableRole(availableRoles, ['debugger', 'executor'], fallbackRole, [primaryRole]);
   }
   if (/(ui|ux|layout|css|responsive|design|frontend)/.test(normalizedTask)) {
     return chooseDistinctAvailableRole(availableRoles, ['designer'], fallbackRole, [primaryRole]);
