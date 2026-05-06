@@ -11,7 +11,10 @@ import {
   resolveCurrentMcpEntrypointMarker,
   resolveDuplicateSiblingWatchdogInitialDelayMs,
   shouldAutoStartMcpServer,
+  shouldBackoffWatchdog,
   shouldSelfExitForDuplicateSibling,
+  shouldSelfExitForHardCap,
+  type DuplicateSiblingObservation,
   type McpServerName,
 } from '../bootstrap.js';
 
@@ -412,5 +415,140 @@ describe('mcp duplicate sibling detection', () => {
       shouldSelfExitForDuplicateSibling(missingSelf, 50_000, 10_000, null),
       false,
     );
+  });
+});
+
+describe('mcp pre-traffic hard cap', () => {
+  function buildPsFixture(pids: number[], parentPid: number, marker: string) {
+    return pids.map((pid) => ({
+      pid,
+      ppid: parentPid,
+      command: `node /tmp/dist/mcp/${marker}`,
+    }));
+  }
+
+  it('exits the oldest pre-traffic siblings until count drops below cap', () => {
+    const parentPid = 1224;
+    const marker = 'state-server.js';
+    const pids = [101, 102, 103, 104, 105, 106]; // 6 siblings, oldest first
+    const processes = buildPsFixture(pids, parentPid, marker);
+    const cap = 4;
+
+    const verdicts = pids.map((pid) => {
+      const observation = analyzeDuplicateSiblingState(processes, pid, parentPid, marker);
+      // Oldest 2 (pid=101,102) are pre-traffic; rest have active traffic.
+      const lastTrafficAtMs = pid <= 102 ? null : 1_000;
+      return shouldSelfExitForHardCap(observation, lastTrafficAtMs, cap, pid);
+    });
+
+    // exitCount = 6 - 4 + 1 = 3, but only those with lastTrafficAtMs===null may exit.
+    assert.deepEqual(verdicts, [true, true, false, false, false, false]);
+  });
+
+  it('never exits siblings that have received stdin traffic', () => {
+    const processes = buildPsFixture([101, 102, 103, 104, 105], 55, 'state-server.js');
+    const observation = analyzeDuplicateSiblingState(processes, 101, 55, 'state-server.js');
+    assert.equal(
+      shouldSelfExitForHardCap(observation, 1_000, 4, 101),
+      false,
+      'active-traffic sibling must never be hard-cap exited',
+    );
+  });
+
+  it('returns false when cap is 0 (disabled)', () => {
+    const processes = buildPsFixture([101, 102, 103, 104, 105], 55, 'state-server.js');
+    const observation = analyzeDuplicateSiblingState(processes, 101, 55, 'state-server.js');
+    assert.equal(shouldSelfExitForHardCap(observation, null, 0, 101), false);
+  });
+
+  it('returns false when sibling count is below cap', () => {
+    const processes = buildPsFixture([101, 102], 55, 'state-server.js');
+    const observation = analyzeDuplicateSiblingState(processes, 101, 55, 'state-server.js');
+    assert.equal(shouldSelfExitForHardCap(observation, null, 4, 101), false);
+  });
+
+  it('preserves ambiguous-state safety (returns false)', () => {
+    const observation: DuplicateSiblingObservation = {
+      status: 'ambiguous',
+      entrypoint: 'state-server.js',
+      matchingPids: [],
+      newerSiblingPids: [],
+    };
+    assert.equal(shouldSelfExitForHardCap(observation, null, 4, 101), false);
+  });
+});
+
+describe('mcp duplicate watchdog defensive instrumentation', () => {
+  it('wraps the duplicate-sibling watchdog body in try/catch with telemetry', async () => {
+    const src = await readFile(join(process.cwd(), 'src/mcp/bootstrap.ts'), 'utf8');
+    const runIdx = src.indexOf('const runDuplicateSiblingWatchdog =');
+    assert.ok(runIdx > 0, 'runDuplicateSiblingWatchdog must exist in bootstrap.ts');
+    const tail = src.slice(runIdx, runIdx + 4_096);
+    assert.match(tail, /try\s*\{/, 'watchdog body must be wrapped in try { ... }');
+    assert.match(
+      tail,
+      /catch[\s\S]*?duplicate_watchdog_error/,
+      'watchdog must emit duplicate_watchdog_error in its catch handler',
+    );
+  });
+
+  it('backs off the watchdog interval to a configurable backoff value when cap is exceeded', async () => {
+    const src = await readFile(join(process.cwd(), 'src/mcp/bootstrap.ts'), 'utf8');
+    assert.match(
+      src,
+      /clearInterval\(duplicateSiblingWatchdog\)/,
+      'back-off must clear the existing watchdog interval',
+    );
+    assert.match(
+      src,
+      /duplicateSiblingBackoffIntervalMs/,
+      'back-off must use the configured backoff interval (>= 30000ms default)',
+    );
+    assert.match(
+      src,
+      /shouldBackoffWatchdog\(observation/,
+      'back-off must be gated on shouldBackoffWatchdog',
+    );
+  });
+
+  it('exposes a configurable backoff interval >= 30000ms by default', async () => {
+    const src = await readFile(join(process.cwd(), 'src/mcp/bootstrap.ts'), 'utf8');
+    assert.match(
+      src,
+      /DEFAULT_DUPLICATE_SIBLING_BACKOFF_INTERVAL_MS\s*=\s*30_000/,
+      'default backoff interval should be 30000ms',
+    );
+  });
+});
+
+describe('mcp watchdog back-off detection', () => {
+  it('returns true when sibling count exceeds cap', () => {
+    const observation: DuplicateSiblingObservation = {
+      status: 'older_duplicate',
+      entrypoint: 'state-server.js',
+      matchingPids: [101, 102, 103, 104, 105],
+      newerSiblingPids: [102, 103, 104, 105],
+    };
+    assert.equal(shouldBackoffWatchdog(observation, 4), true);
+  });
+
+  it('returns false at or below cap', () => {
+    const observation: DuplicateSiblingObservation = {
+      status: 'older_duplicate',
+      entrypoint: 'state-server.js',
+      matchingPids: [101, 102, 103, 104],
+      newerSiblingPids: [102, 103, 104],
+    };
+    assert.equal(shouldBackoffWatchdog(observation, 4), false);
+  });
+
+  it('returns false when cap is 0', () => {
+    const observation: DuplicateSiblingObservation = {
+      status: 'older_duplicate',
+      entrypoint: 'state-server.js',
+      matchingPids: [101, 102, 103, 104, 105, 106],
+      newerSiblingPids: [102, 103, 104, 105, 106],
+    };
+    assert.equal(shouldBackoffWatchdog(observation, 0), false);
   });
 });

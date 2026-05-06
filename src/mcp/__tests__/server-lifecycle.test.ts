@@ -2,6 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const STARTUP_SETTLE_MS = 150;
@@ -326,6 +328,54 @@ describe('MCP stdio lifecycle runtime regression (built entrypoints)', () => {
       if (newer) {
         await forceCleanup(newer);
       }
+    }
+  });
+
+  it('emits lifecycle JSONL with startup and shutdown_reason on stdin close', async () => {
+    const entrypoint = IDLE_ENTRYPOINTS[0];
+    const logDir = await mkdtemp(join(tmpdir(), 'omx-mcp-lifecycle-'));
+    const child = spawn(process.execPath, [join(process.cwd(), 'dist', 'mcp', entrypoint.file)], {
+      cwd: process.cwd(),
+      env: { ...process.env, OMX_MCP_LIFECYCLE_LOG_DIR: logDir },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => stdout.push(chunk));
+    child.stderr?.on('data', (chunk: string) => stderr.push(chunk));
+
+    try {
+      await waitForSpawn(child, entrypoint, stderr, stdout);
+      await delay(STARTUP_SETTLE_MS);
+      child.stdin?.end();
+      await waitForExit(child, entrypoint, stderr, stdout);
+      // Allow any trailing fire-and-forget appendFile to flush.
+      await delay(50);
+
+      const ndjsonPath = join(logDir, 'state-server.ndjson');
+      const content = await readFile(ndjsonPath, 'utf8');
+      const lines = content.trim().split('\n');
+      const events = lines.map((l) => JSON.parse(l));
+      const eventNames = events.map((e) => e.event);
+      assert.ok(eventNames.includes('startup'), `expected startup event, got ${eventNames.join(',')}`);
+      const shutdownEvents = events.filter((e) => e.event === 'shutdown_reason');
+      assert.ok(shutdownEvents.length > 0, 'expected at least one shutdown_reason event');
+      const reasons = shutdownEvents.map((e) => e.reason);
+      assert.ok(
+        reasons.some((r) => r === 'stdin_close' || r === 'stdin_end' || r === 'transport_close'),
+        `expected stdin/transport shutdown reason, got ${reasons.join(',')}`,
+      );
+      for (const event of events) {
+        assert.equal(event.serverName, 'state');
+        assert.equal(typeof event.pid, 'number');
+        assert.equal(typeof event.ppid, 'number');
+        assert.equal(typeof event.ts_ms, 'number');
+      }
+    } finally {
+      await forceCleanup(child);
+      await rm(logDir, { recursive: true, force: true });
     }
   });
 });
