@@ -59,7 +59,7 @@ Leave execution with a right-sized, evidence-grounded plan: scope, steps, accept
 - Codebase facts come from inspection.
 - Plan is saved to `.omx/plans/{name}.md`.
 - User confirmation is obtained before handoff.
-- Consensus mode includes complete RALPLAN-DR, ADR, an explicit available-agent-types roster, staffing guidance for team and ralph follow-up paths, suggested reasoning levels by lane, launch hints, and a team verification path when needed.
+- Consensus mode includes complete RALPLAN-DR, ADR, an explicit available-agent-types roster, staffing guidance for team and ralph follow-up paths, product-facing goal-mode follow-up suggestions (`$ultragoal` generally, `$autoresearch-goal` for research projects, `$performance-goal` for optimization/performance projects), suggested reasoning levels by lane, launch hints, and a team verification path when needed.
 </success_criteria>
 
 <tools>

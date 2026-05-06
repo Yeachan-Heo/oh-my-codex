@@ -146,6 +146,16 @@ describe('Consensus mode execution handoff (plan/SKILL.md)', () => {
     assert.match(consensusSection, /team verification path/i);
   });
 
+  it('should include contextual goal-mode follow-up suggestions in consensus handoff output', () => {
+    const consensusSection = extractSection(planSkill, 'Consensus Mode');
+    assert.ok(consensusSection, 'Consensus Mode section should exist');
+    assert.match(consensusSection, /Goal-Mode Follow-up Suggestions/i);
+    assert.match(consensusSection, /\$ultragoal[\s\S]*general goal-oriented follow-up/i);
+    assert.match(consensusSection, /\$autoresearch-goal[\s\S]*research project/i);
+    assert.match(consensusSection, /\$performance-goal[\s\S]*(optimization|performance) project/i);
+    assert.match(consensusSection, /alongside the Ralph\/team paths/i);
+  });
+
   it('should mention deliberate mode requirements in consensus mode', () => {
     const consensusSection = extractSection(planSkill, 'Consensus Mode');
     assert.ok(consensusSection, 'Consensus Mode section should exist');
@@ -281,12 +291,16 @@ describe('RALPLAN-DR in ralplan/SKILL.md', () => {
     );
   });
 
-  it('should document roster-aware team and ralph follow-up guidance', () => {
+  it('should document roster-aware team, ralph, and goal-mode follow-up guidance', () => {
     assert.match(ralplanSkill, /available-agent-types roster/i);
     assert.match(ralplanSkill, /staffing guidance|role\/staffing allocation/i);
     assert.match(ralplanSkill, /reasoning levels? by lane|reasoning-by-lane/i);
     assert.match(ralplanSkill, /omx team|launch hints?/i);
     assert.match(ralplanSkill, /team verification/i);
+    assert.match(ralplanSkill, /\$ultragoal[\s\S]*general goal-oriented follow-up/i);
+    assert.match(ralplanSkill, /\$autoresearch-goal[\s\S]*research-project follow-up/i);
+    assert.match(ralplanSkill, /\$performance-goal[\s\S]*optimization\/performance follow-up/i);
+    assert.match(ralplanSkill, /Keep `\$ralph` and `\$team` as first-class execution options/i);
   });
 });
 
@@ -321,9 +335,13 @@ describe('Architect prompt RALPLAN-DR sections', () => {
 });
 
 describe('Planner prompt follow-up staffing guidance', () => {
-  it('should require roster-aware staffing guidance for team and ralph handoff', () => {
+  it('should require roster-aware staffing guidance for team, ralph, and goal-mode handoff', () => {
     assert.match(plannerPrompt, /available-agent-types roster/i);
     assert.match(plannerPrompt, /team and ralph follow-up paths/i);
+    assert.match(plannerPrompt, /goal-mode follow-up suggestions/i);
+    assert.match(plannerPrompt, /\$ultragoal[\s\S]*generally/i);
+    assert.match(plannerPrompt, /\$autoresearch-goal[\s\S]*research projects/i);
+    assert.match(plannerPrompt, /\$performance-goal[\s\S]*optimization\/performance projects/i);
     assert.match(plannerPrompt, /reasoning levels? by lane|suggested reasoning/i);
     assert.match(plannerPrompt, /launch hints?/i);
     assert.match(plannerPrompt, /team verification path/i);
