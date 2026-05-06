@@ -291,6 +291,42 @@ describe('pretraffic ledger', () => {
     assert.deepEqual(pretraffic, [102]);
   });
 
+  it('reads order entries by ts_ms, not by append order on disk', async () => {
+    // Reproduces the libuv-thread-pool race: a later-call traffic event lands on disk
+    // BEFORE the earlier-call start event. The reader must trust the call-time ts_ms,
+    // not file order, otherwise the cap could kill an active server.
+    const opts = (now: number) => ({
+      ...ledgerOpts({ pid: 101 }),
+      now: () => now,
+    });
+    await appendPretrafficEvent('traffic', opts(100)); // newer call, written first
+    await appendPretrafficEvent('start', opts(50)); // older call, written second
+    const pretraffic = await readPretrafficSiblingPids([101], ledgerOpts());
+    assert.deepEqual(
+      pretraffic,
+      [],
+      'PID 101 must be classified as already-in-traffic; the later-ts traffic event wins',
+    );
+  });
+
+  it('event precedence breaks ts_ms ties: traffic supersedes start', async () => {
+    const sameTs = 7_777;
+    const opts = { ...ledgerOpts({ pid: 101 }), now: () => sameTs };
+    await appendPretrafficEvent('start', opts);
+    await appendPretrafficEvent('traffic', opts);
+    const pretraffic = await readPretrafficSiblingPids([101], ledgerOpts());
+    assert.deepEqual(pretraffic, [], 'on ts tie, traffic must beat start');
+  });
+
+  it('event precedence breaks ts_ms ties: exit supersedes traffic', async () => {
+    const sameTs = 8_888;
+    const opts = { ...ledgerOpts({ pid: 101 }), now: () => sameTs };
+    await appendPretrafficEvent('traffic', opts);
+    await appendPretrafficEvent('exit', opts);
+    const pretraffic = await readPretrafficSiblingPids([101], ledgerOpts());
+    assert.deepEqual(pretraffic, [], 'on ts tie, exit must beat traffic');
+  });
+
   it('drops PIDs that have exited', async () => {
     await appendPretrafficEvent('start', ledgerOpts({ pid: 101 }));
     await appendPretrafficEvent('exit', ledgerOpts({ pid: 101 }));

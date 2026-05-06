@@ -259,6 +259,17 @@ export function appendPretrafficEvent(
   return writePromise;
 }
 
+// Event precedence used as a tiebreaker when two ledger entries share the same ts_ms.
+// `appendPretrafficEvent` writes are fire-and-forget through libuv's worker pool, so
+// disk order is not guaranteed to follow call order even within a single process.
+// `start < traffic < exit` ensures that, on tie, the more-advanced lifecycle state wins
+// and an initialized server is never misclassified as pre-traffic.
+const PRETRAFFIC_EVENT_RANK: Record<PretrafficEvent, number> = {
+  start: 0,
+  traffic: 1,
+  exit: 2,
+};
+
 export async function readPretrafficSiblingPids(
   candidatePids: ReadonlyArray<number>,
   options: PretrafficOptions,
@@ -273,22 +284,29 @@ export async function readPretrafficSiblingPids(
   }
   const candidateSet = new Set(candidatePids.filter((pid) => Number.isInteger(pid) && pid > 0));
   if (candidateSet.size === 0) return [];
-  const latestEvent = new Map<number, PretrafficEvent>();
+  const winning = new Map<number, { ts: number; ev: PretrafficEvent }>();
   for (const rawLine of raw.split('\n')) {
     const line = rawLine.trim();
     if (!line) continue;
     const parts = line.split('\t');
     if (parts.length !== 3) continue;
+    const ts = Number.parseInt(parts[0], 10);
     const pid = Number.parseInt(parts[1], 10);
-    if (!Number.isInteger(pid) || !candidateSet.has(pid)) continue;
+    if (!Number.isInteger(ts) || !Number.isInteger(pid) || !candidateSet.has(pid)) continue;
     const ev = parts[2];
-    if (ev === 'start' || ev === 'traffic' || ev === 'exit') {
-      latestEvent.set(pid, ev);
+    if (ev !== 'start' && ev !== 'traffic' && ev !== 'exit') continue;
+    const prior = winning.get(pid);
+    if (
+      !prior ||
+      ts > prior.ts ||
+      (ts === prior.ts && PRETRAFFIC_EVENT_RANK[ev] > PRETRAFFIC_EVENT_RANK[prior.ev])
+    ) {
+      winning.set(pid, { ts, ev });
     }
   }
   const result: number[] = [];
   for (const pid of candidateSet) {
-    if (latestEvent.get(pid) === 'start') result.push(pid);
+    if (winning.get(pid)?.ev === 'start') result.push(pid);
   }
   result.sort((a, b) => a - b);
   return result;
