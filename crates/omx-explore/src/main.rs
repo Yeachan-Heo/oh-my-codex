@@ -6,7 +6,7 @@ use std::fs::{
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -14,11 +14,13 @@ const CODEX_BIN_ENV: &str = "OMX_EXPLORE_CODEX_BIN";
 const HARNESS_ROOT_ENV: &str = "OMX_EXPLORE_ROOT";
 const CODEX_TIMEOUT_MS_ENV: &str = "OMX_EXPLORE_CODEX_TIMEOUT_MS";
 const PROCESS_LIMIT_ENV: &str = "OMX_EXPLORE_PROCESS_LIMIT";
+const CODEX_OUTPUT_LIMIT_BYTES_ENV: &str = "OMX_EXPLORE_CODEX_OUTPUT_LIMIT_BYTES";
 const INTERNAL_DIRECT_WRAPPER_FLAG: &str = "--internal-allowlist-direct";
 const INTERNAL_SHELL_WRAPPER_FLAG: &str = "--internal-allowlist-shell";
 const TEMP_ALLOWLIST_DIR_PREFIX: &str = "omx-explore-allowlist-";
 const DEFAULT_CODEX_TIMEOUT_MS: u64 = 180_000;
 const DEFAULT_PROCESS_LIMIT: usize = 96;
+const DEFAULT_CODEX_OUTPUT_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 const PROCESS_LIMIT_POLL_MS: u64 = 100;
 const PROCESS_TERMINATION_GRACE_MS: u64 = 500;
 const PIPE_READER_READY_GRACE_MS: u64 = 25;
@@ -362,6 +364,23 @@ fn invoke_codex(args: &Args, model: &str, prompt_contract: &str) -> io::Result<A
             ),
             output_markdown: None,
         }),
+        TimedCommandOutput::OutputLimitExceeded {
+            stderr,
+            output_limit,
+            stream,
+        } => Ok(AttemptResult {
+            status_code: 126,
+            stderr: format!(
+                "[omx explore] codex exec exceeded subprocess {stream} output limit ({output_limit} bytes); terminated process tree to avoid unbounded memory growth{}{}",
+                if stderr.trim().is_empty() {
+                    ""
+                } else {
+                    ". stderr before termination: "
+                },
+                stderr.trim()
+            ),
+            output_markdown: None,
+        }),
     }
 }
 
@@ -376,6 +395,11 @@ enum TimedCommandOutput {
         process_count: usize,
         process_limit: usize,
     },
+    OutputLimitExceeded {
+        stderr: String,
+        output_limit: usize,
+        stream: &'static str,
+    },
 }
 
 fn codex_timeout() -> Duration {
@@ -385,6 +409,14 @@ fn codex_timeout() -> Duration {
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_CODEX_TIMEOUT_MS);
     Duration::from_millis(timeout_ms)
+}
+
+fn codex_output_limit_bytes() -> usize {
+    env::var(CODEX_OUTPUT_LIMIT_BYTES_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_CODEX_OUTPUT_LIMIT_BYTES)
 }
 
 fn process_limit() -> usize {
@@ -403,8 +435,9 @@ fn run_command_with_timeout(
     configure_process_group(&mut command);
     let mut child = command.spawn()?;
 
-    let stdout_reader = spawn_pipe_reader(child.stdout.take());
-    let stderr_reader = spawn_pipe_reader(child.stderr.take());
+    let output_limit = codex_output_limit_bytes();
+    let mut stdout_reader = spawn_pipe_reader("stdout", child.stdout.take(), output_limit);
+    let mut stderr_reader = spawn_pipe_reader("stderr", child.stderr.take(), output_limit);
 
     let deadline = Instant::now() + timeout;
     let process_limit = process_limit();
@@ -415,13 +448,24 @@ fn run_command_with_timeout(
             // alive. Sweep it before collecting pipes so completed harness
             // runs cannot leave detached shells behind.
             terminate_child_process_tree(&mut child);
-            let (stdout, stderr) = collect_completed_output(
+            let output = collect_completed_output(
                 &mut child,
-                &stdout_reader,
-                &stderr_reader,
+                &mut stdout_reader,
+                &mut stderr_reader,
                 Duration::from_millis(PIPE_READER_READY_GRACE_MS),
                 Duration::from_millis(PIPE_READER_JOIN_GRACE_MS),
-            )?;
+            );
+            let (stdout, stderr) = match output {
+                Ok(output) => output,
+                Err(err) if is_output_limit_error(&err) => {
+                    return Ok(TimedCommandOutput::OutputLimitExceeded {
+                        stderr: String::new(),
+                        output_limit,
+                        stream: output_limit_stream(&err),
+                    });
+                }
+                Err(err) => return Err(err),
+            };
             return Ok(TimedCommandOutput::Completed(Output {
                 status,
                 stdout,
@@ -433,8 +477,9 @@ fn run_command_with_timeout(
             terminate_child_process_tree(&mut child);
             let _ = child.wait();
             let reader_timeout = Duration::from_millis(PIPE_READER_JOIN_GRACE_MS);
-            let _ = receive_pipe_reader(&stdout_reader, reader_timeout);
-            let stderr = receive_pipe_reader(&stderr_reader, reader_timeout).unwrap_or_default();
+            let _ = receive_pipe_reader(&mut stdout_reader, reader_timeout);
+            let stderr =
+                receive_pipe_reader(&mut stderr_reader, reader_timeout).unwrap_or_default();
             return Ok(TimedCommandOutput::TimedOut {
                 stderr: String::from_utf8_lossy(&stderr).into_owned(),
             });
@@ -447,9 +492,9 @@ fn run_command_with_timeout(
                     terminate_child_process_tree(&mut child);
                     let _ = child.wait();
                     let reader_timeout = Duration::from_millis(PIPE_READER_JOIN_GRACE_MS);
-                    let _ = receive_pipe_reader(&stdout_reader, reader_timeout);
+                    let _ = receive_pipe_reader(&mut stdout_reader, reader_timeout);
                     let stderr =
-                        receive_pipe_reader(&stderr_reader, reader_timeout).unwrap_or_default();
+                        receive_pipe_reader(&mut stderr_reader, reader_timeout).unwrap_or_default();
                     return Ok(TimedCommandOutput::ProcessLimitExceeded {
                         stderr: String::from_utf8_lossy(&stderr).into_owned(),
                         process_count,
@@ -457,6 +502,22 @@ fn run_command_with_timeout(
                     });
                 }
             }
+        }
+
+        if let Some(stream) = poll_output_limit(&mut stdout_reader, &mut stderr_reader)? {
+            terminate_child_process_tree(&mut child);
+            let _ = child.wait();
+            let reader_timeout = Duration::from_millis(PIPE_READER_JOIN_GRACE_MS);
+            let stderr = if stream == "stderr" {
+                Vec::new()
+            } else {
+                receive_pipe_reader(&mut stderr_reader, reader_timeout).unwrap_or_default()
+            };
+            return Ok(TimedCommandOutput::OutputLimitExceeded {
+                stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                output_limit,
+                stream,
+            });
         }
 
         thread::sleep(Duration::from_millis(25));
@@ -504,26 +565,104 @@ fn count_process_tree(_root_pid: u32) -> Option<usize> {
     None
 }
 
-fn spawn_pipe_reader<R: Read + Send + 'static>(pipe: Option<R>) -> Receiver<io::Result<Vec<u8>>> {
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = sender.send(read_pipe_to_end(pipe));
-    });
-    receiver
+struct PipeReader {
+    receiver: Receiver<io::Result<Vec<u8>>>,
+    cached: Option<io::Result<Vec<u8>>>,
 }
 
-fn read_pipe_to_end<R: Read + Send + 'static>(pipe: Option<R>) -> io::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    if let Some(mut pipe) = pipe {
-        pipe.read_to_end(&mut bytes)?;
+fn spawn_pipe_reader<R: Read + Send + 'static>(
+    stream: &'static str,
+    pipe: Option<R>,
+    output_limit: usize,
+) -> PipeReader {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = sender.send(read_pipe_bounded(pipe, stream, output_limit));
+    });
+    PipeReader {
+        receiver,
+        cached: None,
     }
-    Ok(bytes)
+}
+
+fn read_pipe_bounded<R: Read + Send + 'static>(
+    pipe: Option<R>,
+    stream: &'static str,
+    output_limit: usize,
+) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let Some(pipe) = pipe else {
+        return Ok(bytes);
+    };
+    let mut reader = BufReader::new(pipe);
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let read = reader.read(&mut chunk)?;
+        if read == 0 {
+            return Ok(bytes);
+        }
+        if bytes.len().saturating_add(read) > output_limit {
+            return Err(output_limit_error(stream, output_limit));
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+}
+
+fn output_limit_error(stream: &'static str, output_limit: usize) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Other,
+        format!("subprocess {stream} exceeded output limit of {output_limit} bytes"),
+    )
+}
+
+fn is_output_limit_error(err: &io::Error) -> bool {
+    err.to_string().contains("exceeded output limit")
+}
+
+fn output_limit_stream(err: &io::Error) -> &'static str {
+    if err.to_string().contains("stderr") {
+        "stderr"
+    } else {
+        "stdout"
+    }
+}
+
+fn poll_output_limit(
+    stdout_reader: &mut PipeReader,
+    stderr_reader: &mut PipeReader,
+) -> io::Result<Option<&'static str>> {
+    if let Some(stream) = poll_one_output_limit("stdout", stdout_reader)? {
+        return Ok(Some(stream));
+    }
+    poll_one_output_limit("stderr", stderr_reader)
+}
+
+fn poll_one_output_limit(
+    stream: &'static str,
+    reader: &mut PipeReader,
+) -> io::Result<Option<&'static str>> {
+    if reader.cached.is_some() {
+        return Ok(None);
+    }
+    match reader.receiver.try_recv() {
+        Ok(Ok(bytes)) => {
+            reader.cached = Some(Ok(bytes));
+            Ok(None)
+        }
+        Ok(Err(err)) if is_output_limit_error(&err) => Ok(Some(stream)),
+        Ok(Err(err)) => Err(err),
+        Err(TryRecvError::Empty) => Ok(None),
+        Err(TryRecvError::Disconnected) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            "subprocess output reader disconnected",
+        )),
+    }
 }
 
 fn collect_completed_output(
     child: &mut Child,
-    stdout_reader: &Receiver<io::Result<Vec<u8>>>,
-    stderr_reader: &Receiver<io::Result<Vec<u8>>>,
+    stdout_reader: &mut PipeReader,
+    stderr_reader: &mut PipeReader,
     ready_timeout: Duration,
     cleanup_timeout: Duration,
 ) -> io::Result<(Vec<u8>, Vec<u8>)> {
@@ -547,21 +686,21 @@ fn collect_completed_output(
 }
 
 fn receive_pipe_reader_if_ready(
-    receiver: &Receiver<io::Result<Vec<u8>>>,
+    reader: &mut PipeReader,
     timeout: Duration,
 ) -> io::Result<Option<Vec<u8>>> {
-    match receive_pipe_reader(receiver, timeout) {
+    match receive_pipe_reader(reader, timeout) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(err) if err.kind() == io::ErrorKind::TimedOut => Ok(None),
         Err(err) => Err(err),
     }
 }
 
-fn receive_pipe_reader(
-    receiver: &Receiver<io::Result<Vec<u8>>>,
-    timeout: Duration,
-) -> io::Result<Vec<u8>> {
-    match receiver.recv_timeout(timeout) {
+fn receive_pipe_reader(reader: &mut PipeReader, timeout: Duration) -> io::Result<Vec<u8>> {
+    if let Some(result) = reader.cached.take() {
+        return result;
+    }
+    match reader.receiver.recv_timeout(timeout) {
         Ok(result) => result,
         Err(RecvTimeoutError::Timeout) => Err(io::Error::new(
             io::ErrorKind::TimedOut,
@@ -2623,6 +2762,86 @@ done
         };
         assert!(process_count > process_limit);
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_with_timeout_fails_closed_on_large_stdout() {
+        let _env_guard = env_lock();
+        let _process_guard = process_tree_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let script = root.path.join("large-stdout.sh");
+        write_executable(
+            &script,
+            r#"#!/bin/sh
+while :; do
+  printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+done
+"#,
+        )
+        .expect("write script");
+
+        unsafe {
+            env::set_var(CODEX_OUTPUT_LIMIT_BYTES_ENV, "4096");
+        }
+        let started = Instant::now();
+        let result = run_command_with_timeout(Command::new(&script), Duration::from_secs(10))
+            .expect("run with large stdout");
+        unsafe {
+            env::remove_var(CODEX_OUTPUT_LIMIT_BYTES_ENV);
+        }
+
+        let TimedCommandOutput::OutputLimitExceeded {
+            stream,
+            output_limit,
+            ..
+        } = result
+        else {
+            panic!("expected stdout output limit failure");
+        };
+        assert_eq!(stream, "stdout");
+        assert_eq!(output_limit, 4096);
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_with_timeout_fails_closed_on_large_stderr() {
+        let _env_guard = env_lock();
+        let _process_guard = process_tree_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let script = root.path.join("large-stderr.sh");
+        write_executable(
+            &script,
+            r#"#!/bin/sh
+while :; do
+  printf 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' >&2
+done
+"#,
+        )
+        .expect("write script");
+
+        unsafe {
+            env::set_var(CODEX_OUTPUT_LIMIT_BYTES_ENV, "4096");
+        }
+        let started = Instant::now();
+        let result = run_command_with_timeout(Command::new(&script), Duration::from_secs(10))
+            .expect("run with large stderr");
+        unsafe {
+            env::remove_var(CODEX_OUTPUT_LIMIT_BYTES_ENV);
+        }
+
+        let TimedCommandOutput::OutputLimitExceeded {
+            stream,
+            output_limit,
+            ..
+        } = result
+        else {
+            panic!("expected stderr output limit failure");
+        };
+        assert_eq!(stream, "stderr");
+        assert_eq!(output_limit, 4096);
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 
     #[cfg(unix)]

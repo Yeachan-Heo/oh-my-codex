@@ -202,20 +202,26 @@ export function runProcessTreeWithTimeout(
     child.stderr.on('data', (chunk: string) => {
       stderr = appendBoundedOutput(stderr, chunk);
     });
+    const sweepProcessGroupAfterParentExit = (): void => {
+      if (platform === 'win32') return;
+      killProcessTree(child, platform, killSignal);
+      const residualSigkillTimer = setTimeout(() => {
+        killProcessTree(child, platform, 'SIGKILL');
+      }, sigkillGraceMs);
+      residualSigkillTimer.unref?.();
+    };
+
     child.on('error', (error: NodeJS.ErrnoException) => {
       finish({ status: null, signal: null, error });
     });
+    child.on('exit', () => {
+      // `close` waits for stdio EOF, so a direct wrapper that exits while a
+      // grandchild keeps inherited stdout/stderr open can otherwise sit until
+      // timeout. Sweep as soon as the direct parent exits, then let `close`
+      // report the parent's status and captured output.
+      sweepProcessGroupAfterParentExit();
+    });
     child.on('close', (status: number | null, signal: NodeJS.Signals | null) => {
-      // A direct wrapper can exit while grandchildren still hold the detached
-      // process group. Always sweep the group before settling so `omx explore`
-      // cannot leave orphan shell storms behind when the parent exits early.
-      if (platform !== 'win32') {
-        killProcessTree(child, platform, killSignal);
-        const residualSigkillTimer = setTimeout(() => {
-          killProcessTree(child, platform, 'SIGKILL');
-        }, sigkillGraceMs);
-        residualSigkillTimer.unref?.();
-      }
       finish({ status, signal });
     });
 

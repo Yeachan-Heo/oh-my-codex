@@ -67,6 +67,33 @@ describe('runProcessTreeWithTimeout', () => {
     assert.notEqual(result.status, 0);
   });
 
+
+  it('returns parent output promptly when inherited-stdio grandchildren outlive the parent', { skip: process.platform === 'win32' }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-process-tree-inherited-stdio-'));
+    const script = join(root, 'inherited-stdio.sh');
+    await writeFile(script, [
+      '#!/bin/sh',
+      '(sleep 30) &',
+      'printf "parent stdout\n"',
+      'printf "parent stderr\n" >&2',
+      'exit 7',
+      '',
+    ].join('\n'));
+    chmodSync(script, 0o755);
+
+    const started = Date.now();
+    const result = await runProcessTreeWithTimeout(script, [], {
+      timeoutMs: 10_000,
+      sigkillGraceMs: 10,
+    });
+
+    assert.equal(result.timedOut, false);
+    assert.equal(result.status, 7);
+    assert.equal(result.stdout, 'parent stdout\n');
+    assert.equal(result.stderr, 'parent stderr\n');
+    assert.ok(Date.now() - started < 3_000, 'should not wait for grandchild sleep or timeout');
+  });
+
   it('sweeps process-group grandchildren when the direct child exits', { skip: process.platform === 'win32' }, async () => {
     const root = await mkdtemp(join(tmpdir(), 'omx-process-tree-orphan-'));
     const script = join(root, 'orphan.sh');
