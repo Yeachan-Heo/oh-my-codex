@@ -8514,6 +8514,64 @@ exit 0
     }
   });
 
+  it("reconciles stale root skill-active state under OMX_ROOT boxed state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-boxed-source-"));
+    const omxRoot = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-boxed-root-"));
+    const previousOmxRoot = process.env.OMX_ROOT;
+    try {
+      process.env.OMX_ROOT = omxRoot;
+      const stateDir = join(omxRoot, ".omx", "state");
+      const sourceStateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-stop-boxed-ralplan";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
+        active: false,
+        mode: "ralplan",
+        current_phase: "completed",
+        lifecycle_outcome: "finished",
+        run_outcome: "finish",
+      });
+      await writeJson(join(stateDir, "skill-active-state.json"), {
+        active: true,
+        skill: "ultrawork",
+        phase: "planning",
+        source: "keyword-detector",
+        active_skills: [
+          { skill: "ultrawork", phase: "planning", active: true },
+        ],
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-stop-boxed-ralplan",
+          turn_id: "turn-stop-boxed-ralplan-1",
+          last_assistant_message: "Done.",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+
+      const boxedRootSkillState = JSON.parse(
+        await readFile(join(stateDir, "skill-active-state.json"), "utf-8"),
+      ) as { active?: boolean; active_skills?: unknown[]; reconciliation_reason?: string };
+      assert.equal(boxedRootSkillState.active, false);
+      assert.deepEqual(boxedRootSkillState.active_skills, []);
+      assert.equal(boxedRootSkillState.reconciliation_reason, "stop_hook_session_state_terminal");
+      assert.equal(existsSync(join(sourceStateDir, "skill-active-state.json")), false);
+    } finally {
+      if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = previousOmxRoot;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(omxRoot, { recursive: true, force: true });
+    }
+  });
+
   it("auto-continues native Stop for permission-seeking prompts even outside OMX runtime", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-auto-nudge-plain-session-"));
     try {

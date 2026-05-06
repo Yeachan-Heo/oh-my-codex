@@ -6,6 +6,7 @@ import { pathToFileURL } from "url";
 import { readModeState, readModeStateForActiveDecision, readModeStateForSession, updateModeState } from "../modes/base.js";
 import {
   extractSessionIdFromInitializedStatePath,
+  getSkillActiveStatePaths,
   listActiveSkills,
   readSkillActiveState,
   readVisibleSkillActiveState,
@@ -1944,7 +1945,7 @@ async function readSessionScopedModeStateForRootSkill(
   sessionIds: string[],
 ): Promise<Record<string, unknown> | null> {
   for (const sessionId of sessionIds) {
-    const state = await readJsonIfExists(join(cwd, ".omx", "state", "sessions", sessionId, `${skill}-state.json`));
+    const state = await readJsonIfExists(getStateFilePath(`${skill}-state.json`, cwd, sessionId));
     if (state) return state;
   }
   return null;
@@ -1954,7 +1955,7 @@ async function reconcileStaleRootSkillActiveStateForStop(
   cwd: string,
   sessionId: string,
 ): Promise<void> {
-  const rootPath = join(cwd, ".omx", "state", "skill-active-state.json");
+  const { rootPath } = getSkillActiveStatePaths(cwd);
   const rootState = await readSkillActiveState(rootPath);
   if (!rootState?.active) return;
 
