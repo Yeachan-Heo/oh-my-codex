@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 export const LIFECYCLE_LOG_ENV = 'OMX_MCP_LIFECYCLE_LOG';
 export const LIFECYCLE_LOG_DIR_ENV = 'OMX_MCP_LIFECYCLE_LOG_DIR';
+export const PRETRAFFIC_LEDGER_ENV = 'OMX_MCP_PRETRAFFIC_LEDGER';
 
 const MAX_LINE_BYTES = 4 * 1024 - 64;
 const ROTATION_THRESHOLD_BYTES = 4 * 1024 * 1024;
@@ -70,6 +71,12 @@ export function isLifecycleLogDisabled(
   env: Record<string, string | undefined> = process.env,
 ): boolean {
   return env[LIFECYCLE_LOG_ENV]?.toLowerCase() === 'off';
+}
+
+export function isPretrafficLedgerDisabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env[PRETRAFFIC_LEDGER_ENV]?.toLowerCase() === 'off';
 }
 
 export interface EmitOptions {
@@ -214,8 +221,12 @@ export interface PretrafficOptions {
 }
 
 function pretrafficLedgerPath(options: PretrafficOptions): { path: string; dir: string } | null {
+  // Pretraffic ledger is functional state for the hard cap, not diagnostics, so it is
+  // intentionally NOT gated on OMX_MCP_LIFECYCLE_LOG. Only OMX_MCP_PRETRAFFIC_LEDGER=off
+  // disables it (e.g. on read-only filesystems). Path resolution is shared with the
+  // JSONL log via resolveLogDir + OMX_MCP_LIFECYCLE_LOG_DIR override.
   const env = options.env ?? process.env;
-  if (isLifecycleLogDisabled(env)) return null;
+  if (isPretrafficLedgerDisabled(env)) return null;
   const platform = options.platform ?? process.platform;
   const resolution = resolveLogDir({ env, platform });
   return {

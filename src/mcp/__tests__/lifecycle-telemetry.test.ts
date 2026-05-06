@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import {
   LIFECYCLE_LOG_DIR_ENV,
   LIFECYCLE_LOG_ENV,
+  PRETRAFFIC_LEDGER_ENV,
   appendPretrafficEvent,
   emit,
   isLifecycleLogDisabled,
@@ -309,16 +310,37 @@ describe('pretraffic ledger', () => {
     assert.deepEqual(pretraffic, []);
   });
 
-  it('skips reads and writes when OMX_MCP_LIFECYCLE_LOG=off', async () => {
-    const offOpts = {
+  it('keeps working when OMX_MCP_LIFECYCLE_LOG=off (ledger is functional state, not diagnostics)', async () => {
+    // Disabling the JSONL diagnostic log must NOT disable the hard-cap ledger.
+    // The plan eventually flips OMX_MCP_LIFECYCLE_LOG to off-by-default; the cap must
+    // keep enforcing in that configuration.
+    const opts = {
       entrypoint: 'state-server',
       env: { [LIFECYCLE_LOG_DIR_ENV]: dir, [LIFECYCLE_LOG_ENV]: 'off' },
       platform: 'linux' as NodeJS.Platform,
       pid: 101,
     };
+    await appendPretrafficEvent('start', opts);
+    const pretraffic = await readPretrafficSiblingPids([101], opts);
+    assert.deepEqual(
+      pretraffic,
+      [101],
+      'LIFECYCLE_LOG=off must NOT short-circuit the pretraffic ledger',
+    );
+    const fileInfo = await stat(join(dir, 'state-server.pretraffic'));
+    assert.ok(fileInfo.size > 0, 'ledger file should be written despite LIFECYCLE_LOG=off');
+  });
+
+  it('skips reads and writes when OMX_MCP_PRETRAFFIC_LEDGER=off', async () => {
+    const offOpts = {
+      entrypoint: 'state-server',
+      env: { [LIFECYCLE_LOG_DIR_ENV]: dir, [PRETRAFFIC_LEDGER_ENV]: 'off' },
+      platform: 'linux' as NodeJS.Platform,
+      pid: 101,
+    };
     await appendPretrafficEvent('start', offOpts);
     const pretraffic = await readPretrafficSiblingPids([101], offOpts);
-    assert.deepEqual(pretraffic, [], 'LOG=off must short-circuit the ledger entirely');
+    assert.deepEqual(pretraffic, [], 'PRETRAFFIC_LEDGER=off must short-circuit the ledger entirely');
     let didThrow = false;
     try {
       await stat(join(dir, 'state-server.pretraffic'));
