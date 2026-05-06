@@ -18,7 +18,7 @@ All artifacts live under `.omx/ultragoal/`:
 
 - `brief.md` — original project/conversation brief.
 - `goals.json` — ordered durable plan with status, attempts, evidence, and the active goal id.
-- `ledger.jsonl` — append-only checkpoint events (`plan_created`, `goal_started`, `goal_resumed`, `goal_completed`, `goal_failed`, `goal_retried`).
+- `ledger.jsonl` — append-only checkpoint events (`plan_created`, `goal_started`, `goal_resumed`, `goal_completed`, `goal_blocked`, `goal_failed`, `goal_retried`).
 
 ## Commands
 
@@ -49,6 +49,14 @@ omx ultragoal checkpoint --goal-id G001-example --status failed --evidence "bloc
 omx ultragoal complete-goals --retry-failed
 ```
 
+Completed legacy thread-goal blocker handling:
+
+```sh
+omx ultragoal checkpoint --goal-id G001-example --status blocked --evidence "completed legacy Codex goal blocks create_goal in this thread" --codex-goal-json ./get-goal.json
+```
+
+`--status blocked` is a non-terminal ledger checkpoint for issue #2139-style sessions: a previous, different Codex thread goal is already `complete`, and the current `get_goal`/`create_goal` tool surface has no reset/new-goal operation that can clear that completed goal from the same thread. This writes a `goal_blocked` event, preserves the ultragoal as `in_progress`, and records that the agent must continue the same repo/worktree from a fresh Codex thread where `create_goal` can start the active ultragoal objective.
+
 Status:
 
 ```sh
@@ -62,7 +70,9 @@ omx ultragoal status --json
 - One Codex thread can have at most one active goal.
 - `create_goal` starts the active objective; it is not a general plan store.
 - `update_goal` is completion-only; pause/resume/budget state is controlled by Codex/user/system, not OMX.
+- There is currently no Codex goal-tool reset/new-goal surface for replacing a completed legacy thread goal. If `get_goal` returns a different completed objective and `create_goal` rejects because the thread already has a goal, record `omx ultragoal checkpoint --status blocked` with that `get_goal` JSON, then continue in a fresh Codex thread on the same branch/worktree and call `create_goal` there for the ultragoal payload.
 - Ultragoal owns durable plan and ledger state; Codex goal mode owns active-thread focus and accounting.
 - OMX never edits upstream Codex source such as `../../codex`, never shells out to a hidden `/goal` mutator, and never claims that `omx ultragoal checkpoint` changes Codex's active thread goal. The only Codex goal-mode handoff is explicit: `get_goal`, then `create_goal` when no active goal exists, then `update_goal({status: "complete"})` after the real completion audit passes.
 - Completion checkpoints require a fresh `get_goal` snapshot. Save or pass the JSON from `get_goal` with `--codex-goal-json <json-or-path>`; OMX compares the objective and requires Codex status `complete` before accepting `--status complete`.
+- Active or incomplete wrong Codex goals remain strict mismatch errors. The `--status blocked` workaround only applies when the blocking Codex snapshot is `complete` and has a different objective from the active ultragoal; it must not be used to bypass active-goal mismatch protection.
 - A goal is not complete merely because tests pass or a ledger entry exists. The agent must audit the objective against files, commands, tests, PR state, or other concrete evidence.
