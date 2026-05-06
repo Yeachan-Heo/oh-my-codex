@@ -2,6 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const STARTUP_SETTLE_MS = 150;
@@ -110,7 +112,7 @@ function spawnEntrypoint(entrypoint: EntryPoint): {
 } {
   const child = spawn(process.execPath, [join(process.cwd(), 'dist', 'mcp', entrypoint.file)], {
     cwd: process.cwd(),
-    env: { ...process.env },
+    env: { ...process.env, OMX_MCP_LIFECYCLE_LOG: 'off' },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
@@ -220,6 +222,7 @@ describe('MCP stdio lifecycle runtime regression (built entrypoints)', () => {
       OMX_MCP_PARENT_WATCHDOG_INTERVAL_MS: '250',
       OMX_MCP_DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS: '250',
       OMX_MCP_DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS: '500',
+      OMX_MCP_LIFECYCLE_LOG: 'off',
     };
     const older = spawn(process.execPath, [join(process.cwd(), 'dist', 'mcp', entrypoint.file)], {
       cwd: process.cwd(),
@@ -275,6 +278,7 @@ describe('MCP stdio lifecycle runtime regression (built entrypoints)', () => {
       OMX_MCP_PARENT_WATCHDOG_INTERVAL_MS: '250',
       OMX_MCP_DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS: '250',
       OMX_MCP_DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS: '500',
+      OMX_MCP_LIFECYCLE_LOG: 'off',
     };
     const older = spawn(process.execPath, [join(process.cwd(), 'dist', 'mcp', entrypoint.file)], {
       cwd: process.cwd(),
@@ -325,6 +329,62 @@ describe('MCP stdio lifecycle runtime regression (built entrypoints)', () => {
       await forceCleanup(older);
       if (newer) {
         await forceCleanup(newer);
+      }
+    }
+  });
+
+  it('pre-traffic sibling hard cap cleans up no-traffic app-server children and records telemetry', async () => {
+    const entrypoint = IDLE_ENTRYPOINTS[0];
+    const logDir = await mkdtemp(join(tmpdir(), 'omx-mcp-runtime-lifecycle-'));
+    const sharedEnv = {
+      ...process.env,
+      OMX_MCP_PARENT_WATCHDOG_INTERVAL_MS: '250',
+      OMX_MCP_DUPLICATE_SIBLING_INITIAL_DELAY_MS: '0',
+      OMX_MCP_DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS: '250',
+      OMX_MCP_DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS: '60000',
+      OMX_MCP_MAX_SIBLINGS_PER_ENTRYPOINT: '4',
+      OMX_MCP_LIFECYCLE_LOG_DIR: logDir,
+    };
+    const children: ChildProcess[] = [];
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const attachLogs = (child: ChildProcess) => {
+      child.stdout?.setEncoding('utf8');
+      child.stderr?.setEncoding('utf8');
+      child.stdout?.on('data', (chunk: string) => stdout.push(chunk));
+      child.stderr?.on('data', (chunk: string) => stderr.push(chunk));
+    };
+
+    try {
+      for (let index = 0; index < 5; index += 1) {
+        const child = spawn(process.execPath, [join(process.cwd(), 'dist', 'mcp', entrypoint.file)], {
+          cwd: process.cwd(),
+          env: sharedEnv,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        children.push(child);
+        attachLogs(child);
+        await waitForSpawn(child, entrypoint, stderr, stdout);
+      }
+
+      await waitForCondition(
+        () => children.filter(isChildAlive).length <= 4,
+        4_000,
+        `pre-traffic hard cap did not bound duplicate children: ${formatFailureContext(entrypoint, stderr, stdout)}`,
+      );
+
+      assert.equal(
+        children.filter(isChildAlive).length,
+        4,
+        `hard cap should preserve the newest four children: ${formatFailureContext(entrypoint, stderr, stdout)}`,
+      );
+
+      const telemetry = await readFile(join(logDir, 'state-server.js.ndjson'), 'utf8');
+      assert.match(telemetry, /duplicate_sibling_observed/);
+      assert.match(telemetry, /superseded_hard_cap_pre_traffic/);
+    } finally {
+      for (const child of children) {
+        await forceCleanup(child);
       }
     }
   });
