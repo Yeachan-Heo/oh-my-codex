@@ -39,7 +39,11 @@ export const EXPLORE_BIN_ENV = EXPLORE_BIN_ENV_SHARED;
 const EXPLORE_SPARK_MODEL_ENV = 'OMX_EXPLORE_SPARK_MODEL';
 const EXPLORE_INSTRUCTIONS_FILE_ENV = 'OMX_EXPLORE_MODEL_INSTRUCTIONS_FILE';
 const EXPLORE_TIMEOUT_MS_ENV = 'OMX_EXPLORE_TIMEOUT_MS';
+const EXPLORE_PROCESS_LIMIT_ENV = 'OMX_EXPLORE_PROCESS_LIMIT';
+const EXPLORE_ACTIVE_ENV = 'OMX_EXPLORE_ACTIVE';
 const DEFAULT_EXPLORE_TIMEOUT_MS = 120_000;
+const DEFAULT_EXPLORE_PROCESS_LIMIT = 96;
+const EXPLORE_OUTPUT_LIMIT_BYTES = 4 * 1024 * 1024;
 const LOCAL_FAST_PATH_MAX_FILES = 2_000;
 const LOCAL_FAST_PATH_MAX_MATCHES = 40;
 const LOCAL_FAST_PATH_FILE_MAX_BYTES = 16_384;
@@ -296,6 +300,13 @@ function parseExploreTimeoutMs(env: NodeJS.ProcessEnv): number {
   if (!raw) return DEFAULT_EXPLORE_TIMEOUT_MS;
   const value = Number.parseInt(raw, 10);
   return Number.isFinite(value) && value > 0 ? value : DEFAULT_EXPLORE_TIMEOUT_MS;
+}
+
+function parseExploreProcessLimit(env: NodeJS.ProcessEnv): number {
+  const raw = env[EXPLORE_PROCESS_LIMIT_ENV]?.trim();
+  if (!raw) return DEFAULT_EXPLORE_PROCESS_LIMIT;
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_EXPLORE_PROCESS_LIMIT;
 }
 
 function tokenizeExploreShellCommand(commandText: string): string[] | undefined {
@@ -606,9 +617,11 @@ export function resolveExploreEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   const codexHomeOverride = resolveCodexHomeForLaunch(cwd, env);
-  return codexHomeOverride
-    ? { ...env, CODEX_HOME: codexHomeOverride }
-    : env;
+  return {
+    ...env,
+    ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
+    [EXPLORE_ACTIVE_ENV]: '1',
+  };
 }
 
 export async function loadExplorePrompt(parsed: ParsedExploreArgs): Promise<string> {
@@ -621,6 +634,9 @@ export async function loadExplorePrompt(parsed: ParsedExploreArgs): Promise<stri
 }
 
 export async function exploreCommand(args: string[]): Promise<void> {
+  if (process.env[EXPLORE_ACTIVE_ENV] === '1') {
+    throw new Error('[explore] refusing to launch nested omx explore from an active explore run.');
+  }
   const parsed = parseExploreArgs(args);
   const prompt = await loadExplorePrompt(parsed);
   const cwd = process.cwd();
@@ -664,6 +680,9 @@ export async function exploreCommand(args: string[]): Promise<void> {
     env: exploreEnv,
     encoding: 'utf-8',
     timeoutMs: parseExploreTimeoutMs(exploreEnv),
+    maxProcessCount: parseExploreProcessLimit(exploreEnv),
+    maxOutputBytes: EXPLORE_OUTPUT_LIMIT_BYTES,
+    cleanupOnParentExit: true,
   });
 
   if (result.stdout && result.stdout.length > 0) process.stdout.write(result.stdout);
@@ -671,6 +690,14 @@ export async function exploreCommand(args: string[]): Promise<void> {
 
   if (result.timedOut) {
     throw new Error(`[explore] harness timed out after ${parseExploreTimeoutMs(exploreEnv)}ms; terminated the process tree to avoid runaway Codex sessions. Set ${EXPLORE_TIMEOUT_MS_ENV} to adjust the bound.`);
+  }
+
+  if (result.processLimitExceeded) {
+    throw new Error(`[explore] harness exceeded the per-run process limit (${parseExploreProcessLimit(exploreEnv)} processes); terminated the process tree to avoid runaway shell storms. Set ${EXPLORE_PROCESS_LIMIT_ENV} to adjust the bound.`);
+  }
+
+  if (result.outputLimitExceeded) {
+    throw new Error('[explore] harness output exceeded the safety limit; terminated the process tree to avoid unbounded memory use.');
   }
 
   if (result.error) {

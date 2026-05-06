@@ -13,15 +13,26 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const CODEX_BIN_ENV: &str = "OMX_EXPLORE_CODEX_BIN";
 const HARNESS_ROOT_ENV: &str = "OMX_EXPLORE_ROOT";
 const CODEX_TIMEOUT_MS_ENV: &str = "OMX_EXPLORE_CODEX_TIMEOUT_MS";
+const PROCESS_LIMIT_ENV: &str = "OMX_EXPLORE_PROCESS_LIMIT";
 const INTERNAL_DIRECT_WRAPPER_FLAG: &str = "--internal-allowlist-direct";
 const INTERNAL_SHELL_WRAPPER_FLAG: &str = "--internal-allowlist-shell";
 const TEMP_ALLOWLIST_DIR_PREFIX: &str = "omx-explore-allowlist-";
 const DEFAULT_CODEX_TIMEOUT_MS: u64 = 180_000;
+const DEFAULT_PROCESS_LIMIT: usize = 96;
+const PROCESS_LIMIT_POLL_MS: u64 = 100;
 const PROCESS_TERMINATION_GRACE_MS: u64 = 500;
 const PIPE_READER_READY_GRACE_MS: u64 = 25;
 const PIPE_READER_JOIN_GRACE_MS: u64 = 500;
-const EXPLORE_SUBPROCESS_ENV_VARS_TO_SCRUB: &[&str] =
-    &["BASH_ENV", "ENV", "PROMPT_COMMAND", "NODE_OPTIONS"];
+const EXPLORE_SUBPROCESS_ENV_VARS_TO_SCRUB: &[&str] = &[
+    "BASH_ENV",
+    "ENV",
+    "PROMPT_COMMAND",
+    "NODE_OPTIONS",
+    "SHELLOPTS",
+    "BASHOPTS",
+    "GREP_OPTIONS",
+    "GREP_COLORS",
+];
 const WINDOWS_UNSUPPORTED_ALLOWLIST_MESSAGE: &str =
     "omx explore built-in harness is not ready on Windows because its allowlist runtime relies on POSIX sh/bash wrappers. Set OMX_EXPLORE_BIN to a compatible custom harness, prefer `omx sparkshell` for shell-native read-only lookups, or run `omx doctor` for readiness details.";
 
@@ -334,13 +345,37 @@ fn invoke_codex(args: &Args, model: &str, prompt_contract: &str) -> io::Result<A
             ),
             output_markdown: None,
         }),
+        TimedCommandOutput::ProcessLimitExceeded {
+            stderr,
+            process_count,
+            process_limit,
+        } => Ok(AttemptResult {
+            status_code: 125,
+            stderr: format!(
+                "[omx explore] codex exec exceeded per-run process limit ({process_count}>{process_limit}); terminated process tree to avoid runaway shell storms{}{}",
+                if stderr.trim().is_empty() {
+                    ""
+                } else {
+                    ". stderr before termination: "
+                },
+                stderr.trim()
+            ),
+            output_markdown: None,
+        }),
     }
 }
 
 #[derive(Debug)]
 enum TimedCommandOutput {
     Completed(Output),
-    TimedOut { stderr: String },
+    TimedOut {
+        stderr: String,
+    },
+    ProcessLimitExceeded {
+        stderr: String,
+        process_count: usize,
+        process_limit: usize,
+    },
 }
 
 fn codex_timeout() -> Duration {
@@ -350,6 +385,14 @@ fn codex_timeout() -> Duration {
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_CODEX_TIMEOUT_MS);
     Duration::from_millis(timeout_ms)
+}
+
+fn process_limit() -> usize {
+    env::var(PROCESS_LIMIT_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_PROCESS_LIMIT)
 }
 
 fn run_command_with_timeout(
@@ -364,8 +407,14 @@ fn run_command_with_timeout(
     let stderr_reader = spawn_pipe_reader(child.stderr.take());
 
     let deadline = Instant::now() + timeout;
+    let process_limit = process_limit();
+    let mut next_process_limit_poll = Instant::now() + Duration::from_millis(PROCESS_LIMIT_POLL_MS);
     loop {
         if let Some(status) = child.try_wait()? {
+            // The wrapper may exit while grandchildren keep the process group
+            // alive. Sweep it before collecting pipes so completed harness
+            // runs cannot leave detached shells behind.
+            terminate_child_process_tree(&mut child);
             let (stdout, stderr) = collect_completed_output(
                 &mut child,
                 &stdout_reader,
@@ -391,8 +440,68 @@ fn run_command_with_timeout(
             });
         }
 
+        if Instant::now() >= next_process_limit_poll {
+            next_process_limit_poll = Instant::now() + Duration::from_millis(PROCESS_LIMIT_POLL_MS);
+            if let Some(process_count) = count_process_tree(child.id()) {
+                if process_count > process_limit {
+                    terminate_child_process_tree(&mut child);
+                    let _ = child.wait();
+                    let reader_timeout = Duration::from_millis(PIPE_READER_JOIN_GRACE_MS);
+                    let _ = receive_pipe_reader(&stdout_reader, reader_timeout);
+                    let stderr =
+                        receive_pipe_reader(&stderr_reader, reader_timeout).unwrap_or_default();
+                    return Ok(TimedCommandOutput::ProcessLimitExceeded {
+                        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                        process_count,
+                        process_limit,
+                    });
+                }
+            }
+        }
+
         thread::sleep(Duration::from_millis(25));
     }
+}
+
+#[cfg(target_os = "linux")]
+fn count_process_tree(root_pid: u32) -> Option<usize> {
+    use std::collections::HashMap;
+    let entries = std::fs::read_dir("/proc").ok()?;
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        let Some(close_paren) = stat.rfind(')') else {
+            continue;
+        };
+        let fields: Vec<&str> = stat[close_paren + 2..].split(' ').collect();
+        let Some(ppid) = fields.get(1).and_then(|field| field.parse::<u32>().ok()) else {
+            continue;
+        };
+        children.entry(ppid).or_default().push(pid);
+    }
+    let mut count = 1;
+    let mut stack = children.remove(&root_pid).unwrap_or_default();
+    while let Some(pid) = stack.pop() {
+        count += 1;
+        if let Some(mut nested) = children.remove(&pid) {
+            stack.append(&mut nested);
+        }
+    }
+    Some(count)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn count_process_tree(_root_pid: u32) -> Option<usize> {
+    None
 }
 
 fn spawn_pipe_reader<R: Read + Send + 'static>(pipe: Option<R>) -> Receiver<io::Result<Vec<u8>>> {
@@ -2476,6 +2585,46 @@ sleep 30
         assert_eq!(read_to_string(&term_file).unwrap_or_default(), "term");
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn run_command_with_timeout_aborts_suspicious_process_storm() {
+        let _env_guard = env_lock();
+        let _process_guard = process_tree_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let script = root.path.join("storm.sh");
+        write_executable(
+            &script,
+            r#"#!/bin/sh
+while :; do
+  sleep 30 &
+  sleep 0.01
+done
+"#,
+        )
+        .expect("write script");
+
+        unsafe {
+            env::set_var(PROCESS_LIMIT_ENV, "12");
+        }
+        let started = Instant::now();
+        let result = run_command_with_timeout(Command::new(&script), Duration::from_secs(10))
+            .expect("run with process storm");
+        unsafe {
+            env::remove_var(PROCESS_LIMIT_ENV);
+        }
+
+        let TimedCommandOutput::ProcessLimitExceeded {
+            process_count,
+            process_limit,
+            ..
+        } = result
+        else {
+            panic!("expected process limit failure");
+        };
+        assert!(process_count > process_limit);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
     #[cfg(unix)]
     #[test]
     fn run_command_with_timeout_closes_inherited_stdio_after_parent_exit() {
@@ -2508,6 +2657,44 @@ exit 0
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout), "parent stdout\n");
         assert_eq!(String::from_utf8_lossy(&output.stderr), "parent stderr\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_with_timeout_sweeps_detached_grandchildren_after_parent_exit() {
+        let _env_guard = env_lock();
+        let _process_guard = process_tree_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let term_file = root.path.join("orphan.term");
+        let ready_file = root.path.join("orphan.ready");
+        let script = root.path.join("spawn-detached-grandchild.sh");
+        write_executable(
+            &script,
+            &format!(
+                r#"#!/bin/sh
+(trap 'printf term > {}; exit 0' TERM; printf ready > {}; sleep 30) >/dev/null 2>&1 &
+while [ ! -f {} ]; do
+  sleep 0.01
+done
+printf 'parent done\n'
+exit 0
+"#,
+                shell_quote(&term_file.display().to_string()),
+                shell_quote(&ready_file.display().to_string()),
+                shell_quote(&ready_file.display().to_string()),
+            ),
+        )
+        .expect("write script");
+
+        let result = run_command_with_timeout(Command::new(&script), Duration::from_secs(10))
+            .expect("run with detached grandchild");
+
+        let TimedCommandOutput::Completed(output) = result else {
+            panic!("expected parent completion");
+        };
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "parent done\n");
+        assert_eq!(read_to_string(&term_file).unwrap_or_default(), "term");
     }
 
     fn fallback_test_event() -> FallbackEvent {
