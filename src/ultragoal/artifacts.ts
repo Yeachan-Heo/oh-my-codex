@@ -48,6 +48,7 @@ export interface UltragoalLedgerEntry {
     | 'goal_started'
     | 'goal_resumed'
     | 'goal_completed'
+    | 'goal_blocked'
     | 'goal_failed'
     | 'goal_retried';
   goalId?: string;
@@ -71,7 +72,7 @@ export interface StartNextOptions {
 
 export interface CheckpointOptions {
   goalId: string;
-  status: Extract<UltragoalStatus, 'complete' | 'failed'>;
+  status: Extract<UltragoalStatus, 'complete' | 'failed'> | 'blocked';
   evidence?: string;
   codexGoal?: unknown;
   now?: Date;
@@ -105,6 +106,10 @@ function repoRelative(cwd: string, path: string): string {
 
 function cleanLine(line: string): string {
   return line.replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/, '').trim();
+}
+
+function normalizeObjective(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
 }
 
 function titleFromObjective(objective: string, fallback: string): string {
@@ -255,6 +260,38 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
   const plan = await readUltragoalPlan(cwd);
   const goal = plan.goals.find((candidate) => candidate.id === options.goalId);
   if (!goal) throw new UltragoalError(`Unknown ultragoal id: ${options.goalId}`);
+  const now = iso(options.now);
+  if (options.status === 'blocked') {
+    if (goal.status !== 'in_progress') {
+      throw new UltragoalError(`Cannot record a blocked checkpoint for ${goal.id} while it is ${goal.status}; start or resume the ultragoal before recording a non-terminal blocker.`);
+    }
+    const snapshot = options.codexGoal === undefined ? null : parseCodexGoalSnapshot(options.codexGoal);
+    if (!snapshot?.available) {
+      throw new UltragoalError('Blocked ultragoal checkpoints require a get_goal snapshot for the completed legacy Codex goal that blocked create_goal; pass --codex-goal-json.');
+    }
+    if (snapshot.status !== 'complete') {
+      throw new UltragoalError(`Cannot record a blocked ultragoal checkpoint while the existing Codex goal is ${snapshot.status ?? 'unknown'}; strict objective mismatch protection remains required for active or incomplete goals.`);
+    }
+    if (!snapshot.objective) {
+      throw new UltragoalError('Blocked ultragoal checkpoint Codex snapshot is missing objective text.');
+    }
+    if (normalizeObjective(snapshot.objective) === normalizeObjective(goal.objective)) {
+      throw new UltragoalError('Blocked ultragoal checkpoint is only for a different completed legacy Codex goal; complete this ultragoal with --status complete after its audit passes.');
+    }
+    goal.updatedAt = now;
+    plan.activeGoalId = goal.id;
+    plan.updatedAt = now;
+    await writePlan(cwd, plan);
+    await appendLedger(cwd, {
+      ts: now,
+      event: 'goal_blocked',
+      goalId: goal.id,
+      status: goal.status,
+      evidence: options.evidence,
+      codexGoal: options.codexGoal,
+    });
+    return plan;
+  }
   if (options.status === 'complete') {
     const reconciliation = reconcileCodexGoalSnapshot(
       options.codexGoal === undefined ? null : parseCodexGoalSnapshot(options.codexGoal),
@@ -269,7 +306,6 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
       throw new UltragoalError(formatCodexGoalReconciliation(reconciliation));
     }
   }
-  const now = iso(options.now);
   goal.status = options.status;
   goal.updatedAt = now;
   if (options.status === 'complete') {
@@ -310,6 +346,8 @@ export function buildCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalPl
     'Codex goal integration constraints:',
     '- First call get_goal. If no active goal exists, call create_goal with the payload below.',
     '- If a different active Codex goal exists, finish/checkpoint that goal before starting this ultragoal.',
+    '- If get_goal returns a different completed legacy/thread goal and create_goal rejects because this thread already has a completed goal, continue this ultragoal in a fresh Codex thread (same repo/worktree) and create the payload there.',
+    `- To preserve the durable ledger before switching threads, record the non-terminal blocker without failing this goal: omx ultragoal checkpoint --goal-id ${goal.id} --status blocked --evidence "<completed legacy Codex goal blocks create_goal in this thread>" --codex-goal-json "<get_goal JSON or path>"`,
     '- Work only this goal until its completion audit passes.',
     '- After the goal is actually complete, call update_goal({status: "complete"}), call get_goal again for a fresh completion snapshot, then checkpoint the ledger with:',
     `  omx ultragoal checkpoint --goal-id ${goal.id} --status complete --evidence "<tests/files/PR evidence>" --codex-goal-json "<fresh get_goal JSON or path>"`,

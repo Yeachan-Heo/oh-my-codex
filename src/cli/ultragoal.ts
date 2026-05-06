@@ -21,7 +21,7 @@ export const ULTRAGOAL_HELP = `omx ultragoal - Durable repo-native multi-goal wo
 Usage:
   omx ultragoal create-goals [--brief <text> | --brief-file <path> | --from-stdin] [--goal <title::objective>] [--force] [--json]
   omx ultragoal complete-goals [--retry-failed] [--json]
-  omx ultragoal checkpoint --goal-id <id> --status <complete|failed> [--evidence <text>] [--codex-goal-json <json-or-path>] [--json]
+  omx ultragoal checkpoint --goal-id <id> --status <complete|failed|blocked> [--evidence <text>] [--codex-goal-json <json-or-path>] [--json]
   omx ultragoal status [--codex-goal-json <json-or-path>] [--json]
 
 Aliases:
@@ -36,6 +36,9 @@ Codex goal integration:
   This command cannot directly invoke the interactive /goal tool from a shell.
   complete-goals writes durable state and prints a model-facing handoff that tells
   the active Codex agent when to call get_goal/create_goal/update_goal safely.
+  If a completed legacy thread goal blocks create_goal for the next ultragoal,
+  checkpoint --status blocked records that non-terminal blocker and the handoff
+  should continue in a fresh Codex thread for the same repo/worktree.
 `;
 
 function hasFlag(args: readonly string[], flag: string): boolean {
@@ -174,7 +177,7 @@ export async function ultragoalCommand(args: string[]): Promise<void> {
       const goalId = readValue(rest, '--goal-id');
       const status = readValue(rest, '--status');
       if (!goalId) throw new UltragoalError('Missing --goal-id.');
-      if (status !== 'complete' && status !== 'failed') throw new UltragoalError('Missing or invalid --status; expected complete or failed.');
+      if (status !== 'complete' && status !== 'failed' && status !== 'blocked') throw new UltragoalError('Missing or invalid --status; expected complete, failed, or blocked.');
       const evidence = readValue(rest, '--evidence');
       const codexGoal = await parseCodexGoalJson(readValue(rest, '--codex-goal-json'));
       const plan = await checkpointUltragoal(cwd, { goalId, status, evidence, codexGoal });

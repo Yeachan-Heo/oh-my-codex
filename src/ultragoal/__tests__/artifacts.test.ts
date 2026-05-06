@@ -60,6 +60,9 @@ describe('ultragoal artifacts', () => {
       const instruction = buildCodexGoalInstruction(started.goal!, started.plan);
       assert.match(instruction, /call get_goal/i);
       assert.match(instruction, /call create_goal/i);
+      assert.match(instruction, /different completed legacy\/thread goal/i);
+      assert.match(instruction, /fresh Codex thread/i);
+      assert.match(instruction, /--status blocked/);
       assert.match(instruction, /update_goal\(\{status: "complete"\}\)/);
       assert.match(instruction, /--codex-goal-json/);
       assert.match(instruction, /Complete first milestone/);
@@ -105,6 +108,67 @@ describe('ultragoal artifacts', () => {
       assert.match(ledger, /"event":"goal_completed"/);
       assert.match(ledger, /"event":"goal_failed"/);
       assert.match(ledger, /"event":"goal_retried"/);
+    });
+  });
+
+  it('records a completed legacy Codex-goal blocker without failing the active ultragoal', async () => {
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, {
+        brief: 'brief',
+        goals: [
+          { title: 'First', objective: 'Complete first milestone.' },
+        ],
+      });
+
+      const first = await startNextUltragoal(cwd);
+      const blocked = await checkpointUltragoal(cwd, {
+        goalId: first.goal!.id,
+        status: 'blocked',
+        evidence: 'completed aggregate Codex goal blocks create_goal',
+        codexGoal: { goal: { objective: 'achieve all goals on this repo ultragoal status', status: 'complete' } },
+        now: new Date('2026-05-04T10:03:00Z'),
+      });
+
+      assert.equal(blocked.activeGoalId, first.goal!.id);
+      assert.equal(blocked.goals[0]?.status, 'in_progress');
+      assert.equal(blocked.goals[0]?.failureReason, undefined);
+      assert.equal(blocked.goals[0]?.failedAt, undefined);
+
+      const ledger = await readFile(join(cwd, '.omx/ultragoal/ledger.jsonl'), 'utf-8');
+      assert.match(ledger, /"event":"goal_blocked"/);
+      assert.match(ledger, /completed aggregate Codex goal blocks create_goal/);
+    });
+  });
+
+  it('rejects blocked checkpoints for active or same-objective Codex goals', async () => {
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, {
+        brief: 'brief',
+        goals: [
+          { title: 'First', objective: 'Complete first milestone.' },
+        ],
+      });
+
+      const first = await startNextUltragoal(cwd);
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: first.goal!.id,
+          status: 'blocked',
+          evidence: 'active wrong goal',
+          codexGoal: { goal: { objective: 'Different active work', status: 'active' } },
+        }),
+        /strict objective mismatch protection remains required/,
+      );
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: first.goal!.id,
+          status: 'blocked',
+          evidence: 'same complete goal',
+          codexGoal: { goal: { objective: first.goal!.objective, status: 'complete' } },
+        }),
+        /different completed legacy Codex goal/,
+      );
     });
   });
 });
