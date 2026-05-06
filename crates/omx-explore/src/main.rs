@@ -284,6 +284,8 @@ fn invoke_codex(args: &Args, model: &str, prompt_contract: &str) -> io::Result<A
         .arg("-C")
         .arg(&args.cwd)
         .args(codex_support_dir_args())
+        .arg("-p")
+        .arg("readonly")
         .arg("-m")
         .arg(model)
         .arg("-s")
@@ -2233,6 +2235,101 @@ printf '# Answer\nok\n' > "$output_path"
             "expected {:?} in {:?}",
             expected,
             captured
+        );
+    }
+
+    #[test]
+    fn invoke_codex_uses_readonly_profile_before_model_overrides() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let repo = root.path.join("repo");
+        create_dir_all(&repo).expect("create repo");
+        let prompt_file = root.path.join("prompt.md");
+        write(&prompt_file, "contract").expect("write prompt");
+        let capture_path = root.path.join("argv.txt");
+        let fake_codex = root.path.join("codex-stub");
+        write_executable(
+            &fake_codex,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+output_path=""
+capture={}
+printf '' > "$capture"
+while [ "$#" -gt 0 ]; do
+  printf '%s\n' "$1" >> "$capture"
+  if [ "$1" = "-o" ]; then
+    shift
+    output_path="$1"
+    printf '%s\n' "$1" >> "$capture"
+  fi
+  shift
+done
+printf '# Answer\nok\n' > "$output_path"
+"#,
+                shell_quote(&capture_path.display().to_string())
+            ),
+        )
+        .expect("write fake codex");
+
+        unsafe {
+            env::set_var(CODEX_BIN_ENV, &fake_codex);
+        }
+        let attempt = invoke_codex(
+            &Args {
+                cwd: repo.clone(),
+                prompt: "find tests".to_string(),
+                prompt_file,
+                instructions_file: repo.join("AGENTS.md"),
+                spark_model: "spark-model".to_string(),
+                fallback_model: "fallback-model".to_string(),
+            },
+            "spark-model",
+            "contract",
+        )
+        .expect("invoke codex");
+        unsafe {
+            env::remove_var(CODEX_BIN_ENV);
+        }
+
+        assert_eq!(attempt.status_code, 0);
+        let captured = read_to_string(&capture_path).expect("read capture");
+        let argv = captured.lines().collect::<Vec<_>>();
+        assert_eq!(argv.first().copied(), Some("exec"));
+        let readonly_profile_index = argv
+            .windows(2)
+            .position(|pair| pair == ["-p", "readonly"])
+            .expect("readonly profile should be passed to codex exec");
+        assert_eq!(
+            argv.windows(2)
+                .filter(|pair| *pair == ["-p", "readonly"])
+                .count(),
+            1,
+            "readonly profile should be passed exactly once"
+        );
+        let model_index = argv
+            .iter()
+            .position(|arg| *arg == "-m")
+            .expect("model flag should be present");
+        let sandbox_index = argv
+            .windows(2)
+            .position(|pair| pair == ["-s", "read-only"])
+            .expect("read-only sandbox should be passed");
+        let effort_index = argv
+            .windows(2)
+            .position(|pair| pair == ["-c", "model_reasoning_effort=\"low\""])
+            .expect("low reasoning override should be passed");
+        assert!(
+            readonly_profile_index < model_index,
+            "readonly profile must precede model selection"
+        );
+        assert!(
+            readonly_profile_index < sandbox_index,
+            "readonly profile must precede sandbox selection"
+        );
+        assert!(
+            readonly_profile_index < effort_index,
+            "readonly profile must precede reasoning override"
         );
     }
 
