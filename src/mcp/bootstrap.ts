@@ -298,6 +298,19 @@ export function shouldBackoffWatchdog(
   return observation.matchingPids.length > maxSiblings;
 }
 
+// The in-memory `lastTrafficAtMs` on this process is authoritative for self even when
+// the corresponding `traffic` ledger append has not flushed to disk yet. Without this
+// override, the ledger's last-known event for self is still 'start', and the cap could
+// evict a transport that has already been claimed by the client.
+export function effectivePretrafficSiblings(
+  pretrafficSiblingPids: ReadonlyArray<number>,
+  selfPid: number,
+  selfLastTrafficAtMs: number | null,
+): number[] {
+  if (selfLastTrafficAtMs === null) return [...pretrafficSiblingPids];
+  return pretrafficSiblingPids.filter((pid) => pid !== selfPid);
+}
+
 function stableStringHash(value: string): number {
   let hash = 0;
   for (let i = 0; i < value.length; i += 1) {
@@ -492,10 +505,15 @@ export function autoStartStdioMcpServer(
         observation.matchingPids,
         { entrypoint: telemetryEntrypoint, env },
       );
+      const effectivePretraffic = effectivePretrafficSiblings(
+        pretrafficSiblingPids,
+        process.pid,
+        lastTrafficAtMs,
+      );
       if (
         shouldSelfExitForHardCap(
           observation,
-          pretrafficSiblingPids,
+          effectivePretraffic,
           lifecycleTiming.maxSiblingsPerEntrypoint,
           process.pid,
         )

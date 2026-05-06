@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   analyzeDuplicateSiblingState,
   MCP_ENTRYPOINT_MARKER_ENV,
+  effectivePretrafficSiblings,
   extractMcpEntrypointMarker,
   isParentProcessAlive,
   parseProcessTable,
@@ -530,6 +531,52 @@ describe('mcp pre-traffic hard cap', () => {
       newerSiblingPids: [],
     };
     assert.equal(shouldSelfExitForHardCap(observation, [101], 4, 101), false);
+  });
+
+  describe('effectivePretrafficSiblings (in-memory authoritative override for self)', () => {
+    it('returns the full set when selfLastTrafficAtMs is null', () => {
+      const result = effectivePretrafficSiblings([101, 102, 103], 101, null);
+      assert.deepEqual(result, [101, 102, 103]);
+    });
+
+    it('excludes self when local traffic has been observed but ledger has not flushed', () => {
+      const result = effectivePretrafficSiblings([101, 102, 103], 101, 1_700_000_000_000);
+      assert.deepEqual(
+        result,
+        [102, 103],
+        'self must be excluded so the cap cannot evict an already-claimed transport',
+      );
+    });
+
+    it('returns the set unchanged when self is not in it', () => {
+      const result = effectivePretrafficSiblings([102, 103], 101, 1_700_000_000_000);
+      assert.deepEqual(result, [102, 103]);
+    });
+
+    it('does not mutate the input array', () => {
+      const input = [101, 102, 103];
+      effectivePretrafficSiblings(input, 101, 42);
+      assert.deepEqual(input, [101, 102, 103]);
+    });
+  });
+
+  it('does not evict self when local stdin traffic is observed but ledger has not yet flushed', () => {
+    // Reproduces the bot's race: the ledger still reports PID 101 as 'start' because the
+    // fire-and-forget 'traffic' append has not flushed, but in memory we already saw stdin.
+    const parentPid = 1224;
+    const marker = 'state-server.js';
+    const pids = [101, 102, 103, 104, 105]; // 5 siblings, cap=4 → over by 1
+    const processes = buildPsFixture(pids, parentPid, marker);
+    const ledgerPretraffic = [101, 102, 103, 104, 105]; // ledger says all are pre-traffic
+    const observation = analyzeDuplicateSiblingState(processes, 101, parentPid, marker);
+    const localLastTrafficAtMs = 1_700_000_000_500;
+
+    const effective = effectivePretrafficSiblings(ledgerPretraffic, 101, localLastTrafficAtMs);
+    assert.equal(
+      shouldSelfExitForHardCap(observation, effective, 4, 101),
+      false,
+      'PID 101 has received local traffic; the cap must not evict it even if the ledger lags',
+    );
   });
 });
 
