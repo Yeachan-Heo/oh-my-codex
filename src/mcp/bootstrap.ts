@@ -271,11 +271,11 @@ export function shouldSelfExitForHardCap(
 ): boolean {
   if (!Number.isInteger(maxSiblings) || maxSiblings <= 0) return false;
   if (lastTrafficAtMs !== null) return false;
-  if (observation.matchingPids.length < maxSiblings) return false;
+  if (observation.matchingPids.length <= maxSiblings) return false;
   const sorted = [...observation.matchingPids].sort((a, b) => a - b);
   const idx = sorted.indexOf(currentPid);
   if (idx === -1) return false;
-  const exitCount = sorted.length - maxSiblings + 1;
+  const exitCount = sorted.length - maxSiblings;
   return idx < exitCount;
 }
 

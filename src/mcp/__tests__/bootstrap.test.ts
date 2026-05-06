@@ -427,7 +427,7 @@ describe('mcp pre-traffic hard cap', () => {
     }));
   }
 
-  it('exits the oldest pre-traffic siblings until count drops below cap', () => {
+  it('exits the oldest pre-traffic siblings until count drops to cap', () => {
     const parentPid = 1224;
     const marker = 'state-server.js';
     const pids = [101, 102, 103, 104, 105, 106]; // 6 siblings, oldest first
@@ -441,8 +441,31 @@ describe('mcp pre-traffic hard cap', () => {
       return shouldSelfExitForHardCap(observation, lastTrafficAtMs, cap, pid);
     });
 
-    // exitCount = 6 - 4 + 1 = 3, but only those with lastTrafficAtMs===null may exit.
+    // exitCount = 6 - 4 = 2; only pre-traffic siblings can exit.
     assert.deepEqual(verdicts, [true, true, false, false, false, false]);
+  });
+
+  it('keeps the lone unique pre-traffic server alive at cap=1 (boundary)', () => {
+    const processes = buildPsFixture([101], 55, 'state-server.js');
+    const observation = analyzeDuplicateSiblingState(processes, 101, 55, 'state-server.js');
+    assert.equal(
+      shouldSelfExitForHardCap(observation, null, 1, 101),
+      false,
+      'with cap=1 and a single sibling, the lone server must not self-exit',
+    );
+  });
+
+  it('returns false when sibling count exactly equals cap (no overshoot)', () => {
+    const processes = buildPsFixture([101, 102, 103, 104], 55, 'state-server.js');
+    const verdicts = [101, 102, 103, 104].map((pid) => {
+      const observation = analyzeDuplicateSiblingState(processes, pid, 55, 'state-server.js');
+      return shouldSelfExitForHardCap(observation, null, 4, pid);
+    });
+    assert.deepEqual(
+      verdicts,
+      [false, false, false, false],
+      'at length === cap, the cap must keep all siblings (not exit oldest)',
+    );
   });
 
   it('never exits siblings that have received stdin traffic', () => {
