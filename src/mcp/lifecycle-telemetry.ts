@@ -1,4 +1,4 @@
-import { appendFile, mkdir, rename, stat } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -201,6 +201,86 @@ export async function flush(): Promise<void> {
   const pending = Array.from(inflight);
   if (pending.length === 0) return;
   await Promise.allSettled(pending);
+}
+
+export type PretrafficEvent = 'start' | 'traffic' | 'exit';
+
+export interface PretrafficOptions {
+  entrypoint: string;
+  env?: Record<string, string | undefined>;
+  platform?: NodeJS.Platform;
+  now?: () => number;
+  pid?: number;
+}
+
+function pretrafficLedgerPath(options: PretrafficOptions): { path: string; dir: string } | null {
+  const env = options.env ?? process.env;
+  if (isLifecycleLogDisabled(env)) return null;
+  const platform = options.platform ?? process.platform;
+  const resolution = resolveLogDir({ env, platform });
+  return {
+    path: join(resolution.dir, `${options.entrypoint}.pretraffic`),
+    dir: resolution.dir,
+  };
+}
+
+export function appendPretrafficEvent(
+  event: PretrafficEvent,
+  options: PretrafficOptions,
+): Promise<void> {
+  const target = pretrafficLedgerPath(options);
+  if (!target) return Promise.resolve();
+  const ts = options.now ? options.now() : Date.now();
+  const pid = options.pid ?? process.pid;
+  const line = `${ts}\t${pid}\t${event}\n`;
+  const writePromise = (async () => {
+    try {
+      await ensureDirOnce(target.dir);
+      await appendFile(target.path, line, { flag: 'a' });
+    } catch {
+      // ledger writes must never throw
+    }
+  })();
+  inflight.add(writePromise);
+  void writePromise.finally(() => {
+    inflight.delete(writePromise);
+  });
+  return writePromise;
+}
+
+export async function readPretrafficSiblingPids(
+  candidatePids: ReadonlyArray<number>,
+  options: PretrafficOptions,
+): Promise<number[]> {
+  const target = pretrafficLedgerPath(options);
+  if (!target) return [];
+  let raw: string;
+  try {
+    raw = await readFile(target.path, 'utf8');
+  } catch {
+    return [];
+  }
+  const candidateSet = new Set(candidatePids.filter((pid) => Number.isInteger(pid) && pid > 0));
+  if (candidateSet.size === 0) return [];
+  const latestEvent = new Map<number, PretrafficEvent>();
+  for (const rawLine of raw.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const parts = line.split('\t');
+    if (parts.length !== 3) continue;
+    const pid = Number.parseInt(parts[1], 10);
+    if (!Number.isInteger(pid) || !candidateSet.has(pid)) continue;
+    const ev = parts[2];
+    if (ev === 'start' || ev === 'traffic' || ev === 'exit') {
+      latestEvent.set(pid, ev);
+    }
+  }
+  const result: number[] = [];
+  for (const pid of candidateSet) {
+    if (latestEvent.get(pid) === 'start') result.push(pid);
+  }
+  result.sort((a, b) => a - b);
+  return result;
 }
 
 export function _resetForTests(): void {

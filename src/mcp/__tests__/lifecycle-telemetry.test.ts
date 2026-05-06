@@ -6,8 +6,10 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import {
   LIFECYCLE_LOG_DIR_ENV,
   LIFECYCLE_LOG_ENV,
+  appendPretrafficEvent,
   emit,
   isLifecycleLogDisabled,
+  readPretrafficSiblingPids,
   resolveLogDir,
   _resetForTests,
 } from '../lifecycle-telemetry.js';
@@ -249,5 +251,80 @@ describe('emit', () => {
       },
     );
     // No assertion needed - emit() must not throw
+  });
+});
+
+describe('pretraffic ledger', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'omx-mcp-pretraffic-'));
+    _resetForTests();
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function ledgerOpts(extra?: Partial<{ pid: number }>) {
+    return {
+      entrypoint: 'state-server',
+      env: { [LIFECYCLE_LOG_DIR_ENV]: dir },
+      platform: 'linux' as NodeJS.Platform,
+      ...(extra ?? {}),
+    };
+  }
+
+  it('reads back PIDs whose latest event is start', async () => {
+    await appendPretrafficEvent('start', ledgerOpts({ pid: 101 }));
+    await appendPretrafficEvent('start', ledgerOpts({ pid: 102 }));
+    const pretraffic = await readPretrafficSiblingPids([101, 102, 103], ledgerOpts());
+    assert.deepEqual(pretraffic, [101, 102]);
+  });
+
+  it('drops PIDs that have transitioned to traffic', async () => {
+    await appendPretrafficEvent('start', ledgerOpts({ pid: 101 }));
+    await appendPretrafficEvent('start', ledgerOpts({ pid: 102 }));
+    await appendPretrafficEvent('traffic', ledgerOpts({ pid: 101 }));
+    const pretraffic = await readPretrafficSiblingPids([101, 102], ledgerOpts());
+    assert.deepEqual(pretraffic, [102]);
+  });
+
+  it('drops PIDs that have exited', async () => {
+    await appendPretrafficEvent('start', ledgerOpts({ pid: 101 }));
+    await appendPretrafficEvent('exit', ledgerOpts({ pid: 101 }));
+    const pretraffic = await readPretrafficSiblingPids([101], ledgerOpts());
+    assert.deepEqual(pretraffic, []);
+  });
+
+  it('intersects with the candidate PID list (ignores stale ledger entries)', async () => {
+    await appendPretrafficEvent('start', ledgerOpts({ pid: 9001 }));
+    await appendPretrafficEvent('start', ledgerOpts({ pid: 9002 }));
+    const pretraffic = await readPretrafficSiblingPids([9001], ledgerOpts());
+    assert.deepEqual(pretraffic, [9001]);
+  });
+
+  it('returns [] when ledger does not exist', async () => {
+    const pretraffic = await readPretrafficSiblingPids([101, 102], ledgerOpts());
+    assert.deepEqual(pretraffic, []);
+  });
+
+  it('skips reads and writes when OMX_MCP_LIFECYCLE_LOG=off', async () => {
+    const offOpts = {
+      entrypoint: 'state-server',
+      env: { [LIFECYCLE_LOG_DIR_ENV]: dir, [LIFECYCLE_LOG_ENV]: 'off' },
+      platform: 'linux' as NodeJS.Platform,
+      pid: 101,
+    };
+    await appendPretrafficEvent('start', offOpts);
+    const pretraffic = await readPretrafficSiblingPids([101], offOpts);
+    assert.deepEqual(pretraffic, [], 'LOG=off must short-circuit the ledger entirely');
+    let didThrow = false;
+    try {
+      await stat(join(dir, 'state-server.pretraffic'));
+    } catch {
+      didThrow = true;
+    }
+    assert.equal(didThrow, true, 'no ledger file should be created');
   });
 });

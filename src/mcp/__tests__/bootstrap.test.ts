@@ -433,23 +433,42 @@ describe('mcp pre-traffic hard cap', () => {
     const pids = [101, 102, 103, 104, 105, 106]; // 6 siblings, oldest first
     const processes = buildPsFixture(pids, parentPid, marker);
     const cap = 4;
+    // Oldest 2 (101, 102) are pre-traffic; PIDs 103-106 have already received traffic.
+    const pretraffic = [101, 102];
 
     const verdicts = pids.map((pid) => {
       const observation = analyzeDuplicateSiblingState(processes, pid, parentPid, marker);
-      // Oldest 2 (pid=101,102) are pre-traffic; rest have active traffic.
-      const lastTrafficAtMs = pid <= 102 ? null : 1_000;
-      return shouldSelfExitForHardCap(observation, lastTrafficAtMs, cap, pid);
+      return shouldSelfExitForHardCap(observation, pretraffic, cap, pid);
     });
 
-    // exitCount = 6 - 4 = 2; only pre-traffic siblings can exit.
+    // exitCount = min(6 - 4, 2) = 2; both pre-traffic siblings exit, the 4 active-traffic ones stay.
     assert.deepEqual(verdicts, [true, true, false, false, false, false]);
+  });
+
+  it('selects victims from pre-traffic siblings even when an active sibling holds the oldest PID slot', () => {
+    // Codex review (2026-05-06) regression: with matchingPids=[1..5] and PID 1 already in traffic,
+    // the cap must still be enforced by selecting from the pre-traffic subset [2..5].
+    const parentPid = 55;
+    const marker = 'state-server.js';
+    const pids = [1, 2, 3, 4, 5];
+    const processes = buildPsFixture(pids, parentPid, marker);
+    const pretraffic = [2, 3, 4, 5]; // PID 1 has already transitioned to traffic
+    const cap = 4;
+
+    const verdicts = pids.map((pid) => {
+      const observation = analyzeDuplicateSiblingState(processes, pid, parentPid, marker);
+      return shouldSelfExitForHardCap(observation, pretraffic, cap, pid);
+    });
+
+    // Total = 5 > cap = 4; exitCount = min(1, 4) = 1; oldest pre-traffic sibling (PID 2) self-exits.
+    assert.deepEqual(verdicts, [false, true, false, false, false]);
   });
 
   it('keeps the lone unique pre-traffic server alive at cap=1 (boundary)', () => {
     const processes = buildPsFixture([101], 55, 'state-server.js');
     const observation = analyzeDuplicateSiblingState(processes, 101, 55, 'state-server.js');
     assert.equal(
-      shouldSelfExitForHardCap(observation, null, 1, 101),
+      shouldSelfExitForHardCap(observation, [101], 1, 101),
       false,
       'with cap=1 and a single sibling, the lone server must not self-exit',
     );
@@ -457,9 +476,10 @@ describe('mcp pre-traffic hard cap', () => {
 
   it('returns false when sibling count exactly equals cap (no overshoot)', () => {
     const processes = buildPsFixture([101, 102, 103, 104], 55, 'state-server.js');
-    const verdicts = [101, 102, 103, 104].map((pid) => {
+    const pretraffic = [101, 102, 103, 104];
+    const verdicts = pretraffic.map((pid) => {
       const observation = analyzeDuplicateSiblingState(processes, pid, 55, 'state-server.js');
-      return shouldSelfExitForHardCap(observation, null, 4, pid);
+      return shouldSelfExitForHardCap(observation, pretraffic, 4, pid);
     });
     assert.deepEqual(
       verdicts,
@@ -471,8 +491,10 @@ describe('mcp pre-traffic hard cap', () => {
   it('never exits siblings that have received stdin traffic', () => {
     const processes = buildPsFixture([101, 102, 103, 104, 105], 55, 'state-server.js');
     const observation = analyzeDuplicateSiblingState(processes, 101, 55, 'state-server.js');
+    // PID 101 has graduated to traffic, so the ledger excludes it from the pre-traffic set.
+    const pretraffic = [102, 103, 104, 105];
     assert.equal(
-      shouldSelfExitForHardCap(observation, 1_000, 4, 101),
+      shouldSelfExitForHardCap(observation, pretraffic, 4, 101),
       false,
       'active-traffic sibling must never be hard-cap exited',
     );
@@ -481,13 +503,23 @@ describe('mcp pre-traffic hard cap', () => {
   it('returns false when cap is 0 (disabled)', () => {
     const processes = buildPsFixture([101, 102, 103, 104, 105], 55, 'state-server.js');
     const observation = analyzeDuplicateSiblingState(processes, 101, 55, 'state-server.js');
-    assert.equal(shouldSelfExitForHardCap(observation, null, 0, 101), false);
+    assert.equal(shouldSelfExitForHardCap(observation, [101, 102, 103, 104, 105], 0, 101), false);
   });
 
   it('returns false when sibling count is below cap', () => {
     const processes = buildPsFixture([101, 102], 55, 'state-server.js');
     const observation = analyzeDuplicateSiblingState(processes, 101, 55, 'state-server.js');
-    assert.equal(shouldSelfExitForHardCap(observation, null, 4, 101), false);
+    assert.equal(shouldSelfExitForHardCap(observation, [101, 102], 4, 101), false);
+  });
+
+  it('returns false when no pre-traffic siblings are known to the ledger (empty pretraffic)', () => {
+    const processes = buildPsFixture([101, 102, 103, 104, 105], 55, 'state-server.js');
+    const observation = analyzeDuplicateSiblingState(processes, 101, 55, 'state-server.js');
+    assert.equal(
+      shouldSelfExitForHardCap(observation, [], 4, 101),
+      false,
+      'an empty pre-traffic set means no killable victims; the cap must skip',
+    );
   });
 
   it('preserves ambiguous-state safety (returns false)', () => {
@@ -497,7 +529,7 @@ describe('mcp pre-traffic hard cap', () => {
       matchingPids: [],
       newerSiblingPids: [],
     };
-    assert.equal(shouldSelfExitForHardCap(observation, null, 4, 101), false);
+    assert.equal(shouldSelfExitForHardCap(observation, [101], 4, 101), false);
   });
 });
 

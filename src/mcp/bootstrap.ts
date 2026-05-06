@@ -1,7 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { resolveOmxFirstPartyMcpEntrypointForPluginTarget } from '../config/omx-first-party-mcp.js';
-import { emit as emitLifecycleEvent, flush as flushLifecycleEvents } from './lifecycle-telemetry.js';
+import {
+  appendPretrafficEvent,
+  emit as emitLifecycleEvent,
+  flush as flushLifecycleEvents,
+  readPretrafficSiblingPids,
+} from './lifecycle-telemetry.js';
 
 export type McpServerName = 'state' | 'memory' | 'code_intel' | 'trace' | 'wiki';
 
@@ -265,17 +270,23 @@ function resolveLifecycleTimingConfig(
 
 export function shouldSelfExitForHardCap(
   observation: DuplicateSiblingObservation,
-  lastTrafficAtMs: number | null,
+  pretrafficSiblingPids: ReadonlyArray<number>,
   maxSiblings: number,
   currentPid: number,
 ): boolean {
   if (!Number.isInteger(maxSiblings) || maxSiblings <= 0) return false;
-  if (lastTrafficAtMs !== null) return false;
+  if (!pretrafficSiblingPids.includes(currentPid)) return false;
   if (observation.matchingPids.length <= maxSiblings) return false;
-  const sorted = [...observation.matchingPids].sort((a, b) => a - b);
+  // Only pre-traffic siblings are killable. Cap the exit count so we never
+  // try to evict more victims than we have.
+  const exitCount = Math.min(
+    observation.matchingPids.length - maxSiblings,
+    pretrafficSiblingPids.length,
+  );
+  if (exitCount <= 0) return false;
+  const sorted = [...pretrafficSiblingPids].sort((a, b) => a - b);
   const idx = sorted.indexOf(currentPid);
   if (idx === -1) return false;
-  const exitCount = sorted.length - maxSiblings;
   return idx < exitCount;
 }
 
@@ -412,6 +423,8 @@ export function autoStartStdioMcpServer(
       markerEnv: env[MCP_ENTRYPOINT_MARKER_ENV] ?? null,
     });
   }
+  void appendPretrafficEvent('start', { entrypoint: telemetryEntrypoint, env });
+  let recordedTraffic = false;
 
   const logLifecycle = (message: string, error?: unknown) => {
     if (!lifecycleDebugEnabled) return;
@@ -447,7 +460,7 @@ export function autoStartStdioMcpServer(
     });
   };
 
-  const runDuplicateSiblingWatchdog = () => {
+  const runDuplicateSiblingWatchdog = async () => {
     try {
       const processes = listProcessTable();
       if (!processes) {
@@ -475,10 +488,14 @@ export function autoStartStdioMcpServer(
         applyBackoff();
       }
 
+      const pretrafficSiblingPids = await readPretrafficSiblingPids(
+        observation.matchingPids,
+        { entrypoint: telemetryEntrypoint, env },
+      );
       if (
         shouldSelfExitForHardCap(
           observation,
-          lastTrafficAtMs,
+          pretrafficSiblingPids,
           lifecycleTiming.maxSiblingsPerEntrypoint,
           process.pid,
         )
@@ -563,6 +580,7 @@ export function autoStartStdioMcpServer(
       console.error(`[omx-${serverName}-server] shutdown failed`, error);
     }
 
+    void appendPretrafficEvent('exit', { entrypoint: telemetryEntrypoint, env });
     logLifecycle('transport shutdown: exit');
     await flushLifecycleEvents().catch(() => {});
     process.exit(0);
@@ -576,6 +594,10 @@ export function autoStartStdioMcpServer(
   };
   const handleStdinData = () => {
     lastTrafficAtMs = Date.now();
+    if (!recordedTraffic) {
+      recordedTraffic = true;
+      void appendPretrafficEvent('traffic', { entrypoint: telemetryEntrypoint, env });
+    }
   };
   const handleSigterm = () => {
     void shutdown('sigterm');
