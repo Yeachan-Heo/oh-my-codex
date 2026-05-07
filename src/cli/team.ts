@@ -874,7 +874,7 @@ export function parseTeamArgs(args: string[], cwd: string = process.cwd()): Pars
     && (followupReadyApprovedHint.agentType == null || followupReadyApprovedHint.agentType === agentType);
   const allowRepoAwareDagHandoff = followupContext != null || matchesApprovedLaunchHint;
   const approvedRepositoryContextSummary = allowRepoAwareDagHandoff
-    ? followupReadyApprovedHint?.repositoryContextSummary
+    ? contextReadyApprovedHint?.repositoryContextSummary
     : undefined;
 
   const teamName = sanitizeTeamName(slugifyTask(effectiveTask));
@@ -888,7 +888,9 @@ export function parseTeamArgs(args: string[], cwd: string = process.cwd()): Pars
     displayName: teamName,
     allowRepoAwareDagHandoff,
     ...(approvedRepositoryContextSummary ? { approvedRepositoryContextSummary } : {}),
-    ...(contextReadyApprovedHint ? { approvedExecution: buildApprovedTeamExecutionBinding(contextReadyApprovedHint) } : {}),
+    ...(allowRepoAwareDagHandoff && contextReadyApprovedHint
+      ? { approvedExecution: buildApprovedTeamExecutionBinding(contextReadyApprovedHint) }
+      : {}),
   };
 }
 

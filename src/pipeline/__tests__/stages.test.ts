@@ -451,6 +451,7 @@ describe('Team Exec Stage', () => {
       '# Plan-only plan\n\nLaunch via omx team 5:debugger "Execute plan-only team handoff"\n',
     );
     await writeFile(join(plansDir, 'test-spec-plan-only.md'), '# Plan-only test spec\n');
+    await writeFile(join(plansDir, 'repo-context-plan-only.md'), 'Plan-only repo summary should not reach workers.\n');
 
     const previousCwd = process.cwd();
     try {
@@ -475,6 +476,10 @@ describe('Team Exec Stage', () => {
       assert.equal(descriptor.approvedExecution, null);
       assert.equal(runtimeCliInput.task, 'Execute plan-only team handoff');
       assert.equal(runtimeCliInput.approvedExecution, null);
+      assert.equal(
+        (runtimeCliInput.decompositionMetadata as Record<string, unknown> | undefined)?.approved_context_summary,
+        undefined,
+      );
     } finally {
       process.chdir(previousCwd);
     }
