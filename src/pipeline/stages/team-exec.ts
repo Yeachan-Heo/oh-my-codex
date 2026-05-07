@@ -108,9 +108,11 @@ function readRuntimeLatestPlanningSelection(
       : '';
     if (!draftPlanPath) continue;
     const resolvedDraftPlanPath = resolvePlanningPrdPath(artifacts, cwd, draftPlanPath).matchedPath;
+    const testSpecPaths = resolvedDraftPlanPath ? matchingTestSpecPathsForPrd(artifacts, resolvedDraftPlanPath) : [];
+    if (!resolvedDraftPlanPath || testSpecPaths.length === 0) continue;
     return {
       prdPath: resolvedDraftPlanPath,
-      testSpecPaths: resolvedDraftPlanPath ? matchingTestSpecPathsForPrd(artifacts, resolvedDraftPlanPath) : [],
+      testSpecPaths,
     };
   }
   return null;
