@@ -564,6 +564,32 @@ describe('readAllState canonical skill precedence', () => {
     });
   });
 
+  it('does not resurrect terminal autopilot from stale canonical skill-active phase', async () => {
+    await withTempRepo('omx-hud-canonical-autopilot-terminal-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-autopilot-terminal';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'autopilot',
+        phase: 'ralph',
+        session_id: sessionId,
+        active_skills: [{ skill: 'autopilot', phase: 'ralph', active: true, session_id: sessionId }],
+      }));
+      await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+        active: false,
+        mode: 'autopilot',
+        current_phase: 'complete',
+        completed_at: '2026-05-07T00:00:00.000Z',
+      }));
+
+      const state = await readAllState(cwd);
+      assert.equal(state.autopilot, null);
+    });
+  });
+
   it('suppresses stale autoresearch detail when canonical session skill state excludes it', async () => {
     await withTempRepo('omx-hud-canonical-autoresearch-', async (cwd) => {
       const rootStateDir = join(cwd, '.omx', 'state');

@@ -847,6 +847,46 @@ describe("cleanupPostLaunchModeStateFiles", () => {
     assert.match(warnings[0] ?? "", /skipped malformed mode state .*ralph-state\.json/);
   });
 
+  it("reconciles root skill-active entries for the finished terminal session", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-postlaunch-root-skill-active-"));
+    const sessionId = "sess-terminal-autopilot";
+    const otherSessionId = "sess-other";
+    const stateDir = join(wd, ".omx", "state");
+    const sessionStateDir = join(stateDir, "sessions", sessionId);
+
+    try {
+      await mkdir(sessionStateDir, { recursive: true });
+      await writeFile(
+        join(stateDir, "skill-active-state.json"),
+        JSON.stringify({
+          version: 1,
+          active: true,
+          skill: "autopilot",
+          phase: "ralph",
+          session_id: sessionId,
+          initialized_state_path: `.omx/state/sessions/${sessionId}/autopilot-state.json`,
+          active_skills: [
+            { skill: "autopilot", phase: "ralph", active: true, session_id: sessionId },
+            { skill: "team", phase: "running", active: true, session_id: otherSessionId },
+          ],
+        }, null, 2),
+        "utf-8",
+      );
+
+      await cleanupPostLaunchModeStateFiles(wd, sessionId);
+
+      const rootCanonical = JSON.parse(
+        await readFile(join(stateDir, "skill-active-state.json"), "utf-8"),
+      ) as { active?: boolean; active_skills?: Array<{ skill?: string; session_id?: string }> };
+      assert.equal(rootCanonical.active, true);
+      assert.deepEqual(rootCanonical.active_skills, [
+        { skill: "team", phase: "running", active: true, session_id: otherSessionId },
+      ]);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("clears canonical skill-active entries during cleanup and hides them from HUD/overlay readers", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-postlaunch-skill-active-cleanup-"));
     const sessionId = "sess-skill-active-cleanup";

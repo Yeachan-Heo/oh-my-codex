@@ -68,7 +68,14 @@ export {
   resolveCodexHomeForLaunch,
   resolveProjectLocalCodexHomeForLaunch,
 } from "./codex-home.js";
-import { SKILL_ACTIVE_STATE_MODE, syncCanonicalSkillStateForMode } from "../state/skill-active.js";
+import {
+  SKILL_ACTIVE_STATE_MODE,
+  extractSessionIdFromInitializedStatePath,
+  getSkillActiveStatePaths,
+  listActiveSkills,
+  readSkillActiveState,
+  syncCanonicalSkillStateForMode,
+} from "../state/skill-active.js";
 import { isTrackedWorkflowMode } from "../state/workflow-transition.js";
 import { maybeCheckAndPromptUpdate, runImmediateUpdate } from "./update.js";
 import { maybePromptGithubStar } from "./star-prompt.js";
@@ -2880,6 +2887,55 @@ async function readPostLaunchModeStateFile(
   return { kind: "recoverable" };
 }
 
+function cleanPostLaunchString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function postLaunchUniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+async function scrubPostLaunchRootSkillActiveForSession(
+  cwd: string,
+  sessionId: string,
+  nowIso: string,
+  writeFileFn: typeof import("fs/promises").writeFile,
+): Promise<void> {
+  const normalizedSessionId = cleanPostLaunchString(sessionId);
+  if (!normalizedSessionId) return;
+
+  const { rootPath } = getSkillActiveStatePaths(cwd);
+  const rootState = await readSkillActiveState(rootPath);
+  if (!rootState) return;
+
+  const rootSessionIds = postLaunchUniqueStrings([
+    cleanPostLaunchString(rootState.session_id),
+    cleanPostLaunchString(extractSessionIdFromInitializedStatePath(rootState.initialized_state_path)),
+  ]);
+  const rootBelongsToSession = rootSessionIds.includes(normalizedSessionId);
+  const entries = listActiveSkills(rootState);
+  const keptEntries = entries.filter((entry) => {
+    const entrySessionId = cleanPostLaunchString(entry.session_id);
+    if (entrySessionId) return entrySessionId !== normalizedSessionId;
+    return !rootBelongsToSession;
+  });
+
+  if (keptEntries.length === entries.length && rootState.active !== true) return;
+  if (keptEntries.length === entries.length && !rootBelongsToSession) return;
+
+  const nextRoot = {
+    ...rootState,
+    active: keptEntries.length > 0,
+    skill: keptEntries[0]?.skill ?? (keptEntries.length > 0 ? cleanPostLaunchString(rootState.skill) : ""),
+    phase: keptEntries[0]?.phase ?? (keptEntries.length > 0 ? cleanPostLaunchString(rootState.phase) : "complete"),
+    updated_at: nowIso,
+    active_skills: keptEntries,
+    post_launch_reconciled_at: nowIso,
+    post_launch_reconciliation_reason: "terminal_session_cleanup",
+  };
+  await writeFileFn(rootPath, JSON.stringify(nextRoot, null, 2));
+}
+
 function buildRecoveredPostLaunchModeState(
   mode: string,
   completedAt: string,
@@ -3000,6 +3056,16 @@ export async function cleanupPostLaunchModeStateFiles(
           `[omx] postLaunch: failed to update mode state ${path}: ${err instanceof Error ? err.message : err}`,
         );
       }
+    }
+  }
+
+  if (sessionId) {
+    try {
+      await scrubPostLaunchRootSkillActiveForSession(cwd, sessionId, now().toISOString(), writeFile);
+    } catch (err) {
+      writeWarn(
+        `[omx] postLaunch: failed to reconcile root skill-active state: ${err instanceof Error ? err.message : err}`,
+      );
     }
   }
 }

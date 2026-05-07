@@ -341,6 +341,25 @@ export function buildGitBranchLabel(
   return repoLabel ? `${repoLabel}/${branch}` : branch;
 }
 
+const TERMINAL_OR_INACTIVE_PHASES = new Set(['complete', 'completed', 'cancelled', 'canceled', 'failed', 'inactive', 'cleared']);
+
+function isMissingTerminalOrInactiveDetail(detail: { active?: boolean; current_phase?: string } | null): boolean {
+  if (!detail) return true;
+  if (detail.active !== true) return true;
+  const phase = sanitizeOptionalString(detail.current_phase)?.toLowerCase();
+  return phase ? TERMINAL_OR_INACTIVE_PHASES.has(phase) : false;
+}
+
+function shouldSurfaceCanonicalSkill(
+  canonicalSkills: Map<string, { phase?: string }>,
+  skill: string,
+  detail: { active?: boolean; current_phase?: string } | null,
+  useCompatibilityFallback: boolean,
+): boolean {
+  if (!canonicalSkills.has(skill) && !useCompatibilityFallback) return false;
+  return !isMissingTerminalOrInactiveDetail(detail);
+}
+
 function canonicalPhaseForSkill(
   canonicalSkills: Map<string, { phase?: string }>,
   skill: string,
@@ -416,19 +435,19 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
     readSessionAwareModeState<TeamStateForHud>(cwd, 'team'),
   ]);
 
-  const ralph = canonicalSkills.has('ralph') || useCompatibilityFallback
+  const ralph = shouldSurfaceCanonicalSkill(canonicalSkills, 'ralph', ralphDetail, useCompatibilityFallback)
     ? (ralphDetail?.active === true ? mergePhase(ralphDetail, canonicalPhaseForSkill(canonicalSkills, 'ralph')) : null)
     : null;
-  const ultrawork = canonicalSkills.has('ultrawork') || useCompatibilityFallback
+  const ultrawork = shouldSurfaceCanonicalSkill(canonicalSkills, 'ultrawork', ultraworkDetail, useCompatibilityFallback)
     ? mergePhase(ultraworkDetail?.active === true ? ultraworkDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ultrawork'))
     : null;
-  const autopilot = canonicalSkills.has('autopilot') || useCompatibilityFallback
+  const autopilot = shouldSurfaceCanonicalSkill(canonicalSkills, 'autopilot', autopilotDetail, useCompatibilityFallback)
     ? mergePhase(autopilotDetail?.active === true ? autopilotDetail : null, canonicalPhaseForSkill(canonicalSkills, 'autopilot'))
     : null;
-  const ralplan = canonicalSkills.has('ralplan') || useCompatibilityFallback
+  const ralplan = shouldSurfaceCanonicalSkill(canonicalSkills, 'ralplan', ralplanDetail, useCompatibilityFallback)
     ? mergePhase(ralplanDetail?.active === true ? ralplanDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ralplan'))
     : null;
-  const deepInterview = canonicalSkills.has('deep-interview') || useCompatibilityFallback
+  const deepInterview = shouldSurfaceCanonicalSkill(canonicalSkills, 'deep-interview', deepInterviewDetail, useCompatibilityFallback)
     ? (() => {
       const merged = mergePhase(
         deepInterviewDetail?.active === true ? {
@@ -440,18 +459,18 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
       return merged;
     })()
     : null;
-  const ultraqa = canonicalSkills.has('ultraqa') || useCompatibilityFallback
+  const ultraqa = shouldSurfaceCanonicalSkill(canonicalSkills, 'ultraqa', ultraqaDetail, useCompatibilityFallback)
     ? mergePhase(ultraqaDetail?.active === true ? ultraqaDetail : null, canonicalPhaseForSkill(canonicalSkills, 'ultraqa'))
     : null;
   const canonicalTeamPhase = await readCanonicalTeamPhase(cwd, teamDetail?.active === true ? teamDetail : null);
-  const team = canonicalSkills.has('team') || useCompatibilityFallback
+  const team = shouldSurfaceCanonicalSkill(canonicalSkills, 'team', teamDetail, useCompatibilityFallback)
     ? mergeTeamPhase(
       teamDetail?.active === true ? teamDetail : null,
       canonicalPhaseForSkill(canonicalSkills, 'team'),
       canonicalTeamPhase,
     )
     : null;
-  const autoresearch = canonicalSkills.has('autoresearch') || useCompatibilityFallback
+  const autoresearch = shouldSurfaceCanonicalSkill(canonicalSkills, 'autoresearch', autoresearchDetail, useCompatibilityFallback)
     ? mergePhase(
       autoresearchDetail?.active === true ? autoresearchDetail : null,
       canonicalPhaseForSkill(canonicalSkills, 'autoresearch'),
