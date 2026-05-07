@@ -75,6 +75,7 @@ import {
   listActiveSkills,
   readSkillActiveState,
   syncCanonicalSkillStateForMode,
+  type SkillActiveStateLike,
 } from "../state/skill-active.js";
 import { isTrackedWorkflowMode } from "../state/workflow-transition.js";
 import { maybeCheckAndPromptUpdate, runImmediateUpdate } from "./update.js";
@@ -2900,12 +2901,13 @@ async function scrubPostLaunchRootSkillActiveForSession(
   sessionId: string,
   nowIso: string,
   writeFileFn: typeof import("fs/promises").writeFile,
+  rootStateBeforeCleanup?: SkillActiveStateLike | null,
 ): Promise<void> {
   const normalizedSessionId = cleanPostLaunchString(sessionId);
   if (!normalizedSessionId) return;
 
   const { rootPath } = getSkillActiveStatePaths(cwd);
-  const rootState = await readSkillActiveState(rootPath);
+  const rootState = rootStateBeforeCleanup ?? await readSkillActiveState(rootPath);
   if (!rootState) return;
 
   const rootSessionIds = postLaunchUniqueStrings([
@@ -2976,6 +2978,9 @@ export async function cleanupPostLaunchModeStateFiles(
   const scopedDirs = sessionId
     ? [getStateDir(cwd, sessionId)]
     : [getBaseStateDir(cwd)];
+  const rootSkillActiveStateBeforeCleanup = sessionId
+    ? await readSkillActiveState(getSkillActiveStatePaths(cwd).rootPath)
+    : null;
 
   for (const stateDir of scopedDirs) {
     const files = await readdir(stateDir).catch(() => [] as string[]);
@@ -3061,7 +3066,13 @@ export async function cleanupPostLaunchModeStateFiles(
 
   if (sessionId) {
     try {
-      await scrubPostLaunchRootSkillActiveForSession(cwd, sessionId, now().toISOString(), writeFile);
+      await scrubPostLaunchRootSkillActiveForSession(
+        cwd,
+        sessionId,
+        now().toISOString(),
+        writeFile,
+        rootSkillActiveStateBeforeCleanup,
+      );
     } catch (err) {
       writeWarn(
         `[omx] postLaunch: failed to reconcile root skill-active state: ${err instanceof Error ? err.message : err}`,
