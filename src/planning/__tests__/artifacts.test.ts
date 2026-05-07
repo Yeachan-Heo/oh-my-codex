@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import {
   decodeApprovedExecutionQuotedValue,
   isPlanningComplete,
@@ -20,6 +21,59 @@ function encodeApprovedExecutionTask(task: string, quote: 'single' | 'double'): 
   return quote === 'single'
     ? `'${task.replace(/'/g, "\\'")}'`
     : `"${task.replace(/"/g, '\\"')}"`;
+}
+
+function computeGitBlobSha1(content: string): string {
+  const buffer = Buffer.from(content, 'utf-8');
+  const header = Buffer.from(`blob ${buffer.length}\0`, 'utf-8');
+  return createHash('sha1').update(header).update(buffer).digest('hex');
+}
+
+function relativeToRepo(path: string): string {
+  return relative(tempDir, path).replaceAll('\\', '/');
+}
+
+function canonicalContextPackRelativePath(slug: string): string {
+  return `.omx/context/context-20260507T120000Z-${slug}.json`;
+}
+
+function buildContextPackOutcome(relativePackPath: string): string {
+  return [
+    '## Context Pack Outcome',
+    '',
+    `- pack: \`${relativePackPath}\``,
+  ].join('\n');
+}
+
+async function writeContextPack(
+  slug: string,
+  prdPath: string,
+  testSpecPath: string,
+  roles: string[],
+): Promise<string> {
+  const contextDir = join(tempDir, '.omx', 'context');
+  await mkdir(contextDir, { recursive: true });
+  const packPath = join(tempDir, canonicalContextPackRelativePath(slug));
+  const prdContent = await readFile(prdPath, 'utf-8');
+  const testSpecContent = await readFile(testSpecPath, 'utf-8');
+  await writeFile(packPath, JSON.stringify({
+    slug,
+    basis: {
+      prd: {
+        path: relativeToRepo(prdPath),
+        sha1: computeGitBlobSha1(prdContent),
+      },
+      testSpecs: [{
+        path: relativeToRepo(testSpecPath),
+        sha1: computeGitBlobSha1(testSpecContent),
+      }],
+    },
+    entries: roles.map((role, index) => ({
+      path: `src/${role}-${index}.ts`,
+      roles: [role],
+    })),
+  }, null, 2));
+  return packPath;
 }
 
 async function setup(): Promise<void> {
@@ -228,6 +282,9 @@ describe('planning artifacts', () => {
     const selection = readLatestPlanningArtifacts(tempDir);
     assert.equal(selection.prdPath, join(plansDir, 'prd-20260427T153100Z-alpha.md'));
     assert.deepEqual(selection.testSpecPaths, []);
+    assert.equal(selection.contextPackStatus, 'missing-baseline');
+    assert.deepEqual(selection.missingRequiredContextPackRoles, []);
+    assert.deepEqual(selection.contextPackIssues, ['Approved plan is missing a matching test spec.']);
 
     assert.equal(readApprovedExecutionLaunchHint(tempDir, 'ralph'), null);
 
@@ -236,6 +293,56 @@ describe('planning artifacts', () => {
     assert.equal(resolution.prdPath, join(plansDir, 'prd-20260427T153100Z-alpha.md'));
     assert.equal(resolution.planSlug, '20260427T153100Z-alpha');
     assert.deepEqual(resolution.warnings, ['missing_matching_test_spec']);
+  });
+
+  it('surfaces plan-only context-pack status on approved hints when no pack is declared', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-plan-only.md'),
+      '# PRD\n\nLaunch via omx ralph "Execute plan-only handoff"\n',
+    );
+    await writeFile(join(plansDir, 'test-spec-plan-only.md'), '# Test Spec\n');
+
+    const selection = readLatestPlanningArtifacts(tempDir);
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
+
+    assert.equal(selection.contextPack, null);
+    assert.equal(selection.contextPackStatus, 'plan-only');
+    assert.deepEqual(selection.missingRequiredContextPackRoles, []);
+    assert.deepEqual(selection.contextPackIssues, []);
+    assert.ok(hint);
+    assert.equal(hint?.contextPack, null);
+    assert.equal(hint?.contextPackStatus, 'plan-only');
+    assert.deepEqual(hint?.missingRequiredContextPackRoles, []);
+    assert.deepEqual(hint?.contextPackIssues, []);
+  });
+
+  it('surfaces ready context-pack status on approved hints when the latest plan declares a fresh pack', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    const prdPath = join(plansDir, 'prd-context-ready.md');
+    const testSpecPath = join(plansDir, 'test-spec-context-ready.md');
+    await writeFile(
+      prdPath,
+      [
+        '# PRD',
+        '',
+        buildContextPackOutcome(canonicalContextPackRelativePath('context-ready')),
+        '',
+        'Launch via omx ralph "Execute context-ready handoff"',
+      ].join('\n'),
+    );
+    await writeFile(testSpecPath, '# Test Spec\n');
+    const packPath = await writeContextPack('context-ready', prdPath, testSpecPath, ['scope', 'build', 'verify']);
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
+
+    assert.ok(hint);
+    assert.deepEqual(hint?.contextPack, { path: packPath });
+    assert.equal(hint?.contextPackStatus, 'ready');
+    assert.deepEqual(hint?.missingRequiredContextPackRoles, []);
+    assert.deepEqual(hint?.contextPackIssues, []);
   });
 
 

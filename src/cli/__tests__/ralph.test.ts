@@ -150,6 +150,10 @@ const approvedHint: ApprovedExecutionLaunchHint = {
   sourcePath: '.omx/plans/prd-issue-1072.md',
   testSpecPaths: ['.omx/plans/test-spec-issue-1072.md'],
   deepInterviewSpecPaths: ['.omx/specs/deep-interview-issue-1072.md'],
+  contextPack: null,
+  contextPackStatus: 'plan-only',
+  missingRequiredContextPackRoles: [],
+  contextPackIssues: [],
   repositoryContextSummary: {
     sourcePath: '.omx/plans/repo-context-issue-1072.md',
     content: 'Key files: src/cli/ralph.ts and src/planning/artifacts.ts',
