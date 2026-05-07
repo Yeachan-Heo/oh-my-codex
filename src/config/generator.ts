@@ -83,6 +83,8 @@ const OMX_AGENTS_MAX_DEPTH = 2;
 const OMX_EXPLORE_ROUTING_DEFAULT = "1";
 const OMX_EXPLORE_CMD_ENV = "USE_OMX_EXPLORE_CMD";
 const DEFAULT_LAUNCHER_MCP_STARTUP_TIMEOUT_SEC = 15;
+const CODEX_HOOKS_FEATURE_FLAG = "hooks";
+const LEGACY_CODEX_HOOKS_FEATURE_FLAG = "codex_hooks";
 const STATUS_LINE_FOCUSED_FIELDS: readonly string[] = [
   "model-with-reasoning",
   "git-branch",
@@ -435,7 +437,7 @@ function upsertFeatureFlags(config: string): string {
       "[features]",
       "multi_agent = true",
       "child_agents_md = true",
-      "codex_hooks = true",
+      `${CODEX_HOOKS_FEATURE_FLAG} = true`,
       "goals = true",
       "",
     ].join("\n");
@@ -454,9 +456,10 @@ function upsertFeatureFlags(config: string): string {
   }
 
   // Remove deprecated 'collab' key (superseded by multi_agent) and
-  // the misspelled singular 'goal' flag written by unreleased PR builds.
+  // 'codex_hooks' key (superseded by hooks), plus the misspelled singular
+  // 'goal' flag written by unreleased PR builds.
   for (let i = sectionEnd - 1; i > featuresStart; i--) {
-    if (/^\s*(?:collab|goal)\s*=/.test(lines[i])) {
+    if (/^\s*(?:collab|goal|codex_hooks)\s*=/.test(lines[i])) {
       lines.splice(i, 1);
       sectionEnd -= 1;
     }
@@ -464,15 +467,15 @@ function upsertFeatureFlags(config: string): string {
 
   let multiAgentIdx = -1;
   let childAgentsIdx = -1;
-  let codexHooksIdx = -1;
+  let hooksIdx = -1;
   let goalsIdx = -1;
   for (let i = featuresStart + 1; i < sectionEnd; i++) {
     if (/^\s*multi_agent\s*=/.test(lines[i])) {
       multiAgentIdx = i;
     } else if (/^\s*child_agents_md\s*=/.test(lines[i])) {
       childAgentsIdx = i;
-    } else if (/^\s*codex_hooks\s*=/.test(lines[i])) {
-      codexHooksIdx = i;
+    } else if (/^\s*hooks\s*=/.test(lines[i])) {
+      hooksIdx = i;
     } else if (/^\s*goals\s*=/.test(lines[i])) {
       goalsIdx = i;
     }
@@ -492,10 +495,10 @@ function upsertFeatureFlags(config: string): string {
     sectionEnd += 1;
   }
 
-  if (codexHooksIdx >= 0) {
-    lines[codexHooksIdx] = "codex_hooks = true";
+  if (hooksIdx >= 0) {
+    lines[hooksIdx] = `${CODEX_HOOKS_FEATURE_FLAG} = true`;
   } else {
-    lines.splice(sectionEnd, 0, "codex_hooks = true");
+    lines.splice(sectionEnd, 0, `${CODEX_HOOKS_FEATURE_FLAG} = true`);
     sectionEnd += 1;
   }
 
@@ -518,7 +521,7 @@ export function upsertPluginModeRuntimeFeatureFlags(config: string): string {
     const base = config.trimEnd();
     const featureBlock = [
       "[features]",
-      "codex_hooks = true",
+      `${CODEX_HOOKS_FEATURE_FLAG} = true`,
       "goals = true",
       "",
     ].join("\n");
@@ -536,29 +539,29 @@ export function upsertPluginModeRuntimeFeatureFlags(config: string): string {
     }
   }
 
-  // Remove the misspelled singular flag from unreleased PR builds before
-  // upserting the supported plural Codex feature flag.
+  // Remove legacy 'codex_hooks' and the misspelled singular flag from
+  // unreleased PR builds before upserting supported Codex feature flags.
   for (let i = sectionEnd - 1; i > featuresStart; i--) {
-    if (/^\s*goal\s*=/.test(lines[i])) {
+    if (/^\s*(?:goal|codex_hooks)\s*=/.test(lines[i])) {
       lines.splice(i, 1);
       sectionEnd -= 1;
     }
   }
 
-  let codexHooksIdx = -1;
+  let hooksIdx = -1;
   let goalsIdx = -1;
   for (let i = featuresStart + 1; i < sectionEnd; i++) {
-    if (/^\s*codex_hooks\s*=/.test(lines[i])) {
-      codexHooksIdx = i;
+    if (/^\s*hooks\s*=/.test(lines[i])) {
+      hooksIdx = i;
     } else if (/^\s*goals\s*=/.test(lines[i])) {
       goalsIdx = i;
     }
   }
 
-  if (codexHooksIdx >= 0) {
-    lines[codexHooksIdx] = "codex_hooks = true";
+  if (hooksIdx >= 0) {
+    lines[hooksIdx] = `${CODEX_HOOKS_FEATURE_FLAG} = true`;
   } else {
-    lines.splice(sectionEnd, 0, "codex_hooks = true");
+    lines.splice(sectionEnd, 0, `${CODEX_HOOKS_FEATURE_FLAG} = true`);
     sectionEnd++;
   }
 
@@ -820,7 +823,8 @@ export function stripOmxFeatureFlags(config: string): string {
   const omxFlags = [
     "multi_agent",
     "child_agents_md",
-    "codex_hooks",
+    CODEX_HOOKS_FEATURE_FLAG,
+    LEGACY_CODEX_HOOKS_FEATURE_FLAG,
     "goals",
     "goal",
     "collab",
@@ -1442,7 +1446,7 @@ function getOmxTablesBlock(
  *
  * Layout:
  *   1. OMX top-level keys (notify, model_reasoning_effort, developer_instructions)
- *   2. [features] with multi_agent + child_agents_md + codex_hooks + goals
+ *   2. [features] with multi_agent + child_agents_md + hooks + goals
  *   3. [shell_environment_policy.set] with defaulted explore-routing opt-in
  *   4. … user sections …
  *   5. OMX [table] sections (mcp_servers, tui)
