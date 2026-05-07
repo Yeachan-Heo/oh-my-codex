@@ -258,16 +258,16 @@ Options:
                 user | project
 
 Launch policy:
-  OMX_LAUNCH_POLICY=direct|tmux|detached-tmux|auto
-                Choose the default leader launch policy when no CLI policy flag is present
-  unset OMX_LAUNCH_POLICY
-                Return to the auto/default policy (detached tmux on supported interactive terminals)
-  omx --direct --yolo
-                Run this launch without OMX tmux/HUD management
-  OMX_LAUNCH_POLICY=direct omx --yolo
-                Use direct launch from the environment
-  OMX_LAUNCH_POLICY=direct omx --tmux --yolo
-                CLI policy flags override the environment for one launch
+  OMX_LAUNCH_POLICY=auto
+                Use the default policy: detached tmux when supported, direct otherwise
+  OMX_LAUNCH_POLICY=direct
+                Run without OMX tmux/HUD management
+  OMX_LAUNCH_POLICY=tmux
+                Force OMX-managed detached tmux launch
+  OMX_LAUNCH_POLICY=detached-tmux
+                Force OMX-managed detached tmux launch
+  CLI policy flags (--direct/--tmux) override OMX_LAUNCH_POLICY; the last flag before -- wins.
+  Unset or empty OMX_LAUNCH_POLICY returns to auto/default behavior.
   Config files are intentionally not used for launch policy in this release.
 `;
 

@@ -1269,13 +1269,17 @@ describe("resolveCliInvocation", () => {
     assert.match(HELP, /omx update\s+Check npm now, update the global install immediately, then refresh setup/);
   });
 
-  it("advertises direct launch policy controls in top-level help", () => {
+  it("advertises concise launch policy controls in top-level help", () => {
     assert.match(HELP, /--direct\s+Launch the interactive leader directly/);
-    assert.match(HELP, /OMX_LAUNCH_POLICY=direct\|tmux\|detached-tmux\|auto/);
-    assert.match(HELP, /unset OMX_LAUNCH_POLICY/);
-    assert.match(HELP, /omx --direct --yolo/);
-    assert.match(HELP, /OMX_LAUNCH_POLICY=direct omx --tmux --yolo/);
+    assert.match(HELP, /OMX_LAUNCH_POLICY=auto[\s\S]*Use the default policy/);
+    assert.match(HELP, /OMX_LAUNCH_POLICY=direct[\s\S]*Run without OMX tmux\/HUD management/);
+    assert.match(HELP, /OMX_LAUNCH_POLICY=tmux[\s\S]*Force OMX-managed detached tmux launch/);
+    assert.match(HELP, /OMX_LAUNCH_POLICY=detached-tmux[\s\S]*Force OMX-managed detached tmux launch/);
+    assert.match(HELP, /CLI policy flags \(--direct\/--tmux\) override OMX_LAUNCH_POLICY/);
+    assert.match(HELP, /Unset or empty OMX_LAUNCH_POLICY returns to auto\/default behavior/);
     assert.match(HELP, /Config files are intentionally not used/);
+    assert.doesNotMatch(HELP, /OMX_LAUNCH_POLICY=direct\|tmux\|detached-tmux\|auto/);
+    assert.doesNotMatch(HELP, /OMX_LAUNCH_POLICY=direct omx --tmux --yolo/);
   });
 });
 
