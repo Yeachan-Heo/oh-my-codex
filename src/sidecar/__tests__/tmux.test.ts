@@ -10,7 +10,7 @@ describe('sidecar tmux launcher', () => {
     assert.equal(args[8], '-F');
     assert.equal(args[9], '#{pane_id}');
     assert.match(args[10], /OMX_SESSION_ID='sess 1'/);
-    assert.match(args[10], /node '\/repo\/dist\/cli\/omx\.js' sidecar 'demo-team' --watch --width 52/);
+    assert.ok(args[10].includes(`'${process.execPath}' '/repo/dist/cli/omx.js' sidecar 'demo-team' --watch --width 52`));
   });
 
   it('uses a safe minimum sidecar width and parses the new pane id', () => {

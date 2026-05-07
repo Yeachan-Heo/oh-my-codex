@@ -8,6 +8,16 @@ import {
 } from "../codex-hooks.js";
 
 describe("codex hooks helpers", () => {
+
+  it("uses the current JavaScript runtime for managed hook commands", () => {
+    const config = buildManagedCodexHooksConfig("/repo");
+    const command = (config.hooks.SessionStart[0] as { hooks?: Array<{ command?: string }> } | undefined)?.hooks?.[0]?.command;
+
+    assert.equal(
+      command,
+      `"${process.execPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" "/repo/dist/scripts/codex-native-hook.js"`,
+    );
+  });
   it("merges managed wrappers without dropping user hooks", () => {
     const merged = JSON.parse(
       mergeManagedCodexHooksConfig(

@@ -34,6 +34,10 @@ function cloneJson<T>(value: T): T {
   return structuredClone(value);
 }
 
+function quoteCommandPart(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
 function buildCommandHook(
   command: string,
   options: {
@@ -59,7 +63,7 @@ export function buildManagedCodexHooksConfig(
   pkgRoot: string,
 ): ManagedCodexHooksConfig {
   const hookScript = join(pkgRoot, "dist", "scripts", "codex-native-hook.js");
-  const command = `node "${hookScript}"`;
+  const command = `${quoteCommandPart(process.execPath)} ${quoteCommandPart(hookScript)}`;
 
   return {
     hooks: {

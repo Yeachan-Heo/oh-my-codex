@@ -262,7 +262,7 @@ export function buildTmuxSplitArgs(
   const presetArg = safePreset ? ` --preset=${safePreset}` : '';
   const safeSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
   const sessionPrefix = safeSessionId ? `OMX_SESSION_ID=${shellEscape(safeSessionId)} ` : '';
-  const cmd = `${sessionPrefix}node ${shellEscape(omxBin)} hud --watch${presetArg}`;
+  const cmd = `${sessionPrefix}${shellEscape(process.execPath)} ${shellEscape(omxBin)} hud --watch${presetArg}`;
   return ['split-window', '-v', '-l', String(HUD_TMUX_HEIGHT_LINES), '-c', cwd, cmd];
 }
 

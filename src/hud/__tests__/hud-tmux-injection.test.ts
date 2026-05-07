@@ -12,6 +12,9 @@ import assert from 'node:assert/strict';
 import { shellEscape, buildTmuxSplitArgs } from '../index.js';
 import { HUD_TMUX_HEIGHT_LINES } from '../constants.js';
 
+const runtimePrefix = shellEscape(process.execPath);
+
+
 // ── Vulnerability demonstration (old code) ──────────────────────────────────
 
 describe('VULNERABILITY – old string-interpolation approach', () => {
@@ -97,7 +100,7 @@ describe('buildTmuxSplitArgs – shell injection hardening', () => {
       'split-window', '-v', '-l', String(HUD_TMUX_HEIGHT_LINES),
       // split height should come from shared HUD constants
       '-c', '/home/user/project',
-      "node '/usr/local/bin/omx.js' hud --watch",
+      `${runtimePrefix} '/usr/local/bin/omx.js' hud --watch`,
     ]);
   });
 
@@ -130,7 +133,7 @@ describe('buildTmuxSplitArgs – shell injection hardening', () => {
       cmd.includes("'\\''"),
       `Expected escaped single quote in: ${cmd}`,
     );
-    assert.equal(cmd, "node '/tmp/it'\\''s/omx.js' hud --watch");
+    assert.equal(cmd, `${runtimePrefix} '/tmp/it'\\''s/omx.js' hud --watch`);
   });
 
   it('omxBin with $() is neutralised by single-quote wrapping', () => {
@@ -139,7 +142,7 @@ describe('buildTmuxSplitArgs – shell injection hardening', () => {
     const cmd = args[6];
 
     // Inside single quotes, $() is literal.
-    assert.equal(cmd, "node '/tmp/$(id)/omx.js' hud --watch");
+    assert.equal(cmd, `${runtimePrefix} '/tmp/$(id)/omx.js' hud --watch`);
   });
 
   it('omxBin with backticks is neutralised by single-quote wrapping', () => {
@@ -147,7 +150,7 @@ describe('buildTmuxSplitArgs – shell injection hardening', () => {
     const args = buildTmuxSplitArgs('/home/user', maliciousOmx);
     const cmd = args[6];
 
-    assert.equal(cmd, "node '/tmp/`whoami`/omx.js' hud --watch");
+    assert.equal(cmd, `${runtimePrefix} '/tmp/\`whoami\`/omx.js' hud --watch`);
   });
 
   it("omxBin with ';command' breakout attempt is neutralised", () => {
@@ -162,7 +165,7 @@ describe('buildTmuxSplitArgs – shell injection hardening', () => {
     // Raw expected value: node '/tmp/x'\'';touch /tmp/pwned;echo '\''/omx.js' hud --watch
     assert.equal(
       cmd,
-      "node '/tmp/x'\\'';touch /tmp/pwned;echo '\\''/omx.js' hud --watch",
+      `${runtimePrefix} '/tmp/x'\\'';touch /tmp/pwned;echo '\\''/omx.js' hud --watch`,
     );
 
     // Both original single quotes are escaped (two '\'' sequences).
@@ -190,13 +193,13 @@ describe('buildTmuxSplitArgs – shell injection hardening', () => {
       'minimal;touch /tmp/pwned',
     );
     const cmd = args[6];
-    assert.equal(cmd, "node '/usr/bin/omx.js' hud --watch");
+    assert.equal(cmd, `${runtimePrefix} '/usr/bin/omx.js' hud --watch`);
     assert.ok(!cmd.includes('--preset='));
   });
 
   it('prepends OMX_SESSION_ID when provided', () => {
     const args = buildTmuxSplitArgs('/home/user', '/usr/bin/omx.js', 'focused', 'sess-managed');
     const cmd = args[6];
-    assert.equal(cmd, "OMX_SESSION_ID='sess-managed' node '/usr/bin/omx.js' hud --watch --preset=focused");
+    assert.equal(cmd, `OMX_SESSION_ID='sess-managed' ${runtimePrefix} '/usr/bin/omx.js' hud --watch --preset=focused`);
   });
 });

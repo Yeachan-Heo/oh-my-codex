@@ -84,7 +84,7 @@ describe('reconcileHudForPromptSubmit', () => {
 
     assert.equal(result.status, 'recreated');
     assert.equal(created.length, 1);
-    assert.match(created[0]?.cmd || '', /^OMX_SESSION_ID='sess-canonical' node '.*omx\.js' hud --watch/);
+    assert.match(created[0]?.cmd || '', /^OMX_SESSION_ID='sess-canonical' '.*' '.*omx\.js' hud --watch/);
     assert.doesNotMatch(created[0]?.cmd || '', /sess-stale/);
   });
 
