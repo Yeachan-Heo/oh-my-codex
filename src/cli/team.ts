@@ -13,7 +13,6 @@ import { classifyTaskSize } from '../hooks/task-size-detector.js';
 import {
   isApprovedExecutionContextReadyStatus,
   isApprovedExecutionFollowupReadyStatus,
-  readApprovedExecutionLaunchHint,
   readApprovedExecutionLaunchHintOutcome,
   type ApprovedExecutionLaunchHint,
   type ApprovedRepositoryContextSummary,
@@ -55,6 +54,7 @@ interface ParsedTeamArgs {
   teamName: string;
   displayName?: string;
   allowRepoAwareDagHandoff: boolean;
+  dagFallbackReason?: string;
   approvedRepositoryContextSummary?: ApprovedRepositoryContextSummary;
   approvedExecution?: ApprovedTeamExecutionBinding;
 }
@@ -860,8 +860,13 @@ export function parseTeamArgs(args: string[], cwd: string = process.cwd()): Pars
     }
   }
 
+  const approvedHintOutcome = followupContext
+    ? null
+    : readApprovedExecutionLaunchHintOutcome(cwd, 'team', { task: effectiveTask });
   const approvedHint = followupContext?.approvedHint
-    ?? readApprovedExecutionLaunchHint(cwd, 'team', { task: effectiveTask });
+    ?? (approvedHintOutcome?.status === 'resolved' && approvedHintOutcome.hint.contextPackStatus !== 'missing-baseline'
+      ? approvedHintOutcome.hint
+      : null);
   const followupReadyApprovedHint = approvedHint && isApprovedExecutionFollowupReadyStatus(approvedHint.contextPackStatus)
     ? approvedHint
     : null;
@@ -873,6 +878,11 @@ export function parseTeamArgs(args: string[], cwd: string = process.cwd()): Pars
     && (followupReadyApprovedHint.workerCount == null || followupReadyApprovedHint.workerCount === workerCount)
     && (followupReadyApprovedHint.agentType == null || followupReadyApprovedHint.agentType === agentType);
   const allowRepoAwareDagHandoff = followupContext != null || matchesApprovedLaunchHint;
+  const dagFallbackReason = followupContext == null
+    && approvedHintOutcome?.status === 'resolved'
+    && !isApprovedExecutionFollowupReadyStatus(approvedHintOutcome.hint.contextPackStatus)
+    ? `context_pack_not_followup_ready:${approvedHintOutcome.hint.contextPackStatus}`
+    : undefined;
   const approvedRepositoryContextSummary = allowRepoAwareDagHandoff
     ? contextReadyApprovedHint?.repositoryContextSummary
     : undefined;
@@ -887,6 +897,7 @@ export function parseTeamArgs(args: string[], cwd: string = process.cwd()): Pars
     teamName,
     displayName: teamName,
     allowRepoAwareDagHandoff,
+    ...(dagFallbackReason ? { dagFallbackReason } : {}),
     ...(approvedRepositoryContextSummary ? { approvedRepositoryContextSummary } : {}),
     ...(allowRepoAwareDagHandoff && contextReadyApprovedHint
       ? { approvedExecution: buildApprovedTeamExecutionBinding(contextReadyApprovedHint) }
@@ -1633,6 +1644,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     cwd,
     buildLegacyPlan: buildTeamExecutionPlan,
     allowDagHandoff: parsed.allowRepoAwareDagHandoff,
+    dagFallbackReason: parsed.dagFallbackReason,
     approvedRepositoryContextSummary: parsed.approvedRepositoryContextSummary,
   });
   const tasks = executionPlan.tasks;

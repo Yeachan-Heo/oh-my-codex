@@ -69,6 +69,27 @@ describe('buildRepoAwareTeamExecutionPlan', () => {
     assert.equal(plan.tasks[0].subject, 'legacy');
   });
 
+  it('preserves explicit lifecycle fallback reasons when DAG handoff is disabled upstream', () => {
+    const cwd = repo();
+    writeFileSync(join(cwd, '.omx', 'plans', 'team-dag-demo.json'), JSON.stringify({
+      schema_version: 1,
+      nodes: [{ id: 'stale', subject: 'Stale sidecar', description: 'Must not override lifecycle-rejected startup' }],
+    }));
+    const plan = buildRepoAwareTeamExecutionPlan({
+      task: 'fix unrelated tests',
+      workerCount: 3,
+      agentType: 'executor',
+      explicitAgentType: false,
+      explicitWorkerCount: false,
+      cwd,
+      buildLegacyPlan: legacy,
+      dagFallbackReason: 'context_pack_not_followup_ready:invalid',
+    });
+    assert.equal(plan.metadata?.decomposition_source, 'legacy_text');
+    assert.equal(plan.metadata?.fallback_reason, 'context_pack_not_followup_ready:invalid');
+    assert.equal(plan.tasks[0].subject, 'legacy');
+  });
+
   it('requires a matching approved test spec before importing an opted-in DAG sidecar', () => {
     const cwd = repo();
     writeFileSync(join(cwd, '.omx', 'plans', 'test-spec-demo.md'), '');

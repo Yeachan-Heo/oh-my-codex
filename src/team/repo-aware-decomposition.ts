@@ -13,6 +13,7 @@ export interface LegacyTeamExecutionPlanInput {
   cwd: string;
   buildLegacyPlan: (task: string, workerCount: number, agentType: string, explicitAgentType: boolean, explicitWorkerCount: boolean) => RepoAwareTeamExecutionPlan;
   allowDagHandoff?: boolean;
+  dagFallbackReason?: string;
   approvedRepositoryContextSummary?: ApprovedRepositoryContextSummary;
 }
 
@@ -284,7 +285,11 @@ export function remapRepoAwareDecompositionMetadataToCreatedTasks(
 export function buildRepoAwareTeamExecutionPlan(input: LegacyTeamExecutionPlanInput): RepoAwareTeamExecutionPlan {
   const resolution = input.allowDagHandoff === true
     ? readTeamDagHandoffForLatestPlan(input.cwd)
-    : ({ dag: null, source: 'none', error: 'dag_handoff_not_approved_for_invocation' } satisfies TeamDagResolution);
+    : ({
+      dag: null,
+      source: 'none',
+      error: input.dagFallbackReason ?? 'dag_handoff_not_approved_for_invocation',
+    } satisfies TeamDagResolution);
   if (resolution.dag) return buildFromDag(input, resolution as TeamDagResolution & { dag: TeamDagHandoff });
 
   const legacy = input.buildLegacyPlan(input.task, input.workerCount, input.agentType, input.explicitAgentType, input.explicitWorkerCount);

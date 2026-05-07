@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { buildLeaderMonitoringHints, parseTeamStartArgs, teamCommand } from '../team.js';
 import { readModeState } from '../../modes/base.js';
 import { readApprovedExecutionLaunchHint } from '../../planning/artifacts.js';
+import { buildRepoAwareTeamExecutionPlan } from '../../team/repo-aware-decomposition.js';
 import { DEFAULT_MAX_WORKERS } from '../../team/state.js';
 import { shutdownTeam } from '../../team/runtime.js';
 import { sameFilePath } from '../../utils/paths.js';
@@ -917,6 +918,99 @@ describe('parseTeamStartArgs', () => {
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves lifecycle-specific DAG fallback reasons for explicit nonready approved launches', async () => {
+    const previousCwd = process.cwd();
+    const cases = [
+      {
+        name: 'missing-baseline',
+        slug: 'issue-2090-missing-baseline',
+        includeOutcome: false,
+        writeTestSpec: false,
+        packSetup: async (_wd: string, _prdPath: string, _testSpecPath: string) => {},
+        expected: 'context_pack_not_followup_ready:missing-baseline',
+      },
+      {
+        name: 'incomplete',
+        slug: 'issue-2090-incomplete',
+        includeOutcome: true,
+        writeTestSpec: true,
+        packSetup: async (wd: string, prdPath: string, testSpecPath: string) => {
+          await writeContextPack(wd, 'issue-2090-incomplete', prdPath, testSpecPath, ['scope']);
+        },
+        expected: 'context_pack_not_followup_ready:incomplete',
+      },
+      {
+        name: 'invalid',
+        slug: 'issue-2090-invalid',
+        includeOutcome: true,
+        writeTestSpec: true,
+        packSetup: async (_wd: string, _prdPath: string, _testSpecPath: string) => {},
+        expected: 'context_pack_not_followup_ready:invalid',
+      },
+    ] as const;
+
+    try {
+      for (const scenario of cases) {
+        const wd = await mkdtemp(join(tmpdir(), `omx-team-dag-fallback-${scenario.name}-`));
+        try {
+          process.chdir(wd);
+          const plansDir = join(wd, '.omx', 'plans');
+          await mkdir(plansDir, { recursive: true });
+          const prdPath = join(plansDir, `prd-${scenario.slug}.md`);
+          const testSpecPath = join(plansDir, `test-spec-${scenario.slug}.md`);
+          const outcomePath = scenario.name === 'invalid'
+            ? canonicalContextPackRelativePath('other')
+            : canonicalContextPackRelativePath(scenario.slug);
+          const prdSections = ['# Approved plan', ''];
+          if (scenario.includeOutcome) {
+            prdSections.push(buildContextPackOutcome(outcomePath), '');
+          }
+          prdSections.push(`Launch via omx team 3:executor "Execute approved ${scenario.name} DAG plan"`);
+          await writeFile(
+            prdPath,
+            prdSections.join('\n'),
+          );
+          if (scenario.writeTestSpec) {
+            await writeFile(testSpecPath, '# Test spec\n');
+          }
+          await writeFile(
+            join(plansDir, `team-dag-${scenario.slug}.json`),
+            '{"schema_version":1,"nodes":[{"id":"impl","subject":"Impl","description":"Impl"}]}\n',
+          );
+          await scenario.packSetup(wd, prdPath, testSpecPath);
+
+          const parsed = parseTeamStartArgs(['3:executor', 'Execute', 'approved', scenario.name, 'DAG', 'plan']);
+          const executionPlan = buildRepoAwareTeamExecutionPlan({
+            task: parsed.parsed.task,
+            workerCount: parsed.parsed.workerCount,
+            agentType: parsed.parsed.agentType,
+            explicitAgentType: parsed.parsed.explicitAgentType,
+            explicitWorkerCount: parsed.parsed.explicitWorkerCount,
+            cwd: wd,
+            buildLegacyPlan: (task, workerCount, agentType) => ({
+              workerCount,
+              tasks: [{ subject: task, description: task, owner: 'worker-1', role: agentType }],
+            }),
+            allowDagHandoff: parsed.parsed.allowRepoAwareDagHandoff,
+            dagFallbackReason: parsed.parsed.dagFallbackReason,
+            approvedRepositoryContextSummary: parsed.parsed.approvedRepositoryContextSummary,
+          });
+
+          assert.equal(parsed.parsed.allowRepoAwareDagHandoff, false);
+          assert.equal(parsed.parsed.dagFallbackReason, scenario.expected);
+          assert.equal(parsed.parsed.approvedExecution, undefined);
+          assert.equal(executionPlan.metadata?.decomposition_source, 'legacy_text');
+          assert.equal(executionPlan.metadata?.fallback_reason, scenario.expected);
+        } finally {
+          process.chdir(previousCwd);
+          await rm(wd, { recursive: true, force: true });
+        }
+      }
+    } finally {
+      process.chdir(previousCwd);
     }
   });
 
