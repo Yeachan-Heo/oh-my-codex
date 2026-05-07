@@ -16,7 +16,6 @@ import {
 } from '../../team/followup-planner.js';
 import {
   readApprovedExecutionLaunchHintOutcome,
-  readLatestPlanningArtifacts,
   readPlanningArtifacts,
   type PlanningArtifacts,
 } from '../../planning/artifacts.js';
@@ -117,6 +116,19 @@ function readRuntimeLatestPlanningSelection(
   return null;
 }
 
+function readLatestApprovedPlanningSelection(
+  artifacts: PlanningArtifacts,
+): { prdPath: string | null; testSpecPaths: string[] } {
+  for (let index = artifacts.prdPaths.length - 1; index >= 0; index -= 1) {
+    const prdPath = artifacts.prdPaths[index];
+    const testSpecPaths = matchingTestSpecPathsForPrd(artifacts, prdPath);
+    if (testSpecPaths.length > 0) {
+      return { prdPath, testSpecPaths };
+    }
+  }
+  return { prdPath: null, testSpecPaths: [] };
+}
+
 function resolveApprovedTeamPlanPath(
   cwd: string,
   latestPlanPath: string,
@@ -124,7 +136,8 @@ function resolveApprovedTeamPlanPath(
 ): string {
   const artifacts = readPlanningArtifacts(cwd);
   const resolvedLatestPlanPath = resolvePlanningPrdPath(artifacts, cwd, latestPlanPath);
-  const selection = readRuntimeLatestPlanningSelection(artifacts, cwd, ralplanArtifacts) ?? readLatestPlanningArtifacts(cwd);
+  const selection = readRuntimeLatestPlanningSelection(artifacts, cwd, ralplanArtifacts)
+    ?? readLatestApprovedPlanningSelection(artifacts);
   const selectedPrdPath = selection.prdPath
     ? resolvePlanningPrdPath(artifacts, cwd, selection.prdPath).matchedPath
     : null;

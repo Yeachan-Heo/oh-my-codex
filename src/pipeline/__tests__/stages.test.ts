@@ -279,6 +279,48 @@ describe('Team Exec Stage', () => {
     }
   });
 
+  it('derives the team-exec task from the selected approved PRD when a newer draft is incomplete', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    const approvedPrdPath = join(plansDir, 'prd-zeta.md');
+    await writeFile(
+      approvedPrdPath,
+      '# Zeta plan\n\nLaunch via omx team 5:debugger "Execute zeta handoff"\n',
+    );
+    await writeFile(join(plansDir, 'test-spec-zeta.md'), '# Zeta test spec\n');
+    await writeFile(join(plansDir, 'prd-zulu.md'), '# Zulu draft\n\nNo approved team launch here.\n');
+
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(tmpdir());
+      const stage = createTeamExecStage();
+      const result = await stage.run(makeCtx({
+        task: 'original request task',
+        artifacts: {
+          ralplan: {
+            task: 'original request task',
+            stage: 'ralplan',
+            latestPlanPath: join('.omx', 'plans', 'prd-zeta.md'),
+          },
+        },
+      }));
+
+      assert.equal(result.status, 'completed');
+      const descriptor = (result.artifacts as Record<string, unknown>).teamDescriptor as Record<string, unknown>;
+      const instruction = (result.artifacts as Record<string, unknown>).instruction as string;
+      const runtimeCliInput = decodeRuntimeCliInstructionPayload(instruction);
+      assert.equal(descriptor.task, 'Execute zeta handoff');
+      assert.deepEqual(descriptor.approvedExecution, {
+        prd_path: approvedPrdPath,
+        task: 'Execute zeta handoff',
+        command: 'omx team 5:debugger "Execute zeta handoff"',
+      });
+      assert.deepEqual(runtimeCliInput.approvedExecution, descriptor.approvedExecution);
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
   it('derives the team-exec task when latestPlanPath is already cwd-prefixed', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });

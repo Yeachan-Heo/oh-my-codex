@@ -207,8 +207,6 @@ function readApprovedPlanText(
   options: ApprovedExecutionLaunchHintReadOptions = {},
 ): { content: string; context: ApprovedPlanContext } | null {
   const artifacts = readPlanningArtifacts(cwd);
-  if (!isPlanningComplete(artifacts)) return null;
-
   const selection = selectPlanningArtifacts(artifacts, options.prdPath);
   const latestPrdPath = selection.prdPath;
   if (!latestPrdPath || selection.testSpecPaths.length === 0 || !existsSync(latestPrdPath)) return null;
