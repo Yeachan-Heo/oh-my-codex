@@ -61,6 +61,7 @@ const OMX_TEAM_WORKER_CLI_ENV = 'OMX_TEAM_WORKER_CLI';
 const OMX_TEAM_WORKER_CLI_MAP_ENV = 'OMX_TEAM_WORKER_CLI_MAP';
 const OMX_TEAM_WORKER_LAUNCH_MODE_ENV = 'OMX_TEAM_WORKER_LAUNCH_MODE';
 const OMX_TEAM_AUTO_INTERRUPT_RETRY_ENV = 'OMX_TEAM_AUTO_INTERRUPT_RETRY';
+const CODEX_SQLITE_HOME_ENV = 'CODEX_SQLITE_HOME';
 const GEMINI_PROMPT_INTERACTIVE_FLAG = '-i';
 const GEMINI_APPROVAL_MODE_FLAG = '--approval-mode';
 const GEMINI_APPROVAL_MODE_YOLO = 'yolo';
@@ -931,6 +932,9 @@ export function buildWorkerProcessLaunchSpec(
   const workerCodexHomeOverride = typeof effectiveEnv.CODEX_HOME === 'string'
     ? effectiveEnv.CODEX_HOME.trim()
     : undefined;
+  const workerSqliteHomeOverride = typeof effectiveEnv[CODEX_SQLITE_HOME_ENV] === 'string'
+    ? effectiveEnv[CODEX_SQLITE_HOME_ENV].trim()
+    : undefined;
   const providerLookupCodexHome = workerCodexHomeOverride
     ? (isAbsolute(workerCodexHomeOverride) ? workerCodexHomeOverride : resolve(cwd, workerCodexHomeOverride))
     : undefined;
@@ -965,6 +969,9 @@ export function buildWorkerProcessLaunchSpec(
     [OMX_TMUX_HUD_OWNER_ENV]: '1',
     ...(workerCli === 'codex' && workerCodexHomeOverride
       ? { CODEX_HOME: workerCodexHomeOverride }
+      : {}),
+    ...(workerCli === 'codex' && workerSqliteHomeOverride
+      ? { [CODEX_SQLITE_HOME_ENV]: workerSqliteHomeOverride }
       : {}),
     ...codexProviderEnv,
   };

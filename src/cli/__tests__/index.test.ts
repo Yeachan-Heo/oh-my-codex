@@ -64,6 +64,7 @@ import {
   resolveNativeSessionName,
   releaseTmuxExtendedKeysLease,
   withTmuxExtendedKeys,
+  CODEX_SQLITE_HOME_ENV,
 } from "../index.js";
 import { ensureReusableNodeModules } from "../../utils/repo-deps.js";
 import { readAllState } from "../../hud/state.js";
@@ -1424,12 +1425,16 @@ describe("project launch scope helpers", () => {
       ].join("\n");
       await writeFile(configPath, originalConfig);
       await writeFile(join(projectCodexHome, "agents", "planner.toml"), 'name = "planner"\n');
+      await writeFile(join(projectCodexHome, "state_5.sqlite"), "state db placeholder");
+      await writeFile(join(projectCodexHome, "state_5.sqlite-wal"), "state db wal placeholder");
+      await writeFile(join(projectCodexHome, "logs_2.sqlite-shm"), "logs db shm placeholder");
       const beforeStat = await stat(configPath);
 
       const prepared = await prepareCodexHomeForLaunch(wd, "session-2033", {});
       const runtimeCodexHome = runtimeCodexHomePath(wd, "session-2033");
 
       assert.equal(prepared.codexHomeOverride, runtimeCodexHome);
+      assert.equal(prepared.sqliteHomeOverride, projectCodexHome);
       assert.equal(prepared.projectLocalCodexHomeForCleanup, projectCodexHome);
       assert.equal(prepared.runtimeCodexHomeForCleanup, runtimeCodexHome);
       assert.equal(await readFile(join(runtimeCodexHome, "config.toml"), "utf-8"), originalConfig);
@@ -1437,6 +1442,9 @@ describe("project launch scope helpers", () => {
         await readFile(join(runtimeCodexHome, "agents", "planner.toml"), "utf-8"),
         'name = "planner"\n',
       );
+      assert.equal(existsSync(join(runtimeCodexHome, "state_5.sqlite")), false);
+      assert.equal(existsSync(join(runtimeCodexHome, "state_5.sqlite-wal")), false);
+      assert.equal(existsSync(join(runtimeCodexHome, "logs_2.sqlite-shm")), false);
 
       await writeFile(
         join(runtimeCodexHome, "config.toml"),
@@ -1502,8 +1510,31 @@ describe("project launch scope helpers", () => {
       });
 
       assert.equal(prepared.codexHomeOverride, "/tmp/explicit-codex-home");
+      assert.equal(prepared.sqliteHomeOverride, undefined);
       assert.equal(prepared.projectLocalCodexHomeForCleanup, undefined);
       assert.equal(prepared.runtimeCodexHomeForCleanup, undefined);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("respects explicit CODEX_SQLITE_HOME for project-scope launches", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-launch-sqlite-home-"));
+    try {
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await mkdir(join(wd, ".codex"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+      await writeFile(join(wd, ".codex", "config.toml"), 'model = "gpt-5.5"\n');
+
+      const prepared = await prepareCodexHomeForLaunch(wd, "session-explicit-sqlite", {
+        [CODEX_SQLITE_HOME_ENV]: "/tmp/explicit-sqlite-home",
+      });
+
+      assert.equal(prepared.codexHomeOverride, runtimeCodexHomePath(wd, "session-explicit-sqlite"));
+      assert.equal(prepared.sqliteHomeOverride, undefined);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -1981,6 +2012,32 @@ describe("detached tmux new-session sequencing", () => {
     assert.equal(
       newSession!.args.includes("-e") &&
         newSession!.args.some((arg) => arg === "CODEX_HOME=/tmp/project/.codex"),
+      true,
+    );
+  });
+
+  it("buildDetachedSessionBootstrapSteps forwards CODEX_SQLITE_HOME override to detached tmux session", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-demo",
+      "/tmp/project",
+      "'codex' '--model' 'gpt-5'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      null,
+      "/tmp/project/.omx/runtime/codex-home/session-1",
+      null,
+      false,
+      "sess-detached-managed",
+      undefined,
+      undefined,
+      undefined,
+      {},
+      "/tmp/project/.codex",
+    );
+    const newSession = steps.find((step) => step.name === "new-session");
+    assert.ok(newSession);
+    assert.equal(
+      newSession!.args.includes("-e") &&
+        newSession!.args.some((arg) => arg === `${CODEX_SQLITE_HOME_ENV}=/tmp/project/.codex`),
       true,
     );
   });

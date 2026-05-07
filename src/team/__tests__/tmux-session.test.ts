@@ -2133,10 +2133,13 @@ describe('team worker launch mode helpers', () => {
   it('buildWorkerProcessLaunchSpec preserves ambient CODEX_HOME so Codex workers keep provider websocket metadata', async () => {
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     const prevCodexHome = process.env.CODEX_HOME;
+    const prevSqliteHome = process.env.CODEX_SQLITE_HOME;
     const prevProviderEnv = process.env.CUSTOM_PROVIDER_API_KEY;
     const codexHome = await mkdtemp(join(tmpdir(), 'omx-team-provider-websocket-'));
+    const sqliteHome = await mkdtemp(join(tmpdir(), 'omx-team-provider-sqlite-'));
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
     process.env.CODEX_HOME = codexHome;
+    process.env.CODEX_SQLITE_HOME = sqliteHome;
     process.env.CUSTOM_PROVIDER_API_KEY = 'test-secret';
 
     try {
@@ -2164,15 +2167,19 @@ describe('team worker launch mode helpers', () => {
       );
 
       assert.equal(spec.env.CODEX_HOME, codexHome);
+      assert.equal(spec.env.CODEX_SQLITE_HOME, sqliteHome);
       assert.equal(spec.env.CUSTOM_PROVIDER_API_KEY, 'test-secret');
     } finally {
       if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
       if (typeof prevCodexHome === 'string') process.env.CODEX_HOME = prevCodexHome;
       else delete process.env.CODEX_HOME;
+      if (typeof prevSqliteHome === 'string') process.env.CODEX_SQLITE_HOME = prevSqliteHome;
+      else delete process.env.CODEX_SQLITE_HOME;
       if (typeof prevProviderEnv === 'string') process.env.CUSTOM_PROVIDER_API_KEY = prevProviderEnv;
       else delete process.env.CUSTOM_PROVIDER_API_KEY;
       await rm(codexHome, { recursive: true, force: true });
+      await rm(sqliteHome, { recursive: true, force: true });
     }
   });
 
