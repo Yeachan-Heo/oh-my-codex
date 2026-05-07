@@ -258,12 +258,22 @@ describe('Team Exec Stage', () => {
       assert.equal(result.status, 'completed');
       const descriptor = (result.artifacts as Record<string, unknown>).teamDescriptor as Record<string, unknown>;
       const instruction = (result.artifacts as Record<string, unknown>).instruction as string;
+      const runtimeCliInput = decodeRuntimeCliInstructionPayload(instruction);
       assert.equal(descriptor.task, 'Execute zeta handoff');
+      assert.deepEqual(descriptor.approvedExecution, {
+        prd_path: approvedPrdPath,
+        task: 'Execute zeta handoff',
+        command: 'omx team 5:debugger "Execute zeta handoff"',
+      });
       assert.match(instruction, /Execute zeta handoff/);
       assert.doesNotMatch(instruction, /plan-content/);
       assert.ok(Array.isArray(descriptor.availableAgentTypes));
       assert.ok((descriptor.availableAgentTypes as unknown[]).length > 0);
       assert.equal(typeof (descriptor.staffingPlan as Record<string, unknown>).staffingSummary, 'string');
+      assert.equal(runtimeCliInput.task, 'Execute zeta handoff');
+      assert.deepEqual(runtimeCliInput.approvedExecution, descriptor.approvedExecution);
+      assert.equal(runtimeCliInput.workerCount, 2);
+      assert.equal(runtimeCliInput.agentType, 'executor');
     } finally {
       process.chdir(previousCwd);
     }
@@ -514,9 +524,13 @@ describe('Team Exec Stage', () => {
     assert.equal(result.status, 'completed');
     const descriptor = (result.artifacts as Record<string, unknown>).teamDescriptor as Record<string, unknown>;
     const instruction = (result.artifacts as Record<string, unknown>).instruction as string;
+    const runtimeCliInput = decodeRuntimeCliInstructionPayload(instruction);
     assert.equal(descriptor.task, 'structural pipeline task');
+    assert.equal(descriptor.approvedExecution, null);
     assert.match(instruction, /structural pipeline task/);
     assert.doesNotMatch(instruction, /plan-content/);
+    assert.equal(runtimeCliInput.task, 'structural pipeline task');
+    assert.equal(runtimeCliInput.approvedExecution, null);
   });
 
   it('does not adopt a pre-existing approved plan when latestPlanPath is absent', async () => {
@@ -545,9 +559,13 @@ describe('Team Exec Stage', () => {
     assert.equal(result.status, 'completed');
     const descriptor = (result.artifacts as Record<string, unknown>).teamDescriptor as Record<string, unknown>;
     const instruction = (result.artifacts as Record<string, unknown>).instruction as string;
+    const runtimeCliInput = decodeRuntimeCliInstructionPayload(instruction);
     assert.equal(descriptor.task, 'generic pipeline task');
+    assert.equal(descriptor.approvedExecution, null);
     assert.match(instruction, /generic pipeline task/);
     assert.doesNotMatch(instruction, /Execute zeta handoff/);
+    assert.equal(runtimeCliInput.task, 'generic pipeline task');
+    assert.equal(runtimeCliInput.approvedExecution, null);
   });
 
   it('fails closed when latestPlanPath has no team launch hint', async () => {
@@ -625,6 +643,7 @@ describe('Team Exec Stage', () => {
         staffingPlan,
         useWorktrees: false,
         cwd: '/tmp/test',
+        approvedExecution: null,
       });
       const runtimeCliInput = decodeRuntimeCliInstructionPayload(instruction);
 
@@ -645,7 +664,8 @@ describe('Team Exec Stage', () => {
       assert.equal(runtimeCliInput.cwd, '/tmp/test');
       assert.ok(Array.isArray(runtimeCliInput.tasks));
       assert.equal((runtimeCliInput.tasks as unknown[]).length > 0, true);
-      assert.equal('task' in runtimeCliInput, false);
+      assert.equal(runtimeCliInput.task, 'implement feature');
+      assert.equal(runtimeCliInput.approvedExecution, null);
       assert.equal('useWorktrees' in runtimeCliInput, false);
       assert.equal(
         (runtimeCliInput.decompositionMetadata as Record<string, unknown>).decomposition_source,
@@ -668,11 +688,14 @@ describe('Team Exec Stage', () => {
         staffingPlan,
         useWorktrees: false,
         cwd: '/tmp',
+        approvedExecution: null,
       });
       const runtimeCliInput = decodeRuntimeCliInstructionPayload(instruction);
 
       assert.match(instruction, /runtime-cli\.js/);
       assert.match(instruction, /--input-json-base64/);
+      assert.equal(runtimeCliInput.task, longTask);
+      assert.equal(runtimeCliInput.approvedExecution, null);
       assert.equal(runtimeCliInput.workerCount, 1);
       assert.equal(runtimeCliInput.agentType, 'executor');
       assert.match(instruction, /staffing=/);
@@ -691,6 +714,7 @@ describe('Team Exec Stage', () => {
         staffingPlan,
         useWorktrees: false,
         cwd: 'C:\\repo with spaces',
+        approvedExecution: null,
       }, { platform: 'win32' });
       const runtimeCliInput = decodeRuntimeCliInstructionPayload(instruction);
       const commandPrefix = instruction.split('--input-json-base64')[0] ?? '';
@@ -701,6 +725,8 @@ describe('Team Exec Stage', () => {
       assert.doesNotMatch(encodedPayload, /[%&|<>"'\s]/);
       assert.doesNotMatch(instruction, /# staffing=/);
       assert.doesNotMatch(instruction, /# verify=/);
+      assert.equal(runtimeCliInput.task, task);
+      assert.equal(runtimeCliInput.approvedExecution, null);
       assert.equal(runtimeCliInput.workerCount, 1);
       assert.equal(runtimeCliInput.agentType, 'executor');
       assert.equal('agentTypes' in runtimeCliInput, false);
@@ -749,12 +775,15 @@ describe('Team Exec Stage', () => {
         staffingPlan,
         useWorktrees: false,
         cwd: tempDir,
+        approvedExecution: null,
       });
       const runtimeCliInput = decodeRuntimeCliInstructionPayload(instruction);
       const tasks = runtimeCliInput.tasks as Array<Record<string, unknown>>;
       const decompositionMetadata = runtimeCliInput.decompositionMetadata as Record<string, unknown>;
 
       assert.equal(runtimeCliInput.teamName, 'execute-approved-demo-plan');
+      assert.equal(runtimeCliInput.task, 'Execute approved demo plan');
+      assert.equal(runtimeCliInput.approvedExecution, null);
       assert.equal(runtimeCliInput.workerCount, 2);
       assert.equal(runtimeCliInput.agentType, 'executor');
       assert.equal(tasks.length, 2);

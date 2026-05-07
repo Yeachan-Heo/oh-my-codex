@@ -13,6 +13,7 @@ import { writeFile, rename } from 'fs/promises';
 import { join } from 'path';
 import { startTeam, monitorTeam, shutdownTeam } from './runtime.js';
 import type { TeamRuntime, TeamShutdownSummary, StaleTeamSummary } from './runtime.js';
+import type { ApprovedTeamExecutionBinding } from './approved-execution.js';
 import type { TeamDecompositionMetadata } from './repo-aware-decomposition.js';
 import { teamReadConfig as readTeamConfig } from './team-ops.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
@@ -39,6 +40,7 @@ async function promptStaleCleanup(summary: StaleTeamSummary): Promise<boolean> {
 
 interface CliInput {
   teamName: string;
+  task?: string;
   workerCount?: number;
   agentType?: string;
   agentTypes?: string[];
@@ -58,6 +60,7 @@ interface CliInput {
     symbolic_id?: string;
   }>;
   cwd: string;
+  approvedExecution?: ApprovedTeamExecutionBinding | null;
   pollIntervalMs?: number;
   decompositionMetadata?: TeamDecompositionMetadata;
 }
@@ -248,6 +251,14 @@ export function resolveRuntimeCliMissingFields(input: Partial<CliInput>): string
   return missing;
 }
 
+export function resolveRuntimeCliTask(input: Pick<CliInput, 'task' | 'tasks'>): string {
+  const explicitTask = typeof input.task === 'string' ? input.task.trim() : '';
+  if (explicitTask !== '') {
+    return explicitTask;
+  }
+  return input.tasks.map((task) => task.subject).join('; ');
+}
+
 export function resolveRuntimeCliInlineInput(argv: readonly string[]): string | null {
   const index = argv.indexOf(RUNTIME_CLI_INPUT_JSON_FLAG);
   if (index !== -1) {
@@ -379,6 +390,7 @@ async function main(): Promise<void> {
 
   // Start the team — OMX's startTeam takes individual parameters
   const agentType = resolveRuntimeCliAgentType(rawAgentType);
+  const task = resolveRuntimeCliTask(input);
   try {
     const providerMap = resolveRuntimeCliProviderMap(agentTypes, workerCount);
     const previousCliMap = process.env.OMX_TEAM_WORKER_CLI_MAP;
@@ -388,7 +400,7 @@ async function main(): Promise<void> {
       }
       runtime = await startTeam(
         teamName,
-        tasks.map(t => t.subject).join('; '),
+        task,
         agentType,
         workerCount,
         tasks,
@@ -396,6 +408,9 @@ async function main(): Promise<void> {
         {
           codexHomeOverride: resolveCodexHomeForLaunch(cwd, process.env),
           confirmStaleCleanup: promptStaleCleanup,
+          ...(Object.prototype.hasOwnProperty.call(input, 'approvedExecution')
+            ? { approvedExecution: input.approvedExecution ?? null }
+            : {}),
           ...(decompositionMetadata ? { decompositionMetadata } : {}),
         },
       );

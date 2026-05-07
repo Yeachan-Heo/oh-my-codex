@@ -88,6 +88,30 @@ describe('runtime-cli helpers', () => {
     );
   });
 
+  it('prefers the explicit task transport over joined subtask subjects and falls back when absent', async () => {
+    const runtimeCli = await loadRuntimeCliModule();
+
+    assert.equal(
+      runtimeCli.resolveRuntimeCliTask({
+        task: 'Execute approved demo plan',
+        tasks: [
+          { subject: 'Implement runtime', description: 'Change runtime' },
+          { subject: 'Verify runtime', description: 'Cover runtime' },
+        ],
+      }),
+      'Execute approved demo plan',
+    );
+    assert.equal(
+      runtimeCli.resolveRuntimeCliTask({
+        tasks: [
+          { subject: 'Implement runtime', description: 'Change runtime' },
+          { subject: 'Verify runtime', description: 'Cover runtime' },
+        ],
+      }),
+      'Implement runtime; Verify runtime',
+    );
+  });
+
   it('refreshes pane targets from live team config after scale changes', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-cli-live-'));
     try {
