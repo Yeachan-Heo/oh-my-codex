@@ -63,7 +63,7 @@ describe('config generator', () => {
       const toml = await readFile(configPath, 'utf-8');
 
       assert.match(toml, /^notify = \["node", ".*notify-hook\.js"\]$/m);
-      assert.match(toml, /^codex_hooks = true$/m);
+      assert.match(toml, /^hooks = true$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -183,7 +183,7 @@ describe('config generator', () => {
 
       // Top-level keys present and before [features]
       assert.match(rerun, /^notify = \["node", ".*notify-hook\.js"\]$/m);
-      assert.match(rerun, /^codex_hooks = true$/m);
+      assert.match(rerun, /^hooks = true$/m);
       assert.match(rerun, /^model_reasoning_effort = "medium"$/m);
       const notifyIdx = rerun.indexOf('notify =');
       const featuresIdx = rerun.indexOf('[features]');
@@ -376,10 +376,34 @@ describe('config generator', () => {
       assert.match(merged, /^custom_user_flag = false$/m);
       assert.match(merged, /^multi_agent = true$/m);
       assert.match(merged, /^child_agents_md = true$/m);
+      assert.match(merged, /^hooks = true$/m);
       assert.match(merged, /^goals = true$/m);
       assert.doesNotMatch(merged, /^goal\s*=/m);
       assert.match(merged, /^\[user.settings\]$/m);
       assert.match(merged, /^name = "kept"$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('migrates deprecated codex_hooks flag to hooks', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
+    try {
+      const configPath = join(wd, 'config.toml');
+      const original = [
+        '[features]',
+        'custom_user_flag = false',
+        'codex_hooks = true',
+        '',
+      ].join('\n');
+      await writeFile(configPath, original);
+
+      await mergeConfig(configPath, wd);
+      const merged = await readFile(configPath, 'utf-8');
+
+      assert.match(merged, /^hooks = true$/m);
+      assert.doesNotMatch(merged, /^codex_hooks\s*=/m);
+      assert.match(merged, /^custom_user_flag = false$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

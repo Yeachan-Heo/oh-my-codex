@@ -49,7 +49,7 @@ function buildOmxConfig(): string {
     '[features]',
     'multi_agent = true',
     'child_agents_md = true',
-    'codex_hooks = true',
+    'hooks = true',
     'goals = true',
     '',
     '# ============================================================',
@@ -123,7 +123,7 @@ function buildConfigWithSeededModelContext(): string {
     '[features]',
     'multi_agent = true',
     'child_agents_md = true',
-    'codex_hooks = true',
+    'hooks = true',
     'goals = true',
     '',
     '# ============================================================',
@@ -157,7 +157,7 @@ function buildConfigWithEditedSeededModelContext(): string {
     '[features]',
     'multi_agent = true',
     'child_agents_md = true',
-    'codex_hooks = true',
+    'hooks = true',
     'goals = true',
     '',
     '# ============================================================',
@@ -189,7 +189,7 @@ function buildMixedConfig(): string {
     '[features]',
     'multi_agent = true',
     'child_agents_md = true',
-    'codex_hooks = true',
+    'hooks = true',
     'goals = true',
     'web_search = true',
     '',
@@ -301,7 +301,7 @@ describe('omx uninstall', () => {
       assert.doesNotMatch(config, /developer_instructions\s*=/);
       assert.doesNotMatch(config, /multi_agent\s*=/);
       assert.doesNotMatch(config, /child_agents_md\s*=/);
-      assert.doesNotMatch(config, /codex_hooks\s*=/);
+      assert.doesNotMatch(config, /^hooks\s*=/m);
       assert.equal(existsSync(join(codexDir, 'hooks.json')), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -332,7 +332,7 @@ describe('omx uninstall', () => {
       assert.doesNotMatch(config, /notify\s*=.*node/);
       assert.doesNotMatch(config, /multi_agent/);
       assert.doesNotMatch(config, /child_agents_md/);
-      assert.doesNotMatch(config, /codex_hooks/);
+      assert.doesNotMatch(config, /^hooks\s*=/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -793,6 +793,8 @@ describe('stripOmxFeatureFlags', () => {
       '[features]',
       'multi_agent = true',
       'child_agents_md = true',
+      'hooks = true',
+      'codex_hooks = true',
       'goals = true',
       'goal = true',
       'web_search = true',
@@ -802,6 +804,8 @@ describe('stripOmxFeatureFlags', () => {
     const result = stripOmxFeatureFlags(config);
     assert.doesNotMatch(result, /multi_agent/);
     assert.doesNotMatch(result, /child_agents_md/);
+    assert.doesNotMatch(result, /^hooks\s*=/m);
+    assert.doesNotMatch(result, /^codex_hooks\s*=/m);
     assert.doesNotMatch(result, /^goals\s*=/m);
     assert.doesNotMatch(result, /^goal\s*=/m);
     assert.match(result, /web_search = true/);

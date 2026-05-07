@@ -204,7 +204,7 @@ command = "node"
 				JSON.stringify({ scope: "user", installMode: "plugin" }, null, 2) +
 					"\n",
 			);
-			await writeFile(join(codexDir, "config.toml"), "codex_hooks = true\n");
+			await writeFile(join(codexDir, "config.toml"), "hooks = true\n");
 
 			const res = runOmx(wd, ["doctor"], {
 				HOME: home,
