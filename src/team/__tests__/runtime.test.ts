@@ -6017,6 +6017,37 @@ esac
     }
   });
 
+  it('resumeTeam fails closed when the persisted approved binding is ambiguous', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-resume-ambiguous-'));
+    const approvedTask = 'Execute approved issue 2111 plan';
+    try {
+      await initTeamState('team-approved-resume', 'approved resume test', 'executor', 1, cwd);
+      await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
+      const prdPath = join(cwd, '.omx', 'plans', 'prd-issue-2111.md');
+      await writeFile(
+        prdPath,
+        [
+          '# Approved plan',
+          '',
+          `Launch via omx team 2:executor "${approvedTask}"`,
+          `Launch via omx team 5:debugger "${approvedTask}"`,
+        ].join('\n'),
+      );
+      await writeFile(join(cwd, '.omx', 'plans', 'test-spec-issue-2111.md'), '# Test spec\n');
+      await writePersistedApprovedTeamExecutionBinding('team-approved-resume', cwd, {
+        prd_path: prdPath,
+        task: approvedTask,
+      });
+
+      await assert.rejects(
+        () => resumeTeam('team-approved-resume', cwd),
+        /approved_execution_binding_ambiguous:.*Execute approved issue 2111 plan/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('resumeTeam resolves approved binding continuity against the persisted leader cwd', async () => {
     const teamName = 'team-approved-shared-root';
     const leaderCwd = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-leader-'));
@@ -6390,6 +6421,60 @@ esac
       );
       assert.equal(
         existsSync(join(cwd, '.omx', 'state', 'team', 'team-approved-binding-stale')),
+        false,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('startTeam fails closed when an explicit approved execution binding is ambiguous', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-binding-ambiguous-'));
+    const binDir = join(cwd, 'bin');
+    const fakeCodexPath = join(binDir, 'codex');
+    const approvedTask = 'Execute approved issue 1316 plan';
+    await mkdir(binDir, { recursive: true });
+    await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
+    const prdPath = join(cwd, '.omx', 'plans', 'prd-issue-1316.md');
+    await writeFile(
+      prdPath,
+      [
+        '# Approved plan',
+        '',
+        `Launch via omx team 2:executor "${approvedTask}"`,
+        `Launch via omx team 5:debugger "${approvedTask}"`,
+      ].join('\n'),
+    );
+    await writeFile(join(cwd, '.omx', 'plans', 'test-spec-issue-1316.md'), '# Test spec\n');
+    await writeFakePromptWorkerBinary(
+      fakeCodexPath,
+      `setTimeout(() => {}, 5000);`,
+    );
+
+    try {
+      await assert.rejects(
+        () => withPromptModeCodexEnv(binDir, {}, () =>
+          withoutTeamWorkerEnv(() =>
+            startTeam(
+              'team-approved-binding-ambiguous',
+              'approved binding ambiguous start test',
+              'executor',
+              1,
+              [{ subject: 's', description: 'd', owner: 'worker-1' }],
+              cwd,
+              {
+                approvedExecution: {
+                  prd_path: prdPath,
+                  task: approvedTask,
+                },
+              },
+            ),
+          ),
+        ),
+        /approved_execution_binding_ambiguous:.*Execute approved issue 1316 plan/,
+      );
+      assert.equal(
+        existsSync(join(cwd, '.omx', 'state', 'team', 'team-approved-binding-ambiguous')),
         false,
       );
     } finally {

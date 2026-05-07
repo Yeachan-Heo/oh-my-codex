@@ -102,6 +102,91 @@ describe('approved execution binding', () => {
     });
   });
 
+  it('reports an ambiguous continuity state when a task-only binding matches multiple team launch hints', async () => {
+    await withUnboxedOmxRoot(async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-approved-execution-ambiguous-'));
+      const stateRoot = join(cwd, '.omx', 'state');
+      const approvedTask = 'Execute approved issue 1316 plan';
+      try {
+        const plansDir = join(cwd, '.omx', 'plans');
+        await mkdir(plansDir, { recursive: true });
+        const prdPath = join(plansDir, 'prd-issue-1316.md');
+        await writeFile(
+          prdPath,
+          [
+            '# Approved plan',
+            '',
+            `Launch via omx team 2:executor "${approvedTask}"`,
+            `Launch via omx team 5:debugger "${approvedTask}"`,
+          ].join('\n'),
+        );
+        await writeFile(join(plansDir, 'test-spec-issue-1316.md'), '# Test spec\n');
+        await writePersistedApprovedTeamExecutionBinding('bound-team', cwd, {
+          prd_path: prdPath,
+          task: approvedTask,
+        }, stateRoot);
+
+        const state = await resolvePersistedApprovedTeamExecutionContinuityState(
+          'bound-team',
+          cwd,
+          stateRoot,
+        );
+        assert.equal(state.status, 'ambiguous');
+        if (state.status !== 'ambiguous') {
+          throw new Error('expected ambiguous continuity state');
+        }
+        assert.equal(state.binding.prd_path, prdPath);
+        assert.equal(state.binding.task, approvedTask);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('keeps an exact-command binding valid when the task text alone would be ambiguous', async () => {
+    await withUnboxedOmxRoot(async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-approved-execution-command-'));
+      const stateRoot = join(cwd, '.omx', 'state');
+      const approvedTask = 'Execute approved issue 1317 plan';
+      const exactCommand = `omx team 2:executor "${approvedTask}"`;
+      try {
+        const plansDir = join(cwd, '.omx', 'plans');
+        await mkdir(plansDir, { recursive: true });
+        const prdPath = join(plansDir, 'prd-issue-1317.md');
+        await writeFile(
+          prdPath,
+          [
+            '# Approved plan',
+            '',
+            `Launch via ${exactCommand}`,
+            `Launch via omx team 5:debugger "${approvedTask}"`,
+          ].join('\n'),
+        );
+        await writeFile(join(plansDir, 'test-spec-issue-1317.md'), '# Test spec\n');
+        await writePersistedApprovedTeamExecutionBinding('bound-team', cwd, {
+          prd_path: prdPath,
+          task: approvedTask,
+          command: exactCommand,
+        }, stateRoot);
+
+        const state = await resolvePersistedApprovedTeamExecutionContinuityState(
+          'bound-team',
+          cwd,
+          stateRoot,
+        );
+        assert.equal(state.status, 'valid');
+        if (state.status !== 'valid') {
+          throw new Error('expected valid continuity state');
+        }
+        assert.equal(state.approvedHint.command, exactCommand);
+        assert.equal(state.approvedHint.workerCount, 2);
+        assert.equal(state.approvedHint.agentType, 'executor');
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('reports malformed and stale binding states explicitly', async () => {
     await withUnboxedOmxRoot(async () => {
       const cwd = await mkdtemp(join(tmpdir(), 'omx-approved-execution-invalid-'));

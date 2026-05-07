@@ -135,7 +135,7 @@ import { readModeState, updateModeState } from '../modes/base.js';
 import {
   buildApprovedTeamExecutionBinding,
   normalizeApprovedTeamExecutionBinding,
-  readApprovedTeamExecutionHintFromBinding,
+  readApprovedTeamExecutionHintOutcomeFromBinding,
   resolvePersistedApprovedTeamExecutionContinuityState,
   writePersistedApprovedTeamExecutionBinding,
   type ApprovedTeamExecutionBinding,
@@ -2257,8 +2257,16 @@ export async function startTeam(
 
   const teamStateRoot = resolveCanonicalTeamStateRoot(leaderCwd);
   const requestedApprovedExecution = normalizeApprovedTeamExecutionBinding(options.approvedExecution);
-  const selectedApprovedExecutionHint = requestedApprovedExecution
-    ? readApprovedTeamExecutionHintFromBinding(leaderCwd, requestedApprovedExecution)
+  const requestedApprovedExecutionOutcome = requestedApprovedExecution
+    ? readApprovedTeamExecutionHintOutcomeFromBinding(leaderCwd, requestedApprovedExecution)
+    : null;
+  if (requestedApprovedExecution && requestedApprovedExecutionOutcome?.status === 'ambiguous') {
+    throw new Error(
+      `approved_execution_binding_ambiguous:${requestedApprovedExecution.prd_path}:${requestedApprovedExecution.task}`,
+    );
+  }
+  const selectedApprovedExecutionHint = requestedApprovedExecutionOutcome?.status === 'resolved'
+    ? requestedApprovedExecutionOutcome.approvedHint
     : null;
   if (requestedApprovedExecution && !selectedApprovedExecutionHint) {
     throw new Error(
@@ -3754,6 +3762,11 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
   );
   if (approvedExecutionState.status === 'malformed') {
     throw new Error(`approved_execution_binding_malformed:${sanitized}`);
+  }
+  if (approvedExecutionState.status === 'ambiguous') {
+    throw new Error(
+      `approved_execution_binding_ambiguous:${approvedExecutionState.binding.prd_path}:${approvedExecutionState.binding.task}`,
+    );
   }
   if (approvedExecutionState.status === 'stale') {
     throw new Error(

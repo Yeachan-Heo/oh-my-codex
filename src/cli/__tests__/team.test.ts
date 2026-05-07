@@ -518,6 +518,50 @@ describe('parseTeamStartArgs', () => {
     }
   });
 
+  it('fails closed for a short follow-up when the persisted approved binding is ambiguous', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-followup-bound-ambiguous-'));
+    const previousCwd = process.cwd();
+    const approvedTask = 'Execute approved issue 956 plan';
+    try {
+      process.chdir(wd);
+      const plansDir = join(wd, '.omx', 'plans');
+      const stateDir = join(wd, '.omx', 'state');
+      await mkdir(plansDir, { recursive: true });
+      await writeFile(
+        join(plansDir, 'prd-issue-956.md'),
+        [
+          '# Approved plan',
+          '',
+          `Launch via omx team 4:executor "${approvedTask}"`,
+          `Launch via omx team 6:debugger "${approvedTask}"`,
+        ].join('\n'),
+      );
+      await writeFile(join(plansDir, 'test-spec-issue-956.md'), '# Test spec\n');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        join(stateDir, 'team-state.json'),
+        JSON.stringify({
+          active: true,
+          team_name: 'bound-team-ambiguous',
+          task_description: approvedTask,
+          agent_count: 4,
+        }, null, 2),
+      );
+      await writePersistedApprovedTeamExecutionBinding('bound-team-ambiguous', wd, {
+        prd_path: join(plansDir, 'prd-issue-956.md'),
+        task: approvedTask,
+      });
+
+      assert.throws(
+        () => parseTeamStartArgs(['team']),
+        /approved_execution_binding_ambiguous:.*Execute approved issue 956 plan/,
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed for a short team follow-up when the selected PRD lists multiple team launch hints', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-followup-ambiguous-'));
     const previousCwd = process.cwd();

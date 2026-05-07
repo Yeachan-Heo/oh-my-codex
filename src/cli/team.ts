@@ -181,6 +181,11 @@ function resolveApprovedTeamFollowupContext(cwd: string, task: string): TeamFoll
     if (continuity.status === 'malformed') {
       throw new Error(`approved_execution_binding_malformed:${persistedTeamName}`);
     }
+    if (continuity.status === 'ambiguous') {
+      throw new Error(
+        `approved_execution_binding_ambiguous:${continuity.binding.prd_path}:${continuity.binding.task}`,
+      );
+    }
     if (continuity.status === 'stale') {
       throw new Error(`approved_execution_binding_stale:${continuity.binding.prd_path}:${continuity.binding.task}`);
     }

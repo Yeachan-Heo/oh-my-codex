@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import {
-  readApprovedExecutionLaunchHint,
+  readApprovedExecutionLaunchHintOutcome,
   readPlanningArtifacts,
   type ApprovedExecutionLaunchHint,
 } from '../planning/artifacts.js';
@@ -25,7 +25,13 @@ export type PersistedApprovedTeamExecutionContinuityState =
   | { status: 'missing' }
   | { status: 'malformed' }
   | { status: 'stale'; binding: ApprovedTeamExecutionBinding }
+  | { status: 'ambiguous'; binding: ApprovedTeamExecutionBinding }
   | { status: 'valid'; binding: ApprovedTeamExecutionBinding; approvedHint: ApprovedExecutionLaunchHint };
+
+type ApprovedTeamExecutionHintBindingOutcome =
+  | { status: 'resolved'; approvedHint: ApprovedExecutionLaunchHint }
+  | { status: 'stale' }
+  | { status: 'ambiguous' };
 
 export function normalizeApprovedTeamExecutionBinding(
   value: unknown,
@@ -155,35 +161,54 @@ export async function writePersistedApprovedTeamExecutionBinding(
   await writeFile(path, `${JSON.stringify(normalized, null, 2)}\n`, 'utf-8');
 }
 
-export function readApprovedTeamExecutionHintFromBinding(
+function readApprovedTeamExecutionHintOutcomeForPrdPath(
+  cwd: string,
+  binding: ApprovedTeamExecutionBinding,
+  prdPath: string,
+): ApprovedTeamExecutionHintBindingOutcome {
+  const outcome = readApprovedExecutionLaunchHintOutcome(cwd, 'team', {
+    prdPath,
+    task: binding.task,
+    command: binding.command,
+  });
+  if (outcome.status === 'resolved') {
+    return { status: 'resolved', approvedHint: outcome.hint };
+  }
+  if (outcome.status === 'ambiguous') {
+    return { status: 'ambiguous' };
+  }
+  return { status: 'stale' };
+}
+
+export function readApprovedTeamExecutionHintOutcomeFromBinding(
   cwd: string,
   binding: ApprovedTeamExecutionBinding | null | undefined,
-): ApprovedExecutionLaunchHint | null {
+): ApprovedTeamExecutionHintBindingOutcome | null {
   const normalized = normalizeApprovedTeamExecutionBinding(binding);
   if (!normalized) {
     return null;
   }
 
-  const direct = readApprovedExecutionLaunchHint(cwd, 'team', {
-    prdPath: normalized.prd_path,
-    task: normalized.task,
-    command: normalized.command,
-  });
-  if (direct) {
+  const direct = readApprovedTeamExecutionHintOutcomeForPrdPath(cwd, normalized, normalized.prd_path);
+  if (direct.status !== 'stale') {
     return direct;
   }
 
   const matchedPrdPath = readPlanningArtifacts(cwd).prdPaths.find((candidatePath) =>
     sameFilePath(candidatePath, normalized.prd_path));
   if (!matchedPrdPath || matchedPrdPath === normalized.prd_path) {
-    return null;
+    return direct;
   }
 
-  return readApprovedExecutionLaunchHint(cwd, 'team', {
-    prdPath: matchedPrdPath,
-    task: normalized.task,
-    command: normalized.command,
-  });
+  return readApprovedTeamExecutionHintOutcomeForPrdPath(cwd, normalized, matchedPrdPath);
+}
+
+export function readApprovedTeamExecutionHintFromBinding(
+  cwd: string,
+  binding: ApprovedTeamExecutionBinding | null | undefined,
+): ApprovedExecutionLaunchHint | null {
+  const outcome = readApprovedTeamExecutionHintOutcomeFromBinding(cwd, binding);
+  return outcome?.status === 'resolved' ? outcome.approvedHint : null;
 }
 
 export async function resolvePersistedApprovedTeamExecutionContinuityState(
@@ -196,10 +221,14 @@ export async function resolvePersistedApprovedTeamExecutionContinuityState(
     return state;
   }
 
-  const approvedHint = readApprovedTeamExecutionHintFromBinding(cwd, state.binding);
-  return approvedHint
-    ? { status: 'valid', binding: state.binding, approvedHint }
-    : { status: 'stale', binding: state.binding };
+  const approvedHintOutcome = readApprovedTeamExecutionHintOutcomeFromBinding(cwd, state.binding);
+  if (!approvedHintOutcome || approvedHintOutcome.status === 'stale') {
+    return { status: 'stale', binding: state.binding };
+  }
+  if (approvedHintOutcome.status === 'ambiguous') {
+    return { status: 'ambiguous', binding: state.binding };
+  }
+  return { status: 'valid', binding: state.binding, approvedHint: approvedHintOutcome.approvedHint };
 }
 
 export function resolvePersistedApprovedTeamExecutionContinuityStateSync(
@@ -212,8 +241,12 @@ export function resolvePersistedApprovedTeamExecutionContinuityStateSync(
     return state;
   }
 
-  const approvedHint = readApprovedTeamExecutionHintFromBinding(cwd, state.binding);
-  return approvedHint
-    ? { status: 'valid', binding: state.binding, approvedHint }
-    : { status: 'stale', binding: state.binding };
+  const approvedHintOutcome = readApprovedTeamExecutionHintOutcomeFromBinding(cwd, state.binding);
+  if (!approvedHintOutcome || approvedHintOutcome.status === 'stale') {
+    return { status: 'stale', binding: state.binding };
+  }
+  if (approvedHintOutcome.status === 'ambiguous') {
+    return { status: 'ambiguous', binding: state.binding };
+  }
+  return { status: 'valid', binding: state.binding, approvedHint: approvedHintOutcome.approvedHint };
 }
