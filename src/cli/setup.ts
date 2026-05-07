@@ -828,15 +828,55 @@ async function readPluginManifestName(
 	}
 }
 
-async function discoverOmxPluginCacheDir(
+interface OmxPluginCacheManifest {
+	name: string | null;
+	version: string | null;
+	skills: string | null;
+}
+
+async function readPluginManifestSummary(
+	manifestPath: string,
+): Promise<OmxPluginCacheManifest | null> {
+	try {
+		const parsed = JSON.parse(await readFile(manifestPath, "utf-8")) as unknown;
+		if (typeof parsed !== "object" || parsed === null) return null;
+		const manifest = parsed as {
+			name?: unknown;
+			version?: unknown;
+			skills?: unknown;
+		};
+		return {
+			name: typeof manifest.name === "string" ? manifest.name : null,
+			version: typeof manifest.version === "string" ? manifest.version : null,
+			skills: typeof manifest.skills === "string" ? manifest.skills : null,
+		};
+	} catch {
+		return null;
+	}
+}
+
+async function listChildDirectoryNames(dir: string): Promise<string[] | null> {
+	try {
+		const entries = await readdir(dir, { withFileTypes: true });
+		return entries
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => entry.name)
+			.sort();
+	} catch {
+		return null;
+	}
+}
+
+async function discoverOmxPluginCacheDirs(
 	cacheRoot = join(codexHome(), "plugins", "cache"),
-): Promise<string | null> {
-	if (!existsSync(cacheRoot)) return null;
+): Promise<string[]> {
+	if (!existsSync(cacheRoot)) return [];
 
 	const queue: Array<{ path: string; depth: number }> = [
 		{ path: cacheRoot, depth: 0 },
 	];
 	const maxDepth = 5;
+	const matches: string[] = [];
 
 	while (queue.length > 0) {
 		const current = queue.shift();
@@ -846,7 +886,8 @@ async function discoverOmxPluginCacheDir(
 		if (existsSync(manifestPath)) {
 			const name = await readPluginManifestName(manifestPath);
 			if (name === "oh-my-codex") {
-				return current.path;
+				matches.push(current.path);
+				continue;
 			}
 		}
 
@@ -869,7 +910,80 @@ async function discoverOmxPluginCacheDir(
 		}
 	}
 
-	return null;
+	return matches.sort();
+}
+
+async function discoverOmxPluginCacheDir(
+	cacheRoot = join(codexHome(), "plugins", "cache"),
+): Promise<string | null> {
+	return (await discoverOmxPluginCacheDirs(cacheRoot))[0] ?? null;
+}
+
+interface PluginDiscoveryCacheRefreshResult {
+	status: "unavailable" | "unchanged" | "refreshed";
+	staleDirs: string[];
+}
+
+async function refreshOmxPluginDiscoveryCache(
+	pkgRoot: string,
+	options: Pick<SetupOptions, "dryRun" | "verbose">,
+): Promise<PluginDiscoveryCacheRefreshResult> {
+	const packagedMarketplace = await resolvePackagedOmxMarketplace(pkgRoot);
+	if (!packagedMarketplace) {
+		return { status: "unavailable", staleDirs: [] };
+	}
+
+	const [pkg, expectedSkillNames, cachedDirs] = await Promise.all([
+		readFile(join(pkgRoot, "package.json"), "utf-8").then((raw) =>
+			JSON.parse(raw) as { version?: unknown },
+		),
+		listChildDirectoryNames(join(packagedMarketplace.pluginRoot, "skills")),
+		discoverOmxPluginCacheDirs(),
+	]);
+	const expectedVersion = typeof pkg.version === "string" ? pkg.version : null;
+	const staleDirs: string[] = [];
+
+	for (const cacheDir of cachedDirs) {
+		const manifest = await readPluginManifestSummary(
+			join(cacheDir, ".codex-plugin", "plugin.json"),
+		);
+		if (manifest?.name !== "oh-my-codex") continue;
+
+		const cachedSkillNames = await listChildDirectoryNames(join(cacheDir, "skills"));
+		const versionChanged =
+			expectedVersion !== null && manifest.version !== expectedVersion;
+		const skillsPointerChanged = manifest.skills !== "./skills/";
+		const skillListChanged =
+			expectedSkillNames !== null &&
+			cachedSkillNames !== null &&
+			JSON.stringify(cachedSkillNames) !== JSON.stringify(expectedSkillNames);
+
+		if (!versionChanged && !skillsPointerChanged && !skillListChanged) continue;
+
+		staleDirs.push(cacheDir);
+		if (!options.dryRun) {
+			await rm(cacheDir, { recursive: true, force: true });
+		}
+		if (options.verbose) {
+			const reasons = [
+				versionChanged
+					? `version ${manifest.version ?? "unknown"} -> ${expectedVersion}`
+					: null,
+				skillsPointerChanged
+					? `skills pointer ${manifest.skills ?? "missing"} -> ./skills/`
+					: null,
+				skillListChanged ? "skill directory list changed" : null,
+			].filter(Boolean);
+			console.log(
+				`  ${options.dryRun ? "would invalidate" : "invalidated"} Codex plugin discovery cache ${cacheDir} (${reasons.join(", ")})`,
+			);
+		}
+	}
+
+	return {
+		status: staleDirs.length > 0 ? "refreshed" : "unchanged",
+		staleDirs,
+	};
 }
 
 async function resolveSetupInstallMode(
@@ -1789,6 +1903,17 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			console.log(
 				`  Local Codex plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} already registered (${pkgRoot}).`,
 			);
+		}
+		const pluginCacheRefresh = await refreshOmxPluginDiscoveryCache(pkgRoot, {
+			dryRun,
+			verbose,
+		});
+		if (pluginCacheRefresh.status === "refreshed") {
+			console.log(
+				`  ${dryRun ? "Would invalidate" : "Invalidated"} ${pluginCacheRefresh.staleDirs.length} stale Codex plugin discovery cache entr${pluginCacheRefresh.staleDirs.length === 1 ? "y" : "ies"} so plugin skills refresh from the packaged manifest.`,
+			);
+		} else if (pluginCacheRefresh.status === "unchanged") {
+			console.log("  Codex plugin discovery cache already matches packaged plugin metadata.");
 		}
 			resolvedConfig = existsSync(scopeDirs.codexConfigFile)
 				? await readFile(scopeDirs.codexConfigFile, "utf-8")

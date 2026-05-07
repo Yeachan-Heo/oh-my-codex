@@ -158,6 +158,28 @@ async function seedPluginCacheFromInstalledSkills(
 	);
 }
 
+async function seedStalePluginDiscoveryCache(codexHomeDir: string): Promise<string> {
+	const artifactPath = join(
+		codexHomeDir,
+		"plugins",
+		"cache",
+		"oh-my-codex-local",
+		"oh-my-codex",
+	);
+	await mkdir(join(artifactPath, ".codex-plugin"), { recursive: true });
+	await writeFile(
+		join(artifactPath, ".codex-plugin", "plugin.json"),
+		JSON.stringify(
+			{ name: "oh-my-codex", version: "0.0.0", skills: "./skills/" },
+			null,
+			2,
+		),
+	);
+	await mkdir(join(artifactPath, "skills", "old-only"), { recursive: true });
+	await writeFile(join(artifactPath, "skills", "old-only", "SKILL.md"), "# old\n");
+	return artifactPath;
+}
+
 describe("omx setup install mode behavior", () => {
 	it("summarizes and keeps persisted setup preferences when review chooses keep", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
@@ -463,6 +485,56 @@ describe("omx setup install mode behavior", () => {
 						"utf-8",
 					);
 					assert.match(hooks, /codex-native-hook\.js/);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("invalidates stale plugin discovery caches so updated plugin skills refresh", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const cacheDir = await seedStalePluginDiscoveryCache(codexHomeDir);
+
+					const output = await captureConsoleOutput(async () => {
+						await setup({ scope: "user", installMode: "plugin" });
+					});
+
+					assert.equal(existsSync(cacheDir), false);
+					assert.match(
+						output,
+						/Invalidated 1 stale Codex plugin discovery cache entry/,
+					);
+					assert.equal(
+						existsSync(join(codexHomeDir, "skills", "old-only", "SKILL.md")),
+						false,
+					);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("reports stale plugin discovery cache invalidation during dry-run without deleting it", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const cacheDir = await seedStalePluginDiscoveryCache(codexHomeDir);
+
+					const output = await captureConsoleOutput(async () => {
+						await setup({ scope: "user", installMode: "plugin", dryRun: true });
+					});
+
+					assert.equal(existsSync(cacheDir), true);
+					assert.match(
+						output,
+						/Would invalidate 1 stale Codex plugin discovery cache entry/,
+					);
 				});
 			});
 		} finally {
