@@ -180,6 +180,35 @@ function buildRalphApprovedContextLines(approvedHint: ApprovedExecutionLaunchHin
     lines.push('Approved repository context summary (bounded, inspectable):');
     lines.push(approvedHint.repositoryContextSummary.content);
   }
+  if (approvedHint.contextPackStatus === 'ready') {
+    return lines;
+  }
+  if (approvedHint.contextPackStatus === 'plan-only') {
+    lines.push('- context pack: not declared in the approved plan; using the pre-context-pack plan-only handoff baseline.');
+    lines.push('- Plan-only fallback: use the approved plan, matching test specs, and any deep-interview artifacts as repair inputs; do not treat this as approved context-bearing execution.');
+    return lines;
+  }
+  if (approvedHint.contextPackStatus === 'incomplete') {
+    if (approvedHint.contextPackIssues.length > 0) {
+      lines.push(`- incomplete context pack issues: ${approvedHint.contextPackIssues.join(' | ')}`);
+    }
+    if (approvedHint.missingRequiredContextPackRoles.length > 0) {
+      lines.push(`- missing required context roles: ${approvedHint.missingRequiredContextPackRoles.join(', ')}`);
+    }
+    lines.push('- Incomplete-pack fallback: use the approved plan, matching test specs, and any deep-interview artifacts only as repair inputs; repair or recreate the canonical context pack with required role coverage before broadening context.');
+    return lines;
+  }
+  if (approvedHint.contextPackStatus === 'invalid') {
+    if (approvedHint.contextPackIssues.length > 0) {
+      lines.push(`- invalid context pack issues: ${approvedHint.contextPackIssues.join(' | ')}`);
+    }
+    lines.push('- Invalid-pack fallback: use the approved plan, matching test specs, and any deep-interview artifacts only as repair inputs; repair or recreate the canonical context pack before broadening context.');
+    return lines;
+  }
+  if (approvedHint.contextPackIssues.length > 0) {
+    lines.push(`- missing-baseline issues: ${approvedHint.contextPackIssues.join(' | ')}`);
+  }
+  lines.push('- Missing-baseline fallback: the latest approved plan is missing its matching test spec, so use the surfaced plan as lineage guidance only and restore the missing baseline before broadening context.');
   return lines;
 }
 

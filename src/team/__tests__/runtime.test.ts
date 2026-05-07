@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'child_process';
 import { mkdtemp, rm, writeFile, readFile, mkdir, chmod, readdir } from 'fs/promises';
-import { join } from 'path';
+import { join, relative } from 'path';
 import { tmpdir } from 'os';
 import { existsSync } from 'fs';
 import { HUD_TMUX_TEAM_HEIGHT_LINES } from '../../hud/constants.js';
@@ -69,6 +70,54 @@ async function addWorktree(repo: string, branchName: string, pathPrefix: string)
   const worktreePath = await mkdtemp(join(tmpdir(), pathPrefix));
   execFileSync('git', ['worktree', 'add', '-b', branchName, worktreePath, 'HEAD'], { cwd: repo, stdio: 'ignore' });
   return worktreePath;
+}
+
+function computeGitBlobSha1(content: string): string {
+  const buffer = Buffer.from(content, 'utf-8');
+  const header = Buffer.from(`blob ${buffer.length}\0`, 'utf-8');
+  return createHash('sha1').update(header).update(buffer).digest('hex');
+}
+
+function canonicalContextPackRelativePath(slug: string): string {
+  return `.omx/context/context-20260507T120000Z-${slug}.json`;
+}
+
+function buildContextPackOutcome(relativePackPath: string): string {
+  return [
+    '## Context Pack Outcome',
+    '',
+    `- pack: created \`${relativePackPath}\``,
+  ].join('\n');
+}
+
+async function writeReadyContextPack(
+  cwd: string,
+  slug: string,
+  prdPath: string,
+  testSpecPath: string,
+): Promise<void> {
+  const contextDir = join(cwd, '.omx', 'context');
+  const packPath = join(cwd, canonicalContextPackRelativePath(slug));
+  const prdContent = await readFile(prdPath, 'utf-8');
+  const testSpecContent = await readFile(testSpecPath, 'utf-8');
+  await mkdir(contextDir, { recursive: true });
+  await writeFile(packPath, JSON.stringify({
+    slug,
+    basis: {
+      prd: {
+        path: relative(cwd, prdPath).replaceAll('\\', '/'),
+        sha1: computeGitBlobSha1(prdContent),
+      },
+      testSpecs: [{
+        path: relative(cwd, testSpecPath).replaceAll('\\', '/'),
+        sha1: computeGitBlobSha1(testSpecContent),
+      }],
+    },
+    entries: ['scope', 'build', 'verify'].map((role, index) => ({
+      path: `src/${role}-${index}.ts`,
+      roles: [role],
+    })),
+  }, null, 2));
 }
 
 async function attachDirtyWorkerRepo(teamName: string, cwd: string, repoName: string): Promise<void> {
@@ -6048,6 +6097,39 @@ esac
     }
   });
 
+  it('resumeTeam fails closed when the persisted approved binding is nonready', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-resume-nonready-'));
+    try {
+      await initTeamState('team-approved-resume', 'approved resume test', 'executor', 1, cwd);
+      await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
+      const prdPath = join(cwd, '.omx', 'plans', 'prd-issue-2112.md');
+      await writeFile(
+        prdPath,
+        [
+          '# Approved plan',
+          '',
+          '## Context Pack Outcome',
+          '',
+          '- pack: created `.omx/context/context-20260507T120000Z-other.json`',
+          '',
+          'Launch via omx team 1:executor "Execute approved issue 2112 plan"',
+        ].join('\n'),
+      );
+      await writeFile(join(cwd, '.omx', 'plans', 'test-spec-issue-2112.md'), '# Test spec\n');
+      await writePersistedApprovedTeamExecutionBinding('team-approved-resume', cwd, {
+        prd_path: prdPath,
+        task: 'Execute approved issue 2112 plan',
+      });
+
+      await assert.rejects(
+        () => resumeTeam('team-approved-resume', cwd),
+        /approved_execution_binding_nonready:invalid:.*Execute approved issue 2112 plan/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('resumeTeam resolves approved binding continuity against the persisted leader cwd', async () => {
     const teamName = 'team-approved-shared-root';
     const leaderCwd = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-leader-'));
@@ -6326,11 +6408,20 @@ esac
     const fakeCodexPath = join(binDir, 'codex');
     await mkdir(binDir, { recursive: true });
     await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
+    const prdPath = join(cwd, '.omx', 'plans', 'prd-issue-1314.md');
+    const testSpecPath = join(cwd, '.omx', 'plans', 'test-spec-issue-1314.md');
     await writeFile(
-      join(cwd, '.omx', 'plans', 'prd-issue-1314.md'),
-      '# Approved plan\n\nLaunch via omx team 1:executor "Execute approved issue 1314 plan"\n',
+      prdPath,
+      [
+        '# Approved plan',
+        '',
+        buildContextPackOutcome(canonicalContextPackRelativePath('issue-1314')),
+        '',
+        'Launch via omx team 1:executor "Execute approved issue 1314 plan"',
+      ].join('\n'),
     );
-    await writeFile(join(cwd, '.omx', 'plans', 'test-spec-issue-1314.md'), '# Test spec\n');
+    await writeFile(testSpecPath, '# Test spec\n');
+    await writeReadyContextPack(cwd, 'issue-1314', prdPath, testSpecPath);
     await writeFakePromptWorkerBinary(
       fakeCodexPath,
       `setTimeout(() => {}, 5000);`,
@@ -6349,7 +6440,7 @@ esac
             cwd,
             {
               approvedExecution: {
-                prd_path: join(cwd, '.omx', 'plans', 'prd-issue-1314.md'),
+                prd_path: prdPath,
                 task: 'Execute approved issue 1314 plan',
                 command: 'omx team 1:executor "Execute approved issue 1314 plan"',
               },
@@ -6366,7 +6457,7 @@ esac
       );
       const binding = JSON.parse(await readFile(bindingPath, 'utf-8')) as Record<string, string>;
       assert.deepEqual(binding, {
-        prd_path: join(cwd, '.omx', 'plans', 'prd-issue-1314.md'),
+        prd_path: prdPath,
         task: 'Execute approved issue 1314 plan',
         command: 'omx team 1:executor "Execute approved issue 1314 plan"',
       });
@@ -6375,6 +6466,115 @@ esac
       if (runtime) {
         await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
       }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('startTeam keeps explicit plan-only approved bindings on the generic path', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-binding-plan-only-'));
+    const binDir = join(cwd, 'bin');
+    const fakeCodexPath = join(binDir, 'codex');
+    await mkdir(binDir, { recursive: true });
+    await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
+    await writeFile(
+      join(cwd, '.omx', 'plans', 'prd-issue-1314-plan-only.md'),
+      '# Approved plan\n\nLaunch via omx team 1:executor "Execute approved issue 1314 plan-only"\n',
+    );
+    await writeFile(join(cwd, '.omx', 'plans', 'test-spec-issue-1314-plan-only.md'), '# Test spec\n');
+    await writeFakePromptWorkerBinary(
+      fakeCodexPath,
+      `setTimeout(() => {}, 5000);`,
+    );
+
+    let runtime: TeamRuntime | null = null;
+    try {
+      runtime = await withPromptModeCodexEnv(binDir, {}, () =>
+        withoutTeamWorkerEnv(() =>
+          startTeam(
+            'team-approved-binding-plan-only',
+            'approved binding generic fallback test',
+            'executor',
+            1,
+            [{ subject: 's', description: 'd', owner: 'worker-1' }],
+            cwd,
+            {
+              approvedExecution: {
+                prd_path: join(cwd, '.omx', 'plans', 'prd-issue-1314-plan-only.md'),
+                task: 'Execute approved issue 1314 plan-only',
+                command: 'omx team 1:executor "Execute approved issue 1314 plan-only"',
+              },
+            },
+          ),
+        ),
+      );
+
+      const bindingPath = join(
+        runtime.config.team_state_root ?? join(cwd, '.omx', 'state'),
+        'team',
+        runtime.teamName,
+        'approved-execution.json',
+      );
+      assert.equal(existsSync(bindingPath), false);
+    } finally {
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
+      }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('startTeam fails closed when an explicit approved execution binding is nonready', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-binding-nonready-'));
+    const binDir = join(cwd, 'bin');
+    const fakeCodexPath = join(binDir, 'codex');
+    await mkdir(binDir, { recursive: true });
+    await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
+    const prdPath = join(cwd, '.omx', 'plans', 'prd-issue-1314-nonready.md');
+    await writeFile(
+      prdPath,
+      [
+        '# Approved plan',
+        '',
+        '## Context Pack Outcome',
+        '',
+        '- pack: created `.omx/context/context-20260507T120000Z-other.json`',
+        '',
+        'Launch via omx team 1:executor "Execute approved issue 1314 nonready plan"',
+      ].join('\n'),
+    );
+    await writeFile(join(cwd, '.omx', 'plans', 'test-spec-issue-1314-nonready.md'), '# Test spec\n');
+    await writeFakePromptWorkerBinary(
+      fakeCodexPath,
+      `setTimeout(() => {}, 5000);`,
+    );
+
+    try {
+      await assert.rejects(
+        () => withPromptModeCodexEnv(binDir, {}, () =>
+          withoutTeamWorkerEnv(() =>
+            startTeam(
+              'team-approved-binding-nonready',
+              'approved binding nonready start test',
+              'executor',
+              1,
+              [{ subject: 's', description: 'd', owner: 'worker-1' }],
+              cwd,
+              {
+                approvedExecution: {
+                  prd_path: prdPath,
+                  task: 'Execute approved issue 1314 nonready plan',
+                },
+              },
+            ),
+          ),
+        ),
+        /approved_execution_binding_nonready:invalid:.*Execute approved issue 1314 nonready plan/,
+      );
+      assert.equal(
+        existsSync(join(cwd, '.omx', 'state', 'team', 'team-approved-binding-nonready')),
+        false,
+      );
+    } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });

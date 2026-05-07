@@ -133,6 +133,10 @@ import { buildRebalanceDecisions } from './rebalance-policy.js';
 import { getStatePath } from '../mcp/state-paths.js';
 import { readModeState, updateModeState } from '../modes/base.js';
 import {
+  isApprovedExecutionContextReadyStatus,
+  isApprovedExecutionFollowupReadyStatus,
+} from '../planning/artifacts.js';
+import {
   buildApprovedTeamExecutionBinding,
   normalizeApprovedTeamExecutionBinding,
   readApprovedTeamExecutionHintOutcomeFromBinding,
@@ -2268,12 +2272,22 @@ export async function startTeam(
   const selectedApprovedExecutionHint = requestedApprovedExecutionOutcome?.status === 'resolved'
     ? requestedApprovedExecutionOutcome.approvedHint
     : null;
+  if (
+    requestedApprovedExecution
+    && selectedApprovedExecutionHint
+    && !isApprovedExecutionFollowupReadyStatus(selectedApprovedExecutionHint.contextPackStatus)
+  ) {
+    throw new Error(
+      `approved_execution_binding_nonready:${selectedApprovedExecutionHint.contextPackStatus}:${requestedApprovedExecution.prd_path}:${requestedApprovedExecution.task}`,
+    );
+  }
   if (requestedApprovedExecution && !selectedApprovedExecutionHint) {
     throw new Error(
       `approved_execution_binding_stale:${requestedApprovedExecution.prd_path}:${requestedApprovedExecution.task}`,
     );
   }
   const approvedExecution = selectedApprovedExecutionHint
+    && isApprovedExecutionContextReadyStatus(selectedApprovedExecutionHint.contextPackStatus)
     ? buildApprovedTeamExecutionBinding(selectedApprovedExecutionHint)
     : null;
   const activeWorktreeMode: 'detached' | 'named' | null =
@@ -3771,6 +3785,14 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
   if (approvedExecutionState.status === 'stale') {
     throw new Error(
       `approved_execution_binding_stale:${approvedExecutionState.binding.prd_path}:${approvedExecutionState.binding.task}`,
+    );
+  }
+  if (
+    approvedExecutionState.status === 'valid'
+    && !isApprovedExecutionFollowupReadyStatus(approvedExecutionState.approvedHint.contextPackStatus)
+  ) {
+    throw new Error(
+      `approved_execution_binding_nonready:${approvedExecutionState.approvedHint.contextPackStatus}:${approvedExecutionState.binding.prd_path}:${approvedExecutionState.binding.task}`,
     );
   }
 

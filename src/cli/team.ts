@@ -11,6 +11,8 @@ import type { TeamEvent } from '../team/state.js';
 import { parseWorktreeMode, type WorktreeMode } from '../team/worktree.js';
 import { classifyTaskSize } from '../hooks/task-size-detector.js';
 import {
+  isApprovedExecutionContextReadyStatus,
+  isApprovedExecutionFollowupReadyStatus,
   readApprovedExecutionLaunchHint,
   readApprovedExecutionLaunchHintOutcome,
   type ApprovedExecutionLaunchHint,
@@ -190,6 +192,11 @@ function resolveApprovedTeamFollowupContext(cwd: string, task: string): TeamFoll
       throw new Error(`approved_execution_binding_stale:${continuity.binding.prd_path}:${continuity.binding.task}`);
     }
     if (continuity.status === 'valid') {
+      if (!isApprovedExecutionFollowupReadyStatus(continuity.approvedHint.contextPackStatus)) {
+        throw new Error(
+          `approved_execution_binding_nonready:${continuity.approvedHint.contextPackStatus}:${continuity.binding.prd_path}:${continuity.binding.task}`,
+        );
+      }
       approvedHint = continuity.approvedHint;
     }
   }
@@ -200,6 +207,9 @@ function resolveApprovedTeamFollowupContext(cwd: string, task: string): TeamFoll
       throw new Error('approved_execution_hint_ambiguous:team');
     }
     if (approvedHintOutcome.status !== 'resolved') return null;
+    if (!isApprovedExecutionFollowupReadyStatus(approvedHintOutcome.hint.contextPackStatus)) {
+      throw new Error(`approved_execution_hint_nonready:team:${approvedHintOutcome.hint.contextPackStatus}`);
+    }
     approvedHint = approvedHintOutcome.hint;
   }
 
@@ -852,12 +862,19 @@ export function parseTeamArgs(args: string[], cwd: string = process.cwd()): Pars
 
   const approvedHint = followupContext?.approvedHint
     ?? readApprovedExecutionLaunchHint(cwd, 'team', { task: effectiveTask });
-  const matchesApprovedLaunchHint = approvedHint?.task.trim() === effectiveTask.trim()
-    && (approvedHint.workerCount == null || approvedHint.workerCount === workerCount)
-    && (approvedHint.agentType == null || approvedHint.agentType === agentType);
+  const followupReadyApprovedHint = approvedHint && isApprovedExecutionFollowupReadyStatus(approvedHint.contextPackStatus)
+    ? approvedHint
+    : null;
+  const contextReadyApprovedHint = followupReadyApprovedHint
+    && isApprovedExecutionContextReadyStatus(followupReadyApprovedHint.contextPackStatus)
+    ? followupReadyApprovedHint
+    : null;
+  const matchesApprovedLaunchHint = followupReadyApprovedHint?.task.trim() === effectiveTask.trim()
+    && (followupReadyApprovedHint.workerCount == null || followupReadyApprovedHint.workerCount === workerCount)
+    && (followupReadyApprovedHint.agentType == null || followupReadyApprovedHint.agentType === agentType);
   const allowRepoAwareDagHandoff = followupContext != null || matchesApprovedLaunchHint;
   const approvedRepositoryContextSummary = allowRepoAwareDagHandoff
-    ? approvedHint?.repositoryContextSummary
+    ? followupReadyApprovedHint?.repositoryContextSummary
     : undefined;
 
   const teamName = sanitizeTeamName(slugifyTask(effectiveTask));
@@ -871,7 +888,7 @@ export function parseTeamArgs(args: string[], cwd: string = process.cwd()): Pars
     displayName: teamName,
     allowRepoAwareDagHandoff,
     ...(approvedRepositoryContextSummary ? { approvedRepositoryContextSummary } : {}),
-    ...(allowRepoAwareDagHandoff && approvedHint ? { approvedExecution: buildApprovedTeamExecutionBinding(approvedHint) } : {}),
+    ...(contextReadyApprovedHint ? { approvedExecution: buildApprovedTeamExecutionBinding(contextReadyApprovedHint) } : {}),
   };
 }
 

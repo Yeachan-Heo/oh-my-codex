@@ -1,7 +1,8 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, mkdir, writeFile } from 'fs/promises';
-import { basename, dirname, join } from 'path';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm, mkdir, readFile, writeFile } from 'fs/promises';
+import { basename, dirname, join, relative } from 'path';
 import { tmpdir } from 'os';
 import { existsSync } from 'fs';
 import type { StageContext } from '../types.js';
@@ -22,6 +23,54 @@ function encodeApprovedExecutionTask(task: string, quote: 'single' | 'double'): 
   return quote === 'single'
     ? `'${task.replace(/'/g, "\\'")}'`
     : `"${task.replace(/"/g, '\\"')}"`;
+}
+
+function computeGitBlobSha1(content: string): string {
+  const buffer = Buffer.from(content, 'utf-8');
+  const header = Buffer.from(`blob ${buffer.length}\0`, 'utf-8');
+  return createHash('sha1').update(header).update(buffer).digest('hex');
+}
+
+function canonicalContextPackRelativePath(slug: string): string {
+  return `.omx/context/context-20260507T120000Z-${slug}.json`;
+}
+
+function buildContextPackOutcome(relativePackPath: string): string {
+  return [
+    '## Context Pack Outcome',
+    '',
+    `- pack: created \`${relativePackPath}\``,
+  ].join('\n');
+}
+
+async function writeReadyContextPack(
+  cwd: string,
+  slug: string,
+  prdPath: string,
+  testSpecPath: string,
+): Promise<void> {
+  const contextDir = join(cwd, '.omx', 'context');
+  const packPath = join(cwd, canonicalContextPackRelativePath(slug));
+  const prdContent = await readFile(prdPath, 'utf-8');
+  const testSpecContent = await readFile(testSpecPath, 'utf-8');
+  await mkdir(contextDir, { recursive: true });
+  await writeFile(packPath, JSON.stringify({
+    slug,
+    basis: {
+      prd: {
+        path: relative(cwd, prdPath).replaceAll('\\', '/'),
+        sha1: computeGitBlobSha1(prdContent),
+      },
+      testSpecs: [{
+        path: relative(cwd, testSpecPath).replaceAll('\\', '/'),
+        sha1: computeGitBlobSha1(testSpecContent),
+      }],
+    },
+    entries: ['scope', 'build', 'verify'].map((role, index) => ({
+      path: `src/${role}-${index}.ts`,
+      roles: [role],
+    })),
+  }, null, 2));
 }
 
 function makeCtx(overrides: Partial<StageContext> = {}): StageContext {
@@ -233,11 +282,19 @@ describe('Team Exec Stage', () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     const approvedPrdPath = join(plansDir, 'prd-zeta.md');
+    const approvedTestSpecPath = join(plansDir, 'test-spec-zeta.md');
     await writeFile(
       approvedPrdPath,
-      '# Zeta plan\n\nLaunch via omx team 5:debugger "Execute zeta handoff"\n',
+      [
+        '# Zeta plan',
+        '',
+        buildContextPackOutcome(canonicalContextPackRelativePath('zeta')),
+        '',
+        'Launch via omx team 5:debugger "Execute zeta handoff"',
+      ].join('\n'),
     );
-    await writeFile(join(plansDir, 'test-spec-zeta.md'), '# Zeta test spec\n');
+    await writeFile(approvedTestSpecPath, '# Zeta test spec\n');
+    await writeReadyContextPack(tempDir, 'zeta', approvedPrdPath, approvedTestSpecPath);
 
     const previousCwd = process.cwd();
     try {
@@ -283,11 +340,19 @@ describe('Team Exec Stage', () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     const approvedPrdPath = join(plansDir, 'prd-zeta.md');
+    const approvedTestSpecPath = join(plansDir, 'test-spec-zeta.md');
     await writeFile(
       approvedPrdPath,
-      '# Zeta plan\n\nLaunch via omx team 5:debugger "Execute zeta handoff"\n',
+      [
+        '# Zeta plan',
+        '',
+        buildContextPackOutcome(canonicalContextPackRelativePath('zeta')),
+        '',
+        'Launch via omx team 5:debugger "Execute zeta handoff"',
+      ].join('\n'),
     );
-    await writeFile(join(plansDir, 'test-spec-zeta.md'), '# Zeta test spec\n');
+    await writeFile(approvedTestSpecPath, '# Zeta test spec\n');
+    await writeReadyContextPack(tempDir, 'zeta', approvedPrdPath, approvedTestSpecPath);
     await writeFile(join(plansDir, 'prd-zulu.md'), '# Zulu draft\n\nNo approved team launch here.\n');
 
     const previousCwd = process.cwd();
@@ -325,11 +390,19 @@ describe('Team Exec Stage', () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     const approvedPrdPath = join(plansDir, 'prd-zeta.md');
+    const approvedTestSpecPath = join(plansDir, 'test-spec-zeta.md');
     await writeFile(
       approvedPrdPath,
-      '# Zeta plan\n\nLaunch via omx team 5:debugger "Execute zeta handoff"\n',
+      [
+        '# Zeta plan',
+        '',
+        buildContextPackOutcome(canonicalContextPackRelativePath('zeta')),
+        '',
+        'Launch via omx team 5:debugger "Execute zeta handoff"',
+      ].join('\n'),
     );
-    await writeFile(join(plansDir, 'test-spec-zeta.md'), '# Zeta test spec\n');
+    await writeFile(approvedTestSpecPath, '# Zeta test spec\n');
+    await writeReadyContextPack(tempDir, 'zeta', approvedPrdPath, approvedTestSpecPath);
     const incompleteDraftPath = join(plansDir, 'prd-zulu.md');
     await writeFile(incompleteDraftPath, '# Zulu draft\n\nNo approved team launch here.\n');
 
@@ -364,6 +437,86 @@ describe('Team Exec Stage', () => {
       });
       assert.doesNotMatch(instruction, new RegExp(escapeRegExp(incompleteDraftPath)));
       assert.deepEqual(runtimeCliInput.approvedExecution, descriptor.approvedExecution);
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
+  it('keeps team-exec generic for plan-only approved handoffs while reusing the approved task text', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    const approvedPrdPath = join(plansDir, 'prd-plan-only.md');
+    await writeFile(
+      approvedPrdPath,
+      '# Plan-only plan\n\nLaunch via omx team 5:debugger "Execute plan-only team handoff"\n',
+    );
+    await writeFile(join(plansDir, 'test-spec-plan-only.md'), '# Plan-only test spec\n');
+
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(tmpdir());
+      const stage = createTeamExecStage();
+      const result = await stage.run(makeCtx({
+        task: 'original request task',
+        artifacts: {
+          ralplan: {
+            task: 'original request task',
+            stage: 'ralplan',
+            latestPlanPath: join('.omx', 'plans', 'prd-plan-only.md'),
+          },
+        },
+      }));
+
+      assert.equal(result.status, 'completed');
+      const descriptor = (result.artifacts as Record<string, unknown>).teamDescriptor as Record<string, unknown>;
+      const instruction = (result.artifacts as Record<string, unknown>).instruction as string;
+      const runtimeCliInput = decodeRuntimeCliInstructionPayload(instruction);
+      assert.equal(descriptor.task, 'Execute plan-only team handoff');
+      assert.equal(descriptor.approvedExecution, null);
+      assert.equal(runtimeCliInput.task, 'Execute plan-only team handoff');
+      assert.equal(runtimeCliInput.approvedExecution, null);
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
+  it('blocks team-exec when the selected approved handoff is nonready', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-issue-nonready.md'),
+      [
+        '# Nonready plan',
+        '',
+        '## Context Pack Outcome',
+        '',
+        '- pack: created `.omx/context/context-20260507T120000Z-other.json`',
+        '',
+        'Launch via omx team 5:debugger "Execute nonready team handoff"',
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-issue-nonready.md'), '# Nonready test spec\n');
+
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(tmpdir());
+      const stage = createTeamExecStage();
+      const result = await stage.run(makeCtx({
+        task: 'original request task',
+        artifacts: {
+          ralplan: {
+            task: 'original request task',
+            stage: 'ralplan',
+            latestPlanPath: join('.omx', 'plans', 'prd-issue-nonready.md'),
+          },
+        },
+      }));
+      assert.equal(result.status, 'failed');
+      assert.match(
+        result.error ?? '',
+        /team_exec_approved_handoff_nonready:invalid:.*prd-issue-nonready\.md/,
+      );
+      assert.deepEqual(result.artifacts, {});
     } finally {
       process.chdir(previousCwd);
     }

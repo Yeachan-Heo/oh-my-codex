@@ -300,6 +300,23 @@ describe('ralph deslop launch wiring', () => {
     assert.match(instructions, /Carry forward the approved deep-interview requirements/i);
     assert.match(instructions, /approved repository context summary: \.omx\/plans\/repo-context-issue-1072\.md/i);
     assert.match(instructions, /Key files: src\/cli\/ralph\.ts and src\/planning\/artifacts\.ts/i);
+    assert.match(instructions, /pre-context-pack plan-only handoff baseline/i);
+    assert.match(instructions, /do not treat this as approved context-bearing execution/i);
+  });
+
+  it('surfaces repair-only guidance for invalid approved handoff context', () => {
+    const instructions = buildRalphAppendInstructions('Repair approved issue 1072 plan', {
+      changedFilesPath: '.omx/ralph/changed-files.txt',
+      noDeslop: false,
+      approvedHint: {
+        ...approvedHint,
+        contextPackStatus: 'invalid',
+        contextPackIssues: ['Declared context pack basis test-spec hash does not match the current approved test spec.'],
+      },
+    });
+    assert.match(instructions, /invalid context pack issues: Declared context pack basis test-spec hash/i);
+    assert.match(instructions, /only as repair inputs/i);
+    assert.match(instructions, /repair or recreate the canonical context pack/i);
   });
 
   it('seeds the changed-files artifact with bounded-scope guidance', () => {

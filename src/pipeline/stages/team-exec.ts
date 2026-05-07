@@ -15,6 +15,8 @@ import {
   resolveAvailableAgentTypes,
 } from '../../team/followup-planner.js';
 import {
+  isApprovedExecutionContextReadyStatus,
+  isApprovedExecutionFollowupReadyStatus,
   readApprovedExecutionLaunchHintOutcome,
   readPlanningArtifacts,
   type PlanningArtifacts,
@@ -158,7 +160,7 @@ function resolveApprovedTeamLaunchFromPlanPath(
   cwd: string,
   latestPlanPath: string,
   ralplanArtifacts?: Record<string, unknown>,
-): { task: string; approvedExecution: ApprovedTeamExecutionBinding } {
+): { task: string; approvedExecution: ApprovedTeamExecutionBinding | null } {
   const approvedPlanPath = resolveApprovedTeamPlanPath(cwd, latestPlanPath, ralplanArtifacts);
   const approvedHintOutcome = readApprovedExecutionLaunchHintOutcome(cwd, 'team', {
     prdPath: approvedPlanPath,
@@ -169,9 +171,16 @@ function resolveApprovedTeamLaunchFromPlanPath(
   if (approvedHintOutcome.status !== 'resolved') {
     throw new Error(`team_exec_approved_handoff_missing:${approvedPlanPath}`);
   }
+  if (!isApprovedExecutionFollowupReadyStatus(approvedHintOutcome.hint.contextPackStatus)) {
+    throw new Error(
+      `team_exec_approved_handoff_nonready:${approvedHintOutcome.hint.contextPackStatus}:${approvedPlanPath}`,
+    );
+  }
   return {
     task: approvedHintOutcome.hint.task,
-    approvedExecution: buildApprovedTeamExecutionBinding(approvedHintOutcome.hint),
+    approvedExecution: isApprovedExecutionContextReadyStatus(approvedHintOutcome.hint.contextPackStatus)
+      ? buildApprovedTeamExecutionBinding(approvedHintOutcome.hint)
+      : null,
   };
 }
 
