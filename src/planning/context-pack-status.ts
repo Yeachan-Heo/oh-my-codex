@@ -1,15 +1,17 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, relative, resolve } from 'node:path';
+import { dirname, relative } from 'node:path';
 import { planningArtifactSlug } from './artifact-names.js';
+import {
+  normalizePlanningRepoRelativePath,
+  resolveDeclaredContextPackPath,
+} from './path-utils.js';
 
 const CONTEXT_PACK_OUTCOME_HEADING_PATTERN =
   /^#{1,6}\s+Context Pack Outcome\s*$/i;
 const CONTEXT_PACK_OUTCOME_DECLARATION_PATTERN = /^[*-]\s*pack\s*:/i;
 const CONTEXT_PACK_OUTCOME_LINE_PATTERN =
   /^[*-]\s*pack\s*:\s*(?:(?:created|refreshed|revalidated)\s+)?(?:`(?<quotedPath>[^`]+\.json)`|(?<barePath>\S+\.json))\s*$/i;
-const CONTEXT_PACK_PATH_PATTERN =
-  /^\.omx\/context\/context-(?<timestamp>\d{8}T\d{6}Z)-(?<slug>[^/]+)\.json$/i;
 const SHA1_PATTERN = /^[0-9a-f]{40}$/i;
 
 export const REQUIRED_CONTEXT_PACK_ROLES = ['scope', 'build', 'verify'] as const;
@@ -56,7 +58,7 @@ interface ContextPackBasisObject {
   sha1: string;
 }
 
-interface ContextPackDocument {
+export interface ContextPackDocument {
   slug: string;
   basis: {
     prd: ContextPackBasisObject;
@@ -68,7 +70,7 @@ interface ContextPackDocument {
   }>;
 }
 
-interface ContextPackOutcomeInspection {
+export interface ContextPackOutcomeInspection {
   outcomeState: ContextPackOutcomeState;
   contextPack: ContextPackRef | null;
   declaredPackPath: string | null;
@@ -86,28 +88,6 @@ export function isApprovedExecutionContextReadyStatus(
   status: ContextPackStatus,
 ): boolean {
   return status === 'ready';
-}
-
-function normalizeRepoRelativePath(rawPath: string): string | null {
-  const trimmed = rawPath.trim().replace(/^`|`$/g, '').replaceAll('\\', '/');
-  if (!trimmed) {
-    return null;
-  }
-  const withoutLeadingDot = trimmed.startsWith('./') ? trimmed.slice(2) : trimmed;
-  if (
-    !withoutLeadingDot
-    || withoutLeadingDot.startsWith('/')
-    || /^[A-Za-z]:/.test(withoutLeadingDot)
-  ) {
-    return null;
-  }
-  const segments = withoutLeadingDot
-    .split('/')
-    .filter((segment) => segment.length > 0);
-  if (segments.length === 0 || segments.includes('..')) {
-    return null;
-  }
-  return segments.join('/');
 }
 
 function computeGitBlobSha1(filePath: string): string {
@@ -162,31 +142,7 @@ function extractContextPackOutcomeSections(content: string): string[][] {
   return sections;
 }
 
-function resolveDeclaredContextPackPath(
-  repoRoot: string,
-  rawPath: string,
-): { normalizedPath: string; resolvedPath: string; slug: string } | null {
-  const normalizedPath = normalizeRepoRelativePath(rawPath);
-  if (!normalizedPath) {
-    return null;
-  }
-  const pathMatch = normalizedPath.match(CONTEXT_PACK_PATH_PATTERN);
-  if (!pathMatch?.groups?.slug) {
-    return null;
-  }
-  const resolvedPath = resolve(repoRoot, normalizedPath);
-  const roundTripPath = normalizeRepoRelativePath(relative(repoRoot, resolvedPath));
-  if (!roundTripPath || roundTripPath !== normalizedPath) {
-    return null;
-  }
-  return {
-    normalizedPath,
-    resolvedPath,
-    slug: pathMatch.groups.slug,
-  };
-}
-
-function inspectContextPackOutcome(
+export function inspectContextPackOutcome(
   repoRoot: string,
   content: string,
 ): ContextPackOutcomeInspection {
@@ -284,7 +240,7 @@ function inspectContextPackOutcome(
   };
 }
 
-function readContextPackDocument(packPath: string): {
+export function readContextPackDocument(packPath: string): {
   packState: ContextPackPackState;
   document: ContextPackDocument | null;
   issues: string[];
@@ -350,7 +306,7 @@ function readContextPackDocument(packPath: string): {
     }
     const record = value as Record<string, unknown>;
     const path =
-      typeof record.path === 'string' ? normalizeRepoRelativePath(record.path) : null;
+      typeof record.path === 'string' ? normalizePlanningRepoRelativePath(record.path) : null;
     if (!path) {
       issues.push(`Declared context pack ${label} basis path must be repo-relative.`);
     }
@@ -388,7 +344,7 @@ function readContextPackDocument(packPath: string): {
       }
       const record = rawEntry as Record<string, unknown>;
       const path =
-        typeof record.path === 'string' ? normalizeRepoRelativePath(record.path) : null;
+        typeof record.path === 'string' ? normalizePlanningRepoRelativePath(record.path) : null;
       if (!path) {
         issues.push('Declared context pack entries must provide a repo-relative path.');
       }
@@ -445,14 +401,14 @@ function readContextPackDocument(packPath: string): {
   };
 }
 
-function findMissingRequiredContextPackRoles(
+export function findMissingRequiredContextPackRoles(
   document: ContextPackDocument,
 ): ContextPackRole[] {
   const presentRoles = new Set(document.entries.flatMap((entry) => entry.roles));
   return REQUIRED_CONTEXT_PACK_ROLES.filter((role) => !presentRoles.has(role));
 }
 
-function validateContextPackBasis(
+export function validateContextPackBasis(
   repoRoot: string,
   prdPath: string,
   testSpecPaths: readonly string[],
@@ -468,7 +424,8 @@ function validateContextPackBasis(
     );
   }
 
-  const expectedPrdRelativePath = normalizeRepoRelativePath(relative(repoRoot, prdPath));
+  const expectedPrdRelativePath =
+    normalizePlanningRepoRelativePath(relative(repoRoot, prdPath));
   if (!expectedPrdRelativePath) {
     issues.push('Approved plan path could not be normalized for context pack validation.');
   } else if (document.basis.prd.path !== expectedPrdRelativePath) {
@@ -482,7 +439,8 @@ function validateContextPackBasis(
   }
 
   const expectedTestSpecMap = new Map(testSpecPaths.flatMap((testSpecPath) => {
-    const normalizedPath = normalizeRepoRelativePath(relative(repoRoot, testSpecPath));
+    const normalizedPath =
+      normalizePlanningRepoRelativePath(relative(repoRoot, testSpecPath));
     return normalizedPath
       ? [[normalizedPath, computeGitBlobSha1(testSpecPath)]]
       : [];
