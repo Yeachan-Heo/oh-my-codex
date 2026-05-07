@@ -41,7 +41,7 @@ function buildContextPackOutcome(relativePackPath: string): string {
   return [
     '## Context Pack Outcome',
     '',
-    `- pack: \`${relativePackPath}\``,
+    `- pack: created \`${relativePackPath}\``,
   ].join('\n');
 }
 

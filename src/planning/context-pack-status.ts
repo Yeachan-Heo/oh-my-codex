@@ -628,7 +628,7 @@ export function resolveContextPackHandoffStatus(
     }
   }
 
-  if (declarationMismatch && packState === 'valid') {
+  if (declarationMismatch) {
     packState = 'invalid';
   }
 

@@ -30,7 +30,7 @@ function buildContextPackOutcome(relativePackPath: string): string {
   return [
     '## Context Pack Outcome',
     '',
-    `- pack: \`${relativePackPath}\``,
+    `- pack: created \`${relativePackPath}\``,
   ].join('\n');
 }
 
@@ -219,7 +219,7 @@ describe('context pack handoff status', () => {
       '```md',
       '## Context Pack Outcome',
       '',
-      `- pack: \`${canonicalContextPackRelativePath('epsilon')}\``,
+      `- pack: created \`${canonicalContextPackRelativePath('epsilon')}\``,
       '```',
       '',
       'Launch via omx ralph "Execute epsilon plan"',
@@ -246,6 +246,25 @@ describe('context pack handoff status', () => {
     assert.equal(status.outcomeState, 'malformed');
     assert.ok(status.contextPackIssues.some((issue) => issue.includes(
       '.omx/context/context-<timestamp>-<slug>.json',
+    )));
+  });
+
+  it('reports invalid when the declared pack slug does not match the approved plan even if the file is missing', async () => {
+    await writeApprovedPlan('theta', [
+      '# PRD',
+      '',
+      buildContextPackOutcome(canonicalContextPackRelativePath('other')),
+      '',
+      'Launch via omx ralph "Execute theta plan"',
+    ]);
+
+    const status = readContextPackHandoffStatus(tempDir);
+
+    assert.equal(status.contextPackStatus, 'invalid');
+    assert.equal(status.outcomeState, 'declared');
+    assert.equal(status.packState, 'invalid');
+    assert.ok(status.contextPackIssues.some((issue) => issue.includes(
+      'does not match approved plan slug theta',
     )));
   });
 
