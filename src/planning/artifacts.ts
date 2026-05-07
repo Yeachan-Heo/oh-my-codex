@@ -8,8 +8,6 @@ import {
   selectMatchingTestSpecsForPrd,
 } from './artifact-names.js';
 import {
-  isApprovedExecutionContextReadyStatus,
-  isApprovedExecutionFollowupReadyStatus,
   resolveContextPackHandoffStatus,
   type ContextPackHandoffStatusSnapshot,
   type ContextPackRef,
