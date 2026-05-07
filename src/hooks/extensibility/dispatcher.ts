@@ -95,6 +95,7 @@ async function runPluginRunner(
 		const child = spawn(process.execPath, [runnerPath], {
 			cwd: options.cwd,
 			stdio: ["pipe", "pipe", "pipe"],
+			windowsHide: true,
 			env: {
 				...process.env,
 				...(options.env || {}),

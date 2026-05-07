@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -434,6 +434,73 @@ describe("codex native hook dispatch", () => {
       assert.equal(output.stopReason, "native_stop_dispatch_failure");
       assert.match(String(output.reason), /failed before normal continuation handling/);
       assert.match(String(output.systemMessage), /test-induced Stop dispatch failure/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("logs Stop dispatch failures without foreground stderr noise", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-stop-dispatch-silent-"));
+    try {
+      const result = spawnSync(process.execPath, [nativeHookScriptPath()], {
+        cwd,
+        input: JSON.stringify({
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-cli-stop-dispatch-silent",
+          thread_id: "thread-cli-stop-dispatch-silent",
+          turn_id: "turn-cli-stop-dispatch-silent",
+        }),
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          NODE_ENV: "test",
+          OMX_NATIVE_HOOK_TEST_THROW_STOP_DISPATCH: "1",
+        },
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.stderr, "");
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.stopReason, "native_stop_dispatch_failure");
+
+      const logFiles = await readdir(join(cwd, ".omx", "logs"));
+      assert.equal(logFiles.some((name) => /^native-hook-\d{4}-\d{2}-\d{2}\.jsonl$/.test(name)), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps non-Stop dispatch failures fail-closed without foreground stderr noise", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-pretool-dispatch-silent-"));
+    try {
+      const result = spawnSync(process.execPath, [nativeHookScriptPath()], {
+        cwd,
+        input: JSON.stringify({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-cli-pretool-dispatch-silent",
+          thread_id: "thread-cli-pretool-dispatch-silent",
+          turn_id: "turn-cli-pretool-dispatch-silent",
+          tool_name: "Bash",
+          tool_input: { command: "pwd" },
+        }),
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          NODE_ENV: "test",
+          OMX_NATIVE_HOOK_TEST_THROW_DISPATCH: "1",
+        },
+      });
+
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, "");
+
+      const logFiles = await readdir(join(cwd, ".omx", "logs"));
+      assert.equal(logFiles.some((name) => /^native-hook-\d{4}-\d{2}-\d{2}\.jsonl$/.test(name)), true);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

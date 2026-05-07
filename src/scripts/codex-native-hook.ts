@@ -1,6 +1,6 @@
 import { execFileSync } from "child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync } from "fs";
-import { mkdir, readFile, readdir, writeFile } from "fs/promises";
+import { appendFile, mkdir, readFile, readdir, writeFile } from "fs/promises";
 import { extname, join, relative, resolve } from "path";
 import { pathToFileURL } from "url";
 import { readModeState, readModeStateForActiveDecision, readModeStateForSession, updateModeState } from "../modes/base.js";
@@ -655,6 +655,7 @@ function readParentPid(pid: number): number | null {
     const raw = execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
     }).trim();
     const ppid = Number.parseInt(raw, 10);
     return Number.isFinite(ppid) && ppid > 0 ? ppid : null;
@@ -674,6 +675,7 @@ function readProcessCommand(pid: number): string {
     return execFileSync("ps", ["-o", "command=", "-p", String(pid)], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
     }).trim();
   } catch {
     return "";
@@ -3089,10 +3091,38 @@ function writeNativeHookJsonStdout(output: Record<string, unknown>): void {
   process.stdout.write(`${JSON.stringify(output)}\n`);
 }
 
+async function logNativeHookCliError(
+  cwd: string,
+  type: string,
+  error: unknown,
+  payload: CodexHookPayload = {},
+): Promise<void> {
+  const logsDir = join(cwd || process.cwd(), ".omx", "logs");
+  await mkdir(logsDir, { recursive: true }).catch(() => {});
+  const logPath = join(logsDir, `native-hook-${new Date().toISOString().split("T")[0]}.jsonl`);
+  await appendFile(
+    logPath,
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      type,
+      hook_event_name: readHookEventName(payload) ?? "Unknown",
+      session_id: readPayloadSessionId(payload) || undefined,
+      thread_id: readPayloadThreadId(payload) || undefined,
+      turn_id: readPayloadTurnId(payload) || undefined,
+      error: error instanceof Error ? error.message : String(error),
+    }) + "\n",
+  ).catch(() => {});
+}
+
 function isStopDispatchFailureTestTrigger(payload: CodexHookPayload): boolean {
   return process.env.NODE_ENV === "test"
     && process.env.OMX_NATIVE_HOOK_TEST_THROW_STOP_DISPATCH === "1"
     && readHookEventName(payload) === "Stop";
+}
+
+function isDispatchFailureTestTrigger(): boolean {
+  return process.env.NODE_ENV === "test"
+    && process.env.OMX_NATIVE_HOOK_TEST_THROW_DISPATCH === "1";
 }
 
 function buildStopDispatchFailureOutput(error: unknown): Record<string, unknown> {
@@ -3110,6 +3140,7 @@ function buildStopDispatchFailureOutput(error: unknown): Record<string, unknown>
 export async function runCodexNativeHookCli(): Promise<void> {
   const { payload, parseError } = await readStdinJson();
   if (parseError) {
+    await logNativeHookCliError(process.cwd(), "native_hook_stdin_parse_error", parseError);
     writeNativeHookJsonStdout({
       decision: "block",
       reason: "OMX native hook received malformed JSON input. Preserve runtime state, inspect the emitting hook payload yourself, and retry with valid JSON.",
@@ -3126,6 +3157,9 @@ export async function runCodexNativeHookCli(): Promise<void> {
     if (isStopDispatchFailureTestTrigger(payload)) {
       throw new Error("test-induced Stop dispatch failure");
     }
+    if (isDispatchFailureTestTrigger()) {
+      throw new Error("test-induced dispatch failure");
+    }
 
     const result = await dispatchCodexNativeHook(payload);
     if (result.outputJson) {
@@ -3134,25 +3168,19 @@ export async function runCodexNativeHookCli(): Promise<void> {
       writeNativeHookJsonStdout({});
     }
   } catch (error) {
-    if (readHookEventName(payload) !== "Stop") {
-      throw error;
+    const cwd = safeString(payload.cwd).trim() || process.cwd();
+    await logNativeHookCliError(cwd, "native_hook_dispatch_error", error, payload);
+    if (readHookEventName(payload) === "Stop") {
+      writeNativeHookJsonStdout(buildStopDispatchFailureOutput(error));
+    } else {
+      process.exitCode = 1;
     }
-    process.stderr.write(
-      `[omx] codex-native Stop hook dispatch failed: ${
-        error instanceof Error ? error.message : String(error)
-      }\n`,
-    );
-    writeNativeHookJsonStdout(buildStopDispatchFailureOutput(error));
   }
 }
 
 if (isCodexNativeHookMainModule(import.meta.url, process.argv[1])) {
   runCodexNativeHookCli().catch((error) => {
-    process.stderr.write(
-      `[omx] codex-native-hook failed: ${
-        error instanceof Error ? error.message : String(error)
-      }\n`,
-    );
     process.exitCode = 1;
+    void logNativeHookCliError(process.cwd(), "native_hook_fatal_error", error);
   });
 }

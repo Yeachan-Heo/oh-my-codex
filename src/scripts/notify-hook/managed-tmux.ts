@@ -75,6 +75,7 @@ function readCurrentTmuxSessionName(): string {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 2000,
+      windowsHide: true,
     }).trim();
   } catch {
     return '';
@@ -104,13 +105,10 @@ async function readTmuxPaneInstanceId(paneTarget: string): Promise<string> {
 }
 
 function warnPaneInstanceFallback(paneTarget: string): void {
-  const target = safeString(paneTarget).trim();
-  if (!target) return;
-  try {
-    console.warn(`[omx] missing ${OMX_PANE_INSTANCE_OPTION} on ${target}; falling back to ${OMX_INSTANCE_OPTION}`);
-  } catch {
-    // warning is best effort only
-  }
+  // Notify hooks run inside Codex foreground hook surfaces. Keep this
+  // compatibility fallback silent; downstream tmux-hook events still record
+  // skipped/failed injection decisions in .omx/logs.
+  void paneTarget;
 }
 
 export async function resolveTmuxSessionForInstance(instanceId: string): Promise<string> {
@@ -146,6 +144,7 @@ function readParentPid(pid: number): number | null {
     const raw = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], {
       encoding: 'utf-8',
       timeout: 2000,
+      windowsHide: true,
     }).trim();
     const ppid = Number(raw);
     return Number.isFinite(ppid) && ppid > 0 ? ppid : null;

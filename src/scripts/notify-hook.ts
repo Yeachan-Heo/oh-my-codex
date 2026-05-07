@@ -771,8 +771,31 @@ async function main() {
   }
 }
 
+async function logFatalNotifyHookError(err: unknown): Promise<void> {
+  let cwd = process.cwd();
+  try {
+    const rawPayload = process.argv[process.argv.length - 1];
+    if (rawPayload && !rawPayload.startsWith('-')) {
+      const payload = JSON.parse(rawPayload) as Record<string, unknown>;
+      cwd = safeString(payload.cwd || payload['cwd'] || cwd) || cwd;
+    }
+  } catch {
+    // Keep notification hook failures silent in Codex TUI surfaces.
+  }
+
+  const logsDir = join(cwd, '.omx', 'logs');
+  await mkdir(logsDir, { recursive: true }).catch(() => {});
+  const logPath = join(logsDir, `notify-hook-${new Date().toISOString().split('T')[0]}.jsonl`);
+  await appendFile(logPath, JSON.stringify({
+    timestamp: new Date().toISOString(),
+    type: 'notify_hook_fatal_error',
+    error: err instanceof Error ? err.message : String(err),
+  }) + '\n').catch(() => {});
+}
+
 main().catch((err) => {
-  process.exitCode = 1;
-  // eslint-disable-next-line no-console
-  console.error('[notify-hook] fatal error:', err);
+  // Notify hooks are auxiliary background work. Avoid printing stack traces into
+  // Codex TUI/PowerShell foreground panes; record diagnostics in .omx/logs.
+  process.exitCode = 0;
+  void logFatalNotifyHookError(err);
 });
