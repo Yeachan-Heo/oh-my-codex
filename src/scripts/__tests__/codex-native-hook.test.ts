@@ -792,6 +792,9 @@ describe("codex native hook dispatch", () => {
     try {
       await writeFile(join(cwd, ".gitignore"), "node_modules/\n");
       execFileSync("git", ["init"], { cwd, stdio: "pipe" });
+      const emptyExcludesFile = join(cwd, "empty-global-ignore");
+      await writeFile(emptyExcludesFile, "");
+      execFileSync("git", ["config", "core.excludesfile", emptyExcludesFile], { cwd, stdio: "pipe" });
 
       const result = await dispatchCodexNativeHook(
         {

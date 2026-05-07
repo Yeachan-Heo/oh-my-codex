@@ -70,6 +70,29 @@ describe('run-test-files diagnostics', () => {
     }
   });
 
+  it('serializes test files by default outside CI to avoid tmux and process watcher races', () => {
+    const wd = mkdtempSync(join(tmpdir(), 'omx-run-test-files-'));
+    try {
+      const testsDir = join(wd, '__tests__');
+      mkdirSync(testsDir, { recursive: true });
+      writeFileSync(
+        join(testsDir, 'pass.test.js'),
+        [
+          "import { test } from 'node:test';",
+          "test('passes', () => {});",
+          '',
+        ].join('\n'),
+      );
+
+      const result = runCompiledRunner(wd);
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stderr, /test concurrency 1/);
+    } finally {
+      rmSync(wd, { recursive: true, force: true });
+    }
+  });
+
   it('serializes test files by default in CI to avoid cross-file child-process leaks', () => {
     const wd = mkdtempSync(join(tmpdir(), 'omx-run-test-files-'));
     try {
@@ -111,6 +134,29 @@ describe('run-test-files diagnostics', () => {
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
       assert.match(result.stderr, /test concurrency 2/);
+    } finally {
+      rmSync(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to serialized execution when test concurrency override is invalid', () => {
+    const wd = mkdtempSync(join(tmpdir(), 'omx-run-test-files-'));
+    try {
+      const testsDir = join(wd, '__tests__');
+      mkdirSync(testsDir, { recursive: true });
+      writeFileSync(
+        join(testsDir, 'pass.test.js'),
+        [
+          "import { test } from 'node:test';",
+          "test('passes', () => {});",
+          '',
+        ].join('\n'),
+      );
+
+      const result = runCompiledRunner(wd, { OMX_NODE_TEST_CONCURRENCY: '0' });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stderr, /test concurrency 1/);
     } finally {
       rmSync(wd, { recursive: true, force: true });
     }

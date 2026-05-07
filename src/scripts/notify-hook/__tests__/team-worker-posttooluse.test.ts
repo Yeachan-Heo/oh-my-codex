@@ -8,11 +8,14 @@ import { tmpdir } from 'node:os';
 import { handleTeamWorkerPostToolUseSuccess, teamWorkerPostToolUseInternals } from '../team-worker-posttooluse.js';
 import { readTeamEvents } from '../../../team/state/events.js';
 
-async function initWorkerFixture(): Promise<{ cwd: string; stateRoot: string; env: NodeJS.ProcessEnv }> {
+async function initWorkerFixture(): Promise<{ cwd: string; hooksDir: string; stateRoot: string; env: NodeJS.ProcessEnv }> {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-posttooluse-worker-'));
   execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.name', 'Test User'], { cwd, stdio: 'ignore' });
+  const hooksDir = join(cwd, 'test-hooks');
+  await mkdir(hooksDir, { recursive: true });
+  execFileSync('git', ['config', 'core.hooksPath', hooksDir], { cwd, stdio: 'ignore' });
   await writeFile(join(cwd, 'README.md'), 'hello\n', 'utf-8');
   execFileSync('git', ['add', 'README.md'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['commit', '-m', 'init'], { cwd, stdio: 'ignore' });
@@ -29,6 +32,7 @@ async function initWorkerFixture(): Promise<{ cwd: string; stateRoot: string; en
   await writeFile(join(stateRoot, 'team', 'demo-team', 'config.json'), JSON.stringify({ leader_cwd: cwd }, null, 2), 'utf-8');
   return {
     cwd,
+    hooksDir,
     stateRoot,
     env: {
       ...process.env,
@@ -138,7 +142,7 @@ describe('handleTeamWorkerPostToolUseSuccess', () => {
 
   it('unstages checkpointable paths when checkpoint commit fails after staging', async () => {
     const fixture = await initWorkerFixture();
-    const hookPath = join(fixture.cwd, '.git', 'hooks', 'prepare-commit-msg');
+    const hookPath = join(fixture.hooksDir, 'prepare-commit-msg');
     await writeFile(hookPath, '#!/bin/sh\nexit 42\n', 'utf-8');
     await chmod(hookPath, 0o755);
     await writeFile(join(fixture.cwd, 'commit-fail.txt'), 'must not remain staged\n', 'utf-8');

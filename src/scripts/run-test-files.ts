@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 
 const DEFAULT_TEST_TIMEOUT_MS = 0;
 const DEFAULT_RUNNER_TIMEOUT_MS = 30 * 60 * 1_000;
-const DEFAULT_CI_TEST_CONCURRENCY = 1;
+const DEFAULT_TEST_CONCURRENCY = 1;
 
 function collectTests(path: string, out: string[]): void {
   let stats;
@@ -38,10 +38,10 @@ function parseTestConcurrency(env: NodeJS.ProcessEnv): number | undefined {
   if (rawValue) {
     const parsed = Number(rawValue);
     if (Number.isFinite(parsed) && parsed >= 1) return Math.floor(parsed);
-    return undefined;
+    return DEFAULT_TEST_CONCURRENCY;
   }
 
-  return env.CI === 'true' || env.GITHUB_ACTIONS === 'true' ? DEFAULT_CI_TEST_CONCURRENCY : undefined;
+  return DEFAULT_TEST_CONCURRENCY;
 }
 
 const roots = process.argv.slice(2);
