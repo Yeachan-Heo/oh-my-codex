@@ -9,6 +9,7 @@ import {
   decodeApprovedExecutionQuotedValue,
   isPlanningComplete,
   readApprovedExecutionLaunchHint,
+  readApprovedExecutionLaunchHintOutcome,
   readLatestPlanningArtifacts,
   readPlanningArtifacts,
   readTeamDagArtifactResolution,
@@ -285,6 +286,15 @@ describe('planning artifacts', () => {
     assert.equal(selection.contextPackStatus, 'missing-baseline');
     assert.deepEqual(selection.missingRequiredContextPackRoles, []);
     assert.deepEqual(selection.contextPackIssues, ['Approved plan is missing a matching test spec.']);
+
+    const outcome = readApprovedExecutionLaunchHintOutcome(tempDir, 'ralph');
+    assert.equal(outcome.status, 'resolved');
+    if (outcome.status !== 'resolved') {
+      throw new Error('expected missing-baseline approved hint outcome');
+    }
+    assert.equal(outcome.hint.contextPackStatus, 'missing-baseline');
+    assert.deepEqual(outcome.hint.testSpecPaths, []);
+    assert.deepEqual(outcome.hint.contextPackIssues, ['Approved plan is missing a matching test spec.']);
 
     assert.equal(readApprovedExecutionLaunchHint(tempDir, 'ralph'), null);
 

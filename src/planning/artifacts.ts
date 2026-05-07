@@ -259,11 +259,14 @@ function readApprovedRepositoryContextSummary(
 function readApprovedPlanText(
   cwd: string,
   options: ApprovedExecutionLaunchHintReadOptions = {},
+  allowMissingBaseline = false,
 ): { content: string; context: ApprovedPlanContext } | null {
   const artifacts = readPlanningArtifacts(cwd);
   const selection = selectPlanningArtifacts(artifacts, options.prdPath);
   const latestPrdPath = selection.prdPath;
-  if (!latestPrdPath || selection.testSpecPaths.length === 0 || !existsSync(latestPrdPath)) return null;
+  if (!latestPrdPath || (!allowMissingBaseline && selection.testSpecPaths.length === 0) || !existsSync(latestPrdPath)) {
+    return null;
+  }
 
   try {
     const content = readFileSync(latestPrdPath, 'utf-8');
@@ -429,7 +432,7 @@ export function readApprovedExecutionLaunchHintOutcome(
   mode: 'team' | 'ralph',
   options: ApprovedExecutionLaunchHintReadOptions = {},
 ): ApprovedExecutionLaunchHintOutcome {
-  const approvedPlan = readApprovedPlanText(cwd, options);
+  const approvedPlan = readApprovedPlanText(cwd, options, true);
   if (!approvedPlan) return { status: 'absent' };
 
   const selected = selectLaunchHintMatch(
@@ -476,5 +479,8 @@ export function readApprovedExecutionLaunchHint(
   options: ApprovedExecutionLaunchHintReadOptions = {},
 ): ApprovedExecutionLaunchHint | null {
   const outcome = readApprovedExecutionLaunchHintOutcome(cwd, mode, options);
-  return outcome.status === 'resolved' ? outcome.hint : null;
+  if (outcome.status !== 'resolved' || outcome.hint.contextPackStatus === 'missing-baseline') {
+    return null;
+  }
+  return outcome.hint;
 }

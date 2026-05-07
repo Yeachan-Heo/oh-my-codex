@@ -95,6 +95,38 @@ describe('readMatchedApprovedRalphExecutionHint', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it('preserves missing-baseline approved Ralph hints for repair-only follow-up guidance', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-missing-baseline-'));
+    try {
+      await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
+      await writeFile(
+        join(cwd, '.omx', 'plans', 'prd-issue-910.md'),
+        [
+          '# PRD',
+          '',
+          'Launch via omx ralph "Repair approved issue 910 plan"',
+        ].join('\n'),
+      );
+
+      const hint = readMatchedApprovedRalphExecutionHint(cwd, 'ralph-cli-launch');
+      assert.ok(hint);
+      assert.equal(hint?.task, 'Repair approved issue 910 plan');
+      assert.equal(hint?.contextPackStatus, 'missing-baseline');
+      assert.deepEqual(hint?.testSpecPaths, []);
+
+      const instructions = buildRalphAppendInstructions('Repair approved issue 910 plan', {
+        changedFilesPath: '.omx/ralph/changed-files.txt',
+        noDeslop: false,
+        approvedHint: hint,
+      });
+      assert.match(instructions, /Approved planning handoff context/i);
+      assert.match(instructions, /Missing-baseline fallback/i);
+      assert.match(instructions, /restore the missing baseline before broadening context/i);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('isRalphPrdMode', () => {
@@ -317,6 +349,22 @@ describe('ralph deslop launch wiring', () => {
     assert.match(instructions, /invalid context pack issues: Declared context pack basis test-spec hash/i);
     assert.match(instructions, /only as repair inputs/i);
     assert.match(instructions, /repair or recreate the canonical context pack/i);
+  });
+
+  it('surfaces repair-only guidance for incomplete approved handoff context', () => {
+    const instructions = buildRalphAppendInstructions('Repair approved issue 1072 plan', {
+      changedFilesPath: '.omx/ralph/changed-files.txt',
+      noDeslop: false,
+      approvedHint: {
+        ...approvedHint,
+        contextPackStatus: 'incomplete',
+        contextPackIssues: ['Pack omits required execution roles.'],
+        missingRequiredContextPackRoles: ['build', 'verify'],
+      },
+    });
+    assert.match(instructions, /incomplete context pack issues: Pack omits required execution roles/i);
+    assert.match(instructions, /missing required context roles: build, verify/i);
+    assert.match(instructions, /repair or recreate the canonical context pack with required role coverage/i);
   });
 
   it('seeds the changed-files artifact with bounded-scope guidance', () => {

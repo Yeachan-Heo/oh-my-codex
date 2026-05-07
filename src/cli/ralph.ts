@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { startMode, updateModeState } from '../modes/base.js';
-import { readApprovedExecutionLaunchHint, type ApprovedExecutionLaunchHint } from '../planning/artifacts.js';
+import { readApprovedExecutionLaunchHintOutcome, type ApprovedExecutionLaunchHint } from '../planning/artifacts.js';
 import { ensureCanonicalRalphArtifacts } from '../ralph/persistence.js';
 import { resolveCodexHomeForLaunch } from './codex-home.js';
 import {
@@ -152,12 +152,13 @@ export function readMatchedApprovedRalphExecutionHint(
   cwd: string,
   explicitTask: string,
 ): ApprovedExecutionLaunchHint | null {
+  const outcome = readApprovedExecutionLaunchHintOutcome(
+    cwd,
+    'ralph',
+    explicitTask === 'ralph-cli-launch' ? {} : { task: explicitTask },
+  );
   return resolveApprovedRalphExecutionHint(
-    readApprovedExecutionLaunchHint(
-      cwd,
-      'ralph',
-      explicitTask === 'ralph-cli-launch' ? {} : { task: explicitTask },
-    ),
+    outcome.status === 'resolved' ? outcome.hint : null,
     explicitTask,
   );
 }

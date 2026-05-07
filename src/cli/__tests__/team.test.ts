@@ -59,11 +59,12 @@ function buildContextPackOutcome(relativePackPath: string): string {
   ].join('\n');
 }
 
-async function writeReadyContextPack(
+async function writeContextPack(
   cwd: string,
   slug: string,
   prdPath: string,
   testSpecPath: string,
+  roles: readonly string[],
 ): Promise<void> {
   const contextDir = join(cwd, '.omx', 'context');
   const packPath = join(cwd, canonicalContextPackRelativePath(slug));
@@ -82,11 +83,20 @@ async function writeReadyContextPack(
         sha1: computeGitBlobSha1(testSpecContent),
       }],
     },
-    entries: ['scope', 'build', 'verify'].map((role, index) => ({
+    entries: roles.map((role, index) => ({
       path: `src/${role}-${index}.ts`,
       roles: [role],
     })),
   }, null, 2));
+}
+
+async function writeReadyContextPack(
+  cwd: string,
+  slug: string,
+  prdPath: string,
+  testSpecPath: string,
+): Promise<void> {
+  await writeContextPack(cwd, slug, prdPath, testSpecPath, ['scope', 'build', 'verify']);
 }
 
 beforeEach(() => {
@@ -567,6 +577,60 @@ describe('parseTeamStartArgs', () => {
       assert.throws(
         () => parseTeamStartArgs(['team']),
         /approved_execution_hint_nonready:team:invalid/,
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails short follow-up reuse when the latest approved handoff is missing its baseline', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-followup-missing-baseline-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(wd);
+      const plansDir = join(wd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      await writeFile(
+        join(plansDir, 'prd-issue-2086-missing-baseline.md'),
+        '# Approved plan\n\nLaunch via omx team 3:executor "Execute approved issue 2086 missing-baseline plan"\n',
+      );
+
+      assert.throws(
+        () => parseTeamStartArgs(['team']),
+        /approved_execution_hint_nonready:team:missing-baseline/,
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails short follow-up reuse when the latest approved handoff is incomplete', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-followup-incomplete-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(wd);
+      const plansDir = join(wd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      const prdPath = join(plansDir, 'prd-issue-2086-incomplete.md');
+      const testSpecPath = join(plansDir, 'test-spec-issue-2086-incomplete.md');
+      await writeFile(
+        prdPath,
+        [
+          '# Approved plan',
+          '',
+          buildContextPackOutcome(canonicalContextPackRelativePath('issue-2086-incomplete')),
+          '',
+          'Launch via omx team 3:executor "Execute approved issue 2086 incomplete plan"',
+        ].join('\n'),
+      );
+      await writeFile(testSpecPath, '# Test spec\n');
+      await writeContextPack(wd, 'issue-2086-incomplete', prdPath, testSpecPath, ['scope']);
+
+      assert.throws(
+        () => parseTeamStartArgs(['team']),
+        /approved_execution_hint_nonready:team:incomplete/,
       );
     } finally {
       process.chdir(previousCwd);

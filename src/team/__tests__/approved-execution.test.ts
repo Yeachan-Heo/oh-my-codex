@@ -187,6 +187,41 @@ describe('approved execution binding', () => {
     });
   });
 
+  it('preserves missing-baseline continuity instead of collapsing it to stale', async () => {
+    await withUnboxedOmxRoot(async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-approved-execution-missing-baseline-'));
+      const stateRoot = join(cwd, '.omx', 'state');
+      try {
+        const plansDir = join(cwd, '.omx', 'plans');
+        await mkdir(plansDir, { recursive: true });
+        const prdPath = join(plansDir, 'prd-issue-1318.md');
+        await writeFile(
+          prdPath,
+          '# Approved plan\n\nLaunch via omx team 1:executor "Execute approved issue 1318 plan"\n',
+        );
+        await writePersistedApprovedTeamExecutionBinding('bound-team', cwd, {
+          prd_path: prdPath,
+          task: 'Execute approved issue 1318 plan',
+          command: 'omx team 1:executor "Execute approved issue 1318 plan"',
+        }, stateRoot);
+
+        const state = await resolvePersistedApprovedTeamExecutionContinuityState(
+          'bound-team',
+          cwd,
+          stateRoot,
+        );
+        assert.equal(state.status, 'valid');
+        if (state.status !== 'valid') {
+          throw new Error('expected missing-baseline continuity state');
+        }
+        assert.equal(state.approvedHint.contextPackStatus, 'missing-baseline');
+        assert.deepEqual(state.approvedHint.testSpecPaths, []);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('reports malformed and stale binding states explicitly', async () => {
     await withUnboxedOmxRoot(async () => {
       const cwd = await mkdtemp(join(tmpdir(), 'omx-approved-execution-invalid-'));

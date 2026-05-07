@@ -140,13 +140,22 @@ function resolveApprovedTeamPlanPath(
 ): string {
   const artifacts = readPlanningArtifacts(cwd);
   const resolvedLatestPlanPath = resolvePlanningPrdPath(artifacts, cwd, latestPlanPath);
+  const latestPlanTestSpecPaths = resolvedLatestPlanPath.matchedPath
+    ? matchingTestSpecPathsForPrd(artifacts, resolvedLatestPlanPath.matchedPath)
+    : [];
+  if (!resolvedLatestPlanPath.matchedPath) {
+    throw new Error(`team_exec_approved_handoff_missing:${resolvedLatestPlanPath.fallbackPath}`);
+  }
+  if (latestPlanTestSpecPaths.length === 0) {
+    return resolvedLatestPlanPath.matchedPath;
+  }
   const selection = readRuntimeLatestPlanningSelection(artifacts, cwd, ralplanArtifacts)
     ?? readLatestApprovedPlanningSelection(artifacts);
   const selectedPrdPath = selection.prdPath
     ? resolvePlanningPrdPath(artifacts, cwd, selection.prdPath).matchedPath
     : null;
 
-  if (!selectedPrdPath || selection.testSpecPaths.length === 0 || !resolvedLatestPlanPath.matchedPath) {
+  if (!selectedPrdPath) {
     throw new Error(`team_exec_approved_handoff_missing:${resolvedLatestPlanPath.fallbackPath}`);
   }
   if (selectedPrdPath !== resolvedLatestPlanPath.matchedPath) {
