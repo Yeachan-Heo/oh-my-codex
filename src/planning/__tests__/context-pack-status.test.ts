@@ -101,21 +101,21 @@ describe('context pack handoff status', () => {
       baselineState: 'missing-prd',
       outcomeState: 'absent',
       packState: 'missing',
-      roleCoverage: 'missing-required-roles',
+      roleCoverage: 'unknown',
       basisState: 'stale',
     }), 'missing-baseline');
     assert.equal(resolveContextPackHandoffState({
       baselineState: 'present',
       outcomeState: 'absent',
       packState: 'missing',
-      roleCoverage: 'missing-required-roles',
+      roleCoverage: 'unknown',
       basisState: 'stale',
     }), 'plan-only');
     assert.equal(resolveContextPackHandoffState({
       baselineState: 'present',
       outcomeState: 'declared',
       packState: 'missing',
-      roleCoverage: 'missing-required-roles',
+      roleCoverage: 'unknown',
       basisState: 'stale',
     }), 'incomplete');
     assert.equal(resolveContextPackHandoffState({
@@ -129,7 +129,7 @@ describe('context pack handoff status', () => {
       baselineState: 'present',
       outcomeState: 'malformed',
       packState: 'valid',
-      roleCoverage: 'covered',
+      roleCoverage: 'unknown',
       basisState: 'fresh',
     }), 'invalid');
     assert.equal(resolveContextPackHandoffState({
@@ -154,6 +154,7 @@ describe('context pack handoff status', () => {
     assert.equal(status.contextPackStatus, 'plan-only');
     assert.equal(status.baselineState, 'present');
     assert.equal(status.outcomeState, 'absent');
+    assert.equal(status.roleCoverage, 'unknown');
     assert.deepEqual(status.missingRequiredContextPackRoles, []);
     assert.deepEqual(status.contextPackIssues, []);
   });
@@ -209,7 +210,47 @@ describe('context pack handoff status', () => {
     const status = readContextPackHandoffStatus(tempDir);
 
     assert.equal(status.contextPackStatus, 'invalid');
+    assert.equal(status.roleCoverage, 'covered');
+    assert.deepEqual(status.missingRequiredContextPackRoles, []);
     assert.ok(status.contextPackIssues.some((issue) => issue.includes('basis test-spec hash')));
+  });
+
+  it('preserves inspectable missing roles even when the declared pack is otherwise invalid', async () => {
+    const { prdPath, testSpecPath } = await writeApprovedPlan('delta-missing-roles', [
+      '# PRD',
+      '',
+      buildContextPackOutcome(canonicalContextPackRelativePath('delta-missing-roles')),
+      '',
+      'Launch via omx ralph "Execute delta missing roles plan"',
+    ]);
+    await writeContextPack('delta-missing-roles', prdPath, testSpecPath, ['scope']);
+    await writeFile(testSpecPath, '# Drifted Test Spec\n');
+
+    const status = readContextPackHandoffStatus(tempDir);
+
+    assert.equal(status.contextPackStatus, 'invalid');
+    assert.equal(status.roleCoverage, 'missing-required-roles');
+    assert.deepEqual(status.missingRequiredContextPackRoles, ['build', 'verify']);
+    assert.ok(status.contextPackIssues.some((issue) => issue.includes('basis test-spec hash')));
+  });
+
+  it('keeps role coverage unknown when the declared pack cannot be inspected', async () => {
+    const { packPath } = await writeApprovedPlan('invalid-json', [
+      '# PRD',
+      '',
+      buildContextPackOutcome(canonicalContextPackRelativePath('invalid-json')),
+      '',
+      'Launch via omx ralph "Execute invalid json plan"',
+    ]);
+    await writeFile(packPath, '{not json');
+
+    const status = readContextPackHandoffStatus(tempDir);
+
+    assert.equal(status.contextPackStatus, 'invalid');
+    assert.equal(status.packState, 'invalid');
+    assert.equal(status.roleCoverage, 'unknown');
+    assert.deepEqual(status.missingRequiredContextPackRoles, []);
+    assert.ok(status.contextPackIssues.some((issue) => issue.includes('invalid JSON')));
   });
 
   it('ignores fenced outcome declarations and keeps the plan in plan-only status', async () => {

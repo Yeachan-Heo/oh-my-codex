@@ -345,6 +345,60 @@ describe('planning artifacts', () => {
     assert.deepEqual(hint?.contextPackIssues, []);
   });
 
+  it('preserves invalid context-pack issues on approved hints without widening them into missing roles', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    const prdPath = join(plansDir, 'prd-context-invalid.md');
+    const testSpecPath = join(plansDir, 'test-spec-context-invalid.md');
+    await writeFile(
+      prdPath,
+      [
+        '# PRD',
+        '',
+        buildContextPackOutcome(canonicalContextPackRelativePath('context-invalid')),
+        '',
+        'Launch via omx ralph "Execute invalid context handoff"',
+      ].join('\n'),
+    );
+    await writeFile(testSpecPath, '# Test Spec\n');
+    await writeContextPack('context-invalid', prdPath, testSpecPath, ['scope', 'build', 'verify']);
+    await writeFile(testSpecPath, '# Drifted Test Spec\n');
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
+
+    assert.ok(hint);
+    assert.equal(hint?.contextPackStatus, 'invalid');
+    assert.deepEqual(hint?.missingRequiredContextPackRoles, []);
+    assert.ok(hint?.contextPackIssues.some((issue) => issue.includes('basis test-spec hash')));
+  });
+
+  it('preserves inspectable missing roles on approved hints even when the pack is invalid', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    const prdPath = join(plansDir, 'prd-context-invalid-missing-roles.md');
+    const testSpecPath = join(plansDir, 'test-spec-context-invalid-missing-roles.md');
+    await writeFile(
+      prdPath,
+      [
+        '# PRD',
+        '',
+        buildContextPackOutcome(canonicalContextPackRelativePath('context-invalid-missing-roles')),
+        '',
+        'Launch via omx ralph "Execute invalid missing roles handoff"',
+      ].join('\n'),
+    );
+    await writeFile(testSpecPath, '# Test Spec\n');
+    await writeContextPack('context-invalid-missing-roles', prdPath, testSpecPath, ['scope']);
+    await writeFile(testSpecPath, '# Drifted Test Spec\n');
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
+
+    assert.ok(hint);
+    assert.equal(hint?.contextPackStatus, 'invalid');
+    assert.deepEqual(hint?.missingRequiredContextPackRoles, ['build', 'verify']);
+    assert.ok(hint?.contextPackIssues.some((issue) => issue.includes('basis test-spec hash')));
+  });
+
 
   it('parses $ralph aliases with single-quoted task text for approved launch hints', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');

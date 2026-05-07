@@ -20,7 +20,8 @@ export type ContextPackStatus =
 export type ContextPackBaselineState = 'missing-prd' | 'missing-test-spec' | 'present';
 export type ContextPackOutcomeState = 'absent' | 'malformed' | 'ambiguous' | 'declared';
 export type ContextPackPackState = 'missing' | 'unreadable' | 'invalid' | 'valid';
-export type ContextPackRoleCoverageState = 'missing-required-roles' | 'covered';
+export type ContextPackRoleCoverageState =
+  'unknown' | 'missing-required-roles' | 'covered';
 export type ContextPackBasisState = 'stale' | 'fresh';
 
 export interface ContextPackRef {
@@ -536,7 +537,7 @@ export function resolveContextPackHandoffState(input: {
   if (input.basisState !== 'fresh') {
     return 'invalid';
   }
-  if (input.roleCoverage !== 'covered') {
+  if (input.roleCoverage === 'missing-required-roles') {
     return 'incomplete';
   }
   return 'ready';
@@ -562,7 +563,7 @@ export function resolveContextPackHandoffStatus(
   let contextPack: ContextPackRef | null = null;
   let outcomeState: ContextPackOutcomeState = 'absent';
   let packState: ContextPackPackState = 'missing';
-  let roleCoverage: ContextPackRoleCoverageState = 'missing-required-roles';
+  let roleCoverage: ContextPackRoleCoverageState = 'unknown';
   let basisState: ContextPackBasisState = 'stale';
   let missingRequiredContextPackRoles: ContextPackRole[] = [];
   let declarationMismatch = false;
