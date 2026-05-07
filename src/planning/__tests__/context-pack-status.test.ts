@@ -231,6 +231,24 @@ describe('context pack handoff status', () => {
     assert.equal(status.outcomeState, 'absent');
   });
 
+  it('rejects nested outcome paths that are not canonical context-pack files', async () => {
+    await writeApprovedPlan('eta', [
+      '# PRD',
+      '',
+      buildContextPackOutcome('.omx/context/context-20260507T120000Z-eta/nested.json'),
+      '',
+      'Launch via omx ralph "Execute eta plan"',
+    ]);
+
+    const status = readContextPackHandoffStatus(tempDir);
+
+    assert.equal(status.contextPackStatus, 'invalid');
+    assert.equal(status.outcomeState, 'malformed');
+    assert.ok(status.contextPackIssues.some((issue) => issue.includes(
+      '.omx/context/context-<timestamp>-<slug>.json',
+    )));
+  });
+
   it('reports invalid when the approved plan declares multiple outcome sections', async () => {
     await writeApprovedPlan('zeta', [
       '# PRD',

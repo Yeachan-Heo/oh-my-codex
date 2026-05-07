@@ -9,7 +9,7 @@ const CONTEXT_PACK_OUTCOME_DECLARATION_PATTERN = /^[*-]\s*pack\s*:/i;
 const CONTEXT_PACK_OUTCOME_LINE_PATTERN =
   /^[*-]\s*pack\s*:\s*(?:(?:created|refreshed|revalidated)\s+)?(?:`(?<quotedPath>[^`]+\.json)`|(?<barePath>\S+\.json))\s*$/i;
 const CONTEXT_PACK_PATH_PATTERN =
-  /^\.omx\/context\/context-(?<timestamp>\d{8}T\d{6}Z)-(?<slug>.+)\.json$/i;
+  /^\.omx\/context\/context-(?<timestamp>\d{8}T\d{6}Z)-(?<slug>[^/]+)\.json$/i;
 const SHA1_PATTERN = /^[0-9a-f]{40}$/i;
 
 export const REQUIRED_CONTEXT_PACK_ROLES = ['scope', 'build', 'verify'] as const;
