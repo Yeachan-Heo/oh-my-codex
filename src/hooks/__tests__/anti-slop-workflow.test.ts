@@ -64,6 +64,13 @@ const aiSlopCleanerWorkflowPatterns = [
   /^   - \*\*Dead code\*\* — unused code, unreachable branches, stale flags, debug leftovers$/m,
   /^   - \*\*Needless abstraction\*\* — pass-through wrappers, speculative indirection, single-use helper layers$/m,
   /^   - \*\*Boundary violations\*\* — hidden coupling, leaky responsibilities, wrong-layer imports or side effects$/m,
+  /^   - \*\*UI\/design slop\*\* — review visual outputs as context-sensitive signals, not absolute bans; preserve intentional brand, design-system, accessibility, or product-context exceptions when the rationale is clear$/m,
+  /^     - Korean body text that is too small: challenge 11-12px body copy; Korean body text generally needs 14px or larger unless a dense, accessible system explicitly supports smaller text$/m,
+  /^     - Gratuitous depth: avoid putting box shadows on every logo, surface, card, icon, background, and step block when hierarchy or affordance does not need it$/m,
+  /^     - Repetitive content scaffolding: trim repeated eyebrow \+ title \+ description \+ paragraph stacks, filler explanation text, and generic emoji badges that do not add meaning$/m,
+  /^     - Default AI palettes: question blue\/purple defaults such as #3B82F6 when there is no brand, semantic, or system rationale$/m,
+  /^     - Over-perfect grids: avoid reflexive uniform 3-column or 4-column card grids when the product context would benefit from rhythm, asymmetry, carousel cuts, bento composition, or varied emphasis$/m,
+  /^     - Extreme gradients: tone down "AI demo" gradients unless the brand or campaign intentionally calls for that intensity$/m,
   /^5\. \*\*Execute passes one smell at a time\*\*$/m,
   /^   - \*\*Fallback-like code resolution gate\*\* — remove masking fallback slop, repair root causes, or escalate ambiguous cases before continuing$/m,
   /^   - \*\*Pass 1: Dead code deletion\*\*$/m,
@@ -124,6 +131,18 @@ describe('anti-slop workflow surfaces', () => {
     assert.match(skill, /dead code/i);
     assert.match(skill, /needless abstraction/i);
     assert.match(skill, /boundary violations/i);
+    assert.match(skill, /UI\/design slop/i);
+    assert.match(skill, /Korean body text/i);
+    assert.match(skill, /11-12px/);
+    assert.match(skill, /14px or larger/);
+    assert.match(skill, /box shadows/i);
+    assert.match(skill, /eyebrow \+ title \+ description \+ paragraph/i);
+    assert.match(skill, /generic emoji badges/i);
+    assert.match(skill, /#3B82F6/);
+    assert.match(skill, /3-column or 4-column card grids/i);
+    assert.match(skill, /rhythm, asymmetry/i);
+    assert.match(skill, /Extreme gradients/i);
+    assert.match(skill, /intentional brand, design-system, accessibility, or product-context exceptions/i);
     assert.match(skill, /Pass 1: Dead code deletion/i);
     assert.match(skill, /Pass 2: Duplicate removal/i);
     assert.match(skill, /Pass 3: Naming\/error handling cleanup/i);

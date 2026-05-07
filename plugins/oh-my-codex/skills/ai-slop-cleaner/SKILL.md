@@ -59,6 +59,13 @@ Use this skill when:
    - **Dead code** — unused code, unreachable branches, stale flags, debug leftovers
    - **Needless abstraction** — pass-through wrappers, speculative indirection, single-use helper layers
    - **Boundary violations** — hidden coupling, leaky responsibilities, wrong-layer imports or side effects
+   - **UI/design slop** — review visual outputs as context-sensitive signals, not absolute bans; preserve intentional brand, design-system, accessibility, or product-context exceptions when the rationale is clear
+     - Korean body text that is too small: challenge 11-12px body copy; Korean body text generally needs 14px or larger unless a dense, accessible system explicitly supports smaller text
+     - Gratuitous depth: avoid putting box shadows on every logo, surface, card, icon, background, and step block when hierarchy or affordance does not need it
+     - Repetitive content scaffolding: trim repeated eyebrow + title + description + paragraph stacks, filler explanation text, and generic emoji badges that do not add meaning
+     - Default AI palettes: question blue/purple defaults such as #3B82F6 when there is no brand, semantic, or system rationale
+     - Over-perfect grids: avoid reflexive uniform 3-column or 4-column card grids when the product context would benefit from rhythm, asymmetry, carousel cuts, bento composition, or varied emphasis
+     - Extreme gradients: tone down "AI demo" gradients unless the brand or campaign intentionally calls for that intensity
    - **Missing tests** — behavior not locked, weak regression coverage, gaps around edge cases
 
 5. **Execute passes one smell at a time**
@@ -84,6 +91,7 @@ Use this skill when:
    - Simplifications made
    - Fallback findings, classifications, and escalation status
    - Tests/diagnostics/build checks run
+   - UI/design reviewer checklist findings when visual/UI files were in scope
    - Remaining risks
    - Residual follow-ups or consciously deferred cleanup
 
@@ -97,6 +105,7 @@ Scope: [files or feature area]
 Behavior Lock: [targeted regression tests added/run]
 Cleanup Plan: [bounded smells and order]
 Fallback Findings: [none, or finding -> masking fallback slop / grounded compatibility/fail-safe fallback -> escalation status]
+UI/Design Findings: [none/N/A, or signal -> action taken/deferred -> intentional exception rationale]
 
 Passes Completed:
 - Fallback-like code resolution gate - [root-cause repair, explicit failure behavior, preserved grounded fallback, or ralplan handoff]
