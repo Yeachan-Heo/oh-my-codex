@@ -10,6 +10,7 @@ import {
   discoverCodexHookConfigPaths,
   dedupeCodexHookConfigPaths,
   getMissingManagedCodexHookEvents,
+  hasUserCodexHooksAfterManagedRemoval,
   isRuntimeCodexHomeMirrorPath,
   mergeManagedCodexHooksConfig,
   removeManagedCodexHooks,
@@ -240,7 +241,39 @@ describe("codex hooks helpers", () => {
     assert.match(removedMixed.nextContent, /"version": 1/);
   });
 
+  it("detects user hooks that remain after managed wrapper removal", () => {
+    const managedOnly = JSON.stringify(buildManagedCodexHooksConfig("/repo"));
+    const mixed = JSON.stringify({
+      hooks: {
+        state: {
+          "custom:/hooks.json:stop:0:0": {
+            trusted_hash: "sha256:user",
+          },
+        },
+        SessionStart: [
+          {
+            hooks: [
+              { type: "command", command: 'node "/repo/dist/scripts/codex-native-hook.js"' },
+              { type: "command", command: "echo keep-me" },
+            ],
+          },
+        ],
+      },
+    });
+    const stateOnly = JSON.stringify({
+      hooks: {
+        state: {
+          "custom:/hooks.json:stop:0:0": {
+            trusted_hash: "sha256:user",
+          },
+        },
+      },
+    });
 
+    assert.equal(hasUserCodexHooksAfterManagedRemoval(managedOnly), false);
+    assert.equal(hasUserCodexHooksAfterManagedRemoval(mixed), true);
+    assert.equal(hasUserCodexHooksAfterManagedRemoval(stateOnly), false);
+  });
 
   it("registers managed compact hook wrappers", () => {
     const config = buildManagedCodexHooksConfig("/repo");

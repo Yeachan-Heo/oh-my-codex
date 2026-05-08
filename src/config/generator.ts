@@ -910,6 +910,41 @@ export function stripOmxFeatureFlags(config: string): string {
   return filtered.join("\n");
 }
 
+/**
+ * Preserve native Codex hook enablement without re-adding other OMX feature
+ * flags. Used by uninstall when user-owned hooks remain in hooks.json.
+ */
+export function upsertCodexHooksFeatureFlag(config: string): string {
+  const lines = config.split(/\r?\n/);
+  const featuresStart = lines.findIndex((line) =>
+    /^\s*\[features\]\s*$/.test(line),
+  );
+
+  if (featuresStart < 0) {
+    const base = config.trimEnd();
+    const featureBlock = ["[features]", "codex_hooks = true", ""].join("\n");
+    return base.length === 0 ? featureBlock : `${base}\n${featureBlock}`;
+  }
+
+  let sectionEnd = lines.length;
+  for (let i = featuresStart + 1; i < lines.length; i++) {
+    if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(lines[i])) {
+      sectionEnd = i;
+      break;
+    }
+  }
+
+  for (let i = featuresStart + 1; i < sectionEnd; i++) {
+    if (/^\s*(?:hooks|codex_hooks)\s*=/.test(lines[i])) {
+      lines[i] = "codex_hooks = true";
+      return lines.join("\n");
+    }
+  }
+
+  lines.splice(sectionEnd, 0, "codex_hooks = true");
+  return lines.join("\n");
+}
+
 export function stripOmxEnvSettings(config: string): string {
   let lines = config.split(/\r?\n/);
   lines = stripTomlTableKey(lines, /^\s*\[env\]\s*$/, OMX_EXPLORE_CMD_ENV);

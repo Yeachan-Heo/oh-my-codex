@@ -10,9 +10,11 @@ import {
   stripOmxEnvSettings,
   stripOmxTopLevelKeys,
   stripOmxFeatureFlags,
+  upsertCodexHooksFeatureFlag,
   stripOmxSeededBehavioralDefaults,
 } from "../config/generator.js";
 import {
+  hasUserCodexHooksAfterManagedRemoval,
   parseCodexHooksConfig,
   removeManagedCodexHooks,
 } from "../config/codex-hooks.js";
@@ -97,9 +99,44 @@ function detectOmxConfigArtifacts(config: string): {
   };
 }
 
+function hasNativeHooksFeatureFlag(config: string): boolean {
+  const lines = config.split(/\r?\n/);
+  const featuresStart = lines.findIndex((line) =>
+    /^\s*\[features\]\s*$/.test(line),
+  );
+  if (featuresStart < 0) return false;
+
+  let sectionEnd = lines.length;
+  for (let i = featuresStart + 1; i < lines.length; i++) {
+    if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(lines[i])) {
+      sectionEnd = i;
+      break;
+    }
+  }
+
+  return lines
+    .slice(featuresStart + 1, sectionEnd)
+    .some((line) => /^\s*(?:hooks|codex_hooks)\s*=\s*true/.test(line));
+}
+
+async function shouldPreserveHooksFeatureFlag(
+  hooksFilePath: string,
+): Promise<boolean> {
+  if (!existsSync(hooksFilePath)) return false;
+
+  try {
+    const existing = await readFile(hooksFilePath, "utf-8");
+    return hasUserCodexHooksAfterManagedRemoval(existing);
+  } catch {
+    return false;
+  }
+}
+
 async function cleanConfig(
   configPath: string,
-  options: Pick<UninstallOptions, "dryRun" | "verbose">,
+  options: Pick<UninstallOptions, "dryRun" | "verbose"> & {
+    preserveHooksFeatureFlag?: boolean;
+  },
 ): Promise<
   Pick<
     UninstallSummary,
@@ -127,6 +164,8 @@ async function cleanConfig(
 
   const original = await readFile(configPath, "utf-8");
   const detected = detectOmxConfigArtifacts(original);
+  const shouldRestoreHooksFeatureFlag =
+    options.preserveHooksFeatureFlag && hasNativeHooksFeatureFlag(original);
 
   result.mcpServersRemoved = detected.hasMcpServers;
   result.agentEntriesRemoved = detected.hasAgentEntries;
@@ -147,6 +186,9 @@ async function cleanConfig(
 
   // Strip feature flags
   config = stripOmxFeatureFlags(config);
+  if (shouldRestoreHooksFeatureFlag) {
+    config = upsertCodexHooksFeatureFlag(config);
+  }
 
   // Strip OMX-managed env defaults
   config = stripOmxEnvSettings(config);
@@ -391,7 +433,9 @@ function printSummary(summary: UninstallSummary, dryRun: boolean): void {
       );
     }
     if (summary.featureFlagsRemoved) {
-      console.log("    Feature flags (multi_agent, child_agents_md, hooks, goals)");
+      console.log(
+        "    Feature flags (multi_agent, child_agents_md, goals; hooks preserved when user hooks remain)",
+      );
     }
   } else if (!summary.configCleaned && summary.mcpServersRemoved.length === 0) {
     console.log("  config.toml: no OMX entries found (or --keep-config used)");
@@ -477,6 +521,9 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
   };
 
   summary.legacySkillRootWarning = await detectLegacySkillRootWarning(scope);
+  const preserveHooksFeatureFlag = await shouldPreserveHooksFeatureFlag(
+    scopeDirs.codexHooksFile,
+  );
 
   // Step 1: Clean config.toml
   if (keepConfig) {
@@ -486,6 +533,7 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
     const configResult = await cleanConfig(scopeDirs.codexConfigFile, {
       dryRun,
       verbose,
+      preserveHooksFeatureFlag,
     });
     Object.assign(summary, configResult);
   }

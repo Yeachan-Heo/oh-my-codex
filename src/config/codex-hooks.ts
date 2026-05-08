@@ -574,3 +574,24 @@ export function removeManagedCodexHooks(
     removedCount,
   };
 }
+
+export function hasCodexHookEntries(content: string): boolean {
+  const parsed = parseCodexHooksConfig(content);
+  if (!parsed) return false;
+
+  return Object.entries(parsed.hooks).some(([eventName, rawEntries]) => {
+    if (eventName === "state" || !Array.isArray(rawEntries)) return false;
+    return rawEntries.some((entry) => {
+      return isPlainObject(entry) &&
+        Array.isArray(entry.hooks) &&
+        entry.hooks.length > 0;
+    });
+  });
+}
+
+export function hasUserCodexHooksAfterManagedRemoval(
+  existingContent: string,
+): boolean {
+  const { nextContent } = removeManagedCodexHooks(existingContent);
+  return nextContent !== null && hasCodexHookEntries(nextContent);
+}
