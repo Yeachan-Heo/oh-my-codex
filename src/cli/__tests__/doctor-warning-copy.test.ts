@@ -512,6 +512,55 @@ OMX_LORE_COMMIT_GUARD = "off"
 		}
 	});
 
+	it("warns when runtime codex-home hooks.json symlinks back to project hooks", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-hooks-runtime-mirror-"));
+		try {
+			const codexDir = join(wd, ".codex");
+			const runtimeSessionDir = join(wd, ".omx", "runtime", "codex-home", "session-1");
+			await mkdir(codexDir, { recursive: true });
+			await mkdir(runtimeSessionDir, { recursive: true });
+			await writeFile(
+				join(wd, ".omx", "setup-scope.json"),
+				JSON.stringify({ scope: "project" }),
+			);
+			const managedEntry = {
+				hooks: [
+					{
+						type: "command",
+						command: 'node "/repo/dist/scripts/codex-native-hook.js"',
+					},
+				],
+			};
+			await writeFile(
+				join(codexDir, "hooks.json"),
+				JSON.stringify(
+					{
+						hooks: {
+							SessionStart: [managedEntry],
+							PreToolUse: [managedEntry],
+							PostToolUse: [managedEntry],
+							UserPromptSubmit: [managedEntry],
+							Stop: [managedEntry],
+						},
+					},
+					null,
+					2,
+				) + "\n",
+			);
+			await symlink(join(codexDir, "hooks.json"), join(runtimeSessionDir, "hooks.json"));
+
+			const res = runOmx(wd, ["doctor"]);
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(
+				res.stdout,
+				/Native hook runtime mirrors: \.omx\/runtime\/codex-home contains 1 hooks\.json runtime mirror skipped by hook discovery/,
+			);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("warns when hooks.json is missing after OMX config was already installed", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-hooks-missing-"));
 		try {

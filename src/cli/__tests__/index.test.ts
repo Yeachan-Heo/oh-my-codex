@@ -1,7 +1,7 @@
 import { afterEach, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, utimesSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -1650,6 +1650,7 @@ describe("project launch scope helpers", () => {
       ].join("\n");
       await writeFile(configPath, originalConfig);
       await writeFile(join(projectCodexHome, "agents", "planner.toml"), 'name = "planner"\n');
+      await writeFile(join(projectCodexHome, "hooks.json"), '{"hooks":{}}\n');
       await writeFile(join(projectCodexHome, "state_5.sqlite"), "state db placeholder");
       await writeFile(join(projectCodexHome, "state_5.sqlite-wal"), "state db wal placeholder");
       await writeFile(join(projectCodexHome, "logs_2.sqlite-shm"), "logs db shm placeholder");
@@ -1667,6 +1668,8 @@ describe("project launch scope helpers", () => {
         await readFile(join(runtimeCodexHome, "agents", "planner.toml"), "utf-8"),
         'name = "planner"\n',
       );
+      assert.equal(await readFile(join(runtimeCodexHome, "hooks.json"), "utf-8"), '{"hooks":{}}\n');
+      assert.equal((await lstat(join(runtimeCodexHome, "hooks.json"))).isSymbolicLink(), false);
       assert.equal(existsSync(join(runtimeCodexHome, "state_5.sqlite")), false);
       assert.equal(existsSync(join(runtimeCodexHome, "state_5.sqlite-wal")), false);
       assert.equal(existsSync(join(runtimeCodexHome, "logs_2.sqlite-shm")), false);

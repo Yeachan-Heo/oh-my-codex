@@ -1,10 +1,16 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildManagedCodexHookTrustState,
   buildManagedCodexHookTrustToml,
   buildManagedCodexHooksConfig,
+  discoverCodexHookConfigPaths,
+  dedupeCodexHookConfigPaths,
   getMissingManagedCodexHookEvents,
+  isRuntimeCodexHomeMirrorPath,
   mergeManagedCodexHooksConfig,
   removeManagedCodexHooks,
 } from "../codex-hooks.js";
@@ -275,5 +281,62 @@ describe("codex hooks helpers", () => {
 
   it("returns null for invalid hooks.json content", () => {
     assert.equal(getMissingManagedCodexHookEvents("{ invalid json"), null);
+  });
+
+  it("ignores runtime codex-home hook mirrors before hook loading", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-hook-dedupe-"));
+    try {
+      const canonicalPath = join(cwd, ".codex", "hooks.json");
+      const mirrorPath = join(cwd, ".omx", "runtime", "codex-home", "session-1", "hooks.json");
+      await mkdir(join(cwd, ".codex"), { recursive: true });
+      await mkdir(join(cwd, ".omx", "runtime", "codex-home", "session-1"), { recursive: true });
+      await writeFile(canonicalPath, JSON.stringify(buildManagedCodexHooksConfig("/repo")));
+      await symlink(canonicalPath, mirrorPath);
+
+      assert.equal(isRuntimeCodexHomeMirrorPath(mirrorPath, cwd), true);
+
+      const result = await dedupeCodexHookConfigPaths([canonicalPath, mirrorPath], cwd);
+      assert.deepEqual(result.paths.map((entry) => entry.path), [canonicalPath]);
+      assert.deepEqual(result.skipped.map((entry) => entry.reason), ["runtime_codex_home_mirror"]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("de-dupes hook config paths by realpath outside runtime mirrors", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-hook-realpath-dedupe-"));
+    try {
+      const canonicalPath = join(cwd, ".codex", "hooks.json");
+      const aliasPath = join(cwd, "alias-hooks.json");
+      await mkdir(join(cwd, ".codex"), { recursive: true });
+      await writeFile(canonicalPath, JSON.stringify(buildManagedCodexHooksConfig("/repo")));
+      await symlink(canonicalPath, aliasPath);
+
+      const result = await dedupeCodexHookConfigPaths([canonicalPath, aliasPath], cwd);
+      assert.deepEqual(result.paths.map((entry) => entry.path), [canonicalPath]);
+      assert.deepEqual(result.skipped.map((entry) => entry.reason), ["duplicate_realpath"]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("discovers canonical hook configs while skipping runtime codex-home mirrors", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-hook-discover-"));
+    try {
+      const canonicalPath = join(cwd, ".codex", "hooks.json");
+      const mirrorPath = join(cwd, ".omx", "runtime", "codex-home", "session-1", "hooks.json");
+      await mkdir(join(cwd, ".codex"), { recursive: true });
+      await mkdir(join(cwd, ".omx", "runtime", "codex-home", "session-1"), { recursive: true });
+      await writeFile(canonicalPath, JSON.stringify(buildManagedCodexHooksConfig("/repo")));
+      await writeFile(mirrorPath, JSON.stringify(buildManagedCodexHooksConfig("/repo")));
+
+      const result = await discoverCodexHookConfigPaths(cwd);
+
+      assert.deepEqual(result.paths.map((entry) => entry.path), [canonicalPath]);
+      assert.deepEqual(result.skipped.map((entry) => entry.path), [mirrorPath]);
+      assert.deepEqual(result.skipped.map((entry) => entry.reason), ["runtime_codex_home_mirror"]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });

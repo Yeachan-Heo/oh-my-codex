@@ -14,6 +14,7 @@ This page is the canonical answer to:
 
 For project scope, `.gitignore` keeps generated `.codex/hooks.json` out of source control.
 `omx uninstall` removes only the OMX-managed wrapper entries from `.codex/hooks.json`; if user hooks remain, the file stays in place.
+Project launches use a session-scoped `.omx/runtime/codex-home/<session>/` mirror for Codex runtime writes; hook review/discovery tools should treat that directory as runtime mirror state and ignore its `hooks.json` surfaces rather than loading them alongside the canonical `.codex/hooks.json`.
 
 `omx doctor` can confirm that these files exist and are shaped correctly. It does not prove that the same shell/profile can complete an authenticated Codex request; use `codex login status` plus a real `omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"` smoke test for that boundary.
 

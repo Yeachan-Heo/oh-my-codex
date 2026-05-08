@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
-import { join, win32 } from "path";
+import { readdir, realpath } from "fs/promises";
+import { basename, join, relative, resolve, win32 } from "path";
 
 export const MANAGED_HOOK_EVENTS = [
   "SessionStart",
@@ -41,6 +42,21 @@ export interface RemoveManagedCodexHooksResult {
 
 export interface ManagedCodexHookTrustState {
   trusted_hash: string;
+}
+
+export interface DedupedCodexHookConfigPath {
+  path: string;
+  reason: "unique";
+}
+
+export interface SkippedCodexHookConfigPath {
+  path: string;
+  reason: "runtime_codex_home_mirror" | "duplicate_realpath";
+  canonicalPath?: string;
+}
+
+export interface DiscoverCodexHookConfigPathsOptions {
+  maxFiles?: number;
 }
 
 const CODEX_HOOK_EVENT_LABELS: Record<ManagedHookEventName, string> = {
@@ -334,6 +350,121 @@ export function buildManagedCodexHookTrustToml(
     ])
     .join("\n")
     .trimEnd();
+}
+
+function pathSegments(filePath: string): string[] {
+  return filePath.split(/[\\/]+/).filter(Boolean);
+}
+
+export function isRuntimeCodexHomeMirrorPath(
+  hookConfigPath: string,
+  cwd: string = process.cwd(),
+): boolean {
+  if (basename(hookConfigPath) !== "hooks.json") return false;
+
+  const absolutePath = resolve(cwd, hookConfigPath);
+  const relativePath = relative(resolve(cwd), absolutePath);
+  const segments = pathSegments(relativePath);
+  if (relativePath === "" || segments[0] === "..") {
+    return false;
+  }
+
+  const omxIndex = segments.indexOf(".omx");
+  if (omxIndex < 0) return false;
+
+  return (
+    segments[omxIndex + 1] === "runtime" &&
+    segments[omxIndex + 2] === "codex-home" &&
+    segments.length > omxIndex + 4 &&
+    segments[segments.length - 1] === "hooks.json"
+  );
+}
+
+export async function dedupeCodexHookConfigPaths(
+  hookConfigPaths: readonly string[],
+  cwd: string = process.cwd(),
+): Promise<{
+  paths: DedupedCodexHookConfigPath[];
+  skipped: SkippedCodexHookConfigPath[];
+}> {
+  const seenRealpaths = new Set<string>();
+  const paths: DedupedCodexHookConfigPath[] = [];
+  const skipped: SkippedCodexHookConfigPath[] = [];
+
+  for (const hookConfigPath of hookConfigPaths) {
+    if (isRuntimeCodexHomeMirrorPath(hookConfigPath, cwd)) {
+      skipped.push({
+        path: hookConfigPath,
+        reason: "runtime_codex_home_mirror",
+      });
+      continue;
+    }
+
+    let canonicalPath: string;
+    try {
+      canonicalPath = await realpath(hookConfigPath);
+    } catch {
+      canonicalPath = resolve(cwd, hookConfigPath);
+    }
+
+    if (seenRealpaths.has(canonicalPath)) {
+      skipped.push({
+        path: hookConfigPath,
+        reason: "duplicate_realpath",
+        canonicalPath,
+      });
+      continue;
+    }
+
+    seenRealpaths.add(canonicalPath);
+    paths.push({ path: hookConfigPath, reason: "unique" });
+  }
+
+  return { paths, skipped };
+}
+
+const DEFAULT_DISCOVER_HOOK_CONFIG_MAX_FILES = 5_000;
+const DISCOVER_HOOK_CONFIG_EXCLUDED_DIRS = new Set([
+  ".git",
+  "node_modules",
+  "dist",
+  "target",
+]);
+
+export async function discoverCodexHookConfigPaths(
+  cwd: string = process.cwd(),
+  options: DiscoverCodexHookConfigPathsOptions = {},
+): Promise<{
+  paths: DedupedCodexHookConfigPath[];
+  skipped: SkippedCodexHookConfigPath[];
+}> {
+  const root = resolve(cwd);
+  const maxFiles = options.maxFiles ?? DEFAULT_DISCOVER_HOOK_CONFIG_MAX_FILES;
+  const pending = [root];
+  const candidates: string[] = [];
+  let visitedFiles = 0;
+
+  while (pending.length > 0 && visitedFiles < maxFiles) {
+    const dir = pending.pop()!;
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!DISCOVER_HOOK_CONFIG_EXCLUDED_DIRS.has(entry.name)) {
+          pending.push(fullPath);
+        }
+        continue;
+      }
+
+      if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+      visitedFiles += 1;
+      if (entry.name === "hooks.json") candidates.push(fullPath);
+      if (visitedFiles >= maxFiles) break;
+    }
+  }
+
+  return dedupeCodexHookConfigPaths(candidates, root);
 }
 
 export function mergeManagedCodexHooksConfig(

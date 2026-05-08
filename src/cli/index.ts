@@ -661,7 +661,7 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
     if (isCodexSqliteArtifact(entry.name)) continue;
     const source = join(projectCodexHome, entry.name);
     const destination = join(runtimeCodexHome, entry.name);
-    if (entry.name === "config.toml") {
+    if (entry.name === "config.toml" || entry.name === "hooks.json") {
       await copyFile(source, destination);
       continue;
     }

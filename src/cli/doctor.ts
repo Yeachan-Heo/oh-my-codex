@@ -31,6 +31,7 @@ import {
 	getModelContextRecommendation,
 } from "../config/generator.js";
 import { getMissingManagedCodexHookEvents } from "../config/codex-hooks.js";
+import { discoverCodexHookConfigPaths } from "../config/codex-hooks.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { getDefaultBridge, isBridgeEnabled } from "../runtime/bridge.js";
 import {
@@ -170,6 +171,8 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
 	// Check 4.25: Native hooks coverage
 	checks.push(await checkNativeHooks(paths.hooksPath, paths.configPath));
+	const runtimeMirrorCheck = await checkNativeHookRuntimeMirrors(cwd, paths.hooksPath);
+	if (runtimeMirrorCheck) checks.push(runtimeMirrorCheck);
 
 	// Check 4.5: Explore routing default
 	checks.push(await checkExploreRouting(paths.configPath));
@@ -1039,6 +1042,26 @@ async function checkNativeHooks(
 			message: "cannot read hooks.json",
 		};
 	}
+}
+
+async function checkNativeHookRuntimeMirrors(
+	cwd: string,
+	hooksPath: string,
+): Promise<Check | null> {
+	if (!existsSync(hooksPath)) return null;
+
+	const discovery = await discoverCodexHookConfigPaths(cwd);
+	const runtimeMirrorCount = discovery.skipped.filter(
+		(entry) => entry.reason === "runtime_codex_home_mirror",
+	).length;
+	if (runtimeMirrorCount === 0) return null;
+
+	return {
+		name: "Native hook runtime mirrors",
+		status: "warn",
+		message:
+			`.omx/runtime/codex-home contains ${runtimeMirrorCount} hooks.json runtime mirror${runtimeMirrorCount === 1 ? "" : "s"} skipped by hook discovery; cleanup or relaunch so external hook review tools do not see duplicate native hook surfaces`,
+	};
 }
 
 async function checkPrompts(

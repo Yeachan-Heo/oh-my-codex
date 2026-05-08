@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mergeConfig, OMX_DEVELOPER_INSTRUCTIONS } from '../generator.js';
+import { mergeConfig, OMX_DEVELOPER_INSTRUCTIONS, upsertPluginModeRuntimeFeatureFlags } from '../generator.js';
 
 describe('config generator', () => {
   it('places top-level keys before [features]', async () => {
@@ -407,6 +407,47 @@ describe('config generator', () => {
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
+  });
+
+  it('keeps existing codex_hooks flag idempotent without adding hooks alias', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
+    try {
+      const configPath = join(wd, 'config.toml');
+      const original = [
+        '[features]',
+        'codex_hooks = true',
+        'custom_user_flag = false',
+        '',
+      ].join('\n');
+      await writeFile(configPath, original);
+
+      await mergeConfig(configPath, wd);
+      const merged = await readFile(configPath, 'utf-8');
+
+      assert.equal((merged.match(/^codex_hooks = true$/gm) ?? []).length, 1);
+      assert.doesNotMatch(merged, /^hooks\s*=/m);
+      assert.match(merged, /^custom_user_flag = false$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes plugin-mode runtime flags from hooks alias to codex_hooks', () => {
+    const original = [
+      '[features]',
+      'custom_user_flag = false',
+      'hooks = true',
+      'goal = true',
+      '',
+    ].join('\n');
+
+    const merged = upsertPluginModeRuntimeFeatureFlags(original);
+
+    assert.match(merged, /^codex_hooks = true$/m);
+    assert.match(merged, /^goals = true$/m);
+    assert.doesNotMatch(merged, /^hooks\s*=/m);
+    assert.doesNotMatch(merged, /^goal\s*=/m);
+    assert.match(merged, /^custom_user_flag = false$/m);
   });
 
   it('escapes Windows-style backslashes for MCP server args', async () => {
