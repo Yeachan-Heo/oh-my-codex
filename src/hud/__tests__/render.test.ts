@@ -240,6 +240,79 @@ describe('renderHud – team', () => {
   });
 });
 
+// ── Hooks dashboard ──────────────────────────────────────────────────────────
+
+describe('renderHud – hooks dashboard', () => {
+  it('renders hook count and covered event count', () => {
+    const ctx: HudRenderContext = {
+      ...emptyCtx(),
+      hooks: {
+        status: 'ok',
+        enabled: true,
+        total_hooks: 10,
+        managed_hooks: 5,
+        custom_hooks: 5,
+        event_count: 5,
+        managed_event_count: 5,
+        expected_managed_event_count: 5,
+        missing_managed_events: [],
+        hooks_path: '/tmp/hooks.json',
+      },
+    };
+
+    const result = renderHud(ctx, 'focused');
+    assert.ok(result.includes(`${GREEN}hooks:10/5ev${RESET}`));
+  });
+
+  it('highlights partial hook coverage', () => {
+    const ctx: HudRenderContext = {
+      ...emptyCtx(),
+      hooks: {
+        status: 'partial',
+        enabled: true,
+        total_hooks: 4,
+        managed_hooks: 4,
+        custom_hooks: 0,
+        event_count: 4,
+        managed_event_count: 4,
+        expected_managed_event_count: 5,
+        missing_managed_events: ['Stop'],
+        hooks_path: '/tmp/hooks.json',
+      },
+    };
+
+    const result = renderHud(ctx, 'focused');
+    assert.ok(result.includes(`${YELLOW}hooks:4/4ev${RESET}`));
+  });
+
+  it('shows disabled, missing, and invalid hook states as dashboard warnings', () => {
+    const baseHooks = {
+      enabled: true,
+      total_hooks: 0,
+      managed_hooks: 0,
+      custom_hooks: 0,
+      event_count: 0,
+      managed_event_count: 0,
+      expected_managed_event_count: 5,
+      missing_managed_events: [],
+      hooks_path: '/tmp/hooks.json',
+    };
+
+    assert.ok(renderHud({
+      ...emptyCtx(),
+      hooks: { ...baseHooks, status: 'disabled', enabled: false },
+    }, 'focused').includes('hooks:off'));
+    assert.ok(renderHud({
+      ...emptyCtx(),
+      hooks: { ...baseHooks, status: 'missing' },
+    }, 'focused').includes('hooks:missing'));
+    assert.ok(renderHud({
+      ...emptyCtx(),
+      hooks: { ...baseHooks, status: 'invalid' },
+    }, 'focused').includes('hooks:invalid'));
+  });
+});
+
 // ── Metrics – turns ───────────────────────────────────────────────────────────
 
 describe('renderHud – metrics (turns)', () => {

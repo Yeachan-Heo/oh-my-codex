@@ -9,7 +9,7 @@ import { readFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
-import { omxStateDir } from '../utils/paths.js';
+import { codexConfigPath, codexHome, omxStateDir } from '../utils/paths.js';
 import { findGitLayout, readGitLayoutFile } from '../utils/git-layout.js';
 import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
 import type { RuntimeSnapshot } from '../runtime/bridge.js';
@@ -17,6 +17,7 @@ import { getReadScopedStateFilePaths, getReadScopedStatePaths, readCurrentSessio
 import { teamReadPhase as readTeamPhase } from '../team/team-ops.js';
 import { readUsableSessionState } from '../hooks/session.js';
 import { listActiveSkills, readVisibleSkillActiveState } from '../state/skill-active.js';
+import { MANAGED_HOOK_EVENTS, getMissingManagedCodexHookEvents, parseCodexHooksConfig } from '../config/codex-hooks.js';
 import type {
   RalphStateForHud,
   UltraworkStateForHud,
@@ -31,6 +32,7 @@ import type {
   HudConfig,
   HudRenderContext,
   SessionStateForHud,
+  HookDashboardStateForHud,
   ResolvedHudConfig,
   HudGitDisplay,
 } from './types.js';
@@ -179,6 +181,130 @@ export async function readHudNotifyState(cwd: string): Promise<HudNotifyState | 
 export async function readSessionState(cwd: string): Promise<SessionStateForHud | null> {
   const state = await readUsableSessionState(cwd);
   return state?.session_id ? state : null;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isOmxManagedHookCommand(command: string): boolean {
+  return /(?:^|[\\/])codex-native-hook\.js(?:["'\s]|$)/.test(command);
+}
+
+function readCodexHooksFeatureEnabled(configText: string): boolean | null {
+  const matches = [...configText.matchAll(/^\s*codex_hooks\s*=\s*(true|false)\s*(?:#.*)?$/gmi)];
+  const last = matches.at(-1)?.[1];
+  if (last === 'true') return true;
+  if (last === 'false') return false;
+  return null;
+}
+
+function summarizeHookEntries(hooksRoot: unknown): {
+  totalHooks: number;
+  managedHooks: number;
+  customHooks: number;
+  eventCount: number;
+  managedEventCount: number;
+} {
+  let totalHooks = 0;
+  let managedHooks = 0;
+  let customHooks = 0;
+  let eventCount = 0;
+  let managedEventCount = 0;
+
+  if (!isPlainObject(hooksRoot)) {
+    return { totalHooks, managedHooks, customHooks, eventCount, managedEventCount };
+  }
+
+  for (const entries of Object.values(hooksRoot)) {
+    if (!Array.isArray(entries)) continue;
+
+    let hooksForEvent = 0;
+    let managedForEvent = 0;
+
+    for (const entry of entries) {
+      if (!isPlainObject(entry) || !Array.isArray(entry.hooks)) continue;
+
+      for (const hook of entry.hooks) {
+        if (!isPlainObject(hook)) continue;
+
+        totalHooks += 1;
+        hooksForEvent += 1;
+
+        const command = typeof hook.command === 'string' ? hook.command : '';
+        if (hook.type === 'command' && isOmxManagedHookCommand(command)) {
+          managedHooks += 1;
+          managedForEvent += 1;
+        } else {
+          customHooks += 1;
+        }
+      }
+    }
+
+    if (hooksForEvent > 0) eventCount += 1;
+    if (managedForEvent > 0) managedEventCount += 1;
+  }
+
+  return { totalHooks, managedHooks, customHooks, eventCount, managedEventCount };
+}
+
+export async function readHookDashboardState(): Promise<HookDashboardStateForHud> {
+  const hooksPath = join(codexHome(), 'hooks.json');
+  const configPath = codexConfigPath();
+  const configText = await readFile(configPath, 'utf-8').catch(() => '');
+  const nativeEnabled = configText ? readCodexHooksFeatureEnabled(configText) : null;
+  const hooksContent = await readFile(hooksPath, 'utf-8').catch(() => null);
+
+  if (hooksContent === null) {
+    return {
+      status: nativeEnabled === false ? 'disabled' : 'missing',
+      enabled: nativeEnabled === true,
+      total_hooks: 0,
+      managed_hooks: 0,
+      custom_hooks: 0,
+      event_count: 0,
+      managed_event_count: 0,
+      expected_managed_event_count: MANAGED_HOOK_EVENTS.length,
+      missing_managed_events: [...MANAGED_HOOK_EVENTS],
+      hooks_path: hooksPath,
+    };
+  }
+
+  const parsed = parseCodexHooksConfig(hooksContent);
+  if (!parsed) {
+    return {
+      status: 'invalid',
+      enabled: nativeEnabled !== false,
+      total_hooks: 0,
+      managed_hooks: 0,
+      custom_hooks: 0,
+      event_count: 0,
+      managed_event_count: 0,
+      expected_managed_event_count: MANAGED_HOOK_EVENTS.length,
+      missing_managed_events: [...MANAGED_HOOK_EVENTS],
+      hooks_path: hooksPath,
+    };
+  }
+
+  const summary = summarizeHookEntries(parsed.hooks);
+  const missingManagedEvents = getMissingManagedCodexHookEvents(hooksContent) ?? [...MANAGED_HOOK_EVENTS];
+  const enabled = nativeEnabled !== false;
+  const status = enabled
+    ? (missingManagedEvents.length > 0 ? 'partial' : 'ok')
+    : 'disabled';
+
+  return {
+    status,
+    enabled,
+    total_hooks: summary.totalHooks,
+    managed_hooks: summary.managedHooks,
+    custom_hooks: summary.customHooks,
+    event_count: summary.eventCount,
+    managed_event_count: summary.managedEventCount,
+    expected_managed_event_count: MANAGED_HOOK_EVENTS.length,
+    missing_managed_events: missingManagedEvents,
+    hooks_path: hooksPath,
+  };
 }
 
 export async function readHudConfig(cwd: string): Promise<ResolvedHudConfig> {
@@ -403,11 +529,12 @@ function mergeTeamPhase(
 export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFAULT_HUD_CONFIG): Promise<HudRenderContext> {
   const version = readVersion();
   const gitBranch = buildGitBranchLabel(cwd, config);
-  const [metrics, hudNotify, session, currentSessionId] = await Promise.all([
+  const [metrics, hudNotify, session, currentSessionId, hooks] = await Promise.all([
     readMetrics(cwd),
     readHudNotifyState(cwd),
     readSessionState(cwd),
     readCurrentSessionId(cwd),
+    readHookDashboardState(),
   ]);
   const canonicalSkillState = await readVisibleSkillActiveState(cwd, currentSessionId);
   const canonicalSkills = new Map(
@@ -500,6 +627,7 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
     metrics,
     hudNotify,
     session,
+    hooks,
     runtimeSnapshot,
   };
 }
