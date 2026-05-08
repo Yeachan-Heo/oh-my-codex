@@ -284,6 +284,7 @@ describe('planning artifacts', () => {
     assert.equal(selection.prdPath, join(plansDir, 'prd-20260427T153100Z-alpha.md'));
     assert.deepEqual(selection.testSpecPaths, []);
     assert.equal(selection.contextPackStatus, 'missing-baseline');
+    assert.equal(selection.contextPackRoleRefs, null);
     assert.deepEqual(selection.missingRequiredContextPackRoles, []);
     assert.deepEqual(selection.contextPackIssues, ['Approved plan is missing a matching test spec.']);
 
@@ -293,6 +294,7 @@ describe('planning artifacts', () => {
       throw new Error('expected missing-baseline approved hint outcome');
     }
     assert.equal(outcome.hint.contextPackStatus, 'missing-baseline');
+    assert.equal(outcome.hint.contextPackRoleRefs, null);
     assert.deepEqual(outcome.hint.testSpecPaths, []);
     assert.deepEqual(outcome.hint.contextPackIssues, ['Approved plan is missing a matching test spec.']);
 
@@ -319,11 +321,13 @@ describe('planning artifacts', () => {
 
     assert.equal(selection.contextPack, null);
     assert.equal(selection.contextPackStatus, 'plan-only');
+    assert.equal(selection.contextPackRoleRefs, null);
     assert.deepEqual(selection.missingRequiredContextPackRoles, []);
     assert.deepEqual(selection.contextPackIssues, []);
     assert.ok(hint);
     assert.equal(hint?.contextPack, null);
     assert.equal(hint?.contextPackStatus, 'plan-only');
+    assert.equal(hint?.contextPackRoleRefs, null);
     assert.deepEqual(hint?.missingRequiredContextPackRoles, []);
     assert.deepEqual(hint?.contextPackIssues, []);
   });
@@ -346,11 +350,24 @@ describe('planning artifacts', () => {
     await writeFile(testSpecPath, '# Test Spec\n');
     const packPath = await writeContextPack('context-ready', prdPath, testSpecPath, ['scope', 'build', 'verify']);
 
+    const selection = readLatestPlanningArtifacts(tempDir);
     const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
 
+    assert.deepEqual(selection.contextPack, { path: packPath });
+    assert.equal(selection.contextPackStatus, 'ready');
+    assert.deepEqual(selection.contextPackRoleRefs, {
+      scope: ['src/scope-0.ts'],
+      build: ['src/build-1.ts'],
+      verify: ['src/verify-2.ts'],
+    });
     assert.ok(hint);
     assert.deepEqual(hint?.contextPack, { path: packPath });
     assert.equal(hint?.contextPackStatus, 'ready');
+    assert.deepEqual(hint?.contextPackRoleRefs, {
+      scope: ['src/scope-0.ts'],
+      build: ['src/build-1.ts'],
+      verify: ['src/verify-2.ts'],
+    });
     assert.deepEqual(hint?.missingRequiredContextPackRoles, []);
     assert.deepEqual(hint?.contextPackIssues, []);
   });
@@ -378,6 +395,7 @@ describe('planning artifacts', () => {
 
     assert.ok(hint);
     assert.equal(hint?.contextPackStatus, 'invalid');
+    assert.equal(hint?.contextPackRoleRefs, null);
     assert.deepEqual(hint?.missingRequiredContextPackRoles, []);
     assert.ok(hint?.contextPackIssues.some((issue) => issue.includes('basis test-spec hash')));
   });
@@ -405,6 +423,7 @@ describe('planning artifacts', () => {
 
     assert.ok(hint);
     assert.equal(hint?.contextPackStatus, 'invalid');
+    assert.equal(hint?.contextPackRoleRefs, null);
     assert.deepEqual(hint?.missingRequiredContextPackRoles, ['build', 'verify']);
     assert.ok(hint?.contextPackIssues.some((issue) => issue.includes('basis test-spec hash')));
   });

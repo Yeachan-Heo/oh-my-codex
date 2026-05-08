@@ -8,10 +8,12 @@ import {
   selectMatchingTestSpecsForPrd,
 } from './artifact-names.js';
 import {
+  readReadyContextPackRoleRefs,
   resolveContextPackHandoffStatus,
   type ContextPackHandoffStatusSnapshot,
   type ContextPackRef,
   type ContextPackRole,
+  type ContextPackRoleRefs,
   type ContextPackStatus,
 } from './context-pack-status.js';
 import { omxPlansDir } from '../utils/paths.js';
@@ -36,6 +38,7 @@ export type {
   ContextPackPackState,
   ContextPackRef,
   ContextPackRole,
+  ContextPackRoleRefs,
   ContextPackRoleCoverageState,
   ContextPackStatus,
 } from './context-pack-status.js';
@@ -66,6 +69,7 @@ export interface ApprovedPlanContext {
   deepInterviewSpecPaths: string[];
   contextPack: ContextPackRef | null;
   contextPackStatus: ContextPackStatus;
+  contextPackRoleRefs: ContextPackRoleRefs | null;
   missingRequiredContextPackRoles: ContextPackRole[];
   contextPackIssues: string[];
   repositoryContextSummary?: ApprovedRepositoryContextSummary;
@@ -86,6 +90,7 @@ export interface LatestPlanningArtifactSelection {
   deepInterviewSpecPaths: string[];
   contextPack: ContextPackRef | null;
   contextPackStatus: ContextPackStatus;
+  contextPackRoleRefs: ContextPackRoleRefs | null;
   missingRequiredContextPackRoles: ContextPackRole[];
   contextPackIssues: string[];
 }
@@ -198,10 +203,15 @@ function selectPlanningArtifacts(
 ): LatestPlanningArtifactSelection {
   const selection = selectPlanningArtifactsBase(artifacts, prdPath);
   const handoffStatus = resolveContextPackHandoffStatus(artifacts, selection);
+  const contextPackRoleRefs =
+    handoffStatus.contextPackStatus === 'ready' && handoffStatus.contextPack
+      ? readReadyContextPackRoleRefs(handoffStatus.contextPack.path)
+      : null;
   return {
     ...selection,
     contextPack: handoffStatus.contextPack,
     contextPackStatus: handoffStatus.contextPackStatus,
+    contextPackRoleRefs,
     missingRequiredContextPackRoles: handoffStatus.missingRequiredContextPackRoles,
     contextPackIssues: handoffStatus.contextPackIssues,
   };
@@ -283,6 +293,7 @@ function readApprovedPlanText(
         deepInterviewSpecPaths: selection.deepInterviewSpecPaths,
         contextPack: selection.contextPack,
         contextPackStatus: selection.contextPackStatus,
+        contextPackRoleRefs: selection.contextPackRoleRefs,
         missingRequiredContextPackRoles: selection.missingRequiredContextPackRoles,
         contextPackIssues: selection.contextPackIssues,
         ...(repositoryContextSummary ? { repositoryContextSummary } : {}),

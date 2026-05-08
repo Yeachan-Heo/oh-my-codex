@@ -184,6 +184,7 @@ const approvedHint: ApprovedExecutionLaunchHint = {
   deepInterviewSpecPaths: ['.omx/specs/deep-interview-issue-1072.md'],
   contextPack: null,
   contextPackStatus: 'plan-only',
+  contextPackRoleRefs: null,
   missingRequiredContextPackRoles: [],
   contextPackIssues: [],
   repositoryContextSummary: {

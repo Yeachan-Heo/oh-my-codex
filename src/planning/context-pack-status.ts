@@ -28,6 +28,12 @@ export interface ContextPackRef {
   path: string;
 }
 
+export interface ContextPackRoleRefs {
+  scope: string[];
+  build: string[];
+  verify: string[];
+}
+
 export interface ContextPackHandoffStatusSnapshot {
   prdPath: string | null;
   testSpecPaths: string[];
@@ -450,6 +456,38 @@ function findMissingRequiredContextPackRoles(
 ): ContextPackRole[] {
   const presentRoles = new Set(document.entries.flatMap((entry) => entry.roles));
   return REQUIRED_CONTEXT_PACK_ROLES.filter((role) => !presentRoles.has(role));
+}
+
+function emptyContextPackRoleRefs(): ContextPackRoleRefs {
+  return { scope: [], build: [], verify: [] };
+}
+
+export function readReadyContextPackRoleRefs(
+  packPath: string,
+): ContextPackRoleRefs | null {
+  const packDocument = readContextPackDocument(packPath);
+  if (!packDocument.document) {
+    return null;
+  }
+
+  const grouped = emptyContextPackRoleRefs();
+  const seen: Record<ContextPackRole, Set<string>> = {
+    scope: new Set<string>(),
+    build: new Set<string>(),
+    verify: new Set<string>(),
+  };
+
+  for (const entry of packDocument.document.entries) {
+    for (const role of entry.roles) {
+      if (seen[role].has(entry.path)) {
+        continue;
+      }
+      seen[role].add(entry.path);
+      grouped[role].push(entry.path);
+    }
+  }
+
+  return grouped;
 }
 
 function validateContextPackBasis(
