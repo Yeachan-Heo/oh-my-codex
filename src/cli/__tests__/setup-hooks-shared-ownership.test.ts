@@ -142,6 +142,16 @@ describe("omx setup/uninstall shared ownership for native hooks", () => {
         1,
         "setup should append the managed PostToolUse wrapper into user-owned hooks.json",
       );
+      assert.equal(
+        countManagedHooks(refreshed.hooks?.PostCompact),
+        1,
+        "setup should append a single managed PostCompact wrapper that runs the JSON-safe native hook",
+      );
+      assert.doesNotMatch(
+        hookCommands(refreshed.hooks?.PostCompact).join("\n"),
+        /PostCompact Nudge|additionalContext|printf/,
+        "generated PostCompact hooks should not embed advisory text or shell printf workarounds",
+      );
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

@@ -276,6 +276,20 @@ describe("codex native hook config", () => {
       hooks?: Array<Record<string, unknown>>;
     };
     assert.equal(stop.hooks?.[0]?.timeout, 30);
+
+    const postCompact = config.hooks.PostCompact[0] as {
+      matcher?: string;
+      hooks?: Array<Record<string, unknown>>;
+    };
+    assert.equal(postCompact.matcher, undefined);
+    assert.match(
+      String(postCompact.hooks?.[0]?.command || ""),
+      /codex-native-hook\.js"?$/,
+    );
+    assert.doesNotMatch(
+      String(postCompact.hooks?.[0]?.command || ""),
+      /PostCompact Nudge|additionalContext|printf/,
+    );
   });
 });
 
@@ -558,7 +572,7 @@ describe("codex native hook dispatch", () => {
     }
   });
 
-  it("returns a PostCompact nudge to write compaction artifacts to omx_wiki", async () => {
+  it("does not write PostCompact stdout that Codex rejects as hook JSON", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-postcompact-"));
     try {
       const result = await dispatchCodexNativeHook({
@@ -569,11 +583,22 @@ describe("codex native hook dispatch", () => {
 
       assert.equal(result.hookEventName, "PostCompact");
       assert.equal(result.omxEventName, "post-compact");
-      const additionalContext = (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } } | null)
-        ?.hookSpecificOutput?.additionalContext ?? "";
-      assert.match(additionalContext, /PostCompact Nudge/);
-      assert.match(additionalContext, /omx_wiki/);
-      assert.match(additionalContext, /compaction artifacts/);
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("emits no CLI stdout for PostCompact when no Codex action is needed", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-postcompact-cli-"));
+    try {
+      const stdout = runNativeHookCli({
+        hook_event_name: "PostCompact",
+        cwd,
+        session_id: "sess-postcompact-cli",
+      });
+
+      assert.equal(stdout, "");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -71,7 +71,6 @@ import type { HookEventEnvelope } from "../hooks/extensibility/types.js";
 import { dispatchHookEventRuntime } from "../hooks/extensibility/runtime.js";
 import { reconcileHudForPromptSubmit } from "../hud/reconcile.js";
 import {
-  onPostCompact as buildWikiPostCompactContext,
   onPreCompact as buildWikiPreCompactContext,
   onSessionStart as buildWikiSessionStartContext,
 } from "../wiki/lifecycle.js";
@@ -3024,16 +3023,6 @@ export async function dispatchCodexNativeHook(
 
   if (hookEventName === "PreCompact") {
     const compactContext = buildWikiPreCompactContext({ cwd });
-    if (compactContext.additionalContext) {
-      outputJson = {
-        hookSpecificOutput: {
-          hookEventName,
-          additionalContext: compactContext.additionalContext,
-        },
-      };
-    }
-  } else if (hookEventName === "PostCompact") {
-    const compactContext = buildWikiPostCompactContext({ cwd });
     if (compactContext.additionalContext) {
       outputJson = {
         hookSpecificOutput: {

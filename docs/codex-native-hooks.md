@@ -125,7 +125,7 @@ The approved OMX-native wiki backport keeps lifecycle ownership intentionally na
 - **Storage** lives under repository `omx_wiki/`, not ignored `.omx/wiki/` runtime state and not `.omc/wiki/`.
 - **SessionStart** may surface bounded wiki context from `omx_wiki/` when the wiki already exists, but it should stay read-mostly and must not block the native hook path on expensive writes or index rebuilds.
 - **SessionEnd** remains a runtime/notify-path responsibility for best-effort, non-blocking session capture into `omx_wiki/`.
-- **PreCompact** is native and bounded: it can surface compact wiki context before compaction. **PostCompact** is native and advisory: it nudges agents to write/update `omx_wiki/` entries about compaction artifacts.
+- **PreCompact** is native and bounded: it can surface compact wiki context before compaction. **PostCompact** is native and no-stdout by default: it records the lifecycle seam without emitting advisory `additionalContext` that Codex rejects for PostCompact.
 - **Routing should stay explicit**: prefer `$wiki` or task verbs like `wiki query` / `wiki add`, and avoid implicit bare `wiki` noun activation.
 
 ## Explicit terminal stop model note

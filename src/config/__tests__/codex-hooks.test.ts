@@ -285,6 +285,8 @@ describe("codex hooks helpers", () => {
     const postCommand = postCompact[0]?.hooks?.[0]?.command;
     assert.match(String(preCommand), /codex-native-hook\.js/);
     assert.match(String(postCommand), /codex-native-hook\.js/);
+    assert.equal(postCommand, preCommand);
+    assert.doesNotMatch(String(postCommand), /PostCompact Nudge|additionalContext|printf/);
   });
 
   it("reports missing managed hook coverage by event", () => {
