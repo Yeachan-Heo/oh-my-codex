@@ -832,7 +832,7 @@ describe('state-server directory initialization', () => {
     }
   });
 
-  it('propagates root clears into inherited session canonical copies', async () => {
+  it('does not propagate root clears into isolated session canonical copies', async () => {
     process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
     const { handleStateToolCall } = await import('../state-server.js');
 
@@ -886,7 +886,7 @@ describe('state-server directory initialization', () => {
     }
   });
 
-  it('preserves root-scoped team state when session-scoped ralph is added via state_write', async () => {
+  it('keeps root-scoped team state out of session-scoped ralph canonical state', async () => {
     process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
     const { handleStateToolCall } = await import('../state-server.js');
 
@@ -945,10 +945,7 @@ describe('state-server directory initialization', () => {
           phase,
           session_id,
         })),
-        [
-          { skill: 'team', phase: 'running', session_id: undefined },
-          { skill: 'ralph', phase: 'executing', session_id: 'sess-team-ralph' },
-        ],
+        [{ skill: 'ralph', phase: 'executing', session_id: 'sess-team-ralph' }],
       );
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -1179,4 +1176,182 @@ describe('state-server directory initialization', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('keeps session-scoped workflow states isolated across writes and clears', async () => {
+    process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
+    const { handleStateToolCall } = await import('../state-server.js');
+
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-server-session-isolation-'));
+    try {
+      const writeA = await handleStateToolCall({
+        params: {
+          name: 'state_write',
+          arguments: {
+            workingDirectory: wd,
+            session_id: 'sess-a',
+            mode: 'deep-interview',
+            active: true,
+            current_phase: 'interview-a',
+          },
+        },
+      });
+      assert.equal(writeA.isError, undefined);
+
+      const writeB = await handleStateToolCall({
+        params: {
+          name: 'state_write',
+          arguments: {
+            workingDirectory: wd,
+            session_id: 'sess-b',
+            mode: 'ralph',
+            active: true,
+            iteration: 1,
+            max_iterations: 3,
+            current_phase: 'executing',
+          },
+        },
+      });
+      assert.equal(writeB.isError, undefined);
+
+      await handleStateToolCall({
+        params: {
+          name: 'state_clear',
+          arguments: {
+            workingDirectory: wd,
+            session_id: 'sess-b',
+            mode: 'ralph',
+          },
+        },
+      });
+
+      const sessionAState = JSON.parse(
+        await readFile(join(wd, '.omx', 'state', 'sessions', 'sess-a', 'deep-interview-state.json'), 'utf-8'),
+      ) as Record<string, unknown>;
+      assert.equal(sessionAState.active, true);
+      assert.equal(sessionAState.current_phase, 'interview-a');
+
+      const sessionACanonical = JSON.parse(
+        await readFile(join(wd, '.omx', 'state', 'sessions', 'sess-a', 'skill-active-state.json'), 'utf-8'),
+      ) as { active_skills?: Array<{ skill: string; session_id?: string }> };
+      assert.deepEqual(
+        sessionACanonical.active_skills?.map(({ skill, session_id }) => ({ skill, session_id })),
+        [{ skill: 'deep-interview', session_id: 'sess-a' }],
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not auto-complete session workflows from root-scoped workflow writes', async () => {
+    process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
+    const { handleStateToolCall } = await import('../state-server.js');
+
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-server-root-session-isolation-'));
+    try {
+      await handleStateToolCall({
+        params: {
+          name: 'state_write',
+          arguments: {
+            workingDirectory: wd,
+            session_id: 'sess-interview',
+            mode: 'deep-interview',
+            active: true,
+            current_phase: 'asking',
+          },
+        },
+      });
+
+      const rootWrite = await handleStateToolCall({
+        params: {
+          name: 'state_write',
+          arguments: {
+            workingDirectory: wd,
+            mode: 'ralplan',
+            active: true,
+            current_phase: 'planning',
+          },
+        },
+      });
+      assert.equal(rootWrite.isError, undefined);
+
+      const sessionState = JSON.parse(
+        await readFile(join(wd, '.omx', 'state', 'sessions', 'sess-interview', 'deep-interview-state.json'), 'utf-8'),
+      ) as Record<string, unknown>;
+      assert.equal(sessionState.active, true);
+      assert.equal(sessionState.current_phase, 'asking');
+      assert.equal(sessionState.auto_completed_reason, undefined);
+
+      const sessionCanonical = JSON.parse(
+        await readFile(join(wd, '.omx', 'state', 'sessions', 'sess-interview', 'skill-active-state.json'), 'utf-8'),
+      ) as { active_skills?: Array<{ skill: string; session_id?: string }> };
+      assert.deepEqual(
+        sessionCanonical.active_skills?.map(({ skill, session_id }) => ({ skill, session_id })),
+        [{ skill: 'deep-interview', session_id: 'sess-interview' }],
+      );
+
+      const rootState = JSON.parse(await readFile(join(wd, '.omx', 'state', 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(rootState.active, true);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps session canonical state when clearing the root scope without all_sessions', async () => {
+    process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
+    const { handleStateToolCall } = await import('../state-server.js');
+
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-server-root-clear-isolation-'));
+    try {
+      await handleStateToolCall({
+        params: {
+          name: 'state_write',
+          arguments: {
+            workingDirectory: wd,
+            session_id: 'sess-keep',
+            mode: 'deep-interview',
+            active: true,
+            current_phase: 'asking',
+          },
+        },
+      });
+      await handleStateToolCall({
+        params: {
+          name: 'state_write',
+          arguments: {
+            workingDirectory: wd,
+            mode: 'deep-interview',
+            active: true,
+            current_phase: 'root-asking',
+          },
+        },
+      });
+
+      await handleStateToolCall({
+        params: {
+          name: 'state_clear',
+          arguments: {
+            workingDirectory: wd,
+            mode: 'deep-interview',
+          },
+        },
+      });
+
+      assert.equal(existsSync(join(wd, '.omx', 'state', 'deep-interview-state.json')), false);
+      const sessionState = JSON.parse(
+        await readFile(join(wd, '.omx', 'state', 'sessions', 'sess-keep', 'deep-interview-state.json'), 'utf-8'),
+      ) as Record<string, unknown>;
+      assert.equal(sessionState.active, true);
+
+      const sessionCanonical = JSON.parse(
+        await readFile(join(wd, '.omx', 'state', 'sessions', 'sess-keep', 'skill-active-state.json'), 'utf-8'),
+      ) as { active_skills?: Array<{ skill: string; session_id?: string }> };
+      assert.deepEqual(
+        sessionCanonical.active_skills?.map(({ skill, session_id }) => ({ skill, session_id })),
+        [{ skill: 'deep-interview', session_id: 'sess-keep' }],
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 });

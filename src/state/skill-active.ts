@@ -64,6 +64,7 @@ export interface SyncCanonicalSkillStateOptions {
   turnId?: string;
   nowIso?: string;
   source?: string;
+  allSessions?: boolean;
 }
 
 function safeString(value: unknown): string {
@@ -172,13 +173,13 @@ export function listActiveSkills(raw: unknown): SkillActiveEntry[] {
     for (const candidate of state.active_skills) {
       const normalized = normalizeSkillActiveEntry(candidate);
       if (!normalized || normalized.active === false) continue;
-      deduped.set(normalized.skill, normalized);
+      deduped.set(entryKey(normalized), normalized);
     }
   }
 
   const topLevelSkill = safeString(state.skill).trim();
   if (deduped.size === 0 && state.active === true && topLevelSkill) {
-    deduped.set(topLevelSkill, {
+    const topLevelEntry = {
       skill: topLevelSkill,
       phase: safeString(state.phase).trim() || undefined,
       active: true,
@@ -187,7 +188,8 @@ export function listActiveSkills(raw: unknown): SkillActiveEntry[] {
       session_id: safeString(state.session_id).trim() || undefined,
       thread_id: safeString(state.thread_id).trim() || undefined,
       turn_id: safeString(state.turn_id).trim() || undefined,
-    });
+    };
+    deduped.set(entryKey(topLevelEntry), topLevelEntry);
   }
 
   return [...deduped.values()];
@@ -288,6 +290,7 @@ export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkill
     turnId,
     nowIso = new Date().toISOString(),
     source = 'state-server',
+    allSessions = false,
   } = options;
 
   if (!tracksCanonicalWorkflowSkill(mode)) return;
@@ -295,15 +298,13 @@ export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkill
   const { rootPath, sessionPath } = getSkillActiveStatePaths(cwd, sessionId);
   const existingRoot = await readSkillActiveState(rootPath);
   const existingSession = sessionPath ? await readSkillActiveState(sessionPath) : null;
-  if (!existingRoot && !existingSession && !active) return;
+  if (!existingRoot && !existingSession && !active && !options.allSessions) return;
 
   const normalizedSessionId = safeString(sessionId).trim();
+  const allRootEntries = listActiveSkills(existingRoot ?? {});
   const rootEntries = normalizedSessionId
-    ? listActiveSkills(existingRoot ?? {}).filter((entry) => {
-      const entrySessionId = safeString(entry.session_id).trim();
-      return entrySessionId.length === 0 || entrySessionId === normalizedSessionId;
-    })
-    : listActiveSkills(existingRoot ?? {});
+    ? allRootEntries.filter((entry) => safeString(entry.session_id).trim() === normalizedSessionId)
+    : allRootEntries;
   const sessionOnlyEntries = normalizedSessionId
     ? listActiveSkills(existingSession ?? {}).filter((entry) => (
       safeString(entry.session_id).trim() === normalizedSessionId
@@ -315,7 +316,7 @@ export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkill
     : [];
   const visibleEntries = normalizedSessionId
     ? [...rootEntries, ...sessionOnlyEntries]
-    : [...rootEntries];
+    : rootEntries.filter((entry) => safeString(entry.session_id).trim().length === 0);
 
   if (active && isTrackedWorkflowMode(mode)) {
     const currentWorkflowModes = visibleEntries
@@ -366,14 +367,18 @@ export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkill
       });
     }
 
-    const nextRootEntries = rootEntries.filter((entry) => !(
+    const nextSessionRootEntries = rootEntries.filter((entry) => !(
+      entry.skill === mode
+      && safeString(entry.session_id).trim() === normalizedSessionId
+    ));
+    const nextRootEntries = allRootEntries.filter((entry) => !(
       entry.skill === mode
       && safeString(entry.session_id).trim() === normalizedSessionId
     ));
 
     const nextSessionState = applyEntriesToState(
       existingSession ?? existingRoot,
-      [...nextRootEntries, ...nextSessionEntries],
+      [...nextSessionRootEntries, ...nextSessionEntries],
       mode,
       normalizedSessionId,
     );
@@ -389,19 +394,26 @@ export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkill
     return;
   }
 
-  const nextRootEntries = rootEntries.filter((entry) => entry.skill !== mode);
+  const rootScopedEntries = rootEntries.filter((entry) => safeString(entry.session_id).trim().length === 0);
+  const sessionScopedRootMirrorEntries = allSessions
+    ? []
+    : rootEntries.filter((entry) => safeString(entry.session_id).trim().length > 0);
+  const nextRootScopedEntries = rootScopedEntries.filter((entry) => entry.skill !== mode);
   if (active) {
-    nextRootEntries.push({
+    nextRootScopedEntries.push({
       skill: mode,
       phase: safeString(currentPhase).trim() || undefined,
       active: true,
-      activated_at: rootEntries.find((entry) => entry.skill === mode)?.activated_at || nowIso,
+      activated_at: rootScopedEntries.find((entry) => entry.skill === mode)?.activated_at || nowIso,
       updated_at: nowIso,
       session_id: undefined,
       thread_id: safeString(threadId).trim() || undefined,
       turn_id: safeString(turnId).trim() || undefined,
     });
   }
+  const nextRootEntries = allSessions
+    ? rootEntries.filter((entry) => entry.skill !== mode)
+    : [...sessionScopedRootMirrorEntries, ...nextRootScopedEntries];
 
   const nextRootState = applyEntriesToState(existingRoot, nextRootEntries, mode);
   await writeSkillActiveStateCopies(cwd, nextRootState, undefined, nextRootState);
@@ -418,8 +430,10 @@ export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkill
     if (!existsSync(sessionPath)) continue;
 
     const existingSessionState = await readSkillActiveState(sessionPath);
-    const sessionOnlyEntries = filterSessionOnlyEntries(existingSessionState, rootEntries, sessionId);
-    const nextVisibleRootEntries = filterRootEntriesForSession(nextRootEntries, sessionId);
+    const sessionOnlyEntries = filterSessionOnlyEntries(existingSessionState, rootEntries, sessionId)
+      .filter((entry) => !(allSessions && entry.skill === mode));
+    const nextVisibleRootEntries = nextRootEntries
+      .filter((entry) => safeString(entry.session_id).trim() === sessionId);
     const nextSessionEntries = [...nextVisibleRootEntries, ...sessionOnlyEntries];
 
     if (nextSessionEntries.length === 0) {

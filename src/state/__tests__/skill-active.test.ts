@@ -49,7 +49,7 @@ describe('skill-active state helpers', () => {
     });
   });
 
-  it('drops stale entries from other sessions when syncing canonical state for the current session', async () => {
+  it('keeps stale root entries from other sessions out of current session state', async () => {
     await withTempRepo('omx-skill-active-filter-', async (cwd) => {
       await mkdir(join(cwd, '.omx', 'state'), { recursive: true });
       await writeSkillActiveStateCopies(cwd, {
@@ -84,17 +84,15 @@ describe('skill-active state helpers', () => {
         active_skills?: Array<{ skill: string; session_id?: string }>;
       };
       assert.deepEqual(rootState.active_skills, [{
-        skill: 'ralph',
-        phase: 'executing',
+        skill: 'deep-interview',
+        phase: 'intent-first',
         active: true,
-        activated_at: '2026-04-08T00:00:00.000Z',
-        updated_at: '2026-04-08T00:00:00.000Z',
-        session_id: 'new-session',
+        session_id: 'old-session',
       }]);
     });
   });
 
-  it('preserves root-scoped team state when a session-scoped ralph overlap is activated', async () => {
+  it('keeps root-scoped team state isolated when session-scoped ralph is activated', async () => {
     await withTempRepo('omx-skill-active-team-ralph-', async (cwd) => {
       await mkdir(join(cwd, '.omx', 'state'), { recursive: true });
       await writeSkillActiveStateCopies(cwd, {
@@ -133,10 +131,7 @@ describe('skill-active state helpers', () => {
           phase,
           session_id,
         })),
-        [
-          { skill: 'team', phase: 'running', session_id: undefined },
-          { skill: 'ralph', phase: 'executing', session_id: 'sess-overlap' },
-        ],
+        [{ skill: 'ralph', phase: 'executing', session_id: 'sess-overlap' }],
       );
     });
   });
@@ -178,8 +173,8 @@ describe('skill-active state helpers', () => {
       );
 
       const rootState = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'skill-active-state.json'), 'utf-8')) as Record<string, unknown>;
-      assert.equal(rootState.initialized_mode, undefined);
-      assert.equal(rootState.initialized_state_path, undefined);
+      assert.equal(rootState.initialized_mode, 'ralph');
+      assert.equal(rootState.initialized_state_path, '.omx/state/sessions/old-session/ralph-state.json');
     });
   });
 
@@ -212,14 +207,8 @@ describe('skill-active state helpers', () => {
 
       const sessionState = await readVisibleSkillActiveState(cwd, 'sess-terminal');
       assert.ok(sessionState);
-      assert.deepEqual(
-        listActiveSkills(sessionState).map(({ skill, phase, session_id }) => ({
-          skill,
-          phase,
-          session_id,
-        })),
-        [{ skill: 'custom-skill', phase: 'running', session_id: undefined }],
-      );
+      assert.equal(sessionState.active, false);
+      assert.deepEqual(listActiveSkills(sessionState), []);
 
       const rootState = JSON.parse(
         await readFile(join(cwd, '.omx', 'state', 'skill-active-state.json'), 'utf-8'),

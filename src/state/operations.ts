@@ -123,16 +123,6 @@ async function initializeStateEnvironment(cwd: string, effectiveSessionId?: stri
   await ensureTmuxHookInitialized(cwd);
 }
 
-async function listStateSessionIds(cwd: string): Promise<string[]> {
-  const sessionsDir = join(getStateDir(cwd), 'sessions');
-  if (!existsSync(sessionsDir)) return [];
-  const entries = await readdir(sessionsDir, { withFileTypes: true }).catch(() => []);
-  return entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .filter((entry) => entry.trim().length > 0);
-}
-
 function hasExplicitStateField(
   fields: Record<string, unknown>,
   customState: unknown,
@@ -309,17 +299,6 @@ export async function executeStateOperation(
 
           if (isTrackedWorkflowMode(mode) && mergedRaw.active === true) {
             try {
-              if (!effectiveSessionId) {
-                for (const sessionId of await listStateSessionIds(cwd)) {
-                  const sessionTransition = await reconcileWorkflowTransition(cwd, mode, {
-                    action: 'write',
-                    sessionId,
-                    source: 'state-operations',
-                  });
-                  transitionMessage ??= sessionTransition.transitionMessage;
-                }
-              }
-
               const transition = await reconcileWorkflowTransition(cwd, mode, {
                 action: 'write',
                 sessionId: effectiveSessionId,
@@ -417,6 +396,7 @@ export async function executeStateOperation(
             mode,
             active: false,
             source: 'state-operations',
+            allSessions: true,
           });
         }
 

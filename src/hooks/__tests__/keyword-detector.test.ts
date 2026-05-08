@@ -1069,7 +1069,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
-  it('preserves root team state when $ralph is activated for the current session', async () => {
+  it('keeps root team state out of the session-scoped Ralph canonical state', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-team-ralph-'));
     const stateDir = join(cwd, '.omx', 'state');
     try {

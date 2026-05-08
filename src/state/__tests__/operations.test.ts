@@ -300,6 +300,66 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('isolates same workflow state across explicit session ids when starting and clearing one session', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-same-workflow-isolation-'));
+    try {
+      const writeA = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        session_id: 'sess-a',
+        mode: 'ralph',
+        active: true,
+        iteration: 1,
+        max_iterations: 5,
+        current_phase: 'executing',
+        state: { task_slug: 'session-a-task' },
+      });
+      assert.equal(writeA.isError, undefined);
+
+      const sessionAStatePath = join(wd, '.omx', 'state', 'sessions', 'sess-a', 'ralph-state.json');
+      const sessionACanonicalPath = join(wd, '.omx', 'state', 'sessions', 'sess-a', 'skill-active-state.json');
+      const sessionAStateBefore = JSON.parse(await readFile(sessionAStatePath, 'utf-8')) as Record<string, unknown>;
+      const sessionACanonicalBefore = JSON.parse(await readFile(sessionACanonicalPath, 'utf-8')) as Record<string, unknown>;
+
+      const writeB = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        session_id: 'sess-b',
+        mode: 'ralph',
+        active: true,
+        iteration: 1,
+        max_iterations: 5,
+        current_phase: 'executing',
+        state: { task_slug: 'session-b-task' },
+      });
+      assert.equal(writeB.isError, undefined);
+
+      assert.deepEqual(JSON.parse(await readFile(sessionAStatePath, 'utf-8')), sessionAStateBefore);
+      assert.deepEqual(JSON.parse(await readFile(sessionACanonicalPath, 'utf-8')), sessionACanonicalBefore);
+
+      await executeStateOperation('state_clear', {
+        workingDirectory: wd,
+        session_id: 'sess-b',
+        mode: 'ralph',
+      });
+
+      const activeA = await executeStateOperation('state_list_active', {
+        workingDirectory: wd,
+        session_id: 'sess-a',
+      });
+      assert.deepEqual(activeA.payload, { active_modes: ['ralph'] });
+
+      const activeB = await executeStateOperation('state_list_active', {
+        workingDirectory: wd,
+        session_id: 'sess-b',
+      });
+      assert.deepEqual(activeB.payload, { active_modes: [] });
+
+      assert.deepEqual(JSON.parse(await readFile(sessionAStatePath, 'utf-8')), sessionAStateBefore);
+      assert.deepEqual(JSON.parse(await readFile(sessionACanonicalPath, 'utf-8')), sessionACanonicalBefore);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('serializes concurrent state_write calls per mode file and preserves merged fields', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-concurrency-'));
     try {
@@ -379,6 +439,40 @@ describe('state operations directory initialization', () => {
       const readBody = readResponse.payload as Record<string, unknown>;
       assert.equal(readBody.active, false);
       assert.equal(readBody.current_phase, 'cleared');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('all_sessions clear removes session-only canonical workflow state', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-all-sessions-session-only-'));
+    try {
+      const sessionDir = join(wd, '.omx', 'state', 'sessions', 'sess-only');
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(
+        join(sessionDir, 'ralph-state.json'),
+        JSON.stringify({ active: true, mode: 'ralph', current_phase: 'executing' }, null, 2),
+      );
+      await writeFile(
+        join(sessionDir, 'skill-active-state.json'),
+        JSON.stringify({
+          version: 1,
+          active: true,
+          skill: 'ralph',
+          session_id: 'sess-only',
+          active_skills: [{ skill: 'ralph', phase: 'executing', active: true, session_id: 'sess-only' }],
+        }, null, 2),
+      );
+
+      const cleared = await executeStateOperation('state_clear', {
+        workingDirectory: wd,
+        mode: 'ralph',
+        all_sessions: true,
+      });
+      assert.equal(cleared.isError, undefined);
+
+      assert.equal(existsSync(join(sessionDir, 'ralph-state.json')), false);
+      assert.equal(existsSync(join(sessionDir, 'skill-active-state.json')), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

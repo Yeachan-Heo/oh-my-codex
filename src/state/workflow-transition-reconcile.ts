@@ -57,6 +57,7 @@ async function readJsonIfExists(
 async function visibleTrackedModes(cwd: string, sessionId?: string): Promise<TrackedWorkflowMode[]> {
   const canonical = await readVisibleSkillActiveState(cwd, sessionId);
   const canonicalModes = listActiveSkills(canonical ?? {})
+    .filter((entry) => sessionId || safeString(entry.session_id).trim().length === 0)
     .map((entry) => entry.skill)
     .filter(isTrackedWorkflowMode);
 
