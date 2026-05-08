@@ -526,21 +526,29 @@ const OMX_HOOK_TRUST_END_MARKER = "# End OMX-owned Codex hook trust state";
 export function stripManagedCodexHookTrustState(config: string): string {
   const lines = config.split(/\r?\n/);
   const kept: string[] = [];
-  let insideManagedBlock = false;
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed === OMX_HOOK_TRUST_START_MARKER) {
-      insideManagedBlock = true;
+  for (let i = 0; i < lines.length;) {
+    const trimmed = lines[i].trim();
+    if (trimmed !== OMX_HOOK_TRUST_START_MARKER) {
+      kept.push(lines[i]);
+      i += 1;
       continue;
     }
-    if (insideManagedBlock) {
-      if (trimmed === OMX_HOOK_TRUST_END_MARKER) {
-        insideManagedBlock = false;
-      }
+
+    const nextEndIdx = lines.findIndex(
+      (line, index) => index > i && line.trim() === OMX_HOOK_TRUST_END_MARKER,
+    );
+    const nextStartIdx = lines.findIndex(
+      (line, index) => index > i && line.trim() === OMX_HOOK_TRUST_START_MARKER,
+    );
+
+    if (nextEndIdx === -1 || (nextStartIdx !== -1 && nextStartIdx < nextEndIdx)) {
+      kept.push(lines[i]);
+      i += 1;
       continue;
     }
-    kept.push(line);
+
+    i = nextEndIdx + 1;
   }
 
   return kept.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();

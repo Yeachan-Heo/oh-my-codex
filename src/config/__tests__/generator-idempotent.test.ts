@@ -13,6 +13,7 @@ import {
   cleanCodexModelAvailabilityNuxIfNeeded,
   mergeConfig,
   repairConfigIfNeeded,
+  stripManagedCodexHookTrustState,
   upsertManagedCodexHookTrustState,
 } from "../generator.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../omx-first-party-mcp.js";
@@ -1022,6 +1023,33 @@ describe("config generator idempotency (#384)", () => {
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
+  });
+
+  it("preserves trailing user config after an unmatched managed hook trust-state start marker", () => {
+    const malformed = [
+      'model = "gpt-5.5"',
+      "",
+      "# OMX-owned Codex hook trust state",
+      "# Missing the end fence must not cause trailing user config deletion.",
+      "",
+      '[hooks.state."custom:/hooks.json:stop:0:0"]',
+      'trusted_hash = "sha256:user"',
+      "enabled = false",
+      "",
+      "[hooks.state.user_prompt_submit]",
+      'trusted_hash = "sha256:prompt"',
+      "enabled = true",
+      "",
+    ].join("\n");
+
+    const stripped = stripManagedCodexHookTrustState(malformed);
+
+    assert.match(stripped, /^# OMX-owned Codex hook trust state$/m);
+    assert.match(stripped, /^\[hooks\.state\."custom:\/hooks\.json:stop:0:0"\]$/m);
+    assert.match(stripped, /^enabled = false$/m);
+    assert.match(stripped, /^\[hooks\.state\.user_prompt_submit\]$/m);
+    assert.match(stripped, /^trusted_hash = "sha256:prompt"$/m);
+    assert.doesNotThrow(() => TOML.parse(stripped));
   });
 
   it("dedupes prior fenced managed hook trust-state blocks before writing a replacement", () => {
