@@ -1101,7 +1101,12 @@ describe("codex native hook dispatch", () => {
       assert.ok(result.outputJson, "UserPromptSubmit should emit developer context");
       assert.match(JSON.stringify(result.outputJson), /skill: ralplan activated and initial state initialized at \.omx\/state\/sessions\/sess-1\/ralplan-state\.json; write subsequent updates via omx_state MCP\./);
 
-      const statePath = join(cwd, ".omx", "state", "skill-active-state.json");
+      assert.equal(
+        existsSync(join(cwd, ".omx", "state", "skill-active-state.json")),
+        false,
+        "session-scoped keyword activation should not write root skill-active-state.json",
+      );
+      const statePath = join(cwd, ".omx", "state", "sessions", "sess-1", "skill-active-state.json");
       assert.equal(existsSync(statePath), true);
       const state = JSON.parse(await readFile(statePath, "utf-8")) as {
         skill?: string;

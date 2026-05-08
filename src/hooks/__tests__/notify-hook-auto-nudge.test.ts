@@ -1875,6 +1875,8 @@ exit 0
       await writeJson(join(codexHome, '.omx-config.json'), {
         autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
       });
+      await writeManagedSessionState(stateDir, cwd);
+      const sessionStateDir = join(stateDir, 'sessions', 'sess-managed');
 
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(join(cwd, 'tmux.log')));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
@@ -1885,15 +1887,17 @@ exit 0
       });
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
-      const skillStatePath = join(stateDir, 'skill-active-state.json');
-      assert.ok(existsSync(skillStatePath), 'skill-active-state.json should be created');
+      const rootSkillStatePath = join(stateDir, 'skill-active-state.json');
+      assert.equal(existsSync(rootSkillStatePath), false, 'session-scoped activation should not write root skill-active-state.json');
+      const skillStatePath = join(sessionStateDir, 'skill-active-state.json');
+      assert.ok(existsSync(skillStatePath), 'session skill-active-state.json should be created');
       const skillState = JSON.parse(await readFile(skillStatePath, 'utf-8')) as {
         skill: string;
         phase: string;
         active: boolean;
       };
       assert.equal(skillState.skill, 'autopilot');
-      assert.equal(skillState.phase, 'ralplan');
+      assert.equal(skillState.phase, 'planning');
       assert.equal(skillState.active, true);
     });
   });
@@ -2004,6 +2008,7 @@ exit 0
       await writeJson(join(codexHome, '.omx-config.json'), {
         autoNudge: { enabled: true, delaySec: 0, stallMs: 0 },
       });
+      await writeManagedSessionState(stateDir, cwd);
 
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(join(cwd, 'tmux.log')));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
@@ -2014,7 +2019,12 @@ exit 0
       });
       assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
 
-      const skillState = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')) as {
+      assert.equal(
+        existsSync(join(stateDir, 'skill-active-state.json')),
+        false,
+        'session-scoped deep-interview activation should not write root skill-active-state.json',
+      );
+      const skillState = JSON.parse(await readFile(join(sessionStateDir, 'skill-active-state.json'), 'utf-8')) as {
         skill: string;
         input_lock?: { active: boolean; blocked_inputs: string[]; message: string };
       };
