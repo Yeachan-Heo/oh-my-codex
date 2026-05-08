@@ -972,6 +972,8 @@ function runCodexBlocking(
         : resolveSignalExitCode(result.signal);
     if (result.signal) {
       console.error(`[omx] codex exited due to signal ${result.signal}`);
+    } else if (typeof result.status === "number") {
+      console.error(`[omx] codex exited with code ${result.status}`);
     }
   }
 }
@@ -2332,15 +2334,30 @@ function buildDetachedSessionLeaderCommand(
     'exec 3<&- 2>/dev/null || true;',
     buildTmuxExtendedKeysReleaseShellSnippet(cwd),
     detachedPostLaunchHelper,
-    'if [ "$status" -lt 128 ]; then',
+    'if [ "$status" -eq 0 ]; then',
     `tmux kill-session -t "${escapeShellDoubleQuotedValue(sessionName)}" >/dev/null 2>&1 || true;`,
     "fi;",
     "exit $status;",
     "};",
     "trap omx_detached_session_cleanup 0 INT TERM HUP;",
+    "omx_codex_started_at=$(date +%s 2>/dev/null || printf 0);",
     `${codexCmd} <&3 &`,
     "omx_codex_pid=$!;",
     'wait "$omx_codex_pid";',
+    "omx_codex_status=$?;",
+    "omx_codex_finished_at=$(date +%s 2>/dev/null || printf 0);",
+    'omx_codex_elapsed=$((omx_codex_finished_at - omx_codex_started_at));',
+    'if [ "$omx_codex_status" -eq 0 ] && [ "$omx_codex_elapsed" -le 2 ]; then',
+    'printf "\\n[omx] codex exited immediately with code 0 during startup. The detached tmux session is being kept open so any output above remains visible. Press Enter to close this OMX session.\\n" >&2;',
+    'IFS= read -r _omx_close || true;',
+    'elif [ "$omx_codex_status" -gt 0 ] && [ "$omx_codex_status" -lt 128 ] && [ "$omx_codex_elapsed" -le 2 ]; then',
+    'printf "\\n[omx] codex exited with code %s during startup. The detached tmux session is being kept open so the error above remains visible. Press Enter to close this OMX session.\\n" "$omx_codex_status" >&2;',
+    'IFS= read -r _omx_close || true;',
+    'elif [ "$omx_codex_status" -gt 0 ] && [ "$omx_codex_status" -lt 128 ]; then',
+    'printf "\\n[omx] codex exited with code %s. The detached tmux session is being kept open so the error above remains visible. Press Enter to close this OMX session.\\n" "$omx_codex_status" >&2;',
+    'IFS= read -r _omx_close || true;',
+    "fi;",
+    'exit "$omx_codex_status";',
   ].join(" ");
   return `/bin/sh -c ${quoteShellArg(wrapped)}`;
 }

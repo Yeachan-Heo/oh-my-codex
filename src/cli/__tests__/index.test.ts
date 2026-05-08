@@ -2388,9 +2388,12 @@ describe("detached tmux new-session sequencing", () => {
     assert.match(leaderCmd!, /wait "\$omx_codex_pid";/);
     assert.match(leaderCmd!, /kill -TERM "\$omx_codex_pid"/);
     assert.match(leaderCmd!, /releaseTmuxExtendedKeysLease/);
-    assert.match(leaderCmd!, /if \[ "\$status" -lt 128 \]; then/);
+    assert.match(leaderCmd!, /if \[ "\$status" -eq 0 \]; then/);
     assert.match(leaderCmd!, /tmux kill-session -t/);
     assert.match(leaderCmd!, /"omx-demo"/);
+    assert.match(leaderCmd!, /codex exited immediately with code 0/);
+    assert.match(leaderCmd!, /codex exited with code/);
+    assert.match(leaderCmd!, /detached tmux session is being kept open/);
     assert.match(leaderCmd!, /exit \$status/);
   });
 
@@ -2416,7 +2419,7 @@ describe("detached tmux new-session sequencing", () => {
     assert.match(leaderCmd!, /\/tmp\/project\/\.codex-project/);
     assert.match(leaderCmd!, /\/tmp\/project\/\.omx\/runtime\/codex-home\/omx-session-123/);
     const helperIndex = leaderCmd!.indexOf("runDetachedSessionPostLaunch");
-    const signalGateIndex = leaderCmd!.indexOf('if [ "$status" -lt 128 ]');
+    const signalGateIndex = leaderCmd!.indexOf('if [ "$status" -eq 0 ]');
     assert.ok(helperIndex >= 0);
     assert.ok(signalGateIndex >= 0);
     assert.ok(
@@ -2644,6 +2647,146 @@ exit 0
       assert.match(log, /tmux:set-option -sq extended-keys always/);
       assert.match(log, /tmux:set-option -sq extended-keys off/);
       assert.doesNotMatch(log, /tmux:kill-session -t omx-demo/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("detached leader command keeps child startup errors visible instead of killing the session", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-detached-leader-error-"));
+    const fakeBin = join(cwd, "bin");
+    const logPath = join(cwd, "leader.log");
+
+    try {
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(
+        join(fakeBin, "codex"),
+        `#!/bin/sh
+printf 'codex-stderr: unsupported startup flag\\n' >&2
+exit 42
+`,
+      );
+      await chmod(join(fakeBin, "codex"), 0o755);
+      await writeFile(
+        join(fakeBin, "tmux"),
+        `#!/bin/sh
+printf 'tmux:%s\\n' "$*" >> "${logPath}"
+case "$1" in
+  display-message)
+    if [ "$3" = '#{socket_path}' ] || [ "$4" = '#{socket_path}' ]; then
+      printf '/tmp/tmux-test.sock\\n'
+    else
+      printf '0\\n'
+    fi
+    ;;
+  show-options)
+    printf 'off\\n'
+    ;;
+  set-option|kill-session)
+    ;;
+esac
+exit 0
+`,
+      );
+      await chmod(join(fakeBin, "tmux"), 0o755);
+
+      const steps = buildDetachedSessionBootstrapSteps(
+        "omx-demo",
+        cwd,
+        buildTmuxPaneCommand("codex", ["--bad-startup-flag"], "/bin/sh"),
+        "'node' '/tmp/omx.js' 'hud' '--watch'",
+        null,
+      );
+      const leaderCmd = steps[0]?.args.at(-1);
+      assert.equal(typeof leaderCmd, "string");
+
+      const result = (await import("node:child_process")).spawnSync("/bin/sh", ["-c", leaderCmd!], {
+        cwd,
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+          HOME: cwd,
+        },
+        input: "\n",
+        encoding: "utf-8",
+      });
+
+      assert.equal(result.status, 42);
+      assert.match(result.stderr, /codex-stderr: unsupported startup flag/);
+      assert.match(result.stderr, /codex exited with code 42 during startup/);
+      assert.match(result.stderr, /detached tmux session is being kept open/);
+      const log = await readFile(logPath, "utf-8");
+      assert.doesNotMatch(log, /tmux:kill-session -t omx-demo/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("detached leader command keeps immediate zero-code exits visible instead of silently closing", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-detached-leader-zero-"));
+    const fakeBin = join(cwd, "bin");
+    const logPath = join(cwd, "leader.log");
+
+    try {
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(
+        join(fakeBin, "codex"),
+        `#!/bin/sh
+printf 'codex-started-then-quit\\n' >&2
+exit 0
+`,
+      );
+      await chmod(join(fakeBin, "codex"), 0o755);
+      await writeFile(
+        join(fakeBin, "tmux"),
+        `#!/bin/sh
+printf 'tmux:%s\\n' "$*" >> "${logPath}"
+case "$1" in
+  display-message)
+    if [ "$3" = '#{socket_path}' ] || [ "$4" = '#{socket_path}' ]; then
+      printf '/tmp/tmux-test.sock\\n'
+    else
+      printf '0\\n'
+    fi
+    ;;
+  show-options)
+    printf 'off\\n'
+    ;;
+  set-option|kill-session)
+    ;;
+esac
+exit 0
+`,
+      );
+      await chmod(join(fakeBin, "tmux"), 0o755);
+
+      const steps = buildDetachedSessionBootstrapSteps(
+        "omx-demo",
+        cwd,
+        buildTmuxPaneCommand("codex", [], "/bin/sh"),
+        "'node' '/tmp/omx.js' 'hud' '--watch'",
+        null,
+      );
+      const leaderCmd = steps[0]?.args.at(-1);
+      assert.equal(typeof leaderCmd, "string");
+
+      const result = (await import("node:child_process")).spawnSync("/bin/sh", ["-c", leaderCmd!], {
+        cwd,
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+          HOME: cwd,
+        },
+        input: "\n",
+        encoding: "utf-8",
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stderr, /codex-started-then-quit/);
+      assert.match(result.stderr, /codex exited immediately with code 0 during startup/);
+      assert.match(result.stderr, /detached tmux session is being kept open/);
+      const log = await readFile(logPath, "utf-8");
+      assert.match(log, /tmux:kill-session -t omx-demo/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

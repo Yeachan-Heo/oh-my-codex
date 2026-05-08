@@ -97,6 +97,73 @@ async function createLaunchFixture(
 }
 
 describe('omx launch fallback when tmux is unavailable', () => {
+  it('surfaces direct Codex startup stderr and preserves the child exit code', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-child-error-'));
+    try {
+      const home = join(wd, 'home');
+      const fakeBin = join(wd, 'bin');
+
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeExecutable(
+        join(fakeBin, 'codex'),
+        `#!/bin/sh
+printf 'codex-startup-boom\\n' >&2
+exit 42
+`,
+      );
+      await writeExecutable(join(fakeBin, 'ps'), '#!/bin/sh\nexit 0\n');
+
+      const result = runOmx(wd, ['--direct', '--version'], {
+        HOME: home,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+        TMUX: '',
+        TMUX_PANE: '',
+      });
+
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      assert.equal(result.status, 42, result.error || result.stderr || result.stdout);
+      assert.match(result.stderr, /codex-startup-boom/);
+      assert.match(result.stderr, /\[omx\] codex exited with code 42/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a missing Codex executable instead of exiting silently', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-missing-codex-'));
+    try {
+      const home = join(wd, 'home');
+      const fakeBin = join(wd, 'bin');
+
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeExecutable(join(fakeBin, 'ps'), '#!/bin/sh\nexit 0\n');
+
+      const result = runOmx(wd, ['--direct', '--version'], {
+        HOME: home,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+        TMUX: '',
+        TMUX_PANE: '',
+      });
+
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /failed to launch codex: executable not found in PATH/);
+      assert.notEqual(result.stderr.trim(), '');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('launches codex directly without tmux ENOENT noise', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-fallback-'));
     try {
