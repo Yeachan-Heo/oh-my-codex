@@ -9,6 +9,10 @@ import { execFileSync, spawnSync } from 'child_process';
 import { sleepSync } from '../utils/sleep.js';
 import { resolveCommandPathForPlatform, resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 import { buildCapturePaneArgv as sharedBuildCapturePaneArgv } from '../scripts/tmux-hook-engine.js';
+import {
+  resolveTmuxSubmitRepeatDelayMs,
+  resolveTmuxSubmitSettleMs,
+} from '../utils/tmux-submit-delay.js';
 
 export function isTmuxAvailable(): boolean {
   return resolveCommandPathForPlatform('tmux') !== null;
@@ -112,9 +116,6 @@ export function buildSendPaneArgvs(
   return argvs;
 }
 
-const TMUX_TEXT_SETTLE_MS = 120;
-const TMUX_SUBMIT_REPEAT_DELAY_MS = 100;
-
 /**
  * Returns the number of C-m (submit) key presses needed for a given worker CLI.
  * Source of truth: Rust runtime's submit_presses_for_worker_cli (Claude=1, Codex/Other=2).
@@ -152,6 +153,8 @@ export function sendToPane(
 ): boolean {
   const spawnSyncImpl = deps.spawnSyncImpl ?? spawnSync;
   const sleepImpl = deps.sleepImpl ?? sleepSync;
+  const submitSettleMs = resolveTmuxSubmitSettleMs();
+  const submitRepeatDelayMs = resolveTmuxSubmitRepeatDelayMs();
   const argvs = buildSendPaneArgvs(paneId, text, pressEnter);
   const tmuxCommand = resolveTmuxBinaryForPlatform() || 'tmux';
 
@@ -167,7 +170,7 @@ export function sendToPane(
     const hasNextArgv = index < argvs.length - 1;
     if (!hasNextArgv) continue;
 
-    sleepImpl(index === 0 ? TMUX_TEXT_SETTLE_MS : TMUX_SUBMIT_REPEAT_DELAY_MS);
+    sleepImpl(index === 0 ? submitSettleMs : submitRepeatDelayMs);
   }
   return true;
 }

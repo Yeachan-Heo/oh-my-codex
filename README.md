@@ -261,6 +261,17 @@ Only use the forced team shutdown for a team you have confirmed is dead or inten
 
 If `Shift+Enter` still submits instead of inserting a newline inside an OMX-managed tmux session, see [Troubleshooting execution readiness](./docs/troubleshooting.md#shiftenter-submits-instead-of-inserting-a-newline-in-tmux-backed-omx-sessions). Current OMX already enables tmux extended-key forwarding around its own Codex launch paths, so a persistent failure is usually a tmux terminal-capability/discoverability problem rather than a net-new OMX feature gap.
 
+### Tmux submit timing
+
+If a terminal emulator needs more time between literal `tmux send-keys` text injection and the first `C-m` submit, persist the delay in `${CODEX_HOME:-~/.codex}/config.toml`:
+
+```toml
+[omx]
+tmux_submit_settle_ms = 275
+```
+
+The default remains 120ms.
+
 ### Explore and sparkshell
 
 - `omx explore --prompt "..."` is for read-only repository lookup

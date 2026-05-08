@@ -1,6 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzePaneContent, buildSendPaneArgvs, buildCapturePaneArgv, sendToPane } from '../tmux-detector.js';
+import { mkdtemp, rm, writeFile } from 'fs/promises';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import {
+  analyzePaneContent,
+  buildSendPaneArgvs,
+  buildCapturePaneArgv,
+  sendToPane,
+} from '../tmux-detector.js';
 import type { PaneAnalysis } from '../tmux-detector.js';
 
 describe('analyzePaneContent', () => {
@@ -190,6 +198,28 @@ describe('buildSendPaneArgvs', () => {
       ['send-keys', '-t', '%5', 'C-m'],
     ]);
     assert.deepEqual(sleeps, [120, 100]);
+  });
+
+  it('honors persistent config.toml tmux submit settle delay for slower terminal emulators', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-tmux-delay-'));
+    const originalCodexHome = process.env.CODEX_HOME;
+    const sleeps: number[] = [];
+
+    try {
+      process.env.CODEX_HOME = codexHome;
+      await writeFile(join(codexHome, 'config.toml'), '[omx]\ntmux_submit_settle_ms = 275\n');
+      const ok = sendToPane('%5', 'continue', true, {
+        spawnSyncImpl: () => ({ status: 0 }),
+        sleepImpl: (ms) => sleeps.push(ms),
+      });
+
+      assert.equal(ok, true);
+      assert.deepEqual(sleeps, [275, 100]);
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      await rm(codexHome, { recursive: true, force: true });
+    }
   });
 });
 

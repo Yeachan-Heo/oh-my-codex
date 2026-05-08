@@ -6,6 +6,10 @@ import { spawnSync } from 'child_process';
 import { sleepSync } from '../../../utils/sleep.js';
 import { resolveCodexPane } from '../../../scripts/tmux-hook-engine.js';
 import { resolveTmuxBinaryForPlatform } from '../../../utils/platform-command.js';
+import {
+  resolveTmuxSubmitRepeatDelayMs,
+  resolveTmuxSubmitSettleMs,
+} from '../../../utils/tmux-submit-delay.js';
 import type {
   HookEventEnvelope,
   HookPluginSdk,
@@ -50,9 +54,9 @@ function hashDedupeKey(target: string, text: string): string {
   return createHash('sha256').update(`${target}|${text}`).digest('hex');
 }
 
-function sleepFractionalSeconds(seconds: number): void {
-  if (!Number.isFinite(seconds) || seconds <= 0) return;
-  sleepSync(Math.round(seconds * 1000));
+function sleepMilliseconds(ms: number): void {
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  sleepSync(Math.round(ms));
 }
 
 function runTmux(args: string[]): { ok: true; stdout: string } | { ok: false; stderr: string } {
@@ -185,9 +189,9 @@ async function sendTmuxKeys(
   }
 
   if (options.submit !== false) {
-    sleepFractionalSeconds(0.12);
+    sleepMilliseconds(resolveTmuxSubmitSettleMs());
     const submitA = runTmux(['send-keys', '-t', targetResolution.target, 'C-m']);
-    sleepFractionalSeconds(0.1);
+    sleepMilliseconds(resolveTmuxSubmitRepeatDelayMs());
     const submitB = runTmux(['send-keys', '-t', targetResolution.target, 'C-m']);
     if (!submitA.ok && !submitB.ok) {
       return {
