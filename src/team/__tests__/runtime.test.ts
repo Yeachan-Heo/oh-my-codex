@@ -6470,6 +6470,79 @@ esac
     }
   });
 
+  it('startTeam injects approved handoff context into ready approved worker inboxes', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-handoff-'));
+    const binDir = join(cwd, 'bin');
+    const fakeCodexPath = join(binDir, 'codex');
+    const approvedTask = 'Execute approved issue 1314 handoff plan';
+    await mkdir(binDir, { recursive: true });
+    await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
+    const prdPath = join(cwd, '.omx', 'plans', 'prd-issue-1314-handoff.md');
+    const testSpecPath = join(cwd, '.omx', 'plans', 'test-spec-issue-1314-handoff.md');
+    await writeFile(
+      prdPath,
+      [
+        '# Approved plan',
+        '',
+        buildContextPackOutcome(canonicalContextPackRelativePath('issue-1314-handoff')),
+        '',
+        `Launch via omx team 1:executor "${approvedTask}"`,
+      ].join('\n'),
+    );
+    await writeFile(testSpecPath, '# Test spec\n');
+    await writeReadyContextPack(cwd, 'issue-1314-handoff', prdPath, testSpecPath);
+    await writeFile(
+      join(cwd, '.omx', 'plans', 'repo-context-issue-1314-handoff.md'),
+      'Read the approved repository slice first.\n',
+    );
+    await writeFakePromptWorkerBinary(
+      fakeCodexPath,
+      `setTimeout(() => {}, 5000);`,
+    );
+
+    let runtime: TeamRuntime | null = null;
+    try {
+      runtime = await withPromptModeCodexEnv(binDir, {}, () =>
+        withoutTeamWorkerEnv(() =>
+          startTeam(
+            'team-approved-handoff',
+            'approved handoff context test',
+            'executor',
+            1,
+            [{ subject: 's', description: 'd', owner: 'worker-1' }],
+            cwd,
+            {
+              approvedExecution: {
+                prd_path: prdPath,
+                task: approvedTask,
+                command: `omx team 1:executor "${approvedTask}"`,
+              },
+            },
+          ),
+        ),
+      );
+
+      const inbox = await readFile(
+        join(cwd, '.omx', 'state', 'team', runtime.teamName, 'workers', 'worker-1', 'inbox.md'),
+        'utf-8',
+      );
+      assert.match(inbox, /## Approved Handoff Context/);
+      assert.match(inbox, new RegExp(`Approved plan: ${prdPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      assert.match(inbox, new RegExp(`Test specs: ${testSpecPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      assert.match(inbox, /Approved repository context summary source: .*repo-context-issue-1314-handoff\.md/);
+      assert.match(inbox, /Read the approved repository slice first\./);
+      assert.match(inbox, /Build refs \(read first\): src\/build-1\.ts/);
+      assert.match(inbox, /Verify refs: src\/verify-2\.ts/);
+      assert.match(inbox, /Scope refs: src\/scope-0\.ts/);
+      assert.doesNotMatch(inbox, /query the canonical pack|Context pack index/);
+    } finally {
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
+      }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('startTeam keeps explicit plan-only approved bindings on the generic path', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-binding-plan-only-'));
     const binDir = join(cwd, 'bin');
@@ -6515,6 +6588,11 @@ esac
         'approved-execution.json',
       );
       assert.equal(existsSync(bindingPath), false);
+      const inbox = await readFile(
+        join(cwd, '.omx', 'state', 'team', runtime.teamName, 'workers', 'worker-1', 'inbox.md'),
+        'utf-8',
+      );
+      assert.doesNotMatch(inbox, /## Approved Handoff Context/);
     } finally {
       if (runtime) {
         await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
@@ -6803,6 +6881,81 @@ esac
       const inbox = await readFile(join(cwd, '.omx', 'state', 'team', 'team-assign-delegation', 'workers', 'worker-1', 'inbox.md'), 'utf-8');
       assert.match(inbox, /Assignment Cancelled/);
       assert.match(inbox, /worker_notify_failed/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('assignTask injects approved handoff context when the persisted approved binding remains ready', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-followup-'));
+    const approvedTask = 'Execute approved issue 1320 plan';
+    try {
+      await initTeamState('team-approved-followup', 'assignment test', 'executor', 1, cwd);
+      const manifestPath = teamStateTestPath(cwd, 'team', 'team-approved-followup', 'manifest.v2.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
+      manifest.policy = { ...(manifest.policy || {}), dispatch_ack_timeout_ms: 250 };
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+      const plansDir = join(cwd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      const prdPath = join(plansDir, 'prd-issue-1320.md');
+      const testSpecPath = join(plansDir, 'test-spec-issue-1320.md');
+      await writeFile(
+        prdPath,
+        [
+          '# Approved plan',
+          '',
+          buildContextPackOutcome(canonicalContextPackRelativePath('issue-1320')),
+          '',
+          `Launch via omx team 1:executor "${approvedTask}"`,
+        ].join('\n'),
+      );
+      await writeFile(testSpecPath, '# Test spec\n');
+      await writeReadyContextPack(cwd, 'issue-1320', prdPath, testSpecPath);
+      await writeFile(
+        join(plansDir, 'repo-context-issue-1320.md'),
+        'Follow the approved repository slice before broader repo exploration.\n',
+      );
+      await writePersistedApprovedTeamExecutionBinding('team-approved-followup', cwd, {
+        prd_path: prdPath,
+        task: approvedTask,
+        command: `omx team 1:executor "${approvedTask}"`,
+      });
+      const task = await createTask(
+        'team-approved-followup',
+        { subject: 'Implement approved follow-up', description: 'Implement approved follow-up', status: 'pending' },
+        cwd,
+      );
+
+      const assignPromise = assignTask('team-approved-followup', 'worker-1', task.id, cwd);
+      const deadline = Date.now() + 2_000;
+      let delivered = false;
+      while (Date.now() < deadline && !delivered) {
+        const requests = await listDispatchRequests('team-approved-followup', cwd, { kind: 'inbox', to_worker: 'worker-1' });
+        if (!requests.some((request) => request.status === 'pending')) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          continue;
+        }
+        await markPendingInboxDispatchesDelivered('team-approved-followup', cwd, {
+          toWorker: 'worker-1',
+          lastReason: 'test_delivered_receipt',
+        });
+        delivered = true;
+      }
+      assert.ok(delivered, 'expected follow-up inbox dispatch request to be queued');
+
+      await assignPromise;
+
+      const inbox = await readFile(
+        join(cwd, '.omx', 'state', 'team', 'team-approved-followup', 'workers', 'worker-1', 'inbox.md'),
+        'utf-8',
+      );
+      assert.match(inbox, /## Approved Handoff Context/);
+      assert.match(inbox, new RegExp(`Approved plan: ${prdPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      assert.match(inbox, /Build refs \(read first\): src\/build-1\.ts/);
+      assert.match(inbox, /Verify refs: src\/verify-2\.ts/);
+      assert.match(inbox, /Scope refs: src\/scope-0\.ts/);
+      assert.match(inbox, /Follow the approved repository slice before broader repo exploration\./);
+      assert.doesNotMatch(inbox, /query the canonical pack|Context pack index/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

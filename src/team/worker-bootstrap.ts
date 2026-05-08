@@ -705,6 +705,7 @@ export function generateInitialInbox(
     worktreeRootAgentsCanonical?: boolean;
     taskHints?: Record<string, TaskHintSummary>;
     approvedContextSummary?: ApprovedRepositoryContextSummary;
+    approvedContextSection?: string;
     workerGoalInstruction?: TeamWorkerGoalInstruction;
   } = {},
 ): string {
@@ -747,15 +748,21 @@ export function generateInitialInbox(
   const delegationSection = renderDelegationContracts(tasks);
   const workerGoalSection = renderTeamWorkerGoalInstruction(options.workerGoalInstruction);
 
-  const approvedContextSection = options.approvedContextSummary
+  const approvedContextSection = options.approvedContextSection
     ? `
+## Approved Handoff Context
+
+${options.approvedContextSection}
+`
+    : options.approvedContextSummary
+      ? `
 ## Approved Repository Context Summary
 
 Source: ${options.approvedContextSummary.sourcePath}${options.approvedContextSummary.truncated ? ' (bounded/truncated)' : ''}
 
 ${options.approvedContextSummary.content}
 `
-    : "";
+      : "";
 
   const specializationSection = options.worktreeRootAgentsCanonical === true
     ? ""
@@ -836,21 +843,35 @@ export function generateTaskAssignmentInbox(
   workerName: string,
   teamName: string,
   task: TeamTask,
+  options?: {
+    approvedContextSection?: string;
+  },
 ): string;
 export function generateTaskAssignmentInbox(
   workerName: string,
   teamName: string,
   taskId: string,
   taskDescription: string,
+  options?: {
+    approvedContextSection?: string;
+  },
 ): string;
 export function generateTaskAssignmentInbox(
   workerName: string,
   teamName: string,
   taskOrId: TeamTask | string,
-  taskDescriptionArg?: string,
+  taskDescriptionArg?: string | {
+    approvedContextSection?: string;
+  },
+  optionsArg: {
+    approvedContextSection?: string;
+  } = {},
 ): string {
+  const options = typeof taskDescriptionArg === "string"
+    ? optionsArg
+    : taskDescriptionArg ?? optionsArg;
   const task = typeof taskOrId === "string"
-    ? { id: taskOrId, description: taskDescriptionArg ?? "" }
+    ? { id: taskOrId, description: typeof taskDescriptionArg === "string" ? taskDescriptionArg : "" }
     : taskOrId;
   const taskId = task.id;
   const taskDescription = task.description;
@@ -870,6 +891,9 @@ export function generateTaskAssignmentInbox(
         }],
       });
   const delegationSection = renderDelegationContracts([task as TeamTask]);
+  const approvedContextSection = options.approvedContextSection
+    ? `\n## Approved Handoff Context\n\n${options.approvedContextSection}\n`
+    : "";
 
   return `# New Task Assignment
 
@@ -879,6 +903,7 @@ export function generateTaskAssignmentInbox(
 ## Task Description
 
 ${taskDescription}
+${approvedContextSection}
 ${workerGoalSection}
 ## Instructions
 

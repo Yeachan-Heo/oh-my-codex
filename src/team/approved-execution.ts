@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import {
   readApprovedExecutionLaunchHintOutcome,
   readPlanningArtifacts,
+  type ApprovedRepositoryContextSummary,
   type ApprovedExecutionLaunchHint,
 } from '../planning/artifacts.js';
 import { TEAM_NAME_SAFE_PATTERN } from './contracts.js';
@@ -70,6 +71,71 @@ export function buildApprovedTeamExecutionBinding(
     task: approvedHint.task,
     ...(approvedHint.command ? { command: approvedHint.command } : {}),
   };
+}
+
+function renderApprovedRepositoryContextSummary(
+  summary: ApprovedRepositoryContextSummary,
+): string[] {
+  const lines = [
+    `- Approved repository context summary source: ${summary.sourcePath}${summary.truncated ? ' (bounded/truncated)' : ''}`,
+  ];
+  const content = summary.content.trim();
+  if (content !== '') {
+    lines.push('', content);
+  }
+  return lines;
+}
+
+function renderRoleRefLine(label: string, refs: readonly string[]): string | null {
+  return refs.length > 0
+    ? `- ${label}: ${refs.join(', ')}`
+    : null;
+}
+
+export function buildApprovedTeamHandoffSection(
+  approvedHint: ApprovedExecutionLaunchHint | null | undefined,
+): string | undefined {
+  if (
+    !approvedHint
+    || approvedHint.mode !== 'team'
+    || approvedHint.contextPackStatus !== 'ready'
+    || !approvedHint.contextPackRoleRefs
+  ) {
+    return undefined;
+  }
+
+  const { build, verify, scope } = approvedHint.contextPackRoleRefs;
+  if (build.length === 0 && verify.length === 0 && scope.length === 0) {
+    return undefined;
+  }
+
+  const lines = [`- Approved plan: ${approvedHint.sourcePath}`];
+  if (approvedHint.testSpecPaths.length > 0) {
+    lines.push(`- Test specs: ${approvedHint.testSpecPaths.join(', ')}`);
+  }
+  if (approvedHint.repositoryContextSummary) {
+    lines.push(...renderApprovedRepositoryContextSummary(approvedHint.repositoryContextSummary));
+  }
+
+  const buildLine = renderRoleRefLine('Build refs (read first)', build);
+  const verifyLine = renderRoleRefLine('Verify refs', verify);
+  const scopeLine = renderRoleRefLine('Scope refs', scope);
+  if (buildLine) {
+    lines.push(buildLine);
+  }
+  if (verifyLine) {
+    lines.push(verifyLine);
+  }
+  if (scopeLine) {
+    lines.push(scopeLine);
+  }
+
+  lines.push(
+    build.length > 0
+      ? '- Read the build refs above before broader repo exploration.'
+      : '- Read the approved refs above before broader repo exploration.',
+  );
+  return lines.join('\n');
 }
 
 function assertSafeTeamName(teamName: string): void {

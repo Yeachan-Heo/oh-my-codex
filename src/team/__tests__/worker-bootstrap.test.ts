@@ -1070,4 +1070,56 @@ describe("worker bootstrap", () => {
     assert.match(inbox, /preserve approved context only for matching launches/);
   });
 
+  it("generateInitialInbox prefers approved handoff context when provided", () => {
+    const inbox = generateInitialInbox(
+      "worker-1",
+      "context-team",
+      "executor",
+      [{ id: "1", subject: "Implement", description: "Do task", status: "pending", owner: "worker-1", created_at: "2026-04-30T00:00:00.000Z" }],
+      {
+        approvedContextSection: [
+          "- Approved plan: .omx/plans/prd-issue-2039.md",
+          "- Build refs (read first): src/build-1.ts",
+          "- Read the build refs above before broader repo exploration.",
+        ].join("\n"),
+        approvedContextSummary: {
+          sourcePath: ".omx/plans/repo-context-issue-2039.md",
+          content: "This legacy summary should be suppressed when the handoff section is present.",
+          truncated: false,
+        },
+      },
+    );
+
+    assert.match(inbox, /## Approved Handoff Context/);
+    assert.match(inbox, /Approved plan: \.omx\/plans\/prd-issue-2039\.md/);
+    assert.match(inbox, /Build refs \(read first\): src\/build-1\.ts/);
+    assert.doesNotMatch(inbox, /## Approved Repository Context Summary/);
+  });
+
+  it("generateTaskAssignmentInbox includes approved handoff context when provided", () => {
+    const inbox = generateTaskAssignmentInbox(
+      "worker-1",
+      "team-followup",
+      {
+        id: "42",
+        subject: "Implement parser update",
+        description: "Implement parser update",
+        status: "pending",
+        created_at: "2026-04-30T00:00:00.000Z",
+      },
+      {
+        approvedContextSection: [
+          "- Approved plan: .omx/plans/prd-issue-2040.md",
+          "- Build refs (read first): src/build-1.ts",
+          "- Verify refs: src/verify-2.ts",
+        ].join("\n"),
+      },
+    );
+
+    assert.match(inbox, /## Approved Handoff Context/);
+    assert.match(inbox, /Approved plan: \.omx\/plans\/prd-issue-2040\.md/);
+    assert.match(inbox, /Build refs \(read first\): src\/build-1\.ts/);
+    assert.match(inbox, /Verify refs: src\/verify-2\.ts/);
+  });
+
 });

@@ -137,6 +137,7 @@ import {
   isApprovedExecutionFollowupReadyStatus,
 } from '../planning/artifacts.js';
 import {
+  buildApprovedTeamHandoffSection,
   buildApprovedTeamExecutionBinding,
   normalizeApprovedTeamExecutionBinding,
   readApprovedTeamExecutionHintOutcomeFromBinding,
@@ -2290,6 +2291,7 @@ export async function startTeam(
     && isApprovedExecutionContextReadyStatus(selectedApprovedExecutionHint.contextPackStatus)
     ? buildApprovedTeamExecutionBinding(selectedApprovedExecutionHint)
     : null;
+  const approvedContextSection = buildApprovedTeamHandoffSection(selectedApprovedExecutionHint);
   const activeWorktreeMode: 'detached' | 'named' | null =
     effectiveWorktreeMode.enabled
       ? (effectiveWorktreeMode.detached ? 'detached' : 'named')
@@ -2527,7 +2529,10 @@ export async function startTeam(
         rolePromptContent: rawRolePromptContent ?? undefined,
         worktreeRootAgentsCanonical: Boolean(workerWorkspace.worktreePath),
         taskHints: effectiveDecompositionMetadata?.task_hints,
-        approvedContextSummary: effectiveDecompositionMetadata?.approved_context_summary,
+        approvedContextSection,
+        approvedContextSummary: approvedContextSection
+          ? undefined
+          : effectiveDecompositionMetadata?.approved_context_summary,
         workerGoalInstruction: buildTeamWorkerGoalInstruction(sanitized, workerName, workerTasks, { teamStateRoot }),
       });
       const triggerDirective = buildTriggerDirective(
@@ -3297,10 +3302,19 @@ export async function assignTask(
 
   try {
     // Retry dispatch up to 2 times to handle trust prompts during assignment (fixes #393).
+    const approvedExecutionState = await resolvePersistedApprovedTeamExecutionContinuityState(
+      sanitized,
+      config.leader_cwd ?? cwd,
+      config.team_state_root ?? resolveCanonicalTeamStateRoot(config.leader_cwd ?? cwd),
+    );
+    const approvedContextSection = approvedExecutionState.status === 'valid'
+      && isApprovedExecutionFollowupReadyStatus(approvedExecutionState.approvedHint.contextPackStatus)
+      ? buildApprovedTeamHandoffSection(approvedExecutionState.approvedHint)
+      : undefined;
     const taskForInbox = task.delegation
       ? task
       : (await updateTask(sanitized, taskId, { delegation: synthesizeDelegationPlan(task) }, cwd)) ?? task;
-    const inbox = generateTaskAssignmentInbox(workerName, sanitized, taskForInbox);
+    const inbox = generateTaskAssignmentInbox(workerName, sanitized, taskForInbox, { approvedContextSection });
     const maxAssignRetries = 2;
     const assignRetryDelayS = 2;
     let outcome: DispatchOutcome = { ok: false, transport: 'none', reason: 'not_attempted' };

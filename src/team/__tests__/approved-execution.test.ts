@@ -5,11 +5,13 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  buildApprovedTeamHandoffSection,
   readPersistedApprovedTeamExecutionBinding,
   readPersistedApprovedTeamExecutionBindingStateSync,
   resolvePersistedApprovedTeamExecutionContinuityState,
   writePersistedApprovedTeamExecutionBinding,
 } from '../approved-execution.js';
+import type { ApprovedExecutionLaunchHint } from '../../planning/artifacts.js';
 
 async function withUnboxedOmxRoot<T>(fn: () => Promise<T>): Promise<T> {
   const previousOmxRoot = process.env.OMX_ROOT;
@@ -26,7 +28,63 @@ async function withUnboxedOmxRoot<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+function buildReadyApprovedTeamHint(
+  overrides: Partial<ApprovedExecutionLaunchHint> = {},
+): ApprovedExecutionLaunchHint {
+  return {
+    sourcePath: '/repo/.omx/plans/prd-issue-1314.md',
+    testSpecPaths: ['/repo/.omx/plans/test-spec-issue-1314.md'],
+    deepInterviewSpecPaths: [],
+    contextPack: { path: '/repo/.omx/context/context-20260507T120000Z-issue-1314.json' },
+    contextPackStatus: 'ready',
+    contextPackRoleRefs: {
+      build: ['src/build-entry.ts'],
+      verify: ['tests/verify-entry.ts'],
+      scope: ['docs/scope-entry.md'],
+    },
+    missingRequiredContextPackRoles: [],
+    contextPackIssues: [],
+    repositoryContextSummary: {
+      sourcePath: '/repo/.omx/plans/repo-context-issue-1314.md',
+      content: 'Read the approved repository slice before broader repo exploration.',
+      truncated: false,
+    },
+    mode: 'team',
+    command: 'omx team 1:executor "Execute approved issue 1314 plan"',
+    task: 'Execute approved issue 1314 plan',
+    workerCount: 1,
+    agentType: 'executor',
+    linkedRalph: false,
+    ...overrides,
+  };
+}
+
 describe('approved execution binding', () => {
+  it('buildApprovedTeamHandoffSection renders ready approved Team context with grouped refs', () => {
+    const handoff = buildApprovedTeamHandoffSection(buildReadyApprovedTeamHint());
+
+    assert.match(handoff ?? '', /Approved plan: \/repo\/\.omx\/plans\/prd-issue-1314\.md/);
+    assert.match(handoff ?? '', /Test specs: \/repo\/\.omx\/plans\/test-spec-issue-1314\.md/);
+    assert.match(handoff ?? '', /Approved repository context summary source: \/repo\/\.omx\/plans\/repo-context-issue-1314\.md/);
+    assert.match(handoff ?? '', /Read the approved repository slice before broader repo exploration\./);
+    assert.match(handoff ?? '', /Build refs \(read first\): src\/build-entry\.ts/);
+    assert.match(handoff ?? '', /Verify refs: tests\/verify-entry\.ts/);
+    assert.match(handoff ?? '', /Scope refs: docs\/scope-entry\.md/);
+    assert.match(handoff ?? '', /Read the build refs above before broader repo exploration\./);
+    assert.doesNotMatch(handoff ?? '', /query the canonical pack|Context pack index/);
+  });
+
+  it('buildApprovedTeamHandoffSection stays undefined outside ready Team handoffs', () => {
+    assert.equal(
+      buildApprovedTeamHandoffSection(buildReadyApprovedTeamHint({ mode: 'ralph' })),
+      undefined,
+    );
+    assert.equal(
+      buildApprovedTeamHandoffSection(buildReadyApprovedTeamHint({ contextPackStatus: 'plan-only' })),
+      undefined,
+    );
+  });
+
   it('writes and reads a normalized approved execution binding under the team state root', async () => {
     await withUnboxedOmxRoot(async () => {
       const cwd = await mkdtemp(join(tmpdir(), 'omx-approved-execution-write-'));
