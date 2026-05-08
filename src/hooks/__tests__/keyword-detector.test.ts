@@ -411,32 +411,17 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(result.initialized_mode, 'autopilot');
       assert.equal(result.initialized_state_path, '.omx/state/sessions/sess-1/autopilot-state.json');
 
-      const persisted = JSON.parse(await readFile(join(stateDir, SKILL_ACTIVE_STATE_FILE), 'utf-8')) as {
-        skill: string;
-        phase: string;
-        active: boolean;
-        active_skills?: Array<{ skill: string; session_id?: string }>;
-        initialized_mode?: string;
-      };
-      assert.equal(persisted.skill, 'autopilot');
-      assert.equal(persisted.phase, 'ralplan');
-      assert.equal(persisted.active, true);
-      assert.deepEqual(persisted.active_skills, [{
-        skill: 'autopilot',
-        phase: 'ralplan',
-        active: true,
-        activated_at: '2026-02-25T00:00:00.000Z',
-        updated_at: '2026-02-25T00:00:00.000Z',
-        session_id: 'sess-1',
-        thread_id: 'thread-1',
-        turn_id: 'turn-1',
-      }]);
-      assert.equal(persisted.initialized_mode, 'autopilot');
+      assert.equal(
+        existsSync(join(stateDir, SKILL_ACTIVE_STATE_FILE)),
+        false,
+        'session-scoped non-Ralph activation should not create root canonical state when no root state exists',
+      );
 
       const sessionScopedSkillState = JSON.parse(
         await readFile(join(stateDir, 'sessions', 'sess-1', SKILL_ACTIVE_STATE_FILE), 'utf-8'),
-      ) as { active_skills?: Array<{ skill: string; session_id?: string }> };
-      assert.deepEqual(sessionScopedSkillState.active_skills, persisted.active_skills);
+      ) as { active_skills?: Array<{ skill: string; session_id?: string }>; initialized_mode?: string };
+      assert.deepEqual(sessionScopedSkillState.active_skills, result.active_skills);
+      assert.equal(sessionScopedSkillState.initialized_mode, 'autopilot');
 
       const modeState = JSON.parse(await readFile(join(stateDir, 'sessions', 'sess-1', 'autopilot-state.json'), 'utf-8')) as {
         mode: string;
@@ -1091,16 +1076,10 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.ok(result);
       assert.equal(result.skill, 'ralph');
 
-      const rootCanonical = JSON.parse(
-        await readFile(join(stateDir, SKILL_ACTIVE_STATE_FILE), 'utf-8'),
-      ) as { active_skills?: Array<{ skill: string; phase?: string; session_id?: string }> };
-      assert.deepEqual(
-        rootCanonical.active_skills?.map(({ skill, phase, session_id }) => ({
-          skill,
-          phase,
-          session_id,
-        })),
-        [{ skill: 'team', phase: 'planning', session_id: 'sess-team-ralph' }],
+      assert.equal(
+        existsSync(join(stateDir, SKILL_ACTIVE_STATE_FILE)),
+        false,
+        'session-scoped team and Ralph activations should stay out of root canonical state when no root state exists',
       );
 
       const sessionCanonical = JSON.parse(
@@ -1411,12 +1390,11 @@ describe('keyword detector skill-active-state lifecycle', () => {
   it('preserves seeded mode progress for same-skill continuation', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-seed-continuation-'));
     const stateDir = join(cwd, '.omx', 'state');
-    const statePath = join(stateDir, SKILL_ACTIVE_STATE_FILE);
     try {
       await mkdir(stateDir, { recursive: true });
       await mkdir(join(stateDir, 'sessions', 'sess-autopilot'), { recursive: true });
       await writeFile(
-        statePath,
+        join(stateDir, 'sessions', 'sess-autopilot', SKILL_ACTIVE_STATE_FILE),
         JSON.stringify({
           version: 1,
           active: true,
@@ -1790,6 +1768,44 @@ describe('keyword detector skill-active-state lifecycle', () => {
 
       assert.equal(result, null);
       assert.equal(existsSync(join(stateDir, 'sessions', 'sess-unknown-prefixed', 'ralph-state.json')), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not continue a workflow from another session root canonical entry', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-cross-session-continue-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        join(stateDir, SKILL_ACTIVE_STATE_FILE),
+        JSON.stringify({
+          version: 1,
+          active: true,
+          skill: 'autopilot',
+          keyword: 'autopilot',
+          phase: 'ralplan',
+          session_id: 'sess-a',
+          active_skills: [{ skill: 'autopilot', phase: 'ralplan', active: true, session_id: 'sess-a' }],
+        }, null, 2),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: 'continue',
+        sessionId: 'sess-b',
+        nowIso: '2026-05-08T00:00:00.000Z',
+      });
+
+      assert.equal(result, null);
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-b', SKILL_ACTIVE_STATE_FILE)), false);
+      const rootCanonical = JSON.parse(await readFile(join(stateDir, SKILL_ACTIVE_STATE_FILE), 'utf-8')) as {
+        active_skills?: Array<{ skill: string; session_id?: string }>;
+      };
+      assert.deepEqual(rootCanonical.active_skills, [
+        { skill: 'autopilot', phase: 'ralplan', active: true, session_id: 'sess-a' },
+      ]);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

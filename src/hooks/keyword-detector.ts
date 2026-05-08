@@ -735,8 +735,7 @@ function selectRootSkillStateCopy(
 ): SkillActiveState | null | undefined {
   if (!sessionId) return nextState;
   if (previousRoot) return previousRoot;
-  if (nextState.skill === 'ralph') return null;
-  return nextState;
+  return null;
 }
 
 export async function recordSkillActivation(input: RecordSkillActivationInput): Promise<SkillActiveState | null> {
@@ -746,7 +745,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
     : null;
   const previousRoot = await readExistingSkillState(rootStatePath);
   const previousSession = sessionStatePath ? await readExistingSkillState(sessionStatePath) : null;
-  const previous = previousSession ?? previousRoot;
+  const previous = input.sessionId ? previousSession : previousRoot;
   const match = resolveContinuationKeywordMatch(
     input.text,
     previous,
