@@ -788,6 +788,58 @@ describe('parseTeamStartArgs', () => {
     }
   });
 
+  it('uses the persisted team launch signature to disambiguate a short approved follow-up', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-followup-signature-'));
+    const previousCwd = process.cwd();
+    const approvedTask = 'Execute approved issue 2042 plan';
+    try {
+      process.chdir(wd);
+      const plansDir = join(wd, '.omx', 'plans');
+      const stateDir = join(wd, '.omx', 'state');
+      await mkdir(plansDir, { recursive: true });
+      const prdPath = join(plansDir, 'prd-issue-2042.md');
+      const testSpecPath = join(plansDir, 'test-spec-issue-2042.md');
+      await writeFile(
+        prdPath,
+        [
+          '# Approved plan',
+          '',
+          buildContextPackOutcome(canonicalContextPackRelativePath('issue-2042')),
+          '',
+          `Launch via omx team 2:executor "${approvedTask}"`,
+          `Launch via $team ralph 5:debugger "${approvedTask}"`,
+        ].join('\n'),
+      );
+      await writeFile(testSpecPath, '# Test spec\n');
+      await writeReadyContextPack(wd, 'issue-2042', prdPath, testSpecPath);
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        join(stateDir, 'team-state.json'),
+        JSON.stringify({
+          active: true,
+          team_name: 'signature-followup-team',
+          task_description: approvedTask,
+          agent_count: 2,
+          agentType: 'executor',
+          linkedRalph: false,
+        }, null, 2),
+      );
+
+      const result = parseTeamStartArgs(['team']);
+      assert.equal(result.parsed.task, approvedTask);
+      assert.equal(result.parsed.workerCount, 2);
+      assert.equal(result.parsed.agentType, 'executor');
+      assert.equal(result.parsed.allowRepoAwareDagHandoff, true);
+      assert.equal(
+        result.parsed.approvedExecution?.command,
+        `omx team 2:executor "${approvedTask}"`,
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 
   it('does not opt normal team startup into repo-aware DAG handoff even when a stale sidecar exists', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-dag-normal-'));
@@ -825,6 +877,79 @@ describe('parseTeamStartArgs', () => {
 
       const result = parseTeamStartArgs(['3:executor', 'Execute', 'approved', 'issue', '831', 'plan']);
       assert.equal(result.parsed.allowRepoAwareDagHandoff, true);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('matches the full approved team launch signature for same-task explicit launches', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-dag-signature-match-'));
+    const previousCwd = process.cwd();
+    const approvedTask = 'Execute approved issue 2043 plan';
+    try {
+      process.chdir(wd);
+      const plansDir = join(wd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      const prdPath = join(plansDir, 'prd-issue-2043.md');
+      const testSpecPath = join(plansDir, 'test-spec-issue-2043.md');
+      await writeFile(
+        prdPath,
+        [
+          '# Approved plan',
+          '',
+          buildContextPackOutcome(canonicalContextPackRelativePath('issue-2043')),
+          '',
+          `Launch via omx team 2:executor "${approvedTask}"`,
+          `Launch via $team ralph 5:debugger "${approvedTask}"`,
+        ].join('\n'),
+      );
+      await writeFile(testSpecPath, '# Test spec\n');
+      await writeReadyContextPack(wd, 'issue-2043', prdPath, testSpecPath);
+
+      const result = parseTeamStartArgs(['2:executor', 'Execute', 'approved', 'issue', '2043', 'plan']);
+      assert.equal(result.parsed.allowRepoAwareDagHandoff, true);
+      assert.equal(result.parsed.approvedExecution?.task, approvedTask);
+      assert.equal(
+        result.parsed.approvedExecution?.command,
+        `omx team 2:executor "${approvedTask}"`,
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers the exact omx team command when same-signature duplicates are present', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-dag-command-match-'));
+    const previousCwd = process.cwd();
+    const approvedTask = 'Execute approved issue 2044 plan';
+    try {
+      process.chdir(wd);
+      const plansDir = join(wd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      const prdPath = join(plansDir, 'prd-issue-2044.md');
+      const testSpecPath = join(plansDir, 'test-spec-issue-2044.md');
+      await writeFile(
+        prdPath,
+        [
+          '# Approved plan',
+          '',
+          buildContextPackOutcome(canonicalContextPackRelativePath('issue-2044')),
+          '',
+          `Launch via omx team 2:executor "${approvedTask}"`,
+          `Launch via $team 2:executor "${approvedTask}"`,
+        ].join('\n'),
+      );
+      await writeFile(testSpecPath, '# Test spec\n');
+      await writeReadyContextPack(wd, 'issue-2044', prdPath, testSpecPath);
+
+      const result = parseTeamStartArgs(['2:executor', 'Execute', 'approved', 'issue', '2044', 'plan']);
+      assert.equal(result.parsed.allowRepoAwareDagHandoff, true);
+      assert.equal(
+        result.parsed.approvedExecution?.command,
+        `omx team 2:executor "${approvedTask}"`,
+      );
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });

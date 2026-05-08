@@ -172,6 +172,23 @@ function resolveApprovedTeamFollowupContext(cwd: string, task: string): TeamFoll
     && existingTeamState.team_state_root.trim() !== ''
     ? existingTeamState.team_state_root.trim()
     : undefined;
+  const persistedTask = typeof existingTeamState?.task_description === 'string'
+    ? existingTeamState.task_description.trim()
+    : typeof existingTeamState?.task === 'string'
+      ? existingTeamState.task.trim()
+      : '';
+  const persistedWorkerCount = typeof existingTeamState?.agent_count === 'number'
+    ? existingTeamState.agent_count
+    : typeof existingTeamState?.workerCount === 'number'
+      ? existingTeamState.workerCount
+      : null;
+  const persistedAgentType = typeof existingTeamState?.agentType === 'string'
+    && existingTeamState.agentType.trim() !== ''
+    ? existingTeamState.agentType.trim()
+    : undefined;
+  const persistedLinkedRalph = typeof existingTeamState?.linkedRalph === 'boolean'
+    ? existingTeamState.linkedRalph
+    : undefined;
   let approvedHint: ApprovedExecutionLaunchHint | null = null;
 
   if (persistedTeamName !== '') {
@@ -202,7 +219,12 @@ function resolveApprovedTeamFollowupContext(cwd: string, task: string): TeamFoll
   }
 
   if (!approvedHint) {
-    const approvedHintOutcome = readApprovedExecutionLaunchHintOutcome(cwd, 'team');
+    const approvedHintOutcome = readApprovedExecutionLaunchHintOutcome(cwd, 'team', {
+      ...(persistedTask !== '' ? { task: persistedTask } : {}),
+      ...(persistedWorkerCount != null ? { workerCount: persistedWorkerCount } : {}),
+      ...(persistedAgentType ? { agentType: persistedAgentType } : {}),
+      ...(persistedLinkedRalph != null ? { linkedRalph: persistedLinkedRalph } : {}),
+    });
     if (approvedHintOutcome.status === 'ambiguous') {
       throw new Error('approved_execution_hint_ambiguous:team');
     }
@@ -213,17 +235,7 @@ function resolveApprovedTeamFollowupContext(cwd: string, task: string): TeamFoll
     approvedHint = approvedHintOutcome.hint;
   }
 
-  const persistedTask = typeof existingTeamState?.task_description === 'string'
-    ? existingTeamState.task_description
-    : typeof existingTeamState?.task === 'string'
-      ? existingTeamState.task
-      : null;
-  const persistedWorkerCount = typeof existingTeamState?.agent_count === 'number'
-    ? existingTeamState.agent_count
-    : typeof existingTeamState?.workerCount === 'number'
-      ? existingTeamState.workerCount
-      : null;
-  if (persistedTask && persistedWorkerCount && persistedTask.trim() === approvedHint.task.trim()) {
+  if (persistedTask !== '' && persistedWorkerCount && persistedTask === approvedHint.task.trim()) {
     return {
       task: persistedTask,
       workerCount: persistedWorkerCount,
@@ -242,6 +254,23 @@ function resolveApprovedTeamFollowupContext(cwd: string, task: string): TeamFoll
     explicitAgentType: approvedHint.agentType != null,
     approvedHint,
   };
+}
+
+function buildExplicitOmxTeamLaunchCommand(
+  task: string,
+  workerCount: number,
+  explicitWorkerCount: boolean,
+  agentType: string,
+  explicitAgentType: boolean,
+): string | null {
+  if (!explicitWorkerCount) {
+    return null;
+  }
+
+  const countToken = explicitAgentType
+    ? `${workerCount}:${agentType}`
+    : String(workerCount);
+  return `omx team ${countToken} ${JSON.stringify(task)}`;
 }
 
 const MIN_WORKER_COUNT = 1;
@@ -860,9 +889,31 @@ export function parseTeamArgs(args: string[], cwd: string = process.cwd()): Pars
     }
   }
 
+  const explicitApprovedCommand = followupContext == null
+    ? buildExplicitOmxTeamLaunchCommand(
+      effectiveTask,
+      workerCount,
+      explicitWorkerCount,
+      agentType,
+      explicitAgentType,
+    )
+    : null;
+  const exactCommandHintOutcome = explicitApprovedCommand
+    ? readApprovedExecutionLaunchHintOutcome(cwd, 'team', {
+      task: effectiveTask,
+      command: explicitApprovedCommand,
+    })
+    : null;
   const approvedHintOutcome = followupContext
     ? null
-    : readApprovedExecutionLaunchHintOutcome(cwd, 'team', { task: effectiveTask });
+    : exactCommandHintOutcome && exactCommandHintOutcome.status !== 'absent'
+      ? exactCommandHintOutcome
+    : readApprovedExecutionLaunchHintOutcome(cwd, 'team', {
+      task: effectiveTask,
+      workerCount,
+      agentType,
+      linkedRalph: false,
+    });
   const approvedHint = followupContext?.approvedHint
     ?? (approvedHintOutcome?.status === 'resolved' && approvedHintOutcome.hint.contextPackStatus !== 'missing-baseline'
       ? approvedHintOutcome.hint
@@ -874,9 +925,11 @@ export function parseTeamArgs(args: string[], cwd: string = process.cwd()): Pars
     && isApprovedExecutionContextReadyStatus(followupReadyApprovedHint.contextPackStatus)
     ? followupReadyApprovedHint
     : null;
-  const matchesApprovedLaunchHint = followupReadyApprovedHint?.task.trim() === effectiveTask.trim()
+  const matchesApprovedLaunchHint = followupContext == null
+    && followupReadyApprovedHint?.task.trim() === effectiveTask.trim()
     && (followupReadyApprovedHint.workerCount == null || followupReadyApprovedHint.workerCount === workerCount)
-    && (followupReadyApprovedHint.agentType == null || followupReadyApprovedHint.agentType === agentType);
+    && (followupReadyApprovedHint.agentType == null || followupReadyApprovedHint.agentType === agentType)
+    && Boolean(followupReadyApprovedHint.linkedRalph) === false;
   const allowRepoAwareDagHandoff = followupContext != null || matchesApprovedLaunchHint;
   const dagFallbackReason = followupContext == null
     && approvedHintOutcome?.status === 'resolved'

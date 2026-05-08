@@ -638,6 +638,63 @@ describe('planning artifacts', () => {
     assert.equal(hint, null);
   });
 
+  it('uses the requested team launch signature to disambiguate same-task launch hints', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const sharedTask = 'Execute shared team handoff';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-issue-910-signature.md'),
+      [
+        '# PRD',
+        '',
+        `Launch via omx team 2:executor ${JSON.stringify(sharedTask)}`,
+        `Launch via $team ralph 5:debugger ${JSON.stringify(sharedTask)}`,
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-issue-910-signature.md'), '# Test Spec\n');
+
+    const outcome = readApprovedExecutionLaunchHintOutcome(tempDir, 'team', {
+      task: sharedTask,
+      workerCount: 2,
+      agentType: 'executor',
+      linkedRalph: false,
+    });
+
+    assert.equal(outcome.status, 'resolved');
+    if (outcome.status !== 'resolved') {
+      throw new Error('expected a resolved team launch-hint outcome');
+    }
+    assert.equal(outcome.hint.command, `omx team 2:executor ${JSON.stringify(sharedTask)}`);
+    assert.equal(outcome.hint.workerCount, 2);
+    assert.equal(outcome.hint.agentType, 'executor');
+    assert.equal(outcome.hint.linkedRalph, false);
+  });
+
+  it('keeps same-task team launch-hint selection ambiguous when the full signature repeats', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const sharedTask = 'Execute shared duplicate team handoff';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-issue-910-same-signature.md'),
+      [
+        '# PRD',
+        '',
+        `Launch via omx team 2:executor ${JSON.stringify(sharedTask)}`,
+        `Launch via $team 2:executor ${JSON.stringify(sharedTask)}`,
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-issue-910-same-signature.md'), '# Test Spec\n');
+
+    const outcome = readApprovedExecutionLaunchHintOutcome(tempDir, 'team', {
+      task: sharedTask,
+      workerCount: 2,
+      agentType: 'executor',
+      linkedRalph: false,
+    });
+
+    assert.equal(outcome.status, 'ambiguous');
+  });
+
   it('rehydrates the exact team launch hint by command when one PRD repeats the same task', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     const sharedTask = 'Ship feature';
