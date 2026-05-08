@@ -20,6 +20,52 @@ describe("codex hooks helpers", () => {
       `"${process.execPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" "/repo/dist/scripts/codex-native-hook.js"`,
     );
   });
+
+  it("uses portable node invocation for Windows managed hook commands", () => {
+    const config = buildManagedCodexHooksConfig(
+      "D:\\Program Files\\nvm\\v24.12.0\\node_modules\\oh-my-codex",
+      { platform: "win32" },
+    );
+    const command = (config.hooks.SessionStart[0] as {
+      hooks?: Array<{ command?: string }>;
+    } | undefined)?.hooks?.[0]?.command;
+
+    assert.equal(
+      command,
+      'node "D:\\Program Files\\nvm\\v24.12.0\\node_modules\\oh-my-codex\\dist\\scripts\\codex-native-hook.js"',
+    );
+    assert.doesNotMatch(command ?? "", /^"/, "the node launcher must not be a quoted absolute node.exe path");
+    assert.match(command ?? "", /^node "[^"]*Program Files[^"]*codex-native-hook\.js"$/);
+  });
+
+  it("keeps Windows hook script paths quoted when they contain spaces", () => {
+    const merged = JSON.parse(
+      mergeManagedCodexHooksConfig(
+        JSON.stringify({
+          hooks: {
+            PreToolUse: [
+              {
+                matcher: "Bash",
+                hooks: [{ type: "command", command: "echo keep-me" }],
+              },
+            ],
+          },
+        }),
+        "D:\\Program Files\\nvm\\v24.12.0\\node_modules\\oh-my-codex",
+        { platform: "win32" },
+      ),
+    ) as { hooks: Record<string, Array<{ hooks?: Array<{ command?: string }> }>> };
+
+    const commands = merged.hooks.PreToolUse
+      .flatMap((entry) => entry.hooks ?? [])
+      .map((hook) => hook.command);
+
+    assert.ok(commands.includes("echo keep-me"));
+    assert.ok(commands.includes(
+      'node "D:\\Program Files\\nvm\\v24.12.0\\node_modules\\oh-my-codex\\dist\\scripts\\codex-native-hook.js"',
+    ));
+  });
+
   it("merges managed wrappers without dropping user hooks", () => {
     const merged = JSON.parse(
       mergeManagedCodexHooksConfig(

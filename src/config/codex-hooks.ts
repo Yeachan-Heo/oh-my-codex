@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { join } from "path";
+import { join, win32 } from "path";
 
 export const MANAGED_HOOK_EVENTS = [
   "SessionStart",
@@ -61,12 +61,33 @@ function cloneJson<T>(value: T): T {
   return structuredClone(value);
 }
 
+type HookCommandPlatform = NodeJS.Platform;
+
 function quoteCommandPart(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
 function escapeTomlBasicString(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function quoteWindowsCommandPart(value: string): string {
+  return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+function buildNativeHookCommand(
+  pkgRoot: string,
+  platform: HookCommandPlatform = process.platform,
+): string {
+  const hookScript = platform === "win32"
+    ? win32.join(pkgRoot, "dist", "scripts", "codex-native-hook.js")
+    : join(pkgRoot, "dist", "scripts", "codex-native-hook.js");
+
+  if (platform === "win32") {
+    return `node ${quoteWindowsCommandPart(hookScript)}`;
+  }
+
+  return `${quoteCommandPart(process.execPath)} ${quoteCommandPart(hookScript)}`;
 }
 
 function buildCommandHook(
@@ -92,9 +113,9 @@ function buildCommandHook(
 
 export function buildManagedCodexHooksConfig(
   pkgRoot: string,
+  options: { platform?: HookCommandPlatform } = {},
 ): ManagedCodexHooksConfig {
-  const hookScript = join(pkgRoot, "dist", "scripts", "codex-native-hook.js");
-  const command = `${quoteCommandPart(process.execPath)} ${quoteCommandPart(hookScript)}`;
+  const command = buildNativeHookCommand(pkgRoot, options.platform);
 
   return {
     hooks: {
@@ -267,8 +288,9 @@ function managedHookStateKey(
 export function buildManagedCodexHookTrustState(
   hooksPath: string,
   pkgRoot: string,
+  options: { platform?: HookCommandPlatform } = {},
 ): Record<string, ManagedCodexHookTrustState> {
-  const managedConfig = buildManagedCodexHooksConfig(pkgRoot);
+  const managedConfig = buildManagedCodexHooksConfig(pkgRoot, options);
   const state: Record<string, ManagedCodexHookTrustState> = {};
 
   for (const eventName of MANAGED_HOOK_EVENTS) {
@@ -299,9 +321,10 @@ export function buildManagedCodexHookTrustState(
 export function buildManagedCodexHookTrustToml(
   hooksPath: string | undefined,
   pkgRoot: string,
+  options: { platform?: HookCommandPlatform } = {},
 ): string {
   if (!hooksPath) return "";
-  const state = buildManagedCodexHookTrustState(hooksPath, pkgRoot);
+  const state = buildManagedCodexHookTrustState(hooksPath, pkgRoot, options);
   return Object.entries(state)
     .sort(([left], [right]) => left.localeCompare(right))
     .flatMap(([key, hookState]) => [
@@ -316,9 +339,14 @@ export function buildManagedCodexHookTrustToml(
 export function mergeManagedCodexHooksConfig(
   existingContent: string | null | undefined,
   pkgRoot: string,
-  hooksPath?: string,
+  hooksPathOrOptions?: string | { platform?: HookCommandPlatform },
+  options: { platform?: HookCommandPlatform } = {},
 ): string {
-  const managedConfig = buildManagedCodexHooksConfig(pkgRoot);
+  const hooksPath = typeof hooksPathOrOptions === "string" ? hooksPathOrOptions : undefined;
+  const resolvedOptions = typeof hooksPathOrOptions === "object" && hooksPathOrOptions !== null
+    ? hooksPathOrOptions
+    : options;
+  const managedConfig = buildManagedCodexHooksConfig(pkgRoot, resolvedOptions);
   const parsed =
     typeof existingContent === "string"
       ? parseCodexHooksConfig(existingContent)
@@ -352,7 +380,7 @@ export function mergeManagedCodexHooksConfig(
       : {};
     nextHooks.state = {
       ...existingState,
-      ...buildManagedCodexHookTrustState(hooksPath, pkgRoot),
+      ...buildManagedCodexHookTrustState(hooksPath, pkgRoot, resolvedOptions),
     };
   }
 
