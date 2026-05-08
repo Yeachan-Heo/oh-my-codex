@@ -219,6 +219,72 @@ describe("codex hooks helpers", () => {
     assert.match(JSON.stringify(merged.hooks.Stop), /echo user-stop/);
   });
 
+  it("preserves top-level managed hook state metadata while updating trusted_hash", () => {
+    const managedState = buildManagedCodexHookTrustState("/hooks.json", "/repo");
+    const managedKey = Object.keys(managedState).find((key) =>
+      key.includes(":stop:"),
+    ) ?? Object.keys(managedState)[0];
+    assert.ok(managedKey);
+
+    const merged = JSON.parse(
+      mergeManagedCodexHooksConfig(
+        JSON.stringify({
+          state: {
+            [managedKey]: {
+              trusted_hash: "sha256:old",
+              enabled: false,
+            },
+          },
+        }),
+        "/repo",
+        "/hooks.json",
+      ),
+    ) as {
+      state: Record<string, { trusted_hash?: string; enabled?: boolean }>;
+      hooks: Record<string, unknown>;
+    };
+
+    assert.equal(Object.hasOwn(merged.hooks, "state"), false);
+    assert.deepEqual(merged.state[managedKey], {
+      trusted_hash: managedState[managedKey]?.trusted_hash,
+      enabled: false,
+    });
+  });
+
+  it("migrates misplaced managed hook state metadata while updating trusted_hash", () => {
+    const managedState = buildManagedCodexHookTrustState("/hooks.json", "/repo");
+    const managedKey = Object.keys(managedState).find((key) =>
+      key.includes(":stop:"),
+    ) ?? Object.keys(managedState)[0];
+    assert.ok(managedKey);
+
+    const merged = JSON.parse(
+      mergeManagedCodexHooksConfig(
+        JSON.stringify({
+          hooks: {
+            state: {
+              [managedKey]: {
+                trusted_hash: "sha256:old",
+                enabled: false,
+              },
+            },
+          },
+        }),
+        "/repo",
+        "/hooks.json",
+      ),
+    ) as {
+      state: Record<string, { trusted_hash?: string; enabled?: boolean }>;
+      hooks: Record<string, unknown>;
+    };
+
+    assert.equal(Object.hasOwn(merged.hooks, "state"), false);
+    assert.deepEqual(merged.state[managedKey], {
+      trusted_hash: managedState[managedKey]?.trusted_hash,
+      enabled: false,
+    });
+  });
+
   it("keeps managed hook merge idempotent", () => {
     const first = mergeManagedCodexHooksConfig(null, "/repo", "/hooks.json");
     const second = mergeManagedCodexHooksConfig(first, "/repo", "/hooks.json");

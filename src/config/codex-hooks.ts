@@ -515,10 +515,20 @@ export function mergeManagedCodexHooksConfig(
   const nextState = {
     ...misplacedHookState,
     ...existingRootState,
-    ...(hooksPath
-      ? buildManagedCodexHookTrustState(hooksPath, pkgRoot, resolvedOptions)
-      : {}),
   };
+
+  const managedTrustState = hooksPath
+    ? buildManagedCodexHookTrustState(hooksPath, pkgRoot, resolvedOptions)
+    : {};
+  for (const [key, hookState] of Object.entries(managedTrustState)) {
+    const existingHookState = isPlainObject(nextState[key])
+      ? nextState[key]
+      : {};
+    nextState[key] = {
+      ...existingHookState,
+      trusted_hash: hookState.trusted_hash,
+    };
+  }
   if (Object.keys(nextState).length > 0) {
     nextRoot.state = nextState;
   } else if (isPlainObject(nextRoot.state)) {
