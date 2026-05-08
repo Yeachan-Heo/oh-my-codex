@@ -920,6 +920,80 @@ describe('parseTeamStartArgs', () => {
     }
   });
 
+  it('matches role-agnostic approved team hints for default executor launches', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-dag-role-agnostic-default-'));
+    const previousCwd = process.cwd();
+    const approvedTask = 'Execute approved issue 2045 plan';
+    try {
+      process.chdir(wd);
+      const plansDir = join(wd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      const prdPath = join(plansDir, 'prd-issue-2045.md');
+      const testSpecPath = join(plansDir, 'test-spec-issue-2045.md');
+      await writeFile(
+        prdPath,
+        [
+          '# Approved plan',
+          '',
+          buildContextPackOutcome(canonicalContextPackRelativePath('issue-2045')),
+          '',
+          `Launch via omx team 3 "${approvedTask}"`,
+        ].join('\n'),
+      );
+      await writeFile(testSpecPath, '# Test spec\n');
+      await writeReadyContextPack(wd, 'issue-2045', prdPath, testSpecPath);
+
+      const result = parseTeamStartArgs(['Execute', 'approved', 'issue', '2045', 'plan']);
+      assert.equal(result.parsed.workerCount, 3);
+      assert.equal(result.parsed.agentType, 'executor');
+      assert.equal(result.parsed.allowRepoAwareDagHandoff, true);
+      assert.equal(
+        result.parsed.approvedExecution?.command,
+        `omx team 3 "${approvedTask}"`,
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('matches role-agnostic approved team hints when fallback must ignore the default executor role', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-dag-role-agnostic-fallback-'));
+    const previousCwd = process.cwd();
+    const approvedTask = 'Execute approved issue 2046 plan';
+    try {
+      process.chdir(wd);
+      const plansDir = join(wd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      const prdPath = join(plansDir, 'prd-issue-2046.md');
+      const testSpecPath = join(plansDir, 'test-spec-issue-2046.md');
+      await writeFile(
+        prdPath,
+        [
+          '# Approved plan',
+          '',
+          buildContextPackOutcome(canonicalContextPackRelativePath('issue-2046')),
+          '',
+          `Launch via $team 3 "${approvedTask}"`,
+        ].join('\n'),
+      );
+      await writeFile(testSpecPath, '# Test spec\n');
+      await writeReadyContextPack(wd, 'issue-2046', prdPath, testSpecPath);
+
+      const result = parseTeamStartArgs(['3', 'Execute', 'approved', 'issue', '2046', 'plan']);
+      assert.equal(result.parsed.workerCount, 3);
+      assert.equal(result.parsed.agentType, 'executor');
+      assert.equal(result.parsed.allowRepoAwareDagHandoff, true);
+      assert.equal(
+        result.parsed.approvedExecution?.command,
+        `$team 3 "${approvedTask}"`,
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('prefers the exact omx team command when same-signature duplicates are present', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-dag-command-match-'));
     const previousCwd = process.cwd();

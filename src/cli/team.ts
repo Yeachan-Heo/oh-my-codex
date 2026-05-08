@@ -911,7 +911,7 @@ export function parseTeamArgs(args: string[], cwd: string = process.cwd()): Pars
     : readApprovedExecutionLaunchHintOutcome(cwd, 'team', {
       task: effectiveTask,
       workerCount,
-      agentType,
+      ...(explicitAgentType ? { agentType } : {}),
       linkedRalph: false,
     });
   const approvedHint = followupContext?.approvedHint
