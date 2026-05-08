@@ -738,6 +738,7 @@ describe("omx setup install mode behavior", () => {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				await withTempCwd(wd, async () => {
 					await setup({ scope: "user", installMode: "plugin" });
+					await setup({ scope: "user", installMode: "plugin" });
 
 					const hooks = await readFile(
 						join(codexHomeDir, "hooks.json"),
@@ -747,13 +748,31 @@ describe("omx setup install mode behavior", () => {
 					const config = await readFile(
 						join(codexHomeDir, "config.toml"),
 						"utf-8",
-						);
-						assert.match(config, /^codex_hooks = true$/m);
-						assert.match(config, /^goals = true$/m);
-						assert.match(config, /^\[hooks\.state\.".*hooks\.json:pre_tool_use:0:0"\]$/m);
-						assert.match(config, /^trusted_hash = "sha256:[a-f0-9]{64}"$/m);
-						assert.doesNotMatch(
-							config,
+					);
+					const parsed = parseToml(config) as {
+						hooks?: { state?: Record<string, unknown> };
+					};
+					const managedHookStateKeys = Object.keys(
+						parsed.hooks?.state ?? {},
+					).filter((key) => key.includes(`${codexHomeDir}/hooks.json:`));
+					assert.equal(managedHookStateKeys.length, 7);
+					assert.match(config, /^codex_hooks = true$/m);
+					assert.match(config, /^goals = true$/m);
+					assert.match(
+						config,
+						/^\[hooks\.state\.".*hooks\.json:pre_tool_use:0:0"\]$/m,
+					);
+					assert.equal(
+						(
+							config.match(
+								/^\[hooks\.state\.".*hooks\.json:pre_tool_use:0:0"\]$/gm,
+							) ?? []
+						).length,
+						1,
+					);
+					assert.match(config, /^trusted_hash = "sha256:[a-f0-9]{64}"$/m);
+					assert.doesNotMatch(
+						config,
 							/developer_instructions|notify-hook|mcp_servers/,
 					);
 					assert.equal(

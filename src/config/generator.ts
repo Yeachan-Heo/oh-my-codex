@@ -524,11 +524,26 @@ const OMX_HOOK_TRUST_START_MARKER = "# OMX-owned Codex hook trust state";
 const OMX_HOOK_TRUST_END_MARKER = "# End OMX-owned Codex hook trust state";
 
 export function stripManagedCodexHookTrustState(config: string): string {
-  const blockPattern = new RegExp(
-    `\n?${OMX_HOOK_TRUST_START_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\n[\\s\\S]*?${OMX_HOOK_TRUST_END_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\n?`,
-    "g",
-  );
-  return config.replace(blockPattern, "\n").replace(/\n{3,}/g, "\n\n").trimEnd();
+  const lines = config.split(/\r?\n/);
+  const kept: string[] = [];
+  let insideManagedBlock = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === OMX_HOOK_TRUST_START_MARKER) {
+      insideManagedBlock = true;
+      continue;
+    }
+    if (insideManagedBlock) {
+      if (trimmed === OMX_HOOK_TRUST_END_MARKER) {
+        insideManagedBlock = false;
+      }
+      continue;
+    }
+    kept.push(line);
+  }
+
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
 }
 
 export function upsertManagedCodexHookTrustState(
@@ -1536,6 +1551,7 @@ export function buildMergedConfig(
 
   existing = stripOmxTopLevelKeys(existing);
   existing = stripOrphanedManagedNotify(existing);
+  existing = stripManagedCodexHookTrustState(existing);
   if (options.modelOverride) {
     existing = stripRootLevelKeys(existing, ["model"]);
   }
