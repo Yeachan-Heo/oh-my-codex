@@ -124,6 +124,20 @@ function renderTeam(ctx: HudRenderContext): string | null {
   return green('team');
 }
 
+function renderHooks(ctx: HudRenderContext): string | null {
+  if (!ctx.hooks) return null;
+
+  const status = ctx.hooks.status;
+  if (status === 'disabled') return dim('hooks:off');
+  if (status === 'missing') return yellow('hooks:missing');
+  if (status === 'invalid') return yellow('hooks:invalid');
+
+  const totalHooks = Number.isFinite(ctx.hooks.total_hooks) ? ctx.hooks.total_hooks : 0;
+  const eventCount = Number.isFinite(ctx.hooks.event_count) ? ctx.hooks.event_count : 0;
+  const label = `hooks:${totalHooks}/${eventCount}ev`;
+  return status === 'partial' ? yellow(label) : green(label);
+}
+
 function renderTurns(ctx: HudRenderContext): string | null {
   if (!ctx.metrics || !isCurrentSessionMetrics(ctx)) return null;
   return dim(`turns:${ctx.metrics.session_turns}`);
@@ -211,6 +225,7 @@ const FOCUSED_ELEMENTS: ElementRenderer[] = [
   renderAutoresearch,
   renderUltraqa,
   renderTeam,
+  renderHooks,
   renderTurns,
   renderTokens,
   renderQuota,
@@ -228,6 +243,7 @@ const FULL_ELEMENTS: ElementRenderer[] = [
   renderAutoresearch,
   renderUltraqa,
   renderTeam,
+  renderHooks,
   renderTurns,
   renderTokens,
   renderQuota,

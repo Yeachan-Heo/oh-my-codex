@@ -10,6 +10,7 @@ import {
   readGitBranch,
   readAllState,
   readHudNotifyState,
+  readHookDashboardState,
   readRalphState,
   readRalplanState,
   readDeepInterviewState,
@@ -45,6 +46,23 @@ async function withTempRepo(prefix: string, run: (cwd: string) => Promise<void>)
     await run(cwd);
   } finally {
     await rm(cwd, { recursive: true, force: true });
+  }
+}
+
+async function withTempCodexHome(prefix: string, run: (home: string) => Promise<void>): Promise<void> {
+  const home = await mkdtemp(join(tmpdir(), prefix));
+  const previous = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = home;
+
+  try {
+    await run(home);
+  } finally {
+    if (typeof previous === 'string') {
+      process.env.CODEX_HOME = previous;
+    } else {
+      delete process.env.CODEX_HOME;
+    }
+    await rm(home, { recursive: true, force: true });
   }
 }
 
@@ -431,6 +449,63 @@ describe('additional HUD mode state readers', () => {
         if (typeof previousSessionId === 'string') process.env.OMX_SESSION_ID = previousSessionId;
         else delete process.env.OMX_SESSION_ID;
       }
+    });
+  });
+});
+
+describe('readHookDashboardState', () => {
+  it('counts Codex native hooks across events for the HUD dashboard', async () => {
+    await withTempCodexHome('omx-hud-hooks-home-', async (home) => {
+      await writeFile(join(home, 'config.toml'), 'codex_hooks = true\n');
+      await writeFile(join(home, 'hooks.json'), JSON.stringify({
+        hooks: {
+          SessionStart: [{ hooks: [{ type: 'command', command: 'node "/pkg/dist/scripts/codex-native-hook.js"' }] }],
+          PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'node "/pkg/dist/scripts/codex-native-hook.js"' }] }],
+          PostToolUse: [{ hooks: [{ type: 'command', command: 'node "/pkg/dist/scripts/codex-native-hook.js"' }] }],
+          UserPromptSubmit: [
+            { hooks: [{ type: 'command', command: 'node "/pkg/dist/scripts/codex-native-hook.js"' }] },
+            { hooks: [{ type: 'command', command: 'node "/custom/hook.js"' }] },
+          ],
+          Stop: [{ hooks: [{ type: 'command', command: 'node "/pkg/dist/scripts/codex-native-hook.js"', timeout: 30 }] }],
+        },
+      }));
+
+      const state = await readHookDashboardState();
+      assert.equal(state.status, 'ok');
+      assert.equal(state.enabled, true);
+      assert.equal(state.total_hooks, 6);
+      assert.equal(state.managed_hooks, 5);
+      assert.equal(state.custom_hooks, 1);
+      assert.equal(state.event_count, 5);
+      assert.equal(state.managed_event_count, 5);
+      assert.deepEqual(state.missing_managed_events, []);
+    });
+  });
+
+  it('reports partial coverage when a managed event wrapper is missing', async () => {
+    await withTempCodexHome('omx-hud-hooks-partial-', async (home) => {
+      await writeFile(join(home, 'config.toml'), 'codex_hooks = true\n');
+      await writeFile(join(home, 'hooks.json'), JSON.stringify({
+        hooks: {
+          SessionStart: [{ hooks: [{ type: 'command', command: 'node "/pkg/dist/scripts/codex-native-hook.js"' }] }],
+        },
+      }));
+
+      const state = await readHookDashboardState();
+      assert.equal(state.status, 'partial');
+      assert.equal(state.total_hooks, 1);
+      assert.deepEqual(state.missing_managed_events, ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop']);
+    });
+  });
+
+  it('reports missing hooks when codex_hooks is enabled but hooks.json is absent', async () => {
+    await withTempCodexHome('omx-hud-hooks-missing-', async (home) => {
+      await writeFile(join(home, 'config.toml'), 'codex_hooks = true\n');
+
+      const state = await readHookDashboardState();
+      assert.equal(state.status, 'missing');
+      assert.equal(state.enabled, true);
+      assert.equal(state.total_hooks, 0);
     });
   });
 });
