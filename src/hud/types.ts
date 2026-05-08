@@ -81,6 +81,22 @@ export interface SessionStateForHud {
   started_at: string;
 }
 
+export type HookDashboardStatus = 'ok' | 'partial' | 'missing' | 'invalid' | 'disabled';
+
+/** Native Codex hook coverage summary for HUD display */
+export interface HookDashboardStateForHud {
+  status: HookDashboardStatus;
+  enabled: boolean;
+  total_hooks: number;
+  managed_hooks: number;
+  custom_hooks: number;
+  event_count: number;
+  managed_event_count: number;
+  expected_managed_event_count: number;
+  missing_managed_events: string[];
+  hooks_path: string;
+}
+
 /** All data needed to render one HUD frame */
 export interface HudRenderContext {
   version: string | null;
@@ -96,6 +112,7 @@ export interface HudRenderContext {
   metrics: HudMetrics | null;
   hudNotify: HudNotifyState | null;
   session: SessionStateForHud | null;
+  hooks?: HookDashboardStateForHud | null;
   /** Rust-authored runtime snapshot (present when bridge is enabled and snapshot.json exists). */
   runtimeSnapshot?: import('../runtime/bridge.js').RuntimeSnapshot | null;
 }
