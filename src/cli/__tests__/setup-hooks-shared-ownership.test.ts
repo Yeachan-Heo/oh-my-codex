@@ -262,6 +262,17 @@ describe("omx setup/uninstall shared ownership for native hooks", () => {
         false,
         "uninstall should strip only OMX-managed wrappers",
       );
+
+      const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      assert.match(
+        config,
+        /^codex_hooks = true$/m,
+        "uninstall should keep native Codex hooks enabled for preserved user hooks",
+      );
+      assert.doesNotMatch(config, /^hooks = true$/m);
+      assert.doesNotMatch(config, /^multi_agent\s*=/m);
+      assert.doesNotMatch(config, /^child_agents_md\s*=/m);
+      assert.doesNotMatch(config, /^goals\s*=/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

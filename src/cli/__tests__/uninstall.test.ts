@@ -375,6 +375,53 @@ describe('omx uninstall', () => {
       assert.match(hooks, /echo keep-me/);
       assert.match(hooks, /"version": 1/);
       assert.doesNotMatch(hooks, /codex-native-hook\.js/);
+
+      const config = await readFile(join(codexDir, 'config.toml'), 'utf-8');
+      assert.match(config, /^codex_hooks = true$/m);
+      assert.doesNotMatch(config, /^hooks = true$/m);
+      assert.doesNotMatch(config, /^multi_agent\s*=/m);
+      assert.doesNotMatch(config, /^child_agents_md\s*=/m);
+      assert.doesNotMatch(config, /^goals\s*=/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not preserve hooks feature flag from non-features tables', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-uninstall-'));
+    try {
+      const home = join(wd, 'home');
+      const codexDir = join(home, '.codex');
+      await mkdir(codexDir, { recursive: true });
+      await writeFile(
+        join(codexDir, 'config.toml'),
+        `${buildOmxConfig().replace('codex_hooks = true\n', '')}\n[user.settings]\nhooks = true\n`,
+      );
+      await writeFile(
+        join(codexDir, 'hooks.json'),
+        JSON.stringify({
+          hooks: {
+            SessionStart: [
+              {
+                hooks: [
+                  { type: 'command', command: 'node "/repo/dist/scripts/codex-native-hook.js"' },
+                  { type: 'command', command: 'echo keep-me' },
+                ],
+              },
+            ],
+          },
+        }) + '\n',
+      );
+
+      const res = runOmx(wd, ['uninstall'], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+
+      const config = await readFile(join(codexDir, 'config.toml'), 'utf-8');
+      const featuresBlock = config.match(/^\[features\]\n(?:(?!^\[).*\n?)*/m)?.[0] ?? '';
+      assert.doesNotMatch(featuresBlock, /^hooks = true$/m);
+      assert.doesNotMatch(featuresBlock, /^codex_hooks = true$/m);
+      assert.match(config, /^\[user\.settings\]\nhooks = true$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
