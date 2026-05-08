@@ -173,7 +173,10 @@ printf 'fake-codex:%s\n' "$*"
 
       const worktreePath = join(dirname(repo), `${basename(repo)}.omx-worktrees`, 'launch-detached');
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
-      assert.match(result.stdout, new RegExp(`fake-codex-omx-root:${escapeRegExp(repo)}`));
+      assert.match(
+        normalizeDarwinTmpPath(result.stdout),
+        new RegExp(`fake-codex-omx-root:${escapeRegExp(normalizeDarwinTmpPath(repo))}`),
+      );
       assert.equal(existsSync(join(repo, '.omx', 'state')), true);
       assert.equal(existsSync(join(worktreePath, '.omx')), false);
     } finally {
