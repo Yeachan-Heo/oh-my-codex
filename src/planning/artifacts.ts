@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   comparePlanningArtifactPaths,
   parsePlanningArtifactFileName,
@@ -180,11 +180,12 @@ function selectPlanningArtifactsBase(
   artifacts: PlanningArtifacts,
   prdPath?: string,
 ): PlanningArtifactSelectionBase {
+  const requestedPrdPath = prdPath == null
+    ? null
+    : resolveRequestedPrdPath(artifacts, prdPath);
   const selectedPrdPath = prdPath == null
     ? selectLatestPlanningArtifactPath(artifacts.prdPaths)
-    : artifacts.prdPaths.includes(prdPath)
-      ? prdPath
-      : null;
+    : requestedPrdPath;
   const slug = selectedPrdPath
     ? planningArtifactSlug(selectedPrdPath, 'prd')
     : null;
@@ -194,6 +195,38 @@ function selectPlanningArtifactsBase(
     testSpecPaths: selectMatchingTestSpecsForPrd(selectedPrdPath, artifacts.testSpecPaths),
     deepInterviewSpecPaths: selectDeepInterviewSpecPathsForSlug(artifacts.deepInterviewSpecPaths, slug),
   };
+}
+
+function resolveRequestedPrdPath(
+  artifacts: PlanningArtifacts,
+  rawPrdPath: string,
+): string | null {
+  const requested = rawPrdPath.trim();
+  if (!requested) {
+    return null;
+  }
+  if (artifacts.prdPaths.includes(requested)) {
+    return requested;
+  }
+
+  const repoRoot = dirname(dirname(artifacts.plansDir));
+  const candidatePaths = isAbsolute(requested)
+    ? [resolve(requested)]
+    : [
+      resolve(repoRoot, requested),
+      resolve(artifacts.plansDir, requested),
+    ];
+  const canonicalByResolvedPath = new Map(
+    artifacts.prdPaths.map((artifactPath) => [resolve(artifactPath), artifactPath]),
+  );
+
+  for (const candidatePath of candidatePaths) {
+    const canonical = canonicalByResolvedPath.get(candidatePath);
+    if (canonical) {
+      return canonical;
+    }
+  }
+  return null;
 }
 
 function selectPlanningArtifacts(
