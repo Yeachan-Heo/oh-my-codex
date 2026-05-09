@@ -8,7 +8,14 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import TOML from "@iarna/toml";
-import { buildMergedConfig, cleanCodexModelAvailabilityNuxIfNeeded, mergeConfig, repairConfigIfNeeded } from "../generator.js";
+import {
+  buildMergedConfig,
+  cleanCodexModelAvailabilityNuxIfNeeded,
+  mergeConfig,
+  repairConfigIfNeeded,
+  stripManagedCodexHookTrustState,
+  upsertManagedCodexHookTrustState,
+} from "../generator.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../omx-first-party-mcp.js";
 
 /** Count occurrences of a pattern in text */
@@ -122,6 +129,43 @@ function assertSingleOmxBlock(toml: string): void {
       `[mcp_servers.${name}] command should be absolute`,
     );
   }
+}
+
+function assertSingleManagedHookTrustState(toml: string): void {
+  const parsed = TOML.parse(toml) as {
+    hooks?: { state?: Record<string, { trusted_hash?: unknown }> };
+  };
+  const managedKeys = Object.keys(parsed.hooks?.state ?? {}).filter((key) =>
+    key.startsWith("/tmp/codex/hooks.json:"),
+  );
+
+  assert.deepEqual(
+    managedKeys.sort(),
+    [
+      "/tmp/codex/hooks.json:post_compact:0:0",
+      "/tmp/codex/hooks.json:post_tool_use:0:0",
+      "/tmp/codex/hooks.json:pre_compact:0:0",
+      "/tmp/codex/hooks.json:pre_tool_use:0:0",
+      "/tmp/codex/hooks.json:session_start:0:0",
+      "/tmp/codex/hooks.json:stop:0:0",
+      "/tmp/codex/hooks.json:user_prompt_submit:0:0",
+    ],
+  );
+  assert.equal(
+    count(toml, /^# OMX-owned Codex hook trust state$/gm),
+    1,
+    "managed hook trust fence should appear once",
+  );
+  assert.equal(
+    count(toml, /^# End OMX-owned Codex hook trust state$/gm),
+    1,
+    "managed hook trust end fence should appear once",
+  );
+  assert.equal(
+    count(toml, /^\[hooks\.state\."\/tmp\/codex\/hooks\.json:/gm),
+    managedKeys.length,
+    "managed hook trust tables should not duplicate",
+  );
 }
 
 describe("Codex transient TUI NUX cleanup", () => {
@@ -979,6 +1023,79 @@ describe("config generator idempotency (#384)", () => {
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
+  });
+
+  it("preserves trailing user config after an unmatched managed hook trust-state start marker", () => {
+    const malformed = [
+      'model = "gpt-5.5"',
+      "",
+      "# OMX-owned Codex hook trust state",
+      "# Missing the end fence must not cause trailing user config deletion.",
+      "",
+      '[hooks.state."custom:/hooks.json:stop:0:0"]',
+      'trusted_hash = "sha256:user"',
+      "enabled = false",
+      "",
+      "[hooks.state.user_prompt_submit]",
+      'trusted_hash = "sha256:prompt"',
+      "enabled = true",
+      "",
+    ].join("\n");
+
+    const stripped = stripManagedCodexHookTrustState(malformed);
+
+    assert.match(stripped, /^# OMX-owned Codex hook trust state$/m);
+    assert.match(stripped, /^\[hooks\.state\."custom:\/hooks\.json:stop:0:0"\]$/m);
+    assert.match(stripped, /^enabled = false$/m);
+    assert.match(stripped, /^\[hooks\.state\.user_prompt_submit\]$/m);
+    assert.match(stripped, /^trusted_hash = "sha256:prompt"$/m);
+    assert.doesNotThrow(() => TOML.parse(stripped));
+  });
+
+  it("dedupes prior fenced managed hook trust-state blocks before writing a replacement", () => {
+    const first = upsertManagedCodexHookTrustState(
+      [
+        'model = "gpt-5.5"',
+        "",
+        '[hooks.state."custom:/hooks.json:stop:0:0"]',
+        'trusted_hash = "sha256:user"',
+        "enabled = false",
+        "",
+      ].join("\n"),
+      "/tmp/omx",
+      "/tmp/codex/hooks.json",
+    );
+    const brokenWithDuplicatePriorBlock = `${first}\n${first.slice(
+      first.indexOf("# OMX-owned Codex hook trust state"),
+    )}`;
+    assert.equal(
+      count(
+        brokenWithDuplicatePriorBlock,
+        /^\[hooks\.state\."\/tmp\/codex\/hooks\.json:stop:0:0"\]$/gm,
+      ),
+      2,
+      "regression fixture should contain duplicate managed trust tables",
+    );
+
+    const repaired = upsertManagedCodexHookTrustState(
+      brokenWithDuplicatePriorBlock,
+      "/tmp/omx",
+      "/tmp/codex/hooks.json",
+    );
+    const repeated = upsertManagedCodexHookTrustState(
+      repaired,
+      "/tmp/omx",
+      "/tmp/codex/hooks.json",
+    );
+
+    assert.equal(repeated, repaired);
+    assert.match(
+      repaired,
+      /^\[hooks\.state\."custom:\/hooks\.json:stop:0:0"\]$/m,
+      "unrelated user hook state should be preserved",
+    );
+    assert.match(repaired, /^enabled = false$/m);
+    assertSingleManagedHookTrustState(repaired);
   });
 
   it("syncs shared MCP registry entries in a dedicated managed block", async () => {

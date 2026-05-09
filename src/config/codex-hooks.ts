@@ -485,6 +485,10 @@ export function mergeManagedCodexHooksConfig(
 
   const nextRoot = parsed ? cloneJson(parsed.root) : {};
   const nextHooks = parsed ? cloneJson(parsed.hooks) : {};
+  const misplacedHookState = isPlainObject(nextHooks.state)
+    ? cloneJson(nextHooks.state)
+    : {};
+  delete nextHooks.state;
 
   for (const eventName of MANAGED_HOOK_EVENTS) {
     const existingEntries = Array.isArray(nextHooks[eventName])
@@ -505,14 +509,30 @@ export function mergeManagedCodexHooksConfig(
     ];
   }
 
-  if (hooksPath) {
-    const existingState = isPlainObject(nextHooks.state)
-      ? cloneJson(nextHooks.state)
+  const existingRootState = isPlainObject(nextRoot.state)
+    ? cloneJson(nextRoot.state)
+    : {};
+  const nextState = {
+    ...misplacedHookState,
+    ...existingRootState,
+  };
+
+  const managedTrustState = hooksPath
+    ? buildManagedCodexHookTrustState(hooksPath, pkgRoot, resolvedOptions)
+    : {};
+  for (const [key, hookState] of Object.entries(managedTrustState)) {
+    const existingHookState = isPlainObject(nextState[key])
+      ? nextState[key]
       : {};
-    nextHooks.state = {
-      ...existingState,
-      ...buildManagedCodexHookTrustState(hooksPath, pkgRoot, resolvedOptions),
+    nextState[key] = {
+      ...existingHookState,
+      trusted_hash: hookState.trusted_hash,
     };
+  }
+  if (Object.keys(nextState).length > 0) {
+    nextRoot.state = nextState;
+  } else if (isPlainObject(nextRoot.state)) {
+    delete nextRoot.state;
   }
 
   if (Object.keys(nextHooks).length > 0) {
@@ -534,6 +554,10 @@ export function removeManagedCodexHooks(
 
   const nextRoot = cloneJson(parsed.root);
   const nextHooks = cloneJson(parsed.hooks);
+  const misplacedHookState = isPlainObject(nextHooks.state)
+    ? cloneJson(nextHooks.state)
+    : {};
+  delete nextHooks.state;
   let removedCount = 0;
 
   for (const [eventName, rawEntries] of Object.entries(nextHooks)) {
@@ -559,7 +583,25 @@ export function removeManagedCodexHooks(
     return { nextContent: existingContent, removedCount: 0 };
   }
 
-  if (Object.keys(nextHooks).length > 0) {
+  const hasRemainingHookEntries = Object.keys(nextHooks).length > 0;
+  if (hasRemainingHookEntries) {
+    const existingRootState = isPlainObject(nextRoot.state)
+      ? cloneJson(nextRoot.state)
+      : {};
+    const nextState = {
+      ...misplacedHookState,
+      ...existingRootState,
+    };
+    if (Object.keys(nextState).length > 0) {
+      nextRoot.state = nextState;
+    } else if (isPlainObject(nextRoot.state)) {
+      delete nextRoot.state;
+    }
+  } else {
+    delete nextRoot.state;
+  }
+
+  if (hasRemainingHookEntries) {
     nextRoot.hooks = nextHooks;
   } else {
     delete nextRoot.hooks;

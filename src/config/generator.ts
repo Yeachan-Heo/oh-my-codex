@@ -569,11 +569,34 @@ const OMX_HOOK_TRUST_START_MARKER = "# OMX-owned Codex hook trust state";
 const OMX_HOOK_TRUST_END_MARKER = "# End OMX-owned Codex hook trust state";
 
 export function stripManagedCodexHookTrustState(config: string): string {
-  const blockPattern = new RegExp(
-    `\n?${OMX_HOOK_TRUST_START_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\n[\\s\\S]*?${OMX_HOOK_TRUST_END_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\n?`,
-    "g",
-  );
-  return config.replace(blockPattern, "\n").replace(/\n{3,}/g, "\n\n").trimEnd();
+  const lines = config.split(/\r?\n/);
+  const kept: string[] = [];
+
+  for (let i = 0; i < lines.length;) {
+    const trimmed = lines[i].trim();
+    if (trimmed !== OMX_HOOK_TRUST_START_MARKER) {
+      kept.push(lines[i]);
+      i += 1;
+      continue;
+    }
+
+    const nextEndIdx = lines.findIndex(
+      (line, index) => index > i && line.trim() === OMX_HOOK_TRUST_END_MARKER,
+    );
+    const nextStartIdx = lines.findIndex(
+      (line, index) => index > i && line.trim() === OMX_HOOK_TRUST_START_MARKER,
+    );
+
+    if (nextEndIdx === -1 || (nextStartIdx !== -1 && nextStartIdx < nextEndIdx)) {
+      kept.push(lines[i]);
+      i += 1;
+      continue;
+    }
+
+    i = nextEndIdx + 1;
+  }
+
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
 }
 
 export function upsertManagedCodexHookTrustState(
@@ -1642,6 +1665,7 @@ export function buildMergedConfig(
 
   existing = stripOmxTopLevelKeys(existing);
   existing = stripOrphanedManagedNotify(existing);
+  existing = stripManagedCodexHookTrustState(existing);
   if (options.modelOverride) {
     existing = stripRootLevelKeys(existing, ["model"]);
   }

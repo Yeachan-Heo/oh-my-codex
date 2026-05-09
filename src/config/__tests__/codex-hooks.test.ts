@@ -167,10 +167,16 @@ describe("codex hooks helpers", () => {
     assert.doesNotMatch(toml, /echo keep-me/);
   });
 
-  it("can preserve existing hook state when explicitly merging trust into hooks.json", () => {
+  it("keeps hooks.json trust state outside the hook event map", () => {
     const merged = JSON.parse(
       mergeManagedCodexHooksConfig(
         JSON.stringify({
+          state: {
+            "custom:/hooks.json:prompt:0:0": {
+              trusted_hash: "sha256:top-level-user",
+              enabled: true,
+            },
+          },
           hooks: {
             state: {
               "custom:/hooks.json:stop:0:0": {
@@ -189,21 +195,94 @@ describe("codex hooks helpers", () => {
         "/hooks.json",
       ),
     ) as {
-      hooks: {
-        state: Record<string, { trusted_hash?: string; enabled?: boolean }>;
-        Stop: Array<{ hooks?: Array<{ command?: string }> }>;
-      };
+      state: Record<string, { trusted_hash?: string; enabled?: boolean }>;
+      hooks: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
     };
 
-    assert.deepEqual(merged.hooks.state["custom:/hooks.json:stop:0:0"], {
+    assert.equal(Object.hasOwn(merged.hooks, "state"), false);
+    assert.ok(
+      Object.values(merged.hooks).every(Array.isArray),
+      "Codex Rust hook discovery expects hooks.hooks values to be event arrays",
+    );
+    assert.deepEqual(merged.state["custom:/hooks.json:stop:0:0"], {
       trusted_hash: "sha256:user",
       enabled: false,
     });
+    assert.deepEqual(merged.state["custom:/hooks.json:prompt:0:0"], {
+      trusted_hash: "sha256:top-level-user",
+      enabled: true,
+    });
     assert.match(
-      merged.hooks.state["/hooks.json:stop:0:0"]?.trusted_hash ?? "",
+      merged.state["/hooks.json:stop:0:0"]?.trusted_hash ?? "",
       /^sha256:[a-f0-9]{64}$/,
     );
     assert.match(JSON.stringify(merged.hooks.Stop), /echo user-stop/);
+  });
+
+  it("preserves top-level managed hook state metadata while updating trusted_hash", () => {
+    const managedState = buildManagedCodexHookTrustState("/hooks.json", "/repo");
+    const managedKey = Object.keys(managedState).find((key) =>
+      key.includes(":stop:"),
+    ) ?? Object.keys(managedState)[0];
+    assert.ok(managedKey);
+
+    const merged = JSON.parse(
+      mergeManagedCodexHooksConfig(
+        JSON.stringify({
+          state: {
+            [managedKey]: {
+              trusted_hash: "sha256:old",
+              enabled: false,
+            },
+          },
+        }),
+        "/repo",
+        "/hooks.json",
+      ),
+    ) as {
+      state: Record<string, { trusted_hash?: string; enabled?: boolean }>;
+      hooks: Record<string, unknown>;
+    };
+
+    assert.equal(Object.hasOwn(merged.hooks, "state"), false);
+    assert.deepEqual(merged.state[managedKey], {
+      trusted_hash: managedState[managedKey]?.trusted_hash,
+      enabled: false,
+    });
+  });
+
+  it("migrates misplaced managed hook state metadata while updating trusted_hash", () => {
+    const managedState = buildManagedCodexHookTrustState("/hooks.json", "/repo");
+    const managedKey = Object.keys(managedState).find((key) =>
+      key.includes(":stop:"),
+    ) ?? Object.keys(managedState)[0];
+    assert.ok(managedKey);
+
+    const merged = JSON.parse(
+      mergeManagedCodexHooksConfig(
+        JSON.stringify({
+          hooks: {
+            state: {
+              [managedKey]: {
+                trusted_hash: "sha256:old",
+                enabled: false,
+              },
+            },
+          },
+        }),
+        "/repo",
+        "/hooks.json",
+      ),
+    ) as {
+      state: Record<string, { trusted_hash?: string; enabled?: boolean }>;
+      hooks: Record<string, unknown>;
+    };
+
+    assert.equal(Object.hasOwn(merged.hooks, "state"), false);
+    assert.deepEqual(merged.state[managedKey], {
+      trusted_hash: managedState[managedKey]?.trusted_hash,
+      enabled: false,
+    });
   });
 
   it("keeps managed hook merge idempotent", () => {
@@ -217,6 +296,11 @@ describe("codex hooks helpers", () => {
     const managedOnly = JSON.stringify(buildManagedCodexHooksConfig("/repo"));
     const preserved = JSON.stringify({
       hooks: {
+        state: {
+          "custom:/hooks.json:session_start:0:0": {
+            trusted_hash: "sha256:user",
+          },
+        },
         SessionStart: [
           {
             hooks: [
@@ -233,12 +317,32 @@ describe("codex hooks helpers", () => {
     assert.equal(removedManagedOnly.removedCount > 0, true);
     assert.equal(removedManagedOnly.nextContent, null);
 
+    const generatedWithTrustState = mergeManagedCodexHooksConfig(
+      null,
+      "/repo",
+      "/hooks.json",
+    );
+    const removedGeneratedWithTrustState = removeManagedCodexHooks(
+      generatedWithTrustState,
+    );
+    assert.equal(removedGeneratedWithTrustState.removedCount > 0, true);
+    assert.equal(removedGeneratedWithTrustState.nextContent, null);
+
     const removedMixed = removeManagedCodexHooks(preserved);
     assert.equal(removedMixed.removedCount, 1);
     assert.ok(removedMixed.nextContent);
     assert.match(removedMixed.nextContent, /echo keep-me/);
     assert.doesNotMatch(removedMixed.nextContent, /codex-native-hook\.js/);
     assert.match(removedMixed.nextContent, /"version": 1/);
+
+    const cleaned = JSON.parse(removedMixed.nextContent) as {
+      state?: Record<string, { trusted_hash?: string }>;
+      hooks?: Record<string, unknown>;
+    };
+    assert.equal(Object.hasOwn(cleaned.hooks ?? {}, "state"), false);
+    assert.deepEqual(cleaned.state?.["custom:/hooks.json:session_start:0:0"], {
+      trusted_hash: "sha256:user",
+    });
   });
 
   it("detects user hooks that remain after managed wrapper removal", () => {
