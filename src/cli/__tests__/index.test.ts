@@ -731,6 +731,40 @@ describe("cleanupPostLaunchModeStateFiles", () => {
     assert.deepEqual(warnings, []);
   });
 
+  it("marks active Ralph state cancelled with interrupted metadata during postLaunch cleanup", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-postlaunch-ralph-interrupted-"));
+    const sessionId = "sess-postlaunch-ralph-interrupted";
+    const sessionStateDir = join(wd, ".omx", "state", "sessions", sessionId);
+    await mkdir(sessionStateDir, { recursive: true });
+    await writeFile(
+      join(sessionStateDir, "ralph-state.json"),
+      JSON.stringify({
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        owner_omx_session_id: sessionId,
+      }, null, 2),
+      "utf-8",
+    );
+
+    try {
+      await cleanupPostLaunchModeStateFiles(wd, sessionId, {
+        now: () => new Date("2026-05-09T08:00:00.000Z"),
+      });
+
+      const ralph = JSON.parse(
+        await readFile(join(sessionStateDir, "ralph-state.json"), "utf-8"),
+      ) as Record<string, unknown>;
+      assert.equal(ralph.active, false);
+      assert.equal(ralph.current_phase, "cancelled");
+      assert.equal(ralph.completed_at, "2026-05-09T08:00:00.000Z");
+      assert.equal(ralph.interrupted_at, "2026-05-09T08:00:00.000Z");
+      assert.equal(ralph.stop_reason, "session_exit");
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("does not cancel root mode state during session-scoped postLaunch cleanup", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-postlaunch-root-preserve-"));
     const sessionId = "sess-postlaunch-root-preserve";

@@ -3061,6 +3061,10 @@ export async function cleanupPostLaunchModeStateFiles(
         result.state.active = false;
         result.state.current_phase = "cancelled";
         result.state.completed_at = completedAt;
+        if (mode === "ralph") {
+          result.state.interrupted_at = completedAt;
+          result.state.stop_reason = cleanPostLaunchString(result.state.stop_reason) || "session_exit";
+        }
         await writeFile(path, JSON.stringify(result.state, null, 2));
         if (isTrackedWorkflowMode(mode)) {
           await syncCanonicalSkillStateForMode({
