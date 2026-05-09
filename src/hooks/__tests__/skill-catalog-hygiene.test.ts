@@ -17,26 +17,36 @@ function skillNames(): string[] {
 }
 
 describe('skill catalog hygiene', () => {
-  it('does not ship redundant alias-only skills as separate catalog entries', () => {
+  it('keeps deprecated public compatibility shims non-routing', () => {
     const names = skillNames();
-    assert(!names.includes('swarm'), 'swarm should be folded into team instead of shipped as an alias-only skill');
-    assert.match(
-      skillContent('review'),
-      /Hard-deprecated/i,
-      'review should remain only as a hard-deprecated compatibility shim',
-    );
-    assert.match(
-      skillContent('ralph-init'),
-      /Hard-deprecated/i,
-      'ralph-init should remain only as a hard-deprecated compatibility shim',
-    );
-  });
+    const shims = [
+      { name: 'swarm', canonical: /\$team|omx team/i },
+      { name: 'ask-claude', canonical: /\$ask claude|omx ask claude/i },
+      { name: 'ask-gemini', canonical: /\$ask gemini|omx ask gemini/i },
+      { name: 'frontend-ui-ux', canonical: /designer/i },
+      { name: 'review', canonical: /\$code-review|code review/i },
+      { name: 'ralph-init', canonical: /\$ralph|PRD\/test-spec/i },
+    ];
 
-  it('does not expose advisor wrappers as skills when package scripts already provide them', () => {
-    const names = skillNames();
-    assert(!names.includes('ask-claude'), 'ask-claude duplicates omx ask/package script behavior');
-    assert(!names.includes('ask-gemini'), 'ask-gemini duplicates omx ask/package script behavior');
-    assert(!names.includes('frontend-ui-ux'), 'frontend-ui-ux is a stale routing wrapper, not a workflow skill');
+    for (const { name, canonical } of shims) {
+      assert(names.includes(name), `${name} should remain as a public compatibility shim`);
+      const content = skillContent(name);
+      assert.match(
+        content,
+        /Hard-deprecated/i,
+        `${name} should remain only as a hard-deprecated compatibility shim`,
+      );
+      assert.match(
+        content,
+        /Do not invoke or route this skill/i,
+        `${name} should be non-routing compatibility guidance`,
+      );
+      assert.match(
+        content,
+        canonical,
+        `${name} should point to its canonical replacement surface`,
+      );
+    }
   });
 
   it('keeps the cleanup subset free of obsolete prompt/tool boilerplate', () => {
