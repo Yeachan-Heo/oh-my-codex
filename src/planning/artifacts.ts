@@ -33,6 +33,7 @@ export type {
   ContextPackHandoffStatusSnapshot,
   ContextPackBaselineState,
   ContextPackBasisState,
+  ContextPackDeclarationState,
   ContextPackOutcomeState,
   ContextPackPackState,
   ContextPackRef,

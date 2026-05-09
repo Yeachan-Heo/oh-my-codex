@@ -23,6 +23,7 @@ export type ContextPackPackState = 'missing' | 'unreadable' | 'invalid' | 'valid
 export type ContextPackRoleCoverageState =
   'unknown' | 'missing-required-roles' | 'covered';
 export type ContextPackBasisState = 'stale' | 'fresh';
+export type ContextPackDeclarationState = 'unknown' | 'matching' | 'mismatched';
 
 export interface ContextPackRef {
   path: string;
@@ -41,6 +42,7 @@ export interface ContextPackHandoffStatusSnapshot {
   contextPackStatus: ContextPackStatus;
   baselineState: ContextPackBaselineState;
   outcomeState: ContextPackOutcomeState;
+  declarationState: ContextPackDeclarationState;
   packState: ContextPackPackState;
   roleCoverage: ContextPackRoleCoverageState;
   basisState: ContextPackBasisState;
@@ -603,6 +605,7 @@ export function resolveContextPackHandoffStatus(
   let packState: ContextPackPackState = 'missing';
   let roleCoverage: ContextPackRoleCoverageState = 'unknown';
   let basisState: ContextPackBasisState = 'stale';
+  let declarationState: ContextPackDeclarationState = 'unknown';
   let missingRequiredContextPackRoles: ContextPackRole[] = [];
   let declarationMismatch = false;
 
@@ -621,9 +624,12 @@ export function resolveContextPackHandoffStatus(
         && outcome.declaredSlug !== expectedSlug
       ) {
         declarationMismatch = true;
+        declarationState = 'mismatched';
         contextPackIssues.push(
           `Declared context pack slug ${outcome.declaredSlug} does not match approved plan slug ${expectedSlug}.`,
         );
+      } else if (outcome.outcomeState === 'declared' && outcome.declaredSlug && expectedSlug) {
+        declarationState = 'matching';
       }
 
       if (outcome.outcomeState === 'declared' && contextPack) {
@@ -684,6 +690,7 @@ export function resolveContextPackHandoffStatus(
     }),
     baselineState,
     outcomeState,
+    declarationState,
     packState,
     roleCoverage,
     basisState,

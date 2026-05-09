@@ -154,6 +154,7 @@ describe('context pack handoff status', () => {
     assert.equal(status.contextPackStatus, 'plan-only');
     assert.equal(status.baselineState, 'present');
     assert.equal(status.outcomeState, 'absent');
+    assert.equal(status.declarationState, 'unknown');
     assert.equal(status.roleCoverage, 'unknown');
     assert.deepEqual(status.missingRequiredContextPackRoles, []);
     assert.deepEqual(status.contextPackIssues, []);
@@ -174,6 +175,7 @@ describe('context pack handoff status', () => {
     assert.deepEqual(status.contextPack, { path: packPath });
     assert.equal(status.contextPackStatus, 'ready');
     assert.equal(status.packState, 'valid');
+    assert.equal(status.declarationState, 'matching');
     assert.equal(status.roleCoverage, 'covered');
     assert.equal(status.basisState, 'fresh');
     assert.deepEqual(status.missingRequiredContextPackRoles, []);
@@ -193,6 +195,7 @@ describe('context pack handoff status', () => {
     const status = readContextPackHandoffStatus(tempDir);
 
     assert.equal(status.contextPackStatus, 'incomplete');
+    assert.equal(status.roleCoverage, 'missing-required-roles');
     assert.deepEqual(status.missingRequiredContextPackRoles, ['build', 'verify']);
   });
 
@@ -211,6 +214,7 @@ describe('context pack handoff status', () => {
 
     assert.equal(status.contextPackStatus, 'invalid');
     assert.equal(status.roleCoverage, 'covered');
+    assert.equal(status.basisState, 'stale');
     assert.deepEqual(status.missingRequiredContextPackRoles, []);
     assert.ok(status.contextPackIssues.some((issue) => issue.includes('basis test-spec hash')));
   });
@@ -303,6 +307,7 @@ describe('context pack handoff status', () => {
 
     assert.equal(status.contextPackStatus, 'invalid');
     assert.equal(status.outcomeState, 'declared');
+    assert.equal(status.declarationState, 'mismatched');
     assert.equal(status.packState, 'invalid');
     assert.ok(status.contextPackIssues.some((issue) => issue.includes(
       'does not match approved plan slug theta',
@@ -325,5 +330,129 @@ describe('context pack handoff status', () => {
     assert.equal(status.contextPackStatus, 'invalid');
     assert.equal(status.outcomeState, 'ambiguous');
     assert.ok(status.contextPackIssues.some((issue) => issue.includes('multiple Context Pack Outcome sections')));
+  });
+
+  it('distinguishes missing, unreadable, invalid, stale, mismatched, and missing-role handoffs', async () => {
+    const cases: Array<{
+      slug: string;
+      mutate: (fixture: Awaited<ReturnType<typeof writeApprovedPlan>>) => Promise<void>;
+      expected: {
+        status: string;
+        packState: string;
+        declarationState: string;
+        basisState: string;
+        roleCoverage: string;
+        issue?: string;
+        missingRoles?: string[];
+      };
+    }> = [
+      {
+        slug: 'missing-pack',
+        mutate: async () => {},
+        expected: {
+          status: 'incomplete',
+          packState: 'missing',
+          declarationState: 'matching',
+          basisState: 'stale',
+          roleCoverage: 'unknown',
+          issue: 'file is missing',
+        },
+      },
+      {
+        slug: 'unreadable-pack',
+        mutate: async ({ packPath }) => { await mkdir(packPath, { recursive: true }); },
+        expected: {
+          status: 'invalid',
+          packState: 'unreadable',
+          declarationState: 'matching',
+          basisState: 'stale',
+          roleCoverage: 'unknown',
+          issue: 'could not be read',
+        },
+      },
+      {
+        slug: 'invalid-pack',
+        mutate: async ({ packPath }) => { await writeFile(packPath, '{bad json'); },
+        expected: {
+          status: 'invalid',
+          packState: 'invalid',
+          declarationState: 'matching',
+          basisState: 'stale',
+          roleCoverage: 'unknown',
+          issue: 'invalid JSON',
+        },
+      },
+      {
+        slug: 'stale-basis',
+        mutate: async ({ prdPath, testSpecPath }) => {
+          await writeContextPack('stale-basis', prdPath, testSpecPath, ['scope', 'build', 'verify']);
+          await writeFile(testSpecPath, '# Drifted Test Spec\n');
+        },
+        expected: {
+          status: 'invalid',
+          packState: 'valid',
+          declarationState: 'matching',
+          basisState: 'stale',
+          roleCoverage: 'covered',
+          issue: 'basis test-spec hash',
+        },
+      },
+      {
+        slug: 'missing-role',
+        mutate: async ({ prdPath, testSpecPath }) => {
+          await writeContextPack('missing-role', prdPath, testSpecPath, ['scope']);
+        },
+        expected: {
+          status: 'incomplete',
+          packState: 'valid',
+          declarationState: 'matching',
+          basisState: 'fresh',
+          roleCoverage: 'missing-required-roles',
+          missingRoles: ['build', 'verify'],
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const fixture = await writeApprovedPlan(testCase.slug, [
+        '# PRD',
+        '',
+        buildContextPackOutcome(canonicalContextPackRelativePath(testCase.slug)),
+        '',
+        `Launch via omx ralph "Execute ${testCase.slug} plan"`,
+      ]);
+      await testCase.mutate(fixture);
+
+      const status = readContextPackHandoffStatus(tempDir, fixture.prdPath);
+
+      assert.equal(status.contextPackStatus, testCase.expected.status);
+      assert.equal(status.packState, testCase.expected.packState);
+      assert.equal(status.declarationState, testCase.expected.declarationState);
+      assert.equal(status.basisState, testCase.expected.basisState);
+      assert.equal(status.roleCoverage, testCase.expected.roleCoverage);
+      assert.deepEqual(
+        status.missingRequiredContextPackRoles,
+        testCase.expected.missingRoles ?? [],
+      );
+      if (testCase.expected.issue) {
+        assert.ok(
+          status.contextPackIssues.some((issue) => issue.includes(testCase.expected.issue ?? '')),
+          `expected issue containing ${testCase.expected.issue}`,
+        );
+      }
+    }
+
+    const mismatch = await writeApprovedPlan('declared-mismatch', [
+      '# PRD',
+      '',
+      buildContextPackOutcome(canonicalContextPackRelativePath('other')),
+      '',
+      'Launch via omx ralph "Execute mismatch plan"',
+    ]);
+    const mismatchStatus = readContextPackHandoffStatus(tempDir, mismatch.prdPath);
+    assert.equal(mismatchStatus.contextPackStatus, 'invalid');
+    assert.equal(mismatchStatus.declarationState, 'mismatched');
+    assert.equal(mismatchStatus.packState, 'invalid');
+    assert.ok(mismatchStatus.contextPackIssues.some((issue) => issue.includes('does not match approved plan slug')));
   });
 });
