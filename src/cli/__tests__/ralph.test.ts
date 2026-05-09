@@ -337,6 +337,31 @@ describe('ralph deslop launch wiring', () => {
     assert.match(instructions, /do not treat this as approved context-bearing execution/i);
   });
 
+  it('includes ready approved context pack refs as read-first Ralph guidance', () => {
+    const instructions = buildRalphAppendInstructions('Execute approved issue 1072 plan', {
+      changedFilesPath: '.omx/ralph/changed-files.txt',
+      noDeslop: false,
+      approvedHint: {
+        ...approvedHint,
+        contextPack: { path: '.omx/context/context-20260507T120000Z-issue-1072.json' },
+        contextPackStatus: 'ready',
+        contextPackRoleRefs: {
+          build: ['src/cli/ralph.ts', 'src/planning/artifacts.ts'],
+          verify: ['src/cli/__tests__/ralph.test.ts'],
+          scope: ['docs/ralph.md'],
+        },
+      },
+    });
+
+    assert.match(instructions, /approved context pack: \.omx\/context\/context-20260507T120000Z-issue-1072\.json/i);
+    assert.match(instructions, /build refs \(read first\): src\/cli\/ralph\.ts, src\/planning\/artifacts\.ts/i);
+    assert.match(instructions, /verify refs: src\/cli\/__tests__\/ralph\.test\.ts/i);
+    assert.match(instructions, /scope refs: docs\/ralph\.md/i);
+    assert.match(instructions, /Read the build refs above before broader repo exploration/i);
+    assert.doesNotMatch(instructions, /Plan-only fallback/i);
+    assert.doesNotMatch(instructions, /repair or recreate the canonical context pack/i);
+  });
+
   it('surfaces repair-only guidance for invalid approved handoff context', () => {
     const instructions = buildRalphAppendInstructions('Repair approved issue 1072 plan', {
       changedFilesPath: '.omx/ralph/changed-files.txt',

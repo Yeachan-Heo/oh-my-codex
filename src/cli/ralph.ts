@@ -182,6 +182,28 @@ function buildRalphApprovedContextLines(approvedHint: ApprovedExecutionLaunchHin
     lines.push(approvedHint.repositoryContextSummary.content);
   }
   if (approvedHint.contextPackStatus === 'ready') {
+    if (approvedHint.contextPack) {
+      lines.push(`- approved context pack: ${approvedHint.contextPack.path}`);
+    }
+    if (approvedHint.contextPackRoleRefs) {
+      const { build, verify, scope } = approvedHint.contextPackRoleRefs;
+      if (build.length > 0) {
+        lines.push(`- build refs (read first): ${build.join(', ')}`);
+      }
+      if (verify.length > 0) {
+        lines.push(`- verify refs: ${verify.join(', ')}`);
+      }
+      if (scope.length > 0) {
+        lines.push(`- scope refs: ${scope.join(', ')}`);
+      }
+      if (build.length > 0 || verify.length > 0 || scope.length > 0) {
+        lines.push(
+          build.length > 0
+            ? '- Read the build refs above before broader repo exploration.'
+            : '- Read the approved refs above before broader repo exploration.',
+        );
+      }
+    }
     return lines;
   }
   if (approvedHint.contextPackStatus === 'plan-only') {
