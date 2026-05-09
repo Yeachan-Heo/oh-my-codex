@@ -210,23 +210,55 @@ function resolveRequestedPrdPath(
   }
 
   const repoRoot = dirname(dirname(artifacts.plansDir));
-  const candidatePaths = isAbsolute(requested)
-    ? [resolve(requested)]
-    : [
-      resolve(repoRoot, requested),
-      resolve(artifacts.plansDir, requested),
-    ];
   const canonicalByResolvedPath = new Map(
     artifacts.prdPaths.map((artifactPath) => [resolve(artifactPath), artifactPath]),
   );
+  const candidatePaths = isAbsolute(requested)
+    ? [resolve(requested)]
+    : [
+      resolveRelativePathWithinRoot(repoRoot, requested, repoRoot),
+      resolveRelativePathWithinRoot(artifacts.plansDir, requested, repoRoot),
+    ];
 
   for (const candidatePath of candidatePaths) {
+    if (!candidatePath) {
+      continue;
+    }
     const canonical = canonicalByResolvedPath.get(candidatePath);
     if (canonical) {
       return canonical;
     }
   }
   return null;
+}
+
+function resolveRelativePathWithinRoot(
+  baseDir: string,
+  rawPath: string,
+  rootDir: string,
+): string | null {
+  const resolvedRootDir = resolve(rootDir);
+  let currentDir = resolve(baseDir);
+
+  for (const segment of rawPath.split(/[\\/]+/)) {
+    if (!segment || segment === '.') {
+      continue;
+    }
+    if (segment === '..') {
+      if (currentDir === resolvedRootDir) {
+        return null;
+      }
+      const parentDir = dirname(currentDir);
+      if (parentDir === currentDir) {
+        return null;
+      }
+      currentDir = parentDir;
+      continue;
+    }
+    currentDir = join(currentDir, segment);
+  }
+
+  return resolve(currentDir);
 }
 
 function selectPlanningArtifacts(

@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { basename, join, relative } from 'node:path';
 import {
   decodeApprovedExecutionQuotedValue,
   isPlanningComplete,
@@ -615,6 +615,7 @@ describe('planning artifacts', () => {
     const rejectedAliases = [
       '.omx/plans/prd-missing.md',
       '../prd-alpha.md',
+      join('..', basename(tempDir), '.omx', 'plans', 'prd-alpha.md'),
       join(tempDir, '.omx', 'prd-alpha.md'),
       relative(process.cwd(), join(plansDir, 'prd-alpha.md')),
     ];
