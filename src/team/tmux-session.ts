@@ -24,6 +24,10 @@ import { readActiveProviderEnvOverrides } from '../config/models.js';
 import { extractModelProviderOverrideValue } from './model-contract.js';
 import { sleep, sleepSync } from '../utils/sleep.js';
 import {
+  resolveTmuxSubmitRepeatDelayMs,
+  resolveTmuxSubmitSettleMs,
+} from '../utils/tmux-submit-delay.js';
+import {
   buildPlatformCommandSpec,
   classifySpawnError,
   resolveCommandPathForPlatform,
@@ -82,6 +86,7 @@ const TMUX_NO_UNDERLINE_STYLE_FLAGS = [
   'nodotted-underscore',
   'nodashed-underscore',
 ] as const;
+const SEND_TO_WORKER_DEFAULT_TMUX_SUBMIT_SETTLE_MS = 150;
 const TMUX_COPY_MODE_STYLE_OPTIONS = [
   'mode-style',
   'copy-mode-selection-style',
@@ -100,6 +105,16 @@ export interface WorkerSubmitPlan {
   rounds: number;
   submitKeyPressesPerRound: number;
   allowAdaptiveRetry: boolean;
+}
+
+export interface SendToWorkerOptions {
+  sleepImpl?: (ms: number) => Promise<void>;
+}
+
+interface SendToWorkerTiming {
+  sleepImpl: (ms: number) => Promise<void>;
+  settleDelayMs: number;
+  repeatDelayMs: number;
 }
 
 interface WorkerLaunchSpec {
@@ -1411,7 +1426,7 @@ export async function evaluateStartupDirectTriggerSafety(
 
 function acceptClaudeBypassPermissionsPrompt(target: string): void {
   runTmux(['send-keys', '-t', target, '-l', '--', '2']);
-  sleepFractionalSeconds(0.12);
+  sleepFractionalSeconds(resolveTmuxSubmitSettleMs() / 1000);
   runTmux(['send-keys', '-t', target, 'C-m']);
 }
 
@@ -1568,23 +1583,24 @@ async function attemptSubmitRounds(
   rounds: number,
   queueFirstRound: boolean,
   submitKeyPressesPerRound: number,
+  timing: SendToWorkerTiming,
 ): Promise<boolean> {
   const presses = Math.max(1, Math.floor(submitKeyPressesPerRound));
   for (let round = 0; round < rounds; round++) {
-    await sleep(100);
+    await timing.sleepImpl(timing.repeatDelayMs);
     if (round === 0 && queueFirstRound) {
       await sendKeyAsync(target, 'Tab');
-      await sleep(80);
+      await timing.sleepImpl(timing.repeatDelayMs);
       await sendKeyAsync(target, 'C-m');
     } else {
       for (let press = 0; press < presses; press++) {
         await sendKeyAsync(target, 'C-m');
         if (press < presses - 1) {
-          await sleep(200);
+          await timing.sleepImpl(timing.repeatDelayMs);
         }
       }
     }
-    await sleep(140);
+    await timing.sleepImpl(140);
     const [captured, visibleCapture] = await Promise.all([
       capturePaneAsync(target),
       captureVisiblePaneAsync(target),
@@ -1596,7 +1612,7 @@ async function attemptSubmitRounds(
     ) {
       return true;
     }
-    await sleep(140);
+    await timing.sleepImpl(140);
   }
   return false;
 }
@@ -1618,7 +1634,7 @@ export function waitForWorkerReady(
     // Trust + follow-up splash can require two submits in Codex TUI.
     // Use C-m (carriage return) for raw-mode compatibility.
     runTmux(['send-keys', '-t', target, 'C-m']);
-    sleepFractionalSeconds(0.12);
+    sleepFractionalSeconds(resolveTmuxSubmitRepeatDelayMs() / 1000);
     runTmux(['send-keys', '-t', target, 'C-m']);
   };
 
@@ -1694,7 +1710,7 @@ export async function waitForWorkerReadyAsync(
     // Trust + follow-up splash can require two submits in Codex TUI.
     // Use C-m (carriage return) for raw-mode compatibility.
     await runTmuxAsync(['send-keys', '-t', target, 'C-m']);
-    await sleep(120);
+    await sleep(resolveTmuxSubmitRepeatDelayMs());
     await runTmuxAsync(['send-keys', '-t', target, 'C-m']);
   };
 
@@ -1768,7 +1784,7 @@ export function dismissTrustPromptIfPresent(
   if (!paneHasTrustPrompt(result.stdout)) return false;
   // Trust prompt detected; send C-m twice to dismiss (trust + follow-up splash)
   runTmux(['send-keys', '-t', target, 'C-m']);
-  sleepFractionalSeconds(0.12);
+  sleepFractionalSeconds(resolveTmuxSubmitRepeatDelayMs() / 1000);
   runTmux(['send-keys', '-t', target, 'C-m']);
   return true;
 }
@@ -1807,38 +1823,48 @@ export async function sendToWorker(
   text: string,
   workerPaneId?: string,
   workerCli?: TeamWorkerCli,
+  options: SendToWorkerOptions = {},
 ): Promise<void> {
   assertWorkerTriggerText(text);
 
   const target = paneTarget(sessionName, workerIndex, workerPaneId);
   const strategy = resolveSendStrategyFromEnv();
   const resolvedWorkerCli = resolveWorkerCliForSend(workerIndex, workerCli);
+  const timing: SendToWorkerTiming = {
+    sleepImpl: options.sleepImpl ?? sleep,
+    settleDelayMs: resolveTmuxSubmitSettleMs(
+      undefined,
+      SEND_TO_WORKER_DEFAULT_TMUX_SUBMIT_SETTLE_MS,
+    ),
+    repeatDelayMs: resolveTmuxSubmitRepeatDelayMs(),
+  };
 
   // Guard: if the trust prompt is still present, advance it first so our trigger text
   // doesn't get typed into the trust screen and ignored.
   const capturedStr = await capturePaneAsync(target);
   const paneBusy = paneHasActiveTask(capturedStr);
   if (dismissClaudeBypassPermissionsPromptIfPresent(target, capturedStr)) {
-    await sleep(200);
+    await timing.sleepImpl(200);
   }
   if (paneHasTrustPrompt(capturedStr)) {
     await sendKeyAsync(target, 'C-m');
-    await sleep(120);
+    await timing.sleepImpl(timing.repeatDelayMs);
     await sendKeyAsync(target, 'C-m');
-    await sleep(200);
+    await timing.sleepImpl(200);
   }
 
   sendLiteralTextOrThrow(target, text);
 
-  // Allow the input buffer to settle before sending C-m
-  await sleep(150);
+  // Allow the terminal input buffer to settle before sending C-m. Slow
+  // terminal emulators can need more time after literal typing before Enter.
+  await timing.sleepImpl(timing.settleDelayMs);
 
   const allowAutoInterruptRetry = process.env[OMX_TEAM_AUTO_INTERRUPT_RETRY_ENV] !== '0';
   const submitPlan = buildWorkerSubmitPlan(strategy, resolvedWorkerCli, paneBusy, allowAutoInterruptRetry);
   if (submitPlan.shouldInterrupt) {
     // Explicit interrupt mode: abort current turn first, then submit the new command.
     await sendKeyAsync(target, 'C-c');
-    await sleep(100);
+    await timing.sleepImpl(100);
   }
 
   // Submit deterministically using CLI-specific plan:
@@ -1850,6 +1876,7 @@ export async function sendToWorker(
     submitPlan.rounds,
     submitPlan.queueFirstRound,
     submitPlan.submitKeyPressesPerRound,
+    timing,
   )) return;
 
   // Adaptive escalation for "likely unsent trigger text at ready prompt" cases:
@@ -1858,10 +1885,10 @@ export async function sendToWorker(
   if (shouldAttemptAdaptiveRetry(strategy, paneBusy, submitPlan.allowAdaptiveRetry, latestCapture || null, text)) {
     // Keep this branch non-interrupting to avoid canceling active turns on false positives.
     await sendKeyAsync(target, 'C-u');
-    await sleep(80);
+    await timing.sleepImpl(80);
     sendLiteralTextOrThrow(target, text);
-    await sleep(120);
-    if (await attemptSubmitRounds(target, text, 4, false, submitPlan.submitKeyPressesPerRound)) return;
+    await timing.sleepImpl(timing.settleDelayMs);
+    if (await attemptSubmitRounds(target, text, 4, false, submitPlan.submitKeyPressesPerRound, timing)) return;
   }
 
   // Fail-open by default: Codex may keep the last submitted line visible even after executing it.
@@ -1873,12 +1900,12 @@ export async function sendToWorker(
 
   // One last best-effort double C-m nudge, then verify.
   await sendKeyAsync(target, 'C-m');
-  await sleep(120);
+  await timing.sleepImpl(timing.repeatDelayMs);
   await sendKeyAsync(target, 'C-m');
 
   // Post-submit verification: wait briefly and confirm the worker consumed the
   // trigger (draft disappeared or active-task indicator appeared). Fixes #391.
-  await sleep(300);
+  await timing.sleepImpl(300);
   const [verifyCapture, verifyVisibleCapture] = await Promise.all([
     capturePaneAsync(target),
     captureVisiblePaneAsync(target),
@@ -1893,7 +1920,7 @@ export async function sendToWorker(
     }
     // Draft still visible and no active task — one more C-m attempt.
     await sendKeyAsync(target, 'C-m');
-    await sleep(150);
+    await timing.sleepImpl(timing.repeatDelayMs);
     await sendKeyAsync(target, 'C-m');
     const finalVisibleCapture = await captureVisiblePaneAsync(target);
     if (paneHasQueuedCodexSubmission(finalVisibleCapture)) {

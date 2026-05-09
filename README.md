@@ -263,14 +263,27 @@ If `Shift+Enter` still submits instead of inserting a newline inside an OMX-mana
 
 ### Tmux submit timing
 
-If a terminal emulator needs more time between literal `tmux send-keys` text injection and the first `C-m` submit, persist the delay in `${CODEX_HOME:-~/.codex}/config.toml`:
+OMX uses tmux to type short prompts into worker panes and then presses Enter
+for you. On some terminal setups, especially slower iTerm/tmux combinations,
+tmux can press Enter before the typed text is fully visible to the Codex TUI.
+The usual symptom is that a worker pane shows the prompt text, but the prompt
+was not submitted until you manually press Enter.
+
+You can give the terminal a little more time between "type the prompt" and
+"press Enter" by saving a persistent delay in
+`${CODEX_HOME:-~/.codex}/config.toml`:
 
 ```toml
 [omx]
 tmux_submit_settle_ms = 275
 ```
 
-The default remains 120ms.
+Increase this value if worker startup prompts or notification replies are left
+typed but unsubmitted. The setting is in milliseconds; for example, `275` means
+OMX waits 0.275 seconds before sending Enter.
+
+The general default remains 120ms; team worker prompt submission preserves its
+legacy 150ms first-submit fallback unless this value is configured.
 
 ### Explore and sparkshell
 

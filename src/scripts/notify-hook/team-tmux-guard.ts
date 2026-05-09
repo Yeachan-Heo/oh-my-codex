@@ -9,6 +9,10 @@ import {
   paneHasActiveTask,
   paneLooksReady,
 } from '../tmux-hook-engine.js';
+import {
+  resolveTmuxSubmitRepeatDelayMs,
+  resolveTmuxSubmitSettleMs,
+} from '../../utils/tmux-submit-delay.js';
 
 export const PANE_READINESS_UNVERIFIED_REASON = 'pane_readiness_unverified';
 
@@ -132,7 +136,7 @@ export async function sendPaneInput({
   paneTarget,
   prompt,
   submitKeyPresses = 2,
-  submitDelayMs = 0,
+  submitDelayMs,
   typePrompt = true,
 }: any): Promise<any> {
   const target = safeString(paneTarget).trim();
@@ -163,9 +167,16 @@ export async function sendPaneInput({
     if (typePrompt) {
       await runProcess('tmux', argv.typeArgv, 3000);
     }
-    for (const submit of argv.submitArgv) {
-      if (submitDelayMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, submitDelayMs));
+    const explicitDelayMs = Number.isFinite(submitDelayMs)
+      ? Math.max(0, Math.floor(submitDelayMs))
+      : undefined;
+    const settleDelayMs = explicitDelayMs ?? resolveTmuxSubmitSettleMs();
+    const repeatDelayMs = explicitDelayMs ?? resolveTmuxSubmitRepeatDelayMs();
+    for (let i = 0; i < argv.submitArgv.length; i++) {
+      const submit = argv.submitArgv[i]!;
+      const delayMs = typePrompt && i === 0 ? settleDelayMs : repeatDelayMs;
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
       await runProcess('tmux', submit, 3000);
     }

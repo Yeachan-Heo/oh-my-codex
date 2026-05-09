@@ -177,7 +177,9 @@ describe('buildSendPaneArgvs', () => {
     ]);
   });
 
-  it('delays the first C-m submit so tmux send-keys text is visible to the alternate-screen TUI', () => {
+  it('delays the first C-m submit so tmux send-keys text is visible to the alternate-screen TUI', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-tmux-delay-'));
+    const originalCodexHome = process.env.CODEX_HOME;
     const calls: string[][] = [];
     const sleeps: number[] = [];
     const fakeSpawnSync = (command: string, argv: readonly string[]) => {
@@ -186,18 +188,25 @@ describe('buildSendPaneArgvs', () => {
       return { status: 0 };
     };
 
-    const ok = sendToPane('%5', 'continue', true, {
-      spawnSyncImpl: fakeSpawnSync,
-      sleepImpl: (ms) => sleeps.push(ms),
-    });
+    try {
+      process.env.CODEX_HOME = codexHome;
+      const ok = sendToPane('%5', 'continue', true, {
+        spawnSyncImpl: fakeSpawnSync,
+        sleepImpl: (ms) => sleeps.push(ms),
+      });
 
-    assert.equal(ok, true);
-    assert.deepEqual(calls, [
-      ['send-keys', '-t', '%5', '-l', '--', 'continue'],
-      ['send-keys', '-t', '%5', 'C-m'],
-      ['send-keys', '-t', '%5', 'C-m'],
-    ]);
-    assert.deepEqual(sleeps, [120, 100]);
+      assert.equal(ok, true);
+      assert.deepEqual(calls, [
+        ['send-keys', '-t', '%5', '-l', '--', 'continue'],
+        ['send-keys', '-t', '%5', 'C-m'],
+        ['send-keys', '-t', '%5', 'C-m'],
+      ]);
+      assert.deepEqual(sleeps, [120, 100]);
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      await rm(codexHome, { recursive: true, force: true });
+    }
   });
 
   it('honors persistent config.toml tmux submit settle delay for slower terminal emulators', async () => {

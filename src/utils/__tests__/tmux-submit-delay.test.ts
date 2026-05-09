@@ -9,8 +9,13 @@ import {
 } from '../tmux-submit-delay.js';
 
 describe('resolveTmuxSubmitSettleMs', () => {
-  it('uses the compatibility default when no override is provided', () => {
-    assert.equal(resolveTmuxSubmitSettleMs(), DEFAULT_TMUX_SUBMIT_SETTLE_MS);
+  it('uses the compatibility default when no override is provided', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-tmux-delay-empty-'));
+    try {
+      assert.equal(resolveTmuxSubmitSettleMs(codexHome), DEFAULT_TMUX_SUBMIT_SETTLE_MS);
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
   });
 
   it('uses persistent [omx] tmux_submit_settle_ms from config.toml', async () => {

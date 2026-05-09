@@ -60,10 +60,13 @@ function readTomlOmxDelayValue(
   return parseTmuxSubmitDelayMs(omx[key]);
 }
 
-export function resolveTmuxSubmitSettleMs(codexHomeOverride?: string): number {
+export function resolveTmuxSubmitSettleMs(
+  codexHomeOverride?: string,
+  fallbackMs = DEFAULT_TMUX_SUBMIT_SETTLE_MS,
+): number {
   return (
     readTomlOmxDelayValue('tmux_submit_settle_ms', codexHomeOverride)
-    ?? DEFAULT_TMUX_SUBMIT_SETTLE_MS
+    ?? fallbackMs
   );
 }
 
