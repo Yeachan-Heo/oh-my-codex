@@ -388,6 +388,10 @@ if (stateRoot && teamName && workerName) {
   await writeFile(
     binaryPath,
     `#!/usr/bin/env node
+if (process.argv[2] === '--version') {
+  console.log('codex 0.0.0-test');
+  process.exit(0);
+}
 ${bootstrap}
 ${scriptBody}
 `,
@@ -430,6 +434,24 @@ type MockBinarySpec = {
   name: string;
   content: string;
 };
+
+function fakeCodexShellScript(body: string): string {
+  return `#!/bin/sh
+if [ "\${1:-}" = "--version" ] || [ "\${1:-}" = "-V" ]; then
+  echo "codex 0.0.0-test"
+  exit 0
+fi
+${body}`;
+}
+
+function fakeCodexNodeScript(body: string): string {
+  return `#!/usr/bin/env node
+if (process.argv.includes('--version') || process.argv.includes('-V')) {
+  console.log('codex 0.0.0-test');
+  process.exit(0);
+}
+${body}`;
+}
 
 
 function teamStateTestPath(cwd: string, ...parts: string[]): string {
@@ -949,7 +971,7 @@ describe('runtime', () => {
 set -eu
 printf '%s\\n' "$*" >> "${tmuxLogPath}"
 case "$1" in
-  -V)
+  --version|-V)
     echo "tmux 3.4"
     exit 0
     ;;
@@ -1009,7 +1031,7 @@ esac
           binaries: [
             {
               name: 'codex',
-              content: '#!/bin/sh\nsleep 30\n',
+              content: fakeCodexShellScript('sleep 30\n'),
             },
           ],
         },
@@ -1173,7 +1195,7 @@ esac
           binaries: [
             {
               name: 'codex',
-              content: '#!/bin/sh\nsleep 30\n',
+              content: fakeCodexShellScript('sleep 30\n'),
             },
           ],
         },
@@ -1764,7 +1786,7 @@ EOF
     ;;
 esac
 `,
-          binaries: [{ name: 'codex', content: '#!/bin/sh\nexit 0\n' }],
+          binaries: [{ name: 'codex', content: fakeCodexShellScript('exit 0\n') }],
         },
         async ({ tmuxLogPath }) => {
           delete process.env.TMUX;
@@ -1898,7 +1920,7 @@ EOF
     ;;
 esac
 `,
-          binaries: [{ name: 'codex', content: '#!/bin/sh\nexit 0\n' }],
+          binaries: [{ name: 'codex', content: fakeCodexShellScript('exit 0\n') }],
         },
         async () => {
           delete process.env.TMUX;
@@ -2026,7 +2048,7 @@ case "$1" in
     ;;
 esac
 `,
-          binaries: [{ name: 'codex', content: '#!/usr/bin/env node\nprocess.stdin.resume();\n' }],
+          binaries: [{ name: 'codex', content: fakeCodexNodeScript('process.stdin.resume();\n') }],
         },
         async () => {
           delete process.env.TMUX;
@@ -2148,7 +2170,7 @@ case "$1" in
     ;;
 esac
 `,
-          binaries: [{ name: 'codex', content: '#!/usr/bin/env node\nprocess.stdin.resume();\n' }],
+          binaries: [{ name: 'codex', content: fakeCodexNodeScript('process.stdin.resume();\n') }],
         },
         async () => {
           delete process.env.TMUX;
@@ -2300,7 +2322,7 @@ case "$1" in
     ;;
 esac
 `,
-          binaries: [{ name: 'codex', content: '#!/usr/bin/env node\nprocess.stdin.resume();\n' }],
+          binaries: [{ name: 'codex', content: fakeCodexNodeScript('process.stdin.resume();\n') }],
         },
         async () => {
           delete process.env.TMUX;
@@ -2448,11 +2470,10 @@ esac
           binaries: [
             {
               name: 'codex',
-              content: `#!/usr/bin/env node
-process.stdin.resume();
+              content: fakeCodexNodeScript(`process.stdin.resume();
 setTimeout(() => process.exit(0), 30000);
 process.on('SIGTERM', () => process.exit(0));
-`,
+`),
             },
           ],
         },
@@ -2566,7 +2587,7 @@ process.on('SIGTERM', () => process.exit(0));
 set -eu
 order_file="${cwd}/dead-pane-order.log"
 case "$1" in
-  -V)
+  --version|-V)
     echo "tmux 3.4"
     exit 0
     ;;
@@ -2619,15 +2640,15 @@ case "$1" in
     ;;
 esac
 `,
-          binaries: [{ name: 'codex', content: '#!/usr/bin/env node\nprocess.stdin.resume();\n' }],
+          binaries: [{ name: 'codex', content: fakeCodexNodeScript('setTimeout(() => process.exit(0), 100);\n') }],
         },
         async () => {
           delete process.env.TMUX;
           process.env.TMUX_PANE = '%1';
           process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
           process.env.OMX_TEAM_WORKER_CLI = 'codex';
-          process.env.OMX_TEAM_READY_TIMEOUT_MS = '300';
-          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '50';
+          process.env.OMX_TEAM_READY_TIMEOUT_MS = '5000';
+          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '500';
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES = '1';
 
           receiptFailer = setInterval(() => {
@@ -2780,7 +2801,7 @@ case "$1" in
     ;;
 esac
 `,
-          binaries: [{ name: 'codex', content: '#!/usr/bin/env node\nprocess.stdin.resume();\n' }],
+          binaries: [{ name: 'codex', content: fakeCodexNodeScript('process.stdin.resume();\n') }],
         },
         async () => {
           delete process.env.TMUX;
@@ -2933,11 +2954,10 @@ esac
           binaries: [
             {
               name: 'codex',
-              content: `#!/usr/bin/env node
-process.stdin.resume();
+              content: fakeCodexNodeScript(`process.stdin.resume();
 setTimeout(() => process.exit(0), 30000);
 process.on('SIGTERM', () => process.exit(0));
-`,
+`),
             },
           ],
         },
@@ -3254,6 +3274,10 @@ sleep 5
     await writeFile(
       fakeCodexPath,
       `#!/usr/bin/env node
+if (process.argv[2] === '--version') {
+  console.log('codex 0.0.0-test');
+  process.exit(0);
+}
 process.exit(0);
 `,
       { mode: 0o755 },
@@ -3314,6 +3338,10 @@ process.exit(0);
     await writeFile(
       fakeCodexPath,
       `#!/usr/bin/env node
+if (process.argv[2] === '--version') {
+  console.log('codex 0.0.0-test');
+  process.exit(0);
+}
 const fs = require('fs');
 const path = require('path');
 const worker = String(process.env.OMX_TEAM_WORKER || 'unknown').replace(/[^a-zA-Z0-9_-]+/g, '__');
@@ -3448,6 +3476,10 @@ process.on('SIGTERM', () => process.exit(0));
     await writeFile(
       fakeCodexPath,
       `#!/usr/bin/env node
+if (process.argv[2] === '--version') {
+  console.log('codex 0.0.0-test');
+  process.exit(0);
+}
 const fs = require('fs');
 const path = require('path');
 const worker = String(process.env.OMX_TEAM_WORKER || 'unknown').replace(/[^a-zA-Z0-9_-]+/g, '__');
@@ -3544,6 +3576,10 @@ process.on('SIGTERM', () => process.exit(0));
     await writeFile(
       fakeCodexPath,
       `#!/usr/bin/env node
+if (process.argv[2] === '--version') {
+  console.log('codex 0.0.0-test');
+  process.exit(0);
+}
 process.stdin.resume();
 setTimeout(() => process.exit(0), 5000);
 process.on('SIGTERM', () => process.exit(0));
@@ -3736,6 +3772,10 @@ exit 0
     await writeFile(
       fakeCodexPath,
       `#!/usr/bin/env node
+if (process.argv[2] === '--version') {
+  console.log('codex 0.0.0-test');
+  process.exit(0);
+}
 const fs = require('fs');
 const path = require('path');
 const logDir = process.env.OMX_TEST_LOG_DIR;
@@ -3853,6 +3893,10 @@ process.on('SIGTERM', () => process.exit(0));
     await writeFile(
       fakeCodexPath,
       `#!/usr/bin/env node
+if (process.argv[2] === '--version') {
+  console.log('codex 0.0.0-test');
+  process.exit(0);
+}
 process.stdin.resume();
 setTimeout(() => process.exit(0), 5000);
 process.on('SIGTERM', () => process.exit(0));
@@ -3921,6 +3965,10 @@ process.on('SIGTERM', () => process.exit(0));
     await writeFile(
       fakeCodexPath,
       `#!/usr/bin/env node
+if (process.argv[2] === '--version') {
+  console.log('codex 0.0.0-test');
+  process.exit(0);
+}
 const fs = require('fs');
 const path = require('path');
 const logDir = process.env.OMX_TEST_LOG_DIR;
