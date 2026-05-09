@@ -7,9 +7,9 @@
  */
 
 import { readFile, writeFile, mkdir } from 'fs/promises';
-import { existsSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { createInterface } from 'readline/promises';
 import { getPackageRoot } from '../utils/package.js';
 import { omxUserInstallStampPath } from '../utils/paths.js';
@@ -35,14 +35,16 @@ interface PackageManifest {
 }
 
 export interface UpdateExecutionResult {
-  status: 'updated' | 'up-to-date' | 'declined' | 'failed' | 'unavailable';
+  status: 'updated' | 'scheduled' | 'up-to-date' | 'declined' | 'failed' | 'unavailable';
   currentVersion: string | null;
   latestVersion: string | null;
 }
 
 type RunGlobalUpdateResult = { ok: boolean; stderr: string };
 type RunSetupRefreshResult = { ok: boolean; stderr: string };
+type RunDeferredUpdateResult = { ok: boolean; stderr: string; logPath?: string };
 type SpawnSyncLike = typeof spawnSync;
+type SpawnLike = typeof spawn;
 
 const PACKAGE_NAME = 'oh-my-codex';
 const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12h
@@ -124,7 +126,7 @@ async function getCurrentVersion(): Promise<string | null> {
 function runGlobalUpdate(): RunGlobalUpdateResult {
   const result = spawnSync('npm', ['install', '-g', `${PACKAGE_NAME}@latest`], {
     encoding: 'utf-8',
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 120000,
     windowsHide: true,
   });
@@ -136,6 +138,100 @@ function runGlobalUpdate(): RunGlobalUpdateResult {
     return { ok: false, stderr: (result.stderr || '').trim() || `npm exited ${result.status}` };
   }
   return { ok: true, stderr: '' };
+}
+
+function formatUpdateLogPath(date = new Date()): string {
+  return `update-${date.toISOString().replace(/[:.]/g, '-')}.log`;
+}
+
+export function runDeferredGlobalUpdate(
+  cwd: string,
+  spawnProcess: SpawnLike = spawn,
+  platform: NodeJS.Platform = process.platform,
+  parentPid = process.pid,
+): RunDeferredUpdateResult {
+  const logPath = join(cwd, '.omx', 'logs', formatUpdateLogPath());
+
+  try {
+    mkdirSync(dirname(logPath), { recursive: true });
+
+    const env = {
+      ...process.env,
+      OMX_DEFERRED_UPDATE_LOG: logPath,
+      OMX_DEFERRED_UPDATE_PARENT_PID: String(parentPid),
+    };
+
+    const command = platform === 'win32' ? 'powershell.exe' : 'sh';
+    const args = platform === 'win32'
+      ? [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          [
+            '$ErrorActionPreference = "Continue"',
+            '$log = $env:OMX_DEFERRED_UPDATE_LOG',
+            '$parentPid = [int]$env:OMX_DEFERRED_UPDATE_PARENT_PID',
+            'while (Get-Process -Id $parentPid -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 1 }',
+            'npm install -g oh-my-codex@latest *>> $log',
+            'if ($LASTEXITCODE -eq 0) { omx setup *>> $log }',
+          ].join('; '),
+        ]
+      : [
+          '-c',
+          [
+            'while kill -0 "$OMX_DEFERRED_UPDATE_PARENT_PID" 2>/dev/null; do sleep 1; done',
+            'npm install -g oh-my-codex@latest >> "$OMX_DEFERRED_UPDATE_LOG" 2>&1',
+            'if [ "$?" -eq 0 ]; then omx setup >> "$OMX_DEFERRED_UPDATE_LOG" 2>&1; fi',
+          ].join('; '),
+        ];
+
+    const child = spawnProcess(command, args, {
+      cwd,
+      detached: true,
+      env,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    child.once('error', (error) => {
+      try {
+        appendFileSync(
+          logPath,
+          `[omx] Deferred update launcher failed: ${error.message}\n`,
+          'utf-8',
+        );
+      } catch {
+        // The startup path must remain non-fatal even when diagnostics cannot be persisted.
+      }
+    });
+    child.unref();
+    return { ok: true, stderr: '', logPath };
+  } catch (error) {
+    return {
+      ok: false,
+      stderr: error instanceof Error ? error.message : String(error),
+      logPath,
+    };
+  }
+}
+
+function formatDeferredUpdateFailure(stderr: string, logPath?: string): string {
+  return [
+    '[omx] Failed to schedule the deferred update.',
+    stderr.trim() ? `[omx] scheduler error: ${stderr.trim()}` : undefined,
+    logPath ? `[omx] Intended log: ${logPath}` : undefined,
+    '[omx] You can retry manually with: npm install -g oh-my-codex@latest && omx setup',
+  ].filter((line): line is string => typeof line === 'string').join('\n');
+}
+
+function summarizeUpdateFailure(stderr: string, logPath?: string): string {
+  const details = stderr.trim().split(/\r?\n/).filter(Boolean).slice(0, 3).join(' | ');
+  return [
+    '[omx] Update failed while running npm install -g oh-my-codex@latest.',
+    details ? `[omx] npm stderr: ${details}` : undefined,
+    logPath ? `[omx] Full log: ${logPath}` : undefined,
+    '[omx] You can retry manually with: npm install -g oh-my-codex@latest && omx setup',
+  ].filter((line): line is string => typeof line === 'string').join('\n');
 }
 
 async function askYesNo(question: string): Promise<boolean> {
@@ -155,6 +251,7 @@ interface UpdateDependencies {
   getCurrentVersion: typeof getCurrentVersion;
   readUserInstallStamp: typeof readUserInstallStamp;
   runGlobalUpdate: typeof runGlobalUpdate;
+  runDeferredGlobalUpdate: typeof runDeferredGlobalUpdate;
   runSetupRefresh: (cwd: string) => Promise<RunSetupRefreshResult>;
   writeUpdateState: typeof writeUpdateState;
 }
@@ -165,6 +262,7 @@ const defaultUpdateDependencies: UpdateDependencies = {
   getCurrentVersion,
   readUserInstallStamp,
   runGlobalUpdate,
+  runDeferredGlobalUpdate,
   runSetupRefresh,
   writeUpdateState,
 };
@@ -377,18 +475,33 @@ async function executeUpdate(
 
   if (prompt) {
     const approved = await dependencies.askYesNo(
-      `[omx] Update available: v${current} → v${latest}. Update now? [Y/n] `,
+      immediate
+        ? `[omx] Update available: v${current} → v${latest}. Update now? [Y/n] `
+        : `[omx] Update available: v${current} → v${latest}. Update after this session exits? [Y/n] `,
     );
     if (!approved) {
       return { status: 'declined', currentVersion: current, latestVersion: latest };
     }
   }
 
+  if (!immediate) {
+    const deferredResult = dependencies.runDeferredGlobalUpdate(cwd);
+    if (!deferredResult.ok) {
+      console.log(formatDeferredUpdateFailure(deferredResult.stderr, deferredResult.logPath));
+      return { status: 'failed', currentVersion: current, latestVersion: latest };
+    }
+    console.log('[omx] Update scheduled after this session exits.');
+    if (deferredResult.logPath) {
+      console.log(`[omx] Log: ${deferredResult.logPath}`);
+    }
+    return { status: 'scheduled', currentVersion: current, latestVersion: latest };
+  }
+
   console.log(`[omx] Running: npm install -g ${PACKAGE_NAME}@latest`);
   const result = dependencies.runGlobalUpdate();
 
   if (!result.ok) {
-    console.log('[omx] Update failed. Run manually: npm install -g oh-my-codex@latest');
+    console.log(summarizeUpdateFailure(result.stderr));
     return { status: 'failed', currentVersion: current, latestVersion: latest };
   }
 

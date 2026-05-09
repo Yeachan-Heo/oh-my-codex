@@ -9,6 +9,7 @@ import {
   maybeCheckAndPromptUpdate,
   readUserInstallStamp,
   resolveInstalledCliEntry,
+  runDeferredGlobalUpdate,
   runImmediateUpdate,
   shouldCheckForUpdates,
   spawnInstalledSetupRefresh,
@@ -166,13 +167,15 @@ describe('maybeCheckAndPromptUpdate', () => {
     }
   }
 
-  it('runs setup refresh after a successful auto-update', async () => {
+  it('schedules a deferred update after a successful startup prompt', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-'));
     const originalLog = console.log;
-    const prompts: string[] = [];
-    const setupRefreshCalls: string[] = [];
+    const logs: string[] = [];
+    let inlineUpdateCalls = 0;
+    let setupRefreshCalls = 0;
+    const deferredCwds: string[] = [];
     console.log = (...args: unknown[]) => {
-      prompts.push(args.map((arg) => String(arg)).join(' '));
+      logs.push(args.map((arg) => String(arg)).join(' '));
     };
 
     try {
@@ -180,26 +183,41 @@ describe('maybeCheckAndPromptUpdate', () => {
         await maybeCheckAndPromptUpdate(cwd, {
           getCurrentVersion: async () => '0.8.9',
           fetchLatestVersion: async () => '0.9.0',
-          askYesNo: async () => true,
-          runGlobalUpdate: () => ({ ok: true, stderr: '' }),
-          runSetupRefresh: async (refreshCwd) => {
-            setupRefreshCalls.push(refreshCwd);
+          askYesNo: async (question) => {
+            assert.match(question, /Update after this session exits/);
+            return true;
+          },
+          runGlobalUpdate: () => {
+            inlineUpdateCalls += 1;
+            return { ok: true, stderr: '' };
+          },
+          runDeferredGlobalUpdate: (deferredCwd) => {
+            deferredCwds.push(deferredCwd);
+            return { ok: true, stderr: '', logPath: join(deferredCwd, '.omx', 'logs', 'update-test.log') };
+          },
+          runSetupRefresh: async () => {
+            setupRefreshCalls += 1;
             return { ok: true, stderr: '' };
           },
         });
       });
 
-      assert.deepEqual(setupRefreshCalls, [cwd]);
-      assert.match(prompts.join('\n'), /Updated to v0\.9\.0/);
+      assert.equal(inlineUpdateCalls, 0);
+      assert.equal(setupRefreshCalls, 0);
+      assert.deepEqual(deferredCwds, [cwd]);
+      assert.match(logs.join('\n'), /Update scheduled after this session exits/);
+      assert.match(logs.join('\n'), /Log: .*update-test\.log/);
     } finally {
       console.log = originalLog;
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it('preserves local config semantics by avoiding force setup during auto-update', async () => {
+  it('keeps startup update deferred so local setup is not refreshed inline', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-'));
+    const originalLog = console.log;
     const receivedCwds: string[] = [];
+    console.log = () => undefined;
 
     try {
       await withInteractiveTty(async () => {
@@ -207,16 +225,19 @@ describe('maybeCheckAndPromptUpdate', () => {
           getCurrentVersion: async () => '0.13.0',
           fetchLatestVersion: async () => '0.13.1',
           askYesNo: async () => true,
-          runGlobalUpdate: () => ({ ok: true, stderr: '' }),
-          runSetupRefresh: async (refreshCwd) => {
-            receivedCwds.push(refreshCwd);
-            return { ok: true, stderr: '' };
+          runDeferredGlobalUpdate: (deferredCwd) => {
+            receivedCwds.push(deferredCwd);
+            return { ok: true, stderr: '', logPath: join(deferredCwd, '.omx', 'logs', 'update-test.log') };
+          },
+          runSetupRefresh: async () => {
+            throw new Error('startup setup refresh should be handled by the deferred updater');
           },
         });
       });
 
       assert.deepEqual(receivedCwds, [cwd]);
     } finally {
+      console.log = originalLog;
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -250,7 +271,7 @@ describe('maybeCheckAndPromptUpdate', () => {
     }
   });
 
-  it('does not refresh setup when the global update fails', async () => {
+  it('reports scheduler diagnostics when startup deferral cannot be launched', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-'));
     const originalLog = console.log;
     const logs: string[] = [];
@@ -266,7 +287,7 @@ describe('maybeCheckAndPromptUpdate', () => {
           getCurrentVersion: async () => '0.8.9',
           fetchLatestVersion: async () => '0.9.0',
           askYesNo: async () => true,
-          runGlobalUpdate: () => ({ ok: false, stderr: 'npm exited 1' }),
+          runDeferredGlobalUpdate: () => ({ ok: false, stderr: 'powershell not found', logPath: join(cwd, '.omx', 'logs', 'update-test.log') }),
           runSetupRefresh: async () => {
             setupRefreshCalls += 1;
             return { ok: true, stderr: '' };
@@ -275,7 +296,9 @@ describe('maybeCheckAndPromptUpdate', () => {
       });
 
       assert.equal(setupRefreshCalls, 0);
-      assert.match(logs.join('\n'), /Update failed\. Run manually: npm install -g oh-my-codex@latest/);
+      assert.match(logs.join('\n'), /Failed to schedule the deferred update/);
+      assert.match(logs.join('\n'), /powershell not found/);
+      assert.match(logs.join('\n'), /update-test\.log/);
     } finally {
       console.log = originalLog;
       await rm(cwd, { recursive: true, force: true });
@@ -593,6 +616,85 @@ describe('runImmediateUpdate', () => {
       } else {
         delete process.env.CODEX_HOME;
       }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('runImmediateUpdate failure diagnostics', () => {
+  it('reports npm stderr when explicit update fails', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-update-now-'));
+    const originalLog = console.log;
+    const logs: string[] = [];
+    let refreshCalls = 0;
+
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '));
+    };
+
+    try {
+      const result = await runImmediateUpdate(cwd, {
+        getCurrentVersion: async () => '0.14.0',
+        fetchLatestVersion: async () => '0.14.1',
+        runGlobalUpdate: () => ({ ok: false, stderr: 'EPERM: file is locked\nmore detail' }),
+        runSetupRefresh: async () => {
+          refreshCalls += 1;
+          return { ok: true, stderr: '' };
+        },
+      });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(refreshCalls, 0);
+      assert.match(logs.join('\n'), /Update failed while running npm install -g oh-my-codex@latest/);
+      assert.match(logs.join('\n'), /npm stderr: EPERM: file is locked/);
+      assert.match(logs.join('\n'), /npm install -g oh-my-codex@latest && omx setup/);
+    } finally {
+      console.log = originalLog;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe('runDeferredGlobalUpdate', () => {
+  it('launches a detached Windows PowerShell updater that waits for the parent and runs setup after npm', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-deferred-update-'));
+    const calls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
+    const listeners: string[] = [];
+
+    try {
+      const result = runDeferredGlobalUpdate(
+        cwd,
+        ((command, args, options) => {
+          calls.push({ command, args: args as string[], options: (options ?? {}) as Record<string, unknown> });
+          return {
+            once(event: string) {
+              listeners.push(event);
+              return this;
+            },
+            unref() {},
+          } as unknown as ReturnType<typeof import('node:child_process').spawn>;
+        }) as typeof import('node:child_process').spawn,
+        'win32',
+        12345,
+      );
+
+      assert.equal(result.ok, true);
+      assert.match(result.logPath ?? '', /\.omx[\\/]logs[\\/]update-/);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].command, 'powershell.exe');
+      assert.deepEqual(calls[0].args.slice(0, 4), ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command']);
+      assert.deepEqual(listeners, ['error']);
+      assert.equal(calls[0].options.detached, true);
+      assert.equal(calls[0].options.stdio, 'ignore');
+      assert.equal(calls[0].options.windowsHide, true);
+      assert.equal(calls[0].options.cwd, cwd);
+      assert.equal((calls[0].options.env as NodeJS.ProcessEnv | undefined)?.OMX_DEFERRED_UPDATE_PARENT_PID, '12345');
+      assert.equal((calls[0].options.env as NodeJS.ProcessEnv | undefined)?.OMX_DEFERRED_UPDATE_LOG, result.logPath);
+      assert.match(calls[0].args[4], /Get-Process -Id \$parentPid/);
+      assert.match(calls[0].args[4], /npm install -g oh-my-codex@latest/);
+      assert.match(calls[0].args[4], /omx setup/);
+    } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
