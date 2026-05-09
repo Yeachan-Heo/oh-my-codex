@@ -137,10 +137,8 @@ Plans are saved to `.omx/plans/`. Drafts go to `.omx/drafts/`.
 </Steps>
 
 <Tool_Usage>
-- Before first MCP tool use, call `ToolSearch("mcp")` to discover deferred MCP tools
-- Use the surface-appropriate structured question path for preference questions (scope, priority, timeline, risk tolerance): attached-tmux OMX runtime uses `omx question`; outside tmux uses native structured input when available. Use plain text only as a last fallback for unsupported surfaces or highly specific free-form values.
-- `omx question` success JSON uses `answers[]` as the primary contract. For single-question planning prompts, read `answers[0].answer`; treat top-level `answer` as legacy compatibility fallback only.
-- Batch `questions[]` may be used for non-interview grouped preference or approval prompts when one submitted form is clearer than multiple interruptions; interview mode still asks one question per round.
+- Use `AskUserQuestion` for preference questions (scope, priority, timeline, risk tolerance) -- provides clickable UI
+- Use plain text for questions needing specific values (port numbers, names, follow-up clarifications)
 - Use the `explore` agent (LOW tier, bounded quick pass) to gather codebase facts before asking the user
 - Use `ask_codex` with `agent_role: "planner"` for planning validation on large-scope plans
 - Use `ask_codex` with `agent_role: "analyst"` for requirements analysis
@@ -152,7 +150,6 @@ Plans are saved to `.omx/plans/`. Drafts go to `.omx/drafts/`.
 - In consensus mode with `--interactive`, on user approval **MUST** invoke the selected follow-up lane from step 9 (`$ralph`, `$team`, `$ultragoal`, `$autoresearch-goal`, or `$performance-goal`) -- never implement directly in the planning agent
 - In consensus mode, execution follow-up handoff **MUST** include an explicit available-agent-types roster plus concrete staffing / role-allocation guidance grounded in that roster, suggested reasoning levels by lane, product-facing goal-mode follow-up suggestions (`$ultragoal` by default, `$autoresearch-goal` for research projects, `$performance-goal` for optimization/performance projects), explicit `omx team` / `$team` launch hints, and a team verification path
 </Tool_Usage>
-
 
 ## Scenario Examples
 

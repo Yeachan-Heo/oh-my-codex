@@ -487,5 +487,3 @@ deep-interview -> ralplan -> autopilot
 - Stage 2 (ralplan): feasibility + architecture gate
 - Stage 3 (autopilot): execution + QA + validation gate
 </Advanced>
-
-Task: {{ARGUMENTS}}

@@ -144,5 +144,3 @@ A good analyze response is:
 - free of normative drift or judgmental filler
 - explicit about the evidence-vs-inference distinction
 - concise for simple cases, broader only when the question truly needs it
-
-Task: {{ARGUMENTS}}

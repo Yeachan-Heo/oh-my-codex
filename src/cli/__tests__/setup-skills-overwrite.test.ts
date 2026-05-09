@@ -296,7 +296,8 @@ describe('omx setup skills overwrite behavior', () => {
       await setup({ scope: 'project', force: true, verbose: true });
 
       const output = logs.join('\n');
-      assert.match(output, /skipped swarm\/ \(status: deprecated\)/);
+      assert.match(output, /skipped review\/ \(status: deprecated\)/);
+      assert.match(output, /skipped ralph-init\/ \(status: deprecated\)/);
       assert.match(output, /removed stale skill swarm\/ \(status: deprecated\)/);
       assert.match(output, /skills: updated=/);
     } finally {

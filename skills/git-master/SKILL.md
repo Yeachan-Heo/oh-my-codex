@@ -15,8 +15,8 @@ Routes to the git-master agent for git operations.
 
 ## Routing
 
-```
-delegate(role="git-master", tier="STANDARD", task="{{ARGUMENTS}}")
+```text
+Use /prompts:git-master with the user task.
 ```
 
 ## Capabilities
@@ -25,5 +25,3 @@ delegate(role="git-master", tier="STANDARD", task="{{ARGUMENTS}}")
 - Branch management
 - History cleanup
 - Style detection from repo history
-
-Task: {{ARGUMENTS}}
