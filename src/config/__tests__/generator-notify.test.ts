@@ -63,7 +63,7 @@ describe('config generator', () => {
       const toml = await readFile(configPath, 'utf-8');
 
       assert.match(toml, /^notify = \["node", ".*notify-hook\.js"\]$/m);
-      assert.match(toml, /^codex_hooks = true$/m);
+      assert.match(toml, /^hooks = true$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -183,7 +183,7 @@ describe('config generator', () => {
 
       // Top-level keys present and before [features]
       assert.match(rerun, /^notify = \["node", ".*notify-hook\.js"\]$/m);
-      assert.match(rerun, /^codex_hooks = true$/m);
+      assert.match(rerun, /^hooks = true$/m);
       assert.match(rerun, /^model_reasoning_effort = "medium"$/m);
       const notifyIdx = rerun.indexOf('notify =');
       const featuresIdx = rerun.indexOf('[features]');
@@ -376,7 +376,7 @@ describe('config generator', () => {
       assert.match(merged, /^custom_user_flag = false$/m);
       assert.match(merged, /^multi_agent = true$/m);
       assert.match(merged, /^child_agents_md = true$/m);
-      assert.match(merged, /^codex_hooks = true$/m);
+      assert.match(merged, /^hooks = true$/m);
       assert.match(merged, /^goals = true$/m);
       assert.doesNotMatch(merged, /^goal\s*=/m);
       assert.match(merged, /^\[user.settings\]$/m);
@@ -386,7 +386,7 @@ describe('config generator', () => {
     }
   });
 
-  it('preserves the supported codex_hooks flag and repairs hooks aliases', async () => {
+  it('preserves existing hooks flag without adding codex_hooks', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
     try {
       const configPath = join(wd, 'config.toml');
@@ -401,15 +401,15 @@ describe('config generator', () => {
       await mergeConfig(configPath, wd);
       const merged = await readFile(configPath, 'utf-8');
 
-      assert.match(merged, /^codex_hooks = true$/m);
-      assert.doesNotMatch(merged, /^hooks\s*=/m);
+      assert.equal((merged.match(/^hooks = true$/gm) ?? []).length, 1);
+      assert.doesNotMatch(merged, /^codex_hooks\s*=/m);
       assert.match(merged, /^custom_user_flag = false$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('keeps existing codex_hooks flag idempotent without adding hooks alias', async () => {
+  it('migrates legacy codex_hooks flag to hooks and removes codex_hooks', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
     try {
       const configPath = join(wd, 'config.toml');
@@ -424,28 +424,28 @@ describe('config generator', () => {
       await mergeConfig(configPath, wd);
       const merged = await readFile(configPath, 'utf-8');
 
-      assert.equal((merged.match(/^codex_hooks = true$/gm) ?? []).length, 1);
-      assert.doesNotMatch(merged, /^hooks\s*=/m);
+      assert.equal((merged.match(/^hooks = true$/gm) ?? []).length, 1);
+      assert.doesNotMatch(merged, /^codex_hooks\s*=/m);
       assert.match(merged, /^custom_user_flag = false$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('normalizes plugin-mode runtime flags from hooks alias to codex_hooks', () => {
+  it('normalizes plugin-mode runtime flags from codex_hooks legacy flag to hooks', () => {
     const original = [
       '[features]',
       'custom_user_flag = false',
-      'hooks = true',
+      'codex_hooks = true',
       'goal = true',
       '',
     ].join('\n');
 
     const merged = upsertPluginModeRuntimeFeatureFlags(original);
 
-    assert.match(merged, /^codex_hooks = true$/m);
+    assert.match(merged, /^hooks = true$/m);
     assert.match(merged, /^goals = true$/m);
-    assert.doesNotMatch(merged, /^hooks\s*=/m);
+    assert.doesNotMatch(merged, /^codex_hooks\s*=/m);
     assert.doesNotMatch(merged, /^goal\s*=/m);
     assert.match(merged, /^custom_user_flag = false$/m);
   });

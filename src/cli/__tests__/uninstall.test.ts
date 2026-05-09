@@ -49,7 +49,7 @@ function buildOmxConfig(): string {
     '[features]',
     'multi_agent = true',
     'child_agents_md = true',
-    'codex_hooks = true',
+    'hooks = true',
     'goals = true',
     '',
     '# ============================================================',
@@ -123,7 +123,7 @@ function buildConfigWithSeededModelContext(): string {
     '[features]',
     'multi_agent = true',
     'child_agents_md = true',
-    'codex_hooks = true',
+    'hooks = true',
     'goals = true',
     '',
     '# ============================================================',
@@ -157,7 +157,7 @@ function buildConfigWithEditedSeededModelContext(): string {
     '[features]',
     'multi_agent = true',
     'child_agents_md = true',
-    'codex_hooks = true',
+    'hooks = true',
     'goals = true',
     '',
     '# ============================================================',
@@ -189,7 +189,7 @@ function buildMixedConfig(): string {
     '[features]',
     'multi_agent = true',
     'child_agents_md = true',
-    'codex_hooks = true',
+    'hooks = true',
     'goals = true',
     'web_search = true',
     '',
@@ -377,8 +377,7 @@ describe('omx uninstall', () => {
       assert.doesNotMatch(hooks, /codex-native-hook\.js/);
 
       const config = await readFile(join(codexDir, 'config.toml'), 'utf-8');
-      assert.match(config, /^codex_hooks = true$/m);
-      assert.doesNotMatch(config, /^hooks = true$/m);
+      assert.match(config, /^hooks = true$/m);
       assert.doesNotMatch(config, /^multi_agent\s*=/m);
       assert.doesNotMatch(config, /^child_agents_md\s*=/m);
       assert.doesNotMatch(config, /^goals\s*=/m);
@@ -395,7 +394,7 @@ describe('omx uninstall', () => {
       await mkdir(codexDir, { recursive: true });
       await writeFile(
         join(codexDir, 'config.toml'),
-        `${buildOmxConfig().replace('codex_hooks = true\n', '')}\n[user.settings]\nhooks = true\n`,
+        `${buildOmxConfig().replace('hooks = true\n', '')}\n[user.settings]\nhooks = true\n`,
       );
       await writeFile(
         join(codexDir, 'hooks.json'),
@@ -420,7 +419,7 @@ describe('omx uninstall', () => {
       const config = await readFile(join(codexDir, 'config.toml'), 'utf-8');
       const featuresBlock = config.match(/^\[features\]\n(?:(?!^\[).*\n?)*/m)?.[0] ?? '';
       assert.doesNotMatch(featuresBlock, /^hooks = true$/m);
-      assert.doesNotMatch(featuresBlock, /^codex_hooks = true$/m);
+      assert.doesNotMatch(featuresBlock, /^hooks = true$/m);
       assert.match(config, /^\[user\.settings\]\nhooks = true$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -840,8 +839,8 @@ describe('stripOmxFeatureFlags', () => {
       '[features]',
       'multi_agent = true',
       'child_agents_md = true',
-      'codex_hooks = true',
       'hooks = true',
+      'codex_hooks = true',
       'goals = true',
       'goal = true',
       'web_search = true',

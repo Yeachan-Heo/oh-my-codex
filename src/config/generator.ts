@@ -475,7 +475,7 @@ function upsertFeatureFlags(config: string): string {
       "[features]",
       "multi_agent = true",
       "child_agents_md = true",
-      "codex_hooks = true",
+      "hooks = true",
       "goals = true",
       "",
     ].join("\n");
@@ -536,17 +536,24 @@ function upsertFeatureFlags(config: string): string {
   }
 
   if (hooksIdx >= 0) {
-    lines[hooksIdx] = "codex_hooks = true";
-    if (legacyCodexHooksIdx >= 0) {
-      lines.splice(legacyCodexHooksIdx, 1);
-      sectionEnd -= 1;
-      if (goalsIdx > legacyCodexHooksIdx) goalsIdx -= 1;
-    }
+    lines[hooksIdx] = "hooks = true";
   } else if (legacyCodexHooksIdx >= 0) {
-    lines[legacyCodexHooksIdx] = "codex_hooks = true";
+    lines[legacyCodexHooksIdx] = "hooks = true";
+    hooksIdx = legacyCodexHooksIdx;
+    legacyCodexHooksIdx = -1;
   } else {
-    lines.splice(sectionEnd, 0, "codex_hooks = true");
+    lines.splice(sectionEnd, 0, "hooks = true");
+    hooksIdx = sectionEnd;
     sectionEnd += 1;
+  }
+
+  for (let i = sectionEnd - 1; i > featuresStart; i--) {
+    if (i !== hooksIdx && /^\s*codex_hooks\s*=/.test(lines[i])) {
+      lines.splice(i, 1);
+      sectionEnd -= 1;
+      if (hooksIdx > i) hooksIdx -= 1;
+      if (goalsIdx > i) goalsIdx -= 1;
+    }
   }
 
   if (goalsIdx >= 0) {
@@ -598,7 +605,7 @@ export function upsertPluginModeRuntimeFeatureFlags(config: string): string {
     const base = config.trimEnd();
     const featureBlock = [
       "[features]",
-      "codex_hooks = true",
+      "hooks = true",
       "goals = true",
       "",
     ].join("\n");
@@ -639,17 +646,24 @@ export function upsertPluginModeRuntimeFeatureFlags(config: string): string {
   }
 
   if (hooksIdx >= 0) {
-    lines[hooksIdx] = "codex_hooks = true";
-    if (legacyCodexHooksIdx >= 0) {
-      lines.splice(legacyCodexHooksIdx, 1);
-      sectionEnd--;
-      if (goalsIdx > legacyCodexHooksIdx) goalsIdx--;
-    }
+    lines[hooksIdx] = "hooks = true";
   } else if (legacyCodexHooksIdx >= 0) {
-    lines[legacyCodexHooksIdx] = "codex_hooks = true";
+    lines[legacyCodexHooksIdx] = "hooks = true";
+    hooksIdx = legacyCodexHooksIdx;
+    legacyCodexHooksIdx = -1;
   } else {
-    lines.splice(sectionEnd, 0, "codex_hooks = true");
+    lines.splice(sectionEnd, 0, "hooks = true");
+    hooksIdx = sectionEnd;
     sectionEnd++;
+  }
+
+  for (let i = sectionEnd - 1; i > featuresStart; i--) {
+    if (i !== hooksIdx && /^\s*codex_hooks\s*=/.test(lines[i])) {
+      lines.splice(i, 1);
+      sectionEnd--;
+      if (hooksIdx > i) hooksIdx--;
+      if (goalsIdx > i) goalsIdx--;
+    }
   }
 
   if (goalsIdx >= 0) {
@@ -960,7 +974,7 @@ export function upsertCodexHooksFeatureFlag(config: string): string {
 
   if (featuresStart < 0) {
     const base = config.trimEnd();
-    const featureBlock = ["[features]", "codex_hooks = true", ""].join("\n");
+    const featureBlock = ["[features]", "hooks = true", ""].join("\n");
     return base.length === 0 ? featureBlock : `${base}\n${featureBlock}`;
   }
 
@@ -972,14 +986,33 @@ export function upsertCodexHooksFeatureFlag(config: string): string {
     }
   }
 
+  let hooksIdx = -1;
   for (let i = featuresStart + 1; i < sectionEnd; i++) {
-    if (/^\s*(?:hooks|codex_hooks)\s*=/.test(lines[i])) {
-      lines[i] = "codex_hooks = true";
-      return lines.join("\n");
+    if (/^\s*hooks\s*=/.test(lines[i])) {
+      hooksIdx = i;
+      lines[i] = "hooks = true";
+      break;
+    }
+    if (hooksIdx < 0 && /^\s*codex_hooks\s*=/.test(lines[i])) {
+      hooksIdx = i;
+      lines[i] = "hooks = true";
     }
   }
 
-  lines.splice(sectionEnd, 0, "codex_hooks = true");
+  if (hooksIdx < 0) {
+    lines.splice(sectionEnd, 0, "hooks = true");
+    hooksIdx = sectionEnd;
+    sectionEnd += 1;
+  }
+
+  for (let i = sectionEnd - 1; i > featuresStart; i--) {
+    if (i !== hooksIdx && /^\s*codex_hooks\s*=/.test(lines[i])) {
+      lines.splice(i, 1);
+      sectionEnd -= 1;
+      if (hooksIdx > i) hooksIdx -= 1;
+    }
+  }
+
   return lines.join("\n");
 }
 
