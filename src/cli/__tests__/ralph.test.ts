@@ -127,6 +127,38 @@ describe('readMatchedApprovedRalphExecutionHint', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it('reuses the older approved Ralph hint when the latest same-task handoff is missing its baseline', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-lineage-fallback-'));
+    const approvedTask = 'Repair approved Ralph lineage handoff';
+    try {
+      await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
+      await writeFile(
+        join(cwd, '.omx', 'plans', 'prd-alpha-lineage.md'),
+        `# PRD\n\nLaunch via omx ralph ${JSON.stringify(approvedTask)}\n`,
+      );
+      await writeFile(join(cwd, '.omx', 'plans', 'test-spec-alpha-lineage.md'), '# Test Spec\n');
+      await writeFile(
+        join(cwd, '.omx', 'plans', 'prd-zeta-lineage.md'),
+        `# PRD\n\nLaunch via omx ralph ${JSON.stringify(approvedTask)}\n`,
+      );
+
+      const hint = readMatchedApprovedRalphExecutionHint(cwd, 'ralph-cli-launch');
+      assert.ok(hint);
+      assert.equal(hint?.sourcePath, join(cwd, '.omx', 'plans', 'prd-alpha-lineage.md'));
+      assert.equal(hint?.contextPackStatus, 'plan-only');
+
+      const instructions = buildRalphAppendInstructions(approvedTask, {
+        changedFilesPath: '.omx/ralph/changed-files.txt',
+        noDeslop: false,
+        approvedHint: hint,
+      });
+      assert.match(instructions, /Approved planning handoff context/i);
+      assert.doesNotMatch(instructions, /Missing-baseline fallback/i);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('isRalphPrdMode', () => {

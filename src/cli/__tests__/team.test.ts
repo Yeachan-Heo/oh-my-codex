@@ -318,6 +318,135 @@ describe('parseTeamStartArgs', () => {
     }
   });
 
+  it('reuses the older same-signature approved team hint when the latest matching handoff is missing its baseline', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-followup-lineage-missing-baseline-'));
+    const previousCwd = process.cwd();
+    const approvedTask = 'Execute approved Team lineage follow-up';
+    try {
+      process.chdir(wd);
+      const plansDir = join(wd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      await writeFile(
+        join(plansDir, 'prd-alpha-team-lineage.md'),
+        `# Approved plan\n\nLaunch via omx team 3:executor ${JSON.stringify(approvedTask)}\n`,
+      );
+      await writeFile(join(plansDir, 'test-spec-alpha-team-lineage.md'), '# Test spec\n');
+      await writeFile(
+        join(plansDir, 'prd-zeta-team-lineage.md'),
+        `# Approved plan\n\nLaunch via omx team 3:executor ${JSON.stringify(approvedTask)}\n`,
+      );
+
+      const result = parseTeamStartArgs(['team']);
+      assert.equal(result.parsed.task, approvedTask);
+      assert.equal(result.parsed.workerCount, 3);
+      assert.equal(result.parsed.agentType, 'executor');
+      assert.equal(result.parsed.allowRepoAwareDagHandoff, true);
+      assert.equal(result.parsed.approvedExecution, undefined);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('reuses the older ready Team handoff when the latest same-signature handoff is invalid', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-followup-lineage-invalid-'));
+    const previousCwd = process.cwd();
+    const approvedTask = 'Execute approved Team invalid lineage follow-up';
+    const approvedCommand = `omx team 3:executor ${JSON.stringify(approvedTask)}`;
+    try {
+      process.chdir(wd);
+      const plansDir = join(wd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      const alphaPrdPath = join(plansDir, 'prd-alpha-team-lineage-ready.md');
+      const alphaTestSpecPath = join(plansDir, 'test-spec-alpha-team-lineage-ready.md');
+      await writeFile(
+        alphaPrdPath,
+        [
+          '# Approved plan',
+          '',
+          buildContextPackOutcome(canonicalContextPackRelativePath('alpha-team-lineage-ready')),
+          '',
+          `Launch via ${approvedCommand}`,
+        ].join('\n'),
+      );
+      await writeFile(alphaTestSpecPath, '# Test spec\n');
+      await writeReadyContextPack(wd, 'alpha-team-lineage-ready', alphaPrdPath, alphaTestSpecPath);
+      await writeFile(
+        join(plansDir, 'prd-zeta-team-lineage-invalid.md'),
+        [
+          '# Approved plan',
+          '',
+          buildContextPackOutcome(canonicalContextPackRelativePath('zeta-team-lineage-invalid')),
+          '',
+          `Launch via ${approvedCommand}`,
+        ].join('\n'),
+      );
+      await writeFile(join(plansDir, 'test-spec-zeta-team-lineage-invalid.md'), '# Test spec\n');
+
+      const result = parseTeamStartArgs(['team']);
+      assert.equal(result.parsed.task, approvedTask);
+      assert.equal(result.parsed.workerCount, 3);
+      assert.equal(result.parsed.agentType, 'executor');
+      assert.equal(result.parsed.allowRepoAwareDagHandoff, true);
+      assert.equal(result.parsed.approvedExecution?.command, approvedCommand);
+      assert.equal(sameFilePath(result.parsed.approvedExecution?.prd_path ?? '', alphaPrdPath), true);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('reuses the older ready Team handoff when the latest same-signature handoff is incomplete', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-followup-lineage-incomplete-'));
+    const previousCwd = process.cwd();
+    const approvedTask = 'Execute approved Team incomplete lineage follow-up';
+    const approvedCommand = `omx team 3:executor ${JSON.stringify(approvedTask)}`;
+    try {
+      process.chdir(wd);
+      const plansDir = join(wd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      const alphaPrdPath = join(plansDir, 'prd-alpha-team-lineage-complete.md');
+      const alphaTestSpecPath = join(plansDir, 'test-spec-alpha-team-lineage-complete.md');
+      await writeFile(
+        alphaPrdPath,
+        [
+          '# Approved plan',
+          '',
+          buildContextPackOutcome(canonicalContextPackRelativePath('alpha-team-lineage-complete')),
+          '',
+          `Launch via ${approvedCommand}`,
+        ].join('\n'),
+      );
+      await writeFile(alphaTestSpecPath, '# Test spec\n');
+      await writeReadyContextPack(wd, 'alpha-team-lineage-complete', alphaPrdPath, alphaTestSpecPath);
+      const zetaPrdPath = join(plansDir, 'prd-zeta-team-lineage-incomplete.md');
+      const zetaTestSpecPath = join(plansDir, 'test-spec-zeta-team-lineage-incomplete.md');
+      await writeFile(
+        zetaPrdPath,
+        [
+          '# Approved plan',
+          '',
+          buildContextPackOutcome(canonicalContextPackRelativePath('zeta-team-lineage-incomplete')),
+          '',
+          `Launch via ${approvedCommand}`,
+        ].join('\n'),
+      );
+      await writeFile(zetaTestSpecPath, '# Test spec\n');
+      await writeContextPack(wd, 'zeta-team-lineage-incomplete', zetaPrdPath, zetaTestSpecPath, ['scope']);
+
+      const result = parseTeamStartArgs(['team']);
+      assert.equal(result.parsed.task, approvedTask);
+      assert.equal(result.parsed.workerCount, 3);
+      assert.equal(result.parsed.agentType, 'executor');
+      assert.equal(result.parsed.allowRepoAwareDagHandoff, true);
+      assert.equal(result.parsed.approvedExecution?.command, approvedCommand);
+      assert.equal(sameFilePath(result.parsed.approvedExecution?.prd_path ?? '', alphaPrdPath), true);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('prefers the persisted approved binding over a newer latest approved hint for a short follow-up', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-followup-bound-'));
     const previousCwd = process.cwd();
