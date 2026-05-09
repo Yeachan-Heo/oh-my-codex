@@ -1203,6 +1203,61 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
+	it("dedupes plugin-mode hook trust state when switching user setup back to legacy", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const configPath = join(codexHomeDir, "config.toml");
+
+					await setup({ scope: "user", installMode: "plugin", force: true });
+					const pluginConfig = await readFile(configPath, "utf-8");
+					const staleUnfencedPluginConfig = pluginConfig
+						.split(/\r?\n/)
+						.filter(
+							(line) =>
+								line.trim() !== "# OMX-owned Codex hook trust state" &&
+								line.trim() !==
+									"# Trusts only setup-managed codex-native-hook.js wrappers." &&
+								line.trim() !== "# End OMX-owned Codex hook trust state",
+						)
+						.join("\n");
+					await writeFile(configPath, staleUnfencedPluginConfig);
+					assert.doesNotThrow(() => parseToml(staleUnfencedPluginConfig));
+
+					await setup({ scope: "user", installMode: "legacy", force: true });
+
+					const legacyConfig = await readFile(configPath, "utf-8");
+					assert.doesNotThrow(() => parseToml(legacyConfig));
+					assert.equal(
+						legacyConfig
+							.split(/\r?\n/)
+							.filter(
+								(line) =>
+									line.trim() ===
+									`[hooks.state."${join(codexHomeDir, "hooks.json")}:post_compact:0:0"]`,
+							).length,
+						1,
+						"legacy setup should replace stale plugin-mode hook trust state instead of duplicating it",
+					);
+					assert.match(
+						legacyConfig,
+						/# OMX-owned Codex hook trust state[\s\S]*# End OMX-owned Codex hook trust state/,
+					);
+					const persisted = JSON.parse(
+						await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
+					) as { scope: string; installMode?: string };
+					assert.deepEqual(persisted, {
+						scope: "user",
+						installMode: "legacy",
+					});
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("installs project-scoped native hooks when plugin mode is explicitly requested", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {

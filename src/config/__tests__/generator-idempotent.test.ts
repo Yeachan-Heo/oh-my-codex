@@ -1098,6 +1098,46 @@ describe("config generator idempotency (#384)", () => {
     assertSingleManagedHookTrustState(repaired);
   });
 
+  it("dedupes stale unfenced managed hook trust-state tables during legacy setup refresh", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const stalePluginModeConfig = [
+      "[features]",
+      "codex_hooks = true",
+      "goals = true",
+      "",
+      '[hooks.state."custom:/hooks.json:stop:0:0"]',
+      'trusted_hash = "sha256:user"',
+      "enabled = false",
+      "",
+      // Regression fixture for #2225: plugin-mode state could be left outside
+      // the managed fence, then legacy setup appended the same table again.
+      '[hooks.state."/tmp/codex/hooks.json:post_compact:0:0"]',
+      'trusted_hash = "sha256:stale-plugin-mode"',
+      "",
+    ].join("\n");
+
+    const refreshed = buildMergedConfig(stalePluginModeConfig, "/tmp/omx", {
+      codexHooksFile: hooksPath,
+    });
+
+    assert.doesNotThrow(() => TOML.parse(refreshed));
+    assert.equal(
+      count(
+        refreshed,
+        /^\[hooks\.state\."\/tmp\/codex\/hooks\.json:post_compact:0:0"\]$/gm,
+      ),
+      1,
+      "legacy refresh should replace the stale plugin-mode managed hook state",
+    );
+    assert.match(
+      refreshed,
+      /^\[hooks\.state\."custom:\/hooks\.json:stop:0:0"\]$/m,
+      "unrelated user hook state should be preserved",
+    );
+    assert.match(refreshed, /^enabled = false$/m);
+    assertSingleManagedHookTrustState(refreshed);
+  });
+
   it("syncs shared MCP registry entries in a dedicated managed block", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {

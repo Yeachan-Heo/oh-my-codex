@@ -625,13 +625,55 @@ export function stripManagedCodexHookTrustState(config: string): string {
   return kept.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
 }
 
+function managedCodexHookTrustStateHeaders(
+  hookTrustToml: string,
+): ReadonlySet<string> {
+  const headers = new Set<string>();
+  for (const line of hookTrustToml.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (/^\[hooks\.state\./.test(trimmed)) {
+      headers.add(trimmed);
+    }
+  }
+  return headers;
+}
+
+function stripUnfencedManagedCodexHookTrustState(
+  config: string,
+  hookTrustToml: string,
+): string {
+  const managedHeaders = managedCodexHookTrustStateHeaders(hookTrustToml);
+  if (managedHeaders.size === 0) return config;
+
+  const lines = config.split(/\r?\n/);
+  const kept: string[] = [];
+
+  for (let i = 0; i < lines.length;) {
+    if (!managedHeaders.has(lines[i].trim())) {
+      kept.push(lines[i]);
+      i += 1;
+      continue;
+    }
+
+    i += 1;
+    while (i < lines.length && !TOML_TABLE_HEADER_PATTERN.test(lines[i])) {
+      i += 1;
+    }
+  }
+
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
+}
+
 export function upsertManagedCodexHookTrustState(
   config: string,
   pkgRoot: string,
   codexHooksFile: string | undefined,
 ): string {
-  const stripped = stripManagedCodexHookTrustState(config);
   const hookTrustToml = buildManagedCodexHookTrustToml(codexHooksFile, pkgRoot);
+  const stripped = stripUnfencedManagedCodexHookTrustState(
+    stripManagedCodexHookTrustState(config),
+    hookTrustToml,
+  );
   if (!hookTrustToml) return `${stripped}\n`;
   return [
     stripped,
@@ -1700,6 +1742,10 @@ export function buildMergedConfig(
   }
   existing = stripOrphanedManagedNotify(existing, pkgRoot);
   existing = stripManagedCodexHookTrustState(existing);
+  existing = stripUnfencedManagedCodexHookTrustState(
+    existing,
+    buildManagedCodexHookTrustToml(options.codexHooksFile, pkgRoot),
+  );
   if (options.modelOverride) {
     existing = stripRootLevelKeys(existing, ["model"]);
   }
