@@ -318,6 +318,35 @@ describe('parseTeamStartArgs', () => {
     }
   });
 
+  it('reuses the older same-signature approved team hint when the latest matching handoff is missing its baseline', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-followup-lineage-'));
+    const previousCwd = process.cwd();
+    const approvedTask = 'Execute approved Team lineage follow-up';
+    try {
+      process.chdir(wd);
+      const plansDir = join(wd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      await writeFile(
+        join(plansDir, 'prd-alpha-team-lineage.md'),
+        `# Approved plan\n\nLaunch via omx team 3:executor ${JSON.stringify(approvedTask)}\n`,
+      );
+      await writeFile(join(plansDir, 'test-spec-alpha-team-lineage.md'), '# Test spec\n');
+      await writeFile(
+        join(plansDir, 'prd-zeta-team-lineage.md'),
+        `# Approved plan\n\nLaunch via omx team 3:executor ${JSON.stringify(approvedTask)}\n`,
+      );
+
+      const result = parseTeamStartArgs(['team']);
+      assert.equal(result.parsed.task, approvedTask);
+      assert.equal(result.parsed.workerCount, 3);
+      assert.equal(result.parsed.agentType, 'executor');
+      assert.equal(result.parsed.approvedExecution, undefined);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('prefers the persisted approved binding over a newer latest approved hint for a short follow-up', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-followup-bound-'));
     const previousCwd = process.cwd();

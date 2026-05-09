@@ -666,6 +666,31 @@ describe('planning artifacts', () => {
     assert.equal(hint, null);
   });
 
+  it('reuses the older bare Ralph handoff when the latest same-task handoff is missing its baseline', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const sharedTask = 'Execute shared Ralph lineage handoff';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-alpha-ralph-lineage.md'),
+      `# Alpha\n\nLaunch via omx ralph ${JSON.stringify(sharedTask)}\n`,
+    );
+    await writeFile(join(plansDir, 'test-spec-alpha-ralph-lineage.md'), '# Alpha Test Spec\n');
+    await writeFile(
+      join(plansDir, 'prd-zeta-ralph-lineage.md'),
+      `# Zeta\n\nLaunch via omx ralph ${JSON.stringify(sharedTask)}\n`,
+    );
+
+    const outcome = readApprovedExecutionLaunchHintOutcome(tempDir, 'ralph');
+
+    assert.equal(outcome.status, 'resolved');
+    if (outcome.status !== 'resolved') {
+      throw new Error('expected a resolved Ralph lineage outcome');
+    }
+    assert.equal(outcome.hint.sourcePath, join(plansDir, 'prd-alpha-ralph-lineage.md'));
+    assert.equal(outcome.hint.contextPackStatus, 'plan-only');
+    assert.equal(readApprovedExecutionLaunchHint(tempDir, 'ralph')?.sourcePath, join(plansDir, 'prd-alpha-ralph-lineage.md'));
+  });
+
   it('honors the requested team task when a single plan lists multiple team launch hints', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
@@ -795,6 +820,121 @@ describe('planning artifacts', () => {
     assert.equal(hint?.workerCount, 2);
     assert.equal(hint?.agentType, 'executor');
     assert.equal(hint?.linkedRalph, false);
+  });
+
+  it('reuses the older bare Team handoff when the latest same-signature handoff is missing its baseline', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const sharedTask = 'Execute shared Team lineage handoff';
+    const sharedCommand = `omx team 3:executor ${JSON.stringify(sharedTask)}`;
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-alpha-team-lineage.md'),
+      `# Alpha\n\nLaunch via ${sharedCommand}\n`,
+    );
+    await writeFile(join(plansDir, 'test-spec-alpha-team-lineage.md'), '# Alpha Test Spec\n');
+    await writeFile(
+      join(plansDir, 'prd-zeta-team-lineage.md'),
+      `# Zeta\n\nLaunch via ${sharedCommand}\n`,
+    );
+
+    const outcome = readApprovedExecutionLaunchHintOutcome(tempDir, 'team');
+
+    assert.equal(outcome.status, 'resolved');
+    if (outcome.status !== 'resolved') {
+      throw new Error('expected a resolved Team lineage outcome');
+    }
+    assert.equal(outcome.hint.sourcePath, join(plansDir, 'prd-alpha-team-lineage.md'));
+    assert.equal(outcome.hint.contextPackStatus, 'plan-only');
+    assert.equal(outcome.hint.workerCount, 3);
+    assert.equal(outcome.hint.agentType, 'executor');
+    assert.equal(readApprovedExecutionLaunchHint(tempDir, 'team')?.sourcePath, join(plansDir, 'prd-alpha-team-lineage.md'));
+  });
+
+  it('keeps the latest nonready Team handoff when older same-task PRDs change the launch signature', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const sharedTask = 'Execute shared Team signature split';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-alpha-team-signature-split.md'),
+      `# Alpha\n\nLaunch via omx team 2:executor ${JSON.stringify(sharedTask)}\n`,
+    );
+    await writeFile(join(plansDir, 'test-spec-alpha-team-signature-split.md'), '# Alpha Test Spec\n');
+    await writeFile(
+      join(plansDir, 'prd-zeta-team-signature-split.md'),
+      `# Zeta\n\nLaunch via omx team 5:debugger ${JSON.stringify(sharedTask)}\n`,
+    );
+
+    const outcome = readApprovedExecutionLaunchHintOutcome(tempDir, 'team', { task: sharedTask });
+
+    assert.equal(outcome.status, 'resolved');
+    if (outcome.status !== 'resolved') {
+      throw new Error('expected the latest nonready Team lineage outcome');
+    }
+    assert.equal(outcome.hint.sourcePath, join(plansDir, 'prd-zeta-team-signature-split.md'));
+    assert.equal(outcome.hint.contextPackStatus, 'missing-baseline');
+    assert.equal(outcome.hint.workerCount, 5);
+    assert.equal(outcome.hint.agentType, 'debugger');
+    assert.equal(readApprovedExecutionLaunchHint(tempDir, 'team', { task: sharedTask }), null);
+  });
+
+  it('rehydrates the exact older Team command across newer same-task nonready PRDs', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const sharedTask = 'Execute exact Team lineage command';
+    const olderCommand = `omx team 2:executor ${JSON.stringify(sharedTask)}`;
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-alpha-team-command-lineage.md'),
+      `# Alpha\n\nLaunch via ${olderCommand}\n`,
+    );
+    await writeFile(join(plansDir, 'test-spec-alpha-team-command-lineage.md'), '# Alpha Test Spec\n');
+    await writeFile(
+      join(plansDir, 'prd-zeta-team-command-lineage.md'),
+      `# Zeta\n\nLaunch via omx team 5:debugger ${JSON.stringify(sharedTask)}\n`,
+    );
+
+    const outcome = readApprovedExecutionLaunchHintOutcome(tempDir, 'team', {
+      task: sharedTask,
+      command: olderCommand,
+    });
+
+    assert.equal(outcome.status, 'resolved');
+    if (outcome.status !== 'resolved') {
+      throw new Error('expected a resolved exact Team command outcome');
+    }
+    assert.equal(outcome.hint.sourcePath, join(plansDir, 'prd-alpha-team-command-lineage.md'));
+    assert.equal(outcome.hint.command, olderCommand);
+    assert.equal(outcome.hint.contextPackStatus, 'plan-only');
+  });
+
+  it('fails closed when an older same-lineage Team handoff becomes ambiguous', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const sharedTask = 'Execute ambiguous Team lineage handoff';
+    const sharedCommand = `omx team 3:executor ${JSON.stringify(sharedTask)}`;
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-alpha-team-lineage-ready.md'),
+      `# Alpha\n\nLaunch via ${sharedCommand}\n`,
+    );
+    await writeFile(join(plansDir, 'test-spec-alpha-team-lineage-ready.md'), '# Alpha Test Spec\n');
+    await writeFile(
+      join(plansDir, 'prd-beta-team-lineage-ambiguous.md'),
+      [
+        '# Beta',
+        '',
+        `Launch via ${sharedCommand}`,
+        `Launch via $team 3:executor ${JSON.stringify(sharedTask)}`,
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-beta-team-lineage-ambiguous.md'), '# Beta Test Spec\n');
+    await writeFile(
+      join(plansDir, 'prd-zeta-team-lineage-nonready.md'),
+      `# Zeta\n\nLaunch via ${sharedCommand}\n`,
+    );
+
+    assert.equal(
+      readApprovedExecutionLaunchHintOutcome(tempDir, 'team', { task: sharedTask }).status,
+      'ambiguous',
+    );
   });
 
   it('fails closed for bare team lookups when a single plan lists multiple team launch hints', async () => {
