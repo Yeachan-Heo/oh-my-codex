@@ -684,6 +684,100 @@ describe('planning artifacts', () => {
     assert.equal(outcome.status, 'absent');
   });
 
+  it('resolves Ralph launch hints wrapped across visible markdown lines', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const task = 'Execute wrapped visible ralph plan';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-wrapped-visible-ralph.md'),
+      [
+        '# PRD',
+        '',
+        'Launch via omx ralph',
+        JSON.stringify(task),
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-wrapped-visible-ralph.md'), '# Test Spec\n');
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph', { task });
+    assert.ok(hint);
+    assert.equal(hint?.task, task);
+    assert.equal(hint?.command, `omx ralph\n${JSON.stringify(task)}`);
+    assert.equal(hint?.contextPackStatus, 'plan-only');
+  });
+
+  it('does not let Ralph launch hints span hidden markdown gaps', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+
+    const scenarios = [
+      {
+        name: 'fenced',
+        buildHiddenLines: (task: string) => [
+          '```md',
+          JSON.stringify(task),
+          '```',
+        ],
+      },
+      {
+        name: 'commented',
+        buildHiddenLines: (task: string) => [
+          '<!--',
+          JSON.stringify(task),
+          '-->',
+        ],
+      },
+      {
+        name: 'indented',
+        buildHiddenLines: (task: string) => [
+          `    ${JSON.stringify(task)}`,
+        ],
+      },
+    ] as const;
+
+    for (const scenario of scenarios) {
+      const task = `Execute hidden-gap ${scenario.name} ralph plan`;
+      await writeFile(
+        join(plansDir, `prd-hidden-gap-${scenario.name}-ralph.md`),
+        [
+          '# PRD',
+          '',
+          'Launch via omx ralph',
+          ...scenario.buildHiddenLines(task),
+        ].join('\n'),
+      );
+      await writeFile(join(plansDir, `test-spec-hidden-gap-${scenario.name}-ralph.md`), '# Test Spec\n');
+
+      const outcome = readApprovedExecutionLaunchHintOutcome(tempDir, 'ralph', { task });
+      assert.equal(outcome.status, 'absent', scenario.name);
+    }
+  });
+
+  it('resolves Team launch hints wrapped across visible markdown lines', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const task = 'Execute wrapped visible team plan';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-wrapped-visible-team.md'),
+      [
+        '# PRD',
+        '',
+        'Launch via omx team',
+        '2:executor',
+        JSON.stringify(task),
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-wrapped-visible-team.md'), '# Test Spec\n');
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'team', { task });
+    assert.ok(hint);
+    assert.equal(hint?.task, task);
+    assert.equal(hint?.workerCount, 2);
+    assert.equal(hint?.agentType, 'executor');
+    assert.equal(hint?.command, `omx team\n2:executor\n${JSON.stringify(task)}`);
+    assert.equal(hint?.contextPackStatus, 'plan-only');
+  });
+
   it('ignores Team launch hints inside fenced code blocks', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     const task = 'Execute approved issue 1314 fenced team plan';

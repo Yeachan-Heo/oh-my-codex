@@ -170,14 +170,30 @@ export function collectMarkdownVisibleMatches(
   const globalFlags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
   let state = INITIAL_MARKDOWN_VISIBILITY_STATE;
   const matches: RegExpMatchArray[] = [];
+  const visibleChunkLines: string[] = [];
+
+  const flushVisibleChunk = (): void => {
+    if (visibleChunkLines.length === 0) {
+      return;
+    }
+    matches.push(
+      ...visibleChunkLines
+        .join('\n')
+        .matchAll(new RegExp(pattern.source, globalFlags)),
+    );
+    visibleChunkLines.length = 0;
+  };
 
   for (const line of lines) {
     const inspection = inspectMarkdownLine(state, line);
     if (inspection.scanState === 'normal') {
-      matches.push(...inspection.visibleText.matchAll(new RegExp(pattern.source, globalFlags)));
+      visibleChunkLines.push(inspection.visibleText);
+    } else {
+      flushVisibleChunk();
     }
     state = inspection.nextState;
   }
 
+  flushVisibleChunk();
   return matches;
 }

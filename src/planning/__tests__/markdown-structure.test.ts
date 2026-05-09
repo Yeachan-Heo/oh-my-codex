@@ -19,6 +19,7 @@ interface ModelVisibilityState {
 }
 
 const MATCH_TOKEN_PATTERN = /match-[a-z]+/g;
+const MULTILINE_MATCH_PATTERN = /match-alpha\s+match-beta/g;
 const MODEL_COMMENT_LINE_PATTERN = /^(?: {0,3})<!--/;
 const MODEL_COMMENT_OPEN = '<!--';
 const MODEL_COMMENT_CLOSE = '-->';
@@ -161,6 +162,67 @@ describe('collectMarkdownVisibleMatches', () => {
     );
 
     assert.deepEqual(matches.map((match) => match[0]), ['match-alpha', 'match-beta']);
+  });
+
+  it('preserves multiline matches across contiguous visible markdown while blocking hidden-gap counterfactuals', () => {
+    const cases = [
+      {
+        name: 'visible-adjacent-lines',
+        content: [
+          'match-alpha',
+          'match-beta',
+        ].join('\n'),
+        expected: ['match-alpha\nmatch-beta'],
+      },
+      {
+        name: 'visible-blank-line',
+        content: [
+          'match-alpha',
+          '',
+          'match-beta',
+        ].join('\n'),
+        expected: ['match-alpha\n\nmatch-beta'],
+      },
+      {
+        name: 'fenced-gap',
+        content: [
+          'match-alpha',
+          '```md',
+          'match-hidden',
+          '```',
+          'match-beta',
+        ].join('\n'),
+        expected: [],
+      },
+      {
+        name: 'comment-gap',
+        content: [
+          'match-alpha',
+          '<!--',
+          'match-hidden',
+          '-->',
+          'match-beta',
+        ].join('\n'),
+        expected: [],
+      },
+      {
+        name: 'indented-gap',
+        content: [
+          'match-alpha',
+          '    match-hidden',
+          'match-beta',
+        ].join('\n'),
+        expected: [],
+      },
+    ] as const;
+
+    for (const { name, content, expected } of cases) {
+      assert.deepEqual(
+        collectMarkdownVisibleMatches(content, MULTILINE_MATCH_PATTERN).map((match) => match[0]),
+        expected,
+        name,
+      );
+    }
   });
 
   it('ignores matches inside backtick fenced code blocks with info strings', () => {
