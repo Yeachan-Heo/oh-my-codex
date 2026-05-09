@@ -1653,7 +1653,10 @@ async function findActiveGoalWorkflowReconciliationRequirement(cwd: string): Pro
     if (!entry.isDirectory()) continue;
     const mission = await readJsonIfExists(join(autoresearchRoot, entry.name, "mission.json"));
     const status = safeString(mission?.status);
-    if (mission?.workflow === "autoresearch-goal" && status && status !== "complete") {
+    const completion = await readJsonIfExists(join(autoresearchRoot, entry.name, "completion.json"));
+    const completionVerdict = safeString(completion?.verdict);
+    const completionPassed = completion?.passed === true || completionVerdict === "pass";
+    if (mission?.workflow === "autoresearch-goal" && status && status !== "complete" && completionPassed) {
       return {
         workflow: "autoresearch-goal",
         command: `omx autoresearch-goal complete --slug ${safeString(mission.slug) || entry.name} --codex-goal-json '<get_goal JSON or path>'`,

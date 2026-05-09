@@ -1265,6 +1265,100 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("does not block Stop for non-passing autoresearch-goal professor-critic verdicts", async () => {
+    for (const verdict of ["blocked", "fail", "failed"]) {
+      const cwd = await mkdtemp(join(tmpdir(), `omx-native-hook-autoresearch-${verdict}-stop-`));
+      const slug = `${verdict}-mission`;
+      try {
+        await writeJson(join(cwd, ".omx", "goals", "autoresearch", slug, "mission.json"), {
+          version: 1,
+          workflow: "autoresearch-goal",
+          slug,
+          topic: "Blocked research",
+          status: verdict === "blocked" ? "blocked" : "failed",
+        });
+        await writeJson(join(cwd, ".omx", "goals", "autoresearch", slug, "completion.json"), {
+          verdict,
+          passed: false,
+        });
+
+        const result = await dispatchCodexNativeHook({
+          hook_event_name: "Stop",
+          cwd,
+          session_id: `sess-autoresearch-${verdict}-stop`,
+          thread_id: `thread-autoresearch-${verdict}-stop`,
+          last_assistant_message: "Autoresearch goal complete; next call update_goal({status: \"complete\"}).",
+        }, { cwd });
+
+        assert.notEqual(result.outputJson?.decision, "block");
+        assert.doesNotMatch(JSON.stringify(result.outputJson), new RegExp(`autoresearch-goal complete --slug ${slug}`));
+        assert.doesNotMatch(JSON.stringify(result.outputJson), /get_goal snapshot reconciliation/);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("blocks Stop for passing autoresearch-goal professor-critic verdicts that need reconciliation", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autoresearch-pass-stop-"));
+    try {
+      await writeJson(join(cwd, ".omx", "goals", "autoresearch", "passing-mission", "mission.json"), {
+        version: 1,
+        workflow: "autoresearch-goal",
+        slug: "passing-mission",
+        topic: "Passing research",
+        status: "validation_passed",
+      });
+      await writeJson(join(cwd, ".omx", "goals", "autoresearch", "passing-mission", "completion.json"), {
+        verdict: "fail",
+        passed: true,
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-autoresearch-pass-stop",
+        thread_id: "thread-autoresearch-pass-stop",
+        last_assistant_message: "Autoresearch goal complete; next call update_goal({status: \"complete\"}).",
+      }, { cwd });
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /get_goal snapshot reconciliation/);
+      assert.match(JSON.stringify(result.outputJson), /omx autoresearch-goal complete --slug passing-mission/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks Stop for autoresearch-goal verdict=pass even when passed is omitted", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autoresearch-verdict-pass-stop-"));
+    try {
+      await writeJson(join(cwd, ".omx", "goals", "autoresearch", "verdict-pass-mission", "mission.json"), {
+        version: 1,
+        workflow: "autoresearch-goal",
+        slug: "verdict-pass-mission",
+        topic: "Passing research",
+        status: "validation_passed",
+      });
+      await writeJson(join(cwd, ".omx", "goals", "autoresearch", "verdict-pass-mission", "completion.json"), {
+        verdict: "pass",
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-autoresearch-verdict-pass-stop",
+        thread_id: "thread-autoresearch-verdict-pass-stop",
+        last_assistant_message: "Autoresearch goal complete; next call update_goal({status: \"complete\"}).",
+      }, { cwd });
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /omx autoresearch-goal complete --slug verdict-pass-mission/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("treats workflow keywords in native subagent prompt text as literal delegation text", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-keyword-literal-"));
     try {
