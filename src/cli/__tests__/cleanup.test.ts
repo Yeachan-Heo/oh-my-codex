@@ -73,6 +73,14 @@ describe('findCleanupCandidates', () => {
       'code-intel-server.cjs',
     );
     assert.equal(extractOmxMcpEntrypoint('node /tmp/worktree/dist/mcp/team-server.js'), null);
+    assert.equal(
+      extractOmxMcpEntrypoint('node /repo/dist/cli/omx.js mcp-serve state'),
+      'state-server.js',
+    );
+    assert.equal(
+      extractOmxMcpEntrypoint('omx mcp-serve code-intel'),
+      'code-intel-server.js',
+    );
   });
 
   it('selects orphaned OMX MCP processes while preserving the current session tree', () => {
@@ -176,9 +184,36 @@ describe('findCleanupCandidates', () => {
       { pid: 720, ppid: 700, command: 'node /repo/dist/mcp/wiki-server.js' },
       { pid: 900, ppid: 800, command: 'codex --model gpt-5' },
       { pid: 901, ppid: 900, command: 'node /repo/dist/mcp/trace-server.js' },
+      { pid: 910, ppid: 900, command: 'node /repo/dist/cli/omx.js mcp-serve state' },
+      { pid: 911, ppid: 900, command: 'node /repo/dist/cli/omx.js mcp-serve state' },
     ];
 
     assert.deepEqual(findLaunchSafeCleanupCandidates(processes, 701), []);
+  });
+
+  it('reaps plugin-launched omx mcp-serve orphans during launch-safe cleanup', () => {
+    const processes: ProcessEntry[] = [
+      { pid: 700, ppid: 500, command: 'codex app-server' },
+      { pid: 701, ppid: 700, command: 'node /repo/bin/omx.js cleanup --launch-safe' },
+      { pid: 820, ppid: 1, command: 'node /repo/dist/cli/omx.js mcp-serve state' },
+      { pid: 821, ppid: 42, command: 'omx mcp-serve code-intel' },
+      { pid: 830, ppid: 700, command: 'node /repo/dist/cli/omx.js mcp-serve memory' },
+    ];
+
+    assert.deepEqual(findLaunchSafeCleanupCandidates(processes, 701), [
+      {
+        pid: 820,
+        ppid: 1,
+        command: 'node /repo/dist/cli/omx.js mcp-serve state',
+        reason: 'ppid=1',
+      },
+      {
+        pid: 821,
+        ppid: 42,
+        command: 'omx mcp-serve code-intel',
+        reason: 'outside-current-session',
+      },
+    ]);
   });
 
   it('preserves same-parent first-party MCP siblings under live Codex and OMX ancestors during launch-safe cleanup', () => {
