@@ -2,6 +2,11 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { planningArtifactSlug } from './artifact-names.js';
+import {
+  advanceMarkdownFenceState,
+  getMarkdownScanState,
+  type MarkdownFenceState,
+} from './markdown-structure.js';
 
 const CONTEXT_PACK_OUTCOME_HEADING_PATTERN =
   /^#{1,6}\s+Context Pack Outcome\s*$/i;
@@ -125,26 +130,16 @@ function computeGitBlobSha1(filePath: string): string {
   return createHash('sha1').update(header).update(buffer).digest('hex');
 }
 
-function isMarkdownFenceLine(line: string): boolean {
-  return /^(```|~~~)/.test(line.trimStart());
-}
-
-function isIndentedMarkdownCodeLine(line: string): boolean {
-  return /^(?: {4,}|\t)/.test(line);
-}
-
 function extractContextPackOutcomeSections(content: string): string[][] {
   const lines = content.replace(/\r\n/g, '\n').split('\n');
   const sections: string[][] = [];
-  let inFence = false;
+  let activeFence: MarkdownFenceState | null = null;
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
-    if (isMarkdownFenceLine(line)) {
-      inFence = !inFence;
-      continue;
-    }
-    if (inFence || isIndentedMarkdownCodeLine(line)) {
+    const scanState = getMarkdownScanState(activeFence, line);
+    activeFence = advanceMarkdownFenceState(activeFence, line);
+    if (scanState !== 'normal') {
       continue;
     }
     if (!CONTEXT_PACK_OUTCOME_HEADING_PATTERN.test(line.trim())) {
@@ -152,12 +147,14 @@ function extractContextPackOutcomeSections(content: string): string[][] {
     }
 
     const section: string[] = [];
+    let sectionFence: MarkdownFenceState | null = null;
     for (let sectionIndex = index + 1; sectionIndex < lines.length; sectionIndex += 1) {
       const sectionLine = lines[sectionIndex]!;
       const trimmed = sectionLine.trim();
+      const sectionScanState = getMarkdownScanState(sectionFence, sectionLine);
+      sectionFence = advanceMarkdownFenceState(sectionFence, sectionLine);
       if (
-        isMarkdownFenceLine(sectionLine)
-        || isIndentedMarkdownCodeLine(sectionLine)
+        sectionScanState !== 'normal'
         || /^#{1,6}\s+\S/.test(trimmed)
         || (trimmed !== '' && !/^[*-]\s+/.test(trimmed))
       ) {

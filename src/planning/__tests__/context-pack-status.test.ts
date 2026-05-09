@@ -288,6 +288,23 @@ describe('context pack handoff status', () => {
     assert.equal(status.outcomeState, 'absent');
   });
 
+  it('ignores indented outcome declarations and keeps the plan in plan-only status', async () => {
+    await writeApprovedPlan('epsilon-indented', [
+      '# PRD',
+      '',
+      '    ## Context Pack Outcome',
+      '',
+      `    - pack: created \`${canonicalContextPackRelativePath('epsilon-indented')}\``,
+      '',
+      'Launch via omx ralph "Execute epsilon indented plan"',
+    ]);
+
+    const status = readContextPackHandoffStatus(tempDir);
+
+    assert.equal(status.contextPackStatus, 'plan-only');
+    assert.equal(status.outcomeState, 'absent');
+  });
+
   it('rejects nested outcome paths that are not canonical context-pack files', async () => {
     await writeApprovedPlan('eta', [
       '# PRD',

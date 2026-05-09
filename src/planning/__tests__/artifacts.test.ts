@@ -666,6 +666,94 @@ describe('planning artifacts', () => {
     assert.equal(hint, null);
   });
 
+  it('ignores Ralph launch hints that appear only inside indented code blocks', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const task = 'Execute hidden indented ralph plan';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-hidden-indented-ralph.md'),
+      [
+        '# PRD',
+        '',
+        `    omx ralph ${JSON.stringify(task)}`,
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-hidden-indented-ralph.md'), '# Test Spec\n');
+
+    const outcome = readApprovedExecutionLaunchHintOutcome(tempDir, 'ralph', { task });
+    assert.equal(outcome.status, 'absent');
+  });
+
+  it('ignores Team launch hints inside fenced code blocks', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const task = 'Execute approved issue 1314 fenced team plan';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-issue-1314-fenced-team.md'),
+      [
+        '# PRD',
+        '',
+        '```sh',
+        `omx team 5:reviewer ${JSON.stringify(task)}`,
+        '```',
+        '',
+        `Launch via omx team 2:executor ${JSON.stringify(task)}`,
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-issue-1314-fenced-team.md'), '# Test Spec\n');
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'team');
+    assert.ok(hint);
+    assert.equal(hint?.task, task);
+    assert.equal(hint?.workerCount, 2);
+    assert.equal(hint?.agentType, 'executor');
+    assert.equal(hint?.command, `omx team 2:executor ${JSON.stringify(task)}`);
+    assert.equal(hint?.contextPackStatus, 'plan-only');
+  });
+
+  it('ignores Team launch hints that appear only inside fenced code blocks', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const task = 'Execute hidden fenced team plan';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-hidden-fenced-team.md'),
+      [
+        '# PRD',
+        '',
+        '```sh',
+        `omx team 2:executor ${JSON.stringify(task)}`,
+        '```',
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-hidden-fenced-team.md'), '# Test Spec\n');
+
+    const outcome = readApprovedExecutionLaunchHintOutcome(tempDir, 'team', { task });
+    assert.equal(outcome.status, 'absent');
+  });
+
+  it('ignores Ralph launch hints inside indented code blocks', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const task = 'Execute approved issue 1314 indented ralph plan';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-issue-1314-indented-ralph.md'),
+      [
+        '# PRD',
+        '',
+        `    omx ralph ${JSON.stringify(task)}`,
+        '',
+        `Launch via omx ralph ${JSON.stringify(task)}`,
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-issue-1314-indented-ralph.md'), '# Test Spec\n');
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
+    assert.ok(hint);
+    assert.equal(hint?.task, task);
+    assert.equal(hint?.command, `omx ralph ${JSON.stringify(task)}`);
+    assert.equal(hint?.contextPackStatus, 'plan-only');
+  });
+
   it('honors the requested team task when a single plan lists multiple team launch hints', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
