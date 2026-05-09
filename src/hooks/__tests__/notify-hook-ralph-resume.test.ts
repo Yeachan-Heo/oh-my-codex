@@ -378,6 +378,47 @@ describe('notify-hook Ralph session resume', () => {
     }
   });
 
+  it('keeps active current-session Ralph state when fresh turn activity is newer than stale updated_at', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-notify-ralph-fresh-current-turn-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const currentOmxSessionId = 'sess-current';
+      const currentSessionDir = join(stateDir, 'sessions', currentOmxSessionId);
+      const lastTurnAt = new Date().toISOString();
+      await writeJson(join(stateDir, 'session.json'), { session_id: currentOmxSessionId });
+      await writeJson(join(currentSessionDir, 'ralph-state.json'), {
+        active: true,
+        iteration: 0,
+        max_iterations: 50,
+        current_phase: 'executing',
+        updated_at: '2026-02-22T00:00:00.000Z',
+        last_turn_at: lastTurnAt,
+        owner_omx_session_id: currentOmxSessionId,
+        owner_codex_session_id: 'codex-session-1',
+      });
+
+      const result = await reconcileRalphSessionResume({
+        stateDir,
+        payloadSessionId: 'codex-session-1',
+        payloadThreadId: 'thread-fresh-current',
+        env: { OMX_RALPH_ACTIVE_STATE_STALE_MS: '60000' },
+      });
+
+      assert.equal(result.resumed, false);
+      assert.equal(result.reason, 'current_ralph_active');
+      const currentState = JSON.parse(
+        await readFile(join(currentSessionDir, 'ralph-state.json'), 'utf-8'),
+      ) as Record<string, unknown>;
+      assert.equal(currentState.active, true);
+      assert.equal(currentState.current_phase, 'executing');
+      assert.equal(currentState.stop_reason, undefined);
+      assert.equal(currentState.abandoned_at, undefined);
+      assert.equal(currentState.last_turn_at, lastTurnAt);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('marks a stale matching prior Ralph abandoned instead of auto-resuming it', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-notify-ralph-stale-prior-'));
     try {

@@ -156,11 +156,14 @@ function parseTimestampMs(value: unknown): number | null {
 }
 
 function stateActivityTimestampMs(state: Record<string, unknown>): { ms: number; source: string } | null {
+  let newest: { ms: number; source: string } | null = null;
   for (const key of ['updated_at', 'last_turn_at', 'tmux_pane_set_at']) {
     const ms = parseTimestampMs(state[key]);
-    if (ms !== null) return { ms, source: key };
+    if (ms !== null && (!newest || ms > newest.ms)) {
+      newest = { ms, source: key };
+    }
   }
-  return null;
+  return newest;
 }
 
 async function readRalphStateFreshness(
