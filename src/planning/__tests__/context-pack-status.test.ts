@@ -155,6 +155,7 @@ describe('context pack handoff status', () => {
     assert.equal(status.baselineState, 'present');
     assert.equal(status.outcomeState, 'absent');
     assert.equal(status.declarationState, 'unknown');
+    assert.equal(status.contextPackRoleRefs, null);
     assert.equal(status.roleCoverage, 'unknown');
     assert.deepEqual(status.missingRequiredContextPackRoles, []);
     assert.deepEqual(status.contextPackIssues, []);
@@ -178,6 +179,11 @@ describe('context pack handoff status', () => {
     assert.equal(status.declarationState, 'matching');
     assert.equal(status.roleCoverage, 'covered');
     assert.equal(status.basisState, 'fresh');
+    assert.deepEqual(status.contextPackRoleRefs, {
+      scope: ['src/scope-0.ts'],
+      build: ['src/build-1.ts'],
+      verify: ['src/verify-2.ts'],
+    });
     assert.deepEqual(status.missingRequiredContextPackRoles, []);
     assert.deepEqual(status.contextPackIssues, []);
   });
@@ -195,6 +201,8 @@ describe('context pack handoff status', () => {
     const status = readContextPackHandoffStatus(tempDir);
 
     assert.equal(status.contextPackStatus, 'incomplete');
+    assert.equal(status.roleCoverage, 'missing-required-roles');
+    assert.equal(status.contextPackRoleRefs, null);
     assert.equal(status.roleCoverage, 'missing-required-roles');
     assert.deepEqual(status.missingRequiredContextPackRoles, ['build', 'verify']);
   });
@@ -215,6 +223,8 @@ describe('context pack handoff status', () => {
     assert.equal(status.contextPackStatus, 'invalid');
     assert.equal(status.roleCoverage, 'covered');
     assert.equal(status.basisState, 'stale');
+    assert.equal(status.contextPackRoleRefs, null);
+    assert.equal(status.basisState, 'stale');
     assert.deepEqual(status.missingRequiredContextPackRoles, []);
     assert.ok(status.contextPackIssues.some((issue) => issue.includes('basis test-spec hash')));
   });
@@ -234,6 +244,7 @@ describe('context pack handoff status', () => {
 
     assert.equal(status.contextPackStatus, 'invalid');
     assert.equal(status.roleCoverage, 'missing-required-roles');
+    assert.equal(status.contextPackRoleRefs, null);
     assert.deepEqual(status.missingRequiredContextPackRoles, ['build', 'verify']);
     assert.ok(status.contextPackIssues.some((issue) => issue.includes('basis test-spec hash')));
   });
@@ -252,6 +263,7 @@ describe('context pack handoff status', () => {
 
     assert.equal(status.contextPackStatus, 'invalid');
     assert.equal(status.packState, 'invalid');
+    assert.equal(status.contextPackRoleRefs, null);
     assert.equal(status.roleCoverage, 'unknown');
     assert.deepEqual(status.missingRequiredContextPackRoles, []);
     assert.ok(status.contextPackIssues.some((issue) => issue.includes('invalid JSON')));

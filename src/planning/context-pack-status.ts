@@ -46,6 +46,7 @@ export interface ContextPackHandoffStatusSnapshot {
   packState: ContextPackPackState;
   roleCoverage: ContextPackRoleCoverageState;
   basisState: ContextPackBasisState;
+  contextPackRoleRefs: ContextPackRoleRefs | null;
   missingRequiredContextPackRoles: ContextPackRole[];
   contextPackIssues: string[];
 }
@@ -464,14 +465,9 @@ function emptyContextPackRoleRefs(): ContextPackRoleRefs {
   return { scope: [], build: [], verify: [] };
 }
 
-export function readReadyContextPackRoleRefs(
-  packPath: string,
-): ContextPackRoleRefs | null {
-  const packDocument = readContextPackDocument(packPath);
-  if (!packDocument.document) {
-    return null;
-  }
-
+function groupContextPackRoleRefs(
+  document: ContextPackDocument,
+): ContextPackRoleRefs {
   const grouped = emptyContextPackRoleRefs();
   const seen: Record<ContextPackRole, Set<string>> = {
     scope: new Set<string>(),
@@ -479,7 +475,7 @@ export function readReadyContextPackRoleRefs(
     verify: new Set<string>(),
   };
 
-  for (const entry of packDocument.document.entries) {
+  for (const entry of document.entries) {
     for (const role of entry.roles) {
       if (seen[role].has(entry.path)) {
         continue;
@@ -490,6 +486,16 @@ export function readReadyContextPackRoleRefs(
   }
 
   return grouped;
+}
+
+export function readReadyContextPackRoleRefs(
+  packPath: string,
+): ContextPackRoleRefs | null {
+  const packDocument = readContextPackDocument(packPath);
+  if (!packDocument.document) {
+    return null;
+  }
+  return groupContextPackRoleRefs(packDocument.document);
 }
 
 function validateContextPackBasis(
@@ -606,6 +612,7 @@ export function resolveContextPackHandoffStatus(
   let roleCoverage: ContextPackRoleCoverageState = 'unknown';
   let basisState: ContextPackBasisState = 'stale';
   let declarationState: ContextPackDeclarationState = 'unknown';
+  let contextPackRoleRefs: ContextPackRoleRefs | null = null;
   let missingRequiredContextPackRoles: ContextPackRole[] = [];
   let declarationMismatch = false;
 
@@ -649,6 +656,9 @@ export function resolveContextPackHandoffStatus(
               missingRequiredContextPackRoles.length === 0
                 ? 'covered'
                 : 'missing-required-roles';
+            if (missingRequiredContextPackRoles.length === 0) {
+              contextPackRoleRefs = groupContextPackRoleRefs(packDocument.document);
+            }
             if (baselineState === 'present') {
               const basisIssues = validateContextPackBasis(
                 repoRoot,
@@ -677,23 +687,26 @@ export function resolveContextPackHandoffStatus(
     packState = 'invalid';
   }
 
+  const contextPackStatus = resolveContextPackHandoffState({
+    baselineState,
+    outcomeState,
+    packState,
+    roleCoverage,
+    basisState,
+  });
+
   return {
     prdPath,
     testSpecPaths: selection.testSpecPaths,
     contextPack,
-    contextPackStatus: resolveContextPackHandoffState({
-      baselineState,
-      outcomeState,
-      packState,
-      roleCoverage,
-      basisState,
-    }),
+    contextPackStatus,
     baselineState,
     outcomeState,
     declarationState,
     packState,
     roleCoverage,
     basisState,
+    contextPackRoleRefs: contextPackStatus === 'ready' ? contextPackRoleRefs : null,
     missingRequiredContextPackRoles,
     contextPackIssues,
   };

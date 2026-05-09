@@ -8,7 +8,6 @@ import {
   selectMatchingTestSpecsForPrd,
 } from './artifact-names.js';
 import {
-  readReadyContextPackRoleRefs,
   resolveContextPackHandoffStatus,
   type ContextPackHandoffStatusSnapshot,
   type ContextPackRef,
@@ -204,8 +203,8 @@ function selectPlanningArtifacts(
   const selection = selectPlanningArtifactsBase(artifacts, prdPath);
   const handoffStatus = resolveContextPackHandoffStatus(artifacts, selection);
   const contextPackRoleRefs =
-    handoffStatus.contextPackStatus === 'ready' && handoffStatus.contextPack
-      ? readReadyContextPackRoleRefs(handoffStatus.contextPack.path)
+    handoffStatus.contextPackStatus === 'ready'
+      ? handoffStatus.contextPackRoleRefs
       : null;
   return {
     ...selection,
