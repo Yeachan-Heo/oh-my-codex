@@ -87,6 +87,7 @@ import {
 	OMX_LOCAL_MARKETPLACE_NAME,
 	resolvePackagedOmxMarketplace,
 	upsertLocalOmxMarketplaceRegistration,
+	upsertLocalOmxPluginEnablement,
 } from "./plugin-marketplace.js";
 
 async function resolveStatusLinePresetForSetup(
@@ -1373,7 +1374,7 @@ async function ensurePluginMarketplaceRegistration(
 		? await readFile(configPath, "utf-8")
 		: "";
 	const nextConfig = upsertLocalOmxMarketplaceRegistration(
-		existingConfig,
+		upsertLocalOmxPluginEnablement(existingConfig),
 		pkgRoot,
 	);
 	const destinationExists = existsSync(configPath);

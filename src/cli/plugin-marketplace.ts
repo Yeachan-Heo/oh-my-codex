@@ -4,6 +4,7 @@ import { join, resolve } from "path";
 
 export const OMX_LOCAL_MARKETPLACE_NAME = "oh-my-codex-local";
 export const OMX_PLUGIN_NAME = "oh-my-codex";
+export const OMX_LOCAL_PLUGIN_CONFIG_KEY = `${OMX_PLUGIN_NAME}@${OMX_LOCAL_MARKETPLACE_NAME}`;
 
 export interface PackagedOmxMarketplace {
 	marketplacePath: string;
@@ -123,4 +124,49 @@ export function upsertLocalOmxMarketplaceRegistration(
 	const stripped = stripLocalOmxMarketplaceRegistration(config).trimEnd();
 	const registration = buildLocalOmxMarketplaceRegistration(packageRoot);
 	return `${stripped ? `${stripped}\n\n` : ""}${registration}\n`;
+}
+
+function localPluginTableHeaderPattern(): RegExp {
+	return new RegExp(
+		`^\\s*\\[plugins\\.${JSON.stringify(OMX_LOCAL_PLUGIN_CONFIG_KEY).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]\\s*$`,
+	);
+}
+
+export function upsertLocalOmxPluginEnablement(config: string): string {
+	const lines = config.split(/\r?\n/);
+	const headerPattern = localPluginTableHeaderPattern();
+	const start = lines.findIndex((line) => headerPattern.test(line));
+
+	if (start < 0) {
+		const base = config.trimEnd();
+		return `${base ? `${base}\n\n` : ""}[plugins.${JSON.stringify(OMX_LOCAL_PLUGIN_CONFIG_KEY)}]\nenabled = true\n`;
+	}
+
+	let end = lines.length;
+	for (let index = start + 1; index < lines.length; index += 1) {
+		if (isTomlTableHeader(lines[index])) {
+			end = index;
+			break;
+		}
+	}
+
+	let enabledIndex = -1;
+	for (let index = start + 1; index < end; index += 1) {
+		if (/^\s*enabled\s*=/.test(lines[index])) {
+			if (enabledIndex < 0) {
+				enabledIndex = index;
+				lines[index] = "enabled = true";
+			} else {
+				lines.splice(index, 1);
+				index -= 1;
+				end -= 1;
+			}
+		}
+	}
+
+	if (enabledIndex < 0) {
+		lines.splice(start + 1, 0, "enabled = true");
+	}
+
+	return lines.join("\n").replace(/\n*$/, "\n");
 }

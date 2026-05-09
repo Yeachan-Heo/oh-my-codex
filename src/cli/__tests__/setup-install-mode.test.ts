@@ -764,6 +764,7 @@ describe("omx setup install mode behavior", () => {
 							string,
 							{ source_type?: string; source?: string }
 						>;
+						plugins?: Record<string, { enabled?: boolean }>;
 					};
 					assert.equal(
 						parsed.marketplaces?.["oh-my-codex-local"]?.source_type,
@@ -780,6 +781,15 @@ describe("omx setup install mode behavior", () => {
 							.length,
 						1,
 					);
+					assert.equal(
+						(config.match(/^\[plugins\."oh-my-codex@oh-my-codex-local"\]$/gm) ?? [])
+							.length,
+						1,
+					);
+					assert.equal(
+						parsed.plugins?.["oh-my-codex@oh-my-codex-local"]?.enabled,
+						true,
+					);
 					assert.match(config, /^codex_hooks = true$/m);
 					assert.doesNotMatch(config, /\[mcp_servers\./);
 					assert.equal(
@@ -792,6 +802,59 @@ describe("omx setup install mode behavior", () => {
 					);
 					assert.equal(
 						existsSync(join(codexHomeDir, "prompts", "executor.md")),
+						false,
+					);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("enables the local Codex plugin while preserving plugin subtable policy", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const configPath = join(codexHomeDir, "config.toml");
+					await writeFile(
+						configPath,
+						[
+							"[plugins.\"oh-my-codex@oh-my-codex-local\"]",
+							"enabled = false",
+							"",
+							"[plugins.\"oh-my-codex@oh-my-codex-local\".mcp_servers.omx_state]",
+							"enabled = false",
+							"",
+						].join("\n"),
+					);
+
+					await setup({ scope: "user", installMode: "plugin", force: true });
+					await setup({ scope: "user", installMode: "plugin", force: true });
+
+					const config = await readFile(configPath, "utf-8");
+					const parsed = parseToml(config) as {
+						plugins?: Record<
+							string,
+							{
+								enabled?: boolean;
+								mcp_servers?: Record<string, { enabled?: boolean }>;
+							}
+						>;
+					};
+
+					assert.equal(
+						(config.match(/^\[plugins\."oh-my-codex@oh-my-codex-local"\]$/gm) ?? [])
+							.length,
+						1,
+					);
+					assert.equal(
+						parsed.plugins?.["oh-my-codex@oh-my-codex-local"]?.enabled,
+						true,
+					);
+					assert.equal(
+						parsed.plugins?.["oh-my-codex@oh-my-codex-local"]?.mcp_servers
+							?.omx_state?.enabled,
 						false,
 					);
 				});
