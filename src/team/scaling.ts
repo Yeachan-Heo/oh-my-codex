@@ -76,6 +76,12 @@ import {
   type EnsureWorktreeResult,
   type WorktreeMode,
 } from './worktree.js';
+import { isApprovedExecutionFollowupReadyStatus } from '../planning/artifacts.js';
+import {
+  buildApprovedTeamHandoffSection,
+  resolvePersistedApprovedTeamExecutionContinuityState,
+  type PersistedApprovedTeamExecutionContinuityState,
+} from './approved-execution.js';
 
 // ── Environment gate ──────────────────────────────────────────────────────────
 
@@ -119,6 +125,50 @@ export interface ScaleError {
 
 function resolveInstructionStateRoot(worktreePath?: string | null): string | undefined {
   return worktreePath ? WORKTREE_TRIGGER_STATE_ROOT : undefined;
+}
+
+interface ScaleUpApprovedExecutionGate {
+  ok: true;
+  approvedContextSection?: string;
+}
+
+function assertUnreachableApprovedExecutionState(state: never): never {
+  throw new Error(`unreachable_scale_up_approved_execution_state:${JSON.stringify(state)}`);
+}
+
+function resolveScaleUpApprovedExecutionGate(
+  teamName: string,
+  approvedExecutionState: PersistedApprovedTeamExecutionContinuityState,
+): ScaleUpApprovedExecutionGate | ScaleError {
+  switch (approvedExecutionState.status) {
+    case 'missing':
+      return { ok: true };
+    case 'malformed':
+      return { ok: false, error: `approved_execution_binding_malformed:${teamName}` };
+    case 'ambiguous':
+      return {
+        ok: false,
+        error: `approved_execution_binding_ambiguous:${approvedExecutionState.binding.prd_path}:${approvedExecutionState.binding.task}`,
+      };
+    case 'stale':
+      return {
+        ok: false,
+        error: `approved_execution_binding_stale:${approvedExecutionState.binding.prd_path}:${approvedExecutionState.binding.task}`,
+      };
+    case 'valid':
+      if (!isApprovedExecutionFollowupReadyStatus(approvedExecutionState.approvedHint.contextPackStatus)) {
+        return {
+          ok: false,
+          error: `approved_execution_binding_nonready:${approvedExecutionState.approvedHint.contextPackStatus}:${approvedExecutionState.binding.prd_path}:${approvedExecutionState.binding.task}`,
+        };
+      }
+      return {
+        ok: true,
+        approvedContextSection: buildApprovedTeamHandoffSection(approvedExecutionState.approvedHint),
+      };
+    default:
+      return assertUnreachableApprovedExecutionState(approvedExecutionState);
+  }
 }
 
 function resolveLegacyScaledTeamWorktreeMode(config: Pick<TeamConfig, 'name' | 'workspace_mode' | 'worktree_mode' | 'workers'>): WorktreeMode {
@@ -240,6 +290,19 @@ export async function scaleUp(
       display_mode: manifest?.policy?.display_mode === 'split_pane' ? 'split_pane' : 'auto',
       worker_launch_mode: config.worker_launch_mode,
     });
+    const approvedExecutionState = await resolvePersistedApprovedTeamExecutionContinuityState(
+      sanitized,
+      config.leader_cwd ?? leaderCwd,
+      config.team_state_root ?? teamStateRoot,
+    );
+    const approvedExecutionGate = resolveScaleUpApprovedExecutionGate(
+      sanitized,
+      approvedExecutionState,
+    );
+    if (!approvedExecutionGate.ok) {
+      return approvedExecutionGate;
+    }
+    const { approvedContextSection } = approvedExecutionGate;
     const effectiveWorktreeMode = config.worktree_mode ?? resolveScaleUpWorktreeMode(config);
     if (!config.worktree_mode && effectiveWorktreeMode.enabled) {
       config.worktree_mode = effectiveWorktreeMode;
@@ -477,6 +540,7 @@ export async function scaleUp(
         workerRole: runtimeRole,
         rolePromptContent: rawRolePromptContent ?? undefined,
         worktreeRootAgentsCanonical: Boolean(workerWorkspace?.worktreePath),
+        approvedContextSection,
         workerGoalInstruction: buildTeamWorkerGoalInstruction(sanitized, workerName, workerTasks, { teamStateRoot }),
       });
 

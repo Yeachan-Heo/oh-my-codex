@@ -1,8 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm, readFile, writeFile, mkdir, chmod } from 'fs/promises';
-import { join } from 'path';
+import { mkdtemp, rm, readFile, writeFile, mkdir, chmod, readdir } from 'fs/promises';
+import { join, relative } from 'path';
 import { tmpdir } from 'os';
 import { existsSync, readFileSync } from 'fs';
 import {
@@ -17,6 +18,10 @@ import {
   DEFAULT_MAX_WORKERS,
 } from '../state.js';
 import { isScalingEnabled, scaleUp, scaleDown } from '../scaling.js';
+import {
+  resolvePersistedApprovedTeamExecutionContinuityState,
+  writePersistedApprovedTeamExecutionBinding,
+} from '../approved-execution.js';
 
 delete process.env.OMX_TEAM_STATE_ROOT;
 
@@ -37,6 +42,326 @@ async function initRepo(): Promise<string> {
   execFileSync('git', ['add', 'README.md'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['commit', '-m', 'init'], { cwd, stdio: 'ignore' });
   return cwd;
+}
+
+function computeGitBlobSha1(content: string): string {
+  const buffer = Buffer.from(content, 'utf-8');
+  const header = Buffer.from(`blob ${buffer.length}\0`, 'utf-8');
+  return createHash('sha1').update(header).update(buffer).digest('hex');
+}
+
+function canonicalContextPackRelativePath(slug: string): string {
+  return `.omx/context/context-20260507T120000Z-${slug}.json`;
+}
+
+function buildContextPackOutcome(relativePackPath: string): string {
+  return [
+    '## Context Pack Outcome',
+    '',
+    `- pack: created \`${relativePackPath}\``,
+  ].join('\n');
+}
+
+type ContextPackRole = 'scope' | 'build' | 'verify';
+
+type ScaleUpApprovedBindingState =
+  | 'missing'
+  | 'malformed'
+  | 'stale'
+  | 'ambiguous'
+  | 'missing-baseline'
+  | 'plan-only'
+  | 'incomplete'
+  | 'invalid'
+  | 'ready';
+
+type ScaleUpObservedOutcome = 'generic' | 'blocked' | 'approved';
+
+type ScaleUpCount = 1 | 2 | 3;
+
+type BlockedScaleUpApprovedBindingState = Exclude<ScaleUpApprovedBindingState, 'missing' | 'plan-only' | 'ready'>;
+
+const BLOCKED_SCALE_UP_APPROVED_BINDING_STATES: readonly BlockedScaleUpApprovedBindingState[] = [
+  'malformed',
+  'stale',
+  'ambiguous',
+  'missing-baseline',
+  'incomplete',
+  'invalid',
+];
+
+const SCALE_UP_STATE_TEAM_SUFFIX: Record<ScaleUpApprovedBindingState, string> = {
+  missing: 'miss',
+  malformed: 'mal',
+  stale: 'stale',
+  ambiguous: 'amb',
+  'missing-baseline': 'mbase',
+  'plan-only': 'ponly',
+  incomplete: 'inc',
+  invalid: 'inv',
+  ready: 'ready',
+};
+
+const SCALE_UP_APPROVED_BINDING_STATES: readonly ScaleUpApprovedBindingState[] = [
+  'missing',
+  ...BLOCKED_SCALE_UP_APPROVED_BINDING_STATES,
+  'plan-only',
+  'ready',
+];
+
+const SCALE_UP_COUNTS: readonly ScaleUpCount[] = [1, 2, 3];
+
+function assertNeverScaleUpState(state: never): never {
+  throw new Error(`unexpected scale-up approved binding state: ${state}`);
+}
+
+function expectedScaleUpOutcome(state: ScaleUpApprovedBindingState): ScaleUpObservedOutcome {
+  if (state === 'missing' || state === 'plan-only') {
+    return 'generic';
+  }
+  return state === 'ready' ? 'approved' : 'blocked';
+}
+
+function forbiddenScaleUpOutcomes(
+  state: ScaleUpApprovedBindingState,
+): readonly ScaleUpObservedOutcome[] {
+  switch (state) {
+    case 'missing':
+    case 'plan-only':
+      return ['blocked', 'approved'];
+    case 'ready':
+      return ['blocked', 'generic'];
+    case 'malformed':
+    case 'stale':
+    case 'ambiguous':
+    case 'missing-baseline':
+    case 'incomplete':
+    case 'invalid':
+      return ['generic', 'approved'];
+    default:
+      return assertNeverScaleUpState(state);
+  }
+}
+
+function buildScaleUpScenarioTasks(
+  state: ScaleUpApprovedBindingState,
+  count: ScaleUpCount,
+): Array<{ subject: string; description: string; owner: string }> {
+  return Array.from({ length: count }, (_, index) => {
+    const workerIndex = index + 2;
+    return {
+      subject: `Implement ${state} follow-up ${workerIndex}/${count}`,
+      description: `Implement ${state} follow-up ${workerIndex}/${count}`,
+      owner: `worker-${workerIndex}`,
+    };
+  });
+}
+
+async function writeContextPack(
+  cwd: string,
+  slug: string,
+  prdPath: string,
+  testSpecPath: string,
+  roles: readonly ContextPackRole[],
+): Promise<void> {
+  const contextDir = join(cwd, '.omx', 'context');
+  const packPath = join(cwd, canonicalContextPackRelativePath(slug));
+  const prdContent = await readFile(prdPath, 'utf-8');
+  const testSpecContent = await readFile(testSpecPath, 'utf-8');
+  await mkdir(contextDir, { recursive: true });
+  await writeFile(packPath, JSON.stringify({
+    slug,
+    basis: {
+      prd: {
+        path: relative(cwd, prdPath).replaceAll('\\', '/'),
+        sha1: computeGitBlobSha1(prdContent),
+      },
+      testSpecs: [{
+        path: relative(cwd, testSpecPath).replaceAll('\\', '/'),
+        sha1: computeGitBlobSha1(testSpecContent),
+      }],
+    },
+    entries: roles.map((role, index) => ({
+      path: `src/${role}-${index}.ts`,
+      roles: [role],
+    })),
+  }, null, 2));
+}
+
+async function writeReadyContextPack(
+  cwd: string,
+  slug: string,
+  prdPath: string,
+  testSpecPath: string,
+): Promise<void> {
+  await writeContextPack(cwd, slug, prdPath, testSpecPath, ['scope', 'build', 'verify']);
+}
+
+async function writeSuccessfulScaleUpTmuxStub(
+  fakeBinDir: string,
+  tmuxLogPath: string,
+): Promise<void> {
+  const tmuxStubPath = join(fakeBinDir, 'tmux');
+  await writeFile(
+    tmuxStubPath,
+    [
+      '#!/bin/sh',
+      'set -eu',
+      `printf '%s\n' "$*" >> "${tmuxLogPath}"`,
+      'case "${1:-}" in',
+      '  -V)',
+      '    echo "tmux 3.2a"',
+      '    ;;',
+      '  split-window)',
+      '    echo "%31"',
+      '    ;;',
+      '  list-panes)',
+      '    echo "42424"',
+      '    ;;',
+      '  send-keys)',
+      '    ;;',
+      '  capture-pane)',
+      '    echo ""',
+      '    ;;',
+      'esac',
+      'exit 0',
+      '',
+    ].join('\n'),
+  );
+  await chmod(tmuxStubPath, 0o755);
+  await writeFile(tmuxLogPath, '');
+}
+
+async function configureScaleUpTeamForDirectDispatch(teamName: string, cwd: string): Promise<void> {
+  const config = await readTeamConfig(teamName, cwd);
+  assert.ok(config);
+  if (!config) {
+    throw new Error(`missing team config for ${teamName}`);
+  }
+  config.tmux_session = `omx-team-${teamName}`;
+  config.leader_pane_id = '%11';
+  config.workers[0]!.pane_id = '%21';
+  await saveTeamConfig(config, cwd);
+
+  const manifestPath = join(cwd, '.omx', 'state', 'team', teamName, 'manifest.v2.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as { policy?: Record<string, unknown> };
+  manifest.policy = {
+    ...(manifest.policy ?? {}),
+    dispatch_mode: 'transport_direct',
+  };
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+}
+
+async function readScaleUpTmuxLogCommands(tmuxLogPath: string): Promise<string[]> {
+  const content = await readFile(tmuxLogPath, 'utf-8');
+  const trimmed = content.trim();
+  return trimmed === '' ? [] : trimmed.split('\n');
+}
+
+async function readScaleUpTaskPayloads(teamName: string, cwd: string): Promise<string[]> {
+  const tasksDir = join(cwd, '.omx', 'state', 'team', teamName, 'tasks');
+  if (!existsSync(tasksDir)) {
+    return [];
+  }
+  const taskFiles = (await readdir(tasksDir)).filter((entry) => entry.endsWith('.json')).sort();
+  return await Promise.all(taskFiles.map((entry) => readFile(join(tasksDir, entry), 'utf-8')));
+}
+
+async function readExpectedScaleUpApprovedBindingError(
+  teamName: string,
+  cwd: string,
+): Promise<string | null> {
+  const continuity = await resolvePersistedApprovedTeamExecutionContinuityState(teamName, cwd);
+  if (continuity.status === 'missing') {
+    return null;
+  }
+  if (continuity.status === 'malformed') {
+    return `approved_execution_binding_malformed:${teamName}`;
+  }
+  if (continuity.status === 'ambiguous') {
+    return `approved_execution_binding_ambiguous:${continuity.binding.prd_path}:${continuity.binding.task}`;
+  }
+  if (continuity.status === 'stale') {
+    return `approved_execution_binding_stale:${continuity.binding.prd_path}:${continuity.binding.task}`;
+  }
+  return continuity.approvedHint.contextPackStatus === 'ready'
+    || continuity.approvedHint.contextPackStatus === 'plan-only'
+    ? null
+    : `approved_execution_binding_nonready:${continuity.approvedHint.contextPackStatus}:${continuity.binding.prd_path}:${continuity.binding.task}`;
+}
+
+async function prepareScaleUpApprovedBindingState(
+  teamName: string,
+  cwd: string,
+  state: Exclude<ScaleUpApprovedBindingState, 'missing'>,
+): Promise<void> {
+  if (state === 'malformed') {
+    await writeFile(
+      join(cwd, '.omx', 'state', 'team', teamName, 'approved-execution.json'),
+      '{"prd_path":42}\n',
+    );
+    return;
+  }
+
+  const plansDir = join(cwd, '.omx', 'plans');
+  const approvedTask = `Execute ${state} scale-up handoff`;
+  const prdPath = join(plansDir, `prd-${state}.md`);
+  const testSpecPath = join(plansDir, `test-spec-${state}.md`);
+  await mkdir(plansDir, { recursive: true });
+
+  if (state === 'stale') {
+    await writePersistedApprovedTeamExecutionBinding(teamName, cwd, {
+      prd_path: prdPath,
+      task: approvedTask,
+      command: `omx team 1:executor "${approvedTask}"`,
+    });
+    return;
+  }
+
+  if (state === 'ambiguous') {
+    await writeFile(
+      prdPath,
+      [
+        '# Approved plan',
+        '',
+        `Launch via omx team 1:executor "${approvedTask}"`,
+        `Launch via omx team 2:writer "${approvedTask}"`,
+      ].join('\n'),
+    );
+    await writePersistedApprovedTeamExecutionBinding(teamName, cwd, {
+      prd_path: prdPath,
+      task: approvedTask,
+    });
+    return;
+  }
+
+  const prdLines = ['# Approved plan', ''];
+  if (state === 'incomplete' || state === 'invalid' || state === 'ready') {
+    prdLines.push(buildContextPackOutcome(canonicalContextPackRelativePath(state)), '');
+  }
+  prdLines.push(`Launch via omx team 1:executor "${approvedTask}"`);
+  await writeFile(prdPath, prdLines.join('\n'));
+
+  if (state !== 'missing-baseline') {
+    await writeFile(testSpecPath, `# ${state} test spec\n`);
+  }
+
+  if (state === 'incomplete') {
+    await writeContextPack(cwd, state, prdPath, testSpecPath, ['scope']);
+  }
+  if (state === 'invalid') {
+    await writeContextPack(cwd, state, prdPath, testSpecPath, ['scope', 'build', 'verify']);
+    await writeFile(testSpecPath, '# invalid drifted test spec\n');
+  }
+  if (state === 'ready') {
+    await writeContextPack(cwd, state, prdPath, testSpecPath, ['scope', 'build', 'verify']);
+  }
+
+  await writePersistedApprovedTeamExecutionBinding(teamName, cwd, {
+    prd_path: prdPath,
+    task: approvedTask,
+    command: `omx team 1:executor "${approvedTask}"`,
+  });
 }
 
 // ── isScalingEnabled ──────────────────────────────────────────────────────────
@@ -395,6 +720,358 @@ describe('scaleUp', () => {
       await rm(fakeBinDir, { recursive: true, force: true });
     }
   });
+
+  it('keeps scale-up on the generic path when no approved binding is persisted', async () => {
+    const teamName = 'scale-up-no-approved-binding';
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-no-approved-binding-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-no-approved-binding-bin-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const previousPath = process.env.PATH;
+
+    try {
+      await writeSuccessfulScaleUpTmuxStub(fakeBinDir, tmuxLogPath);
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      await initTeamState(teamName, 'generic scale-up test', 'executor', 1, cwd);
+      await configureScaleUpTeamForDirectDispatch(teamName, cwd);
+
+      assert.equal(await readExpectedScaleUpApprovedBindingError(teamName, cwd), null);
+
+      const result = await scaleUp(
+        teamName,
+        1,
+        'executor',
+        [{ subject: 'Implement generic follow-up', description: 'Implement generic follow-up', owner: 'worker-2' }],
+        cwd,
+        { OMX_TEAM_SCALING_ENABLED: '1', OMX_TEAM_SKIP_READY_WAIT: '1' },
+      );
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+
+      const inbox = await readFile(
+        join(cwd, '.omx', 'state', 'team', teamName, 'workers', 'worker-2', 'inbox.md'),
+        'utf-8',
+      );
+      const tmuxCommands = await readScaleUpTmuxLogCommands(tmuxLogPath);
+      assert.match(inbox, /Implement generic follow-up/);
+      assert.doesNotMatch(inbox, /## Approved Handoff Context/);
+      assert.ok(tmuxCommands.some((command) => command.startsWith('split-window ')));
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps scale-up on the generic path when the persisted binding is only plan-only followup-ready', async () => {
+    const teamName = 'scale-up-plan-only';
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-plan-only-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-plan-only-bin-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const previousPath = process.env.PATH;
+
+    try {
+      await writeSuccessfulScaleUpTmuxStub(fakeBinDir, tmuxLogPath);
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      await initTeamState(teamName, 'plan-only scale-up test', 'executor', 1, cwd);
+      await configureScaleUpTeamForDirectDispatch(teamName, cwd);
+      await prepareScaleUpApprovedBindingState(teamName, cwd, 'plan-only');
+
+      assert.equal(await readExpectedScaleUpApprovedBindingError(teamName, cwd), null);
+
+      const result = await scaleUp(
+        teamName,
+        1,
+        'executor',
+        [{ subject: 'Implement plan-only follow-up', description: 'Implement plan-only follow-up', owner: 'worker-2' }],
+        cwd,
+        { OMX_TEAM_SCALING_ENABLED: '1', OMX_TEAM_SKIP_READY_WAIT: '1' },
+      );
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+
+      const inbox = await readFile(
+        join(cwd, '.omx', 'state', 'team', teamName, 'workers', 'worker-2', 'inbox.md'),
+        'utf-8',
+      );
+      const tmuxCommands = await readScaleUpTmuxLogCommands(tmuxLogPath);
+      assert.match(inbox, /Implement plan-only follow-up/);
+      assert.doesNotMatch(inbox, /## Approved Handoff Context/);
+      assert.ok(tmuxCommands.some((command) => command.startsWith('split-window ')));
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('injects approved handoff context into scaled worker inboxes when the persisted binding stays ready', async () => {
+    const teamName = 'scale-up-approved-context';
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-approved-context-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-approved-context-bin-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const previousPath = process.env.PATH;
+    const approvedTask = 'Execute approved issue 1410 plan';
+
+    try {
+      await writeSuccessfulScaleUpTmuxStub(fakeBinDir, tmuxLogPath);
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      await initTeamState(teamName, 'approved scale-up test', 'executor', 1, cwd);
+      await configureScaleUpTeamForDirectDispatch(teamName, cwd);
+
+      const plansDir = join(cwd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      const prdPath = join(plansDir, 'prd-issue-1410.md');
+      const testSpecPath = join(plansDir, 'test-spec-issue-1410.md');
+      await writeFile(
+        prdPath,
+        [
+          '# Approved plan',
+          '',
+          buildContextPackOutcome(canonicalContextPackRelativePath('issue-1410')),
+          '',
+          `Launch via omx team 1:executor "${approvedTask}"`,
+        ].join('\n'),
+      );
+      await writeFile(testSpecPath, '# Test spec\n');
+      await writeReadyContextPack(cwd, 'issue-1410', prdPath, testSpecPath);
+      await writeFile(
+        join(plansDir, 'repo-context-issue-1410.md'),
+        'Read the approved repository slice first.\n',
+      );
+      await writePersistedApprovedTeamExecutionBinding(teamName, cwd, {
+        prd_path: prdPath,
+        task: approvedTask,
+        command: `omx team 1:executor "${approvedTask}"`,
+      });
+
+      assert.equal(await readExpectedScaleUpApprovedBindingError(teamName, cwd), null);
+
+      const result = await scaleUp(
+        teamName,
+        1,
+        'executor',
+        [{ subject: 'Implement approved follow-up', description: 'Implement approved follow-up', owner: 'worker-2' }],
+        cwd,
+        { OMX_TEAM_SCALING_ENABLED: '1', OMX_TEAM_SKIP_READY_WAIT: '1' },
+      );
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+
+      const inbox = await readFile(
+        join(cwd, '.omx', 'state', 'team', teamName, 'workers', 'worker-2', 'inbox.md'),
+        'utf-8',
+      );
+      const tmuxCommands = await readScaleUpTmuxLogCommands(tmuxLogPath);
+      assert.match(inbox, /## Approved Handoff Context/);
+      assert.ok(inbox.includes(`Approved plan: ${prdPath}`));
+      assert.ok(inbox.includes(`Test specs: ${testSpecPath}`));
+      assert.match(inbox, /Approved repository context summary source: .*repo-context-issue-1410\.md/);
+      assert.match(inbox, /Read the approved repository slice first\./);
+      assert.match(inbox, /Build refs \(read first\): src\/build-1\.ts/);
+      assert.match(inbox, /Verify refs: src\/verify-2\.ts/);
+      assert.match(inbox, /Scope refs: src\/scope-0\.ts/);
+      assert.doesNotMatch(inbox, /query the canonical pack|Context pack index/);
+      assert.ok(tmuxCommands.some((command) => command.startsWith('split-window ')));
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('proves the approved-binding scale-up model across generated state/count scenarios, including forbidden counterfactuals', async () => {
+    for (const state of SCALE_UP_APPROVED_BINDING_STATES) {
+      for (const count of SCALE_UP_COUNTS) {
+        const teamName = `su-model-${SCALE_UP_STATE_TEAM_SUFFIX[state]}-${count}`;
+        const cwd = await mkdtemp(join(tmpdir(), `omx-scale-up-model-${state}-${count}-`));
+        const fakeBinDir = await mkdtemp(join(tmpdir(), `omx-scale-up-model-${state}-${count}-bin-`));
+        const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+        const previousPath = process.env.PATH;
+
+        try {
+          await writeSuccessfulScaleUpTmuxStub(fakeBinDir, tmuxLogPath);
+          process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+          await initTeamState(teamName, `approved ${state} scale-up model`, 'executor', 1, cwd);
+          await configureScaleUpTeamForDirectDispatch(teamName, cwd);
+
+          if (state !== 'missing') {
+            await prepareScaleUpApprovedBindingState(teamName, cwd, state);
+          }
+
+          const expectedOutcome = expectedScaleUpOutcome(state);
+          const expectedError = await readExpectedScaleUpApprovedBindingError(teamName, cwd);
+          const tasks = buildScaleUpScenarioTasks(state, count);
+
+          const result = await scaleUp(
+            teamName,
+            count,
+            'executor',
+            tasks,
+            cwd,
+            { OMX_TEAM_SCALING_ENABLED: '1', OMX_TEAM_SKIP_READY_WAIT: '1' },
+          );
+          const tmuxCommands = await readScaleUpTmuxLogCommands(tmuxLogPath);
+          const splitWindowCommands = tmuxCommands.filter((command) => command.startsWith('split-window '));
+          const inboxes = await Promise.all(tasks.map(async (task) => {
+            const inboxPath = join(
+              cwd,
+              '.omx',
+              'state',
+              'team',
+              teamName,
+              'workers',
+              task.owner,
+              'inbox.md',
+            );
+            return existsSync(inboxPath)
+              ? await readFile(inboxPath, 'utf-8')
+              : null;
+          }));
+          const approvedInboxCount = inboxes.filter((inbox) =>
+            typeof inbox === 'string' && inbox.includes('## Approved Handoff Context')
+          ).length;
+          assert.ok(
+            approvedInboxCount === 0 || approvedInboxCount === tasks.length,
+            `expected approved handoff context presence to stay consistent across all scaled workers (state=${state} count=${count})`,
+          );
+          const observedOutcome: ScaleUpObservedOutcome = !result.ok
+            ? 'blocked'
+            : approvedInboxCount === tasks.length
+              ? 'approved'
+              : 'generic';
+          const taskPayloads = await readScaleUpTaskPayloads(teamName, cwd);
+
+          assert.equal(observedOutcome, expectedOutcome, `state=${state} count=${count}`);
+          assert.equal(
+            forbiddenScaleUpOutcomes(state).includes(observedOutcome),
+            false,
+            `state=${state} count=${count} produced forbidden counterfactual outcome ${observedOutcome}`,
+          );
+          if (expectedOutcome === 'blocked') {
+            assert.equal(result.ok, false);
+            if (result.ok) {
+              throw new Error(`expected blocked scale-up outcome for ${state} count=${count}`);
+            }
+            assert.equal(result.error, expectedError);
+            assert.deepEqual(tmuxCommands, ['-V']);
+            assert.deepEqual(splitWindowCommands, []);
+            assert.ok(inboxes.every((inbox) => inbox === null));
+            assert.equal(
+              taskPayloads.some((payload) => tasks.some((task) => payload.includes(task.subject))),
+              false,
+            );
+
+            const config = await readTeamConfig(teamName, cwd);
+            assert.ok(config);
+            if (!config) {
+              throw new Error(`missing team config for ${teamName}`);
+            }
+            assert.equal(config.workers.length, 1);
+            assert.equal(config.worker_count, 1);
+            assert.equal(config.next_worker_index, 2);
+            continue;
+          }
+
+          assert.equal(result.ok, true);
+          if (!result.ok) {
+            throw new Error(`expected successful scale-up outcome for ${state} count=${count}`);
+          }
+          assert.equal(result.newWorkerCount, 1 + count);
+          assert.equal(result.nextWorkerIndex, 2 + count);
+          assert.equal(splitWindowCommands.length, count);
+          assert.equal(expectedError, null);
+          assert.ok(inboxes.every((inbox): inbox is string => typeof inbox === 'string'));
+
+          for (const [index, inbox] of inboxes.entries()) {
+            const task = tasks[index]!;
+            assert.ok(inbox.includes(task.subject), `expected inbox to include task subject ${task.subject}`);
+          }
+          assert.equal(
+            taskPayloads.filter((payload) => tasks.some((task) => payload.includes(task.subject))).length,
+            count,
+          );
+          if (expectedOutcome === 'approved') {
+            assert.ok(inboxes.every((inbox) => inbox.includes('## Approved Handoff Context')));
+          } else {
+            assert.ok(inboxes.every((inbox) => !inbox.includes('## Approved Handoff Context')));
+          }
+        } finally {
+          if (typeof previousPath === 'string') process.env.PATH = previousPath;
+          else delete process.env.PATH;
+          await rm(cwd, { recursive: true, force: true });
+          await rm(fakeBinDir, { recursive: true, force: true });
+        }
+      }
+    }
+  });
+
+  for (const state of BLOCKED_SCALE_UP_APPROVED_BINDING_STATES) {
+    it(`fails closed before worker launch when the persisted approved binding is ${state}`, async () => {
+      const teamName = `su-block-${SCALE_UP_STATE_TEAM_SUFFIX[state]}`;
+      const cwd = await mkdtemp(join(tmpdir(), `omx-scale-up-approved-${state}-`));
+      const fakeBinDir = await mkdtemp(join(tmpdir(), `omx-scale-up-approved-${state}-bin-`));
+      const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+      const previousPath = process.env.PATH;
+
+      try {
+        await writeSuccessfulScaleUpTmuxStub(fakeBinDir, tmuxLogPath);
+        process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+        await initTeamState(teamName, `approved ${state} scale-up test`, 'executor', 1, cwd);
+        await configureScaleUpTeamForDirectDispatch(teamName, cwd);
+        await prepareScaleUpApprovedBindingState(teamName, cwd, state);
+
+        const expectedError = await readExpectedScaleUpApprovedBindingError(teamName, cwd);
+        assert.ok(expectedError);
+
+        const result = await scaleUp(
+          teamName,
+          1,
+          'executor',
+          [{ subject: 'Implement approved follow-up', description: 'Implement approved follow-up', owner: 'worker-2' }],
+          cwd,
+          { OMX_TEAM_SCALING_ENABLED: '1', OMX_TEAM_SKIP_READY_WAIT: '1' },
+        );
+        assert.equal(result.ok, false);
+        if (result.ok) return;
+        assert.equal(result.error, expectedError);
+
+        const config = await readTeamConfig(teamName, cwd);
+        assert.ok(config);
+        if (!config) return;
+        assert.equal(config.workers.length, 1);
+        assert.equal(config.worker_count, 1);
+        assert.equal(config.next_worker_index, 2);
+
+        const taskPayloads = await readScaleUpTaskPayloads(teamName, cwd);
+        assert.equal(
+          taskPayloads.some((payload) => payload.includes('Implement approved follow-up')),
+          false,
+        );
+        assert.equal(
+          existsSync(join(cwd, '.omx', 'state', 'team', teamName, 'workers', 'worker-2', 'identity.json')),
+          false,
+        );
+        assert.equal(
+          existsSync(join(cwd, '.omx', 'state', 'team', teamName, 'workers', 'worker-2', 'inbox.md')),
+          false,
+        );
+        assert.deepEqual(await readScaleUpTmuxLogCommands(tmuxLogPath), ['-V']);
+      } finally {
+        if (typeof previousPath === 'string') process.env.PATH = previousPath;
+        else delete process.env.PATH;
+        await rm(cwd, { recursive: true, force: true });
+        await rm(fakeBinDir, { recursive: true, force: true });
+      }
+    });
+  }
 
 
   it('uses project-scoped CODEX_HOME for scaled worker reasoning and model defaults', async () => {
