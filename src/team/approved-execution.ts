@@ -113,6 +113,9 @@ export function buildApprovedTeamHandoffSection(
   if (approvedHint.testSpecPaths.length > 0) {
     lines.push(`- Test specs: ${approvedHint.testSpecPaths.join(', ')}`);
   }
+  if (approvedHint.contextPack) {
+    lines.push(`- Approved context pack: ${approvedHint.contextPack.path}`);
+  }
   if (approvedHint.repositoryContextSummary) {
     lines.push(...renderApprovedRepositoryContextSummary(approvedHint.repositoryContextSummary));
   }

@@ -65,6 +65,7 @@ describe('approved execution binding', () => {
 
     assert.match(handoff ?? '', /Approved plan: \/repo\/\.omx\/plans\/prd-issue-1314\.md/);
     assert.match(handoff ?? '', /Test specs: \/repo\/\.omx\/plans\/test-spec-issue-1314\.md/);
+    assert.match(handoff ?? '', /Approved context pack: \/repo\/\.omx\/context\/context-20260507T120000Z-issue-1314\.json/);
     assert.match(handoff ?? '', /Approved repository context summary source: \/repo\/\.omx\/plans\/repo-context-issue-1314\.md/);
     assert.match(handoff ?? '', /Read the approved repository slice before broader repo exploration\./);
     assert.match(handoff ?? '', /Build refs \(read first\): src\/build-entry\.ts/);

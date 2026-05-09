@@ -1079,6 +1079,8 @@ describe("worker bootstrap", () => {
       {
         approvedContextSection: [
           "- Approved plan: .omx/plans/prd-issue-2039.md",
+          "- Test specs: .omx/plans/test-spec-issue-2039.md",
+          "- Approved context pack: .omx/context/context-20260507T120000Z-issue-2039.json",
           "- Build refs (read first): src/build-1.ts",
           "- Read the build refs above before broader repo exploration.",
         ].join("\n"),
@@ -1092,6 +1094,8 @@ describe("worker bootstrap", () => {
 
     assert.match(inbox, /## Approved Handoff Context/);
     assert.match(inbox, /Approved plan: \.omx\/plans\/prd-issue-2039\.md/);
+    assert.match(inbox, /Test specs: \.omx\/plans\/test-spec-issue-2039\.md/);
+    assert.match(inbox, /Approved context pack: \.omx\/context\/context-20260507T120000Z-issue-2039\.json/);
     assert.match(inbox, /Build refs \(read first\): src\/build-1\.ts/);
     assert.doesNotMatch(inbox, /## Approved Repository Context Summary/);
   });
@@ -1110,6 +1114,8 @@ describe("worker bootstrap", () => {
       {
         approvedContextSection: [
           "- Approved plan: .omx/plans/prd-issue-2040.md",
+          "- Test specs: .omx/plans/test-spec-issue-2040.md",
+          "- Approved context pack: .omx/context/context-20260507T120000Z-issue-2040.json",
           "- Build refs (read first): src/build-1.ts",
           "- Verify refs: src/verify-2.ts",
         ].join("\n"),
@@ -1118,6 +1124,8 @@ describe("worker bootstrap", () => {
 
     assert.match(inbox, /## Approved Handoff Context/);
     assert.match(inbox, /Approved plan: \.omx\/plans\/prd-issue-2040\.md/);
+    assert.match(inbox, /Test specs: \.omx\/plans\/test-spec-issue-2040\.md/);
+    assert.match(inbox, /Approved context pack: \.omx\/context\/context-20260507T120000Z-issue-2040\.json/);
     assert.match(inbox, /Build refs \(read first\): src\/build-1\.ts/);
     assert.match(inbox, /Verify refs: src\/verify-2\.ts/);
   });

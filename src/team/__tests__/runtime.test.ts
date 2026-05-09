@@ -6527,6 +6527,7 @@ esac
     await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
     const prdPath = join(cwd, '.omx', 'plans', 'prd-issue-1314-handoff.md');
     const testSpecPath = join(cwd, '.omx', 'plans', 'test-spec-issue-1314-handoff.md');
+    const contextPackPath = join(cwd, canonicalContextPackRelativePath('issue-1314-handoff'));
     await writeFile(
       prdPath,
       [
@@ -6577,6 +6578,7 @@ esac
       assert.match(inbox, /## Approved Handoff Context/);
       assert.match(inbox, new RegExp(`Approved plan: ${prdPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
       assert.match(inbox, new RegExp(`Test specs: ${testSpecPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      assert.match(inbox, new RegExp(`Approved context pack: ${contextPackPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
       assert.match(inbox, /Approved repository context summary source: .*repo-context-issue-1314-handoff\.md/);
       assert.match(inbox, /Read the approved repository slice first\./);
       assert.match(inbox, /Build refs \(read first\): src\/build-1\.ts/);
@@ -6947,6 +6949,7 @@ esac
       await mkdir(plansDir, { recursive: true });
       const prdPath = join(plansDir, 'prd-issue-1320.md');
       const testSpecPath = join(plansDir, 'test-spec-issue-1320.md');
+      const contextPackPath = join(cwd, canonicalContextPackRelativePath('issue-1320'));
       await writeFile(
         prdPath,
         [
@@ -6999,6 +7002,8 @@ esac
       );
       assert.match(inbox, /## Approved Handoff Context/);
       assert.match(inbox, new RegExp(`Approved plan: ${prdPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      assert.match(inbox, new RegExp(`Test specs: ${testSpecPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      assert.match(inbox, new RegExp(`Approved context pack: ${contextPackPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
       assert.match(inbox, /Build refs \(read first\): src\/build-1\.ts/);
       assert.match(inbox, /Verify refs: src\/verify-2\.ts/);
       assert.match(inbox, /Scope refs: src\/scope-0\.ts/);
