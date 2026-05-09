@@ -45,7 +45,7 @@ describe('state-root', () => {
     try {
       process.env.OMX_ROOT = '/tmp/omx-box';
       assert.equal(
-        resolveCanonicalTeamStateRoot('/tmp/demo/project', {}),
+        resolveCanonicalTeamStateRoot('/tmp/demo/project'),
         '/tmp/omx-box/.omx/state',
       );
     } finally {

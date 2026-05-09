@@ -14,6 +14,12 @@ export function resolveCanonicalTeamStateRoot(
   if (typeof explicit === 'string' && explicit.trim() !== '') {
     return resolve(leaderCwd, explicit.trim());
   }
+
+  const boxedRoot = env.OMX_ROOT || env.OMX_STATE_ROOT;
+  if (typeof boxedRoot === 'string' && boxedRoot.trim() !== '') {
+    return resolve(leaderCwd, boxedRoot.trim(), '.omx', 'state');
+  }
+
   return omxStateDir(leaderCwd);
 }
 

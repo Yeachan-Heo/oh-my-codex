@@ -66,7 +66,7 @@ import {
 } from './contracts.js';
 import type { TeamReminderIntent } from './reminder-intents.js';
 import type { WorktreeMode } from './worktree.js';
-import { omxStateDir } from '../utils/paths.js';
+import { resolveCanonicalTeamStateRoot } from './state-root.js';
 
 export type { TeamDispatchRequestStatus, TeamWorkerIntegrationStatus } from './contracts.js';
 
@@ -583,11 +583,7 @@ function normalizeTask(task: TeamTask): TeamTaskV2 {
 
 // Team state directory: .omx/state/team/{teamName}/
 function resolveTeamStateRoot(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
-  const explicit = env.OMX_TEAM_STATE_ROOT;
-  if (typeof explicit === 'string' && explicit.trim() !== '') {
-    return resolve(cwd, explicit.trim());
-  }
-  return omxStateDir(cwd);
+  return resolveCanonicalTeamStateRoot(cwd, env);
 }
 
 function assertSafeTeamName(teamName: string): void {
