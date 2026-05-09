@@ -31,8 +31,7 @@ describe("project wiki documentation contract", () => {
     assert.match(hooksDoc, /Storage.*`omx_wiki\/`/i);
     assert.match(hooksDoc, /SessionStart.*bounded wiki context/i);
     assert.match(hooksDoc, /SessionEnd.*runtime\/notify-path.*non-blocking/i);
-    assert.match(hooksDoc, /PreCompact.*native.*bounded/i);
-    assert.match(hooksDoc, /PostCompact.*native.*no-stdout/i);
+    assert.match(hooksDoc, /PreCompact.*PostCompact.*native.*no-stdout/i);
     assert.match(hooksDoc, /prefer `\$wiki`.*avoid implicit bare `wiki` noun activation/i);
   });
 });

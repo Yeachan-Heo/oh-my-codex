@@ -3025,15 +3025,10 @@ export async function dispatchCodexNativeHook(
   }
 
   if (hookEventName === "PreCompact") {
-    const compactContext = buildWikiPreCompactContext({ cwd });
-    if (compactContext.additionalContext) {
-      outputJson = {
-        hookSpecificOutput: {
-          hookEventName,
-          additionalContext: compactContext.additionalContext,
-        },
-      };
-    }
+    // Codex native PreCompact currently accepts only the common continuation fields.
+    // Keep the OMX lifecycle dispatch above, but do not emit `hookSpecificOutput`
+    // unless Codex defines a supported PreCompact output contract.
+    buildWikiPreCompactContext({ cwd });
   } else if ((hookEventName === "SessionStart" && !skipCanonicalSessionStartContext) || hookEventName === "UserPromptSubmit") {
     const additionalContext = hookEventName === "SessionStart"
       ? await buildSessionStartContext(cwd, canonicalSessionId || nativeSessionId, {

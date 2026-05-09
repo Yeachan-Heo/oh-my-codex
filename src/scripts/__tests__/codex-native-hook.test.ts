@@ -536,7 +536,7 @@ describe("codex native hook dispatch", () => {
 
 
 
-  it("returns bounded wiki context for PreCompact", async () => {
+  it("does not write PreCompact stdout that Codex rejects as hook JSON", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-precompact-"));
     try {
       writePage(cwd, {
@@ -563,10 +563,38 @@ describe("codex native hook dispatch", () => {
 
       assert.equal(result.hookEventName, "PreCompact");
       assert.equal(result.omxEventName, "pre-compact");
-      const additionalContext = (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } } | null)
-        ?.hookSpecificOutput?.additionalContext ?? "";
-      assert.match(additionalContext, /Wiki: 1 pages/);
-      assert.match(additionalContext, /architecture/);
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("emits no CLI stdout for PreCompact when no Codex action is needed", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-precompact-cli-"));
+    try {
+      writePage(cwd, {
+        filename: "architecture.md",
+        frontmatter: {
+          title: "Architecture",
+          tags: ["architecture"],
+          created: "2026-05-08T00:00:00.000Z",
+          updated: "2026-05-08T00:00:00.000Z",
+          sources: [],
+          links: [],
+          category: "architecture",
+          confidence: "high",
+          schemaVersion: WIKI_SCHEMA_VERSION,
+        },
+        content: "\n# Architecture\n\nCompaction-relevant architecture note.\n",
+      });
+
+      const stdout = runNativeHookCli({
+        hook_event_name: "PreCompact",
+        cwd,
+        session_id: "sess-precompact-cli",
+      });
+
+      assert.equal(stdout, "");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
