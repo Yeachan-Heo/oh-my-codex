@@ -339,8 +339,8 @@ function readApprovedPlanText(
   cwd: string,
   options: ApprovedExecutionLaunchHintReadOptions = {},
   allowMissingBaseline = false,
+  artifacts: PlanningArtifacts = readPlanningArtifacts(cwd),
 ): { content: string; context: ApprovedPlanContext } | null {
-  const artifacts = readPlanningArtifacts(cwd);
   const selection = selectPlanningArtifacts(artifacts, options.prdPath);
   const latestPrdPath = selection.prdPath;
   if (!latestPrdPath || (!allowMissingBaseline && selection.testSpecPaths.length === 0) || !existsSync(latestPrdPath)) {
@@ -608,8 +608,9 @@ function readApprovedExecutionLaunchHintOutcomeForPrdPath(
   prdPath: string,
   options: ApprovedExecutionLaunchHintReadOptions = {},
   matchFilter?: LaunchHintMatchFilter,
+  artifacts: PlanningArtifacts = readPlanningArtifacts(cwd),
 ): ApprovedExecutionLaunchHintOutcome {
-  const approvedPlan = readApprovedPlanText(cwd, { ...options, prdPath }, true);
+  const approvedPlan = readApprovedPlanText(cwd, { ...options, prdPath }, true, artifacts);
   if (!approvedPlan) {
     return { status: 'absent' };
   }
@@ -684,6 +685,7 @@ function resolveOlderReusableSameLineageHint(
       mode === 'team'
         ? (match: RegExpMatchArray, _task: string) => sameTeamLaunchSignatureMatch(anchorHint, match)
         : undefined,
+      artifacts,
     );
     if (outcome.status === 'ambiguous') {
       return { status: 'ambiguous' };
@@ -704,6 +706,7 @@ export function readApprovedExecutionLaunchHintOutcome(
   mode: 'team' | 'ralph',
   options: ApprovedExecutionLaunchHintReadOptions = {},
 ): ApprovedExecutionLaunchHintOutcome {
+  const artifacts = readPlanningArtifacts(cwd);
   if (options.prdPath) {
     return readApprovedExecutionLaunchHintOutcomeForPrdPath(
       cwd,
@@ -711,13 +714,13 @@ export function readApprovedExecutionLaunchHintOutcome(
       options.prdPath,
       options,
       mode === 'team' ? buildRequestedTeamLaunchSignatureMatchFilter(options) : undefined,
+      artifacts,
     );
   }
 
   const normalizedTask = options.task?.trim();
   const normalizedCommand = options.command?.trim();
   if (!normalizedTask && !normalizedCommand) {
-    const artifacts = readPlanningArtifacts(cwd);
     const latestPrdPath = selectLatestPlanningArtifactPath(artifacts.prdPaths);
     if (!latestPrdPath) {
       return { status: 'absent' };
@@ -729,6 +732,7 @@ export function readApprovedExecutionLaunchHintOutcome(
       latestPrdPath,
       options,
       mode === 'team' ? buildRequestedTeamLaunchSignatureMatchFilter(options) : undefined,
+      artifacts,
     );
     if (latestOutcome.status === 'ambiguous') {
       return { status: 'ambiguous' };
@@ -755,7 +759,6 @@ export function readApprovedExecutionLaunchHintOutcome(
       : latestOutcome;
   }
 
-  const artifacts = readPlanningArtifacts(cwd);
   let newestNonreadyHint: ApprovedExecutionLaunchHint | null = null;
   let teamLineageAnchorHint: ApprovedExecutionLaunchHint | null = null;
   for (const prdPath of orderedPrdPathsNewestFirst(artifacts.prdPaths)) {
@@ -777,6 +780,7 @@ export function readApprovedExecutionLaunchHintOutcome(
       prdPath,
       options,
       teamLineageMatchFilter,
+      artifacts,
     );
     if (outcome.status === 'ambiguous') {
       return { status: 'ambiguous' };

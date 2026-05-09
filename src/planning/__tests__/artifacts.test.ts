@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import fs, { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, join, relative } from 'node:path';
 import {
@@ -89,7 +90,11 @@ async function cleanup(): Promise<void> {
 
 describe('planning artifacts', () => {
   beforeEach(async () => { await setup(); });
-  afterEach(async () => { await cleanup(); });
+  afterEach(async () => {
+    mock.restoreAll();
+    syncBuiltinESMExports();
+    await cleanup();
+  });
 
   it('round-trips single-quoted approved execution tasks with only escaped apostrophes normalized', () => {
     const task = String.raw`Fix Bob's regression in C:\\tmp`;
@@ -646,6 +651,46 @@ describe('planning artifacts', () => {
     assert.ok(hint);
     assert.equal(hint?.task, 'Execute alpha');
     assert.equal(hint?.command, 'omx ralph "Execute alpha"');
+  });
+
+  it('reuses one planning artifact scan while task lookup checks older same-lineage PRDs', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const task = 'Execute cached planning artifact lineage lookup';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-alpha.md'),
+      `# Alpha\n\nLaunch via omx ralph ${JSON.stringify(task)}\n`,
+    );
+    await writeFile(join(plansDir, 'test-spec-alpha.md'), '# Alpha Test Spec\n');
+    await writeFile(
+      join(plansDir, 'prd-beta.md'),
+      `# Beta\n\nLaunch via omx ralph ${JSON.stringify(task)}\n`,
+    );
+    await writeFile(
+      join(plansDir, 'prd-gamma.md'),
+      `# Gamma\n\nLaunch via omx ralph ${JSON.stringify(task)}\n`,
+    );
+    await writeFile(
+      join(plansDir, 'prd-zeta.md'),
+      `# Zeta\n\nLaunch via omx ralph ${JSON.stringify(task)}\n`,
+    );
+
+    let readdirCount = 0;
+    const originalReaddirSync = fs.readdirSync;
+    mock.method(fs, 'readdirSync', ((...args: unknown[]) => {
+      readdirCount += 1;
+      return Reflect.apply(originalReaddirSync, fs, args);
+    }) as typeof fs.readdirSync);
+    syncBuiltinESMExports();
+
+    const outcome = readApprovedExecutionLaunchHintOutcome(tempDir, 'ralph', { task });
+
+    assert.equal(outcome.status, 'resolved');
+    if (outcome.status !== 'resolved') {
+      return;
+    }
+    assert.equal(outcome.hint.sourcePath, join(plansDir, 'prd-alpha.md'));
+    assert.equal(readdirCount, 2);
   });
 
   it('fails closed for bare Ralph lookups when a single plan lists multiple Ralph launch hints', async () => {
