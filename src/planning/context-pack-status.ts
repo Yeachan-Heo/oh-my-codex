@@ -2,6 +2,11 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { planningArtifactSlug } from './artifact-names.js';
+import {
+  INITIAL_MARKDOWN_VISIBILITY_STATE,
+  inspectMarkdownLine,
+  type MarkdownVisibilityState,
+} from './markdown-structure.js';
 
 const CONTEXT_PACK_OUTCOME_HEADING_PATTERN =
   /^#{1,6}\s+Context Pack Outcome\s*$/i;
@@ -125,45 +130,39 @@ function computeGitBlobSha1(filePath: string): string {
   return createHash('sha1').update(header).update(buffer).digest('hex');
 }
 
-function isMarkdownFenceLine(line: string): boolean {
-  return /^(```|~~~)/.test(line.trimStart());
-}
-
-function isIndentedMarkdownCodeLine(line: string): boolean {
-  return /^(?: {4,}|\t)/.test(line);
-}
-
 function extractContextPackOutcomeSections(content: string): string[][] {
   const lines = content.replace(/\r\n/g, '\n').split('\n');
   const sections: string[][] = [];
-  let inFence = false;
+  let state = INITIAL_MARKDOWN_VISIBILITY_STATE;
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
-    if (isMarkdownFenceLine(line)) {
-      inFence = !inFence;
+    const inspection = inspectMarkdownLine(state, line);
+    state = inspection.nextState;
+    if (inspection.scanState !== 'normal') {
       continue;
     }
-    if (inFence || isIndentedMarkdownCodeLine(line)) {
-      continue;
-    }
-    if (!CONTEXT_PACK_OUTCOME_HEADING_PATTERN.test(line.trim())) {
+    if (!CONTEXT_PACK_OUTCOME_HEADING_PATTERN.test(inspection.visibleText.trim())) {
       continue;
     }
 
     const section: string[] = [];
+    let sectionState: MarkdownVisibilityState = INITIAL_MARKDOWN_VISIBILITY_STATE;
     for (let sectionIndex = index + 1; sectionIndex < lines.length; sectionIndex += 1) {
       const sectionLine = lines[sectionIndex]!;
-      const trimmed = sectionLine.trim();
+      const sectionInspection = inspectMarkdownLine(sectionState, sectionLine);
+      sectionState = sectionInspection.nextState;
+      if (sectionInspection.scanState !== 'normal') {
+        continue;
+      }
+      const trimmed = sectionInspection.visibleText.trim();
       if (
-        isMarkdownFenceLine(sectionLine)
-        || isIndentedMarkdownCodeLine(sectionLine)
-        || /^#{1,6}\s+\S/.test(trimmed)
+        /^#{1,6}\s+\S/.test(trimmed)
         || (trimmed !== '' && !/^[*-]\s+/.test(trimmed))
       ) {
         break;
       }
-      section.push(sectionLine);
+      section.push(sectionInspection.visibleText);
     }
     sections.push(section);
   }

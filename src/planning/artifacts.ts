@@ -15,6 +15,7 @@ import {
   type ContextPackRoleRefs,
   type ContextPackStatus,
 } from './context-pack-status.js';
+import { collectMarkdownVisibleMatches } from './markdown-structure.js';
 
 const PRD_PATTERN = /^prd-.*\.md$/i;
 const TEST_SPEC_PATTERN = /^test-?spec-.*\.md$/i;
@@ -466,7 +467,7 @@ function collectLaunchHintMatches(
   content: string,
   mode: 'team' | 'ralph',
 ): RegExpMatchArray[] {
-  return [...content.matchAll(launchHintPattern(mode))];
+  return collectMarkdownVisibleMatches(content, launchHintPattern(mode));
 }
 
 function selectLaunchHintMatch(

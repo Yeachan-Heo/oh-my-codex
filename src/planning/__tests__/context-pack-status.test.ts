@@ -288,6 +288,109 @@ describe('context pack handoff status', () => {
     assert.equal(status.outcomeState, 'absent');
   });
 
+  it('ignores indented outcome declarations and keeps the plan in plan-only status', async () => {
+    await writeApprovedPlan('epsilon-indented', [
+      '# PRD',
+      '',
+      '    ## Context Pack Outcome',
+      '',
+      `    - pack: created \`${canonicalContextPackRelativePath('epsilon-indented')}\``,
+      '',
+      'Launch via omx ralph "Execute epsilon indented plan"',
+    ]);
+
+    const status = readContextPackHandoffStatus(tempDir);
+
+    assert.equal(status.contextPackStatus, 'plan-only');
+    assert.equal(status.outcomeState, 'absent');
+  });
+
+  it('ignores commented outcome declarations and keeps the plan in plan-only status', async () => {
+    await writeApprovedPlan('epsilon-commented', [
+      '# PRD',
+      '',
+      '<!--',
+      '## Context Pack Outcome',
+      '',
+      `- pack: created \`${canonicalContextPackRelativePath('epsilon-commented-hidden')}\``,
+      '<!--',
+      `- pack: created \`${canonicalContextPackRelativePath('epsilon-commented-hidden-deeper')}\``,
+      '-->',
+      '-->',
+      '',
+      'Launch via omx ralph "Execute epsilon commented plan"',
+    ]);
+
+    const status = readContextPackHandoffStatus(tempDir);
+
+    assert.equal(status.contextPackStatus, 'plan-only');
+    assert.equal(status.outcomeState, 'absent');
+  });
+
+  it('ignores adversarial hidden outcome declarations and still reads the visible declaration', async () => {
+    const { prdPath, testSpecPath } = await writeApprovedPlan('epsilon-adversarial', [
+      '# PRD',
+      '',
+      '```md',
+      '## Context Pack Outcome',
+      '',
+      `- pack: created \`${canonicalContextPackRelativePath('sample-hidden')}\``,
+      '    ```',
+      '```still-open',
+      '~~~',
+      '## Context Pack Outcome',
+      '',
+      `- pack: created \`${canonicalContextPackRelativePath('other-hidden')}\``,
+      '```',
+      '',
+      buildContextPackOutcome(canonicalContextPackRelativePath('epsilon-adversarial')),
+      '',
+      'Launch via omx ralph "Execute epsilon adversarial plan"',
+    ]);
+    await writeContextPack('epsilon-adversarial', prdPath, testSpecPath, ['scope', 'build', 'verify']);
+
+    const status = readContextPackHandoffStatus(tempDir);
+
+    assert.equal(status.contextPackStatus, 'ready');
+    assert.equal(status.outcomeState, 'declared');
+    assert.deepEqual(status.contextPack, {
+      path: join(tempDir, canonicalContextPackRelativePath('epsilon-adversarial')),
+    });
+    assert.deepEqual(status.contextPackIssues, []);
+  });
+
+  it('keeps the visible outcome section valid when nested hidden blocks appear inside it', async () => {
+    const { prdPath, testSpecPath } = await writeApprovedPlan('epsilon-inner-hidden', [
+      '# PRD',
+      '',
+      '## Context Pack Outcome',
+      '',
+      '<!--',
+      `- pack: created \`${canonicalContextPackRelativePath('epsilon-inner-hidden-comment')}\``,
+      '<!--',
+      `- pack: created \`${canonicalContextPackRelativePath('epsilon-inner-hidden-comment-deeper')}\``,
+      '-->',
+      '-->',
+      '```md',
+      `- pack: created \`${canonicalContextPackRelativePath('epsilon-inner-hidden-fenced')}\``,
+      '```',
+      `    - pack: created \`${canonicalContextPackRelativePath('epsilon-inner-hidden-indented')}\``,
+      `- pack: created \`${canonicalContextPackRelativePath('epsilon-inner-hidden')}\``,
+      '',
+      'Launch via omx ralph "Execute epsilon inner hidden plan"',
+    ]);
+    await writeContextPack('epsilon-inner-hidden', prdPath, testSpecPath, ['scope', 'build', 'verify']);
+
+    const status = readContextPackHandoffStatus(tempDir);
+
+    assert.equal(status.contextPackStatus, 'ready');
+    assert.equal(status.outcomeState, 'declared');
+    assert.deepEqual(status.contextPack, {
+      path: join(tempDir, canonicalContextPackRelativePath('epsilon-inner-hidden')),
+    });
+    assert.deepEqual(status.contextPackIssues, []);
+  });
+
   it('rejects nested outcome paths that are not canonical context-pack files', async () => {
     await writeApprovedPlan('eta', [
       '# PRD',
