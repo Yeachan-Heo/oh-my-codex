@@ -76,6 +76,11 @@ import {
   type EnsureWorktreeResult,
   type WorktreeMode,
 } from './worktree.js';
+import { isApprovedExecutionFollowupReadyStatus } from '../planning/artifacts.js';
+import {
+  buildApprovedTeamHandoffSection,
+  resolvePersistedApprovedTeamExecutionContinuityState,
+} from './approved-execution.js';
 
 // ── Environment gate ──────────────────────────────────────────────────────────
 
@@ -241,6 +246,15 @@ export async function scaleUp(
       worker_launch_mode: config.worker_launch_mode,
     });
     const effectiveWorktreeMode = config.worktree_mode ?? resolveScaleUpWorktreeMode(config);
+    const approvedExecutionState = await resolvePersistedApprovedTeamExecutionContinuityState(
+      sanitized,
+      config.leader_cwd ?? leaderCwd,
+      config.team_state_root ?? teamStateRoot,
+    );
+    const approvedContextSection = approvedExecutionState.status === 'valid'
+      && isApprovedExecutionFollowupReadyStatus(approvedExecutionState.approvedHint.contextPackStatus)
+      ? buildApprovedTeamHandoffSection(approvedExecutionState.approvedHint)
+      : undefined;
     if (!config.worktree_mode && effectiveWorktreeMode.enabled) {
       config.worktree_mode = effectiveWorktreeMode;
       await saveTeamConfig(config, leaderCwd);
@@ -477,6 +491,7 @@ export async function scaleUp(
         workerRole: runtimeRole,
         rolePromptContent: rawRolePromptContent ?? undefined,
         worktreeRootAgentsCanonical: Boolean(workerWorkspace?.worktreePath),
+        approvedContextSection,
         workerGoalInstruction: buildTeamWorkerGoalInstruction(sanitized, workerName, workerTasks, { teamStateRoot }),
       });
 
