@@ -55,6 +55,18 @@ Setup-owned trust state is limited to those generated wrapper identities; user h
 | wiki session capture | none | `session-end` | runtime-fallback | Wiki session-log capture runs from the existing runtime session-end cleanup path, not from a native Codex hook |
 | `session-idle` | none | `session-idle` | runtime-fallback | Still emitted from runtime/notify path, not native Codex hooks |
 
+## Stop diff audit budget
+
+The native `Stop` adapter also runs a bounded sloppy-fallback diff audit after
+active workflow continuation and auto-nudge checks. Because `Stop` runs inside
+Codex's foreground hook timeout, this audit must stay best-effort: git diff
+commands share `OMX_STOP_DIFF_AUDIT_BUDGET_MS` (default `2500` ms), untracked
+source scanning is capped by `OMX_STOP_DIFF_AUDIT_MAX_UNTRACKED_FILES` (default
+`200`), and oversized untracked files are skipped above
+`OMX_STOP_DIFF_AUDIT_MAX_FILE_BYTES` (default `524288`). If those limits are
+exhausted, the audit returns no findings instead of risking a native Stop hook
+timeout.
+
 
 ## Document-refresh warning MVP
 

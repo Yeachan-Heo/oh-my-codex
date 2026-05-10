@@ -1,5 +1,5 @@
 import { execFileSync } from "child_process";
-import { closeSync, existsSync, openSync, readFileSync, readSync } from "fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "fs";
 import { appendFile, mkdir, readFile, readdir, writeFile } from "fs/promises";
 import { extname, join, relative, resolve } from "path";
 import { pathToFileURL } from "url";
@@ -771,6 +771,19 @@ interface SloppyFallbackDiffFinding {
   source: "staged" | "unstaged" | "untracked";
 }
 
+const STOP_DIFF_AUDIT_BUDGET_ENV = "OMX_STOP_DIFF_AUDIT_BUDGET_MS";
+const STOP_DIFF_AUDIT_MAX_UNTRACKED_FILES_ENV = "OMX_STOP_DIFF_AUDIT_MAX_UNTRACKED_FILES";
+const STOP_DIFF_AUDIT_MAX_FILE_BYTES_ENV = "OMX_STOP_DIFF_AUDIT_MAX_FILE_BYTES";
+const DEFAULT_STOP_DIFF_AUDIT_BUDGET_MS = 2500;
+const DEFAULT_STOP_DIFF_AUDIT_MAX_UNTRACKED_FILES = 200;
+const DEFAULT_STOP_DIFF_AUDIT_MAX_FILE_BYTES = 512 * 1024;
+
+interface SloppyFallbackAuditBudget {
+  deadlineMs: number;
+  maxUntrackedFiles: number;
+  maxFileBytes: number;
+}
+
 const SOURCE_DIFF_EXTENSIONS = new Set([
   ".c",
   ".cc",
@@ -797,7 +810,33 @@ const SOURCE_DIFF_EXTENSIONS = new Set([
   ".tsx",
 ]);
 
-function gitOutput(cwd: string, args: string[]): string {
+function parsePositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function createSloppyFallbackAuditBudget(): SloppyFallbackAuditBudget {
+  return {
+    deadlineMs: Date.now() + parsePositiveIntegerEnv(STOP_DIFF_AUDIT_BUDGET_ENV, DEFAULT_STOP_DIFF_AUDIT_BUDGET_MS),
+    maxUntrackedFiles: parsePositiveIntegerEnv(
+      STOP_DIFF_AUDIT_MAX_UNTRACKED_FILES_ENV,
+      DEFAULT_STOP_DIFF_AUDIT_MAX_UNTRACKED_FILES,
+    ),
+    maxFileBytes: parsePositiveIntegerEnv(STOP_DIFF_AUDIT_MAX_FILE_BYTES_ENV, DEFAULT_STOP_DIFF_AUDIT_MAX_FILE_BYTES),
+  };
+}
+
+function remainingAuditBudgetMs(budget: SloppyFallbackAuditBudget): number {
+  return Math.max(0, budget.deadlineMs - Date.now());
+}
+
+function isAuditBudgetExhausted(budget: SloppyFallbackAuditBudget): boolean {
+  return remainingAuditBudgetMs(budget) <= 0;
+}
+
+function gitOutput(cwd: string, args: string[], timeoutMs?: number): string {
   try {
     return execFileSync("git", args, {
       cwd,
@@ -805,10 +844,17 @@ function gitOutput(cwd: string, args: string[]): string {
       stdio: ["ignore", "pipe", "ignore"],
       windowsHide: true,
       maxBuffer: 10 * 1024 * 1024,
+      ...(timeoutMs ? { timeout: Math.max(1, timeoutMs) } : {}),
     });
   } catch {
     return "";
   }
+}
+
+function gitOutputWithinBudget(cwd: string, args: string[], budget: SloppyFallbackAuditBudget): string {
+  const timeoutMs = remainingAuditBudgetMs(budget);
+  if (timeoutMs <= 0) return "";
+  return gitOutput(cwd, args, timeoutMs);
 }
 
 function normalizeGitPath(path: string): string {
@@ -906,16 +952,24 @@ function collectSloppyFallbackFindingsFromPatch(
   return findings;
 }
 
-function collectSloppyFallbackFindingsFromUntracked(cwd: string): SloppyFallbackDiffFinding[] {
-  const output = gitOutput(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]);
+function collectSloppyFallbackFindingsFromUntracked(
+  cwd: string,
+  budget: SloppyFallbackAuditBudget,
+): SloppyFallbackDiffFinding[] {
+  const output = gitOutputWithinBudget(cwd, ["ls-files", "--others", "--exclude-standard", "-z"], budget);
   if (!output) return [];
   const findings: SloppyFallbackDiffFinding[] = [];
+  let inspectedFiles = 0;
   for (const rawPath of output.split("\0")) {
+    if (isAuditBudgetExhausted(budget) || inspectedFiles >= budget.maxUntrackedFiles) break;
     const path = normalizeGitPath(rawPath.trim());
     if (!path || !isDiffAuditableSourcePath(path)) continue;
+    const absolutePath = join(cwd, path);
     let content = "";
     try {
-      content = readFileSync(join(cwd, path), "utf-8");
+      if (statSync(absolutePath).size > budget.maxFileBytes) continue;
+      inspectedFiles += 1;
+      content = readFileSync(absolutePath, "utf-8");
     } catch {
       continue;
     }
@@ -928,10 +982,17 @@ function findSloppyFallbackDiffFindings(cwd: string): SloppyFallbackDiffFinding[
   const layout = findGitLayout(cwd);
   if (!layout) return [];
   const auditRoot = layout.worktreeRoot;
+  const budget = createSloppyFallbackAuditBudget();
   return [
-    ...collectSloppyFallbackFindingsFromPatch(gitOutput(auditRoot, ["diff", "--cached", "--no-ext-diff", "--unified=3"]), "staged"),
-    ...collectSloppyFallbackFindingsFromPatch(gitOutput(auditRoot, ["diff", "--no-ext-diff", "--unified=3"]), "unstaged"),
-    ...collectSloppyFallbackFindingsFromUntracked(auditRoot),
+    ...collectSloppyFallbackFindingsFromPatch(
+      gitOutputWithinBudget(auditRoot, ["diff", "--cached", "--no-ext-diff", "--unified=3"], budget),
+      "staged",
+    ),
+    ...collectSloppyFallbackFindingsFromPatch(
+      gitOutputWithinBudget(auditRoot, ["diff", "--no-ext-diff", "--unified=3"], budget),
+      "unstaged",
+    ),
+    ...collectSloppyFallbackFindingsFromUntracked(auditRoot, budget),
   ];
 }
 

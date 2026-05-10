@@ -195,6 +195,9 @@ const TEAM_ENV_KEYS = [
   "SESSION_ID",
   "OMX_QUESTION_RETURN_PANE",
   "OMX_LEADER_PANE_ID",
+  "OMX_STOP_DIFF_AUDIT_BUDGET_MS",
+  "OMX_STOP_DIFF_AUDIT_MAX_UNTRACKED_FILES",
+  "OMX_STOP_DIFF_AUDIT_MAX_FILE_BYTES",
   "TMUX",
   "TMUX_PANE",
   "OMX_TMUX_HUD_OWNER",
@@ -3127,6 +3130,51 @@ exit 0
       assert.equal((repeated.outputJson as { decision?: string } | null)?.decision, "block");
       assert.equal((repeated.outputJson as { stopReason?: string } | null)?.stopReason, "sloppy_fallback_diff_audit");
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let a slow sloppy fallback diff audit consume the Stop hook timeout", async () => {
+    const cwd = await initTempGitRepo("omx-native-hook-stop-slop-budget-");
+    const originalPath = process.env.PATH;
+    try {
+      await mkdir(join(cwd, "src"), { recursive: true });
+      await writeFile(
+        join(cwd, "src", "runtime.ts"),
+        [
+          "export function loadRuntime() {",
+          "  // implement a quick hack fallback if it fails",
+          "  return process.env.RUNTIME || 'local';",
+          "}",
+        ].join("\n"),
+      );
+      const binDir = join(cwd, "bin");
+      await mkdir(binDir, { recursive: true });
+      await writeFile(
+        join(binDir, "git"),
+        [
+          "#!/usr/bin/env bash",
+          "sleep 1",
+          "exit 0",
+        ].join("\n"),
+      );
+      await chmod(join(binDir, "git"), 0o755);
+
+      process.env.PATH = `${binDir}:${originalPath}`;
+      process.env.OMX_STOP_DIFF_AUDIT_BUDGET_MS = "50";
+
+      const startedAt = Date.now();
+      const result = await dispatchCodexNativeHook(
+        { hook_event_name: "Stop", cwd, session_id: "sess-stop-slop-budget" },
+        { cwd },
+      );
+      const elapsedMs = Date.now() - startedAt;
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+      assert.ok(elapsedMs < 1000, `Stop hook should return within the audit budget path, got ${elapsedMs}ms`);
+    } finally {
+      process.env.PATH = originalPath;
       await rm(cwd, { recursive: true, force: true });
     }
   });
