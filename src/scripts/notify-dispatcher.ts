@@ -45,12 +45,16 @@ function sameCommand(
 	return left.every((part, index) => part === right[index]);
 }
 
+function resolveNotifyEntrypoint(command: readonly string[]): string | undefined {
+	if (!/(?:^|[\\/])node(?:\.exe)?$/i.test(command[0] ?? "")) {
+		return command[0];
+	}
+	return command.slice(1).find((arg) => !arg.startsWith("-"));
+}
+
 function isOmxManagedNotifyCommand(command: readonly string[] | null | undefined): boolean {
 	if (!command) return false;
-	const entrypoint =
-		/(?:^|[\\/])node(?:\.exe)?$/i.test(command[0] ?? "")
-			? command[1]
-			: command[0];
+	const entrypoint = resolveNotifyEntrypoint(command);
 	if (!entrypoint) return false;
 	if (!/(?:^|[\\/])notify-(?:hook|dispatcher)\.js$/.test(entrypoint)) {
 		return false;
