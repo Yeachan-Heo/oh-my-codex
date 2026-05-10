@@ -18,6 +18,14 @@ import { uninstall } from "../uninstall.js";
 
 const packageRoot = process.cwd();
 
+function formatTomlStringArray(values: string[]): string {
+	return `[${values.map((value) => JSON.stringify(value)).join(", ")}]`;
+}
+
+function configTomlWithNotify(notify: string[], extra = ""): string {
+	return `notify = ${formatTomlStringArray(notify)}\n${extra}`;
+}
+
 async function withTempCwd(wd: string, fn: () => Promise<void>): Promise<void> {
 	const previousCwd = process.cwd();
 	process.chdir(wd);
@@ -73,6 +81,19 @@ async function withIsolatedUserHome<T>(
 }
 
 describe("notify setup scope", () => {
+	it("escapes seeded notify commands with Windows-style paths", () => {
+		const notify = [
+			"node",
+			String.raw`C:\Users\agent\AppData\Local\Temp\notify-dispatcher.js`,
+			"--metadata",
+			String.raw`C:\Users\agent\AppData\Local\Temp\notify-dispatch.json`,
+		];
+		const parsed = parseToml(configTomlWithNotify(notify)) as {
+			notify?: unknown;
+		};
+		assert.deepEqual(parsed.notify, notify);
+	});
+
 	it("does not write unsupported project-scope notify", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-project-no-notify-"));
 		try {
@@ -182,7 +203,10 @@ describe("notify setup scope", () => {
 				await mkdir(dirname(metadataPath), { recursive: true });
 				await writeFile(
 					join(codexHomeDir, "config.toml"),
-					`notify = ["node", "${oldDispatcher}", "--metadata", "${metadataPath}"]\napproval_policy = "on-failure"\n`,
+					configTomlWithNotify(
+						["node", oldDispatcher, "--metadata", metadataPath],
+						'approval_policy = "on-failure"\n',
+					),
 				);
 				await writeFile(
 					metadataPath,
@@ -224,7 +248,7 @@ describe("notify setup scope", () => {
 				await mkdir(dirname(metadataPath), { recursive: true });
 				await writeFile(
 					join(codexHomeDir, "config.toml"),
-					`notify = ["node", "${oldDispatcher}", "--metadata", "${metadataPath}"]\n`,
+					configTomlWithNotify(["node", oldDispatcher, "--metadata", metadataPath]),
 				);
 				await writeFile(
 					metadataPath,
