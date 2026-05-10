@@ -309,6 +309,58 @@ describe('omx uninstall', () => {
   });
 
 
+  it('does not restore stale OMX dispatcher metadata as notify', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-uninstall-stale-notify-'));
+    try {
+      const home = join(wd, 'home');
+      const codexDir = join(home, '.codex');
+      const metadataPath = join(codexDir, '.omx', 'notify-dispatch.json');
+      const stalePkgRoot = join(wd, 'old-global', 'oh-my-codex');
+      const staleDispatcher = join(stalePkgRoot, 'dist', 'scripts', 'notify-dispatcher.js');
+      await mkdir(dirname(metadataPath), { recursive: true });
+      await writeFile(
+        join(codexDir, 'config.toml'),
+        [
+          '# User settings',
+          'approval_policy = "on-failure"',
+          `notify = ["node", "${staleDispatcher}", "--metadata", "${metadataPath}"]`,
+          '',
+          '# ============================================================',
+          '# oh-my-codex (OMX) Configuration',
+          '# Managed by omx setup - manual edits preserved on next setup',
+          '# ============================================================',
+          '[mcp_servers.omx_state]',
+          'command = "node"',
+          'args = ["/path/to/state-server.js"]',
+          'enabled = true',
+          '# ============================================================',
+          '# End oh-my-codex',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        metadataPath,
+        JSON.stringify({
+          managedBy: 'oh-my-codex',
+          version: 1,
+          previousNotify: ['node', staleDispatcher, '--metadata', metadataPath],
+        }),
+      );
+
+      const res = runOmx(wd, ['uninstall'], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+
+      const config = await readFile(join(codexDir, 'config.toml'), 'utf-8');
+      assert.match(config, /^approval_policy = "on-failure"$/m);
+      assert.doesNotMatch(config, /^notify\s*=/m);
+      assert.doesNotMatch(config, /notify-dispatcher\.js/);
+      assert.doesNotMatch(config, /oh-my-codex \(OMX\) Configuration/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('preserves user config entries when removing OMX', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-uninstall-'));
     try {

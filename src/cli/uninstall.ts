@@ -9,6 +9,7 @@ import {
   formatTomlStringArray,
   getRootTomlArray,
   isOmxManagedNotifyCommand,
+  sanitizePreviousNotifyCommand,
   stripExistingOmxBlocks,
   stripOmxEnvSettings,
   stripOmxTopLevelKeys,
@@ -170,10 +171,16 @@ async function restorePreviousNotifyIfDispatcher(
       Array.isArray(previousNotify) &&
       previousNotify.every((item) => typeof item === "string")
     ) {
-      return insertRootTomlKey(
-        strippedConfig,
-        `notify = ${formatTomlStringArray(previousNotify)}`,
+      const sanitizedPreviousNotify = sanitizePreviousNotifyCommand(
+        previousNotify,
+        getPackageRoot(),
       );
+      if (sanitizedPreviousNotify) {
+        return insertRootTomlKey(
+          strippedConfig,
+          `notify = ${formatTomlStringArray(sanitizedPreviousNotify)}`,
+        );
+      }
     }
   } catch {
     // Missing or malformed metadata means uninstall falls back to removing OMX notify.
