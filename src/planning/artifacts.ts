@@ -458,10 +458,64 @@ type LaunchHintSelection =
 
 type LaunchHintMatchFilter = (match: RegExpMatchArray, task: string) => boolean;
 
+const TEAM_LAUNCH_HINT_PATTERN_SOURCE =
+  String.raw`(?<command>(?:omx\s+team|\$team)\s+(?<ralph>ralph\s+)?(?<count>\d+)(?::(?<role>[a-z][a-z0-9-]*))?\s+(?<task>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'))`;
+const RALPH_LAUNCH_HINT_PATTERN_SOURCE =
+  String.raw`(?<command>(?:omx\s+ralph|\$ralph)\s+(?<task>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'))`;
+
 function launchHintPattern(mode: 'team' | 'ralph'): RegExp {
   return mode === 'team'
-    ? /(?<command>(?:omx\s+team|\$team)\s+(?<ralph>ralph\s+)?(?<count>\d+)(?::(?<role>[a-z][a-z0-9-]*))?\s+(?<task>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'))/gi
-    : /(?<command>(?:omx\s+ralph|\$ralph)\s+(?<task>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'))/gi;
+    ? new RegExp(TEAM_LAUNCH_HINT_PATTERN_SOURCE, 'gi')
+    : new RegExp(RALPH_LAUNCH_HINT_PATTERN_SOURCE, 'gi');
+}
+
+function launchHintExactPattern(mode: 'team' | 'ralph'): RegExp {
+  return mode === 'team'
+    ? new RegExp(`^${TEAM_LAUNCH_HINT_PATTERN_SOURCE}$`, 'i')
+    : new RegExp(`^${RALPH_LAUNCH_HINT_PATTERN_SOURCE}$`, 'i');
+}
+
+function normalizeLaunchHintCommandFromMatch(
+  mode: 'team' | 'ralph',
+  match: RegExpMatchArray | null | undefined,
+): string | null {
+  const groups = match?.groups;
+  const rawCommand = groups?.command?.trim();
+  const taskToken = groups?.task?.trim();
+  if (!groups || !rawCommand || !taskToken) {
+    return null;
+  }
+
+  if (mode === 'team') {
+    const countToken = groups.count?.trim();
+    if (!countToken) {
+      return null;
+    }
+    const roleToken = groups.role?.trim();
+    const prefix = /^\$team\b/i.test(rawCommand) ? '$team' : 'omx team';
+    const countWithRole = roleToken ? `${countToken}:${roleToken}` : countToken;
+    const parts = [prefix];
+    if (groups.ralph?.trim()) {
+      parts.push('ralph');
+    }
+    parts.push(countWithRole, taskToken);
+    return parts.join(' ');
+  }
+
+  const prefix = /^\$ralph\b/i.test(rawCommand) ? '$ralph' : 'omx ralph';
+  return `${prefix} ${taskToken}`;
+}
+
+function normalizeLaunchHintCommand(
+  mode: 'team' | 'ralph',
+  command: string | undefined,
+): string | undefined {
+  const trimmed = command?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const parsed = trimmed.match(launchHintExactPattern(mode));
+  return normalizeLaunchHintCommandFromMatch(mode, parsed) ?? trimmed;
 }
 
 function collectLaunchHintMatches(
@@ -472,15 +526,17 @@ function collectLaunchHintMatches(
 }
 
 function selectLaunchHintMatch(
+  mode: 'team' | 'ralph',
   matches: RegExpMatchArray[],
   normalizedTask?: string,
   normalizedCommand?: string,
   matchFilter?: LaunchHintMatchFilter,
 ): LaunchHintSelection {
+  const exactCommand = normalizeLaunchHintCommand(mode, normalizedCommand);
   if (normalizedCommand) {
     const exactMatches = matches.flatMap((match) => {
-      const command = match.groups?.command?.trim();
-      if (!command || command !== normalizedCommand) {
+      const command = normalizeLaunchHintCommandFromMatch(mode, match);
+      if (!command || command !== exactCommand) {
         return [];
       }
       const task = match.groups?.task ? decodeApprovedExecutionQuotedValue(match.groups.task) : null;
@@ -615,6 +671,7 @@ function readApprovedExecutionLaunchHintOutcomeForPrdPath(
     return { status: 'absent' };
   }
   const selected = selectLaunchHintMatch(
+    mode,
     collectLaunchHintMatches(approvedPlan.content, mode),
     options.task?.trim(),
     options.command?.trim(),
@@ -636,7 +693,7 @@ function readApprovedExecutionLaunchHintOutcomeForPrdPath(
       status: 'resolved',
       hint: {
         mode,
-        command: selected.match.groups.command,
+        command: normalizeLaunchHintCommandFromMatch(mode, selected.match) ?? selected.match.groups.command,
         task: selected.task,
         workerCount,
         agentType: selected.match.groups.role || undefined,
@@ -650,7 +707,7 @@ function readApprovedExecutionLaunchHintOutcomeForPrdPath(
     status: 'resolved',
     hint: {
       mode,
-      command: selected.match.groups.command,
+      command: normalizeLaunchHintCommandFromMatch(mode, selected.match) ?? selected.match.groups.command,
       task: selected.task,
       ...approvedPlan.context,
     },

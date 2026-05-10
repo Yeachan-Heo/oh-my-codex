@@ -732,6 +732,7 @@ describe('planning artifacts', () => {
   it('resolves Ralph launch hints wrapped across visible markdown lines', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     const task = 'Execute wrapped visible ralph plan';
+    const command = `omx ralph ${JSON.stringify(task)}`;
     await mkdir(plansDir, { recursive: true });
     await writeFile(
       join(plansDir, 'prd-wrapped-visible-ralph.md'),
@@ -747,8 +748,12 @@ describe('planning artifacts', () => {
     const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph', { task });
     assert.ok(hint);
     assert.equal(hint?.task, task);
-    assert.equal(hint?.command, `omx ralph\n${JSON.stringify(task)}`);
+    assert.equal(hint?.command, command);
     assert.equal(hint?.contextPackStatus, 'plan-only');
+
+    const exactHint = readApprovedExecutionLaunchHint(tempDir, 'ralph', { command });
+    assert.ok(exactHint);
+    assert.equal(exactHint?.command, command);
   });
 
   it('does not let Ralph launch hints span hidden markdown gaps', async () => {
@@ -801,6 +806,7 @@ describe('planning artifacts', () => {
   it('resolves Team launch hints wrapped across visible markdown lines', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     const task = 'Execute wrapped visible team plan';
+    const command = `omx team 2:executor ${JSON.stringify(task)}`;
     await mkdir(plansDir, { recursive: true });
     await writeFile(
       join(plansDir, 'prd-wrapped-visible-team.md'),
@@ -819,8 +825,102 @@ describe('planning artifacts', () => {
     assert.equal(hint?.task, task);
     assert.equal(hint?.workerCount, 2);
     assert.equal(hint?.agentType, 'executor');
-    assert.equal(hint?.command, `omx team\n2:executor\n${JSON.stringify(task)}`);
+    assert.equal(hint?.command, command);
     assert.equal(hint?.contextPackStatus, 'plan-only');
+
+    const exactHint = readApprovedExecutionLaunchHint(tempDir, 'team', { command });
+    assert.ok(exactHint);
+    assert.equal(exactHint?.command, command);
+  });
+
+  it('normalizes wrapped linked-Ralph team launch hints for exact command matching', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const task = 'Execute wrapped linked ralph team plan';
+    const command = `$team ralph 5:debugger ${JSON.stringify(task)}`;
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-wrapped-visible-team-linked-ralph.md'),
+      [
+        '# PRD',
+        '',
+        'Launch via $team',
+        'ralph',
+        '5:debugger',
+        JSON.stringify(task),
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-wrapped-visible-team-linked-ralph.md'), '# Test Spec\n');
+
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'team', { command });
+    assert.ok(hint);
+    assert.equal(hint?.command, command);
+    assert.equal(hint?.workerCount, 5);
+    assert.equal(hint?.agentType, 'debugger');
+    assert.equal(hint?.linkedRalph, true);
+  });
+
+  it('keeps exact-command normalization bounded to visible whitespace-only variants', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+
+    const task = 'Execute exact-command normalization state table plan';
+    const command = `omx team 2:executor ${JSON.stringify(task)}`;
+    const cases = [
+      {
+        name: 'visible-whitespace-only-variant',
+        prdPath: 'prd-exact-command-visible.md',
+        content: [
+          '# PRD',
+          '',
+          'Launch via omx team',
+          '2:executor',
+          JSON.stringify(task),
+        ].join('\n'),
+        expectedStatus: 'resolved',
+      },
+      {
+        name: 'hidden-gap-counterfactual',
+        prdPath: 'prd-exact-command-hidden-gap.md',
+        content: [
+          '# PRD',
+          '',
+          'Launch via omx team',
+          '```md',
+          'hidden',
+          '```',
+          '2:executor',
+          JSON.stringify(task),
+        ].join('\n'),
+        expectedStatus: 'absent',
+      },
+      {
+        name: 'formatting-only-duplicate',
+        prdPath: 'prd-exact-command-duplicate.md',
+        content: [
+          '# PRD',
+          '',
+          `Launch via ${command}`,
+          'Launch via omx team',
+          '2:executor',
+          JSON.stringify(task),
+        ].join('\n'),
+        expectedStatus: 'ambiguous',
+      },
+    ] as const;
+
+    for (const scenario of cases) {
+      await writeFile(join(plansDir, scenario.prdPath), scenario.content);
+      await writeFile(
+        join(plansDir, scenario.prdPath.replace(/^prd-/, 'test-spec-')),
+        '# Test Spec\n',
+      );
+
+      const outcome = readApprovedExecutionLaunchHintOutcome(tempDir, 'team', { command });
+      assert.equal(outcome.status, scenario.expectedStatus, scenario.name);
+
+      await rm(join(plansDir, scenario.prdPath), { force: true });
+      await rm(join(plansDir, scenario.prdPath.replace(/^prd-/, 'test-spec-')), { force: true });
+    }
   });
 
   it('ignores Team launch hints inside fenced code blocks', async () => {

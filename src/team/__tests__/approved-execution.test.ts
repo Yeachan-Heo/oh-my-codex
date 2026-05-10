@@ -246,6 +246,52 @@ describe('approved execution binding', () => {
     });
   });
 
+  it('keeps an exact-command binding valid when the approved team hint is wrapped across visible lines', async () => {
+    await withUnboxedOmxRoot(async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-approved-execution-wrapped-command-'));
+      const stateRoot = join(cwd, '.omx', 'state');
+      const approvedTask = 'Execute approved issue 1317 wrapped plan';
+      const exactCommand = `omx team 2:executor "${approvedTask}"`;
+      try {
+        const plansDir = join(cwd, '.omx', 'plans');
+        await mkdir(plansDir, { recursive: true });
+        const prdPath = join(plansDir, 'prd-issue-1317-wrapped.md');
+        await writeFile(
+          prdPath,
+          [
+            '# Approved plan',
+            '',
+            'Launch via omx team',
+            '2:executor',
+            JSON.stringify(approvedTask),
+            `Launch via omx team 5:debugger "${approvedTask}"`,
+          ].join('\n'),
+        );
+        await writeFile(join(plansDir, 'test-spec-issue-1317-wrapped.md'), '# Test spec\n');
+        await writePersistedApprovedTeamExecutionBinding('bound-team', cwd, {
+          prd_path: prdPath,
+          task: approvedTask,
+          command: exactCommand,
+        }, stateRoot);
+
+        const state = await resolvePersistedApprovedTeamExecutionContinuityState(
+          'bound-team',
+          cwd,
+          stateRoot,
+        );
+        assert.equal(state.status, 'valid');
+        if (state.status !== 'valid') {
+          throw new Error('expected valid continuity state');
+        }
+        assert.equal(state.approvedHint.command, exactCommand);
+        assert.equal(state.approvedHint.workerCount, 2);
+        assert.equal(state.approvedHint.agentType, 'executor');
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('preserves missing-baseline continuity instead of collapsing it to stale', async () => {
     await withUnboxedOmxRoot(async () => {
       const cwd = await mkdtemp(join(tmpdir(), 'omx-approved-execution-missing-baseline-'));
