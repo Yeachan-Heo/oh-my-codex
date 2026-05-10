@@ -302,7 +302,7 @@ export function isOmxManagedNotifyCommand(
   return command.some((part) => {
     if (!/(?:^|[\\/])notify-(?:hook|dispatcher)\.js$/.test(part)) return false;
     if (pkgRoot) {
-      return isAbsolute(part) && managedScripts.has(resolve(part));
+      if (isAbsolute(part) && managedScripts.has(resolve(part))) return true;
     }
     return /(?:^|[\\/])oh-my-codex(?:[\\/]|$)/.test(part);
   });

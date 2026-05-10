@@ -3117,6 +3117,13 @@ async function buildNotifyMergePlan(
 				Array.isArray(previousNotify) &&
 				previousNotify.every((item) => typeof item === "string")
 			) {
+				if (
+					previousNotify.length === 0 ||
+					isOmxManagedNotifyCommand(previousNotify, pkgRoot) ||
+					isOmxManagedNotifyCommand(previousNotify)
+				) {
+					return { notifyCommand: omxNotify };
+				}
 				return {
 					notifyCommand: dispatcherNotify,
 					metadataPath,
