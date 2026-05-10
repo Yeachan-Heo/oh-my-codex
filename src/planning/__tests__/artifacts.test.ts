@@ -923,6 +923,41 @@ describe('planning artifacts', () => {
     }
   });
 
+  it('does not normalize whitespace that changes the quoted task payload', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+
+    const task = 'Execute embedded\nnewline task';
+    const exactCommand = [
+      'omx ralph "Execute embedded',
+      'newline task"',
+    ].join('\n');
+    const collapsedCommand = 'omx ralph "Execute embedded newline task"';
+
+    await writeFile(
+      join(plansDir, 'prd-exact-command-embedded-newline-task.md'),
+      [
+        '# PRD',
+        '',
+        'Launch via omx ralph "Execute embedded',
+        'newline task"',
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-exact-command-embedded-newline-task.md'), '# Test Spec\n');
+
+    const exactOutcome = readApprovedExecutionLaunchHintOutcome(tempDir, 'ralph', { command: exactCommand });
+    assert.equal(exactOutcome.status, 'resolved');
+    if (exactOutcome.status !== 'resolved') {
+      return;
+    }
+    assert.equal(exactOutcome.hint.command, exactCommand);
+    assert.equal(exactOutcome.hint.task, task);
+    assert.equal(
+      readApprovedExecutionLaunchHintOutcome(tempDir, 'ralph', { command: collapsedCommand }).status,
+      'absent',
+    );
+  });
+
   it('ignores Team launch hints inside fenced code blocks', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     const task = 'Execute approved issue 1314 fenced team plan';
