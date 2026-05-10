@@ -7,6 +7,7 @@
 
 import { readFile } from "fs/promises";
 import { spawnSync } from "child_process";
+import { isAbsolute, resolve } from "path";
 
 interface NotifyDispatcherMetadata {
 	managedBy?: string;
@@ -33,6 +34,18 @@ function parseArgs(): { metadataPath: string; payloadArg: string } {
 function isCommand(value: unknown): value is string[] {
 	return (
 		Array.isArray(value) && value.every((item) => typeof item === "string")
+	);
+}
+
+function isOmxNotifyEntrypointCommand(command: string[]): boolean {
+	const currentDispatcher = isAbsolute(process.argv[1] || "")
+		? resolve(process.argv[1])
+		: "";
+	return command.some(
+		(part) =>
+			/(?:^|[\\/])notify-(?:hook|dispatcher)\.js$/.test(part) &&
+			((currentDispatcher && isAbsolute(part) && resolve(part) === currentDispatcher) ||
+				/(?:^|[\\/])oh-my-codex(?:[\\/]|$)/.test(part)),
 	);
 }
 
@@ -67,7 +80,12 @@ async function main(): Promise<void> {
 	const { metadataPath, payloadArg } = parseArgs();
 	if (!payloadArg || payloadArg.startsWith("-")) return;
 	const metadata = await readMetadata(metadataPath);
-	runNotify(metadata?.previousNotify, payloadArg);
+	if (
+		isCommand(metadata?.previousNotify) &&
+		!isOmxNotifyEntrypointCommand(metadata.previousNotify)
+	) {
+		runNotify(metadata.previousNotify, payloadArg);
+	}
 	runNotify(metadata?.omxNotify, payloadArg);
 }
 

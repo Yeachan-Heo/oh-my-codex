@@ -3,9 +3,34 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mergeConfig, OMX_DEVELOPER_INSTRUCTIONS, upsertPluginModeRuntimeFeatureFlags } from '../generator.js';
+import {
+  isOmxManagedNotifyCommand,
+  mergeConfig,
+  OMX_DEVELOPER_INSTRUCTIONS,
+  upsertPluginModeRuntimeFeatureFlags,
+} from '../generator.js';
 
 describe('config generator', () => {
+  it('recognizes managed notify commands from another global install', () => {
+    assert.equal(
+      isOmxManagedNotifyCommand(
+        [
+          'node',
+          '/opt/homebrew/lib/node_modules/oh-my-codex/dist/scripts/notify-dispatcher.js',
+        ],
+        '/tmp/current-package-root',
+      ),
+      true,
+    );
+    assert.equal(
+      isOmxManagedNotifyCommand(
+        ['node', '/tmp/user-notify-dispatcher.js'],
+        '/tmp/current-package-root',
+      ),
+      false,
+    );
+  });
+
   it('places top-level keys before [features]', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
     try {

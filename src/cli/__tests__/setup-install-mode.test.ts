@@ -165,6 +165,93 @@ describe("notify setup scope", () => {
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
+
+	it("does not preserve a managed dispatcher as previous notify across global installs", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-recursive-notify-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const metadataPath = join(
+					codexHomeDir,
+					".omx",
+					"notify-dispatch.json",
+				);
+				const oldDispatcher =
+					"/tmp/old-global/lib/node_modules/oh-my-codex/dist/scripts/notify-dispatcher.js";
+				const olderDispatcher =
+					"/opt/homebrew/lib/node_modules/oh-my-codex/dist/scripts/notify-dispatcher.js";
+				await mkdir(dirname(metadataPath), { recursive: true });
+				await writeFile(
+					join(codexHomeDir, "config.toml"),
+					`notify = ["node", "${oldDispatcher}", "--metadata", "${metadataPath}"]\napproval_policy = "on-failure"\n`,
+				);
+				await writeFile(
+					metadataPath,
+					JSON.stringify(
+						{
+							managedBy: "oh-my-codex",
+							version: 1,
+							previousNotify: ["node", olderDispatcher, "--metadata", metadataPath],
+						},
+						null,
+						2,
+					),
+				);
+
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user" });
+				});
+
+				const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
+				assert.match(config, /^notify = \["node", ".*notify-hook\.js"\]$/m);
+				assert.doesNotMatch(config, /notify-dispatcher\.js/);
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves a real user notify from legacy dispatcher metadata", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-legacy-user-notify-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const metadataPath = join(
+					codexHomeDir,
+					".omx",
+					"notify-dispatch.json",
+				);
+				const oldDispatcher =
+					"/tmp/old-global/lib/node_modules/oh-my-codex/dist/scripts/notify-dispatcher.js";
+				await mkdir(dirname(metadataPath), { recursive: true });
+				await writeFile(
+					join(codexHomeDir, "config.toml"),
+					`notify = ["node", "${oldDispatcher}", "--metadata", "${metadataPath}"]\n`,
+				);
+				await writeFile(
+					metadataPath,
+					JSON.stringify(
+						{
+							managedBy: "oh-my-codex",
+							version: 1,
+							previousNotify: ["node", "/tmp/user-notify.js"],
+						},
+						null,
+						2,
+					),
+				);
+
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user" });
+				});
+
+				const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
+				assert.match(config, /notify-dispatcher\.js/);
+				const metadata = JSON.parse(await readFile(metadataPath, "utf-8"));
+				assert.deepEqual(metadata.previousNotify, ["node", "/tmp/user-notify.js"]);
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
 });
 
 async function assertProjectPluginModeArtifacts(wd: string): Promise<void> {
