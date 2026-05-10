@@ -28,6 +28,23 @@ describe("codex hooks helpers", () => {
     );
   });
 
+  it("registers SessionStart for startup, resume, and clear reset sources", () => {
+    const config = buildManagedCodexHooksConfig("/repo");
+    const sessionStart = config.hooks.SessionStart[0];
+
+    assert.equal(sessionStart?.matcher, "startup|resume|clear");
+    assert.match(
+      sessionStart?.matcher ?? "",
+      /(?:^|\|)clear(?:\||$)/,
+      "Codex emits SessionStart source=clear after /clear replacement threads; OMX must keep beginning-of-session hooks active",
+    );
+    assert.match(
+      sessionStart?.matcher ?? "",
+      /(?:^|\|)startup(?:\||$)/,
+      "fresh /new thread starts remain covered by Codex's startup SessionStart source",
+    );
+  });
+
   it("uses portable node invocation for Windows managed hook commands", () => {
     const config = buildManagedCodexHooksConfig(
       "D:\\Program Files\\nvm\\v24.12.0\\node_modules\\oh-my-codex",

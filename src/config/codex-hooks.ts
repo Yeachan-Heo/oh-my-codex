@@ -137,7 +137,7 @@ export function buildManagedCodexHooksConfig(
     hooks: {
       SessionStart: [
         buildCommandHook(command, {
-          matcher: "startup|resume",
+          matcher: "startup|resume|clear",
         }),
       ],
       PreToolUse: [
