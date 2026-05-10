@@ -12,6 +12,16 @@ import {
 
 let tempDir: string;
 
+type TestContextPackEntry = {
+  path: string;
+  roles: string[];
+  label?: unknown;
+  tags?: unknown;
+  selector?: unknown;
+  relationPath?: unknown;
+  [key: string]: unknown;
+};
+
 function computeGitBlobSha1(content: string): string {
   const buffer = Buffer.from(content, 'utf-8');
   const header = Buffer.from(`blob ${buffer.length}\0`, 'utf-8');
@@ -89,6 +99,31 @@ async function writeContextPack(
       path: `src/${role}-${index}.ts`,
       roles: [role],
     })),
+  }, null, 2));
+}
+
+async function writeContextPackWithEntries(
+  slug: string,
+  prdPath: string,
+  testSpecPath: string,
+  entries: TestContextPackEntry[],
+): Promise<void> {
+  const packPath = join(tempDir, canonicalContextPackRelativePath(slug));
+  const prdActual = await readFile(prdPath, 'utf-8');
+  const testSpecActual = await readFile(testSpecPath, 'utf-8');
+  await writeFile(packPath, JSON.stringify({
+    slug,
+    basis: {
+      prd: {
+        path: relativeToRepo(prdPath),
+        sha1: computeGitBlobSha1(prdActual),
+      },
+      testSpecs: [{
+        path: relativeToRepo(testSpecPath),
+        sha1: computeGitBlobSha1(testSpecActual),
+      }],
+    },
+    entries,
   }, null, 2));
 }
 
@@ -186,6 +221,387 @@ describe('context pack handoff status', () => {
     });
     assert.deepEqual(status.missingRequiredContextPackRoles, []);
     assert.deepEqual(status.contextPackIssues, []);
+  });
+
+  it('keeps the handoff state machine invariant under private metadata variations and counterfactuals', async () => {
+    const cases: Array<{
+      slug: string;
+      entries: TestContextPackEntry[];
+      mutate?: (fixture: Awaited<ReturnType<typeof writeApprovedPlan>>) => Promise<void>;
+      expected: {
+        status: string;
+        packState: string;
+        declarationState: string;
+        basisState: string;
+        roleCoverage: string;
+        roleRefs: { scope: string[]; build: string[]; verify: string[] } | null;
+        missingRoles?: string[];
+        issue?: string;
+      };
+    }> = [
+      {
+        slug: 'ready-valid-private-metadata',
+        entries: [
+          { path: 'src/scope.ts', roles: ['scope'] },
+          {
+            path: 'src/build.ts',
+            roles: ['build'],
+            label: 'Runtime Contract',
+            tags: ['runtime', 'build'],
+            selector: { type: 'heading', value: '## Runtime Contract', maxWords: 120 },
+            relationPath: [
+              { tag: 'plan', target: 'ready-valid-private-metadata' },
+              { tag: 'implements', target: 'src/build.ts#runtime-contract' },
+            ],
+          },
+          {
+            path: 'src/verify.ts',
+            roles: ['verify'],
+            selector: { type: 'lines', start: 2, end: 4 },
+          },
+        ],
+        expected: {
+          status: 'ready',
+          packState: 'valid',
+          declarationState: 'matching',
+          basisState: 'fresh',
+          roleCoverage: 'covered',
+          roleRefs: {
+            scope: ['src/scope.ts'],
+            build: ['src/build.ts'],
+            verify: ['src/verify.ts'],
+          },
+        },
+      },
+      {
+        slug: 'ready-invalid-private-metadata',
+        entries: [
+          { path: 'src/scope.ts', roles: ['scope'] },
+          {
+            path: 'src/build.ts',
+            roles: ['build'],
+            selector: { type: 'heading', value: 'Runtime Contract', maxWords: 20 },
+          },
+          { path: 'src/verify.ts', roles: ['verify'] },
+        ],
+        expected: {
+          status: 'ready',
+          packState: 'valid',
+          declarationState: 'matching',
+          basisState: 'fresh',
+          roleCoverage: 'covered',
+          roleRefs: {
+            scope: ['src/scope.ts'],
+            build: ['src/build.ts'],
+            verify: ['src/verify.ts'],
+          },
+        },
+      },
+      {
+        slug: 'incomplete-invalid-private-metadata',
+        entries: [
+          { path: 'src/scope.ts', roles: ['scope'] },
+          {
+            path: 'src/build.ts',
+            roles: ['build'],
+            relationPath: [
+              { tag: 'plan', target: 'alpha' },
+              { tag: 'evidence', target: 'beta' },
+              { tag: 'implements', target: 'gamma' },
+              { tag: 'dependency', target: 'delta' },
+              { tag: 'bounds', target: 'epsilon' },
+              { tag: 'verifies', target: 'zeta' },
+            ],
+          },
+        ],
+        expected: {
+          status: 'incomplete',
+          packState: 'valid',
+          declarationState: 'matching',
+          basisState: 'fresh',
+          roleCoverage: 'missing-required-roles',
+          roleRefs: null,
+          missingRoles: ['verify'],
+        },
+      },
+      {
+        slug: 'invalid-stale-private-metadata',
+        entries: [
+          { path: 'src/scope.ts', roles: ['scope'] },
+          {
+            path: 'src/build.ts',
+            roles: ['build'],
+            tags: ['runtime', '', 'verify'],
+          },
+          { path: 'src/verify.ts', roles: ['verify'] },
+        ],
+        mutate: async ({ testSpecPath }) => {
+          await writeFile(testSpecPath, '# Drifted Test Spec\n');
+        },
+        expected: {
+          status: 'invalid',
+          packState: 'valid',
+          declarationState: 'matching',
+          basisState: 'stale',
+          roleCoverage: 'covered',
+          roleRefs: null,
+          issue: 'basis test-spec hash',
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const fixture = await writeApprovedPlan(testCase.slug, [
+        '# PRD',
+        '',
+        buildContextPackOutcome(canonicalContextPackRelativePath(testCase.slug)),
+        '',
+        `Launch via omx ralph ${JSON.stringify(`Execute ${testCase.slug} plan`)}`,
+      ]);
+      await writeContextPackWithEntries(
+        testCase.slug,
+        fixture.prdPath,
+        fixture.testSpecPath,
+        testCase.entries,
+      );
+      if (testCase.mutate) {
+        await testCase.mutate(fixture);
+      }
+
+      const status = readContextPackHandoffStatus(tempDir, fixture.prdPath);
+
+      assert.equal(status.contextPackStatus, testCase.expected.status, `status mismatch for ${testCase.slug}`);
+      assert.equal(status.packState, testCase.expected.packState, `packState mismatch for ${testCase.slug}`);
+      assert.equal(status.declarationState, testCase.expected.declarationState, `declarationState mismatch for ${testCase.slug}`);
+      assert.equal(status.basisState, testCase.expected.basisState, `basisState mismatch for ${testCase.slug}`);
+      assert.equal(status.roleCoverage, testCase.expected.roleCoverage, `roleCoverage mismatch for ${testCase.slug}`);
+      assert.deepEqual(status.contextPackRoleRefs, testCase.expected.roleRefs, `role refs mismatch for ${testCase.slug}`);
+      assert.deepEqual(
+        status.missingRequiredContextPackRoles,
+        testCase.expected.missingRoles ?? [],
+        `missing roles mismatch for ${testCase.slug}`,
+      );
+      if (testCase.expected.issue) {
+        assert.ok(
+          status.contextPackIssues.some((issue) => issue.includes(testCase.expected.issue ?? '')),
+          `expected issue containing ${testCase.expected.issue} for ${testCase.slug}`,
+        );
+      } else {
+        assert.deepEqual(status.contextPackIssues, [], `issues should stay empty for ${testCase.slug}`);
+      }
+    }
+  });
+
+  it('keeps the public handoff state machine invariant across exhaustive private metadata modes', async () => {
+    const metadataVariants: Array<{
+      name: string;
+      buildMetadata: (slug: string) => Record<string, unknown>;
+    }> = [
+      {
+        name: 'none',
+        buildMetadata: () => ({}),
+      },
+      {
+        name: 'valid-heading',
+        buildMetadata: (slug) => ({
+          label: 'Runtime Contract',
+          tags: ['runtime', 'build'],
+          selector: { type: 'heading', value: ' ## Runtime Contract ', maxWords: 120 },
+          relationPath: [
+            { tag: 'Plan', target: ` ${slug} ` },
+            { tag: 'Implements', target: ' src/build.ts#runtime-contract ' },
+          ],
+        }),
+      },
+      {
+        name: 'valid-lines',
+        buildMetadata: (slug) => ({
+          label: 'Verify Slice',
+          selector: { type: 'lines', start: 2, end: 5 },
+          relationPath: [
+            { tag: 'Plan', target: ` ${slug} ` },
+            { tag: 'Verifies', target: ' src/build.ts:2-5 ' },
+          ],
+        }),
+      },
+      {
+        name: 'invalid-label',
+        buildMetadata: () => ({ label: '---' }),
+      },
+      {
+        name: 'invalid-tags',
+        buildMetadata: () => ({ tags: ['runtime', '', 'verify'] }),
+      },
+      {
+        name: 'invalid-selector-extra-key',
+        buildMetadata: () => ({
+          selector: { type: 'heading', value: 'Runtime Contract', extra: true },
+        }),
+      },
+      {
+        name: 'invalid-relation-too-many-steps',
+        buildMetadata: () => ({
+          relationPath: [
+            { tag: 'plan', target: 'alpha' },
+            { tag: 'evidence', target: 'beta' },
+            { tag: 'dependency', target: 'gamma' },
+            { tag: 'links-to', target: 'delta' },
+            { tag: 'bounds', target: 'epsilon' },
+            { tag: 'verifies', target: 'zeta' },
+          ],
+        }),
+      },
+      {
+        name: 'invalid-relation-step-extra-key',
+        buildMetadata: () => ({
+          relationPath: [{ tag: 'plan', target: 'alpha', extra: true }],
+        }),
+      },
+      {
+        name: 'invalid-entry-extra-key',
+        buildMetadata: () => ({ unexpected: true }),
+      },
+    ];
+    const scenarios: Array<{
+      name: string;
+      buildEntries: (metadata: Record<string, unknown>) => TestContextPackEntry[];
+      mutate?: (fixture: Awaited<ReturnType<typeof writeApprovedPlan>>) => Promise<void>;
+      expected: {
+        status: string;
+        packState: string;
+        declarationState: string;
+        basisState: string;
+        roleCoverage: string;
+        roleRefs: { scope: string[]; build: string[]; verify: string[] } | null;
+        missingRoles?: string[];
+        issue?: string;
+      };
+    }> = [
+      {
+        name: 'ready',
+        buildEntries: (metadata) => [
+          { path: 'src/scope.ts', roles: ['scope'] },
+          { path: 'src/build.ts', roles: ['build'], ...metadata },
+          { path: 'src/verify.ts', roles: ['verify'] },
+        ],
+        expected: {
+          status: 'ready',
+          packState: 'valid',
+          declarationState: 'matching',
+          basisState: 'fresh',
+          roleCoverage: 'covered',
+          roleRefs: {
+            scope: ['src/scope.ts'],
+            build: ['src/build.ts'],
+            verify: ['src/verify.ts'],
+          },
+        },
+      },
+      {
+        name: 'incomplete',
+        buildEntries: (metadata) => [
+          { path: 'src/scope.ts', roles: ['scope'] },
+          { path: 'src/build.ts', roles: ['build'], ...metadata },
+        ],
+        expected: {
+          status: 'incomplete',
+          packState: 'valid',
+          declarationState: 'matching',
+          basisState: 'fresh',
+          roleCoverage: 'missing-required-roles',
+          roleRefs: null,
+          missingRoles: ['verify'],
+        },
+      },
+      {
+        name: 'stale',
+        buildEntries: (metadata) => [
+          { path: 'src/scope.ts', roles: ['scope'] },
+          { path: 'src/build.ts', roles: ['build'], ...metadata },
+          { path: 'src/verify.ts', roles: ['verify'] },
+        ],
+        mutate: async ({ testSpecPath }) => {
+          await writeFile(testSpecPath, '# Drifted Test Spec\n');
+        },
+        expected: {
+          status: 'invalid',
+          packState: 'valid',
+          declarationState: 'matching',
+          basisState: 'stale',
+          roleCoverage: 'covered',
+          roleRefs: null,
+          issue: 'basis test-spec hash',
+        },
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      for (const metadataVariant of metadataVariants) {
+        const slug = `${scenario.name}-${metadataVariant.name}`;
+        const fixture = await writeApprovedPlan(slug, [
+          '# PRD',
+          '',
+          buildContextPackOutcome(canonicalContextPackRelativePath(slug)),
+          '',
+          `Launch via omx ralph ${JSON.stringify(`Execute ${slug} plan`)}`,
+        ]);
+        await writeContextPackWithEntries(
+          slug,
+          fixture.prdPath,
+          fixture.testSpecPath,
+          scenario.buildEntries(metadataVariant.buildMetadata(slug)),
+        );
+        if (scenario.mutate) {
+          await scenario.mutate(fixture);
+        }
+
+        const status = readContextPackHandoffStatus(tempDir, fixture.prdPath);
+
+        assert.equal(
+          status.contextPackStatus,
+          scenario.expected.status,
+          `status mismatch for ${slug}`,
+        );
+        assert.equal(
+          status.packState,
+          scenario.expected.packState,
+          `packState mismatch for ${slug}`,
+        );
+        assert.equal(
+          status.declarationState,
+          scenario.expected.declarationState,
+          `declarationState mismatch for ${slug}`,
+        );
+        assert.equal(
+          status.basisState,
+          scenario.expected.basisState,
+          `basisState mismatch for ${slug}`,
+        );
+        assert.equal(
+          status.roleCoverage,
+          scenario.expected.roleCoverage,
+          `roleCoverage mismatch for ${slug}`,
+        );
+        assert.deepEqual(
+          status.contextPackRoleRefs,
+          scenario.expected.roleRefs,
+          `role refs mismatch for ${slug}`,
+        );
+        assert.deepEqual(
+          status.missingRequiredContextPackRoles,
+          scenario.expected.missingRoles ?? [],
+          `missing roles mismatch for ${slug}`,
+        );
+        if (scenario.expected.issue) {
+          assert.ok(
+            status.contextPackIssues.some((issue) => issue.includes(scenario.expected.issue ?? '')),
+            `expected issue containing ${scenario.expected.issue} for ${slug}`,
+          );
+        } else {
+          assert.deepEqual(status.contextPackIssues, [], `issues should stay empty for ${slug}`);
+        }
+      }
+    }
   });
 
   it('reports incomplete when the declared pack omits required execution roles', async () => {

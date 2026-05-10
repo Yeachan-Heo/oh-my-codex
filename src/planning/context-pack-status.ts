@@ -16,6 +16,36 @@ const CONTEXT_PACK_OUTCOME_LINE_PATTERN =
 const CONTEXT_PACK_PATH_PATTERN =
   /^\.omx\/context\/context-(?<timestamp>\d{8}T\d{6}Z)-(?<slug>[^/]+)\.json$/i;
 const SHA1_PATTERN = /^[0-9a-f]{40}$/i;
+const CONTEXT_PACK_COMPACT_TOKEN_PATTERN = /^[a-z][a-z0-9-]*$/;
+const CONTEXT_PACK_LABEL_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}\p{M}-]*$/u;
+const MAX_CONTEXT_PACK_LABEL_LENGTH = 80;
+const MAX_CONTEXT_PACK_TAG_COUNT = 8;
+const MIN_CONTEXT_PACK_SELECTOR_MAX_WORDS = 40;
+const MAX_CONTEXT_PACK_SELECTOR_MAX_WORDS = 240;
+const MAX_CONTEXT_PACK_RELATION_PATH_STEPS = 5;
+const MAX_CONTEXT_PACK_RELATION_TARGET_LENGTH = 180;
+const CONTEXT_PACK_PRIVATE_ENTRY_KEYS = new Set<string>([
+  'path',
+  'roles',
+  'label',
+  'tags',
+  'selector',
+  'relationPath',
+]);
+const CONTEXT_PACK_PRIVATE_HEADING_SELECTOR_KEYS = new Set<string>([
+  'type',
+  'value',
+  'maxWords',
+]);
+const CONTEXT_PACK_PRIVATE_LINES_SELECTOR_KEYS = new Set<string>([
+  'type',
+  'start',
+  'end',
+]);
+const CONTEXT_PACK_PRIVATE_RELATION_STEP_KEYS = new Set<string>([
+  'tag',
+  'target',
+]);
 
 export const REQUIRED_CONTEXT_PACK_ROLES = ['scope', 'build', 'verify'] as const;
 
@@ -38,6 +68,32 @@ export interface ContextPackRoleRefs {
   scope: string[];
   build: string[];
   verify: string[];
+}
+
+export interface ContextPackPrivateRelationStep {
+  tag: string;
+  target: string;
+}
+
+export type ContextPackPrivateSelector =
+  | {
+    type: 'heading';
+    value: string;
+    maxWords?: number;
+  }
+  | {
+    type: 'lines';
+    start: number;
+    end: number;
+  };
+
+export interface ContextPackPrivateEntryReadModel {
+  path: string;
+  roles: ContextPackRole[];
+  label: string | null;
+  tags: string[];
+  selector: ContextPackPrivateSelector | null;
+  relationPath: ContextPackPrivateRelationStep[] | null;
 }
 
 export interface ContextPackHandoffStatusSnapshot {
@@ -122,6 +178,160 @@ function normalizeRepoRelativePath(rawPath: string): string | null {
     return null;
   }
   return segments.join('/');
+}
+
+function hasOnlyAllowedKeys(
+  record: Record<string, unknown>,
+  allowedKeys: ReadonlySet<string>,
+): boolean {
+  return Object.keys(record).every((key) => allowedKeys.has(key));
+}
+
+function normalizeContextPackCompactToken(raw: string): string | null {
+  const normalized = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, MAX_CONTEXT_PACK_LABEL_LENGTH)
+    .replace(/-+$/g, '');
+  return CONTEXT_PACK_COMPACT_TOKEN_PATTERN.test(normalized) ? normalized : null;
+}
+
+function normalizeContextPackLabel(raw: unknown): string | null {
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  const normalized = Array.from(
+    raw
+      .normalize('NFKC')
+      .trim()
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\p{M}]+/gu, '-')
+      .replace(/^-+|-+$/g, ''),
+  )
+    .slice(0, MAX_CONTEXT_PACK_LABEL_LENGTH)
+    .join('')
+    .replace(/-+$/g, '');
+  return CONTEXT_PACK_LABEL_PATTERN.test(normalized) ? normalized : null;
+}
+
+function normalizeContextPackPrivateTags(raw: unknown): string[] | null {
+  if (!Array.isArray(raw) || raw.length > MAX_CONTEXT_PACK_TAG_COUNT) {
+    return null;
+  }
+
+  const normalized = new Set<string>();
+  for (const tag of raw) {
+    if (typeof tag !== 'string') {
+      return null;
+    }
+    const normalizedTag = normalizeContextPackCompactToken(tag);
+    if (!normalizedTag) {
+      return null;
+    }
+    normalized.add(normalizedTag);
+  }
+
+  return [...normalized].sort((left, right) => left.localeCompare(right));
+}
+
+function normalizeContextPackPrivateSelector(
+  raw: unknown,
+): ContextPackPrivateSelector | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return null;
+  }
+
+  const record = raw as Record<string, unknown>;
+  if (record.type === 'heading') {
+    if (!hasOnlyAllowedKeys(record, CONTEXT_PACK_PRIVATE_HEADING_SELECTOR_KEYS)) {
+      return null;
+    }
+    const value = typeof record.value === 'string' ? record.value.trim() : '';
+    const rawMaxWords = record.maxWords;
+    if (!value) {
+      return null;
+    }
+    if (rawMaxWords != null) {
+      if (typeof rawMaxWords !== 'number' || !Number.isInteger(rawMaxWords)) {
+        return null;
+      }
+      if (
+        rawMaxWords < MIN_CONTEXT_PACK_SELECTOR_MAX_WORDS
+        || rawMaxWords > MAX_CONTEXT_PACK_SELECTOR_MAX_WORDS
+      ) {
+        return null;
+      }
+    }
+    return {
+      type: 'heading',
+      value,
+      maxWords: typeof rawMaxWords === 'number' ? rawMaxWords : undefined,
+    };
+  }
+
+  if (record.type === 'lines') {
+    if (!hasOnlyAllowedKeys(record, CONTEXT_PACK_PRIVATE_LINES_SELECTOR_KEYS)) {
+      return null;
+    }
+    const start = record.start;
+    const end = record.end;
+    if (typeof start !== 'number' || typeof end !== 'number') {
+      return null;
+    }
+    if (!Number.isInteger(start) || !Number.isInteger(end)) {
+      return null;
+    }
+    if (start < 1 || end < start) {
+      return null;
+    }
+    return {
+      type: 'lines',
+      start,
+      end,
+    };
+  }
+
+  return null;
+}
+
+function normalizeContextPackPrivateRelationPath(
+  raw: unknown,
+): ContextPackPrivateRelationStep[] | null {
+  if (
+    !Array.isArray(raw)
+    || raw.length === 0
+    || raw.length > MAX_CONTEXT_PACK_RELATION_PATH_STEPS
+  ) {
+    return null;
+  }
+
+  const steps: ContextPackPrivateRelationStep[] = [];
+  for (const step of raw) {
+    if (!step || typeof step !== 'object' || Array.isArray(step)) {
+      return null;
+    }
+    const record = step as Record<string, unknown>;
+    if (!hasOnlyAllowedKeys(record, CONTEXT_PACK_PRIVATE_RELATION_STEP_KEYS)) {
+      return null;
+    }
+    const tag =
+      typeof record.tag === 'string'
+        ? normalizeContextPackCompactToken(record.tag)
+        : null;
+    const target = typeof record.target === 'string' ? record.target.trim() : '';
+    if (
+      !tag
+      || !target
+      || target.length > MAX_CONTEXT_PACK_RELATION_TARGET_LENGTH
+    ) {
+      return null;
+    }
+    steps.push({ tag, target });
+  }
+
+  return steps;
 }
 
 function computeGitBlobSha1(filePath: string): string {
@@ -290,6 +500,19 @@ function inspectContextPackOutcome(
     declaredSlug: resolvedSlug,
     issues: [],
   };
+}
+
+function readRawContextPackRecord(packPath: string): Record<string, unknown> | null {
+  try {
+    const rawContent = readFileSync(packPath, 'utf-8');
+    const rawDocument = JSON.parse(rawContent);
+    if (!rawDocument || typeof rawDocument !== 'object' || Array.isArray(rawDocument)) {
+      return null;
+    }
+    return rawDocument as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 function readContextPackDocument(packPath: string): {
@@ -495,6 +718,83 @@ export function readReadyContextPackRoleRefs(
     return null;
   }
   return groupContextPackRoleRefs(packDocument.document);
+}
+
+export function readReadyContextPackPrivateEntryReadModel(
+  packPath: string,
+): ContextPackPrivateEntryReadModel[] | null {
+  const packDocument = readContextPackDocument(packPath);
+  const rawDocument = readRawContextPackRecord(packPath);
+  if (!packDocument.document || !rawDocument) {
+    return null;
+  }
+
+  const rawEntries = rawDocument.entries;
+  if (
+    !Array.isArray(rawEntries)
+    || rawEntries.length !== packDocument.document.entries.length
+  ) {
+    return null;
+  }
+
+  const entries: ContextPackPrivateEntryReadModel[] = [];
+  for (const [index, rawEntry] of rawEntries.entries()) {
+    if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
+      return null;
+    }
+    const baseEntry = packDocument.document.entries[index];
+    if (!baseEntry) {
+      return null;
+    }
+
+    const record = rawEntry as Record<string, unknown>;
+    if (!hasOnlyAllowedKeys(record, CONTEXT_PACK_PRIVATE_ENTRY_KEYS)) {
+      return null;
+    }
+    const label =
+      record.label == null
+        ? null
+        : normalizeContextPackLabel(record.label);
+    if (record.label != null && !label) {
+      return null;
+    }
+
+    let tags: string[] = [];
+    if (record.tags != null) {
+      const normalizedTags = normalizeContextPackPrivateTags(record.tags);
+      if (!normalizedTags) {
+        return null;
+      }
+      tags = normalizedTags;
+    }
+
+    const selector =
+      record.selector == null
+        ? null
+        : normalizeContextPackPrivateSelector(record.selector);
+    if (record.selector != null && !selector) {
+      return null;
+    }
+
+    const relationPath =
+      record.relationPath == null
+        ? null
+        : normalizeContextPackPrivateRelationPath(record.relationPath);
+    if (record.relationPath != null && !relationPath) {
+      return null;
+    }
+
+    entries.push({
+      path: baseEntry.path,
+      roles: [...baseEntry.roles],
+      label,
+      tags,
+      selector,
+      relationPath,
+    });
+  }
+
+  return entries;
 }
 
 function validateContextPackBasis(

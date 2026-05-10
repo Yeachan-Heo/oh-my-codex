@@ -78,6 +78,41 @@ async function writeContextPack(
   return packPath;
 }
 
+async function writeContextPackWithEntries(
+  slug: string,
+  prdPath: string,
+  testSpecPath: string,
+  entries: Array<{
+    path: string;
+    roles: string[];
+    label?: unknown;
+    tags?: unknown;
+    selector?: unknown;
+    relationPath?: unknown;
+  }>,
+): Promise<string> {
+  const contextDir = join(tempDir, '.omx', 'context');
+  await mkdir(contextDir, { recursive: true });
+  const packPath = join(tempDir, canonicalContextPackRelativePath(slug));
+  const prdContent = await readFile(prdPath, 'utf-8');
+  const testSpecContent = await readFile(testSpecPath, 'utf-8');
+  await writeFile(packPath, JSON.stringify({
+    slug,
+    basis: {
+      prd: {
+        path: relativeToRepo(prdPath),
+        sha1: computeGitBlobSha1(prdContent),
+      },
+      testSpecs: [{
+        path: relativeToRepo(testSpecPath),
+        sha1: computeGitBlobSha1(testSpecContent),
+      }],
+    },
+    entries,
+  }, null, 2));
+  return packPath;
+}
+
 async function setup(): Promise<void> {
   tempDir = await mkdtemp(join(tmpdir(), 'omx-planning-artifacts-'));
 }
@@ -372,6 +407,134 @@ describe('planning artifacts', () => {
       scope: ['src/scope-0.ts'],
       build: ['src/build-1.ts'],
       verify: ['src/verify-2.ts'],
+    });
+    assert.deepEqual(hint?.missingRequiredContextPackRoles, []);
+    assert.deepEqual(hint?.contextPackIssues, []);
+  });
+
+  it('keeps approved hint role refs unchanged when ready packs carry private entry metadata', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    const prdPath = join(plansDir, 'prd-context-ready-private.md');
+    const testSpecPath = join(plansDir, 'test-spec-context-ready-private.md');
+    await writeFile(
+      prdPath,
+      [
+        '# PRD',
+        '',
+        buildContextPackOutcome(canonicalContextPackRelativePath('context-ready-private')),
+        '',
+        'Launch via omx ralph "Execute context-ready private handoff"',
+      ].join('\n'),
+    );
+    await writeFile(testSpecPath, '# Test Spec\n');
+    const packPath = await writeContextPackWithEntries(
+      'context-ready-private',
+      prdPath,
+      testSpecPath,
+      [
+        {
+          path: 'src/scope-ready.ts',
+          roles: ['scope'],
+        },
+        {
+          path: 'src/build-ready.ts',
+          roles: ['build'],
+          label: 'Build Focus',
+          tags: ['runtime', 'build'],
+          selector: { type: 'heading', value: ' ## Build Focus ', maxWords: 120 },
+          relationPath: [
+            { tag: 'Plan', target: ' context-ready-private ' },
+            { tag: 'Implements', target: ' src/build-ready.ts#build-focus ' },
+          ],
+        },
+        {
+          path: 'src/verify-ready.ts',
+          roles: ['verify'],
+          relationPath: [
+            { tag: 'Plan', target: ' context-ready-private ' },
+            { tag: 'Verifies', target: ' src/verify-ready.ts ' },
+          ],
+        },
+      ],
+    );
+
+    const selection = readLatestPlanningArtifacts(tempDir);
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
+
+    assert.deepEqual(selection.contextPack, { path: packPath });
+    assert.equal(selection.contextPackStatus, 'ready');
+    assert.deepEqual(selection.contextPackRoleRefs, {
+      scope: ['src/scope-ready.ts'],
+      build: ['src/build-ready.ts'],
+      verify: ['src/verify-ready.ts'],
+    });
+    assert.ok(hint);
+    assert.deepEqual(hint?.contextPack, { path: packPath });
+    assert.equal(hint?.contextPackStatus, 'ready');
+    assert.deepEqual(hint?.contextPackRoleRefs, {
+      scope: ['src/scope-ready.ts'],
+      build: ['src/build-ready.ts'],
+      verify: ['src/verify-ready.ts'],
+    });
+    assert.deepEqual(hint?.missingRequiredContextPackRoles, []);
+    assert.deepEqual(hint?.contextPackIssues, []);
+  });
+
+  it('keeps approved hint role refs unchanged when ready packs carry malformed private metadata', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    const prdPath = join(plansDir, 'prd-context-ready-private-counterfactual.md');
+    const testSpecPath = join(plansDir, 'test-spec-context-ready-private-counterfactual.md');
+    await writeFile(
+      prdPath,
+      [
+        '# PRD',
+        '',
+        buildContextPackOutcome(canonicalContextPackRelativePath('context-ready-private-counterfactual')),
+        '',
+        'Launch via omx ralph "Execute context-ready private counterfactual handoff"',
+      ].join('\n'),
+    );
+    await writeFile(testSpecPath, '# Test Spec\n');
+    const packPath = await writeContextPackWithEntries(
+      'context-ready-private-counterfactual',
+      prdPath,
+      testSpecPath,
+      [
+        {
+          path: 'src/scope-counterfactual.ts',
+          roles: ['scope'],
+        },
+        {
+          path: 'src/build-counterfactual.ts',
+          roles: ['build'],
+          selector: { type: 'heading', value: 'Build Focus', maxWords: 20 },
+        },
+        {
+          path: 'src/verify-counterfactual.ts',
+          roles: ['verify'],
+        },
+      ],
+    );
+
+    const selection = readLatestPlanningArtifacts(tempDir);
+    const hint = readApprovedExecutionLaunchHint(tempDir, 'ralph');
+
+    assert.deepEqual(selection.contextPack, { path: packPath });
+    assert.equal(selection.contextPackStatus, 'ready');
+    assert.deepEqual(selection.contextPackRoleRefs, {
+      scope: ['src/scope-counterfactual.ts'],
+      build: ['src/build-counterfactual.ts'],
+      verify: ['src/verify-counterfactual.ts'],
+    });
+    assert.ok(hint);
+    assert.deepEqual(hint?.contextPack, { path: packPath });
+    assert.equal(hint?.contextPackStatus, 'ready');
+    assert.deepEqual(hint?.contextPackRoleRefs, {
+      scope: ['src/scope-counterfactual.ts'],
+      build: ['src/build-counterfactual.ts'],
+      verify: ['src/verify-counterfactual.ts'],
     });
     assert.deepEqual(hint?.missingRequiredContextPackRoles, []);
     assert.deepEqual(hint?.contextPackIssues, []);
