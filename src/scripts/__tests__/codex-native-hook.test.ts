@@ -236,7 +236,7 @@ describe("codex native hook config", () => {
       matcher?: string;
       hooks?: Array<Record<string, unknown>>;
     };
-    assert.equal(sessionStart.matcher, "startup|resume");
+    assert.equal(sessionStart.matcher, "startup|resume|clear");
     assert.equal(sessionStart.hooks?.[0]?.statusMessage, undefined);
 
     const preToolUse = config.hooks.PreToolUse[0] as {
