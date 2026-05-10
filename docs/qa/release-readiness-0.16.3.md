@@ -11,7 +11,7 @@ Release: https://github.com/Yeachan-Heo/oh-my-codex/releases/tag/v0.16.3
 
 ## Release surface
 
-- Codex hook setup/config: supported `[features].codex_hooks = true`, runtime hook trust placement, dedupe, Windows command generation, and native compact hook JSON validity.
+- Codex hook setup/config: supported `[features].hooks = true`, runtime hook trust placement, dedupe, Windows command generation, and native compact hook JSON validity.
 - Setup/uninstall ownership: user notify preservation, user hook enablement preservation, managed notify detection hardening, and project-scope runtime mirror boundaries.
 - Team/planning/runtime: approved handoff context, ready context-pack role refs, launch signature preservation, role-agnostic hints, startup-evidence state-root isolation, and local planning artifact reads.
 - Workflow lifecycle: stale Ralph resume prevention and blocked autoresearch Stop reconciliation.
@@ -20,7 +20,7 @@ Release: https://github.com/Yeachan-Heo/oh-my-codex/releases/tag/v0.16.3
 
 | Gate | Result |
 | --- | --- |
-| Official Codex docs check | PASS — lifecycle hooks use `[features].codex_hooks = true`. |
+| Official Codex docs check | PASS — lifecycle hooks use `[features].hooks = true`. |
 | Local blocker suite | PASS — `npm run build`, `npm run lint`, `npm run check:no-unused`, targeted setup/config/uninstall/hook/Team Node tests, and `git diff --check`. |
 | Release body generation | PASS — generated from `RELEASE_BODY.md` with `v0.16.2...v0.16.3` compare inputs before tagging. |
 | Dev CI | PENDING — verify after pushing the release-prep commit. |

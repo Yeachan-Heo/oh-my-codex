@@ -4,7 +4,7 @@
 
 ## Highlights
 
-- **Codex native-hook setup is aligned with the supported feature flag** — generated setup/runtime config now emits and migrates to `[features].codex_hooks = true`, removes stale unsupported `hooks = true` aliases inside the features table, preserves user-owned hook state, and keeps project runtime `CODEX_HOME` hook trust pointed at the mirrored runtime `hooks.json`.
+- **Codex native-hook setup is aligned with the supported feature flag** — generated setup/runtime config now emits and migrates to `[features].hooks = true`, removes stale legacy `codex_hooks = true` aliases inside the features table, preserves user-owned hook state, and keeps project runtime `CODEX_HOME` hook trust pointed at the mirrored runtime `hooks.json`.
 - **User-owned notification hooks are safer across setup/uninstall** — project setup with `notifyCommand: false` preserves non-OMX `notify` commands, managed notify detection no longer relies on basename-only matches, uninstall keeps user hook enablement intact, and Windows/global install hook commands avoid unsafe self-updates.
 - **Team, planning, and approved handoffs are more durable** — approved handoff context is surfaced to workers, ready context-pack role references are exposed, symbolic Team launch signatures survive planning, role-agnostic approved hints are preserved, and Team startup-evidence tests now isolate local state roots from global OMX state.
 - **Ralph/autoresearch/native compact hooks avoid stale or malformed lifecycle behavior** — stale Ralph sessions no longer auto-resume, blocked autoresearch Stop reconciliation is explicit, and PreCompact/PostCompact native hook output remains valid JSON.

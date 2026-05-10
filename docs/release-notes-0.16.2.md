@@ -11,8 +11,8 @@
 ## Codex native hooks and setup
 
 - Added Codex-compatible trust-state generation for setup-owned `codex-native-hook.js` wrappers so generated hooks can be trusted without manual `/hooks` review, while user hook entries and user-owned hook state remain preserved. ([#2194](https://github.com/Yeachan-Heo/oh-my-codex/pull/2194))
-- Updated the hook feature-flag migration so generated setup config uses the Codex CLI 0.130 lifecycle-hook flag, `[features].codex_hooks = true`.
-- Migrates unsupported `[features].hooks = true` entries back to `codex_hooks` during setup, while retaining legacy cleanup detection for older configs.
+- Updated the hook feature-flag migration so generated setup config uses the Codex CLI 0.130 lifecycle-hook flag, `[features].hooks = true`.
+- Migrates legacy `[features].codex_hooks = true` entries forward to `hooks` during setup, while retaining legacy cleanup detection for older configs.
 
 ## Merged PR inventory
 
