@@ -3,8 +3,10 @@
  */
 
 import { existsSync } from "fs";
-import { readdir, readFile } from "fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "fs/promises";
+import { spawnSync } from "child_process";
 import { join } from "path";
+import { tmpdir } from "os";
 import {
 	codexHome,
 	codexConfigPath,
@@ -30,8 +32,12 @@ import {
 	hasLegacyOmxTeamRunTable,
 	getModelContextRecommendation,
 } from "../config/generator.js";
-import { getMissingManagedCodexHookEvents } from "../config/codex-hooks.js";
-import { discoverCodexHookConfigPaths } from "../config/codex-hooks.js";
+import {
+	buildManagedCodexNativeHookCommand,
+	discoverCodexHookConfigPaths,
+	getManagedCodexHookCommandsForEvent,
+	getMissingManagedCodexHookEvents,
+} from "../config/codex-hooks.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { getDefaultBridge, isBridgeEnabled } from "../runtime/bridge.js";
 import {
@@ -171,6 +177,13 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
 	// Check 4.25: Native hooks coverage
 	checks.push(await checkNativeHooks(paths.hooksPath, paths.configPath));
+	if (options.verbose) {
+		const postCompactRuntimeCheck = await checkNativePostCompactHookRuntime(
+			paths.hooksPath,
+			cwd,
+		);
+		if (postCompactRuntimeCheck) checks.push(postCompactRuntimeCheck);
+	}
 	const runtimeMirrorCheck = await checkNativeHookRuntimeMirrors(cwd, paths.hooksPath);
 	if (runtimeMirrorCheck) checks.push(runtimeMirrorCheck);
 
@@ -1041,6 +1054,108 @@ async function checkNativeHooks(
 			status: "fail",
 			message: "cannot read hooks.json",
 		};
+	}
+}
+
+export function classifyPostCompactHookStdout(stdout: string): Check | null {
+	const trimmed = stdout.trim();
+	if (trimmed === "") return null;
+
+	try {
+		JSON.parse(trimmed);
+		return {
+			name: "Native PostCompact hook",
+			status: "fail",
+			message:
+				"PostCompact hook emitted JSON stdout, but OMX PostCompact must emit no stdout until Codex defines a supported PostCompact output contract; run \"omx setup --force\" after upgrading",
+		};
+	} catch (error) {
+		return {
+			name: "Native PostCompact hook",
+			status: "fail",
+			message: `PostCompact hook emitted invalid JSON stdout (${error instanceof Error ? error.message : String(error)}); run "omx setup --force" after upgrading`,
+		};
+	}
+}
+
+async function checkNativePostCompactHookRuntime(
+	hooksPath: string,
+	cwd: string,
+): Promise<Check | null> {
+	if (!existsSync(hooksPath)) return null;
+
+	let content: string;
+	try {
+		content = await readFile(hooksPath, "utf-8");
+	} catch {
+		return null;
+	}
+
+	const postCompactCommands = getManagedCodexHookCommandsForEvent(
+		content,
+		"PostCompact",
+	);
+	if (postCompactCommands === null || postCompactCommands.length === 0) {
+		return null;
+	}
+
+	const expectedCommand = buildManagedCodexNativeHookCommand(getPackageRoot());
+	const uniqueCommands = [...new Set(postCompactCommands)];
+	if (uniqueCommands.length !== 1 || uniqueCommands[0] !== expectedCommand) {
+		return {
+			name: "Native PostCompact hook",
+			status: "warn",
+			message:
+				"effective PostCompact OMX command does not match this installation's managed hook command; doctor skipped execution for safety, and \"omx setup --force\" should refresh stale hooks.json entries",
+		};
+	}
+
+	const smokeCwd = await mkdtemp(join(tmpdir(), "omx-doctor-postcompact-"));
+	try {
+		const payload = JSON.stringify({
+			hook_event_name: "PostCompact",
+			cwd: smokeCwd,
+			session_id: "omx-doctor-postcompact-smoke",
+		});
+		const result = spawnSync(expectedCommand, {
+			cwd,
+			encoding: "utf-8",
+			env: {
+				...process.env,
+				OMX_NATIVE_HOOK_DOCTOR_SMOKE: "1",
+			},
+			input: payload,
+			shell: true,
+			timeout: 5_000,
+		});
+
+		if (result.error) {
+			return {
+				name: "Native PostCompact hook",
+				status: "fail",
+				message: `PostCompact hook smoke validation failed to run (${result.error.message})`,
+			};
+		}
+		if (result.status !== 0) {
+			const stderr = (result.stderr || "").trim();
+			return {
+				name: "Native PostCompact hook",
+				status: "fail",
+				message: `PostCompact hook smoke validation exited ${result.status}${stderr ? `: ${stderr}` : ""}`,
+			};
+		}
+
+		const stdoutCheck = classifyPostCompactHookStdout(result.stdout || "");
+		if (stdoutCheck) return stdoutCheck;
+
+		return {
+			name: "Native PostCompact hook",
+			status: "pass",
+			message:
+				"verbose smoke validation confirmed the effective PostCompact hook exits successfully with no stdout",
+		};
+	} finally {
+		await rm(smokeCwd, { recursive: true, force: true });
 	}
 }
 

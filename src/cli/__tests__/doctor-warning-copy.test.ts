@@ -17,7 +17,20 @@ import {
 	withPackagedExploreHarnessHidden,
 	withPackagedExploreHarnessLock,
 } from "./packaged-explore-harness-lock.js";
-import { checkExploreHarness } from "../doctor.js";
+import {
+	checkExploreHarness,
+	classifyPostCompactHookStdout,
+} from "../doctor.js";
+
+const MANAGED_HOOK_EVENTS = [
+	"SessionStart",
+	"PreToolUse",
+	"PostToolUse",
+	"UserPromptSubmit",
+	"PreCompact",
+	"PostCompact",
+	"Stop",
+] as const;
 
 function runOmx(
 	cwd: string,
@@ -49,6 +62,39 @@ function runOmx(
 
 function shouldSkipForSpawnPermissions(err?: string): boolean {
 	return typeof err === "string" && /(EPERM|EACCES)/i.test(err);
+}
+
+function quoteCommandPart(value: string): string {
+	return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function currentNativeHookCommand(): string {
+	const testDir = dirname(fileURLToPath(import.meta.url));
+	const repoRoot = join(testDir, "..", "..", "..");
+	return `${quoteCommandPart(process.execPath)} ${quoteCommandPart(join(repoRoot, "dist", "scripts", "codex-native-hook.js"))}`;
+}
+
+function buildHooksJsonWithPostCompactCommand(postCompactCommand: string): string {
+	const expectedCommand = currentNativeHookCommand();
+	return `${JSON.stringify({
+		hooks: Object.fromEntries(
+			MANAGED_HOOK_EVENTS.map((eventName) => [
+				eventName,
+				[
+					{
+						hooks: [
+							{
+								type: "command",
+								command: eventName === "PostCompact"
+									? postCompactCommand
+									: expectedCommand,
+							},
+						],
+					},
+				],
+			]),
+		),
+	}, null, 2)}\n`;
 }
 
 describe("omx doctor onboarding warning copy", () => {
@@ -608,6 +654,83 @@ command = "node"
 			assert.match(
 				res.stdout,
 				/\[XX\] Native hooks: invalid hooks\.json; Codex may skip OMX hook coverage until "omx setup --force" repairs it/,
+			);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("verbose doctor warns instead of executing when the effective PostCompact command is stale", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-postcompact-stale-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(codexDir, { recursive: true });
+			await writeFile(join(codexDir, "config.toml"), "omx_enabled = true\n");
+			await writeFile(
+				join(codexDir, "hooks.json"),
+				buildHooksJsonWithPostCompactCommand(
+					`${quoteCommandPart(process.execPath)} ${quoteCommandPart(join(wd, "old", "dist", "scripts", "codex-native-hook.js"))}`,
+				),
+			);
+
+			const res = runOmx(wd, ["doctor", "--verbose"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(
+				res.stdout,
+				/Native hooks: hooks\.json includes OMX-managed coverage for all native hook events/,
+			);
+			assert.match(
+				res.stdout,
+				/\[!!\] Native PostCompact hook: effective PostCompact OMX command does not match this installation's managed hook command; doctor skipped execution for safety/,
+			);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("classifies invalid or unsupported PostCompact stdout as a verbose doctor failure", () => {
+		const invalidJson = classifyPostCompactHookStdout("{not json");
+		assert.equal(invalidJson?.status, "fail");
+		assert.match(invalidJson?.message ?? "", /invalid JSON stdout/);
+
+		const unsupportedJson = classifyPostCompactHookStdout(
+			JSON.stringify({
+				hookSpecificOutput: {
+					hookEventName: "PostCompact",
+					additionalContext: "stale nudge",
+				},
+			}),
+		);
+		assert.equal(unsupportedJson?.status, "fail");
+		assert.match(unsupportedJson?.message ?? "", /must emit no stdout/);
+	});
+
+	it("verbose doctor smoke-validates the current PostCompact command with no stdout", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-postcompact-current-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(codexDir, { recursive: true });
+			await writeFile(join(codexDir, "config.toml"), "omx_enabled = true\n");
+			await writeFile(
+				join(codexDir, "hooks.json"),
+				buildHooksJsonWithPostCompactCommand(currentNativeHookCommand()),
+			);
+
+			const res = runOmx(wd, ["doctor", "--verbose"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(
+				res.stdout,
+				/\[OK\] Native PostCompact hook: verbose smoke validation confirmed the effective PostCompact hook exits successfully with no stdout/,
 			);
 		} finally {
 			await rm(wd, { recursive: true, force: true });

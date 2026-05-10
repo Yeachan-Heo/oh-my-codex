@@ -91,7 +91,7 @@ function quoteWindowsCommandPart(value: string): string {
   return `"${value.replace(/"/g, '\\"')}"`;
 }
 
-function buildNativeHookCommand(
+export function buildManagedCodexNativeHookCommand(
   pkgRoot: string,
   platform: HookCommandPlatform = process.platform,
 ): string {
@@ -131,7 +131,7 @@ export function buildManagedCodexHooksConfig(
   pkgRoot: string,
   options: { platform?: HookCommandPlatform } = {},
 ): ManagedCodexHooksConfig {
-  const command = buildNativeHookCommand(pkgRoot, options.platform);
+  const command = buildManagedCodexNativeHookCommand(pkgRoot, options.platform);
 
   return {
     hooks: {
@@ -211,6 +211,35 @@ export function getMissingManagedCodexHookEvents(
       : [];
     return !entries.some((entry) => countManagedHooksInEntry(entry) > 0);
   });
+}
+
+export function getManagedCodexHookCommandsForEvent(
+  content: string,
+  eventName: ManagedHookEventName,
+): string[] | null {
+  const parsed = parseCodexHooksConfig(content);
+  if (!parsed) return null;
+
+  const entries = Array.isArray(parsed.hooks[eventName])
+    ? parsed.hooks[eventName]
+    : [];
+  const commands: string[] = [];
+
+  for (const entry of entries) {
+    if (!isPlainObject(entry) || !Array.isArray(entry.hooks)) continue;
+    for (const hook of entry.hooks) {
+      if (
+        isPlainObject(hook) &&
+        hook.type === "command" &&
+        typeof hook.command === "string" &&
+        isOmxManagedHookCommand(hook.command)
+      ) {
+        commands.push(hook.command);
+      }
+    }
+  }
+
+  return commands;
 }
 
 function stripManagedHooksFromEntry(entry: unknown): {
