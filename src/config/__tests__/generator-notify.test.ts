@@ -533,6 +533,21 @@ describe('config generator', () => {
     assert.match(merged, /^approval_policy = "never"$/m);
   });
 
+  it('does not preserve OMX notify commands invoked through node flags when notify is disabled', () => {
+    const pkgRoot = '/current/install/oh-my-codex';
+    const staleConfig = [
+      'notify = ["node", "--no-warnings", "/opt/homebrew/lib/node_modules/oh-my-codex/dist/scripts/notify-hook.js"]',
+      'approval_policy = "never"',
+      '',
+    ].join('\n');
+
+    const merged = buildMergedConfig(staleConfig, pkgRoot, { notifyCommand: false });
+
+    assert.doesNotMatch(merged, /^notify\s*=/m);
+    assert.doesNotMatch(merged, /notify-hook\.js/);
+    assert.match(merged, /^approval_policy = "never"$/m);
+  });
+
   it('preserves real user notify commands that mention OMX paths as arguments', () => {
     const pkgRoot = '/current/install/oh-my-codex';
     const userNotify = [

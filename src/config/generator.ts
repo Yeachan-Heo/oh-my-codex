@@ -288,15 +288,19 @@ export function getRootTomlArray(config: string, key: string): string[] | null {
   }
 }
 
+function resolveNotifyEntrypoint(command: readonly string[]): string | undefined {
+  if (!/(?:^|[\\/])node(?:\.exe)?$/i.test(command[0] ?? "")) {
+    return command[0];
+  }
+  return command.slice(1).find((arg) => !arg.startsWith("-"));
+}
+
 export function isOmxManagedNotifyCommand(
   command: readonly string[] | null | undefined,
   pkgRoot?: string,
 ): boolean {
   if (!command) return false;
-  const entrypoint =
-    /(?:^|[\\/])node(?:\.exe)?$/i.test(command[0] ?? "")
-      ? command[1]
-      : command[0];
+  const entrypoint = resolveNotifyEntrypoint(command);
   if (!entrypoint) return false;
   if (!/(?:^|[\\/])notify-(?:hook|dispatcher)\.js$/.test(entrypoint)) {
     return false;
