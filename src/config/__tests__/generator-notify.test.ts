@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mergeConfig, OMX_DEVELOPER_INSTRUCTIONS, upsertPluginModeRuntimeFeatureFlags } from '../generator.js';
+import { buildMergedConfig, mergeConfig, OMX_DEVELOPER_INSTRUCTIONS, upsertPluginModeRuntimeFeatureFlags } from '../generator.js';
 
 describe('config generator', () => {
   it('places top-level keys before [features]', async () => {
@@ -501,5 +501,52 @@ describe('config generator', () => {
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
+  });
+
+  it('does not preserve cross-install OMX notify commands when notify is disabled', () => {
+    const pkgRoot = '/current/install/oh-my-codex';
+    const staleConfig = [
+      'notify = ["node", "/opt/homebrew/lib/node_modules/oh-my-codex/dist/scripts/notify-dispatcher.js", "--metadata", "/tmp/notify-dispatch.json"]',
+      'approval_policy = "never"',
+      '',
+    ].join('\n');
+
+    const merged = buildMergedConfig(staleConfig, pkgRoot, { notifyCommand: false });
+
+    assert.doesNotMatch(merged, /^notify\s*=/m);
+    assert.doesNotMatch(merged, /notify-dispatcher\.js/);
+    assert.match(merged, /^approval_policy = "never"$/m);
+  });
+
+  it('does not preserve Windows-style OMX notify hooks when notify is disabled', () => {
+    const pkgRoot = 'C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules\\oh-my-codex';
+    const staleConfig = [
+      'notify = ["node", "C:\\\\Users\\\\alice\\\\AppData\\\\Roaming\\\\npm\\\\node_modules\\\\oh-my-codex\\\\dist\\\\scripts\\\\notify-hook.js"]',
+      'approval_policy = "never"',
+      '',
+    ].join('\n');
+
+    const merged = buildMergedConfig(staleConfig, pkgRoot, { notifyCommand: false });
+
+    assert.doesNotMatch(merged, /^notify\s*=/m);
+    assert.doesNotMatch(merged, /notify-hook\.js/);
+    assert.match(merged, /^approval_policy = "never"$/m);
+  });
+
+  it('preserves real user notify commands that mention OMX paths as arguments', () => {
+    const pkgRoot = '/current/install/oh-my-codex';
+    const userNotify = [
+      'notify = ["node", "/tmp/user-notify.js", "/opt/homebrew/lib/node_modules/oh-my-codex/dist/scripts/notify-hook.js"]',
+      'approval_policy = "never"',
+      '',
+    ].join('\n');
+
+    const merged = buildMergedConfig(userNotify, pkgRoot, { notifyCommand: false });
+
+    assert.match(
+      merged,
+      /^notify = \["node", "\/tmp\/user-notify\.js", "\/opt\/homebrew\/lib\/node_modules\/oh-my-codex\/dist\/scripts\/notify-hook\.js"\]$/m,
+    );
+    assert.match(merged, /^approval_policy = "never"$/m);
   });
 });

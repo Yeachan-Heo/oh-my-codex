@@ -13,6 +13,7 @@ interface NotifyDispatcherMetadata {
 	version?: number;
 	previousNotify?: string[] | null;
 	omxNotify?: string[];
+	dispatcherNotify?: string[];
 }
 
 function parseArgs(): { metadataPath: string; payloadArg: string } {
@@ -33,6 +34,38 @@ function parseArgs(): { metadataPath: string; payloadArg: string } {
 function isCommand(value: unknown): value is string[] {
 	return (
 		Array.isArray(value) && value.every((item) => typeof item === "string")
+	);
+}
+
+function sameCommand(
+	left: readonly string[] | null | undefined,
+	right: readonly string[] | null | undefined,
+): boolean {
+	if (!left || !right || left.length !== right.length) return false;
+	return left.every((part, index) => part === right[index]);
+}
+
+function isOmxManagedNotifyCommand(command: readonly string[] | null | undefined): boolean {
+	if (!command) return false;
+	const entrypoint =
+		/(?:^|[\\/])node(?:\.exe)?$/i.test(command[0] ?? "")
+			? command[1]
+			: command[0];
+	if (!entrypoint) return false;
+	if (!/(?:^|[\\/])notify-(?:hook|dispatcher)\.js$/.test(entrypoint)) {
+		return false;
+	}
+	return /(?:^|[\\/])oh-my-codex(?:[\\/]|$)/.test(entrypoint);
+}
+
+function isManagedPreviousNotify(
+	previousNotify: readonly string[] | null | undefined,
+	metadata: NotifyDispatcherMetadata | null,
+): boolean {
+	return (
+		isOmxManagedNotifyCommand(previousNotify) ||
+		sameCommand(previousNotify, metadata?.omxNotify) ||
+		sameCommand(previousNotify, metadata?.dispatcherNotify)
 	);
 }
 
@@ -67,7 +100,9 @@ async function main(): Promise<void> {
 	const { metadataPath, payloadArg } = parseArgs();
 	if (!payloadArg || payloadArg.startsWith("-")) return;
 	const metadata = await readMetadata(metadataPath);
-	runNotify(metadata?.previousNotify, payloadArg);
+	if (!isManagedPreviousNotify(metadata?.previousNotify, metadata)) {
+		runNotify(metadata?.previousNotify, payloadArg);
+	}
 	runNotify(metadata?.omxNotify, payloadArg);
 }
 

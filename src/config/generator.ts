@@ -12,7 +12,7 @@
 
 import { readFile, writeFile } from "fs/promises";
 import { existsSync } from "fs";
-import { isAbsolute, join, resolve } from "path";
+import { join, resolve } from "path";
 import TOML from "@iarna/toml";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { DEFAULT_FRONTIER_MODEL } from "./models.js";
@@ -293,19 +293,31 @@ export function isOmxManagedNotifyCommand(
   pkgRoot?: string,
 ): boolean {
   if (!command) return false;
+  const entrypoint =
+    /(?:^|[\\/])node(?:\.exe)?$/i.test(command[0] ?? "")
+      ? command[1]
+      : command[0];
+  if (!entrypoint) return false;
+  if (!/(?:^|[\\/])notify-(?:hook|dispatcher)\.js$/.test(entrypoint)) {
+    return false;
+  }
   const managedScripts = pkgRoot
     ? new Set([
         resolve(pkgRoot, "dist", "scripts", "notify-hook.js"),
         resolve(pkgRoot, "dist", "scripts", "notify-dispatcher.js"),
       ])
     : new Set<string>();
-  return command.some((part) => {
-    if (!/(?:^|[\\/])notify-(?:hook|dispatcher)\.js$/.test(part)) return false;
-    if (pkgRoot) {
-      return isAbsolute(part) && managedScripts.has(resolve(part));
-    }
-    return /(?:^|[\\/])oh-my-codex(?:[\\/]|$)/.test(part);
-  });
+  if (pkgRoot && managedScripts.has(resolve(entrypoint))) return true;
+  return /(?:^|[\\/])oh-my-codex(?:[\\/]|$)/.test(entrypoint);
+}
+
+export function sanitizePreviousNotifyCommand(
+  command: readonly string[] | null | undefined,
+  pkgRoot?: string,
+): string[] | null {
+  if (!command || command.length === 0) return null;
+  if (isOmxManagedNotifyCommand(command, pkgRoot)) return null;
+  return [...command];
 }
 
 function getOmxTopLevelLines(

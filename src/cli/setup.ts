@@ -36,6 +36,7 @@ import {
 	getRootTomlArray,
 	hasLegacyOmxTeamRunTable,
 	isOmxManagedNotifyCommand,
+	sanitizePreviousNotifyCommand,
 	stripExistingOmxBlocks,
 	stripExistingSharedMcpRegistryBlock,
 	stripOmxEnvSettings,
@@ -3117,13 +3118,20 @@ async function buildNotifyMergePlan(
 				Array.isArray(previousNotify) &&
 				previousNotify.every((item) => typeof item === "string")
 			) {
+				const sanitizedPreviousNotify = sanitizePreviousNotifyCommand(
+					previousNotify,
+					pkgRoot,
+				);
+				if (!sanitizedPreviousNotify) {
+					return { notifyCommand: omxNotify };
+				}
 				return {
 					notifyCommand: dispatcherNotify,
 					metadataPath,
 					metadata: {
 						managedBy: "oh-my-codex",
 						version: 1,
-						previousNotify,
+						previousNotify: sanitizedPreviousNotify,
 						omxNotify,
 						dispatcherNotify,
 					},
@@ -3141,7 +3149,7 @@ async function buildNotifyMergePlan(
 		metadata: {
 			managedBy: "oh-my-codex",
 			version: 1,
-			previousNotify: existingNotify,
+			previousNotify: sanitizePreviousNotifyCommand(existingNotify, pkgRoot),
 			omxNotify,
 			dispatcherNotify,
 		},
