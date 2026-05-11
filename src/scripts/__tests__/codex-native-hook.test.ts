@@ -7430,6 +7430,79 @@ exit 0
     }
   });
 
+  it("blocks Codex App Stop when Ralph is marked complete without completion-audit evidence", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-complete-audit-missing-"));
+    try {
+      const sessionId = "sess-ralph-complete-missing";
+      const statePath = join(cwd, ".omx", "state", "sessions", sessionId, "ralph-state.json");
+      await writeJson(join(cwd, ".omx", "state", "session.json"), { session_id: sessionId, native_session_id: sessionId, cwd });
+      await writeJson(statePath, {
+        active: false,
+        mode: "ralph",
+        current_phase: "complete",
+        session_id: sessionId,
+        completed_at: "2026-05-10T12:00:00.000Z",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+          last_assistant_message: "Done. Ralph complete.",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.match(String(result.outputJson?.reason), /Ralph completion audit is missing required evidence/);
+      assert.equal(result.outputJson?.stopReason, "ralph_completion_audit_missing_completion_audit");
+      const reopened = JSON.parse(await readFile(statePath, "utf-8")) as Record<string, unknown>;
+      assert.equal(reopened.active, true);
+      assert.equal(reopened.current_phase, "verifying");
+      assert.equal(reopened.completion_audit_gate, "blocked");
+      assert.equal(reopened.completion_audit_missing_reason, "missing_completion_audit");
+      assert.equal(typeof reopened.completed_at, "undefined");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows Codex App Stop when complete Ralph state carries checklist and verification evidence", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-complete-audit-present-"));
+    try {
+      const sessionId = "sess-ralph-complete-present";
+      await writeJson(join(cwd, ".omx", "state", "session.json"), { session_id: sessionId, native_session_id: sessionId, cwd });
+      await writeJson(join(cwd, ".omx", "state", "sessions", sessionId, "ralph-state.json"), {
+        active: false,
+        mode: "ralph",
+        current_phase: "complete",
+        session_id: sessionId,
+        completed_at: "2026-05-10T12:00:00.000Z",
+        completion_audit: {
+          passed: true,
+          prompt_to_artifact_checklist: ["issue #2260 fixed", "tests added"],
+          verification_evidence: ["node --test dist/scripts/__tests__/codex-native-hook.test.js"],
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+          last_assistant_message: "Done with completion audit evidence recorded.",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns Stop continuation output while Ralph is active without an explicit session pin", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-"));
     try {

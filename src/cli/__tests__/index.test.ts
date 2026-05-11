@@ -731,6 +731,77 @@ describe("cleanupPostLaunchModeStateFiles", () => {
     assert.deepEqual(warnings, []);
   });
 
+  it("does not preserve complete Ralph cleanup state without completion-audit evidence", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-postlaunch-ralph-complete-audit-missing-"));
+    const sessionId = "sess-postlaunch-ralph-complete-audit-missing";
+    const sessionStateDir = join(wd, ".omx", "state", "sessions", sessionId);
+    await mkdir(sessionStateDir, { recursive: true });
+    await writeFile(
+      join(sessionStateDir, "ralph-state.json"),
+      JSON.stringify({
+        active: false,
+        mode: "ralph",
+        current_phase: "complete",
+        completed_at: "2026-05-09T07:00:00.000Z",
+      }, null, 2),
+      "utf-8",
+    );
+
+    try {
+      await cleanupPostLaunchModeStateFiles(wd, sessionId, {
+        now: () => new Date("2026-05-09T08:00:00.000Z"),
+      });
+
+      const ralph = JSON.parse(
+        await readFile(join(sessionStateDir, "ralph-state.json"), "utf-8"),
+      ) as Record<string, unknown>;
+      assert.equal(ralph.active, false);
+      assert.equal(ralph.current_phase, "cancelled");
+      assert.equal(ralph.stop_reason, "missing_completion_audit:missing_completion_audit");
+      assert.equal(ralph.completion_audit_gate, "blocked");
+      assert.equal(ralph.completion_audit_missing_reason, "missing_completion_audit");
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves complete Ralph cleanup state when completion-audit evidence is present", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-postlaunch-ralph-complete-audit-present-"));
+    const sessionId = "sess-postlaunch-ralph-complete-audit-present";
+    const sessionStateDir = join(wd, ".omx", "state", "sessions", sessionId);
+    await mkdir(sessionStateDir, { recursive: true });
+    await writeFile(
+      join(sessionStateDir, "ralph-state.json"),
+      JSON.stringify({
+        active: false,
+        mode: "ralph",
+        current_phase: "complete",
+        completed_at: "2026-05-09T07:00:00.000Z",
+        completion_audit: {
+          passed: true,
+          prompt_to_artifact_checklist: ["all prompt requirements mapped"],
+          verification_evidence: ["npm test"],
+        },
+      }, null, 2),
+      "utf-8",
+    );
+
+    try {
+      await cleanupPostLaunchModeStateFiles(wd, sessionId, {
+        now: () => new Date("2026-05-09T08:00:00.000Z"),
+      });
+
+      const ralph = JSON.parse(
+        await readFile(join(sessionStateDir, "ralph-state.json"), "utf-8"),
+      ) as Record<string, unknown>;
+      assert.equal(ralph.active, false);
+      assert.equal(ralph.current_phase, "complete");
+      assert.equal(ralph.stop_reason, undefined);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("marks active Ralph state cancelled with interrupted metadata during postLaunch cleanup", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-postlaunch-ralph-interrupted-"));
     const sessionId = "sess-postlaunch-ralph-interrupted";

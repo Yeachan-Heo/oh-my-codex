@@ -303,6 +303,7 @@ export function buildRalphAppendInstructions(
     '- Treat any active goal objective as the top-level completion contract for this Ralph run; Ralph mode state is not proof of goal completion by itself.',
     '- Call `create_goal` only when the user/system explicitly requested a new goal and `get_goal` reports no active goal; otherwise do not invent a goal.',
     '- Before completion, build a prompt-to-artifact checklist, inspect real evidence for every requirement, and continue working if any item is missing, incomplete, weakly verified, or uncovered.',
+    '- Record Ralph completion evidence in state before final Stop/cleanup: `completion_audit.passed=true`, a non-empty `completion_audit.prompt_to_artifact_checklist`, and non-empty `completion_audit.verification_evidence` (or point `completion_audit_path`/`completion_audit_evidence_path` at an artifact with those fields).',
     '- Call `update_goal({status: "complete"})` only after that audit proves the active objective is fully achieved; then report final elapsed time and token-budget usage when provided.',
     'Final deslop guidance:',
     options.noDeslop

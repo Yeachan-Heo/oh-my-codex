@@ -30,5 +30,7 @@ describe('ralph goal mode integration contract', () => {
     assert.match(instructions, /update_goal\(\{status: "complete"\}\)/i);
     assert.match(instructions, /top-level completion contract/i);
     assert.match(instructions, /prompt-to-artifact checklist/i);
+    assert.match(instructions, /completion_audit\.passed=true/i);
+    assert.match(instructions, /completion_audit\.verification_evidence/i);
   });
 });

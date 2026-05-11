@@ -55,6 +55,7 @@ import {
   getStateDir,
   listModeStateFilesWithScopePreference,
 } from "../mcp/state-paths.js";
+import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
 import {
   resolveCodexConfigPathForLaunch,
   resolveCodexHomeForLaunch,
@@ -2998,6 +2999,26 @@ function buildRecoveredPostLaunchSkillActiveState(
   };
 }
 
+function markRalphCompletionAuditBlockedForPostLaunch(
+  state: Record<string, unknown>,
+  cwd: string,
+  nowIso: string,
+): boolean {
+  if (!isRalphCompletePhase(state.current_phase ?? state.currentPhase)) return false;
+  const audit = evaluateRalphCompletionAuditEvidence(state, cwd);
+  if (audit.complete) return false;
+  state.active = false;
+  state.current_phase = "cancelled";
+  state.completed_at = nowIso;
+  state.last_turn_at = nowIso;
+  state.interrupted_at = nowIso;
+  state.stop_reason = `missing_completion_audit:${audit.reason}`;
+  state.completion_audit_gate = "blocked";
+  state.completion_audit_missing_reason = audit.reason;
+  state.completion_audit_blocked_at = nowIso;
+  return true;
+}
+
 export async function cleanupPostLaunchModeStateFiles(
   cwd: string,
   sessionId: string,
@@ -3065,7 +3086,25 @@ export async function cleanupPostLaunchModeStateFiles(
       const skillStateStillVisible = mode === SKILL_ACTIVE_STATE_MODE
         && Array.isArray(result.state.active_skills)
         && result.state.active_skills.length > 0;
-      if (result.state.active !== true && !skillStateStillVisible) continue;
+      if (result.state.active !== true && !skillStateStillVisible) {
+        if (mode === "ralph") {
+          const completedAt = now().toISOString();
+          if (markRalphCompletionAuditBlockedForPostLaunch(result.state, cwd, completedAt)) {
+            await writeFile(path, JSON.stringify(result.state, null, 2));
+            await syncCanonicalSkillStateForMode({
+              cwd,
+              baseStateDir: rootStateDir,
+              mode,
+              active: false,
+              currentPhase: "cancelled",
+              sessionId: stateDir === getStateDir(cwd, sessionId) ? sessionId : undefined,
+              nowIso: completedAt,
+              source: "postLaunchCleanup",
+            });
+          }
+        }
+        continue;
+      }
 
       try {
         const completedAt = now().toISOString();

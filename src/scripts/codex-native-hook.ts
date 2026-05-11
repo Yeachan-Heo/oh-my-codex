@@ -76,6 +76,7 @@ import {
 } from "../wiki/lifecycle.js";
 import { readAutoresearchCompletionStatus, readAutoresearchModeStateForActiveDecision } from "../autoresearch/skill-validation.js";
 import { readRunState } from "../runtime/run-state.js";
+import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
 import { getRunContinuationSnapshot, shouldContinueRun } from "../runtime/run-loop.js";
 import { triagePrompt } from "../hooks/triage-heuristic.js";
 import { readTriageConfig } from "../hooks/triage-config.js";
@@ -485,6 +486,12 @@ interface ActiveRalphStopState {
   path: string;
 }
 
+interface RalphCompletionAuditBlockState {
+  state: Record<string, unknown>;
+  path: string;
+  reason: string;
+}
+
 interface RalphStopOwnershipContext {
   sessionId: string;
   payloadSessionId: string;
@@ -579,6 +586,72 @@ async function hasConsistentRalphSkillActivation(stateDir: string, sessionId: st
   if (initializedPathSessionId && initializedPathSessionId !== sessionId) return false;
 
   return true;
+}
+
+
+async function readRalphCompletionAuditBlockState(
+  cwd: string,
+  stateDir: string,
+  preferredSessionId?: string,
+  ownerContext?: {
+    payloadSessionId?: string;
+    threadId?: string;
+    tmuxPaneId?: string;
+  },
+): Promise<RalphCompletionAuditBlockState | null> {
+  const [rawSessionInfo, usableSessionInfo] = await Promise.all([
+    readSessionState(cwd),
+    readUsableSessionState(cwd),
+  ]);
+  const currentOmxSessionId = safeString(usableSessionInfo?.session_id).trim();
+  const currentNativeSessionId = safeString(usableSessionInfo?.native_session_id).trim();
+  const staleCurrentSessionId = rawSessionInfo && !isSessionStateUsable(rawSessionInfo, cwd)
+    ? safeString(rawSessionInfo.session_id).trim()
+    : "";
+  const sessionCandidates = [...new Set([
+    safeString(preferredSessionId).trim(),
+    currentOmxSessionId,
+  ].filter(Boolean))];
+
+  const evaluateCandidate = (state: Record<string, unknown> | null, path: string, sessionId: string): RalphCompletionAuditBlockState | null => {
+    if (!state || state.mode && safeString(state.mode) !== "ralph") return null;
+    if (!isRalphCompletePhase(state.current_phase ?? state.currentPhase)) return null;
+    if (activeRalphStateMatchesStopOwner(state, {
+      sessionId,
+      payloadSessionId: safeString(ownerContext?.payloadSessionId).trim(),
+      threadId: safeString(ownerContext?.threadId).trim(),
+      currentNativeSessionId,
+      tmuxPaneId: safeString(ownerContext?.tmuxPaneId).trim(),
+    }) !== true) return null;
+    const audit = evaluateRalphCompletionAuditEvidence(state, cwd);
+    return audit.complete ? null : { state, path, reason: audit.reason };
+  };
+
+  for (const sessionId of sessionCandidates) {
+    if (staleCurrentSessionId && sessionId === staleCurrentSessionId) continue;
+    const sessionScopedPath = getStateFilePath("ralph-state.json", cwd, sessionId);
+    const result = evaluateCandidate(await readJsonIfExists(sessionScopedPath), sessionScopedPath, sessionId);
+    if (result) return result;
+  }
+
+  if (sessionCandidates.length > 0) return null;
+
+  const directPath = join(stateDir, "ralph-state.json");
+  return evaluateCandidate(await readJsonIfExists(directPath), directPath, "");
+}
+
+async function reopenRalphCompletionAuditBlock(block: RalphCompletionAuditBlockState): Promise<void> {
+  const nowIso = new Date().toISOString();
+  const next: Record<string, unknown> = {
+    ...block.state,
+    active: true,
+    current_phase: "verifying",
+    completion_audit_gate: "blocked",
+    completion_audit_missing_reason: block.reason,
+    completion_audit_blocked_at: nowIso,
+  };
+  delete next.completed_at;
+  await writeFile(block.path, JSON.stringify(next, null, 2));
 }
 
 async function readActiveRalphState(
@@ -2563,13 +2636,37 @@ async function buildStopHookOutput(
   }
   const execFollowupOutput = await buildExecFollowupStopOutput(cwd, canonicalSessionId);
   if (execFollowupOutput) return execFollowupOutput;
+  const ralphOwnerContext = {
+    payloadSessionId: sessionId,
+    threadId,
+    tmuxPaneId: safeString(process.env.TMUX_PANE).trim(),
+  };
+  const ralphCompletionAuditBlock = options.skipRalphStopBlock === true
+    ? null
+    : await readRalphCompletionAuditBlockState(cwd, stateDir, canonicalSessionId, ralphOwnerContext);
+  if (ralphCompletionAuditBlock) {
+    await reopenRalphCompletionAuditBlock(ralphCompletionAuditBlock);
+    const blockingPath = formatStopStatePath(cwd, ralphCompletionAuditBlock.path);
+    const systemMessage =
+      `OMX Ralph completion audit is missing required evidence (${ralphCompletionAuditBlock.reason}; state: ${blockingPath}); continue verification, record a prompt-to-artifact checklist plus verification evidence, and do not report complete yet.`;
+    return await returnPersistentStopBlock(
+      payload,
+      stateDir,
+      "ralph-completion-audit-stop",
+      `${blockingPath}|${ralphCompletionAuditBlock.reason}`,
+      {
+        decision: "block",
+        reason: systemMessage,
+        stopReason: `ralph_completion_audit_${ralphCompletionAuditBlock.reason}`,
+        systemMessage,
+      },
+      canonicalSessionId,
+      { allowRepeatDuringStopHook: true },
+    );
+  }
   const ralphState = options.skipRalphStopBlock === true
     ? null
-    : await readActiveRalphState(cwd, stateDir, canonicalSessionId, {
-      payloadSessionId: sessionId,
-      threadId,
-      tmuxPaneId: safeString(process.env.TMUX_PANE).trim(),
-    });
+    : await readActiveRalphState(cwd, stateDir, canonicalSessionId, ralphOwnerContext);
   if (!ralphState) {
     const autoresearchState = await readActiveAutoresearchState(cwd, canonicalSessionId);
     if (autoresearchState) {
