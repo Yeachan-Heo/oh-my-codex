@@ -258,6 +258,35 @@ describe("config generator idempotency (#384)", () => {
     assertSingleOmxBlock(toml, { includeFirstPartyMcp: true });
   });
 
+  it("omits first-party MCP blocks in no-MCP mode while preserving user MCP servers", () => {
+    const compatConfig = buildMergedConfig(
+      [
+        "[mcp_servers.user_tool]",
+        'command = "user-tool"',
+        'args = ["serve"]',
+        "enabled = true",
+        "",
+      ].join("\n"),
+      "/tmp/omx",
+      { includeFirstPartyMcp: true },
+    );
+    const noMcpConfig = buildMergedConfig(compatConfig, "/tmp/omx", {
+      includeFirstPartyMcp: false,
+    });
+
+    assertSingleOmxBlock(noMcpConfig);
+    assert.match(
+      noMcpConfig,
+      /^\[mcp_servers\.user_tool\]$/m,
+      "user-authored MCP servers should not be removed by no-MCP mode",
+    );
+    assert.doesNotMatch(
+      noMcpConfig,
+      /dist\/mcp\/state-server\.js/,
+      "first-party MCP entrypoints should be removed when no-MCP mode is selected",
+    );
+  });
+
   it("second run updates without duplicating any section", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
