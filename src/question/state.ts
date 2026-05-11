@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { getStateDir } from '../mcp/state-paths.js';
 import { writeAtomic } from '../team/state.js';
 import { sleep } from '../utils/sleep.js';
-import { appendQuestionEvent, normalizeSubmittedAnswers, resolveQuestionRunId } from './events.js';
+import { appendQuestionAnsweredEventOnce, appendQuestionEvent, normalizeSubmittedAnswers, resolveQuestionRunId } from './events.js';
 import { getNormalizedQuestionType, isMultiAnswerableQuestion, normalizeQuestionInput } from './types.js';
 import type {
   NormalizedQuestionItem,
@@ -367,7 +367,7 @@ export async function submitQuestionAnswerById(
       throw new QuestionSubmitError('question_invalid_answer', error instanceof Error ? error.message : String(error));
     }
     const record = await markQuestionAnswered(recordPath, answers);
-    await appendQuestionEvent(cwd, 'question-answered', record, { recordPath, runId: options.runId });
+    await appendQuestionAnsweredEventOnce(cwd, record, { recordPath, runId: options.runId });
     return { recordPath, record };
   });
 }

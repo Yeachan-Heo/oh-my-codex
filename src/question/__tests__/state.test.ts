@@ -14,7 +14,7 @@ import {
   submitQuestionAnswerById,
   waitForQuestionTerminalState,
 } from '../state.js';
-import { appendQuestionEvent, readQuestionEvents } from '../events.js';
+import { appendQuestionAnsweredEventOnce, appendQuestionEvent, readQuestionEvents } from '../events.js';
 
 const tempDirs: string[] = [];
 
@@ -200,6 +200,42 @@ describe('question state', () => {
 
     const loaded = await readQuestionRecord(getQuestionRecordPath(cwd, record.question_id, 'sess-invalid'));
     assert.equal(loaded?.status, 'pending');
+  });
+
+  it('dedupes answered lifecycle events when a waiting command observes an externally submitted answer', async () => {
+    const cwd = await makeRepo();
+    const { record, recordPath } = await createQuestionRecord(cwd, {
+      question: 'Pick one',
+      options: [{ label: 'A', value: 'a' }],
+      allow_other: false,
+      other_label: 'Other',
+      multi_select: false,
+    }, 'sess-external', new Date('2026-05-11T00:00:00.000Z'), {
+      emitEvent: true,
+      runId: 'run-external-answer',
+    });
+
+    const submitted = await submitQuestionAnswerById(cwd, record.question_id, {
+      answer: {
+        kind: 'option',
+        value: 'a',
+        selected_labels: ['A'],
+        selected_values: ['a'],
+      },
+    }, { sessionId: 'sess-external' });
+
+    const duplicateAppend = await appendQuestionAnsweredEventOnce(cwd, submitted.record, {
+      recordPath,
+      timeoutMs: 5000,
+    });
+
+    assert.equal(duplicateAppend.appended, false);
+    const answeredEvents = (await readQuestionEvents(cwd)).filter((event) => (
+      event.type === 'question-answered' && event.question_id === record.question_id
+    ));
+    assert.equal(answeredEvents.length, 1);
+    assert.equal(answeredEvents[0]?.run_id, 'run-external-answer');
+    assert.equal(answeredEvents[0]?.state?.answer_count, 1);
   });
 
   it('serializes concurrent duplicate submissions so only one answer is accepted', async () => {

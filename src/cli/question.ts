@@ -1,5 +1,5 @@
 import { evaluateQuestionPolicy } from '../question/policy.js';
-import { appendQuestionEvent } from '../question/events.js';
+import { appendQuestionAnsweredEventOnce, appendQuestionEvent } from '../question/events.js';
 import {
   createQuestionRecord,
   markQuestionTerminalError,
@@ -319,7 +319,7 @@ export async function questionCommand(args: string[]): Promise<void> {
     return;
   }
 
-  await appendQuestionEvent(cwd, 'question-answered', finalRecord, {
+  await appendQuestionAnsweredEventOnce(cwd, finalRecord, {
     recordPath,
     timeoutMs: waitTimeoutMs,
   });
