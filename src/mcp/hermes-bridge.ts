@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { injectExecFollowup } from "../exec/followup.js";
 import { isSessionStateUsable, readUsableSessionState, type SessionState } from "../hooks/session.js";
@@ -308,6 +308,39 @@ function normalizeArtifactRelativePath(pathValue: unknown): string {
   return normalized;
 }
 
+function isInsideDirectory(parent: string, candidate: string): boolean {
+  const rel = relative(parent, candidate);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+async function resolveSafeArtifactPath(cwd: string, rel: string): Promise<string> {
+  const cwdRealPath = await realpath(cwd);
+  const full = resolve(cwd, rel);
+  const relativeToCwd = relative(resolve(cwd), full);
+  if (relativeToCwd.startsWith("..") || isAbsolute(relativeToCwd)) {
+    throw new Error("artifact resolved outside working directory");
+  }
+
+  let artifactRealPath: string;
+  try {
+    artifactRealPath = await realpath(full);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("artifact_missing");
+    throw error;
+  }
+
+  if (!isInsideDirectory(cwdRealPath, artifactRealPath)) {
+    throw new Error("artifact resolved outside working directory");
+  }
+
+  for (const prefix of SAFE_ARTIFACT_PREFIXES) {
+    const rootRealPath = await realpath(resolve(cwd, prefix)).catch(() => null);
+    if (rootRealPath && isInsideDirectory(rootRealPath, artifactRealPath)) return artifactRealPath;
+  }
+
+  throw new Error(`artifact path must be under ${SAFE_ARTIFACT_PREFIXES.join(", ")}`);
+}
+
 async function collectFiles(root: string, cwd: string, limit: number, out: Array<{ path: string; bytes: number }>): Promise<void> {
   if (out.length >= limit || !existsSync(root)) return;
   const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
@@ -350,22 +383,17 @@ export async function hermesReadArtifact(
   try {
     const cwd = resolveWorkingDirectoryForState(normalizeString(args.workingDirectory, "workingDirectory"));
     const rel = normalizeArtifactRelativePath(args.path);
-    const full = resolve(cwd, rel);
-    const relativeToCwd = relative(resolve(cwd), full);
-    if (relativeToCwd.startsWith("..") || isAbsolute(relativeToCwd)) {
-      return failure("artifact_outside_safe_roots", "artifact resolved outside working directory");
-    }
+    const full = await resolveSafeArtifactPath(cwd, rel);
     const maxBytes = normalizePositiveInteger(args.max_bytes, DEFAULT_ARTIFACT_MAX_BYTES, 1_000_000);
-    const raw = await readFile(full).catch((error) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("artifact_missing");
-      throw error;
-    });
+    const raw = await readFile(full);
     const truncated = raw.byteLength > maxBytes;
     return jsonResult({ path: rel, content: raw.subarray(0, maxBytes).toString("utf-8"), truncated });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message === "artifact_missing") return failure("artifact_missing", message);
-    if (message.includes("artifact path")) return failure("artifact_outside_safe_roots", message);
+    if (message.includes("artifact path") || message.includes("outside working directory")) {
+      return failure("artifact_outside_safe_roots", message);
+    }
     return failure("invalid_input", message);
   }
 }

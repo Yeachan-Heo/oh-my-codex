@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -229,8 +229,30 @@ describe("Hermes MCP bridge core", () => {
       const rejected = await hermesReadArtifact({ workingDirectory: cwd, path: "package.json" });
       assert.equal(rejected.ok, false);
       assert.equal(rejected.code, "artifact_outside_safe_roots");
+
+      const traversal = await hermesReadArtifact({ workingDirectory: cwd, path: ".omx/plans/../../package.json" });
+      assert.equal(traversal.ok, false);
+      assert.equal(traversal.code, "artifact_outside_safe_roots");
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects safe-root artifact symlinks that resolve outside the worktree", async () => {
+    const cwd = await tempWorkspace("omx-hermes-artifact-symlink-");
+    const outside = await mkdtemp(join(tmpdir(), "omx-hermes-artifact-outside-"));
+    try {
+      await mkdir(join(cwd, ".omx", "plans"), { recursive: true });
+      const outsideFile = join(outside, "host.md");
+      await writeFile(outsideFile, "outside artifact");
+      await symlink(outsideFile, join(cwd, ".omx", "plans", "host.md"));
+
+      const result = await hermesReadArtifact({ workingDirectory: cwd, path: ".omx/plans/host.md" });
+      assert.equal(result.ok, false);
+      assert.equal(result.code, "artifact_outside_safe_roots");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
     }
   });
 
