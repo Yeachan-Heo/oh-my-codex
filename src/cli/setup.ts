@@ -90,6 +90,8 @@ import {
 } from "./setup-preferences.js";
 import {
 	OMX_LOCAL_MARKETPLACE_NAME,
+	OMX_PLUGIN_NAME,
+	materializePackagedOmxPluginCache,
 	resolvePackagedOmxMarketplace,
 	upsertLocalOmxMarketplaceRegistration,
 	upsertLocalOmxPluginEnablement,
@@ -948,6 +950,7 @@ interface PluginDiscoveryCacheRefreshResult {
 async function refreshOmxPluginDiscoveryCache(
 	pkgRoot: string,
 	options: Pick<SetupOptions, "dryRun" | "verbose">,
+	codexHomeDir = codexHome(),
 ): Promise<PluginDiscoveryCacheRefreshResult> {
 	const packagedMarketplace = await resolvePackagedOmxMarketplace(pkgRoot);
 	if (!packagedMarketplace) {
@@ -959,7 +962,7 @@ async function refreshOmxPluginDiscoveryCache(
 			JSON.parse(raw) as { version?: unknown },
 		),
 		listChildDirectoryNames(join(packagedMarketplace.pluginRoot, "skills")),
-		discoverOmxPluginCacheDirs(),
+		discoverOmxPluginCacheDirs(join(codexHomeDir, "plugins", "cache")),
 	]);
 	const expectedVersion = typeof pkg.version === "string" ? pkg.version : null;
 	const staleDirs: string[] = [];
@@ -2014,16 +2017,33 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				`  Local Codex plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} already registered (${pkgRoot}).`,
 			);
 		}
-		const pluginCacheRefresh = await refreshOmxPluginDiscoveryCache(pkgRoot, {
-			dryRun,
-			verbose,
-		});
+		const packagedMarketplace = await resolvePackagedOmxMarketplace(pkgRoot);
+		const pluginCacheRefresh = await refreshOmxPluginDiscoveryCache(
+			pkgRoot,
+			{
+				dryRun,
+				verbose,
+			},
+			scopeDirs.codexHomeDir,
+		);
 		if (pluginCacheRefresh.status === "refreshed") {
 			console.log(
 				`  ${dryRun ? "Would invalidate" : "Invalidated"} ${pluginCacheRefresh.staleDirs.length} stale Codex plugin discovery cache entr${pluginCacheRefresh.staleDirs.length === 1 ? "y" : "ies"} so plugin skills refresh from the packaged manifest.`,
 			);
 		} else if (pluginCacheRefresh.status === "unchanged") {
 			console.log("  Codex plugin discovery cache already matches packaged plugin metadata.");
+		}
+		const pluginCacheMaterialize = await materializePackagedOmxPluginCache(
+			scopeDirs.codexHomeDir,
+			packagedMarketplace,
+			{ dryRun },
+		);
+		if (pluginCacheMaterialize.status === "materialized") {
+			console.log(
+				`  ${dryRun ? "Would install" : "Installed"} local Codex plugin cache for ${OMX_LOCAL_MARKETPLACE_NAME}/${OMX_PLUGIN_NAME} at ${pluginCacheMaterialize.cacheDir}.`,
+			);
+		} else if (pluginCacheMaterialize.status === "unchanged") {
+			console.log("  Local Codex plugin cache already exposes packaged OMX skills.");
 		}
 		if (shouldSyncSharedMcpRegistry) {
 			resolvedConfig = await syncSharedMcpRegistryIntoConfig(
@@ -2042,12 +2062,12 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				);
 			}
 		}
-			resolvedConfig = existsSync(scopeDirs.codexConfigFile)
-				? await readFile(scopeDirs.codexConfigFile, "utf-8")
-				: "";
-			console.log(
-				`  Native Codex hooks and runtime feature flags refresh complete (${scopeDirs.codexHooksFile}; hooks, goals).\n`,
-			);
+		resolvedConfig = existsSync(scopeDirs.codexConfigFile)
+			? await readFile(scopeDirs.codexConfigFile, "utf-8")
+			: "";
+		console.log(
+			`  Native Codex hooks and runtime feature flags refresh complete (${scopeDirs.codexHooksFile}; hooks, goals).\n`,
+		);
 
 		if (usePluginDeveloperInstructionsDefault) {
 			const developerInstructionsResult =

@@ -366,6 +366,23 @@ async function seedStalePluginDiscoveryCache(codexHomeDir: string): Promise<stri
 	return artifactPath;
 }
 
+async function packagedPluginCacheDir(codexHomeDir: string): Promise<string> {
+	const manifest = JSON.parse(
+		await readFile(
+			join(packageRoot, "plugins", "oh-my-codex", ".codex-plugin", "plugin.json"),
+			"utf-8",
+		),
+	) as { version: string };
+	return join(
+		codexHomeDir,
+		"plugins",
+		"cache",
+		"oh-my-codex-local",
+		"oh-my-codex",
+		manifest.version,
+	);
+}
+
 describe("omx setup install mode behavior", () => {
 	it("summarizes and keeps persisted setup preferences when review chooses keep", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
@@ -747,7 +764,11 @@ describe("omx setup install mode behavior", () => {
 						await setup({ scope: "user", installMode: "plugin" });
 					});
 
-					assert.equal(existsSync(cacheDir), false);
+					assert.equal(existsSync(join(cacheDir, "skills", "old-only", "SKILL.md")), false);
+					assert.equal(
+						existsSync(join(await packagedPluginCacheDir(codexHomeDir), "skills", "ask", "SKILL.md")),
+						true,
+					);
 					assert.match(
 						output,
 						/Invalidated 1 stale Codex plugin discovery cache entry/,
@@ -779,6 +800,25 @@ describe("omx setup install mode behavior", () => {
 						output,
 						/Would invalidate 1 stale Codex plugin discovery cache entry/,
 					);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("reports plugin cache materialization during dry-run without writing cache", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const output = await captureConsoleOutput(async () => {
+						await setup({ scope: "user", installMode: "plugin", dryRun: true });
+					});
+
+					const cacheDir = await packagedPluginCacheDir(codexHomeDir);
+					assert.equal(existsSync(cacheDir), false);
+					assert.match(output, /Would install local Codex plugin cache/);
 				});
 			});
 		} finally {
@@ -940,6 +980,15 @@ describe("omx setup install mode behavior", () => {
 					);
 					assert.equal(
 						parsed.plugins?.["oh-my-codex@oh-my-codex-local"]?.enabled,
+						true,
+					);
+					const cacheDir = await packagedPluginCacheDir(codexHomeDir);
+					assert.equal(
+						existsSync(join(cacheDir, ".codex-plugin", "plugin.json")),
+						true,
+					);
+					assert.equal(
+						existsSync(join(cacheDir, "skills", "ask", "SKILL.md")),
 						true,
 					);
 					assert.match(config, /^hooks = true$/m);

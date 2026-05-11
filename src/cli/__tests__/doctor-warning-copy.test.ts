@@ -187,6 +187,43 @@ command = "node"
 		}
 	});
 
+	it("warns when plugin mode is configured but the Codex plugin cache is missing", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-cache-missing-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(codexDir, { recursive: true });
+
+			const setupRes = runOmx(
+				wd,
+				["setup", "--scope", "user", "--plugin", "--force"],
+				{
+					HOME: home,
+					CODEX_HOME: codexDir,
+				},
+			);
+			if (shouldSkipForSpawnPermissions(setupRes.error)) return;
+			assert.equal(setupRes.status, 0, setupRes.stderr || setupRes.stdout);
+			await rm(join(codexDir, "plugins", "cache"), {
+				recursive: true,
+				force: true,
+			});
+
+			const res = runOmx(wd, ["doctor"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(
+				res.stdout,
+				/Skills: plugin marketplace oh-my-codex-local is registered, but no installed Codex plugin cache was found; run "omx setup --plugin --force" so \/skills can discover OMX plugin skills/,
+			);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("uses project-scoped plugin marketplace registration without legacy omission warnings", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-project-plugin-mode-"));
 		try {

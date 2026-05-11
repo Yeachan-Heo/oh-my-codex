@@ -1,5 +1,5 @@
 import { existsSync } from "fs";
-import { readFile } from "fs/promises";
+import { cp, readdir, readFile, rm } from "fs/promises";
 import { join, resolve } from "path";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 
@@ -24,6 +24,7 @@ interface MarketplaceManifest {
 
 interface PluginManifest {
 	name?: unknown;
+	version?: unknown;
 	skills?: unknown;
 }
 
@@ -75,6 +76,167 @@ export async function resolvePackagedOmxMarketplace(
 	}
 
 	return { marketplacePath, packageRoot, pluginRoot, pluginManifestPath };
+}
+
+async function readPluginManifest(
+	manifestPath: string,
+): Promise<PluginManifest | null> {
+	try {
+		return JSON.parse(await readFile(manifestPath, "utf-8")) as PluginManifest;
+	} catch {
+		return null;
+	}
+}
+
+async function listChildDirectoryNames(dir: string): Promise<string[] | null> {
+	try {
+		const entries = await readdir(dir, { withFileTypes: true });
+		return entries
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => entry.name)
+			.sort();
+	} catch {
+		return null;
+	}
+}
+
+export async function packagedOmxPluginVersion(
+	packagedMarketplace: PackagedOmxMarketplace,
+): Promise<string | null> {
+	const manifest = await readPluginManifest(packagedMarketplace.pluginManifestPath);
+	return typeof manifest?.version === "string" && manifest.version.trim()
+		? manifest.version.trim()
+		: null;
+}
+
+export async function expectedPackagedOmxSkillNames(
+	packagedMarketplace: PackagedOmxMarketplace,
+): Promise<string[] | null> {
+	return listChildDirectoryNames(join(packagedMarketplace.pluginRoot, "skills"));
+}
+
+export function omxPluginCacheBase(codexHomeDir: string): string {
+	return join(
+		codexHomeDir,
+		"plugins",
+		"cache",
+		OMX_LOCAL_MARKETPLACE_NAME,
+		OMX_PLUGIN_NAME,
+	);
+}
+
+export async function discoverOmxPluginCacheDirs(
+	codexHomeDir: string,
+): Promise<string[]> {
+	const cacheRoot = join(codexHomeDir, "plugins", "cache");
+	if (!existsSync(cacheRoot)) return [];
+
+	const queue: Array<{ path: string; depth: number }> = [
+		{ path: cacheRoot, depth: 0 },
+	];
+	const maxDepth = 5;
+	const matches: string[] = [];
+
+	while (queue.length > 0) {
+		const current = queue.shift();
+		if (!current) break;
+
+		const manifestPath = join(current.path, ".codex-plugin", "plugin.json");
+		if (existsSync(manifestPath)) {
+			const manifest = await readPluginManifest(manifestPath);
+			if (manifest?.name === OMX_PLUGIN_NAME) {
+				matches.push(current.path);
+				continue;
+			}
+		}
+
+		if (current.depth >= maxDepth) continue;
+
+		let entries;
+		try {
+			entries = await readdir(current.path, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+
+		for (const entry of entries) {
+			if (!entry.isDirectory()) continue;
+			if (entry.name === ".git" || entry.name === "node_modules") continue;
+			queue.push({
+				path: join(current.path, entry.name),
+				depth: current.depth + 1,
+			});
+		}
+	}
+
+	return matches.sort();
+}
+
+export interface OmxPluginCacheState {
+	cacheDir: string;
+	manifestVersion: string | null;
+	skillsPointer: string | null;
+	skillNames: string[] | null;
+}
+
+export async function readOmxPluginCacheState(
+	cacheDir: string,
+): Promise<OmxPluginCacheState | null> {
+	const manifest = await readPluginManifest(
+		join(cacheDir, ".codex-plugin", "plugin.json"),
+	);
+	if (manifest?.name !== OMX_PLUGIN_NAME) return null;
+	return {
+		cacheDir,
+		manifestVersion:
+			typeof manifest.version === "string" ? manifest.version : null,
+		skillsPointer: typeof manifest.skills === "string" ? manifest.skills : null,
+		skillNames: await listChildDirectoryNames(join(cacheDir, "skills")),
+	};
+}
+
+export async function hasExpectedOmxPluginCache(
+	codexHomeDir: string,
+	packagedMarketplace: PackagedOmxMarketplace,
+): Promise<boolean> {
+	const [version, expectedSkillNames] = await Promise.all([
+		packagedOmxPluginVersion(packagedMarketplace),
+		expectedPackagedOmxSkillNames(packagedMarketplace),
+	]);
+	if (!version || !expectedSkillNames) return false;
+	const state = await readOmxPluginCacheState(
+		join(omxPluginCacheBase(codexHomeDir), version),
+	);
+	return (
+		state?.manifestVersion === version &&
+		state.skillsPointer === "./skills/" &&
+		JSON.stringify(state.skillNames) === JSON.stringify(expectedSkillNames)
+	);
+}
+
+export interface OmxPluginCacheMaterializeResult {
+	status: "unavailable" | "unchanged" | "materialized";
+	cacheDir?: string;
+	version?: string;
+}
+
+export async function materializePackagedOmxPluginCache(
+	codexHomeDir: string,
+	packagedMarketplace: PackagedOmxMarketplace | null,
+	options: { dryRun?: boolean } = {},
+): Promise<OmxPluginCacheMaterializeResult> {
+	if (!packagedMarketplace) return { status: "unavailable" };
+	const version = await packagedOmxPluginVersion(packagedMarketplace);
+	if (!version) return { status: "unavailable" };
+	const cacheDir = join(omxPluginCacheBase(codexHomeDir), version);
+	if (await hasExpectedOmxPluginCache(codexHomeDir, packagedMarketplace)) {
+		return { status: "unchanged", cacheDir, version };
+	}
+	if (!options.dryRun) {
+		await rm(cacheDir, { recursive: true, force: true });
+		await cp(packagedMarketplace.pluginRoot, cacheDir, { recursive: true });
+	}
+	return { status: "materialized", cacheDir, version };
 }
 
 function marketplaceTableHeaderPattern(): RegExp {

@@ -59,6 +59,9 @@ import {
 import {
 	OMX_LOCAL_MARKETPLACE_NAME,
 	OMX_LOCAL_PLUGIN_CONFIG_KEY,
+	discoverOmxPluginCacheDirs,
+	expectedPackagedOmxSkillNames,
+	readOmxPluginCacheState,
 	resolvePackagedOmxMarketplace,
 } from "./plugin-marketplace.js";
 
@@ -1274,17 +1277,23 @@ async function checkLegacySkillRootOverlap(): Promise<Check> {
 	};
 }
 
-function getParsedMarketplaceRegistration(
-	content: string,
-): { source_type?: unknown; source?: unknown } | null {
+function getParsedPluginMarketplaceConfig(content: string): {
+	marketplace: { source_type?: unknown; source?: unknown } | null;
+	plugin: { enabled?: unknown } | null;
+} {
 	const parsed = parseToml(content) as {
 		marketplaces?: Record<string, { source_type?: unknown; source?: unknown }>;
+		plugins?: Record<string, { enabled?: unknown }>;
 	};
-	return parsed.marketplaces?.[OMX_LOCAL_MARKETPLACE_NAME] ?? null;
+	return {
+		marketplace: parsed.marketplaces?.[OMX_LOCAL_MARKETPLACE_NAME] ?? null,
+		plugin: parsed.plugins?.[OMX_LOCAL_PLUGIN_CONFIG_KEY] ?? null,
+	};
 }
 
 async function checkPluginMarketplaceRegistration(
 	configPath: string,
+	codexHomeDir: string,
 ): Promise<Check> {
 	const packagedMarketplace = await resolvePackagedOmxMarketplace(
 		getPackageRoot(),
@@ -1307,7 +1316,8 @@ async function checkPluginMarketplaceRegistration(
 
 	try {
 		const content = await readFile(configPath, "utf-8");
-		const registration = getParsedMarketplaceRegistration(content);
+		const { marketplace: registration, plugin } =
+			getParsedPluginMarketplaceConfig(content);
 		if (!registration) {
 			return {
 				name: "Skills",
@@ -1329,10 +1339,49 @@ async function checkPluginMarketplaceRegistration(
 				message: `Codex marketplace ${OMX_LOCAL_MARKETPLACE_NAME} points to ${String(registration.source)} (expected ${getPackageRoot()}); run "omx setup --plugin --force"`,
 			};
 		}
+		if (plugin?.enabled !== true) {
+			return {
+				name: "Skills",
+				status: "warn",
+				message: `Codex plugin ${OMX_LOCAL_PLUGIN_CONFIG_KEY} is not enabled; run "omx setup --plugin --force"`,
+			};
+		}
+
+		const [expectedSkillNames, cacheDirs] = await Promise.all([
+			expectedPackagedOmxSkillNames(packagedMarketplace),
+			discoverOmxPluginCacheDirs(codexHomeDir),
+		]);
+		if (!expectedSkillNames || expectedSkillNames.length === 0) {
+			return {
+				name: "Skills",
+				status: "warn",
+				message: `packaged ${OMX_LOCAL_MARKETPLACE_NAME} plugin has no skills mirror; reinstall oh-my-codex`,
+			};
+		}
+		const cacheStates = (
+			await Promise.all(cacheDirs.map((dir) => readOmxPluginCacheState(dir)))
+		).filter((state) => state !== null);
+		const readyCache = cacheStates.find(
+			(state) =>
+				state.skillsPointer === "./skills/" &&
+				JSON.stringify(state.skillNames) === JSON.stringify(expectedSkillNames),
+		);
+		if (!readyCache) {
+			const detail =
+				cacheStates.length === 0
+					? "no installed Codex plugin cache was found"
+					: "installed Codex plugin cache is missing the packaged skills mirror";
+			return {
+				name: "Skills",
+				status: "warn",
+				message: `plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} is registered, but ${detail}; run "omx setup --plugin --force" so /skills can discover OMX plugin skills`,
+			};
+		}
+
 		return {
 			name: "Skills",
 			status: "pass",
-			message: `plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} registered; OMX skills are supplied by ${packagedMarketplace.pluginRoot}`,
+			message: `plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} registered; OMX skills are supplied by ${readyCache.cacheDir}`,
 		};
 	} catch {
 		return {
@@ -1349,7 +1398,10 @@ async function checkSkills(
 	installMode?: SetupInstallMode,
 ): Promise<Check> {
 	if (installMode === "plugin") {
-		return checkPluginMarketplaceRegistration(paths.configPath);
+		return checkPluginMarketplaceRegistration(
+			paths.configPath,
+			paths.codexHomeDir,
+		);
 	}
 
 	const expectations = getCatalogExpectations();
