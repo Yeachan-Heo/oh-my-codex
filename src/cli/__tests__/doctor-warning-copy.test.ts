@@ -74,6 +74,21 @@ function currentNativeHookCommand(): string {
 	return `${quoteCommandPart(process.execPath)} ${quoteCommandPart(join(repoRoot, "dist", "scripts", "codex-native-hook.js"))}`;
 }
 
+async function packagedPluginVersion(): Promise<string> {
+	const testDir = dirname(fileURLToPath(import.meta.url));
+	const repoRoot = join(testDir, "..", "..", "..");
+	const manifest = JSON.parse(
+		await readFile(
+			join(repoRoot, "plugins", "oh-my-codex", ".codex-plugin", "plugin.json"),
+			"utf-8",
+		),
+	) as { version?: unknown };
+	if (typeof manifest.version !== "string") {
+		assert.fail("packaged plugin manifest version must be a string");
+	}
+	return manifest.version;
+}
+
 function buildHooksJsonWithPostCompactCommand(postCompactCommand: string): string {
 	const expectedCommand = currentNativeHookCommand();
 	return `${JSON.stringify({
@@ -182,6 +197,63 @@ command = "node"
 			assert.doesNotMatch(res.stdout, /Skills: skills directory not found/);
 			assert.doesNotMatch(res.stdout, /Skills: \d+ skills \(expected >=/);
 			assert.doesNotMatch(res.stdout, /MCP Servers: no MCP servers configured/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("warns when plugin cache manifest version is stale even when skills match", async () => {
+		const wd = await mkdtemp(
+			join(tmpdir(), "omx-doctor-plugin-cache-stale-version-"),
+		);
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(codexDir, { recursive: true });
+
+			const setupRes = runOmx(
+				wd,
+				["setup", "--scope", "user", "--plugin", "--force"],
+				{
+					HOME: home,
+					CODEX_HOME: codexDir,
+				},
+			);
+			if (shouldSkipForSpawnPermissions(setupRes.error)) return;
+			assert.equal(setupRes.status, 0, setupRes.stderr || setupRes.stdout);
+
+			const version = await packagedPluginVersion();
+			const cacheManifestPath = join(
+				codexDir,
+				"plugins",
+				"cache",
+				"oh-my-codex-local",
+				"oh-my-codex",
+				version,
+				".codex-plugin",
+				"plugin.json",
+			);
+			const staleManifest = JSON.parse(
+				await readFile(cacheManifestPath, "utf-8"),
+			) as Record<string, unknown>;
+			staleManifest.version = "0.0.0-stale";
+			await writeFile(
+				cacheManifestPath,
+				`${JSON.stringify(staleManifest, null, 2)}\n`,
+			);
+
+			const res = runOmx(wd, ["doctor"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(
+				res.stdout,
+				new RegExp(
+					`Skills: plugin marketplace oh-my-codex-local is registered, but installed Codex plugin cache manifest version 0\\.0\\.0-stale does not match packaged version ${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}; run "omx setup --plugin --force" so /skills can discover OMX plugin skills`,
+				),
+			);
 		} finally {
 			await rm(wd, { recursive: true, force: true });
 		}

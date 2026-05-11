@@ -61,6 +61,7 @@ import {
 	OMX_LOCAL_PLUGIN_CONFIG_KEY,
 	discoverOmxPluginCacheDirs,
 	expectedPackagedOmxSkillNames,
+	packagedOmxPluginVersion,
 	readOmxPluginCacheState,
 	resolvePackagedOmxMarketplace,
 } from "./plugin-marketplace.js";
@@ -1347,10 +1348,19 @@ async function checkPluginMarketplaceRegistration(
 			};
 		}
 
-		const [expectedSkillNames, cacheDirs] = await Promise.all([
-			expectedPackagedOmxSkillNames(packagedMarketplace),
-			discoverOmxPluginCacheDirs(codexHomeDir),
-		]);
+		const [packagedManifestVersion, expectedSkillNames, cacheDirs] =
+			await Promise.all([
+				packagedOmxPluginVersion(packagedMarketplace),
+				expectedPackagedOmxSkillNames(packagedMarketplace),
+				discoverOmxPluginCacheDirs(codexHomeDir),
+			]);
+		if (!packagedManifestVersion) {
+			return {
+				name: "Skills",
+				status: "warn",
+				message: `packaged ${OMX_LOCAL_MARKETPLACE_NAME} plugin has no manifest version; reinstall oh-my-codex`,
+			};
+		}
 		if (!expectedSkillNames || expectedSkillNames.length === 0) {
 			return {
 				name: "Skills",
@@ -1361,14 +1371,28 @@ async function checkPluginMarketplaceRegistration(
 		const cacheStates = (
 			await Promise.all(cacheDirs.map((dir) => readOmxPluginCacheState(dir)))
 		).filter((state) => state !== null);
+		const packagedManifestSummary = {
+			manifestVersion: packagedManifestVersion,
+			skillNames: expectedSkillNames,
+		};
 		const readyCache = cacheStates.find(
 			(state) =>
+				state.manifestVersion === packagedManifestSummary.manifestVersion &&
 				state.skillsPointer === "./skills/" &&
-				JSON.stringify(state.skillNames) === JSON.stringify(expectedSkillNames),
+				JSON.stringify(state.skillNames) ===
+					JSON.stringify(packagedManifestSummary.skillNames),
 		);
 		if (!readyCache) {
-			const detail =
-				cacheStates.length === 0
+			const staleManifestCache = cacheStates.find(
+				(state) =>
+					state.skillsPointer === "./skills/" &&
+					JSON.stringify(state.skillNames) ===
+						JSON.stringify(packagedManifestSummary.skillNames) &&
+					state.manifestVersion !== packagedManifestSummary.manifestVersion,
+			);
+			const detail = staleManifestCache
+				? `installed Codex plugin cache manifest version ${String(staleManifestCache.manifestVersion)} does not match packaged version ${packagedManifestSummary.manifestVersion}`
+				: cacheStates.length === 0
 					? "no installed Codex plugin cache was found"
 					: "installed Codex plugin cache is missing the packaged skills mirror";
 			return {
