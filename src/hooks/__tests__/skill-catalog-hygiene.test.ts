@@ -87,9 +87,10 @@ describe('skill catalog hygiene', () => {
       /Before first MCP tool use, call `ToolSearch\("mcp"\)`/i,
       /If ToolSearch finds no MCP tools/i,
       /state_write MCP tool/i,
-			/write subsequent updates via omx_state MCP/i,
-			/omx state clear --mode/i,
-			/omx state state_write/i,
+      /write subsequent updates via omx_state MCP/i,
+      /omx state clear --mode/i,
+      /omx state state_write/i,
+      /state_(?:read|write)\(mode=/i,
       /wiki_(?:ingest|query|lint|add|list|read|delete|refresh)\([^)]*\)/,
     ];
 

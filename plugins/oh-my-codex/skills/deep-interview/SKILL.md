@@ -475,7 +475,7 @@ enableChallengeModes = true
 
 ## Resume
 
-If interrupted, rerun `$deep-interview`. Resume from persisted mode state via `state_read(mode="deep-interview")`.
+If interrupted, rerun `$deep-interview`. Resume from persisted mode state via `omx state read --input '{"mode":"deep-interview"}' --json`.
 
 ## Recommended 3-Stage Pipeline
 

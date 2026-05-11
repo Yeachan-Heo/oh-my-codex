@@ -49,6 +49,10 @@ function escapeTomlString(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 // ---------------------------------------------------------------------------
 // Top-level OMX keys (must live before any [table] header)
 // ---------------------------------------------------------------------------
@@ -1506,6 +1510,88 @@ export function stripExistingSharedMcpRegistryBlock(config: string): {
   }
 
   return { cleaned, removed };
+}
+
+function getExistingSharedMcpRegistryBlocks(config: string): string[] {
+  const blocks: string[] = [];
+  let cursor = 0;
+
+  while (cursor < config.length) {
+    const markerIdx = config.indexOf(SHARED_MCP_REGISTRY_MARKER, cursor);
+    if (markerIdx < 0) break;
+
+    let blockStart = config.lastIndexOf("\n", markerIdx);
+    blockStart = blockStart >= 0 ? blockStart + 1 : 0;
+
+    const previousLineEnd = blockStart - 1;
+    if (previousLineEnd >= 0) {
+      const previousLineStart = config.lastIndexOf("\n", previousLineEnd - 1);
+      const previousLine = config.slice(previousLineStart + 1, previousLineEnd);
+      if (/^# =+$/.test(previousLine.trim())) {
+        blockStart = previousLineStart >= 0 ? previousLineStart + 1 : 0;
+      }
+    }
+
+    let blockEnd = config.length;
+    const endIdx = config.indexOf(SHARED_MCP_REGISTRY_END_MARKER, markerIdx);
+    if (endIdx >= 0) {
+      const endLineBreak = config.indexOf("\n", endIdx);
+      blockEnd = endLineBreak >= 0 ? endLineBreak + 1 : config.length;
+    }
+
+    blocks.push(config.slice(blockStart, blockEnd));
+    cursor = blockEnd;
+  }
+
+  return blocks;
+}
+
+export function extractSharedMcpRegistryServersFromConfig(config: string): {
+  servers: UnifiedMcpRegistryServer[];
+  sourcePath?: string;
+} {
+  const servers: UnifiedMcpRegistryServer[] = [];
+  let sourcePath: string | undefined;
+
+  for (const block of getExistingSharedMcpRegistryBlocks(config)) {
+    sourcePath ??= block.match(/^# Source:\s*(.+?)\s*$/m)?.[1];
+
+    let parsed: unknown;
+    try {
+      parsed = TOML.parse(block);
+    } catch {
+      continue;
+    }
+
+    if (!isRecord(parsed) || !isRecord(parsed.mcp_servers)) continue;
+
+    for (const [name, value] of Object.entries(parsed.mcp_servers)) {
+      if (!isRecord(value) || typeof value.command !== "string") continue;
+      const args = Array.isArray(value.args)
+        ? value.args.filter((arg): arg is string => typeof arg === "string")
+        : [];
+      const enabled =
+        typeof value.enabled === "boolean" ? value.enabled : true;
+      const timeoutCandidate =
+        typeof value.startup_timeout_sec === "number"
+          ? value.startup_timeout_sec
+          : value.startupTimeoutSec;
+      const startupTimeoutSec =
+        typeof timeoutCandidate === "number" && Number.isFinite(timeoutCandidate)
+          ? timeoutCandidate
+          : undefined;
+
+      servers.push({
+        name,
+        command: value.command,
+        args,
+        enabled,
+        ...(startupTimeoutSec !== undefined ? { startupTimeoutSec } : {}),
+      });
+    }
+  }
+
+  return { servers, sourcePath };
 }
 
 function toMcpServerTableKey(name: string): string {
