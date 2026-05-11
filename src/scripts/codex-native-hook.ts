@@ -33,7 +33,7 @@ import {
   writeTeamLeaderAttention,
   writeTeamPhase,
 } from "../team/state.js";
-import { omxNotepadPath, omxProjectMemoryPath } from "../utils/paths.js";
+import { omxNotepadPath, resolveProjectMemoryPath } from "../utils/paths.js";
 import { findGitLayout } from "../utils/git-layout.js";
 import { getBaseStateDir, getStateFilePath, getStatePath } from "../mcp/state-paths.js";
 import {
@@ -155,6 +155,12 @@ function safeString(value: unknown): string {
 
 function safeObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function safeContextSnippet(value: unknown, maxLength = 300): string {
+  const text = safeString(value).replace(/\s+/g, " ").trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
 interface NativeSubagentSessionStartMetadata {
@@ -1122,28 +1128,31 @@ async function buildSessionStartContext(
     sections.push(["[Active OMX modes]", ...modeSummaries].join("\n"));
   }
 
-  const projectMemory = await readJsonIfExists(omxProjectMemoryPath(cwd));
-  if (projectMemory) {
+  const projectMemoryPath = resolveProjectMemoryPath(cwd);
+  const projectMemory = projectMemoryPath ? await readJsonIfExists(projectMemoryPath) : null;
+  if (projectMemory && projectMemoryPath) {
     const directives = Array.isArray(projectMemory.directives) ? projectMemory.directives : [];
     const notes = Array.isArray(projectMemory.notes) ? projectMemory.notes : [];
-    const techStack = safeString(projectMemory.techStack).trim();
-    const conventions = safeString(projectMemory.conventions).trim();
-    const build = safeString(projectMemory.build).trim();
+    const techStack = safeContextSnippet(projectMemory.techStack);
+    const conventions = safeContextSnippet(projectMemory.conventions);
+    const build = safeContextSnippet(projectMemory.build);
     const summary: string[] = [];
+    const relativeMemoryPath = relative(cwd, projectMemoryPath).replace(/\\/g, "/");
+    summary.push(`- source: ${relativeMemoryPath === "project-memory.json" ? "project-memory.json" : ".omx/project-memory.json"}`);
     if (techStack) summary.push(`- stack: ${techStack}`);
     if (conventions) summary.push(`- conventions: ${conventions}`);
     if (build) summary.push(`- build: ${build}`);
     if (directives.length > 0) {
       const firstDirective = directives[0] as Record<string, unknown>;
-      const directive = safeString(firstDirective.directive).trim();
+      const directive = safeContextSnippet(firstDirective.directive);
       if (directive) summary.push(`- directive: ${directive}`);
     }
     if (notes.length > 0) {
       const firstNote = notes[0] as Record<string, unknown>;
-      const note = safeString(firstNote.content).trim();
+      const note = safeContextSnippet(firstNote.content);
       if (note) summary.push(`- note: ${note}`);
     }
-    if (summary.length > 0) {
+    if (summary.length > 1) {
       sections.push(["[Project memory]", ...summary].join("\n"));
     }
   }

@@ -310,6 +310,26 @@ export function omxProjectMemoryPath(projectRoot?: string): string {
   return join(omxRoot(projectRoot), "project-memory.json");
 }
 
+/** Repository-visible project memory file used as canonical startup context. */
+export function canonicalProjectMemoryPath(projectRoot?: string): string {
+  return join(projectRoot || process.cwd(), "project-memory.json");
+}
+
+/** Project memory read order: repository-visible canonical file, then legacy OMX runtime memory. */
+export function projectMemoryPathCandidates(projectRoot?: string): string[] {
+  const canonical = canonicalProjectMemoryPath(projectRoot);
+  const legacy = omxProjectMemoryPath(projectRoot);
+  return canonical === legacy ? [canonical] : [canonical, legacy];
+}
+
+/** First readable project memory path, preferring repository-visible canonical memory. */
+export function resolveProjectMemoryPath(projectRoot?: string): string | null {
+  for (const path of projectMemoryPathCandidates(projectRoot)) {
+    if (existsSync(path)) return path;
+  }
+  return null;
+}
+
 /** oh-my-codex notepad file (.omx/notepad.md) */
 export function omxNotepadPath(projectRoot?: string): string {
   return join(omxRoot(projectRoot), "notepad.md");

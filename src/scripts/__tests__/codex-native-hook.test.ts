@@ -25,7 +25,7 @@ import { resetTriageConfigCache } from "../../hooks/triage-config.js";
 import { executeStateOperation } from "../../state/operations.js";
 import { OMX_TMUX_HUD_OWNER_ENV } from "../../hud/reconcile.js";
 import { readAllState } from "../../hud/state.js";
-import { writePage } from "../../wiki/storage.js";
+import { getLegacyWikiDir, serializePage, writePage } from "../../wiki/storage.js";
 import { WIKI_SCHEMA_VERSION } from "../../wiki/types.js";
 
 function nativeHookScriptPath(): string {
@@ -1089,6 +1089,68 @@ describe("codex native hook dispatch", () => {
       assert.match(serialized, /small diffs, verify before claim/);
       assert.match(serialized, /Keep native Stop bounded to real continuation decisions\./);
       assert.match(serialized, /Requires LOCAL_API_BASE for smoke tests/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers repository project-memory.json during SessionStart while preserving legacy wiki guidance", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-session-root-memory-legacy-wiki-"));
+    try {
+      const now = new Date().toISOString();
+      const legacyWikiDir = getLegacyWikiDir(cwd);
+      await mkdir(legacyWikiDir, { recursive: true });
+      await writeFile(join(legacyWikiDir, "legacy.md"), serializePage({
+        filename: "legacy.md",
+        frontmatter: {
+          title: "Legacy",
+          tags: ["legacy"],
+          created: now,
+          updated: now,
+          sources: [],
+          links: [],
+          category: "reference",
+          confidence: "medium",
+          schemaVersion: WIKI_SCHEMA_VERSION,
+        },
+        content: "\n# Legacy\n\nLegacy wiki context must remain visible.\n",
+      }));
+      await writeJson(join(cwd, ".omx", "project-memory.json"), {
+        techStack: "Legacy runtime memory should not win",
+        notes: [{ category: "legacy", content: "stale legacy note", timestamp: now }],
+      });
+      await writeJson(join(cwd, "project-memory.json"), {
+        techStack: "Canonical root memory",
+        build: "npm run build && node --test dist/scripts/__tests__/codex-native-hook.test.js",
+        conventions: "prefer repository-visible project memory at startup",
+        directives: [
+          { directive: "Load root project-memory.json before legacy .omx memory.", priority: "high", timestamp: now },
+        ],
+        notes: [
+          { category: "issue", content: "Regression fixture for issue #2273.", timestamp: now },
+        ],
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: "sess-root-memory-legacy-wiki",
+        },
+        { cwd, sessionOwnerPid: 43210 },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /\[Project memory\]/);
+      assert.match(additionalContext, /source: project-memory\.json/);
+      assert.match(additionalContext, /Canonical root memory/);
+      assert.match(additionalContext, /Load root project-memory\.json before legacy \.omx memory\./);
+      assert.match(additionalContext, /Regression fixture for issue #2273\./);
+      assert.doesNotMatch(additionalContext, /Legacy runtime memory should not win/);
+      assert.match(additionalContext, /legacy pages at \.omx\/wiki\//);
+      assert.match(additionalContext, /Legacy wiki fallback is read-only/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

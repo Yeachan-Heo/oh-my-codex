@@ -16,6 +16,9 @@ import {
   omxStateDir,
   omxRoot,
   omxProjectMemoryPath,
+  canonicalProjectMemoryPath,
+  projectMemoryPathCandidates,
+  resolveProjectMemoryPath,
   omxNotepadPath,
   omxPlansDir,
   omxAdaptersDir,
@@ -400,6 +403,38 @@ describe("omxProjectMemoryPath", () => {
       omxProjectMemoryPath(),
       join(process.cwd(), ".omx", "project-memory.json"),
     );
+  });
+});
+
+describe("project memory startup path resolution", () => {
+  it("prefers repository project-memory.json over legacy .omx/project-memory.json", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-project-memory-paths-"));
+    try {
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await writeFile(join(wd, "project-memory.json"), "{}");
+      await writeFile(join(wd, ".omx", "project-memory.json"), "{}");
+
+      assert.equal(canonicalProjectMemoryPath(wd), join(wd, "project-memory.json"));
+      assert.deepEqual(projectMemoryPathCandidates(wd), [
+        join(wd, "project-memory.json"),
+        join(wd, ".omx", "project-memory.json"),
+      ]);
+      assert.equal(resolveProjectMemoryPath(wd), join(wd, "project-memory.json"));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to legacy .omx/project-memory.json when canonical memory is absent", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-project-memory-legacy-path-"));
+    try {
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await writeFile(join(wd, ".omx", "project-memory.json"), "{}");
+
+      assert.equal(resolveProjectMemoryPath(wd), join(wd, ".omx", "project-memory.json"));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
   });
 });
 

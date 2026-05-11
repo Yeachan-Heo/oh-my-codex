@@ -4,7 +4,7 @@
 
 import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
-import { codexHome, omxProjectMemoryPath } from '../utils/paths.js';
+import { codexHome, resolveProjectMemoryPath } from '../utils/paths.js';
 import {
   appendLogUnsafe,
   getWikiDir,
@@ -187,8 +187,8 @@ export function onPostCompact(data: { cwd?: string }): { additionalContext?: str
 
 function feedProjectMemory(root: string): void {
   try {
-    const projectMemoryPath = omxProjectMemoryPath(root);
-    if (!existsSync(projectMemoryPath)) return;
+    const projectMemoryPath = resolveProjectMemoryPath(root);
+    if (!projectMemoryPath || !existsSync(projectMemoryPath)) return;
 
     const parsed = JSON.parse(readFileSync(projectMemoryPath, 'utf8')) as Record<string, unknown>;
     const existing = readPage(root, 'environment.md');
