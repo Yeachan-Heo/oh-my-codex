@@ -194,6 +194,7 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 		const postCompactRuntimeCheck = await checkNativePostCompactHookRuntime(
 			paths.hooksPath,
 			cwd,
+			paths.codexHomeDir,
 		);
 		if (postCompactRuntimeCheck) checks.push(postCompactRuntimeCheck);
 	}
@@ -1098,6 +1099,7 @@ export function classifyPostCompactHookStdout(stdout: string): Check | null {
 async function checkNativePostCompactHookRuntime(
 	hooksPath: string,
 	cwd: string,
+	codexHomeDir: string,
 ): Promise<Check | null> {
 	if (!existsSync(hooksPath)) return null;
 
@@ -1116,7 +1118,9 @@ async function checkNativePostCompactHookRuntime(
 		return null;
 	}
 
-	const expectedCommand = buildManagedCodexNativeHookCommand(getPackageRoot());
+	const expectedCommand = buildManagedCodexNativeHookCommand(getPackageRoot(), {
+		codexHomeDir,
+	});
 	const uniqueCommands = [...new Set(postCompactCommands)];
 	if (uniqueCommands.length !== 1 || uniqueCommands[0] !== expectedCommand) {
 		return {

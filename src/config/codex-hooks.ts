@@ -95,6 +95,33 @@ function quotePowerShellLiteral(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+function quoteWindowsProcessArgument(value: string): string {
+  let quoted = '"';
+  let backslashes = 0;
+
+  for (const char of value) {
+    if (char === '\\') {
+      backslashes += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      quoted += '\\'.repeat(backslashes * 2 + 1);
+      quoted += '"';
+      backslashes = 0;
+      continue;
+    }
+
+    quoted += '\\'.repeat(backslashes);
+    quoted += char;
+    backslashes = 0;
+  }
+
+  quoted += '\\'.repeat(backslashes * 2);
+  quoted += '"';
+  return quoted;
+}
+
 export const WINDOWS_NATIVE_HOOK_SHIM_RELATIVE_PATH = [
   "hooks",
   "omx-native-hook-windows-shim.ps1",
@@ -131,7 +158,7 @@ export function buildManagedCodexNativeHookWindowsShimContent(
     "$startInfo.RedirectStandardInput = $true",
     "$startInfo.RedirectStandardOutput = $true",
     "$startInfo.RedirectStandardError = $true",
-    `$startInfo.ArgumentList.Add(${quotePowerShellLiteral(hookScript)})`,
+    `$startInfo.Arguments = ${quotePowerShellLiteral(quoteWindowsProcessArgument(hookScript))}`,
     "$process = [System.Diagnostics.Process]::new()",
     "$process.StartInfo = $startInfo",
     "$null = $process.Start()",

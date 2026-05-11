@@ -21,6 +21,7 @@ import {
 	checkExploreHarness,
 	classifyPostCompactHookStdout,
 } from "../doctor.js";
+import { buildManagedCodexNativeHookCommand } from "../../config/codex-hooks.js";
 
 const MANAGED_HOOK_EVENTS = [
 	"SessionStart",
@@ -68,10 +69,12 @@ function quoteCommandPart(value: string): string {
 	return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
-function currentNativeHookCommand(): string {
+function currentNativeHookCommand(codexHomeDir: string): string {
 	const testDir = dirname(fileURLToPath(import.meta.url));
 	const repoRoot = join(testDir, "..", "..", "..");
-	return `${quoteCommandPart(process.execPath)} ${quoteCommandPart(join(repoRoot, "dist", "scripts", "codex-native-hook.js"))}`;
+	return buildManagedCodexNativeHookCommand(repoRoot, {
+		codexHomeDir,
+	});
 }
 
 async function packagedPluginVersion(): Promise<string> {
@@ -89,8 +92,11 @@ async function packagedPluginVersion(): Promise<string> {
 	return manifest.version;
 }
 
-function buildHooksJsonWithPostCompactCommand(postCompactCommand: string): string {
-	const expectedCommand = currentNativeHookCommand();
+function buildHooksJsonWithPostCompactCommand(
+	postCompactCommand: string,
+	codexHomeDir: string,
+): string {
+	const expectedCommand = currentNativeHookCommand(codexHomeDir);
 	return `${JSON.stringify({
 		hooks: Object.fromEntries(
 			MANAGED_HOOK_EVENTS.map((eventName) => [
@@ -785,6 +791,7 @@ command = "node"
 				join(codexDir, "hooks.json"),
 				buildHooksJsonWithPostCompactCommand(
 					`${quoteCommandPart(process.execPath)} ${quoteCommandPart(join(wd, "old", "dist", "scripts", "codex-native-hook.js"))}`,
+					codexDir,
 				),
 			);
 
@@ -833,7 +840,10 @@ command = "node"
 			await writeFile(join(codexDir, "config.toml"), "omx_enabled = true\n");
 			await writeFile(
 				join(codexDir, "hooks.json"),
-				buildHooksJsonWithPostCompactCommand(currentNativeHookCommand()),
+				buildHooksJsonWithPostCompactCommand(
+					currentNativeHookCommand(codexDir),
+					codexDir,
+				),
 			);
 
 			const res = runOmx(wd, ["doctor", "--verbose"], {

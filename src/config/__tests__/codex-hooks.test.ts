@@ -94,7 +94,7 @@ describe("codex hooks helpers", () => {
     ));
   });
 
-  it("builds deterministic Windows shim paths and ProcessStartInfo content", () => {
+  it("builds deterministic Windows shim paths and PowerShell 5.1-compatible ProcessStartInfo content", () => {
     assert.equal(
       buildManagedCodexNativeHookWindowsShimPath("C:\\Users\\Ada Lovelace\\.codex"),
       "C:\\Users\\Ada Lovelace\\.codex\\hooks\\omx-native-hook-windows-shim.ps1",
@@ -107,6 +107,7 @@ describe("codex hooks helpers", () => {
 
     assert.match(content, /\$stdinPayload = \[Console\]::In\.ReadToEnd\(\)/);
     assert.match(content, /\[System\.Diagnostics\.ProcessStartInfo\]::new\(\)/);
+    assert.doesNotMatch(content, /ArgumentList/);
     assert.match(content, /\$startInfo\.UseShellExecute = \$false/);
     assert.match(content, /\$startInfo\.RedirectStandardInput = \$true/);
     assert.match(content, /\$startInfo\.RedirectStandardOutput = \$true/);
@@ -117,7 +118,7 @@ describe("codex hooks helpers", () => {
     assert.match(content, /\$startInfo\.FileName = 'C:\\Program Files\\nodejs\\node\.exe'/);
     assert.match(
       content,
-      /\$startInfo\.ArgumentList\.Add\('D:\\Program Files\\O''Malley\\oh-my-codex\\dist\\scripts\\codex-native-hook\.js'\)/,
+      /\$startInfo\.Arguments = '"D:\\Program Files\\O''Malley\\oh-my-codex\\dist\\scripts\\codex-native-hook\.js"'/,
     );
   });
 
