@@ -432,6 +432,29 @@ describe('config generator', () => {
     }
   });
 
+  it('can target the legacy codex_hooks flag when requested', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
+    try {
+      const configPath = join(wd, 'config.toml');
+      const original = [
+        '[features]',
+        'hooks = true',
+        'custom_user_flag = false',
+        '',
+      ].join('\n');
+      await writeFile(configPath, original);
+
+      await mergeConfig(configPath, wd, { codexHookFeatureFlag: 'codex_hooks' });
+      const merged = await readFile(configPath, 'utf-8');
+
+      assert.equal((merged.match(/^codex_hooks = true$/gm) ?? []).length, 1);
+      assert.doesNotMatch(merged, /^hooks\s*=/m);
+      assert.match(merged, /^custom_user_flag = false$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('dedupes mixed legacy codex_hooks and hooks flags to a single hooks flag', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
     try {
@@ -456,7 +479,7 @@ describe('config generator', () => {
     }
   });
 
-  it('normalizes plugin-mode runtime flags from legacy codex_hooks flag to hooks', () => {
+  it('normalizes plugin-mode runtime flags to the current hooks flag by default', () => {
     const original = [
       '[features]',
       'custom_user_flag = false',
@@ -470,6 +493,24 @@ describe('config generator', () => {
     assert.match(merged, /^hooks = true$/m);
     assert.match(merged, /^goals = true$/m);
     assert.doesNotMatch(merged, /^codex_hooks\s*=/m);
+    assert.doesNotMatch(merged, /^goal\s*=/m);
+    assert.match(merged, /^custom_user_flag = false$/m);
+  });
+
+  it('normalizes plugin-mode runtime flags to legacy codex_hooks when requested', () => {
+    const original = [
+      '[features]',
+      'custom_user_flag = false',
+      'codex_hooks = true',
+      'goal = true',
+      '',
+    ].join('\n');
+
+    const merged = upsertPluginModeRuntimeFeatureFlags(original, 'codex_hooks');
+
+    assert.match(merged, /^codex_hooks = true$/m);
+    assert.match(merged, /^goals = true$/m);
+    assert.doesNotMatch(merged, /^hooks\s*=/m);
     assert.doesNotMatch(merged, /^goal\s*=/m);
     assert.match(merged, /^custom_user_flag = false$/m);
   });

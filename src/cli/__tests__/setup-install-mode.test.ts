@@ -1219,6 +1219,32 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
+	it("uses legacy codex_hooks only when the installed Codex reports that hook feature", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await setup({
+						scope: "user",
+						installMode: "plugin",
+						codexFeaturesProbe: () =>
+							"codex_hooks                             experimental       true\n",
+						codexVersionProbe: () => "codex-cli 0.129.0",
+					});
+
+					const config = await readFile(
+						join(codexHomeDir, "config.toml"),
+						"utf-8",
+					);
+					assert.match(config, /^codex_hooks = true$/m);
+					assert.doesNotMatch(config, /^hooks = true$/m);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("preserves existing user hooks while installing plugin-mode native hooks", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {

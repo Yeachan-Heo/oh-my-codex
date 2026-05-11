@@ -26,11 +26,14 @@ import { getPackageRoot } from "../utils/package.js";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { detectLegacySkillRootOverlap } from "../utils/paths.js";
 import { resolveScopeDirectories, type SetupScope } from "./setup.js";
+import { resolveCodexHookFeatureFlagForCli } from "./codex-feature-probe.js";
 import { readPersistedSetupScope } from "./index.js";
 import { isOmxGeneratedAgentsMd } from "../utils/agents-md.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 
 export interface UninstallOptions {
+  codexFeaturesProbe?: () => string | null;
+  codexVersionProbe?: () => string | null;
   dryRun?: boolean;
   keepConfig?: boolean;
   verbose?: boolean;
@@ -190,7 +193,10 @@ async function restorePreviousNotifyIfDispatcher(
 
 async function cleanConfig(
   configPath: string,
-  options: Pick<UninstallOptions, "dryRun" | "verbose"> & {
+  options: Pick<
+    UninstallOptions,
+    "dryRun" | "verbose" | "codexFeaturesProbe" | "codexVersionProbe"
+  > & {
     preserveHooksFeatureFlag?: boolean;
   },
 ): Promise<
@@ -245,7 +251,13 @@ async function cleanConfig(
   // Strip feature flags
   config = stripOmxFeatureFlags(config);
   if (shouldRestoreHooksFeatureFlag) {
-    config = upsertCodexHooksFeatureFlag(config);
+    config = upsertCodexHooksFeatureFlag(
+      config,
+      resolveCodexHookFeatureFlagForCli({
+        codexFeaturesProbe: options.codexFeaturesProbe,
+        codexVersionProbe: options.codexVersionProbe,
+      }),
+    );
   }
 
   // Strip OMX-managed env defaults
@@ -592,6 +604,8 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
       dryRun,
       verbose,
       preserveHooksFeatureFlag,
+      codexFeaturesProbe: options.codexFeaturesProbe,
+      codexVersionProbe: options.codexVersionProbe,
     });
     Object.assign(summary, configResult);
   }

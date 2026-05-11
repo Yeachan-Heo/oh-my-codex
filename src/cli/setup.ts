@@ -47,6 +47,7 @@ import {
 	stripManagedCodexHookTrustState,
 	OMX_PLUGIN_DEVELOPER_INSTRUCTIONS,
 } from "../config/generator.js";
+import type { CodexHookFeatureFlag } from "../config/codex-feature-flags.js";
 import { mergeManagedCodexHooksConfig } from "../config/codex-hooks.js";
 import {
 	getLegacyUnifiedMcpRegistryCandidate,
@@ -90,6 +91,7 @@ import {
 	upsertLocalOmxMarketplaceRegistration,
 	upsertLocalOmxPluginEnablement,
 } from "./plugin-marketplace.js";
+import { resolveCodexHookFeatureFlagForCli } from "./codex-feature-probe.js";
 
 async function resolveStatusLinePresetForSetup(
 	projectRoot: string,
@@ -119,6 +121,7 @@ import {
 } from "../utils/agents-model-table.js";
 
 interface SetupOptions {
+	codexFeaturesProbe?: () => string | null;
 	codexVersionProbe?: () => string | null;
 	force?: boolean;
 	mergeAgents?: boolean;
@@ -1409,13 +1412,18 @@ async function applyPluginModeHooksConfig(
 	pkgRoot: string,
 	backupContext: SetupBackupContext,
 	summary: SetupCategorySummary,
-	options: Pick<SetupOptions, "dryRun" | "verbose">,
+	options: Pick<SetupOptions, "dryRun" | "verbose"> & {
+		codexHookFeatureFlag: CodexHookFeatureFlag;
+	},
 ): Promise<void> {
 	const existingConfig = existsSync(configPath)
 		? await readFile(configPath, "utf-8")
 		: "";
 	const nextConfig = upsertManagedCodexHookTrustState(
-		upsertPluginModeRuntimeFeatureFlags(stripManagedCodexHookTrustState(existingConfig)),
+		upsertPluginModeRuntimeFeatureFlags(
+			stripManagedCodexHookTrustState(existingConfig),
+			options.codexHookFeatureFlag,
+		),
 		pkgRoot,
 		hooksPath,
 	);
@@ -1874,6 +1882,15 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	console.log("[5/8] Updating config.toml...");
 	let resolvedConfig = "";
 	let omxManagesTui = false;
+	const codexHookFeatureFlag = resolveCodexHookFeatureFlagForCli({
+		codexFeaturesProbe: options.codexFeaturesProbe,
+		codexVersionProbe: options.codexVersionProbe,
+	});
+	if (verbose) {
+		console.log(
+			`  Native Codex hook feature flag: [features].${codexHookFeatureFlag}`,
+		);
+	}
 	if (isPluginInstallMode) {
 		const configCleaned = await cleanupPluginModeLegacyConfig(
 			scopeDirs.codexConfigFile,
@@ -1893,7 +1910,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			pkgRoot,
 			backupContext,
 			summary.config,
-			{ dryRun, verbose },
+			{ dryRun, verbose, codexHookFeatureFlag },
 		);
 		const pluginMarketplaceResult = await ensurePluginMarketplaceRegistration(
 			scopeDirs.codexConfigFile,
@@ -2006,6 +2023,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				verbose,
 				statusLinePreset,
 				forceStatusLinePreset: force,
+				codexHookFeatureFlag,
 			},
 		);
 		resolvedConfig = managedConfig.finalConfig;
@@ -3168,6 +3186,7 @@ async function updateManagedConfig(
 	options: Pick<SetupOptions, "dryRun" | "verbose" | "modelUpgradePrompt"> & {
 		statusLinePreset?: HudPreset;
 		forceStatusLinePreset?: boolean;
+		codexHookFeatureFlag: CodexHookFeatureFlag;
 	},
 ): Promise<ManagedConfigResult> {
 	const existing = existsSync(configPath)
@@ -3201,6 +3220,7 @@ async function updateManagedConfig(
 	const finalConfig = buildMergedConfig(existing, pkgRoot, {
 		includeTui: omxManagesTui,
 		codexHooksFile: hooksPath,
+		codexHookFeatureFlag: options.codexHookFeatureFlag,
 		modelOverride,
 		sharedMcpServers: sharedMcpRegistry.servers,
 		sharedMcpRegistrySource: sharedMcpRegistry.sourcePath,
