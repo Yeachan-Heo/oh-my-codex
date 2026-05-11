@@ -11,12 +11,15 @@ import {
 import { autoStartStdioMcpServer } from "./bootstrap.js";
 import {
   hermesListArtifacts,
+  hermesListQuestionEvents,
+  hermesListQuestions,
   hermesListSessions,
   hermesReadArtifact,
   hermesReadStatus,
   hermesReadTail,
   hermesReportStatus,
   hermesSendPrompt,
+  hermesSubmitQuestionAnswer,
   hermesStartSession,
 } from "./hermes-bridge.js";
 
@@ -78,6 +81,40 @@ export function buildHermesServerTools() {
       inputSchema: { type: "object", properties: { workingDirectory, lines: { type: "number" } } },
     },
     {
+      name: "hermes_list_question_events",
+      description: "Read structured question lifecycle events for coordinator bridge correlation.",
+      inputSchema: { type: "object", properties: { workingDirectory, limit: { type: "number" } } },
+    },
+    {
+      name: "hermes_list_questions",
+      description: "List bounded structured question records without reading terminal UI.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          workingDirectory,
+          session_id: sessionId,
+          status: { type: "string", enum: ["open", "pending", "prompting", "answered", "aborted", "error"] },
+          limit: { type: "number" },
+        },
+      },
+    },
+    {
+      name: "hermes_submit_question_answer",
+      description: "Submit a bounded structured answer by question id; never proxies arbitrary terminal input.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          workingDirectory,
+          session_id: sessionId,
+          question_id: { type: "string" },
+          answer: { type: "object" },
+          answers: { type: "array", items: { type: "object" } },
+          allow_mutation: allowMutation,
+        },
+        required: ["question_id", "allow_mutation"],
+      },
+    },
+    {
       name: "hermes_list_artifacts",
       description: "List known safe result artifact files under .omx plans/specs/goals/context/reports.",
       inputSchema: { type: "object", properties: { workingDirectory, limit: { type: "number" } } },
@@ -115,6 +152,9 @@ const TOOL_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<u
   hermes_list_sessions: hermesListSessions,
   hermes_start_session: hermesStartSession,
   hermes_send_prompt: hermesSendPrompt,
+  hermes_list_question_events: hermesListQuestionEvents,
+  hermes_list_questions: hermesListQuestions,
+  hermes_submit_question_answer: hermesSubmitQuestionAnswer,
   hermes_read_status: hermesReadStatus,
   hermes_read_tail: hermesReadTail,
   hermes_list_artifacts: hermesListArtifacts,

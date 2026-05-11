@@ -4,6 +4,9 @@ import { mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { injectExecFollowup } from "../exec/followup.js";
 import { isSessionStateUsable, readUsableSessionState, type SessionState } from "../hooks/session.js";
+import { readQuestionEvents } from "../question/events.js";
+import { listQuestionRecords, QuestionSubmitError, submitQuestionAnswerById } from "../question/state.js";
+import type { QuestionAnswerEntry, QuestionRecord } from "../question/types.js";
 import {
   getAllSessionScopedStateDirs,
   getBaseStateDir,
@@ -21,7 +24,10 @@ export type HermesBridgeFailureCode =
   | "invalid_input"
   | "mutation_not_allowed"
   | "no_session"
-  | "prompt_not_accepted";
+  | "prompt_not_accepted"
+  | "question_invalid_answer"
+  | "question_not_open"
+  | "question_unknown";
 
 export interface HermesBridgeResult<T extends Record<string, unknown> = Record<string, unknown>> {
   ok: boolean;
@@ -56,6 +62,25 @@ export interface HermesModeStatusSummary {
   updated_at?: string;
   completed_at?: string;
   error?: string;
+}
+
+export interface HermesQuestionSummary {
+  question_id: string;
+  session_id?: string;
+  created_at: string;
+  updated_at: string;
+  status: QuestionRecord["status"];
+  source?: string;
+  header?: string;
+  question: string;
+  questions?: QuestionRecord["questions"];
+  options?: QuestionRecord["options"];
+  allow_other?: boolean;
+  other_label?: string;
+  type?: QuestionRecord["type"];
+  multi_select?: boolean;
+  renderer?: QuestionRecord["renderer"];
+  error?: QuestionRecord["error"];
 }
 
 export interface HermesBridgeDeps {
@@ -127,6 +152,27 @@ function optionalBoolean(value: unknown): boolean | undefined {
 function optionalString(value: unknown): string | undefined {
   const normalized = typeof value === "string" ? value.trim() : "";
   return normalized || undefined;
+}
+
+function projectQuestion(record: QuestionRecord): HermesQuestionSummary {
+  return {
+    question_id: record.question_id,
+    ...(record.session_id ? { session_id: record.session_id } : {}),
+    created_at: record.created_at,
+    updated_at: record.updated_at,
+    status: record.status,
+    ...(record.source ? { source: record.source } : {}),
+    ...(record.header ? { header: record.header } : {}),
+    question: record.question,
+    ...(record.questions ? { questions: record.questions } : {}),
+    options: record.options,
+    allow_other: record.allow_other,
+    other_label: record.other_label,
+    type: record.type,
+    multi_select: record.multi_select,
+    ...(record.renderer ? { renderer: record.renderer } : {}),
+    ...(record.error ? { error: record.error } : {}),
+  };
 }
 
 function projectSessionStatus(session: SessionState | null): HermesStatusSessionSummary | null {
@@ -236,6 +282,62 @@ export async function hermesReadStatus(
     return jsonResult({ session, modes });
   } catch (error) {
     return failure("invalid_input", error instanceof Error ? error.message : String(error));
+  }
+}
+
+export async function hermesListQuestionEvents(
+  args: Record<string, unknown>,
+): Promise<HermesBridgeResult<{ events: Awaited<ReturnType<typeof readQuestionEvents>> }>> {
+  try {
+    const cwd = resolveWorkingDirectoryForState(normalizeString(args.workingDirectory, "workingDirectory"));
+    const limit = normalizePositiveInteger(args.limit, 100, 1000);
+    return jsonResult({ events: await readQuestionEvents(cwd, { limit }) });
+  } catch (error) {
+    return failure("invalid_input", error instanceof Error ? error.message : String(error));
+  }
+}
+
+export async function hermesListQuestions(
+  args: Record<string, unknown>,
+): Promise<HermesBridgeResult<{ questions: HermesQuestionSummary[] }>> {
+  try {
+    const cwd = resolveWorkingDirectoryForState(normalizeString(args.workingDirectory, "workingDirectory"));
+    const sessionId = validateSessionId(normalizeString(args.session_id, "session_id"));
+    const status = normalizeString(args.status, "status") ?? "open";
+    if (!["open", "pending", "prompting", "answered", "aborted", "error"].includes(status)) {
+      throw new Error("status must be one of open, pending, prompting, answered, aborted, error");
+    }
+    const limit = normalizePositiveInteger(args.limit, 100, 1000);
+    const questionStatus = status as "open" | QuestionRecord["status"];
+    const records = await listQuestionRecords(cwd, {
+      ...(sessionId ? { sessionId } : {}),
+      status: questionStatus,
+      limit,
+    });
+    return jsonResult({ questions: records.map(({ record }) => projectQuestion(record)) });
+  } catch (error) {
+    return failure("invalid_input", error instanceof Error ? error.message : String(error));
+  }
+}
+
+export async function hermesSubmitQuestionAnswer(
+  args: Record<string, unknown>,
+): Promise<HermesBridgeResult<{ question: HermesQuestionSummary; answers: QuestionAnswerEntry[] }>> {
+  try {
+    requireMutation(args);
+    const cwd = resolveWorkingDirectoryForState(normalizeString(args.workingDirectory, "workingDirectory"));
+    const sessionId = validateSessionId(normalizeString(args.session_id, "session_id"));
+    const questionId = normalizeString(args.question_id, "question_id", { required: true })!;
+    const payload = args.answers !== undefined ? { answers: args.answers } : { answer: args.answer };
+    const { record } = await submitQuestionAnswerById(cwd, questionId, payload, {
+      ...(sessionId ? { sessionId } : {}),
+    });
+    return jsonResult({ question: projectQuestion(record), answers: record.answers ?? [] });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("allow_mutation")) return failure("mutation_not_allowed", message);
+    if (error instanceof QuestionSubmitError) return failure(error.code, message);
+    return failure("invalid_input", message);
   }
 }
 

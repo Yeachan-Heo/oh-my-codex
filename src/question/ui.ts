@@ -1,7 +1,6 @@
 import { emitKeypressEvents } from 'node:readline';
 import { createInterface as createPromptInterface } from 'node:readline/promises';
 import { stdin as defaultInput, stdout as defaultOutput } from 'node:process';
-import { injectQuestionAnswersToPane } from './renderer.js';
 import { markQuestionAnswered, markQuestionTerminalError, readQuestionRecord } from './state.js';
 import { isMultiAnswerableQuestion } from './types.js';
 import type { NormalizedQuestionItem, QuestionAnswer, QuestionAnswerEntry, QuestionRecord } from './types.js';
@@ -142,21 +141,6 @@ function buildAnswer(question: NormalizedQuestionItem, selections: number[], oth
   const selected = selectedOptions[0];
   if (!selected) throw new Error('No option selected.');
   return { kind: 'option', value: selected.value, selected_labels: [selected.label], selected_values: [selected.value] };
-}
-
-function safeString(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
-
-function maybeInjectAnswers(record: QuestionRecord, answers: QuestionAnswerEntry[], deps: Pick<QuestionUiDeps, 'env' | 'injectAnswersToPane'> = {}): void {
-  const env = deps.env ?? process.env;
-  const envTransport = safeString(env.OMX_QUESTION_RETURN_TRANSPORT).trim();
-  const target = record.renderer?.return_target ?? safeString(env.OMX_QUESTION_RETURN_TARGET).trim();
-  const transport = record.renderer?.return_transport ?? (envTransport === 'tmux-send-keys' ? envTransport : undefined);
-  if (!target || transport !== 'tmux-send-keys') return;
-  try {
-    (deps.injectAnswersToPane ?? injectQuestionAnswersToPane)(target, answers);
-  } catch {}
 }
 
 function supportsInteractiveArrowUi(input: QuestionUiInput, output: QuestionUiOutput): boolean {
@@ -474,8 +458,7 @@ export async function runQuestionUi(recordPath: string, deps: QuestionUiDeps = {
         ? await promptForAnswersWithArrows(record, { input, output })
         : await promptForAnswersWithNumbers(record, { input, output });
     }
-    const answeredRecord = await markQuestionAnswered(recordPath, answers);
-    maybeInjectAnswers(answeredRecord, answers, { env: deps.env, injectAnswersToPane: deps.injectAnswersToPane });
+    await markQuestionAnswered(recordPath, answers);
   } catch (error) {
     await markQuestionTerminalError(recordPath, 'error', 'question_ui_failed', error instanceof Error ? error.message : String(error));
     throw error;

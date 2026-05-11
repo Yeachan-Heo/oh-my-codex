@@ -9,9 +9,12 @@ import {
   markQuestionAnswered,
   markQuestionPrompting,
   markQuestionTerminalError,
+  QuestionSubmitError,
   readQuestionRecord,
+  submitQuestionAnswerById,
   waitForQuestionTerminalState,
 } from '../state.js';
+import { readQuestionEvents } from '../events.js';
 
 const tempDirs: string[] = [];
 
@@ -40,6 +43,81 @@ describe('question state', () => {
     const loaded = await readQuestionRecord(recordPath);
     assert.equal(loaded?.question, 'Pick one');
     assert.equal(loaded?.type, 'single-answerable');
+  });
+
+  it('emits a structured creation event with correlation metadata', async () => {
+    const cwd = await makeRepo();
+    const { record } = await createQuestionRecord(cwd, {
+      header: 'Decision',
+      question: 'Pick one',
+      options: [{ label: 'A', value: 'a', description: 'Alpha lane' }],
+      allow_other: false,
+      other_label: 'Other',
+      multi_select: false,
+      source: 'test-source',
+    }, 'sess-events', new Date('2026-05-11T00:00:00.000Z'), {
+      emitEvent: true,
+      timeoutMs: 1234,
+      runId: 'run-1',
+    });
+
+    const event = (await readQuestionEvents(cwd)).find((item) => item.question_id === record.question_id);
+    assert.equal(event?.type, 'question-created');
+    assert.equal(event?.session_id, 'sess-events');
+    assert.equal(event?.run_id, 'run-1');
+    assert.equal(event?.context_summary, 'Decision — Pick one');
+    assert.equal(event?.option_schema?.[0]?.options[0]?.description, 'Alpha lane');
+    assert.equal(event?.state?.timeout_ms, 1234);
+  });
+
+  it('submits bounded answers by id and rejects duplicate stale or unknown submissions', async () => {
+    const cwd = await makeRepo();
+    const { record } = await createQuestionRecord(cwd, {
+      question: 'Pick one',
+      options: [{ label: 'A', value: 'a' }],
+      allow_other: false,
+      other_label: 'Other',
+      multi_select: false,
+    }, 'sess-submit');
+
+    const submitted = await submitQuestionAnswerById(cwd, record.question_id, {
+      answer: {
+        kind: 'option',
+        value: 'a',
+        selected_labels: ['A'],
+        selected_values: ['a'],
+      },
+    }, { sessionId: 'sess-submit' });
+
+    assert.equal(submitted.record.status, 'answered');
+    assert.equal(submitted.record.answer?.value, 'a');
+    const events = await readQuestionEvents(cwd);
+    assert.equal(events.at(-1)?.type, 'question-answered');
+    assert.equal(events.at(-1)?.state?.answer_count, 1);
+
+    await assert.rejects(
+      () => submitQuestionAnswerById(cwd, record.question_id, {
+        answer: {
+          kind: 'option',
+          value: 'a',
+          selected_labels: ['A'],
+          selected_values: ['a'],
+        },
+      }, { sessionId: 'sess-submit' }),
+      (error) => error instanceof QuestionSubmitError && error.code === 'question_not_open',
+    );
+
+    await assert.rejects(
+      () => submitQuestionAnswerById(cwd, 'question-missing', {
+        answer: {
+          kind: 'option',
+          value: 'a',
+          selected_labels: ['A'],
+          selected_values: ['a'],
+        },
+      }, { sessionId: 'sess-submit' }),
+      (error) => error instanceof QuestionSubmitError && error.code === 'question_unknown',
+    );
   });
 
   it('waits for terminal answered state and returns free-text other values exactly', async () => {

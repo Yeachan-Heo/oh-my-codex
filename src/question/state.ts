@@ -1,9 +1,10 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { getStateDir } from '../mcp/state-paths.js';
 import { writeAtomic } from '../team/state.js';
 import { sleep } from '../utils/sleep.js';
+import { appendQuestionEvent, normalizeSubmittedAnswers } from './events.js';
 import { getNormalizedQuestionType, normalizeQuestionInput } from './types.js';
 import type {
   QuestionAnswer,
@@ -16,6 +17,21 @@ import type {
 
 const QUESTION_NAMESPACE = 'questions';
 const DEFAULT_POLL_INTERVAL_MS = 100;
+
+export type QuestionSubmitFailureCode =
+  | 'question_unknown'
+  | 'question_not_open'
+  | 'question_invalid_answer';
+
+export class QuestionSubmitError extends Error {
+  readonly code: QuestionSubmitFailureCode;
+
+  constructor(code: QuestionSubmitFailureCode, message: string) {
+    super(message);
+    this.name = 'QuestionSubmitError';
+    this.code = code;
+  }
+}
 
 function buildQuestionId(now = new Date()): string {
   return `question-${now.toISOString().replace(/[:.]/g, '-')}-$${Math.random().toString(16).slice(2, 10)}`.replace('$', '');
@@ -45,6 +61,7 @@ export async function createQuestionRecord(
   input: QuestionInput,
   sessionId?: string,
   now = new Date(),
+  options: { emitEvent?: boolean; timeoutMs?: number; runId?: string } = {},
 ): Promise<{ recordPath: string; record: QuestionRecord }> {
   const normalizedInput = normalizeQuestionInput(input);
   const questionId = buildQuestionId(now);
@@ -68,6 +85,14 @@ export async function createQuestionRecord(
   };
   const recordPath = getQuestionRecordPath(cwd, questionId, sessionId);
   await writeQuestionRecord(recordPath, record);
+  if (options.emitEvent) {
+    await appendQuestionEvent(cwd, 'question-created', record, {
+      recordPath,
+      timeoutMs: options.timeoutMs,
+      runId: options.runId,
+      now,
+    });
+  }
   return { recordPath, record };
 }
 
@@ -112,6 +137,72 @@ export async function markQuestionAnswered(
       error: undefined,
     };
   });
+}
+
+function isValidQuestionId(questionId: string): boolean {
+  return /^question-[A-Za-z0-9_.-]+$/.test(questionId) && !questionId.includes('..');
+}
+
+async function listQuestionRecordsInDir(dir: string): Promise<Array<{ recordPath: string; record: QuestionRecord }>> {
+  if (!existsSync(dir)) return [];
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  const records: Array<{ recordPath: string; record: QuestionRecord }> = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const recordPath = join(dir, entry.name);
+    const record = await readQuestionRecord(recordPath).catch(() => null);
+    if (record?.kind === 'omx.question/v1') records.push({ recordPath, record });
+  }
+  return records;
+}
+
+export async function listQuestionRecords(
+  cwd: string,
+  options: { sessionId?: string; status?: QuestionStatus | 'open'; limit?: number } = {},
+): Promise<Array<{ recordPath: string; record: QuestionRecord }>> {
+  const dirs = [getQuestionStateDir(cwd, options.sessionId)];
+  const records = (await Promise.all(dirs.map((dir) => listQuestionRecordsInDir(dir)))).flat();
+  const filtered = records.filter(({ record }) => {
+    if (!options.status) return true;
+    if (options.status === 'open') return record.status === 'pending' || record.status === 'prompting';
+    return record.status === options.status;
+  });
+  const limit = Math.max(1, Math.min(options.limit ?? 100, 1000));
+  return filtered
+    .sort((left, right) => left.record.created_at.localeCompare(right.record.created_at))
+    .slice(-limit);
+}
+
+export async function submitQuestionAnswerById(
+  cwd: string,
+  questionId: string,
+  answerPayload: unknown,
+  options: { sessionId?: string; runId?: string } = {},
+): Promise<{ recordPath: string; record: QuestionRecord }> {
+  const normalizedQuestionId = questionId.trim();
+  if (!isValidQuestionId(normalizedQuestionId)) {
+    throw new QuestionSubmitError('question_unknown', `Unknown question id: ${questionId}`);
+  }
+
+  const recordPath = getQuestionRecordPath(cwd, normalizedQuestionId, options.sessionId);
+  const current = await readQuestionRecord(recordPath);
+  if (!current) throw new QuestionSubmitError('question_unknown', `Unknown question id: ${normalizedQuestionId}`);
+  if (current.status !== 'pending' && current.status !== 'prompting') {
+    throw new QuestionSubmitError(
+      'question_not_open',
+      `Question ${normalizedQuestionId} is ${current.status}; only pending or prompting questions can be answered.`,
+    );
+  }
+
+  let answers: QuestionAnswerEntry[];
+  try {
+    answers = normalizeSubmittedAnswers(current, answerPayload);
+  } catch (error) {
+    throw new QuestionSubmitError('question_invalid_answer', error instanceof Error ? error.message : String(error));
+  }
+  const record = await markQuestionAnswered(recordPath, answers);
+  await appendQuestionEvent(cwd, 'question-answered', record, { recordPath, runId: options.runId });
+  return { recordPath, record };
 }
 
 export async function markQuestionTerminalError(

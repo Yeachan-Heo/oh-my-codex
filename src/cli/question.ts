@@ -1,8 +1,11 @@
 import { evaluateQuestionPolicy } from '../question/policy.js';
+import { appendQuestionEvent } from '../question/events.js';
 import {
   createQuestionRecord,
   markQuestionTerminalError,
   markQuestionPrompting,
+  QuestionSubmitError,
+  submitQuestionAnswerById,
   waitForQuestionTerminalState,
 } from '../question/state.js';
 import { isQuestionRendererAlive, launchQuestionRenderer } from '../question/renderer.js';
@@ -28,6 +31,9 @@ Options:
   --help, -h           Show this help message
   --input <json>       JSON object with question/options schema; blocks until answered
   --input=<json>       Same as --input
+  --answer-question-id <id>  Submit a bounded answer payload for a known question id
+  --answer <json>      JSON answer object or {"answers":[...]} payload for --answer-question-id
+  --session-id <id>    Optional session scope for answer submission
   --json               Emit compact JSON on stdout for machine callers
   --ui                 Internal renderer mode; renders the OMX question UI for an existing state record
   --state-path <path>  Question record path used by --ui mode
@@ -66,6 +72,9 @@ interface ParsedQuestionArgs {
   ui: boolean;
   input?: string;
   statePath?: string;
+  answerQuestionId?: string;
+  answer?: string;
+  sessionId?: string;
 }
 
 function parseQuestionArgs(args: string[]): ParsedQuestionArgs {
@@ -93,6 +102,39 @@ function parseQuestionArgs(args: string[]): ParsedQuestionArgs {
     }
     if (arg.startsWith('--input=')) {
       parsed.input = arg.slice('--input='.length);
+      continue;
+    }
+    if (arg === '--answer-question-id') {
+      const next = args[index + 1];
+      if (!next) throw new Error('Missing question id after --answer-question-id');
+      parsed.answerQuestionId = next;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--answer-question-id=')) {
+      parsed.answerQuestionId = arg.slice('--answer-question-id='.length);
+      continue;
+    }
+    if (arg === '--answer') {
+      const next = args[index + 1];
+      if (!next) throw new Error('Missing JSON value after --answer');
+      parsed.answer = next;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--answer=')) {
+      parsed.answer = arg.slice('--answer='.length);
+      continue;
+    }
+    if (arg === '--session-id') {
+      const next = args[index + 1];
+      if (!next) throw new Error('Missing session id after --session-id');
+      parsed.sessionId = next;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--session-id=')) {
+      parsed.sessionId = arg.slice('--session-id='.length);
       continue;
     }
     if (arg === '--state-path') {
@@ -143,6 +185,45 @@ export async function questionCommand(args: string[]): Promise<void> {
     return;
   }
 
+  if (parsed.answerQuestionId) {
+    if (!parsed.answer) throw new Error('--answer-question-id requires --answer');
+    let answerPayload: unknown;
+    try {
+      answerPayload = JSON.parse(parsed.answer);
+    } catch (error) {
+      throw new Error(`--answer must be valid JSON: ${(error as Error).message}`);
+    }
+    try {
+      const { record, recordPath } = await submitQuestionAnswerById(
+        process.cwd(),
+        parsed.answerQuestionId,
+        answerPayload,
+        { sessionId: parsed.sessionId },
+      );
+      printJson({
+        ok: true,
+        question_id: record.question_id,
+        session_id: record.session_id,
+        status: record.status,
+        answers: record.answers ?? [],
+        record_path: recordPath,
+      }, parsed.json);
+    } catch (error) {
+      const code = error instanceof QuestionSubmitError ? error.code : 'question_submit_failed';
+      printJson({
+        ok: false,
+        question_id: parsed.answerQuestionId,
+        session_id: parsed.sessionId,
+        error: {
+          code,
+          message: extractErrorMessage(error),
+        },
+      }, parsed.json);
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   if (!parsed.input) throw new Error('omx question requires --input in normal mode');
 
   let rawInput: unknown;
@@ -167,7 +248,11 @@ export async function questionCommand(args: string[]): Promise<void> {
     return;
   }
 
-  const { record, recordPath } = await createQuestionRecord(cwd, input, policy.sessionId);
+  const waitTimeoutMs = parseQuestionWaitTimeoutMs();
+  const { record, recordPath } = await createQuestionRecord(cwd, input, policy.sessionId, new Date(), {
+    emitEvent: true,
+    timeoutMs: waitTimeoutMs,
+  });
 
   let finalRecord;
   try {
@@ -184,7 +269,7 @@ export async function questionCommand(args: string[]): Promise<void> {
       );
     }
     finalRecord = await waitForQuestionTerminalState(recordPath, {
-      timeoutMs: parseQuestionWaitTimeoutMs(),
+      timeoutMs: waitTimeoutMs,
       rendererAlive: (currentRecord) => isQuestionRendererAlive(currentRecord.renderer),
       rendererDeathMessage: (currentRecord) => (
         `Question renderer ${currentRecord.renderer?.renderer ?? renderer.renderer} ${currentRecord.renderer?.target ?? renderer.target} exited before answering.`
@@ -192,12 +277,16 @@ export async function questionCommand(args: string[]): Promise<void> {
     });
   } catch (error) {
     const message = extractErrorMessage(error);
-    await markQuestionTerminalError(
+    const errorRecord = await markQuestionTerminalError(
       recordPath,
       'error',
       'question_runtime_failed',
       message,
     );
+    await appendQuestionEvent(cwd, 'question-error', errorRecord, {
+      recordPath,
+      timeoutMs: waitTimeoutMs,
+    });
     printJson({
       ok: false,
       question_id: record.question_id,
@@ -212,6 +301,12 @@ export async function questionCommand(args: string[]): Promise<void> {
   }
 
   if (finalRecord.status !== 'answered' || !finalRecord.answer) {
+    if (finalRecord.status === 'aborted' || finalRecord.status === 'error') {
+      await appendQuestionEvent(cwd, 'question-error', finalRecord, {
+        recordPath,
+        timeoutMs: waitTimeoutMs,
+      });
+    }
     printJson({
       ok: false,
       question_id: finalRecord.question_id,
@@ -223,6 +318,11 @@ export async function questionCommand(args: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
+
+  await appendQuestionEvent(cwd, 'question-answered', finalRecord, {
+    recordPath,
+    timeoutMs: waitTimeoutMs,
+  });
 
   const isSingleQuestion = (finalRecord.questions?.length ?? 0) === 1;
   printJson({

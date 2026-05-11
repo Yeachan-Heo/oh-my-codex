@@ -14,6 +14,9 @@ The plugin manifest registers it as `omx_hermes` and keeps it disabled by defaul
 
 Hermes or another coordinator owns intake, operator Q&A, package shaping, and external approval policy. OMX owns planning, execution, review, and local artifact production inside a bounded worktree/session. The bridge only connects those product-facing responsibilities.
 
+For operator Q&A, Hermes should use the structured question bridge rather than
+terminal relay. See [Question coordinator bridge](./question-coordinator-bridge.md).
+
 The v1 bridge intentionally does **not** expose:
 
 - interactive `$deep-interview` turn routing
@@ -30,6 +33,8 @@ Read tools:
 - `hermes_list_sessions` — list known OMX session-state directories and active mode names.
 - `hermes_read_status` — read selected session/mode JSON status.
 - `hermes_read_tail` — read `.omx/logs/session-history.jsonl` tail, not tmux scrollback.
+- `hermes_list_question_events` — read structured question lifecycle events for coordinator correlation.
+- `hermes_list_questions` — list pending or terminal structured question records without terminal scraping.
 - `hermes_list_artifacts` — list safe result artifacts under `.omx/plans`, `.omx/specs`, `.omx/goals`, `.omx/context`, and `.omx/reports`.
 - `hermes_read_artifact` — read one safe relative `.omx/...` artifact with byte truncation.
 
@@ -37,6 +42,7 @@ Mutating tools require `allow_mutation: true`:
 
 - `hermes_start_session` — starts `omx --tmux --worktree[=<name>] <prompt>` from the bounded working directory.
 - `hermes_send_prompt` — queues one prompt through the existing audited `exec-followups.json` contract for a selected exec session.
+- `hermes_submit_question_answer` — submits one bounded structured answer by question id; stale, duplicate, unknown, and malformed submissions fail closed.
 - `hermes_report_status` — writes `.omx/state[/sessions/<session_id>]/hermes-coordination.json` with final/blocker/PR summary data.
 
-Failure responses are explicit JSON with `ok: false`, `code`, and `error`, including `no_session`, `prompt_not_accepted`, `artifact_missing`, `artifact_outside_safe_roots`, `mutation_not_allowed`, and `command_failed`.
+Failure responses are explicit JSON with `ok: false`, `code`, and `error`, including `no_session`, `prompt_not_accepted`, `artifact_missing`, `artifact_outside_safe_roots`, `mutation_not_allowed`, `question_unknown`, `question_not_open`, `question_invalid_answer`, and `command_failed`.
