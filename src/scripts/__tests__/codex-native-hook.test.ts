@@ -1419,6 +1419,10 @@ describe("codex native hook dispatch", () => {
       "Call update_goal({status: \"complete\"}) after verification.",
       "Goal complete.",
       "The goal is complete.",
+      "Goal complete: verified with tests.",
+      "Goal complete — verified with tests.",
+      "The goal is complete: verified.",
+      "The goal is complete — verified.",
     ];
 
     const ordinary = [
