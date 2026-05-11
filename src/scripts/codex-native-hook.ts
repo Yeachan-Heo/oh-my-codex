@@ -1706,18 +1706,25 @@ async function buildModeBasedStopOutput(
 
 function looksLikeGoalCompletionPrompt(text: string): boolean {
   return /\b(?:complete|checkpoint|finish|close|mark)\b.{0,80}\b(?:goal|ultragoal|performance-goal|autoresearch-goal)\b/i.test(text)
+    || /\b(?:goal|ultragoal|performance-goal|autoresearch-goal)\b.{0,80}\b(?:complete|checkpoint|finish|close|mark)\b/i.test(text)
     || /\bupdate_goal\s*\(/i.test(text)
     || /\bomx\s+(?:ultragoal|performance-goal|autoresearch-goal)\s+(?:checkpoint|complete)\b/i.test(text);
 }
 
-async function findActiveGoalWorkflowReconciliationRequirement(cwd: string): Promise<{ workflow: string; command: string } | null> {
+async function findActiveGoalWorkflowReconciliationRequirement(cwd: string): Promise<{ workflow: string; command: string; remediation?: string } | null> {
   const ultragoal = await readJsonIfExists(join(cwd, ".omx", "ultragoal", "goals.json"));
   const ultragoals = Array.isArray(ultragoal?.goals) ? ultragoal.goals.map(safeObject) : [];
   const activeUltragoal = ultragoals.find((goal) => safeString(goal.status) === "in_progress" || safeString(goal.id) === safeString(ultragoal?.activeGoalId));
   if (activeUltragoal) {
+    const goalId = safeString(activeUltragoal.id) || "<goal-id>";
     return {
       workflow: "ultragoal",
-      command: `omx ultragoal checkpoint --goal-id ${safeString(activeUltragoal.id) || "<goal-id>"} --status complete --codex-goal-json '<get_goal JSON or path>' --evidence '<evidence>'`,
+      command: `omx ultragoal checkpoint --goal-id ${goalId} --status complete --codex-goal-json '<get_goal JSON or path>' --evidence '<evidence>'`,
+      remediation: [
+        `If get_goal instead returns a different completed legacy objective and complete checkpointing fails, do not repeat --status complete in this thread.`,
+        `Record the non-terminal blocker with: omx ultragoal checkpoint --goal-id ${goalId} --status blocked --codex-goal-json '<different completed get_goal JSON or path>' --evidence '<completed legacy Codex goal blocks create_goal in this thread>'.`,
+        "Then continue this ultragoal from a fresh Codex thread in the same repo/worktree and create the intended goal there.",
+      ].join(" "),
     };
   }
 
@@ -1761,7 +1768,8 @@ async function buildGoalWorkflowReconciliationPromptWarning(cwd: string, prompt:
     `OMX ${requirement.workflow} goal workflow requires Codex goal snapshot reconciliation before completion.`,
     "Call get_goal, pass the resulting JSON or a path with --codex-goal-json, and do not rely on hooks or shell commands to mutate Codex-owned goal state.",
     `Required command shape: ${requirement.command}.`,
-  ].join(" ");
+    requirement.remediation,
+  ].filter(Boolean).join(" ");
 }
 
 async function buildGoalWorkflowReconciliationStopOutput(
@@ -1773,7 +1781,11 @@ async function buildGoalWorkflowReconciliationStopOutput(
   const requirement = await findActiveGoalWorkflowReconciliationRequirement(cwd);
   if (!requirement) return null;
   const systemMessage =
-    `OMX ${requirement.workflow} requires get_goal snapshot reconciliation before completion; call get_goal and pass --codex-goal-json to ${requirement.command}. Hooks must not mutate Codex goal state.`;
+    [
+      `OMX ${requirement.workflow} requires get_goal snapshot reconciliation before completion; call get_goal and pass --codex-goal-json to ${requirement.command}.`,
+      requirement.remediation,
+      "Hooks must not mutate Codex goal state.",
+    ].filter(Boolean).join(" ");
   return {
     decision: "block",
     reason: systemMessage,

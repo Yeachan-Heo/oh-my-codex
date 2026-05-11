@@ -176,6 +176,8 @@ describe('cli/ultragoal', () => {
       ]));
       assert.equal(mismatch.exitCode, 1);
       assert.match(mismatch.stderr.join('\n'), /objective mismatch/);
+      assert.match(mismatch.stderr.join('\n'), /--status blocked/);
+      assert.match(mismatch.stderr.join('\n'), /fresh Codex thread/);
     });
   });
 

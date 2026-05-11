@@ -379,6 +379,34 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('guides different completed legacy snapshots to blocked checkpoints and fresh threads', async () => {
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, {
+        brief: 'brief',
+        codexGoalMode: 'per_story',
+        goals: [
+          { title: 'First', objective: 'Complete first milestone.' },
+        ],
+      });
+
+      const first = await startNextUltragoal(cwd);
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: first.goal!.id,
+          status: 'complete',
+          evidence: 'audit passed but wrong Codex snapshot',
+          codexGoal: { goal: { objective: 'Completed legacy objective', status: 'complete' } },
+        }),
+        (error: unknown) => {
+          assert.match(String(error), /objective mismatch/);
+          assert.match(String(error), /--status blocked/);
+          assert.match(String(error), /fresh Codex thread/);
+          return true;
+        },
+      );
+    });
+  });
+
   it('rejects blocked checkpoints for active or same-objective Codex goals', async () => {
     await withTempRepo(async (cwd) => {
       await createUltragoalPlan(cwd, {

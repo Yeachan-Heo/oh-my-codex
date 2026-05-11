@@ -152,6 +152,14 @@ function normalizeObjective(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
+function buildCompletedLegacyGoalRemediation(goal: UltragoalItem): string {
+  return [
+    'If get_goal returns a different completed legacy/thread objective, do not repeat --status complete in this thread.',
+    `Record a non-terminal blocker with: omx ultragoal checkpoint --goal-id ${goal.id} --status blocked --evidence "<completed legacy Codex goal blocks create_goal in this thread>" --codex-goal-json "<different completed get_goal JSON or path>".`,
+    'Then continue this ultragoal in a fresh Codex thread in the same repo/worktree and create the intended goal there.',
+  ].join(' ');
+}
+
 function codexGoalMode(plan: UltragoalPlan): UltragoalCodexGoalMode {
   return plan.codexGoalMode ?? 'per_story';
 }
@@ -457,7 +465,13 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
       },
     );
     if (!reconciliation.ok) {
-      throw new UltragoalError(formatCodexGoalReconciliation(reconciliation));
+      const remediation = reconciliation.snapshot.available
+        && reconciliation.snapshot.status === 'complete'
+        && Boolean(reconciliation.snapshot.objective)
+        && normalizeObjective(reconciliation.snapshot.objective ?? '') !== normalizeObjective(expectedObjective)
+        ? ` ${buildCompletedLegacyGoalRemediation(goal)}`
+        : '';
+      throw new UltragoalError(`${formatCodexGoalReconciliation(reconciliation)}${remediation}`);
     }
     if (finalRunCheckpoint && !options.allowActiveFinalCodexGoal) goal.evidence = options.evidence;
   }

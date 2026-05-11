@@ -1462,6 +1462,34 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("blocks ultragoal Stop with blocked checkpoint and fresh-thread remediation for completed legacy snapshots", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-legacy-stop-"));
+    try {
+      await writeJson(join(cwd, ".omx", "ultragoal", "goals.json"), {
+        version: 1,
+        activeGoalId: "G001-demo",
+        goals: [{ id: "G001-demo", status: "in_progress", objective: "Demo goal" }],
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-ultragoal-legacy-stop",
+        thread_id: "thread-ultragoal-legacy-stop",
+        last_assistant_message: "get_goal returned a completed legacy goal, so ultragoal complete failed; marking complete now.",
+      }, { cwd });
+
+      const output = JSON.stringify(result.outputJson);
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(output, /omx ultragoal checkpoint --goal-id G001-demo --status complete/);
+      assert.match(output, /--status blocked/);
+      assert.match(output, /fresh Codex thread/);
+      assert.match(output, /Hooks must not mutate Codex goal state/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not block Stop for non-passing autoresearch-goal professor-critic verdicts", async () => {
     for (const verdict of ["blocked", "fail", "failed"]) {
       const cwd = await mkdtemp(join(tmpdir(), `omx-native-hook-autoresearch-${verdict}-stop-`));
