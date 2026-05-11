@@ -256,6 +256,54 @@ describe("Hermes MCP bridge core", () => {
     }
   });
 
+
+  it("rejects workdir-root candidate symlinks that would expose outside artifacts", async () => {
+    const allowed = await tempWorkspace("omx-hermes-allowed-root-");
+    const outside = await tempWorkspace("omx-hermes-outside-root-");
+    try {
+      await mkdir(join(outside, ".omx", "plans"), { recursive: true });
+      await writeFile(join(outside, ".omx", "plans", "secret.md"), "outside via workdir symlink");
+      await symlink(outside, join(allowed, "link"));
+      process.env.OMX_MCP_WORKDIR_ROOTS = allowed;
+
+      const result = await hermesReadArtifact({
+        workingDirectory: join(allowed, "link"),
+        path: ".omx/plans/secret.md",
+      });
+
+      assert.equal(result.ok, false);
+      assert.equal(result.code, "invalid_input");
+      assert.match(result.error ?? "", /outside allowed roots/);
+    } finally {
+      await rm(allowed, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects symlinked OMX_MCP_WORKDIR_ROOTS entries before reading artifacts", async () => {
+    const intended = await tempWorkspace("omx-hermes-intended-root-");
+    const outside = await tempWorkspace("omx-hermes-outside-root-");
+    try {
+      await mkdir(join(outside, ".omx", "plans"), { recursive: true });
+      await writeFile(join(outside, ".omx", "plans", "secret.md"), "outside via symlinked root");
+      const symlinkedRoot = join(intended, "allowed-link");
+      await symlink(outside, symlinkedRoot);
+      process.env.OMX_MCP_WORKDIR_ROOTS = symlinkedRoot;
+
+      const result = await hermesReadArtifact({
+        workingDirectory: symlinkedRoot,
+        path: ".omx/plans/secret.md",
+      });
+
+      assert.equal(result.ok, false);
+      assert.equal(result.code, "invalid_input");
+      assert.match(result.error ?? "", /resolves through a symlink/);
+    } finally {
+      await rm(intended, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
   it("writes a bounded Hermes coordination report", async () => {
     const cwd = await tempWorkspace("omx-hermes-report-");
     try {

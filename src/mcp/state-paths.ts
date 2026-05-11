@@ -1,5 +1,5 @@
 import { delimiter, isAbsolute, join, relative, resolve as resolvePath } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
 import { readFile, readdir } from 'fs/promises';
 import {
   isSessionStateUsable,
@@ -103,8 +103,7 @@ export function resolveWorkingDirectoryForState(workingDirectory?: string): stri
   }
   if (!raw) {
     const cwd = resolvePath(process.cwd());
-    enforceWorkingDirectoryPolicy(cwd);
-    return cwd;
+    return enforceWorkingDirectoryPolicy(cwd);
   }
 
   let normalized = raw;
@@ -126,8 +125,32 @@ export function resolveWorkingDirectoryForState(workingDirectory?: string): stri
   }
 
   const resolved = resolvePath(normalized);
-  enforceWorkingDirectoryPolicy(resolved);
-  return resolved;
+  return enforceWorkingDirectoryPolicy(resolved);
+}
+
+function canonicalizeExistingPath(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+
+  let current = path;
+  const suffixes: string[] = [];
+  while (true) {
+    const parent = resolvePath(current, '..');
+    if (parent === current) break;
+    suffixes.unshift(current.substring(parent.length).replace(/^[\\/]+/, ''));
+    current = parent;
+    try {
+      const realParent = realpathSync.native(current);
+      return suffixes.reduce((acc, segment) => resolvePath(acc, segment), realParent);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+
+  return path;
 }
 
 function parseAllowedWorkingDirectoryRoots(): string[] {
@@ -142,7 +165,12 @@ function parseAllowedWorkingDirectoryRoots(): string[] {
       if (part.includes('\0')) {
         throw new Error(`${WORKDIR_ALLOWLIST_ENV} contains an invalid root with a NUL byte`);
       }
-      return resolvePath(part);
+      const resolvedRoot = resolvePath(part);
+      const realRoot = canonicalizeExistingPath(resolvedRoot);
+      if (realRoot !== resolvedRoot) {
+        throw new Error(`${WORKDIR_ALLOWLIST_ENV} root "${resolvedRoot}" resolves through a symlink to "${realRoot}"`);
+      }
+      return realRoot;
     });
 
   return [...new Set(roots)];
@@ -153,16 +181,18 @@ function isWithinRoot(path: string, root: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
-function enforceWorkingDirectoryPolicy(resolvedWorkingDirectory: string): void {
+function enforceWorkingDirectoryPolicy(resolvedWorkingDirectory: string): string {
   const roots = parseAllowedWorkingDirectoryRoots();
-  if (roots.length === 0) return;
+  if (roots.length === 0) return resolvedWorkingDirectory;
 
-  const allowed = roots.some((root) => isWithinRoot(resolvedWorkingDirectory, root));
+  const canonicalWorkingDirectory = canonicalizeExistingPath(resolvedWorkingDirectory);
+  const allowed = roots.some((root) => isWithinRoot(canonicalWorkingDirectory, root));
   if (!allowed) {
     throw new Error(
-      `workingDirectory "${resolvedWorkingDirectory}" is outside allowed roots (${WORKDIR_ALLOWLIST_ENV})`,
+      `workingDirectory "${canonicalWorkingDirectory}" is outside allowed roots (${WORKDIR_ALLOWLIST_ENV})`,
     );
   }
+  return canonicalWorkingDirectory;
 }
 
 export function getBaseStateDir(workingDirectory?: string): string {

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve as resolvePath } from 'path';
@@ -149,6 +149,66 @@ describe('state paths', () => {
       else delete process.env.OMX_MCP_WORKDIR_ROOTS;
       await rm(allowedRoot, { recursive: true, force: true });
       await rm(disallowedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves symlinked workingDirectory spelling when no allowlist is configured', async () => {
+    const realRoot = await mkdtemp(join(tmpdir(), 'omx-real-root-'));
+    const linkParent = await mkdtemp(join(tmpdir(), 'omx-link-parent-'));
+    const link = join(linkParent, 'workspace-link');
+    const prev = process.env.OMX_MCP_WORKDIR_ROOTS;
+    delete process.env.OMX_MCP_WORKDIR_ROOTS;
+    try {
+      await symlink(realRoot, link);
+
+      assert.equal(resolveWorkingDirectoryForState(link), link);
+    } finally {
+      if (typeof prev === 'string') process.env.OMX_MCP_WORKDIR_ROOTS = prev;
+      else delete process.env.OMX_MCP_WORKDIR_ROOTS;
+      await rm(realRoot, { recursive: true, force: true });
+      await rm(linkParent, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects symlinked workingDirectory candidates that escape OMX_MCP_WORKDIR_ROOTS', async () => {
+    const allowedRoot = await mkdtemp(join(tmpdir(), 'omx-allowed-root-'));
+    const outsideRoot = await mkdtemp(join(tmpdir(), 'omx-outside-root-'));
+    const prev = process.env.OMX_MCP_WORKDIR_ROOTS;
+    process.env.OMX_MCP_WORKDIR_ROOTS = allowedRoot;
+    try {
+      const link = join(allowedRoot, 'link');
+      await symlink(outsideRoot, link);
+
+      assert.throws(
+        () => resolveWorkingDirectoryForState(link),
+        /outside allowed roots \(OMX_MCP_WORKDIR_ROOTS\)/,
+      );
+    } finally {
+      if (typeof prev === 'string') process.env.OMX_MCP_WORKDIR_ROOTS = prev;
+      else delete process.env.OMX_MCP_WORKDIR_ROOTS;
+      await rm(allowedRoot, { recursive: true, force: true });
+      await rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects symlinked OMX_MCP_WORKDIR_ROOTS entries instead of treating their targets as allowed roots', async () => {
+    const intendedRoot = await mkdtemp(join(tmpdir(), 'omx-intended-root-'));
+    const outsideRoot = await mkdtemp(join(tmpdir(), 'omx-outside-root-'));
+    const prev = process.env.OMX_MCP_WORKDIR_ROOTS;
+    const symlinkedRoot = join(intendedRoot, 'allowed-link');
+    process.env.OMX_MCP_WORKDIR_ROOTS = symlinkedRoot;
+    try {
+      await symlink(outsideRoot, symlinkedRoot);
+
+      assert.throws(
+        () => resolveWorkingDirectoryForState(symlinkedRoot),
+        /OMX_MCP_WORKDIR_ROOTS root .* resolves through a symlink/,
+      );
+    } finally {
+      if (typeof prev === 'string') process.env.OMX_MCP_WORKDIR_ROOTS = prev;
+      else delete process.env.OMX_MCP_WORKDIR_ROOTS;
+      await rm(intendedRoot, { recursive: true, force: true });
+      await rm(outsideRoot, { recursive: true, force: true });
     }
   });
 
