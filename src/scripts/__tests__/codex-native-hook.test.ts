@@ -17,6 +17,7 @@ import {
 import {
   dispatchCodexNativeHook,
   isCodexNativeHookMainModule,
+  looksLikeGoalCompletionPrompt,
   mapCodexHookEventToOmxEvent,
   resolveSessionOwnerPidFromAncestry,
 } from "../codex-native-hook.js";
@@ -1409,6 +1410,32 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("classifies only actionable goal completion wording", () => {
+    const actionable = [
+      "complete this goal now",
+      "Performance goal complete; next call update_goal({status: \"complete\"}).",
+      "get_goal returned a completed legacy goal, so ultragoal complete failed; marking complete now.",
+      "omx ultragoal checkpoint --goal-id G001-demo --status complete --codex-goal-json goal.json",
+      "Call update_goal({status: \"complete\"}) after verification.",
+      "Goal complete.",
+      "The goal is complete.",
+    ];
+
+    const ordinary = [
+      "my goal is to complete the migration without regressions",
+      "Our goal is to finish this carefully after tests pass.",
+      "The goal of this patch is to close a review gap.",
+      "A goal can be complete only after a human review.",
+    ];
+
+    for (const text of actionable) {
+      assert.equal(looksLikeGoalCompletionPrompt(text), true, text);
+    }
+    for (const text of ordinary) {
+      assert.equal(looksLikeGoalCompletionPrompt(text), false, text);
+    }
+  });
+
   it("warns completion-like prompts when active goal workflows need Codex snapshot reconciliation", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-goal-warning-"));
     try {
@@ -1457,6 +1484,54 @@ describe("codex native hook dispatch", () => {
       assert.match(JSON.stringify(result.outputJson), /get_goal snapshot reconciliation/);
       assert.match(JSON.stringify(result.outputJson), /omx performance-goal complete --slug latency/);
       assert.match(JSON.stringify(result.outputJson), /Hooks must not mutate Codex goal state/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks ultragoal Stop for concise generic goal completion claims", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-generic-complete-stop-"));
+    try {
+      await writeJson(join(cwd, ".omx", "ultragoal", "goals.json"), {
+        version: 1,
+        activeGoalId: "G001-demo",
+        goals: [{ id: "G001-demo", status: "in_progress", objective: "Demo goal" }],
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-ultragoal-generic-complete-stop",
+        thread_id: "thread-ultragoal-generic-complete-stop",
+        last_assistant_message: "Goal complete.",
+      }, { cwd });
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /omx ultragoal checkpoint --goal-id G001-demo --status complete/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block ultragoal Stop for ordinary prose about a goal to complete work", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-ordinary-stop-"));
+    try {
+      await writeJson(join(cwd, ".omx", "ultragoal", "goals.json"), {
+        version: 1,
+        activeGoalId: "G001-demo",
+        goals: [{ id: "G001-demo", status: "in_progress", objective: "Demo goal" }],
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-ultragoal-ordinary-stop",
+        thread_id: "thread-ultragoal-ordinary-stop",
+        last_assistant_message: "My goal is to complete the migration without regressions, so I will keep testing.",
+      }, { cwd });
+
+      assert.notEqual(result.outputJson?.stopReason, "ultragoal_codex_goal_snapshot_required");
+      assert.doesNotMatch(JSON.stringify(result.outputJson), /omx ultragoal checkpoint --goal-id G001-demo --status complete/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
