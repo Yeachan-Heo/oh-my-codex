@@ -148,10 +148,15 @@
       "canonical": "designer"
     },
     {
+      "name": "design",
+      "category": "shortcut",
+      "status": "active",
+      "canonical": "designer"
+    },
+    {
       "name": "frontend-ui-ux",
       "category": "shortcut",
-      "status": "alias",
-      "canonical": "designer"
+      "status": "deprecated"
     },
     {
       "name": "git-master",

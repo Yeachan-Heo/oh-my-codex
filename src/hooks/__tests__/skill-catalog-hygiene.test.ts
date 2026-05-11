@@ -23,7 +23,7 @@ describe('skill catalog hygiene', () => {
       { name: 'swarm', canonical: /\$team|omx team/i },
       { name: 'ask-claude', canonical: /\$ask claude|omx ask claude/i },
       { name: 'ask-gemini', canonical: /\$ask gemini|omx ask gemini/i },
-      { name: 'frontend-ui-ux', canonical: /designer/i },
+      { name: 'frontend-ui-ux', canonical: /\$design|\$visual-ralph/i },
       { name: 'review', canonical: /\$code-review|code review/i },
       { name: 'ralph-init', canonical: /\$ralph|PRD\/test-spec/i },
     ];

@@ -27,7 +27,7 @@ This is an orchestration skill. It composes existing skills and must not add run
 
 ## Do not use when
 
-- The user only wants design critique or general frontend advice; use `$frontend-ui-ux` or a designer lane.
+- The user only wants repo-wide design guidance, product/design context, or a DESIGN.md source of truth; use `$design` or a designer lane.
 - The task is a non-visual backend/API implementation with no UI reference target.
 - The user already supplied a final static reference image and only needs comparison/fixes; hand directly to `$ralph` with Visual Ralph verdict guidance.
 - The requested output is a deterministic SVG/vector/code-native asset rather than a raster reference.
@@ -117,7 +117,7 @@ Record final diff evidence with the reference/screenshot artifacts so the result
 
 ### 7. Build a reproducible design system
 
-The implementation is incomplete unless the visual match is encoded in repo-native reusable artifacts. Depending on the project, this may mean CSS variables, theme tokens, Tailwind config, component variants, Storybook stories, design docs, or existing equivalents.
+The implementation is incomplete unless the visual match is encoded in repo-native reusable artifacts. Depending on the project, this may mean CSS variables, theme tokens, Tailwind config, component variants, Storybook stories, updates that align with DESIGN.md, or existing equivalents.
 
 Capture at least the applicable:
 - colors,

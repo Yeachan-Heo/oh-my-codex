@@ -313,7 +313,8 @@ Project-only skills (2):
   - backend-scaffold
 
 Common skills (3):
-  - frontend-ui-ux
+  - design
+  - frontend-ui-ux (deprecated; use design or visual-ralph)
   - git-master
   - planner
 

@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-05-06T00:56:25.752Z",
+  "generatedAt": "2026-05-11T07:38:27.080Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 46,
+    "skillCount": 47,
     "promptCount": 30,
-    "activeSkillCount": 24,
+    "activeSkillCount": 25,
     "activeAgentCount": 16
   },
   "coreSkills": [
@@ -195,10 +195,17 @@
       "internalRequired": false
     },
     {
+      "name": "design",
+      "category": "shortcut",
+      "status": "active",
+      "canonical": "designer",
+      "core": false,
+      "internalRequired": false
+    },
+    {
       "name": "frontend-ui-ux",
       "category": "shortcut",
-      "status": "alias",
-      "canonical": "designer",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -511,10 +518,6 @@
     }
   ],
   "aliases": [
-    {
-      "name": "frontend-ui-ux",
-      "canonical": "designer"
-    },
     {
       "name": "git-master",
       "canonical": "git-master"

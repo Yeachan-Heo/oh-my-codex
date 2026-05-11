@@ -544,7 +544,9 @@ interface ExplicitSkillParseResult {
 }
 
 function normalizeExplicitSkillToken(token: string): string {
-  return token === 'ulw' ? 'ultrawork' : token;
+  if (token === 'ulw') return 'ultrawork';
+  if (token === 'frontend-ui-ux') return 'design';
+  return token;
 }
 
 function parseExplicitSkillInvocations(text: string): ExplicitSkillParseResult {
