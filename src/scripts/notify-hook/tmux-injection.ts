@@ -99,7 +99,7 @@ async function resolveCanonicalPaneFromPaneTarget(paneTarget: any, expectedCwd: 
   return finalizeResolvedPane(healedPaneId, 'healed_hud_pane_target', expectedCwd);
 }
 
-async function resolvePreferredModePane(stateDir: string, allowedModes: string[]): Promise<{ mode: string; state: any; pane: string } | null> {
+async function resolvePreferredModePane(stateDir: string, allowedModes: string[]): Promise<{ mode: string; state: any; pane: string; stateDir: string } | null> {
   const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir).catch(() => [stateDir]);
   const dirs = [...scopedDirs];
   if (!dirs.map((dir) => resolvePath(dir)).includes(resolvePath(stateDir))) {
@@ -111,11 +111,82 @@ async function resolvePreferredModePane(stateDir: string, allowedModes: string[]
       const parsed = await readJsonIfExists(path, null);
       const pane = safeString(parsed?.tmux_pane_id || '').trim();
       if (parsed?.active && pane) {
-        return { mode, state: parsed, pane };
+        return { mode, state: parsed, pane, stateDir: dir };
       }
     }
   }
   return null;
+}
+
+function modeStateMatchesInvocationOwner(modeState: any, payload: any, managedContext: any): { ok: true } | { ok: false; reason: string } {
+  const invocationSessionId = resolveInvocationSessionId(payload);
+  const canonicalSessionId = safeString(managedContext?.canonicalSessionId || managedContext?.sessionState?.session_id).trim();
+  const nativeSessionId = safeString(managedContext?.nativeSessionId || managedContext?.sessionState?.native_session_id || managedContext?.sessionState?.codex_session_id).trim();
+  const allowedSessionIds = new Set([
+    invocationSessionId,
+    canonicalSessionId,
+    nativeSessionId,
+  ].filter(Boolean));
+
+  const ownerOmxSessionId = safeString(modeState?.owner_omx_session_id).trim();
+  if (ownerOmxSessionId && !allowedSessionIds.has(ownerOmxSessionId)) {
+    return { ok: false, reason: 'mode_owner_session_mismatch' };
+  }
+
+  const stateSessionId = safeString(modeState?.session_id).trim();
+  if (!ownerOmxSessionId && stateSessionId && !allowedSessionIds.has(stateSessionId)) {
+    return { ok: false, reason: 'mode_session_mismatch' };
+  }
+
+  const ownerCodexSessionId = safeString(modeState?.owner_codex_session_id || modeState?.codex_session_id).trim();
+  if (ownerCodexSessionId && !allowedSessionIds.has(ownerCodexSessionId)) {
+    return { ok: false, reason: 'mode_codex_session_mismatch' };
+  }
+
+  return { ok: true };
+}
+
+async function validateResolvedInjectionOwnership({
+  paneTarget,
+  cwd,
+  payload,
+  modeState,
+  modePane,
+  managedCurrentPane,
+}: any): Promise<{ ok: true } | { ok: false; reason: string; managedContext?: any }> {
+  const ownership = await verifyManagedPaneTarget(paneTarget, cwd, payload, { allowTeamWorker: false });
+  if (!ownership.ok) {
+    return { ok: false, reason: ownership.reason || 'pane_not_managed_session', managedContext: ownership.managedContext };
+  }
+
+  const modeOwner = modeStateMatchesInvocationOwner(modeState, payload, ownership.managedContext);
+  if (!modeOwner.ok) return { ...modeOwner, managedContext: ownership.managedContext };
+
+  const statePane = safeString(modePane || modeState?.tmux_pane_id).trim();
+  const currentPane = safeString(managedCurrentPane).trim();
+  if (statePane && currentPane && statePane !== currentPane) {
+    return { ok: false, reason: 'mode_pane_current_pane_mismatch', managedContext: ownership.managedContext };
+  }
+
+  const expectedWindowId = safeString(modeState?.tmux_window_id || modeState?.tmuxWindowId).trim();
+  if (!expectedWindowId) {
+    return { ok: true };
+  }
+
+  try {
+    const windowResult = await runProcess('tmux', ['display-message', '-p', '-t', paneTarget, '#{window_id}'], 2000);
+    const paneWindowId = safeString(windowResult.stdout).trim();
+    if (!paneWindowId) {
+      return { ok: false, reason: 'pane_window_unverified', managedContext: ownership.managedContext };
+    }
+    if (paneWindowId !== expectedWindowId) {
+      return { ok: false, reason: 'pane_window_mismatch', managedContext: ownership.managedContext };
+    }
+  } catch {
+    return { ok: false, reason: 'pane_window_unverified', managedContext: ownership.managedContext };
+  }
+
+  return { ok: true };
 }
 
 async function readVisibleAllowedModes(
@@ -460,7 +531,22 @@ export async function handleTmuxInjection({
     turnId,
     timestamp: nowIso,
   }), sourceText);
-  const preferredPaneTarget = modePane || await resolveManagedCurrentPane(cwd, payload, { allowTeamWorker: false });
+  const managedCurrentPane = await resolveManagedCurrentPane(cwd, payload, { allowTeamWorker: false });
+  if (modePane && managedCurrentPane && modePane !== managedCurrentPane) {
+    state.last_reason = 'mode_pane_current_pane_mismatch';
+    state.last_event_at = nowIso;
+    await writeFile(hookStatePath, JSON.stringify(state, null, 2)).catch(() => {});
+    await logTmuxHookEvent(logsDir, {
+      ...baseLog,
+      event: 'injection_skipped',
+      reason: 'mode_pane_current_pane_mismatch',
+      mode_pane: modePane,
+      current_pane: managedCurrentPane,
+    });
+    return;
+  }
+
+  const preferredPaneTarget = modePane || managedCurrentPane;
   let resolution = preferredModePane
     ? await resolvePaneTarget({ type: 'pane', value: preferredModePane.pane }, cwd, preferredModePane.pane, cwd, payload)
     : preferredPaneTarget
@@ -483,6 +569,27 @@ export async function handleTmuxInjection({
     return;
   }
   const paneTarget = resolution.paneTarget;
+
+  const ownership = await validateResolvedInjectionOwnership({
+    paneTarget,
+    cwd,
+    payload,
+    modeState,
+    modePane,
+    managedCurrentPane,
+  });
+  if (!ownership.ok) {
+    state.last_reason = ownership.reason;
+    state.last_event_at = nowIso;
+    await writeFile(hookStatePath, JSON.stringify(state, null, 2)).catch(() => {});
+    await logTmuxHookEvent(logsDir, {
+      ...baseLog,
+      event: 'injection_skipped',
+      reason: ownership.reason,
+      pane_target: paneTarget,
+    });
+    return;
+  }
 
   // Final guard phase: pane is canonical identity for quota/cooldown.
   const guard = evaluateInjectionGuards({
