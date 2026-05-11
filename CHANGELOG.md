@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Codex hook feature flag compatibility** — setup now probes `codex features list` and writes the current `[features].hooks = true` flag when supported, while retaining legacy `[features].codex_hooks = true` fallback for older Codex releases and deduping stale aliases during refresh.
+
 ## [0.16.3] - 2026-05-09
 
 Patch release focused on post-`0.16.2` native-hook/setup/runtime hardening: supported Codex hook feature flags, safer notify ownership, runtime hook-trust mirroring, Team startup-evidence state isolation, approved handoff context, planning context-pack references, stale Ralph resume prevention, and native compact-hook JSON validity.

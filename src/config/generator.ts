@@ -17,6 +17,13 @@ import TOML from "@iarna/toml";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { DEFAULT_FRONTIER_MODEL } from "./models.js";
 import type { UnifiedMcpRegistryServer } from "./mcp-registry.js";
+import {
+  DEFAULT_CODEX_HOOK_FEATURE_FLAG,
+  CODEX_HOOK_FEATURE_FLAGS,
+  formatCodexHookFeatureFlagLine,
+  normalizeCodexHookFeatureFlag,
+  type CodexHookFeatureFlag,
+} from "./codex-feature-flags.js";
 import { getOmxFirstPartySetupMcpServers } from "./omx-first-party-mcp.js";
 import { buildManagedCodexHookTrustToml } from "./codex-hooks.js";
 import type { HudPreset } from "../hud/types.js";
@@ -24,6 +31,7 @@ import type { HudPreset } from "../hud/types.js";
 interface MergeOptions {
   includeTui?: boolean;
   codexHooksFile?: string;
+  codexHookFeatureFlag?: CodexHookFeatureFlag;
   modelOverride?: string;
   sharedMcpServers?: UnifiedMcpRegistryServer[];
   sharedMcpRegistrySource?: string;
@@ -489,10 +497,65 @@ export function stripOmxTopLevelKeys(config: string): string {
 // [features] upsert
 // ---------------------------------------------------------------------------
 
-function upsertFeatureFlags(config: string): string {
+function isFeatureFlagLine(line: string, featureFlag: string): boolean {
+  return new RegExp(`^\\s*${featureFlag}\\s*=`).test(line);
+}
+
+function isAnyCodexHookFeatureFlagLine(line: string): boolean {
+  return CODEX_HOOK_FEATURE_FLAGS.some((flag) => isFeatureFlagLine(line, flag));
+}
+
+function upsertCodexHookFeatureFlagInSection(
+  lines: string[],
+  featuresStart: number,
+  sectionEnd: number,
+  codexHookFeatureFlag: CodexHookFeatureFlag,
+): { sectionEnd: number; featureFlagIndex: number } {
+  const featureFlag = normalizeCodexHookFeatureFlag(codexHookFeatureFlag);
+  let featureFlagIdx = -1;
+  let fallbackAliasIdx = -1;
+
+  for (let i = featuresStart + 1; i < sectionEnd; i++) {
+    if (isFeatureFlagLine(lines[i], featureFlag)) {
+      featureFlagIdx = i;
+    } else if (isAnyCodexHookFeatureFlagLine(lines[i]) && fallbackAliasIdx < 0) {
+      fallbackAliasIdx = i;
+    }
+  }
+
+  if (featureFlagIdx < 0 && fallbackAliasIdx >= 0) {
+    featureFlagIdx = fallbackAliasIdx;
+  }
+
+  if (featureFlagIdx >= 0) {
+    lines[featureFlagIdx] = formatCodexHookFeatureFlagLine(featureFlag);
+  } else {
+    lines.splice(sectionEnd, 0, formatCodexHookFeatureFlagLine(featureFlag));
+    featureFlagIdx = sectionEnd;
+    sectionEnd += 1;
+  }
+
+  for (let i = sectionEnd - 1; i > featuresStart; i--) {
+    if (i !== featureFlagIdx && isAnyCodexHookFeatureFlagLine(lines[i])) {
+      lines.splice(i, 1);
+      sectionEnd -= 1;
+      if (featureFlagIdx > i) featureFlagIdx -= 1;
+    }
+  }
+
+  return { sectionEnd, featureFlagIndex: featureFlagIdx };
+}
+
+function upsertFeatureFlags(
+  config: string,
+  codexHookFeatureFlag: CodexHookFeatureFlag = DEFAULT_CODEX_HOOK_FEATURE_FLAG,
+): string {
   const lines = config.split(/\r?\n/);
   const featuresStart = lines.findIndex((line) =>
     /^\s*\[features\]\s*$/.test(line),
+  );
+  const hookFeatureFlagLine = formatCodexHookFeatureFlagLine(
+    codexHookFeatureFlag,
   );
 
   if (featuresStart < 0) {
@@ -501,7 +564,7 @@ function upsertFeatureFlags(config: string): string {
       "[features]",
       "multi_agent = true",
       "child_agents_md = true",
-      "codex_hooks = true",
+      hookFeatureFlagLine,
       "goals = true",
       "",
     ].join("\n");
@@ -530,20 +593,11 @@ function upsertFeatureFlags(config: string): string {
 
   let multiAgentIdx = -1;
   let childAgentsIdx = -1;
-  let codexHooksIdx = -1;
-  let unsupportedHooksIdx = -1;
-  let goalsIdx = -1;
   for (let i = featuresStart + 1; i < sectionEnd; i++) {
     if (/^\s*multi_agent\s*=/.test(lines[i])) {
       multiAgentIdx = i;
     } else if (/^\s*child_agents_md\s*=/.test(lines[i])) {
       childAgentsIdx = i;
-    } else if (/^\s*hooks\s*=/.test(lines[i])) {
-      unsupportedHooksIdx = i;
-    } else if (/^\s*codex_hooks\s*=/.test(lines[i])) {
-      codexHooksIdx = i;
-    } else if (/^\s*goals\s*=/.test(lines[i])) {
-      goalsIdx = i;
     }
   }
 
@@ -561,27 +615,19 @@ function upsertFeatureFlags(config: string): string {
     sectionEnd += 1;
   }
 
-  if (codexHooksIdx >= 0) {
-    lines[codexHooksIdx] = "codex_hooks = true";
-  } else if (unsupportedHooksIdx >= 0) {
-    lines[unsupportedHooksIdx] = "codex_hooks = true";
-    codexHooksIdx = unsupportedHooksIdx;
-    unsupportedHooksIdx = -1;
-  } else {
-    lines.splice(sectionEnd, 0, "codex_hooks = true");
-    codexHooksIdx = sectionEnd;
-    sectionEnd += 1;
-  }
+  ({ sectionEnd } = upsertCodexHookFeatureFlagInSection(
+    lines,
+    featuresStart,
+    sectionEnd,
+    codexHookFeatureFlag,
+  ));
 
-  for (let i = sectionEnd - 1; i > featuresStart; i--) {
-    if (i !== codexHooksIdx && /^\s*hooks\s*=/.test(lines[i])) {
-      lines.splice(i, 1);
-      sectionEnd -= 1;
-      if (codexHooksIdx > i) codexHooksIdx -= 1;
-      if (goalsIdx > i) goalsIdx -= 1;
+  let goalsIdx = -1;
+  for (let i = featuresStart + 1; i < sectionEnd; i++) {
+    if (/^\s*goals\s*=/.test(lines[i])) {
+      goalsIdx = i;
     }
   }
-
   if (goalsIdx >= 0) {
     lines[goalsIdx] = "goals = true";
   } else {
@@ -644,17 +690,23 @@ export function upsertManagedCodexHookTrustState(
   ].filter((line, index) => index !== 0 || line.length > 0).join("\n");
 }
 
-export function upsertPluginModeRuntimeFeatureFlags(config: string): string {
+export function upsertPluginModeRuntimeFeatureFlags(
+  config: string,
+  codexHookFeatureFlag: CodexHookFeatureFlag = DEFAULT_CODEX_HOOK_FEATURE_FLAG,
+): string {
   const lines = config.split(/\r?\n/);
   const featuresStart = lines.findIndex((line) =>
     /^\s*\[features\]\s*$/.test(line),
+  );
+  const hookFeatureFlagLine = formatCodexHookFeatureFlagLine(
+    codexHookFeatureFlag,
   );
 
   if (featuresStart < 0) {
     const base = config.trimEnd();
     const featureBlock = [
       "[features]",
-      "codex_hooks = true",
+      hookFeatureFlagLine,
       "goals = true",
       "",
     ].join("\n");
@@ -681,40 +733,19 @@ export function upsertPluginModeRuntimeFeatureFlags(config: string): string {
     }
   }
 
-  let codexHooksIdx = -1;
-  let unsupportedHooksIdx = -1;
+  ({ sectionEnd } = upsertCodexHookFeatureFlagInSection(
+    lines,
+    featuresStart,
+    sectionEnd,
+    codexHookFeatureFlag,
+  ));
+
   let goalsIdx = -1;
   for (let i = featuresStart + 1; i < sectionEnd; i++) {
-    if (/^\s*hooks\s*=/.test(lines[i])) {
-      unsupportedHooksIdx = i;
-    } else if (/^\s*codex_hooks\s*=/.test(lines[i])) {
-      codexHooksIdx = i;
-    } else if (/^\s*goals\s*=/.test(lines[i])) {
+    if (/^\s*goals\s*=/.test(lines[i])) {
       goalsIdx = i;
     }
   }
-
-  if (codexHooksIdx >= 0) {
-    lines[codexHooksIdx] = "codex_hooks = true";
-  } else if (unsupportedHooksIdx >= 0) {
-    lines[unsupportedHooksIdx] = "codex_hooks = true";
-    codexHooksIdx = unsupportedHooksIdx;
-    unsupportedHooksIdx = -1;
-  } else {
-    lines.splice(sectionEnd, 0, "codex_hooks = true");
-    codexHooksIdx = sectionEnd;
-    sectionEnd++;
-  }
-
-  for (let i = sectionEnd - 1; i > featuresStart; i--) {
-    if (i !== codexHooksIdx && /^\s*hooks\s*=/.test(lines[i])) {
-      lines.splice(i, 1);
-      sectionEnd--;
-      if (codexHooksIdx > i) codexHooksIdx--;
-      if (goalsIdx > i) goalsIdx--;
-    }
-  }
-
   if (goalsIdx >= 0) {
     lines[goalsIdx] = "goals = true";
   } else {
@@ -1015,15 +1046,21 @@ export function stripOmxFeatureFlags(config: string): string {
  * Preserve native Codex hook enablement without re-adding other OMX feature
  * flags. Used by uninstall when user-owned hooks remain in hooks.json.
  */
-export function upsertCodexHooksFeatureFlag(config: string): string {
+export function upsertCodexHooksFeatureFlag(
+  config: string,
+  codexHookFeatureFlag: CodexHookFeatureFlag = DEFAULT_CODEX_HOOK_FEATURE_FLAG,
+): string {
   const lines = config.split(/\r?\n/);
   const featuresStart = lines.findIndex((line) =>
     /^\s*\[features\]\s*$/.test(line),
   );
+  const hookFeatureFlagLine = formatCodexHookFeatureFlagLine(
+    codexHookFeatureFlag,
+  );
 
   if (featuresStart < 0) {
     const base = config.trimEnd();
-    const featureBlock = ["[features]", "codex_hooks = true", ""].join("\n");
+    const featureBlock = ["[features]", hookFeatureFlagLine, ""].join("\n");
     return base.length === 0 ? featureBlock : `${base}\n${featureBlock}`;
   }
 
@@ -1035,32 +1072,12 @@ export function upsertCodexHooksFeatureFlag(config: string): string {
     }
   }
 
-  let codexHooksIdx = -1;
-  for (let i = featuresStart + 1; i < sectionEnd; i++) {
-    if (/^\s*codex_hooks\s*=/.test(lines[i])) {
-      codexHooksIdx = i;
-      lines[i] = "codex_hooks = true";
-      break;
-    }
-    if (codexHooksIdx < 0 && /^\s*hooks\s*=/.test(lines[i])) {
-      codexHooksIdx = i;
-      lines[i] = "codex_hooks = true";
-    }
-  }
-
-  if (codexHooksIdx < 0) {
-    lines.splice(sectionEnd, 0, "codex_hooks = true");
-    codexHooksIdx = sectionEnd;
-    sectionEnd += 1;
-  }
-
-  for (let i = sectionEnd - 1; i > featuresStart; i--) {
-    if (i !== codexHooksIdx && /^\s*hooks\s*=/.test(lines[i])) {
-      lines.splice(i, 1);
-      sectionEnd -= 1;
-      if (codexHooksIdx > i) codexHooksIdx -= 1;
-    }
-  }
+  upsertCodexHookFeatureFlagInSection(
+    lines,
+    featuresStart,
+    sectionEnd,
+    codexHookFeatureFlag,
+  );
 
   return lines.join("\n");
 }
@@ -1704,7 +1721,7 @@ export function buildMergedConfig(
     existing = stripRootLevelKeys(existing, ["model"]);
   }
   existing = stripOrphanedOmxSections(existing);
-  existing = upsertFeatureFlags(existing);
+  existing = upsertFeatureFlags(existing, options.codexHookFeatureFlag);
   existing = upsertEnvSettings(existing);
   existing = upsertAgentsSettings(existing);
   const tuiUpsert = includeTui
