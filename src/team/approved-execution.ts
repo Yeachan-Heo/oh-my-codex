@@ -110,7 +110,7 @@ function displayApprovedContextFilePath(
   path: string,
   repoRoot: string | null,
 ): string {
-  if (!repoRoot || !isAbsolute(path)) {
+  if (!repoRoot || !isAbsolute(repoRoot) || !isAbsolute(path)) {
     return path;
   }
   const displayPath = relative(repoRoot, path).replaceAll('\\', '/');
@@ -131,7 +131,14 @@ function rebindApprovedContextFileRef(
   sourceRepoRoot: string | null,
   repoRoot: string | null,
 ): ContextPackFileRef {
-  if (!repoRoot || !sourceRepoRoot || !isAbsolute(ref.path) || !isAbsolute(ref.sourcePath)) {
+  if (
+    !repoRoot
+    || !sourceRepoRoot
+    || !isAbsolute(repoRoot)
+    || !isAbsolute(sourceRepoRoot)
+    || !isAbsolute(ref.path)
+    || !isAbsolute(ref.sourcePath)
+  ) {
     return ref;
   }
 

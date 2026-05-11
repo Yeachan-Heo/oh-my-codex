@@ -1,4 +1,4 @@
-import { basename, dirname, extname, resolve } from 'node:path';
+import { basename, dirname, extname, isAbsolute, resolve } from 'node:path';
 import {
   readReadyContextPackPrivateEntryReadModel,
   type ContextPackPrivateSelector,
@@ -130,6 +130,13 @@ export function readReadyContextPackFileRefs(
   packPath: string,
   repoRoot: string,
 ): ContextPackFileRefResolution {
+  if (!isAbsolute(repoRoot)) {
+    return {
+      refs: [],
+      issues: [`Could not resolve an absolute repo root for ${basename(packPath)}.`],
+    };
+  }
+
   const privateEntries = readReadyContextPackPrivateEntryReadModel(packPath);
   if (!privateEntries) {
     return {

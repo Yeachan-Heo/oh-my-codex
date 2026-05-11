@@ -278,6 +278,26 @@ describe('context pack file refs', () => {
     assert.match(resolution.issues[0] ?? '', /Could not read ready private context-pack entry metadata/);
   });
 
+  it('fails closed when the caller does not provide an absolute repo root', async () => {
+    const { prdPath, testSpecPath } = await writeReadyPlanningBaseline('file-refs-relative-root');
+    const packPath = await writeContextPackWithEntries(
+      'file-refs-relative-root',
+      prdPath,
+      testSpecPath,
+      [
+        { path: 'docs/scope-ready.md', roles: ['scope'] },
+        { path: 'src/build-ready.ts', roles: ['build'] },
+        { path: 'tests/verify-ready.ts', roles: ['verify'] },
+      ],
+    );
+
+    const resolution = readReadyContextPackFileRefs(packPath, '.');
+
+    assert.deepEqual(resolution.refs, []);
+    assert.equal(resolution.issues.length, 1);
+    assert.match(resolution.issues[0] ?? '', /Could not resolve an absolute repo root/);
+  });
+
   it('keeps derived labels unique across duplicate basename and label collisions', async () => {
     const { prdPath, testSpecPath } = await writeReadyPlanningBaseline('file-refs-duplicates');
     const packPath = await writeContextPackWithEntries(
