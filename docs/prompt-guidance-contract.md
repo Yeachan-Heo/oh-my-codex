@@ -31,6 +31,10 @@ The GPT-5.5 contract is distributed across:
 
 Workflow skills may use a compact reference to the shared workflow guidance pattern instead of repeating every GPT-5.5 bullet. That pattern must preserve: outcome-first framing, concise visible updates for multi-step work, scoped task-update overrides, evidence-backed validation, and explicit stop/escalation rules. Workflow-specific invariants such as state transitions, gates, cleanup, cancellation, and verification commands remain explicit in the owning skill.
 
+### UltraQA adversarial e2e invariant
+
+`$ultraqa` is an adversarial dynamic e2e workflow, not a shallow static QA checklist. Its skill guidance must require a generated scenario matrix, malicious/hostile user behavior modeling, useful temporary tests or harnesses, hostile edge cases such as malformed input, repeated interruptions, prompt injection, cancel/resume, stale state, dirty worktrees, hung commands, flaky tests, and misleading success output, plus a structured report with commands, failures, fixes, cleanup/rollback, residual risks, and evidence. Safety bounds must remain explicit: no destructive commands, no secret exfiltration, no unbounded runtime, and no untracked generated debris. Regression coverage in `src/hooks/prompt-guidance-contract.ts` and `src/hooks/__tests__/skill-guidance-contract.test.ts` should fail if UltraQA regresses to build/lint/typecheck/test-only guidance.
+
 ## Exact-model mini adaptation seam
 
 OMX also has a narrow **instruction-composition seam** for subagents/workers whose **final resolved model** is exactly `gpt-5.4-mini`.
