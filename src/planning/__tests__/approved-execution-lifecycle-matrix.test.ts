@@ -261,9 +261,13 @@ function assertRalphGuidance(status: LifecycleStatus, instructions: string): voi
     case 'ready':
       assert.match(instructions, /approved context pack: .*context-20260507T120000Z-ready\.json/i);
       assert.match(instructions, /build refs \(read first\): src\/build\.ts/i);
+      assert.match(instructions, /verify refs: src\/verify\.ts/i);
+      assert.match(instructions, /scope refs: src\/scope\.ts/i);
       assert.match(instructions, /Read the build refs above before broader repo exploration/i);
       assert.doesNotMatch(instructions, /Missing-baseline fallback/i);
       assert.doesNotMatch(instructions, /repair or recreate the canonical context pack/i);
+      assert.doesNotMatch(instructions, /=.*\[file\]/);
+      assert.doesNotMatch(instructions, /query the canonical pack|Context pack index/i);
       return;
     default:
       throw new Error(`unexpected lifecycle status ${status}`);
@@ -360,10 +364,11 @@ describe('approved execution lifecycle matrix', () => {
           task: fixture.teamTask,
           command: fixture.teamCommand,
         });
-        assert.match(
-          buildApprovedTeamHandoffSection(teamHint) ?? '',
-          /Build refs \(read first\): src\/build\.ts/,
-        );
+        const handoff = buildApprovedTeamHandoffSection(teamHint) ?? '';
+        assert.match(handoff, /Build refs \(read first\): build=src\/build\.ts \[file\]/);
+        assert.match(handoff, /Verify refs: verify=src\/verify\.ts \[file\]/);
+        assert.match(handoff, /Scope refs: scope=src\/scope\.ts \[file\]/);
+        assert.doesNotMatch(handoff, /query the canonical pack|Context pack index/i);
       } else {
         assert.equal(buildApprovedTeamHandoffSection(teamHint), undefined);
       }

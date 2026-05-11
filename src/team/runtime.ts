@@ -2378,7 +2378,6 @@ export async function startTeam(
     && isApprovedExecutionContextReadyStatus(selectedApprovedExecutionHint.contextPackStatus)
     ? buildApprovedTeamExecutionBinding(selectedApprovedExecutionHint)
     : null;
-  const approvedContextSection = buildApprovedTeamHandoffSection(selectedApprovedExecutionHint);
   const activeWorktreeMode: 'detached' | 'named' | null =
     effectiveWorktreeMode.enabled
       ? (effectiveWorktreeMode.detached ? 'detached' : 'named')
@@ -2609,6 +2608,9 @@ export async function startTeam(
         : rolePromptContent
           ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, fallbackInstructionsPath, runtimeRole, rolePromptContent)
           : fallbackInstructionsPath;
+      const approvedContextSection = buildApprovedTeamHandoffSection(selectedApprovedExecutionHint, {
+        repoRoot: workerWorkspace.worktreeRepoRoot ?? null,
+      });
       const inbox = generateInitialInbox(workerName, sanitized, agentType, workerTasks, {
         teamStateRoot,
         leaderCwd,
@@ -3396,7 +3398,9 @@ export async function assignTask(
     );
     const approvedContextSection = approvedExecutionState.status === 'valid'
       && isApprovedExecutionFollowupReadyStatus(approvedExecutionState.approvedHint.contextPackStatus)
-      ? buildApprovedTeamHandoffSection(approvedExecutionState.approvedHint)
+      ? buildApprovedTeamHandoffSection(approvedExecutionState.approvedHint, {
+        repoRoot: workerInfo.worktree_repo_root ?? null,
+      })
       : undefined;
     const taskForInbox = task.delegation
       ? task

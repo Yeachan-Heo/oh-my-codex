@@ -1,12 +1,17 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   readApprovedExecutionLaunchHintOutcome,
   readPlanningArtifacts,
   type ApprovedRepositoryContextSummary,
   type ApprovedExecutionLaunchHint,
 } from '../planning/artifacts.js';
+import {
+  groupContextPackFileRefsByRole,
+  readReadyContextPackFileRefs,
+  type ContextPackFileRef,
+} from '../planning/context-pack-file-refs.js';
 import { TEAM_NAME_SAFE_PATTERN } from './contracts.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
 import { sameFilePath } from '../utils/paths.js';
@@ -92,8 +97,85 @@ function renderRoleRefLine(label: string, refs: readonly string[]): string | nul
     : null;
 }
 
+function inferApprovedExecutionRepoRoot(
+  approvedHint: ApprovedExecutionLaunchHint,
+): string | null {
+  if (!isAbsolute(approvedHint.sourcePath)) {
+    return null;
+  }
+  return resolve(dirname(approvedHint.sourcePath), '..', '..');
+}
+
+function displayApprovedContextFilePath(
+  path: string,
+  repoRoot: string | null,
+): string {
+  if (!repoRoot || !isAbsolute(path)) {
+    return path;
+  }
+  const displayPath = relative(repoRoot, path).replaceAll('\\', '/');
+  if (
+    displayPath === ''
+    || displayPath === '.'
+    || displayPath.startsWith('..')
+    || displayPath.startsWith('../')
+    || isAbsolute(displayPath)
+  ) {
+    return path;
+  }
+  return displayPath;
+}
+
+function rebindApprovedContextFileRef(
+  ref: ContextPackFileRef,
+  sourceRepoRoot: string | null,
+  repoRoot: string | null,
+): ContextPackFileRef {
+  if (!repoRoot || !sourceRepoRoot || !isAbsolute(ref.path) || !isAbsolute(ref.sourcePath)) {
+    return ref;
+  }
+
+  const repoRelativePath = relative(sourceRepoRoot, ref.sourcePath).replaceAll('\\', '/');
+  if (
+    repoRelativePath === ''
+    || repoRelativePath === '.'
+    || repoRelativePath.startsWith('..')
+    || repoRelativePath.startsWith('../')
+    || isAbsolute(repoRelativePath)
+  ) {
+    return ref;
+  }
+
+  const reboundPath = join(repoRoot, repoRelativePath);
+  return existsSync(reboundPath)
+    ? { ...ref, path: reboundPath }
+    : ref;
+}
+
+function describeApprovedContextFileRef(
+  ref: ContextPackFileRef,
+  repoRoot: string | null,
+): string {
+  return `${ref.label}=${displayApprovedContextFilePath(ref.path, repoRoot)} [${ref.delivery}]`;
+}
+
+function renderContextFileRefLine(
+  label: string,
+  refs: readonly ContextPackFileRef[],
+  repoRoot: string | null,
+): string | null {
+  return refs.length > 0
+    ? `- ${label}: ${refs.map((ref) => describeApprovedContextFileRef(ref, repoRoot)).join(', ')}`
+    : null;
+}
+
+export interface ApprovedTeamHandoffSectionOptions {
+  repoRoot?: string | null;
+}
+
 export function buildApprovedTeamHandoffSection(
   approvedHint: ApprovedExecutionLaunchHint | null | undefined,
+  options: ApprovedTeamHandoffSectionOptions = {},
 ): string | undefined {
   if (
     !approvedHint
@@ -120,9 +202,34 @@ export function buildApprovedTeamHandoffSection(
     lines.push(...renderApprovedRepositoryContextSummary(approvedHint.repositoryContextSummary));
   }
 
-  const buildLine = renderRoleRefLine('Build refs (read first)', build);
-  const verifyLine = renderRoleRefLine('Verify refs', verify);
-  const scopeLine = renderRoleRefLine('Scope refs', scope);
+  const sourceRepoRoot = inferApprovedExecutionRepoRoot(approvedHint);
+  const displayRepoRoot = options.repoRoot ?? sourceRepoRoot;
+  // File refs are additive in this row. If private entry metadata is unavailable,
+  // keep the older grouped-path handoff without changing ready/nonready behavior.
+  const contextFileRefs =
+    approvedHint.contextPack && sourceRepoRoot
+      ? readReadyContextPackFileRefs(approvedHint.contextPack.path, sourceRepoRoot)
+      : { refs: [], issues: ['Approved Team handoff could not resolve the source repo root.'] };
+  const groupedContextFileRefs =
+    contextFileRefs.issues.length === 0
+      ? groupContextPackFileRefsByRole(
+        contextFileRefs.refs.map((ref) =>
+          rebindApprovedContextFileRef(ref, sourceRepoRoot, options.repoRoot ?? null)),
+      )
+      : null;
+
+  const buildLine =
+    groupedContextFileRefs
+      ? renderContextFileRefLine('Build refs (read first)', groupedContextFileRefs.build ?? [], displayRepoRoot)
+      : renderRoleRefLine('Build refs (read first)', build);
+  const verifyLine =
+    groupedContextFileRefs
+      ? renderContextFileRefLine('Verify refs', groupedContextFileRefs.verify ?? [], displayRepoRoot)
+      : renderRoleRefLine('Verify refs', verify);
+  const scopeLine =
+    groupedContextFileRefs
+      ? renderContextFileRefLine('Scope refs', groupedContextFileRefs.scope ?? [], displayRepoRoot)
+      : renderRoleRefLine('Scope refs', scope);
   if (buildLine) {
     lines.push(buildLine);
   }

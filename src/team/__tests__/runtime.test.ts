@@ -90,11 +90,26 @@ function buildContextPackOutcome(relativePackPath: string): string {
   ].join('\n');
 }
 
+type TestContextPackEntry = {
+  path: string;
+  roles: readonly ('scope' | 'build' | 'verify')[];
+  label?: unknown;
+  tags?: unknown;
+  selector?: unknown;
+  relationPath?: unknown;
+  [key: string]: unknown;
+};
+
 async function writeReadyContextPack(
   cwd: string,
   slug: string,
   prdPath: string,
   testSpecPath: string,
+  entries: readonly TestContextPackEntry[] = [
+    { path: 'src/scope-0.ts', roles: ['scope'] },
+    { path: 'src/build-1.ts', roles: ['build'] },
+    { path: 'src/verify-2.ts', roles: ['verify'] },
+  ],
 ): Promise<void> {
   const contextDir = join(cwd, '.omx', 'context');
   const packPath = join(cwd, canonicalContextPackRelativePath(slug));
@@ -113,10 +128,7 @@ async function writeReadyContextPack(
         sha1: computeGitBlobSha1(testSpecContent),
       }],
     },
-    entries: ['scope', 'build', 'verify'].map((role, index) => ({
-      path: `src/${role}-${index}.ts`,
-      roles: [role],
-    })),
+    entries,
   }, null, 2));
 }
 
@@ -6539,7 +6551,16 @@ esac
       ].join('\n'),
     );
     await writeFile(testSpecPath, '# Test spec\n');
-    await writeReadyContextPack(cwd, 'issue-1314-handoff', prdPath, testSpecPath);
+    await writeReadyContextPack(cwd, 'issue-1314-handoff', prdPath, testSpecPath, [
+      { path: 'src/scope-0.ts', roles: ['scope'] },
+      {
+        path: 'src/build-1.ts',
+        roles: ['build'],
+        label: 'Build Focus',
+        selector: { type: 'heading', value: '## Build Focus', maxWords: 120 },
+      },
+      { path: 'src/verify-2.ts', roles: ['verify'] },
+    ]);
     await writeFile(
       join(cwd, '.omx', 'plans', 'repo-context-issue-1314-handoff.md'),
       'Read the approved repository slice first.\n',
@@ -6581,9 +6602,9 @@ esac
       assert.match(inbox, new RegExp(`Approved context pack: ${contextPackPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
       assert.match(inbox, /Approved repository context summary source: .*repo-context-issue-1314-handoff\.md/);
       assert.match(inbox, /Read the approved repository slice first\./);
-      assert.match(inbox, /Build refs \(read first\): src\/build-1\.ts/);
-      assert.match(inbox, /Verify refs: src\/verify-2\.ts/);
-      assert.match(inbox, /Scope refs: src\/scope-0\.ts/);
+      assert.match(inbox, /Build refs \(read first\): build-focus=src\/build-1\.ts \[file\]/);
+      assert.match(inbox, /Verify refs: verify-2=src\/verify-2\.ts \[file\]/);
+      assert.match(inbox, /Scope refs: scope-0=src\/scope-0\.ts \[file\]/);
       assert.doesNotMatch(inbox, /query the canonical pack|Context pack index/);
     } finally {
       if (runtime) {
@@ -6961,7 +6982,16 @@ esac
         ].join('\n'),
       );
       await writeFile(testSpecPath, '# Test spec\n');
-      await writeReadyContextPack(cwd, 'issue-1320', prdPath, testSpecPath);
+      await writeReadyContextPack(cwd, 'issue-1320', prdPath, testSpecPath, [
+        { path: 'src/scope-0.ts', roles: ['scope'] },
+        {
+          path: 'src/build-1.ts',
+          roles: ['build'],
+          label: 'Build Focus',
+          selector: { type: 'heading', value: '## Build Focus', maxWords: 120 },
+        },
+        { path: 'src/verify-2.ts', roles: ['verify'] },
+      ]);
       await writeFile(
         join(plansDir, 'repo-context-issue-1320.md'),
         'Follow the approved repository slice before broader repo exploration.\n',
@@ -7004,9 +7034,9 @@ esac
       assert.match(inbox, new RegExp(`Approved plan: ${prdPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
       assert.match(inbox, new RegExp(`Test specs: ${testSpecPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
       assert.match(inbox, new RegExp(`Approved context pack: ${contextPackPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
-      assert.match(inbox, /Build refs \(read first\): src\/build-1\.ts/);
-      assert.match(inbox, /Verify refs: src\/verify-2\.ts/);
-      assert.match(inbox, /Scope refs: src\/scope-0\.ts/);
+      assert.match(inbox, /Build refs \(read first\): build-focus=src\/build-1\.ts \[file\]/);
+      assert.match(inbox, /Verify refs: verify-2=src\/verify-2\.ts \[file\]/);
+      assert.match(inbox, /Scope refs: scope-0=src\/scope-0\.ts \[file\]/);
       assert.match(inbox, /Follow the approved repository slice before broader repo exploration\./);
       assert.doesNotMatch(inbox, /query the canonical pack|Context pack index/);
     } finally {

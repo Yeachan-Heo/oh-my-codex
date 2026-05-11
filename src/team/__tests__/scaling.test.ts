@@ -62,8 +62,6 @@ function buildContextPackOutcome(relativePackPath: string): string {
   ].join('\n');
 }
 
-type ContextPackRole = 'scope' | 'build' | 'verify';
-
 type ScaleUpApprovedBindingState =
   | 'missing'
   | 'malformed'
@@ -78,6 +76,16 @@ type ScaleUpApprovedBindingState =
 type ScaleUpObservedOutcome = 'generic' | 'blocked' | 'approved';
 
 type ScaleUpCount = 1 | 2 | 3;
+
+type TestContextPackEntry = {
+  path: string;
+  roles: readonly ('scope' | 'build' | 'verify')[];
+  label?: unknown;
+  tags?: unknown;
+  selector?: unknown;
+  relationPath?: unknown;
+  [key: string]: unknown;
+};
 
 type BlockedScaleUpApprovedBindingState = Exclude<ScaleUpApprovedBindingState, 'missing' | 'plan-only' | 'ready'>;
 
@@ -162,12 +170,18 @@ async function writeContextPack(
   slug: string,
   prdPath: string,
   testSpecPath: string,
-  roles: readonly ContextPackRole[],
+  entriesOrRoles: readonly TestContextPackEntry[] | readonly string[],
 ): Promise<void> {
   const contextDir = join(cwd, '.omx', 'context');
   const packPath = join(cwd, canonicalContextPackRelativePath(slug));
   const prdContent = await readFile(prdPath, 'utf-8');
   const testSpecContent = await readFile(testSpecPath, 'utf-8');
+  const entries: TestContextPackEntry[] = typeof entriesOrRoles[0] === 'string'
+    ? (entriesOrRoles as readonly string[]).map((role, index) => ({
+      path: `src/${role}-${index}.ts`,
+      roles: [role as 'scope' | 'build' | 'verify'],
+    }))
+    : [...entriesOrRoles as readonly TestContextPackEntry[]];
   await mkdir(contextDir, { recursive: true });
   await writeFile(packPath, JSON.stringify({
     slug,
@@ -181,10 +195,7 @@ async function writeContextPack(
         sha1: computeGitBlobSha1(testSpecContent),
       }],
     },
-    entries: roles.map((role, index) => ({
-      path: `src/${role}-${index}.ts`,
-      roles: [role],
-    })),
+    entries,
   }, null, 2));
 }
 
@@ -193,8 +204,13 @@ async function writeReadyContextPack(
   slug: string,
   prdPath: string,
   testSpecPath: string,
+  entries: readonly TestContextPackEntry[] = [
+    { path: 'src/scope-0.ts', roles: ['scope'] },
+    { path: 'src/build-1.ts', roles: ['build'] },
+    { path: 'src/verify-2.ts', roles: ['verify'] },
+  ],
 ): Promise<void> {
-  await writeContextPack(cwd, slug, prdPath, testSpecPath, ['scope', 'build', 'verify']);
+  await writeContextPack(cwd, slug, prdPath, testSpecPath, entries);
 }
 
 async function writeSuccessfulScaleUpTmuxStub(
@@ -838,7 +854,16 @@ describe('scaleUp', () => {
         ].join('\n'),
       );
       await writeFile(testSpecPath, '# Test spec\n');
-      await writeReadyContextPack(cwd, 'issue-1410', prdPath, testSpecPath);
+      await writeReadyContextPack(cwd, 'issue-1410', prdPath, testSpecPath, [
+        { path: 'src/scope-0.ts', roles: ['scope'] },
+        {
+          path: 'src/build-1.ts',
+          roles: ['build'],
+          label: 'Build Focus',
+          selector: { type: 'heading', value: '## Build Focus', maxWords: 120 },
+        },
+        { path: 'src/verify-2.ts', roles: ['verify'] },
+      ]);
       await writeFile(
         join(plansDir, 'repo-context-issue-1410.md'),
         'Read the approved repository slice first.\n',
@@ -872,9 +897,9 @@ describe('scaleUp', () => {
       assert.ok(inbox.includes(`Test specs: ${testSpecPath}`));
       assert.match(inbox, /Approved repository context summary source: .*repo-context-issue-1410\.md/);
       assert.match(inbox, /Read the approved repository slice first\./);
-      assert.match(inbox, /Build refs \(read first\): src\/build-1\.ts/);
-      assert.match(inbox, /Verify refs: src\/verify-2\.ts/);
-      assert.match(inbox, /Scope refs: src\/scope-0\.ts/);
+      assert.match(inbox, /Build refs \(read first\): build-focus=src\/build-1\.ts \[file\]/);
+      assert.match(inbox, /Verify refs: verify-2=src\/verify-2\.ts \[file\]/);
+      assert.match(inbox, /Scope refs: scope-0=src\/scope-0\.ts \[file\]/);
       assert.doesNotMatch(inbox, /query the canonical pack|Context pack index/);
       assert.ok(tmuxCommands.some((command) => command.startsWith('split-window ')));
     } finally {

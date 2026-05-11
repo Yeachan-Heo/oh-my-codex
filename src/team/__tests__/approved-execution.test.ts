@@ -1,9 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import {
   buildApprovedTeamHandoffSection,
   readPersistedApprovedTeamExecutionBinding,
@@ -11,7 +12,17 @@ import {
   resolvePersistedApprovedTeamExecutionContinuityState,
   writePersistedApprovedTeamExecutionBinding,
 } from '../approved-execution.js';
-import type { ApprovedExecutionLaunchHint } from '../../planning/artifacts.js';
+import { readApprovedExecutionLaunchHint } from '../../planning/artifacts.js';
+
+type TestContextPackEntry = {
+  path: string;
+  roles: readonly ('scope' | 'build' | 'verify')[];
+  label?: unknown;
+  tags?: unknown;
+  selector?: unknown;
+  relationPath?: unknown;
+  [key: string]: unknown;
+};
 
 async function withUnboxedOmxRoot<T>(fn: () => Promise<T>): Promise<T> {
   const previousOmxRoot = process.env.OMX_ROOT;
@@ -28,62 +39,246 @@ async function withUnboxedOmxRoot<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-function buildReadyApprovedTeamHint(
-  overrides: Partial<ApprovedExecutionLaunchHint> = {},
-): ApprovedExecutionLaunchHint {
-  return {
-    sourcePath: '/repo/.omx/plans/prd-issue-1314.md',
-    testSpecPaths: ['/repo/.omx/plans/test-spec-issue-1314.md'],
-    deepInterviewSpecPaths: [],
-    contextPack: { path: '/repo/.omx/context/context-20260507T120000Z-issue-1314.json' },
-    contextPackStatus: 'ready',
-    contextPackRoleRefs: {
-      build: ['src/build-entry.ts'],
-      verify: ['tests/verify-entry.ts'],
-      scope: ['docs/scope-entry.md'],
+function computeGitBlobSha1(content: string): string {
+  const buffer = Buffer.from(content, 'utf-8');
+  const header = Buffer.from(`blob ${buffer.length}\0`, 'utf-8');
+  return createHash('sha1').update(header).update(buffer).digest('hex');
+}
+
+function canonicalContextPackRelativePath(slug: string): string {
+  return `.omx/context/context-20260507T120000Z-${slug}.json`;
+}
+
+function buildContextPackOutcome(relativePackPath: string): string {
+  return [
+    '## Context Pack Outcome',
+    '',
+    `- pack: created \`${relativePackPath}\``,
+  ].join('\n');
+}
+
+async function writeContextPackWithEntries(
+  cwd: string,
+  slug: string,
+  prdPath: string,
+  testSpecPath: string,
+  entries: readonly TestContextPackEntry[],
+): Promise<string> {
+  const contextDir = join(cwd, '.omx', 'context');
+  await mkdir(contextDir, { recursive: true });
+  const packPath = join(cwd, canonicalContextPackRelativePath(slug));
+  const prdContent = await readFile(prdPath, 'utf-8');
+  const testSpecContent = await readFile(testSpecPath, 'utf-8');
+  await writeFile(packPath, JSON.stringify({
+    slug,
+    basis: {
+      prd: {
+        path: relative(cwd, prdPath).replaceAll('\\', '/'),
+        sha1: computeGitBlobSha1(prdContent),
+      },
+      testSpecs: [{
+        path: relative(cwd, testSpecPath).replaceAll('\\', '/'),
+        sha1: computeGitBlobSha1(testSpecContent),
+      }],
     },
-    missingRequiredContextPackRoles: [],
-    contextPackIssues: [],
-    repositoryContextSummary: {
-      sourcePath: '/repo/.omx/plans/repo-context-issue-1314.md',
-      content: 'Read the approved repository slice before broader repo exploration.',
-      truncated: false,
-    },
-    mode: 'team',
-    command: 'omx team 1:executor "Execute approved issue 1314 plan"',
-    task: 'Execute approved issue 1314 plan',
-    workerCount: 1,
-    agentType: 'executor',
-    linkedRalph: false,
-    ...overrides,
-  };
+    entries,
+  }, null, 2));
+  return packPath;
+}
+
+async function createReadyApprovedTeamHint(
+  cwd: string,
+  slug: string,
+  entries: readonly TestContextPackEntry[],
+): Promise<{
+  hint: NonNullable<ReturnType<typeof readApprovedExecutionLaunchHint>>;
+  prdPath: string;
+  testSpecPath: string;
+  packPath: string;
+  repoContextPath: string;
+}> {
+  const plansDir = join(cwd, '.omx', 'plans');
+  await mkdir(plansDir, { recursive: true });
+  const prdPath = join(plansDir, `prd-${slug}.md`);
+  const testSpecPath = join(plansDir, `test-spec-${slug}.md`);
+  const repoContextPath = join(plansDir, `repo-context-${slug}.md`);
+  await writeFile(
+    prdPath,
+    [
+      '# Approved plan',
+      '',
+      buildContextPackOutcome(canonicalContextPackRelativePath(slug)),
+      '',
+      `Launch via omx team 1:executor "Execute approved ${slug} plan"`,
+    ].join('\n'),
+  );
+  await writeFile(testSpecPath, '# Test spec\n');
+  await writeFile(repoContextPath, 'Read the approved repository slice before broader repo exploration.\n');
+  const packPath = await writeContextPackWithEntries(cwd, slug, prdPath, testSpecPath, entries);
+  const hint = readApprovedExecutionLaunchHint(cwd, 'team');
+  assert.ok(hint, 'expected ready Team approved hint');
+  return { hint, prdPath, testSpecPath, packPath, repoContextPath };
 }
 
 describe('approved execution binding', () => {
-  it('buildApprovedTeamHandoffSection renders ready approved Team context with grouped refs', () => {
-    const handoff = buildApprovedTeamHandoffSection(buildReadyApprovedTeamHint());
+  it('buildApprovedTeamHandoffSection renders ready approved Team context with labeled file refs', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-approved-execution-handoff-'));
+    try {
+      const { hint, prdPath, testSpecPath, packPath, repoContextPath } = await createReadyApprovedTeamHint(
+        cwd,
+        'issue-1314',
+        [
+          { path: 'docs/scope-entry.md', roles: ['scope'] },
+          { path: 'src/build-entry.ts', roles: ['build'], label: 'Build Focus' },
+          { path: 'tests/verify-entry.ts', roles: ['verify'] },
+        ],
+      );
 
-    assert.match(handoff ?? '', /Approved plan: \/repo\/\.omx\/plans\/prd-issue-1314\.md/);
-    assert.match(handoff ?? '', /Test specs: \/repo\/\.omx\/plans\/test-spec-issue-1314\.md/);
-    assert.match(handoff ?? '', /Approved context pack: \/repo\/\.omx\/context\/context-20260507T120000Z-issue-1314\.json/);
-    assert.match(handoff ?? '', /Approved repository context summary source: \/repo\/\.omx\/plans\/repo-context-issue-1314\.md/);
-    assert.match(handoff ?? '', /Read the approved repository slice before broader repo exploration\./);
-    assert.match(handoff ?? '', /Build refs \(read first\): src\/build-entry\.ts/);
-    assert.match(handoff ?? '', /Verify refs: tests\/verify-entry\.ts/);
-    assert.match(handoff ?? '', /Scope refs: docs\/scope-entry\.md/);
-    assert.match(handoff ?? '', /Read the build refs above before broader repo exploration\./);
-    assert.doesNotMatch(handoff ?? '', /query the canonical pack|Context pack index/);
+      const handoff = buildApprovedTeamHandoffSection(hint);
+
+      assert.match(handoff ?? '', new RegExp(`Approved plan: ${prdPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      assert.match(handoff ?? '', new RegExp(`Test specs: ${testSpecPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      assert.match(handoff ?? '', new RegExp(`Approved context pack: ${packPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      assert.match(handoff ?? '', new RegExp(`Approved repository context summary source: ${repoContextPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      assert.match(handoff ?? '', /Read the approved repository slice before broader repo exploration\./);
+      assert.match(handoff ?? '', /Build refs \(read first\): build-focus=src\/build-entry\.ts \[file\]/);
+      assert.match(handoff ?? '', /Verify refs: verify-entry=tests\/verify-entry\.ts \[file\]/);
+      assert.match(handoff ?? '', /Scope refs: scope-entry=docs\/scope-entry\.md \[file\]/);
+      assert.match(handoff ?? '', /Read the build refs above before broader repo exploration\./);
+      assert.doesNotMatch(handoff ?? '', /query the canonical pack|Context pack index/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
-  it('buildApprovedTeamHandoffSection stays undefined outside ready Team handoffs', () => {
-    assert.equal(
-      buildApprovedTeamHandoffSection(buildReadyApprovedTeamHint({ mode: 'ralph' })),
-      undefined,
-    );
-    assert.equal(
-      buildApprovedTeamHandoffSection(buildReadyApprovedTeamHint({ contextPackStatus: 'plan-only' })),
-      undefined,
-    );
+  it('upgrades previous-version ready packs to derived file refs without changing ready status', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-approved-execution-handoff-legacy-'));
+    try {
+      const { hint } = await createReadyApprovedTeamHint(
+        cwd,
+        'issue-1314-legacy',
+        [
+          { path: './docs\\scope-entry.md', roles: ['scope'] },
+          { path: 'src\\build-entry.ts', roles: ['build'] },
+          { path: './tests/verify-entry.ts', roles: ['verify'] },
+        ],
+      );
+
+      assert.equal(hint.contextPackStatus, 'ready');
+      assert.deepEqual(hint.contextPackRoleRefs, {
+        build: ['src/build-entry.ts'],
+        verify: ['tests/verify-entry.ts'],
+        scope: ['docs/scope-entry.md'],
+      });
+
+      const handoff = buildApprovedTeamHandoffSection(hint);
+
+      assert.match(handoff ?? '', /Build refs \(read first\): build-entry=src\/build-entry\.ts \[file\]/);
+      assert.match(handoff ?? '', /Verify refs: verify-entry=tests\/verify-entry\.ts \[file\]/);
+      assert.match(handoff ?? '', /Scope refs: scope-entry=docs\/scope-entry\.md \[file\]/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to grouped role refs when private metadata is malformed', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-approved-execution-handoff-fallback-'));
+    try {
+      const { hint } = await createReadyApprovedTeamHint(
+        cwd,
+        'issue-1314-counterfactual',
+        [
+          { path: 'docs/scope-entry.md', roles: ['scope'] },
+          {
+            path: 'src/build-entry.ts',
+            roles: ['build'],
+            selector: { type: 'heading', value: 'Build Focus', maxWords: 20 },
+          },
+          { path: 'tests/verify-entry.ts', roles: ['verify'] },
+        ],
+      );
+
+      assert.equal(hint.contextPackStatus, 'ready');
+      assert.deepEqual(hint.contextPackRoleRefs, {
+        build: ['src/build-entry.ts'],
+        verify: ['tests/verify-entry.ts'],
+        scope: ['docs/scope-entry.md'],
+      });
+
+      const handoff = buildApprovedTeamHandoffSection(hint);
+
+      assert.match(handoff ?? '', /Build refs \(read first\): src\/build-entry\.ts/);
+      assert.match(handoff ?? '', /Verify refs: tests\/verify-entry\.ts/);
+      assert.match(handoff ?? '', /Scope refs: docs\/scope-entry\.md/);
+      assert.doesNotMatch(handoff ?? '', /=.*\[file\]/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rebinds file refs only when the worker repo contains the target path', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-approved-execution-handoff-rebind-'));
+    try {
+      const { hint } = await createReadyApprovedTeamHint(
+        cwd,
+        'issue-1314-rebind',
+        [
+          { path: 'docs/scope-entry.md', roles: ['scope'] },
+          { path: 'src/build-entry.ts', roles: ['build'], label: 'Build Focus' },
+          { path: 'tests/verify-entry.ts', roles: ['verify'] },
+        ],
+      );
+      assert.equal(hint.contextPackStatus, 'ready');
+      await mkdir(join(cwd, 'src'), { recursive: true });
+      await mkdir(join(cwd, 'tests'), { recursive: true });
+      await mkdir(join(cwd, 'docs'), { recursive: true });
+      await writeFile(join(cwd, 'src', 'build-entry.ts'), 'export const buildEntry = true;\n');
+      await writeFile(join(cwd, 'tests', 'verify-entry.ts'), 'export const verifyEntry = true;\n');
+      await writeFile(join(cwd, 'docs', 'scope-entry.md'), '# Scope\n');
+
+      const workerRepoRoot = join(cwd, 'worker-repo');
+      await mkdir(join(workerRepoRoot, 'src'), { recursive: true });
+      await writeFile(join(workerRepoRoot, 'src', 'build-entry.ts'), 'export const buildEntry = true;\n');
+
+      const handoff = buildApprovedTeamHandoffSection(hint, { repoRoot: workerRepoRoot });
+
+      assert.match(handoff ?? '', /Build refs \(read first\): build-focus=src\/build-entry\.ts \[file\]/);
+      assert.match(
+        handoff ?? '',
+        new RegExp(`Verify refs: verify-entry=${join(cwd, 'tests', 'verify-entry.ts').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\[file\\]`),
+      );
+      assert.match(
+        handoff ?? '',
+        new RegExp(`Scope refs: scope-entry=${join(cwd, 'docs', 'scope-entry.md').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\[file\\]`),
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('buildApprovedTeamHandoffSection stays undefined outside ready Team handoffs', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-approved-execution-handoff-nonready-'));
+    try {
+      const { hint } = await createReadyApprovedTeamHint(
+        cwd,
+        'issue-1314-nonready',
+        [
+          { path: 'docs/scope-entry.md', roles: ['scope'] },
+          { path: 'src/build-entry.ts', roles: ['build'] },
+          { path: 'tests/verify-entry.ts', roles: ['verify'] },
+        ],
+      );
+      assert.equal(
+        buildApprovedTeamHandoffSection({ ...hint, mode: 'ralph' }),
+        undefined,
+      );
+      assert.equal(
+        buildApprovedTeamHandoffSection({ ...hint, contextPackStatus: 'plan-only' }),
+        undefined,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it('writes and reads a normalized approved execution binding under the team state root', async () => {

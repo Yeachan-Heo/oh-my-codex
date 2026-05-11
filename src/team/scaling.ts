@@ -76,7 +76,10 @@ import {
   type EnsureWorktreeResult,
   type WorktreeMode,
 } from './worktree.js';
-import { isApprovedExecutionFollowupReadyStatus } from '../planning/artifacts.js';
+import {
+  isApprovedExecutionFollowupReadyStatus,
+  type ApprovedExecutionLaunchHint,
+} from '../planning/artifacts.js';
 import {
   buildApprovedTeamHandoffSection,
   resolvePersistedApprovedTeamExecutionContinuityState,
@@ -129,7 +132,7 @@ function resolveInstructionStateRoot(worktreePath?: string | null): string | und
 
 interface ScaleUpApprovedExecutionGate {
   ok: true;
-  approvedContextSection?: string;
+  approvedHint?: ApprovedExecutionLaunchHint;
 }
 
 function assertUnreachableApprovedExecutionState(state: never): never {
@@ -164,7 +167,7 @@ function resolveScaleUpApprovedExecutionGate(
       }
       return {
         ok: true,
-        approvedContextSection: buildApprovedTeamHandoffSection(approvedExecutionState.approvedHint),
+        approvedHint: approvedExecutionState.approvedHint,
       };
     default:
       return assertUnreachableApprovedExecutionState(approvedExecutionState);
@@ -302,7 +305,7 @@ export async function scaleUp(
     if (!approvedExecutionGate.ok) {
       return approvedExecutionGate;
     }
-    const { approvedContextSection } = approvedExecutionGate;
+    const { approvedHint } = approvedExecutionGate;
     const effectiveWorktreeMode = config.worktree_mode ?? resolveScaleUpWorktreeMode(config);
     if (!config.worktree_mode && effectiveWorktreeMode.enabled) {
       config.worktree_mode = effectiveWorktreeMode;
@@ -533,6 +536,11 @@ export async function scaleUp(
 
       // Get assigned tasks for this worker
       const workerTasks = persistedTasks.filter(t => t.owner === workerName);
+      const approvedContextSection = approvedHint
+        ? buildApprovedTeamHandoffSection(approvedHint, {
+          repoRoot: workerWorkspace?.repoRoot ?? null,
+        })
+        : undefined;
 
       const inbox = generateInitialInbox(workerName, sanitized, agentType, workerTasks, {
         teamStateRoot,
