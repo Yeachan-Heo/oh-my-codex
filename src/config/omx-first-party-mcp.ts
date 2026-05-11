@@ -48,6 +48,13 @@ const OMX_FIRST_PARTY_MCP_SPECS: readonly OmxFirstPartyMcpSpec[] = [
     pluginTarget: "wiki",
     startupTimeoutSec: 5,
   },
+  {
+    name: "omx_hermes",
+    title: "# OMX Hermes Coordination MCP Server (safe dispatch/status/artifacts)",
+    entrypoint: "hermes-server.js",
+    pluginTarget: "hermes",
+    startupTimeoutSec: 5,
+  },
 ] as const;
 
 export const OMX_FIRST_PARTY_MCP_SERVER_NAMES = OMX_FIRST_PARTY_MCP_SPECS.map(

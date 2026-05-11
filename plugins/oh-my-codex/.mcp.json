@@ -39,6 +39,14 @@
         "wiki"
       ],
       "enabled": false
+    },
+    "omx_hermes": {
+      "command": "omx",
+      "args": [
+        "mcp-serve",
+        "hermes"
+      ],
+      "enabled": false
     }
   }
 }

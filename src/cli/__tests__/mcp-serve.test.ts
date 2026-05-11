@@ -27,6 +27,9 @@ describe("mcp-serve command", () => {
 				"wiki-server.js": async () => {
 					loaded.push("wiki-server.js");
 				},
+				"hermes-server.js": async () => {
+					loaded.push("hermes-server.js");
+				},
 			},
 		});
 
@@ -60,6 +63,7 @@ describe("mcp-serve command", () => {
 				"code-intel-server.js": async () => {},
 				"trace-server.js": async () => {},
 				"wiki-server.js": async () => {},
+				"hermes-server.js": async () => {},
 			},
 		});
 		void commandPromise.then(
