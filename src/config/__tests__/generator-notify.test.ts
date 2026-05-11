@@ -520,7 +520,7 @@ describe('config generator', () => {
     try {
       const configPath = join(wd, 'config.toml');
       const windowsPkgRoot = 'C:\\Users\\alice\\oh-my-codex';
-      await mergeConfig(configPath, windowsPkgRoot);
+      await mergeConfig(configPath, windowsPkgRoot, { includeFirstPartyMcp: true });
       const toml = await readFile(configPath, 'utf-8');
 
       assert.match(

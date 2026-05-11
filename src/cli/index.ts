@@ -463,7 +463,7 @@ export function resolveSetupMcpModeArg(args: string[]): SetupMcpMode | undefined
     }
     value = next;
   };
-  const parseValue = (next: string, source: string): SetupMcpMode => {
+  const parseValue = (next: string, _source: string): SetupMcpMode => {
     if (!SETUP_MCP_MODES.includes(next as SetupMcpMode)) {
       throw new Error(
         `Invalid setup MCP mode: ${next}. Expected one of: none, compat`,
