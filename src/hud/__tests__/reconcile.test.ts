@@ -161,4 +161,50 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(resized[0]?.paneId, '%2');
     assert.equal(resized[0]?.heightLines, 3);
   });
+
+  it('registers client-resized hook after resizing an existing HUD pane', async () => {
+    const written: Array<{ path: string; lines: number }> = [];
+    const registered: string[] = [];
+
+    await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%1', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
+        { paneId: '%2', currentCommand: 'node', startCommand: 'node omx hud --watch' },
+      ],
+      resizeTmuxPane: () => true,
+      writeHudResizeScript: (path, lines) => { written.push({ path, lines }); },
+      registerHudResizeHook: (path) => { registered.push(path); return true; },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(written.length, 1);
+    assert.match(written[0]?.path ?? '', /\.omx[/\\]state[/\\]hud-resize\.sh$/);
+    assert.equal(written[0]?.lines, 3);
+    assert.equal(registered.length, 1);
+    assert.equal(registered[0], written[0]?.path);
+  });
+
+  it('registers client-resized hook after creating a new HUD pane', async () => {
+    const written: Array<{ path: string; lines: number }> = [];
+    const registered: string[] = [];
+
+    await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%1', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
+      ],
+      createHudWatchPane: () => '%9',
+      resizeTmuxPane: () => true,
+      writeHudResizeScript: (path, lines) => { written.push({ path, lines }); },
+      registerHudResizeHook: (path) => { registered.push(path); return true; },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(written.length, 1);
+    assert.match(written[0]?.path ?? '', /\.omx[/\\]state[/\\]hud-resize\.sh$/);
+    assert.equal(written[0]?.lines, 3);
+    assert.equal(registered.length, 1);
+    assert.equal(registered[0], written[0]?.path);
+  });
 });

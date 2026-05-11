@@ -1,4 +1,6 @@
 import { execFileSync } from 'child_process';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { HUD_TMUX_HEIGHT_LINES } from './constants.js';
 import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 
@@ -177,6 +179,28 @@ export function resizeTmuxPane(
     : HUD_TMUX_HEIGHT_LINES;
   try {
     execTmuxSync(['resize-pane', '-t', paneId, '-y', String(height)]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function buildHudResizeScript(heightLines: number): string {
+  const h = String(Math.max(1, Math.floor(heightLines)));
+  return `#!/bin/sh\ntmux list-panes -F "#{pane_id} #{pane_start_command}" 2>/dev/null | grep "hud.*--watch" | awk '{print $1}' | while read -r id; do tmux resize-pane -t "$id" -y ${h} 2>/dev/null; done\n`;
+}
+
+export function writeHudResizeScript(scriptPath: string, heightLines: number): void {
+  mkdirSync(dirname(scriptPath), { recursive: true });
+  writeFileSync(scriptPath, buildHudResizeScript(heightLines), { mode: 0o755 });
+}
+
+export function registerHudResizeHook(
+  scriptPath: string,
+  execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
+): boolean {
+  try {
+    execTmuxSync(['set-hook', '-g', 'client-resized[99]', `run-shell -b ${shellEscapeSingle(scriptPath)}`]);
     return true;
   } catch {
     return false;
