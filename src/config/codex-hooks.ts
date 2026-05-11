@@ -104,6 +104,7 @@ export interface ManagedCodexHookOptions {
   platform?: HookCommandPlatform;
   codexHomeDir?: string;
   nodePath?: string;
+  hookScriptPath?: string;
 }
 
 export function buildManagedCodexNativeHookWindowsShimPath(
@@ -114,9 +115,11 @@ export function buildManagedCodexNativeHookWindowsShimPath(
 
 export function buildManagedCodexNativeHookWindowsShimContent(
   pkgRoot: string,
-  options: Pick<ManagedCodexHookOptions, "nodePath"> = {},
+  options: Pick<ManagedCodexHookOptions, "hookScriptPath" | "nodePath"> = {},
 ): string {
-  const hookScript = win32.join(pkgRoot, "dist", "scripts", "codex-native-hook.js");
+  const hookScript =
+    options.hookScriptPath ??
+    win32.join(pkgRoot, "dist", "scripts", "codex-native-hook.js");
   const nodePath = options.nodePath ?? process.execPath;
 
   return [

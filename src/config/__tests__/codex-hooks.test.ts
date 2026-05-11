@@ -153,6 +153,7 @@ describe("codex hooks helpers", () => {
       await writeFile(
         shimPath,
         buildManagedCodexNativeHookWindowsShimContent(pkgRoot, {
+          hookScriptPath: hookPath,
           nodePath: process.execPath,
         }),
       );
