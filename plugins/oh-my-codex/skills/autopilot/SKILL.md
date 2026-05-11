@@ -75,7 +75,7 @@ Before Phase `ralplan` starts or resumes:
 </Execution_Policy>
 
 <State_Management>
-Use `omx_state` MCP tools (or `omx state ... --json` fallback if MCP transport is unavailable) for Autopilot lifecycle state. State must be session-aware when a session id exists.
+Use the CLI-first state surface (`omx state ... --json`) for Autopilot lifecycle state. State must be session-aware when a session id exists. If the explicit MCP compatibility surface is already available, equivalent `omx_state` tool calls remain acceptable but are not required.
 
 Required fields:
 
@@ -99,7 +99,7 @@ Required fields:
 }
 ```
 
-- **On start**: `state_write({mode:"autopilot", active:true, current_phase:"ralplan", iteration:1, review_cycle:0, state:{phase_cycle:["ralplan","ralph","code-review"], handoff_artifacts:{context_snapshot_path, ralplan:null, ralph:null, code_review:null}, review_verdict:null, return_to_ralplan_reason:null}})`
+- **On start**: `omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralplan","iteration":1,"review_cycle":0,"state":{"phase_cycle":["ralplan","ralph","code-review"],"handoff_artifacts":{"context_snapshot_path":"<snapshot-path>","ralplan":null,"ralph":null,"code_review":null},"review_verdict":null,"return_to_ralplan_reason":null}}' --json`
 - **On ralplan -> ralph**: set `current_phase:"ralph"`, persist the plan/test-spec paths under `handoff_artifacts.ralplan`.
 - **On ralph -> code-review**: set `current_phase:"code-review"`, persist implementation/test evidence under `handoff_artifacts.ralph`.
 - **On clean review**: set `active:false`, `current_phase:"complete"`, persist `review_verdict:{recommendation:"APPROVE", architectural_status:"CLEAR", clean:true}` and `completed_at`.

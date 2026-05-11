@@ -1,6 +1,7 @@
 import { existsSync } from "fs";
 import { readFile } from "fs/promises";
 import { join, resolve } from "path";
+import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 
 export const OMX_LOCAL_MARKETPLACE_NAME = "oh-my-codex-local";
 export const OMX_PLUGIN_NAME = "oh-my-codex";
@@ -132,6 +133,58 @@ function localPluginTableHeaderPattern(): RegExp {
 	);
 }
 
+function localPluginMcpServerTableHeaderPattern(serverName: string): RegExp {
+	return new RegExp(
+		`^\\s*\\[plugins\\.${JSON.stringify(OMX_LOCAL_PLUGIN_CONFIG_KEY).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.mcp_servers\\.${serverName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]\\s*$`,
+	);
+}
+
+function upsertTomlTableBooleanKey(
+	config: string,
+	header: string,
+	headerPattern: RegExp,
+	key: string,
+	value: boolean,
+	options: { create: boolean },
+): string {
+	const lines = config.split(/\r?\n/);
+	const start = lines.findIndex((line) => headerPattern.test(line));
+
+	if (start < 0) {
+		if (!options.create) return config;
+		const base = config.trimEnd();
+		return `${base ? `${base}\n\n` : ""}${header}\n${key} = ${value ? "true" : "false"}\n`;
+	}
+
+	let end = lines.length;
+	for (let index = start + 1; index < lines.length; index += 1) {
+		if (isTomlTableHeader(lines[index])) {
+			end = index;
+			break;
+		}
+	}
+
+	let keyIndex = -1;
+	for (let index = start + 1; index < end; index += 1) {
+		if (new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*=`).test(lines[index])) {
+			if (keyIndex < 0) {
+				keyIndex = index;
+				lines[index] = `${key} = ${value ? "true" : "false"}`;
+			} else {
+				lines.splice(index, 1);
+				index -= 1;
+				end -= 1;
+			}
+		}
+	}
+
+	if (keyIndex < 0) {
+		lines.splice(start + 1, 0, `${key} = ${value ? "true" : "false"}`);
+	}
+
+	return lines.join("\n").replace(/\n*$/, "\n");
+}
+
 export function upsertLocalOmxPluginEnablement(config: string): string {
 	const lines = config.split(/\r?\n/);
 	const headerPattern = localPluginTableHeaderPattern();
@@ -169,4 +222,19 @@ export function upsertLocalOmxPluginEnablement(config: string): string {
 	}
 
 	return lines.join("\n").replace(/\n*$/, "\n");
+}
+
+export function upsertLocalOmxPluginMcpServerEnablement(
+	config: string,
+	enabled: boolean,
+): string {
+	let next = config;
+	for (const serverName of OMX_FIRST_PARTY_MCP_SERVER_NAMES) {
+		const header = `[plugins.${JSON.stringify(OMX_LOCAL_PLUGIN_CONFIG_KEY)}.mcp_servers.${serverName}]`;
+		const headerPattern = localPluginMcpServerTableHeaderPattern(serverName);
+		next = upsertTomlTableBooleanKey(next, header, headerPattern, "enabled", enabled, {
+			create: true,
+		});
+	}
+	return next;
 }

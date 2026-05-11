@@ -31,6 +31,7 @@ import {
   injectModelInstructionsBypassArgs,
   resolveWorkerSparkModel,
   resolveSetupInstallModeArg,
+  resolveSetupMcpModeArg,
   resolveSetupScopeArg,
   readPersistedSetupPreferences,
   readPersistedSetupScope,
@@ -1574,6 +1575,37 @@ describe("resolveSetupInstallModeArg", () => {
     assert.throws(
       () => resolveSetupInstallModeArg(["--legacy", "--install-mode=plugin"]),
       /Conflicting setup install mode flags/,
+    );
+  });
+});
+
+
+describe("resolveSetupMcpModeArg", () => {
+  it("maps explicit setup MCP mode flags", () => {
+    assert.equal(resolveSetupMcpModeArg(["--dry-run"]), undefined);
+    assert.equal(resolveSetupMcpModeArg(["--no-mcp"]), "none");
+    assert.equal(resolveSetupMcpModeArg(["--with-mcp"]), "compat");
+    assert.equal(resolveSetupMcpModeArg(["--mcp", "none"]), "none");
+    assert.equal(resolveSetupMcpModeArg(["--mcp=compat"]), "compat");
+    assert.equal(resolveSetupMcpModeArg(["--scope", "project", "--mcp", "compat"]), "compat");
+  });
+
+  it("rejects invalid or conflicting setup MCP mode flags", () => {
+    assert.throws(
+      () => resolveSetupMcpModeArg(["--mcp"]),
+      /Missing setup MCP mode value after --mcp/,
+    );
+    assert.throws(
+      () => resolveSetupMcpModeArg(["--mcp", "full"]),
+      /Invalid setup MCP mode: full/,
+    );
+    assert.throws(
+      () => resolveSetupMcpModeArg(["--no-mcp", "--with-mcp"]),
+      /Conflicting setup MCP mode flags/,
+    );
+    assert.throws(
+      () => resolveSetupMcpModeArg(["--no-mcp", "--mcp=compat"]),
+      /Conflicting setup MCP mode flags/,
     );
   });
 });

@@ -114,7 +114,7 @@ From `omx doctor`, expect:
 - Skills installed (scope-dependent: user or project)
 - AGENTS.md found in project root
 - `.omx/state` exists
-- OMX MCP servers configured in scope target `config.toml` (`~/.codex/config.toml` or `./.codex/config.toml`)
+- CLI-first config present in the scope target `config.toml`; first-party OMX MCP servers and shared MCP registry sync are omitted by default unless setup was run with `--mcp compat`
 
 ## Troubleshooting
 

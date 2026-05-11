@@ -24,7 +24,10 @@ function count(text: string, pattern: RegExp): number {
 }
 
 /** Assert the current OMX block appears exactly once */
-function assertSingleOmxBlock(toml: string): void {
+function assertSingleOmxBlock(
+  toml: string,
+  options: { includeFirstPartyMcp?: boolean } = {},
+): void {
   assert.equal(
     count(toml, /# oh-my-codex \(OMX\) Configuration/g),
     1,
@@ -35,31 +38,17 @@ function assertSingleOmxBlock(toml: string): void {
     1,
     "End marker should appear once",
   );
-  assert.equal(
-    count(toml, /^\[mcp_servers\.omx_state\]$/gm),
-    1,
-    "[mcp_servers.omx_state] should appear once",
-  );
-  assert.equal(
-    count(toml, /^\[mcp_servers\.omx_memory\]$/gm),
-    1,
-    "[mcp_servers.omx_memory] should appear once",
-  );
-  assert.equal(
-    count(toml, /^\[mcp_servers\.omx_code_intel\]$/gm),
-    1,
-    "[mcp_servers.omx_code_intel] should appear once",
-  );
-  assert.equal(
-    count(toml, /^\[mcp_servers\.omx_trace\]$/gm),
-    1,
-    "[mcp_servers.omx_trace] should appear once",
-  );
-  assert.equal(
-    count(toml, /^\[mcp_servers\.omx_wiki\]$/gm),
-    1,
-    "[mcp_servers.omx_wiki] should appear once",
-  );
+  if (options.includeFirstPartyMcp) {
+    assertFirstPartyMcpBlocks(toml);
+  } else {
+    for (const name of OMX_FIRST_PARTY_MCP_SERVER_NAMES) {
+      assert.equal(
+        count(toml, new RegExp(`^\\[mcp_servers\\.${name}\\]$`, "gm")),
+        0,
+        `[mcp_servers.${name}] should not be emitted by default`,
+      );
+    }
+  }
   assert.equal(
     count(toml, /^\[mcp_servers\.omx_team_run\]$/gm),
     0,
@@ -113,10 +102,18 @@ function assertSingleOmxBlock(toml: string): void {
     "USE_OMX_EXPLORE_CMD should appear once",
   );
 
+}
+
+function assertFirstPartyMcpBlocks(toml: string): void {
   const parsed = TOML.parse(toml) as {
     mcp_servers?: Record<string, { command?: unknown }>;
   };
   for (const name of OMX_FIRST_PARTY_MCP_SERVER_NAMES) {
+    assert.equal(
+      count(toml, new RegExp(`^\\[mcp_servers\\.${name}\\]$`, "gm")),
+      1,
+      `[mcp_servers.${name}] should appear once when first-party MCP is enabled`,
+    );
     const command = parsed.mcp_servers?.[name]?.command;
     assert.equal(
       command,
@@ -253,6 +250,14 @@ describe("config generator idempotency (#384)", () => {
     }
   });
 
+  it("emits first-party MCP blocks only when explicitly enabled", () => {
+    const toml = buildMergedConfig("", "/tmp/omx", {
+      includeFirstPartyMcp: true,
+    });
+
+    assertSingleOmxBlock(toml, { includeFirstPartyMcp: true });
+  });
+
   it("second run updates without duplicating any section", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
@@ -376,6 +381,34 @@ describe("config generator idempotency (#384)", () => {
       assert.match(toml, /^model = "o3"$/m, "user model preserved");
       assert.match(toml, /^\[user\.settings\]$/m, "user section preserved");
       assert.match(toml, /^name = "kept"$/m, "user key preserved");
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves user-owned omx-prefixed MCP servers that are not first-party", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      const userMcp = [
+        "[mcp_servers.omx_custom]",
+        'command = "node"',
+        'args = ["/user/custom-server.js"]',
+        "enabled = true",
+        "",
+      ].join("\n");
+      await writeFile(configPath, userMcp);
+
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, "utf-8");
+
+      assertSingleOmxBlock(toml);
+      assert.match(
+        toml,
+        /^\[mcp_servers\.omx_custom\]$/m,
+        "user-owned omx-prefixed MCP server preserved",
+      );
+      assert.match(toml, /^args = \["\/user\/custom-server\.js"\]$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -613,7 +646,7 @@ describe("config generator idempotency (#384)", () => {
     });
 
     assert.doesNotMatch(toml, /^\[tui\]$/m);
-    assert.match(toml, /^\[mcp_servers\.omx_state\]$/m);
+    assert.doesNotMatch(toml, /^\[mcp_servers\.omx_state\]$/m);
     assert.match(toml, /^\[shell_environment_policy\.set\]$/m);
     assert.match(toml, /^USE_OMX_EXPLORE_CMD = "1"$/m);
   });

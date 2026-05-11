@@ -177,7 +177,7 @@ export function onPostCompact(data: { cwd?: string }): { additionalContext?: str
       additionalContext: [
         '[OMX Wiki PostCompact Nudge]',
         'Review the compaction artifacts and write durable findings to repository `omx_wiki/` when they would help future agents.',
-        'Use wiki_ingest or omx wiki add for decisions, architecture notes, debugging findings, environment facts, and session-log summaries worth committing.',
+        'Use `omx wiki wiki_ingest --input <json> --json` or `omx wiki wiki_add --input <json> --json` for decisions, architecture notes, debugging findings, environment facts, and session-log summaries worth committing.',
       ].join('\n'),
     };
   } catch {

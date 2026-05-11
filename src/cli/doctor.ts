@@ -54,9 +54,11 @@ import { readTriageConfig } from "../hooks/triage-config.js";
 import {
 	readPersistedSetupPreferences,
 	type SetupInstallMode,
+	type SetupMcpMode,
 } from "./setup-preferences.js";
 import {
 	OMX_LOCAL_MARKETPLACE_NAME,
+	OMX_LOCAL_PLUGIN_CONFIG_KEY,
 	resolvePackagedOmxMarketplace,
 } from "./plugin-marketplace.js";
 
@@ -79,6 +81,7 @@ interface DoctorScopeResolution {
 	scope: DoctorSetupScope;
 	source: "persisted" | "default";
 	installMode?: SetupInstallMode;
+	mcpMode?: SetupMcpMode;
 }
 
 interface DoctorPaths {
@@ -97,6 +100,7 @@ async function resolveDoctorScope(cwd: string): Promise<DoctorScopeResolution> {
 			scope: persisted.scope,
 			source: "persisted",
 			installMode: persisted.installMode,
+			mcpMode: persisted.mcpMode ?? "none",
 		};
 	}
 
@@ -148,6 +152,11 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	if (scopeResolution.installMode) {
 		console.log(
 			`Resolved setup install mode: ${scopeResolution.installMode}${scopeSourceMessage}`,
+		);
+	}
+	if (scopeResolution.mcpMode) {
+		console.log(
+			`Resolved setup MCP mode: ${scopeResolution.mcpMode}${scopeSourceMessage}`,
 		);
 	}
 	console.log();
@@ -220,7 +229,11 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
 	// Check 9: MCP servers configured
 	checks.push(
-		await checkMcpServers(paths.configPath, scopeResolution.installMode),
+		await checkMcpServers(
+			paths.configPath,
+			scopeResolution.installMode,
+			scopeResolution.mcpMode,
+		),
 	);
 
 	// Check 10: Prompt triage
@@ -1475,9 +1488,56 @@ function checkPromptTriage(): Check {
 	}
 }
 
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function pluginMcpServerEnabled(content: string, serverName: string): boolean | null {
+	const headerPattern = new RegExp(
+		`^\\s*\\[plugins\\.${escapeRegExp(JSON.stringify(OMX_LOCAL_PLUGIN_CONFIG_KEY))}\\.mcp_servers\\.${escapeRegExp(serverName)}\\]\\s*$`,
+	);
+	const lines = content.split(/\r?\n/);
+	const start = lines.findIndex((line) => headerPattern.test(line));
+	if (start < 0) return null;
+	for (let index = start + 1; index < lines.length; index += 1) {
+		const line = lines[index];
+		if (/^\s*\[/.test(line)) break;
+		const enabledMatch = line.match(/^\s*enabled\s*=\s*(true|false)\s*$/);
+		if (enabledMatch) return enabledMatch[1] === "true";
+	}
+	return null;
+}
+
+function describePluginMcpState(content: string, mcpMode?: SetupMcpMode): Check {
+	const states = OMX_FIRST_PARTY_MCP_SERVER_NAMES.map((serverName) =>
+		pluginMcpServerEnabled(content, serverName),
+	);
+	const enabledCount = states.filter((state) => state === true).length;
+	const disabledCount = states.filter((state) => state === false).length;
+	const missingCount = states.filter((state) => state === null).length;
+	const expectedEnabled = mcpMode === "compat";
+
+	if (missingCount === 0 && enabledCount === (expectedEnabled ? states.length : 0)) {
+		return {
+			name: "MCP Servers",
+			status: "pass",
+			message: expectedEnabled
+				? `plugin MCP compatibility enabled by setup MCP mode compat (${enabledCount}/${states.length} first-party servers enabled)`
+				: `CLI-first plugin mode: first-party MCP compatibility explicitly disabled (${disabledCount}/${states.length} first-party servers disabled)`,
+		};
+	}
+
+	return {
+		name: "MCP Servers",
+		status: "warn",
+		message: `plugin MCP compatibility overrides are incomplete or mixed (enabled=${enabledCount}, disabled=${disabledCount}, missing=${missingCount}); run "omx setup --plugin --force --mcp ${mcpMode ?? "none"}" to repair`,
+	};
+}
+
 async function checkMcpServers(
 	configPath: string,
 	installMode?: SetupInstallMode,
+	mcpMode?: SetupMcpMode,
 ): Promise<Check> {
 	if (!existsSync(configPath)) {
 		if (installMode === "plugin") {
@@ -1505,34 +1565,29 @@ async function checkMcpServers(
 			};
 		}
 		if (installMode === "plugin") {
-			return {
-				name: "MCP Servers",
-				status: "pass",
-				message:
-					"plugin mode uses plugin-scoped MCP metadata; setup-owned OMX MCP tables are intentionally omitted",
-			};
+			return describePluginMcpState(content, mcpMode);
 		}
 		if (mcpCount > 0) {
 			const hasOmx = OMX_FIRST_PARTY_MCP_SERVER_NAMES.some((name) =>
-				content.includes(name),
+				content.includes(`[mcp_servers.${name}]`),
 			);
 			if (hasOmx) {
 				return {
 					name: "MCP Servers",
 					status: "pass",
-					message: `${mcpCount} servers configured (OMX present)`,
+					message: `${mcpCount} servers configured; first-party OMX MCP compatibility is explicitly present`,
 				};
 			}
 			return {
 				name: "MCP Servers",
-				status: "warn",
-				message: `${mcpCount} servers but no OMX servers yet (expected before first setup; run "omx setup --force" once)`,
+				status: "pass",
+				message: `${mcpCount} user-managed MCP server(s) preserved; first-party OMX MCP omitted by default`,
 			};
 		}
 		return {
 			name: "MCP Servers",
-			status: "warn",
-			message: "no MCP servers configured",
+			status: "pass",
+			message: "CLI-first default: no first-party OMX MCP servers configured",
 		};
 	} catch {
 		return {

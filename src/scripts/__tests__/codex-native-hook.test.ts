@@ -1218,7 +1218,7 @@ describe("codex native hook dispatch", () => {
       assert.equal(result.omxEventName, "keyword-detector");
       assert.equal(result.skillState?.skill, "ralplan");
       assert.ok(result.outputJson, "UserPromptSubmit should emit developer context");
-      assert.match(JSON.stringify(result.outputJson), /skill: ralplan activated and initial state initialized at \.omx\/state\/sessions\/sess-1\/ralplan-state\.json; write subsequent updates via omx_state MCP\./);
+      assert.match(JSON.stringify(result.outputJson), /use CLI-first state updates via `omx state write\/read\/clear --input '<json>' --json`/);
 
       assert.equal(
         existsSync(join(cwd, ".omx", "state", "skill-active-state.json")),
@@ -1581,7 +1581,7 @@ describe("codex native hook dispatch", () => {
         (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
       );
       assert.match(message, /\$oh-my-codex:ralplan" -> ralplan/);
-      assert.match(message, /skill: ralplan activated and initial state initialized at \.omx\/state\/sessions\/sess-plugin-1\/ralplan-state\.json; write subsequent updates via omx_state MCP\./);
+      assert.match(message, /use CLI-first state updates via `omx state write\/read\/clear --input '<json>' --json`/);
       assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", "sess-plugin-1", "ralplan-state.json")), true);
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -1798,7 +1798,7 @@ describe("codex native hook dispatch", () => {
         (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
       );
       assert.match(message, /\$ralph" -> ralph/);
-      assert.match(message, /skill: ralph activated and initial state initialized at \.omx\/state\/sessions\/sess-ralph-msg\/ralph-state\.json; write subsequent updates via omx_state MCP\./);
+      assert.match(message, /use CLI-first state updates via `omx state write\/read\/clear --input '<json>' --json`/);
       assert.match(message, /Prompt-side `\$ralph` activation seeds Ralph workflow state only; it does not invoke `omx ralph`\./);
       assert.match(message, /Use `omx ralph --prd \.\.\.` only when you explicitly want the PRD-gated CLI startup path\./);
     } finally {
@@ -1828,7 +1828,7 @@ describe("codex native hook dispatch", () => {
         (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
       );
       assert.match(message, /\$oh-my-codex:ralph" -> ralph/);
-      assert.match(message, /skill: ralph activated and initial state initialized at \.omx\/state\/sessions\/sess-plugin-ralph-msg\/ralph-state\.json; write subsequent updates via omx_state MCP\./);
+      assert.match(message, /use CLI-first state updates via `omx state write\/read\/clear --input '<json>' --json`/);
       assert.match(message, /Prompt-side `\$ralph` activation seeds Ralph workflow state only; it does not invoke `omx ralph`\./);
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -1910,7 +1910,7 @@ describe("codex native hook dispatch", () => {
         (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
       );
       assert.match(message, /\$deep-interview" -> deep-interview/);
-      assert.match(message, /skill: deep-interview activated and initial state initialized at \.omx\/state\/sessions\/sess-deep-interview-msg\/deep-interview-state\.json; write subsequent updates via omx_state MCP\./);
+      assert.match(message, /use CLI-first state updates via `omx state write\/read\/clear --input '<json>' --json`/);
       assert.match(message, /Deep-interview is active, but this session is not attached to tmux/);
       assert.match(message, /Do not invoke `omx question`, `omx hud`, or `omx team`/);
       assert.match(message, /native structured question tool when available/);
@@ -2386,8 +2386,11 @@ export async function onHookEvent(event) {
 
       assert.match(JSON.stringify(denied.outputJson), /denied workflow keyword/i);
       assert.match(JSON.stringify(denied.outputJson), /Unsupported workflow overlap: team \+ autopilot\./);
-      assert.match(JSON.stringify(denied.outputJson), /`omx state clear --mode <mode>`/);
-      assert.match(JSON.stringify(denied.outputJson), /`omx_state\.\*` MCP tools/);
+      assert.match(JSON.stringify(denied.outputJson), /omx state clear --input/);
+      assert.match(JSON.stringify(denied.outputJson), /mode\\":\\"<mode>/);
+      assert.match(JSON.stringify(denied.outputJson), /--json/);
+      assert.match(JSON.stringify(denied.outputJson), /explicit MCP compatibility is enabled/);
+      assert.match(JSON.stringify(denied.outputJson), /`omx_state\.\*` tools/);
       assert.equal(
         existsSync(join(cwd, ".omx", "state", "sessions", "sess-deny-1", "autopilot-state.json")),
         false,
@@ -2464,7 +2467,7 @@ export async function onHookEvent(event) {
       assert.match(message, /\$ralph" -> ralph/);
       assert.doesNotMatch(message, /mode transiting:/);
       assert.match(message, /planning preserved over simultaneous execution follow-up; deferred skills: team, ralph\./);
-      assert.match(message, /skill: ralplan activated and initial state initialized at \.omx\/state\/sessions\/sess-multi-1\/ralplan-state\.json; write subsequent updates via omx_state MCP\./);
+      assert.match(message, /use CLI-first state updates via `omx state write\/read\/clear --input '<json>' --json`/);
       assert.doesNotMatch(message, /Use the durable OMX team runtime via `omx team \.\.\.`/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -2496,7 +2499,7 @@ export async function onHookEvent(event) {
       assert.match(message, /\$oh-my-codex:ralph" -> ralph/);
       assert.doesNotMatch(message, /mode transiting:/);
       assert.match(message, /planning preserved over simultaneous execution follow-up; deferred skills: team, ralph\./);
-      assert.match(message, /skill: ralplan activated and initial state initialized at \.omx\/state\/sessions\/sess-plugin-multi-1\/ralplan-state\.json; write subsequent updates via omx_state MCP\./);
+      assert.match(message, /use CLI-first state updates via `omx state write\/read\/clear --input '<json>' --json`/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -4606,7 +4609,7 @@ exit 0
       );
       assert.match(
         additionalContext,
-        /omx state state_write --input/,
+        /omx state write --input/,
       );
       assert.match(
         additionalContext,
@@ -4854,7 +4857,7 @@ exit 0
       assert.equal(hookSpecificOutput?.hookEventName, "PostToolUse");
       assert.match(
         String(hookSpecificOutput?.additionalContext || ""),
-        /Retry via CLI parity with `omx state state_write --input '\{\}' --json`\./,
+        /Retry via CLI parity with `omx state write --input '\{\}' --json`\./,
       );
       assert.match(
         String(hookSpecificOutput?.additionalContext || ""),
@@ -4940,7 +4943,7 @@ exit 0
         hookSpecificOutput: {
           hookEventName: "PostToolUse",
           additionalContext:
-            "Clear MCP transport-death signal detected. Preserve current team/runtime state. Retry via CLI parity with `omx state state_write --input '{\"mode\":\"team\",\"active\":true}' --json`. OMX MCP servers are plain Node stdio processes, so they still shut down when stdin/transport closes. If this happened during team runtime, inspect first with `omx team status <team>` or `omx team api read-stall-state --input '{\"team_name\":\"<team>\"}' --json`, and only force cleanup after capturing needed state. For root-cause debugging, rerun with `OMX_MCP_TRANSPORT_DEBUG=1` to log why the stdio transport closed.",
+            "Clear MCP transport-death signal detected. Preserve current team/runtime state. Retry via CLI parity with `omx state write --input '{\"mode\":\"team\",\"active\":true}' --json`. OMX MCP servers are plain Node stdio processes, so they still shut down when stdin/transport closes. If this happened during team runtime, inspect first with `omx team status <team>` or `omx team api read-stall-state --input '{\"team_name\":\"<team>\"}' --json`, and only force cleanup after capturing needed state. For root-cause debugging, rerun with `OMX_MCP_TRANSPORT_DEBUG=1` to log why the stdio transport closed.",
         },
       });
 

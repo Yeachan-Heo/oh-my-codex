@@ -93,19 +93,19 @@ Output progress each cycle:
 
 ## State Tracking
 
-Use `omx_state` MCP tools for UltraQA lifecycle state.
+Use the CLI-first state surface (`omx state ... --json`) for UltraQA lifecycle state. If explicit MCP compatibility tools are already available, equivalent `omx_state` calls are optional compatibility, not the default.
 
 - **On start**:
-  `state_write({mode: "ultraqa", active: true, current_phase: "qa", iteration: 1, started_at: "<now>"})`
+  `omx state write --input '{"mode":"ultraqa","active":true,"current_phase":"qa","iteration":1,"started_at":"<now>"}' --json`
 - **On each cycle**:
-  `state_write({mode: "ultraqa", current_phase: "qa", iteration: <cycle>})`
+  `omx state write --input '{"mode":"ultraqa","current_phase":"qa","iteration":<cycle>}' --json`
 - **On diagnose/fix transitions**:
-  `state_write({mode: "ultraqa", current_phase: "diagnose"})`
-  `state_write({mode: "ultraqa", current_phase: "fix"})`
+  `omx state write --input '{"mode":"ultraqa","current_phase":"diagnose"}' --json`
+  `omx state write --input '{"mode":"ultraqa","current_phase":"fix"}' --json`
 - **On completion**:
-  `state_write({mode: "ultraqa", active: false, current_phase: "complete", completed_at: "<now>"})`
+  `omx state write --input '{"mode":"ultraqa","active":false,"current_phase":"complete","completed_at":"<now>"}' --json`
 - **For resume detection**:
-  `state_read({mode: "ultraqa"})`
+  `omx state read --input '{"mode":"ultraqa"}' --json`
 
 ## Scenario Examples
 
@@ -131,9 +131,9 @@ User can cancel with `/cancel` which clears the state file.
 
 When goal is met OR max cycles reached OR exiting early, run `$cancel` or call:
 
-`state_clear({mode: "ultraqa"})`
+`omx state clear --input '{"mode":"ultraqa"}' --json`
 
-Use MCP state cleanup rather than deleting files directly.
+Use CLI state cleanup rather than deleting files directly.
 
 ---
 

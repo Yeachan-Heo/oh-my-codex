@@ -107,7 +107,7 @@ describe("omx doctor onboarding warning copy", () => {
 		assert.match(check.message, /OMX_EXPLORE_BIN/);
 	});
 
-	it("explains first-setup expectation for config and MCP onboarding warnings", async () => {
+	it("treats user-managed MCP servers as preserved under CLI-first defaults", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-copy-"));
 		try {
 			const home = join(wd, "home");
@@ -133,7 +133,7 @@ command = "node"
 			);
 			assert.match(
 				res.stdout,
-				/MCP Servers: 1 servers but no OMX servers yet \(expected before first setup; run "omx setup --force" once\)/,
+				/MCP Servers: 1 user-managed MCP server\(s\) preserved; first-party OMX MCP omitted by default/,
 			);
 		} finally {
 			await rm(wd, { recursive: true, force: true });
@@ -165,6 +165,7 @@ command = "node"
 			if (shouldSkipForSpawnPermissions(res.error)) return;
 			assert.equal(res.status, 0, res.stderr || res.stdout);
 			assert.match(res.stdout, /Resolved setup install mode: plugin/);
+			assert.match(res.stdout, /Resolved setup MCP mode: none/);
 			assert.match(
 				res.stdout,
 				/Prompts: plugin mode intentionally omits setup-owned prompts; Codex plugin discovery supplies workflow surfaces/,
@@ -175,7 +176,7 @@ command = "node"
 			);
 			assert.match(
 				res.stdout,
-				/MCP Servers: plugin mode uses plugin-scoped MCP metadata; setup-owned OMX MCP tables are intentionally omitted/,
+				/MCP Servers: CLI-first plugin mode: first-party MCP compatibility explicitly disabled/,
 			);
 			assert.doesNotMatch(res.stdout, /Prompts: prompts directory not found/);
 			assert.doesNotMatch(res.stdout, /Skills: skills directory not found/);
@@ -220,6 +221,10 @@ command = "node"
 			);
 			assert.match(
 				res.stdout,
+				/Resolved setup MCP mode: none \(from \.omx\/setup-scope\.json\)/,
+			);
+			assert.match(
+				res.stdout,
 				/Skills: plugin marketplace oh-my-codex-local registered; OMX skills are supplied by/,
 			);
 			assert.match(
@@ -228,7 +233,7 @@ command = "node"
 			);
 			assert.match(
 				res.stdout,
-				/MCP Servers: plugin mode uses plugin-scoped MCP metadata; setup-owned OMX MCP tables are intentionally omitted/,
+				/MCP Servers: CLI-first plugin mode: first-party MCP compatibility explicitly disabled/,
 			);
 			assert.doesNotMatch(res.stdout, /Prompts: prompts directory not found/);
 			assert.doesNotMatch(res.stdout, /Skills: skills directory not found/);
@@ -303,7 +308,7 @@ enabled = true
 			assert.doesNotMatch(res.stdout, /Config: config\.toml has OMX entries/);
 			assert.doesNotMatch(
 				res.stdout,
-				/MCP Servers: 1 servers but no OMX servers yet \(expected before first setup; run "omx setup --force" once\)/,
+				/MCP Servers: 1 user-managed MCP server\(s\) preserved; first-party OMX MCP omitted by default/,
 			);
 		} finally {
 			await rm(wd, { recursive: true, force: true });

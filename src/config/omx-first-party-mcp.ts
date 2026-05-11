@@ -93,7 +93,9 @@ export function getOmxFirstPartySetupMcpServers(
   }));
 }
 
-export function buildOmxPluginMcpManifest(): {
+export function buildOmxPluginMcpManifest(
+  options: { enabled?: boolean } = {},
+): {
   mcpServers: Record<
     string,
     {
@@ -110,7 +112,7 @@ export function buildOmxPluginMcpManifest(): {
         {
           command: OMX_PLUGIN_MCP_COMMAND,
           args: [OMX_PLUGIN_MCP_SERVE_SUBCOMMAND, spec.pluginTarget],
-          enabled: true,
+          enabled: options.enabled === true,
         },
       ]),
     ),

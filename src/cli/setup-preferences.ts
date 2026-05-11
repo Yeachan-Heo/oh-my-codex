@@ -8,9 +8,13 @@ export type SetupScope = (typeof SETUP_SCOPES)[number];
 export const SETUP_INSTALL_MODES = ["legacy", "plugin"] as const;
 export type SetupInstallMode = (typeof SETUP_INSTALL_MODES)[number];
 
+export const SETUP_MCP_MODES = ["none", "compat"] as const;
+export type SetupMcpMode = (typeof SETUP_MCP_MODES)[number];
+
 export interface PersistedSetupScope {
 	scope: SetupScope;
 	installMode?: SetupInstallMode;
+	mcpMode?: SetupMcpMode;
 }
 
 export type PartialPersistedSetupScope = Partial<PersistedSetupScope>;
@@ -27,6 +31,10 @@ export function isSetupInstallMode(value: string): value is SetupInstallMode {
 	return SETUP_INSTALL_MODES.includes(value as SetupInstallMode);
 }
 
+export function isSetupMcpMode(value: string): value is SetupMcpMode {
+	return SETUP_MCP_MODES.includes(value as SetupMcpMode);
+}
+
 export function getSetupScopeFilePath(projectRoot: string): string {
 	return join(projectRoot, ".omx", "setup-scope.json");
 }
@@ -38,6 +46,7 @@ function parsePersistedSetupPreferences(
 	const parsed = JSON.parse(raw) as Partial<{
 		scope: unknown;
 		installMode: unknown;
+		mcpMode: unknown;
 	}>;
 	const persisted: PartialPersistedSetupScope = {};
 
@@ -57,6 +66,10 @@ function parsePersistedSetupPreferences(
 		isSetupInstallMode(parsed.installMode)
 	) {
 		persisted.installMode = parsed.installMode;
+	}
+
+	if (typeof parsed.mcpMode === "string" && isSetupMcpMode(parsed.mcpMode)) {
+		persisted.mcpMode = parsed.mcpMode;
 	}
 
 	return Object.keys(persisted).length > 0 ? persisted : undefined;

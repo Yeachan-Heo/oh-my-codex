@@ -99,6 +99,6 @@ The tdd-guide agent SHOULD consult Codex for test strategy validation.
 - Small, isolated functionality
 
 ### Tool Usage
-If ToolSearch finds no MCP tools, fall back to the `test-engineer` agent.
+Prefer native `test-engineer` consultation or CLI-backed ask surfaces when available. Optional MCP compatibility ask tools may be used only when already enabled. If consultation tools are unavailable, fall back to the `test-engineer` agent.
 
 **Remember:** The discipline IS the value. Shortcuts destroy the benefit.

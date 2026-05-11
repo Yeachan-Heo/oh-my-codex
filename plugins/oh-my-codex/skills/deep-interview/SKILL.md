@@ -72,7 +72,7 @@ If no flag is provided, use **Standard**.
 - Do not hand off to execution while ambiguity remains above threshold unless user explicitly opts to proceed with warning
 - Do not crystallize or hand off while `Non-goals` or `Decision Boundaries` remain unresolved, even if the weighted ambiguity threshold is met
 - Treat early exit as a safety valve, not the default success path
-- Persist mode state for resume safety (`state_write` / `state_read`)
+- Persist mode state for resume safety with CLI-first state commands (`omx state write/read --input '<json>' --json`); use `state_write` / `state_read` only when explicit MCP compatibility is enabled
 </Execution_Policy>
 
 <Steps>
@@ -101,7 +101,7 @@ If no flag is provided, use **Standard**.
 2. Detect project context:
    - Run `explore` to classify **brownfield** (existing codebase target) vs **greenfield**.
    - For brownfield, collect relevant codebase context before questioning.
-3. Initialize state via `state_write(mode="deep-interview")`:
+3. Initialize state via `omx state write --input '{"mode":"deep-interview","active":true}' --json`:
 
 ```json
 {
@@ -286,7 +286,7 @@ Readiness gate:
 Show weighted breakdown table, readiness-gate status (`Non-goals`, `Decision Boundaries`), and the next focus dimension.
 
 ### 2e) Persist state
-Append round result and updated scores via `state_write`.
+Append round result and updated scores via `omx state write --input '<json>' --json`; use `state_write` only when explicit MCP compatibility is enabled.
 
 ### 2f) Round controls
 - Do not offer early exit before the first explicit assumption probe and one persistent follow-up have happened
@@ -428,7 +428,7 @@ Preserve `$ralph` for persistent single-owner execution/verification and `$team`
 - From attached-tmux Bash/tool paths, call it as `OMX_QUESTION_RETURN_PANE=$TMUX_PANE omx question ...` unless an explicit `%pane` return target is already known
 - If the current runtime is outside tmux and cannot render `omx question`, use native structured input when available; otherwise ask exactly one concise plain-text question and wait for the answer
 - After `omx question` returns JSON, prefer `answers[0].answer` / `answers[]`; use legacy `answer` only as a fallback for older records
-- Use `state_write` / `state_read` for resumable mode state
+- Use `omx state write/read --input '<json>' --json` for resumable mode state; `state_write` / `state_read` are explicit MCP compatibility fallbacks only
 - If the interview cannot ask a required `omx question` round, persist the blocker as terminal state with `active: false` and `current_phase: "blocked"`; do not write a terminal blocked phase with `active: true`
 - Read/write context snapshots under `.omx/context/`
 - Record whether the oversized-context summary gate is not needed, pending, or satisfied before any scoring or handoff step

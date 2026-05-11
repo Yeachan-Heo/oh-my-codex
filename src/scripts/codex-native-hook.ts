@@ -1386,6 +1386,10 @@ function buildNativeOutsideTmuxTeamPromptBlockState(
   };
 }
 
+function buildSkillStateCliInstruction(mode: string, statePath: string): string {
+  return `skill: ${mode} activated and initial state initialized at ${statePath}; use CLI-first state updates via \`omx state write/read/clear --input '<json>' --json\`; use omx_state MCP only when explicit MCP compatibility is enabled.`;
+}
+
 function buildAdditionalContextMessage(
   prompt: string,
   skillState?: SkillActiveState | null,
@@ -1447,7 +1451,7 @@ function buildAdditionalContextMessage(
       promptPriorityMessage,
       ultragoalPromptActivationNote,
       skillState.initialized_mode && skillState.initialized_state_path
-        ? `skill: ${skillState.initialized_mode} activated and initial state initialized at ${skillState.initialized_state_path}; write subsequent updates via omx_state MCP.`
+        ? buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path)
         : null,
       teamDetected
         ? buildTeamRuntimeInstruction(cwd, payload)
@@ -1459,7 +1463,7 @@ function buildAdditionalContextMessage(
 
   if (teamDetected) {
     const initializedStateMessage = skillState?.initialized_mode && skillState.initialized_state_path
-      ? `skill: ${skillState.initialized_mode} activated and initial state initialized at ${skillState.initialized_state_path}; write subsequent updates via omx_state MCP.`
+      ? buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path)
       : null;
     return [
       detectedKeywordMessage,
@@ -1486,7 +1490,7 @@ function buildAdditionalContextMessage(
         ? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
         : null,
       promptPriorityMessage,
-      `skill: ${skillState.initialized_mode} activated and initial state initialized at ${skillState.initialized_state_path}; write subsequent updates via omx_state MCP.`,
+      buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path),
       deepInterviewPromptActivationNote,
       ultraworkPromptActivationNote,
       ultragoalPromptActivationNote,

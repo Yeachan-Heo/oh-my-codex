@@ -11,31 +11,31 @@ Persistent, self-maintained markdown knowledge base for project and session know
 ## Operations
 
 ### Ingest
-```text
-wiki_ingest({ title: "Auth Architecture", content: "...", tags: ["auth", "architecture"], category: "architecture" })
+```bash
+omx wiki wiki_ingest --input '{"title":"Auth Architecture","content":"...","tags":["auth","architecture"],"category":"architecture"}' --json
 ```
 
 ### Query
-```text
-wiki_query({ query: "authentication", tags: ["auth"], category: "architecture" })
+```bash
+omx wiki wiki_query --input '{"query":"authentication","tags":["auth"],"category":"architecture"}' --json
 ```
 
 ### Lint
-```text
-wiki_lint()
+```bash
+omx wiki wiki_lint --json
 ```
 
 ### Quick Add
-```text
-wiki_add({ title: "Page Title", content: "...", tags: ["tag1"], category: "decision" })
+```bash
+omx wiki wiki_add --input '{"title":"Page Title","content":"...","tags":["tag1"],"category":"decision"}' --json
 ```
 
 ### List / Read / Delete
-```text
-wiki_list()
-wiki_read({ page: "auth-architecture" })
-wiki_delete({ page: "outdated-page" })
-wiki_refresh()
+```bash
+omx wiki wiki_list --json
+omx wiki wiki_read --input '{"page":"auth-architecture"}' --json
+omx wiki wiki_delete --input '{"page":"outdated-page"}' --json
+omx wiki wiki_refresh --json
 ```
 
 ## Categories

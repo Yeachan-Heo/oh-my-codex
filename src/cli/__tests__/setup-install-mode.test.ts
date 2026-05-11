@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { parse as parseToml } from "@iarna/toml";
 import { setup } from "../setup.js";
 import { uninstall } from "../uninstall.js";
+import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../../config/omx-first-party-mcp.js";
 
 const packageRoot = process.cwd();
 
@@ -261,7 +262,7 @@ async function assertProjectPluginModeArtifacts(wd: string): Promise<void> {
 	const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
 	assert.match(config, /^hooks = true$/m);
 	assert.match(config, /^goals = true$/m);
-	assert.doesNotMatch(config, /developer_instructions|notify-hook|mcp_servers/);
+	assert.doesNotMatch(config, /developer_instructions|notify-hook/g);
 	assert.equal(
 		existsSync(join(wd, ".codex", "skills", "ask", "SKILL.md")),
 		false,
@@ -276,6 +277,7 @@ async function assertProjectPluginModeArtifacts(wd: string): Promise<void> {
 	assert.deepEqual(persisted, {
 		scope: "project",
 		installMode: "plugin",
+		mcpMode: "none",
 	});
 }
 
@@ -390,7 +392,7 @@ describe("omx setup install mode behavior", () => {
 
 					assert.match(
 						output,
-						/Setup preference review: keep \(scope=user, installMode=legacy\)/,
+						/Setup preference review: keep \(scope=user, installMode=legacy, mcpMode=not recorded\)/,
 					);
 					assert.match(
 						output,
@@ -433,7 +435,11 @@ describe("omx setup install mode behavior", () => {
 					const persisted = JSON.parse(
 						await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
 					) as { scope: string; installMode?: string };
-					assert.deepEqual(persisted, { scope: "user", installMode: "plugin" });
+					assert.deepEqual(persisted, {
+						scope: "user",
+						installMode: "plugin",
+						mcpMode: "none",
+					});
 				});
 			});
 		} finally {
@@ -463,7 +469,7 @@ describe("omx setup install mode behavior", () => {
 					const persisted = JSON.parse(
 						await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
 					) as { scope: string; installMode?: string };
-					assert.deepEqual(persisted, { scope: "project" });
+					assert.deepEqual(persisted, { scope: "project", mcpMode: "none" });
 				});
 			});
 		} finally {
@@ -499,7 +505,11 @@ describe("omx setup install mode behavior", () => {
 					const persisted = JSON.parse(
 						await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
 					) as { scope: string; installMode?: string };
-					assert.deepEqual(persisted, { scope: "user", installMode: "plugin" });
+					assert.deepEqual(persisted, {
+						scope: "user",
+						installMode: "plugin",
+						mcpMode: "none",
+					});
 				});
 			});
 		} finally {
@@ -535,7 +545,11 @@ describe("omx setup install mode behavior", () => {
 					const persisted = JSON.parse(
 						await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
 					) as { scope: string; installMode?: string };
-					assert.deepEqual(persisted, { scope: "user", installMode: "plugin" });
+					assert.deepEqual(persisted, {
+						scope: "user",
+						installMode: "plugin",
+						mcpMode: "none",
+					});
 				});
 			});
 		} finally {
@@ -569,7 +583,11 @@ describe("omx setup install mode behavior", () => {
 					const persisted = JSON.parse(
 						await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
 					) as { scope: string; installMode?: string };
-					assert.deepEqual(persisted, { scope: "user", installMode: "legacy" });
+					assert.deepEqual(persisted, {
+						scope: "user",
+						installMode: "legacy",
+						mcpMode: "none",
+					});
 				});
 			});
 		} finally {
@@ -629,8 +647,46 @@ describe("omx setup install mode behavior", () => {
 
 			const persisted = JSON.parse(
 				await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
-			) as { scope: string; installMode?: string };
-			assert.deepEqual(persisted, { scope: "user", installMode: "plugin" });
+			) as { scope: string; installMode?: string; mcpMode?: string };
+			assert.deepEqual(persisted, {
+				scope: "user",
+				installMode: "plugin",
+				mcpMode: "none",
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("defaults setup to no first-party MCP blocks", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-mcp-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user", installMode: "legacy" });
+				});
+				const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
+				assert.doesNotMatch(config, /^\[mcp_servers\.omx_state\]$/m);
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("emits first-party MCP blocks when compat MCP mode is requested", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-mcp-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user", installMode: "legacy", mcpMode: "compat" });
+				});
+				const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
+				assert.match(config, /^\[mcp_servers\.omx_state\]$/m);
+				const persisted = JSON.parse(
+					await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
+				) as { mcpMode?: string };
+				assert.equal(persisted.mcpMode, "compat");
+			});
 		} finally {
 			await rm(wd, { recursive: true, force: true });
 		}
@@ -659,7 +715,11 @@ describe("omx setup install mode behavior", () => {
 					const persisted = JSON.parse(
 						await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
 					) as { scope: string; installMode?: string };
-					assert.deepEqual(persisted, { scope: "user", installMode: "plugin" });
+					assert.deepEqual(persisted, {
+						scope: "user",
+						installMode: "plugin",
+						mcpMode: "none",
+					});
 					assert.equal(
 						existsSync(join(codexHomeDir, "skills", "ask", "SKILL.md")),
 						false,
@@ -744,7 +804,7 @@ describe("omx setup install mode behavior", () => {
 			const persisted = JSON.parse(
 				await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
 			) as { scope: string; installMode?: string };
-			assert.deepEqual(persisted, { scope: "project" });
+			assert.deepEqual(persisted, { scope: "project", mcpMode: "none" });
 		} finally {
 			await rm(wd, { recursive: true, force: true });
 		}
@@ -762,7 +822,7 @@ describe("omx setup install mode behavior", () => {
 					const persisted = JSON.parse(
 						await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
 					) as { scope: string; installMode?: string };
-					assert.deepEqual(persisted, { scope: "project" });
+					assert.deepEqual(persisted, { scope: "project", mcpMode: "none" });
 					assert.equal(
 						existsSync(join(wd, ".codex", "skills", "ask", "SKILL.md")),
 						true,
@@ -773,7 +833,7 @@ describe("omx setup install mode behavior", () => {
 					const repeatedPersisted = JSON.parse(
 						await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
 					) as { scope: string; installMode?: string };
-					assert.deepEqual(repeatedPersisted, { scope: "project" });
+					assert.deepEqual(repeatedPersisted, { scope: "project", mcpMode: "none" });
 					assert.equal(
 						existsSync(join(wd, ".codex", "agents", "planner.toml")),
 						true,
@@ -801,7 +861,11 @@ describe("omx setup install mode behavior", () => {
 					const persisted = JSON.parse(
 						await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
 					) as { scope: string; installMode?: string };
-					assert.deepEqual(persisted, { scope: "user", installMode: "legacy" });
+					assert.deepEqual(persisted, {
+						scope: "user",
+						installMode: "legacy",
+						mcpMode: "none",
+					});
 					assert.equal(
 						existsSync(join(codexHomeDir, "skills", "ask", "SKILL.md")),
 						true,
@@ -953,6 +1017,55 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
+	it("enables plugin MCP subtables only when compat MCP mode is requested", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const configPath = join(codexHomeDir, "config.toml");
+
+					await setup({
+						scope: "user",
+						installMode: "plugin",
+						mcpMode: "compat",
+						force: true,
+					});
+					let parsed = parseToml(await readFile(configPath, "utf-8")) as {
+						plugins?: Record<
+							string,
+							{ mcp_servers?: Record<string, { enabled?: boolean }> }
+						>;
+					};
+					assert.equal(
+						parsed.plugins?.["oh-my-codex@oh-my-codex-local"]?.mcp_servers
+							?.omx_state?.enabled,
+						true,
+					);
+
+					await setup({
+						scope: "user",
+						installMode: "plugin",
+						mcpMode: "none",
+						force: true,
+					});
+					parsed = parseToml(await readFile(configPath, "utf-8")) as {
+						plugins?: Record<
+							string,
+							{ mcp_servers?: Record<string, { enabled?: boolean }> }
+						>;
+					};
+					assert.equal(
+						parsed.plugins?.["oh-my-codex@oh-my-codex-local"]?.mcp_servers
+							?.omx_state?.enabled,
+						false,
+					);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("reports plugin marketplace registration during dry-run without mutating config", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {
@@ -1022,7 +1135,7 @@ describe("omx setup install mode behavior", () => {
 					assert.match(config, /^trusted_hash = "sha256:[a-f0-9]{64}"$/m);
 					assert.doesNotMatch(
 						config,
-						/developer_instructions|notify-hook|mcp_servers/,
+						/developer_instructions|notify-hook/g,
 					);
 					assert.equal(
 						existsSync(join(codexHomeDir, "skills", "ask", "SKILL.md")),
@@ -1091,7 +1204,9 @@ describe("omx setup install mode behavior", () => {
 					assert.doesNotMatch(config, /Native subagents live in \.codex\/agents/);
 					assert.doesNotMatch(config, /Treat installed prompts as narrower execution surfaces/);
 					assert.match(config, /^hooks = true$/m);
-					assert.doesNotMatch(config, /notify-hook|mcp_servers/);
+					assert.doesNotMatch(config, /notify-hook/);
+					assert.doesNotMatch(config, /^\s*\[mcp_servers[.\]]/m);
+					assert.match(config, /mcp_servers\.omx_state]\nenabled = false/);
 
 					const agentsMd = await readFile(
 						join(codexHomeDir, "AGENTS.md"),
@@ -1284,6 +1399,7 @@ describe("omx setup install mode behavior", () => {
 				assert.deepEqual(persisted, {
 					scope: "project",
 					installMode: "plugin",
+					mcpMode: "none",
 				});
 
 				await setup({ scope: "project" });
@@ -1323,7 +1439,7 @@ describe("omx setup install mode behavior", () => {
 				const persisted = JSON.parse(
 					await readFile(join(wd, ".omx", "setup-scope.json"), "utf-8"),
 				) as { scope: string; installMode?: string };
-				assert.deepEqual(persisted, { scope: "project" });
+				assert.deepEqual(persisted, { scope: "project", mcpMode: "none" });
 				assert.equal(
 					existsSync(join(wd, ".codex", "skills", "ask", "SKILL.md")),
 					true,
@@ -1361,6 +1477,7 @@ describe("omx setup install mode behavior", () => {
 					assert.deepEqual(persisted, {
 						scope: "user",
 						installMode: "legacy",
+						mcpMode: "none",
 					});
 					assert.equal(
 						existsSync(join(codexHomeDir, "skills", "ask", "SKILL.md")),
@@ -1428,6 +1545,7 @@ describe("omx setup install mode behavior", () => {
 					assert.deepEqual(persisted, {
 						scope: "user",
 						installMode: "legacy",
+						mcpMode: "none",
 					});
 				});
 			});

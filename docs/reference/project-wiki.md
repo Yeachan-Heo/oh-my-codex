@@ -6,26 +6,23 @@ It is intentionally **not** a literal OMC port.
 ## Core shape
 
 - Keep the reusable wiki domain under `src/wiki/*`.
-- Expose wiki operations from a dedicated MCP server at `src/mcp/wiki-server.ts`.
-- Register the server as `omx_wiki`.
+- Expose wiki operations through the CLI-first JSON parity surface (`omx wiki <tool> --input <json> --json`). Keep `src/mcp/wiki-server.ts` as explicit compatibility implementation code.
+- Register the optional compatibility server as `omx_wiki` only when MCP compat mode is explicitly enabled.
 - Keep wiki storage under repository-root `omx_wiki/` so project knowledge can be committed and shared.
 - Do **not** add vector embeddings; query stays keyword/tag based.
 
 ## Config + generator contract
 
-`omx setup` / the config generator should own the dedicated wiki MCP block:
+`omx setup` / the config generator should keep wiki access CLI-first by default and emit the dedicated wiki MCP block only in explicit compat mode:
 
 ```toml
 [mcp_servers.omx_wiki]
 command = "<absolute Node executable used by omx setup>"
 args = ["<repo>/dist/mcp/wiki-server.js"]
-enabled = true
+enabled = true  # compat mode only
 ```
 
-The bootstrap/config path should treat `omx_wiki` as a first-party OMX server
-alongside the existing built-ins, while keeping the diff small and idempotent.
-Setup-managed first-party MCP blocks must use the stable absolute Node
-executable that ran `omx setup` rather than a PATH-dependent bare `node`.
+The bootstrap/config path should treat `omx_wiki` as a first-party OMX compatibility server alongside the existing built-ins, while keeping the diff small and idempotent. Setup-managed first-party MCP blocks must not appear in default CLI-first setup; when compat mode is explicit, they must use the stable absolute Node executable that ran `omx setup` rather than a PATH-dependent bare `node`.
 
 ## Storage contract
 
@@ -66,9 +63,9 @@ Wiki access should be explicit:
 
 This keeps the routing surface specific enough to avoid false positives from ordinary prose.
 
-## MCP tool surface
+## CLI-first tool surface
 
-The dedicated `omx_wiki` server should expose the eight stabilized wiki tools:
+The CLI-first `omx wiki <tool> --input <json> --json` surface should expose the eight stabilized wiki tools; the optional `omx_wiki` MCP compatibility server mirrors the same tools when explicitly enabled:
 
 - `wiki_ingest`
 - `wiki_query`
@@ -79,4 +76,4 @@ The dedicated `omx_wiki` server should expose the eight stabilized wiki tools:
 - `wiki_delete`
 - `wiki_refresh`
 
-These tools should write to `omx_wiki/`, may read legacy `.omx/wiki/` only as conservative compatibility fallback when `omx_wiki/` is absent, and keep lifecycle behavior bounded.
+These CLI operations should write to `omx_wiki/`, may read legacy `.omx/wiki/` only as conservative compatibility fallback when `omx_wiki/` is absent, and keep lifecycle behavior bounded.

@@ -191,14 +191,14 @@ export function buildWorkflowTransitionError(
       `Cannot ${action} ${requestedMode}: ${activeModesMessage}.`,
       'Execution-to-planning rollback auto-complete is not allowed.',
       'First clear current state first and retry if this action is intended.',
-      `Clear incompatible workflow state yourself via \`omx state clear --mode <mode>\` or the \`omx_state.*\` MCP tools, then retry.`,
+      `Clear incompatible workflow state yourself via \`omx state clear --input '{"mode":"<mode>"}' --json\`; if explicit MCP compatibility is enabled, \`omx_state.*\` tools are also acceptable.`,
     ].join(' ');
   }
   return [
     `Cannot ${action} ${requestedMode}: ${activeModesMessage}.`,
     `Unsupported workflow overlap: ${overlap}.`,
     'Current state is unchanged.',
-    `Clear incompatible workflow state yourself via \`omx state clear --mode <mode>\` or the \`omx_state.*\` MCP tools, then retry.`,
+    `Clear incompatible workflow state yourself via \`omx state clear --input '{"mode":"<mode>"}' --json\`; if explicit MCP compatibility is enabled, \`omx_state.*\` tools are also acceptable.`,
   ].join(' ');
 }
 
@@ -230,7 +230,7 @@ export async function readActiveWorkflowModes(
         break;
       } catch {
         throw new Error(
-          `Cannot read ${mode} workflow state at ${candidatePath}. Repair or clear that workflow state yourself via \`omx state clear --mode ${mode}\` or the \`omx_state.*\` MCP tools.`,
+          `Cannot read ${mode} workflow state at ${candidatePath}. Repair or clear that workflow state yourself via \`omx state clear --input '{"mode":"${mode}"}' --json\`; if explicit MCP compatibility is enabled, \`omx_state.*\` tools are also acceptable.`,
         );
       }
     }

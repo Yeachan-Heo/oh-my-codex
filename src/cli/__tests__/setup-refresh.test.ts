@@ -550,6 +550,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
 
       await runSetupInTempDir(wd, {
         scope: "project",
+        mcpMode: "compat",
         mcpRegistryCandidates: [registryPath],
       });
 
@@ -558,6 +559,65 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       assert.match(config, /^\[mcp_servers\.eslint\]$/m);
       assert.match(config, /^command = "npx"$/m);
       assert.match(config, /^startup_timeout_sec = 9$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("syncs shared MCP registry entries during plugin-mode compat setup", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+      const registryPath = join(wd, "mcp-registry.json");
+      await writeFile(
+        registryPath,
+        JSON.stringify({
+          eslint: { command: "npx", args: ["@eslint/mcp@latest"], timeout: 9 },
+        }),
+      );
+
+      await runSetupInTempDir(wd, {
+        scope: "project",
+        installMode: "plugin",
+        mcpMode: "compat",
+        mcpRegistryCandidates: [registryPath],
+      });
+
+      const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      assert.match(config, /oh-my-codex \(OMX\) Shared MCP Registry Sync/);
+      assert.match(config, /^\[mcp_servers\.eslint\]$/m);
+      assert.match(config, /^command = "npx"$/m);
+      assert.match(config, /^startup_timeout_sec = 9$/m);
+      assert.match(
+        config,
+        /^\[plugins\."oh-my-codex@oh-my-codex-local"\.mcp_servers\.omx_state\]$/m,
+      );
+      assert.match(config, /^enabled = true$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not sync shared MCP registry entries without compat MCP mode", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+      const registryPath = join(wd, "mcp-registry.json");
+      await writeFile(
+        registryPath,
+        JSON.stringify({
+          eslint: { command: "npx", args: ["@eslint/mcp@latest"], timeout: 9 },
+        }),
+      );
+
+      await runSetupInTempDir(wd, {
+        scope: "project",
+        mcpRegistryCandidates: [registryPath],
+      });
+
+      const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      assert.doesNotMatch(config, /oh-my-codex \(OMX\) Shared MCP Registry Sync/);
+      assert.doesNotMatch(config, /^\[mcp_servers\.eslint\]$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -659,10 +719,12 @@ describe("omx setup refresh summary and dry-run behavior", () => {
 
       await runSetupInTempDir(wd, {
         scope: "user",
+        mcpMode: "compat",
         mcpRegistryCandidates: [registryPath],
       });
       await runSetupInTempDir(wd, {
         scope: "user",
+        mcpMode: "compat",
         mcpRegistryCandidates: [registryPath],
       });
 
@@ -701,6 +763,44 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     }
   });
 
+  it("does not sync shared MCP registry entries into Claude settings without compat MCP mode", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    const previousHome = process.env.HOME;
+    const previousCodexHome = process.env.CODEX_HOME;
+    try {
+      process.env.HOME = wd;
+      delete process.env.CODEX_HOME;
+
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+      await mkdir(join(wd, ".claude"), { recursive: true });
+      const existingSettings = JSON.stringify({ uiTheme: "dark" }, null, 2) + "\n";
+      await writeFile(join(wd, ".claude", "settings.json"), existingSettings);
+      const registryPath = join(wd, "mcp-registry.json");
+      await writeFile(
+        registryPath,
+        JSON.stringify({
+          eslint: { command: "npx", args: ["@eslint/mcp@latest"] },
+        }),
+      );
+
+      await runSetupInTempDir(wd, {
+        scope: "user",
+        mcpRegistryCandidates: [registryPath],
+      });
+
+      assert.equal(
+        await readFile(join(wd, ".claude", "settings.json"), "utf-8"),
+        existingSettings,
+      );
+    } finally {
+      if (typeof previousHome === "string") process.env.HOME = previousHome;
+      else delete process.env.HOME;
+      if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
+      else delete process.env.CODEX_HOME;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("does not write ~/.claude/settings.json during project-scoped setup", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     const previousHome = process.env.HOME;
@@ -720,6 +820,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
 
       await runSetupInTempDir(wd, {
         scope: "project",
+        mcpMode: "compat",
         mcpRegistryCandidates: [registryPath],
       });
 
@@ -733,7 +834,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     }
   });
 
-  it("ignores legacy ~/.omc/mcp-registry.json during setup unless candidates are passed explicitly", async () => {
+  it("ignores legacy ~/.omc/mcp-registry.json during setup by default", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     const previousHome = process.env.HOME;
     const previousCodexHome = process.env.CODEX_HOME;
@@ -757,8 +858,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       assert.doesNotMatch(config, /Shared MCP Server: legacy_helper/);
 
       const output = await runSetupWithCapturedLogs(wd, { scope: "project" });
-      assert.match(output, /legacy shared MCP registry detected at .*\.omc\/mcp-registry\.json but ignored by default/i);
-      assert.match(output, /move it to .*\.omx\/mcp-registry\.json/i);
+      assert.doesNotMatch(output, /legacy shared MCP registry detected/i);
     } finally {
       if (typeof previousHome === "string") process.env.HOME = previousHome;
       else delete process.env.HOME;

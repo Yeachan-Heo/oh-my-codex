@@ -91,14 +91,13 @@ Complex tasks often fail silently: partial implementations get declared "done", 
 </Steps>
 
 <Tool_Usage>
-- Before first MCP tool use, call `ToolSearch("mcp")` to discover deferred MCP tools
 - Use `ask_codex` with `agent_role: "architect"` for verification cross-checks when changes are security-sensitive, architectural, or involve complex multi-system integration
 - Skip Codex consultation for simple feature additions, well-tested changes, or time-critical verification
-- If ToolSearch finds no MCP tools or Codex is unavailable, proceed with architect agent verification alone -- never block on external tools
-- Use `state_write` / `state_read` for ralph mode state persistence between iterations
+- If MCP compatibility tools are unavailable, proceed with CLI/agent verification alone -- never block on external tools
+- Use `omx state write/read --input '<json>' --json` for ralph mode state persistence between iterations
 - Use Codex goal tools when present: `get_goal` to discover or re-check the active objective, `create_goal` only when the user/system explicitly requested a new goal and no active goal exists, and `update_goal` only after the audited objective is fully achieved.
 - Persist context snapshot path in Ralph mode state so later phases and agents share the same grounding context
-- If an `omx_state` MCP tool call reports that its stdio transport is unavailable/closed, do **not** retry the same MCP call. Retry once through the supported CLI parity surface with the same payload, preserving `workingDirectory` and `session_id`: `omx state write --input '<json>' --json`, `omx state read --input '<json>' --json`, or `omx state clear --input '<json>' --json`. If the CLI path also fails, continue with `.omx/context` / `.omx/plans` file-backed artifacts and report the state persistence blocker.
+- Prefer CLI state commands. If an explicit MCP compatibility `omx_state` call reports that its stdio transport is unavailable/closed, do **not** retry the same MCP call. Retry once through the supported CLI parity surface with the same payload, preserving `workingDirectory` and `session_id`: `omx state write --input '<json>' --json`, `omx state read --input '<json>' --json`, or `omx state clear --input '<json>' --json`. If the CLI path also fails, continue with `.omx/context` / `.omx/plans` file-backed artifacts and report the state persistence blocker.
 </Tool_Usage>
 
 ## Goal Mode Integration
@@ -118,18 +117,18 @@ Codex goal mode is the thread-level completion contract for long-running Ralph w
 
 ## State Management
 
-Use the `omx_state` MCP server tools (`state_write`, `state_read`, `state_clear`) for Ralph lifecycle state.
+Use the CLI-first state surface for Ralph lifecycle state (`omx state write/read/clear --input '<json>' --json`). Explicit MCP compatibility tools (`state_write`, `state_read`, `state_clear`) remain acceptable only when already enabled.
 
 - **On start**:
-  `state_write({mode: "ralph", active: true, iteration: 1, max_iterations: 10, current_phase: "executing", started_at: "<now>", state: {context_snapshot_path: "<snapshot-path>"}})`
+  `omx state write --input '{"mode":"ralph","active":true,"iteration":1,"max_iterations":10,"current_phase":"executing","started_at":"<now>","state":{"context_snapshot_path":"<snapshot-path>"}}' --json`
 - **On each iteration**:
-  `state_write({mode: "ralph", iteration: <current>, current_phase: "executing"})`
+  `omx state write --input '{"mode":"ralph","iteration":<current>,"current_phase":"executing"}' --json`
 - **On verification/fix transition**:
-  `state_write({mode: "ralph", current_phase: "verifying"})` or `state_write({mode: "ralph", current_phase: "fixing"})`
+  `omx state write --input '{"mode":"ralph","current_phase":"verifying"}' --json` or `omx state write --input '{"mode":"ralph","current_phase":"fixing"}' --json`
 - **On completion**:
-  `state_write({mode: "ralph", active: false, current_phase: "complete", completed_at: "<now>"})`
+  `omx state write --input '{"mode":"ralph","active":false,"current_phase":"complete","completed_at":"<now>"}' --json`
 - **On cancellation/cleanup**:
-  run `$cancel` (which should call `state_clear(mode="ralph")`)
+  run `$cancel` (which should call `omx state clear --input '{"mode":"ralph"}' --json`)
 
 
 ## Scenario Examples

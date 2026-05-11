@@ -65,7 +65,7 @@ omx --madmax --high
 
 On a real `oh-my-codex` version bump, the global npm install now prints an explicit reminder instead of launching `omx setup` automatically. When you're ready, run `omx setup` manually or use `omx update` to check npm and then run the same setup refresh path.
 
-**Codex plugin install note:** this repo also ships an official Codex plugin layout at `plugins/oh-my-codex` with marketplace metadata in `.agents/plugins/marketplace.json`. That plugin bundles the mirrored skill surface plus plugin-scoped companion metadata for MCP servers and apps. Native/runtime hooks still stay on the setup/runtime side rather than the installable plugin manifest. It is still **not** a replacement for `npm install -g oh-my-codex` plus `omx setup`: legacy setup mode installs native agents and prompts, while plugin setup mode relies on plugin discovery for bundled skills and archives/removes legacy OMX-managed prompts/native-agent TOMLs so stale role files cannot shadow plugin behavior.
+**Codex plugin install note:** this repo also ships an official Codex plugin layout at `plugins/oh-my-codex` with marketplace metadata in `.agents/plugins/marketplace.json`. That plugin bundles the mirrored skill surface plus plugin-scoped companion metadata for optional MCP compatibility servers and apps, disabled by default. Native/runtime hooks still stay on the setup/runtime side rather than the installable plugin manifest. It is still **not** a replacement for `npm install -g oh-my-codex` plus `omx setup`: legacy setup mode installs native agents and prompts, while plugin setup mode relies on plugin discovery for bundled skills and archives/removes legacy OMX-managed prompts/native-agent TOMLs so stale role files cannot shadow plugin behavior.
 
 Then work normally inside Codex:
 
@@ -223,7 +223,7 @@ omx team shutdown <team-name>
 ### Setup, doctor, and HUD
 
 These are operator/support surfaces:
-- Codex plugin marketplace install/discovery can cache the plugin under `${CODEX_HOME:-~/.codex}/plugins/cache/$MARKETPLACE_NAME/oh-my-codex/$VERSION/` (local installs may use `local` as the version identifier); that packaged plugin now includes plugin-scoped companion metadata for MCP servers and apps, while native/runtime hooks remain setup-owned, so it is still not the full OMX runtime setup
+- Codex plugin marketplace install/discovery can cache the plugin under `${CODEX_HOME:-~/.codex}/plugins/cache/$MARKETPLACE_NAME/oh-my-codex/$VERSION/` (local installs may use `local` as the version identifier); that packaged plugin includes plugin-scoped companion metadata for optional MCP compatibility servers and apps (disabled by default), while native/runtime hooks remain setup-owned, so it is still not the full OMX runtime setup
 - `omx setup` installs prompts, skills, AGENTS scaffolding, `.codex/config.toml`, and OMX-managed native Codex hooks in `.codex/hooks.json`
   - setup refresh preserves non-OMX hook entries in `.codex/hooks.json` and only rewrites OMX-managed wrappers
   - `omx setup --merge-agents` preserves existing `AGENTS.md` guidance while inserting or refreshing generated OMX sections between `<!-- OMX:AGENTS:START -->` / `<!-- OMX:AGENTS:END -->`; without `--merge-agents` or `--force`, non-interactive setup keeps skipping existing `AGENTS.md` files
@@ -278,7 +278,7 @@ omx sparkshell --tmux-pane %12 --tail-lines 400
 
 ### Wiki
 
-- `omx wiki` is the CLI parity surface for the OMX wiki MCP server
+- `omx wiki` is the CLI-first JSON surface for wiki operations; `omx_wiki` MCP is explicit compatibility only
 - wiki data lives as repository project knowledge under `omx_wiki/`
 - the wiki is markdown-first and search-first, not vector-first
 

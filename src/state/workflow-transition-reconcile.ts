@@ -48,7 +48,7 @@ async function readJsonIfExists(
   } catch {
     if (options?.throwOnParseError && options.mode) {
       throw new Error(
-        `Cannot read ${options.mode} workflow state at ${path}. Repair or clear that workflow state yourself via \`omx state clear --mode ${options.mode}\` or the \`omx_state.*\` MCP tools.`,
+        `Cannot read ${options.mode} workflow state at ${path}. Repair or clear that workflow state yourself via \`omx state clear --input '{"mode":"${options.mode}"}' --json\`; if explicit MCP compatibility is enabled, \`omx_state.*\` tools are also acceptable.`,
       );
     }
     return null;

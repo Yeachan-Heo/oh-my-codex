@@ -39,6 +39,7 @@ import {
 	sanitizePreviousNotifyCommand,
 	stripExistingOmxBlocks,
 	stripExistingSharedMcpRegistryBlock,
+	mergeSharedMcpRegistryBlock,
 	stripOmxEnvSettings,
 	stripOmxFeatureFlags,
 	stripOmxSeededBehavioralDefaults,
@@ -78,11 +79,13 @@ import {
 import { DEFAULT_HUD_CONFIG, type HudPreset } from "../hud/types.js";
 import {
 	SETUP_INSTALL_MODES,
+	SETUP_MCP_MODES,
 	SETUP_SCOPES,
 	getSetupScopeFilePath,
 	readPersistedSetupPreferences,
 	type PersistedSetupScope,
 	type SetupInstallMode,
+	type SetupMcpMode,
 	type SetupScope,
 } from "./setup-preferences.js";
 import {
@@ -90,6 +93,7 @@ import {
 	resolvePackagedOmxMarketplace,
 	upsertLocalOmxMarketplaceRegistration,
 	upsertLocalOmxPluginEnablement,
+	upsertLocalOmxPluginMcpServerEnablement,
 } from "./plugin-marketplace.js";
 import { resolveCodexHookFeatureFlagForCli } from "./codex-feature-probe.js";
 
@@ -127,6 +131,7 @@ interface SetupOptions {
 	mergeAgents?: boolean;
 	dryRun?: boolean;
 	installMode?: SetupInstallMode;
+	mcpMode?: SetupMcpMode;
 	scope?: SetupScope;
 	verbose?: boolean;
 	agentsOverwritePrompt?: (destinationPath: string) => Promise<boolean>;
@@ -149,8 +154,8 @@ interface SetupOptions {
 	mcpRegistryCandidates?: string[];
 }
 
-export { SETUP_INSTALL_MODES, SETUP_SCOPES };
-export type { SetupInstallMode, SetupScope };
+export { SETUP_INSTALL_MODES, SETUP_MCP_MODES, SETUP_SCOPES };
+export type { SetupInstallMode, SetupMcpMode, SetupScope };
 
 export interface ScopeDirectories {
 	codexConfigFile: string;
@@ -211,6 +216,7 @@ const PROJECT_GITIGNORE_ENTRIES = [
 ] as const;
 const LEGACY_PROJECT_GITIGNORE_ENTRIES = [".codex/"] as const;
 const SETUP_ONLY_INSTALLABLE_SKILLS = new Set(["wiki"]);
+const DEFAULT_SETUP_MCP_MODE: SetupMcpMode = "none";
 const HARD_DEPRECATED_SKILL_NAMES = new Set(["web-clone"]);
 
 function isCatalogInstallableStatus(status: string | undefined): boolean {
@@ -263,6 +269,11 @@ interface ResolvedSetupScope {
 interface ResolvedSetupInstallMode {
 	installMode: SetupInstallMode;
 	source: "cli" | "persisted" | "prompt" | "default";
+}
+
+interface ResolvedSetupMcpMode {
+	mcpMode: SetupMcpMode;
+	source: "cli" | "persisted" | "default";
 }
 
 type PersistedSetupReviewDecision = "keep" | "review" | "reset";
@@ -631,6 +642,7 @@ function formatPersistedSetupPreferenceSummary(
 	return [
 		`scope=${preferences.scope ?? "not recorded"}`,
 		`installMode=${preferences.installMode ?? "not recorded"}`,
+		`mcpMode=${preferences.mcpMode ?? "not recorded"}`,
 	].join(", ");
 }
 
@@ -993,6 +1005,26 @@ async function refreshOmxPluginDiscoveryCache(
 		status: staleDirs.length > 0 ? "refreshed" : "unchanged",
 		staleDirs,
 	};
+}
+
+
+function resolveSetupMcpMode(
+	scope: SetupScope,
+	requestedMcpMode: SetupMcpMode | undefined,
+	persistedReviewDecision: PersistedSetupReviewDecision,
+	persistedPreferences?: Partial<PersistedSetupScope>,
+): ResolvedSetupMcpMode {
+	if (requestedMcpMode) {
+		return { mcpMode: requestedMcpMode, source: "cli" };
+	}
+	if (
+		persistedPreferences?.mcpMode &&
+		persistedReviewDecision === "keep" &&
+		persistedPreferences.scope === scope
+	) {
+		return { mcpMode: persistedPreferences.mcpMode, source: "persisted" };
+	}
+	return { mcpMode: DEFAULT_SETUP_MCP_MODE, source: "default" };
 }
 
 async function resolveSetupInstallMode(
@@ -1364,6 +1396,7 @@ function insertRootTomlKey(config: string, line: string): string {
 async function ensurePluginMarketplaceRegistration(
 	configPath: string,
 	pkgRoot: string,
+	mcpMode: SetupMcpMode,
 	backupContext: SetupBackupContext,
 	summary: SetupCategorySummary,
 	options: Pick<SetupOptions, "dryRun" | "verbose">,
@@ -1378,7 +1411,10 @@ async function ensurePluginMarketplaceRegistration(
 		? await readFile(configPath, "utf-8")
 		: "";
 	const nextConfig = upsertLocalOmxMarketplaceRegistration(
-		upsertLocalOmxPluginEnablement(existingConfig),
+		upsertLocalOmxPluginMcpServerEnablement(
+			upsertLocalOmxPluginEnablement(existingConfig),
+			mcpMode === "compat",
+		),
 		pkgRoot,
 	);
 	const destinationExists = existsSync(configPath);
@@ -1593,6 +1629,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		force = false,
 		dryRun = false,
 		installMode: requestedInstallMode,
+		mcpMode: requestedMcpMode,
 		scope: requestedScope,
 		verbose = false,
 		setupScopePrompt,
@@ -1619,9 +1656,14 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		Boolean(persistedPreferences?.installMode) &&
 		(!persistedPreferences?.scope ||
 			persistedPreferences.scope === effectiveScopeForInstallMode);
+	const wouldUsePersistedMcpMode =
+		!requestedMcpMode &&
+		Boolean(persistedPreferences?.mcpMode) &&
+		(!persistedPreferences?.scope ||
+			persistedPreferences.scope === effectiveScopeForInstallMode);
 	const shouldReviewPersistedSetup =
 		hasPersistedSetupPreferences(persistedPreferences) &&
-		(wouldUsePersistedScope || wouldUsePersistedInstallMode) &&
+		(wouldUsePersistedScope || wouldUsePersistedInstallMode || wouldUsePersistedMcpMode) &&
 		(typeof persistedSetupReviewPrompt === "function" ||
 			(process.stdin.isTTY && process.stdout.isTTY));
 	if (shouldReviewPersistedSetup) {
@@ -1644,6 +1686,12 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		resolvedScope.scope,
 		requestedInstallMode,
 		installModePrompt,
+		persistedReviewDecision,
+		persistedPreferences,
+	);
+	const resolvedMcpMode = resolveSetupMcpMode(
+		resolvedScope.scope,
+		requestedMcpMode,
 		persistedReviewDecision,
 		persistedPreferences,
 	);
@@ -1683,6 +1731,13 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			`Using setup install mode: ${resolvedInstallMode.installMode}${installModeSourceMessage}\n`,
 		);
 	}
+	const mcpModeSourceMessage =
+		resolvedMcpMode.source === "persisted"
+			? " (from .omx/setup-scope.json)"
+			: "";
+	console.log(
+		`Using setup MCP mode: ${resolvedMcpMode.mcpMode}${mcpModeSourceMessage}\n`,
+	);
 
 	// Step 1: Ensure directories exist
 	console.log("[1/8] Creating directories...");
@@ -1708,17 +1763,15 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		}
 		if (verbose) console.log(`  mkdir ${dir}`);
 	}
-	const setupPreferencesToPersist: PersistedSetupScope =
-		resolvedInstallMode &&
+	const setupPreferencesToPersist: PersistedSetupScope = {
+		scope: resolvedScope.scope,
+		mcpMode: resolvedMcpMode.mcpMode,
+		...(resolvedInstallMode &&
 		(resolvedScope.scope === "user" ||
 			resolvedInstallMode.installMode === "plugin")
-			? {
-					scope: resolvedScope.scope,
-					installMode: resolvedInstallMode.installMode,
-				}
-			: {
-					scope: resolvedScope.scope,
-				};
+			? { installMode: resolvedInstallMode.installMode }
+			: {}),
+	};
 	await persistSetupPreferences(projectRoot, setupPreferencesToPersist, {
 		dryRun,
 		verbose,
@@ -1891,6 +1944,34 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			`  Native Codex hook feature flag: [features].${codexHookFeatureFlag}`,
 		);
 	}
+	const shouldSyncSharedMcpRegistry = resolvedMcpMode.mcpMode === "compat";
+	const registryCandidates = getUnifiedMcpRegistryCandidates();
+	const defaultRegistryCandidates = registryCandidates.slice(0, 1);
+	const sharedMcpRegistry: UnifiedMcpRegistryLoadResult = shouldSyncSharedMcpRegistry
+		? await loadUnifiedMcpRegistry({
+				candidates: options.mcpRegistryCandidates ?? defaultRegistryCandidates,
+			})
+		: { servers: [], warnings: [] };
+	const legacyRegistryCandidate = getLegacyUnifiedMcpRegistryCandidate();
+	if (
+		shouldSyncSharedMcpRegistry &&
+		!options.mcpRegistryCandidates &&
+		!sharedMcpRegistry.sourcePath &&
+		existsSync(legacyRegistryCandidate) &&
+		!existsSync(defaultRegistryCandidates[0])
+	) {
+		console.log(
+			`  warning: legacy shared MCP registry detected at ${legacyRegistryCandidate} but ignored by default; move or copy it to ${defaultRegistryCandidates[0]} and rerun setup with --mcp compat if you still want setup to sync those servers`,
+		);
+	}
+	if (verbose && sharedMcpRegistry.sourcePath) {
+		console.log(
+			`  shared MCP registry: ${sharedMcpRegistry.sourcePath} (${sharedMcpRegistry.servers.length} servers)`,
+		);
+	}
+	for (const warning of sharedMcpRegistry.warnings) {
+		console.log(`  warning: ${warning}`);
+	}
 	if (isPluginInstallMode) {
 		const configCleaned = await cleanupPluginModeLegacyConfig(
 			scopeDirs.codexConfigFile,
@@ -1915,6 +1996,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		const pluginMarketplaceResult = await ensurePluginMarketplaceRegistration(
 			scopeDirs.codexConfigFile,
 			pkgRoot,
+			resolvedMcpMode.mcpMode,
 			backupContext,
 			summary.config,
 			{ dryRun, verbose },
@@ -1942,6 +2024,23 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			);
 		} else if (pluginCacheRefresh.status === "unchanged") {
 			console.log("  Codex plugin discovery cache already matches packaged plugin metadata.");
+		}
+		if (shouldSyncSharedMcpRegistry) {
+			resolvedConfig = await syncSharedMcpRegistryIntoConfig(
+				scopeDirs.codexConfigFile,
+				sharedMcpRegistry,
+				summary.config,
+				backupContext,
+				{ dryRun, verbose },
+			);
+			if (resolvedScope.scope === "user") {
+				await syncClaudeCodeMcpSettings(
+					sharedMcpRegistry,
+					summary.config,
+					backupContext,
+					{ dryRun, verbose },
+				);
+			}
 		}
 			resolvedConfig = existsSync(scopeDirs.codexConfigFile)
 				? await readFile(scopeDirs.codexConfigFile, "utf-8")
@@ -1980,30 +2079,6 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			);
 		}
 	} else {
-		const registryCandidates = getUnifiedMcpRegistryCandidates();
-		const defaultRegistryCandidates = registryCandidates.slice(0, 1);
-		const legacyRegistryCandidate = getLegacyUnifiedMcpRegistryCandidate();
-		const sharedMcpRegistry = await loadUnifiedMcpRegistry({
-			candidates: options.mcpRegistryCandidates ?? defaultRegistryCandidates,
-		});
-		if (
-			!options.mcpRegistryCandidates &&
-			!sharedMcpRegistry.sourcePath &&
-			existsSync(legacyRegistryCandidate) &&
-			!existsSync(defaultRegistryCandidates[0])
-		) {
-			console.log(
-				`  warning: legacy shared MCP registry detected at ${legacyRegistryCandidate} but ignored by default; move it to ${defaultRegistryCandidates[0]} if you still want setup to sync those servers`,
-			);
-		}
-		if (verbose && sharedMcpRegistry.sourcePath) {
-			console.log(
-				`  shared MCP registry: ${sharedMcpRegistry.sourcePath} (${sharedMcpRegistry.servers.length} servers)`,
-			);
-		}
-		for (const warning of sharedMcpRegistry.warnings) {
-			console.log(`  warning: ${warning}`);
-		}
 		const statusLinePreset = await resolveStatusLinePresetForSetup(
 			projectRoot,
 			{ force },
@@ -2013,6 +2088,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			scopeDirs.codexHooksFile,
 			pkgRoot,
 			sharedMcpRegistry,
+			resolvedMcpMode.mcpMode,
 			resolvedScope.scope,
 			scopeDirs.codexHomeDir,
 			summary.config,
@@ -2033,7 +2109,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				"  Removed retired [mcp_servers.omx_team_run] config during refresh.",
 			);
 		}
-		if (resolvedScope.scope === "user") {
+		if (shouldSyncSharedMcpRegistry && resolvedScope.scope === "user") {
 			await syncClaudeCodeMcpSettings(
 				sharedMcpRegistry,
 				summary.config,
@@ -3179,6 +3255,7 @@ async function updateManagedConfig(
 	hooksPath: string,
 	pkgRoot: string,
 	sharedMcpRegistry: UnifiedMcpRegistryLoadResult,
+	mcpMode: SetupMcpMode,
 	scope: SetupScope,
 	codexHomeDir: string,
 	summary: SetupCategorySummary,
@@ -3228,6 +3305,7 @@ async function updateManagedConfig(
 		statusLinePreset: options.statusLinePreset,
 		forceStatusLinePreset: options.forceStatusLinePreset,
 		notifyCommand: notifyPlan.notifyCommand,
+		includeFirstPartyMcp: mcpMode === "compat",
 	});
 	const changed = existing !== finalConfig;
 
@@ -3285,6 +3363,51 @@ async function updateManagedConfig(
 		repairedLegacyTeamRunTable:
 			hadLegacyTeamRunTable && !hasLegacyOmxTeamRunTable(finalConfig),
 	};
+}
+
+async function syncSharedMcpRegistryIntoConfig(
+	configPath: string,
+	sharedMcpRegistry: UnifiedMcpRegistryLoadResult,
+	summary: SetupCategorySummary,
+	backupContext: SetupBackupContext,
+	options: Pick<SetupOptions, "dryRun" | "verbose">,
+): Promise<string> {
+	if (sharedMcpRegistry.servers.length === 0) {
+		return existsSync(configPath) ? await readFile(configPath, "utf-8") : "";
+	}
+
+	const existing = existsSync(configPath)
+		? await readFile(configPath, "utf-8")
+		: "";
+	const finalConfig = mergeSharedMcpRegistryBlock(
+		existing,
+		sharedMcpRegistry.servers,
+		sharedMcpRegistry.sourcePath,
+	);
+	if (existing === finalConfig) {
+		summary.unchanged += 1;
+		return finalConfig;
+	}
+	if (
+		await ensureBackup(
+			configPath,
+			existsSync(configPath),
+			backupContext,
+			options,
+		)
+	) {
+		summary.backedUp += 1;
+	}
+	if (!options.dryRun) {
+		await writeFile(configPath, finalConfig);
+	}
+	summary.updated += 1;
+	if (options.verbose) {
+		console.log(
+			`  ${options.dryRun ? "would sync" : "synced"} shared MCP registry servers into ${configPath}`,
+		);
+	}
+	return finalConfig;
 }
 
 function getClaudeCodeSettingsPath(homeDir = homedir()): string {

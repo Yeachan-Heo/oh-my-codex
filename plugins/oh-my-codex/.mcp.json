@@ -6,7 +6,7 @@
         "mcp-serve",
         "state"
       ],
-      "enabled": true
+      "enabled": false
     },
     "omx_memory": {
       "command": "omx",
@@ -14,7 +14,7 @@
         "mcp-serve",
         "memory"
       ],
-      "enabled": true
+      "enabled": false
     },
     "omx_code_intel": {
       "command": "omx",
@@ -22,7 +22,7 @@
         "mcp-serve",
         "code-intel"
       ],
-      "enabled": true
+      "enabled": false
     },
     "omx_trace": {
       "command": "omx",
@@ -30,7 +30,7 @@
         "mcp-serve",
         "trace"
       ],
-      "enabled": true
+      "enabled": false
     },
     "omx_wiki": {
       "command": "omx",
@@ -38,7 +38,7 @@
         "mcp-serve",
         "wiki"
       ],
-      "enabled": true
+      "enabled": false
     }
   }
 }

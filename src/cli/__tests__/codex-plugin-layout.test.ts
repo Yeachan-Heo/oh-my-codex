@@ -159,7 +159,7 @@ describe('official Codex plugin layout', () => {
     assert.ok(manifest.interface?.developerName, 'expected developerName');
   });
 
-  it('ships plugin-scoped companion metadata for MCP servers and apps while hooks stay setup-owned', async () => {
+  it('ships disabled-by-default plugin-scoped MCP compatibility metadata while hooks stay setup-owned', async () => {
     const [mcpManifest, appsManifest] = await Promise.all([
       readJson<PluginMcpManifest>(pluginMcpPath),
       readJson<PluginAppsManifest>(pluginAppsPath),
@@ -176,7 +176,7 @@ describe('official Codex plugin layout', () => {
     for (const [serverName, server] of Object.entries(mcpManifest.mcpServers ?? {})) {
       assert.equal(server.command, OMX_PLUGIN_MCP_COMMAND, `${serverName} should run via omx`);
       assert.notEqual(server.command, 'node', `${serverName} should not depend on a bare node command`);
-      assert.equal(server.enabled, true, `${serverName} should be enabled`);
+      assert.equal(server.enabled, false, `${serverName} should be disabled by default`);
       assert.equal(server.args?.length, 2, `${serverName} should have serve subcommand + public target args`);
       assert.equal(server.args?.[0], OMX_PLUGIN_MCP_SERVE_SUBCOMMAND, `${serverName} should launch through omx mcp-serve`);
       const target = server.args?.[1];
@@ -187,9 +187,15 @@ describe('official Codex plugin layout', () => {
     }
   });
 
-  it('keeps plugin MCP metadata aligned with the setup-managed MCP roster', async () => {
+  it('keeps plugin MCP metadata aligned with the explicit compat setup-managed MCP roster', async () => {
     const mcpManifest = await readJson<PluginMcpManifest>(pluginMcpPath);
-    const mergedConfig = buildMergedConfig('', root, { includeTui: false });
+    const defaultConfig = buildMergedConfig('', root, { includeTui: false });
+    assert.doesNotMatch(
+      defaultConfig,
+      /^\[mcp_servers\.omx_state\]$/m,
+      'default setup config should stay CLI-first without first-party MCP tables',
+    );
+    const mergedConfig = buildMergedConfig('', root, { includeTui: false, includeFirstPartyMcp: true });
     const setupManagedServers = [...mergedConfig.matchAll(/^\[mcp_servers\.(omx_[^\]]+)\]$/gm)]
       .map((match) => match[1])
       .sort();
@@ -309,7 +315,7 @@ describe('official Codex plugin layout', () => {
     assert.match(combined, /plugins\/cache\/\$MARKETPLACE_NAME\/oh-my-codex\/\$VERSION\//);
     assert.match(combined, /not a replacement for `npm install -g oh-my-codex` plus `omx setup`/);
     assert.match(combined, /legacy setup mode installs native agents(?:\/| and )prompts|plugin setup mode archives stale legacy prompt\/native-agent files/);
-    assert.match(combined, /plugin-scoped companion metadata for MCP servers and apps/i);
+    assert.match(combined, /plugin-scoped companion metadata for optional MCP compatibility servers and apps/i);
     assert.match(combined, /hooks stay setup-owned|hooks remain setup-owned|native \.codex\/hooks\.json coverage/i);
   });
 });

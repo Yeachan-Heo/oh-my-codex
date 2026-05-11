@@ -185,7 +185,10 @@ function resolveOmxParityTarget(toolName: string): { command: OmxParityCommand; 
   if (!match) return null;
 
   const [, server, tool] = match;
-  if (server === "state") return { command: "state", tool };
+  if (server === "state") {
+    const stateTool = tool.replace(/^state_/, "").replace(/_/g, "-");
+    return { command: "state", tool: stateTool };
+  }
   if (server === "trace") return { command: "trace", tool };
   if (server === "code_intel") return { command: "code-intel", tool };
   if (server === "memory" && tool.startsWith("notepad_")) {

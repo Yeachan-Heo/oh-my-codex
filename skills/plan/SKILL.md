@@ -143,7 +143,7 @@ Plans are saved to `.omx/plans/`. Drafts go to `.omx/drafts/`.
 - Use `ask_codex` with `agent_role: "planner"` for planning validation on large-scope plans
 - Use `ask_codex` with `agent_role: "analyst"` for requirements analysis
 - Use `ask_codex` with `agent_role: "critic"` for plan review in consensus and review modes
-- If ToolSearch finds no MCP tools or Codex is unavailable, fall back to equivalent OMX prompt agents -- never block on external tools
+- If optional MCP compatibility tools or Codex consultation are unavailable, fall back to equivalent OMX prompt/native agents -- never block on external tools
 - **CRITICAL — Consensus mode agent calls MUST be sequential, never parallel.** Always await the Architect result before issuing the Critic call.
 - In consensus mode, default to RALPLAN-DR short mode; enable deliberate mode on `--deliberate` or explicit high-risk signals (auth/security, migrations, destructive changes, production incidents, compliance/PII, public API breakage)
 - In consensus mode with `--interactive`: use `AskUserQuestion` / the structured question UI for the user feedback step (step 2) and the final approval step (step 7) -- never ask for approval in plain text when a structured surface is available. Without `--interactive`, auto-proceed through planning steps without pausing. Output the final plan without execution.

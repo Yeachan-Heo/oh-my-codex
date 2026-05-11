@@ -12,6 +12,32 @@ import {
 } from '../workflow-transition.js';
 import { reconcileWorkflowTransition } from '../workflow-transition-reconcile.js';
 
+const STATE_ENV_KEYS = [
+  'OMX_ROOT',
+  'OMX_STATE_ROOT',
+  'OMX_TEAM_STATE_ROOT',
+  'OMX_SESSION_ID',
+  'CODEX_SESSION_ID',
+  'SESSION_ID',
+] as const;
+
+async function withIsolatedStateEnv(fn: () => Promise<void>): Promise<void> {
+  const previous = new Map<string, string | undefined>();
+  for (const key of STATE_ENV_KEYS) {
+    previous.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  try {
+    await fn();
+  } finally {
+    for (const key of STATE_ENV_KEYS) {
+      const value = previous.get(key);
+      if (typeof value === 'string') process.env[key] = value;
+      else delete process.env[key];
+    }
+  }
+}
+
 describe('workflow transition rules', () => {
   it('allows the approved overlap matrix and denies unsupported combinations', () => {
     const cases: Array<{
@@ -47,8 +73,8 @@ describe('workflow transition rules', () => {
     assert.match(error, /Unsupported workflow overlap: team \+ autopilot\./);
     assert.match(error, /Current state is unchanged\./);
     assert.match(error, /Clear incompatible workflow state yourself via/);
-    assert.match(error, /`omx state clear --mode <mode>`/);
-    assert.match(error, /`omx_state\.\*` MCP tools/);
+    assert.match(error, /`omx state clear --input '{"mode":"<mode>"}' --json`/);
+    assert.match(error, /explicit MCP compatibility is enabled/);
   });
 
   it('returns auto-complete decisions for allowlisted forward transitions', () => {
@@ -104,58 +130,62 @@ describe('workflow transition rules', () => {
   });
 
   it('ignores stale root workflow state for session-scoped active decisions', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-workflow-active-scope-'));
-    try {
-      const stateDir = join(wd, '.omx', 'state');
-      const sessionDir = join(stateDir, 'sessions', 'sess-current');
-      await mkdir(sessionDir, { recursive: true });
-      await writeFile(
-        join(stateDir, 'ralph-state.json'),
-        JSON.stringify({ active: true, mode: 'ralph', current_phase: 'executing' }, null, 2),
-        'utf-8',
-      );
-      await writeFile(
-        join(stateDir, 'session.json'),
-        JSON.stringify({ session_id: 'sess-current', cwd: wd }, null, 2),
-        'utf-8',
-      );
+    await withIsolatedStateEnv(async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-workflow-active-scope-'));
+      try {
+        const stateDir = join(wd, '.omx', 'state');
+        const sessionDir = join(stateDir, 'sessions', 'sess-current');
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(stateDir, 'ralph-state.json'),
+          JSON.stringify({ active: true, mode: 'ralph', current_phase: 'executing' }, null, 2),
+          'utf-8',
+        );
+        await writeFile(
+          join(stateDir, 'session.json'),
+          JSON.stringify({ session_id: 'sess-current', cwd: wd }, null, 2),
+          'utf-8',
+        );
 
-      assert.deepEqual(await readActiveWorkflowModes(wd, 'sess-current'), []);
-      assert.deepEqual(await readActiveWorkflowModes(wd), []);
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
+        assert.deepEqual(await readActiveWorkflowModes(wd, 'sess-current'), []);
+        assert.deepEqual(await readActiveWorkflowModes(wd), []);
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
   });
 
   it('does not auto-complete stale root workflow state during a session transition', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-workflow-reconcile-scope-'));
-    try {
-      const stateDir = join(wd, '.omx', 'state');
-      const sessionDir = join(stateDir, 'sessions', 'sess-current');
-      const rootRalphPath = join(stateDir, 'ralph-state.json');
-      await mkdir(sessionDir, { recursive: true });
-      await writeFile(
-        rootRalphPath,
-        JSON.stringify({ active: true, mode: 'ralph', current_phase: 'executing' }, null, 2),
-        'utf-8',
-      );
+    await withIsolatedStateEnv(async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-workflow-reconcile-scope-'));
+      try {
+        const stateDir = join(wd, '.omx', 'state');
+        const sessionDir = join(stateDir, 'sessions', 'sess-current');
+        const rootRalphPath = join(stateDir, 'ralph-state.json');
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          rootRalphPath,
+          JSON.stringify({ active: true, mode: 'ralph', current_phase: 'executing' }, null, 2),
+          'utf-8',
+        );
 
-      const transition = await reconcileWorkflowTransition(wd, 'ralplan', {
-        action: 'start',
-        sessionId: 'sess-current',
-        source: 'test',
-      });
+        const transition = await reconcileWorkflowTransition(wd, 'ralplan', {
+          action: 'start',
+          sessionId: 'sess-current',
+          source: 'test',
+        });
 
-      assert.equal(transition.decision.allowed, true);
-      assert.deepEqual(transition.decision.currentModes, []);
-      assert.deepEqual(transition.completedPaths, []);
+        assert.equal(transition.decision.allowed, true);
+        assert.deepEqual(transition.decision.currentModes, []);
+        assert.deepEqual(transition.completedPaths, []);
 
-      const rootRalph = JSON.parse(await readFile(rootRalphPath, 'utf-8')) as { active?: unknown };
-      assert.equal(rootRalph.active, true);
-      assert.equal(existsSync(join(sessionDir, 'ralph-state.json')), false);
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
+        const rootRalph = JSON.parse(await readFile(rootRalphPath, 'utf-8')) as { active?: unknown };
+        assert.equal(rootRalph.active, true);
+        assert.equal(existsSync(join(sessionDir, 'ralph-state.json')), false);
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
   });
 
   it('co-locates auto-completed mode detail and canonical skill state under an explicit base state dir', async () => {

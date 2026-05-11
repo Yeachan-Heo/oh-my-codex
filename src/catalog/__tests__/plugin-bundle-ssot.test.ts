@@ -10,6 +10,7 @@ import {
 	isDirectCliInvocation,
 	syncPluginMirror,
 } from "../../scripts/sync-plugin-mirror.js";
+import { buildOmxPluginMcpManifest } from "../../config/omx-first-party-mcp.js";
 
 const root = process.cwd();
 
@@ -61,6 +62,28 @@ describe("plugin bundle SSOT contract", () => {
 		assert.equal(result.changed, false);
 		assert.deepEqual(result.mirroredSkillNames, expectedSkillNames);
 		assert.equal(result.mirroredSkillNames.includes("pipeline"), true);
+		const pluginMcp = JSON.parse(
+			await readFile(join(root, "plugins", "oh-my-codex", ".mcp.json"), "utf-8"),
+		) as { mcpServers?: Record<string, { enabled?: boolean }> };
+		assert.deepEqual(
+			Object.values(pluginMcp.mcpServers ?? {}).map((server) => server.enabled),
+			Object.values(pluginMcp.mcpServers ?? {}).map(() => false),
+			"checked-in plugin MCP metadata must be disabled by default",
+		);
+	});
+
+	it("builds disabled plugin MCP metadata by default with explicit compat opt-in", () => {
+		const defaultManifest = buildOmxPluginMcpManifest();
+		assert.deepEqual(
+			Object.values(defaultManifest.mcpServers).map((server) => server.enabled),
+			Object.values(defaultManifest.mcpServers).map(() => false),
+		);
+
+		const compatManifest = buildOmxPluginMcpManifest({ enabled: true });
+		assert.deepEqual(
+			Object.values(compatManifest.mcpServers).map((server) => server.enabled),
+			Object.values(compatManifest.mcpServers).map(() => true),
+		);
 	});
 
 	it("fails check mode when plugin MCP metadata drifts from canonical first-party specs", async () => {

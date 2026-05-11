@@ -188,7 +188,7 @@ async function loadStateDescriptor(): Promise<McpCliDescriptor> {
   );
   return {
     commandName: "state",
-    title: "CLI parity surface for OMX state MCP tools.",
+    title: "JSON CLI surface for OMX state operations.",
     tools: buildStateServerTools().map(({ name, description }) => ({ name, description })),
     aliases: {
       read: "state_read",
@@ -242,7 +242,7 @@ async function loadTraceDescriptor(): Promise<McpCliDescriptor> {
   );
   return {
     commandName: "trace",
-    title: "CLI parity surface for OMX trace MCP tools.",
+    title: "JSON CLI surface for OMX trace operations.",
     tools: buildTraceServerTools().map(({ name, description }) => ({ name, description })),
     aliases: {
       timeline: "trace_timeline",
@@ -259,7 +259,7 @@ async function loadCodeIntelDescriptor(): Promise<McpCliDescriptor> {
   );
   return {
     commandName: "code-intel",
-    title: "CLI parity surface for OMX code-intel MCP tools.",
+    title: "JSON CLI surface for OMX code-intel operations.",
     tools: buildCodeIntelServerTools().map(({ name, description }) => ({ name, description })),
     handle: handleCodeIntelToolCall,
   };
@@ -272,7 +272,7 @@ async function loadWikiDescriptor(): Promise<McpCliDescriptor> {
   );
   return {
     commandName: "wiki",
-    title: "CLI parity surface for OMX wiki MCP tools.",
+    title: "JSON CLI surface for OMX wiki operations.",
     tools: buildWikiServerTools().map(({ name, description }) => ({ name, description })),
     aliases: {
       ingest: "wiki_ingest",
@@ -299,7 +299,7 @@ export async function mcpParityCommand(
     case "notepad":
       await runDescriptorCommand(
         args,
-        async () => await loadMemoryDescriptor("notepad", "notepad_", "CLI parity surface for OMX notepad MCP tools."),
+        async () => await loadMemoryDescriptor("notepad", "notepad_", "JSON CLI surface for OMX notepad operations."),
       );
       return;
     case "project-memory":
@@ -308,7 +308,7 @@ export async function mcpParityCommand(
         async () => await loadMemoryDescriptor(
           "project-memory",
           "project_memory_",
-          "CLI parity surface for OMX project-memory MCP tools.",
+          "JSON CLI surface for OMX project-memory operations.",
         ),
       );
       return;
@@ -334,7 +334,7 @@ export async function executeMcpParityCommand(
     case "notepad":
       return await executeDescriptorCommand(
         args,
-        async () => await loadMemoryDescriptor("notepad", "notepad_", "CLI parity surface for OMX notepad MCP tools."),
+        async () => await loadMemoryDescriptor("notepad", "notepad_", "JSON CLI surface for OMX notepad operations."),
       );
     case "project-memory":
       return await executeDescriptorCommand(
@@ -342,7 +342,7 @@ export async function executeMcpParityCommand(
         async () => await loadMemoryDescriptor(
           "project-memory",
           "project_memory_",
-          "CLI parity surface for OMX project-memory MCP tools.",
+          "JSON CLI surface for OMX project-memory operations.",
         ),
       );
     case "trace":

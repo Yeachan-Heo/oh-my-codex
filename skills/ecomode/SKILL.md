@@ -104,11 +104,11 @@ Set in `~/.codex/.omx-config.json`:
 
 ## State Management
 
-Use `omx_state` MCP tools for ecomode lifecycle state.
+Use the CLI-first state surface (`omx state ... --json`) for ecomode lifecycle state. If explicit MCP compatibility tools are already available, equivalent `omx_state` calls are optional compatibility, not the default.
 
 - **On activation**:
-  `state_write({mode: "ecomode", active: true})`
+  `omx state write --input '{"mode":"ecomode","active":true}' --json`
 - **On deactivation/completion**:
-  `state_write({mode: "ecomode", active: false})`
+  `omx state write --input '{"mode":"ecomode","active":false}' --json`
 - **On cancellation/cleanup**:
-  run `$cancel` (which should call `state_clear(mode="ecomode")`)
+  run `$cancel` (which should call `omx state clear --input '{"mode":"ecomode"}' --json`)

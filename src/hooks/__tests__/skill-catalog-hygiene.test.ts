@@ -68,4 +68,38 @@ describe('skill catalog hygiene', () => {
 
     assert.deepEqual(offenders, []);
   });
+
+  it('keeps primary workflow guidance CLI-first instead of MCP-first', () => {
+    const primaryWorkflows = [
+      'autopilot',
+      'code-review',
+      'ecomode',
+      'plan',
+      'ralph',
+      'tdd',
+      'ultraqa',
+      'ultrawork',
+      'wiki',
+    ];
+    const mcpFirstPatterns = [
+      /Use `omx_state` MCP tools/i,
+      /Use the `omx_state` MCP server tools/i,
+      /Before first MCP tool use, call `ToolSearch\("mcp"\)`/i,
+      /If ToolSearch finds no MCP tools/i,
+      /state_write MCP tool/i,
+			/write subsequent updates via omx_state MCP/i,
+			/omx state clear --mode/i,
+			/omx state state_write/i,
+      /wiki_(?:ingest|query|lint|add|list|read|delete|refresh)\([^)]*\)/,
+    ];
+
+    const offenders = primaryWorkflows.flatMap((name) => {
+      const content = skillContent(name);
+      return mcpFirstPatterns
+        .filter((pattern) => pattern.test(content))
+        .map((pattern) => `${name}: ${pattern}`);
+    });
+
+    assert.deepEqual(offenders, []);
+  });
 });
