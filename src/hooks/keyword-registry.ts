@@ -45,6 +45,9 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: '$team', skill: 'team', priority: 8, guidance: 'Activate coordinated team mode' },
   { keyword: 'coordinated team', skill: 'team', priority: 8, guidance: 'Activate coordinated team mode' },
 
+  { keyword: '$runingteam', skill: 'runingteam', priority: 8, guidance: 'Activate RuningTeam dynamic planning + team orchestration mode' },
+  { keyword: 'runingteam', skill: 'runingteam', priority: 8, guidance: 'Activate RuningTeam dynamic planning + team orchestration mode' },
+
   { keyword: '$cancel', skill: 'cancel', priority: 5, guidance: 'Cancel active execution modes' },
   { keyword: 'stop', skill: 'cancel', priority: 5, guidance: 'Cancel active execution modes' },
   { keyword: 'abort', skill: 'cancel', priority: 5, guidance: 'Cancel active execution modes' },

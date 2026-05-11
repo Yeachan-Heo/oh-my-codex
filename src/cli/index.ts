@@ -23,6 +23,7 @@ import { hooksCommand } from "./hooks.js";
 import { hudCommand } from "../hud/index.js";
 import { sidecarCommand } from "../sidecar/index.js";
 import { teamCommand } from "./team.js";
+import { runingTeamCommand } from "./runingteam.js";
 import { ralphCommand } from "./ralph.js";
 import { ultragoalCommand } from "./ultragoal.js";
 import { performanceGoalCommand } from "./performance-goal.js";
@@ -54,6 +55,7 @@ import {
   XHIGH_REASONING_FLAG,
   SPARK_FLAG,
   MADMAX_SPARK_FLAG,
+  RUNINGTEAM_FLAG,
   CONFIG_FLAG,
   LONG_CONFIG_FLAG,
 } from "./constants.js";
@@ -209,6 +211,7 @@ Usage:
   omx deepinit [path]
                 Alias for agents-init (lightweight AGENTS bootstrap only)
   omx team      Spawn parallel worker panes in tmux and bootstrap inbox/task state
+  omx runingteam Launch Codex with RuningTeam dynamic planning mode active
   omx ralph     Launch Codex with ralph persistence mode active
   omx ultragoal Create, resume, and checkpoint durable multi-goal plans over Codex goal mode
   omx performance-goal
@@ -251,6 +254,8 @@ Options:
                 Workers get the configured low-complexity team model; leader model unchanged
   --madmax-spark  spark model for workers + bypass approvals for leader and workers
                 (shorthand for: --spark --madmax)
+  --runingteam  Launch Codex with RuningTeam dynamic planning mode active
+                (can be combined with --madmax, --high, --xhigh, --spark)
   --notify-temp  Enable temporary notification routing for this run/session only
   --direct       Launch the interactive leader directly without OMX tmux/HUD management
   --tmux         Launch the interactive leader session in detached tmux
@@ -305,6 +310,8 @@ const OMX_RALPH_APPEND_INSTRUCTIONS_FILE_ENV =
   "OMX_RALPH_APPEND_INSTRUCTIONS_FILE";
 const OMX_AUTORESEARCH_APPEND_INSTRUCTIONS_FILE_ENV =
   "OMX_AUTORESEARCH_APPEND_INSTRUCTIONS_FILE";
+const OMX_RUNINGTEAM_APPEND_INSTRUCTIONS_FILE_ENV =
+  "OMX_RUNINGTEAM_APPEND_INSTRUCTIONS_FILE";
 const REASONING_MODES = ["low", "medium", "high", "xhigh"] as const;
 type ReasoningMode = (typeof REASONING_MODES)[number];
 const REASONING_MODE_SET = new Set<string>(REASONING_MODES);
@@ -354,6 +361,7 @@ type CliCommand =
   | "explore"
   | "sparkshell"
   | "team"
+  | "runingteam"
   | "session"
   | "resume"
   | "version"
@@ -396,6 +404,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "session",
   "sparkshell",
   "team",
+  "runingteam",
   "tmux-hook",
 ]);
 
@@ -1242,6 +1251,7 @@ export async function main(args: string[]): Promise<void> {
     "explore",
     "sparkshell",
     "team",
+    "runingteam",
     "ralph",
     "ultragoal",
     "performance-goal",
@@ -1281,7 +1291,11 @@ export async function main(args: string[]): Promise<void> {
   try {
     switch (command) {
       case "launch":
-        await launchWithHud(launchArgs);
+        if (launchArgs.includes(RUNINGTEAM_FLAG)) {
+          await runingTeamCommand(launchArgs.filter((arg) => arg !== RUNINGTEAM_FLAG));
+        } else {
+          await launchWithHud(launchArgs);
+        }
         break;
       case "resume":
         await launchWithHud(["resume", ...launchArgs]);
@@ -1362,6 +1376,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "team":
         await teamCommand(args.slice(1), options);
+        break;
+      case "runingteam":
+        await runingTeamCommand(args.slice(1));
         break;
       case "session":
         await sessionCommand(args.slice(1));
@@ -1807,6 +1824,11 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
         normalized.push(arg);
         hasBypass = true;
       }
+      continue;
+    }
+
+    if (arg === RUNINGTEAM_FLAG) {
+      // RuningTeam is an OMX launch profile. Its instructions are injected by the launcher, not forwarded as a Codex-native flag.
       continue;
     }
 
@@ -2768,6 +2790,7 @@ async function readLaunchAppendInstructions(): Promise<string> {
   const appendixCandidates = [
     process.env[OMX_RALPH_APPEND_INSTRUCTIONS_FILE_ENV]?.trim(),
     process.env[OMX_AUTORESEARCH_APPEND_INSTRUCTIONS_FILE_ENV]?.trim(),
+    process.env[OMX_RUNINGTEAM_APPEND_INSTRUCTIONS_FILE_ENV]?.trim(),
   ].filter(
     (value): value is string => typeof value === "string" && value.length > 0,
   );

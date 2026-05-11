@@ -444,9 +444,9 @@ const KEYWORD_MAP: Array<{ pattern: RegExp; skill: string; priority: number }> =
   priority: entry.priority,
 }));
 
-const KEYWORDS_REQUIRING_INTENT = new Set(['ralph', 'team', 'stop', 'abort', 'parallel', 'autoresearch', 'ultragoal']);
+const KEYWORDS_REQUIRING_INTENT = new Set(['ralph', 'team', 'runingteam', 'stop', 'abort', 'parallel', 'autoresearch', 'ultragoal']);
 
-type IntentKeyword = 'ralph' | 'team' | 'stop' | 'abort' | 'parallel' | 'autoresearch' | 'ultragoal';
+type IntentKeyword = 'ralph' | 'team' | 'runingteam' | 'stop' | 'abort' | 'parallel' | 'autoresearch' | 'ultragoal';
 
 const DEEP_INTERVIEW_ACTIVATION_PATTERNS: RegExp[] = [
   /(?:^|[^\w])\$(?:deep-interview)\b/i,
@@ -484,6 +484,12 @@ const KEYWORD_INTENT_PATTERNS: Record<IntentKeyword, RegExp[]> = {
     /\/prompts:team\b/i,
     /\b(?:use|run|start|enable|launch|invoke|activate|orchestrate|coordinate)\s+(?:a\s+|an\s+|the\s+)?team\b/i,
     /\bteam\s+(?:mode|orchestration|workflow|agents?)\b/i,
+  ],
+  runingteam: [
+    /(?:^|[^\w])\$(?:runingteam)\b/i,
+    /\/prompts:runingteam\b/i,
+    /\b(?:use|run|start|enable|launch|invoke|activate|orchestrate|coordinate)\s+(?:a\s+|an\s+|the\s+)?runingteam\b/i,
+    /\bruningteam\s+(?:mode|orchestration|workflow|skill|loop)\b/i,
   ],
   stop: [
     /^(?:please\s+)?stop(?:\s+now)?\s*[.!]?\s*$/i,

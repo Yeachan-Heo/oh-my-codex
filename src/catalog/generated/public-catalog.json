@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-05-06T00:56:25.752Z",
+  "generatedAt": "2026-05-11T09:54:00.616Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 46,
+    "skillCount": 47,
     "promptCount": 30,
-    "activeSkillCount": 24,
+    "activeSkillCount": 25,
     "activeAgentCount": 16
   },
   "coreSkills": [
@@ -42,6 +42,13 @@
       "category": "execution",
       "status": "active",
       "core": true,
+      "internalRequired": false
+    },
+    {
+      "name": "runingteam",
+      "category": "execution",
+      "status": "active",
+      "core": false,
       "internalRequired": false
     },
     {

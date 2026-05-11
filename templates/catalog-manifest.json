@@ -31,6 +31,13 @@
       "internalRequired": false
     },
     {
+      "name": "runingteam",
+      "category": "execution",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
       "name": "ecomode",
       "category": "execution",
       "status": "deprecated",
