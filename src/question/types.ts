@@ -71,6 +71,7 @@ export interface QuestionRecord {
   created_at: string;
   updated_at: string;
   status: QuestionStatus;
+  run_id?: string;
   header?: string;
   question: string;
   options: QuestionOption[];

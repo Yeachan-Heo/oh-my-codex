@@ -14,7 +14,7 @@ import {
   submitQuestionAnswerById,
   waitForQuestionTerminalState,
 } from '../state.js';
-import { readQuestionEvents } from '../events.js';
+import { appendQuestionEvent, readQuestionEvents } from '../events.js';
 
 const tempDirs: string[] = [];
 
@@ -118,6 +118,166 @@ describe('question state', () => {
       }, { sessionId: 'sess-submit' }),
       (error) => error instanceof QuestionSubmitError && error.code === 'question_unknown',
     );
+  });
+
+  it('rejects submitted answers that do not match the prompt option schema', async () => {
+    const cwd = await makeRepo();
+    const { record } = await createQuestionRecord(cwd, {
+      questions: [
+        {
+          id: 'single',
+          question: 'Pick one',
+          options: [{ label: 'A', value: 'a' }],
+          allow_other: false,
+          other_label: 'Other',
+          multi_select: false,
+          type: 'single-answerable',
+        },
+        {
+          id: 'multi',
+          question: 'Pick many',
+          options: [{ label: 'B', value: 'b' }, { label: 'C', value: 'c' }],
+          allow_other: false,
+          other_label: 'Other',
+          multi_select: true,
+          type: 'multi-answerable',
+        },
+      ],
+      question: 'Pick one',
+      options: [{ label: 'A', value: 'a' }],
+      allow_other: false,
+      other_label: 'Other',
+      multi_select: false,
+    }, 'sess-invalid');
+
+    await assert.rejects(
+      () => submitQuestionAnswerById(cwd, record.question_id, {
+        answers: [
+          {
+            question_id: 'single',
+            answer: { kind: 'option', value: 'missing', selected_labels: ['Missing'], selected_values: ['missing'] },
+          },
+          {
+            question_id: 'multi',
+            answer: { kind: 'multi', value: ['b'], selected_labels: ['B'], selected_values: ['b'] },
+          },
+        ],
+      }, { sessionId: 'sess-invalid' }),
+      (error) => error instanceof QuestionSubmitError && error.code === 'question_invalid_answer',
+    );
+
+    await assert.rejects(
+      () => submitQuestionAnswerById(cwd, record.question_id, {
+        answers: [
+          {
+            question_id: 'single',
+            answer: { kind: 'other', value: 'custom', selected_labels: ['Other'], selected_values: ['custom'], other_text: 'custom' },
+          },
+          {
+            question_id: 'multi',
+            answer: { kind: 'multi', value: ['b'], selected_labels: ['B'], selected_values: ['b'] },
+          },
+        ],
+      }, { sessionId: 'sess-invalid' }),
+      (error) => error instanceof QuestionSubmitError && error.code === 'question_invalid_answer',
+    );
+
+    await assert.rejects(
+      () => submitQuestionAnswerById(cwd, record.question_id, {
+        answers: [
+          {
+            question_id: 'single',
+            answer: { kind: 'multi', value: ['a'], selected_labels: ['A'], selected_values: ['a'] },
+          },
+          {
+            question_id: 'multi',
+            answer: { kind: 'multi', value: ['b'], selected_labels: ['B'], selected_values: ['b'] },
+          },
+        ],
+      }, { sessionId: 'sess-invalid' }),
+      (error) => error instanceof QuestionSubmitError && error.code === 'question_invalid_answer',
+    );
+
+    const loaded = await readQuestionRecord(getQuestionRecordPath(cwd, record.question_id, 'sess-invalid'));
+    assert.equal(loaded?.status, 'pending');
+  });
+
+  it('serializes concurrent duplicate submissions so only one answer is accepted', async () => {
+    const cwd = await makeRepo();
+    const { record } = await createQuestionRecord(cwd, {
+      question: 'Pick one',
+      options: [{ label: 'A', value: 'a' }],
+      allow_other: false,
+      other_label: 'Other',
+      multi_select: false,
+    }, 'sess-race');
+
+    const payload = {
+      answer: {
+        kind: 'option',
+        value: 'a',
+        selected_labels: ['A'],
+        selected_values: ['a'],
+      },
+    };
+    const results = await Promise.allSettled([
+      submitQuestionAnswerById(cwd, record.question_id, payload, { sessionId: 'sess-race' }),
+      submitQuestionAnswerById(cwd, record.question_id, payload, { sessionId: 'sess-race' }),
+    ]);
+
+    assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    assert.equal(rejected?.reason instanceof QuestionSubmitError, true);
+    assert.equal((rejected?.reason as QuestionSubmitError).code, 'question_not_open');
+    const answeredEvents = (await readQuestionEvents(cwd)).filter((event) => (
+      event.type === 'question-answered' && event.question_id === record.question_id
+    ));
+    assert.equal(answeredEvents.length, 1);
+  });
+
+  it('preserves original run_id correlation on later answered and error events', async () => {
+    const cwd = await makeRepo();
+    const { record, recordPath } = await createQuestionRecord(cwd, {
+      question: 'Pick one',
+      options: [{ label: 'A', value: 'a' }],
+      allow_other: false,
+      other_label: 'Other',
+      multi_select: false,
+    }, 'sess-run', new Date('2026-05-11T00:00:00.000Z'), {
+      emitEvent: true,
+      runId: 'run-original',
+    });
+
+    await submitQuestionAnswerById(cwd, record.question_id, {
+      answer: {
+        kind: 'option',
+        value: 'a',
+        selected_labels: ['A'],
+        selected_values: ['a'],
+      },
+    }, { sessionId: 'sess-run' });
+
+    const answerEvent = (await readQuestionEvents(cwd)).find((event) => (
+      event.type === 'question-answered' && event.question_id === record.question_id
+    ));
+    assert.equal(answerEvent?.run_id, 'run-original');
+
+    const { recordPath: errorPath } = await createQuestionRecord(cwd, {
+      question: 'Pick one',
+      options: [{ label: 'A', value: 'a' }],
+      allow_other: false,
+      other_label: 'Other',
+      multi_select: false,
+    }, 'sess-run', new Date('2026-05-11T00:01:00.000Z'), {
+      emitEvent: true,
+      runId: 'run-error-original',
+    });
+    const errorRecord = await markQuestionTerminalError(errorPath, 'error', 'question_runtime_failed', 'boom');
+    await appendQuestionEvent(cwd, 'question-error', errorRecord, { recordPath: errorPath });
+    const errorEvent = (await readQuestionEvents(cwd)).find((event) => (
+      event.type === 'question-error' && event.question_id === errorRecord.question_id
+    ));
+    assert.equal(errorEvent?.run_id, 'run-error-original');
   });
 
   it('waits for terminal answered state and returns free-text other values exactly', async () => {

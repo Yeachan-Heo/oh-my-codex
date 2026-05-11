@@ -61,7 +61,7 @@ export function buildQuestionEvent(
 ): QuestionEventRecord {
   const now = options.now ?? new Date();
   const answerCount = record.answers?.length ?? (record.answer ? 1 : 0);
-  const runId = options.runId ?? resolveQuestionRunId();
+  const runId = options.runId ?? record.run_id ?? resolveQuestionRunId();
   return {
     kind: 'omx.question-event/v1',
     event_id: `${type}-${record.question_id}-${now.toISOString().replace(/[:.]/g, '-')}`,

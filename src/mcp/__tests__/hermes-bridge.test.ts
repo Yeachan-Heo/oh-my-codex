@@ -209,6 +209,8 @@ describe("Hermes MCP bridge core", () => {
       assert.equal(submitted.ok, true);
       assert.equal(submitted.data?.question.status, "answered");
       assert.equal(submitted.data?.answers[0]?.answer.value, "a");
+      const answeredEvents = await hermesListQuestionEvents({ workingDirectory: cwd });
+      assert.equal(answeredEvents.data?.events.find((event) => event.type === "question-answered")?.run_id, "run-q");
 
       const duplicate = await hermesSubmitQuestionAnswer({
         workingDirectory: cwd,

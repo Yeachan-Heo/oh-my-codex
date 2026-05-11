@@ -1,12 +1,13 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { getStateDir } from '../mcp/state-paths.js';
 import { writeAtomic } from '../team/state.js';
 import { sleep } from '../utils/sleep.js';
-import { appendQuestionEvent, normalizeSubmittedAnswers } from './events.js';
-import { getNormalizedQuestionType, normalizeQuestionInput } from './types.js';
+import { appendQuestionEvent, normalizeSubmittedAnswers, resolveQuestionRunId } from './events.js';
+import { getNormalizedQuestionType, isMultiAnswerableQuestion, normalizeQuestionInput } from './types.js';
 import type {
+  NormalizedQuestionItem,
   QuestionAnswer,
   QuestionAnswerEntry,
   QuestionInput,
@@ -17,6 +18,8 @@ import type {
 
 const QUESTION_NAMESPACE = 'questions';
 const DEFAULT_POLL_INTERVAL_MS = 100;
+const QUESTION_SUBMIT_LOCK_STALE_MS = 30_000;
+const QUESTION_SUBMIT_LOCK_TIMEOUT_MS = 10_000;
 
 export type QuestionSubmitFailureCode =
   | 'question_unknown'
@@ -66,6 +69,7 @@ export async function createQuestionRecord(
   const normalizedInput = normalizeQuestionInput(input);
   const questionId = buildQuestionId(now);
   const nowIso = now.toISOString();
+  const runId = options.runId ?? resolveQuestionRunId();
   const record: QuestionRecord = {
     kind: 'omx.question/v1',
     question_id: questionId,
@@ -73,6 +77,7 @@ export async function createQuestionRecord(
     created_at: nowIso,
     updated_at: nowIso,
     status: 'pending',
+    ...(runId ? { run_id: runId } : {}),
     ...(normalizedInput.header ? { header: normalizedInput.header } : {}),
     question: normalizedInput.question,
     options: normalizedInput.options,
@@ -156,6 +161,165 @@ async function listQuestionRecordsInDir(dir: string): Promise<Array<{ recordPath
   return records;
 }
 
+function lockOwnerToken(): string {
+  return `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+}
+
+async function maybeRecoverStaleQuestionLock(lockDir: string): Promise<boolean> {
+  try {
+    const info = await stat(lockDir);
+    if (Date.now() - info.mtimeMs > QUESTION_SUBMIT_LOCK_STALE_MS) {
+      await rm(lockDir, { recursive: true, force: true });
+      return true;
+    }
+  } catch {
+  }
+  return false;
+}
+
+async function withQuestionSubmitLock<T>(recordPath: string, fn: () => Promise<T>): Promise<T> {
+  const lockDir = `${recordPath}.submit.lock`;
+  const ownerPath = join(lockDir, 'owner');
+  const ownerToken = lockOwnerToken();
+  const deadline = Date.now() + QUESTION_SUBMIT_LOCK_TIMEOUT_MS;
+  await mkdir(dirname(lockDir), { recursive: true });
+  while (true) {
+    try {
+      await mkdir(lockDir);
+      try {
+        await writeFile(ownerPath, ownerToken, 'utf8');
+      } catch (error) {
+        await rm(lockDir, { recursive: true, force: true });
+        throw error;
+      }
+      break;
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code !== 'EEXIST') throw error;
+      if (await maybeRecoverStaleQuestionLock(lockDir)) continue;
+      if (Date.now() > deadline) {
+        throw new QuestionSubmitError('question_not_open', `Timed out acquiring submit lock for ${recordPath}`);
+      }
+      await sleep(25);
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    try {
+      const currentOwner = await readFile(ownerPath, 'utf8');
+      if (currentOwner.trim() === ownerToken) {
+        await rm(lockDir, { recursive: true, force: true });
+      }
+    } catch {
+    }
+  }
+}
+
+function validateStringArray(value: unknown, path: string): string[] {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string' && item.trim().length > 0)) {
+    throw new Error(`${path} must be a non-empty string array`);
+  }
+  return value;
+}
+
+function assertNoDuplicateValues(values: string[], path: string): void {
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) throw new Error(`${path} must not contain duplicate values: ${value}`);
+    seen.add(value);
+  }
+}
+
+function questionForAnswer(record: QuestionRecord, entry: QuestionAnswerEntry): NormalizedQuestionItem {
+  const question = (record.questions ?? []).find((item) => item.id === entry.question_id);
+  if (question) return question;
+  if (entry.question_id === 'q-1') {
+    return {
+      id: 'q-1',
+      ...(record.header ? { header: record.header } : {}),
+      question: record.question,
+      options: record.options,
+      allow_other: record.allow_other,
+      other_label: record.other_label,
+      multi_select: record.multi_select,
+      type: getNormalizedQuestionType(record),
+    };
+  }
+  throw new Error(`answers[${entry.index}].question_id is unknown for this question: ${entry.question_id}`);
+}
+
+function validateAnswerAgainstQuestion(question: NormalizedQuestionItem, entry: QuestionAnswerEntry): void {
+  const { answer } = entry;
+  const selectedValues = validateStringArray(answer.selected_values, `answers[${entry.index}].answer.selected_values`);
+  const selectedLabels = validateStringArray(answer.selected_labels, `answers[${entry.index}].answer.selected_labels`);
+  assertNoDuplicateValues(selectedValues, `answers[${entry.index}].answer.selected_values`);
+
+  const optionValues = new Set(question.options.map((option) => option.value));
+  const optionLabelsByValue = new Map(question.options.map((option) => [option.value, option.label]));
+  const multi = isMultiAnswerableQuestion(question);
+  const hasOtherText = typeof answer.other_text === 'string' && answer.other_text.trim().length > 0;
+  const otherText = hasOtherText ? answer.other_text!.trim() : undefined;
+  const outOfSchemaValues = selectedValues.filter((value) => !optionValues.has(value));
+
+  if (answer.kind === 'other') {
+    if (!question.allow_other) throw new Error(`answers[${entry.index}].answer.kind=other is not allowed for this question`);
+    if (multi) throw new Error(`answers[${entry.index}].answer.kind=other is only valid for single-answerable questions`);
+    if (!otherText) throw new Error(`answers[${entry.index}].answer.other_text must be a non-empty string`);
+    if (selectedValues.length !== 1 || selectedValues[0] !== otherText || answer.value !== otherText) {
+      throw new Error(`answers[${entry.index}].answer other value must match selected_values[0] and other_text`);
+    }
+    return;
+  }
+
+  if (answer.kind === 'option') {
+    if (multi) throw new Error(`answers[${entry.index}].answer.kind=option is only valid for single-answerable questions`);
+    if (selectedValues.length !== 1 || selectedLabels.length !== 1) {
+      throw new Error(`answers[${entry.index}].answer must select exactly one option`);
+    }
+    const selectedValue = selectedValues[0]!;
+    if (!optionValues.has(selectedValue)) {
+      throw new Error(`answers[${entry.index}].answer selected value is not in the option schema: ${selectedValue}`);
+    }
+    if (answer.value !== selectedValue) {
+      throw new Error(`answers[${entry.index}].answer.value must match selected_values[0]`);
+    }
+    if (selectedLabels[0] !== optionLabelsByValue.get(selectedValue)) {
+      throw new Error(`answers[${entry.index}].answer.selected_labels[0] must match the selected option label`);
+    }
+    return;
+  }
+
+  if (!multi) throw new Error(`answers[${entry.index}].answer.kind=multi is only valid for multi-answerable questions`);
+  if (!Array.isArray(answer.value)) throw new Error(`answers[${entry.index}].answer.value must be an array for multi answers`);
+  if (answer.value.length !== selectedValues.length || answer.value.some((value, index) => value !== selectedValues[index])) {
+    throw new Error(`answers[${entry.index}].answer.value must match selected_values`);
+  }
+  if (outOfSchemaValues.length > 0) {
+    if (!question.allow_other) {
+      throw new Error(`answers[${entry.index}].answer selected value is not in the option schema: ${outOfSchemaValues[0]}`);
+    }
+    if (!otherText || outOfSchemaValues.length !== 1 || outOfSchemaValues[0] !== otherText) {
+      throw new Error(`answers[${entry.index}].answer out-of-schema selection must match a single other_text value`);
+    }
+  }
+  const expectedLabelCount = selectedValues.filter((value) => optionValues.has(value)).length + (otherText ? 1 : 0);
+  if (selectedLabels.length !== expectedLabelCount) {
+    throw new Error(`answers[${entry.index}].answer.selected_labels cardinality must match selected values`);
+  }
+}
+
+function validateSubmittedAnswersAgainstSchema(record: QuestionRecord, answers: QuestionAnswerEntry[]): void {
+  const expectedQuestionIds = new Set((record.questions ?? []).map((question) => question.id));
+  if (expectedQuestionIds.size > 0 && answers.length !== expectedQuestionIds.size) {
+    throw new Error(`answer payload must include exactly one answer for each question (${expectedQuestionIds.size})`);
+  }
+  for (const entry of answers) {
+    validateAnswerAgainstQuestion(questionForAnswer(record, entry), entry);
+  }
+}
+
 export async function listQuestionRecords(
   cwd: string,
   options: { sessionId?: string; status?: QuestionStatus | 'open'; limit?: number } = {},
@@ -185,24 +349,27 @@ export async function submitQuestionAnswerById(
   }
 
   const recordPath = getQuestionRecordPath(cwd, normalizedQuestionId, options.sessionId);
-  const current = await readQuestionRecord(recordPath);
-  if (!current) throw new QuestionSubmitError('question_unknown', `Unknown question id: ${normalizedQuestionId}`);
-  if (current.status !== 'pending' && current.status !== 'prompting') {
-    throw new QuestionSubmitError(
-      'question_not_open',
-      `Question ${normalizedQuestionId} is ${current.status}; only pending or prompting questions can be answered.`,
-    );
-  }
+  return await withQuestionSubmitLock(recordPath, async () => {
+    const current = await readQuestionRecord(recordPath);
+    if (!current) throw new QuestionSubmitError('question_unknown', `Unknown question id: ${normalizedQuestionId}`);
+    if (current.status !== 'pending' && current.status !== 'prompting') {
+      throw new QuestionSubmitError(
+        'question_not_open',
+        `Question ${normalizedQuestionId} is ${current.status}; only pending or prompting questions can be answered.`,
+      );
+    }
 
-  let answers: QuestionAnswerEntry[];
-  try {
-    answers = normalizeSubmittedAnswers(current, answerPayload);
-  } catch (error) {
-    throw new QuestionSubmitError('question_invalid_answer', error instanceof Error ? error.message : String(error));
-  }
-  const record = await markQuestionAnswered(recordPath, answers);
-  await appendQuestionEvent(cwd, 'question-answered', record, { recordPath, runId: options.runId });
-  return { recordPath, record };
+    let answers: QuestionAnswerEntry[];
+    try {
+      answers = normalizeSubmittedAnswers(current, answerPayload);
+      validateSubmittedAnswersAgainstSchema(current, answers);
+    } catch (error) {
+      throw new QuestionSubmitError('question_invalid_answer', error instanceof Error ? error.message : String(error));
+    }
+    const record = await markQuestionAnswered(recordPath, answers);
+    await appendQuestionEvent(cwd, 'question-answered', record, { recordPath, runId: options.runId });
+    return { recordPath, record };
+  });
 }
 
 export async function markQuestionTerminalError(
