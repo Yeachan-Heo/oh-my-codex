@@ -28,12 +28,17 @@ import {
   OMX_FIRST_PARTY_MCP_SERVER_NAMES,
   getOmxFirstPartySetupMcpServers,
 } from "./omx-first-party-mcp.js";
-import { buildManagedCodexHookTrustToml } from "./codex-hooks.js";
+import {
+  buildManagedCodexHookTrustToml,
+  type ManagedCodexHookOptions,
+} from "./codex-hooks.js";
 import type { HudPreset } from "../hud/types.js";
 
 interface MergeOptions {
   includeTui?: boolean;
   codexHooksFile?: string;
+  codexHomeDir?: string;
+  hookCommandPlatform?: ManagedCodexHookOptions["platform"];
   codexHookFeatureFlag?: CodexHookFeatureFlag;
   modelOverride?: string;
   sharedMcpServers?: UnifiedMcpRegistryServer[];
@@ -738,8 +743,9 @@ export function upsertManagedCodexHookTrustState(
   config: string,
   pkgRoot: string,
   codexHooksFile: string | undefined,
+  options: ManagedCodexHookOptions = {},
 ): string {
-  const hookTrustToml = buildManagedCodexHookTrustToml(codexHooksFile, pkgRoot);
+  const hookTrustToml = buildManagedCodexHookTrustToml(codexHooksFile, pkgRoot, options);
   const stripped = stripUnfencedManagedCodexHookTrustState(
     stripManagedCodexHookTrustState(config),
     hookTrustToml,
@@ -749,7 +755,7 @@ export function upsertManagedCodexHookTrustState(
     stripped,
     "",
     OMX_HOOK_TRUST_START_MARKER,
-    "# Trusts only setup-managed codex-native-hook.js wrappers.",
+    "# Trusts only setup-managed native hook wrappers.",
     hookTrustToml,
     OMX_HOOK_TRUST_END_MARKER,
     "",
@@ -1798,6 +1804,7 @@ function getOmxTablesBlock(
   includeTui = true,
   statusLinePreset: HudPreset = DEFAULT_STATUS_LINE_PRESET,
   codexHooksFile?: string,
+  hookOptions: ManagedCodexHookOptions = {},
   includeFirstPartyMcp = false,
 ): string {
   const lines = [
@@ -1826,11 +1833,15 @@ function getOmxTablesBlock(
     }
   }
 
-  const hookTrustToml = buildManagedCodexHookTrustToml(codexHooksFile, pkgRoot);
+  const hookTrustToml = buildManagedCodexHookTrustToml(
+    codexHooksFile,
+    pkgRoot,
+    hookOptions,
+  );
   if (hookTrustToml) {
     lines.push("");
     lines.push("# OMX-owned Codex hook trust state");
-    lines.push("# Trusts only setup-managed codex-native-hook.js wrappers.");
+    lines.push("# Trusts only setup-managed native hook wrappers.");
     lines.push(hookTrustToml);
     lines.push("# End OMX-owned Codex hook trust state");
   }
@@ -1905,7 +1916,10 @@ export function buildMergedConfig(
   existing = stripManagedCodexHookTrustState(existing);
   existing = stripUnfencedManagedCodexHookTrustState(
     existing,
-    buildManagedCodexHookTrustToml(options.codexHooksFile, pkgRoot),
+    buildManagedCodexHookTrustToml(options.codexHooksFile, pkgRoot, {
+      codexHomeDir: options.codexHomeDir,
+      platform: options.hookCommandPlatform,
+    }),
   );
   if (options.modelOverride) {
     existing = stripRootLevelKeys(existing, ["model"]);
@@ -1934,6 +1948,10 @@ export function buildMergedConfig(
     includeTui && !tuiUpsert.hadExistingTui,
     statusLinePreset,
     options.codexHooksFile,
+    {
+      codexHomeDir: options.codexHomeDir,
+      platform: options.hookCommandPlatform,
+    },
     options.includeFirstPartyMcp === true,
   );
   const sharedRegistryBlock = getSharedMcpRegistryBlock(

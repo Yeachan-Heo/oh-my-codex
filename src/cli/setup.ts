@@ -49,7 +49,11 @@ import {
 	OMX_PLUGIN_DEVELOPER_INSTRUCTIONS,
 } from "../config/generator.js";
 import type { CodexHookFeatureFlag } from "../config/codex-feature-flags.js";
-import { mergeManagedCodexHooksConfig } from "../config/codex-hooks.js";
+import {
+	buildManagedCodexNativeHookWindowsShimContent,
+	buildManagedCodexNativeHookWindowsShimPath,
+	mergeManagedCodexHooksConfig,
+} from "../config/codex-hooks.js";
 import {
 	getLegacyUnifiedMcpRegistryCandidate,
 	getUnifiedMcpRegistryCandidates,
@@ -1449,6 +1453,7 @@ async function applyPluginModeHooksConfig(
 	configPath: string,
 	hooksPath: string,
 	pkgRoot: string,
+	codexHomeDir: string,
 	backupContext: SetupBackupContext,
 	summary: SetupCategorySummary,
 	options: Pick<SetupOptions, "dryRun" | "verbose"> & {
@@ -1465,6 +1470,7 @@ async function applyPluginModeHooksConfig(
 		),
 		pkgRoot,
 		hooksPath,
+		{ platform: process.platform, codexHomeDir },
 	);
 	if (nextConfig !== existingConfig) {
 		if (
@@ -1493,6 +1499,7 @@ async function applyPluginModeHooksConfig(
 		existingHooksContent,
 		pkgRoot,
 		hooksPath,
+		{ platform: process.platform, codexHomeDir },
 	);
 	await syncManagedContent(
 		hooksConfig,
@@ -1501,6 +1508,13 @@ async function applyPluginModeHooksConfig(
 		backupContext,
 		options,
 		`native hooks ${hooksPath}`,
+	);
+	await syncManagedWindowsNativeHookShim(
+		codexHomeDir,
+		pkgRoot,
+		summary,
+		backupContext,
+		options,
 	);
 
 		if (options.verbose) {
@@ -1992,6 +2006,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			scopeDirs.codexConfigFile,
 			scopeDirs.codexHooksFile,
 			pkgRoot,
+			scopeDirs.codexHomeDir,
 			backupContext,
 			summary.config,
 			{ dryRun, verbose, codexHookFeatureFlag },
@@ -2145,6 +2160,8 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		const hooksConfig = mergeManagedCodexHooksConfig(
 			existingHooksContent,
 			pkgRoot,
+			scopeDirs.codexHooksFile,
+			{ platform: process.platform, codexHomeDir: scopeDirs.codexHomeDir },
 		);
 		await syncManagedContent(
 			hooksConfig,
@@ -2153,6 +2170,13 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			backupContext,
 			{ dryRun, verbose },
 			`native hooks ${scopeDirs.codexHooksFile}`,
+		);
+		await syncManagedWindowsNativeHookShim(
+			scopeDirs.codexHomeDir,
+			pkgRoot,
+			summary.config,
+			backupContext,
+			{ dryRun, verbose },
 		);
 		console.log(
 			`  Native Codex hooks refresh complete (${scopeDirs.codexHooksFile}).\n`,
@@ -2596,6 +2620,27 @@ async function syncManagedContent(
 			`  ${options.dryRun ? "would update" : "updated"} ${verboseLabel}`,
 		);
 	}
+}
+
+async function syncManagedWindowsNativeHookShim(
+	codexHomeDir: string,
+	pkgRoot: string,
+	summary: SetupCategorySummary,
+	backupContext: SetupBackupContext,
+	options: Pick<SetupOptions, "dryRun" | "verbose">,
+): Promise<void> {
+	if (process.platform !== "win32") return;
+
+	const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+	const shimContent = buildManagedCodexNativeHookWindowsShimContent(pkgRoot);
+	await syncManagedContent(
+		shimContent,
+		shimPath,
+		summary,
+		backupContext,
+		options,
+		`native hook Windows shim ${shimPath}`,
+	);
 }
 
 async function syncManagedAgentsContent(
@@ -3317,6 +3362,8 @@ async function updateManagedConfig(
 	const finalConfig = buildMergedConfig(existing, pkgRoot, {
 		includeTui: omxManagesTui,
 		codexHooksFile: hooksPath,
+		codexHomeDir,
+		hookCommandPlatform: process.platform,
 		codexHookFeatureFlag: options.codexHookFeatureFlag,
 		modelOverride,
 		sharedMcpServers: sharedMcpRegistry.servers,

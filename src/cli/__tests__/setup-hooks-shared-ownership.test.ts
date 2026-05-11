@@ -87,7 +87,15 @@ function hookCommands(entries: HookRegistration[] | undefined): string[] {
 }
 
 function countManagedHooks(entries: HookRegistration[] | undefined): number {
-  return hookCommands(entries).filter((command) => command.includes("codex-native-hook.js")).length;
+  return hookCommands(entries).filter((command) =>
+    command.includes("codex-native-hook.js")
+    || command.includes("omx-native-hook-windows-shim.ps1")
+  ).length;
+}
+
+function hasManagedHookCommand(command: string): boolean {
+  return command.includes("codex-native-hook.js")
+    || command.includes("omx-native-hook-windows-shim.ps1");
 }
 
 function cloneRegistration(entry: HookRegistration): HookRegistration {
@@ -221,7 +229,7 @@ describe("omx setup/uninstall shared ownership for native hooks", () => {
         "setup should keep the managed PostToolUse wrapper alongside user hooks",
       );
       assert.ok(
-        hookCommands(refreshed.hooks?.UserPromptSubmit).some((command) => command.includes("codex-native-hook.js")),
+        hookCommands(refreshed.hooks?.UserPromptSubmit).some(hasManagedHookCommand),
         "setup should still register managed UserPromptSubmit hooks",
       );
     } finally {
@@ -268,7 +276,7 @@ describe("omx setup/uninstall shared ownership for native hooks", () => {
       assert.ok(allCommands.includes('node "/custom/session-start.js"'));
       assert.ok(allCommands.includes('node "/custom/post-tool.js"'));
       assert.equal(
-        allCommands.some((command) => command.includes("codex-native-hook.js")),
+        allCommands.some(hasManagedHookCommand),
         false,
         "uninstall should strip only OMX-managed wrappers",
       );
