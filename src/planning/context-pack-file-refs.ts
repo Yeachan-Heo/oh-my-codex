@@ -88,6 +88,24 @@ function buildLabelCandidate(
   return normalizeLabelToken([base, ...suffixes].join('-')) ?? 'context-file';
 }
 
+function buildNumberedLabelCandidate(
+  base: string,
+  suffixes: readonly string[],
+  counter: number,
+): string {
+  const prefix = buildLabelCandidate(base, suffixes);
+  const counterToken = String(counter);
+  const maxPrefixLength = MAX_CONTEXT_PACK_LABEL_LENGTH - counterToken.length - 1;
+  const trimmedPrefix = maxPrefixLength > 0
+    ? Array.from(prefix)
+      .slice(0, maxPrefixLength)
+      .join('')
+      .replace(/-+$/g, '')
+    : '';
+  return normalizeLabelToken(`${trimmedPrefix || 'context-file'}-${counterToken}`)
+    ?? 'context-file';
+}
+
 function resolveUniqueLabel(
   base: string,
   selectorSuffix: string | null,
@@ -118,7 +136,7 @@ function resolveUniqueLabel(
   }
 
   for (let counter = 2; ; counter += 1) {
-    candidate = buildLabelCandidate(base, [...accumulated, String(counter)]);
+    candidate = buildNumberedLabelCandidate(base, accumulated, counter);
     if (!used.has(candidate)) {
       used.add(candidate);
       return candidate;

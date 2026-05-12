@@ -333,6 +333,33 @@ describe('context pack file refs', () => {
     assert.ok(labels.every((label) => DERIVED_LABEL_PATTERN.test(label)));
   });
 
+  it('keeps numeric collision fallback terminating across many length-saturated label collisions', async () => {
+    const { prdPath, testSpecPath } = await writeReadyPlanningBaseline('file-refs-long-labels');
+    const longLabel = 'A'.repeat(80);
+    const entries = Array.from({ length: 12 }, (_, index) => ({
+      path: `dir-${index}/runtime/shared.ts`,
+      roles: [CONTEXT_PACK_ROLES[index % CONTEXT_PACK_ROLES.length]!],
+      label: longLabel,
+    }));
+    const packPath = await writeContextPackWithEntries(
+      'file-refs-long-labels',
+      prdPath,
+      testSpecPath,
+      entries,
+    );
+
+    const resolution = readReadyContextPackFileRefs(packPath, tempDir);
+    const labels = resolution.refs.map((ref) => ref.label);
+
+    assert.deepEqual(resolution.issues, []);
+    assert.equal(labels.length, entries.length);
+    assert.equal(new Set(labels).size, labels.length);
+    assert.ok(labels.some((label) => /-2$/.test(label)));
+    assert.ok(labels.some((label) => /-12$/.test(label)));
+    assert.ok(labels.every((label) => label.length <= 80));
+    assert.ok(labels.every((label) => DERIVED_LABEL_PATTERN.test(label)));
+  });
+
   it('satisfies the file-ref invariants across deterministic valid metadata cases', async () => {
     const nextRandom = createDeterministicRandom(0xC0D3_2214);
     for (let caseIndex = 0; caseIndex < 18; caseIndex += 1) {
