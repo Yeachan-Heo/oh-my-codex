@@ -7,6 +7,8 @@ import {
   isHudWatchPane,
   killTmuxPane,
   listCurrentWindowPanes,
+  registerHudResizeHook,
+  unregisterHudResizeHook,
   resizeTmuxPane,
   type TmuxPaneSnapshot,
 } from './tmux.js';
@@ -45,6 +47,21 @@ export interface ReconcileHudForPromptSubmitDeps {
   resizeTmuxPane?: (paneId: string, heightLines: number) => boolean;
   readHudConfig?: typeof readHudConfig;
   resolveOmxCliEntryPath?: typeof resolveOmxCliEntryPath;
+  registerHudResizeHook?: (hudPaneId: string, currentPaneId: string | undefined, heightLines: number) => boolean;
+  unregisterHudResizeHook?: (currentPaneId: string | undefined) => boolean;
+}
+
+function ensureHudResizeHook(
+  hudPaneId: string,
+  currentPaneId: string | undefined,
+  desiredHeight: number,
+  deps: ReconcileHudForPromptSubmitDeps,
+): void {
+  try {
+    (deps.registerHudResizeHook ?? registerHudResizeHook)(hudPaneId, currentPaneId, desiredHeight);
+  } catch {
+    // Non-critical — hook registration failure does not break HUD lifecycle.
+  }
 }
 
 export async function reconcileHudForPromptSubmit(
@@ -101,6 +118,7 @@ export async function reconcileHudForPromptSubmit(
 
   if (hudPaneIds.length === 1) {
     const resized = resizePane(hudPaneIds[0], desiredHeight);
+    if (resized) ensureHudResizeHook(hudPaneIds[0], currentPaneId, desiredHeight, deps);
     return {
       status: resized ? 'resized' : 'failed',
       paneId: hudPaneIds[0],
@@ -108,6 +126,9 @@ export async function reconcileHudForPromptSubmit(
       duplicateCount,
     };
   }
+
+  const unregisterHook = deps.unregisterHudResizeHook ?? unregisterHudResizeHook;
+  unregisterHook(currentPaneId);
 
   for (const paneId of hudPaneIds) {
     killPane(paneId);
@@ -128,6 +149,7 @@ export async function reconcileHudForPromptSubmit(
   }
 
   resizePane(paneId, desiredHeight);
+  ensureHudResizeHook(paneId, currentPaneId, desiredHeight, deps);
 
   return {
     status: hudPaneIds.length > 1 ? 'replaced_duplicates' : 'recreated',

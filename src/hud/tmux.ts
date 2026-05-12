@@ -182,3 +182,35 @@ export function resizeTmuxPane(
     return false;
   }
 }
+
+export function registerHudResizeHook(
+  hudPaneId: string,
+  currentPaneId: string | undefined,
+  heightLines: number,
+  execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
+): boolean {
+  if (!hudPaneId.startsWith('%')) return false;
+  const tmuxBin = resolveTmuxBinaryForPlatform() || 'tmux';
+  const height = String(Math.max(1, Math.floor(heightLines)));
+  const resizeCmd = shellEscapeSingle(`${tmuxBin} resize-pane -t ${hudPaneId} -y ${height} 2>/dev/null || true`);
+  if (!currentPaneId?.startsWith('%')) return false;
+  try {
+    execTmuxSync(['set-hook', '-t', currentPaneId, 'client-resized', `run-shell -b ${resizeCmd}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function unregisterHudResizeHook(
+  currentPaneId: string | undefined,
+  execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
+): boolean {
+  if (!currentPaneId?.startsWith('%')) return false;
+  try {
+    execTmuxSync(['set-hook', '-u', '-t', currentPaneId, 'client-resized']);
+    return true;
+  } catch {
+    return false;
+  }
+}
