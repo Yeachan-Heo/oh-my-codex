@@ -48,7 +48,7 @@ export interface ReconcileHudForPromptSubmitDeps {
   readHudConfig?: typeof readHudConfig;
   resolveOmxCliEntryPath?: typeof resolveOmxCliEntryPath;
   registerHudResizeHook?: (hudPaneId: string, currentPaneId: string | undefined, heightLines: number) => boolean;
-  unregisterHudResizeHook?: (currentPaneId: string | undefined) => boolean;
+  unregisterHudResizeHook?: (hudPaneId: string, currentPaneId: string | undefined) => boolean;
 }
 
 function ensureHudResizeHook(
@@ -128,9 +128,8 @@ export async function reconcileHudForPromptSubmit(
   }
 
   const unregisterHook = deps.unregisterHudResizeHook ?? unregisterHudResizeHook;
-  unregisterHook(currentPaneId);
-
   for (const paneId of hudPaneIds) {
+    unregisterHook(paneId, currentPaneId);
     killPane(paneId);
   }
 

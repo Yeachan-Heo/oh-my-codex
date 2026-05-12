@@ -194,8 +194,9 @@ export function registerHudResizeHook(
   const height = String(Math.max(1, Math.floor(heightLines)));
   const resizeCmd = shellEscapeSingle(`${tmuxBin} resize-pane -t ${hudPaneId} -y ${height} 2>/dev/null || true`);
   if (!currentPaneId?.startsWith('%')) return false;
+  const slotIndex = hudPaneId.slice(1);
   try {
-    execTmuxSync(['set-hook', '-t', currentPaneId, 'client-resized', `run-shell -b ${resizeCmd}`]);
+    execTmuxSync(['set-hook', '-t', currentPaneId, `client-resized[${slotIndex}]`, `run-shell -b ${resizeCmd}`]);
     return true;
   } catch {
     return false;
@@ -203,12 +204,15 @@ export function registerHudResizeHook(
 }
 
 export function unregisterHudResizeHook(
+  hudPaneId: string,
   currentPaneId: string | undefined,
   execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
 ): boolean {
+  if (!hudPaneId.startsWith('%')) return false;
   if (!currentPaneId?.startsWith('%')) return false;
+  const slotIndex = hudPaneId.slice(1);
   try {
-    execTmuxSync(['set-hook', '-u', '-t', currentPaneId, 'client-resized']);
+    execTmuxSync(['set-hook', '-u', '-t', currentPaneId, `client-resized[${slotIndex}]`]);
     return true;
   } catch {
     return false;
