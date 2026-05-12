@@ -6,21 +6,21 @@ import { getBaseStateDir } from '../mcp/state-paths.js';
 import { readTeamEvents } from '../team/state/events.js';
 import { readTask, type TeamEvent, type TeamTask } from '../team/state.js';
 import {
-  RUNINGTEAM_CRITIC_VERDICTS,
-  RUNINGTEAM_STATUSES,
-  RUNINGTEAM_TERMINAL_STATUSES,
-  type RuningTeamCheckpoint,
-  type RuningTeamCriticVerdict,
-  type RuningTeamCriticVerdictRecord,
-  type RuningTeamPlan,
-  type RuningTeamPlannerRevision,
-  type RuningTeamSession,
-  type RuningTeamStatus,
-  type RuningTeamTeamAdapterState,
-  type RuningTeamWorkerEvidence,
+  RUNNINGTEAM_CRITIC_VERDICTS,
+  RUNNINGTEAM_STATUSES,
+  RUNNINGTEAM_TERMINAL_STATUSES,
+  type RunningTeamCheckpoint,
+  type RunningTeamCriticVerdict,
+  type RunningTeamCriticVerdictRecord,
+  type RunningTeamPlan,
+  type RunningTeamPlannerRevision,
+  type RunningTeamSession,
+  type RunningTeamStatus,
+  type RunningTeamTeamAdapterState,
+  type RunningTeamWorkerEvidence,
 } from './contracts.js';
 
-export interface RuningTeamPaths {
+export interface RunningTeamPaths {
   root: string;
   session: string;
   plan: string;
@@ -35,25 +35,25 @@ export interface RuningTeamPaths {
   revisionJson: (iteration: number) => string;
 }
 
-export interface RuningTeamSessionSummary {
+export interface RunningTeamSessionSummary {
   session_id: string;
-  status: RuningTeamStatus;
+  status: RunningTeamStatus;
   iteration: number;
   plan_version: number;
   team_name: string | null;
   final_synthesis_present: boolean;
 }
 
-export function createRuningTeamSessionId(): string {
-  return `runingteam-${new Date().toISOString().replace(/[-:.]/g, '').slice(0, 15)}-${randomUUID().slice(0, 8)}`;
+export function createRunningTeamSessionId(): string {
+  return `runningteam-${new Date().toISOString().replace(/[-:.]/g, '').slice(0, 15)}-${randomUUID().slice(0, 8)}`;
 }
 
-export function runingTeamRoot(cwd: string): string {
-  return join(getBaseStateDir(cwd), 'runingteam');
+export function runningTeamRoot(cwd: string): string {
+  return join(getBaseStateDir(cwd), 'runningteam');
 }
 
-export function runingTeamPaths(cwd: string, sessionId: string): RuningTeamPaths {
-  const root = join(runingTeamRoot(cwd), sessionId);
+export function runningTeamPaths(cwd: string, sessionId: string): RunningTeamPaths {
+  const root = join(runningTeamRoot(cwd), sessionId);
   return {
     root,
     session: join(root, 'session.json'),
@@ -103,10 +103,10 @@ function requireStringArray(value: Record<string, unknown>, key: string): string
   return raw;
 }
 
-export function validateRuningTeamSession(raw: unknown): RuningTeamSession {
+export function validateRunningTeamSession(raw: unknown): RunningTeamSession {
   if (!isRecord(raw)) throw new Error('invalid_session');
   const status = requireString(raw, 'status');
-  if (!RUNINGTEAM_STATUSES.includes(status as RuningTeamStatus)) throw new Error('invalid_status');
+  if (!RUNNINGTEAM_STATUSES.includes(status as RunningTeamStatus)) throw new Error('invalid_status');
   const teamName = raw.team_name;
   const terminalReason = raw.terminal_reason;
   return {
@@ -114,7 +114,7 @@ export function validateRuningTeamSession(raw: unknown): RuningTeamSession {
     task: requireString(raw, 'task'),
     created_at: requireString(raw, 'created_at'),
     updated_at: requireString(raw, 'updated_at'),
-    status: status as RuningTeamStatus,
+    status: status as RunningTeamStatus,
     iteration: requireNumber(raw, 'iteration'),
     plan_version: requireNumber(raw, 'plan_version'),
     team_name: teamName === null || typeof teamName === 'string' ? teamName : null,
@@ -123,7 +123,7 @@ export function validateRuningTeamSession(raw: unknown): RuningTeamSession {
   };
 }
 
-export function validateRuningTeamPlan(raw: unknown): RuningTeamPlan {
+export function validateRunningTeamPlan(raw: unknown): RunningTeamPlan {
   if (!isRecord(raw)) throw new Error('invalid_plan');
   const lanes = raw.lanes;
   if (!Array.isArray(lanes) || lanes.length === 0) throw new Error('invalid_lanes');
@@ -140,17 +140,17 @@ export function validateRuningTeamPlan(raw: unknown): RuningTeamPlan {
       return {
         id: requireString(lane, 'id'),
         title: requireString(lane, 'title'),
-        status: status as RuningTeamPlan['lanes'][number]['status'],
+        status: status as RunningTeamPlan['lanes'][number]['status'],
         acceptance_criteria: requireStringArray(lane, 'acceptance_criteria'),
       };
     }),
   };
 }
 
-export function validateCriticVerdictRecord(raw: unknown): RuningTeamCriticVerdictRecord {
+export function validateCriticVerdictRecord(raw: unknown): RunningTeamCriticVerdictRecord {
   if (!isRecord(raw)) throw new Error('invalid_critic_verdict');
   const verdict = requireString(raw, 'verdict');
-  if (!RUNINGTEAM_CRITIC_VERDICTS.includes(verdict as RuningTeamCriticVerdict)) throw new Error('invalid_verdict');
+  if (!RUNNINGTEAM_CRITIC_VERDICTS.includes(verdict as RunningTeamCriticVerdict)) throw new Error('invalid_verdict');
   const record = raw as Record<string, unknown>;
   if (verdict === 'ITERATE_PLAN' && (!Array.isArray(record.required_changes) || record.required_changes.length === 0)) {
     throw new Error('iterate_plan_requires_required_changes');
@@ -163,7 +163,7 @@ export function validateCriticVerdictRecord(raw: unknown): RuningTeamCriticVerdi
   }
   return {
     iteration: requireNumber(record, 'iteration'),
-    verdict: verdict as RuningTeamCriticVerdict,
+    verdict: verdict as RunningTeamCriticVerdict,
     required_changes: Array.isArray(record.required_changes) ? record.required_changes.filter((v): v is string => typeof v === 'string') : undefined,
     rejected_claims: Array.isArray(record.rejected_claims) ? record.rejected_claims.filter((v): v is string => typeof v === 'string') : undefined,
     acceptance_criteria_evidence: isRecord(record.acceptance_criteria_evidence)
@@ -173,7 +173,7 @@ export function validateCriticVerdictRecord(raw: unknown): RuningTeamCriticVerdi
   };
 }
 
-export function validatePlannerRevision(raw: unknown): RuningTeamPlannerRevision {
+export function validatePlannerRevision(raw: unknown): RunningTeamPlannerRevision {
   if (!isRecord(raw)) throw new Error('invalid_planner_revision');
   const preserved = raw.preserved_acceptance_criteria;
   const override = raw.user_override;
@@ -192,10 +192,10 @@ export function validatePlannerRevision(raw: unknown): RuningTeamPlannerRevision
   };
 }
 
-export async function createRuningTeamSession(task: string, cwd: string, opts: { sessionId?: string; maxIterations?: number } = {}): Promise<RuningTeamSession> {
+export async function createRunningTeamSession(task: string, cwd: string, opts: { sessionId?: string; maxIterations?: number } = {}): Promise<RunningTeamSession> {
   const now = new Date().toISOString();
-  const session: RuningTeamSession = {
-    session_id: opts.sessionId ?? createRuningTeamSessionId(),
+  const session: RunningTeamSession = {
+    session_id: opts.sessionId ?? createRunningTeamSessionId(),
     task,
     created_at: now,
     updated_at: now,
@@ -206,11 +206,11 @@ export async function createRuningTeamSession(task: string, cwd: string, opts: {
     max_iterations: opts.maxIterations ?? 10,
     terminal_reason: null,
   };
-  const paths = runingTeamPaths(cwd, session.session_id);
-  const plan: RuningTeamPlan = {
+  const paths = runningTeamPaths(cwd, session.session_id);
+  const plan: RunningTeamPlan = {
     plan_version: 1,
     task,
-    intent: `RuningTeam dynamic plan for: ${task}`,
+    intent: `RunningTeam dynamic plan for: ${task}`,
     acceptance_criteria: ['final synthesis is created before completion', 'worker evidence is checkpointed before revision'],
     non_goals: ['no MVP framing', 'no manual ralplan pre-step'],
     lanes: [
@@ -224,27 +224,27 @@ export async function createRuningTeamSession(task: string, cwd: string, opts: {
   return session;
 }
 
-export async function readRuningTeamSession(cwd: string, sessionId: string): Promise<RuningTeamSession> {
-  return validateRuningTeamSession(await readJson(runingTeamPaths(cwd, sessionId).session));
+export async function readRunningTeamSession(cwd: string, sessionId: string): Promise<RunningTeamSession> {
+  return validateRunningTeamSession(await readJson(runningTeamPaths(cwd, sessionId).session));
 }
 
-export async function readRuningTeamPlan(cwd: string, sessionId: string): Promise<RuningTeamPlan> {
-  return validateRuningTeamPlan(await readJson(runingTeamPaths(cwd, sessionId).plan));
+export async function readRunningTeamPlan(cwd: string, sessionId: string): Promise<RunningTeamPlan> {
+  return validateRunningTeamPlan(await readJson(runningTeamPaths(cwd, sessionId).plan));
 }
 
-export async function updateRuningTeamSession(cwd: string, sessionId: string, updates: Partial<RuningTeamSession>): Promise<RuningTeamSession> {
-  const current = await readRuningTeamSession(cwd, sessionId);
-  const next = validateRuningTeamSession({ ...current, ...updates, updated_at: new Date().toISOString() });
-  await writeJson(runingTeamPaths(cwd, sessionId).session, next);
+export async function updateRunningTeamSession(cwd: string, sessionId: string, updates: Partial<RunningTeamSession>): Promise<RunningTeamSession> {
+  const current = await readRunningTeamSession(cwd, sessionId);
+  const next = validateRunningTeamSession({ ...current, ...updates, updated_at: new Date().toISOString() });
+  await writeJson(runningTeamPaths(cwd, sessionId).session, next);
   return next;
 }
 
-export async function assertRuningTeamCompletionReady(cwd: string, sessionId: string): Promise<void> {
-  const paths = runingTeamPaths(cwd, sessionId);
+export async function assertRunningTeamCompletionReady(cwd: string, sessionId: string): Promise<void> {
+  const paths = runningTeamPaths(cwd, sessionId);
   if (!existsSync(paths.finalSynthesis)) {
     throw new Error('complete_requires_final_synthesis');
   }
-  const session = await readRuningTeamSession(cwd, sessionId);
+  const session = await readRunningTeamSession(cwd, sessionId);
   const verdictPath = paths.verdictJson(session.iteration);
   if (!existsSync(verdictPath)) {
     throw new Error('complete_requires_final_synthesis_ready_verdict');
@@ -255,42 +255,42 @@ export async function assertRuningTeamCompletionReady(cwd: string, sessionId: st
   }
 }
 
-export async function transitionRuningTeamSession(cwd: string, sessionId: string, to: RuningTeamStatus): Promise<RuningTeamSession> {
-  const current = await readRuningTeamSession(cwd, sessionId);
-  if (RUNINGTEAM_TERMINAL_STATUSES.has(current.status) && current.status !== to) {
+export async function transitionRunningTeamSession(cwd: string, sessionId: string, to: RunningTeamStatus): Promise<RunningTeamSession> {
+  const current = await readRunningTeamSession(cwd, sessionId);
+  if (RUNNINGTEAM_TERMINAL_STATUSES.has(current.status) && current.status !== to) {
     throw new Error('terminal_states_require_explicit_recovery');
   }
   if (to === 'complete') {
-    await assertRuningTeamCompletionReady(cwd, sessionId);
+    await assertRunningTeamCompletionReady(cwd, sessionId);
   }
-  return await updateRuningTeamSession(cwd, sessionId, { status: to, terminal_reason: to === 'complete' ? 'final synthesis ready' : current.terminal_reason });
+  return await updateRunningTeamSession(cwd, sessionId, { status: to, terminal_reason: to === 'complete' ? 'final synthesis ready' : current.terminal_reason });
 }
 
 export async function writeFinalSynthesis(cwd: string, sessionId: string, content: string): Promise<string> {
-  const paths = runingTeamPaths(cwd, sessionId);
+  const paths = runningTeamPaths(cwd, sessionId);
   await mkdir(dirname(paths.finalSynthesis), { recursive: true });
   await writeFile(paths.finalSynthesis, content.trimEnd() + '\n', 'utf-8');
-  await updateRuningTeamSession(cwd, sessionId, { status: 'synthesizing' });
+  await updateRunningTeamSession(cwd, sessionId, { status: 'synthesizing' });
   return paths.finalSynthesis;
 }
 
-export async function listRuningTeamSessions(cwd: string): Promise<RuningTeamSessionSummary[]> {
-  const root = runingTeamRoot(cwd);
+export async function listRunningTeamSessions(cwd: string): Promise<RunningTeamSessionSummary[]> {
+  const root = runningTeamRoot(cwd);
   if (!existsSync(root)) return [];
   const { readdir } = await import('node:fs/promises');
   const entries = await readdir(root, { withFileTypes: true });
-  const sessions: RuningTeamSessionSummary[] = [];
+  const sessions: RunningTeamSessionSummary[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     try {
-      const session = await readRuningTeamSession(cwd, entry.name);
+      const session = await readRunningTeamSession(cwd, entry.name);
       sessions.push({
         session_id: session.session_id,
         status: session.status,
         iteration: session.iteration,
         plan_version: session.plan_version,
         team_name: session.team_name,
-        final_synthesis_present: existsSync(runingTeamPaths(cwd, session.session_id).finalSynthesis),
+        final_synthesis_present: existsSync(runningTeamPaths(cwd, session.session_id).finalSynthesis),
       });
     } catch {
       // Ignore malformed session directories in status listings.
@@ -299,9 +299,9 @@ export async function listRuningTeamSessions(cwd: string): Promise<RuningTeamSes
   return sessions.sort((a, b) => a.session_id.localeCompare(b.session_id));
 }
 
-export async function linkRuningTeamTeamAdapter(cwd: string, sessionId: string, adapter: RuningTeamTeamAdapterState): Promise<void> {
-  await writeJson(runingTeamPaths(cwd, sessionId).adapterTeam, adapter);
-  await updateRuningTeamSession(cwd, sessionId, { team_name: adapter.team_name });
+export async function linkRunningTeamTeamAdapter(cwd: string, sessionId: string, adapter: RunningTeamTeamAdapterState): Promise<void> {
+  await writeJson(runningTeamPaths(cwd, sessionId).adapterTeam, adapter);
+  await updateRunningTeamSession(cwd, sessionId, { team_name: adapter.team_name });
 }
 
 function parseResultEvidence(result: string): { files: string[]; commands: string[]; tests: string[] } {
@@ -332,7 +332,7 @@ function parseResultEvidence(result: string): { files: string[]; commands: strin
   return { files: unique(files), commands: unique(commands), tests: unique(tests) };
 }
 
-function evidenceFromTeamEvent(event: TeamEvent, planVersion: number, laneTaskMap: Record<string, string>, task?: TeamTask | null): RuningTeamWorkerEvidence | null {
+function evidenceFromTeamEvent(event: TeamEvent, planVersion: number, laneTaskMap: Record<string, string>, task?: TeamTask | null): RunningTeamWorkerEvidence | null {
   if (event.type !== 'task_completed' && event.type !== 'task_failed') return null;
   const taskId = event.task_id;
   if (!taskId) return null;
@@ -361,14 +361,14 @@ function evidenceFromTeamEvent(event: TeamEvent, planVersion: number, laneTaskMa
   };
 }
 
-export async function ingestTeamEvidence(cwd: string, sessionId: string): Promise<RuningTeamWorkerEvidence[]> {
-  const paths = runingTeamPaths(cwd, sessionId);
-  const session = await readRuningTeamSession(cwd, sessionId);
-  const adapter = await readJson<RuningTeamTeamAdapterState>(paths.adapterTeam);
+export async function ingestTeamEvidence(cwd: string, sessionId: string): Promise<RunningTeamWorkerEvidence[]> {
+  const paths = runningTeamPaths(cwd, sessionId);
+  const session = await readRunningTeamSession(cwd, sessionId);
+  const adapter = await readJson<RunningTeamTeamAdapterState>(paths.adapterTeam);
   const afterEventId = adapter.cursor.trim() === '' ? undefined : adapter.cursor;
   const events = await readTeamEvents(adapter.team_name, cwd, { afterEventId, wakeableOnly: false });
   const seen = new Set<string>();
-  const evidence: RuningTeamWorkerEvidence[] = [];
+  const evidence: RunningTeamWorkerEvidence[] = [];
   for (const event of events) {
     if (seen.has(event.event_id)) continue;
     seen.add(event.event_id);
@@ -385,21 +385,21 @@ export async function ingestTeamEvidence(cwd: string, sessionId: string): Promis
   return evidence;
 }
 
-export async function readEvidence(cwd: string, sessionId: string): Promise<RuningTeamWorkerEvidence[]> {
-  const path = runingTeamPaths(cwd, sessionId).evidenceEvents;
+export async function readEvidence(cwd: string, sessionId: string): Promise<RunningTeamWorkerEvidence[]> {
+  const path = runningTeamPaths(cwd, sessionId).evidenceEvents;
   if (!existsSync(path)) return [];
   const raw = await readFile(path, 'utf-8');
-  return raw.split('\n').filter(Boolean).map((line) => JSON.parse(line) as RuningTeamWorkerEvidence);
+  return raw.split('\n').filter(Boolean).map((line) => JSON.parse(line) as RunningTeamWorkerEvidence);
 }
 
 async function readCheckpointedEvidenceIds(cwd: string, sessionId: string, throughIteration: number): Promise<Set<string>> {
-  const paths = runingTeamPaths(cwd, sessionId);
+  const paths = runningTeamPaths(cwd, sessionId);
   const ids = new Set<string>();
   for (let iteration = 1; iteration <= throughIteration; iteration++) {
     const path = paths.checkpointJson(iteration);
     if (!existsSync(path)) continue;
     try {
-      const checkpoint = await readJson<RuningTeamCheckpoint>(path);
+      const checkpoint = await readJson<RunningTeamCheckpoint>(path);
       for (const id of checkpoint.evidence_ids) ids.add(id);
     } catch {
       // Ignore malformed historical checkpoints; validation will happen on the
@@ -409,15 +409,15 @@ async function readCheckpointedEvidenceIds(cwd: string, sessionId: string, throu
   return ids;
 }
 
-export async function createCheckpoint(cwd: string, sessionId: string, opts: { force?: boolean } = {}): Promise<RuningTeamCheckpoint> {
-  const session = await readRuningTeamSession(cwd, sessionId);
+export async function createCheckpoint(cwd: string, sessionId: string, opts: { force?: boolean } = {}): Promise<RunningTeamCheckpoint> {
+  const session = await readRunningTeamSession(cwd, sessionId);
   const alreadyCheckpointed = await readCheckpointedEvidenceIds(cwd, sessionId, session.iteration);
   const evidence = (await readEvidence(cwd, sessionId))
     .filter((entry) => entry.plan_version === session.plan_version)
     .filter((entry) => !alreadyCheckpointed.has(entry.evidence_id));
   if (!opts.force && evidence.length === 0) throw new Error('checkpoint_requires_new_evidence');
   const iteration = session.iteration + 1;
-  const checkpoint: RuningTeamCheckpoint = {
+  const checkpoint: RunningTeamCheckpoint = {
     iteration,
     plan_version: session.plan_version,
     created_at: new Date().toISOString(),
@@ -426,30 +426,30 @@ export async function createCheckpoint(cwd: string, sessionId: string, opts: { f
     blockers: evidence.filter((entry) => !entry.supported).map((entry) => entry.evidence_id),
     summary: `Checkpoint ${iteration}: ${evidence.length} evidence record(s)`,
   };
-  const paths = runingTeamPaths(cwd, sessionId);
+  const paths = runningTeamPaths(cwd, sessionId);
   await writeJson(paths.checkpointJson(iteration), checkpoint);
   await mkdir(dirname(paths.checkpointMd(iteration)), { recursive: true });
-  await writeFile(paths.checkpointMd(iteration), `# RuningTeam Checkpoint ${iteration}\n\n${checkpoint.summary}\n`, 'utf-8');
-  await updateRuningTeamSession(cwd, sessionId, { status: 'checkpointing', iteration });
+  await writeFile(paths.checkpointMd(iteration), `# RunningTeam Checkpoint ${iteration}\n\n${checkpoint.summary}\n`, 'utf-8');
+  await updateRunningTeamSession(cwd, sessionId, { status: 'checkpointing', iteration });
   return checkpoint;
 }
 
-export async function writeCriticVerdict(cwd: string, sessionId: string, record: RuningTeamCriticVerdictRecord): Promise<RuningTeamCriticVerdictRecord> {
+export async function writeCriticVerdict(cwd: string, sessionId: string, record: RunningTeamCriticVerdictRecord): Promise<RunningTeamCriticVerdictRecord> {
   const validated = validateCriticVerdictRecord(record);
-  await writeJson(runingTeamPaths(cwd, sessionId).verdictJson(validated.iteration), validated);
-  await updateRuningTeamSession(cwd, sessionId, { status: 'reviewing' });
+  await writeJson(runningTeamPaths(cwd, sessionId).verdictJson(validated.iteration), validated);
+  await updateRunningTeamSession(cwd, sessionId, { status: 'reviewing' });
   return validated;
 }
 
-export async function revisePlan(cwd: string, sessionId: string, revision: RuningTeamPlannerRevision): Promise<RuningTeamPlan> {
+export async function revisePlan(cwd: string, sessionId: string, revision: RunningTeamPlannerRevision): Promise<RunningTeamPlan> {
   const validatedRevision = validatePlannerRevision(revision);
-  const paths = runingTeamPaths(cwd, sessionId);
+  const paths = runningTeamPaths(cwd, sessionId);
   if (!existsSync(paths.checkpointJson(validatedRevision.iteration))) throw new Error('revision_requires_checkpoint');
   if (!existsSync(paths.verdictJson(validatedRevision.iteration))) throw new Error('revision_requires_critic_verdict');
-  const currentPlan = await readRuningTeamPlan(cwd, sessionId);
-  const nextPlan = validateRuningTeamPlan({ ...currentPlan, plan_version: validatedRevision.to_plan_version });
+  const currentPlan = await readRunningTeamPlan(cwd, sessionId);
+  const nextPlan = validateRunningTeamPlan({ ...currentPlan, plan_version: validatedRevision.to_plan_version });
   await writeJson(paths.revisionJson(validatedRevision.iteration), validatedRevision);
   await writeJson(paths.plan, nextPlan);
-  await updateRuningTeamSession(cwd, sessionId, { status: 'revising', plan_version: nextPlan.plan_version });
+  await updateRunningTeamSession(cwd, sessionId, { status: 'revising', plan_version: nextPlan.plan_version });
   return nextPlan;
 }

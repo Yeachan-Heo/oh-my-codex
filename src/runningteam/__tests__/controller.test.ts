@@ -5,20 +5,20 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  canTransitionRuningTeamStatus,
+  canTransitionRunningTeamStatus,
   createCriticVerdict,
   createFinalSynthesis,
   createPlannerRevision,
-  createRuningTeamSession,
+  createRunningTeamSession,
   ingestTeamEvidence,
   createCheckpoint,
-  transitionRuningTeamStatus,
+  transitionRunningTeamStatus,
   validateCriticVerdict,
   validatePlannerRevision,
 } from '../controller.js';
 
 async function withTempCwd(fn: (cwd: string) => Promise<void>): Promise<void> {
-  const cwd = await mkdtemp(join(tmpdir(), 'omx-runingteam-'));
+  const cwd = await mkdtemp(join(tmpdir(), 'omx-runningteam-'));
   const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
   const previousOmxRoot = process.env.OMX_ROOT;
   const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
@@ -47,7 +47,7 @@ async function writeTeamEvidence(cwd: string): Promise<void> {
     subject: 'execution lane',
     description: 'implementation',
     status: 'completed',
-    result: 'Implemented controller\nFiles changed: src/runingteam/controller.ts\nCommands: npm run build, node --test dist/runingteam/__tests__/controller.test.js',
+    result: 'Implemented controller\nFiles changed: src/runningteam/controller.ts\nCommands: npm run build, node --test dist/runningteam/__tests__/controller.test.js',
   }, null, 2));
   await writeFile(join(teamDir, 'events', 'events.ndjson'), `${JSON.stringify({
     event_id: 'evt-1',
@@ -59,16 +59,16 @@ async function writeTeamEvidence(cwd: string): Promise<void> {
   })}\n`);
 }
 
-describe('RuningTeam controller', () => {
+describe('RunningTeam controller', () => {
   it('enforces lifecycle transitions and final-synthesis completion gate', async () => {
     await withTempCwd(async (cwd) => {
-      await createRuningTeamSession(cwd, { sessionId: 'sess1', task: 'example' });
-      assert.equal(canTransitionRuningTeamStatus('planning', 'executing'), true);
-      assert.equal(canTransitionRuningTeamStatus('executing', 'revising'), false);
-      await transitionRuningTeamStatus(cwd, 'sess1', 'executing');
+      await createRunningTeamSession(cwd, { sessionId: 'sess1', task: 'example' });
+      assert.equal(canTransitionRunningTeamStatus('planning', 'executing'), true);
+      assert.equal(canTransitionRunningTeamStatus('executing', 'revising'), false);
+      await transitionRunningTeamStatus(cwd, 'sess1', 'executing');
       await assert.rejects(
-        () => transitionRuningTeamStatus(cwd, 'sess1', 'complete'),
-        /complete requires final-synthesis\.md|invalid RuningTeam transition/,
+        () => transitionRunningTeamStatus(cwd, 'sess1', 'complete'),
+        /complete requires final-synthesis\.md|invalid RunningTeam transition/,
       );
     });
   });
@@ -84,15 +84,15 @@ describe('RuningTeam controller', () => {
 
   it('ingests team evidence, writes checkpoint, verdict, revision, and preserves criteria', async () => {
     await withTempCwd(async (cwd) => {
-      await createRuningTeamSession(cwd, { sessionId: 'sess2', task: 'example', teamName: 'alpha' });
+      await createRunningTeamSession(cwd, { sessionId: 'sess2', task: 'example', teamName: 'alpha' });
       await writeTeamEvidence(cwd);
       const evidence = await ingestTeamEvidence(cwd, 'sess2');
       assert.equal(evidence.length, 1);
-      assert.deepEqual(evidence[0].files_changed, ['src/runingteam/controller.ts']);
+      assert.deepEqual(evidence[0].files_changed, ['src/runningteam/controller.ts']);
 
       const checkpoint = await createCheckpoint(cwd, 'sess2');
       assert.equal(checkpoint.evidence_count, 1);
-      assert.equal(existsSync(join(cwd, '.omx', 'state', 'runingteam', 'sess2', 'iterations', '1', 'checkpoint.md')), true);
+      assert.equal(existsSync(join(cwd, '.omx', 'state', 'runningteam', 'sess2', 'iterations', '1', 'checkpoint.md')), true);
 
       const verdict = await createCriticVerdict(cwd, 'sess2', {
         verdict: 'ITERATE_PLAN',
@@ -109,7 +109,7 @@ describe('RuningTeam controller', () => {
 
   it('creates final synthesis only after FINAL_SYNTHESIS_READY and then allows completion', async () => {
     await withTempCwd(async (cwd) => {
-      const { plan } = await createRuningTeamSession(cwd, { sessionId: 'sess3', task: 'example', teamName: 'alpha' });
+      const { plan } = await createRunningTeamSession(cwd, { sessionId: 'sess3', task: 'example', teamName: 'alpha' });
       await writeTeamEvidence(cwd);
       await ingestTeamEvidence(cwd, 'sess3');
       await createCheckpoint(cwd, 'sess3');
@@ -118,10 +118,10 @@ describe('RuningTeam controller', () => {
         acceptance_criteria_evidence: Object.fromEntries(plan.acceptance_criteria.map((criterion) => [criterion, ['worker-1/task-1']])),
       });
       await createFinalSynthesis(cwd, 'sess3');
-      const synthesisPath = join(cwd, '.omx', 'state', 'runingteam', 'sess3', 'final-synthesis.md');
+      const synthesisPath = join(cwd, '.omx', 'state', 'runningteam', 'sess3', 'final-synthesis.md');
       assert.equal(existsSync(synthesisPath), true);
-      assert.match(await readFile(synthesisPath, 'utf-8'), /RuningTeam Final Synthesis/);
-      const complete = await transitionRuningTeamStatus(cwd, 'sess3', 'complete');
+      assert.match(await readFile(synthesisPath, 'utf-8'), /RunningTeam Final Synthesis/);
+      const complete = await transitionRunningTeamStatus(cwd, 'sess3', 'complete');
       assert.equal(complete.status, 'complete');
     });
   });

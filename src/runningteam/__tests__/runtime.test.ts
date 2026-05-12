@@ -6,23 +6,23 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   createCheckpoint,
-  createRuningTeamSession,
+  createRunningTeamSession,
   ingestTeamEvidence,
-  linkRuningTeamTeamAdapter,
-  readRuningTeamSession,
+  linkRunningTeamTeamAdapter,
+  readRunningTeamSession,
   revisePlan,
-  runingTeamPaths,
-  transitionRuningTeamSession,
+  runningTeamPaths,
+  transitionRunningTeamSession,
   validateCriticVerdictRecord,
   validatePlannerRevision,
-  validateRuningTeamSession,
+  validateRunningTeamSession,
   writeCriticVerdict,
   writeFinalSynthesis,
 } from '../runtime.js';
 import { appendTeamEvent, initTeamState } from '../../team/state.js';
 
 async function withTempRoot<T>(fn: (cwd: string) => Promise<T>): Promise<T> {
-  const cwd = await mkdtemp(join(tmpdir(), 'omx-runingteam-runtime-'));
+  const cwd = await mkdtemp(join(tmpdir(), 'omx-runningteam-runtime-'));
   const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
   const previousOmxRoot = process.env.OMX_ROOT;
   const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
@@ -42,22 +42,22 @@ async function withTempRoot<T>(fn: (cwd: string) => Promise<T>): Promise<T> {
   }
 }
 
-describe('RuningTeam runtime contracts', () => {
+describe('RunningTeam runtime contracts', () => {
   it('creates first-class session state and rejects completion without final-synthesis.md', async () => {
     await withTempRoot(async (cwd) => {
-      const session = await createRuningTeamSession('two lane fixture task', cwd, { sessionId: 'rt-final-gate' });
+      const session = await createRunningTeamSession('two lane fixture task', cwd, { sessionId: 'rt-final-gate' });
       assert.equal(session.status, 'planning');
       assert.equal(session.plan_version, 1);
       assert.equal(session.team_name, null);
 
       await assert.rejects(
-        transitionRuningTeamSession(cwd, session.session_id, 'complete'),
+        transitionRunningTeamSession(cwd, session.session_id, 'complete'),
         /complete_requires_final_synthesis/,
       );
 
       await writeFinalSynthesis(cwd, session.session_id, '# Final synthesis\n\nAll evidence is supported.');
       await assert.rejects(
-        transitionRuningTeamSession(cwd, session.session_id, 'complete'),
+        transitionRunningTeamSession(cwd, session.session_id, 'complete'),
         /complete_requires_final_synthesis_ready_verdict/,
       );
       await writeCriticVerdict(cwd, session.session_id, {
@@ -66,14 +66,14 @@ describe('RuningTeam runtime contracts', () => {
         acceptance_criteria_evidence: { 'final synthesis is created before completion': ['manual synthesis'] },
         created_at: new Date().toISOString(),
       });
-      const complete = await transitionRuningTeamSession(cwd, session.session_id, 'complete');
+      const complete = await transitionRunningTeamSession(cwd, session.session_id, 'complete');
       assert.equal(complete.status, 'complete');
     });
   });
 
   it('validates schema enums and verdict/revision guardrails', () => {
     assert.throws(
-      () => validateRuningTeamSession({ session_id: 's', task: 't', created_at: 'n', updated_at: 'n', status: 'bogus', iteration: 0, plan_version: 1, team_name: null, max_iterations: 10, terminal_reason: null }),
+      () => validateRunningTeamSession({ session_id: 's', task: 't', created_at: 'n', updated_at: 'n', status: 'bogus', iteration: 0, plan_version: 1, team_name: null, max_iterations: 10, terminal_reason: null }),
       /invalid_status/,
     );
     assert.throws(
@@ -93,8 +93,8 @@ describe('RuningTeam runtime contracts', () => {
   it('ingests team events once, checkpoints evidence, and revises only after checkpoint plus verdict', async () => {
     await withTempRoot(async (cwd) => {
       await initTeamState('rt-team', 'fixture team', 'executor', 2, cwd);
-      const session = await createRuningTeamSession('two lane fixture task', cwd, { sessionId: 'rt-e2e' });
-      await linkRuningTeamTeamAdapter(cwd, session.session_id, {
+      const session = await createRunningTeamSession('two lane fixture task', cwd, { sessionId: 'rt-e2e' });
+      await linkRunningTeamTeamAdapter(cwd, session.session_id, {
         team_name: 'rt-team',
         cursor: '',
         lane_task_map: { tests: '1', implementation: '2' },
@@ -106,7 +106,7 @@ describe('RuningTeam runtime contracts', () => {
         worker: 'worker-1',
         task_id: '1',
         reason: 'RED evidence emitted',
-        metadata: { files_changed: ['src/runingteam/__tests__/runtime.test.ts'], commands: ['node --test'], tests: ['runtime.test.ts'] },
+        metadata: { files_changed: ['src/runningteam/__tests__/runtime.test.ts'], commands: ['node --test'], tests: ['runtime.test.ts'] },
       }, cwd);
       const first = await ingestTeamEvidence(cwd, session.session_id);
       const second = await ingestTeamEvidence(cwd, session.session_id);
@@ -146,15 +146,15 @@ describe('RuningTeam runtime contracts', () => {
         created_at: new Date().toISOString(),
       });
       assert.equal(revised.plan_version, 2);
-      assert.equal((await readRuningTeamSession(cwd, session.session_id)).plan_version, 2);
+      assert.equal((await readRunningTeamSession(cwd, session.session_id)).plan_version, 2);
     });
   });
 
   it('requires fresh current-plan evidence for each checkpoint', async () => {
     await withTempRoot(async (cwd) => {
       await initTeamState('rt-fresh-evidence-team', 'fixture team', 'executor', 2, cwd);
-      const session = await createRuningTeamSession('fresh evidence fixture', cwd, { sessionId: 'rt-fresh-evidence' });
-      await linkRuningTeamTeamAdapter(cwd, session.session_id, {
+      const session = await createRunningTeamSession('fresh evidence fixture', cwd, { sessionId: 'rt-fresh-evidence' });
+      await linkRunningTeamTeamAdapter(cwd, session.session_id, {
         team_name: 'rt-fresh-evidence-team',
         cursor: '',
         lane_task_map: { tests: '1', implementation: '2' },
@@ -166,7 +166,7 @@ describe('RuningTeam runtime contracts', () => {
         worker: 'worker-1',
         task_id: '1',
         reason: 'plan v1 evidence',
-        metadata: { commands: ['npm test'], tests: ['runingteam runtime'] },
+        metadata: { commands: ['npm test'], tests: ['runningteam runtime'] },
       }, cwd);
       const firstEvidence = await ingestTeamEvidence(cwd, session.session_id);
       assert.equal(firstEvidence.length, 1);
@@ -206,7 +206,7 @@ describe('RuningTeam runtime contracts', () => {
         worker: 'worker-2',
         task_id: '2',
         reason: 'plan v2 evidence',
-        metadata: { commands: ['npm test'], tests: ['runingteam runtime v2'] },
+        metadata: { commands: ['npm test'], tests: ['runningteam runtime v2'] },
       }, cwd);
       const secondEvidence = await ingestTeamEvidence(cwd, session.session_id);
       assert.equal(secondEvidence.length, 1);
@@ -220,33 +220,33 @@ describe('RuningTeam runtime contracts', () => {
   it('simulates two-lane E2E through final synthesis completion', async () => {
     await withTempRoot(async (cwd) => {
       await initTeamState('rt-e2e-team', 'fixture team', 'executor', 2, cwd);
-      const session = await createRuningTeamSession('two lane fixture task', cwd, { sessionId: 'rt-full-smoke' });
-      await linkRuningTeamTeamAdapter(cwd, session.session_id, {
+      const session = await createRunningTeamSession('two lane fixture task', cwd, { sessionId: 'rt-full-smoke' });
+      await linkRunningTeamTeamAdapter(cwd, session.session_id, {
         team_name: 'rt-e2e-team',
         cursor: '',
         lane_task_map: { tests: '1', implementation: '2' },
         evidence_guarantee: 'active',
       });
 
-      await appendTeamEvent('rt-e2e-team', { type: 'task_completed', worker: 'worker-1', task_id: '1', reason: 'tests lane RED', metadata: { commands: ['npm test'], tests: ['runingteam runtime'] } }, cwd);
+      await appendTeamEvent('rt-e2e-team', { type: 'task_completed', worker: 'worker-1', task_id: '1', reason: 'tests lane RED', metadata: { commands: ['npm test'], tests: ['runningteam runtime'] } }, cwd);
       await ingestTeamEvidence(cwd, session.session_id);
       await createCheckpoint(cwd, session.session_id);
       await writeCriticVerdict(cwd, session.session_id, { iteration: 1, verdict: 'APPROVE_NEXT_BATCH', created_at: new Date().toISOString() });
 
-      await appendTeamEvent('rt-e2e-team', { type: 'task_failed', worker: 'worker-2', task_id: '2', reason: 'implementation failed tests', metadata: { commands: ['npm test'], tests: ['failing runingteam runtime'] } }, cwd);
+      await appendTeamEvent('rt-e2e-team', { type: 'task_failed', worker: 'worker-2', task_id: '2', reason: 'implementation failed tests', metadata: { commands: ['npm test'], tests: ['failing runningteam runtime'] } }, cwd);
       await ingestTeamEvidence(cwd, session.session_id);
       await createCheckpoint(cwd, session.session_id);
       await writeCriticVerdict(cwd, session.session_id, { iteration: 2, verdict: 'ITERATE_PLAN', required_changes: ['fix implementation evidence'], created_at: new Date().toISOString() });
       await revisePlan(cwd, session.session_id, { iteration: 2, from_plan_version: 1, to_plan_version: 2, reason: 'failed implementation evidence', changes: ['rerun implementation lane'], preserved_acceptance_criteria: true, created_at: new Date().toISOString() });
 
-      await appendTeamEvent('rt-e2e-team', { type: 'task_completed', worker: 'worker-2', task_id: '2', reason: 'implementation passing', metadata: { commands: ['npm test'], tests: ['passing runingteam runtime'] } }, cwd);
+      await appendTeamEvent('rt-e2e-team', { type: 'task_completed', worker: 'worker-2', task_id: '2', reason: 'implementation passing', metadata: { commands: ['npm test'], tests: ['passing runningteam runtime'] } }, cwd);
       await ingestTeamEvidence(cwd, session.session_id);
       await createCheckpoint(cwd, session.session_id);
       await writeCriticVerdict(cwd, session.session_id, { iteration: 3, verdict: 'FINAL_SYNTHESIS_READY', acceptance_criteria_evidence: { 'final synthesis is created before completion': ['worker-1', 'worker-2'] }, created_at: new Date().toISOString() });
       await writeFinalSynthesis(cwd, session.session_id, '# Final synthesis\n\nTwo-lane fixture completed.');
-      const complete = await transitionRuningTeamSession(cwd, session.session_id, 'complete');
+      const complete = await transitionRunningTeamSession(cwd, session.session_id, 'complete');
       assert.equal(complete.status, 'complete');
-      assert.equal(existsSync(runingTeamPaths(cwd, session.session_id).finalSynthesis), true);
+      assert.equal(existsSync(runningTeamPaths(cwd, session.session_id).finalSynthesis), true);
     });
   });
 
@@ -255,8 +255,8 @@ describe('RuningTeam runtime contracts', () => {
   it('ingests task result commands when team event metadata is empty', async () => {
     await withTempRoot(async (cwd) => {
       await initTeamState('rt-result-fallback-team', 'fixture team', 'executor', 1, cwd);
-      const session = await createRuningTeamSession('result fallback fixture', cwd, { sessionId: 'rt-result-fallback' });
-      await linkRuningTeamTeamAdapter(cwd, session.session_id, {
+      const session = await createRunningTeamSession('result fallback fixture', cwd, { sessionId: 'rt-result-fallback' });
+      await linkRunningTeamTeamAdapter(cwd, session.session_id, {
         team_name: 'rt-result-fallback-team',
         cursor: '',
         lane_task_map: { implementation: '1' },
@@ -271,10 +271,10 @@ describe('RuningTeam runtime contracts', () => {
         status: 'completed',
         owner: 'worker-1',
         created_at: '2026-05-10T00:00:00.000Z',
-        filePaths: ['src/runingteam/runtime.ts'],
+        filePaths: ['src/runningteam/runtime.ts'],
         result: [
           'Implemented result fallback.',
-          'PASS - `npm test -- src/runingteam/__tests__/runtime.test.ts` → ok',
+          'PASS - `npm test -- src/runningteam/__tests__/runtime.test.ts` → ok',
           'PASS - `npx tsc --noEmit` → ok',
         ].join('\n'),
       }, null, 2));
@@ -289,20 +289,20 @@ describe('RuningTeam runtime contracts', () => {
 
       const evidence = await ingestTeamEvidence(cwd, session.session_id);
       assert.equal(evidence.length, 1);
-      assert.deepEqual(evidence[0]?.files_changed, ['src/runingteam/runtime.ts']);
+      assert.deepEqual(evidence[0]?.files_changed, ['src/runningteam/runtime.ts']);
       assert.deepEqual(evidence[0]?.commands, ['npx tsc --noEmit']);
-      assert.deepEqual(evidence[0]?.tests, ['npm test -- src/runingteam/__tests__/runtime.test.ts']);
+      assert.deepEqual(evidence[0]?.tests, ['npm test -- src/runningteam/__tests__/runtime.test.ts']);
       assert.equal(evidence[0]?.supported, true);
     });
   });
 
-  it('preserves omx team state when RuningTeam is inactive', async () => {
+  it('preserves omx team state when RunningTeam is inactive', async () => {
     await withTempRoot(async (cwd) => {
       await initTeamState('plain-team', 'plain team task', 'executor', 1, cwd);
       const teamConfigPath = join(cwd, '.omx', 'state', 'team', 'plain-team', 'config.json');
       const before = await readFile(teamConfigPath, 'utf-8');
       await mkdir(join(cwd, '.omx', 'state'), { recursive: true });
-      const sessions = await import('../runtime.js').then((m) => m.listRuningTeamSessions(cwd));
+      const sessions = await import('../runtime.js').then((m) => m.listRunningTeamSessions(cwd));
       assert.deepEqual(sessions, []);
       const after = await readFile(teamConfigPath, 'utf-8');
       assert.equal(after, before);

@@ -27,7 +27,7 @@
       "core": true
     },
     {
-      "name": "runingteam",
+      "name": "runningteam",
       "category": "execution",
       "status": "active",
       "core": false

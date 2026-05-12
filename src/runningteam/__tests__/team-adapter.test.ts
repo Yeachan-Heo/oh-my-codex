@@ -5,21 +5,21 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { appendTeamEvent, claimTask, createTask, initTeamState, transitionTaskStatus } from '../../team/state.js';
 import {
-  ingestRuningTeamAdapterEvidence,
-  initializeRuningTeamAdapterState,
-  readRuningTeamAdapterState,
-  runingTeamEvidenceLogPath,
+  ingestRunningTeamAdapterEvidence,
+  initializeRunningTeamAdapterState,
+  readRunningTeamAdapterState,
+  runningTeamEvidenceLogPath,
 } from '../team-adapter.js';
 
 async function setup(name: string): Promise<{ cwd: string; cleanup: () => Promise<void> }> {
-  const cwd = await mkdtemp(join(tmpdir(), `omx-runingteam-adapter-${name}-`));
+  const cwd = await mkdtemp(join(tmpdir(), `omx-runningteam-adapter-${name}-`));
   const previousOmxRoot = process.env.OMX_ROOT;
   const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
   const previousOmxTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
   delete process.env.OMX_ROOT;
   delete process.env.OMX_STATE_ROOT;
   delete process.env.OMX_TEAM_STATE_ROOT;
-  await initTeamState(name, 'runingteam adapter test', 'executor', 2, cwd);
+  await initTeamState(name, 'runningteam adapter test', 'executor', 2, cwd);
   return {
     cwd,
     cleanup: async () => {
@@ -34,7 +34,7 @@ async function setup(name: string): Promise<{ cwd: string; cleanup: () => Promis
   };
 }
 
-describe('runingteam/team-adapter', () => {
+describe('runningteam/team-adapter', () => {
   it('ingests team task completion evidence with lane/task/plan correlation and stable cursor', async () => {
     const { cwd, cleanup } = await setup('rt-adapter-a');
     try {
@@ -50,14 +50,14 @@ describe('runingteam/team-adapter', () => {
       assert.equal(claim.ok, true);
       if (!claim.ok) throw new Error('claim failed');
 
-      const beforeCompletion = await initializeRuningTeamAdapterState({
+      const beforeCompletion = await initializeRunningTeamAdapterState({
         cwd,
         sessionId: 'session-a',
         teamName: 'rt-adapter-a',
         workerMap: { 'worker-1': 'implementation' },
         taskMap: { [task.id]: 'implementation' },
       });
-      const baseline = await ingestRuningTeamAdapterEvidence({
+      const baseline = await ingestRunningTeamAdapterEvidence({
         cwd,
         sessionId: 'session-a',
         iteration: 1,
@@ -74,7 +74,7 @@ describe('runingteam/team-adapter', () => {
       const transitioned = await transitionTaskStatus('rt-adapter-a', task.id, 'in_progress', 'completed', claim.claimToken, cwd, { result });
       assert.equal(transitioned.ok, true);
 
-      const first = await ingestRuningTeamAdapterEvidence({
+      const first = await ingestRunningTeamAdapterEvidence({
         cwd,
         sessionId: 'session-a',
         iteration: 1,
@@ -97,7 +97,7 @@ describe('runingteam/team-adapter', () => {
       assert.equal(event.commands_run.some((command) => command.command === 'npx tsc --noEmit' && command.exit_code === 0), true);
       assert.equal(typeof first.cursor, 'string');
 
-      const second = await ingestRuningTeamAdapterEvidence({
+      const second = await ingestRunningTeamAdapterEvidence({
         cwd,
         sessionId: 'session-a',
         iteration: 1,
@@ -106,9 +106,9 @@ describe('runingteam/team-adapter', () => {
       assert.equal(second.ingestedCount, 0);
       assert.equal(second.cursor, first.cursor);
 
-      const logRaw = await readFile(runingTeamEvidenceLogPath(cwd, 'session-a'), 'utf-8');
+      const logRaw = await readFile(runningTeamEvidenceLogPath(cwd, 'session-a'), 'utf-8');
       assert.equal(logRaw.trim().split('\n').length, first.ingestedCount);
-      const persisted = await readRuningTeamAdapterState(cwd, 'session-a');
+      const persisted = await readRunningTeamAdapterState(cwd, 'session-a');
       assert.equal(persisted?.event_cursor, first.cursor);
       assert.equal(persisted?.ingested_event_ids?.length, first.ingestedCount);
     } finally {
@@ -125,7 +125,7 @@ describe('runingteam/team-adapter', () => {
         status: 'pending',
         owner: 'worker-1',
         lane: 'implementation',
-        filePaths: ['src/runingteam/example.ts'],
+        filePaths: ['src/runningteam/example.ts'],
       }, cwd);
       const claim = await claimTask('rt-adapter-empty-metadata', task.id, 'worker-1', null, cwd);
       assert.equal(claim.ok, true);
@@ -133,13 +133,13 @@ describe('runingteam/team-adapter', () => {
 
       const result = [
         'Implemented worker result parsing fallback.',
-        'PASS - `npm test -- src/runingteam/__tests__/team-adapter.test.ts` → ok',
+        'PASS - `npm test -- src/runningteam/__tests__/team-adapter.test.ts` → ok',
         'FAIL - `npx tsc --noEmit` → typecheck failed before production fix',
       ].join('\n');
       const transitioned = await transitionTaskStatus('rt-adapter-empty-metadata', task.id, 'in_progress', 'completed', claim.claimToken, cwd, { result });
       assert.equal(transitioned.ok, true);
 
-      await initializeRuningTeamAdapterState({
+      await initializeRunningTeamAdapterState({
         cwd,
         sessionId: 'session-empty-metadata',
         teamName: 'rt-adapter-empty-metadata',
@@ -154,7 +154,7 @@ describe('runingteam/team-adapter', () => {
         metadata: {},
       }, cwd);
 
-      const ingested = await ingestRuningTeamAdapterEvidence({
+      const ingested = await ingestRunningTeamAdapterEvidence({
         cwd,
         sessionId: 'session-empty-metadata',
         iteration: 2,
@@ -164,8 +164,8 @@ describe('runingteam/team-adapter', () => {
       const evidence = ingested.events.find((event) => event.type === 'worker_evidence_received');
       assert.ok(evidence, 'task_completed should become worker evidence even when event metadata is empty');
       if (evidence?.type !== 'worker_evidence_received') throw new Error('expected worker evidence');
-      assert.deepEqual(evidence.files_changed, ['src/runingteam/example.ts']);
-      assert.equal(evidence.tests_run.some((test) => test.command === 'npm test -- src/runingteam/__tests__/team-adapter.test.ts' && test.status === 'pass'), true);
+      assert.deepEqual(evidence.files_changed, ['src/runningteam/example.ts']);
+      assert.equal(evidence.tests_run.some((test) => test.command === 'npm test -- src/runningteam/__tests__/team-adapter.test.ts' && test.status === 'pass'), true);
       assert.equal(evidence.commands_run.some((command) => command.command === 'npx tsc --noEmit' && command.exit_code === 1), true);
       assert.equal(evidence.next_needed, 'checkpoint_review');
     } finally {
@@ -201,20 +201,20 @@ describe('runingteam/team-adapter', () => {
         reason: 'stdout stale',
       }, cwd);
 
-      await initializeRuningTeamAdapterState({
+      await initializeRunningTeamAdapterState({
         cwd,
         sessionId: 'session-b',
         teamName: 'rt-adapter-b',
         workerMap: { 'worker-2': 'tests' },
         taskMap: { '2': 'tests' },
       });
-      const state = await readRuningTeamAdapterState(cwd, 'session-b');
+      const state = await readRunningTeamAdapterState(cwd, 'session-b');
       assert.ok(state);
       if (state) {
         state.event_cursor = baseline.event_id;
       }
 
-      const result = await ingestRuningTeamAdapterEvidence({
+      const result = await ingestRunningTeamAdapterEvidence({
         cwd,
         sessionId: 'session-b',
         iteration: 3,
@@ -234,8 +234,8 @@ describe('runingteam/team-adapter', () => {
   });
 
   it('uses configured OMX state roots for adapter state and evidence paths', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'omx-runingteam-adapter-root-cwd-'));
-    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-runingteam-adapter-root-state-'));
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runningteam-adapter-root-cwd-'));
+    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-runningteam-adapter-root-state-'));
     const previousOmxRoot = process.env.OMX_ROOT;
     const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
     const previousOmxTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
@@ -244,7 +244,7 @@ describe('runingteam/team-adapter', () => {
     delete process.env.OMX_TEAM_STATE_ROOT;
     try {
       await initTeamState('rt-adapter-root', 'configured root adapter test', 'executor', 1, cwd);
-      await initializeRuningTeamAdapterState({
+      await initializeRunningTeamAdapterState({
         cwd,
         sessionId: 'session-root',
         teamName: 'rt-adapter-root',
@@ -255,7 +255,7 @@ describe('runingteam/team-adapter', () => {
         worker: 'worker-1',
         reason: 'idle for configured root evidence',
       }, cwd);
-      const ingested = await ingestRuningTeamAdapterEvidence({
+      const ingested = await ingestRunningTeamAdapterEvidence({
         cwd,
         sessionId: 'session-root',
         iteration: 1,
@@ -263,9 +263,9 @@ describe('runingteam/team-adapter', () => {
       });
 
       assert.equal(ingested.ingestedCount, 1);
-      const evidencePath = runingTeamEvidenceLogPath(cwd, 'session-root');
-      assert.equal(evidencePath.startsWith(join(stateRoot, '.omx', 'state', 'runingteam')), true);
-      assert.equal(evidencePath.startsWith(join(cwd, '.omx', 'state', 'runingteam')), false);
+      const evidencePath = runningTeamEvidenceLogPath(cwd, 'session-root');
+      assert.equal(evidencePath.startsWith(join(stateRoot, '.omx', 'state', 'runningteam')), true);
+      assert.equal(evidencePath.startsWith(join(cwd, '.omx', 'state', 'runningteam')), false);
       assert.match(await readFile(evidencePath, 'utf-8'), /team_event_ingested/);
     } finally {
       if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
@@ -282,14 +282,14 @@ describe('runingteam/team-adapter', () => {
   it('persists merged adapter mappings when reinitialized', async () => {
     const { cwd, cleanup } = await setup('rt-adapter-reinit');
     try {
-      await initializeRuningTeamAdapterState({
+      await initializeRunningTeamAdapterState({
         cwd,
         sessionId: 'session-reinit',
         teamName: 'rt-adapter-reinit',
         workerMap: { 'worker-1': 'tests' },
         taskMap: { '1': 'tests' },
       });
-      await initializeRuningTeamAdapterState({
+      await initializeRunningTeamAdapterState({
         cwd,
         sessionId: 'session-reinit',
         teamName: 'rt-adapter-reinit',
@@ -297,7 +297,7 @@ describe('runingteam/team-adapter', () => {
         taskMap: { '2': 'implementation' },
       });
 
-      const persisted = await readRuningTeamAdapterState(cwd, 'session-reinit');
+      const persisted = await readRunningTeamAdapterState(cwd, 'session-reinit');
       assert.equal(persisted?.worker_map['worker-1'], 'tests');
       assert.equal(persisted?.worker_map['worker-2'], 'implementation');
       assert.equal(persisted?.task_map['1'], 'tests');

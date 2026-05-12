@@ -8,7 +8,7 @@ import { readTeamEvents } from '../team/state/events.js';
 import type { TeamEvent } from '../team/state.js';
 import type { TeamEventType } from '../team/contracts.js';
 
-export interface RuningTeamTeamAdapterState {
+export interface RunningTeamTeamAdapterState {
   team_name: string;
   team_state_root: string;
   event_cursor: string | null;
@@ -17,19 +17,19 @@ export interface RuningTeamTeamAdapterState {
   ingested_event_ids?: string[];
 }
 
-export interface RuningTeamCommandEvidence {
+export interface RunningTeamCommandEvidence {
   command: string;
   exit_code: number;
   summary: string;
 }
 
-export interface RuningTeamTestEvidence {
+export interface RunningTeamTestEvidence {
   command: string;
   status: 'pass' | 'fail' | 'not_run' | 'fail_expected';
   summary: string;
 }
 
-export interface RuningTeamWorkerEvidenceReceived {
+export interface RunningTeamWorkerEvidenceReceived {
   type: 'worker_evidence_received';
   event_id: string;
   session_id: string;
@@ -42,14 +42,14 @@ export interface RuningTeamWorkerEvidenceReceived {
   task_id: string;
   claim: string;
   files_changed: string[];
-  commands_run: RuningTeamCommandEvidence[];
-  tests_run: RuningTeamTestEvidence[];
+  commands_run: RunningTeamCommandEvidence[];
+  tests_run: RunningTeamTestEvidence[];
   blockers: string[];
   next_needed: string;
   source_team_event_id: string;
 }
 
-export interface RuningTeamTeamEventIngested {
+export interface RunningTeamTeamEventIngested {
   type: 'team_event_ingested';
   event_id: string;
   session_id: string;
@@ -65,36 +65,36 @@ export interface RuningTeamTeamEventIngested {
   blockers: string[];
 }
 
-export type RuningTeamAdapterEvidenceEvent = RuningTeamWorkerEvidenceReceived | RuningTeamTeamEventIngested;
+export type RunningTeamAdapterEvidenceEvent = RunningTeamWorkerEvidenceReceived | RunningTeamTeamEventIngested;
 
-export interface RuningTeamEvidenceIngestOptions {
+export interface RunningTeamEvidenceIngestOptions {
   cwd: string;
   sessionId: string;
   iteration: number;
   planVersion: number;
   teamName?: string;
-  state?: RuningTeamTeamAdapterState;
+  state?: RunningTeamTeamAdapterState;
   now?: Date;
 }
 
-export interface RuningTeamEvidenceIngestResult {
-  state: RuningTeamTeamAdapterState;
-  events: RuningTeamAdapterEvidenceEvent[];
+export interface RunningTeamEvidenceIngestResult {
+  state: RunningTeamTeamAdapterState;
+  events: RunningTeamAdapterEvidenceEvent[];
   cursor: string | null;
   ingestedCount: number;
   skippedDuplicateCount: number;
 }
 
-function runingTeamSessionDir(cwd: string, sessionId: string): string {
-  return join(getBaseStateDir(cwd), 'runingteam', sessionId);
+function runningTeamSessionDir(cwd: string, sessionId: string): string {
+  return join(getBaseStateDir(cwd), 'runningteam', sessionId);
 }
 
-export function runingTeamAdapterStatePath(cwd: string, sessionId: string): string {
-  return join(runingTeamSessionDir(cwd, sessionId), 'adapter', 'team.json');
+export function runningTeamAdapterStatePath(cwd: string, sessionId: string): string {
+  return join(runningTeamSessionDir(cwd, sessionId), 'adapter', 'team.json');
 }
 
-export function runingTeamEvidenceLogPath(cwd: string, sessionId: string): string {
-  return join(runingTeamSessionDir(cwd, sessionId), 'evidence', 'events.ndjson');
+export function runningTeamEvidenceLogPath(cwd: string, sessionId: string): string {
+  return join(runningTeamSessionDir(cwd, sessionId), 'evidence', 'events.ndjson');
 }
 
 function stableJson(value: unknown): string {
@@ -137,9 +137,9 @@ function extractFilesChanged(event: TeamEvent, task: TeamTask | null): string[] 
   return [...new Set(candidates.flatMap(uniqueStrings))];
 }
 
-function normalizeCommandEvidence(value: unknown): RuningTeamCommandEvidence[] {
+function normalizeCommandEvidence(value: unknown): RunningTeamCommandEvidence[] {
   if (!Array.isArray(value)) return [];
-  return value.flatMap((entry): RuningTeamCommandEvidence[] => {
+  return value.flatMap((entry): RunningTeamCommandEvidence[] => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
     const record = entry as Record<string, unknown>;
     const command = typeof record.command === 'string' ? record.command.trim() : '';
@@ -156,15 +156,15 @@ function normalizeCommandEvidence(value: unknown): RuningTeamCommandEvidence[] {
   });
 }
 
-function normalizeTestStatus(value: unknown): RuningTeamTestEvidence['status'] {
+function normalizeTestStatus(value: unknown): RunningTeamTestEvidence['status'] {
   return value === 'pass' || value === 'fail' || value === 'not_run' || value === 'fail_expected'
     ? value
     : 'not_run';
 }
 
-function normalizeTestEvidence(value: unknown): RuningTeamTestEvidence[] {
+function normalizeTestEvidence(value: unknown): RunningTeamTestEvidence[] {
   if (!Array.isArray(value)) return [];
-  return value.flatMap((entry): RuningTeamTestEvidence[] => {
+  return value.flatMap((entry): RunningTeamTestEvidence[] => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
     const record = entry as Record<string, unknown>;
     const command = typeof record.command === 'string' ? record.command.trim() : '';
@@ -177,7 +177,7 @@ function normalizeTestEvidence(value: unknown): RuningTeamTestEvidence[] {
   });
 }
 
-function summarizeTaskResultCommands(task: TeamTask | null): { commands: RuningTeamCommandEvidence[]; tests: RuningTeamTestEvidence[] } {
+function summarizeTaskResultCommands(task: TeamTask | null): { commands: RunningTeamCommandEvidence[]; tests: RunningTeamTestEvidence[] } {
   const result = task?.result ?? '';
   if (!result) return { commands: [], tests: [] };
 
@@ -186,10 +186,10 @@ function summarizeTaskResultCommands(task: TeamTask | null): { commands: RuningT
     .map((line) => line.trim())
     .filter((line) => /^(?:PASS|FAIL)\b.*(?:npm|node|tsc|vitest|jest|biome|eslint|cargo|python|pytest|go test|make)\b/i.test(line));
 
-  const tests: RuningTeamTestEvidence[] = [];
-  const commands: RuningTeamCommandEvidence[] = [];
+  const tests: RunningTeamTestEvidence[] = [];
+  const commands: RunningTeamCommandEvidence[] = [];
   for (const line of commandLines) {
-    const status: RuningTeamTestEvidence['status'] = /^PASS\b/i.test(line) ? 'pass' : /^FAIL\b/i.test(line) ? 'fail' : 'not_run';
+    const status: RunningTeamTestEvidence['status'] = /^PASS\b/i.test(line) ? 'pass' : /^FAIL\b/i.test(line) ? 'fail' : 'not_run';
     const commandMatch = line.match(/(?:-|:|→)\s*`?([^`]+?)`?\s*(?:→|$)/);
     const command = commandMatch?.[1]?.trim() || line.replace(/^(?:PASS|FAIL)\b\s*[-:]?\s*/i, '').trim();
     if (/test|spec|vitest|jest|pytest|go test|cargo test/i.test(command)) {
@@ -225,7 +225,7 @@ function eventShouldBecomeWorkerEvidence(event: TeamEvent, task: TeamTask | null
     || Boolean(task?.error);
 }
 
-function mapLane(state: RuningTeamTeamAdapterState, event: TeamEvent, task: TeamTask | null): string {
+function mapLane(state: RunningTeamTeamAdapterState, event: TeamEvent, task: TeamTask | null): string {
   if (event.task_id && state.task_map[event.task_id]) return state.task_map[event.task_id];
   if (event.worker && state.worker_map[event.worker]) return state.worker_map[event.worker];
   if (typeof task?.lane === 'string' && task.lane.trim() !== '') return task.lane.trim();
@@ -243,12 +243,12 @@ function claimFor(event: TeamEvent, task: TeamTask | null): string {
 function buildEvidenceEvent(params: {
   event: TeamEvent;
   task: TeamTask | null;
-  state: RuningTeamTeamAdapterState;
+  state: RunningTeamTeamAdapterState;
   sessionId: string;
   iteration: number;
   planVersion: number;
   createdAt: string;
-}): RuningTeamAdapterEvidenceEvent {
+}): RunningTeamAdapterEvidenceEvent {
   const { event, task, state, sessionId, iteration, planVersion, createdAt } = params;
   const lane = mapLane(state, event, task);
   const taskId = event.task_id ?? task?.id ?? '';
@@ -294,7 +294,7 @@ function buildEvidenceEvent(params: {
   };
 }
 
-function mergeState(base: RuningTeamTeamAdapterState, patch: Partial<RuningTeamTeamAdapterState>): RuningTeamTeamAdapterState {
+function mergeState(base: RunningTeamTeamAdapterState, patch: Partial<RunningTeamTeamAdapterState>): RunningTeamTeamAdapterState {
   return {
     ...base,
     ...patch,
@@ -313,19 +313,19 @@ async function readJsonIfExists<T>(path: string): Promise<T | null> {
   }
 }
 
-export async function readRuningTeamAdapterState(cwd: string, sessionId: string): Promise<RuningTeamTeamAdapterState | null> {
-  return await readJsonIfExists<RuningTeamTeamAdapterState>(runingTeamAdapterStatePath(cwd, sessionId));
+export async function readRunningTeamAdapterState(cwd: string, sessionId: string): Promise<RunningTeamTeamAdapterState | null> {
+  return await readJsonIfExists<RunningTeamTeamAdapterState>(runningTeamAdapterStatePath(cwd, sessionId));
 }
 
-export async function writeRuningTeamAdapterState(cwd: string, sessionId: string, state: RuningTeamTeamAdapterState): Promise<void> {
-  const path = runingTeamAdapterStatePath(cwd, sessionId);
+export async function writeRunningTeamAdapterState(cwd: string, sessionId: string, state: RunningTeamTeamAdapterState): Promise<void> {
+  const path = runningTeamAdapterStatePath(cwd, sessionId);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, 'utf-8');
 }
 
-export async function appendRuningTeamEvidenceEvents(cwd: string, sessionId: string, events: RuningTeamAdapterEvidenceEvent[]): Promise<void> {
+export async function appendRunningTeamEvidenceEvents(cwd: string, sessionId: string, events: RunningTeamAdapterEvidenceEvent[]): Promise<void> {
   if (events.length === 0) return;
-  const path = runingTeamEvidenceLogPath(cwd, sessionId);
+  const path = runningTeamEvidenceLogPath(cwd, sessionId);
   await mkdir(dirname(path), { recursive: true });
   const existingRaw = existsSync(path) ? await readFile(path, 'utf-8').catch(() => '') : '';
   const existingIds = new Set(existingRaw
@@ -347,17 +347,17 @@ export async function appendRuningTeamEvidenceEvents(cwd: string, sessionId: str
   }
 }
 
-export async function initializeRuningTeamAdapterState(params: {
+export async function initializeRunningTeamAdapterState(params: {
   cwd: string;
   sessionId: string;
   teamName: string;
   workerMap?: Record<string, string>;
   taskMap?: Record<string, string>;
-}): Promise<RuningTeamTeamAdapterState> {
-  const existing = await readRuningTeamAdapterState(params.cwd, params.sessionId);
+}): Promise<RunningTeamTeamAdapterState> {
+  const existing = await readRunningTeamAdapterState(params.cwd, params.sessionId);
   if (existing) {
     const merged = mergeState(existing, { team_name: params.teamName, worker_map: params.workerMap, task_map: params.taskMap });
-    await writeRuningTeamAdapterState(params.cwd, params.sessionId, merged);
+    await writeRunningTeamAdapterState(params.cwd, params.sessionId, merged);
     return merged;
   }
 
@@ -374,7 +374,7 @@ export async function initializeRuningTeamAdapterState(params: {
     inferredWorkerMap[worker.name] = params.workerMap?.[worker.name] ?? inferredWorkerMap[worker.name] ?? worker.assigned_tasks.map((id) => inferredTaskMap[id]).find(Boolean) ?? worker.name;
   }
 
-  const state: RuningTeamTeamAdapterState = {
+  const state: RunningTeamTeamAdapterState = {
     team_name: params.teamName,
     team_state_root: config?.team_state_root ?? join(getBaseStateDir(params.cwd), 'team', params.teamName),
     event_cursor: null,
@@ -382,15 +382,15 @@ export async function initializeRuningTeamAdapterState(params: {
     task_map: { ...inferredTaskMap, ...(params.taskMap ?? {}) },
     ingested_event_ids: [],
   };
-  await writeRuningTeamAdapterState(params.cwd, params.sessionId, state);
+  await writeRunningTeamAdapterState(params.cwd, params.sessionId, state);
   return state;
 }
 
-export async function ingestRuningTeamAdapterEvidence(options: RuningTeamEvidenceIngestOptions): Promise<RuningTeamEvidenceIngestResult> {
+export async function ingestRunningTeamAdapterEvidence(options: RunningTeamEvidenceIngestOptions): Promise<RunningTeamEvidenceIngestResult> {
   const existing = options.state
-    ?? await readRuningTeamAdapterState(options.cwd, options.sessionId);
+    ?? await readRunningTeamAdapterState(options.cwd, options.sessionId);
   const state = existing
-    ?? await initializeRuningTeamAdapterState({
+    ?? await initializeRunningTeamAdapterState({
       cwd: options.cwd,
       sessionId: options.sessionId,
       teamName: options.teamName ?? '',
@@ -403,7 +403,7 @@ export async function ingestRuningTeamAdapterEvidence(options: RuningTeamEvidenc
     wakeableOnly: false,
   });
   const seen = new Set(state.ingested_event_ids ?? []);
-  const produced: RuningTeamAdapterEvidenceEvent[] = [];
+  const produced: RunningTeamAdapterEvidenceEvent[] = [];
   let skippedDuplicateCount = 0;
 
   for (const event of teamEvents) {
@@ -429,8 +429,8 @@ export async function ingestRuningTeamAdapterEvidence(options: RuningTeamEvidenc
     event_cursor: teamEvents.at(-1)?.event_id ?? state.event_cursor,
     ingested_event_ids: [...seen],
   });
-  await appendRuningTeamEvidenceEvents(options.cwd, options.sessionId, produced);
-  await writeRuningTeamAdapterState(options.cwd, options.sessionId, nextState);
+  await appendRunningTeamEvidenceEvents(options.cwd, options.sessionId, produced);
+  await writeRunningTeamAdapterState(options.cwd, options.sessionId, nextState);
 
   return {
     state: nextState,

@@ -31,7 +31,7 @@
       "internalRequired": false
     },
     {
-      "name": "runingteam",
+      "name": "runningteam",
       "category": "execution",
       "status": "active",
       "core": false,

@@ -1,4 +1,4 @@
-export const RUNINGTEAM_STATUSES = [
+export const RUNNINGTEAM_STATUSES = [
   'planning',
   'executing',
   'checkpointing',
@@ -11,16 +11,16 @@ export const RUNINGTEAM_STATUSES = [
   'cancelled',
 ] as const;
 
-export type RuningTeamStatus = (typeof RUNINGTEAM_STATUSES)[number];
+export type RunningTeamStatus = (typeof RUNNINGTEAM_STATUSES)[number];
 
-export const RUNINGTEAM_TERMINAL_STATUSES: ReadonlySet<RuningTeamStatus> = new Set([
+export const RUNNINGTEAM_TERMINAL_STATUSES: ReadonlySet<RunningTeamStatus> = new Set([
   'complete',
   'blocked',
   'failed',
   'cancelled',
 ]);
 
-export const RUNINGTEAM_CRITIC_VERDICTS = [
+export const RUNNINGTEAM_CRITIC_VERDICTS = [
   'APPROVE_NEXT_BATCH',
   'ITERATE_PLAN',
   'REJECT_BATCH',
@@ -29,14 +29,14 @@ export const RUNINGTEAM_CRITIC_VERDICTS = [
   'FAIL',
 ] as const;
 
-export type RuningTeamCriticVerdict = (typeof RUNINGTEAM_CRITIC_VERDICTS)[number];
+export type RunningTeamCriticVerdict = (typeof RUNNINGTEAM_CRITIC_VERDICTS)[number];
 
-export interface RuningTeamSession {
+export interface RunningTeamSession {
   session_id: string;
   task: string;
   created_at: string;
   updated_at: string;
-  status: RuningTeamStatus;
+  status: RunningTeamStatus;
   iteration: number;
   plan_version: number;
   team_name: string | null;
@@ -44,30 +44,30 @@ export interface RuningTeamSession {
   terminal_reason: string | null;
 }
 
-export interface RuningTeamPlanLane {
+export interface RunningTeamPlanLane {
   id: string;
   title: string;
   status: 'pending' | 'executing' | 'complete' | 'blocked';
   acceptance_criteria: string[];
 }
 
-export interface RuningTeamPlan {
+export interface RunningTeamPlan {
   plan_version: number;
   task: string;
   intent: string;
   acceptance_criteria: string[];
   non_goals: string[];
-  lanes: RuningTeamPlanLane[];
+  lanes: RunningTeamPlanLane[];
 }
 
-export interface RuningTeamTeamAdapterState {
+export interface RunningTeamTeamAdapterState {
   team_name: string;
   cursor: string;
   lane_task_map: Record<string, string>;
   evidence_guarantee: 'active' | 'failed';
 }
 
-export interface RuningTeamWorkerEvidence {
+export interface RunningTeamWorkerEvidence {
   evidence_id: string;
   worker: string;
   lane: string;
@@ -81,7 +81,7 @@ export interface RuningTeamWorkerEvidence {
   created_at: string;
 }
 
-export interface RuningTeamCheckpoint {
+export interface RunningTeamCheckpoint {
   iteration: number;
   plan_version: number;
   created_at: string;
@@ -91,16 +91,16 @@ export interface RuningTeamCheckpoint {
   summary: string;
 }
 
-export interface RuningTeamCriticVerdictRecord {
+export interface RunningTeamCriticVerdictRecord {
   iteration: number;
-  verdict: RuningTeamCriticVerdict;
+  verdict: RunningTeamCriticVerdict;
   required_changes?: string[];
   rejected_claims?: string[];
   acceptance_criteria_evidence?: Record<string, string[]>;
   created_at: string;
 }
 
-export interface RuningTeamPlannerRevision {
+export interface RunningTeamPlannerRevision {
   iteration: number;
   from_plan_version: number;
   to_plan_version: number;
