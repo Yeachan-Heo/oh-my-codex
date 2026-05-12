@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-05-06T00:56:25.752Z",
+  "generatedAt": "2026-05-12T04:11:07.561Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 46,
+    "skillCount": 47,
     "promptCount": 30,
-    "activeSkillCount": 24,
+    "activeSkillCount": 25,
     "activeAgentCount": 16
   },
   "coreSkills": [
@@ -275,6 +275,13 @@
     },
     {
       "name": "skill",
+      "category": "utility",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "worktree-cleaner",
       "category": "utility",
       "status": "active",
       "core": false,

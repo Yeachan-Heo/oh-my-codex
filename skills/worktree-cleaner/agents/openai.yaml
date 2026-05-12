@@ -1,0 +1,4 @@
+interface:
+  display_name: "Worktree Cleaner"
+  short_description: "워크트리 정리: safely clean Git, Codex, OMX, and Claude worktrees"
+  default_prompt: "Use $worktree-cleaner when the user asks to clean worktrees, cleanup worktrees, 워크트리 정리, or 워크트리 청소. Inventory stale local Git/Codex/Claude worktrees and local-only branches with dry-run evidence first."

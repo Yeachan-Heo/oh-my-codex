@@ -267,6 +267,13 @@
       "internalRequired": false
     },
     {
+      "name": "worktree-cleaner",
+      "category": "utility",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
       "name": "hud",
       "category": "utility",
       "status": "active",
