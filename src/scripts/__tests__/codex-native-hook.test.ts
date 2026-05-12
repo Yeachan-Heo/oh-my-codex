@@ -1569,6 +1569,42 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+
+  it("does not block ultragoal Stop after task-scoped reconciliation finishes exploded bookkeeping", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-reconciled-stop-"));
+    try {
+      await writeJson(join(cwd, ".omx", "ultragoal", "goals.json"), {
+        version: 1,
+        codexGoalMode: "aggregate",
+        codexObjective: "Complete all ultragoal stories in .omx/ultragoal/goals.json: many micro goals",
+        activeGoalId: "G001-micro",
+        aggregateCompletion: {
+          status: "complete",
+          completedAt: "2026-05-04T10:04:00.000Z",
+          evidence: "planned work done; validation complete; reviews clean",
+        },
+        goals: Array.from({ length: 136 }, (_, index) => ({
+          id: `G${String(index + 1).padStart(3, "0")}-micro`,
+          status: index === 0 ? "in_progress" : "pending",
+          objective: `Synthetic slice ${index + 1}.`,
+        })),
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-ultragoal-reconciled-stop",
+        thread_id: "thread-ultragoal-reconciled-stop",
+        last_assistant_message: "Yes — planned implementation work is done; ultragoal bookkeeping reconciled complete.",
+      }, { cwd });
+
+      assert.notEqual(result.outputJson?.stopReason, "ultragoal_codex_goal_snapshot_required");
+      assert.doesNotMatch(JSON.stringify(result.outputJson), /omx ultragoal checkpoint --goal-id/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not block Stop for non-passing autoresearch-goal professor-critic verdicts", async () => {
     for (const verdict of ["blocked", "fail", "failed"]) {
       const cwd = await mkdtemp(join(tmpdir(), `omx-native-hook-autoresearch-${verdict}-stop-`));

@@ -146,6 +146,95 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+
+  it('reconciles completed task-scoped Codex proof to finish exploded aggregate ultragoal bookkeeping', async () => {
+    await withTempRepo(async (cwd) => {
+      const taskObjective = 'Fix the mismatch between Codex immutable completed goal snapshots and OMX ultragoal checkpoint reconciliation.';
+      await createUltragoalPlan(cwd, {
+        brief: taskObjective,
+        goals: Array.from({ length: 136 }, (_, index) => ({
+          title: `Micro goal ${index + 1}`,
+          objective: `Synthetic bookkeeping slice ${index + 1}.`,
+        })),
+      });
+
+      const first = await startNextUltragoal(cwd);
+      assert.equal(first.goal?.id, 'G001-micro-goal-1');
+
+      const reconciled = await checkpointUltragoal(cwd, {
+        goalId: first.goal!.id,
+        status: 'complete',
+        evidence: 'Actual planned work done for .omx/ultragoal/goals.json G001-micro-goal-1; validation complete; reviews clean.',
+        codexGoal: { goal: { objective: taskObjective, status: 'complete' } },
+        qualityGate: cleanQualityGate(),
+        now: new Date('2026-05-04T10:04:00Z'),
+      });
+
+      assert.equal(reconciled.goals.length, 136);
+      assert.equal(reconciled.goals.filter((goal) => goal.status === 'complete').length, 0);
+      assert.equal(reconciled.goals[0]?.status, 'in_progress');
+      assert.equal(reconciled.activeGoalId, undefined);
+      assert.equal(reconciled.aggregateCompletion?.status, 'complete');
+      assert.match(reconciled.aggregateCompletion?.evidence ?? '', /planned work done/);
+      assert.equal(isUltragoalDone(reconciled), true);
+
+      const next = await startNextUltragoal(cwd);
+      assert.equal(next.goal, null);
+      assert.equal(next.done, true);
+
+      const ledger = await readFile(join(cwd, '.omx/ultragoal/ledger.jsonl'), 'utf-8');
+      assert.match(ledger, /microgoal ledger progress remains independent/);
+      assert.equal((ledger.match(/"event":"aggregate_completed"/g) ?? []).length, 1);
+      assert.equal((ledger.match(/"event":"goal_completed"/g) ?? []).length, 0);
+    });
+  });
+
+  it('fails closed for task-scoped aggregate completion without plan mapping or evidence', async () => {
+    await withTempRepo(async (cwd) => {
+      const taskObjective = 'Implement the reconciler fix described in the approved ultragoal brief.';
+      await createUltragoalPlan(cwd, {
+        brief: taskObjective,
+        goals: [
+          { title: 'First', objective: 'Synthetic slice 1.' },
+          { title: 'Second', objective: 'Synthetic slice 2.' },
+        ],
+      });
+
+      const first = await startNextUltragoal(cwd);
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: first.goal!.id,
+          status: 'complete',
+          evidence: 'Actual planned work done for .omx/ultragoal/goals.json G001-first; validation complete; reviews clean.',
+          codexGoal: { goal: { objective: 'Unrelated completed task', status: 'complete' } },
+          qualityGate: cleanQualityGate(),
+        }),
+        /objective mismatch/,
+      );
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: first.goal!.id,
+          status: 'complete',
+          evidence: 'done',
+          codexGoal: { goal: { objective: taskObjective, status: 'complete' } },
+          qualityGate: cleanQualityGate(),
+        }),
+        /Completed task-scoped aggregate reconciliation requires evidence/,
+      );
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: first.goal!.id,
+          status: 'complete',
+          evidence: 'Actual planned work done for .omx/ultragoal/goals.json G001-first; validation complete; reviews clean.',
+          codexGoal: { goal: { objective: taskObjective, status: 'complete' } },
+        }),
+        /quality-gate-json|quality gate/i,
+      );
+    });
+  });
+
   it('requires aggregate Codex goal completion only for the final story', async () => {
     await withTempRepo(async (cwd) => {
       await createUltragoalPlan(cwd, {

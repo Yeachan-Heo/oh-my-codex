@@ -32,6 +32,13 @@ export interface UltragoalItem {
   failureReason?: string;
 }
 
+export interface UltragoalAggregateCompletion {
+  status: 'complete';
+  completedAt: string;
+  evidence: string;
+  codexGoal?: unknown;
+}
+
 export interface UltragoalPlan {
   version: 1;
   createdAt: string;
@@ -41,6 +48,7 @@ export interface UltragoalPlan {
   ledgerPath: string;
   codexGoalMode?: UltragoalCodexGoalMode;
   codexObjective?: string;
+  aggregateCompletion?: UltragoalAggregateCompletion;
   activeGoalId?: string;
   goals: UltragoalItem[];
 }
@@ -55,6 +63,7 @@ export interface UltragoalLedgerEntry {
     | 'goal_blocked'
     | 'goal_failed'
     | 'goal_retried'
+    | 'aggregate_completed'
     | 'goal_added'
     | 'final_review_failed'
     | 'goal_review_blocked';
@@ -152,6 +161,55 @@ function normalizeObjective(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
+
+function textMentionsUltragoalPlanArtifact(value: string | undefined): boolean {
+  const normalized = (value ?? '').toLowerCase();
+  return normalized.includes(ULTRAGOAL_DIR.toLowerCase())
+    || normalized.includes(ULTRAGOAL_GOALS.toLowerCase())
+    || normalized.includes(ULTRAGOAL_LEDGER.toLowerCase());
+}
+
+function textMentionsGoalId(value: string | undefined, goalId: string): boolean {
+  return (value ?? '').toLowerCase().includes(goalId.toLowerCase());
+}
+
+function textHasCompletionValidationEvidence(value: string | undefined): boolean {
+  const normalized = (value ?? '').toLowerCase();
+  const hasImplementationCompletion = /\b(?:planned work|implementation|deliverables?|scope|task|work)\b/.test(normalized)
+    && /\b(?:done|complete|completed|finished|shipped)\b/.test(normalized);
+  const hasValidation = /\b(?:validation|verification|tests?|build|lint|review|quality gate|code-review)\b/.test(normalized)
+    && /\b(?:passed|complete|completed|clean|green|approve|approved|clear)\b/.test(normalized);
+  return hasImplementationCompletion && hasValidation;
+}
+
+async function snapshotObjectiveMapsToUltragoalPlan(cwd: string, snapshotObjective: string): Promise<boolean> {
+  const actual = normalizeObjective(snapshotObjective).toLowerCase();
+  if (textMentionsUltragoalPlanArtifact(actual)) return true;
+  if (actual.length < 24) return false;
+  try {
+    const brief = normalizeObjective(await readFile(ultragoalBriefPath(cwd), 'utf-8')).toLowerCase();
+    if (!brief || brief.length < 24) return false;
+    return brief.includes(actual) || actual.includes(brief);
+  } catch {
+    return false;
+  }
+}
+
+async function canReconcileCompletedTaskScopedAggregateSnapshot(
+  cwd: string,
+  plan: UltragoalPlan,
+  goal: UltragoalItem,
+  snapshotObjective: string,
+  evidence: string | undefined,
+): Promise<boolean> {
+  if (codexGoalMode(plan) !== 'aggregate') return false;
+  if (!textMentionsUltragoalPlanArtifact(evidence)) return false;
+  if (!textMentionsGoalId(evidence, goal.id)) return false;
+  if (!textHasCompletionValidationEvidence(evidence)) return false;
+  return snapshotObjectiveMapsToUltragoalPlan(cwd, snapshotObjective);
+}
+
+
 function buildCompletedLegacyGoalRemediation(goal: UltragoalItem): string {
   return [
     'If get_goal returns a different completed legacy/thread objective, do not repeat --status complete in this thread.',
@@ -189,6 +247,7 @@ export function isFinalRunCompletionCandidate(plan: UltragoalPlan, goal: Ultrago
 }
 
 export function isUltragoalDone(plan: UltragoalPlan): boolean {
+  if (plan.aggregateCompletion?.status === 'complete') return true;
   if (plan.goals.length === 0) return true;
   if (plan.goals.some((goal) => goal.status === 'pending' || goal.status === 'in_progress' || goal.status === 'failed')) return false;
   if (!plan.goals.every((goal) => isResolvedStatus(goal.status))) return false;
@@ -302,7 +361,7 @@ export async function createUltragoalPlan(cwd: string, options: CreateUltragoalO
   return plan;
 }
 
-export function summarizeUltragoalPlan(plan: UltragoalPlan): { total: number; pending: number; inProgress: number; complete: number; failed: number; reviewBlocked: number; activeGoalId?: string } {
+export function summarizeUltragoalPlan(plan: UltragoalPlan): { total: number; pending: number; inProgress: number; complete: number; failed: number; reviewBlocked: number; aggregateComplete: boolean; activeGoalId?: string } {
   return {
     total: plan.goals.length,
     pending: plan.goals.filter((goal) => goal.status === 'pending').length,
@@ -310,6 +369,7 @@ export function summarizeUltragoalPlan(plan: UltragoalPlan): { total: number; pe
     complete: plan.goals.filter((goal) => goal.status === 'complete').length,
     failed: plan.goals.filter((goal) => goal.status === 'failed').length,
     reviewBlocked: plan.goals.filter((goal) => goal.status === 'review_blocked').length,
+    aggregateComplete: plan.aggregateCompletion?.status === 'complete',
     activeGoalId: plan.activeGoalId,
   };
 }
@@ -387,6 +447,7 @@ function validateQualityGate(value: unknown): UltragoalQualityGate {
 export async function startNextUltragoal(cwd: string, options: StartNextOptions = {}): Promise<{ plan: UltragoalPlan; goal: UltragoalItem | null; resumed: boolean; done: boolean }> {
   const plan = await readUltragoalPlan(cwd);
   const now = iso(options.now);
+  if (plan.aggregateCompletion?.status === 'complete') return { plan, goal: null, resumed: false, done: true };
   const existing = plan.goals.find((goal) => goal.status === 'in_progress');
   if (existing) {
     await appendLedger(cwd, { ts: now, event: 'goal_resumed', goalId: existing.id, status: existing.status, message: 'Resuming active ultragoal' });
@@ -449,12 +510,14 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
     });
     return plan;
   }
+  let aggregateCompletion: UltragoalAggregateCompletion | undefined;
   if (options.status === 'complete') {
     const expectedObjective = expectedCodexObjective(plan, goal);
     const aggregateMode = codexGoalMode(plan) === 'aggregate';
     const finalRunCheckpoint = isFinalRunCompletionCandidate(plan, goal);
+    const snapshot = options.codexGoal === undefined ? null : parseCodexGoalSnapshot(options.codexGoal);
     const reconciliation = reconcileCodexGoalSnapshot(
-      options.codexGoal === undefined ? null : parseCodexGoalSnapshot(options.codexGoal),
+      snapshot,
       {
         expectedObjective,
         allowedStatuses: aggregateMode
@@ -465,19 +528,53 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
       },
     );
     if (!reconciliation.ok) {
-      const remediation = reconciliation.snapshot.available
-        && reconciliation.snapshot.status === 'complete'
-        && Boolean(reconciliation.snapshot.objective)
-        && normalizeObjective(reconciliation.snapshot.objective ?? '') !== normalizeObjective(expectedObjective)
-        ? ` ${buildCompletedLegacyGoalRemediation(goal)}`
-        : '';
-      throw new UltragoalError(`${formatCodexGoalReconciliation(reconciliation)}${remediation}`);
+      const completedTaskScopedAggregateSnapshot = snapshot?.available
+        && snapshot.status === 'complete'
+        && Boolean(snapshot.objective)
+        && normalizeObjective(snapshot.objective ?? '') !== normalizeObjective(expectedObjective)
+        && await canReconcileCompletedTaskScopedAggregateSnapshot(cwd, plan, goal, snapshot.objective ?? '', options.evidence);
+      if (completedTaskScopedAggregateSnapshot) {
+        aggregateCompletion = {
+          status: 'complete',
+          completedAt: now,
+          evidence: assertNonEmpty(options.evidence, '--evidence'),
+          codexGoal: options.codexGoal,
+        };
+      } else {
+        const taskScopedRequirement = aggregateMode && snapshot?.status === 'complete' && Boolean(snapshot.objective)
+          ? ' Completed task-scoped aggregate reconciliation requires evidence that names the active OMX goal id, names .omx/ultragoal/goals.json or ledger.jsonl, includes completed implementation plus validation/review evidence, and a get_goal objective that maps to the ultragoal brief/artifact.'
+          : '';
+        const remediation = reconciliation.snapshot.available
+          && reconciliation.snapshot.status === 'complete'
+          && Boolean(reconciliation.snapshot.objective)
+          && normalizeObjective(reconciliation.snapshot.objective ?? '') !== normalizeObjective(expectedObjective)
+          ? ` ${buildCompletedLegacyGoalRemediation(goal)}`
+          : '';
+        throw new UltragoalError(`${formatCodexGoalReconciliation(reconciliation)}${taskScopedRequirement}${remediation}`);
+      }
     }
     if (finalRunCheckpoint && !options.allowActiveFinalCodexGoal) goal.evidence = options.evidence;
   }
-  const qualityGate = options.status === 'complete' && isFinalRunCompletionCandidate(plan, goal) && !options.allowActiveFinalCodexGoal
+  const qualityGate = options.status === 'complete' && (aggregateCompletion !== undefined || (isFinalRunCompletionCandidate(plan, goal) && !options.allowActiveFinalCodexGoal))
     ? validateQualityGate(options.qualityGate)
     : undefined;
+  if (aggregateCompletion) {
+    plan.aggregateCompletion = aggregateCompletion;
+    if (plan.activeGoalId === goal.id) delete plan.activeGoalId;
+    plan.updatedAt = now;
+    await writePlan(cwd, plan);
+    await appendLedger(cwd, {
+      ts: now,
+      event: 'aggregate_completed',
+      goalId: goal.id,
+      status: goal.status,
+      evidence: options.evidence,
+      codexGoal: options.codexGoal,
+      qualityGate,
+      message: 'Aggregate ultragoal plan completed via task-scoped Codex goal snapshot; microgoal ledger progress remains independent.',
+    });
+    return plan;
+  }
   goal.status = options.status;
   goal.updatedAt = now;
   if (options.status === 'complete') {
