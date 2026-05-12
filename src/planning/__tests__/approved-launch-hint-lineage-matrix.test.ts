@@ -197,54 +197,41 @@ function selectUniqueHint(
   return { status: 'unique', hint: matches[0]! };
 }
 
+function reusableRalphHints(state: RalphPlanState): HintModel[] {
+  return ralphVisibleHints(state).filter((hint) => hint.ready);
+}
+
 function resolveExpectedRalphSelection(
   stems: readonly string[],
   states: readonly RalphPlanState[],
   query: QueryModel,
 ): ExpectedSelection {
-  const newestNonready: { stem: string; hint: HintModel }[] = [];
-
   if (!query.task && !query.command) {
     const latestIndex = states.length - 1;
-    const latestSelection = selectUniqueHint(ralphVisibleHints(states[latestIndex]!), query);
+    const latestSelection = selectUniqueHint(reusableRalphHints(states[latestIndex]!), query);
     if (latestSelection.status === 'ambiguous') {
       return { status: 'ambiguous' };
     }
-    if (latestSelection.status !== 'unique') {
-      return { status: 'absent' };
-    }
-    if (latestSelection.hint.ready) {
-      return { status: 'resolved', stem: stems[latestIndex]!, hint: latestSelection.hint };
-    }
-    for (let index = latestIndex - 1; index >= 0; index -= 1) {
-      const selection = selectUniqueHint(ralphVisibleHints(states[index]!), { task: latestSelection.hint.task });
-      if (selection.status === 'ambiguous') {
-        return { status: 'ambiguous' };
-      }
-      if (selection.status === 'unique' && selection.hint.ready) {
-        return { status: 'resolved', stem: stems[index]!, hint: selection.hint };
-      }
-    }
-    return { status: 'resolved', stem: stems[latestIndex]!, hint: latestSelection.hint };
+    return latestSelection.status === 'unique'
+      ? { status: 'resolved', stem: stems[latestIndex]!, hint: latestSelection.hint }
+      : { status: 'absent' };
   }
 
   for (let index = states.length - 1; index >= 0; index -= 1) {
-    const selection = selectUniqueHint(ralphVisibleHints(states[index]!), query);
+    const selection = selectUniqueHint(reusableRalphHints(states[index]!), query);
     if (selection.status === 'ambiguous') {
       return { status: 'ambiguous' };
     }
-    if (selection.status !== 'unique') {
-      continue;
-    }
-    if (selection.hint.ready) {
+    if (selection.status === 'unique') {
       return { status: 'resolved', stem: stems[index]!, hint: selection.hint };
     }
-    newestNonready.push({ stem: stems[index]!, hint: selection.hint });
   }
 
-  return newestNonready.length > 0
-    ? { status: 'resolved', stem: newestNonready[0]!.stem, hint: newestNonready[0]!.hint }
-    : { status: 'absent' };
+  return { status: 'absent' };
+}
+
+function reusableTeamHints(state: TeamPlanState): HintModel[] {
+  return teamVisibleHints(state).filter((hint) => hint.ready);
 }
 
 function resolveExpectedTeamSelection(
@@ -257,40 +244,22 @@ function resolveExpectedTeamSelection(
   if (!query.task && !query.command) {
     const latestIndex = states.length - 1;
     const latestSelection = selectUniqueHint(
-      teamVisibleHints(states[latestIndex]!),
+      reusableTeamHints(states[latestIndex]!),
       query,
       requestedSignature,
     );
     if (latestSelection.status === 'ambiguous') {
       return { status: 'ambiguous' };
     }
-    if (latestSelection.status !== 'unique') {
-      return { status: 'absent' };
-    }
-    if (latestSelection.hint.ready) {
-      return { status: 'resolved', stem: stems[latestIndex]!, hint: latestSelection.hint };
-    }
-    for (let index = latestIndex - 1; index >= 0; index -= 1) {
-      const selection = selectUniqueHint(
-        teamVisibleHints(states[index]!),
-        { task: latestSelection.hint.task },
-        latestSelection.hint.signature,
-      );
-      if (selection.status === 'ambiguous') {
-        return { status: 'ambiguous' };
-      }
-      if (selection.status === 'unique' && selection.hint.ready) {
-        return { status: 'resolved', stem: stems[index]!, hint: selection.hint };
-      }
-    }
-    return { status: 'resolved', stem: stems[latestIndex]!, hint: latestSelection.hint };
+    return latestSelection.status === 'unique'
+      ? { status: 'resolved', stem: stems[latestIndex]!, hint: latestSelection.hint }
+      : { status: 'absent' };
   }
 
-  let newestNonready: { stem: string; hint: HintModel } | null = null;
   let lineageSignature: TeamSignature | null = null;
   for (let index = states.length - 1; index >= 0; index -= 1) {
     const selection = selectUniqueHint(
-      teamVisibleHints(states[index]!),
+      reusableTeamHints(states[index]!),
       query,
       requestedSignature ?? (
         query.task && !query.command
@@ -307,15 +276,10 @@ function resolveExpectedTeamSelection(
     if (query.task && !query.command) {
       lineageSignature ??= selection.hint.signature ?? null;
     }
-    if (selection.hint.ready) {
-      return { status: 'resolved', stem: stems[index]!, hint: selection.hint };
-    }
-    newestNonready ??= { stem: stems[index]!, hint: selection.hint };
+    return { status: 'resolved', stem: stems[index]!, hint: selection.hint };
   }
 
-  return newestNonready
-    ? { status: 'resolved', stem: newestNonready.stem, hint: newestNonready.hint }
-    : { status: 'absent' };
+  return { status: 'absent' };
 }
 
 function ralphQueryModel(kind: RalphQueryKind): QueryModel {
@@ -637,31 +601,31 @@ describe('approved launch hint lineage matrix', () => {
     }
   });
 
-  it('skips newer nonready siblings until the last reusable visible Ralph lineage handoff', async () => {
+  it('treats newer no-baseline Ralph siblings as absent for bare lookups', async () => {
     const cwd = join(tempDir, 'ralph-three-plan-skip');
     await writeRalphScenario(cwd, ['ready', 'nonready', 'nonready']);
     assertExpectedSelection(
       cwd,
-      'ralph three-plan skip',
+      'ralph three-plan no-baseline bare',
       'ralph',
       {},
-      {
-        status: 'resolved',
-        stem: 'alpha',
-        hint: { command: RALPH_COMMAND, task: RALPH_SHARED_TASK, ready: true },
-      },
+      { status: 'absent' },
     );
   });
 
-  it('stops on same-lineage ambiguity before reviving an older Team handoff', async () => {
+  it('counts same-lineage ambiguity only among baseline-ready Team candidates', async () => {
     const cwd = join(tempDir, 'team-three-plan-ambiguous');
     await writeTeamScenario(cwd, ['readyA', 'nonreadyAA', 'nonreadyA']);
     assertExpectedSelection(
       cwd,
-      'team three-plan ambiguity',
+      'team three-plan baseline-only ambiguity',
       'team',
       { task: TEAM_SHARED_TASK },
-      { status: 'ambiguous' },
+      {
+        status: 'resolved',
+        stem: 'alpha',
+        hint: { command: TEAM_COMMANDS.A, task: TEAM_SHARED_TASK, ready: true, signature: 'A' },
+      },
     );
   });
 
@@ -674,11 +638,7 @@ describe('approved launch hint lineage matrix', () => {
         'ralph hidden exact command',
         'ralph',
         ralphQueryOptions('command'),
-        {
-          status: 'resolved',
-          stem: 'beta',
-          hint: { command: RALPH_COMMAND, task: RALPH_SHARED_TASK, ready: false },
-        },
+        { status: 'absent' },
       );
     }
 
@@ -690,11 +650,7 @@ describe('approved launch hint lineage matrix', () => {
         'team hidden exact command',
         'team',
         teamQueryOptions('commandA'),
-        {
-          status: 'resolved',
-          stem: 'beta',
-          hint: { command: TEAM_COMMANDS.A, task: TEAM_SHARED_TASK, ready: false, signature: 'A' },
-        },
+        { status: 'absent' },
       );
     }
   });
