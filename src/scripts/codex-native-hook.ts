@@ -127,6 +127,9 @@ const SKILL_STOP_BLOCKERS = new Set(["ralplan"]);
 const TEAM_STOP_BLOCKING_TASK_STATUSES = new Set(["pending", "in_progress", "blocked"]);
 const TEAM_WORKER_TERMINAL_RUN_STATES = new Set(["done", "complete", "completed", "failed", "stopped", "cancelled"]);
 const NATIVE_STOP_STATE_FILE = "native-stop-state.json";
+const ORDINARY_STOP_NO_PROGRESS_DEFAULT_MAX_REPEATS = 8;
+const ORDINARY_STOP_NO_PROGRESS_DEFAULT_IDLE_MS = 10 * 60_000;
+const ORDINARY_STOP_NO_PROGRESS_MAX_MESSAGE_LENGTH = 240;
 const STABLE_FINAL_RECOMMENDATION_PATTERNS = [
   /^\s*(?:launch|release|ship)-?ready\s*:\s*(?:yes|no)\b[^\n\r]*/im,
   /^\s*ready to release\s*:\s*(?:yes|no)\b[^\n\r]*/im,
@@ -2350,6 +2353,109 @@ function readPreviousNativeStopSignature(
   return safeString(sessionState.last_signature).trim();
 }
 
+function parseBoundedPositiveInteger(value: unknown, fallback: number): number {
+  const parsed = Math.trunc(Number(value));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseBoundedNonNegativeInteger(value: unknown, fallback: number): number {
+  const parsed = Math.trunc(Number(value));
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function normalizeOrdinaryStopProgressText(value: unknown): string {
+  return safeString(value)
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function shortenOrdinaryStopProgressText(value: string): string {
+  const trimmed = value.replace(/\s+/g, " ").trim();
+  if (trimmed.length <= ORDINARY_STOP_NO_PROGRESS_MAX_MESSAGE_LENGTH) return trimmed;
+  return `${trimmed.slice(0, ORDINARY_STOP_NO_PROGRESS_MAX_MESSAGE_LENGTH - 1).trimEnd()}…`;
+}
+
+function ordinaryStopProgressFingerprint(payload: CodexHookPayload): string {
+  const message = normalizeOrdinaryStopProgressText(
+    payload.last_assistant_message ?? payload.lastAssistantMessage,
+  ) || "<no assistant message>";
+  const mode = normalizeOrdinaryStopProgressText(payload.mode) || "ordinary";
+  return `${mode}|${message}`;
+}
+
+function readIsoTimeMs(value: unknown): number | null {
+  const parsed = Date.parse(safeString(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function maybeBuildOrdinaryStopNoProgressOutput(
+  payload: CodexHookPayload,
+  stateDir: string,
+  canonicalSessionId?: string,
+): Promise<Record<string, unknown> | null> {
+  const statePath = join(stateDir, NATIVE_STOP_STATE_FILE);
+  const state = await readJsonIfExists(statePath) ?? {};
+  const sessions = safeObject(state.sessions);
+  const sessionKey = readNativeStopSessionKey(payload, canonicalSessionId);
+  const sessionState = safeObject(sessions[sessionKey]);
+  const previousGuard = safeObject(sessionState.ordinary_no_progress_guard);
+  const fingerprint = ordinaryStopProgressFingerprint(payload);
+  const nowIso = new Date().toISOString();
+  const previousFingerprint = safeString(previousGuard.fingerprint).trim();
+  const sameFingerprint = previousFingerprint === fingerprint;
+  const firstSeenAt = sameFingerprint
+    ? safeString(previousGuard.first_seen_at).trim() || nowIso
+    : nowIso;
+  const repeatCount = sameFingerprint
+    ? parseBoundedPositiveInteger(previousGuard.repeat_count, 1) + 1
+    : 1;
+
+  sessions[sessionKey] = {
+    ...sessionState,
+    ordinary_no_progress_guard: {
+      fingerprint,
+      first_seen_at: firstSeenAt,
+      last_seen_at: nowIso,
+      repeat_count: repeatCount,
+      last_turn_id: readPayloadTurnId(payload) || null,
+      last_thread_id: readPayloadThreadId(payload) || null,
+    },
+  };
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(statePath, JSON.stringify({ ...state, sessions }, null, 2));
+
+  const stopHookActive = payload.stop_hook_active === true || payload.stopHookActive === true;
+  if (!stopHookActive) return null;
+
+  const maxRepeats = parseBoundedPositiveInteger(
+    process.env.OMX_NATIVE_STOP_NO_PROGRESS_MAX_REPEATS,
+    ORDINARY_STOP_NO_PROGRESS_DEFAULT_MAX_REPEATS,
+  );
+  const idleMs = parseBoundedNonNegativeInteger(
+    process.env.OMX_NATIVE_STOP_NO_PROGRESS_IDLE_MS,
+    ORDINARY_STOP_NO_PROGRESS_DEFAULT_IDLE_MS,
+  );
+  const firstSeenMs = readIsoTimeMs(firstSeenAt) ?? Date.now();
+  const elapsedMs = Math.max(0, Date.now() - firstSeenMs);
+  if (repeatCount < maxRepeats || elapsedMs < idleMs) return null;
+
+  const message = shortenOrdinaryStopProgressText(
+    safeString(payload.last_assistant_message ?? payload.lastAssistantMessage) || "no assistant message recorded",
+  );
+  const elapsedSeconds = Math.round(elapsedMs / 1000);
+  const diagnostic =
+    `OMX ordinary task no-progress guard triggered after ${repeatCount} repeated Stop-hook pass(es) over ~${elapsedSeconds}s with unchanged status: "${message}". ` +
+    "Emit a concise diagnostic summary now: state the last concrete progress/evidence, whether the task is complete, blocked, failed, or needs missing information, and stop instead of continuing a vague working loop.";
+
+  return {
+    decision: "block",
+    reason: diagnostic,
+    stopReason: "ordinary_task_no_progress_guard",
+    systemMessage: diagnostic,
+  };
+}
+
 async function persistNativeStopSignature(
   stateDir: string,
   payload: CodexHookPayload,
@@ -2870,6 +2976,13 @@ async function buildStopHookOutput(
         { allowRepeatDuringStopHook: true },
       );
     }
+    const ordinaryNoProgressOutput = await maybeBuildOrdinaryStopNoProgressOutput(
+      payload,
+      stateDir,
+      canonicalSessionId,
+    );
+    if (ordinaryNoProgressOutput) return ordinaryNoProgressOutput;
+
     const autoNudgeConfig = await loadAutoNudgeConfig();
     const autoNudgePhase = await readStopAutoNudgePhase(cwd, stateDir, canonicalSessionId, threadId);
 

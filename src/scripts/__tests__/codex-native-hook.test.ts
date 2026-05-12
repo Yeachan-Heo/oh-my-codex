@@ -200,6 +200,8 @@ const TEAM_ENV_KEYS = [
   "TMUX",
   "TMUX_PANE",
   "OMX_TMUX_HUD_OWNER",
+  "OMX_NATIVE_STOP_NO_PROGRESS_MAX_REPEATS",
+  "OMX_NATIVE_STOP_NO_PROGRESS_IDLE_MS",
 ] as const;
 
 const priorTeamEnv = new Map<(typeof TEAM_ENV_KEYS)[number], string | undefined>();
@@ -8514,6 +8516,51 @@ exit 0
         systemMessage:
           "OMX native Stop detected a stall/permission-style handoff and continued the turn automatically.",
       });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds repeated ordinary working Stop loops with a diagnostic summary", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-working-loop-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      process.env.OMX_SESSION_ID = "sess-working-loop";
+      process.env.OMX_NATIVE_STOP_NO_PROGRESS_MAX_REPEATS = "2";
+      process.env.OMX_NATIVE_STOP_NO_PROGRESS_IDLE_MS = "0";
+
+      const payload = {
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-working-loop",
+        thread_id: "thread-working-loop",
+        turn_id: "turn-working-loop-1",
+        last_assistant_message: "Keep going and finish the cleanup.",
+      };
+
+      const first = await dispatchCodexNativeHook(payload, { cwd });
+      assert.equal(first.outputJson?.stopReason, "auto_nudge");
+
+      const repeated = await dispatchCodexNativeHook(
+        {
+          ...payload,
+          turn_id: "turn-working-loop-2",
+          stop_hook_active: true,
+        },
+        { cwd },
+      );
+
+      assert.equal(repeated.omxEventName, "stop");
+      assert.equal(repeated.outputJson?.decision, "block");
+      assert.equal(repeated.outputJson?.stopReason, "ordinary_task_no_progress_guard");
+      assert.match(String(repeated.outputJson?.systemMessage), /no-progress guard triggered/);
+      assert.match(String(repeated.outputJson?.systemMessage), /diagnostic summary/);
+      assert.match(String(repeated.outputJson?.systemMessage), /complete, blocked, failed, or needs missing information/);
+
+      const persisted = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "native-stop-state.json"), "utf-8"),
+      ) as { sessions: Record<string, { ordinary_no_progress_guard?: { repeat_count?: number } }> };
+      assert.equal(persisted.sessions["sess-working-loop"]?.ordinary_no_progress_guard?.repeat_count, 2);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
