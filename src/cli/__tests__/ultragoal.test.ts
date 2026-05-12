@@ -98,6 +98,29 @@ describe('cli/ultragoal', () => {
     });
   });
 
+  it('labels aggregate product completion separately from microgoal bookkeeping status', async () => {
+    await withCwd(async () => {
+      const taskObjective = 'Fix ultragoal task-scoped goal reconciliation.';
+      await capture(() => ultragoalCommand(['create-goals', '--brief', taskObjective, '--goal', 'First::Synthetic slice 1.', '--goal', 'Second::Synthetic slice 2.']));
+      await capture(() => ultragoalCommand(['complete-goals']));
+
+      const checkpoint = await capture(() => ultragoalCommand([
+        'checkpoint',
+        '--goal-id', 'G001-first',
+        '--status', 'complete',
+        '--evidence', 'Actual planned work done for .omx/ultragoal/goals.json G001-first; validation complete; reviews clean.',
+        '--codex-goal-json', JSON.stringify({ goal: { objective: taskObjective, status: 'complete' } }),
+        '--quality-gate-json', cleanQualityGate(),
+      ]));
+      assert.equal(checkpoint.exitCode, undefined);
+
+      const status = await capture(() => ultragoalCommand(['status']));
+      const output = status.stdout.join('\n');
+      assert.match(output, /ultragoal aggregate product: complete/);
+      assert.match(output, /microgoal ledger bookkeeping \(progress-only\): 0\/2 complete, 1 pending, 1 in progress/);
+    });
+  });
+
   it('adds goals through the command surface', async () => {
     await withCwd(async () => {
       await capture(() => ultragoalCommand(['create-goals', '--brief', '- First milestone']));

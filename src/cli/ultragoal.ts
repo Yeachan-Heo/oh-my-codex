@@ -112,7 +112,12 @@ function normalizeCodexGoalMode(raw: string | undefined): 'aggregate' | 'per_sto
 
 function printStatus(plan: Awaited<ReturnType<typeof readUltragoalPlan>>): void {
   const summary = summarizeUltragoalPlan(plan);
-  console.log(`ultragoal: ${summary.complete}/${summary.total} complete, ${summary.pending} pending, ${summary.inProgress} in progress, ${summary.failed} failed, ${summary.reviewBlocked} review-blocked`);
+  if (summary.aggregateComplete) {
+    console.log('ultragoal aggregate product: complete');
+    console.log(`microgoal ledger bookkeeping (progress-only): ${summary.complete}/${summary.total} complete, ${summary.pending} pending, ${summary.inProgress} in progress, ${summary.failed} failed, ${summary.reviewBlocked} review-blocked`);
+  } else {
+    console.log(`ultragoal: ${summary.complete}/${summary.total} complete, ${summary.pending} pending, ${summary.inProgress} in progress, ${summary.failed} failed, ${summary.reviewBlocked} review-blocked`);
+  }
   for (const goal of plan.goals) {
     const marker = goal.id === plan.activeGoalId ? '*' : '-';
     console.log(`${marker} ${goal.id} [${goal.status}] ${goal.title}`);

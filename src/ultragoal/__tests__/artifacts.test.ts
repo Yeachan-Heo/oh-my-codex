@@ -220,7 +220,7 @@ describe('ultragoal artifacts', () => {
           codexGoal: { goal: { objective: taskObjective, status: 'complete' } },
           qualityGate: cleanQualityGate(),
         }),
-        /Completed task-scoped aggregate reconciliation requires evidence/,
+        /Completed task-scoped aggregate reconciliation requires .*active in-progress/,
       );
 
       await assert.rejects(
@@ -232,6 +232,43 @@ describe('ultragoal artifacts', () => {
         }),
         /quality-gate-json|quality gate/i,
       );
+    });
+  });
+
+  it('fails closed for task-scoped aggregate completion on a non-active microgoal id', async () => {
+    await withTempRepo(async (cwd) => {
+      const taskObjective = 'Fix the mismatch between Codex immutable completed goal snapshots and OMX ultragoal checkpoint reconciliation.';
+      await createUltragoalPlan(cwd, {
+        brief: taskObjective,
+        goals: [
+          { title: 'First', objective: 'Synthetic slice 1.' },
+          { title: 'Second', objective: 'Synthetic slice 2.' },
+        ],
+      });
+
+      const first = await startNextUltragoal(cwd);
+      assert.equal(first.goal?.id, 'G001-first');
+      assert.equal(first.plan.activeGoalId, 'G001-first');
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: 'G002-second',
+          status: 'complete',
+          evidence: 'Actual planned work done for .omx/ultragoal/goals.json G002-second; validation complete; reviews clean.',
+          codexGoal: { goal: { objective: taskObjective, status: 'complete' } },
+          qualityGate: cleanQualityGate(),
+        }),
+        /Completed task-scoped aggregate reconciliation requires .*active in-progress/,
+      );
+
+      const plan = await readUltragoalPlan(cwd);
+      assert.equal(plan.activeGoalId, 'G001-first');
+      assert.equal(plan.aggregateCompletion, undefined);
+      assert.equal(plan.goals.find((goal) => goal.id === 'G001-first')?.status, 'in_progress');
+      assert.equal(plan.goals.find((goal) => goal.id === 'G002-second')?.status, 'pending');
+
+      const ledger = await readFile(join(cwd, '.omx/ultragoal/ledger.jsonl'), 'utf-8');
+      assert.equal((ledger.match(/"event":"aggregate_completed"/g) ?? []).length, 0);
     });
   });
 

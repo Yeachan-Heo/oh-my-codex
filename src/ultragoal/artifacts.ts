@@ -203,6 +203,7 @@ async function canReconcileCompletedTaskScopedAggregateSnapshot(
   evidence: string | undefined,
 ): Promise<boolean> {
   if (codexGoalMode(plan) !== 'aggregate') return false;
+  if (goal.status !== 'in_progress' || plan.activeGoalId !== goal.id) return false;
   if (!textMentionsUltragoalPlanArtifact(evidence)) return false;
   if (!textMentionsGoalId(evidence, goal.id)) return false;
   if (!textHasCompletionValidationEvidence(evidence)) return false;
@@ -542,7 +543,7 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
         };
       } else {
         const taskScopedRequirement = aggregateMode && snapshot?.status === 'complete' && Boolean(snapshot.objective)
-          ? ' Completed task-scoped aggregate reconciliation requires evidence that names the active OMX goal id, names .omx/ultragoal/goals.json or ledger.jsonl, includes completed implementation plus validation/review evidence, and a get_goal objective that maps to the ultragoal brief/artifact.'
+          ? ' Completed task-scoped aggregate reconciliation requires the checkpoint goal to be the active in-progress OMX goal, evidence that names that active OMX goal id, names .omx/ultragoal/goals.json or ledger.jsonl, includes completed implementation plus validation/review evidence, and a get_goal objective that maps to the ultragoal brief/artifact.'
           : '';
         const remediation = reconciliation.snapshot.available
           && reconciliation.snapshot.status === 'complete'
