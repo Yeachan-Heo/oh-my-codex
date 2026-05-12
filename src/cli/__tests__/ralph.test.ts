@@ -95,70 +95,6 @@ describe('readMatchedApprovedRalphExecutionHint', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
-
-  it('preserves missing-baseline approved Ralph hints for repair-only follow-up guidance', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-missing-baseline-'));
-    try {
-      await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
-      await writeFile(
-        join(cwd, '.omx', 'plans', 'prd-issue-910.md'),
-        [
-          '# PRD',
-          '',
-          'Launch via omx ralph "Repair approved issue 910 plan"',
-        ].join('\n'),
-      );
-
-      const hint = readMatchedApprovedRalphExecutionHint(cwd, 'ralph-cli-launch');
-      assert.ok(hint);
-      assert.equal(hint?.task, 'Repair approved issue 910 plan');
-      assert.equal(hint?.contextPackStatus, 'missing-baseline');
-      assert.deepEqual(hint?.testSpecPaths, []);
-
-      const instructions = buildRalphAppendInstructions('Repair approved issue 910 plan', {
-        changedFilesPath: '.omx/ralph/changed-files.txt',
-        noDeslop: false,
-        approvedHint: hint,
-      });
-      assert.match(instructions, /Approved planning handoff context/i);
-      assert.match(instructions, /Missing-baseline fallback/i);
-      assert.match(instructions, /restore the missing baseline before broadening context/i);
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
-
-  it('reuses the older approved Ralph hint when the latest same-task handoff is missing its baseline', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-lineage-fallback-'));
-    const approvedTask = 'Repair approved Ralph lineage handoff';
-    try {
-      await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
-      await writeFile(
-        join(cwd, '.omx', 'plans', 'prd-alpha-lineage.md'),
-        `# PRD\n\nLaunch via omx ralph ${JSON.stringify(approvedTask)}\n`,
-      );
-      await writeFile(join(cwd, '.omx', 'plans', 'test-spec-alpha-lineage.md'), '# Test Spec\n');
-      await writeFile(
-        join(cwd, '.omx', 'plans', 'prd-zeta-lineage.md'),
-        `# PRD\n\nLaunch via omx ralph ${JSON.stringify(approvedTask)}\n`,
-      );
-
-      const hint = readMatchedApprovedRalphExecutionHint(cwd, 'ralph-cli-launch');
-      assert.ok(hint);
-      assert.equal(hint?.sourcePath, join(cwd, '.omx', 'plans', 'prd-alpha-lineage.md'));
-      assert.equal(hint?.contextPackStatus, 'plan-only');
-
-      const instructions = buildRalphAppendInstructions(approvedTask, {
-        changedFilesPath: '.omx/ralph/changed-files.txt',
-        noDeslop: false,
-        approvedHint: hint,
-      });
-      assert.match(instructions, /Approved planning handoff context/i);
-      assert.doesNotMatch(instructions, /Missing-baseline fallback/i);
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
 });
 
 describe('isRalphPrdMode', () => {
@@ -214,11 +150,6 @@ const approvedHint: ApprovedExecutionLaunchHint = {
   sourcePath: '.omx/plans/prd-issue-1072.md',
   testSpecPaths: ['.omx/plans/test-spec-issue-1072.md'],
   deepInterviewSpecPaths: ['.omx/specs/deep-interview-issue-1072.md'],
-  contextPack: null,
-  contextPackStatus: 'plan-only',
-  contextPackRoleRefs: null,
-  missingRequiredContextPackRoles: [],
-  contextPackIssues: [],
   repositoryContextSummary: {
     sourcePath: '.omx/plans/repo-context-issue-1072.md',
     content: 'Key files: src/cli/ralph.ts and src/planning/artifacts.ts',
@@ -351,79 +282,6 @@ describe('ralph deslop launch wiring', () => {
   });
 
 
-
-  it('includes approved plan and deep-interview handoff context when available', () => {
-    const instructions = buildRalphAppendInstructions('Execute approved issue 1072 plan', {
-      changedFilesPath: '.omx/ralph/changed-files.txt',
-      noDeslop: false,
-      approvedHint,
-    });
-    assert.match(instructions, /Approved planning handoff context/i);
-    assert.match(instructions, /approved plan: \.omx\/plans\/prd-issue-1072\.md/i);
-    assert.match(instructions, /test specs: \.omx\/plans\/test-spec-issue-1072\.md/i);
-    assert.match(instructions, /deep-interview specs: \.omx\/specs\/deep-interview-issue-1072\.md/i);
-    assert.match(instructions, /Carry forward the approved deep-interview requirements/i);
-    assert.match(instructions, /approved repository context summary: \.omx\/plans\/repo-context-issue-1072\.md/i);
-    assert.match(instructions, /Key files: src\/cli\/ralph\.ts and src\/planning\/artifacts\.ts/i);
-    assert.match(instructions, /pre-context-pack plan-only handoff baseline/i);
-    assert.match(instructions, /do not treat this as approved context-bearing execution/i);
-  });
-
-  it('includes ready approved context pack refs as read-first Ralph guidance', () => {
-    const instructions = buildRalphAppendInstructions('Execute approved issue 1072 plan', {
-      changedFilesPath: '.omx/ralph/changed-files.txt',
-      noDeslop: false,
-      approvedHint: {
-        ...approvedHint,
-        contextPack: { path: '.omx/context/context-20260507T120000Z-issue-1072.json' },
-        contextPackStatus: 'ready',
-        contextPackRoleRefs: {
-          build: ['src/cli/ralph.ts', 'src/planning/artifacts.ts'],
-          verify: ['src/cli/__tests__/ralph.test.ts'],
-          scope: ['docs/ralph.md'],
-        },
-      },
-    });
-
-    assert.match(instructions, /approved context pack: \.omx\/context\/context-20260507T120000Z-issue-1072\.json/i);
-    assert.match(instructions, /build refs \(read first\): src\/cli\/ralph\.ts, src\/planning\/artifacts\.ts/i);
-    assert.match(instructions, /verify refs: src\/cli\/__tests__\/ralph\.test\.ts/i);
-    assert.match(instructions, /scope refs: docs\/ralph\.md/i);
-    assert.match(instructions, /Read the build refs above before broader repo exploration/i);
-    assert.doesNotMatch(instructions, /Plan-only fallback/i);
-    assert.doesNotMatch(instructions, /repair or recreate the canonical context pack/i);
-  });
-
-  it('surfaces repair-only guidance for invalid approved handoff context', () => {
-    const instructions = buildRalphAppendInstructions('Repair approved issue 1072 plan', {
-      changedFilesPath: '.omx/ralph/changed-files.txt',
-      noDeslop: false,
-      approvedHint: {
-        ...approvedHint,
-        contextPackStatus: 'invalid',
-        contextPackIssues: ['Declared context pack basis test-spec hash does not match the current approved test spec.'],
-      },
-    });
-    assert.match(instructions, /invalid context pack issues: Declared context pack basis test-spec hash/i);
-    assert.match(instructions, /only as repair inputs/i);
-    assert.match(instructions, /repair or recreate the canonical context pack/i);
-  });
-
-  it('surfaces repair-only guidance for incomplete approved handoff context', () => {
-    const instructions = buildRalphAppendInstructions('Repair approved issue 1072 plan', {
-      changedFilesPath: '.omx/ralph/changed-files.txt',
-      noDeslop: false,
-      approvedHint: {
-        ...approvedHint,
-        contextPackStatus: 'incomplete',
-        contextPackIssues: ['Pack omits required execution roles.'],
-        missingRequiredContextPackRoles: ['build', 'verify'],
-      },
-    });
-    assert.match(instructions, /incomplete context pack issues: Pack omits required execution roles/i);
-    assert.match(instructions, /missing required context roles: build, verify/i);
-    assert.match(instructions, /repair or recreate the canonical context pack with required role coverage/i);
-  });
 
   it('seeds the changed-files artifact with bounded-scope guidance', () => {
     const seed = buildRalphChangedFilesSeedContents();

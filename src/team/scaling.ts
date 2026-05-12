@@ -76,7 +76,6 @@ import {
   type EnsureWorktreeResult,
   type WorktreeMode,
 } from './worktree.js';
-import { isApprovedExecutionFollowupReadyStatus } from '../planning/artifacts.js';
 import {
   buildApprovedTeamHandoffSection,
   resolvePersistedApprovedTeamExecutionContinuityState,
@@ -156,12 +155,6 @@ function resolveScaleUpApprovedExecutionGate(
         error: `approved_execution_binding_stale:${approvedExecutionState.binding.prd_path}:${approvedExecutionState.binding.task}`,
       };
     case 'valid':
-      if (!isApprovedExecutionFollowupReadyStatus(approvedExecutionState.approvedHint.contextPackStatus)) {
-        return {
-          ok: false,
-          error: `approved_execution_binding_nonready:${approvedExecutionState.approvedHint.contextPackStatus}:${approvedExecutionState.binding.prd_path}:${approvedExecutionState.binding.task}`,
-        };
-      }
       return {
         ok: true,
         approvedContextSection: buildApprovedTeamHandoffSection(approvedExecutionState.approvedHint),

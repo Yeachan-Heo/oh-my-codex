@@ -442,7 +442,7 @@ describe('Team Exec Stage', () => {
     }
   });
 
-  it('keeps team-exec generic for plan-only approved handoffs while reusing the approved task text', async () => {
+  it('reuses baseline-only approved handoffs for team-exec', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     const approvedPrdPath = join(plansDir, 'prd-plan-only.md');
@@ -451,7 +451,7 @@ describe('Team Exec Stage', () => {
       '# Plan-only plan\n\nLaunch via omx team 5:debugger "Execute plan-only team handoff"\n',
     );
     await writeFile(join(plansDir, 'test-spec-plan-only.md'), '# Plan-only test spec\n');
-    await writeFile(join(plansDir, 'repo-context-plan-only.md'), 'Plan-only repo summary should not reach workers.\n');
+    await writeFile(join(plansDir, 'repo-context-plan-only.md'), 'Baseline repo summary may reach workers.\n');
 
     const previousCwd = process.cwd();
     try {
@@ -473,9 +473,13 @@ describe('Team Exec Stage', () => {
       const instruction = (result.artifacts as Record<string, unknown>).instruction as string;
       const runtimeCliInput = decodeRuntimeCliInstructionPayload(instruction);
       assert.equal(descriptor.task, 'Execute plan-only team handoff');
-      assert.equal(descriptor.approvedExecution, null);
+      assert.deepEqual(descriptor.approvedExecution, {
+        prd_path: approvedPrdPath,
+        task: 'Execute plan-only team handoff',
+        command: 'omx team 5:debugger "Execute plan-only team handoff"',
+      });
       assert.equal(runtimeCliInput.task, 'Execute plan-only team handoff');
-      assert.equal(runtimeCliInput.approvedExecution, null);
+      assert.deepEqual(runtimeCliInput.approvedExecution, descriptor.approvedExecution);
       assert.equal(
         (runtimeCliInput.decompositionMetadata as Record<string, unknown> | undefined)?.approved_context_summary,
         undefined,
@@ -510,7 +514,7 @@ describe('Team Exec Stage', () => {
       assert.equal(result.status, 'failed');
       assert.match(
         result.error ?? '',
-        /team_exec_approved_handoff_nonready:missing-baseline:.*prd-issue-missing-baseline\.md/,
+        /team_exec_approved_handoff_missing:.*prd-issue-missing-baseline\.md/,
       );
       assert.deepEqual(result.artifacts, {});
     } finally {
@@ -518,7 +522,7 @@ describe('Team Exec Stage', () => {
     }
   });
 
-  it('blocks team-exec when the selected approved handoff is nonready', async () => {
+  it('ignores obsolete context-pack markers when a matching test spec baseline exists', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     await writeFile(
@@ -549,12 +553,14 @@ describe('Team Exec Stage', () => {
           },
         },
       }));
-      assert.equal(result.status, 'failed');
-      assert.match(
-        result.error ?? '',
-        /team_exec_approved_handoff_nonready:invalid:.*prd-issue-nonready\.md/,
-      );
-      assert.deepEqual(result.artifacts, {});
+      assert.equal(result.status, 'completed');
+      const descriptor = (result.artifacts as Record<string, unknown>).teamDescriptor as Record<string, unknown>;
+      assert.equal(descriptor.task, 'Execute nonready team handoff');
+      assert.deepEqual(descriptor.approvedExecution, {
+        prd_path: join(plansDir, 'prd-issue-nonready.md'),
+        task: 'Execute nonready team handoff',
+        command: 'omx team 5:debugger "Execute nonready team handoff"',
+      });
     } finally {
       process.chdir(previousCwd);
     }

@@ -86,26 +86,10 @@ function renderApprovedRepositoryContextSummary(
   return lines;
 }
 
-function renderRoleRefLine(label: string, refs: readonly string[]): string | null {
-  return refs.length > 0
-    ? `- ${label}: ${refs.join(', ')}`
-    : null;
-}
-
 export function buildApprovedTeamHandoffSection(
   approvedHint: ApprovedExecutionLaunchHint | null | undefined,
 ): string | undefined {
-  if (
-    !approvedHint
-    || approvedHint.mode !== 'team'
-    || approvedHint.contextPackStatus !== 'ready'
-    || !approvedHint.contextPackRoleRefs
-  ) {
-    return undefined;
-  }
-
-  const { build, verify, scope } = approvedHint.contextPackRoleRefs;
-  if (build.length === 0 && verify.length === 0 && scope.length === 0) {
+  if (!approvedHint || approvedHint.mode !== 'team') {
     return undefined;
   }
 
@@ -113,31 +97,11 @@ export function buildApprovedTeamHandoffSection(
   if (approvedHint.testSpecPaths.length > 0) {
     lines.push(`- Test specs: ${approvedHint.testSpecPaths.join(', ')}`);
   }
-  if (approvedHint.contextPack) {
-    lines.push(`- Approved context pack: ${approvedHint.contextPack.path}`);
-  }
   if (approvedHint.repositoryContextSummary) {
     lines.push(...renderApprovedRepositoryContextSummary(approvedHint.repositoryContextSummary));
   }
 
-  const buildLine = renderRoleRefLine('Build refs (read first)', build);
-  const verifyLine = renderRoleRefLine('Verify refs', verify);
-  const scopeLine = renderRoleRefLine('Scope refs', scope);
-  if (buildLine) {
-    lines.push(buildLine);
-  }
-  if (verifyLine) {
-    lines.push(verifyLine);
-  }
-  if (scopeLine) {
-    lines.push(scopeLine);
-  }
-
-  lines.push(
-    build.length > 0
-      ? '- Read the build refs above before broader repo exploration.'
-      : '- Read the approved refs above before broader repo exploration.',
-  );
+  lines.push('- Use the approved plan and matching test specs as the execution baseline.');
   return lines.join('\n');
 }
 

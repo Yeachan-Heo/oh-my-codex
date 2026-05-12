@@ -35,15 +35,6 @@ function buildReadyApprovedTeamHint(
     sourcePath: '/repo/.omx/plans/prd-issue-1314.md',
     testSpecPaths: ['/repo/.omx/plans/test-spec-issue-1314.md'],
     deepInterviewSpecPaths: [],
-    contextPack: { path: '/repo/.omx/context/context-20260507T120000Z-issue-1314.json' },
-    contextPackStatus: 'ready',
-    contextPackRoleRefs: {
-      build: ['src/build-entry.ts'],
-      verify: ['tests/verify-entry.ts'],
-      scope: ['docs/scope-entry.md'],
-    },
-    missingRequiredContextPackRoles: [],
-    contextPackIssues: [],
     repositoryContextSummary: {
       sourcePath: '/repo/.omx/plans/repo-context-issue-1314.md',
       content: 'Read the approved repository slice before broader repo exploration.',
@@ -60,28 +51,20 @@ function buildReadyApprovedTeamHint(
 }
 
 describe('approved execution binding', () => {
-  it('buildApprovedTeamHandoffSection renders ready approved Team context with grouped refs', () => {
+  it('buildApprovedTeamHandoffSection renders ready approved Team baseline', () => {
     const handoff = buildApprovedTeamHandoffSection(buildReadyApprovedTeamHint());
 
     assert.match(handoff ?? '', /Approved plan: \/repo\/\.omx\/plans\/prd-issue-1314\.md/);
     assert.match(handoff ?? '', /Test specs: \/repo\/\.omx\/plans\/test-spec-issue-1314\.md/);
-    assert.match(handoff ?? '', /Approved context pack: \/repo\/\.omx\/context\/context-20260507T120000Z-issue-1314\.json/);
     assert.match(handoff ?? '', /Approved repository context summary source: \/repo\/\.omx\/plans\/repo-context-issue-1314\.md/);
     assert.match(handoff ?? '', /Read the approved repository slice before broader repo exploration\./);
-    assert.match(handoff ?? '', /Build refs \(read first\): src\/build-entry\.ts/);
-    assert.match(handoff ?? '', /Verify refs: tests\/verify-entry\.ts/);
-    assert.match(handoff ?? '', /Scope refs: docs\/scope-entry\.md/);
-    assert.match(handoff ?? '', /Read the build refs above before broader repo exploration\./);
+    assert.match(handoff ?? '', /Use the approved plan and matching test specs as the execution baseline/);
     assert.doesNotMatch(handoff ?? '', /query the canonical pack|Context pack index/);
   });
 
-  it('buildApprovedTeamHandoffSection stays undefined outside ready Team handoffs', () => {
+  it('buildApprovedTeamHandoffSection stays undefined outside Team handoffs', () => {
     assert.equal(
       buildApprovedTeamHandoffSection(buildReadyApprovedTeamHint({ mode: 'ralph' })),
-      undefined,
-    );
-    assert.equal(
-      buildApprovedTeamHandoffSection(buildReadyApprovedTeamHint({ contextPackStatus: 'plan-only' })),
       undefined,
     );
   });
@@ -292,7 +275,7 @@ describe('approved execution binding', () => {
     });
   });
 
-  it('preserves missing-baseline continuity instead of collapsing it to stale', async () => {
+  it('treats bindings without a matching test-spec baseline as stale', async () => {
     await withUnboxedOmxRoot(async () => {
       const cwd = await mkdtemp(join(tmpdir(), 'omx-approved-execution-missing-baseline-'));
       const stateRoot = join(cwd, '.omx', 'state');
@@ -315,17 +298,13 @@ describe('approved execution binding', () => {
           cwd,
           stateRoot,
         );
-        assert.equal(state.status, 'valid');
-        if (state.status !== 'valid') {
-          throw new Error('expected missing-baseline continuity state');
-        }
-        assert.equal(state.approvedHint.contextPackStatus, 'missing-baseline');
-        assert.deepEqual(state.approvedHint.testSpecPaths, []);
+        assert.equal(state.status, 'stale');
       } finally {
         await rm(cwd, { recursive: true, force: true });
       }
     });
   });
+
 
   it('reports malformed and stale binding states explicitly', async () => {
     await withUnboxedOmxRoot(async () => {

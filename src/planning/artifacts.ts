@@ -7,15 +7,6 @@ import {
   selectLatestPlanningArtifactPath,
   selectMatchingTestSpecsForPrd,
 } from './artifact-names.js';
-import {
-  isApprovedExecutionFollowupReadyStatus,
-  resolveContextPackHandoffStatus,
-  type ContextPackHandoffStatusSnapshot,
-  type ContextPackRef,
-  type ContextPackRole,
-  type ContextPackRoleRefs,
-  type ContextPackStatus,
-} from './context-pack-status.js';
 import { collectMarkdownVisibleMatches } from './markdown-structure.js';
 
 const PRD_PATTERN = /^prd-.*\.md$/i;
@@ -23,26 +14,6 @@ const TEST_SPEC_PATTERN = /^test-?spec-.*\.md$/i;
 const DEEP_INTERVIEW_SPEC_PATTERN = /^deep-interview-.*\.md$/i;
 const APPROVED_REPOSITORY_CONTEXT_MAX_CHARS = 4_000;
 const APPROVED_REPOSITORY_CONTEXT_MAX_LINES = 80;
-
-export {
-  REQUIRED_CONTEXT_PACK_ROLES,
-  isApprovedExecutionContextReadyStatus,
-  isApprovedExecutionFollowupReadyStatus,
-  resolveContextPackHandoffState,
-} from './context-pack-status.js';
-export type {
-  ContextPackHandoffStatusSnapshot,
-  ContextPackBaselineState,
-  ContextPackBasisState,
-  ContextPackDeclarationState,
-  ContextPackOutcomeState,
-  ContextPackPackState,
-  ContextPackRef,
-  ContextPackRole,
-  ContextPackRoleRefs,
-  ContextPackRoleCoverageState,
-  ContextPackStatus,
-} from './context-pack-status.js';
 
 interface PlanningArtifactSelectionBase {
   prdPath: string | null;
@@ -68,11 +39,6 @@ export interface ApprovedPlanContext {
   sourcePath: string;
   testSpecPaths: string[];
   deepInterviewSpecPaths: string[];
-  contextPack: ContextPackRef | null;
-  contextPackStatus: ContextPackStatus;
-  contextPackRoleRefs: ContextPackRoleRefs | null;
-  missingRequiredContextPackRoles: ContextPackRole[];
-  contextPackIssues: string[];
   repositoryContextSummary?: ApprovedRepositoryContextSummary;
 }
 
@@ -89,11 +55,6 @@ export interface LatestPlanningArtifactSelection {
   prdPath: string | null;
   testSpecPaths: string[];
   deepInterviewSpecPaths: string[];
-  contextPack: ContextPackRef | null;
-  contextPackStatus: ContextPackStatus;
-  contextPackRoleRefs: ContextPackRoleRefs | null;
-  missingRequiredContextPackRoles: ContextPackRole[];
-  contextPackIssues: string[];
 }
 
 interface ApprovedExecutionLaunchHintReadOptions {
@@ -267,20 +228,7 @@ function selectPlanningArtifacts(
   artifacts: PlanningArtifacts,
   prdPath?: string,
 ): LatestPlanningArtifactSelection {
-  const selection = selectPlanningArtifactsBase(artifacts, prdPath);
-  const handoffStatus = resolveContextPackHandoffStatus(artifacts, selection);
-  const contextPackRoleRefs =
-    handoffStatus.contextPackStatus === 'ready'
-      ? handoffStatus.contextPackRoleRefs
-      : null;
-  return {
-    ...selection,
-    contextPack: handoffStatus.contextPack,
-    contextPackStatus: handoffStatus.contextPackStatus,
-    contextPackRoleRefs,
-    missingRequiredContextPackRoles: handoffStatus.missingRequiredContextPackRoles,
-    contextPackIssues: handoffStatus.contextPackIssues,
-  };
+  return selectPlanningArtifactsBase(artifacts, prdPath);
 }
 
 function boundedRepositoryContextSummary(sourcePath: string, content: string): ApprovedRepositoryContextSummary | null {
@@ -338,12 +286,11 @@ function readApprovedRepositoryContextSummary(
 function readApprovedPlanText(
   cwd: string,
   options: ApprovedExecutionLaunchHintReadOptions = {},
-  allowMissingBaseline = false,
   artifacts: PlanningArtifacts = readPlanningArtifacts(cwd),
 ): { content: string; context: ApprovedPlanContext } | null {
   const selection = selectPlanningArtifacts(artifacts, options.prdPath);
   const latestPrdPath = selection.prdPath;
-  if (!latestPrdPath || (!allowMissingBaseline && selection.testSpecPaths.length === 0) || !existsSync(latestPrdPath)) {
+  if (!latestPrdPath || selection.testSpecPaths.length === 0 || !existsSync(latestPrdPath)) {
     return null;
   }
 
@@ -357,11 +304,6 @@ function readApprovedPlanText(
         sourcePath: latestPrdPath,
         testSpecPaths: selection.testSpecPaths,
         deepInterviewSpecPaths: selection.deepInterviewSpecPaths,
-        contextPack: selection.contextPack,
-        contextPackStatus: selection.contextPackStatus,
-        contextPackRoleRefs: selection.contextPackRoleRefs,
-        missingRequiredContextPackRoles: selection.missingRequiredContextPackRoles,
-        contextPackIssues: selection.contextPackIssues,
         ...(repositoryContextSummary ? { repositoryContextSummary } : {}),
       },
     };
@@ -378,14 +320,6 @@ export function selectLatestPlanningArtifacts(
 
 export function readLatestPlanningArtifacts(cwd: string): LatestPlanningArtifactSelection {
   return selectLatestPlanningArtifacts(readPlanningArtifacts(cwd));
-}
-
-export function readContextPackHandoffStatus(
-  cwd: string,
-  prdPath?: string,
-): ContextPackHandoffStatusSnapshot {
-  const artifacts = readPlanningArtifacts(cwd);
-  return resolveContextPackHandoffStatus(artifacts, selectPlanningArtifactsBase(artifacts, prdPath));
 }
 
 function extractTeamDagMarkdownHandoff(content: string): string | null {
@@ -666,7 +600,7 @@ function readApprovedExecutionLaunchHintOutcomeForPrdPath(
   matchFilter?: LaunchHintMatchFilter,
   artifacts: PlanningArtifacts = readPlanningArtifacts(cwd),
 ): ApprovedExecutionLaunchHintOutcome {
-  const approvedPlan = readApprovedPlanText(cwd, { ...options, prdPath }, true, artifacts);
+  const approvedPlan = readApprovedPlanText(cwd, { ...options, prdPath }, artifacts);
   if (!approvedPlan) {
     return { status: 'absent' };
   }
@@ -714,6 +648,10 @@ function readApprovedExecutionLaunchHintOutcomeForPrdPath(
   };
 }
 
+function isApprovedExecutionLaunchHintReady(hint: ApprovedExecutionLaunchHint): boolean {
+  return hint.testSpecPaths.length > 0 && existsSync(hint.sourcePath);
+}
+
 type SameLineageFallback =
   | { status: 'none' }
   | { status: 'ambiguous' }
@@ -750,7 +688,7 @@ function resolveOlderReusableSameLineageHint(
     if (outcome.status !== 'resolved') {
       continue;
     }
-    if (isApprovedExecutionFollowupReadyStatus(outcome.hint.contextPackStatus)) {
+    if (isApprovedExecutionLaunchHintReady(outcome.hint)) {
       return { status: 'resolved', hint: outcome.hint };
     }
   }
@@ -797,7 +735,7 @@ export function readApprovedExecutionLaunchHintOutcome(
     if (latestOutcome.status !== 'resolved') {
       return { status: 'absent' };
     }
-    if (isApprovedExecutionFollowupReadyStatus(latestOutcome.hint.contextPackStatus)) {
+    if (isApprovedExecutionLaunchHintReady(latestOutcome.hint)) {
       return latestOutcome;
     }
 
@@ -848,7 +786,7 @@ export function readApprovedExecutionLaunchHintOutcome(
     if (mode === 'team' && normalizedTask && !normalizedCommand) {
       teamLineageAnchorHint ??= outcome.hint;
     }
-    if (isApprovedExecutionFollowupReadyStatus(outcome.hint.contextPackStatus)) {
+    if (isApprovedExecutionLaunchHintReady(outcome.hint)) {
       return outcome;
     }
     newestNonreadyHint ??= outcome.hint;
@@ -865,7 +803,7 @@ export function readApprovedExecutionLaunchHint(
   options: ApprovedExecutionLaunchHintReadOptions = {},
 ): ApprovedExecutionLaunchHint | null {
   const outcome = readApprovedExecutionLaunchHintOutcome(cwd, mode, options);
-  if (outcome.status !== 'resolved' || outcome.hint.contextPackStatus === 'missing-baseline') {
+  if (outcome.status !== 'resolved' || !isApprovedExecutionLaunchHintReady(outcome.hint)) {
     return null;
   }
   return outcome.hint;

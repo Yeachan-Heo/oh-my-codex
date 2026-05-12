@@ -15,8 +15,6 @@ import {
   resolveAvailableAgentTypes,
 } from '../../team/followup-planner.js';
 import {
-  isApprovedExecutionContextReadyStatus,
-  isApprovedExecutionFollowupReadyStatus,
   readApprovedExecutionLaunchHintOutcome,
   readPlanningArtifacts,
   type PlanningArtifacts,
@@ -180,16 +178,9 @@ function resolveApprovedTeamLaunchFromPlanPath(
   if (approvedHintOutcome.status !== 'resolved') {
     throw new Error(`team_exec_approved_handoff_missing:${approvedPlanPath}`);
   }
-  if (!isApprovedExecutionFollowupReadyStatus(approvedHintOutcome.hint.contextPackStatus)) {
-    throw new Error(
-      `team_exec_approved_handoff_nonready:${approvedHintOutcome.hint.contextPackStatus}:${approvedPlanPath}`,
-    );
-  }
   return {
     task: approvedHintOutcome.hint.task,
-    approvedExecution: isApprovedExecutionContextReadyStatus(approvedHintOutcome.hint.contextPackStatus)
-      ? buildApprovedTeamExecutionBinding(approvedHintOutcome.hint)
-      : null,
+    approvedExecution: buildApprovedTeamExecutionBinding(approvedHintOutcome.hint),
   };
 }
 

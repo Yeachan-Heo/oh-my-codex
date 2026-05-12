@@ -518,10 +518,10 @@ function assertExpectedSelection(
     expected.hint?.command,
     `${label}: unexpected selected command`,
   );
-  assert.equal(
-    outcome.hint.contextPackStatus,
-    expected.hint?.ready ? 'plan-only' : 'missing-baseline',
-    `${label}: unexpected readiness state`,
+  assert.deepEqual(
+    outcome.hint.testSpecPaths.length > 0,
+    true,
+    `${label}: unexpected baseline readiness`,
   );
   if (mode === 'team') {
     assert.equal(

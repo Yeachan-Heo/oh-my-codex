@@ -133,10 +133,6 @@ import { buildRebalanceDecisions } from './rebalance-policy.js';
 import { getStatePath } from '../mcp/state-paths.js';
 import { readModeState, updateModeState } from '../modes/base.js';
 import {
-  isApprovedExecutionContextReadyStatus,
-  isApprovedExecutionFollowupReadyStatus,
-} from '../planning/artifacts.js';
-import {
   buildApprovedTeamHandoffSection,
   buildApprovedTeamExecutionBinding,
   normalizeApprovedTeamExecutionBinding,
@@ -2360,22 +2356,12 @@ export async function startTeam(
   const selectedApprovedExecutionHint = requestedApprovedExecutionOutcome?.status === 'resolved'
     ? requestedApprovedExecutionOutcome.approvedHint
     : null;
-  if (
-    requestedApprovedExecution
-    && selectedApprovedExecutionHint
-    && !isApprovedExecutionFollowupReadyStatus(selectedApprovedExecutionHint.contextPackStatus)
-  ) {
-    throw new Error(
-      `approved_execution_binding_nonready:${selectedApprovedExecutionHint.contextPackStatus}:${requestedApprovedExecution.prd_path}:${requestedApprovedExecution.task}`,
-    );
-  }
   if (requestedApprovedExecution && !selectedApprovedExecutionHint) {
     throw new Error(
       `approved_execution_binding_stale:${requestedApprovedExecution.prd_path}:${requestedApprovedExecution.task}`,
     );
   }
   const approvedExecution = selectedApprovedExecutionHint
-    && isApprovedExecutionContextReadyStatus(selectedApprovedExecutionHint.contextPackStatus)
     ? buildApprovedTeamExecutionBinding(selectedApprovedExecutionHint)
     : null;
   const approvedContextSection = buildApprovedTeamHandoffSection(selectedApprovedExecutionHint);
@@ -3395,7 +3381,6 @@ export async function assignTask(
       config.team_state_root ?? resolveCanonicalTeamStateRoot(config.leader_cwd ?? cwd),
     );
     const approvedContextSection = approvedExecutionState.status === 'valid'
-      && isApprovedExecutionFollowupReadyStatus(approvedExecutionState.approvedHint.contextPackStatus)
       ? buildApprovedTeamHandoffSection(approvedExecutionState.approvedHint)
       : undefined;
     const taskForInbox = task.delegation
@@ -3888,15 +3873,6 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
       `approved_execution_binding_stale:${approvedExecutionState.binding.prd_path}:${approvedExecutionState.binding.task}`,
     );
   }
-  if (
-    approvedExecutionState.status === 'valid'
-    && !isApprovedExecutionFollowupReadyStatus(approvedExecutionState.approvedHint.contextPackStatus)
-  ) {
-    throw new Error(
-      `approved_execution_binding_nonready:${approvedExecutionState.approvedHint.contextPackStatus}:${approvedExecutionState.binding.prd_path}:${approvedExecutionState.binding.task}`,
-    );
-  }
-
   if (config.worker_launch_mode === 'prompt') {
     const handleTeamConfig = { ...config, name: sanitized };
     const hasLivePromptWorker = config.workers.some((worker) => isPromptWorkerAlive(handleTeamConfig, worker));

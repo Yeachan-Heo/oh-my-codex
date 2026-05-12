@@ -181,57 +181,7 @@ function buildRalphApprovedContextLines(approvedHint: ApprovedExecutionLaunchHin
     lines.push('Approved repository context summary (bounded, inspectable):');
     lines.push(approvedHint.repositoryContextSummary.content);
   }
-  if (approvedHint.contextPackStatus === 'ready') {
-    if (approvedHint.contextPack) {
-      lines.push(`- approved context pack: ${approvedHint.contextPack.path}`);
-    }
-    if (approvedHint.contextPackRoleRefs) {
-      const { build, verify, scope } = approvedHint.contextPackRoleRefs;
-      if (build.length > 0) {
-        lines.push(`- build refs (read first): ${build.join(', ')}`);
-      }
-      if (verify.length > 0) {
-        lines.push(`- verify refs: ${verify.join(', ')}`);
-      }
-      if (scope.length > 0) {
-        lines.push(`- scope refs: ${scope.join(', ')}`);
-      }
-      if (build.length > 0 || verify.length > 0 || scope.length > 0) {
-        lines.push(
-          build.length > 0
-            ? '- Read the build refs above before broader repo exploration.'
-            : '- Read the approved refs above before broader repo exploration.',
-        );
-      }
-    }
-    return lines;
-  }
-  if (approvedHint.contextPackStatus === 'plan-only') {
-    lines.push('- context pack: not declared in the approved plan; using the pre-context-pack plan-only handoff baseline.');
-    lines.push('- Plan-only fallback: use the approved plan, matching test specs, and any deep-interview artifacts as repair inputs; do not treat this as approved context-bearing execution.');
-    return lines;
-  }
-  if (approvedHint.contextPackStatus === 'incomplete') {
-    if (approvedHint.contextPackIssues.length > 0) {
-      lines.push(`- incomplete context pack issues: ${approvedHint.contextPackIssues.join(' | ')}`);
-    }
-    if (approvedHint.missingRequiredContextPackRoles.length > 0) {
-      lines.push(`- missing required context roles: ${approvedHint.missingRequiredContextPackRoles.join(', ')}`);
-    }
-    lines.push('- Incomplete-pack fallback: use the approved plan, matching test specs, and any deep-interview artifacts only as repair inputs; repair or recreate the canonical context pack with required role coverage before broadening context.');
-    return lines;
-  }
-  if (approvedHint.contextPackStatus === 'invalid') {
-    if (approvedHint.contextPackIssues.length > 0) {
-      lines.push(`- invalid context pack issues: ${approvedHint.contextPackIssues.join(' | ')}`);
-    }
-    lines.push('- Invalid-pack fallback: use the approved plan, matching test specs, and any deep-interview artifacts only as repair inputs; repair or recreate the canonical context pack before broadening context.');
-    return lines;
-  }
-  if (approvedHint.contextPackIssues.length > 0) {
-    lines.push(`- missing-baseline issues: ${approvedHint.contextPackIssues.join(' | ')}`);
-  }
-  lines.push('- Missing-baseline fallback: the latest approved plan is missing its matching test spec, so use the surfaced plan as lineage guidance only and restore the missing baseline before broadening context.');
+  lines.push('- Approved execution baseline is ready: use the approved plan, matching test specs, and any deep-interview artifacts as execution inputs.');
   return lines;
 }
 

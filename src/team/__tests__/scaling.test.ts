@@ -284,10 +284,7 @@ async function readExpectedScaleUpApprovedBindingError(
   if (continuity.status === 'stale') {
     return `approved_execution_binding_stale:${continuity.binding.prd_path}:${continuity.binding.task}`;
   }
-  return continuity.approvedHint.contextPackStatus === 'ready'
-    || continuity.approvedHint.contextPackStatus === 'plan-only'
-    ? null
-    : `approved_execution_binding_nonready:${continuity.approvedHint.contextPackStatus}:${continuity.binding.prd_path}:${continuity.binding.task}`;
+  return null;
 }
 
 async function prepareScaleUpApprovedBindingState(
