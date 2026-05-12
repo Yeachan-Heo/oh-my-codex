@@ -16,6 +16,9 @@ describe('ralph goal mode integration contract', () => {
     assert.match(ralphSkill, /update_goal\(\{status: "complete"\}\)/i);
     assert.match(ralphSkill, /prompt-to-artifact checklist/i);
     assert.match(ralphSkill, /Do not use passing tests, Ralph state, or architect approval as proxy proof/i);
+    assert.match(ralphSkill, /"completion_audit":\{"passed":true/i);
+    assert.match(ralphSkill, /"prompt_to_artifact_checklist":\["<requirement mapped to artifact\/evidence>"\]/i);
+    assert.match(ralphSkill, /"verification_evidence":\["<fresh test\/build\/lint command and result>"\]/i);
   });
 
   it('injects goal-mode guidance into launched Ralph sessions', () => {

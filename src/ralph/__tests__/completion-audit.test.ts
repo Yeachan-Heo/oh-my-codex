@@ -129,6 +129,51 @@ test('requires explicit passed=true in completion-audit evidence', async () => {
   }
 });
 
+test('requires explicit passed=true in inline completion-audit state', () => {
+  for (const completion_audit of [
+    {
+      passed: false,
+      prompt_to_artifact_checklist: ['mapped'],
+      verification_evidence: ['tested'],
+    },
+    {
+      status: 'passed',
+      prompt_to_artifact_checklist: ['mapped'],
+      verification_evidence: ['tested'],
+    },
+  ]) {
+    const result = evaluateRalphCompletionAuditEvidence({ completion_audit }, process.cwd());
+
+    assert.equal(result.complete, false);
+    assert.equal(result.reason, 'completion_audit_not_passing');
+    assert.equal(result.source, 'state');
+  }
+});
+
+test('requires checklist and verification evidence in inline completion-audit state', () => {
+  const missingChecklist = evaluateRalphCompletionAuditEvidence({
+    completion_audit: {
+      passed: true,
+      verification_evidence: ['tested'],
+    },
+  }, process.cwd());
+
+  assert.equal(missingChecklist.complete, false);
+  assert.equal(missingChecklist.reason, 'missing_completion_checklist');
+  assert.equal(missingChecklist.source, 'state');
+
+  const missingEvidence = evaluateRalphCompletionAuditEvidence({
+    completion_audit: {
+      passed: true,
+      prompt_to_artifact_checklist: ['mapped'],
+    },
+  }, process.cwd());
+
+  assert.equal(missingEvidence.complete, false);
+  assert.equal(missingEvidence.reason, 'missing_verification_evidence');
+  assert.equal(missingEvidence.source, 'state');
+});
+
 test('accepts structured relative JSON completion-audit artifacts with evidence', async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-audit-valid-json-'));
   try {

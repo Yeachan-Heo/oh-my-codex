@@ -125,8 +125,8 @@ Use the CLI-first state surface for Ralph lifecycle state (`omx state write/read
   `omx state write --input '{"mode":"ralph","iteration":<current>,"current_phase":"executing"}' --json`
 - **On verification/fix transition**:
   `omx state write --input '{"mode":"ralph","current_phase":"verifying"}' --json` or `omx state write --input '{"mode":"ralph","current_phase":"fixing"}' --json`
-- **On completion**:
-  `omx state write --input '{"mode":"ralph","active":false,"current_phase":"complete","completed_at":"<now>"}' --json`
+- **On completion** (only after the completion audit passes with real evidence):
+  `omx state write --input '{"mode":"ralph","active":false,"current_phase":"complete","completed_at":"<now>","completion_audit":{"passed":true,"prompt_to_artifact_checklist":["<requirement mapped to artifact/evidence>"],"verification_evidence":["<fresh test/build/lint command and result>"]}}' --json`
 - **On cancellation/cleanup**:
   run `$cancel` (which should call `omx state clear --input '{"mode":"ralph"}' --json`)
 
