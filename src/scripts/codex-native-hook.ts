@@ -2784,8 +2784,14 @@ async function buildStopHookOutput(
   if (ralphCompletionAuditBlock) {
     await reopenRalphCompletionAuditBlock(ralphCompletionAuditBlock);
     const blockingPath = formatStopStatePath(cwd, ralphCompletionAuditBlock.path);
-    const systemMessage =
-      `OMX Ralph completion audit is missing required evidence (${ralphCompletionAuditBlock.reason}; state: ${blockingPath}); continue verification, record a prompt-to-artifact checklist plus verification evidence, and do not report complete yet.`;
+    const systemMessage = [
+      `OMX Ralph completion audit is missing required evidence (${ralphCompletionAuditBlock.reason}; state: ${blockingPath}).`,
+      "Continue verification and do not report complete yet.",
+      "Record machine-readable completion evidence before stopping:",
+      "- either set state.completion_audit = { passed: true, prompt_to_artifact_checklist: [...], verification_evidence: [...] }",
+      "- or set completion_audit_path / completion_audit_evidence_path to a repo-relative JSON file with those same fields.",
+      "Markdown artifacts and flat top-level checklist/evidence fields are not accepted by the Ralph Stop gate.",
+    ].join(" ");
     return await returnPersistentStopBlock(
       payload,
       stateDir,

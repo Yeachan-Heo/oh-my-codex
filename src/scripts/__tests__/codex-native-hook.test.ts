@@ -7665,7 +7665,11 @@ exit 0
       );
 
       assert.equal(result.omxEventName, "stop");
-      assert.match(String(result.outputJson?.reason), /Ralph completion audit is missing required evidence/);
+      const reason = String(result.outputJson?.reason);
+      assert.match(reason, /Ralph completion audit is missing required evidence/);
+      assert.match(reason, /state\.completion_audit = \{ passed: true, prompt_to_artifact_checklist: \[\.\.\.\], verification_evidence: \[\.\.\.\] \}/);
+      assert.match(reason, /repo-relative JSON file/);
+      assert.match(reason, /Markdown artifacts and flat top-level checklist\/evidence fields are not accepted/);
       assert.equal(result.outputJson?.stopReason, "ralph_completion_audit_missing_completion_audit");
       const reopened = JSON.parse(await readFile(statePath, "utf-8")) as Record<string, unknown>;
       assert.equal(reopened.active, true);
