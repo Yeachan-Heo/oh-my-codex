@@ -191,6 +191,12 @@ jobs:
           path: dist
       - name: Run grouped full-suite lane
         if: matrix.lane != 'smoke'
+        env:
+          # The team-state-runtime lane exercises tmux/process supervision. On
+          # hosted runners, leaked child handles can leave Node's test process
+          # alive after all tests have reported. Force exit only after the test
+          # runner finishes so successful suites do not hang indefinitely.
+          OMX_NODE_TEST_FORCE_EXIT: ${{ matrix.lane == 'team-state-runtime' && '1' || '' }}
         run: |
           node dist/scripts/run-test-files.js ${{ matrix.test-roots }}
       - name: Verify generated catalog docs

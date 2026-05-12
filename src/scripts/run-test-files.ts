@@ -6,6 +6,12 @@ const DEFAULT_TEST_TIMEOUT_MS = 0;
 const DEFAULT_RUNNER_TIMEOUT_MS = 30 * 60 * 1_000;
 const DEFAULT_CI_TEST_CONCURRENCY = 1;
 
+function parseBooleanEnv(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
 function collectTests(path: string, out: string[]): void {
   let stats;
   try {
@@ -61,6 +67,7 @@ if (files.length === 0) {
 const testTimeoutMs = parseTimeoutMs(process.env.OMX_NODE_TEST_TIMEOUT_MS, DEFAULT_TEST_TIMEOUT_MS);
 const runnerTimeoutMs = parseTimeoutMs(process.env.OMX_NODE_TEST_RUNNER_TIMEOUT_MS, DEFAULT_RUNNER_TIMEOUT_MS);
 const testConcurrency = parseTestConcurrency(process.env);
+const forceExit = parseBooleanEnv(process.env.OMX_NODE_TEST_FORCE_EXIT);
 const testArgs = ['--test'];
 if (testTimeoutMs > 0) {
   testArgs.push(`--test-timeout=${testTimeoutMs}`);
@@ -68,14 +75,17 @@ if (testTimeoutMs > 0) {
 if (testConcurrency) {
   testArgs.push(`--test-concurrency=${testConcurrency}`);
 }
+if (forceExit) {
+  testArgs.push('--test-force-exit');
+}
 testArgs.push(...files);
 
 console.error(
   `[run-test-files] running ${files.length} test file(s) from ${targets.join(', ')}${
     testTimeoutMs > 0 ? ` with per-test timeout ${testTimeoutMs}ms` : ' with per-test timeout disabled'
   }${testConcurrency ? `, test concurrency ${testConcurrency}` : ', default test concurrency'}${
-    runnerTimeoutMs > 0 ? `, and runner timeout ${runnerTimeoutMs}ms` : ', and runner timeout disabled'
-  }`,
+    forceExit ? ', force exit enabled' : ', force exit disabled'
+  }${runnerTimeoutMs > 0 ? `, and runner timeout ${runnerTimeoutMs}ms` : ', and runner timeout disabled'}`,
 );
 
 const childEnv = { ...process.env };
@@ -101,6 +111,7 @@ console.error(
     + `Roots: ${targets.join(', ')}. Test files: ${files.length}. `
     + `Per-test timeout: ${testTimeoutMs > 0 ? `${testTimeoutMs}ms` : 'disabled'}. `
     + `Test concurrency: ${testConcurrency ?? 'default'}. `
+    + `Force exit: ${forceExit ? 'enabled' : 'disabled'}. `
     + `Runner timeout: ${runnerTimeoutMs > 0 ? `${runnerTimeoutMs}ms` : 'disabled'}.`,
 );
 process.exit(1);

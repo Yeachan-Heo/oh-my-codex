@@ -47,6 +47,38 @@ describe('run-test-files diagnostics', () => {
     }
   });
 
+
+  it('can force-exit Node test runner after successful CI tests to avoid leaked-handle hangs', () => {
+    const wd = mkdtempSync(join(tmpdir(), 'omx-run-test-files-'));
+    try {
+      const testsDir = join(wd, '__tests__');
+      mkdirSync(testsDir, { recursive: true });
+      writeFileSync(
+        join(testsDir, 'leaky-pass.test.js'),
+        [
+          "import { test } from 'node:test';",
+          "test('passes but leaves an interval', () => { setInterval(() => {}, 1_000); });",
+          '',
+        ].join('\n'),
+      );
+
+      const withoutForceExit = runCompiledRunner(wd, { OMX_NODE_TEST_RUNNER_TIMEOUT_MS: '750' }, 2_000);
+      assert.notEqual(withoutForceExit.status, 0);
+      assert.match(withoutForceExit.stderr, /force exit disabled/);
+      assert.match(withoutForceExit.stderr, /did not exit normally|runner timeout 750ms/);
+
+      const withForceExit = runCompiledRunner(
+        wd,
+        { OMX_NODE_TEST_RUNNER_TIMEOUT_MS: '750', OMX_NODE_TEST_FORCE_EXIT: '1' },
+        2_000,
+      );
+      assert.equal(withForceExit.status, 0, withForceExit.stderr || withForceExit.stdout);
+      assert.match(withForceExit.stderr, /force exit enabled/);
+    } finally {
+      rmSync(wd, { recursive: true, force: true });
+    }
+  });
+
   it('logs that per-test timeout is disabled by default', () => {
     const wd = mkdtempSync(join(tmpdir(), 'omx-run-test-files-'));
     try {
