@@ -209,7 +209,7 @@ describe('reconcileHudForPromptSubmit', () => {
   });
 
   it('unregisters existing hook before killing duplicates and re-registers for the new pane', async () => {
-    const unregistered: Array<{ hudPaneId: string; currentPaneId: string | undefined }> = [];
+    const unregistered: Array<string | undefined> = [];
     const registered: Array<{ hudPaneId: string; currentPaneId: string | undefined }> = [];
 
     await reconcileHudForPromptSubmit('/repo', {
@@ -222,14 +222,13 @@ describe('reconcileHudForPromptSubmit', () => {
       killTmuxPane: () => true,
       createHudWatchPane: () => '%9',
       resizeTmuxPane: () => true,
-      unregisterHudResizeHook: (hudPaneId, currentPaneId) => { unregistered.push({ hudPaneId, currentPaneId }); return true; },
+      unregisterHudResizeHook: (currentPaneId) => { unregistered.push(currentPaneId); return true; },
       registerHudResizeHook: (hudPaneId, currentPaneId) => { registered.push({ hudPaneId, currentPaneId }); return true; },
       resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
     });
 
-    assert.equal(unregistered.length, 2);
-    assert.deepEqual(unregistered.map((u) => u.hudPaneId), ['%2', '%3']);
-    assert.ok(unregistered.every((u) => u.currentPaneId === '%1'));
+    assert.equal(unregistered.length, 1);
+    assert.equal(unregistered[0], '%1');
     assert.equal(registered.length, 1);
     assert.equal(registered[0]?.hudPaneId, '%9');
     assert.equal(registered[0]?.currentPaneId, '%1');

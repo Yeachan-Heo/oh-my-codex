@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { HUD_TMUX_HEIGHT_LINES } from './constants.js';
+import { HUD_TMUX_HEIGHT_LINES, HUD_RESIZE_HOOK_SLOT } from './constants.js';
 import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 
 export interface TmuxPaneSnapshot {
@@ -194,9 +194,8 @@ export function registerHudResizeHook(
   const height = String(Math.max(1, Math.floor(heightLines)));
   const resizeCmd = shellEscapeSingle(`${tmuxBin} resize-pane -t ${hudPaneId} -y ${height} 2>/dev/null || true`);
   if (!currentPaneId?.startsWith('%')) return false;
-  const slotIndex = hudPaneId.slice(1);
   try {
-    execTmuxSync(['set-hook', '-t', currentPaneId, `client-resized[${slotIndex}]`, `run-shell -b ${resizeCmd}`]);
+    execTmuxSync(['set-hook', '-t', currentPaneId, `client-resized[${HUD_RESIZE_HOOK_SLOT}]`, `run-shell -b ${resizeCmd}`]);
     return true;
   } catch {
     return false;
@@ -204,15 +203,12 @@ export function registerHudResizeHook(
 }
 
 export function unregisterHudResizeHook(
-  hudPaneId: string,
   currentPaneId: string | undefined,
   execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
 ): boolean {
-  if (!hudPaneId.startsWith('%')) return false;
   if (!currentPaneId?.startsWith('%')) return false;
-  const slotIndex = hudPaneId.slice(1);
   try {
-    execTmuxSync(['set-hook', '-u', '-t', currentPaneId, `client-resized[${slotIndex}]`]);
+    execTmuxSync(['set-hook', '-u', '-t', currentPaneId, `client-resized[${HUD_RESIZE_HOOK_SLOT}]`]);
     return true;
   } catch {
     return false;
