@@ -6648,13 +6648,13 @@ esac
     }
   });
 
-  it('startTeam keeps explicit nonready approved execution bindings on the generic path', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-binding-nonready-'));
+  it('startTeam carries explicit baseline-ready bindings despite obsolete context-pack markers', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-binding-obsolete-marker-'));
     const binDir = join(cwd, 'bin');
     const fakeCodexPath = join(binDir, 'codex');
     await mkdir(binDir, { recursive: true });
     await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
-    const prdPath = join(cwd, '.omx', 'plans', 'prd-issue-1314-nonready.md');
+    const prdPath = join(cwd, '.omx', 'plans', 'prd-issue-1314-obsolete-marker.md');
     await writeFile(
       prdPath,
       [
@@ -6664,10 +6664,10 @@ esac
         '',
         '- pack: created `.omx/context/context-20260507T120000Z-other.json`',
         '',
-        'Launch via omx team 1:executor "Execute approved issue 1314 nonready plan"',
+        'Launch via omx team 1:executor "Execute approved issue 1314 obsolete-marker plan"',
       ].join('\n'),
     );
-    await writeFile(join(cwd, '.omx', 'plans', 'test-spec-issue-1314-nonready.md'), '# Test spec\n');
+    await writeFile(join(cwd, '.omx', 'plans', 'test-spec-issue-1314-obsolete-marker.md'), '# Test spec\n');
     await writeFakePromptWorkerBinary(
       fakeCodexPath,
       `setTimeout(() => {}, 5000);`,
@@ -6678,8 +6678,8 @@ esac
       runtime = await withPromptModeCodexEnv(binDir, {}, () =>
         withoutTeamWorkerEnv(() =>
           startTeam(
-            'team-approved-binding-nonready',
-            'approved binding nonready start test',
+            'team-approved-binding-obsolete-marker',
+            'approved binding obsolete-marker start test',
             'executor',
             1,
             [{ subject: 's', description: 'd', owner: 'worker-1' }],
@@ -6687,22 +6687,24 @@ esac
             {
               approvedExecution: {
                 prd_path: prdPath,
-                task: 'Execute approved issue 1314 nonready plan',
+                task: 'Execute approved issue 1314 obsolete-marker plan',
               },
             },
           ),
         ),
       );
-      assert.equal(runtime.teamName.startsWith('team-approved-binding-nonready'), true);
       assert.equal(
         existsSync(join(runtime.config.team_state_root ?? join(cwd, '.omx', 'state'), 'team', runtime.teamName, 'approved-execution.json')),
-        false,
+        true,
       );
       const inbox = await readFile(
         join(cwd, '.omx', 'state', 'team', runtime.teamName, 'workers', 'worker-1', 'inbox.md'),
         'utf-8',
       );
-      assert.doesNotMatch(inbox, /## Approved Handoff Context/);
+      assert.match(inbox, /## Approved Handoff Context/);
+      assert.match(inbox, /Approved plan: .*prd-issue-1314-obsolete-marker\.md/);
+      assert.match(inbox, /Test specs: .*test-spec-issue-1314-obsolete-marker\.md/);
+      assert.doesNotMatch(inbox, /Approved context pack|Context pack index/);
     } finally {
       if (runtime) {
         await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
