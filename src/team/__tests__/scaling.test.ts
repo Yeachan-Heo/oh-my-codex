@@ -79,15 +79,16 @@ type ScaleUpObservedOutcome = 'generic' | 'blocked' | 'approved';
 
 type ScaleUpCount = 1 | 2 | 3;
 
-type BlockedScaleUpApprovedBindingState = Exclude<ScaleUpApprovedBindingState, 'missing' | 'plan-only' | 'ready'>;
+type BlockedScaleUpApprovedBindingState = Exclude<
+  ScaleUpApprovedBindingState,
+  'missing' | 'plan-only' | 'incomplete' | 'invalid' | 'ready'
+>;
 
 const BLOCKED_SCALE_UP_APPROVED_BINDING_STATES: readonly BlockedScaleUpApprovedBindingState[] = [
   'malformed',
   'stale',
   'ambiguous',
   'missing-baseline',
-  'incomplete',
-  'invalid',
 ];
 
 const SCALE_UP_STATE_TEAM_SUFFIX: Record<ScaleUpApprovedBindingState, string> = {
@@ -106,6 +107,8 @@ const SCALE_UP_APPROVED_BINDING_STATES: readonly ScaleUpApprovedBindingState[] =
   'missing',
   ...BLOCKED_SCALE_UP_APPROVED_BINDING_STATES,
   'plan-only',
+  'incomplete',
+  'invalid',
   'ready',
 ];
 
@@ -116,10 +119,12 @@ function assertNeverScaleUpState(state: never): never {
 }
 
 function expectedScaleUpOutcome(state: ScaleUpApprovedBindingState): ScaleUpObservedOutcome {
-  if (state === 'missing' || state === 'plan-only') {
+  if (state === 'missing') {
     return 'generic';
   }
-  return state === 'ready' ? 'approved' : 'blocked';
+  return BLOCKED_SCALE_UP_APPROVED_BINDING_STATES.includes(state as BlockedScaleUpApprovedBindingState)
+    ? 'blocked'
+    : 'approved';
 }
 
 function forbiddenScaleUpOutcomes(
@@ -127,16 +132,16 @@ function forbiddenScaleUpOutcomes(
 ): readonly ScaleUpObservedOutcome[] {
   switch (state) {
     case 'missing':
-    case 'plan-only':
       return ['blocked', 'approved'];
+    case 'plan-only':
+    case 'incomplete':
+    case 'invalid':
     case 'ready':
       return ['blocked', 'generic'];
     case 'malformed':
     case 'stale':
     case 'ambiguous':
     case 'missing-baseline':
-    case 'incomplete':
-    case 'invalid':
       return ['generic', 'approved'];
     default:
       return assertNeverScaleUpState(state);
@@ -761,7 +766,7 @@ describe('scaleUp', () => {
     }
   });
 
-  it('keeps scale-up on the generic path when the persisted binding is only plan-only followup-ready', async () => {
+  it('injects approved handoff context on scale-up when the persisted binding is baseline-ready without context-pack metadata', async () => {
     const teamName = 'scale-up-plan-only';
     const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-plan-only-'));
     const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-plan-only-bin-'));
@@ -795,7 +800,9 @@ describe('scaleUp', () => {
       );
       const tmuxCommands = await readScaleUpTmuxLogCommands(tmuxLogPath);
       assert.match(inbox, /Implement plan-only follow-up/);
-      assert.doesNotMatch(inbox, /## Approved Handoff Context/);
+      assert.match(inbox, /## Approved Handoff Context/);
+      assert.match(inbox, /Use the approved plan and matching test specs as the execution baseline/);
+      assert.doesNotMatch(inbox, /Approved context pack|Context pack index/);
       assert.ok(tmuxCommands.some((command) => command.startsWith('split-window ')));
     } finally {
       if (typeof previousPath === 'string') process.env.PATH = previousPath;
@@ -869,10 +876,8 @@ describe('scaleUp', () => {
       assert.ok(inbox.includes(`Test specs: ${testSpecPath}`));
       assert.match(inbox, /Approved repository context summary source: .*repo-context-issue-1410\.md/);
       assert.match(inbox, /Read the approved repository slice first\./);
-      assert.match(inbox, /Build refs \(read first\): src\/build-1\.ts/);
-      assert.match(inbox, /Verify refs: src\/verify-2\.ts/);
-      assert.match(inbox, /Scope refs: src\/scope-0\.ts/);
-      assert.doesNotMatch(inbox, /query the canonical pack|Context pack index/);
+      assert.match(inbox, /Use the approved plan and matching test specs as the execution baseline/);
+      assert.doesNotMatch(inbox, /Approved context pack|Build refs|Verify refs|Scope refs|query the canonical pack|Context pack index/);
       assert.ok(tmuxCommands.some((command) => command.startsWith('split-window ')));
     } finally {
       if (typeof previousPath === 'string') process.env.PATH = previousPath;
