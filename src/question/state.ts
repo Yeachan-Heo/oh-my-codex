@@ -232,6 +232,34 @@ function assertNoDuplicateValues(values: string[], path: string): void {
   }
 }
 
+function expectedSelectedLabelsForValues(
+  question: NormalizedQuestionItem,
+  selectedValues: string[],
+  otherText: string | undefined,
+): string[] {
+  const optionLabelsByValue = new Map(question.options.map((option) => [option.value, option.label]));
+  return selectedValues.map((value) => {
+    const optionLabel = optionLabelsByValue.get(value);
+    if (optionLabel) return optionLabel;
+    if (question.allow_other && otherText && value === otherText) return question.other_label;
+    throw new Error(`selected value is not in the option schema: ${value}`);
+  });
+}
+
+function assertSelectedLabelsMatch(
+  selectedLabels: string[],
+  expectedLabels: string[],
+  path: string,
+): void {
+  if (selectedLabels.length !== expectedLabels.length) {
+    throw new Error(`${path} cardinality must match selected values`);
+  }
+  const mismatchIndex = selectedLabels.findIndex((label, index) => label !== expectedLabels[index]);
+  if (mismatchIndex !== -1) {
+    throw new Error(`${path}[${mismatchIndex}] must match the selected value label`);
+  }
+}
+
 function questionForAnswer(record: QuestionRecord, entry: QuestionAnswerEntry): NormalizedQuestionItem {
   const question = (record.questions ?? []).find((item) => item.id === entry.question_id);
   if (question) return question;
@@ -257,7 +285,6 @@ function validateAnswerAgainstQuestion(question: NormalizedQuestionItem, entry: 
   assertNoDuplicateValues(selectedValues, `answers[${entry.index}].answer.selected_values`);
 
   const optionValues = new Set(question.options.map((option) => option.value));
-  const optionLabelsByValue = new Map(question.options.map((option) => [option.value, option.label]));
   const multi = isMultiAnswerableQuestion(question);
   const hasOtherText = typeof answer.other_text === 'string' && answer.other_text.trim().length > 0;
   const otherText = hasOtherText ? answer.other_text!.trim() : undefined;
@@ -270,6 +297,11 @@ function validateAnswerAgainstQuestion(question: NormalizedQuestionItem, entry: 
     if (selectedValues.length !== 1 || selectedValues[0] !== otherText || answer.value !== otherText) {
       throw new Error(`answers[${entry.index}].answer other value must match selected_values[0] and other_text`);
     }
+    assertSelectedLabelsMatch(
+      selectedLabels,
+      [question.other_label],
+      `answers[${entry.index}].answer.selected_labels`,
+    );
     return;
   }
 
@@ -285,9 +317,11 @@ function validateAnswerAgainstQuestion(question: NormalizedQuestionItem, entry: 
     if (answer.value !== selectedValue) {
       throw new Error(`answers[${entry.index}].answer.value must match selected_values[0]`);
     }
-    if (selectedLabels[0] !== optionLabelsByValue.get(selectedValue)) {
-      throw new Error(`answers[${entry.index}].answer.selected_labels[0] must match the selected option label`);
-    }
+    assertSelectedLabelsMatch(
+      selectedLabels,
+      expectedSelectedLabelsForValues(question, selectedValues, undefined),
+      `answers[${entry.index}].answer.selected_labels`,
+    );
     return;
   }
 
@@ -304,10 +338,11 @@ function validateAnswerAgainstQuestion(question: NormalizedQuestionItem, entry: 
       throw new Error(`answers[${entry.index}].answer out-of-schema selection must match a single other_text value`);
     }
   }
-  const expectedLabelCount = selectedValues.filter((value) => optionValues.has(value)).length + (otherText ? 1 : 0);
-  if (selectedLabels.length !== expectedLabelCount) {
-    throw new Error(`answers[${entry.index}].answer.selected_labels cardinality must match selected values`);
-  }
+  assertSelectedLabelsMatch(
+    selectedLabels,
+    expectedSelectedLabelsForValues(question, selectedValues, otherText),
+    `answers[${entry.index}].answer.selected_labels`,
+  );
 }
 
 function validateSubmittedAnswersAgainstSchema(record: QuestionRecord, answers: QuestionAnswerEntry[]): void {

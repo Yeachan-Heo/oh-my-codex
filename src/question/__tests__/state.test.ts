@@ -202,6 +202,86 @@ describe('question state', () => {
     assert.equal(loaded?.status, 'pending');
   });
 
+  it('rejects other answers whose selected labels do not exactly match the other label', async () => {
+    const cwd = await makeRepo();
+    const { record } = await createQuestionRecord(cwd, {
+      question: 'Pick one',
+      options: [{ label: 'A', value: 'a' }],
+      allow_other: true,
+      other_label: 'Something else',
+      multi_select: false,
+    }, 'sess-other-labels');
+
+    await assert.rejects(
+      () => submitQuestionAnswerById(cwd, record.question_id, {
+        answer: {
+          kind: 'other',
+          value: 'custom',
+          selected_labels: ['Something else', 'custom'],
+          selected_values: ['custom'],
+          other_text: 'custom',
+        },
+      }, { sessionId: 'sess-other-labels' }),
+      (error) => error instanceof QuestionSubmitError && error.code === 'question_invalid_answer',
+    );
+
+    await assert.rejects(
+      () => submitQuestionAnswerById(cwd, record.question_id, {
+        answer: {
+          kind: 'other',
+          value: 'custom',
+          selected_labels: ['Other'],
+          selected_values: ['custom'],
+          other_text: 'custom',
+        },
+      }, { sessionId: 'sess-other-labels' }),
+      (error) => error instanceof QuestionSubmitError && error.code === 'question_invalid_answer',
+    );
+
+    const loaded = await readQuestionRecord(getQuestionRecordPath(cwd, record.question_id, 'sess-other-labels'));
+    assert.equal(loaded?.status, 'pending');
+  });
+
+  it('rejects multi answers whose selected labels do not match selected values', async () => {
+    const cwd = await makeRepo();
+    const { record } = await createQuestionRecord(cwd, {
+      question: 'Pick many',
+      options: [{ label: 'B', value: 'b' }, { label: 'C', value: 'c' }],
+      allow_other: true,
+      other_label: 'Other value',
+      multi_select: true,
+      type: 'multi-answerable',
+    }, 'sess-multi-labels');
+
+    await assert.rejects(
+      () => submitQuestionAnswerById(cwd, record.question_id, {
+        answer: {
+          kind: 'multi',
+          value: ['b', 'c'],
+          selected_labels: ['C', 'B'],
+          selected_values: ['b', 'c'],
+        },
+      }, { sessionId: 'sess-multi-labels' }),
+      (error) => error instanceof QuestionSubmitError && error.code === 'question_invalid_answer',
+    );
+
+    await assert.rejects(
+      () => submitQuestionAnswerById(cwd, record.question_id, {
+        answer: {
+          kind: 'multi',
+          value: ['b', 'custom'],
+          selected_labels: ['B', 'custom'],
+          selected_values: ['b', 'custom'],
+          other_text: 'custom',
+        },
+      }, { sessionId: 'sess-multi-labels' }),
+      (error) => error instanceof QuestionSubmitError && error.code === 'question_invalid_answer',
+    );
+
+    const loaded = await readQuestionRecord(getQuestionRecordPath(cwd, record.question_id, 'sess-multi-labels'));
+    assert.equal(loaded?.status, 'pending');
+  });
+
   it('dedupes answered lifecycle events when a waiting command observes an externally submitted answer', async () => {
     const cwd = await makeRepo();
     const { record, recordPath } = await createQuestionRecord(cwd, {
