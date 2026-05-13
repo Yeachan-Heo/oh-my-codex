@@ -793,14 +793,20 @@ function buildGitCommitComplianceErrors(message: string | null): string[] {
     errors.push("Add a blank line after the subject before the narrative body.");
   }
 
+  const hasSubject = (lines[0]?.trim() ?? "") !== "";
+  const hasBlankSeparator = lines.length >= 2 && lines[1]?.trim() === "";
   const { bodyText, trailerLines } = splitBodyAndTrailerLines(lines.slice(2).join("\n"));
-  if (!bodyText) {
-    errors.push("Add a narrative body paragraph explaining the decision context.");
+  const hasOmxCoauthorTrailer = trailerLines.includes(OMX_COAUTHOR_TRAILER);
+  const usesCompactLorePath = hasSubject && hasBlankSeparator && !bodyText && hasOmxCoauthorTrailer;
+  if (!usesCompactLorePath) {
+    if (!bodyText) {
+      errors.push("Add a narrative body paragraph explaining the decision context.");
+    }
+    if (!trailerLines.some((line) => LORE_TRAILER_PREFIXES.some((prefix) => line.startsWith(prefix)))) {
+      errors.push("Add at least one Lore trailer such as `Constraint:`, `Confidence:`, or `Tested:`.");
+    }
   }
-  if (!trailerLines.some((line) => LORE_TRAILER_PREFIXES.some((prefix) => line.startsWith(prefix)))) {
-    errors.push("Add at least one Lore trailer such as `Constraint:`, `Confidence:`, or `Tested:`.");
-  }
-  if (!trailerLines.includes(OMX_COAUTHOR_TRAILER)) {
+  if (!hasOmxCoauthorTrailer) {
     errors.push(`Add the required co-author trailer: \`${OMX_COAUTHOR_TRAILER}\`.`);
   }
 

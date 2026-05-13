@@ -4405,6 +4405,87 @@ exit 0
     }
   });
 
+  it("stays silent on PreToolUse for compact inline Lore commit with only OmX co-author trailer", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-git-commit-compact-coauthor-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-compact-coauthor",
+          tool_input: {
+            command: [
+              'git commit',
+              '-m "Launch lvisai.xyz intro site"',
+              '-m "Co-authored-by: OmX <omx@oh-my-codex.dev>"',
+            ].join(" "),
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("stays silent on PreToolUse for body-omitted inline Lore commit with decision trailers", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-git-commit-compact-trailers-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-compact-trailers",
+          tool_input: {
+            command: [
+              'git commit',
+              '-m "Launch lvisai.xyz intro site"',
+              '-m "Constraint: Native PreToolUse can only inspect inline Bash command text\nTested: node --test dist/scripts/__tests__/codex-native-hook.test.js\n\nCo-authored-by: OmX <omx@oh-my-codex.dev>"',
+            ].join(" "),
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks PreToolUse compact inline Lore commit when the blank separator is missing", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-git-commit-compact-no-separator-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-compact-no-separator",
+          tool_input: {
+            command: [
+              'git commit',
+              '--message="Launch lvisai.xyz intro site\nCo-authored-by: OmX <omx@oh-my-codex.dev>"',
+            ].join(" "),
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /Add a blank line after the subject/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("warns on PreToolUse git commit when mapped source changes lack staged docs refresh", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-document-refresh-warn-"));
     try {
