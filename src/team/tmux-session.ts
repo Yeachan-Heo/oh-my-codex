@@ -61,6 +61,7 @@ const OMX_TEAM_WORKER_CLI_ENV = 'OMX_TEAM_WORKER_CLI';
 const OMX_TEAM_WORKER_CLI_MAP_ENV = 'OMX_TEAM_WORKER_CLI_MAP';
 const OMX_TEAM_WORKER_LAUNCH_MODE_ENV = 'OMX_TEAM_WORKER_LAUNCH_MODE';
 const OMX_TEAM_AUTO_INTERRUPT_RETRY_ENV = 'OMX_TEAM_AUTO_INTERRUPT_RETRY';
+const OMX_TEAM_WORKER_MCP_COMPAT_ENV = 'OMX_TEAM_WORKER_MCP_COMPAT';
 const CODEX_SQLITE_HOME_ENV = 'CODEX_SQLITE_HOME';
 const GEMINI_PROMPT_INTERACTIVE_FLAG = '-i';
 const GEMINI_APPROVAL_MODE_FLAG = '--approval-mode';
@@ -74,6 +75,15 @@ const TMUX_WORKER_AMBIENT_ENV_ALLOWLIST = [
   'https_proxy',
   'http_proxy',
   'no_proxy',
+] as const;
+
+const TEAM_WORKER_DISABLED_OMX_MCP_SERVERS = [
+  'omx_state',
+  'omx_memory',
+  'omx_code_intel',
+  'omx_trace',
+  'omx_wiki',
+  'omx_hermes',
 ] as const;
 const TMUX_NO_UNDERLINE_STYLE_FLAGS = [
   'nounderscore',
@@ -838,6 +848,38 @@ function readTmuxWorkerAmbientEnv(env: NodeJS.ProcessEnv = process.env): Record<
   return inherited;
 }
 
+function hasConfigOverride(args: readonly string[], key: string): boolean {
+  const prefix = `${key}=`;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === CONFIG_FLAG || arg === LONG_CONFIG_FLAG) {
+      const value = args[index + 1];
+      if (typeof value === 'string' && value.trim().startsWith(prefix)) return true;
+      index += 1;
+      continue;
+    }
+    if (typeof arg === 'string' && arg.startsWith(`${LONG_CONFIG_FLAG}=`)) {
+      const value = arg.slice(`${LONG_CONFIG_FLAG}=`.length);
+      if (value.trim().startsWith(prefix)) return true;
+    }
+  }
+  return false;
+}
+
+function shouldDisableOmxMcpForTeamWorker(env: NodeJS.ProcessEnv): boolean {
+  const raw = env[OMX_TEAM_WORKER_MCP_COMPAT_ENV]?.trim().toLowerCase();
+  return !(raw === '1' || raw === 'true' || raw === 'on' || raw === 'compat');
+}
+
+function appendTeamWorkerMcpDisableOverrides(args: string[], env: NodeJS.ProcessEnv): void {
+  if (!shouldDisableOmxMcpForTeamWorker(env)) return;
+  for (const server of TEAM_WORKER_DISABLED_OMX_MCP_SERVERS) {
+    const key = `mcp_servers.${server}.enabled`;
+    if (hasConfigOverride(args, key)) continue;
+    args.push(CONFIG_FLAG, `${key}=false`);
+  }
+}
+
 function resolveWorkerLaunchArgs(extraArgs: string[] = [], cwd: string = process.cwd(), env: NodeJS.ProcessEnv = process.env): string[] {
   const merged = [...extraArgs];
   const wantsBypass = process.argv.includes(CODEX_BYPASS_FLAG) || process.argv.includes(MADMAX_FLAG);
@@ -874,6 +916,10 @@ export function buildWorkerStartupCommand(
     ...readTmuxWorkerAmbientEnv(process.env),
     ...processSpec.env,
   };
+  const startupArgs = [...processSpec.args];
+  if (processSpec.workerCli === 'codex') {
+    appendTeamWorkerMcpDisableOverrides(startupArgs, { ...process.env, ...extraEnv });
+  }
   const resolvedLeaderNodePath = processSpec.env[OMX_LEADER_NODE_PATH_ENV]?.trim() || resolveLeaderNodePath();
   const leaderNodeDir = /[\\/]/.test(resolvedLeaderNodePath)
     ? resolvedLeaderNodePath.replace(/[\\/][^\\/]+$/, '')
@@ -886,7 +932,7 @@ export function buildWorkerStartupCommand(
     const envAssignments = Object.entries(startupEnv)
       .map(([key, value]) => `$env:${key} = ${quotePowerShellArg(value)}`)
       .join('; ');
-    const invocation = ['&', quotePowerShellArg(processSpec.command), ...processSpec.args.map(quotePowerShellArg)].join(' ');
+    const invocation = ['&', quotePowerShellArg(processSpec.command), ...startupArgs.map(quotePowerShellArg)].join(' ');
     const encodedCommand = encodePowerShellCommand(
       [
         "$ErrorActionPreference = 'Stop'",
@@ -900,7 +946,7 @@ export function buildWorkerStartupCommand(
 
   const launchSpec = buildWorkerLaunchSpec(process.env.SHELL);
   const pathPrefix = leaderNodeDir ? `export PATH=${shellQuoteSingle(leaderNodeDir)}:$PATH; ` : '';
-  const quotedArgs = processSpec.args.map(shellQuoteSingle).join(' ');
+  const quotedArgs = startupArgs.map(shellQuoteSingle).join(' ');
   const quotedCommand = shellQuoteSingle(processSpec.command);
   const cliInvocation = quotedArgs.length > 0 ? `exec ${quotedCommand} ${quotedArgs}` : `exec ${quotedCommand}`;
   const rcPrefix = launchSpec.rcFile ? `if [ -f ${launchSpec.rcFile} ]; then source ${launchSpec.rcFile}; fi; ` : '';

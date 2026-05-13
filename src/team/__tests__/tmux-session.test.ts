@@ -1341,6 +1341,41 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
+
+  it('disables first-party OMX MCP compatibility servers for Codex team workers by default', () => {
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const prevCompat = process.env.OMX_TEAM_WORKER_MCP_COMPAT;
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    delete process.env.OMX_TEAM_WORKER_MCP_COMPAT;
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [], '/tmp/project', {}, 'codex');
+      for (const server of ['omx_state', 'omx_memory', 'omx_code_intel', 'omx_trace', 'omx_wiki', 'omx_hermes']) {
+        assert.match(cmd, new RegExp(`mcp_servers\\.${server}\\.enabled=false`));
+      }
+    } finally {
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof prevCompat === 'string') process.env.OMX_TEAM_WORKER_MCP_COMPAT = prevCompat;
+      else delete process.env.OMX_TEAM_WORKER_MCP_COMPAT;
+    }
+  });
+
+  it('preserves explicit team-worker MCP compatibility opt-in', () => {
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const prevCompat = process.env.OMX_TEAM_WORKER_MCP_COMPAT;
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    process.env.OMX_TEAM_WORKER_MCP_COMPAT = '1';
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [], '/tmp/project', {}, 'codex');
+      assert.doesNotMatch(cmd, /mcp_servers\.omx_state\.enabled=false/);
+    } finally {
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof prevCompat === 'string') process.env.OMX_TEAM_WORKER_MCP_COMPAT = prevCompat;
+      else delete process.env.OMX_TEAM_WORKER_MCP_COMPAT;
+    }
+  });
+
   it('does not inject model_instructions_file override when disabled', () => {
     const prevShell = process.env.SHELL;
     process.env.SHELL = '/bin/bash';
