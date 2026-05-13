@@ -77,17 +77,19 @@ omx ultragoal status --codex-goal-json ./get-goal.json
 omx ultragoal status --json
 ```
 
-## Using Ultragoal and Team together
+## Use Ultragoal and Team together
 
-Use `$ultragoal` as the durable leader-owned goal/ledger wrapper and `$team` as the parallel execution engine. When an active `.omx/ultragoal/goals.json` is present, Team may pass a **leader-owned Ultragoal context** into worker inboxes and status output. That context names `.omx/ultragoal/goals.json`, `.omx/ultragoal/ledger.jsonl`, the active goal id, the Codex goal mode, and the checkpoint policy `fresh_leader_get_goal_required`.
+Use ultragoal and team together when one durable Ultragoal story needs parallel execution lanes. Ultragoal remains the leader-owned durable goal wrapper: `.omx/ultragoal/goals.json` stores story state and `.omx/ultragoal/ledger.jsonl` stores the audit trail. Team is the parallel execution engine: workers own Team tasks, mailbox updates, verification notes, and terminal task evidence.
 
-Workers provide Team task/evidence updates only. They do not create worker Ultragoal ledgers, do not mutate `.omx/ultragoal`, do not auto-launch Team from Ultragoal, and do not claim that shell commands changed Codex goal state. The leader gathers Team evidence, calls `get_goal` freshly, and checkpoints explicitly:
+The leader checkpoints Ultragoal from Team evidence only after reconciling the Codex goal state. For an intermediate aggregate story, the leader calls `get_goal`, confirms the aggregate objective is still `active`, then runs:
 
 ```sh
 omx ultragoal checkpoint --goal-id <id> --status complete --evidence "<team evidence mentioning .omx/ultragoal and <id>>" --codex-goal-json <fresh-get_goal-json-or-path>
 ```
 
-For a final aggregate story, the leader first runs the mandatory final cleanup/review gate, calls `update_goal({status: "complete"})` only when clean, calls `get_goal` again, and checkpoints with `--quality-gate-json`.
+For the final aggregate story, run the mandatory final cleanup/review gate first, call `update_goal({status: "complete"})` only when it is clean, call `get_goal` again, and checkpoint with `--quality-gate-json`.
+
+Workers do not own ultragoal goal state, do not create worker ultragoal ledgers, and do not checkpoint Ultragoal. Team launch is explicit operator action; `omx ultragoal` does not auto-launch Team and performs no hidden Codex goal mutation.
 
 ## Mandatory final cleanup and review gate
 

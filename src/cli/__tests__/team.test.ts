@@ -2882,6 +2882,112 @@ describe('teamCommand status', () => {
     }
   });
 
+  it('returns Ultragoal checkpoint guidance in JSON status only when approved Team context exists', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-status-ultragoal-json-'));
+    const previousCwd = process.cwd();
+    const logs: string[] = [];
+    const originalLog = console.log;
+    try {
+      process.chdir(wd);
+      await withoutTeamTestWorkerEnv(() => initTeamState('ultragoal-json-team', 'inspect ultragoal guidance', 'executor', 1, wd));
+      const plansDir = join(wd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      const prdPath = join(plansDir, 'prd-ultragoal-json.md');
+      const testSpecPath = join(plansDir, 'test-spec-ultragoal-json.md');
+      const task = 'Execute Team + Ultragoal G001-team-runtime-bridge plan';
+      await writeFile(
+        prdPath,
+        [
+          '# Ultragoal JSON status',
+          '',
+          'Active ultragoal story G001-team-runtime-bridge uses .omx/ultragoal/goals.json and .omx/ultragoal/ledger.jsonl.',
+          `Launch via omx team 1:executor "${task}"`,
+        ].join('\n'),
+      );
+      await writeFile(testSpecPath, '# Ultragoal JSON status test spec\n');
+      const hint = readApprovedExecutionLaunchHint(wd, 'team', { prdPath, task });
+      assert.ok(hint);
+      await writePersistedApprovedTeamExecutionBinding(
+        'ultragoal-json-team',
+        wd,
+        buildApprovedTeamExecutionBinding(hint),
+      );
+      console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
+
+      await withoutTeamTestWorkerEnv(() => teamCommand(['status', 'ultragoal-json-team', '--json']));
+
+      const payload = JSON.parse(logs[0] ?? '{}') as {
+        ultragoal_checkpoint_guidance?: {
+          goal_id?: string;
+          goals_path?: string;
+          ledger_path?: string;
+          checkpoint_policy?: string;
+          checkpoint_command_template?: string;
+          evidence_requirements?: string[];
+        } | null;
+      };
+      assert.equal(payload.ultragoal_checkpoint_guidance?.goal_id, 'G001-team-runtime-bridge');
+      assert.equal(payload.ultragoal_checkpoint_guidance?.goals_path, '.omx/ultragoal/goals.json');
+      assert.equal(payload.ultragoal_checkpoint_guidance?.ledger_path, '.omx/ultragoal/ledger.jsonl');
+      assert.equal(payload.ultragoal_checkpoint_guidance?.checkpoint_policy, 'fresh_leader_get_goal_required');
+      assert.match(payload.ultragoal_checkpoint_guidance?.checkpoint_command_template ?? '', /omx ultragoal checkpoint/);
+      assert.match(payload.ultragoal_checkpoint_guidance?.checkpoint_command_template ?? '', /--codex-goal-json/);
+      assert.ok(payload.ultragoal_checkpoint_guidance?.evidence_requirements?.some((item) => item.includes('.omx/ultragoal artifacts')));
+    } finally {
+      console.log = originalLog;
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('prints Ultragoal checkpoint guidance in text status with fresh get_goal requirement', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-status-ultragoal-text-'));
+    const previousCwd = process.cwd();
+    const logs: string[] = [];
+    const originalLog = console.log;
+    try {
+      process.chdir(wd);
+      await withoutTeamTestWorkerEnv(() => initTeamState('ultragoal-text-team', 'inspect ultragoal text guidance', 'executor', 1, wd));
+      const plansDir = join(wd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      const prdPath = join(plansDir, 'prd-ultragoal-text.md');
+      const testSpecPath = join(plansDir, 'test-spec-ultragoal-text.md');
+      const task = 'Execute Team + Ultragoal G001-team-runtime-bridge text plan';
+      await writeFile(
+        prdPath,
+        [
+          '# Ultragoal text status',
+          '',
+          'Team evidence checkpoints G001-team-runtime-bridge into .omx/ultragoal/goals.json and .omx/ultragoal/ledger.jsonl.',
+          `Launch via omx team 1:executor "${task}"`,
+        ].join('\n'),
+      );
+      await writeFile(testSpecPath, '# Ultragoal text status test spec\n');
+      const hint = readApprovedExecutionLaunchHint(wd, 'team', { prdPath, task });
+      assert.ok(hint);
+      await writePersistedApprovedTeamExecutionBinding(
+        'ultragoal-text-team',
+        wd,
+        buildApprovedTeamExecutionBinding(hint),
+      );
+      console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
+
+      await withoutTeamTestWorkerEnv(() => teamCommand(['status', 'ultragoal-text-team']));
+
+      const output = logs.join('\n');
+      assert.match(output, /ultragoal_checkpoint_guidance/);
+      assert.match(output, /G001-team-runtime-bridge/);
+      assert.match(output, /\.omx\/ultragoal\/goals\.json/);
+      assert.match(output, /\.omx\/ultragoal\/ledger\.jsonl/);
+      assert.match(output, /fresh_get_goal_required: leader must call get_goal/i);
+      assert.match(output, /workers do not own ultragoal goal state/i);
+    } finally {
+      console.log = originalLog;
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('returns a missing envelope in JSON mode when team state is absent', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-status-missing-'));
     const previousCwd = process.cwd();
