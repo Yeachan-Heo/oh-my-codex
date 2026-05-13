@@ -356,6 +356,43 @@ describe("worker bootstrap", () => {
     }
   });
 
+  it("fails closed when present Ultragoal goals.json is malformed", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-team-ultragoal-malformed-"));
+    try {
+      await mkdir(join(wd, ".omx", "ultragoal"), { recursive: true });
+      await writeFile(join(wd, ".omx", "ultragoal", "goals.json"), "{bad json\n");
+
+      await assert.rejects(
+        () => resolveLeaderOwnedUltragoalContext(wd),
+        /invalid_ultragoal_team_context:malformed_goals_json/,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when present Ultragoal goals.json has an unsafe active goal id", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-team-ultragoal-unsafe-"));
+    try {
+      await mkdir(join(wd, ".omx", "ultragoal"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "ultragoal", "goals.json"),
+        `${JSON.stringify({
+          version: 1,
+          activeGoalId: "G001-unsafe; touch /tmp/pwned",
+          goals: [],
+        })}\n`,
+      );
+
+      await assert.rejects(
+        () => resolveLeaderOwnedUltragoalContext(wd),
+        /invalid_ultragoal_team_context:unsafe_active_goal_id/,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 
 
 

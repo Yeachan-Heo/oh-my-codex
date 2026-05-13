@@ -48,15 +48,6 @@ interface TeamCliOptions {
   verbose?: boolean;
 }
 
-function resolveUltragoalCheckpointCommand(guidance: {
-  checkpoint_command_template?: string;
-  command_templates?: { intermediate_story?: string };
-}): string {
-  return guidance.command_templates?.intermediate_story
-    ?? guidance.checkpoint_command_template
-    ?? '';
-}
-
 interface ParsedTeamArgs {
   workerCount: number;
   agentType: string;
@@ -1538,17 +1529,6 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
       console.log(`non_reporting_workers: ${snapshot.nonReportingWorkers.join(' ')}`);
     }
     console.log(`tasks: total=${snapshot.tasks.total} pending=${snapshot.tasks.pending} blocked=${snapshot.tasks.blocked} in_progress=${snapshot.tasks.in_progress} completed=${snapshot.tasks.completed} failed=${snapshot.tasks.failed}`);
-    if (ultragoalCheckpointGuidance && !ultragoalContext) {
-      console.log('ultragoal_checkpoint_guidance:');
-      console.log(`  goal_id: ${ultragoalCheckpointGuidance.goal_id}`);
-      console.log(`  codex_goal_mode: ${ultragoalCheckpointGuidance.codex_goal_mode}`);
-      console.log(`  goals_path: ${ultragoalCheckpointGuidance.goals_path}`);
-      console.log(`  ledger_path: ${ultragoalCheckpointGuidance.ledger_path}`);
-      console.log(`  checkpoint_policy: ${ultragoalCheckpointGuidance.checkpoint_policy}`);
-      console.log(`  checkpoint_command: ${resolveUltragoalCheckpointCommand(ultragoalCheckpointGuidance)}`);
-      console.log('  evidence: team tasks terminal, verification passed, evidence mentions the active goal id and .omx/ultragoal artifacts');
-      console.log('  fresh_get_goal_required: leader must call get_goal before checkpointing; workers do not own ultragoal goal state');
-    }
     if (snapshot.performance) {
       console.log(
         `monitor_perf_ms: total=${snapshot.performance.total_ms} list=${snapshot.performance.list_tasks_ms} workers=${snapshot.performance.worker_scan_ms} mailbox=${snapshot.performance.mailbox_delivery_ms}`

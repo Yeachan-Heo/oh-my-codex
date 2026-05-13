@@ -54,6 +54,13 @@ function normalizeCodexGoalMode(value: unknown): 'aggregate' | 'per_story' {
   return value === 'aggregate' ? 'aggregate' : 'per_story';
 }
 
+class InvalidUltragoalTeamContextError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidUltragoalTeamContextError';
+  }
+}
+
 export function normalizeUltragoalTeamContext(value: unknown): UltragoalTeamContext | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
@@ -85,12 +92,19 @@ export async function resolveLeaderOwnedUltragoalContext(cwd: string): Promise<U
   try {
     const parsed = JSON.parse(await readFile(goalsJsonPath, 'utf-8')) as Record<string, unknown>;
     const activeGoalId = typeof parsed.activeGoalId === 'string' ? parsed.activeGoalId.trim() : '';
-    if (activeGoalId === '') return null;
-    if (!isSafeUltragoalGoalId(activeGoalId)) return null;
+    if (activeGoalId === '') {
+      throw new InvalidUltragoalTeamContextError('missing_active_goal_id');
+    }
+    if (!isSafeUltragoalGoalId(activeGoalId)) {
+      throw new InvalidUltragoalTeamContextError(`unsafe_active_goal_id:${activeGoalId}`);
+    }
     const goals = Array.isArray(parsed.goals) ? parsed.goals : [];
     const activeGoal = goals.find((goal) =>
       goal && typeof goal === 'object' && (goal as Record<string, unknown>).id === activeGoalId,
     ) as Record<string, unknown> | undefined;
+    if (!activeGoal) {
+      throw new InvalidUltragoalTeamContextError(`active_goal_not_found:${activeGoalId}`);
+    }
     const activeGoalTitle = typeof activeGoal?.title === 'string' && activeGoal.title.trim() !== ''
       ? activeGoal.title.trim()
       : undefined;
@@ -103,8 +117,11 @@ export async function resolveLeaderOwnedUltragoalContext(cwd: string): Promise<U
       codexGoalMode: normalizeCodexGoalMode(parsed.codexGoalMode),
       checkpointPolicy: 'fresh_leader_get_goal_required',
     };
-  } catch {
-    return null;
+  } catch (error) {
+    if (error instanceof InvalidUltragoalTeamContextError) {
+      throw new Error(`invalid_ultragoal_team_context:${error.message}`);
+    }
+    throw new Error(`invalid_ultragoal_team_context:malformed_goals_json`);
   }
 }
 
