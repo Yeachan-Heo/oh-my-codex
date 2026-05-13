@@ -37,6 +37,11 @@ import {
   resolvePersistedApprovedTeamExecutionContinuityStateSync,
   type ApprovedTeamExecutionBinding,
 } from '../team/approved-execution.js';
+import {
+  buildUltragoalCheckpointGuidance,
+  readPersistedTeamUltragoalContext,
+  renderUltragoalCheckpointGuidanceText,
+} from '../team/ultragoal-context.js';
 import { resolveCodexHomeForLaunch } from './codex-home.js';
 
 interface TeamCliOptions {
@@ -1472,6 +1477,14 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     const modelInspect = parseStatusModelInspect(teamArgs.slice(2));
     const config = await readTeamConfig(resolvedName, cwd);
     const paneStatus = await readTeamPaneStatus(config, cwd, snapshot, tailLines);
+    const ultragoalContext = await readPersistedTeamUltragoalContext(
+      resolvedName,
+      config?.leader_cwd ?? cwd,
+      config?.team_state_root ?? undefined,
+    );
+    const ultragoalCheckpointGuidance = ultragoalContext
+      ? buildUltragoalCheckpointGuidance(ultragoalContext)
+      : null;
     if (wantsJson) {
       console.log(JSON.stringify({
         ...buildJsonBase(),
@@ -1498,6 +1511,9 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
         },
         performance: snapshot.performance ?? null,
         panes: paneStatus,
+        ...(ultragoalCheckpointGuidance
+          ? { ultragoal_checkpoint_guidance: ultragoalCheckpointGuidance }
+          : {}),
       }));
       return;
     }
@@ -1517,6 +1533,9 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
       console.log(
         `monitor_perf_ms: total=${snapshot.performance.total_ms} list=${snapshot.performance.list_tasks_ms} workers=${snapshot.performance.worker_scan_ms} mailbox=${snapshot.performance.mailbox_delivery_ms}`
       );
+    }
+    for (const line of renderUltragoalCheckpointGuidanceText(ultragoalContext)) {
+      console.log(line);
     }
     renderTeamPaneStatus(paneStatus, modelInspect, tailLines);
     return;

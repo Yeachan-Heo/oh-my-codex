@@ -25,6 +25,7 @@ import {
 } from "../worker-bootstrap.js";
 import { composeRoleInstructionsForRole } from "../../agents/native-config.js";
 import { buildTeamWorkerGoalInstruction } from "../goal-workflow.js";
+import { renderLeaderOwnedUltragoalContextSection } from "../ultragoal-context.js";
 import type { TeamTask } from "../state.js";
 
 function setMockCodexHome(codexHomePath: string): () => void {
@@ -277,6 +278,39 @@ describe("worker bootstrap", () => {
     );
     assert.match(inbox, /Verification Requirements/);
     assert.match(inbox, /Fix-Verify Loop/);
+  });
+
+  it("generateInitialInbox renders leader-owned Ultragoal context without worker goal authority", () => {
+    const tasks: TeamTask[] = [{
+      id: "1",
+      subject: "Team runtime bridge",
+      description: "Implement Team + Ultragoal bridge",
+      status: "pending",
+      created_at: new Date().toISOString(),
+    }];
+    const contextSection = renderLeaderOwnedUltragoalContextSection({
+      kind: "leader_owned_ultragoal_context",
+      goalsPath: ".omx/ultragoal/goals.json",
+      ledgerPath: ".omx/ultragoal/ledger.jsonl",
+      activeGoalId: "G001-team-runtime-bridge",
+      activeGoalTitle: "Team runtime bridge",
+      codexGoalMode: "aggregate",
+      checkpointPolicy: "fresh_leader_get_goal_required",
+    });
+
+    const inbox = generateInitialInbox("worker-1", "team-inbox", "executor", tasks, {
+      approvedContextSection: contextSection,
+    });
+
+    assert.match(inbox, /Leader-owned Ultragoal context/);
+    assert.match(inbox, /\.omx\/ultragoal\/goals\.json/);
+    assert.match(inbox, /\.omx\/ultragoal\/ledger\.jsonl/);
+    assert.match(inbox, /G001-team-runtime-bridge/);
+    assert.match(inbox, /omx ultragoal checkpoint/);
+    assert.match(inbox, /--codex-goal-json/);
+    assert.match(inbox, /workers do not own Ultragoal goal state/);
+    assert.doesNotMatch(inbox, /worker-owned ultragoal ledger/i);
+    assert.doesNotMatch(inbox, /will auto-?launch Team from Ultragoal/i);
   });
 
 

@@ -2375,7 +2375,11 @@ export async function startTeam(
   const approvedExecution = selectedApprovedExecutionHint
     ? buildApprovedTeamExecutionBinding(selectedApprovedExecutionHint)
     : null;
-  const approvedContextSection = buildApprovedTeamHandoffSection(selectedApprovedExecutionHint);
+  const ultragoalContext = await resolveLeaderOwnedUltragoalContext(leaderCwd);
+  const approvedContextSection = joinContextSections(
+    buildApprovedTeamHandoffSection(selectedApprovedExecutionHint),
+    renderLeaderOwnedUltragoalContextSection(ultragoalContext),
+  );
   const activeWorktreeMode: 'detached' | 'named' | null =
     effectiveWorktreeMode.enabled
       ? (effectiveWorktreeMode.detached ? 'detached' : 'named')
@@ -2487,6 +2491,12 @@ export async function startTeam(
       sanitized,
       leaderCwd,
       approvedExecution,
+      teamStateRoot,
+    );
+    await writePersistedTeamUltragoalContext(
+      sanitized,
+      leaderCwd,
+      ultragoalContext,
       teamStateRoot,
     );
 
@@ -3391,9 +3401,17 @@ export async function assignTask(
       config.leader_cwd ?? cwd,
       config.team_state_root ?? resolveCanonicalTeamStateRoot(config.leader_cwd ?? cwd),
     );
-    const approvedContextSection = approvedExecutionState.status === 'valid'
-      ? buildApprovedTeamHandoffSection(approvedExecutionState.approvedHint)
-      : undefined;
+    const persistedUltragoalContext = await readPersistedTeamUltragoalContext(
+      sanitized,
+      config.leader_cwd ?? cwd,
+      config.team_state_root ?? resolveCanonicalTeamStateRoot(config.leader_cwd ?? cwd),
+    );
+    const approvedContextSection = joinContextSections(
+      approvedExecutionState.status === 'valid'
+        ? buildApprovedTeamHandoffSection(approvedExecutionState.approvedHint)
+        : undefined,
+      renderLeaderOwnedUltragoalContextSection(persistedUltragoalContext),
+    );
     const taskForInbox = task.delegation
       ? task
       : (await updateTask(sanitized, taskId, { delegation: synthesizeDelegationPlan(task) }, cwd)) ?? task;
