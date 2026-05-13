@@ -32,6 +32,12 @@ export interface UltragoalCheckpointGuidance {
   };
 }
 
+const ULTRAGOAL_GOAL_ID_SAFE_PATTERN = /^G\d{3}[-\w]*$/;
+
+export function isSafeUltragoalGoalId(value: string): boolean {
+  return ULTRAGOAL_GOAL_ID_SAFE_PATTERN.test(value);
+}
+
 function contextStatePath(teamName: string, cwd: string, teamStateRoot?: string | null): string {
   if (!TEAM_NAME_SAFE_PATTERN.test(teamName)) {
     throw new Error(`invalid_team_name:${teamName}`);
@@ -55,6 +61,8 @@ export function normalizeUltragoalTeamContext(value: unknown): UltragoalTeamCont
   if (raw.goalsPath !== '.omx/ultragoal/goals.json') return null;
   if (raw.ledgerPath !== '.omx/ultragoal/ledger.jsonl') return null;
   if (typeof raw.activeGoalId !== 'string' || raw.activeGoalId.trim() === '') return null;
+  const activeGoalId = raw.activeGoalId.trim();
+  if (!isSafeUltragoalGoalId(activeGoalId)) return null;
   if (raw.checkpointPolicy !== 'fresh_leader_get_goal_required') return null;
   const activeGoalTitle = typeof raw.activeGoalTitle === 'string' && raw.activeGoalTitle.trim() !== ''
     ? raw.activeGoalTitle.trim()
@@ -63,7 +71,7 @@ export function normalizeUltragoalTeamContext(value: unknown): UltragoalTeamCont
     kind: 'leader_owned_ultragoal_context',
     goalsPath: '.omx/ultragoal/goals.json',
     ledgerPath: '.omx/ultragoal/ledger.jsonl',
-    activeGoalId: raw.activeGoalId.trim(),
+    activeGoalId,
     ...(activeGoalTitle ? { activeGoalTitle } : {}),
     codexGoalMode: normalizeCodexGoalMode(raw.codexGoalMode),
     checkpointPolicy: 'fresh_leader_get_goal_required',
@@ -78,6 +86,7 @@ export async function resolveLeaderOwnedUltragoalContext(cwd: string): Promise<U
     const parsed = JSON.parse(await readFile(goalsJsonPath, 'utf-8')) as Record<string, unknown>;
     const activeGoalId = typeof parsed.activeGoalId === 'string' ? parsed.activeGoalId.trim() : '';
     if (activeGoalId === '') return null;
+    if (!isSafeUltragoalGoalId(activeGoalId)) return null;
     const goals = Array.isArray(parsed.goals) ? parsed.goals : [];
     const activeGoal = goals.find((goal) =>
       goal && typeof goal === 'object' && (goal as Record<string, unknown>).id === activeGoalId,

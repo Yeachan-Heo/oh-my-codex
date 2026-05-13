@@ -25,7 +25,7 @@ import {
 } from "../worker-bootstrap.js";
 import { composeRoleInstructionsForRole } from "../../agents/native-config.js";
 import { buildTeamWorkerGoalInstruction } from "../goal-workflow.js";
-import { renderLeaderOwnedUltragoalContextSection } from "../ultragoal-context.js";
+import { normalizeUltragoalTeamContext, renderLeaderOwnedUltragoalContextSection } from "../ultragoal-context.js";
 import type { TeamTask } from "../state.js";
 
 function setMockCodexHome(codexHomePath: string): () => void {
@@ -311,6 +311,19 @@ describe("worker bootstrap", () => {
     assert.match(inbox, /workers do not own Ultragoal goal state/);
     assert.doesNotMatch(inbox, /worker-owned ultragoal ledger/i);
     assert.doesNotMatch(inbox, /will auto-?launch Team from Ultragoal/i);
+  });
+
+  it("rejects unsafe Ultragoal goal IDs before rendering shell checkpoint templates", () => {
+    const context = normalizeUltragoalTeamContext({
+      kind: "leader_owned_ultragoal_context",
+      goalsPath: ".omx/ultragoal/goals.json",
+      ledgerPath: ".omx/ultragoal/ledger.jsonl",
+      activeGoalId: "G001-runtime; touch /tmp/pwned",
+      codexGoalMode: "aggregate",
+      checkpointPolicy: "fresh_leader_get_goal_required",
+    });
+
+    assert.equal(context, null);
   });
 
 
