@@ -59,16 +59,9 @@ requiring a separate linked Ralph launch up front.
 
 ### Team + Ultragoal bridge
 
-Use Team with Ultragoal when a leader-owned `.omx/ultragoal` story needs durable parallel execution. Team remains the task/evidence engine; Ultragoal remains the leader-owned goal ledger and Codex goal reconciliation surface.
+Use `$ultragoal` for durable leader-owned goal/ledger tracking and `$team` for parallel execution lanes. When Team is launched with an active `.omx/ultragoal/goals.json`, worker inboxes/status may include leader-owned Ultragoal context: `.omx/ultragoal/goals.json`, `.omx/ultragoal/ledger.jsonl`, the active goal id, Codex goal mode, and the `fresh_leader_get_goal_required` checkpoint policy.
 
-Combined-flow contract:
-
-- Launch Team explicitly from the leader or approved plan. Do not auto-launch Team from `omx ultragoal complete-goals`.
-- When the leader supplies Ultragoal context, render it to workers as **leader-owned Ultragoal context**: `.omx/ultragoal/goals.json`, `.omx/ultragoal/ledger.jsonl`, active goal id/title, codex goal mode, and checkpoint policy `fresh_leader_get_goal_required`.
-- Worker responsibility is Team task execution plus checkpoint-ready evidence. Workers must not create worker goal state, mutate `.omx/ultragoal`, run `omx ultragoal checkpoint`, or call hidden Codex goal mutation paths.
-- Team status/completion evidence should tell the leader whether tasks are terminal, verification passed, and evidence mentions the active goal id plus `.omx/ultragoal` artifacts.
-- The leader performs the checkpoint after a fresh leader `get_goal`, for example `omx ultragoal checkpoint --goal-id <id> --status complete --evidence "<team evidence>" --codex-goal-json <fresh-leader-get_goal-json-or-path>`.
-- Keep Ralph separate: use Ralph later only for a persistent single-owner verification/fix loop when Team leaves sequential follow-up work.
+Workers provide task status and verification evidence only. They do not own Ultragoal goal state, create worker ledgers, mutate `.omx/ultragoal`, auto-launch Team from Ultragoal, or perform hidden Codex goal mutation. The leader uses terminal Team evidence plus a fresh `get_goal` snapshot to run `omx ultragoal checkpoint --goal-id <id> --status complete --evidence "<team evidence mentioning .omx/ultragoal and <id>>" --codex-goal-json <fresh-get_goal-json-or-path>`.
 
 ### Claude teammates (v0.6.0+)
 
