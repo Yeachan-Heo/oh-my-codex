@@ -1197,6 +1197,7 @@ async function buildSessionStartContext(
 
 type ExecutionEnvironmentKind =
   | "attached-tmux-runtime"
+  | "attached-cmux-runtime"
   | "outside-tmux-with-bridge"
   | "native-outside-tmux"
   | "direct-cli-outside-tmux";
@@ -1240,6 +1241,21 @@ function resolveExecutionEnvironment(
       teamRuntimeInstruction: "Use the durable OMX team runtime via `omx team ...` for coordinated execution; do not replace it with in-process fanout.",
       teamHelpInstruction: "If you need runtime syntax, run `omx team --help` yourself.",
       deepInterviewInstruction: "Deep-interview must ask each interview round via `omx question`; do not fall back to `request_user_input` or plain-text questioning. This session is already attached to tmux, so `omx question` can open its temporary renderer directly over the leader pane. After starting `omx question` in a background terminal, wait for that terminal to finish and read the JSON answer before continuing the interview. Prefer `answers[0].answer` / `answers[]`; use legacy `answer` only as fallback. Deep-interview remains one question per round, so do not batch multiple interview rounds into one `questions[]` form. Stop remains blocked while a deep-interview question obligation is pending.",
+      leaderPaneHint,
+    };
+  }
+
+  if (executionSurface.transport === "attached-cmux") {
+    return {
+      kind: "attached-cmux-runtime",
+      launcher: executionSurface.launcher,
+      transport: executionSurface.transport,
+      surface: "attached cmux runtime - cmux",
+      tmuxWorkflowGuidance: "cmux transport detected; OMX uses the mux adapter path for pane capture and prompt delivery where supported",
+      questionGuidance: "cmux surface available from the current terminal; prefer native structured input unless an explicit question bridge is configured",
+      teamRuntimeInstruction: "Use durable OMX runtime commands only when the current command path supports cmux; do not replace durable runtime coordination with in-process fanout.",
+      teamHelpInstruction: "If you need runtime syntax, run `omx team --help` yourself.",
+      deepInterviewInstruction: "Deep-interview is active in a cmux-attached runtime. Use native structured input when available; use `omx question` only after verifying the cmux question bridge for this surface.",
       leaderPaneHint,
     };
   }

@@ -20,6 +20,7 @@ import {
 import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
 import { resolveInvocationSessionId, resolveManagedCurrentPane, resolveManagedSessionContext, verifyManagedPaneTarget } from './managed-tmux.js';
+import { CMUX_METADATA_UNAVAILABLE_START_COMMAND, resolveMuxKind } from './mux-adapter.js';
 import { evaluatePaneInjectionReadiness, mapPaneInjectionReadinessReason, sendPaneInput } from './team-tmux-guard.js';
 import { listActiveSkills, readVisibleSkillActiveState } from '../../state/skill-active.js';
 import {
@@ -31,6 +32,10 @@ import {
 
 function isHudPaneStartCommand(startCommand: any): boolean {
   return /\bomx\b.*\bhud\b.*--watch/i.test(safeString(startCommand));
+}
+
+function isUnavailableCmuxPaneMetadata(startCommand: any): boolean {
+  return safeString(startCommand).trim() === CMUX_METADATA_UNAVAILABLE_START_COMMAND;
 }
 
 async function resolvePaneCwdMismatch(paneId: string, expectedCwd: any): Promise<any | null> {
@@ -80,6 +85,9 @@ async function resolveCanonicalPaneFromPaneTarget(paneTarget: any, expectedCwd: 
     startCommand = safeString(startResult.stdout).trim();
   } catch {
     startCommand = '';
+  }
+  if (isUnavailableCmuxPaneMetadata(startCommand)) {
+    return { paneTarget: null, reason: 'pane_metadata_unavailable' };
   }
   if (!startCommand || !isHudPaneStartCommand(startCommand)) {
     return finalizeResolvedPane(paneId, 'ok', expectedCwd);
@@ -243,6 +251,7 @@ async function readVisibleAllowedModes(
 
 export async function resolveSessionToPane(sessionName: any): Promise<string | null> {
   const result = await runProcess('tmux', ['list-panes', '-t', sessionName, '-F', '#{pane_id}\t#{pane_active}\t#{pane_current_command}\t#{pane_start_command}']);
+  const cmuxMode = resolveMuxKind() === 'cmux';
   const rows = result.stdout
     .split('\n')
     .map((line: string) => line.trim())
@@ -259,7 +268,7 @@ export async function resolveSessionToPane(sessionName: any): Promise<string | n
         startCommand: safeString(startCommand).trim(),
       };
     })
-    .filter((row: any) => row.paneId.startsWith('%'));
+    .filter((row: any) => cmuxMode ? row.paneId !== '' : row.paneId.startsWith('%'));
   if (rows.length === 0) return null;
 
   const nonHudRows = rows.filter((row: any) => !isHudPaneStartCommand(row.startCommand));

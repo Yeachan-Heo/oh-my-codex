@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { resolveMuxKind } from "./notify-hook/mux-adapter.js";
 
 type CodexHookEventName =
   | "SessionStart"
@@ -13,7 +14,7 @@ type CodexHookEventName =
 type CodexHookPayload = Record<string, unknown>;
 
 export type CodexLauncherKind = "native" | "cli";
-export type CodexTransportKind = "attached-tmux" | "outside-tmux";
+export type CodexTransportKind = "attached-tmux" | "attached-cmux" | "outside-tmux";
 
 export interface CodexExecutionSurface {
   launcher: CodexLauncherKind;
@@ -51,7 +52,7 @@ export function resolveCodexExecutionSurface(
 ): CodexExecutionSurface {
   const transport: CodexTransportKind = safeString(process.env.TMUX).trim()
     ? "attached-tmux"
-    : "outside-tmux";
+    : (resolveMuxKind(process.env) === "cmux" ? "attached-cmux" : "outside-tmux");
   const payloadSessionId = safeString(options.payload?.session_id ?? options.payload?.sessionId).trim();
   const payloadSource = safeString(options.payload?.source).trim().toLowerCase();
   const persistedSession = readPersistedSessionStateSync(cwd);
