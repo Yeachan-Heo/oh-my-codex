@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
+import { currentMuxPaneTarget, resolveMuxKind } from './notify-hook/mux-adapter.js';
 
 export const DEFAULT_ALLOWED_MODES = ['ralph', 'ultrawork', 'team'];
 export const DEFAULT_MARKER = '[OMX_TMUX_INJECT]';
@@ -203,6 +204,10 @@ function isHudStartCommand(startCommand: string): boolean {
  * use this instead of raw `process.env.TMUX_PANE`.
  */
 export function resolveCodexPane(): string {
+  if (resolveMuxKind() === 'cmux') {
+    return currentMuxPaneTarget();
+  }
+
   const envPane = (process.env.TMUX_PANE || '').trim();
   const tmuxCommand = resolveTmuxBinaryForPlatform() || 'tmux';
   if (!envPane) return '';

@@ -909,6 +909,56 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("describes attached cmux runtime when the mux adapter is explicitly selected", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-session-start-cmux-"));
+    const previous = {
+      TMUX: process.env.TMUX,
+      TMUX_PANE: process.env.TMUX_PANE,
+      OMX_MUX: process.env.OMX_MUX,
+      CMUX_SURFACE_ID: process.env.CMUX_SURFACE_ID,
+      CMUX_WORKSPACE_ID: process.env.CMUX_WORKSPACE_ID,
+    };
+    delete process.env.TMUX;
+    delete process.env.TMUX_PANE;
+    process.env.OMX_MUX = "cmux";
+    process.env.CMUX_SURFACE_ID = "surface:test";
+    process.env.CMUX_WORKSPACE_ID = "workspace:test";
+
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: "sess-start-cmux-1",
+        },
+        {
+          cwd,
+          sessionOwnerPid: process.pid,
+        },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /\[Execution environment\]/);
+      assert.match(additionalContext, /attached cmux runtime/);
+      assert.match(additionalContext, /mux adapter path/);
+      assert.match(additionalContext, /prefer native structured input unless an explicit question bridge is configured/);
+    } finally {
+      if (typeof previous.TMUX === "string") process.env.TMUX = previous.TMUX;
+      else delete process.env.TMUX;
+      if (typeof previous.TMUX_PANE === "string") process.env.TMUX_PANE = previous.TMUX_PANE;
+      else delete process.env.TMUX_PANE;
+      if (typeof previous.OMX_MUX === "string") process.env.OMX_MUX = previous.OMX_MUX;
+      else delete process.env.OMX_MUX;
+      if (typeof previous.CMUX_SURFACE_ID === "string") process.env.CMUX_SURFACE_ID = previous.CMUX_SURFACE_ID;
+      else delete process.env.CMUX_SURFACE_ID;
+      if (typeof previous.CMUX_WORKSPACE_ID === "string") process.env.CMUX_WORKSPACE_ID = previous.CMUX_WORKSPACE_ID;
+      else delete process.env.CMUX_WORKSPACE_ID;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("describes direct CLI outside tmux in SessionStart context when the launch source is cli", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-session-start-cli-"));
     try {

@@ -1,12 +1,14 @@
+mod cmux;
 mod tmux;
 mod types;
 
+pub use cmux::{build_cmux_capture_pane_args, CmuxAdapter};
 pub use tmux::{build_capture_pane_args, TmuxAdapter};
 pub use types::*;
 
 pub fn canonical_contract_summary() -> String {
     format!(
-        "mux-operations={operations}\nmux-target-kinds={target_kinds}\nsubmit-policy={submit_policy}\nreadiness={readiness}\nconfirmation={confirmation}\nadapter=tmux",
+        "mux-operations={operations}\nmux-target-kinds={target_kinds}\nsubmit-policy={submit_policy}\nreadiness={readiness}\nconfirmation={confirmation}\nadapters=tmux,cmux",
         operations = MUX_OPERATION_NAMES.join(", "),
         target_kinds = MUX_TARGET_KINDS.join(", "),
         submit_policy = SubmitPolicy::enter(2, 100),

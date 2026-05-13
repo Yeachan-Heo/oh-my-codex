@@ -3,14 +3,13 @@
  */
 
 import { spawn } from 'child_process';
+import { resolveMuxInvocation } from './mux-adapter.js';
 
 export function runProcess(command: string, args: string[], timeoutMs = 3000): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
-    const usingTestTmux = command === 'tmux' && process.env.OMX_TEST_TMUX_BIN;
-    const relaxingTestTmuxTimeout = command === 'tmux' && process.env.OMX_TEST_RELAX_TMUX_TIMEOUT === '1';
-    const executable = usingTestTmux ? process.env.OMX_TEST_TMUX_BIN as string : command;
-    const effectiveTimeoutMs = usingTestTmux || relaxingTestTmuxTimeout ? Math.max(timeoutMs, 10_000) : timeoutMs;
-    const child = spawn(executable, args, {
+    const invocation = resolveMuxInvocation(command, args, process.env);
+    const effectiveTimeoutMs = invocation.usingTestBinary || invocation.relaxTimeout ? Math.max(timeoutMs, 10_000) : timeoutMs;
+    const child = spawn(invocation.command, invocation.args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -44,7 +43,7 @@ export function runProcess(command: string, args: string[], timeoutMs = 3000): P
       if (code === 0) {
         resolve({ stdout, stderr, code });
       } else {
-        reject(new Error(stderr.trim() || `${command} exited ${code}`));
+        reject(new Error(stderr.trim() || `${invocation.command} exited ${code}`));
       }
     });
   });
