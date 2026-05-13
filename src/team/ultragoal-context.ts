@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
 import { TEAM_NAME_SAFE_PATTERN } from './contracts.js';
 
@@ -109,7 +109,7 @@ export async function writePersistedTeamUltragoalContext(
     await rm(path, { force: true }).catch(() => {});
     return;
   }
-  await mkdir(dirname(path), { recursive: true });
+  await mkdir(join(path, '..'), { recursive: true });
   await writeFile(path, `${JSON.stringify(normalized, null, 2)}\n`, 'utf-8');
 }
 
