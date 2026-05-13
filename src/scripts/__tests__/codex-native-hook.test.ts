@@ -199,6 +199,9 @@ const TEAM_ENV_KEYS = [
   "OMX_LEADER_PANE_ID",
   "TMUX",
   "TMUX_PANE",
+  "OMX_MUX",
+  "CMUX_SURFACE_ID",
+  "CMUX_WORKSPACE_ID",
   "OMX_TMUX_HUD_OWNER",
   "OMX_NATIVE_STOP_NO_PROGRESS_MAX_REPEATS",
   "OMX_NATIVE_STOP_NO_PROGRESS_IDLE_MS",
@@ -906,6 +909,88 @@ describe("codex native hook dispatch", () => {
       assert.match(additionalContext, /attached tmux runtime/);
       assert.match(additionalContext, /omx team, omx hud, and omx quest(?:ion) are directly usable in this session/);
       assert.match(additionalContext, /visible temporary renderer available from the current pane; primary success JSON is answers\[\]/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("describes attached cmux runtime when the mux adapter is explicitly selected", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-session-start-cmux-"));
+    const previous = {
+      TMUX: process.env.TMUX,
+      TMUX_PANE: process.env.TMUX_PANE,
+      OMX_MUX: process.env.OMX_MUX,
+      CMUX_SURFACE_ID: process.env.CMUX_SURFACE_ID,
+      CMUX_WORKSPACE_ID: process.env.CMUX_WORKSPACE_ID,
+    };
+    delete process.env.TMUX;
+    delete process.env.TMUX_PANE;
+    process.env.OMX_MUX = "cmux";
+    process.env.CMUX_SURFACE_ID = "surface:test";
+    process.env.CMUX_WORKSPACE_ID = "workspace:test";
+
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: "sess-start-cmux-1",
+        },
+        {
+          cwd,
+          sessionOwnerPid: process.pid,
+        },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /\[Execution environment\]/);
+      assert.match(additionalContext, /attached cmux runtime/);
+      assert.match(additionalContext, /mux adapter path/);
+      assert.match(additionalContext, /prefer native structured input unless an explicit question bridge is configured/);
+    } finally {
+      if (typeof previous.TMUX === "string") process.env.TMUX = previous.TMUX;
+      else delete process.env.TMUX;
+      if (typeof previous.TMUX_PANE === "string") process.env.TMUX_PANE = previous.TMUX_PANE;
+      else delete process.env.TMUX_PANE;
+      if (typeof previous.OMX_MUX === "string") process.env.OMX_MUX = previous.OMX_MUX;
+      else delete process.env.OMX_MUX;
+      if (typeof previous.CMUX_SURFACE_ID === "string") process.env.CMUX_SURFACE_ID = previous.CMUX_SURFACE_ID;
+      else delete process.env.CMUX_SURFACE_ID;
+      if (typeof previous.CMUX_WORKSPACE_ID === "string") process.env.CMUX_WORKSPACE_ID = previous.CMUX_WORKSPACE_ID;
+      else delete process.env.CMUX_WORKSPACE_ID;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps OMX_MUX=cmux outside-tmux when no cmux terminal env is present", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-session-start-cmux-no-env-"));
+    process.env.OMX_MUX = "cmux";
+    delete process.env.TMUX;
+    delete process.env.TMUX_PANE;
+    delete process.env.CMUX_SURFACE_ID;
+    delete process.env.CMUX_WORKSPACE_ID;
+
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: "sess-start-cmux-no-env-1",
+        },
+        {
+          cwd,
+          sessionOwnerPid: process.pid,
+        },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /\[Execution environment\]/);
+      assert.match(additionalContext, /outside tmux/);
+      assert.doesNotMatch(additionalContext, /attached cmux runtime/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -3153,6 +3238,36 @@ exit 0
       assert.equal((result.outputJson as { hookSpecificOutput?: unknown } | null)?.hookSpecificOutput, undefined);
       assert.match(String((result.outputJson as { reason?: string } | null)?.reason || ""), /cannot be launched directly from Codex App\/native outside-tmux Bash sessions/);
       assert.match(String((result.outputJson as { systemMessage?: string } | null)?.systemMessage || ""), /launch OMX CLI from an attached tmux shell first/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks Bash omx team when OMX_MUX=cmux lacks cmux terminal env evidence", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-team-cmux-no-env-block-"));
+    process.env.OMX_MUX = "cmux";
+    delete process.env.CMUX_SURFACE_ID;
+    delete process.env.CMUX_WORKSPACE_ID;
+    delete process.env.TMUX;
+    delete process.env.TMUX_PANE;
+
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          source: "codex-app",
+          session_id: "sess-team-cmux-no-env-block",
+          tool_name: "Bash",
+          tool_use_id: "tool-team-cmux-no-env-block",
+          tool_input: { command: "omx team status my-team" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((result.outputJson as { reason?: string } | null)?.reason || ""), /Codex App\/native outside-tmux Bash sessions/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

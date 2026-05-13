@@ -1,6 +1,15 @@
 import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
+import {
+  CMUX_METADATA_UNAVAILABLE_SESSION,
+  CMUX_METADATA_UNAVAILABLE_START_COMMAND,
+  currentMuxPaneTarget,
+  currentMuxSessionTarget,
+  normalizeMuxStdout,
+  resolveMuxInvocation,
+  resolveMuxKind,
+} from './notify-hook/mux-adapter.js';
 
 export const DEFAULT_ALLOWED_MODES = ['ralph', 'ultrawork', 'team'];
 export const DEFAULT_MARKER = '[OMX_TMUX_INJECT]';
@@ -191,6 +200,66 @@ function isHudStartCommand(startCommand: string): boolean {
   return /\bomx\b.*\bhud\b.*--watch/i.test(startCommand);
 }
 
+function runCmuxTmuxCompatQuery(args: string[]): string {
+  const invocation = resolveMuxInvocation('tmux', args);
+  const stdout = execFileSync(invocation.command, invocation.args, {
+    encoding: 'utf-8',
+    timeout: 2000,
+    windowsHide: process.platform === 'win32',
+  });
+  return normalizeMuxStdout(invocation, stdout).trim();
+}
+
+function cmuxPaneLooksLikeCodexAgent(currentCommand: string, startCommand: string): boolean {
+  const start = startCommand.trim().toLowerCase();
+  if (!start || start === CMUX_METADATA_UNAVAILABLE_START_COMMAND || isHudStartCommand(start)) return false;
+  const base = currentCommand.trim().toLowerCase().split('/').pop()?.replace(/^-/, '') || '';
+  return base === 'codex' || start.includes('codex');
+}
+
+function resolveCmuxCodexPane(): string {
+  const currentSurface = currentMuxPaneTarget();
+  if (!currentSurface) return '';
+
+  try {
+    const currentCommand = runCmuxTmuxCompatQuery(['display-message', '-p', '-t', currentSurface, '#{pane_current_command}']);
+    const startCommand = runCmuxTmuxCompatQuery(['display-message', '-p', '-t', currentSurface, '#{pane_start_command}']);
+    if (cmuxPaneLooksLikeCodexAgent(currentCommand, startCommand)) {
+      return currentSurface;
+    }
+  } catch {
+    // Fall through to workspace scan instead of trusting the current surface.
+  }
+
+  try {
+    let workspace = currentMuxSessionTarget();
+    if (!workspace) {
+      workspace = runCmuxTmuxCompatQuery(['display-message', '-p', '-t', currentSurface, '#S']);
+    }
+    if (!workspace || workspace === CMUX_METADATA_UNAVAILABLE_SESSION) return '';
+
+    const panes = runCmuxTmuxCompatQuery([
+      'list-panes', '-s', '-t', workspace,
+      '-F', '#{pane_id}\t#{pane_current_command}\t#{pane_start_command}',
+    ]).split('\n');
+
+    for (const line of panes) {
+      const parts = line.split('\t');
+      const paneId = parts[0];
+      const currentCommand = parts[1] || '';
+      const startCommand = parts[2] || '';
+      if (!paneId) continue;
+      if (cmuxPaneLooksLikeCodexAgent(currentCommand, startCommand)) {
+        return paneId;
+      }
+    }
+  } catch {
+    // Fall through
+  }
+
+  return '';
+}
+
 /**
  * Canonical codex pane resolver. Finds the tmux pane running a codex/claude agent.
  *
@@ -203,6 +272,10 @@ function isHudStartCommand(startCommand: string): boolean {
  * use this instead of raw `process.env.TMUX_PANE`.
  */
 export function resolveCodexPane(): string {
+  if (resolveMuxKind() === 'cmux') {
+    return resolveCmuxCodexPane();
+  }
+
   const envPane = (process.env.TMUX_PANE || '').trim();
   const tmuxCommand = resolveTmuxBinaryForPlatform() || 'tmux';
   if (!envPane) return '';

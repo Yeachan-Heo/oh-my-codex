@@ -454,4 +454,124 @@ exit 1
       await rm(fakeBinDir, { recursive: true, force: true });
     }
   });
+
+  it('fails closed for cmux when the current surface is HUD and no codex surface is discoverable', async () => {
+    const { mkdtemp, writeFile, chmod, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-resolve-cmux-pane-hud-'));
+    const fakeCmuxPath = join(fakeBinDir, 'cmux');
+    const previous = {
+      OMX_MUX: process.env.OMX_MUX,
+      OMX_TEST_CMUX_BIN: process.env.OMX_TEST_CMUX_BIN,
+      CMUX_SURFACE_ID: process.env.CMUX_SURFACE_ID,
+      CMUX_WORKSPACE_ID: process.env.CMUX_WORKSPACE_ID,
+      TMUX: process.env.TMUX,
+      TMUX_PANE: process.env.TMUX_PANE,
+    };
+
+    try {
+      await writeFile(fakeCmuxPath, `#!/usr/bin/env bash
+set -eu
+cmd="$1"
+shift || true
+if [[ "$cmd" == "identify" ]]; then
+  cat <<'JSON'
+{"surface_id":"surface:hud","current_command":"node","start_command":"node /pkg/dist/cli/omx.js hud --watch","workspace_ref":"workspace:test"}
+JSON
+  exit 0
+fi
+if [[ "$cmd" == "list-pane-surfaces" ]]; then
+  printf "surface:hud\t1\tnode\tnode /pkg/dist/cli/omx.js hud --watch\nsurface:shell\t0\tzsh\t-zsh\n"
+  exit 0
+fi
+echo "unsupported $cmd" >&2
+exit 1
+`);
+      await chmod(fakeCmuxPath, 0o755);
+      process.env.OMX_MUX = 'cmux';
+      process.env.OMX_TEST_CMUX_BIN = fakeCmuxPath;
+      process.env.CMUX_SURFACE_ID = 'surface:hud';
+      process.env.CMUX_WORKSPACE_ID = 'workspace:test';
+      delete process.env.TMUX;
+      delete process.env.TMUX_PANE;
+
+      assert.equal(resolveCodexPane(), '');
+    } finally {
+      if (typeof previous.OMX_MUX === 'string') process.env.OMX_MUX = previous.OMX_MUX;
+      else delete process.env.OMX_MUX;
+      if (typeof previous.OMX_TEST_CMUX_BIN === 'string') process.env.OMX_TEST_CMUX_BIN = previous.OMX_TEST_CMUX_BIN;
+      else delete process.env.OMX_TEST_CMUX_BIN;
+      if (typeof previous.CMUX_SURFACE_ID === 'string') process.env.CMUX_SURFACE_ID = previous.CMUX_SURFACE_ID;
+      else delete process.env.CMUX_SURFACE_ID;
+      if (typeof previous.CMUX_WORKSPACE_ID === 'string') process.env.CMUX_WORKSPACE_ID = previous.CMUX_WORKSPACE_ID;
+      else delete process.env.CMUX_WORKSPACE_ID;
+      if (typeof previous.TMUX === 'string') process.env.TMUX = previous.TMUX;
+      else delete process.env.TMUX;
+      if (typeof previous.TMUX_PANE === 'string') process.env.TMUX_PANE = previous.TMUX_PANE;
+      else delete process.env.TMUX_PANE;
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('scans cmux workspace surfaces instead of injecting into a current HUD surface', async () => {
+    const { mkdtemp, writeFile, chmod, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-resolve-cmux-pane-scan-'));
+    const fakeCmuxPath = join(fakeBinDir, 'cmux');
+    const previous = {
+      OMX_MUX: process.env.OMX_MUX,
+      OMX_TEST_CMUX_BIN: process.env.OMX_TEST_CMUX_BIN,
+      CMUX_SURFACE_ID: process.env.CMUX_SURFACE_ID,
+      CMUX_WORKSPACE_ID: process.env.CMUX_WORKSPACE_ID,
+      TMUX: process.env.TMUX,
+      TMUX_PANE: process.env.TMUX_PANE,
+    };
+
+    try {
+      await writeFile(fakeCmuxPath, `#!/usr/bin/env bash
+set -eu
+cmd="$1"
+shift || true
+if [[ "$cmd" == "identify" ]]; then
+  cat <<'JSON'
+{"surface_id":"surface:hud","current_command":"node","start_command":"node /pkg/dist/cli/omx.js hud --watch","workspace_ref":"workspace:test"}
+JSON
+  exit 0
+fi
+if [[ "$cmd" == "list-pane-surfaces" ]]; then
+  printf "surface:hud\t1\tnode\tnode /pkg/dist/cli/omx.js hud --watch\nsurface:codex\t0\tnode\tcodex --model gpt-5\n"
+  exit 0
+fi
+echo "unsupported $cmd" >&2
+exit 1
+`);
+      await chmod(fakeCmuxPath, 0o755);
+      process.env.OMX_MUX = 'cmux';
+      process.env.OMX_TEST_CMUX_BIN = fakeCmuxPath;
+      process.env.CMUX_SURFACE_ID = 'surface:hud';
+      process.env.CMUX_WORKSPACE_ID = 'workspace:test';
+      delete process.env.TMUX;
+      delete process.env.TMUX_PANE;
+
+      assert.equal(resolveCodexPane(), 'surface:codex');
+    } finally {
+      if (typeof previous.OMX_MUX === 'string') process.env.OMX_MUX = previous.OMX_MUX;
+      else delete process.env.OMX_MUX;
+      if (typeof previous.OMX_TEST_CMUX_BIN === 'string') process.env.OMX_TEST_CMUX_BIN = previous.OMX_TEST_CMUX_BIN;
+      else delete process.env.OMX_TEST_CMUX_BIN;
+      if (typeof previous.CMUX_SURFACE_ID === 'string') process.env.CMUX_SURFACE_ID = previous.CMUX_SURFACE_ID;
+      else delete process.env.CMUX_SURFACE_ID;
+      if (typeof previous.CMUX_WORKSPACE_ID === 'string') process.env.CMUX_WORKSPACE_ID = previous.CMUX_WORKSPACE_ID;
+      else delete process.env.CMUX_WORKSPACE_ID;
+      if (typeof previous.TMUX === 'string') process.env.TMUX = previous.TMUX;
+      else delete process.env.TMUX;
+      if (typeof previous.TMUX_PANE === 'string') process.env.TMUX_PANE = previous.TMUX_PANE;
+      else delete process.env.TMUX_PANE;
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
 });

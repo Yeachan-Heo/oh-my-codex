@@ -1,4 +1,4 @@
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
@@ -59,6 +59,23 @@ describe('notify-hook managed tmux windows fallback', () => {
   const originalTmux = process.env.TMUX;
   const originalTmuxPane = process.env.TMUX_PANE;
   const originalTeamWorker = process.env.OMX_TEAM_WORKER;
+  const originalMux = process.env.OMX_MUX;
+  const originalCmuxSurfaceId = process.env.CMUX_SURFACE_ID;
+  const originalCmuxWorkspaceId = process.env.CMUX_WORKSPACE_ID;
+  const originalTestCmuxBin = process.env.OMX_TEST_CMUX_BIN;
+  const originalTestMuxBin = process.env.OMX_TEST_MUX_BIN;
+  const originalCmuxBin = process.env.OMX_CMUX_BIN;
+  const originalMuxBin = process.env.OMX_MUX_BIN;
+
+  beforeEach(() => {
+    process.env.OMX_MUX = 'tmux';
+    delete process.env.CMUX_SURFACE_ID;
+    delete process.env.CMUX_WORKSPACE_ID;
+    delete process.env.OMX_TEST_CMUX_BIN;
+    delete process.env.OMX_TEST_MUX_BIN;
+    delete process.env.OMX_CMUX_BIN;
+    delete process.env.OMX_MUX_BIN;
+  });
 
   afterEach(() => {
     if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
@@ -68,6 +85,20 @@ describe('notify-hook managed tmux windows fallback', () => {
     else delete process.env.TMUX_PANE;
     if (originalTeamWorker !== undefined) process.env.OMX_TEAM_WORKER = originalTeamWorker;
     else delete process.env.OMX_TEAM_WORKER;
+    if (originalMux !== undefined) process.env.OMX_MUX = originalMux;
+    else delete process.env.OMX_MUX;
+    if (originalCmuxSurfaceId !== undefined) process.env.CMUX_SURFACE_ID = originalCmuxSurfaceId;
+    else delete process.env.CMUX_SURFACE_ID;
+    if (originalCmuxWorkspaceId !== undefined) process.env.CMUX_WORKSPACE_ID = originalCmuxWorkspaceId;
+    else delete process.env.CMUX_WORKSPACE_ID;
+    if (originalTestCmuxBin !== undefined) process.env.OMX_TEST_CMUX_BIN = originalTestCmuxBin;
+    else delete process.env.OMX_TEST_CMUX_BIN;
+    if (originalTestMuxBin !== undefined) process.env.OMX_TEST_MUX_BIN = originalTestMuxBin;
+    else delete process.env.OMX_TEST_MUX_BIN;
+    if (originalCmuxBin !== undefined) process.env.OMX_CMUX_BIN = originalCmuxBin;
+    else delete process.env.OMX_CMUX_BIN;
+    if (originalMuxBin !== undefined) process.env.OMX_MUX_BIN = originalMuxBin;
+    else delete process.env.OMX_MUX_BIN;
   });
 
   it('does not rely on ps ancestry checks on native Windows', async () => {
