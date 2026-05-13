@@ -6628,6 +6628,63 @@ esac
     }
   });
 
+  it('startTeam treats a completed Ultragoal plan without activeGoalId as no active bridge context', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-ultragoal-idle-start-'));
+    const binDir = join(cwd, 'bin');
+    const fakeCodexPath = join(binDir, 'codex');
+    await mkdir(binDir, { recursive: true });
+    await mkdir(join(cwd, '.omx', 'ultragoal'), { recursive: true });
+    await writeFile(
+      join(cwd, '.omx', 'ultragoal', 'goals.json'),
+      `${JSON.stringify({
+        version: 1,
+        codexGoalMode: 'aggregate',
+        goals: [{
+          id: 'G001-completed-story',
+          title: 'Completed story',
+          status: 'complete',
+        }],
+      })}\n`,
+    );
+    await writeFakePromptWorkerBinary(
+      fakeCodexPath,
+      `setTimeout(() => {}, 5000);`,
+    );
+
+    let runtime: TeamRuntime | null = null;
+    try {
+      runtime = await withPromptModeCodexEnv(binDir, {}, () =>
+        withoutTeamWorkerEnv(() =>
+          startTeam(
+            'team-ultragoal-idle-start',
+            'completed Ultragoal artifacts must not block unrelated team startup',
+            'executor',
+            1,
+            [{ subject: 's', description: 'd', owner: 'worker-1' }],
+            cwd,
+          ),
+        ),
+      );
+
+      const teamStateRoot = runtime.config.team_state_root ?? join(cwd, '.omx', 'state');
+      assert.equal(
+        existsSync(join(teamStateRoot, 'team', runtime.teamName, 'ultragoal-context.json')),
+        false,
+      );
+      const inbox = await readFile(
+        join(teamStateRoot, 'team', runtime.teamName, 'workers', 'worker-1', 'inbox.md'),
+        'utf-8',
+      );
+      assert.doesNotMatch(inbox, /Leader-owned Ultragoal context/);
+      assert.doesNotMatch(inbox, /omx ultragoal checkpoint --goal-id G001-completed-story/);
+    } finally {
+      if (runtime) {
+        await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
+      }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('startTeam injects approved handoff context into ready approved worker inboxes', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-handoff-'));
     const binDir = join(cwd, 'bin');

@@ -2949,6 +2949,44 @@ describe('teamCommand status', () => {
     }
   });
 
+  it('omits Ultragoal checkpoint guidance in JSON status for completed plans without activeGoalId', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-status-ultragoal-idle-json-'));
+    const previousCwd = process.cwd();
+    const logs: string[] = [];
+    const originalLog = console.log;
+    try {
+      process.chdir(wd);
+      await withoutTeamTestWorkerEnv(() => initTeamState('ultragoal-idle-json-team', 'inspect idle ultragoal status', 'executor', 1, wd));
+      await mkdir(join(wd, '.omx', 'ultragoal'), { recursive: true });
+      await writeFile(
+        join(wd, '.omx', 'ultragoal', 'goals.json'),
+        `${JSON.stringify({
+          version: 1,
+          codexGoalMode: 'aggregate',
+          goals: [{
+            id: 'G001-completed-story',
+            title: 'Completed story',
+            status: 'complete',
+          }],
+        })}\n`,
+      );
+      console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
+
+      await withoutTeamTestWorkerEnv(() => teamCommand(['status', 'ultragoal-idle-json-team', '--json']));
+
+      const payload = JSON.parse(logs[0] ?? '{}') as {
+        status?: string;
+        ultragoal_checkpoint_guidance?: unknown;
+      };
+      assert.equal(payload.status, 'ok');
+      assert.equal('ultragoal_checkpoint_guidance' in payload, false);
+    } finally {
+      console.log = originalLog;
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('prints Ultragoal checkpoint guidance in text status with fresh get_goal requirement', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-status-ultragoal-text-'));
     const previousCwd = process.cwd();
