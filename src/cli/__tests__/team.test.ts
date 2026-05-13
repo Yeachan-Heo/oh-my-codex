@@ -30,6 +30,7 @@ import {
   buildApprovedTeamExecutionBinding,
   writePersistedApprovedTeamExecutionBinding,
 } from '../../team/approved-execution.js';
+import { writePersistedTeamUltragoalContext } from '../../team/ultragoal-context.js';
 import { isRealTmuxAvailable, withTempTmuxSession, type TempTmuxSessionFixture } from '../../team/__tests__/tmux-test-fixture.js';
 
 const OMX_CLI_PATH = fileURLToPath(new URL('../omx.js', import.meta.url));
@@ -2912,6 +2913,14 @@ describe('teamCommand status', () => {
         wd,
         buildApprovedTeamExecutionBinding(hint),
       );
+      await writePersistedTeamUltragoalContext('ultragoal-json-team', wd, {
+        kind: 'leader_owned_ultragoal_context',
+        goalsPath: '.omx/ultragoal/goals.json',
+        ledgerPath: '.omx/ultragoal/ledger.jsonl',
+        activeGoalId: 'G001-team-runtime-bridge',
+        codexGoalMode: 'aggregate',
+        checkpointPolicy: 'fresh_leader_get_goal_required',
+      });
       console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
 
       await withoutTeamTestWorkerEnv(() => teamCommand(['status', 'ultragoal-json-team', '--json']));
@@ -2970,6 +2979,14 @@ describe('teamCommand status', () => {
         wd,
         buildApprovedTeamExecutionBinding(hint),
       );
+      await writePersistedTeamUltragoalContext('ultragoal-text-team', wd, {
+        kind: 'leader_owned_ultragoal_context',
+        goalsPath: '.omx/ultragoal/goals.json',
+        ledgerPath: '.omx/ultragoal/ledger.jsonl',
+        activeGoalId: 'G001-team-runtime-bridge',
+        codexGoalMode: 'aggregate',
+        checkpointPolicy: 'fresh_leader_get_goal_required',
+      });
       console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
 
       await withoutTeamTestWorkerEnv(() => teamCommand(['status', 'ultragoal-text-team']));
@@ -2979,7 +2996,7 @@ describe('teamCommand status', () => {
       assert.match(output, /G001-team-runtime-bridge/);
       assert.match(output, /\.omx\/ultragoal\/goals\.json/);
       assert.match(output, /\.omx\/ultragoal\/ledger\.jsonl/);
-      assert.match(output, /fresh_get_goal_required: leader must call get_goal/i);
+      assert.match(output, /leader captured fresh get_goal JSON before checkpointing/i);
       assert.match(output, /workers do not own ultragoal goal state/i);
     } finally {
       console.log = originalLog;

@@ -34,7 +34,6 @@ import { recordLeaderRuntimeActivity } from '../team/leader-activity.js';
 import { readTeamPaneStatus } from '../team/pane-status.js';
 import {
   buildApprovedTeamExecutionBinding,
-  buildUltragoalCheckpointGuidance as buildApprovedUltragoalCheckpointGuidance,
   resolvePersistedApprovedTeamExecutionContinuityStateSync,
   type ApprovedTeamExecutionBinding,
 } from '../team/approved-execution.js';
@@ -1487,11 +1486,6 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     const modelInspect = parseStatusModelInspect(teamArgs.slice(2));
     const config = await readTeamConfig(resolvedName, cwd);
     const paneStatus = await readTeamPaneStatus(config, cwd, snapshot, tailLines);
-    const approvedExecutionContinuity = resolvePersistedApprovedTeamExecutionContinuityStateSync(
-      resolvedName,
-      cwd,
-      config?.team_state_root,
-    );
     const ultragoalContext = await readPersistedTeamUltragoalContext(
       resolvedName,
       config?.leader_cwd ?? cwd,
@@ -1499,9 +1493,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     );
     const ultragoalCheckpointGuidance = ultragoalContext
       ? buildUltragoalCheckpointGuidance(ultragoalContext)
-      : approvedExecutionContinuity.status === 'valid'
-        ? buildApprovedUltragoalCheckpointGuidance(approvedExecutionContinuity.approvedHint)
-        : null;
+      : null;
     if (wantsJson) {
       console.log(JSON.stringify({
         ...buildJsonBase(),

@@ -108,8 +108,8 @@ function readApprovedHintSourceText(
   }
 }
 
-function detectUltragoalId(text: string): string {
-  return text.match(/\bG\d{3}[-\w]*/)?.[0] ?? '<id>';
+function detectUltragoalId(text: string): string | null {
+  return text.match(/\bG\d{3}[-\w]*/)?.[0] ?? null;
 }
 
 function detectUltragoalMode(text: string): 'aggregate' | 'per_story' {
@@ -134,18 +134,19 @@ export function buildUltragoalCheckpointGuidance(
   }
 
   const goalId = detectUltragoalId(detectionText);
+  const goalIdDisplay = goalId ?? '<read .omx/ultragoal/goals.json first>';
   return {
-    goal_id: goalId,
+    goal_id: goalIdDisplay,
     codex_goal_mode: detectUltragoalMode(detectionText),
     goals_path: '.omx/ultragoal/goals.json',
     ledger_path: '.omx/ultragoal/ledger.jsonl',
     checkpoint_policy: 'fresh_leader_get_goal_required',
-    checkpoint_command_template: `omx ultragoal checkpoint --goal-id ${goalId} --status complete --evidence "<team evidence mentioning .omx/ultragoal and ${goalId}>" --codex-goal-json <fresh-active-get_goal-json-or-path>`,
-    final_checkpoint_command_template: `omx ultragoal checkpoint --goal-id ${goalId} --status complete --evidence "<team evidence mentioning .omx/ultragoal and ${goalId}>" --codex-goal-json <fresh-complete-get_goal-json-or-path> --quality-gate-json <quality-gate-json-or-path>`,
+    checkpoint_command_template: '<leader must read verified .omx/ultragoal/goals.json context before constructing checkpoint command>',
+    final_checkpoint_command_template: '<leader must read verified .omx/ultragoal/goals.json context and pass final quality gates before constructing checkpoint command>',
     evidence_requirements: [
       'team tasks are terminal',
       'verification passed',
-      `evidence mentions ${goalId}`,
+      goalId ? `evidence mentions ${goalId}` : 'leader resolved the active goal ID from .omx/ultragoal/goals.json',
       'evidence mentions .omx/ultragoal artifacts',
       'leader captured a fresh get_goal snapshot',
     ],
@@ -158,16 +159,15 @@ export function renderLeaderOwnedUltragoalContext(
   if (!guidance) return [];
   return [
     '',
-    '- Leader-owned Ultragoal context:',
-    `  - kind: leader_owned_ultragoal_context`,
+    '- Approved-plan Ultragoal hint:',
+    '  - source: approved Team handoff text; leader must verify `.omx/ultragoal/goals.json` before checkpointing.',
     `  - goals_path: ${guidance.goals_path}`,
     `  - ledger_path: ${guidance.ledger_path}`,
-    `  - active_goal_id: ${guidance.goal_id}`,
+    `  - hinted_goal_id: ${guidance.goal_id}`,
     `  - codex_goal_mode: ${guidance.codex_goal_mode}`,
     `  - checkpoint_policy: ${guidance.checkpoint_policy}`,
     '  - Team workers provide task/evidence updates only; workers do not own ultragoal goal state or create worker ultragoal ledgers.',
-    '  - Leader checkpoint command shape:',
-    `    ${guidance.checkpoint_command_template}`,
+    '  - No checkpoint command is emitted from approved-plan hints; concrete commands require verified leader-owned Ultragoal context.',
     '  - Final aggregate story requires final quality gates before update_goal, then fresh get_goal and --quality-gate-json.',
   ];
 }

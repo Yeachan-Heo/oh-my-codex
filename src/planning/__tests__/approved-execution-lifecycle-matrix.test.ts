@@ -151,14 +151,15 @@ describe('approved execution lifecycle baseline matrix', () => {
     const guidance = buildUltragoalCheckpointGuidance(teamOutcome.hint);
     assert.equal(guidance?.goal_id, 'G001-team-runtime-bridge');
     assert.equal(guidance?.checkpoint_policy, 'fresh_leader_get_goal_required');
-    assert.match(guidance?.checkpoint_command_template ?? '', /omx ultragoal checkpoint/);
-    assert.match(guidance?.checkpoint_command_template ?? '', /--codex-goal-json/);
+    assert.match(guidance?.checkpoint_command_template ?? '', /verified \.omx\/ultragoal\/goals\.json context/);
 
     const section = buildApprovedTeamHandoffSection(teamOutcome.hint) ?? '';
-    assert.match(section, /Leader-owned Ultragoal context/);
+    assert.match(section, /Approved-plan Ultragoal hint/);
     assert.match(section, /\.omx\/ultragoal\/goals\.json/);
     assert.match(section, /\.omx\/ultragoal\/ledger\.jsonl/);
     assert.match(section, /Team workers provide task\/evidence updates only/i);
+    assert.match(section, /No checkpoint command is emitted from approved-plan hints/i);
+    assert.doesNotMatch(section, /omx ultragoal checkpoint --goal-id/i);
     assert.doesNotMatch(section, /auto[- ]launch.*team/i);
 
     const ralphOutcome = readApprovedExecutionLaunchHintOutcome(tempDir, 'ralph', {

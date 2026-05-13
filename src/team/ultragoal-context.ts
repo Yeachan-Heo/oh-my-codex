@@ -203,6 +203,7 @@ export function renderUltragoalCheckpointGuidanceText(
     `  goals_path: ${guidance.goals_path}`,
     `  ledger_path: ${guidance.ledger_path}`,
     `  checkpoint_policy: ${guidance.checkpoint_policy}`,
+    '  worker_boundary: workers do not own Ultragoal goal state or mutate .omx/ultragoal artifacts',
     `  evidence_requirements: ${guidance.evidence_requirements.join('; ')}`,
     `  intermediate_story: ${guidance.command_templates.intermediate_story}`,
     `  final_story: ${guidance.command_templates.final_story}`,
