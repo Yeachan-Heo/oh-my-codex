@@ -4403,6 +4403,60 @@ exit 0
     }
   });
 
+  it("stays silent on PreToolUse for compact git commit with only the OmX co-author trailer", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-git-commit-compact-coauthor-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-compact-coauthor",
+          tool_input: {
+            command: [
+              'git commit',
+              '-m "Record lvisai onboarding launch"',
+              '-m "Co-authored-by: OmX <omx@oh-my-codex.dev>"',
+            ].join(" "),
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("stays silent on PreToolUse when optional Lore body is omitted but OmX co-author is present", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-git-commit-body-optional-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-git-commit-body-optional",
+          tool_input: {
+            command: [
+              'git commit',
+              '-m "Launch lvisai.xyz intro site"',
+              '-m "Constraint: lvisai.xyz needs a no-build static intro site that can deploy from GitHub Pages.\nTested: python3 -m http.server 4173 and curl checks\n\nCo-authored-by: OmX <omx@oh-my-codex.dev>"',
+            ].join(" "),
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("warns on PreToolUse git commit when mapped source changes lack staged docs refresh", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-document-refresh-warn-"));
     try {

@@ -85,6 +85,13 @@ native `PreToolUse` checks, including document-refresh warnings and command
 safety checks, still run. `omx doctor` reports when the guard is explicitly
 disabled by environment or config.
 
+When the guard is enabled, the required inline shape is intentionally small:
+an intent-first subject, the normal blank separator, and the exact
+`Co-authored-by: OmX <omx@oh-my-codex.dev>` trailer. A narrative body and
+decision trailers such as `Constraint:` or `Tested:` remain supported for
+changes that need decision context, but the guard should not require them when
+the commit message already carries the OmX co-author trailer.
+
 Warning scope is intentionally narrow and rule-scoped:
 
 - **Commit path:** `PreToolUse` is Bash-only in this MVP and evaluates only
