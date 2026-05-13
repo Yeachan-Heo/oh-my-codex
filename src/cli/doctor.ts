@@ -2,7 +2,7 @@
  * omx doctor - Validate oh-my-codex installation
  */
 
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { mkdtemp, readdir, readFile, rm } from "fs/promises";
 import { spawnSync } from "child_process";
 import { join } from "path";
@@ -65,6 +65,7 @@ import {
 	readOmxPluginCacheState,
 	resolvePackagedOmxMarketplace,
 } from "./plugin-marketplace.js";
+import { hasOmxAgentsContract } from "../utils/agents-md.js";
 
 interface DoctorOptions {
 	verbose?: boolean;
@@ -269,7 +270,9 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	if (failCount > 0) {
 		console.log('\nRun "omx setup" to fix installation issues.');
 	} else if (warnCount > 0) {
-		console.log('\nRun "omx setup --force" to refresh all components.');
+		console.log(
+			'\nReview warnings above. Use "omx setup --force" only when a warning recommends full replacement; for AGENTS.md preservation prefer "omx setup --merge-agents".',
+		);
 	} else {
 		console.log("\nAll checks passed! oh-my-codex is ready.");
 	}
@@ -1469,13 +1472,34 @@ function checkAgentsMd(
 	codexHomeDir: string,
 	installMode?: SetupInstallMode,
 ): Check {
+	const scopeFlag = scope === "project" ? "--scope project" : "--scope user";
+	const repairMessage =
+		`OMX AGENTS contract markers missing; file may have been overwritten by another tool. ` +
+		`Run "omx setup ${scopeFlag} --merge-agents" to preserve local guidance while restoring OMX-managed sections, ` +
+		`or "omx setup ${scopeFlag} --force" to replace it after backup.`;
+
 	if (scope === "user") {
 		const userAgentsMd = join(codexHomeDir, "AGENTS.md");
 		if (existsSync(userAgentsMd)) {
+			if (installMode === "plugin") {
+				return {
+					name: "AGENTS.md",
+					status: "pass",
+					message: `optional plugin-mode AGENTS.md defaults found in ${userAgentsMd}; contract validation skipped`,
+				};
+			}
+			const content = readFileSync(userAgentsMd, "utf-8");
+			if (!hasOmxAgentsContract(content)) {
+				return {
+					name: "AGENTS.md",
+					status: "warn",
+					message: `${repairMessage} Path: ${userAgentsMd}`,
+				};
+			}
 			return {
 				name: "AGENTS.md",
 				status: "pass",
-				message: `found in ${userAgentsMd}`,
+				message: `found OMX contract in ${userAgentsMd}`,
 			};
 		}
 		if (installMode === "plugin") {
@@ -1494,10 +1518,26 @@ function checkAgentsMd(
 
 	const projectAgentsMd = join(process.cwd(), "AGENTS.md");
 	if (existsSync(projectAgentsMd)) {
+		if (installMode === "plugin") {
+			return {
+				name: "AGENTS.md",
+				status: "pass",
+				message:
+					"optional plugin-mode AGENTS.md defaults found in project root; contract validation skipped",
+			};
+		}
+		const content = readFileSync(projectAgentsMd, "utf-8");
+		if (!hasOmxAgentsContract(content)) {
+			return {
+				name: "AGENTS.md",
+				status: "warn",
+				message: `${repairMessage} Path: ${projectAgentsMd}`,
+			};
+		}
 		return {
 			name: "AGENTS.md",
 			status: "pass",
-			message: "found in project root",
+			message: "found OMX contract in project root",
 		};
 	}
 	if (installMode === "plugin") {

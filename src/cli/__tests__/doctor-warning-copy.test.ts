@@ -161,6 +161,60 @@ command = "node"
 		}
 	});
 
+	it("warns when an existing user AGENTS.md lacks OMX contract markers", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-agents-contract-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(codexDir, { recursive: true });
+			await writeFile(join(codexDir, "AGENTS.md"), "# context-mode instructions\n");
+
+			const res = runOmx(wd, ["doctor"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(res.stdout, /\[!!\] AGENTS\.md: OMX AGENTS contract markers missing/);
+			assert.match(res.stdout, /may have been overwritten by another tool/);
+			assert.match(res.stdout, /omx setup --scope user --merge-agents/);
+			assert.match(res.stdout, /omx setup --scope user --force/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("passes when user AGENTS.md contains the generated OMX contract marker", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-agents-contract-ok-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(codexDir, { recursive: true });
+			await writeFile(
+				join(codexDir, "AGENTS.md"),
+				[
+					"<!-- AUTONOMY DIRECTIVE — DO NOT REMOVE -->",
+					"<!-- END AUTONOMY DIRECTIVE -->",
+					"<!-- omx:generated:agents-md -->",
+					"# oh-my-codex - Intelligent Multi-Agent Orchestration",
+					"AGENTS.md is the top-level operating contract for the workspace.",
+					"",
+				].join("\n"),
+			);
+
+			const res = runOmx(wd, ["doctor"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(res.stdout, /\[OK\] AGENTS\.md: found OMX contract in /);
+			assert.doesNotMatch(res.stdout, /AGENTS contract markers missing/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("treats plugin-mode setup omissions as expected and verifies marketplace registration", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-mode-"));
 		try {

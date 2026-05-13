@@ -76,6 +76,7 @@ import { tryReadCatalogManifest } from "../catalog/reader.js";
 import { DEFAULT_FRONTIER_MODEL } from "../config/models.js";
 import {
 	addGeneratedAgentsMarker,
+	hasOmxAgentsContract,
 	hasOmxManagedAgentsSections,
 	isOmxGeneratedAgentsMd,
 	upsertManagedAgentsBlock,
@@ -2303,6 +2304,16 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			if (agentsMdExists) {
 				const existing = await readFile(agentsMdDst, "utf-8");
 				changed = existing !== rewritten;
+				if (!hasOmxAgentsContract(existing)) {
+					const scopeFlag =
+						resolvedScope.scope === "project" ? "--scope project" : "--scope user";
+					console.log(
+						`  WARNING: Existing AGENTS.md at ${agentsMdDst} lacks OMX contract markers; it may have been overwritten by another tool.`,
+					);
+					console.log(
+						`  Repair safely with "omx setup ${scopeFlag} --merge-agents" to preserve local guidance, or "omx setup ${scopeFlag} --force" to replace it after backup.`,
+					);
+				}
 				if (options.mergeAgents) {
 					mergedAgentsContent = upsertManagedAgentsBlock(existing, rewritten);
 					canApplyManagedAgentsMerge = mergedAgentsContent !== existing;

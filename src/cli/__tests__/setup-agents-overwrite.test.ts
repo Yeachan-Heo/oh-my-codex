@@ -291,6 +291,8 @@ describe('omx setup AGENTS refresh behavior', () => {
       });
 
       assert.match(output, /Skipped AGENTS\.md overwrite/);
+      assert.match(output, /WARNING: Existing AGENTS\.md .* lacks OMX contract markers/);
+      assert.match(output, /omx setup --scope project --merge-agents/);
       assert.doesNotMatch(output, /Refreshed AGENTS\.md model capability table/);
       assert.equal(await readFile(join(wd, 'AGENTS.md'), 'utf-8'), existing);
       assert.equal(existsSync(join(wd, '.omx', 'backups', 'setup')), false);

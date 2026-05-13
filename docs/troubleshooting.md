@@ -21,6 +21,18 @@ Treat the boundary this way:
 - `codex login status` green: the active Codex profile can see login state.
 - `omx exec ...` returns `OMX-EXEC-OK`: real execution, auth, provider routing, and current working-directory assumptions are working together.
 
+## AGENTS.md exists, but doctor says the OMX contract is missing
+
+Other Codex ecosystem tools may rewrite `AGENTS.md` while leaving OMX prompts, skills, hooks, and config in place. In that case `omx doctor` warns when the file exists but no longer carries the generated OMX AGENTS contract marker.
+
+To preserve local guidance and restore the OMX-managed contract sections, run:
+
+```bash
+omx setup --scope user --merge-agents
+```
+
+Use `--scope project` for project-scoped setup. If you intentionally want to replace the existing file, use `omx setup --scope <user|project> --force`; setup backs up the old file before replacement.
+
 ## Green doctor, but `omx exec` fails with auth errors
 
 Common failure strings include `401 Unauthorized`, `Missing bearer or basic authentication in header`, or `Incorrect API key provided`.

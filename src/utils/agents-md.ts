@@ -6,6 +6,13 @@ import {
 export const OMX_GENERATED_AGENTS_MARKER = '<!-- omx:generated:agents-md -->'
 export const OMX_MANAGED_AGENTS_START_MARKER = '<!-- OMX:AGENTS:START -->'
 export const OMX_MANAGED_AGENTS_END_MARKER = '<!-- OMX:AGENTS:END -->'
+export const OMX_AGENTS_CONTRACT_HEADING =
+  '# oh-my-codex - Intelligent Multi-Agent Orchestration'
+const OMX_AGENTS_CONTRACT_REQUIRED_TEXT = [
+  OMX_GENERATED_AGENTS_MARKER,
+  OMX_AGENTS_CONTRACT_HEADING,
+  'AGENTS.md is the top-level operating contract for the workspace.',
+] as const
 const AUTONOMY_DIRECTIVE_END_MARKER = '<!-- END AUTONOMY DIRECTIVE -->'
 
 export function isOmxGeneratedAgentsMd(content: string): boolean {
@@ -19,6 +26,26 @@ export function hasOmxManagedAgentsSections(content: string): boolean {
       content.includes(OMX_MANAGED_AGENTS_END_MARKER)) ||
     (content.includes(OMX_MODELS_START_MARKER) &&
       content.includes(OMX_MODELS_END_MARKER))
+  )
+}
+
+export function hasOmxAgentsContract(content: string): boolean {
+  if (candidateHasOmxAgentsContract(content)) return true
+
+  const startIndex = content.indexOf(OMX_MANAGED_AGENTS_START_MARKER)
+  const endIndex = content.indexOf(OMX_MANAGED_AGENTS_END_MARKER)
+  if (startIndex === -1 || endIndex <= startIndex) return false
+
+  const managedBlock = content.slice(
+    startIndex + OMX_MANAGED_AGENTS_START_MARKER.length,
+    endIndex,
+  )
+  return candidateHasOmxAgentsContract(managedBlock)
+}
+
+function candidateHasOmxAgentsContract(content: string): boolean {
+  return OMX_AGENTS_CONTRACT_REQUIRED_TEXT.every((text) =>
+    content.includes(text),
   )
 }
 
