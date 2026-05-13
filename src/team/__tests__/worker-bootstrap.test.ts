@@ -356,6 +356,83 @@ describe("worker bootstrap", () => {
     }
   });
 
+  it("ignores completed or idle Ultragoal plans without an active goal", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-team-ultragoal-idle-"));
+    try {
+      await mkdir(join(wd, ".omx", "ultragoal"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "ultragoal", "goals.json"),
+        `${JSON.stringify({
+          version: 1,
+          goals: [{
+            id: "G001-done",
+            title: "Done story",
+            status: "complete",
+          }],
+        })}\n`,
+      );
+
+      const context = await resolveLeaderOwnedUltragoalContext(wd);
+
+      assert.equal(context, null);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when present Ultragoal goals.json has an invalid codexGoalMode", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-team-ultragoal-bad-mode-"));
+    try {
+      await mkdir(join(wd, ".omx", "ultragoal"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "ultragoal", "goals.json"),
+        `${JSON.stringify({
+          version: 1,
+          activeGoalId: "G001-active",
+          codexGoalMode: "surprise",
+          goals: [{
+            id: "G001-active",
+            title: "Active story",
+            status: "in_progress",
+          }],
+        })}\n`,
+      );
+
+      await assert.rejects(
+        () => resolveLeaderOwnedUltragoalContext(wd),
+        /invalid_ultragoal_team_context:invalid_codex_goal_mode/,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when active Ultragoal goal is not in progress", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-team-ultragoal-stale-active-"));
+    try {
+      await mkdir(join(wd, ".omx", "ultragoal"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "ultragoal", "goals.json"),
+        `${JSON.stringify({
+          version: 1,
+          activeGoalId: "G001-done",
+          goals: [{
+            id: "G001-done",
+            title: "Done story",
+            status: "complete",
+          }],
+        })}\n`,
+      );
+
+      await assert.rejects(
+        () => resolveLeaderOwnedUltragoalContext(wd),
+        /invalid_ultragoal_team_context:active_goal_not_in_progress:G001-done/,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed when present Ultragoal goals.json is malformed", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-team-ultragoal-malformed-"));
     try {

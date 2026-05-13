@@ -18,6 +18,7 @@ import {
   DEFAULT_MAX_WORKERS,
 } from '../state.js';
 import { isScalingEnabled, scaleUp, scaleDown } from '../scaling.js';
+import { resolveCanonicalTeamStateRoot } from '../state-root.js';
 import {
   resolvePersistedApprovedTeamExecutionContinuityState,
   writePersistedApprovedTeamExecutionBinding,
@@ -249,6 +250,10 @@ async function configureScaleUpTeamForDirectDispatch(teamName: string, cwd: stri
   await saveTeamConfig(config, cwd);
 
   const manifestPath = join(cwd, '.omx', 'state', 'team', teamName, 'manifest.v2.json');
+  if (!existsSync(manifestPath)) {
+    await mkdir(join(cwd, '.omx', 'state', 'team', teamName), { recursive: true });
+    await writeFile(manifestPath, `${JSON.stringify({ version: 2, policy: {} }, null, 2)}\n`);
+  }
   const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as { policy?: Record<string, unknown> };
   manifest.policy = {
     ...(manifest.policy ?? {}),
@@ -715,6 +720,65 @@ describe('scaleUp', () => {
       const inbox = await readFile(join(cwd, '.omx', 'state', 'team', 'scale-up-role', 'workers', 'worker-2', 'inbox.md'), 'utf-8');
       assert.match(inbox, /Task 2/);
       assert.match(inbox, /Role: writer/);
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('injects persisted leader-owned Ultragoal context into scaled worker inboxes', async () => {
+    const teamName = 'scale-up-ultragoal-context';
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-up-ultragoal-context-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-ultragoal-context-bin-'));
+    const tmuxLogPath = join(fakeBinDir, 'tmux.log');
+    const previousPath = process.env.PATH;
+
+    try {
+      await writeSuccessfulScaleUpTmuxStub(fakeBinDir, tmuxLogPath);
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+
+      await initTeamState(teamName, 'ultragoal scale-up test', 'executor', 1, cwd);
+      await configureScaleUpTeamForDirectDispatch(teamName, cwd);
+      const teamStateRoot = resolveCanonicalTeamStateRoot(cwd);
+      await mkdir(join(teamStateRoot, 'team', teamName), { recursive: true });
+      await writeFile(
+        join(teamStateRoot, 'team', teamName, 'ultragoal-context.json'),
+        `${JSON.stringify({
+          kind: 'leader_owned_ultragoal_context',
+          goalsPath: '.omx/ultragoal/goals.json',
+          ledgerPath: '.omx/ultragoal/ledger.jsonl',
+          activeGoalId: 'G001-team-runtime-bridge',
+          activeGoalTitle: 'Team runtime bridge',
+          codexGoalMode: 'aggregate',
+          checkpointPolicy: 'fresh_leader_get_goal_required',
+        })}\n`,
+      );
+
+      const result = await scaleUp(
+        teamName,
+        1,
+        'executor',
+        [{ subject: 'Implement ultragoal follow-up', description: 'Implement ultragoal follow-up', owner: 'worker-2' }],
+        cwd,
+        { OMX_TEAM_SCALING_ENABLED: '1', OMX_TEAM_SKIP_READY_WAIT: '1' },
+      );
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+
+      const inboxStateRoot = result.addedWorkers[0]?.team_state_root ?? resolveCanonicalTeamStateRoot(cwd);
+      const inbox = await readFile(
+        join(inboxStateRoot, 'team', teamName, 'workers', 'worker-2', 'inbox.md'),
+        'utf-8',
+      );
+      const tmuxCommands = await readScaleUpTmuxLogCommands(tmuxLogPath);
+      assert.match(inbox, /Implement ultragoal follow-up/);
+      assert.match(inbox, /### Leader-owned Ultragoal context/);
+      assert.match(inbox, /G001-team-runtime-bridge/);
+      assert.match(inbox, /workers do not own Ultragoal goal state/i);
+      assert.match(inbox, /omx ultragoal checkpoint --goal-id G001-team-runtime-bridge/);
+      assert.ok(tmuxCommands.some((command) => command.startsWith('split-window ')));
     } finally {
       if (typeof previousPath === 'string') process.env.PATH = previousPath;
       else delete process.env.PATH;

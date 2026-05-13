@@ -81,6 +81,10 @@ import {
   resolvePersistedApprovedTeamExecutionContinuityState,
   type PersistedApprovedTeamExecutionContinuityState,
 } from './approved-execution.js';
+import {
+  readPersistedTeamUltragoalContext,
+  renderLeaderOwnedUltragoalContextSection,
+} from './ultragoal-context.js';
 
 // ── Environment gate ──────────────────────────────────────────────────────────
 
@@ -100,6 +104,11 @@ function assertScalingEnabled(env: NodeJS.ProcessEnv = process.env): void {
       `Dynamic scaling is disabled. Set ${OMX_TEAM_SCALING_ENABLED_ENV}=1 to enable.`,
     );
   }
+}
+
+function joinContextSections(...sections: Array<string | undefined>): string | undefined {
+  const present = sections.filter((section): section is string => Boolean(section?.trim()));
+  return present.length > 0 ? present.join('\n\n') : undefined;
 }
 
 // ── Result types ──────────────────────────────────────────────────────────────
@@ -295,7 +304,15 @@ export async function scaleUp(
     if (!approvedExecutionGate.ok) {
       return approvedExecutionGate;
     }
-    const { approvedContextSection } = approvedExecutionGate;
+    const persistedUltragoalContext = await readPersistedTeamUltragoalContext(
+      sanitized,
+      config.leader_cwd ?? leaderCwd,
+      config.team_state_root ?? teamStateRoot,
+    );
+    const approvedContextSection = joinContextSections(
+      approvedExecutionGate.approvedContextSection,
+      renderLeaderOwnedUltragoalContextSection(persistedUltragoalContext),
+    );
     const effectiveWorktreeMode = config.worktree_mode ?? resolveScaleUpWorktreeMode(config);
     if (!config.worktree_mode && effectiveWorktreeMode.enabled) {
       config.worktree_mode = effectiveWorktreeMode;

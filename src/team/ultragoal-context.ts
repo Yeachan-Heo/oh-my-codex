@@ -54,6 +54,12 @@ function normalizeCodexGoalMode(value: unknown): 'aggregate' | 'per_story' {
   return value === 'aggregate' ? 'aggregate' : 'per_story';
 }
 
+function resolvePlanCodexGoalMode(value: unknown): 'aggregate' | 'per_story' {
+  if (typeof value === 'undefined') return 'per_story';
+  if (value === 'aggregate' || value === 'per_story') return value;
+  throw new InvalidUltragoalTeamContextError('invalid_codex_goal_mode');
+}
+
 class InvalidUltragoalTeamContextError extends Error {
   constructor(message: string) {
     super(message);
@@ -93,7 +99,7 @@ export async function resolveLeaderOwnedUltragoalContext(cwd: string): Promise<U
     const parsed = JSON.parse(await readFile(goalsJsonPath, 'utf-8')) as Record<string, unknown>;
     const activeGoalId = typeof parsed.activeGoalId === 'string' ? parsed.activeGoalId.trim() : '';
     if (activeGoalId === '') {
-      throw new InvalidUltragoalTeamContextError('missing_active_goal_id');
+      return null;
     }
     if (!isSafeUltragoalGoalId(activeGoalId)) {
       throw new InvalidUltragoalTeamContextError(`unsafe_active_goal_id:${activeGoalId}`);
@@ -105,6 +111,9 @@ export async function resolveLeaderOwnedUltragoalContext(cwd: string): Promise<U
     if (!activeGoal) {
       throw new InvalidUltragoalTeamContextError(`active_goal_not_found:${activeGoalId}`);
     }
+    if (activeGoal.status !== 'in_progress') {
+      throw new InvalidUltragoalTeamContextError(`active_goal_not_in_progress:${activeGoalId}`);
+    }
     const activeGoalTitle = typeof activeGoal?.title === 'string' && activeGoal.title.trim() !== ''
       ? activeGoal.title.trim()
       : undefined;
@@ -114,7 +123,7 @@ export async function resolveLeaderOwnedUltragoalContext(cwd: string): Promise<U
       ledgerPath: '.omx/ultragoal/ledger.jsonl',
       activeGoalId,
       ...(activeGoalTitle ? { activeGoalTitle } : {}),
-      codexGoalMode: normalizeCodexGoalMode(parsed.codexGoalMode),
+      codexGoalMode: resolvePlanCodexGoalMode(parsed.codexGoalMode),
       checkpointPolicy: 'fresh_leader_get_goal_required',
     };
   } catch (error) {
