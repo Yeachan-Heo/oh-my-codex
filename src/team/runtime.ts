@@ -142,6 +142,12 @@ import {
   type ApprovedTeamExecutionBinding,
 } from './approved-execution.js';
 import {
+  readPersistedTeamUltragoalContext,
+  renderLeaderOwnedUltragoalContextSection,
+  resolveLeaderOwnedUltragoalContext,
+  writePersistedTeamUltragoalContext,
+} from './ultragoal-context.js';
+import {
   appendTeamCommitHygieneEntries,
   buildTeamCommitHygieneContext,
   resolveTeamCommitHygieneArtifactCwd,
@@ -165,6 +171,11 @@ import {
   findLaunchSafeCleanupCandidates,
   type CleanupResult,
 } from '../cli/cleanup.js';
+
+function joinContextSections(...sections: Array<string | undefined>): string | undefined {
+  const present = sections.filter((section): section is string => Boolean(section?.trim()));
+  return present.length > 0 ? present.join('\n\n') : undefined;
+}
 
 /** Snapshot of the team state at a point in time */
 export interface TeamSnapshot {
