@@ -34,7 +34,7 @@ import { recordLeaderRuntimeActivity } from '../team/leader-activity.js';
 import { readTeamPaneStatus } from '../team/pane-status.js';
 import {
   buildApprovedTeamExecutionBinding,
-  buildUltragoalCheckpointGuidance,
+  buildUltragoalCheckpointGuidance as buildApprovedUltragoalCheckpointGuidance,
   resolvePersistedApprovedTeamExecutionContinuityStateSync,
   type ApprovedTeamExecutionBinding,
 } from '../team/approved-execution.js';
@@ -47,6 +47,15 @@ import { resolveCodexHomeForLaunch } from './codex-home.js';
 
 interface TeamCliOptions {
   verbose?: boolean;
+}
+
+function resolveUltragoalCheckpointCommand(guidance: {
+  checkpoint_command_template?: string;
+  command_templates?: { intermediate_story?: string };
+}): string {
+  return guidance.command_templates?.intermediate_story
+    ?? guidance.checkpoint_command_template
+    ?? '';
 }
 
 interface ParsedTeamArgs {
@@ -1477,15 +1486,12 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     const tailLines = parseStatusTailLines(teamArgs.slice(2));
     const modelInspect = parseStatusModelInspect(teamArgs.slice(2));
     const config = await readTeamConfig(resolvedName, cwd);
+    const paneStatus = await readTeamPaneStatus(config, cwd, snapshot, tailLines);
     const approvedExecutionContinuity = resolvePersistedApprovedTeamExecutionContinuityStateSync(
       resolvedName,
       cwd,
       config?.team_state_root,
     );
-    const ultragoalCheckpointGuidance = approvedExecutionContinuity.status === 'valid'
-      ? buildUltragoalCheckpointGuidance(approvedExecutionContinuity.approvedHint)
-      : null;
-    const paneStatus = await readTeamPaneStatus(config, cwd, snapshot, tailLines);
     const ultragoalContext = await readPersistedTeamUltragoalContext(
       resolvedName,
       config?.leader_cwd ?? cwd,
@@ -1493,7 +1499,9 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     );
     const ultragoalCheckpointGuidance = ultragoalContext
       ? buildUltragoalCheckpointGuidance(ultragoalContext)
-      : null;
+      : approvedExecutionContinuity.status === 'valid'
+        ? buildApprovedUltragoalCheckpointGuidance(approvedExecutionContinuity.approvedHint)
+        : null;
     if (wantsJson) {
       console.log(JSON.stringify({
         ...buildJsonBase(),
@@ -1519,7 +1527,6 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
           failed: snapshot.tasks.failed,
         },
         performance: snapshot.performance ?? null,
-        ultragoal_checkpoint_guidance: ultragoalCheckpointGuidance,
         panes: paneStatus,
         ...(ultragoalCheckpointGuidance
           ? { ultragoal_checkpoint_guidance: ultragoalCheckpointGuidance }
@@ -1546,7 +1553,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
       console.log(`  goals_path: ${ultragoalCheckpointGuidance.goals_path}`);
       console.log(`  ledger_path: ${ultragoalCheckpointGuidance.ledger_path}`);
       console.log(`  checkpoint_policy: ${ultragoalCheckpointGuidance.checkpoint_policy}`);
-      console.log(`  checkpoint_command: ${ultragoalCheckpointGuidance.checkpoint_command_template}`);
+      console.log(`  checkpoint_command: ${resolveUltragoalCheckpointCommand(ultragoalCheckpointGuidance)}`);
       console.log('  evidence: team tasks terminal, verification passed, evidence mentions the active goal id and .omx/ultragoal artifacts');
       console.log('  fresh_get_goal_required: leader must call get_goal before checkpointing; workers do not own ultragoal goal state');
     }

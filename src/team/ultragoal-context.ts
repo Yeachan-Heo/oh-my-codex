@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
 import { TEAM_NAME_SAFE_PATTERN } from './contracts.js';
 
@@ -21,6 +21,8 @@ export interface UltragoalCheckpointGuidance {
   goals_path: '.omx/ultragoal/goals.json';
   ledger_path: '.omx/ultragoal/ledger.jsonl';
   checkpoint_policy: 'fresh_leader_get_goal_required';
+  checkpoint_command_template: string;
+  final_checkpoint_command_template: string;
   evidence_requirements: string[];
   command_templates: {
     intermediate_story: string;
@@ -109,7 +111,7 @@ export async function writePersistedTeamUltragoalContext(
     await rm(path, { force: true }).catch(() => {});
     return;
   }
-  await mkdir(join(path, '..'), { recursive: true });
+  await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(normalized, null, 2)}\n`, 'utf-8');
 }
 
@@ -131,6 +133,8 @@ export function buildUltragoalCheckpointGuidance(
   context: UltragoalTeamContext,
 ): UltragoalCheckpointGuidance {
   const goalId = context.activeGoalId;
+  const intermediateStoryCommand = `omx ultragoal checkpoint --goal-id ${goalId} --status complete --evidence "<team evidence mentioning .omx/ultragoal and ${goalId}>" --codex-goal-json <fresh-active-get_goal-json-or-path>`;
+  const finalStoryCommand = `omx ultragoal checkpoint --goal-id ${goalId} --status complete --evidence "<team evidence mentioning .omx/ultragoal and ${goalId}>" --codex-goal-json <fresh-complete-get_goal-json-or-path> --quality-gate-json <quality-gate-json-or-path>`;
   return {
     goal_id: goalId,
     ...(context.activeGoalTitle ? { goal_title: context.activeGoalTitle } : {}),
@@ -138,6 +142,8 @@ export function buildUltragoalCheckpointGuidance(
     goals_path: context.goalsPath,
     ledger_path: context.ledgerPath,
     checkpoint_policy: context.checkpointPolicy,
+    checkpoint_command_template: intermediateStoryCommand,
+    final_checkpoint_command_template: finalStoryCommand,
     evidence_requirements: [
       'team tasks are terminal',
       'verification passed',
@@ -146,8 +152,8 @@ export function buildUltragoalCheckpointGuidance(
       'leader captured fresh get_goal JSON before checkpointing',
     ],
     command_templates: {
-      intermediate_story: `omx ultragoal checkpoint --goal-id ${goalId} --status complete --evidence "<team evidence mentioning .omx/ultragoal and ${goalId}>" --codex-goal-json <fresh-active-get_goal-json-or-path>`,
-      final_story: `omx ultragoal checkpoint --goal-id ${goalId} --status complete --evidence "<team evidence mentioning .omx/ultragoal and ${goalId}>" --codex-goal-json <fresh-complete-get_goal-json-or-path> --quality-gate-json <quality-gate-json-or-path>`,
+      intermediate_story: intermediateStoryCommand,
+      final_story: finalStoryCommand,
       per_story: `omx ultragoal checkpoint --goal-id ${goalId} --status complete --evidence "<team evidence mentioning .omx/ultragoal and ${goalId}>" --codex-goal-json <fresh-matching-get_goal-json-or-path>`,
       completed_wrong_legacy_goal_blocker: `omx ultragoal checkpoint --goal-id ${goalId} --status blocked --evidence "<completed legacy Codex goal blocks this ultragoal story>" --codex-goal-json <fresh-completed-wrong-get_goal-json-or-path>`,
     },
