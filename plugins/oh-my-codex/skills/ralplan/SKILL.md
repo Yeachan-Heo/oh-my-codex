@@ -70,7 +70,7 @@ When ralplan outputs a final handoff or asks the user to choose a next lane, inc
 - `$autoresearch-goal` — research-project follow-up when the plan centers on a question, literature/reference gathering, evaluator-backed research, or a professor/critic-style research deliverable.
 - `$performance-goal` — optimization/performance follow-up when the plan centers on speed, latency, throughput, memory, benchmark, or other measurable performance work.
 
-Keep `$ralph` and `$team` as first-class execution options where appropriate: use Ralph for persistent single-owner completion/verification pressure and team for coordinated parallel implementation. Do not present the goal-mode options as replacements for Ralph/team when the task is mainly implementation delivery; present them as better fits when durable goal tracking, research validation, or performance evaluators are the primary need.
+Keep `$ralph` and `$team` as first-class execution options where appropriate: use Ralph for persistent sequential single-owner completion/verification pressure and Team for coordinated parallel implementation. When the plan is both durable-goal-shaped and parallelizable, recommend **Team + Ultragoal**: Ultragoal owns `.omx/ultragoal/goals.json`, `.omx/ultragoal/ledger.jsonl`, and fresh Codex goal snapshots, while Team owns task execution/evidence and returns checkpoint-ready proof to the leader. Do not present the goal-mode options as replacements for Ralph/team when the task is mainly implementation delivery; present them as better fits when durable goal tracking, research validation, or performance evaluators are the primary need.
 
 ## Pre-context Intake
 
