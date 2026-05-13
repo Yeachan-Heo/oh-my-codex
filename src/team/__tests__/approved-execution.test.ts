@@ -11,6 +11,7 @@ import {
   resolvePersistedApprovedTeamExecutionContinuityState,
   writePersistedApprovedTeamExecutionBinding,
 } from '../approved-execution.js';
+import { renderLeaderOwnedUltragoalContextSection } from '../ultragoal-context.js';
 import type { ApprovedExecutionLaunchHint } from '../../planning/artifacts.js';
 
 async function withUnboxedOmxRoot<T>(fn: () => Promise<T>): Promise<T> {
@@ -60,6 +61,27 @@ describe('approved execution binding', () => {
     assert.match(handoff ?? '', /Read the approved repository slice before broader repo exploration\./);
     assert.match(handoff ?? '', /Use the approved plan and matching test specs as the execution baseline/);
     assert.doesNotMatch(handoff ?? '', /query the canonical pack|Context pack index/);
+  });
+
+  it('renders checkpoint-ready leader-owned Ultragoal context for Team handoff surfaces', () => {
+    const section = renderLeaderOwnedUltragoalContextSection({
+      kind: 'leader_owned_ultragoal_context',
+      goalsPath: '.omx/ultragoal/goals.json',
+      ledgerPath: '.omx/ultragoal/ledger.jsonl',
+      activeGoalId: 'G001-team-runtime-bridge',
+      activeGoalTitle: 'Team runtime bridge',
+      codexGoalMode: 'aggregate',
+      checkpointPolicy: 'fresh_leader_get_goal_required',
+    }) ?? '';
+
+    assert.match(section, /Leader-owned Ultragoal context/);
+    assert.match(section, /\.omx\/ultragoal\/goals\.json/);
+    assert.match(section, /\.omx\/ultragoal\/ledger\.jsonl/);
+    assert.match(section, /G001-team-runtime-bridge/);
+    assert.match(section, /omx ultragoal checkpoint/);
+    assert.match(section, /--codex-goal-json/);
+    assert.match(section, /workers do not own Ultragoal goal state/);
+    assert.match(section, /fresh_leader_get_goal_required/);
   });
 
   it('buildApprovedTeamHandoffSection stays undefined outside Team handoffs', () => {

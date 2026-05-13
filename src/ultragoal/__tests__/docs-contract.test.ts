@@ -56,4 +56,26 @@ describe('ultragoal docs contract', () => {
       assert.doesNotMatch(doc, /On the final story only, call `update_goal/);
     }
   });
+
+  it('documents Team bridge boundaries and leader checkpointing from Team evidence', () => {
+    const docs = [
+      loadDoc('docs/ultragoal.md'),
+      loadDoc('skills/ultragoal/SKILL.md'),
+      loadDoc('plugins/oh-my-codex/skills/ultragoal/SKILL.md'),
+      loadDoc('skills/team/SKILL.md'),
+    ];
+
+    for (const doc of docs) {
+      assert.match(doc, /Team/i);
+      assert.match(doc, /parallel execution/i);
+      assert.match(doc, /leader-owned/i);
+      assert.match(doc, /\.omx\/ultragoal\/goals\.json/);
+      assert.match(doc, /\.omx\/ultragoal\/ledger\.jsonl|ledger/i);
+      assert.match(doc, /fresh|get_goal/i);
+      assert.match(doc, /omx ultragoal checkpoint/);
+      assert.match(doc, /--codex-goal-json/);
+      assert.match(doc, /Team evidence|task\/evidence|verification evidence/i);
+      assert.match(doc, /do not .*Codex goal state|hidden Codex goal mutation|shell commands changed Codex goal state/i);
+    }
+  });
 });

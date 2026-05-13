@@ -897,6 +897,39 @@ describe('planning artifacts', () => {
     assert.equal(outcome.hint.linkedRalph, false);
   });
 
+  it('resolves Team launch hints when PRD recommends Team plus Ultragoal and separates Ralph follow-up', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const sharedTask = 'Implement durable parallel delivery with Team and Ultragoal';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(
+      join(plansDir, 'prd-ultragoal-team-handoff.md'),
+      [
+        '# PRD',
+        '',
+        'Recommend Team + Ultragoal for parallelizable durable-goal execution.',
+        'Use Ralph only for a later persistent single-owner verification/fix loop.',
+        '',
+        `Launch via omx team 3:executor ${JSON.stringify(sharedTask)}`,
+      ].join('\n'),
+    );
+    await writeFile(join(plansDir, 'test-spec-ultragoal-team-handoff.md'), '# Test Spec\n');
+
+    const outcome = readApprovedExecutionLaunchHintOutcome(tempDir, 'team', {
+      task: sharedTask,
+      workerCount: 3,
+      agentType: 'executor',
+      linkedRalph: false,
+    });
+
+    assert.equal(outcome.status, 'resolved');
+    if (outcome.status !== 'resolved') {
+      throw new Error('expected Team + Ultragoal PRD to resolve a team launch hint');
+    }
+    assert.equal(outcome.hint.linkedRalph, false);
+    assert.equal(outcome.hint.workerCount, 3);
+    assert.equal(outcome.hint.agentType, 'executor');
+  });
+
   it('keeps same-task team launch-hint selection ambiguous when the full signature repeats', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     const sharedTask = 'Execute shared duplicate team handoff';

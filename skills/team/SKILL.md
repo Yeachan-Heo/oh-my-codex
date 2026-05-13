@@ -57,6 +57,12 @@ requiring a separate linked Ralph launch up front.
 - **Escalation:** start a separate `omx ralph ...` / `$ralph ...` only when a later manual follow-up still needs a persistent single-owner fix/verification loop.
 - **Deprecation:** `omx team ralph ...` has been removed. Use plain `omx team ...` for team execution or run `omx ralph ...` separately when you explicitly want a later Ralph loop.
 
+### Team + Ultragoal bridge
+
+Use `$ultragoal` for durable leader-owned goal/ledger tracking and `$team` for parallel execution lanes. When Team is launched with an active `.omx/ultragoal/goals.json`, worker inboxes/status may include leader-owned Ultragoal context: `.omx/ultragoal/goals.json`, `.omx/ultragoal/ledger.jsonl`, the active goal id, Codex goal mode, and the `fresh_leader_get_goal_required` checkpoint policy.
+
+Workers provide task status and verification evidence only. They do not own Ultragoal goal state, create worker ledgers, mutate `.omx/ultragoal`, auto-launch Team from Ultragoal, or perform hidden Codex goal mutation. The leader uses terminal Team evidence plus a fresh `get_goal` snapshot to run `omx ultragoal checkpoint --goal-id <id> --status complete --evidence "<team evidence mentioning .omx/ultragoal and <id>>" --codex-goal-json <fresh-get_goal-json-or-path>`.
+
 ### Claude teammates (v0.6.0+)
 
 Important: `N:agent-type` (for example `2:executor`) selects the **worker role prompt**, not the worker CLI (`codex` vs `claude`).

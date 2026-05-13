@@ -43,6 +43,14 @@ Loop until `omx ultragoal status` reports all goals complete:
    `omx ultragoal checkpoint --goal-id <id> --status blocked --evidence "<completed legacy Codex goal blocks create_goal in this thread>" --codex-goal-json <get_goal-json-or-path>`
 11. Resume failed goals with `omx ultragoal complete-goals --retry-failed`.
 
+## Use with Team
+
+Use `$ultragoal` as the durable leader-owned goal/ledger wrapper and `$team` as the parallel execution engine. Team may pass leader-owned Ultragoal context into worker inboxes/status when `.omx/ultragoal/goals.json` has an active goal. Workers report Team task/evidence only; they do not own Ultragoal goal state, create worker ledgers, auto-launch Team from Ultragoal, mutate `.omx/ultragoal`, or claim shell commands changed Codex goal state.
+
+The leader checkpoints from Team evidence with a fresh `get_goal` snapshot:
+
+`omx ultragoal checkpoint --goal-id <id> --status complete --evidence "<team evidence mentioning .omx/ultragoal and <id>>" --codex-goal-json <fresh-get_goal-json-or-path>`
+
 
 ## Mandatory final cleanup and review gate
 
