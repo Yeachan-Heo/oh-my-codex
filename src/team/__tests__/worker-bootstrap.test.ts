@@ -25,7 +25,11 @@ import {
 } from "../worker-bootstrap.js";
 import { composeRoleInstructionsForRole } from "../../agents/native-config.js";
 import { buildTeamWorkerGoalInstruction } from "../goal-workflow.js";
-import { normalizeUltragoalTeamContext, renderLeaderOwnedUltragoalContextSection } from "../ultragoal-context.js";
+import {
+  normalizeUltragoalTeamContext,
+  renderLeaderOwnedUltragoalContextSection,
+  resolveLeaderOwnedUltragoalContext,
+} from "../ultragoal-context.js";
 import type { TeamTask } from "../state.js";
 
 function setMockCodexHome(codexHomePath: string): () => void {
@@ -324,6 +328,32 @@ describe("worker bootstrap", () => {
     });
 
     assert.equal(context, null);
+  });
+
+  it("preserves legacy Ultragoal per-story mode when goals.json omits codexGoalMode", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-team-ultragoal-legacy-"));
+    try {
+      await mkdir(join(wd, ".omx", "ultragoal"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "ultragoal", "goals.json"),
+        `${JSON.stringify({
+          version: 1,
+          activeGoalId: "G001-legacy-story",
+          goals: [{
+            id: "G001-legacy-story",
+            title: "Legacy story",
+            status: "in_progress",
+          }],
+        })}\n`,
+      );
+
+      const context = await resolveLeaderOwnedUltragoalContext(wd);
+
+      assert.equal(context?.activeGoalId, "G001-legacy-story");
+      assert.equal(context?.codexGoalMode, "per_story");
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
   });
 
 

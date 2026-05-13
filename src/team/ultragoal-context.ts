@@ -51,7 +51,7 @@ function contextStatePath(teamName: string, cwd: string, teamStateRoot?: string 
 }
 
 function normalizeCodexGoalMode(value: unknown): 'aggregate' | 'per_story' {
-  return value === 'per_story' ? 'per_story' : 'aggregate';
+  return value === 'aggregate' ? 'aggregate' : 'per_story';
 }
 
 export function normalizeUltragoalTeamContext(value: unknown): UltragoalTeamContext | null {
