@@ -239,7 +239,7 @@ describe('session lifecycle manager', () => {
     }
   });
 
-  it('starts a fresh canonical session when a new native SessionStart arrives after an earlier native session', async () => {
+  it('starts a fresh native session while retaining the owner OMX launch session when native SessionStart changes', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-fresh-'));
     try {
       await writeSessionStart(cwd, 'omx-old-session', {
@@ -253,11 +253,153 @@ describe('session lifecycle manager', () => {
 
       assert.equal(reconciled.session_id, 'codex-native-new');
       assert.equal(reconciled.native_session_id, 'codex-native-new');
+      assert.equal(reconciled.previous_native_session_id, 'codex-native-old');
+      assert.equal(reconciled.owner_omx_session_id, 'omx-old-session');
+      assert.match(reconciled.native_session_switched_at ?? '', /^\d{4}-\d{2}-\d{2}T/);
       assert.equal(reconciled.pid, 54321);
 
       const persisted = await readSessionState(cwd);
       assert.equal(persisted?.session_id, 'codex-native-new');
       assert.equal(persisted?.native_session_id, 'codex-native-new');
+      assert.equal(persisted?.previous_native_session_id, 'codex-native-old');
+      assert.equal(persisted?.owner_omx_session_id, 'omx-old-session');
+
+      const dailyLogPath = join(cwd, '.omx', 'logs', `omx-${todayIsoDate()}.jsonl`);
+      const dailyLog = await readFile(dailyLogPath, 'utf-8');
+      assert.match(dailyLog, /"event":"native_session_replaced"/);
+      assert.match(dailyLog, /"event":"session_start"/);
+      assert.match(dailyLog, /"previous_native_session_id":"codex-native-old"/);
+      assert.match(dailyLog, /"native_session_id":"codex-native-new"/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('lets an owner OMX launch session end the fresh native session it spawned', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-owner-end-'));
+    try {
+      await writeSessionStart(cwd, 'omx-owner-session', {
+        nativeSessionId: 'codex-native-old',
+      });
+      await reconcileNativeSessionStart(cwd, 'codex-native-new', {
+        pid: 54321,
+        platform: 'win32',
+      });
+
+      await writeSessionEnd(cwd, 'omx-owner-session');
+
+      assert.equal(await readSessionState(cwd), null);
+      const historyLines = (await readFile(join(cwd, '.omx', 'logs', 'session-history.jsonl'), 'utf-8'))
+        .trim()
+        .split('\n')
+        .filter(Boolean);
+      assert.equal(historyLines.length, 1);
+      const historyEntry = JSON.parse(historyLines[0]) as SessionHistoryEntry & {
+        active_session_id?: string;
+      };
+      assert.equal(historyEntry.session_id, 'omx-owner-session');
+      assert.equal(historyEntry.native_session_id, 'codex-native-new');
+      assert.equal(historyEntry.active_session_id, 'codex-native-new');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves owner OMX metadata when reconciling the same fresh native session', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-owner-reconcile-'));
+    try {
+      await writeSessionStart(cwd, 'omx-owner-session', {
+        nativeSessionId: 'codex-native-old',
+      });
+      await reconcileNativeSessionStart(cwd, 'codex-native-new', {
+        pid: process.pid,
+        platform: 'win32',
+      });
+
+      const reconciled = await reconcileNativeSessionStart(cwd, 'codex-native-new', {
+        pid: process.pid,
+        platform: 'win32',
+      });
+
+      assert.equal(reconciled.session_id, 'codex-native-new');
+      assert.equal(reconciled.native_session_id, 'codex-native-new');
+      assert.equal(reconciled.previous_native_session_id, 'codex-native-old');
+      assert.equal(reconciled.owner_omx_session_id, 'omx-owner-session');
+      assert.equal(reconciled.pid, process.pid);
+
+      await writeSessionEnd(cwd, 'omx-owner-session');
+      assert.equal(await readSessionState(cwd), null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('carries the owner OMX launch session across chained native SessionStart replacements', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-owner-chain-'));
+    try {
+      await writeSessionStart(cwd, 'omx-owner-session', {
+        nativeSessionId: 'codex-native-a',
+      });
+      await reconcileNativeSessionStart(cwd, 'codex-native-b', {
+        pid: process.pid,
+        platform: 'win32',
+      });
+
+      const reconciled = await reconcileNativeSessionStart(cwd, 'codex-native-c', {
+        pid: process.pid,
+        platform: 'win32',
+      });
+
+      assert.equal(reconciled.session_id, 'codex-native-c');
+      assert.equal(reconciled.native_session_id, 'codex-native-c');
+      assert.equal(reconciled.previous_native_session_id, 'codex-native-b');
+      assert.equal(reconciled.owner_omx_session_id, 'omx-owner-session');
+
+      const dailyLogPath = join(cwd, '.omx', 'logs', `omx-${todayIsoDate()}.jsonl`);
+      const dailyLog = await readFile(dailyLogPath, 'utf-8');
+      assert.match(dailyLog, /"session_id":"omx-owner-session"/);
+      assert.match(dailyLog, /"active_session_id":"codex-native-b"/);
+      assert.match(dailyLog, /"previous_native_session_id":"codex-native-b"/);
+      assert.match(dailyLog, /"replaced_by_native_session_id":"codex-native-c"/);
+
+      await writeSessionEnd(cwd, 'omx-owner-session');
+      assert.equal(await readSessionState(cwd), null);
+      const historyLines = (await readFile(join(cwd, '.omx', 'logs', 'session-history.jsonl'), 'utf-8'))
+        .trim()
+        .split('\n')
+        .filter(Boolean);
+      const historyEntry = JSON.parse(historyLines.at(-1) ?? '{}') as SessionHistoryEntry & {
+        active_session_id?: string;
+      };
+      assert.equal(historyEntry.session_id, 'omx-owner-session');
+      assert.equal(historyEntry.native_session_id, 'codex-native-c');
+      assert.equal(historyEntry.active_session_id, 'codex-native-c');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('starts a fresh canonical session when a non-OMX native session is replaced', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-non-omx-fresh-'));
+    try {
+      await writeSessionStart(cwd, 'codex-native-old', {
+        nativeSessionId: 'codex-native-old',
+      });
+
+      const reconciled = await reconcileNativeSessionStart(cwd, 'codex-native-new', {
+        pid: 54321,
+        platform: 'win32',
+      });
+
+      assert.equal(reconciled.session_id, 'codex-native-new');
+      assert.equal(reconciled.native_session_id, 'codex-native-new');
+      assert.equal(reconciled.previous_native_session_id, undefined);
+      assert.equal(reconciled.pid, 54321);
+
+      const persisted = await readSessionState(cwd);
+      assert.equal(persisted?.session_id, 'codex-native-new');
+      assert.equal(persisted?.native_session_id, 'codex-native-new');
+      assert.equal(persisted?.previous_native_session_id, undefined);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
