@@ -1546,7 +1546,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
       console.log(`non_reporting_workers: ${snapshot.nonReportingWorkers.join(' ')}`);
     }
     console.log(`tasks: total=${snapshot.tasks.total} pending=${snapshot.tasks.pending} blocked=${snapshot.tasks.blocked} in_progress=${snapshot.tasks.in_progress} completed=${snapshot.tasks.completed} failed=${snapshot.tasks.failed}`);
-    if (ultragoalCheckpointGuidance) {
+    if (ultragoalCheckpointGuidance && !ultragoalContext) {
       console.log('ultragoal_checkpoint_guidance:');
       console.log(`  goal_id: ${ultragoalCheckpointGuidance.goal_id}`);
       console.log(`  codex_goal_mode: ${ultragoalCheckpointGuidance.codex_goal_mode}`);
