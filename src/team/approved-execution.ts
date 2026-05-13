@@ -17,6 +17,18 @@ export interface ApprovedTeamExecutionBinding {
   command?: string;
 }
 
+export interface UltragoalCheckpointGuidance {
+  goal_id: string;
+  goal_title?: string;
+  codex_goal_mode: 'aggregate' | 'per_story';
+  goals_path: '.omx/ultragoal/goals.json';
+  ledger_path: '.omx/ultragoal/ledger.jsonl';
+  checkpoint_policy: 'fresh_leader_get_goal_required';
+  checkpoint_command_template: string;
+  final_checkpoint_command_template: string;
+  evidence_requirements: string[];
+}
+
 export type PersistedApprovedTeamExecutionBindingReadResult =
   | { status: 'missing' }
   | { status: 'malformed' }
@@ -86,6 +98,80 @@ function renderApprovedRepositoryContextSummary(
   return lines;
 }
 
+function readApprovedHintSourceText(
+  approvedHint: ApprovedExecutionLaunchHint,
+): string {
+  try {
+    return readFileSync(approvedHint.sourcePath, 'utf-8');
+  } catch {
+    return '';
+  }
+}
+
+function detectUltragoalId(text: string): string {
+  return text.match(/\bG\d{3}[-\w]*/)?.[0] ?? '<id>';
+}
+
+function detectUltragoalMode(text: string): 'aggregate' | 'per_story' {
+  return /per[- ]story/i.test(text) ? 'per_story' : 'aggregate';
+}
+
+export function buildUltragoalCheckpointGuidance(
+  approvedHint: ApprovedExecutionLaunchHint | null | undefined,
+): UltragoalCheckpointGuidance | null {
+  if (!approvedHint || approvedHint.mode !== 'team') {
+    return null;
+  }
+
+  const sourceText = readApprovedHintSourceText(approvedHint);
+  const detectionText = [
+    approvedHint.task,
+    approvedHint.command ?? '',
+    sourceText,
+  ].join('\n');
+  if (!/ultragoal|\.omx\/ultragoal/i.test(detectionText)) {
+    return null;
+  }
+
+  const goalId = detectUltragoalId(detectionText);
+  return {
+    goal_id: goalId,
+    codex_goal_mode: detectUltragoalMode(detectionText),
+    goals_path: '.omx/ultragoal/goals.json',
+    ledger_path: '.omx/ultragoal/ledger.jsonl',
+    checkpoint_policy: 'fresh_leader_get_goal_required',
+    checkpoint_command_template: `omx ultragoal checkpoint --goal-id ${goalId} --status complete --evidence "<team evidence mentioning .omx/ultragoal and ${goalId}>" --codex-goal-json <fresh-active-get_goal-json-or-path>`,
+    final_checkpoint_command_template: `omx ultragoal checkpoint --goal-id ${goalId} --status complete --evidence "<team evidence mentioning .omx/ultragoal and ${goalId}>" --codex-goal-json <fresh-complete-get_goal-json-or-path> --quality-gate-json <quality-gate-json-or-path>`,
+    evidence_requirements: [
+      'team tasks are terminal',
+      'verification passed',
+      `evidence mentions ${goalId}`,
+      'evidence mentions .omx/ultragoal artifacts',
+      'leader captured a fresh get_goal snapshot',
+    ],
+  };
+}
+
+export function renderLeaderOwnedUltragoalContext(
+  guidance: UltragoalCheckpointGuidance | null | undefined,
+): string[] {
+  if (!guidance) return [];
+  return [
+    '',
+    '- Leader-owned Ultragoal context:',
+    `  - kind: leader_owned_ultragoal_context`,
+    `  - goals_path: ${guidance.goals_path}`,
+    `  - ledger_path: ${guidance.ledger_path}`,
+    `  - active_goal_id: ${guidance.goal_id}`,
+    `  - codex_goal_mode: ${guidance.codex_goal_mode}`,
+    `  - checkpoint_policy: ${guidance.checkpoint_policy}`,
+    '  - Team workers provide task/evidence updates only; workers do not own ultragoal goal state or create worker ultragoal ledgers.',
+    '  - Leader checkpoint command shape:',
+    `    ${guidance.checkpoint_command_template}`,
+    '  - Final aggregate story requires final quality gates before update_goal, then fresh get_goal and --quality-gate-json.',
+  ];
+}
+
 export function buildApprovedTeamHandoffSection(
   approvedHint: ApprovedExecutionLaunchHint | null | undefined,
 ): string | undefined {
@@ -100,6 +186,7 @@ export function buildApprovedTeamHandoffSection(
   if (approvedHint.repositoryContextSummary) {
     lines.push(...renderApprovedRepositoryContextSummary(approvedHint.repositoryContextSummary));
   }
+  lines.push(...renderLeaderOwnedUltragoalContext(buildUltragoalCheckpointGuidance(approvedHint)));
 
   lines.push('- Use the approved plan and matching test specs as the execution baseline.');
   return lines.join('\n');
