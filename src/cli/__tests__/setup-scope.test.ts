@@ -53,6 +53,13 @@ function shouldSkipForSpawnPermissions(err: string): boolean {
   return typeof err === "string" && /(EPERM|EACCES)/i.test(err);
 }
 
+const MINIMAL_OMX_AGENTS_CONTRACT = [
+  "<!-- omx:generated:agents-md -->",
+  "# oh-my-codex - Intelligent Multi-Agent Orchestration",
+  "AGENTS.md is the top-level operating contract for the workspace.",
+  "",
+].join("\n");
+
 describe("omx setup scope behavior", () => {
   it("accepts --scope project form", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-scope-"));
@@ -402,7 +409,10 @@ describe("omx setup scope behavior", () => {
         join(wd, ".omx", "setup-scope.json"),
         JSON.stringify({ scope: "user" }),
       );
-      await writeFile(join(home, ".codex", "AGENTS.md"), "# user agents\n");
+      await writeFile(
+        join(home, ".codex", "AGENTS.md"),
+        MINIMAL_OMX_AGENTS_CONTRACT,
+      );
       await writeFile(
         join(home, ".codex", "prompts", "executor.md"),
         "# executor\n",
@@ -428,7 +438,7 @@ describe("omx setup scope behavior", () => {
       );
       assert.match(
         res.stdout,
-        /\[OK\] AGENTS\.md: found in .*home\/\.codex\/AGENTS\.md/,
+        /\[OK\] AGENTS\.md: found OMX contract in .*home\/\.codex\/AGENTS\.md/,
       );
     } finally {
       await rm(wd, { recursive: true, force: true });
