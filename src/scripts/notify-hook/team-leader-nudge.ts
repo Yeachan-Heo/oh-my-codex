@@ -18,7 +18,7 @@ import {
   classifyLeaderActionState,
   resolveLeaderNudgeIntent,
 } from './orchestration-intent.js';
-import { DEFAULT_MARKER } from '../tmux-hook-engine.js';
+import { DEFAULT_MARKER, paneHasActiveTask } from '../tmux-hook-engine.js';
 import { isLeaderRuntimeStale } from '../../team/leader-activity.js';
 import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
 import { writeTeamLeaderAttention } from '../../team/state.js';
@@ -967,14 +967,29 @@ export async function maybeNudgeTeamLeader({
     }
 
     try {
-      const sendResult = await sendPaneInput({
-        paneTarget: tmuxTarget,
-        prompt: markedText,
-        submitKeyPresses: 2,
-        submitDelayMs: 100,
-      });
-      if (!sendResult.ok) {
-        throw new Error(sendResult.error || sendResult.reason);
+      const leaderHasActiveTask = paneHasActiveTask(paneGuard.paneCapture);
+      let deliveryMode = 'sent';
+      if (leaderHasActiveTask) {
+        const sendResult = await sendPaneInput({
+          paneTarget: tmuxTarget,
+          prompt: markedText,
+          submitKeyPresses: 0,
+        });
+        if (!sendResult.ok) {
+          throw new Error(sendResult.error || sendResult.reason);
+        }
+        await runProcess('tmux', ['send-keys', '-t', tmuxTarget, 'Tab'], 3000);
+        deliveryMode = 'queued';
+      } else {
+        const sendResult = await sendPaneInput({
+          paneTarget: tmuxTarget,
+          prompt: markedText,
+          submitKeyPresses: 2,
+          submitDelayMs: 100,
+        });
+        if (!sendResult.ok) {
+          throw new Error(sendResult.error || sendResult.reason);
+        }
       }
       nudgeState.last_nudged_by_team[teamName] = {
         at: nowIso,
@@ -1005,6 +1020,7 @@ export async function maybeNudgeTeamLeader({
           message_count: messages.length,
           stalled_for_ms: undefined,
           missing_signal_workers: progressSnapshot.missingSignalWorkers,
+          delivery: deliveryMode,
         });
       } catch { /* ignore */ }
       await appendTeamDeliveryLog(logsDir, {
@@ -1013,7 +1029,7 @@ export async function maybeNudgeTeamLeader({
         team: teamName,
         to_worker: 'leader-fixed',
         transport: 'send-keys',
-        result: 'sent',
+        result: deliveryMode,
         reason: nudgeReason,
         orchestration_intent: orchestrationIntent,
       }).catch(() => {});

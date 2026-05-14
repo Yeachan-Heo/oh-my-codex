@@ -606,6 +606,72 @@ esac
       },
     );
   });
+
+  it('does not confirm delivery while a wrapped hyphenated trigger remains as an unsent draft', async () => {
+    const trigger = 'Read .omx/state/team/team-x/workers/worker-1/inbox.md';
+    await withMockTmuxFixture(
+      'omx-tmux-codex-wrapped-trigger-draft-',
+      (logPath) => `#!/bin/sh
+set -eu
+state_dir="$(dirname "${logPath}")"
+text_sent_file="$state_dir/text-sent"
+printf '%s\n' "$*" >> "${logPath}"
+case "$1" in
+  capture-pane)
+    if [ -f "$text_sent_file" ]; then
+      cat <<'EOF'
+${READY_HELPER_CAPTURE}
+
+› Read .omx/state/team/team-x/workers/worker-
+  1/inbox.md
+EOF
+    else
+      cat <<'EOF'
+${READY_HELPER_CAPTURE}
+EOF
+    fi
+    exit 0
+    ;;
+  send-keys)
+    if [ "\${4:-}" = "-l" ] && [ "\${6:-}" = "${trigger}" ]; then
+      : > "$text_sent_file"
+    fi
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+      async ({ logPath }) => {
+        await assert.rejects(
+          () => sendToWorker('omx-team-x', 1, trigger),
+          /submit_failed/,
+        );
+        const log = await readFile(logPath, 'utf-8');
+        const enterCount = (log.match(/send-keys -t omx-team-x:1 C-m/g) || []).length;
+        assert.ok(
+          enterCount >= 4,
+          `expected repeated submit nudges before failing on the still-visible wrapped draft:\n${log}`,
+        );
+      },
+    );
+  });
+});
+
+describe('sendToWorker adaptive retry matching', () => {
+  it('recognizes hyphen-wrapped trigger drafts as still visible', () => {
+    assert.equal(
+      shouldAttemptAdaptiveRetry(
+        'auto',
+        true,
+        true,
+        `${READY_HELPER_CAPTURE}\n\n› Read .omx/state/team/team-x/workers/worker-\n  1/inbox.md`,
+        'Read .omx/state/team/team-x/workers/worker-1/inbox.md',
+      ),
+      true,
+    );
+  });
 });
 
 describe('startup direct trigger safety', () => {

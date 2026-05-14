@@ -1605,10 +1605,10 @@ export function shouldAttemptAdaptiveRetry(
   if (!paneBusyAtStart) return false;
   if (typeof latestCapture !== 'string') return false;
 
-  const normalizedText = normalizeTmuxCapture(text);
+  const normalizedText = normalizeWorkerTriggerForDraftMatch(text);
   if (normalizedText === '') return false;
 
-  const normalizedCapture = normalizeTmuxCapture(latestCapture);
+  const normalizedCapture = normalizeWorkerTriggerForDraftMatch(latestCapture);
   if (!normalizedCapture.includes(normalizedText)) return false;
   if (paneHasActiveTask(latestCapture)) return false;
   if (!paneLooksReady(latestCapture)) return false;
@@ -1656,9 +1656,9 @@ async function attemptSubmitRounds(
       capturePaneAsync(target),
       captureVisiblePaneAsync(target),
     ]);
-    const normalizedCapture = normalizeTmuxCapture(captured);
+    const normalizedCapture = normalizeWorkerTriggerForDraftMatch(captured);
     if (
-      !normalizedCapture.includes(normalizeTmuxCapture(text))
+      !normalizedCapture.includes(normalizeWorkerTriggerForDraftMatch(text))
       && !paneHasQueuedCodexSubmission(visibleCapture)
     ) {
       return true;
@@ -1842,6 +1842,13 @@ export function dismissTrustPromptIfPresent(
 
 export const normalizeTmuxCapture = sharedNormalizeTmuxCapture;
 
+function normalizeWorkerTriggerForDraftMatch(value: string | null | undefined): string {
+  // Codex/tmux can wrap long path-like trigger text after a hyphen, e.g.
+  // `worker-\n  1/inbox.md`. Treat those visual wraps as the original token so
+  // delivery verification does not mistake an unsent draft for consumed input.
+  return normalizeTmuxCapture(value ?? '').replace(/-\s+/g, '-');
+}
+
 function assertWorkerTriggerText(text: string): void {
   if (text.length >= 200) {
     throw new Error('sendToWorker: text must be < 200 characters');
@@ -1953,7 +1960,7 @@ export async function sendToWorker(
   if (verifyCapture) {
     if (paneHasActiveTask(verifyCapture)) return;
     if (
-      !normalizeTmuxCapture(verifyCapture).includes(normalizeTmuxCapture(text))
+      !normalizeWorkerTriggerForDraftMatch(verifyCapture).includes(normalizeWorkerTriggerForDraftMatch(text))
       && !paneHasQueuedCodexSubmission(verifyVisibleCapture)
     ) {
       return;
@@ -1965,6 +1972,14 @@ export async function sendToWorker(
     const finalVisibleCapture = await captureVisiblePaneAsync(target);
     if (paneHasQueuedCodexSubmission(finalVisibleCapture)) {
       throw new Error('sendToWorker: submit_queued_after_tool_call');
+    }
+    const finalCapture = await capturePaneAsync(target);
+    if (
+      normalizeWorkerTriggerForDraftMatch(finalCapture).includes(normalizeWorkerTriggerForDraftMatch(text))
+      && !paneHasActiveTask(finalCapture)
+      && paneLooksReady(finalCapture)
+    ) {
+      throw new Error('sendToWorker: submit_failed (trigger text still visible after retries)');
     }
   }
 }
