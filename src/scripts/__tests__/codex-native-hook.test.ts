@@ -8068,6 +8068,138 @@ exit 0
     }
   });
 
+  it("retires prompt-seeded Ralph starting state when canonical Ralph already completed with audit", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-ralph-shadowed-starting-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const nativeSessionId = "native-hook-seed";
+      const canonicalSessionId = "omx-runtime-session";
+      await mkdir(join(stateDir, "sessions", nativeSessionId), { recursive: true });
+      await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: canonicalSessionId,
+        cwd,
+      });
+      await writeJson(join(stateDir, "sessions", nativeSessionId, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "starting",
+        session_id: nativeSessionId,
+        iteration: 0,
+        task_slug: "mvp-h-local-method-preflight-execution",
+        started_at: "2026-05-14T07:00:00.000Z",
+      });
+      await writeJson(join(stateDir, "sessions", nativeSessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "ralph",
+        phase: "starting",
+        session_id: nativeSessionId,
+        active_skills: [{ skill: "ralph", phase: "starting", active: true, session_id: nativeSessionId }],
+      });
+      await writeJson(join(stateDir, "sessions", canonicalSessionId, "ralph-state.json"), {
+        active: false,
+        mode: "ralph",
+        current_phase: "complete",
+        session_id: canonicalSessionId,
+        completed_at: "2026-05-14T07:30:00.000Z",
+        completion_audit: {
+          passed: true,
+          prompt_to_artifact_checklist: ["task evidence mapped"],
+          verification_evidence: ["fresh verification evidence recorded"],
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: nativeSessionId,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+      const retiredState = JSON.parse(await readFile(join(stateDir, "sessions", nativeSessionId, "ralph-state.json"), "utf-8"));
+      assert.equal(retiredState.active, false);
+      assert.equal(retiredState.current_phase, "complete");
+      assert.equal(retiredState.stop_reason, "shadowed_by_completed_canonical_ralph");
+      assert.equal(retiredState.shadowed_by_completed_canonical_ralph.session_id, canonicalSessionId);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not retire prompt-seeded Ralph starting state from a completed canonical Ralph owned by another thread", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-ralph-shadowed-thread-mismatch-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const nativeSessionId = "native-hook-seed";
+      const canonicalSessionId = "omx-runtime-session";
+      await mkdir(join(stateDir, "sessions", nativeSessionId), { recursive: true });
+      await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: canonicalSessionId,
+        cwd,
+      });
+      await writeJson(join(stateDir, "sessions", nativeSessionId, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "starting",
+        session_id: nativeSessionId,
+        iteration: 0,
+        task_slug: "mvp-h-local-method-preflight-execution",
+        started_at: "2026-05-14T07:00:00.000Z",
+      });
+      await writeJson(join(stateDir, "sessions", nativeSessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "ralph",
+        phase: "starting",
+        session_id: nativeSessionId,
+        active_skills: [{ skill: "ralph", phase: "starting", active: true, session_id: nativeSessionId }],
+      });
+      await writeJson(join(stateDir, "sessions", canonicalSessionId, "ralph-state.json"), {
+        active: false,
+        mode: "ralph",
+        current_phase: "complete",
+        session_id: canonicalSessionId,
+        owner_codex_thread_id: "thread-A",
+        completed_at: "2026-05-14T07:30:00.000Z",
+        completion_audit: {
+          passed: true,
+          prompt_to_artifact_checklist: ["task evidence mapped"],
+          verification_evidence: ["fresh verification evidence recorded"],
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: nativeSessionId,
+          thread_id: "thread-B",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.deepEqual(result.outputJson, {
+        decision: "block",
+        reason:
+          "OMX Ralph is still active (phase: starting; state: .omx/state/sessions/native-hook-seed/ralph-state.json); continue the task and gather fresh verification evidence before stopping.",
+        stopReason: "ralph_starting",
+        systemMessage:
+          "OMX Ralph is still active (phase: starting; state: .omx/state/sessions/native-hook-seed/ralph-state.json); continue the task and gather fresh verification evidence before stopping.",
+      });
+      const preservedState = JSON.parse(await readFile(join(stateDir, "sessions", nativeSessionId, "ralph-state.json"), "utf-8"));
+      assert.equal(preservedState.active, true);
+      assert.equal(preservedState.current_phase, "starting");
+      assert.equal(preservedState.stop_reason, undefined);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not block Stop from another session-scoped Ralph state when an explicit session_id has no active Ralph state", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-explicit-session-ralph-"));
     try {

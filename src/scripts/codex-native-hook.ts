@@ -644,6 +644,99 @@ async function hasConsistentRalphSkillActivation(stateDir: string, sessionId: st
   return true;
 }
 
+function isShadowableRalphStartingSeed(state: Record<string, unknown>): boolean {
+  if (state.active !== true) return false;
+  if (!isRalphStartingPhase(state)) return false;
+  if (state.completion_audit || state.completionAudit) return false;
+  const iteration = numericValue(state.iteration);
+  return iteration === null || iteration <= 0;
+}
+
+function hasPassingCompletedRalphAudit(state: Record<string, unknown> | null, cwd: string): boolean {
+  if (!state) return false;
+  if (state.mode && safeString(state.mode) !== "ralph") return false;
+  if (!isRalphCompletePhase(state.current_phase ?? state.currentPhase)) return false;
+  if (state.active === true) return false;
+  return evaluateRalphCompletionAuditEvidence(state, cwd).complete === true;
+}
+
+function shouldRetireShadowedRalphStartingSeed(
+  seedState: Record<string, unknown>,
+  completedState: Record<string, unknown> | null,
+  cwd: string,
+  ownerContext?: {
+    completedSessionId?: string;
+    payloadSessionId?: string;
+    threadId?: string;
+    currentNativeSessionId?: string;
+    tmuxPaneId?: string;
+  },
+): boolean {
+  if (!isShadowableRalphStartingSeed(seedState)) return false;
+  if (!hasPassingCompletedRalphAudit(completedState, cwd)) return false;
+  if (!completedState) return false;
+
+  const completedSessionId = safeString(ownerContext?.completedSessionId ?? completedState.session_id).trim();
+  if (
+    completedSessionId
+    && !activeRalphStateMatchesStopOwner(completedState, {
+      sessionId: completedSessionId,
+      payloadSessionId: safeString(ownerContext?.payloadSessionId).trim(),
+      threadId: safeString(ownerContext?.threadId).trim(),
+      currentNativeSessionId: safeString(ownerContext?.currentNativeSessionId).trim(),
+      tmuxPaneId: safeString(ownerContext?.tmuxPaneId).trim(),
+    })
+  ) {
+    return false;
+  }
+
+  const seedThreadId = safeString(seedState.owner_codex_thread_id ?? seedState.thread_id).trim();
+  const completedThreadId = safeString(completedState?.owner_codex_thread_id ?? completedState?.thread_id).trim();
+  const stopThreadId = safeString(ownerContext?.threadId).trim();
+  if (seedThreadId && completedThreadId && seedThreadId !== completedThreadId) return false;
+  if (seedThreadId && stopThreadId && seedThreadId !== stopThreadId) return false;
+  if (completedThreadId && stopThreadId && completedThreadId !== stopThreadId) return false;
+
+  const seedPaneId = safeString(seedState.tmux_pane_id).trim();
+  const completedPaneId = safeString(completedState?.tmux_pane_id).trim();
+  const stopPaneId = safeString(ownerContext?.tmuxPaneId).trim();
+  if (seedPaneId && completedPaneId && seedPaneId !== completedPaneId) return false;
+  if (seedPaneId && stopPaneId && seedPaneId !== stopPaneId) return false;
+  if (completedPaneId && stopPaneId && completedPaneId !== stopPaneId) return false;
+
+  const seedStartedAt = parseTimestampMs(seedState.started_at ?? seedState.startedAt);
+  const completedAt = parseTimestampMs(completedState?.completed_at ?? completedState?.completedAt);
+  if (completedAt === null) return false;
+  if (seedStartedAt !== null && seedStartedAt > completedAt) return false;
+
+  return true;
+}
+
+async function retireShadowedRalphStartingSeed(
+  path: string,
+  seedState: Record<string, unknown>,
+  completedSessionId: string,
+  completedPath: string,
+  completedState: Record<string, unknown>,
+): Promise<void> {
+  const nowIso = new Date().toISOString();
+  const completedAt = safeString(completedState.completed_at ?? completedState.completedAt).trim() || nowIso;
+  const next: Record<string, unknown> = {
+    ...seedState,
+    active: false,
+    current_phase: "complete",
+    completed_at: completedAt,
+    stop_reason: "shadowed_by_completed_canonical_ralph",
+    shadowed_by_completed_canonical_ralph: {
+      session_id: completedSessionId,
+      state_path: completedPath,
+      completed_at: completedAt,
+      reconciled_at: nowIso,
+    },
+  };
+  await writeFile(path, JSON.stringify(next, null, 2));
+}
+
 
 async function readRalphCompletionAuditBlockState(
   cwd: string,
@@ -733,6 +826,12 @@ async function readActiveRalphState(
     safeString(preferredSessionId).trim(),
     currentOmxSessionId,
   ].filter(Boolean))];
+  const completedCanonicalPath = currentOmxSessionId
+    ? getStateFilePath("ralph-state.json", cwd, currentOmxSessionId)
+    : "";
+  const completedCanonicalState = completedCanonicalPath
+    ? await readJsonIfExists(completedCanonicalPath)
+    : null;
 
   // Ralph Stop stays authoritative-scope-only once the Stop payload is session-bound.
   // That is intentionally stricter than generic state MCP reads: do not scan sibling
@@ -747,6 +846,27 @@ async function readActiveRalphState(
     const sessionScopedPath = getStateFilePath("ralph-state.json", cwd, sessionId);
     const sessionScoped = await readJsonIfExists(sessionScopedPath);
     if (sessionScoped?.active === true) {
+      if (
+        currentOmxSessionId
+        && sessionId !== currentOmxSessionId
+        && completedCanonicalState
+        && shouldRetireShadowedRalphStartingSeed(sessionScoped, completedCanonicalState, cwd, {
+          completedSessionId: currentOmxSessionId,
+          payloadSessionId: safeString(ownerContext?.payloadSessionId).trim(),
+          threadId: safeString(ownerContext?.threadId).trim(),
+          currentNativeSessionId,
+          tmuxPaneId: safeString(ownerContext?.tmuxPaneId).trim(),
+        })
+      ) {
+        await retireShadowedRalphStartingSeed(
+          sessionScopedPath,
+          sessionScoped,
+          currentOmxSessionId,
+          completedCanonicalPath,
+          completedCanonicalState,
+        );
+        continue;
+      }
       if (await isStaleOrphanedRalphStartingState(sessionScoped, sessionScopedPath)) {
         continue;
       }
@@ -1965,7 +2085,7 @@ function readPayloadSessionId(payload: CodexHookPayload): string {
 }
 
 function readPayloadThreadId(payload: CodexHookPayload): string {
-  return safeString(payload.thread_id ?? payload.threadId).trim();
+  return safeString(payload.owner_codex_thread_id ?? payload.thread_id ?? payload.threadId).trim();
 }
 
 function readPayloadTurnId(payload: CodexHookPayload): string {
