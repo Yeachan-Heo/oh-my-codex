@@ -20,6 +20,9 @@ describe('version sync contract', () => {
     const workspace = TOML.parse(readFileSync(join(process.cwd(), 'Cargo.toml'), 'utf-8')) as {
       workspace?: { package?: WorkspacePackageMetadata; members?: string[] };
     };
+    const api = TOML.parse(readFileSync(join(process.cwd(), 'crates', 'omx-api', 'Cargo.toml'), 'utf-8')) as {
+      package?: WorkspaceMemberPackageMetadata;
+    };
     const explore = TOML.parse(readFileSync(join(process.cwd(), 'crates', 'omx-explore', 'Cargo.toml'), 'utf-8')) as {
       package?: WorkspaceMemberPackageMetadata;
     };
@@ -38,6 +41,7 @@ describe('version sync contract', () => {
 
     assert.equal(workspace.workspace?.package?.version, pkg.version);
     assert.deepEqual(workspace.workspace?.members, [
+      'crates/omx-api',
       'crates/omx-explore',
       'crates/omx-mux',
       'crates/omx-runtime-core',
@@ -45,11 +49,13 @@ describe('version sync contract', () => {
       'crates/omx-sparkshell',
     ]);
     assert.equal(workspace.workspace?.package?.['rust-version'], '1.73');
+    assert.deepEqual(api.package?.version, { workspace: true });
     assert.deepEqual(explore.package?.version, { workspace: true });
     assert.deepEqual(runtimeCore.package?.version, { workspace: true });
     assert.deepEqual(mux.package?.version, { workspace: true });
     assert.deepEqual(runtime.package?.version, { workspace: true });
     assert.deepEqual(sparkshell.package?.version, { workspace: true });
+    assert.deepEqual(api.package?.['rust-version'], { workspace: true });
     assert.deepEqual(explore.package?.['rust-version'], { workspace: true });
     assert.deepEqual(runtimeCore.package?.['rust-version'], { workspace: true });
     assert.deepEqual(mux.package?.['rust-version'], { workspace: true });

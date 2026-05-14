@@ -1364,6 +1364,7 @@ describe("commandOwnsLocalHelp", () => {
     for (const command of [
       "adapt",
       "agents-init",
+      "api",
       "ask",
       "question",
       "autoresearch",
@@ -1397,6 +1398,16 @@ describe("commandOwnsLocalHelp", () => {
 });
 
 describe("resolveCliInvocation", () => {
+  it("resolves api to api command", () => {
+    assert.deepEqual(
+      resolveCliInvocation(["api", "status"]),
+      {
+        command: "api",
+        launchArgs: [],
+      },
+    );
+  });
+
   it("resolves explore to explore command", () => {
     assert.deepEqual(
       resolveCliInvocation(["explore", "--prompt", "find", "auth"]),

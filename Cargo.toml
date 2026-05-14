@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/omx-api",
   "crates/omx-explore",
   "crates/omx-mux",
   "crates/omx-runtime-core",

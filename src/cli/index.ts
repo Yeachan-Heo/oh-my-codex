@@ -38,6 +38,7 @@ import {
 } from "./cleanup.js";
 import { exploreCommand } from "./explore.js";
 import { sparkshellCommand } from "./sparkshell.js";
+import { apiCommand } from "./api.js";
 import { agentsInitCommand } from "./agents-init.js";
 import { agentsCommand } from "./agents.js";
 import { sessionCommand } from "./session-search.js";
@@ -202,6 +203,7 @@ Usage:
   omx adapt     Scaffold OMX-owned adapter foundations for persistent external targets
   omx resume    Resume a previous interactive Codex session
   omx explore   Default read-only exploration entrypoint (may adaptively use sparkshell backend)
+  omx api       Run native omx-api localhost gateway commands (serve|status|stop|generate)
   omx session   Search prior local session transcripts and history artifacts
   omx agents-init [path]
                 Bootstrap lightweight AGENTS.md files for a repo/subtree
@@ -352,6 +354,7 @@ type CliCommand =
   | "question"
   | "adapt"
   | "explore"
+  | "api"
   | "sparkshell"
   | "team"
   | "session"
@@ -394,6 +397,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "performance-goal",
   "resume",
   "session",
+  "api",
   "sparkshell",
   "team",
   "tmux-hook",
@@ -1240,6 +1244,7 @@ export async function main(args: string[]): Promise<void> {
     "autoresearch",
   "autoresearch-goal",
     "explore",
+    "api",
     "sparkshell",
     "team",
     "ralph",
@@ -1346,6 +1351,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "explore":
         await exploreCommand(args.slice(1));
+        break;
+      case "api":
+        await apiCommand(args.slice(1));
         break;
       case "exec":
         if (launchArgs[0] === "inject") {

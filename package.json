@@ -10,7 +10,7 @@
   "scripts": {
     "build": "node -e \"const fs=require('fs'); fs.rmSync('dist',{recursive:true,force:true});\" && tsc && node -e \"require('fs').chmodSync('dist/cli/omx.js', 0o755)\"",
     "build:explore": "cargo build -p omx-explore-harness",
-    "build:full": "npm run build && npm run build:explore:release && npm run build:sparkshell",
+    "build:full": "npm run build && npm run build:explore:release && npm run build:sparkshell && npm run build:api",
     "build:explore:release": "node dist/scripts/build-explore-harness.js",
     "check:no-unused": "tsc -p tsconfig.no-unused.json",
     "clean:native-package-assets": "node dist/scripts/cleanup-explore-harness.js",
@@ -54,7 +54,8 @@
     "sync:plugin:check": "node dist/scripts/sync-plugin-mirror.js --check",
     "verify:plugin-bundle": "node dist/scripts/sync-plugin-mirror.js --check",
     "verify:native-agents": "node dist/scripts/verify-native-agents.js",
-    "prompt:inventory": "node dist/scripts/prompt-inventory.js"
+    "prompt:inventory": "node dist/scripts/prompt-inventory.js",
+    "build:api": "node dist/scripts/build-api.js"
   },
   "engines": {
     "node": ">=20"

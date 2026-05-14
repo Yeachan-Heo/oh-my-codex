@@ -40,7 +40,8 @@ describe('package bin contract', () => {
     assert.deepEqual(pkg.bin, { omx: 'dist/cli/omx.js' });
     assert.equal(pkg.scripts?.['build:explore'], 'cargo build -p omx-explore-harness');
     assert.equal(pkg.scripts?.['build:explore:release'], 'node dist/scripts/build-explore-harness.js');
-    assert.equal(pkg.scripts?.['build:full'], 'npm run build && npm run build:explore:release && npm run build:sparkshell');
+    assert.equal(pkg.scripts?.['build:full'], 'npm run build && npm run build:explore:release && npm run build:sparkshell && npm run build:api');
+    assert.equal(pkg.scripts?.['build:api'], 'node dist/scripts/build-api.js');
     assert.equal(pkg.scripts?.['clean:native-package-assets'], 'node dist/scripts/cleanup-explore-harness.js');
     assert.equal(pkg.scripts?.['sync:plugin'], 'node dist/scripts/sync-plugin-mirror.js');
     assert.equal(pkg.scripts?.['sync:plugin:check'], 'node dist/scripts/sync-plugin-mirror.js --check');
@@ -165,7 +166,7 @@ describe('package bin contract', () => {
     const packagedHarnessPath = process.platform === 'win32' ? 'bin/omx-explore-harness.exe' : 'bin/omx-explore-harness';
     const packagedHarnessEntry = results[0]?.files?.find((file) => file.path === packagedHarnessPath);
     const packagedHarnessMetaEntry = results[0]?.files?.find((file) => file.path === 'bin/omx-explore-harness.meta.json');
-    const sparkshellEntry = results[0]?.files?.find((file) => file.path.includes('bin/native/'));
+    const nativeBinaryEntry = results[0]?.files?.find((file) => file.path.includes('bin/native/'));
     const cargoTomlEntry = results[0]?.files?.find((file) => file.path === 'Cargo.toml');
     const cargoLockEntry = results[0]?.files?.find((file) => file.path === 'Cargo.lock');
     const crateManifestEntry = results[0]?.files?.find((file) => file.path === 'crates/omx-explore/Cargo.toml');
@@ -192,7 +193,7 @@ describe('package bin contract', () => {
 
     assert.equal(packagedHarnessEntry, undefined, `did not expect ${packagedHarnessPath} in npm pack output`);
     assert.equal(packagedHarnessMetaEntry, undefined, 'did not expect packaged explore harness metadata in npm pack output');
-    assert.equal(sparkshellEntry, undefined, 'did not expect staged sparkshell binaries in npm pack output');
+    assert.equal(nativeBinaryEntry, undefined, 'did not expect staged native binaries in npm pack output');
     assert.ok(cargoTomlEntry, 'expected npm pack output to include Cargo.toml');
     assert.ok(cargoLockEntry, 'expected npm pack output to include Cargo.lock');
     assert.ok(crateManifestEntry, 'expected npm pack output to include crates/omx-explore/Cargo.toml');

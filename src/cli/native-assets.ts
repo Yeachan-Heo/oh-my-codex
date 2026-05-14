@@ -8,7 +8,7 @@ import { Readable } from 'node:stream';
 import { spawnPlatformCommandSync } from '../utils/platform-command.js';
 import { getPackageRoot } from '../utils/package.js';
 
-export type NativeProduct = 'omx-explore-harness' | 'omx-sparkshell';
+export type NativeProduct = 'omx-explore-harness' | 'omx-sparkshell' | 'omx-api';
 export type NativeLibc = 'musl' | 'glibc';
 
 export interface NativeReleaseAsset {
@@ -56,6 +56,7 @@ const NATIVE_RELEASE_BASE_URL_ENV = 'OMX_NATIVE_RELEASE_BASE_URL';
 const NATIVE_CACHE_DIR_ENV = 'OMX_NATIVE_CACHE_DIR';
 export const EXPLORE_BIN_ENV = 'OMX_EXPLORE_BIN';
 export const SPARKSHELL_BIN_ENV = 'OMX_SPARKSHELL_BIN';
+export const API_BIN_ENV = 'OMX_API_BIN';
 
 function packageJsonPath(packageRoot = getPackageRoot()): string {
   return join(packageRoot, 'package.json');
