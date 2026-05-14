@@ -7985,6 +7985,47 @@ exit 0
     }
   });
 
+  it("allows Stop from stale orphaned session-scoped Ralph starting iteration zero state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-stale-orphan-starting-ralph-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-stale-orphan-ralph";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: sessionId, cwd });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "starting",
+        iteration: 0,
+        session_id: sessionId,
+        updated_at: "2000-01-01T00:00:00.000Z",
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
+        active: true,
+        skill: "ralph",
+        phase: "starting",
+        session_id: sessionId,
+        active_skills: [{ skill: "ralph", phase: "starting", active: true, session_id: sessionId }],
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-verifier-terminal",
+          last_assistant_message: "APPROVE: read-only verifier evidence is fresh and sufficient.",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("blocks Stop on visible active session-scoped Ralph starting state and reports its path", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-visible-starting-ralph-"));
     try {

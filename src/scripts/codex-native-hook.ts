@@ -1,6 +1,6 @@
 import { execFileSync } from "child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync } from "fs";
-import { appendFile, mkdir, readFile, readdir, writeFile } from "fs/promises";
+import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "fs/promises";
 import { extname, join, relative, resolve } from "path";
 import { pathToFileURL } from "url";
 import { readModeState, readModeStateForActiveDecision, readModeStateForSession, updateModeState } from "../modes/base.js";
@@ -128,6 +128,7 @@ const TEAM_STOP_BLOCKING_TASK_STATUSES = new Set(["pending", "in_progress", "blo
 const TEAM_WORKER_TERMINAL_RUN_STATES = new Set(["done", "complete", "completed", "failed", "stopped", "cancelled"]);
 const NATIVE_STOP_STATE_FILE = "native-stop-state.json";
 const ORDINARY_STOP_NO_PROGRESS_DEFAULT_MAX_REPEATS = 8;
+const RALPH_ORPHANED_STARTING_STALE_MS = 15 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_DEFAULT_IDLE_MS = 10 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_MAX_MESSAGE_LENGTH = 240;
 const STABLE_FINAL_RECOMMENDATION_PATTERNS = [
@@ -513,6 +514,52 @@ function isRalphStartingPhase(state: Record<string, unknown>): boolean {
   return safeString(state.current_phase ?? state.currentPhase).trim().toLowerCase() === "starting";
 }
 
+
+function parseTimestampMs(value: unknown): number | null {
+  const text = safeString(value).trim();
+  if (!text) return null;
+  const ms = Date.parse(text);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function numericValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function hasRalphOwnerHint(state: Record<string, unknown>): boolean {
+  return [
+    state.owner_omx_session_id,
+    state.owner_codex_session_id,
+    state.owner_codex_thread_id,
+    state.thread_id,
+    state.tmux_pane_id,
+    state.task_slug,
+  ].some((value) => safeString(value).trim() !== "");
+}
+
+async function isStaleOrphanedRalphStartingState(
+  state: Record<string, unknown>,
+  path: string,
+  nowMs = Date.now(),
+): Promise<boolean> {
+  if (!isRalphStartingPhase(state)) return false;
+  if (numericValue(state.iteration) !== 0) return false;
+  if (hasRalphOwnerHint(state)) return false;
+
+  const timestampMs = parseTimestampMs(state.updated_at)
+    ?? parseTimestampMs(state.started_at)
+    ?? parseTimestampMs(state.created_at)
+    ?? await stat(path).then((info) => info.mtimeMs, () => null);
+  if (timestampMs === null) return false;
+
+  return nowMs - timestampMs > RALPH_ORPHANED_STARTING_STALE_MS;
+}
+
 function hasValue(values: string[], value: string): boolean {
   return value !== "" && values.some((candidate) => candidate === value);
 }
@@ -699,12 +746,16 @@ async function readActiveRalphState(
     }
     const sessionScopedPath = getStateFilePath("ralph-state.json", cwd, sessionId);
     const sessionScoped = await readJsonIfExists(sessionScopedPath);
-    if (
-      sessionScoped?.active === true
-      && isRalphStartingPhase(sessionScoped)
-      && !(await isVisibleRalphActiveForSession(stateDir, sessionId))
-    ) {
-      continue;
+    if (sessionScoped?.active === true) {
+      if (await isStaleOrphanedRalphStartingState(sessionScoped, sessionScopedPath)) {
+        continue;
+      }
+      if (
+        isRalphStartingPhase(sessionScoped)
+        && !(await isVisibleRalphActiveForSession(stateDir, sessionId))
+      ) {
+        continue;
+      }
     }
     if (
       sessionScoped?.active === true
