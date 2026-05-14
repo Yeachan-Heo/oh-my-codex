@@ -103,8 +103,8 @@ export function normalizePostToolUsePayload(
   const exitCode = safeInteger(parsedToolResponse?.exit_code)
     ?? safeInteger(parsedToolResponse?.exitCode)
     ?? null;
-  const rawText = safeString(rawToolResponse).trim();
-  const stdoutText = safeString(parsedToolResponse?.stdout).trim() || rawText;
+  const rawToolResponseText = safeString(rawToolResponse).trim();
+  const stdoutText = safeString(parsedToolResponse?.stdout).trim() || rawToolResponseText;
   const stderrText = safeString(parsedToolResponse?.stderr).trim();
 
   return {
@@ -149,30 +149,49 @@ type OmxParityCommand =
   | "trace"
   | "code-intel";
 
+function joinNonEmptyText(parts: string[]): string {
+  return parts
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function structuredMcpTransportText(normalized: NormalizedPostToolUsePayload): string {
+  return joinNonEmptyText([
+    safeString(normalized.parsedToolResponse?.error),
+    safeString(normalized.parsedToolResponse?.message),
+    safeString(normalized.parsedToolResponse?.details),
+  ]);
+}
+
+function hasMcpTransportContext(text: string): boolean {
+  return /\bmcp\b/i.test(text)
+    || /\bomx-(?:state|memory|trace|code-intel)-server\b/i.test(text);
+}
+
+function hasMcpTransportFailurePattern(text: string): boolean {
+  return MCP_TRANSPORT_FAILURE_PATTERNS.some((pattern) => pattern.test(text));
+}
+
 export function detectMcpTransportFailure(
   payload: CodexHookPayload,
 ): McpTransportFailureSignal | null {
   const normalized = normalizePostToolUsePayload(payload);
   if (normalized.isBash) return null;
-  const combined = [
+
+  const isMcpTool = isMcpLikeToolName(normalized.toolName);
+  const structuredText = structuredMcpTransportText(normalized);
+  const rawText = joinNonEmptyText([
     normalized.stderrText,
     normalized.stdoutText,
-    safeString(normalized.parsedToolResponse?.error),
-    safeString(normalized.parsedToolResponse?.message),
-    safeString(normalized.parsedToolResponse?.details),
-  ]
-    .filter(Boolean)
-    .join("\n")
-    .trim();
+  ]);
+  const combined = isMcpTool
+    ? joinNonEmptyText([rawText, structuredText])
+    : structuredText;
 
-  const mcpContextDetected = isMcpLikeToolName(normalized.toolName)
-    || /\bmcp\b/i.test(combined)
-    || /\bomx-(?:state|memory|trace|code-intel)-server\b/i.test(combined);
-  if (!mcpContextDetected) return null;
   if (!combined) return null;
-  if (!MCP_TRANSPORT_FAILURE_PATTERNS.some((pattern) => pattern.test(combined))) {
-    return null;
-  }
+  if (!isMcpTool && !hasMcpTransportContext(structuredText)) return null;
+  if (!hasMcpTransportFailurePattern(combined)) return null;
 
   return {
     toolName: normalized.toolName,

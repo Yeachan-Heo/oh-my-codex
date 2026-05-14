@@ -4866,6 +4866,99 @@ exit 0
     }
   });
 
+  it("does not treat non-MCP source output containing detector constants as MCP transport death", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-read-mcp-source-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "Read",
+          tool_use_id: "tool-read-mcp-source",
+          tool_input: { file_path: "src/scripts/codex-native-pre-post.ts" },
+          tool_response:
+            "const MCP_TRANSPORT_FAILURE_PATTERNS = [/transport closed/i, /server disconnected/i];\nconst context = /\\bmcp\\b/i;",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not treat non-MCP docs stdout mentioning closed MCP transport as transport death", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-docs-mcp-log-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "ShellOutput",
+          tool_use_id: "tool-docs-mcp-log",
+          tool_response: JSON.stringify({
+            stdout: "Troubleshooting note: MCP transport closed after the server disconnected in an old log.",
+            stderr: "",
+          }),
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not MCP-block non-MCP command output with unrelated stderr and MCP transport stdout", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-nonmcp-mixed-output-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "ShellOutput",
+          tool_use_id: "tool-nonmcp-mixed-output",
+          tool_response: JSON.stringify({
+            stdout: "captured log line: MCP transport closed before response",
+            stderr: "grep: fixture.txt: No such file or directory",
+          }),
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("still blocks MCP-like raw transport failures", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-mcp-raw-transport-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: "mcp__omx_state__state_write",
+          tool_use_id: "tool-mcp-raw-transport",
+          tool_response: "transport closed after server disconnected",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "post-tool-use");
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason || ""), /lost its transport\/server connection/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns PostToolUse MCP transport fallback guidance for clear MCP transport death", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-posttool-mcp-transport-"));
     try {
