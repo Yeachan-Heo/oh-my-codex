@@ -14,6 +14,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub type Result<T> = std::result::Result<T, OmxApiError>;
 
 pub const DEFAULT_API_PORT: u16 = 14510;
+const CODEX_RESPONSES_PATH: &str = "/responses";
+const CODEX_DEFAULT_ORIGINATOR: &str = "codex_cli_rs";
+const CODEX_DEFAULT_BACKEND_BASE_PATH: &str = "/backend-api/codex";
+const CODEX_INSTALLATION_ID_HEADER: &str = "x-codex-installation-id";
+const CODEX_WINDOW_ID_HEADER: &str = "x-codex-window-id";
 
 #[derive(Debug)]
 pub enum OmxApiError {
@@ -559,7 +564,7 @@ fn real_private_text(body: &Value) -> std::result::Result<String, (u16, &'static
         return Ok(fixture);
     }
 
-    let Some(token) = discover_codex_oauth_token() else {
+    let Some(auth) = discover_codex_oauth() else {
         return Err((
             503,
             "missing_auth",
@@ -578,7 +583,7 @@ fn real_private_text(body: &Value) -> std::result::Result<String, (u16, &'static
         ));
     };
 
-    match post_json_to_url(&upstream, body, &token) {
+    match post_codex_responses_to_url(&upstream, body, &auth) {
         Ok(text) => Ok(text),
         Err(error) => Err((
             502,
@@ -706,12 +711,23 @@ fn extract_prompt(body: &Value) -> String {
     String::new()
 }
 
-fn discover_codex_oauth_token() -> Option<String> {
+#[derive(Clone, Debug, Default)]
+struct CodexOAuth {
+    token: String,
+    account_id: Option<String>,
+}
+
+fn discover_codex_oauth() -> Option<CodexOAuth> {
     if let Some(token) = env::var("OMX_API_CODEX_OAUTH_TOKEN")
         .ok()
         .filter(|value| !value.trim().is_empty())
     {
-        return Some(token);
+        return Some(CodexOAuth {
+            token,
+            account_id: env::var("OMX_API_CODEX_ACCOUNT_ID")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+        });
     }
 
     let auth_path = env::var("CODEX_HOME")
@@ -726,7 +742,10 @@ fn discover_codex_oauth_token() -> Option<String> {
         .map(|home| home.join("auth.json"))?;
     let bytes = fs::read(auth_path).ok()?;
     let value: Value = serde_json::from_slice(&bytes).ok()?;
-    find_oauth_token(&value)
+    Some(CodexOAuth {
+        token: find_oauth_token(&value)?,
+        account_id: find_codex_account_id(&value),
+    })
 }
 
 fn find_oauth_token(value: &Value) -> Option<String> {
@@ -748,19 +767,150 @@ fn find_oauth_token(value: &Value) -> Option<String> {
     }
 }
 
-fn post_json_to_url(url: &str, body: &Value, bearer: &str) -> Result<String> {
+fn find_codex_account_id(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            for preferred in ["account_id", "chatgpt_account_id"] {
+                if let Some(account_id) = map
+                    .get(preferred)
+                    .and_then(Value::as_str)
+                    .filter(|account_id| !account_id.trim().is_empty())
+                {
+                    return Some(account_id.to_string());
+                }
+            }
+            map.values().find_map(find_codex_account_id)
+        }
+        Value::Array(items) => items.iter().find_map(find_codex_account_id),
+        _ => None,
+    }
+}
+
+#[derive(Debug)]
+struct CodexNativeRequest {
+    path: String,
+    headers: Vec<(String, String)>,
+    body: Value,
+}
+
+fn build_codex_native_request(
+    upstream_path: &str,
+    body: &Value,
+    auth: &CodexOAuth,
+) -> CodexNativeRequest {
+    let session_id = env::var("OMX_API_CODEX_SESSION_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "omx-api-local-session".to_string());
+    let thread_id = env::var("OMX_API_CODEX_THREAD_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "omx-api-local-thread".to_string());
+    let installation_id = env::var("OMX_API_CODEX_INSTALLATION_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "omx-api-local-installation".to_string());
+    let window_id = env::var("OMX_API_CODEX_WINDOW_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "omx-api-local-window".to_string());
+    let model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| env::var("OMX_API_GENERATE_MODEL").ok())
+        .unwrap_or_else(|| "omx-private".to_string());
+    let prompt = extract_prompt(body);
+    let path = normalize_codex_responses_path(upstream_path);
+    let request_body = json!({
+        "model": model,
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": prompt}]
+        }],
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": false,
+        "reasoning": null,
+        "store": false,
+        "stream": true,
+        "include": [],
+        "prompt_cache_key": thread_id,
+        "client_metadata": {
+            CODEX_INSTALLATION_ID_HEADER: installation_id.clone()
+        }
+    });
+
+    let mut headers = vec![
+        ("Content-Type".to_string(), "application/json".to_string()),
+        ("Accept".to_string(), "text/event-stream".to_string()),
+        (
+            "Authorization".to_string(),
+            format!("Bearer {}", auth.token),
+        ),
+        (
+            "originator".to_string(),
+            CODEX_DEFAULT_ORIGINATOR.to_string(),
+        ),
+        ("User-Agent".to_string(), codex_user_agent()),
+        ("x-client-request-id".to_string(), thread_id.clone()),
+        ("session_id".to_string(), session_id.clone()),
+        ("session-id".to_string(), session_id),
+        ("thread_id".to_string(), thread_id.clone()),
+        ("thread-id".to_string(), thread_id),
+        (CODEX_WINDOW_ID_HEADER.to_string(), window_id),
+    ];
+    if let Some(account_id) = auth.account_id.as_ref() {
+        headers.push(("ChatGPT-Account-ID".to_string(), account_id.clone()));
+    }
+
+    CodexNativeRequest {
+        path,
+        headers,
+        body: request_body,
+    }
+}
+
+fn codex_user_agent() -> String {
+    env::var("OMX_API_CODEX_USER_AGENT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "codex_cli_rs/0.130.0 (omx-api)".to_string())
+}
+
+fn normalize_codex_responses_path(path: &str) -> String {
+    let path = if path == "/" || path.is_empty() {
+        CODEX_DEFAULT_BACKEND_BASE_PATH
+    } else {
+        path.trim_end_matches('/')
+    };
+    if path.ends_with(CODEX_RESPONSES_PATH) {
+        path.to_string()
+    } else {
+        format!("{path}{CODEX_RESPONSES_PATH}")
+    }
+}
+
+fn post_codex_responses_to_url(url: &str, body: &Value, auth: &CodexOAuth) -> Result<String> {
     let parsed = parse_http_backend_url(url)?;
-    let payload = serde_json::to_vec(body)?;
+    let codex_request = build_codex_native_request(&parsed.path, body, auth);
+    let payload = serde_json::to_vec(&codex_request.body)?;
     let mut stream = TcpStream::connect((parsed.host.as_str(), parsed.port))?;
     stream.set_read_timeout(Some(Duration::from_secs(120)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     write!(
         stream,
-        "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/json\r\nAccept: application/json\r\nAuthorization: Bearer {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        parsed.path,
-        parsed.host,
-        parsed.port,
-        bearer,
+        "POST {} HTTP/1.1\r\nHost: {}:{}\r\n",
+        codex_request.path, parsed.host, parsed.port
+    )?;
+    for (name, value) in codex_request.headers {
+        write!(stream, "{name}: {value}\r\n")?;
+    }
+    write!(
+        stream,
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
         payload.len()
     )?;
     stream.write_all(&payload)?;
@@ -781,9 +931,46 @@ fn post_json_to_url(url: &str, body: &Value, bearer: &str) -> Result<String> {
         )));
     }
 
+    Ok(extract_backend_text_response(response_body))
+}
+
+fn extract_backend_text_response(response_body: &str) -> String {
+    if response_body
+        .lines()
+        .any(|line| line.starts_with("event:") || line.starts_with("data:"))
+    {
+        let mut text = String::new();
+        for line in response_body.lines() {
+            let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+                continue;
+            };
+            if data == "[DONE]" || data.is_empty() {
+                continue;
+            }
+            if let Ok(value) = serde_json::from_str::<Value>(data) {
+                if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                    text.push_str(delta);
+                } else if let Some(delta) = value
+                    .pointer("/item/content/0/text")
+                    .and_then(Value::as_str)
+                {
+                    text.push_str(delta);
+                } else if let Some(delta) = value
+                    .pointer("/response/output_text")
+                    .and_then(Value::as_str)
+                {
+                    text.push_str(delta);
+                }
+            }
+        }
+        if !text.is_empty() {
+            return text;
+        }
+    }
+
     let value: Value = serde_json::from_str(response_body)
         .unwrap_or_else(|_| json!({"output_text": response_body}));
-    Ok(value
+    value
         .get("output_text")
         .and_then(Value::as_str)
         .or_else(|| {
@@ -797,7 +984,7 @@ fn post_json_to_url(url: &str, body: &Value, bearer: &str) -> Result<String> {
                 .and_then(Value::as_str)
         })
         .unwrap_or(response_body)
-        .to_string())
+        .to_string()
 }
 
 #[derive(Debug)]
@@ -1589,6 +1776,171 @@ mod tests {
         let error = parse_http_backend_url("http://127.0.0.1.evil.test/v1/responses")
             .expect_err("hostname prefix must not bypass loopback check");
         assert!(error.to_string().contains("not loopback"));
+    }
+
+    #[test]
+    fn codex_native_request_matches_installed_codex_responses_wire_shape() {
+        let _guard = env_lock();
+        env::set_var("OMX_API_CODEX_SESSION_ID", "session-1");
+        env::set_var("OMX_API_CODEX_THREAD_ID", "thread-1");
+        env::set_var("OMX_API_CODEX_INSTALLATION_ID", "install-1");
+        env::set_var("OMX_API_CODEX_WINDOW_ID", "window-1");
+        env::set_var("OMX_API_CODEX_USER_AGENT", "codex_cli_rs/test");
+
+        let auth = CodexOAuth {
+            token: "oauth-token".to_string(),
+            account_id: Some("account-1".to_string()),
+        };
+        let request = build_codex_native_request(
+            "/backend-api/codex",
+            &json!({"model": "gpt-5.3-codex", "input": "summarize this"}),
+            &auth,
+        );
+
+        assert_eq!(request.path, "/backend-api/codex/responses");
+        assert!(request
+            .headers
+            .contains(&("Accept".to_string(), "text/event-stream".to_string())));
+        assert!(request.headers.contains(&(
+            "Authorization".to_string(),
+            "Bearer oauth-token".to_string()
+        )));
+        assert!(request
+            .headers
+            .contains(&("ChatGPT-Account-ID".to_string(), "account-1".to_string())));
+        assert!(request
+            .headers
+            .contains(&("originator".to_string(), "codex_cli_rs".to_string())));
+        assert!(request
+            .headers
+            .contains(&("x-client-request-id".to_string(), "thread-1".to_string())));
+        assert!(request
+            .headers
+            .contains(&("session_id".to_string(), "session-1".to_string())));
+        assert!(request
+            .headers
+            .contains(&("session-id".to_string(), "session-1".to_string())));
+        assert!(request
+            .headers
+            .contains(&("thread_id".to_string(), "thread-1".to_string())));
+        assert!(request
+            .headers
+            .contains(&("thread-id".to_string(), "thread-1".to_string())));
+        assert!(!request
+            .headers
+            .iter()
+            .any(|(name, _)| name == CODEX_INSTALLATION_ID_HEADER));
+
+        assert_eq!(request.body["model"], "gpt-5.3-codex");
+        assert_eq!(request.body["tools"], json!([]));
+        assert_eq!(request.body["tool_choice"], "auto");
+        assert_eq!(request.body["parallel_tool_calls"], false);
+        assert_eq!(request.body["store"], false);
+        assert_eq!(request.body["stream"], true);
+        assert_eq!(request.body["include"], json!([]));
+        assert_eq!(request.body["prompt_cache_key"], "thread-1");
+        assert_eq!(
+            request.body["client_metadata"][CODEX_INSTALLATION_ID_HEADER],
+            "install-1"
+        );
+        assert_eq!(
+            request.body["input"],
+            json!([{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "summarize this"}]
+            }])
+        );
+
+        env::remove_var("OMX_API_CODEX_SESSION_ID");
+        env::remove_var("OMX_API_CODEX_THREAD_ID");
+        env::remove_var("OMX_API_CODEX_INSTALLATION_ID");
+        env::remove_var("OMX_API_CODEX_WINDOW_ID");
+        env::remove_var("OMX_API_CODEX_USER_AGENT");
+    }
+
+    #[test]
+    fn real_private_posts_codex_native_request_and_parses_sse_text() {
+        let _guard = env_lock();
+        env::remove_var("OMX_API_REAL_PRIVATE_RESPONSE_TEXT");
+        env::set_var("OMX_API_CODEX_OAUTH_TOKEN", "oauth-token");
+        env::set_var("OMX_API_CODEX_ACCOUNT_ID", "account-1");
+        env::set_var("OMX_API_CODEX_THREAD_ID", "thread-1");
+        env::set_var("OMX_API_CODEX_SESSION_ID", "session-1");
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind private backend");
+        let addr = listener.local_addr().expect("local addr");
+        let seen = Arc::new(Mutex::new(String::new()));
+        let seen_thread = Arc::clone(&seen);
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut raw_bytes = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            let header_end = loop {
+                let read = stream.read(&mut buffer).expect("read request");
+                assert!(read > 0, "request closed before headers");
+                raw_bytes.extend_from_slice(&buffer[..read]);
+                if let Some(index) = raw_bytes.windows(4).position(|chunk| chunk == b"\r\n\r\n") {
+                    break index + 4;
+                }
+            };
+            let head = String::from_utf8_lossy(&raw_bytes[..header_end]).to_string();
+            let content_length = head
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .expect("content length");
+            while raw_bytes.len() < header_end + content_length {
+                let read = stream.read(&mut buffer).expect("read body");
+                assert!(read > 0, "request closed before body");
+                raw_bytes.extend_from_slice(&buffer[..read]);
+            }
+            let raw = String::from_utf8_lossy(&raw_bytes).to_string();
+            *seen_thread.lock().expect("seen lock") = raw;
+            let body = concat!(
+                "event: response.output_text.delta\n",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+                "data: [DONE]\n\n"
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write response");
+        });
+
+        env::set_var(
+            "OMX_API_PRIVATE_BACKEND_URL",
+            format!("http://127.0.0.1:{}/backend-api/codex", addr.port()),
+        );
+        let text = real_private_text(&json!({"model": "gpt-5.3-codex", "input": "ping"}))
+            .expect("private text response");
+        handle.join().expect("server thread");
+
+        assert_eq!(text, "hello");
+        let raw = seen.lock().expect("seen lock").clone();
+        assert!(raw.starts_with("POST /backend-api/codex/responses HTTP/1.1"));
+        assert!(raw.contains("Accept: text/event-stream\r\n"));
+        assert!(raw.contains("Authorization: Bearer oauth-token\r\n"));
+        assert!(raw.contains("ChatGPT-Account-ID: account-1\r\n"));
+        assert!(raw.contains("originator: codex_cli_rs\r\n"));
+        assert!(raw.contains("\"stream\":true") || raw.contains("\"stream\": true"));
+        assert!(
+            raw.contains("\"prompt_cache_key\":\"thread-1\"")
+                || raw.contains("\"prompt_cache_key\": \"thread-1\"")
+        );
+        assert!(
+            raw.contains("\"type\":\"input_text\"") || raw.contains("\"type\": \"input_text\"")
+        );
+        assert!(raw.contains("\"text\":\"ping\"") || raw.contains("\"text\": \"ping\""));
+
+        env::remove_var("OMX_API_CODEX_OAUTH_TOKEN");
+        env::remove_var("OMX_API_CODEX_ACCOUNT_ID");
+        env::remove_var("OMX_API_CODEX_THREAD_ID");
+        env::remove_var("OMX_API_CODEX_SESSION_ID");
+        env::remove_var("OMX_API_PRIVATE_BACKEND_URL");
     }
 
     #[test]
