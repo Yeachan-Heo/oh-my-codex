@@ -823,7 +823,7 @@ fn build_codex_native_request(
         .unwrap_or_else(|| "omx-private".to_string());
     let prompt = extract_prompt(body);
     let path = normalize_codex_responses_path(upstream_path);
-    let request_body = json!({
+    let mut request_body = json!({
         "model": model,
         "input": [{
             "type": "message",
@@ -833,7 +833,7 @@ fn build_codex_native_request(
         "tools": [],
         "tool_choice": "auto",
         "parallel_tool_calls": false,
-        "reasoning": null,
+        "reasoning": body.get("reasoning").cloned().unwrap_or(Value::Null),
         "store": false,
         "stream": true,
         "include": [],
@@ -842,6 +842,9 @@ fn build_codex_native_request(
             CODEX_INSTALLATION_ID_HEADER: installation_id.clone()
         }
     });
+    if let Some(instructions) = body.get("instructions").cloned() {
+        request_body["instructions"] = instructions;
+    }
 
     let mut headers = vec![
         ("Content-Type".to_string(), "application/json".to_string()),
@@ -1793,7 +1796,12 @@ mod tests {
         };
         let request = build_codex_native_request(
             "/backend-api/codex",
-            &json!({"model": "gpt-5.3-codex", "input": "summarize this"}),
+            &json!({
+                "model": "gpt-5.3-codex",
+                "input": "summarize this",
+                "reasoning": {"effort": "low"},
+                "instructions": "Follow the sparkshell summary contract."
+            }),
             &auth,
         );
 
@@ -1835,6 +1843,11 @@ mod tests {
         assert_eq!(request.body["tools"], json!([]));
         assert_eq!(request.body["tool_choice"], "auto");
         assert_eq!(request.body["parallel_tool_calls"], false);
+        assert_eq!(request.body["reasoning"], json!({"effort": "low"}));
+        assert_eq!(
+            request.body["instructions"],
+            "Follow the sparkshell summary contract."
+        );
         assert_eq!(request.body["store"], false);
         assert_eq!(request.body["stream"], true);
         assert_eq!(request.body["include"], json!([]));
@@ -1915,8 +1928,13 @@ mod tests {
             "OMX_API_PRIVATE_BACKEND_URL",
             format!("http://127.0.0.1:{}/backend-api/codex", addr.port()),
         );
-        let text = real_private_text(&json!({"model": "gpt-5.3-codex", "input": "ping"}))
-            .expect("private text response");
+        let text = real_private_text(&json!({
+            "model": "gpt-5.3-codex",
+            "input": "ping",
+            "reasoning": {"effort": "low"},
+            "instructions": "Summarize via sparkshell."
+        }))
+        .expect("private text response");
         handle.join().expect("server thread");
 
         assert_eq!(text, "hello");
@@ -1935,6 +1953,10 @@ mod tests {
             raw.contains("\"type\":\"input_text\"") || raw.contains("\"type\": \"input_text\"")
         );
         assert!(raw.contains("\"text\":\"ping\"") || raw.contains("\"text\": \"ping\""));
+        let forwarded_body = raw.split("\r\n\r\n").nth(1).expect("forwarded body");
+        let forwarded_json: Value = serde_json::from_str(forwarded_body).expect("forwarded JSON");
+        assert_eq!(forwarded_json["reasoning"], json!({"effort": "low"}));
+        assert_eq!(forwarded_json["instructions"], "Summarize via sparkshell.");
 
         env::remove_var("OMX_API_CODEX_OAUTH_TOKEN");
         env::remove_var("OMX_API_CODEX_ACCOUNT_ID");
