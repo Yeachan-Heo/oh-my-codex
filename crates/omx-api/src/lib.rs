@@ -453,7 +453,10 @@ fn canonical_route(path: &str) -> &'static str {
 }
 
 fn responses_response(request: &Request, backend: &BackendMode) -> Response {
-    let body = parse_body(&request.body);
+    let body = match parse_json_body(request) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
     if body.get("stream").and_then(Value::as_bool).unwrap_or(false) {
         if *backend == BackendMode::RealPrivate {
             return real_private_text_response(&body, "response", true);
@@ -487,7 +490,10 @@ fn responses_response(request: &Request, backend: &BackendMode) -> Response {
 }
 
 fn chat_response(request: &Request, backend: &BackendMode) -> Response {
-    let body = parse_body(&request.body);
+    let body = match parse_json_body(request) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
     if body.get("stream").and_then(Value::as_bool).unwrap_or(false) {
         let text = if *backend == BackendMode::RealPrivate {
             match real_private_text(&body) {
@@ -630,7 +636,10 @@ fn image_response(request: &Request, backend: &BackendMode) -> Response {
             json!({"error": {"message": "real-private image generation is not implemented in V1A", "type": "unsupported_request"}}),
         );
     }
-    let body = parse_body(&request.body);
+    let body = match parse_json_body(request) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
     let prompt = body.get("prompt").and_then(Value::as_str).unwrap_or("");
     if body.get("stream").and_then(Value::as_bool).unwrap_or(false) {
         let mut stream = sse_event(
@@ -657,8 +666,21 @@ fn image_response(request: &Request, backend: &BackendMode) -> Response {
     )
 }
 
-fn parse_body(body: &[u8]) -> Value {
-    serde_json::from_slice(body).unwrap_or_else(|_| json!({}))
+fn parse_json_body(request: &Request) -> std::result::Result<Value, Response> {
+    if request.body.is_empty() {
+        return Ok(json!({}));
+    }
+    serde_json::from_slice(&request.body).map_err(|error| {
+        Response::json(
+            400,
+            json!({
+                "error": {
+                    "message": format!("invalid JSON request body: {error}"),
+                    "type": "invalid_request_error"
+                }
+            }),
+        )
+    })
 }
 
 fn extract_prompt(body: &Value) -> String {
@@ -955,6 +977,7 @@ pub fn write_http_response(stream: &mut TcpStream, response: Response) -> Result
 fn reason_phrase(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
         503 => "Service Unavailable",
@@ -1500,6 +1523,27 @@ mod tests {
         let body = String::from_utf8(response.body).unwrap();
         assert!(body.contains("[REDACTED]"));
         assert!(!body.contains("sk-secret123"));
+    }
+
+    #[test]
+    fn post_endpoints_reject_malformed_json() {
+        let telemetry = Telemetry::default();
+        for path in [
+            "/v1/responses",
+            "/v1/chat/completions",
+            "/v1/images/generations",
+        ] {
+            let malformed = Request {
+                method: "POST".to_string(),
+                path: path.to_string(),
+                headers: BTreeMap::new(),
+                body: b"{bad json".to_vec(),
+            };
+            let response = route_request(&malformed, &BackendMode::Mock, &telemetry, None, None);
+            assert_eq!(response.status, 400, "{path} should reject malformed JSON");
+            let body = String::from_utf8(response.body).unwrap();
+            assert!(body.contains("invalid_request_error"));
+        }
     }
 
     #[test]
