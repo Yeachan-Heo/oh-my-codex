@@ -2188,6 +2188,14 @@ async function readBlockingSkillForStop(
     const modeSnapshot = getRunContinuationSnapshot(modeState);
     if (modeSnapshot?.terminal === true) continue;
 
+    if (await shouldIgnoreSessionSkillBlockerForCanonicalInactiveRoot(
+      cwd,
+      stateDir,
+      skill,
+      sessionId,
+      threadId,
+    )) continue;
+
     const phase = formatPhase(
       modeState.current_phase,
       formatPhase(
@@ -2237,6 +2245,58 @@ function isTerminalOrInactiveModeState(state: Record<string, unknown> | null): b
   if (getRunContinuationSnapshot(state)?.terminal === true) return true;
   const phase = safeString(state.current_phase ?? state.currentPhase).trim().toLowerCase();
   return phase !== "" && TERMINAL_MODE_PHASES.has(phase);
+}
+
+function rootSkillStateHasNoActiveSkillForStopContext(
+  rootState: SkillActiveStateLike | null,
+  skill: string,
+  sessionId: string,
+  threadId: string,
+): boolean {
+  if (!rootState) return false;
+  return !listActiveSkills(rootState).some((entry) => (
+    entry.skill === skill
+    && matchesSkillStopContext(entry, rootState, sessionId, threadId)
+  ));
+}
+
+function rootModeStateIsCanonicalForStopContext(
+  state: Record<string, unknown>,
+  cwd: string,
+  sessionId: string,
+  threadId: string,
+): boolean {
+  if (!modeStateMatchesSkillStopContext(state, cwd, sessionId)) return false;
+
+  const stateSessionId = safeString(
+    state.owner_omx_session_id
+      ?? state.session_id
+      ?? state.codex_session_id
+      ?? state.owner_codex_session_id,
+  ).trim();
+  if (sessionId && stateSessionId !== sessionId) return false;
+
+  const stateThreadId = safeString(state.owner_codex_thread_id ?? state.thread_id).trim();
+  if (threadId && stateThreadId && stateThreadId !== threadId) return false;
+
+  return true;
+}
+
+async function shouldIgnoreSessionSkillBlockerForCanonicalInactiveRoot(
+  cwd: string,
+  stateDir: string,
+  skill: string,
+  sessionId: string,
+  threadId: string,
+): Promise<boolean> {
+  const rootModeState = await readJsonIfExists(join(stateDir, `${skill}-state.json`));
+  if (!rootModeState) return false;
+  if (!rootModeStateIsCanonicalForStopContext(rootModeState, cwd, sessionId, threadId)) return false;
+  if (!isTerminalOrInactiveModeState(rootModeState)) return false;
+
+  const { rootPath } = getSkillActiveStatePathsForStateDir(stateDir);
+  const rootSkillState = await readSkillActiveState(rootPath);
+  return rootSkillStateHasNoActiveSkillForStopContext(rootSkillState, skill, sessionId, threadId);
 }
 
 async function readSessionScopedModeStateForRootSkill(
