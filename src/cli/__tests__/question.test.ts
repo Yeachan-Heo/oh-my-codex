@@ -22,6 +22,13 @@ async function makeRepo(): Promise<string> {
   return cwd;
 }
 
+function makeQuestionCliEnv(cwd: string, overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...overrides, OMX_ROOT: cwd };
+  delete env.OMX_STATE_ROOT;
+  delete env.OMX_TEAM_STATE_ROOT;
+  return env;
+}
+
 afterEach(async () => {
   process.exitCode = originalProcessExitCode;
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -42,7 +49,7 @@ describe('omx question CLI', () => {
         allow_other: true,
       }), '--json'], {
         cwd,
-        env: { ...process.env, OMX_TEAM_WORKER: 'demo/worker-1', OMX_AUTO_UPDATE: '0' },
+        env: makeQuestionCliEnv(cwd, { OMX_TEAM_WORKER: 'demo/worker-1', OMX_AUTO_UPDATE: '0' }),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let stdout = '';
@@ -71,7 +78,7 @@ describe('omx question CLI', () => {
 
     const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
       cwd,
-      env: { ...process.env, OMX_AUTO_UPDATE: '0', OMX_NOTIFY_FALLBACK: '0', OMX_HOOK_DERIVED_SIGNALS: '0', OMX_QUESTION_TEST_RENDERER: 'noop' },
+      env: makeQuestionCliEnv(cwd, { OMX_AUTO_UPDATE: '0', OMX_NOTIFY_FALLBACK: '0', OMX_HOOK_DERIVED_SIGNALS: '0', OMX_QUESTION_TEST_RENDERER: 'noop' }),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -136,7 +143,7 @@ describe('omx question CLI', () => {
 
     const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
       cwd,
-      env: { ...process.env, OMX_AUTO_UPDATE: '0', OMX_NOTIFY_FALLBACK: '0', OMX_HOOK_DERIVED_SIGNALS: '0', OMX_QUESTION_TEST_RENDERER: 'noop' },
+      env: makeQuestionCliEnv(cwd, { OMX_AUTO_UPDATE: '0', OMX_NOTIFY_FALLBACK: '0', OMX_HOOK_DERIVED_SIGNALS: '0', OMX_QUESTION_TEST_RENDERER: 'noop' }),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -219,8 +226,7 @@ esac
     const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
       const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
         cwd,
-        env: {
-          ...process.env,
+        env: makeQuestionCliEnv(cwd, {
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
           TMUX: '/tmp/fake',
           TMUX_PANE: '%0',
@@ -229,7 +235,7 @@ esac
           OMX_AUTO_UPDATE: '0',
           OMX_NOTIFY_FALLBACK: '0',
           OMX_HOOK_DERIVED_SIGNALS: '0',
-        },
+        }),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let stdout = '';
@@ -294,8 +300,7 @@ esac
     const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
       const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
         cwd,
-        env: {
-          ...process.env,
+        env: makeQuestionCliEnv(cwd, {
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
           TMUX: '/tmp/fake',
           TMUX_PANE: '%0',
@@ -305,7 +310,7 @@ esac
           OMX_NOTIFY_FALLBACK: '0',
           OMX_HOOK_DERIVED_SIGNALS: '0',
           OMX_QUESTION_WAIT_TIMEOUT_MS: '5000',
-        },
+        }),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let stdout = '';
@@ -342,14 +347,13 @@ esac
     const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
       const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
         cwd,
-        env: {
-          ...process.env,
+        env: makeQuestionCliEnv(cwd, {
           OMX_AUTO_UPDATE: '0',
           OMX_NOTIFY_FALLBACK: '0',
           OMX_HOOK_DERIVED_SIGNALS: '0',
           OMX_QUESTION_TEST_RENDERER: 'noop',
           OMX_QUESTION_WAIT_TIMEOUT_MS: '50',
-        },
+        }),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let stdout = '';
@@ -383,13 +387,12 @@ exit 0
       session_id: 'sess-q',
     });
 
-    const childEnv: NodeJS.ProcessEnv = {
-      ...process.env,
+    const childEnv: NodeJS.ProcessEnv = makeQuestionCliEnv(cwd, {
       PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
       OMX_AUTO_UPDATE: '0',
       OMX_NOTIFY_FALLBACK: '0',
       OMX_HOOK_DERIVED_SIGNALS: '0',
-    };
+    });
     delete childEnv.TMUX;
     delete childEnv.TMUX_PANE;
     delete childEnv.OMX_QUESTION_RETURN_PANE;
@@ -463,8 +466,7 @@ exit 0
     const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
       const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
         cwd,
-        env: {
-          ...process.env,
+        env: makeQuestionCliEnv(cwd, {
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
           TMUX: '/tmp/fake',
           TMUX_PANE: '%0',
@@ -473,7 +475,7 @@ exit 0
           OMX_AUTO_UPDATE: '0',
           OMX_NOTIFY_FALLBACK: '0',
           OMX_HOOK_DERIVED_SIGNALS: '0',
-        },
+        }),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let stdout = '';
@@ -532,14 +534,13 @@ esac
       session_id: 'sess-q',
     });
 
-    const childEnv: NodeJS.ProcessEnv = {
-      ...process.env,
+    const childEnv: NodeJS.ProcessEnv = makeQuestionCliEnv(cwd, {
       PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
       OMX_QUESTION_RETURN_PANE: '%44',
       OMX_AUTO_UPDATE: '0',
       OMX_NOTIFY_FALLBACK: '0',
       OMX_HOOK_DERIVED_SIGNALS: '0',
-    };
+    });
     delete childEnv.TMUX;
     delete childEnv.TMUX_PANE;
     delete childEnv.OMX_LEADER_PANE_ID;
@@ -576,14 +577,19 @@ esac
     assert.equal(record?.renderer?.target, '%45');
     assert.equal(record?.renderer?.return_target, '%44');
 
+    const injectedAnswers: Array<{ paneId: string; answer: string | string[] | undefined }> = [];
     await markQuestionAnswered(recordPath, {
       kind: 'option',
       value: 'a',
       selected_labels: ['A'],
       selected_values: ['a'],
     }, {
-      injectAnswersToPane: () => true,
+      injectAnswersToPane: (paneId, answers) => {
+        injectedAnswers.push({ paneId, answer: answers[0]?.answer.value ?? '' });
+        return true;
+      },
     });
+    assert.deepEqual(injectedAnswers, [{ paneId: '%44', answer: 'a' }]);
 
     const exitCode = await closePromise;
     assert.equal(exitCode, 0, stderr || stdout);
@@ -611,6 +617,9 @@ esac
     const originalTmuxPane = process.env.TMUX_PANE;
     const originalQuestionReturnPane = process.env.OMX_QUESTION_RETURN_PANE;
     const originalLeaderPaneId = process.env.OMX_LEADER_PANE_ID;
+    const originalOmxRoot = process.env.OMX_ROOT;
+    const originalOmxStateRoot = process.env.OMX_STATE_ROOT;
+    const originalOmxTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
     const writes: string[] = [];
     const stderrWrites: string[] = [];
 
@@ -621,6 +630,9 @@ esac
     delete process.env.TMUX_PANE;
     delete process.env.OMX_QUESTION_RETURN_PANE;
     delete process.env.OMX_LEADER_PANE_ID;
+    process.env.OMX_ROOT = cwd;
+    delete process.env.OMX_STATE_ROOT;
+    delete process.env.OMX_TEAM_STATE_ROOT;
     process.stdin.setRawMode = ((_: boolean) => process.stdin) as unknown as typeof process.stdin.setRawMode;
     process.stdin.resume = (() => process.stdin) as unknown as typeof process.stdin.resume;
     process.stdin.pause = (() => process.stdin) as unknown as typeof process.stdin.pause;
@@ -682,6 +694,12 @@ esac
       else delete process.env.OMX_QUESTION_RETURN_PANE;
       if (typeof originalLeaderPaneId === 'string') process.env.OMX_LEADER_PANE_ID = originalLeaderPaneId;
       else delete process.env.OMX_LEADER_PANE_ID;
+      if (typeof originalOmxRoot === 'string') process.env.OMX_ROOT = originalOmxRoot;
+      else delete process.env.OMX_ROOT;
+      if (typeof originalOmxStateRoot === 'string') process.env.OMX_STATE_ROOT = originalOmxStateRoot;
+      else delete process.env.OMX_STATE_ROOT;
+      if (typeof originalOmxTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = originalOmxTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
     }
   });
 
