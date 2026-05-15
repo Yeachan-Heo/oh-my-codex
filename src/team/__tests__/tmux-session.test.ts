@@ -19,6 +19,7 @@ import {
   buildUnregisterClientAttachedReconcileArgs,
   buildUnregisterResizeHookArgs,
   buildWorkerStartupCommand,
+  shouldSourceTeamWorkerShellRc,
   buildHudPaneTarget,
   chooseTeamLeaderPaneId,
   createTeamSession,
@@ -1041,7 +1042,7 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
-  it('uses zsh with ~/.zshrc and non-login shell exec semantics', () => {
+  it('uses zsh without sourcing ~/.zshrc by default and keeps non-login exec semantics', () => {
     const prevShell = process.env.SHELL;
     process.env.SHELL = '/bin/zsh';
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
@@ -1053,7 +1054,7 @@ describe('buildWorkerStartupCommand', () => {
       assert.match(cmd, /OMX_TEAM_WORKER=alpha\/worker-2/);
       assert.match(cmd, /'\/bin\/zsh' -c/);
       assert.doesNotMatch(cmd, /'\/bin\/zsh' -lc\b/);
-      assert.match(cmd, /source ~\/\.zshrc/);
+      assert.doesNotMatch(cmd, /source ~\/\.zshrc/);
       assert.match(cmd, /exec .*codex/);
     } finally {
       if (typeof prevShell === 'string') process.env.SHELL = prevShell;
@@ -1074,7 +1075,7 @@ describe('buildWorkerStartupCommand', () => {
       );
       assert.match(cmd, /'\/opt\/homebrew\/bin\/zsh' -c/);
       assert.doesNotMatch(cmd, /'\/bin\/sh' -c/);
-      assert.match(cmd, /source ~\/\.zshrc/);
+      assert.doesNotMatch(cmd, /source ~\/\.zshrc/);
     } finally {
       if (typeof prevShell === 'string') process.env.SHELL = prevShell;
       else delete process.env.SHELL;
@@ -1094,7 +1095,7 @@ describe('buildWorkerStartupCommand', () => {
       );
       assert.match(cmd, /'\/opt\/local\/bin\/zsh' -c/);
       assert.doesNotMatch(cmd, /'\/bin\/sh' -c/);
-      assert.match(cmd, /source ~\/\.zshrc/);
+      assert.doesNotMatch(cmd, /source ~\/\.zshrc/);
     } finally {
       if (typeof prevShell === 'string') process.env.SHELL = prevShell;
       else delete process.env.SHELL;
@@ -1103,14 +1104,14 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
-  it('uses bash with ~/.bashrc and preserves launch args', () => {
+  it('prevents issue #2358 bash rc fan-out by default and preserves launch args', () => {
     const prevShell = process.env.SHELL;
     process.env.SHELL = '/bin/bash';
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
     try {
       const cmd = buildWorkerStartupCommand('alpha', 1, ['--model', 'gpt-5']);
-      assert.match(cmd, /source ~\/\.bashrc/);
+      assert.doesNotMatch(cmd, /source ~\/\.bashrc/);
       assert.match(cmd, /exec .*codex/);
       assert.match(cmd, /--model/);
       assert.match(cmd, /gpt-5/);
@@ -1119,6 +1120,49 @@ describe('buildWorkerStartupCommand', () => {
       else delete process.env.SHELL;
       if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('sources worker shell rc files only when explicitly opted in', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const prevSourceRc = process.env.OMX_TMUX_SOURCE_SHELL_RC;
+    process.env.SHELL = '/bin/bash';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      delete process.env.OMX_TMUX_SOURCE_SHELL_RC;
+      assert.equal(shouldSourceTeamWorkerShellRc(process.env), false);
+      assert.doesNotMatch(
+        buildWorkerStartupCommand('alpha', 1, ['--model', 'gpt-5']),
+        /source ~\/\.bashrc/,
+      );
+
+      process.env.OMX_TMUX_SOURCE_SHELL_RC = '1';
+      assert.equal(shouldSourceTeamWorkerShellRc(process.env), true);
+      assert.match(
+        buildWorkerStartupCommand('alpha', 1, ['--model', 'gpt-5']),
+        /source ~\/\.bashrc/,
+      );
+
+      delete process.env.OMX_TMUX_SOURCE_SHELL_RC;
+      assert.match(
+        buildWorkerStartupCommand(
+          'alpha',
+          1,
+          ['--model', 'gpt-5'],
+          process.cwd(),
+          { OMX_TMUX_SOURCE_SHELL_RC: '1' },
+        ),
+        /source ~\/\.bashrc/,
+        'per-worker explicit opt-in should be honored',
+      );
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof prevSourceRc === 'string') process.env.OMX_TMUX_SOURCE_SHELL_RC = prevSourceRc;
+      else delete process.env.OMX_TMUX_SOURCE_SHELL_RC;
     }
   });
 
@@ -1877,7 +1921,7 @@ describe('buildWorkerStartupCommand', () => {
         buildWorkerStartupCommand('alpha', 1, [], process.cwd()),
       );
       assert.match(cmd, /\/bin\/bash\b/, 'must fall back to bash when zsh is unavailable');
-      assert.match(cmd, /\.bashrc/, 'must source bash rc file for bash fallback');
+      assert.doesNotMatch(cmd, /\.bashrc/, 'must not source bash rc file for bash fallback by default');
       assert.doesNotMatch(cmd, /fish/, 'must not launch unsupported fish shell');
     } finally {
       if (typeof prevShell === 'string') process.env.SHELL = prevShell;

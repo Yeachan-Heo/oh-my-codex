@@ -601,6 +601,12 @@ function buildShellLaunchSpec(shell: string, rcFile: string | null): WorkerLaunc
   return { shell, rcFile };
 }
 
+export function shouldSourceTeamWorkerShellRc(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return String(env.OMX_TMUX_SOURCE_SHELL_RC ?? '').trim() === '1';
+}
+
 function resolveSupportedShellAffinity(shellPath: string | undefined): WorkerLaunchSpec | null {
   if (!shellPath || shellPath.trim() === '' || !existsSync(shellPath)) return null;
   if (/\/zsh$/i.test(shellPath)) return buildShellLaunchSpec(shellPath, '~/.zshrc');
@@ -971,7 +977,15 @@ export function buildWorkerStartupCommand(
   const quotedArgs = startupArgs.map(shellQuoteSingle).join(' ');
   const quotedCommand = shellQuoteSingle(processSpec.command);
   const cliInvocation = quotedArgs.length > 0 ? `exec ${quotedCommand} ${quotedArgs}` : `exec ${quotedCommand}`;
-  const rcPrefix = launchSpec.rcFile ? `if [ -f ${launchSpec.rcFile} ]; then source ${launchSpec.rcFile}; fi; ` : '';
+  // Keep worker tmux panes non-interactive and rc-free by default. PR #2283
+  // blocked rc sourcing for detached leader/HUD panes, but team workers still
+  // sourced ~/.bashrc or ~/.zshrc here, leaving the same #2239/#2282/#2358
+  // recursive bash fan-out path open when team/ultrawork created workers.
+  // Users who intentionally need legacy shell PATH bootstrapping can opt in
+  // with the same tmux-pane escape hatch used by buildTmuxPaneCommand().
+  const rcPrefix = shouldSourceTeamWorkerShellRc({ ...process.env, ...extraEnv }) && launchSpec.rcFile
+    ? `if [ -f ${launchSpec.rcFile} ]; then source ${launchSpec.rcFile}; fi; `
+    : '';
   const inner = `${rcPrefix}${pathPrefix}${cliInvocation}`;
   const envParts = Object.entries(startupEnv).map(([key, value]) => `${key}=${value}`);
 
