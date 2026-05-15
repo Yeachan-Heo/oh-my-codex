@@ -3,7 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildMergedConfig, mergeConfig, OMX_DEVELOPER_INSTRUCTIONS, upsertPluginModeRuntimeFeatureFlags } from '../generator.js';
+import {
+  buildMergedConfig,
+  formatTomlStringArray,
+  mergeConfig,
+  OMX_DEVELOPER_INSTRUCTIONS,
+  upsertPluginModeRuntimeFeatureFlags,
+} from '../generator.js';
 
 describe('config generator', () => {
   it('places top-level keys before [features]', async () => {
@@ -603,6 +609,35 @@ describe('config generator', () => {
       merged,
       /^notify = \["node", "\/tmp\/user-notify\.js", "\/opt\/homebrew\/lib\/node_modules\/oh-my-codex\/dist\/scripts\/notify-hook\.js"\]$/m,
     );
+    assert.match(merged, /^approval_policy = "never"$/m);
+  });
+
+  it('strips OMX-managed nested previous-notify payloads from preserved user notify commands', () => {
+    const pkgRoot = '/current/install/oh-my-codex';
+    const wrapperNotify = [
+      '/Users/alice/.codex/computer-use/SkyComputerUseClient',
+      'turn-ended',
+      '--previous-notify',
+      JSON.stringify([
+        'node',
+        '/opt/homebrew/lib/node_modules/oh-my-codex/dist/scripts/notify-dispatcher.js',
+        '--metadata',
+        '/tmp/notify-dispatch.json',
+      ]),
+    ];
+    const userNotify = [
+      `notify = ${formatTomlStringArray(wrapperNotify)}`,
+      'approval_policy = "never"',
+      '',
+    ].join('\n');
+
+    const merged = buildMergedConfig(userNotify, pkgRoot, { notifyCommand: false });
+
+    assert.match(
+      merged,
+      /^notify = \["\/Users\/alice\/\.codex\/computer-use\/SkyComputerUseClient", "turn-ended"\]$/m,
+    );
+    assert.doesNotMatch(merged, /notify-dispatcher\.js/);
     assert.match(merged, /^approval_policy = "never"$/m);
   });
 });

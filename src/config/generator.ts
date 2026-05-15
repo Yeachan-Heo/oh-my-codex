@@ -317,6 +317,31 @@ function resolveNotifyEntrypoint(command: readonly string[]): string | undefined
   return command.slice(1).find((arg) => !arg.startsWith("-"));
 }
 
+function parseStringArray(value: string): string[] | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (
+      !Array.isArray(parsed) ||
+      !parsed.every((item) => typeof item === "string")
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function getNestedPreviousNotifyCommand(
+  command: readonly string[],
+): string[] | null {
+  const flagIndex = command.indexOf("--previous-notify");
+  if (flagIndex < 0) return null;
+  const encodedCommand = command[flagIndex + 1];
+  if (!encodedCommand) return null;
+  return parseStringArray(encodedCommand) ?? command.slice(flagIndex + 1);
+}
+
 export function isOmxManagedNotifyCommand(
   command: readonly string[] | null | undefined,
   pkgRoot?: string,
@@ -337,13 +362,28 @@ export function isOmxManagedNotifyCommand(
   return /(?:^|[\\/])oh-my-codex(?:[\\/]|$)/.test(entrypoint);
 }
 
+function stripOmxManagedNestedPreviousNotify(
+  command: readonly string[],
+  pkgRoot?: string,
+): string[] {
+  const nestedPreviousNotify = getNestedPreviousNotifyCommand(command);
+  if (!isOmxManagedNotifyCommand(nestedPreviousNotify, pkgRoot)) {
+    return [...command];
+  }
+  const flagIndex = command.indexOf("--previous-notify");
+  const encodedCommand = command[flagIndex + 1];
+  const removeCount = parseStringArray(encodedCommand ?? "") ? 2 : command.length - flagIndex;
+  return [...command.slice(0, flagIndex), ...command.slice(flagIndex + removeCount)];
+}
+
 export function sanitizePreviousNotifyCommand(
   command: readonly string[] | null | undefined,
   pkgRoot?: string,
 ): string[] | null {
   if (!command || command.length === 0) return null;
   if (isOmxManagedNotifyCommand(command, pkgRoot)) return null;
-  return [...command];
+  const sanitized = stripOmxManagedNestedPreviousNotify(command, pkgRoot);
+  return sanitized.length > 0 ? sanitized : null;
 }
 
 function getOmxTopLevelLines(
@@ -1968,10 +2008,11 @@ export function buildMergedConfig(
     existing = stripped.cleaned;
   }
 
+  const rootNotify = getRootTomlArray(existing, "notify");
   const userNotifyToPreserve =
     options.notifyCommand === false &&
-    !isOmxManagedNotifyCommand(getRootTomlArray(existing, "notify"), pkgRoot)
-      ? getRootTomlArray(existing, "notify")
+    !isOmxManagedNotifyCommand(rootNotify, pkgRoot)
+      ? sanitizePreviousNotifyCommand(rootNotify, pkgRoot)
       : null;
   existing = stripOmxTopLevelKeys(existing);
   if (userNotifyToPreserve) {

@@ -3412,13 +3412,21 @@ async function buildNotifyMergePlan(
 		return { notifyCommand: omxNotify };
 	}
 
+	const sanitizedExistingNotify = sanitizePreviousNotifyCommand(
+		existingNotify,
+		pkgRoot,
+	);
+	if (!sanitizedExistingNotify) {
+		return { notifyCommand: omxNotify };
+	}
+
 	return {
 		notifyCommand: dispatcherNotify,
 		metadataPath,
 		metadata: {
 			managedBy: "oh-my-codex",
 			version: 1,
-			previousNotify: sanitizePreviousNotifyCommand(existingNotify, pkgRoot),
+			previousNotify: sanitizedExistingNotify,
 			omxNotify,
 			dispatcherNotify,
 		},

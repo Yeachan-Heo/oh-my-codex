@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { buildManagedCodexHooksConfig } from '../../config/codex-hooks.js';
+import { formatTomlStringArray } from '../../config/generator.js';
 
 function runOmx(
   cwd: string,
@@ -354,6 +355,71 @@ describe('omx uninstall', () => {
       const config = await readFile(join(codexDir, 'config.toml'), 'utf-8');
       assert.match(config, /^approval_policy = "on-failure"$/m);
       assert.doesNotMatch(config, /^notify\s*=/m);
+      assert.doesNotMatch(config, /notify-dispatcher\.js/);
+      assert.doesNotMatch(config, /oh-my-codex \(OMX\) Configuration/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('restores wrapper notify commands without nested OMX previous-notify payloads', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-uninstall-nested-notify-'));
+    try {
+      const home = join(wd, 'home');
+      const codexDir = join(home, '.codex');
+      const metadataPath = join(codexDir, '.omx', 'notify-dispatch.json');
+      const dispatcherNotify = [
+        'node',
+        join(process.cwd(), 'dist', 'scripts', 'notify-dispatcher.js'),
+        '--metadata',
+        metadataPath,
+      ];
+      const wrapperNotify = [
+        '/Users/alice/.codex/computer-use/SkyComputerUseClient',
+        'turn-ended',
+        '--previous-notify',
+        JSON.stringify(dispatcherNotify),
+      ];
+      await mkdir(dirname(metadataPath), { recursive: true });
+      await writeFile(
+        join(codexDir, 'config.toml'),
+        [
+          '# User settings',
+          'approval_policy = "on-failure"',
+          `notify = ${formatTomlStringArray(dispatcherNotify)}`,
+          '',
+          '# ============================================================',
+          '# oh-my-codex (OMX) Configuration',
+          '# Managed by omx setup - manual edits preserved on next setup',
+          '# ============================================================',
+          '[mcp_servers.omx_state]',
+          'command = "node"',
+          'args = ["/path/to/state-server.js"]',
+          'enabled = true',
+          '# ============================================================',
+          '# End oh-my-codex',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        metadataPath,
+        JSON.stringify({
+          managedBy: 'oh-my-codex',
+          version: 1,
+          previousNotify: wrapperNotify,
+        }),
+      );
+
+      const res = runOmx(wd, ['uninstall'], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+
+      const config = await readFile(join(codexDir, 'config.toml'), 'utf-8');
+      assert.match(config, /^approval_policy = "on-failure"$/m);
+      assert.match(
+        config,
+        /^notify = \["\/Users\/alice\/\.codex\/computer-use\/SkyComputerUseClient", "turn-ended"\]$/m,
+      );
       assert.doesNotMatch(config, /notify-dispatcher\.js/);
       assert.doesNotMatch(config, /oh-my-codex \(OMX\) Configuration/);
     } finally {

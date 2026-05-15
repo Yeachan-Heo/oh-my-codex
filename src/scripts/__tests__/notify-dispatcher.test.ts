@@ -91,6 +91,126 @@ describe("notify dispatcher previousNotify guard", () => {
 		}
 	});
 
+	it("runs wrapper previousNotify commands without nested OMX dispatcher payloads", () => {
+		const wd = mkdtempSync(join(tmpdir(), "omx-notify-dispatcher-wrapper-"));
+		try {
+			const oldPkgScripts = join(wd, "global", "oh-my-codex", "dist", "scripts");
+			mkdirSync(oldPkgScripts, { recursive: true });
+			const wrapperMarker = join(wd, "wrapper-ran");
+			const stalePreviousMarker = join(wd, "stale-previous-ran");
+			const omxMarker = join(wd, "omx-ran");
+			const staleDispatcher = join(oldPkgScripts, "notify-dispatcher.js");
+			const wrapperScript = join(wd, "wrapper.js");
+			const omxHook = join(wd, "current-notify-hook.js");
+			writeFileSync(staleDispatcher, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(stalePreviousMarker)}, "ran");\n`);
+			writeFileSync(
+				wrapperScript,
+				[
+					'import { writeFileSync } from "node:fs";',
+					'import { spawnSync } from "node:child_process";',
+					`writeFileSync(${JSON.stringify(wrapperMarker)}, process.argv.slice(2).join("\\n"));`,
+					'const index = process.argv.indexOf("--previous-notify");',
+					'if (index >= 0) {',
+					'  const nested = JSON.parse(process.argv[index + 1]);',
+					'  spawnSync(nested[0], [...nested.slice(1), process.argv.at(-1) ?? ""], { stdio: "ignore" });',
+					'}',
+					"",
+				].join("\n"),
+			);
+			writeFileSync(omxHook, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(omxMarker)}, "ran");\n`);
+			const metadataPath = join(wd, "notify-dispatch.json");
+			writeFileSync(
+				metadataPath,
+				JSON.stringify({
+					managedBy: "oh-my-codex",
+					version: 1,
+					previousNotify: [
+						process.execPath,
+						wrapperScript,
+						"turn-ended",
+						"--previous-notify",
+						JSON.stringify([
+							process.execPath,
+							staleDispatcher,
+							"--metadata",
+							metadataPath,
+						]),
+					],
+					omxNotify: [process.execPath, omxHook],
+				}),
+			);
+
+			runDispatcher(metadataPath);
+
+			assert.doesNotMatch(readFileSync(wrapperMarker, "utf-8"), /--previous-notify/);
+			assert.equal(existsSync(stalePreviousMarker), false);
+			assert.equal(readFileSync(omxMarker, "utf-8"), "ran");
+		} finally {
+			rmSync(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("strips nested previousNotify payloads that match dispatcher metadata outside oh-my-codex paths", () => {
+		const wd = mkdtempSync(join(tmpdir(), "omx-notify-dispatcher-metadata-wrapper-"));
+		try {
+			const oldPkgScripts = join(wd, "global", "renamed-package", "dist", "scripts");
+			mkdirSync(oldPkgScripts, { recursive: true });
+			const wrapperMarker = join(wd, "wrapper-ran");
+			const stalePreviousMarker = join(wd, "stale-previous-ran");
+			const omxMarker = join(wd, "omx-ran");
+			const staleDispatcher = join(oldPkgScripts, "notify-dispatcher.js");
+			const wrapperScript = join(wd, "wrapper.js");
+			const omxHook = join(wd, "current-notify-hook.js");
+			writeFileSync(staleDispatcher, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(stalePreviousMarker)}, "ran");\n`);
+			writeFileSync(
+				wrapperScript,
+				[
+					'import { writeFileSync } from "node:fs";',
+					'import { spawnSync } from "node:child_process";',
+					`writeFileSync(${JSON.stringify(wrapperMarker)}, process.argv.slice(2).join("\\n"));`,
+					'const index = process.argv.indexOf("--previous-notify");',
+					'if (index >= 0) {',
+					'  const nested = JSON.parse(process.argv[index + 1]);',
+					'  spawnSync(nested[0], [...nested.slice(1), process.argv.at(-1) ?? ""], { stdio: "ignore" });',
+					'}',
+					"",
+				].join("\n"),
+			);
+			writeFileSync(omxHook, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(omxMarker)}, "ran");\n`);
+			const metadataPath = join(wd, "notify-dispatch.json");
+			const dispatcherNotify = [
+				process.execPath,
+				staleDispatcher,
+				"--metadata",
+				metadataPath,
+			];
+			writeFileSync(
+				metadataPath,
+				JSON.stringify({
+					managedBy: "oh-my-codex",
+					version: 1,
+					previousNotify: [
+						process.execPath,
+						wrapperScript,
+						"turn-ended",
+						"--previous-notify",
+						JSON.stringify(dispatcherNotify),
+					],
+					omxNotify: [process.execPath, omxHook],
+					dispatcherNotify,
+				}),
+			);
+
+			runDispatcher(metadataPath);
+
+			assert.doesNotMatch(readFileSync(wrapperMarker, "utf-8"), /--previous-notify/);
+			assert.equal(existsSync(stalePreviousMarker), false);
+			assert.equal(readFileSync(omxMarker, "utf-8"), "ran");
+		} finally {
+			rmSync(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("preserves and runs real user previousNotify entries", () => {
 		const wd = mkdtempSync(join(tmpdir(), "omx-notify-dispatcher-user-"));
 		try {

@@ -16,6 +16,7 @@ import { parse as parseToml } from "@iarna/toml";
 import { setup } from "../setup.js";
 import { uninstall } from "../uninstall.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../../config/omx-first-party-mcp.js";
+import { formatTomlStringArray } from "../../config/generator.js";
 
 const packageRoot = process.cwd();
 
@@ -161,6 +162,117 @@ describe("notify setup scope", () => {
 					new RegExp('^notify = \\["node", "/tmp/user-notify\\.js"\\]$', "m"),
 				);
 				assert.doesNotMatch(restored, /notify-dispatcher\.js/);
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("strips nested OMX previous-notify wrappers from user notify metadata", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-nested-wrapper-notify-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await mkdir(codexHomeDir, { recursive: true });
+				const metadataPath = join(
+					codexHomeDir,
+					".omx",
+					"notify-dispatch.json",
+				);
+				const wrapperNotify = [
+					"/Users/alice/.codex/computer-use/SkyComputerUseClient",
+					"turn-ended",
+					"--previous-notify",
+					JSON.stringify([
+						"node",
+						join(
+							"/opt",
+							"homebrew",
+							"lib",
+							"node_modules",
+							"oh-my-codex",
+							"dist",
+							"scripts",
+							"notify-dispatcher.js",
+						),
+						"--metadata",
+						metadataPath,
+					]),
+				];
+				await writeFile(
+					join(codexHomeDir, "config.toml"),
+					`notify = ${formatTomlStringArray(wrapperNotify)}\napproval_policy = "on-failure"\n`,
+				);
+
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user" });
+				});
+
+				const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
+				assert.match(
+					config,
+					/^notify = \["node", ".*notify-dispatcher\.js", "--metadata", ".*notify-dispatch\.json"\]$/m,
+				);
+				const metadata = JSON.parse(await readFile(metadataPath, "utf-8"));
+				assert.deepEqual(metadata.previousNotify, [
+					"/Users/alice/.codex/computer-use/SkyComputerUseClient",
+					"turn-ended",
+				]);
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("sanitizes nested OMX previous-notify wrappers from existing dispatcher metadata", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-existing-nested-wrapper-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await mkdir(codexHomeDir, { recursive: true });
+				const metadataPath = join(
+					codexHomeDir,
+					".omx",
+					"notify-dispatch.json",
+				);
+				const dispatcherNotify = [
+					"node",
+					join(packageRoot, "dist", "scripts", "notify-dispatcher.js"),
+					"--metadata",
+					metadataPath,
+				];
+				const wrapperNotify = [
+					"/Users/alice/.codex/computer-use/SkyComputerUseClient",
+					"turn-ended",
+					"--previous-notify",
+					JSON.stringify(dispatcherNotify),
+				];
+				await mkdir(dirname(metadataPath), { recursive: true });
+				await writeFile(
+					join(codexHomeDir, "config.toml"),
+					`notify = ${formatTomlStringArray(dispatcherNotify)}\napproval_policy = "on-failure"\n`,
+				);
+				await writeFile(
+					metadataPath,
+					JSON.stringify({
+						managedBy: "oh-my-codex",
+						version: 1,
+						previousNotify: wrapperNotify,
+						omxNotify: [
+							"node",
+							join(packageRoot, "dist", "scripts", "notify-hook.js"),
+						],
+						dispatcherNotify,
+					}),
+				);
+
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user" });
+				});
+
+				const metadata = JSON.parse(await readFile(metadataPath, "utf-8"));
+				assert.deepEqual(metadata.previousNotify, [
+					"/Users/alice/.codex/computer-use/SkyComputerUseClient",
+					"turn-ended",
+				]);
 			});
 		} finally {
 			await rm(wd, { recursive: true, force: true });
