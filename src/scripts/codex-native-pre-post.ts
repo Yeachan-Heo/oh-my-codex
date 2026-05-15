@@ -995,15 +995,75 @@ function buildSloppyFallbackPreToolUseOutput(commandText: string): Record<string
   };
 }
 
-function commandInvokesOmxQuestion(command: string): boolean {
-  const tokens = tokenizeShellCommand(command)?.map((token) => token.toLowerCase()) ?? [];
-  for (let index = 0; index < tokens.length; index += 1) {
-    const rawToken = tokens[index] || '';
-    const token = rawToken.replace(/\\/g, '/').split('/').pop() || '';
-    if ((token === 'omx' || token === 'omx.js') && tokens[index + 1] === 'question') return true;
-    if ((token === 'node' || token === 'node.exe') && /(?:^|\/)omx\.js$/.test(tokens[index + 1] || '') && tokens[index + 2] === 'question') return true;
+function removeHereDocBodies(command: string): string {
+  const lines = command.split(/\r?\n/);
+  const retained: string[] = [];
+  let pendingDelimiter: string | null = null;
+
+  for (const line of lines) {
+    if (pendingDelimiter) {
+      if (line.trim() === pendingDelimiter) {
+        pendingDelimiter = null;
+      }
+      continue;
+    }
+
+    retained.push(line);
+    const match = /<<-?\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_.-]+))/.exec(line);
+    if (match) pendingDelimiter = match[1] || match[2] || match[3] || null;
   }
-  return /\bomx\s+question\b/i.test(command) || /\bomx\.js['"]?\s+question\b/i.test(command);
+
+  return retained.join("\n");
+}
+
+function commandInvokesOmxQuestion(command: string): boolean {
+  const tokens = tokenizeShellCommandWithBoundaries(removeHereDocBodies(command))
+    ?.map((token) => ({ ...token, value: token.value.toLowerCase() }))
+    ?? [];
+
+  for (let commandStart = 0; commandStart < tokens.length; commandStart = nextCommandStart(tokens, commandStart)) {
+    const commandEnd = nextCommandStart(tokens, commandStart);
+    let index = commandStart;
+
+    while (index < commandEnd && isInlineShellEnvAssignment(tokens[index]?.value ?? "")) {
+      index += 1;
+    }
+
+    while (index < commandEnd && isEnvExecutableToken(tokens[index]?.value ?? "")) {
+      index += 1;
+      while (index < commandEnd) {
+        const token = tokens[index]?.value ?? "";
+        if (token === "--") {
+          index += 1;
+          break;
+        }
+        if (isInlineShellEnvAssignment(token)) {
+          index += 1;
+          continue;
+        }
+        if (token === "-i" || token === "--ignore-environment" || token.startsWith("--unset=")) {
+          index += 1;
+          continue;
+        }
+        if (token.startsWith("-")) {
+          index += envOptionConsumesNextValue(token) ? 2 : 1;
+          continue;
+        }
+        break;
+      }
+    }
+
+    const rawToken = tokens[index]?.value || "";
+    const token = rawToken.replace(/\\/g, "/").split("/").pop() || "";
+    if ((token === "omx" || token === "omx.js") && tokens[index + 1]?.value === "question") return true;
+    if (
+      (token === "node" || token === "node.exe")
+      && /(?:^|\/)omx\.js$/.test(tokens[index + 1]?.value || "")
+      && tokens[index + 2]?.value === "question"
+    ) return true;
+  }
+
+  return false;
 }
 
 function isQuestionReturnPaneAssignment(token: string): boolean {

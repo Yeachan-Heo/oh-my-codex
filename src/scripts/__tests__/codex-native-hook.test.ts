@@ -2866,6 +2866,52 @@ exit 0
     }
   });
 
+  it("does not block Bash commands that only mention omx question in quoted arguments", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-question-quoted-mention-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-question-quoted-mention",
+          tool_input: {
+            command: `omx ultragoal create-goals --brief "Deep interview says omx question failed in tmux"`,
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block Bash heredocs that only document omx question text", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-question-heredoc-mention-"));
+    try {
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          tool_name: "Bash",
+          tool_use_id: "tool-question-heredoc-mention",
+          tool_input: {
+            command: `cat > issue-notes.md <<'EOF'\nomx question failed in the attached tmux pane\nEOF`,
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("allows Bash omx question when the command preserves the leader-pane return hint", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-question-allow-"));
     try {
