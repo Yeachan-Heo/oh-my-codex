@@ -18,17 +18,46 @@ import {
   isRuntimeCodexHomeMirrorPath,
   mergeManagedCodexHooksConfig,
   removeManagedCodexHooks,
+  resolveStableNodePath,
 } from "../codex-hooks.js";
 
 describe("codex hooks helpers", () => {
 
-  it("uses the current JavaScript runtime for managed hook commands", () => {
+  it("normalizes Homebrew Cellar node paths to the stable bin symlink", () => {
+    assert.equal(
+      resolveStableNodePath("/opt/homebrew/Cellar/node/26.0.0/bin/node"),
+      "/opt/homebrew/bin/node",
+    );
+    assert.equal(
+      resolveStableNodePath(
+        "/home/linuxbrew/.linuxbrew/Cellar/node/24.1.0/bin/node",
+      ),
+      "/home/linuxbrew/.linuxbrew/bin/node",
+    );
+  });
+
+  it("leaves non-Homebrew node paths unchanged", () => {
+    assert.equal(
+      resolveStableNodePath("/usr/local/bin/node"),
+      "/usr/local/bin/node",
+    );
+    assert.equal(
+      resolveStableNodePath("/usr/bin/node"),
+      "/usr/bin/node",
+    );
+    assert.equal(
+      resolveStableNodePath("/opt/homebrew/bin/node"),
+      "/opt/homebrew/bin/node",
+    );
+  });
+
+  it("uses a stable node path for managed hook commands", () => {
     const config = buildManagedCodexHooksConfig("/repo");
     const command = (config.hooks.SessionStart[0] as { hooks?: Array<{ command?: string }> } | undefined)?.hooks?.[0]?.command;
 
     assert.equal(
       command,
-      `"${process.execPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" "/repo/dist/scripts/codex-native-hook.js"`,
+      `"${resolveStableNodePath(process.execPath).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" "/repo/dist/scripts/codex-native-hook.js"`,
     );
   });
 
@@ -228,7 +257,7 @@ describe("codex hooks helpers", () => {
   it("matches Codex's normalized command hook hash identity", async () => {
     const state = buildManagedCodexHookTrustState("/hooks.json", "/repo");
     const command =
-      `"${process.execPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" "/repo/dist/scripts/codex-native-hook.js"`;
+      `"${resolveStableNodePath(process.execPath).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" "/repo/dist/scripts/codex-native-hook.js"`;
     const expectedIdentity = {
       event_name: "pre_tool_use",
       hooks: [

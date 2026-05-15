@@ -140,6 +140,21 @@ export function buildManagedCodexNativeHookWindowsShimPath(
   return win32.join(codexHomeDir, ...WINDOWS_NATIVE_HOOK_SHIM_RELATIVE_PATH);
 }
 
+/**
+ * Homebrew and Linuxbrew expose node through a stable `bin/node` symlink that is
+ * repointed on every `brew upgrade node`, while `process.execPath` resolves to
+ * the version-pinned Cellar path (e.g. `/opt/homebrew/Cellar/node/26.0.0/bin/node`).
+ * Persisting that pinned path into `~/.codex/hooks.json` makes every managed
+ * codex hook exit 127 the moment node is upgraded and the old Cellar directory
+ * is cleaned up. Normalize it back to the stable symlink so hooks survive node
+ * upgrades. Non-Homebrew paths are returned unchanged.
+ */
+export function resolveStableNodePath(
+  execPath: string = process.execPath,
+): string {
+  return execPath.replace(/\/Cellar\/node\/[^/]+\/bin\/node$/, "/bin/node");
+}
+
 export function buildManagedCodexNativeHookWindowsShimContent(
   pkgRoot: string,
   options: Pick<ManagedCodexHookOptions, "hookScriptPath" | "nodePath"> = {},
@@ -147,7 +162,7 @@ export function buildManagedCodexNativeHookWindowsShimContent(
   const hookScript =
     options.hookScriptPath ??
     win32.join(pkgRoot, "dist", "scripts", "codex-native-hook.js");
-  const nodePath = options.nodePath ?? process.execPath;
+  const nodePath = options.nodePath ?? resolveStableNodePath();
 
   return [
     "$ErrorActionPreference = 'Stop'",
@@ -192,7 +207,7 @@ export function buildManagedCodexNativeHookCommand(
     return `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ${quoteWindowsCommandPart(shimPath)}`;
   }
 
-  return `${quoteCommandPart(process.execPath)} ${quoteCommandPart(hookScript)}`;
+  return `${quoteCommandPart(resolveStableNodePath())} ${quoteCommandPart(hookScript)}`;
 }
 
 function buildCommandHook(
