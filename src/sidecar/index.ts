@@ -22,7 +22,8 @@ interface ParsedSidecarArgs {
 type SleepFn = (ms: number, signal?: AbortSignal) => Promise<void>;
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number.parseInt(value || '', 10);
+  if (!value || !/^\d+$/.test(value)) return fallback;
+  const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
