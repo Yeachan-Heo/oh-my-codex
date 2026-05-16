@@ -2,7 +2,7 @@ use omx_api::{http_request, http_request_with_bearer, read_daemon_state};
 use serde_json::Value;
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn temp_state_file(name: &str) -> std::path::PathBuf {
     let millis = SystemTime::now()
@@ -10,6 +10,32 @@ fn temp_state_file(name: &str) -> std::path::PathBuf {
         .unwrap()
         .as_millis();
     std::env::temp_dir().join(format!("omx-api-{name}-{millis}.json"))
+}
+
+fn wait_for_daemon_state(
+    state_file: &std::path::Path,
+    child: &mut std::process::Child,
+) -> omx_api::DaemonState {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(state) = read_daemon_state(state_file).ok().flatten() {
+            return state;
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            let mut stderr = String::new();
+            if let Some(mut pipe) = child.stderr.take() {
+                use std::io::Read;
+                let _ = pipe.read_to_string(&mut stderr);
+            }
+            panic!("server exited before writing daemon state: status={status}; stderr={stderr}");
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("server did not write daemon state within 5s at {state_file:?}");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]
@@ -48,15 +74,7 @@ fn binary_serve_status_and_stop_work_together() {
         .spawn()
         .expect("spawn omx-api serve");
 
-    let state = (0..50)
-        .find_map(|_| {
-            let state = read_daemon_state(&state_file).ok().flatten();
-            if state.is_none() {
-                thread::sleep(Duration::from_millis(20));
-            }
-            state
-        })
-        .expect("server wrote daemon state");
+    let state = wait_for_daemon_state(&state_file, &mut child);
 
     let status = Command::new(bin)
         .args(["status", "--state-file", state_file.to_str().unwrap()])
@@ -108,15 +126,7 @@ fn binary_local_bearer_gate_rejects_missing_authorization() {
         .spawn()
         .expect("spawn omx-api serve");
 
-    let state = (0..50)
-        .find_map(|_| {
-            let state = read_daemon_state(&state_file).ok().flatten();
-            if state.is_none() {
-                thread::sleep(Duration::from_millis(20));
-            }
-            state
-        })
-        .expect("server wrote daemon state");
+    let state = wait_for_daemon_state(&state_file, &mut child);
 
     let response = http_request(&state.host, state.port, "GET", "/v1/models", None).unwrap();
     assert!(response.contains("401 Unauthorized"), "{response}");
