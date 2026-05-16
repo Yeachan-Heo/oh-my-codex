@@ -2534,6 +2534,89 @@ describe("detached tmux new-session sequencing", () => {
     );
   });
 
+  it("buildDetachedSessionBootstrapSteps forwards active provider env_key to detached tmux session", async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), "omx-detached-provider-env-"));
+    await writeFile(join(codexHome, "config.toml"), [
+      'model_provider = "cliproxy"',
+      "",
+      "[model_providers.cliproxy]",
+      'name = "cliproxy"',
+      'base_url = "http://localhost:4000/v1"',
+      'wire_api = "responses"',
+      'env_key = "CLIPROXY_LLM_API_KEY"',
+      "",
+    ].join("\n"));
+
+    try {
+      const steps = buildDetachedSessionBootstrapSteps(
+        "omx-demo",
+        "/tmp/project",
+        "'codex' '--model' 'gpt-5'",
+        "'node' '/tmp/omx.js' 'hud' '--watch'",
+        null,
+        codexHome,
+        null,
+        false,
+        "sess-detached-managed",
+        undefined,
+        undefined,
+        undefined,
+        {
+          CLIPROXY_LLM_API_KEY: "dummy-provider-key",
+          UNRELATED_API_KEY: "dummy-unrelated-key",
+        },
+      );
+      const newSession = steps.find((step) => step.name === "new-session");
+      assert.ok(newSession);
+      assert.equal(
+        newSession.args.some((arg) => arg === "CLIPROXY_LLM_API_KEY=dummy-provider-key"),
+        true,
+      );
+      assert.equal(
+        newSession.args.some((arg) => arg === "UNRELATED_API_KEY=dummy-unrelated-key"),
+        false,
+      );
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
+  it("buildDetachedSessionBootstrapSteps forwards general *_LLM_API_KEY env vars to detached tmux session", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-demo",
+      "/tmp/project",
+      "'codex' '--model' 'gpt-5'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      null,
+      undefined,
+      null,
+      false,
+      "sess-detached-managed",
+      undefined,
+      undefined,
+      undefined,
+      {
+        CLIPROXY_LLM_API_KEY: "dummy-provider-key",
+        OTHER_LLM_API_KEY: "dummy-other-provider-key",
+        AWS_SECRET_ACCESS_KEY: "dummy-non-provider-secret",
+      },
+    );
+    const newSession = steps.find((step) => step.name === "new-session");
+    assert.ok(newSession);
+    assert.equal(
+      newSession.args.some((arg) => arg === "CLIPROXY_LLM_API_KEY=dummy-provider-key"),
+      true,
+    );
+    assert.equal(
+      newSession.args.some((arg) => arg === "OTHER_LLM_API_KEY=dummy-other-provider-key"),
+      true,
+    );
+    assert.equal(
+      newSession.args.some((arg) => arg === "AWS_SECRET_ACCESS_KEY=dummy-non-provider-secret"),
+      false,
+    );
+  });
+
   it("buildDetachedSessionBootstrapSteps forwards OMX_ROOT override to detached tmux session", () => {
     const steps = buildDetachedSessionBootstrapSteps(
       "omx-demo",

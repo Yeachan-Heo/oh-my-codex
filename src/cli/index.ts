@@ -146,9 +146,11 @@ import { buildHookEvent } from "../hooks/extensibility/events.js";
 import { dispatchHookEvent } from "../hooks/extensibility/dispatcher.js";
 import {
   collectInheritableTeamWorkerArgs as collectInheritableTeamWorkerArgsShared,
+  extractModelProviderOverrideValue,
   resolveTeamWorkerLaunchArgs,
   resolveTeamLowComplexityDefaultModel,
 } from "../team/model-contract.js";
+import { readActiveProviderEnvOverrides } from "../config/models.js";
 import {
   parseWorktreeMode,
   planWorktreeTarget,
@@ -2536,6 +2538,40 @@ function buildDetachedSessionPostLaunchHelperCommand(
 
 type TmuxExecSync = (file: string, args: readonly string[]) => string;
 
+const PROVIDER_LLM_API_KEY_ENV_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*_LLM_API_KEY$/;
+const VALID_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function isValidEnvName(key: string): boolean {
+  return VALID_ENV_NAME_PATTERN.test(key);
+}
+
+function collectDetachedSessionProviderEnv(
+  env: NodeJS.ProcessEnv,
+  codexHomeOverride?: string,
+  activeProviderOverride?: string,
+): Record<string, string> {
+  const collected: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(env)) {
+    if (!PROVIDER_LLM_API_KEY_ENV_PATTERN.test(key)) continue;
+    if (typeof value !== "string" || value.trim() === "") continue;
+    collected[key] = value;
+  }
+
+  const activeProviderEnv = readActiveProviderEnvOverrides(
+    env,
+    codexHomeOverride,
+    activeProviderOverride,
+  );
+  for (const [key, value] of Object.entries(activeProviderEnv)) {
+    if (!isValidEnvName(key)) continue;
+    if (typeof value !== "string" || value.trim() === "") continue;
+    collected[key] = value;
+  }
+
+  return Object.fromEntries(Object.entries(collected).sort(([left], [right]) => left.localeCompare(right)));
+}
+
 function execTmuxSync(
   args: readonly string[],
   execFileSyncImpl: TmuxExecSync = (file, tmuxArgs) =>
@@ -2706,7 +2742,13 @@ export function buildDetachedSessionBootstrapSteps(
   omxRootOverride?: string,
   env: NodeJS.ProcessEnv = process.env,
   sqliteHomeOverride?: string,
+  activeProviderOverride?: string,
 ): DetachedSessionTmuxStep[] {
+  const providerEnv = collectDetachedSessionProviderEnv(
+    env,
+    codexHomeOverride,
+    activeProviderOverride,
+  );
   const detachedLeaderCmd = nativeWindows
     ? "powershell.exe"
     : buildDetachedSessionLeaderCommand(
@@ -2736,6 +2778,7 @@ export function buildDetachedSessionBootstrapSteps(
     ...(codexHomeOverride ? ["-e", `CODEX_HOME=${codexHomeOverride}`] : []),
     ...(sqliteHomeOverride ? ["-e", `${CODEX_SQLITE_HOME_ENV}=${sqliteHomeOverride}`] : []),
     ...(omxRootOverride ? ["-e", `OMX_ROOT=${omxRootOverride}`] : []),
+    ...Object.entries(providerEnv).flatMap(([key, value]) => ["-e", `${key}=${value}`]),
     ...(env.OMX_STATE_ROOT ? ["-e", `OMX_STATE_ROOT=${env.OMX_STATE_ROOT}`] : []),
     ...(env.OMXBOX_ACTIVE ? ["-e", `OMXBOX_ACTIVE=${env.OMXBOX_ACTIVE}`] : []),
     ...(env.OMX_SOURCE_CWD ? ["-e", `OMX_SOURCE_CWD=${env.OMX_SOURCE_CWD}`] : []),
@@ -3597,6 +3640,7 @@ function runCodex(
         omxRootOverride,
         process.env,
         sqliteHomeOverride,
+        extractModelProviderOverrideValue(launchArgs),
       );
       for (const step of bootstrapSteps) {
         const output = execTmuxFileSync(step.args, {
