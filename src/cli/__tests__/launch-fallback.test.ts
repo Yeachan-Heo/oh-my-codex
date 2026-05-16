@@ -377,6 +377,98 @@ exit 0
     }
   });
 
+  it('preserves parent provider env for interactive OMX-created tmux without logging secret values', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-tmux-parent-env-'));
+    try {
+      const home = join(wd, 'home');
+      const fakeBin = join(wd, 'bin');
+      const envLogPath = join(wd, 'codex-env.log');
+      const tmuxLogPath = join(wd, 'tmux.log');
+
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeExecutable(
+        join(fakeBin, 'codex'),
+        `#!/bin/sh
+{
+  printf 'custom=%s\n' "$CUSTOM_LLM_API_KEY"
+  printf 'marker=%s\n' "$IS_GAJAE_SLOP_GENERATOR"
+} > "${envLogPath}"
+exit 130
+`,
+      );
+      await writeExecutable(join(fakeBin, 'ps'), '#!/bin/sh\nexit 0\n');
+      await writeExecutable(
+        join(fakeBin, 'tmux'),
+        `#!/bin/sh
+printf 'tmux:%s\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V)
+    printf 'tmux 3.4\\n'
+    exit 0
+    ;;
+  new-session)
+    last=''
+    for arg in "$@"; do last="$arg"; done
+    sh -c "$last" >/dev/null 2>&1 || true
+    printf 'leader-pane\\n'
+    exit 0
+    ;;
+  split-window)
+    printf 'hud-pane\\n'
+    exit 0
+    ;;
+  display-message)
+    if [ "$2" = '-p' ] && [ "$3" = '#{socket_path}' ]; then
+      printf '/tmp/tmux-test.sock\\n'
+    else
+      printf '0\\n'
+    fi
+    exit 0
+    ;;
+  show-options)
+    printf 'off\\n'
+    exit 0
+    ;;
+  set-option|set-hook|attach-session|kill-session|run-shell|resize-pane)
+    exit 0
+    ;;
+esac
+exit 0
+`,
+      );
+
+      const result = runOmx(
+        wd,
+        ['--tmux', '--madmax'],
+        {
+          HOME: home,
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+          OMX_AUTO_UPDATE: '0',
+          OMX_NOTIFY_FALLBACK: '0',
+          OMX_HOOK_DERIVED_SIGNALS: '0',
+          TMUX: '',
+          TMUX_PANE: '',
+          CUSTOM_LLM_API_KEY: 'fake-provider-key',
+          IS_GAJAE_SLOP_GENERATOR: '1',
+        },
+      );
+
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.equal(
+        await readFile(envLogPath, 'utf-8'),
+        'custom=fake-provider-key\nmarker=1\n',
+      );
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.doesNotMatch(tmuxLog, /fake-provider-key/);
+      assert.doesNotMatch(tmuxLog, /CUSTOM_LLM_API_KEY=/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('launches directly with --direct and skips detached tmux bootstrap', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-direct-'));
     try {

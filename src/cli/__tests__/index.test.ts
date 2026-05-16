@@ -69,6 +69,7 @@ import {
   resolveNativeSessionName,
   releaseTmuxExtendedKeysLease,
   withTmuxExtendedKeys,
+  serializeDetachedSessionParentEnv,
   CODEX_SQLITE_HOME_ENV,
 } from "../index.js";
 import { mergeConfig, repairConfigIfNeeded } from "../../config/generator.js";
@@ -2590,6 +2591,65 @@ describe("detached tmux new-session sequencing", () => {
       newSession.args.some((arg) => arg === "OMX_SOURCE_CWD=/tmp/source-project"),
       true,
     );
+  });
+
+  it("serializes custom parent env for the interactive detached tmux leader without logging values in tmux args", () => {
+    const envFilePath = "/tmp/omx-runtime/tmux-env/sess.env";
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-demo",
+      "/tmp/project",
+      "'codex' '--model' 'gpt-5'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      null,
+      undefined,
+      null,
+      false,
+      "sess-detached-managed",
+      undefined,
+      undefined,
+      undefined,
+      { CUSTOM_LLM_API_KEY: "fake-provider-key", IS_GAJAE_SLOP_GENERATOR: "1" },
+      undefined,
+      envFilePath,
+    );
+    const newSession = steps.find((step) => step.name === "new-session");
+    assert.ok(newSession);
+    const argsText = newSession.args.join("\n");
+    assert.match(argsText, new RegExp(envFilePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(argsText, /fake-provider-key/);
+    assert.doesNotMatch(argsText, /CUSTOM_LLM_API_KEY=/);
+
+    const envScript = serializeDetachedSessionParentEnv({
+      CUSTOM_LLM_API_KEY: "fake-provider-key",
+      IS_GAJAE_SLOP_GENERATOR: "1",
+      "not-a-shell-name": "ignored",
+    });
+    assert.match(envScript, /export CUSTOM_LLM_API_KEY='fake-provider-key'/);
+    assert.match(envScript, /export IS_GAJAE_SLOP_GENERATOR='1'/);
+    assert.doesNotMatch(envScript, /not-a-shell-name/);
+  });
+
+  it("keeps detached tmux bootstrap bounded when no interactive parent env file is requested", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-demo",
+      "/tmp/project",
+      "'codex' '--model' 'gpt-5'",
+      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      null,
+      undefined,
+      null,
+      false,
+      "sess-detached-managed",
+      undefined,
+      undefined,
+      undefined,
+      { CUSTOM_LLM_API_KEY: "fake-provider-key" },
+    );
+    const newSession = steps.find((step) => step.name === "new-session");
+    assert.ok(newSession);
+    const argsText = newSession.args.join("\n");
+    assert.doesNotMatch(argsText, /CUSTOM_LLM_API_KEY/);
+    assert.doesNotMatch(argsText, /fake-provider-key/);
   });
 
   it("runCodex builds inside-tmux HUD command with OMX_SESSION_ID", async () => {

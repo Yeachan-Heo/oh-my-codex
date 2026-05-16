@@ -2457,10 +2457,19 @@ function buildDetachedSessionLeaderCommand(
   codexHomeOverride?: string,
   projectLocalCodexHomeForCleanup?: string,
   runtimeCodexHomeForCleanup?: string,
+  parentEnvFilePath?: string,
 ): string {
   const detachedPostLaunchHelper = sessionId
     ? `${buildDetachedSessionPostLaunchHelperCommand(cwd, sessionId, codexHomeOverride, projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup)} >/dev/null 2>&1 || true;`
     : "";
+  const parentEnvSource =
+    parentEnvFilePath && parentEnvFilePath.trim()
+      ? `if [ -r ${quoteShellArg(parentEnvFilePath)} ]; then . ${quoteShellArg(parentEnvFilePath)}; rm -f ${quoteShellArg(parentEnvFilePath)}; fi;`
+      : "";
+  const parentEnvCleanup =
+    parentEnvFilePath && parentEnvFilePath.trim()
+      ? `rm -f ${quoteShellArg(parentEnvFilePath)} 2>/dev/null || true;`
+      : "";
   const wrapped = [
     buildTmuxExtendedKeysAcquireShellSnippet(cwd),
     'exec 3<&0;',
@@ -2474,6 +2483,7 @@ function buildDetachedSessionLeaderCommand(
     "fi;",
     'exec 3<&- 2>/dev/null || true;',
     buildTmuxExtendedKeysReleaseShellSnippet(cwd),
+    parentEnvCleanup,
     detachedPostLaunchHelper,
     'if [ "$status" -eq 0 ]; then',
     `tmux kill-session -t "${escapeShellDoubleQuotedValue(sessionName)}" >/dev/null 2>&1 || true;`,
@@ -2481,6 +2491,7 @@ function buildDetachedSessionLeaderCommand(
     "exit $status;",
     "};",
     "trap omx_detached_session_cleanup 0 INT TERM HUP;",
+    parentEnvSource,
     "omx_codex_started_at=$(date +%s 2>/dev/null || printf 0);",
     `${codexCmd} <&3 &`,
     "omx_codex_pid=$!;",
@@ -2674,6 +2685,44 @@ function buildTmuxExtendedKeysReleaseShellSnippet(cwd: string): string {
   return `if [ -n "\${OMX_TMUX_EXTENDED_KEYS_LEASE:-}" ]; then ${buildTmuxExtendedKeysHelperCommand(cwd, "release")} "\${OMX_TMUX_EXTENDED_KEYS_LEASE}" >/dev/null 2>&1 || true; fi;`;
 }
 
+const SHELL_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function serializeDetachedSessionParentEnv(
+  env: NodeJS.ProcessEnv,
+): string {
+  const lines: string[] = [];
+  for (const key of Object.keys(env).sort()) {
+    if (!SHELL_ENV_NAME_PATTERN.test(key)) continue;
+    const value = env[key];
+    if (typeof value !== "string") continue;
+    if (value.includes("\0")) continue;
+    lines.push(`export ${key}=${quoteShellArg(value)}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+export function detachedSessionParentEnvFilePath(
+  cwd: string,
+  sessionId: string,
+): string {
+  const safeSessionId = sessionId.replace(/[^A-Za-z0-9_.-]/g, "_");
+  return join(omxRoot(cwd), "runtime", "tmux-env", `${safeSessionId}.env`);
+}
+
+export function writeDetachedSessionParentEnvFile(
+  cwd: string,
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+): string {
+  const filePath = detachedSessionParentEnvFilePath(cwd, sessionId);
+  mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
+  writeFileSync(filePath, serializeDetachedSessionParentEnv(env), {
+    encoding: "utf-8",
+    mode: 0o600,
+  });
+  return filePath;
+}
+
 export function withTmuxExtendedKeys<T>(
   cwd: string,
   run: () => T,
@@ -2706,6 +2755,7 @@ export function buildDetachedSessionBootstrapSteps(
   omxRootOverride?: string,
   env: NodeJS.ProcessEnv = process.env,
   sqliteHomeOverride?: string,
+  parentEnvFilePath?: string,
 ): DetachedSessionTmuxStep[] {
   const detachedLeaderCmd = nativeWindows
     ? "powershell.exe"
@@ -2717,6 +2767,7 @@ export function buildDetachedSessionBootstrapSteps(
         codexHomeOverride,
         projectLocalCodexHomeForCleanup,
         runtimeCodexHomeForCleanup,
+        parentEnvFilePath,
       );
   const newSessionArgs: string[] = [
     "new-session",
@@ -3581,7 +3632,21 @@ function runCodex(
     let registeredHookTarget: string | null = null;
     let registeredHookName: string | null = null;
     let registeredClientAttachedHookName: string | null = null;
+    let detachedParentEnvFilePath: string | undefined;
     try {
+      // This path is the user-shell interactive launch: OMX creates a tmux
+      // session and immediately attaches the user's terminal to it. If a tmux
+      // server already exists, `new-session -e` only forwards explicit values,
+      // so provider-specific parent-shell keys would disappear. Source a
+      // private env file inside the leader shell instead of putting every
+      // parent env value on the tmux command line or in logs.
+      if (!nativeWindows) {
+        detachedParentEnvFilePath = writeDetachedSessionParentEnvFile(
+          cwd,
+          sessionId,
+          codexEnvWithNotify,
+        );
+      }
       const bootstrapSteps = buildDetachedSessionBootstrapSteps(
         sessionName,
         cwd,
@@ -3597,6 +3662,7 @@ function runCodex(
         omxRootOverride,
         process.env,
         sqliteHomeOverride,
+        detachedParentEnvFilePath,
       );
       for (const step of bootstrapSteps) {
         const output = execTmuxFileSync(step.args, {
@@ -3694,6 +3760,9 @@ function runCodex(
       return { postLaunchHandledExternally: !nativeWindows };
     } catch (err) {
       logCliOperationFailure(err);
+      if (detachedParentEnvFilePath) {
+        rmSync(detachedParentEnvFilePath, { force: true });
+      }
       if (createdDetachedSession) {
         const rollbackSteps = buildDetachedSessionRollbackSteps(
           sessionName,
