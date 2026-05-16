@@ -5455,6 +5455,61 @@ exit 0
     }
   });
 
+  it("requires Autopilot code review after a compact-boundary Stop exemption", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-autopilot-review-compact-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-stop-autopilot-review-compact";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "sessions", sessionId, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "code-review",
+        state: {
+          phase_cycle: ["ralplan", "ralph", "code-review"],
+          handoff_artifacts: {
+            ralplan: ".omx/plans/prd-issue-2366.md",
+            ralph: { verification: ["npm test"] },
+            code_review: null,
+          },
+          review_verdict: null,
+        },
+      });
+
+      const compactBoundary = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+          stop_reason: "context compact",
+        },
+        { cwd },
+      );
+      const resumedStop = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+        },
+        { cwd },
+      );
+
+      assert.equal(compactBoundary.omxEventName, "stop");
+      assert.equal(compactBoundary.outputJson, null);
+      assert.equal(resumedStop.omxEventName, "stop");
+      assert.deepEqual(resumedStop.outputJson, {
+        decision: "block",
+        reason:
+          "OMX autopilot is still active (phase: code-review); continue the task and gather fresh verification evidence before stopping.",
+        stopReason: "autopilot_code-review",
+        systemMessage:
+          "OMX autopilot is still active (phase: code-review). Run the required $code-review step before completing or clearing Autopilot state.",
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("suppresses duplicate Autopilot planning Stop replays so stale planning state cannot loop indefinitely", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-autopilot-planning-replay-"));
     try {

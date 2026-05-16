@@ -1870,11 +1870,14 @@ async function buildModeBasedStopOutput(
   const state = await readModeStateForActiveDecision(mode, sessionId?.trim() || undefined, cwd);
   if (!state || !shouldContinueRun(state)) return null;
   const phase = formatPhase(state.current_phase);
+  const systemMessage = mode === "autopilot" && phase.toLowerCase().replace(/_/g, "-") === "code-review"
+    ? "OMX autopilot is still active (phase: code-review). Run the required $code-review step before completing or clearing Autopilot state."
+    : `OMX ${mode} is still active (phase: ${phase}).`;
   return {
     decision: "block",
     reason: `OMX ${mode} is still active (phase: ${phase}); continue the task and gather fresh verification evidence before stopping.`,
     stopReason: `${mode}_${phase}`,
-    systemMessage: `OMX ${mode} is still active (phase: ${phase}).`,
+    systemMessage,
   };
 }
 

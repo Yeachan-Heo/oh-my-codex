@@ -3101,6 +3101,25 @@ function cleanPostLaunchString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function isAutopilotReviewPendingPostLaunchState(state: Record<string, unknown> | null): boolean {
+  if (!state || state.active !== true) return false;
+  const mode = cleanPostLaunchString(state.mode).toLowerCase();
+  if (mode && mode !== "autopilot") return false;
+  const phase = cleanPostLaunchString(state.current_phase ?? state.currentPhase)
+    .toLowerCase()
+    .replace(/_/g, "-");
+  if (phase === "code-review" || phase === "review" || phase === "reviewing" || phase === "review-pending") {
+    return true;
+  }
+  const nestedState = state.state && typeof state.state === "object"
+    ? state.state as Record<string, unknown>
+    : {};
+  return state.review_pending === true
+    || state.reviewPending === true
+    || nestedState.review_pending === true
+    || nestedState.reviewPending === true;
+}
+
 function postLaunchUniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
@@ -3211,9 +3230,18 @@ export async function cleanupPostLaunchModeStateFiles(
   const rootSkillActiveStateBeforeCleanup = sessionId
     ? await readSkillActiveState(getSkillActiveStatePathsForStateDir(rootStateDir).rootPath)
     : null;
+  let preserveSkillActiveForReviewPendingAutopilot = false;
 
   for (const stateDir of scopedDirs) {
     const files = await readdir(stateDir).catch(() => [] as string[]);
+    const autopilotPath = join(stateDir, "autopilot-state.json");
+    const autopilotPrecheck = files.includes("autopilot-state.json")
+      ? await readPostLaunchModeStateFile(autopilotPath, dependencies)
+      : null;
+    const preserveReviewPendingAutopilot = autopilotPrecheck?.kind === "ok"
+      && isAutopilotReviewPendingPostLaunchState(autopilotPrecheck.state);
+    preserveSkillActiveForReviewPendingAutopilot ||= preserveReviewPendingAutopilot;
+
     for (const file of files) {
       if (!file.endsWith("-state.json") || file === "session.json") continue;
       const path = join(stateDir, file);
@@ -3279,6 +3307,12 @@ export async function cleanupPostLaunchModeStateFiles(
         }
         continue;
       }
+      if (
+        preserveReviewPendingAutopilot
+        && (mode === "autopilot" || mode === SKILL_ACTIVE_STATE_MODE)
+      ) {
+        continue;
+      }
 
       try {
         const completedAt = now().toISOString();
@@ -3320,13 +3354,15 @@ export async function cleanupPostLaunchModeStateFiles(
 
   if (sessionId) {
     try {
-      await scrubPostLaunchRootSkillActiveForSession(
-        rootStateDir,
-        sessionId,
-        now().toISOString(),
-        writeFile,
-        rootSkillActiveStateBeforeCleanup,
-      );
+      if (!preserveSkillActiveForReviewPendingAutopilot) {
+        await scrubPostLaunchRootSkillActiveForSession(
+          rootStateDir,
+          sessionId,
+          now().toISOString(),
+          writeFile,
+          rootSkillActiveStateBeforeCleanup,
+        );
+      }
     } catch (err) {
       writeWarn(
         `[omx] postLaunch: failed to reconcile root skill-active state: ${err instanceof Error ? err.message : err}`,
