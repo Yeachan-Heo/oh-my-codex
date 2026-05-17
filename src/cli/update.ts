@@ -45,9 +45,18 @@ type RunSetupRefreshResult = { ok: boolean; stderr: string };
 type RunDeferredUpdateResult = { ok: boolean; stderr: string; logPath?: string };
 type SpawnSyncLike = typeof spawnSync;
 type SpawnLike = typeof spawn;
+export type AutoUpdateMode = 'disabled' | 'prompt' | 'defer';
 
 const PACKAGE_NAME = 'oh-my-codex';
 const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12h
+
+export function resolveAutoUpdateMode(value = process.env.OMX_AUTO_UPDATE): AutoUpdateMode {
+  const normalized = (value ?? '').trim().toLowerCase();
+  if (!normalized) return 'prompt';
+  if (normalized === '0') return 'disabled';
+  if (normalized === 'defer') return 'defer';
+  return 'prompt';
+}
 
 function parseSemver(version: string): [number, number, number] | null {
   const m = version.trim().match(/^v?(\d+)\.(\d+)\.(\d+)$/);
@@ -536,8 +545,9 @@ export async function maybeCheckAndPromptUpdate(
   dependencies: Partial<UpdateDependencies> = {},
 ): Promise<void> {
   const updateDependencies = { ...defaultUpdateDependencies, ...dependencies };
-  if (process.env.OMX_AUTO_UPDATE === '0') return;
-  if (!process.stdin.isTTY || !process.stdout.isTTY) return;
+  const autoUpdateMode = resolveAutoUpdateMode();
+  if (autoUpdateMode === 'disabled') return;
+  if (autoUpdateMode === 'prompt' && (!process.stdin.isTTY || !process.stdout.isTTY)) return;
 
   const now = Date.now();
   const state = await readUpdateState(cwd);
@@ -546,7 +556,7 @@ export async function maybeCheckAndPromptUpdate(
   await executeUpdate({
     cwd,
     dependencies: updateDependencies,
-    prompt: true,
+    prompt: autoUpdateMode === 'prompt',
     immediate: false,
     nowMs: now,
   });

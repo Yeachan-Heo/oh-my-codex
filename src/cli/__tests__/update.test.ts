@@ -8,6 +8,7 @@ import {
   isNewerVersion,
   maybeCheckAndPromptUpdate,
   readUserInstallStamp,
+  resolveAutoUpdateMode,
   resolveInstalledCliEntry,
   runDeferredGlobalUpdate,
   runImmediateUpdate,
@@ -94,6 +95,33 @@ describe('shouldCheckForUpdates', () => {
     const customInterval = 60 * 1000;
     const recentCheck = new Date(now - 30 * 1000).toISOString();
     assert.equal(shouldCheckForUpdates(now, { last_checked_at: recentCheck }, customInterval), false);
+  });
+});
+
+describe('resolveAutoUpdateMode', () => {
+  it('defaults to prompt mode when the env var is unset', () => {
+    const originalMode = process.env.OMX_AUTO_UPDATE;
+    delete process.env.OMX_AUTO_UPDATE;
+
+    try {
+      assert.equal(resolveAutoUpdateMode(), 'prompt');
+      assert.equal(resolveAutoUpdateMode(''), 'prompt');
+    } finally {
+      if (typeof originalMode === 'string') {
+        process.env.OMX_AUTO_UPDATE = originalMode;
+      }
+    }
+  });
+
+  it('supports the explicit legacy disabled value', () => {
+    assert.equal(resolveAutoUpdateMode('0'), 'disabled');
+  });
+
+  it('supports only defer for no-prompt mode and keeps other truthy values in prompt mode', () => {
+    assert.equal(resolveAutoUpdateMode('defer'), 'defer');
+    for (const value of ['1', 'true', 'false', 'off', 'no', 'never', 'disabled', 'deferred', 'always', 'auto', 'silent']) {
+      assert.equal(resolveAutoUpdateMode(value), 'prompt');
+    }
   });
 });
 
@@ -238,6 +266,55 @@ describe('maybeCheckAndPromptUpdate', () => {
       assert.deepEqual(receivedCwds, [cwd]);
     } finally {
       console.log = originalLog;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('schedules deferred update without a TTY prompt when OMX_AUTO_UPDATE=defer', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-update-'));
+    const originalMode = process.env.OMX_AUTO_UPDATE;
+    const originalStdinTty = process.stdin.isTTY;
+    const originalStdoutTty = process.stdout.isTTY;
+    const deferredCwds: string[] = [];
+
+    process.env.OMX_AUTO_UPDATE = 'defer';
+    Object.defineProperty(process.stdin, 'isTTY', {
+      configurable: true,
+      value: false,
+    });
+    Object.defineProperty(process.stdout, 'isTTY', {
+      configurable: true,
+      value: false,
+    });
+
+    try {
+      await maybeCheckAndPromptUpdate(cwd, {
+        getCurrentVersion: async () => '0.13.0',
+        fetchLatestVersion: async () => '0.13.1',
+        askYesNo: async () => {
+          throw new Error('defer mode must not prompt');
+        },
+        runDeferredGlobalUpdate: (deferredCwd) => {
+          deferredCwds.push(deferredCwd);
+          return { ok: true, stderr: '', logPath: join(deferredCwd, '.omx', 'logs', 'update-test.log') };
+        },
+      });
+
+      assert.deepEqual(deferredCwds, [cwd]);
+    } finally {
+      if (typeof originalMode === 'string') {
+        process.env.OMX_AUTO_UPDATE = originalMode;
+      } else {
+        delete process.env.OMX_AUTO_UPDATE;
+      }
+      Object.defineProperty(process.stdin, 'isTTY', {
+        configurable: true,
+        value: originalStdinTty,
+      });
+      Object.defineProperty(process.stdout, 'isTTY', {
+        configurable: true,
+        value: originalStdoutTty,
+      });
       await rm(cwd, { recursive: true, force: true });
     }
   });
