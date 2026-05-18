@@ -347,6 +347,69 @@ describe("notify setup scope", () => {
 		}
 	});
 
+	it("repairs reporter-shaped SkyComputerUseClient dispatcher metadata on rerun", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-reporter-wrapper-notify-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await mkdir(codexHomeDir, { recursive: true });
+				const metadataPath = join(
+					codexHomeDir,
+					".omx",
+					"notify-dispatch.json",
+				);
+				const stalePkgRoot = join(wd, "pkg-without-managed-name");
+				const staleDispatcher = join(
+					stalePkgRoot,
+					"dist",
+					"scripts",
+					"notify-dispatcher.js",
+				);
+				const staleTurnEndedWrapper = join(wd, "SkyComputerUseClient");
+				await mkdir(dirname(metadataPath), { recursive: true });
+				await writeFile(
+					join(codexHomeDir, "config.toml"),
+					`notify = ["node", "${staleDispatcher}", "--metadata", "${metadataPath}"]
+approval_policy = "on-failure"
+`,
+				);
+				await writeFile(
+					metadataPath,
+					JSON.stringify({
+						managedBy: "oh-my-codex",
+						version: 1,
+						previousNotify: [
+							staleTurnEndedWrapper,
+							"turn-ended",
+							"--previous-notify",
+							JSON.stringify([
+								"node",
+								staleDispatcher,
+								"--metadata",
+								metadataPath,
+							]),
+						],
+						omxNotify: [
+							"node",
+							join(stalePkgRoot, "dist", "scripts", "notify-hook.js"),
+						],
+						dispatcherNotify: ["node", staleDispatcher, "--metadata", metadataPath],
+					}),
+				);
+
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user" });
+				});
+
+				const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
+				assert.match(config, /^notify = \["node", ".*notify-hook\.js"\]$/m);
+				assert.doesNotMatch(config, /notify-dispatcher\.js/);
+				assert.doesNotMatch(config, /SkyComputerUseClient/);
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("does not wrap stale global OMX notify hooks as user notify commands", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-stale-hook-notify-"));
 		try {

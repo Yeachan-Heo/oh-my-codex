@@ -332,12 +332,27 @@ function getPreviousNotifyWrapperValue(
   return undefined;
 }
 
+function isOmxDispatcherMetadataCommand(command: readonly string[] | null | undefined): boolean {
+  if (!command) return false;
+  const entrypoint = resolveNotifyEntrypoint(command);
+  if (!entrypoint || !/(?:^|[\\/])notify-dispatcher\.js$/.test(entrypoint)) {
+    return false;
+  }
+  const metadataIndex = command.indexOf("--metadata");
+  const metadataPath = metadataIndex >= 0 ? command[metadataIndex + 1] : undefined;
+  return typeof metadataPath === "string" && /(?:^|[\\/])(?:\.omx[\\/])?notify-dispatch\.json$/.test(metadataPath);
+}
+
 function isOmxManagedPayloadText(value: string): boolean {
-  return (
+  const containsManagedPackageNotify =
     /(?:^|[\\/])notify-(?:hook|dispatcher)\.js(?:\s|$|["'])/.test(
       value,
-    ) && /(?:^|[\\/])oh-my-codex(?:[\\/]|$)/.test(value)
-  );
+    ) && /(?:^|[\\/])oh-my-codex(?:[\\/]|$)/.test(value);
+  const containsDispatcherMetadataNotify =
+    /(?:^|[\\/])notify-dispatcher\.js(?:\s|$|["'])/.test(value) &&
+    /--metadata(?:\s|=)/.test(value) &&
+    /(?:^|[\\/])(?:\.omx[\\/])?notify-dispatch\.json(?:\s|$|["'])/.test(value);
+  return containsManagedPackageNotify || containsDispatcherMetadataNotify;
 }
 
 function parseJsonString(value: string): unknown | undefined {
@@ -370,6 +385,7 @@ function containsOmxManagedNotifyPayload(
       const nestedCommand = value as string[];
       return (
         isOmxManagedNotifyCommand(nestedCommand, pkgRoot) ||
+        isOmxDispatcherMetadataCommand(nestedCommand) ||
         isOmxManagedPreviousNotifyWrapper(nestedCommand, pkgRoot)
       );
     }
@@ -408,6 +424,7 @@ export function isOmxManagedNotifyCommand(
   pkgRoot?: string,
 ): boolean {
   if (!command) return false;
+  if (isOmxDispatcherMetadataCommand(command)) return true;
   const entrypoint = resolveNotifyEntrypoint(command);
   if (!entrypoint) return false;
   if (!/(?:^|[\\/])notify-(?:hook|dispatcher)\.js$/.test(entrypoint)) {
