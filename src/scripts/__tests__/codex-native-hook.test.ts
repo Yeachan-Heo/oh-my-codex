@@ -1704,6 +1704,71 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("does not repeat Stop block when the last autoresearch-goal completion attempt reported objective mismatch", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autoresearch-mismatch-reported-stop-"));
+    try {
+      await writeJson(join(cwd, ".omx", "goals", "autoresearch", "mismatched-mission", "mission.json"), {
+        version: 1,
+        workflow: "autoresearch-goal",
+        slug: "mismatched-mission",
+        topic: "Passing research bound to another Codex goal",
+        status: "passed",
+      });
+      await writeJson(join(cwd, ".omx", "goals", "autoresearch", "mismatched-mission", "completion.json"), {
+        verdict: "pass",
+        passed: true,
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-autoresearch-mismatch-reported-stop",
+        thread_id: "thread-autoresearch-mismatch-reported-stop",
+        last_assistant_message: [
+          "I called get_goal and ran omx autoresearch-goal complete --slug mismatched-mission --codex-goal-json /tmp/snapshot.json.",
+          "The autoresearch-goal completion failed with Codex goal objective mismatch, so I will not repeat the same complete command blindly in this thread.",
+        ].join("\n"),
+      }, { cwd });
+
+      assert.notEqual(result.outputJson?.decision, "block");
+      assert.doesNotMatch(JSON.stringify(result.outputJson), /autoresearch-goal complete --slug mismatched-mission/);
+      assert.doesNotMatch(JSON.stringify(result.outputJson), /get_goal snapshot reconciliation/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("still blocks later autoresearch-goal completion claims after an objective mismatch if no mismatch is reported in the final answer", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autoresearch-mismatch-later-retry-stop-"));
+    try {
+      await writeJson(join(cwd, ".omx", "goals", "autoresearch", "retryable-mission", "mission.json"), {
+        version: 1,
+        workflow: "autoresearch-goal",
+        slug: "retryable-mission",
+        topic: "Passing research that can still retry with the correct snapshot",
+        status: "passed",
+      });
+      await writeJson(join(cwd, ".omx", "goals", "autoresearch", "retryable-mission", "completion.json"), {
+        verdict: "pass",
+        passed: true,
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-autoresearch-mismatch-later-retry-stop",
+        thread_id: "thread-autoresearch-mismatch-later-retry-stop",
+        last_assistant_message: "Autoresearch goal complete; next call update_goal({status: \"complete\"}).",
+      }, { cwd });
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /get_goal snapshot reconciliation/);
+      assert.match(JSON.stringify(result.outputJson), /omx autoresearch-goal complete --slug retryable-mission/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("treats workflow keywords in native subagent prompt text as literal delegation text", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-keyword-literal-"));
     try {

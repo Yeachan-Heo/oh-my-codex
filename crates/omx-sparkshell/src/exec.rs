@@ -26,6 +26,10 @@ impl CommandOutput {
     }
 }
 
+pub fn execute_shell_command(script: &str) -> Result<CommandOutput, SparkshellError> {
+    execute_command(&["bash".to_string(), "-lc".to_string(), script.to_string()])
+}
+
 pub fn execute_command(argv: &[String]) -> Result<CommandOutput, SparkshellError> {
     if argv.is_empty() {
         return Err(SparkshellError::InvalidArgs(

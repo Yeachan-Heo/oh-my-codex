@@ -1889,6 +1889,12 @@ export function looksLikeGoalCompletionPrompt(text: string): boolean {
     || /(?:^|[.!?]\s+)(?:the\s+)?goal\s+(?:is\s+|now\s+|has\s+been\s+)?(?:complete|completed|finished|closed)(?:\s*(?:[.!?]|$)|\s*[:;]\s*\S|\s*[—–-]\s*\S)/i.test(text);
 }
 
+function reportsAutoresearchGoalObjectiveMismatch(text: string): boolean {
+  return /\bautoresearch[-\s]goal\b/i.test(text)
+    && /\b(?:complete|completion|reconciliation)\b/i.test(text)
+    && /objective mismatch/i.test(text);
+}
+
 async function findActiveGoalWorkflowReconciliationRequirement(cwd: string): Promise<{ workflow: string; command: string; remediation?: string } | null> {
   const ultragoal = await readJsonIfExists(join(cwd, ".omx", "ultragoal", "goals.json"));
   const aggregateCompletion = safeObject(ultragoal?.aggregateCompletion);
@@ -1932,10 +1938,19 @@ async function findActiveGoalWorkflowReconciliationRequirement(cwd: string): Pro
     const completion = await readJsonIfExists(join(autoresearchRoot, entry.name, "completion.json"));
     const completionVerdict = safeString(completion?.verdict);
     const completionPassed = completion?.passed === true || completionVerdict === "pass";
-    if (mission?.workflow === "autoresearch-goal" && status && status !== "complete" && completionPassed) {
+    if (
+      mission?.workflow === "autoresearch-goal"
+      && status
+      && status !== "complete"
+      && completionPassed
+    ) {
       return {
         workflow: "autoresearch-goal",
         command: `omx autoresearch-goal complete --slug ${safeString(mission.slug) || entry.name} --codex-goal-json '<get_goal JSON or path>'`,
+        remediation: [
+          "If that command fails with a Codex goal objective mismatch after a fresh get_goal snapshot, do not repeat the same complete command blindly in this thread.",
+          "Either retry with a correct fresh snapshot or record an explicit blocked verdict for this autoresearch-goal and continue it from a fresh Codex thread.",
+        ].join(" "),
       };
     }
   }
@@ -1963,6 +1978,9 @@ async function buildGoalWorkflowReconciliationStopOutput(
   if (!looksLikeGoalCompletionPrompt(lastAssistantMessage)) return null;
   const requirement = await findActiveGoalWorkflowReconciliationRequirement(cwd);
   if (!requirement) return null;
+  if (requirement.workflow === "autoresearch-goal" && reportsAutoresearchGoalObjectiveMismatch(lastAssistantMessage)) {
+    return null;
+  }
   const systemMessage =
     [
       `OMX ${requirement.workflow} requires get_goal snapshot reconciliation before completion; call get_goal and pass --codex-goal-json to ${requirement.command}.`,

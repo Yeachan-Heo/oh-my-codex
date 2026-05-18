@@ -184,7 +184,7 @@ describe('cli/autoresearch-goal', () => {
   });
 
   it('requires matching complete Codex goal proof for completion', async () => {
-    await withCwd(async () => {
+    await withCwd(async (cwd) => {
       await capture(() => autoresearchGoalCommand([
         'create',
         '--topic', 'Research goal snapshots',
@@ -209,6 +209,31 @@ describe('cli/autoresearch-goal', () => {
       assert.equal(incomplete.exitCode, 1);
       assert.match(incomplete.stderr.join('\n'), /objective mismatch/);
       assert.match(incomplete.stderr.join('\n'), /not complete/);
+
+      const mismatched = await capture(() => autoresearchGoalCommand([
+        'complete',
+        '--slug', 'research-goal-snapshots',
+        '--codex-goal-json', '{"goal":{"objective":"Autoresearch goal: Different completed mission","status":"complete"}}',
+      ]));
+
+      assert.equal(mismatched.exitCode, 1);
+      assert.match(mismatched.stderr.join('\n'), /objective mismatch/);
+
+      const completion = JSON.parse(
+        await readFile(join(cwd, '.omx/goals/autoresearch/research-goal-snapshots/completion.json'), 'utf-8'),
+      ) as {
+        verdict: string;
+        passed: boolean;
+        codex_goal_reconciliation?: unknown;
+      };
+      assert.equal(completion.verdict, 'pass');
+      assert.equal(completion.passed, true);
+      assert.equal(completion.codex_goal_reconciliation, undefined);
+
+      const mission = JSON.parse(
+        await readFile(join(cwd, '.omx/goals/autoresearch/research-goal-snapshots/mission.json'), 'utf-8'),
+      ) as { status: string };
+      assert.equal(mission.status, 'passed');
     });
   });
 });

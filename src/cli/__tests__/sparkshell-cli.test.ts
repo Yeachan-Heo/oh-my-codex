@@ -399,6 +399,13 @@ describe('parseSparkShellFallbackInvocation', () => {
     );
   });
 
+  it('translates explicit shell fallback through sh -lc', () => {
+    assert.deepEqual(
+      parseSparkShellFallbackInvocation(['--shell', 'printf ok']),
+      { kind: 'command', argv: ['sh', '-lc', 'printf ok'] },
+    );
+  });
+
   it('matches the shared notification capture-pane argv contract', () => {
     const parsed = parseSparkShellFallbackInvocation(['--tmux-pane', '%12', '--tail-lines', '400']);
     assert.deepEqual(parsed, {

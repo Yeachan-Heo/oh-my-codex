@@ -915,6 +915,30 @@ describe('exploreCommand', () => {
     }
   });
 
+  it('emits verbose telemetry when explore uses the sparkshell backend', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-explore-sparkshell-telemetry-'));
+    try {
+      const sparkshellStub = join(wd, 'sparkshell-stub.sh');
+      const harnessStub = join(wd, 'explore-stub.sh');
+      await writeFile(sparkshellStub, `#!/bin/sh\nprintf '# Answer\\n- telemetry route\\n'\n`);
+      await writeFile(harnessStub, '#!/bin/sh\nprintf harness-should-not-run\n');
+      await chmod(sparkshellStub, 0o755);
+      await chmod(harnessStub, 0o755);
+
+      const result = runOmx(wd, ['explore', '--verbose', '--prompt', 'git log --oneline'], {
+        OMX_SPARKSHELL_BIN: sparkshellStub,
+        OMX_EXPLORE_BIN: harnessStub,
+      });
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stderr, /backend=sparkshell reason=long-output/);
+      assert.match(result.stdout, /telemetry route/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('routes qualifying read-only shell commands through sparkshell instead of the direct harness', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-explore-sparkshell-route-'));
     try {

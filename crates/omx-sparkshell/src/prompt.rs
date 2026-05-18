@@ -1,4 +1,5 @@
 use crate::exec::CommandOutput;
+use crate::redaction::redact_output;
 use std::borrow::Cow;
 use std::env;
 use std::path::Path;
@@ -111,8 +112,10 @@ fn command_basename(command: &str) -> Cow<'_, str> {
 pub fn build_summary_prompt(command: &[String], output: &CommandOutput) -> String {
     let executable = command.first().map(String::as_str).unwrap_or("unknown");
     let family = select_command_family(executable);
-    let stdout_text = output.stdout_text();
-    let stderr_text = output.stderr_text();
+    let redacted = redact_output(output);
+    let safe_output = &redacted.output;
+    let stdout_text = safe_output.stdout_text();
+    let stderr_text = safe_output.stderr_text();
     let stdout_lines = count_lines(&stdout_text);
     let stderr_lines = count_lines(&stderr_text);
     let stdout_excerpt = truncate_for_prompt(&stdout_text, "stdout");
@@ -141,7 +144,7 @@ pub fn build_summary_prompt(command: &[String], output: &CommandOutput) -> Strin
         family_pattern = family.pattern,
         family_description = family.description,
         family_what_it_does = family.what_it_does,
-        exit_code = output.exit_code(),
+        exit_code = safe_output.exit_code(),
         stdout_lines = stdout_lines,
         stdout_bytes = stdout_text.len(),
         stderr_lines = stderr_lines,
@@ -306,6 +309,25 @@ mod tests {
         assert!(prompt.contains("Command family: git"));
         assert!(prompt.contains("<<<STDOUT"));
         assert!(prompt.contains("<<<STDERR"));
+    }
+
+    #[test]
+    fn prompt_redacts_secret_like_stdout_and_stderr_before_embedding() {
+        let output = CommandOutput {
+            status: ok_status(),
+            stdout: b"API_TOKEN=super-secret\nsk-prod-secret\nvisible\n".to_vec(),
+            stderr: b"Authorization: Bearer bearer-secret\nghp_secret\n".to_vec(),
+        };
+
+        let prompt = build_summary_prompt(&["env".into()], &output);
+
+        assert!(prompt.contains("API_TOKEN=[REDACTED]"));
+        assert!(prompt.contains("Authorization: Bearer [REDACTED]"));
+        assert!(prompt.contains("visible"));
+        assert!(!prompt.contains("super-secret"));
+        assert!(!prompt.contains("sk-prod-secret"));
+        assert!(!prompt.contains("bearer-secret"));
+        assert!(!prompt.contains("ghp_secret"));
     }
 
     #[test]
