@@ -15,9 +15,14 @@ import {
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
 
 export const OMX_TMUX_HUD_OWNER_ENV = 'OMX_TMUX_HUD_OWNER';
+export const OMX_TMUX_HUD_AUTO_CREATE_ENV = 'OMX_TMUX_HUD_AUTO_CREATE';
 
 function isExplicitOmxOwnedTmuxEnv(env: NodeJS.ProcessEnv): boolean {
   return env[OMX_TMUX_HUD_OWNER_ENV] === '1';
+}
+
+function shouldAutoCreateHudPane(env: NodeJS.ProcessEnv): boolean {
+  return env[OMX_TMUX_HUD_AUTO_CREATE_ENV] === '1';
 }
 
 export interface ReconcileHudForPromptSubmitResult {
@@ -25,6 +30,7 @@ export interface ReconcileHudForPromptSubmitResult {
     | 'skipped_not_tmux'
     | 'skipped_no_entry'
     | 'skipped_not_omx_owned_tmux'
+    | 'skipped_autocreate_disabled'
     | 'resized'
     | 'recreated'
     | 'replaced_duplicates'
@@ -115,6 +121,15 @@ export async function reconcileHudForPromptSubmit(
   const preset = hudConfig?.preset;
   const resolvedSessionId = deps.sessionId?.trim() || env.OMX_SESSION_ID?.trim() || undefined;
   const hudCmd = buildHudWatchCommand(omxBin, preset, resolvedSessionId);
+
+  if (hudPaneIds.length === 0 && !shouldAutoCreateHudPane(env)) {
+    return {
+      status: 'skipped_autocreate_disabled',
+      paneId: null,
+      desiredHeight,
+      duplicateCount,
+    };
+  }
 
   if (hudPaneIds.length === 1) {
     const resized = resizePane(hudPaneIds[0], desiredHeight);

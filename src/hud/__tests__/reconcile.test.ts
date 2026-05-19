@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { OMX_TMUX_HUD_OWNER_ENV, reconcileHudForPromptSubmit } from '../reconcile.js';
+import { OMX_TMUX_HUD_AUTO_CREATE_ENV, OMX_TMUX_HUD_OWNER_ENV, reconcileHudForPromptSubmit } from '../reconcile.js';
 
 describe('reconcileHudForPromptSubmit', () => {
   it('skips reconciliation outside tmux', async () => {
@@ -36,12 +36,32 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(created, false);
   });
 
-  it('recreates a missing HUD in explicit OMX-owned tmux', async () => {
+  it('does not auto-create a missing HUD in explicit OMX-owned tmux by default', async () => {
+    let created = false;
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%1', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
+      ],
+      createHudWatchPane: () => {
+        created = true;
+        return '%9';
+      },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(result.status, 'skipped_autocreate_disabled');
+    assert.equal(result.paneId, null);
+    assert.equal(created, false);
+  });
+
+  it('recreates a missing HUD in explicit OMX-owned tmux when auto-create is enabled', async () => {
     const created: Array<{ cwd: string; cmd: string; options?: { heightLines?: number; fullWidth?: boolean; targetPaneId?: string } }> = [];
     const resized: Array<{ paneId: string; heightLines: number }> = [];
 
     const result = await reconcileHudForPromptSubmit('/repo', {
-      env: { TMUX: '1', TMUX_PANE: '%1', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      env: { TMUX: '1', TMUX_PANE: '%1', [OMX_TMUX_HUD_OWNER_ENV]: '1', [OMX_TMUX_HUD_AUTO_CREATE_ENV]: '1' },
       listCurrentWindowPanes: () => [
         { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
       ],
@@ -69,7 +89,7 @@ describe('reconcileHudForPromptSubmit', () => {
     const created: Array<{ cmd: string }> = [];
 
     const result = await reconcileHudForPromptSubmit('/repo', {
-      env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-stale', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-stale', [OMX_TMUX_HUD_OWNER_ENV]: '1', [OMX_TMUX_HUD_AUTO_CREATE_ENV]: '1' },
       sessionId: 'sess-canonical',
       listCurrentWindowPanes: () => [
         { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
@@ -93,7 +113,7 @@ describe('reconcileHudForPromptSubmit', () => {
     const created: Array<{ options?: { heightLines?: number; fullWidth?: boolean; targetPaneId?: string } }> = [];
 
     const result = await reconcileHudForPromptSubmit('/repo', {
-      env: { TMUX: '1', TMUX_PANE: '%leader', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      env: { TMUX: '1', TMUX_PANE: '%leader', [OMX_TMUX_HUD_OWNER_ENV]: '1', [OMX_TMUX_HUD_AUTO_CREATE_ENV]: '1' },
       listCurrentWindowPanes: (currentPaneId) => {
         listArgs.push(currentPaneId);
         return [
@@ -166,7 +186,7 @@ describe('reconcileHudForPromptSubmit', () => {
     const registered: Array<{ hudPaneId: string; currentPaneId: string | undefined; heightLines: number }> = [];
 
     await reconcileHudForPromptSubmit('/repo', {
-      env: { TMUX: '1', TMUX_PANE: '%1', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      env: { TMUX: '1', TMUX_PANE: '%1', [OMX_TMUX_HUD_OWNER_ENV]: '1', [OMX_TMUX_HUD_AUTO_CREATE_ENV]: '1' },
       listCurrentWindowPanes: () => [
         { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
         { paneId: '%2', currentCommand: 'node', startCommand: 'node omx hud --watch' },
@@ -189,7 +209,7 @@ describe('reconcileHudForPromptSubmit', () => {
     const registered: Array<{ hudPaneId: string; currentPaneId: string | undefined; heightLines: number }> = [];
 
     await reconcileHudForPromptSubmit('/repo', {
-      env: { TMUX: '1', TMUX_PANE: '%1', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      env: { TMUX: '1', TMUX_PANE: '%1', [OMX_TMUX_HUD_OWNER_ENV]: '1', [OMX_TMUX_HUD_AUTO_CREATE_ENV]: '1' },
       listCurrentWindowPanes: () => [
         { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
       ],

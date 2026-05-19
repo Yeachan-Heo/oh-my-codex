@@ -24,7 +24,7 @@ import {
 import { writeSessionStart } from "../../hooks/session.js";
 import { resetTriageConfigCache } from "../../hooks/triage-config.js";
 import { executeStateOperation } from "../../state/operations.js";
-import { OMX_TMUX_HUD_OWNER_ENV } from "../../hud/reconcile.js";
+import { OMX_TMUX_HUD_AUTO_CREATE_ENV, OMX_TMUX_HUD_OWNER_ENV } from "../../hud/reconcile.js";
 import { readAllState } from "../../hud/state.js";
 import { getLegacyWikiDir, serializePage, writePage } from "../../wiki/storage.js";
 import { WIKI_SCHEMA_VERSION } from "../../wiki/types.js";
@@ -2786,11 +2786,13 @@ export async function onHookEvent(event) {
     const originalTmuxPane = process.env.TMUX_PANE;
     const originalPath = process.env.PATH;
     const originalHudOwner = process.env[OMX_TMUX_HUD_OWNER_ENV];
+    const originalHudAutoCreate = process.env[OMX_TMUX_HUD_AUTO_CREATE_ENV];
     const originalArgv = process.argv;
     try {
       process.env.TMUX = "1";
       process.env.TMUX_PANE = "%1";
       process.env[OMX_TMUX_HUD_OWNER_ENV] = "1";
+      process.env[OMX_TMUX_HUD_AUTO_CREATE_ENV] = "1";
       await mkdir(join(cwd, ".omx", "state"), { recursive: true });
       await writeFile(
         join(cwd, ".omx", "hud-config.json"),
@@ -2855,6 +2857,11 @@ esac
         delete process.env[OMX_TMUX_HUD_OWNER_ENV];
       } else {
         process.env[OMX_TMUX_HUD_OWNER_ENV] = originalHudOwner;
+      }
+      if (originalHudAutoCreate === undefined) {
+        delete process.env[OMX_TMUX_HUD_AUTO_CREATE_ENV];
+      } else {
+        process.env[OMX_TMUX_HUD_AUTO_CREATE_ENV] = originalHudAutoCreate;
       }
       process.env.PATH = originalPath;
       process.argv = originalArgv;
