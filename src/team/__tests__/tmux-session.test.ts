@@ -3221,6 +3221,116 @@ esac
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it('continues startup with best-effort resize fallback when indexed window-resized hook registration fails', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-resize-hook-fallback-'));
+    const prevTmux = process.env.TMUX;
+    const prevTmuxPane = process.env.TMUX_PANE;
+    const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevWarn = console.warn;
+    const warnings: string[] = [];
+
+    try {
+      await withMockTmuxFixture(
+        'omx-tmux-resize-hook-fallback-',
+        (logPath) => `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${logPath}"
+case "\${1:-}" in
+  -V)
+    echo "tmux 3.2a"
+    exit 0
+    ;;
+  display-message)
+    case "$*" in
+      *"#{window_width}"*)
+        echo "120"
+        ;;
+      *)
+        echo "leader:0 %1"
+        ;;
+    esac
+    exit 0
+    ;;
+  list-panes)
+    case "$*" in
+      *"pane_current_command"*)
+        printf "%%1\tnode\t'codex'\n"
+        ;;
+      *)
+        printf "%%1\n"
+        ;;
+    esac
+    exit 0
+    ;;
+  split-window)
+    case "$*" in
+      *" -h "*)
+        echo "%2"
+        ;;
+      *)
+        echo "%3"
+        ;;
+    esac
+    exit 0
+    ;;
+  set-hook)
+    case "$*" in
+      *"window-resized["*)
+        echo "invalid option: window-resized[]" >&2
+        exit 1
+        ;;
+      *)
+        exit 0
+        ;;
+    esac
+    ;;
+  set-option|resize-pane|select-layout|set-window-option|select-pane|run-shell)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        async ({ logPath }) => {
+          const fakeBinDir = join(logPath, '..');
+          const geminiPath = join(fakeBinDir, 'gemini');
+          await writeFile(geminiPath, '#!/bin/sh\nexit 0\n');
+          await chmod(geminiPath, 0o755);
+
+          process.env.TMUX = 'leader-session,stub,0';
+          process.env.TMUX_PANE = '%1';
+          process.env.OMX_TEAM_WORKER_CLI = 'gemini';
+          console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+
+          const session = createTeamSession('Resize Hook Fallback', 1, cwd);
+          assert.equal(session.hudPaneId, '%3');
+          assert.equal(session.resizeHookName, null);
+          assert.equal(session.resizeHookTarget, null);
+          assert.match(warnings.join('\n'), /tmux resize hook unavailable/);
+          assert.match(warnings.join('\n'), /invalid option: window-resized\[\]/);
+
+          const tmuxLog = await readFile(logPath, 'utf-8');
+          assert.match(tmuxLog, /set-hook -w -t leader:0 window-resized\[\d+\]/);
+          assert.match(tmuxLog, /set-hook -t leader:0 client-attached\[\d+\]/);
+          assert.match(tmuxLog, new RegExp(`run-shell -b sleep ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}; .*resize-pane -t %3 -y ${HUD_TMUX_TEAM_HEIGHT_LINES}`));
+          assert.match(tmuxLog, new RegExp(`run-shell .*resize-pane -t %3 -y ${HUD_TMUX_TEAM_HEIGHT_LINES}`));
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %2/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %3/);
+        },
+      );
+    } finally {
+      console.warn = prevWarn;
+      if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
+      else delete process.env.TMUX;
+      if (typeof prevTmuxPane === 'string') process.env.TMUX_PANE = prevTmuxPane;
+      else delete process.env.TMUX_PANE;
+      if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('native Windows HUD reconciliation', () => {
