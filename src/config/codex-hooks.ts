@@ -151,7 +151,6 @@ export function buildManagedCodexNativeHookWindowsShimContent(
 
   return [
     "$ErrorActionPreference = 'Stop'",
-    "$stdinPayload = [Console]::In.ReadToEnd()",
     "$startInfo = [System.Diagnostics.ProcessStartInfo]::new()",
     `$startInfo.FileName = ${quotePowerShellLiteral(nodePath)}`,
     "$startInfo.UseShellExecute = $false",
@@ -162,13 +161,14 @@ export function buildManagedCodexNativeHookWindowsShimContent(
     "$process = [System.Diagnostics.Process]::new()",
     "$process.StartInfo = $startInfo",
     "$null = $process.Start()",
-    "$stdoutTask = $process.StandardOutput.ReadToEndAsync()",
-    "$stderrTask = $process.StandardError.ReadToEndAsync()",
-    "$process.StandardInput.Write($stdinPayload)",
+    "$stdinTask = [Console]::OpenStandardInput().CopyToAsync($process.StandardInput.BaseStream)",
+    "$stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync([Console]::OpenStandardOutput())",
+    "$stderrTask = $process.StandardError.BaseStream.CopyToAsync([Console]::OpenStandardError())",
+    "$stdinTask.Wait()",
     "$process.StandardInput.Close()",
     "$process.WaitForExit()",
-    "[Console]::Out.Write($stdoutTask.Result)",
-    "[Console]::Error.Write($stderrTask.Result)",
+    "$stdoutTask.Wait()",
+    "$stderrTask.Wait()",
     "exit $process.ExitCode",
     "",
   ].join("\n");

@@ -105,15 +105,17 @@ describe("codex hooks helpers", () => {
       { nodePath: "C:\\Program Files\\nodejs\\node.exe" },
     );
 
-    assert.match(content, /\$stdinPayload = \[Console\]::In\.ReadToEnd\(\)/);
+    assert.doesNotMatch(content, /\[Console\]::In\.ReadToEnd\(\)/);
     assert.match(content, /\[System\.Diagnostics\.ProcessStartInfo\]::new\(\)/);
     assert.doesNotMatch(content, /ArgumentList/);
     assert.match(content, /\$startInfo\.UseShellExecute = \$false/);
     assert.match(content, /\$startInfo\.RedirectStandardInput = \$true/);
     assert.match(content, /\$startInfo\.RedirectStandardOutput = \$true/);
     assert.match(content, /\$startInfo\.RedirectStandardError = \$true/);
-    assert.match(content, /\[Console\]::Out\.Write\(\$stdoutTask\.Result\)/);
-    assert.match(content, /\[Console\]::Error\.Write\(\$stderrTask\.Result\)/);
+    assert.match(content, /OpenStandardInput\(\)\.CopyToAsync\(\$process\.StandardInput\.BaseStream\)/);
+    assert.match(content, /\$process\.StandardOutput\.BaseStream\.CopyToAsync\(\[Console\]::OpenStandardOutput\(\)\)/);
+    assert.match(content, /\$process\.StandardError\.BaseStream\.CopyToAsync\(\[Console\]::OpenStandardError\(\)\)/);
+    assert.doesNotMatch(content, /\$process\.StandardInput\.Write\(/);
     assert.match(content, /exit \$process\.ExitCode/);
     assert.match(content, /\$startInfo\.FileName = 'C:\\Program Files\\nodejs\\node\.exe'/);
     assert.match(
@@ -143,8 +145,9 @@ describe("codex hooks helpers", () => {
           "process.stdin.on('data', (chunk) => chunks.push(chunk));",
           "process.stdin.on('end', () => {",
           "  const input = Buffer.concat(chunks).toString('utf8');",
-          "  process.stdout.write(`stdout:${input}`);",
-          "  process.stderr.write(`stderr:${input}`);",
+          "  const parsed = JSON.parse(input);",
+          "  process.stdout.write(`stdout:${parsed.last_user_message.length}:${parsed.last_user_message.slice(0, 2)}`);",
+          "  process.stderr.write(`stderr:${parsed.last_user_message.slice(-6)}`);",
           "  process.exit(17);",
           "});",
           "",
@@ -162,12 +165,19 @@ describe("codex hooks helpers", () => {
       const result = spawnSync(
         shell,
         ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", shimPath],
-        { input: "payload with spaces", encoding: "utf-8" },
+        {
+          input: JSON.stringify({
+            hook_event_name: "Stop",
+            last_user_message: "这是 oh-my-codex PowerShell shim 回归测试，用长中文多字节 stdin JSON 验证不会触发截断。".repeat(600),
+          }),
+          encoding: "utf-8",
+          maxBuffer: 1024 * 1024 * 10,
+        },
       );
 
       assert.equal(result.status, 17);
-      assert.equal(result.stdout, "stdout:payload with spaces");
-      assert.equal(result.stderr, "stderr:payload with spaces");
+      assert.equal(result.stdout, "stdout:32400:这是");
+      assert.equal(result.stderr, "stderr:触发截断。");
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
