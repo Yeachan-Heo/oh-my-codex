@@ -16,6 +16,7 @@ import {
   validateSessionId,
   validateStateModeSegment,
 } from '../mcp/state-paths.js';
+import { evaluateRalphCompletionAuditEvidence } from '../ralph/completion-audit.js';
 import { ensureCanonicalRalphArtifacts } from '../ralph/persistence.js';
 import { RALPH_PHASES, validateAndNormalizeRalphState } from '../ralph/contract.js';
 import { applyRunOutcomeContract } from '../runtime/run-outcome.js';
@@ -287,6 +288,16 @@ export async function executeStateOperation(
               validation.state.ralph_phase_normalized_from = originalPhase;
             }
             Object.assign(mergedRaw, validation.state);
+            if (mergedRaw.current_phase === 'complete') {
+              const completionAudit = evaluateRalphCompletionAuditEvidence(mergedRaw, cwd);
+              if (!completionAudit.complete) {
+                validationError = `ralph complete state requires passing completion_audit or repo-relative completion_audit_path (${completionAudit.reason})`;
+                return;
+              }
+              delete mergedRaw.completion_audit_gate;
+              delete mergedRaw.completion_audit_missing_reason;
+              delete mergedRaw.completion_audit_blocked_at;
+            }
             ensureRalphArtifacts = true;
           }
 

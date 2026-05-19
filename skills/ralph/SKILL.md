@@ -127,6 +127,13 @@ Use the CLI-first state surface for Ralph lifecycle state (`omx state write/read
   `omx state write --input '{"mode":"ralph","current_phase":"verifying"}' --json` or `omx state write --input '{"mode":"ralph","current_phase":"fixing"}' --json`
 - **On completion** (only after the completion audit passes with real evidence):
   `omx state write --input '{"mode":"ralph","active":false,"current_phase":"complete","completed_at":"<now>","completion_audit":{"passed":true,"prompt_to_artifact_checklist":["<requirement mapped to artifact/evidence>"],"verification_evidence":["<fresh test/build/lint command and result>"]}}' --json`
+- **Before the final answer**:
+  1. Run fresh verification and read the output.
+  2. Build `prompt_to_artifact_checklist` entries that map every user requirement, workflow gate, named file, command, PR/delivery requirement, and stop condition to a concrete artifact or evidence item.
+  3. Build `verification_evidence` entries with concrete commands, exit status, files inspected, PR URLs, or other machine-checkable evidence.
+  4. Write the Ralph completion state with a top-level `completion_audit` field on the Ralph state object. Do not write bare top-level `prompt_to_artifact_checklist` or `verification_evidence` fields by themselves; the Stop gate will reject them.
+  5. Read the state back with `omx state read --input '{"mode":"ralph"}' --json` and verify `completion_audit.passed === true`, a non-empty checklist, and non-empty verification evidence before producing the final answer.
+  6. If Codex goal mode is active, call `update_goal({status:"complete"})` only after this Ralph audit read-back succeeds.
 - **On cancellation/cleanup**:
   run `$cancel` (which should call `omx state clear --input '{"mode":"ralph"}' --json`)
 

@@ -8558,16 +8558,29 @@ exit 0
       assert.equal(result.omxEventName, "stop");
       const reason = String(result.outputJson?.reason);
       assert.match(reason, /Ralph completion audit is missing required evidence/);
-      assert.match(reason, /state\.completion_audit = \{ passed: true, prompt_to_artifact_checklist: \[\.\.\.\], verification_evidence: \[\.\.\.\] \}/);
+      assert.match(reason, /set "completion_audit" on the Ralph state object/);
+      assert.doesNotMatch(reason, /state\.completion_audit/);
       assert.match(reason, /repo-relative JSON file/);
       assert.match(reason, /Markdown artifacts and flat top-level checklist\/evidence fields are not accepted/);
       assert.equal(result.outputJson?.stopReason, "ralph_completion_audit_missing_completion_audit");
       const reopened = JSON.parse(await readFile(statePath, "utf-8")) as Record<string, unknown>;
-      assert.equal(reopened.active, true);
-      assert.equal(reopened.current_phase, "verifying");
+      assert.equal(reopened.active, false);
+      assert.equal(reopened.current_phase, "complete");
       assert.equal(reopened.completion_audit_gate, "blocked");
       assert.equal(reopened.completion_audit_missing_reason, "missing_completion_audit");
-      assert.equal(typeof reopened.completed_at, "undefined");
+      assert.equal(reopened.completed_at, "2026-05-10T12:00:00.000Z");
+
+      const repeat = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+          last_assistant_message: "Done. Ralph complete.",
+        },
+        { cwd },
+      );
+      assert.equal(repeat.outputJson?.stopReason, "ralph_completion_audit_missing_completion_audit");
+      assert.doesNotMatch(String(repeat.outputJson?.reason), /Ralph is still active/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

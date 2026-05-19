@@ -896,13 +896,12 @@ async function reopenRalphCompletionAuditBlock(block: RalphCompletionAuditBlockS
   const nowIso = new Date().toISOString();
   const next: Record<string, unknown> = {
     ...block.state,
-    active: true,
-    current_phase: "verifying",
+    active: false,
+    current_phase: "complete",
     completion_audit_gate: "blocked",
     completion_audit_missing_reason: block.reason,
     completion_audit_blocked_at: nowIso,
   };
-  delete next.completed_at;
   await writeFile(block.path, JSON.stringify(next, null, 2));
 }
 
@@ -3143,7 +3142,7 @@ async function buildStopHookOutput(
       `OMX Ralph completion audit is missing required evidence (${ralphCompletionAuditBlock.reason}; state: ${blockingPath}).`,
       "Continue verification and do not report complete yet.",
       "Record machine-readable completion evidence before stopping:",
-      "- either set state.completion_audit = { passed: true, prompt_to_artifact_checklist: [...], verification_evidence: [...] }",
+      '- either set "completion_audit" on the Ralph state object, for example: omx state write --input \'{"mode":"ralph","active":false,"current_phase":"complete","completion_audit":{"passed":true,"prompt_to_artifact_checklist":["..."],"verification_evidence":["..."]}}\' --json',
       "- or set completion_audit_path / completion_audit_evidence_path to a repo-relative JSON file with those same fields.",
       "Markdown artifacts and flat top-level checklist/evidence fields are not accepted by the Ralph Stop gate.",
     ].join(" ");
