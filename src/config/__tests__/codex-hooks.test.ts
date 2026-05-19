@@ -176,7 +176,8 @@ describe("codex hooks helpers", () => {
       );
 
       assert.equal(result.status, 17);
-      assert.equal(result.stdout, "stdout:32400:这是");
+      const expectedMessage = "这是 oh-my-codex PowerShell shim 回归测试，用长中文多字节 stdin JSON 验证不会触发截断。".repeat(600);
+      assert.equal(result.stdout, `stdout:${expectedMessage.length}:这是`);
       assert.equal(result.stderr, "stderr:触发截断。");
     } finally {
       await rm(wd, { recursive: true, force: true });
