@@ -67,6 +67,12 @@
       "core": true
     },
     {
+      "name": "high-ultragoal-team",
+      "category": "execution",
+      "status": "active",
+      "core": false
+    },
+    {
       "name": "swarm",
       "category": "execution",
       "status": "deprecated",

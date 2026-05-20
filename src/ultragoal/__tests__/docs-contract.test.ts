@@ -77,4 +77,26 @@ describe('ultragoal docs contract', () => {
       assert.doesNotMatch(doc, /auto[- ]launches Team/i);
     }
   });
+
+  it('keeps high-ultragoal-team narrowly gated to artifact-returning lanes', () => {
+    const docs = [
+      loadDoc('skills/high-ultragoal-team/SKILL.md'),
+      loadDoc('plugins/oh-my-codex/skills/high-ultragoal-team/SKILL.md'),
+    ];
+
+    for (const doc of docs) {
+      const firstThirtyLines = doc.split('\n').slice(0, 30).join('\n');
+
+      assert.match(firstThirtyLines, /independent lanes/i);
+      assert.match(firstThirtyLines, /verifiable artifacts/i);
+      assert.match(firstThirtyLines, /single leader/i);
+      assert.match(firstThirtyLines, /Workers must never modify `\.omx\/ultragoal`/);
+      assert.match(firstThirtyLines, /Codex goal state, or checkpoints/);
+      assert.match(firstThirtyLines, /quarantine output, inspect diff\/logs, discard prohibited state/i);
+      assert.match(firstThirtyLines, /fresh leader `get_goal` snapshot/i);
+      assert.match(firstThirtyLines, /Do not use for single-threaded debugging, vague backlog cleanup, or unclear ownership/i);
+      assert.doesNotMatch(firstThirtyLines, /large work/i);
+      assert.doesNotMatch(firstThirtyLines, /complex work/i);
+    }
+  });
 });

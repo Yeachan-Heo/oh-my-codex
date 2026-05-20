@@ -96,4 +96,13 @@ describe('catalog schema', () => {
     assert.equal(ultragoal?.status, 'active');
     assert.equal(ultragoal?.core, true);
   });
+
+  it('includes high-ultragoal-team as a non-core execution recipe skill', () => {
+    const parsed = validateCatalogManifest(readSourceManifest());
+    const highUltragoalTeam = parsed.skills.find((skill) => skill.name === 'high-ultragoal-team');
+
+    assert.equal(highUltragoalTeam?.category, 'execution');
+    assert.equal(highUltragoalTeam?.status, 'active');
+    assert.equal(highUltragoalTeam?.core, false);
+  });
 });
