@@ -234,7 +234,32 @@ interface RunSparkShellFallbackOptions {
   announce?: boolean;
 }
 
-export function parseSparkShellFallbackInvocation(args: readonly string[]): SparkShellFallbackInvocation {
+interface ParseSparkShellFallbackOptions {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  commandExists?: (command: string) => boolean;
+}
+
+export function resolveFallbackShellArgv(
+  script: string,
+  options: ParseSparkShellFallbackOptions = {},
+): string[] {
+  const {
+    platform = process.platform,
+    env = process.env,
+    commandExists = (command: string) => spawnSync(command, ['--version'], { encoding: 'utf-8', stdio: 'ignore' }).error === undefined,
+  } = options;
+
+  if (platform !== 'win32') return ['sh', '-lc', script];
+  if (commandExists('pwsh')) return ['pwsh', '-NoLogo', '-NoProfile', '-Command', script];
+  if (commandExists('powershell.exe')) return ['powershell.exe', '-NoLogo', '-NoProfile', '-Command', script];
+  return [env.ComSpec?.trim() || 'cmd.exe', '/d', '/s', '/c', script];
+}
+
+export function parseSparkShellFallbackInvocation(
+  args: readonly string[],
+  options: ParseSparkShellFallbackOptions = {},
+): SparkShellFallbackInvocation {
   if (args.length === 0) {
     throw new Error(`Missing command to run.\n${SPARKSHELL_USAGE}`);
   }
@@ -242,12 +267,12 @@ export function parseSparkShellFallbackInvocation(args: readonly string[]): Spar
   if (args[0] === '--shell') {
     const script = args[1];
     if (!script) throw new Error(`--shell requires a command string.\n${SPARKSHELL_USAGE}`);
-    return { kind: 'command', argv: ['sh', '-lc', script] };
+    return { kind: 'command', argv: resolveFallbackShellArgv(script, options) };
   }
   if (args[0]?.startsWith('--shell=')) {
     const script = args[0].slice('--shell='.length);
     if (!script.trim()) throw new Error(`--shell requires a command string.\n${SPARKSHELL_USAGE}`);
-    return { kind: 'command', argv: ['sh', '-lc', script] };
+    return { kind: 'command', argv: resolveFallbackShellArgv(script, options) };
   }
 
   const paneStart = args.findIndex((arg) => arg === '--tmux-pane' || arg.startsWith('--tmux-pane='));

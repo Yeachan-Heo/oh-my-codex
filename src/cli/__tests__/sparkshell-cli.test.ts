@@ -14,6 +14,7 @@ import {
   packagedSparkShellBinaryCandidatePaths,
   parseSparkShellFallbackInvocation,
   repoLocalSparkShellBinaryPath,
+  resolveFallbackShellArgv,
   resolveSparkShellBinaryPath,
   resolveSparkShellBinaryPathWithHydration,
   runSparkShellBinary,
@@ -403,6 +404,37 @@ describe('parseSparkShellFallbackInvocation', () => {
     assert.deepEqual(
       parseSparkShellFallbackInvocation(['--shell', 'printf ok']),
       { kind: 'command', argv: ['sh', '-lc', 'printf ok'] },
+    );
+  });
+
+  it('translates explicit shell fallback through pwsh on Windows when available', () => {
+    assert.deepEqual(
+      parseSparkShellFallbackInvocation(['--shell', 'Write-Output ok'], {
+        platform: 'win32',
+        commandExists: (command) => command === 'pwsh',
+      }),
+      { kind: 'command', argv: ['pwsh', '-NoLogo', '-NoProfile', '-Command', 'Write-Output ok'] },
+    );
+  });
+
+  it('falls back from pwsh to powershell.exe on Windows', () => {
+    assert.deepEqual(
+      resolveFallbackShellArgv('Write-Output ok', {
+        platform: 'win32',
+        commandExists: (command) => command === 'powershell.exe',
+      }),
+      ['powershell.exe', '-NoLogo', '-NoProfile', '-Command', 'Write-Output ok'],
+    );
+  });
+
+  it('uses minimal cmd fallback for explicit shell fallback on Windows', () => {
+    assert.deepEqual(
+      resolveFallbackShellArgv('echo ok', {
+        platform: 'win32',
+        env: {},
+        commandExists: () => false,
+      }),
+      ['cmd.exe', '/d', '/s', '/c', 'echo ok'],
     );
   });
 

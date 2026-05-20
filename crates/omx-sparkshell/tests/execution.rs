@@ -254,6 +254,7 @@ fn summary_failure_falls_back_to_raw_output_with_notice() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("child-err"));
     assert!(stderr.contains("summary unavailable"));
+    assert!(stderr.contains("showing raw output instead"));
 }
 
 #[test]
@@ -478,6 +479,32 @@ fn summary_failure_when_api_is_missing_falls_back_to_raw_output() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("child-err"));
     assert!(stderr.contains("summary unavailable"));
+    assert!(stderr.contains("showing raw output instead"));
+}
+
+#[test]
+fn json_summary_failure_reports_raw_output_omitted() {
+    let (base_url, server) = start_api_server(1, |_request| {
+        (503, "{\"error\":\"bridge failed\"}".to_string())
+    });
+
+    let output = Command::new(sparkshell_bin())
+        .env("OMX_API_BASE_URL", base_url)
+        .env("OMX_SPARKSHELL_LINES", "1")
+        .arg("--json")
+        .arg("sh")
+        .arg("-c")
+        .arg("printf 'one\ntwo\n'")
+        .output()
+        .expect("run sparkshell");
+    server.join().expect("api server");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("summary unavailable"));
+    assert!(stdout.contains("raw output omitted from JSON report"));
+    assert!(!stdout.contains("raw output included"));
+    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
 }
 
 #[test]

@@ -9,7 +9,7 @@ mod threshold;
 
 use crate::codex_bridge::summarize_output;
 use crate::error::SparkshellError;
-use crate::exec::{execute_command, execute_shell_command, CommandOutput};
+use crate::exec::{execute_command, resolve_shell_argv, CommandOutput};
 use crate::redaction::redact_output;
 use crate::threshold::{combined_visible_lines, read_line_threshold};
 use omx_mux::build_capture_pane_args;
@@ -86,9 +86,7 @@ fn run(args: Vec<String>) -> Result<(), SparkshellError> {
     let options = parse_input(&args)?;
     let execution_argv = match &options.target {
         SparkShellTarget::Command(command) => command.clone(),
-        SparkShellTarget::Shell(script) => {
-            vec!["bash".to_string(), "-lc".to_string(), script.clone()]
-        }
+        SparkShellTarget::Shell(script) => resolve_shell_argv(script),
         SparkShellTarget::TmuxPane {
             pane_id,
             tail_lines,
@@ -99,10 +97,7 @@ fn run(args: Vec<String>) -> Result<(), SparkshellError> {
         }
     };
 
-    let raw_output = match &options.target {
-        SparkShellTarget::Shell(script) => execute_shell_command(script)?,
-        _ => execute_command(&execution_argv)?,
-    };
+    let raw_output = execute_command(&execution_argv)?;
     let redacted = redact_output(&raw_output);
     let output = if options.json {
         &redacted.output
@@ -123,8 +118,9 @@ fn run(args: Vec<String>) -> Result<(), SparkshellError> {
         } else if cache_meta.as_ref().is_some_and(|meta| meta.cache_hit) {
             "unchanged since previous observation".to_string()
         } else {
-            summarize_output(&execution_argv, output)
-                .unwrap_or_else(|error| format!("summary unavailable: {error}"))
+            summarize_output(&execution_argv, output).unwrap_or_else(|error| {
+                format!("summary unavailable: {error}; raw output omitted from JSON report")
+            })
         };
         write_json_report(
             &options,
@@ -153,7 +149,7 @@ fn run(args: Vec<String>) -> Result<(), SparkshellError> {
         }
         Err(error) => {
             write_raw_output(&output.stdout, &output.stderr)?;
-            eprintln!("omx sparkshell: summary unavailable ({error})");
+            eprintln!("omx sparkshell: summary unavailable ({error}); showing raw output instead");
         }
     }
 
@@ -175,9 +171,11 @@ fn usage_text() -> String {
     format!(
         concat!(
             "usage: omx-sparkshell <command> [args...]\n",
+            "   or: omx-sparkshell --shell <shell-command>\n",
             "   or: omx-sparkshell --tmux-pane <pane-id> [--tail-lines <{min}-{max}>]\n",
             "\n",
             "Direct command mode executes argv without shell metacharacter parsing.\n",
+            "Shell mode executes through bash -lc/sh -lc on POSIX and a native Windows shell on Windows.\n",
             "Tmux pane mode captures a larger pane tail and applies the same raw-vs-summary behavior.\n"
         ),
         min = MIN_TMUX_TAIL_LINES,
