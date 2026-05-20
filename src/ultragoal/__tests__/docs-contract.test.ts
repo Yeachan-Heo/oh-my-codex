@@ -140,4 +140,32 @@ describe('ultragoal docs contract', () => {
       assert.doesNotMatch(doc, /auto[- ]launches Team/i);
     }
   });
+
+  it('keeps high-ultragoal-team narrowly scoped to leader-owned artifact lanes', () => {
+    const docs = [
+      loadDoc('skills/high-ultragoal-team/SKILL.md'),
+      loadDoc('plugins/oh-my-codex/skills/high-ultragoal-team/SKILL.md'),
+    ];
+
+    for (const doc of docs) {
+      const firstThirtyLines = doc.split('\n').slice(0, 30).join('\n');
+
+      assert.match(firstThirtyLines, /independent lanes/i);
+      assert.match(firstThirtyLines, /verifiable artifacts/i);
+      assert.match(firstThirtyLines, /single leader/i);
+      assert.match(firstThirtyLines, /Non-overlap/i);
+      assert.match(firstThirtyLines, /\$ultragoal[\s\S]*goal ledgers alone/i);
+      assert.match(firstThirtyLines, /\$team[\s\S]*worker runtime alone/i);
+      assert.match(firstThirtyLines, /\$ralplan[\s\S]*planning alone/i);
+      assert.match(firstThirtyLines, /Workers must never modify `\.omx\/ultragoal`/);
+      assert.match(firstThirtyLines, /Codex goal state, or checkpoints/);
+      assert.match(firstThirtyLines, /quarantine output, inspect diff\/logs, discard prohibited state/i);
+      assert.match(firstThirtyLines, /fresh leader `get_goal` snapshot/i);
+      assert.match(firstThirtyLines, /Do not use for single-threaded debugging, vague backlog cleanup, or unclear ownership/i);
+      assert.match(doc, /manual(?:ly)? clears? the completed Codex goal with `\/goal clear`/i);
+      assert.match(doc, /Worker output lacks verifiable artifacts/);
+      assert.doesNotMatch(firstThirtyLines, /large work/i);
+      assert.doesNotMatch(firstThirtyLines, /complex work/i);
+    }
+  });
 });

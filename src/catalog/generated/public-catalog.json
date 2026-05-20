@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-05-12T05:44:35.138Z",
+  "generatedAt": "2026-05-20T16:33:36.299Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 48,
+    "skillCount": 49,
     "promptCount": 30,
-    "activeSkillCount": 26,
+    "activeSkillCount": 27,
     "activeAgentCount": 16
   },
   "coreSkills": [
@@ -91,6 +91,13 @@
       "category": "execution",
       "status": "active",
       "core": true,
+      "internalRequired": false
+    },
+    {
+      "name": "high-ultragoal-team",
+      "category": "execution",
+      "status": "active",
+      "core": false,
       "internalRequired": false
     },
     {
