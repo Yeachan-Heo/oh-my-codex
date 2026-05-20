@@ -94,17 +94,18 @@ Then work normally inside Codex:
 ```text
 $deep-interview "clarify the authentication change"
 $ralplan "approve the auth plan and review tradeoffs"
+$prometheus-strict "stress-test the plan before durable execution"
 $ultragoal "turn the approved plan into durable Codex goals"
 ```
 
 That is the main path.
 Before you treat the runtime as ready, run the quick-start smoke test below: `omx doctor` verifies the install shape, while `omx exec` proves the active Codex runtime can actually authenticate and complete a model call from the current environment.
-Start OMX strongly, clarify first when needed, approve the plan, then use `$ultragoal` as the default durable completion wrapper. Use `$team` inside that execution path only when a specific Ultragoal story needs coordinated parallel work; use `$ralph` when you intentionally want a single-owner completion loop instead of a durable multi-goal run.
+Start OMX strongly, clarify first when needed, approve the plan, optionally use `$prometheus-strict` for interview-driven plan hardening on high-risk work, then use `$ultragoal` as the default durable completion wrapper. Use `$team` inside that execution path only when a specific Ultragoal story needs coordinated parallel work; use `$ralph` when you intentionally want a single-owner completion loop instead of a durable multi-goal run.
 
 ## What OMX is for
 
 Use OMX if you already like Codex and want a better day-to-day runtime around it:
-- a standard workflow built around `$deep-interview` -> `$ralplan` -> `$ultragoal`
+- a standard workflow built around `$deep-interview` -> `$ralplan` -> `$ultragoal`, with `$prometheus-strict` available when plans need stricter interview/critique/synthesis before execution and optional `.omx/plans/prometheus-strict/` artifacts
 - durable multi-goal handoffs with `$ultragoal` and `.omx/ultragoal` artifacts as the default completion path after planning
 - specialist roles and supporting skills when the task needs them
 - project guidance through scoped `AGENTS.md`
