@@ -265,6 +265,40 @@ describe('ralplan runtime', () => {
     }
   });
 
+  it('fails closed when consensus approves with a mismatched stale test spec', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-mismatched-artifacts-'));
+    const sessionId = 'sess-ralplan-mismatched-artifacts';
+    try {
+      await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
+      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+
+      const result = await runRalplanConsensus({
+        async draft() {
+          const plansDir = join(cwd, '.omx', 'plans');
+          await mkdir(plansDir, { recursive: true });
+          const prdPath = join(plansDir, 'prd-new.md');
+          await writeFile(prdPath, '# new plan\n');
+          await writeFile(join(plansDir, 'test-spec-old.md'), '# old tests\n');
+          return { summary: 'draft mismatched artifacts', planPath: prdPath };
+        },
+        async architectReview() {
+          return { verdict: 'approve', summary: 'architect ok' };
+        },
+        async criticReview() {
+          return { verdict: 'approve', summary: 'critic ok' };
+        },
+      }, { task: 'approve with mismatched artifacts', cwd, maxIterations: 1 });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(result.phase, 'failed');
+      assert.equal(result.planningComplete, false);
+      assert.equal(result.error, 'ralplan_planning_artifacts_missing_after_consensus');
+      assert.equal(result.ralplanConsensusGate.complete, true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed when consensus approves without required planning artifacts', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-no-artifacts-'));
     const sessionId = 'sess-ralplan-no-artifacts';

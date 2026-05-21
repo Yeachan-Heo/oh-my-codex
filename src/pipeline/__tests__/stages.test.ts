@@ -161,6 +161,26 @@ describe('RALPLAN Stage', () => {
     assert.equal(stage.canSkip!(makeCtx()), false);
   });
 
+  it('run fails with consensus-specific artifact error when consensus exists but planning artifacts are missing', async () => {
+    const stage = createRalplanStage();
+    const result = await stage.run(makeCtx({
+      artifacts: {
+        ralplan: {
+          ralplanConsensusGate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: { agent_role: 'architect', verdict: 'approve' },
+            ralplan_critic_review: { agent_role: 'critic', verdict: 'approve' },
+          },
+        },
+      },
+    }));
+
+    assert.equal(result.status, 'failed');
+    assert.equal(result.error, 'ralplan_planning_artifacts_missing_after_consensus');
+    assert.equal((result.artifacts as Record<string, unknown>).planningComplete, false);
+  });
+
   it('canSkip returns true only when planning artifacts have sequential Architect and Critic approval evidence', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
@@ -554,6 +574,7 @@ describe('RALPLAN Stage', () => {
     const artifacts = result.artifacts as Record<string, unknown>;
 
     assert.equal(result.status, 'completed');
+    assert.equal(result.error, undefined);
     assert.equal(artifacts.runtime, true);
     assert.equal(artifacts.planningComplete, true);
     assert.deepEqual(artifacts.ralplanConsensusGate, {
@@ -566,6 +587,35 @@ describe('RALPLAN Stage', () => {
     });
     assert.equal(artifacts.iteration, 1);
     assert.equal(artifacts.runtimeDrafted, true);
+  });
+
+  it('fails runtime handoff when consensus approves but test spec does not match selected PRD', async () => {
+    const stage = createRalplanStage({
+      executor: {
+        async draft() {
+          const plansDir = join(tempDir, '.omx', 'plans');
+          await mkdir(plansDir, { recursive: true });
+          const prdPath = join(plansDir, 'prd-new.md');
+          await writeFile(prdPath, '# New runtime plan\n');
+          await writeFile(join(plansDir, 'test-spec-old.md'), '# Stale runtime tests\n');
+          return { summary: 'drafted mismatched artifacts', planPath: prdPath };
+        },
+        async architectReview() {
+          return { verdict: 'approve', summary: 'architect ok' };
+        },
+        async criticReview() {
+          return { verdict: 'approve', summary: 'critic ok' };
+        },
+      },
+    });
+
+    const result = await stage.run(makeCtx({ task: 'live ralplan mismatched artifacts' }));
+    const artifacts = result.artifacts as Record<string, unknown>;
+
+    assert.equal(result.status, 'failed');
+    assert.equal(result.error, 'ralplan_planning_artifacts_missing_after_consensus');
+    assert.equal(artifacts.planningComplete, false);
+    assert.equal((artifacts.ralplanConsensusGate as { complete?: boolean }).complete, true);
   });
 
   it('fails runtime handoff when consensus approves but required planning artifacts are missing', async () => {

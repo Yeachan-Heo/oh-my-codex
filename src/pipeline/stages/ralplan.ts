@@ -93,8 +93,17 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
         const planningComplete = isPlanningComplete(planningArtifacts);
         const consensusComplete = consensusGate.complete === true;
 
+        const completed = planningComplete && consensusComplete;
+        const error = completed
+          ? undefined
+          : consensusComplete && !planningComplete
+            ? 'ralplan_planning_artifacts_missing_after_consensus'
+            : planningComplete && !consensusComplete
+              ? 'ralplan_consensus_evidence_missing'
+              : 'ralplan_planning_artifacts_missing';
+
         return {
-          status: planningComplete && consensusComplete ? 'completed' : 'failed',
+          status: completed ? 'completed' : 'failed',
           artifacts: {
             plansDir: planningArtifacts.plansDir,
             specsDir: planningArtifacts.specsDir,
@@ -110,7 +119,7 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
               : `Remain in RALPLAN for: ${ctx.task}. Do not hand off to execution until durable Architect approval followed by Critic approval is recorded in ralplan state or handoff artifacts.`,
           },
           duration_ms: Date.now() - startTime,
-          error: planningComplete && !consensusComplete ? 'ralplan_consensus_evidence_missing' : 'ralplan_planning_artifacts_missing',
+          error,
         };
       } catch (err) {
         return {

@@ -1,5 +1,5 @@
 import { cancelMode, readModeState, startMode, updateModeState } from '../modes/base.js';
-import { readPlanningArtifacts } from '../planning/artifacts.js';
+import { isPlanningComplete, readPlanningArtifacts } from '../planning/artifacts.js';
 
 export const RALPLAN_ACTIVE_PHASES = [
   'draft',
@@ -318,7 +318,7 @@ export async function runRalplanConsensus(
 
       if (consensusGate.complete) {
         const planningArtifacts = readPlanningArtifacts(cwd);
-        const planningComplete = planningArtifacts.prdPaths.length > 0 && planningArtifacts.testSpecPaths.length > 0;
+        const planningComplete = isPlanningComplete(planningArtifacts);
         if (!planningComplete) {
           const error = 'ralplan_planning_artifacts_missing_after_consensus';
           await updateRalplanState(cwd, {
