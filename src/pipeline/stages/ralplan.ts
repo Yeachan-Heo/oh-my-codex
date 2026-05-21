@@ -8,7 +8,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import type { PipelineStage, StageContext, StageResult } from '../types.js';
 import { isPlanningComplete, readPlanningArtifacts } from '../../planning/artifacts.js';
-import { getStatePath } from '../../state/paths.js';
+import { getBaseStateDir, getStatePath, validateSessionId } from '../../state/paths.js';
 import { isNonCleanReviewVerdict } from '../review-verdict.js';
 import {
   runRalplanConsensus,
@@ -226,10 +226,38 @@ function isRejectedReviewToken(value: string): boolean {
 }
 
 function readAutopilotState(cwd: string, sessionId?: string): Record<string, unknown> | null {
-  const candidate = getStatePath('autopilot', cwd, sessionId);
-  if (!existsSync(candidate)) return null;
+  const explicitSessionId = validateOptionalSessionId(sessionId);
+  if (sessionId !== undefined) {
+    return explicitSessionId ? readJsonState(getStatePath('autopilot', cwd, explicitSessionId)) : null;
+  }
+
+  const currentSessionId = readCurrentSessionIdFromState(cwd);
+  if (currentSessionId) {
+    const scoped = readJsonState(getStatePath('autopilot', cwd, currentSessionId));
+    if (scoped) return scoped;
+  }
+  return readJsonState(getStatePath('autopilot', cwd));
+}
+
+function validateOptionalSessionId(sessionId?: string): string | undefined {
+  if (sessionId === undefined) return undefined;
   try {
-    return JSON.parse(readFileSync(candidate, 'utf-8')) as Record<string, unknown>;
+    return validateSessionId(sessionId);
+  } catch {
+    return undefined;
+  }
+}
+
+function readCurrentSessionIdFromState(cwd: string): string | undefined {
+  const state = readJsonState(`${getBaseStateDir(cwd)}/session.json`);
+  if (!state) return undefined;
+  return validateOptionalSessionId(typeof state.session_id === 'string' ? state.session_id : undefined);
+}
+
+function readJsonState(path: string): Record<string, unknown> | null {
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
   } catch {
     return null;
   }

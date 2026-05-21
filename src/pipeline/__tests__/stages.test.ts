@@ -318,6 +318,40 @@ describe('RALPLAN Stage', () => {
     assert.equal(stage.canSkip!(makeCtx()), true);
   });
 
+  it('canSkip reads current session-scoped autopilot state when sessionId is omitted', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const statePath = getStatePath('autopilot', tempDir, 'current-ralplan-session');
+    const rootStatePath = getStatePath('autopilot', tempDir);
+    await mkdir(plansDir, { recursive: true });
+    await mkdir(dirname(statePath), { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+    await writeFile(join(dirname(rootStatePath), 'session.json'), JSON.stringify({ session_id: 'current-ralplan-session', cwd: tempDir }));
+    await writeFile(statePath, JSON.stringify({
+      active: true,
+      mode: 'autopilot',
+      state: {
+        handoff_artifacts: {
+          ralplan_architect_review: { verdict: 'APPROVE' },
+          ralplan_critic_review: { verdict: 'APPROVE' },
+        },
+      },
+    }));
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx()), true);
+  });
+
+  it('canSkip rejects invalid explicit session ids instead of resolving state paths', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({ sessionId: '../spoofed-session' })), false);
+  });
+
   it('canSkip returns false after non-clean code-review loopback even when plans exist', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
