@@ -15,6 +15,7 @@ import { createUltragoalStage, buildUltragoalInstruction } from '../stages/ultra
 import { createUltraqaStage, buildUltraqaInstruction } from '../stages/ultraqa.js';
 import { buildFollowupStaffingPlan } from '../../team/followup-planner.js';
 import { packageRoot } from '../../utils/paths.js';
+import { getStatePath } from '../../state/paths.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -119,13 +120,14 @@ describe('RALPLAN Stage', () => {
     assert.equal(stage.name, 'ralplan');
   });
 
-  it('runs successfully and produces artifacts', async () => {
+  it('returns a failed instruction artifact when no ralplan executor is configured', async () => {
     const stage = createRalplanStage();
     const result = await stage.run(makeCtx());
 
-    assert.equal(result.status, 'completed');
+    assert.equal(result.status, 'failed');
     assert.equal((result.artifacts as Record<string, unknown>).stage, 'ralplan');
     assert.ok((result.artifacts as Record<string, unknown>).instruction);
+    assert.match(result.error ?? '', /executor is required/);
   });
 
   it('canSkip returns false when no plans directory exists', () => {
@@ -212,6 +214,36 @@ describe('RALPLAN Stage', () => {
         ralplan_critic_review: { decision: 'blocking', approved: true, clean: true },
       },
     })), false);
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan_architect_review: { verdict: 'APPROVE' },
+        ralplan_critic_review: { status: 'iterating', approved: true },
+      },
+    })), false);
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan_architect_review: { verdict: 'APPROVE' },
+        ralplan_critic_review: { approved: true, blocking: true },
+      },
+    })), false);
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan_architect_review: { verdict: 'APPROVE' },
+        ralplan_critic_review: { approved: true, rejected: true },
+      },
+    })), false);
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan_architect_review: { verdict: 'APPROVE' },
+        ralplan_critic_review: { approved: true, clean: false },
+      },
+    })), false);
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan_architect_review: { verdict: 'APPROVE' },
+        ralplan_critic_review: { approved: true, request_changes: true },
+      },
+    })), false);
   });
 
   it('canSkip uses the latest approved ralplan review array entries', async () => {
@@ -241,12 +273,12 @@ describe('RALPLAN Stage', () => {
 
   it('canSkip returns true when prd/test spec and durable autopilot handoff reviews exist', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
-    const stateDir = join(tempDir, '.omx', 'state', 'sessions', 'sess-ralplan-skip');
+    const statePath = getStatePath('autopilot', tempDir, 'sess-ralplan-skip');
     await mkdir(plansDir, { recursive: true });
-    await mkdir(stateDir, { recursive: true });
+    await mkdir(dirname(statePath), { recursive: true });
     await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
     await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
-    await writeFile(join(stateDir, 'autopilot-state.json'), JSON.stringify({
+    await writeFile(statePath, JSON.stringify({
       active: true,
       mode: 'autopilot',
       current_phase: 'ralplan',
@@ -261,6 +293,29 @@ describe('RALPLAN Stage', () => {
 
     const stage = createRalplanStage();
     assert.equal(stage.canSkip!(makeCtx({ sessionId: 'sess-ralplan-skip' })), true);
+  });
+
+  it('canSkip does not fall back to root autopilot state for an explicit session id', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const rootStatePath = getStatePath('autopilot', tempDir);
+    await mkdir(plansDir, { recursive: true });
+    await mkdir(dirname(rootStatePath), { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+    await writeFile(rootStatePath, JSON.stringify({
+      active: true,
+      mode: 'autopilot',
+      state: {
+        handoff_artifacts: {
+          ralplan_architect_review: { verdict: 'APPROVE' },
+          ralplan_critic_review: { verdict: 'APPROVE' },
+        },
+      },
+    }));
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({ sessionId: 'fresh-session-without-state' })), false);
+    assert.equal(stage.canSkip!(makeCtx()), true);
   });
 
   it('canSkip returns false after non-clean code-review loopback even when plans exist', async () => {

@@ -6,9 +6,9 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import type { PipelineStage, StageContext, StageResult } from '../types.js';
 import { isPlanningComplete, readPlanningArtifacts } from '../../planning/artifacts.js';
+import { getStatePath } from '../../state/paths.js';
 import { isNonCleanReviewVerdict } from '../review-verdict.js';
 import {
   runRalplanConsensus,
@@ -80,7 +80,7 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
         const planningArtifacts = readPlanningArtifacts(ctx.cwd);
 
         return {
-          status: 'completed',
+          status: 'failed',
           artifacts: {
             plansDir: planningArtifacts.plansDir,
             specsDir: planningArtifacts.specsDir,
@@ -93,6 +93,7 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
             instruction: `Run RALPLAN consensus planning for: ${ctx.task}`,
           },
           duration_ms: Date.now() - startTime,
+          error: 'RALPLAN consensus executor is required before this stage can complete.',
         };
       } catch (err) {
         return {
@@ -177,8 +178,25 @@ function isApprovedRalplanReview(value: unknown): boolean {
   ].filter((entry): entry is string => typeof entry === 'string');
 
   if (tokens.some(isRejectedReviewToken)) return false;
+  if (hasBooleanBlocker(record)) return false;
   if (tokens.some(isApprovedReviewToken)) return true;
   return record.clean === true || record.approved === true;
+}
+
+function hasBooleanBlocker(record: Record<string, unknown>): boolean {
+  return [
+    record.blocking,
+    record.blocked,
+    record.block,
+    record.rejected,
+    record.reject,
+    record.iterating,
+    record.iterate,
+    record.request_changes,
+    record.requestChanges,
+    record.needs_changes,
+    record.needsChanges,
+  ].some(value => value === true) || record.clean === false;
 }
 
 function isApprovedReviewToken(value: string): boolean {
@@ -186,22 +204,33 @@ function isApprovedReviewToken(value: string): boolean {
 }
 
 function isRejectedReviewToken(value: string): boolean {
-  return ['reject', 'rejected', 'iterate', 'comment', 'request changes', 'request_changes', 'block', 'blocked', 'blocking', 'watch', 'fail', 'failed'].includes(value.trim().toLowerCase());
+  return [
+    'reject',
+    'rejected',
+    'iterate',
+    'iterating',
+    'comment',
+    'request changes',
+    'request_changes',
+    'changes requested',
+    'changes_requested',
+    'needs changes',
+    'needs_changes',
+    'block',
+    'blocked',
+    'blocking',
+    'watch',
+    'fail',
+    'failed',
+  ].includes(value.trim().toLowerCase());
 }
 
 function readAutopilotState(cwd: string, sessionId?: string): Record<string, unknown> | null {
-  const candidates = [
-    ...(sessionId ? [join(cwd, '.omx', 'state', 'sessions', sessionId, 'autopilot-state.json')] : []),
-    join(cwd, '.omx', 'state', 'autopilot-state.json'),
-  ];
-
-  for (const candidate of candidates) {
-    if (!existsSync(candidate)) continue;
-    try {
-      return JSON.parse(readFileSync(candidate, 'utf-8')) as Record<string, unknown>;
-    } catch {
-      return null;
-    }
+  const candidate = getStatePath('autopilot', cwd, sessionId);
+  if (!existsSync(candidate)) return null;
+  try {
+    return JSON.parse(readFileSync(candidate, 'utf-8')) as Record<string, unknown>;
+  } catch {
+    return null;
   }
-  return null;
 }
