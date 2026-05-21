@@ -194,6 +194,24 @@ describe('RALPLAN Stage', () => {
         ralplan_critic_review: { recommendation: 'REQUEST CHANGES' },
       },
     })), false);
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan_architect_review: { verdict: 'APPROVE' },
+        ralplan_critic_review: { status: 'blocking', approved: true },
+      },
+    })), false);
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan_architect_review: { verdict: 'APPROVE' },
+        ralplan_critic_review: { recommendation: 'blocking', clean: true },
+      },
+    })), false);
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan_architect_review: { verdict: 'APPROVE' },
+        ralplan_critic_review: { decision: 'blocking', approved: true, clean: true },
+      },
+    })), false);
   });
 
   it('canSkip uses the latest approved ralplan review array entries', async () => {

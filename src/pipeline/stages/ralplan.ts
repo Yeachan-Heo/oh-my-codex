@@ -186,7 +186,7 @@ function isApprovedReviewToken(value: string): boolean {
 }
 
 function isRejectedReviewToken(value: string): boolean {
-  return ['reject', 'rejected', 'iterate', 'comment', 'request changes', 'request_changes', 'block', 'blocked', 'watch', 'fail', 'failed'].includes(value.trim().toLowerCase());
+  return ['reject', 'rejected', 'iterate', 'comment', 'request changes', 'request_changes', 'block', 'blocked', 'blocking', 'watch', 'fail', 'failed'].includes(value.trim().toLowerCase());
 }
 
 function readAutopilotState(cwd: string, sessionId?: string): Record<string, unknown> | null {
