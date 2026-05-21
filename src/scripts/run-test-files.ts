@@ -5,6 +5,14 @@ import { join, resolve } from 'node:path';
 const DEFAULT_TEST_TIMEOUT_MS = 0;
 const DEFAULT_RUNNER_TIMEOUT_MS = 30 * 60 * 1_000;
 const DEFAULT_CI_TEST_CONCURRENCY = 1;
+const RUNTIME_STATE_ENV_KEYS = [
+  'OMX_ROOT',
+  'OMX_STATE_ROOT',
+  'OMX_TEAM_STATE_ROOT',
+  'OMX_SESSION_ID',
+  'CODEX_SESSION_ID',
+  'SESSION_ID',
+] as const;
 
 function parseBooleanEnv(value: string | undefined): boolean {
   if (!value) return false;
@@ -91,6 +99,11 @@ console.error(
 const childEnv = { ...process.env };
 delete childEnv.NODE_TEST_CONTEXT;
 childEnv.OMX_TEST_RELAX_TMUX_TIMEOUT = '1';
+if (!parseBooleanEnv(process.env.OMX_NODE_TEST_PRESERVE_RUNTIME_ENV)) {
+  for (const key of RUNTIME_STATE_ENV_KEYS) {
+    delete childEnv[key];
+  }
+}
 
 const result = spawnSync(process.execPath, testArgs, {
   stdio: 'inherit',
