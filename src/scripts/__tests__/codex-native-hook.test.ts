@@ -29,6 +29,7 @@ import { readAllState } from "../../hud/state.js";
 import { getLegacyWikiDir, serializePage, writePage } from "../../wiki/storage.js";
 import { WIKI_SCHEMA_VERSION } from "../../wiki/types.js";
 import { createUltragoalPlan, readUltragoalPlan } from "../../ultragoal/artifacts.js";
+import { getBaseStateDir } from "../../state/paths.js";
 
 function nativeHookScriptPath(): string {
   return join(process.cwd(), "dist", "scripts", "codex-native-hook.js");
@@ -11507,9 +11508,17 @@ describe("codex native hook triage integration", () => {
 
   it("does not activate workflow state for native subagent prompts even when canonical id is the child session", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-subagent-keyword-"));
+    const boxedRoot = await mkdtemp(join(tmpdir(), "omx-native-subagent-keyword-boxed-"));
+    const originalOmxRoot = process.env.OMX_ROOT;
+    const originalOmxStateRoot = process.env.OMX_STATE_ROOT;
+    const originalTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
     try {
-      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
-      await writeJson(join(cwd, ".omx", "state", "subagent-tracking.json"), {
+      process.env.OMX_ROOT = boxedRoot;
+      delete process.env.OMX_STATE_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+      const boxedStateDir = getBaseStateDir(cwd);
+      await mkdir(boxedStateDir, { recursive: true });
+      await writeJson(join(boxedStateDir, "subagent-tracking.json"), {
         schemaVersion: 1,
         sessions: {
           "omx-parent-session": {
@@ -11557,15 +11566,27 @@ describe("codex native hook triage integration", () => {
       );
       assert.equal(additionalContext, "");
       assert.equal(
-        existsSync(join(cwd, ".omx", "state", "sessions", "child-native-session", "skill-active-state.json")),
+        existsSync(join(boxedStateDir, "sessions", "child-native-session", "skill-active-state.json")),
         false,
       );
       assert.equal(
-        existsSync(join(cwd, ".omx", "state", "sessions", "child-native-session", "autopilot-state.json")),
+        existsSync(join(boxedStateDir, "sessions", "child-native-session", "autopilot-state.json")),
         false,
       );
+      assert.equal(
+        existsSync(join(cwd, ".omx", "state", "subagent-tracking.json")),
+        false,
+        "subagent tracking must not leak into the source worktree when OMX_ROOT is boxed",
+      );
     } finally {
+      if (originalOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = originalOmxRoot;
+      if (originalOmxStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = originalOmxStateRoot;
+      if (originalTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = originalTeamStateRoot;
       await rm(cwd, { recursive: true, force: true });
+      await rm(boxedRoot, { recursive: true, force: true });
     }
   });
 

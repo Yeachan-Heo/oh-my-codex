@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { getBaseStateDir } from '../state/paths.js';
 
 export const SUBAGENT_TRACKING_SCHEMA_VERSION = 1;
 export const DEFAULT_SUBAGENT_ACTIVE_WINDOW_MS = 120_000;
@@ -45,7 +46,7 @@ export interface SubagentSessionSummary {
 }
 
 export function subagentTrackingPath(cwd: string): string {
-  return join(cwd, '.omx', 'state', 'subagent-tracking.json');
+  return join(getBaseStateDir(cwd), 'subagent-tracking.json');
 }
 
 export function createSubagentTrackingState(): SubagentTrackingState {
@@ -130,7 +131,7 @@ export async function readSubagentTrackingState(cwd: string): Promise<SubagentTr
 export async function writeSubagentTrackingState(cwd: string, state: SubagentTrackingState): Promise<string> {
   const normalized = normalizeSubagentTrackingState(state);
   const path = subagentTrackingPath(cwd);
-  await mkdir(join(cwd, '.omx', 'state'), { recursive: true });
+  await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(normalized, null, 2)}\n`);
   return path;
 }
