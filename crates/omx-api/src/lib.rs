@@ -6,7 +6,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1934,17 +1934,49 @@ fn spawn_daemon(config: &ServerConfig) -> Result<DaemonState> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
-    for _ in 0..100 {
-        if let Some(state) = read_daemon_state(&config.state_file)? {
-            return Ok(state);
+    wait_for_daemon_state(
+        &mut child,
+        &config.state_file,
+        100,
+        Duration::from_millis(20),
+    )
+}
+
+fn terminate_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn wait_for_daemon_state(
+    child: &mut Child,
+    state_file: &Path,
+    attempts: usize,
+    sleep: Duration,
+) -> Result<DaemonState> {
+    for _ in 0..attempts {
+        match read_daemon_state(state_file) {
+            Ok(Some(state)) => return Ok(state),
+            Ok(None) => {}
+            Err(error) => {
+                terminate_child(child);
+                return Err(error);
+            }
         }
-        if let Some(status) = child.try_wait()? {
-            return Err(OmxApiError::Message(format!(
-                "daemon exited before writing state: {status}"
-            )));
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(OmxApiError::Message(format!(
+                    "daemon exited before writing state: {status}"
+                )));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                terminate_child(child);
+                return Err(error.into());
+            }
         }
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(sleep);
     }
+    terminate_child(child);
     Err(OmxApiError::Message(
         "daemon did not write state within timeout".to_string(),
     ))
@@ -2928,6 +2960,31 @@ mod tests {
         assert_eq!(read.pid, 42);
         remove_daemon_state(&path).unwrap();
         assert!(read_daemon_state(&path).unwrap().is_none());
+    }
+
+    #[test]
+    fn daemon_startup_timeout_kills_child_process_to_avoid_process_leak() {
+        let path = env::temp_dir().join(format!("omx-api-timeout-test-{}.json", now_unix()));
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sleep child");
+
+        let error = wait_for_daemon_state(&mut child, &path, 1, Duration::from_millis(1))
+            .expect_err("missing state should time out");
+
+        assert!(error
+            .to_string()
+            .contains("daemon did not write state within timeout"));
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "timeout path should reap the spawned daemon child"
+        );
+        let _ = fs::remove_file(path);
     }
 
     #[test]

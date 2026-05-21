@@ -59,7 +59,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(result.status, 'recreated');
     assert.equal(result.paneId, '%9');
     assert.equal(created.length, 1);
-    assert.match(created[0]?.cmd || '', /\/repo\/dist\/cli\/omx\.js' hud --watch/);
+    assert.match(created[0]?.cmd || '', /exec .*\/repo\/dist\/cli\/omx\.js' hud --watch/);
     assert.equal(created[0]?.options?.heightLines, 3);
     assert.equal(resized.length, 1);
     assert.equal(resized[0]?.heightLines, 3);
@@ -84,7 +84,7 @@ describe('reconcileHudForPromptSubmit', () => {
 
     assert.equal(result.status, 'recreated');
     assert.equal(created.length, 1);
-    assert.match(created[0]?.cmd || '', /^OMX_SESSION_ID='sess-canonical' '.*' '.*omx\.js' hud --watch/);
+    assert.match(created[0]?.cmd || '', /^exec env OMX_SESSION_ID='sess-canonical' '.*' '.*omx\.js' hud --watch/);
     assert.doesNotMatch(created[0]?.cmd || '', /sess-stale/);
   });
 

@@ -57,11 +57,20 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
       resolve();
       return;
     }
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener('abort', () => {
+    let timer: ReturnType<typeof setTimeout>;
+    const cleanup = () => {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
       resolve();
-    }, { once: true });
+    };
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -71,7 +80,7 @@ export interface RunSidecarWatchDeps {
   writeStdout: (text: string) => void;
   writeStderr: (text: string) => void;
   sleep: SleepFn;
-  registerSigint: (handler: () => void) => void;
+  registerSigint: (handler: () => void) => void | (() => void);
   stdoutColumns?: () => number | undefined;
   stdoutRows?: () => number | undefined;
 }
@@ -88,7 +97,10 @@ export async function runSidecarWatch(
     writeStdout: deps.writeStdout ?? ((text) => process.stdout.write(text)),
     writeStderr: deps.writeStderr ?? ((text) => process.stderr.write(text)),
     sleep: deps.sleep ?? defaultSleep,
-    registerSigint: deps.registerSigint ?? ((handler) => process.on('SIGINT', handler)),
+    registerSigint: deps.registerSigint ?? ((handler) => {
+      process.on('SIGINT', handler);
+      return () => process.off('SIGINT', handler);
+    }),
     stdoutColumns: deps.stdoutColumns ?? (() => process.stdout.columns),
     stdoutRows: deps.stdoutRows ?? (() => process.stdout.rows),
   };
@@ -105,7 +117,7 @@ export async function runSidecarWatch(
     abortController.abort();
     dependencies.writeStdout('\x1b[?25h');
   };
-  dependencies.registerSigint(stop);
+  const unregisterSigint = dependencies.registerSigint(stop);
   dependencies.writeStdout('\x1b[?25l');
 
   const renderTick = async (): Promise<void> => {
@@ -135,13 +147,17 @@ export async function runSidecarWatch(
     }
   };
 
-  while (!stopped && !abortController.signal.aborted) {
-    const started = Date.now();
-    await renderTick();
-    if (stopped || abortController.signal.aborted) break;
-    await dependencies.sleep(Math.max(0, intervalMs - (Date.now() - started)), abortController.signal);
+  try {
+    while (!stopped && !abortController.signal.aborted) {
+      const started = Date.now();
+      await renderTick();
+      if (stopped || abortController.signal.aborted) break;
+      await dependencies.sleep(Math.max(0, intervalMs - (Date.now() - started)), abortController.signal);
+    }
+  } finally {
+    unregisterSigint?.();
+    dependencies.writeStdout('\x1b[?25h');
   }
-  dependencies.writeStdout('\x1b[?25h');
 }
 
 export async function sidecarCommand(args: string[]): Promise<void> {

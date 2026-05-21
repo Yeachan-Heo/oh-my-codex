@@ -4,6 +4,9 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -15,6 +18,24 @@ import {
   resolveCommandTimeoutMs,
   wakeGateway,
 } from '../dispatcher.js';
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForProcessExit(pid: number, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processExists(pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail(`process ${pid} should exit before timeout`);
+}
 
 
 describe('wakeGateway proxy routing', () => {
@@ -278,7 +299,40 @@ describe('wakeCommandGateway - command gate', () => {
       {},
     );
     assert.equal(result.success, false);
-    assert.ok(result.error?.includes('SIGTERM'));
+    assert.ok(result.error?.includes('timed out'));
+  });
+
+  it('kills shell-command descendants on timeout to avoid bash process leaks', async () => {
+    const { wakeCommandGateway } = await import('../dispatcher.js');
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-openclaw-process-leak-'));
+    try {
+      const pidFile = join(cwd, 'grandchild.pid');
+      const scriptFile = join(cwd, 'spawn-grandchild.cjs');
+      const script = `
+        const { spawn } = require('node:child_process');
+        const { writeFileSync } = require('node:fs');
+        const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+          stdio: 'ignore'
+        });
+        writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+        setInterval(() => {}, 1000);
+      `;
+      await writeFile(scriptFile, script);
+      process.env.OMX_OPENCLAW_COMMAND = '1';
+
+      const result = await wakeCommandGateway(
+        'test',
+        { type: 'command', command: `${process.execPath} ${scriptFile}; true`, timeout: 500 },
+        {},
+      );
+      const pid = Number(await readFile(pidFile, 'utf8'));
+
+      assert.equal(result.success, false);
+      assert.ok(result.error?.includes('timed out'));
+      await waitForProcessExit(pid);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it('uses gateway timeout over env timeout', async () => {

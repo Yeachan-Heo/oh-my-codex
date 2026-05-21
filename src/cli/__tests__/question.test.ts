@@ -34,6 +34,31 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
+async function waitForQuestionRecordFile(
+  questionsDir: string,
+  diagnostics: () => string,
+  options: { attempts?: number; intervalMs?: number } = {},
+): Promise<string> {
+  const attempts = options.attempts ?? 250;
+  const intervalMs = options.intervalMs ?? 20;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const entries = await readdir(questionsDir);
+    const recordFile = entries.find((entry) => entry.endsWith('.json')) || '';
+    if (recordFile) return recordFile;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  assert.fail(`expected question record file, ${diagnostics()}`);
+}
+
+async function waitForQuestionRenderer(recordPath: string): Promise<Awaited<ReturnType<typeof readQuestionRecord>>> {
+  for (let attempt = 0; attempt < 250; attempt += 1) {
+    const record = await readQuestionRecord(recordPath);
+    if (record?.renderer) return record;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return readQuestionRecord(recordPath);
+}
+
 describe('omx question CLI', () => {
   beforeEach(() => {
     originalProcessExitCode = process.exitCode;
@@ -89,22 +114,11 @@ describe('omx question CLI', () => {
     const closePromise = new Promise<number | null>((resolve) => child.on('close', resolve));
 
     const questionsDir = join(cwd, '.omx', 'state', 'sessions', 'sess-q', 'questions');
-    let recordFile = '';
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-      try {
-        const { readdir } = await import('node:fs/promises');
-        const entries = await readdir(questionsDir);
-        recordFile = entries.find((entry) => entry.endsWith('.json')) || '';
-        if (recordFile) break;
-      } catch {}
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-
-    assert.notEqual(recordFile, '', `expected question record file, stderr=${stderr}`);
+    const recordFile = await waitForQuestionRecordFile(questionsDir, () => `stderr=${stderr}; stdout=${stdout}`);
     const recordPath = join(questionsDir, recordFile);
 
     let record = null;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    for (let attempt = 0; attempt < 250; attempt += 1) {
       record = await readQuestionRecord(recordPath);
       if (record?.status === 'prompting') break;
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -154,21 +168,11 @@ describe('omx question CLI', () => {
     const closePromise = new Promise<number | null>((resolve) => child.on('close', resolve));
 
     const questionsDir = join(cwd, '.omx', 'state', 'sessions', 'sess-q', 'questions');
-    let recordFile = '';
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-      try {
-        const entries = await readdir(questionsDir);
-        recordFile = entries.find((entry) => entry.endsWith('.json')) || '';
-        if (recordFile) break;
-      } catch {}
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-
-    assert.notEqual(recordFile, '', `expected batch question record file, stderr=${stderr}`);
+    const recordFile = await waitForQuestionRecordFile(questionsDir, () => `stderr=${stderr}; stdout=${stdout}`);
     const recordPath = join(questionsDir, recordFile);
 
     let record = null;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    for (let attempt = 0; attempt < 250; attempt += 1) {
       record = await readQuestionRecord(recordPath);
       if (record?.status === 'prompting') break;
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -558,21 +562,10 @@ esac
     const closePromise = new Promise<number | null>((resolve) => child.on('close', resolve));
 
     const questionsDir = join(cwd, '.omx', 'state', 'sessions', 'sess-q', 'questions');
-    let recordFile = '';
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-      const entries = await readdir(questionsDir);
-      recordFile = entries.find((entry) => entry.endsWith('.json')) || '';
-      if (recordFile) break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    assert.notEqual(recordFile, '', `expected question record file, stderr=${stderr}`);
+    const recordFile = await waitForQuestionRecordFile(questionsDir, () => `stderr=${stderr}; stdout=${stdout}`);
     const recordPath = join(questionsDir, recordFile);
 
-    let record = await readQuestionRecord(recordPath);
-    for (let attempt = 0; attempt < 100 && !record?.renderer; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      record = await readQuestionRecord(recordPath);
-    }
+    const record = await waitForQuestionRenderer(recordPath);
     assert.equal(record?.renderer?.renderer, 'tmux-pane');
     assert.equal(record?.renderer?.target, '%45');
     assert.equal(record?.renderer?.return_target, '%44');

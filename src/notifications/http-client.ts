@@ -124,13 +124,31 @@ export function getProxyForUrl(targetUrl: string | URL, env: ProxyEnv = process.
   return url ? { url } : undefined;
 }
 
-function collectIncoming(res: IncomingMessage, timeout: NodeJS.Timeout, resolve: (value: JsonHttpResponse) => void): void {
+function collectIncoming(
+  res: IncomingMessage,
+  timeout: NodeJS.Timeout,
+  resolve: (value: JsonHttpResponse) => void,
+  reject: (reason?: unknown) => void,
+): void {
   const chunks: Buffer[] = [];
-  res.on("data", (chunk: Buffer) => chunks.push(chunk));
-  res.on("end", () => {
+  const cleanup = () => {
     clearTimeout(timeout);
+    res.off("data", onData);
+    res.off("end", onEnd);
+    res.off("error", onError);
+  };
+  const onData = (chunk: Buffer) => chunks.push(chunk);
+  const onEnd = () => {
+    cleanup();
     resolve(new BufferedHttpResponse(res.statusCode ?? 0, Buffer.concat(chunks).toString("utf-8")));
-  });
+  };
+  const onError = (error: Error) => {
+    cleanup();
+    reject(error);
+  };
+  res.on("data", onData);
+  res.once("end", onEnd);
+  res.once("error", onError);
 }
 
 async function requestDirect(url: URL, options: JsonHttpRequestOptions): Promise<JsonHttpResponse> {
@@ -145,6 +163,15 @@ async function requestDirect(url: URL, options: JsonHttpRequestOptions): Promise
 
   return new Promise<JsonHttpResponse>((resolve, reject) => {
     const request = url.protocol === "https:" ? httpsRequest : httpRequest;
+    let timedOut = false;
+    const cleanup = () => {
+      clearTimeout(timeout);
+      req.off("error", onError);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(timedOut ? new Error("Request timeout") : error);
+    };
     const req = request(
       url,
       {
@@ -152,15 +179,25 @@ async function requestDirect(url: URL, options: JsonHttpRequestOptions): Promise
         headers: options.headers,
         timeout: options.timeoutMs,
       },
-      (res) => collectIncoming(res, timeout, resolve),
+      (res) => collectIncoming(
+        res,
+        timeout,
+        (value) => {
+          cleanup();
+          resolve(value);
+        },
+        (error) => {
+          cleanup();
+          reject(error);
+        },
+      ),
     );
     const timeout = setTimeout(() => {
+      timedOut = true;
       req.destroy(new Error("Request timeout"));
+      req.socket?.destroy();
     }, options.timeoutMs);
-    req.on("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
+    req.on("error", onError);
     if (options.body) req.write(options.body);
     req.end();
   });
@@ -180,17 +217,26 @@ function openProxySocket(proxy: URL, timeoutMs: number): Promise<Socket> {
       ? tlsConnect({ host, port, servername: host })
       : netConnect({ host, port });
     const readyEvent = proxy.protocol === "https:" ? "secureConnect" : "connect";
-    const timeout = setTimeout(() => {
-      socket.destroy(new Error("Proxy connection timeout"));
-    }, timeoutMs);
-    socket.once(readyEvent, () => {
+    const cleanup = () => {
       clearTimeout(timeout);
+      socket.off(readyEvent, onReady);
+      socket.off("error", onError);
+    };
+    const onReady = () => {
+      cleanup();
       resolve(socket);
-    });
-    socket.once("error", (error) => {
-      clearTimeout(timeout);
+    };
+    const onError = (error: Error) => {
+      cleanup();
       reject(error);
-    });
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      socket.destroy();
+      reject(new Error("Proxy connection timeout"));
+    }, timeoutMs);
+    socket.once(readyEvent, onReady);
+    socket.once("error", onError);
   });
 }
 
@@ -204,7 +250,11 @@ function proxyAuthorizationHeader(proxy: URL): string | undefined {
 function readUntilHeaders(socket: Socket, timeoutMs: number): Promise<{ head: string; rest: Buffer }> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    const timeout = setTimeout(() => reject(new Error("Proxy response timeout")), timeoutMs);
+    const timeout = setTimeout(() => {
+      cleanup();
+      socket.destroy();
+      reject(new Error("Proxy response timeout"));
+    }, timeoutMs);
     const cleanup = () => {
       clearTimeout(timeout);
       socket.off("data", onData);
@@ -251,12 +301,15 @@ async function sendRawHttp(socket: Socket, rawRequest: string, timeoutMs: number
   socket.write(rawRequest);
   const chunks: Buffer[] = [];
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      socket.destroy(new Error("Request timeout"));
-    }, timeoutMs);
-    socket.on("data", (chunk: Buffer) => chunks.push(chunk));
-    socket.once("end", () => {
+    const cleanup = () => {
       clearTimeout(timeout);
+      socket.off("data", onData);
+      socket.off("end", onEnd);
+      socket.off("error", onError);
+    };
+    const onData = (chunk: Buffer) => chunks.push(chunk);
+    const onEnd = () => {
+      cleanup();
       const buffer = Buffer.concat(chunks);
       const headerEnd = buffer.indexOf("\r\n\r\n");
       if (headerEnd === -1) {
@@ -269,11 +322,19 @@ async function sendRawHttp(socket: Socket, rawRequest: string, timeoutMs: number
       const rawBody = buffer.slice(headerEnd + 4);
       const body = isChunked ? decodeChunked(rawBody) : rawBody;
       resolve(new BufferedHttpResponse(status, body.toString("utf-8")));
-    });
-    socket.once("error", (error) => {
-      clearTimeout(timeout);
+    };
+    const onError = (error: Error) => {
+      cleanup();
       reject(error);
-    });
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      socket.destroy();
+      reject(new Error("Request timeout"));
+    }, timeoutMs);
+    socket.on("data", onData);
+    socket.once("end", onEnd);
+    socket.once("error", onError);
   });
 }
 

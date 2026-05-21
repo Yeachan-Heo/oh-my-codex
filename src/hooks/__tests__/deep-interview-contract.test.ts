@@ -291,13 +291,14 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /team verification path/i);
 	});
 
-	it("suggests contextual goal-mode follow-ups without replacing Ralph or team lanes", () => {
+	it("suggests Ultragoal as the default durable follow-up with team and explicit Ralph fallback lanes", () => {
 		assert.match(deepInterviewSkill, /Goal-mode follow-ups/i);
 		assert.match(deepInterviewSkill, /\$ultragoal[\s\S]*general goal-oriented follow-up/i);
 		assert.match(deepInterviewSkill, /\$autoresearch-goal[\s\S]*research project/i);
 		assert.match(deepInterviewSkill, /\$performance-goal[\s\S]*(optimization|performance) project/i);
-		assert.match(deepInterviewSkill, /Preserve `\$ralph`[\s\S]*and `\$team`/i);
-		assert.match(deepInterviewSkill, /not as generic replacements for implementation lanes/i);
+		assert.match(deepInterviewSkill, /Recommend `\$ultragoal`[\s\S]*default durable goal-mode follow-up/i);
+		assert.match(deepInterviewSkill, /keep `\$ralph` only as an explicit fallback/i);
+		assert.match(deepInterviewSkill, /supersedes Ralph for goal tracking/i);
 	});
 
 	it("uses OMX-native output paths", () => {

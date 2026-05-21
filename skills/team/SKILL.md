@@ -126,7 +126,7 @@ When `$team` is used as a follow-up mode from ralplan, carry forward the approve
 - state the recommended headcount and role counts
 - state the suggested reasoning level for each lane when available
 - explain why each lane exists (delivery, verification, specialist support)
-- include an explicit launch hint (`omx team N "<task>"` / `$team N "<task>"`) for the coordinated team run; mention a later separate Ralph follow-up only when genuinely needed
+- include an explicit launch hint (`omx team N "<task>"` / `$team N "<task>"`) for the coordinated team run; mention `$ultragoal` as the default durable follow-up/ledger path; mention a later separate Ralph follow-up only when explicitly requested or genuinely needed as a fallback
 - if the ideal role is unavailable, choose the closest role from the roster and say so
 
 ## Current Runtime Behavior (As Implemented)
