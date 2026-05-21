@@ -7,10 +7,12 @@
  *
  * SECURITY: Command gateway requires OMX_OPENCLAW_COMMAND=1 opt-in.
  * Command timeout is configurable with safe bounds.
- * Prefers execFile for simple commands; falls back to sh -c only for shell metacharacters.
+ * Prefers direct argv execution for simple commands; falls back to sh -c only
+ * for shell metacharacters. All command paths use process-tree cleanup.
  */
 
 import { requestJson } from "../notifications/http-client.js";
+import { runProcessTreeWithTimeout } from "../runtime/process-tree.js";
 
 import type {
   OpenClawCommandGatewayConfig,
@@ -190,10 +192,12 @@ export async function wakeGateway(
  * - Requires OMX_OPENCLAW_COMMAND=1 opt-in (separate gate from OMX_OPENCLAW)
  * - Timeout is configurable via gateway.timeout or OMX_OPENCLAW_COMMAND_TIMEOUT_MS
  *   with safe clamping bounds and backward-compatible default 5000ms
- * - Prefers execFile for simple commands (no metacharacters)
+ * - Prefers direct argv execution for simple commands (no metacharacters)
  * - Falls back to sh -c only when metacharacters detected
- * - detached: false to prevent orphan processes
- * - SIGTERM cleanup handler kills child on parent SIGTERM, 1s grace then SIGKILL
+ * - POSIX commands run in a process group so timeout/parent cleanup kills shell
+ *   wrappers and descendants instead of only the direct child.
+ * - SIGTERM cleanup handler kills the process tree on parent SIGTERM, 1s grace
+ *   then SIGKILL
  *
  * The command template supports {{variable}} placeholders. All variable
  * values are shell-escaped before interpolation to prevent injection.
@@ -212,11 +216,7 @@ export async function wakeCommandGateway(
     };
   }
 
-  let child: import("child_process").ChildProcess | null = null;
-  let sigtermHandler: (() => void) | null = null;
-
   try {
-    const { execFile, exec } = await import("child_process");
     const timeout = resolveCommandTimeoutMs(gatewayConfig.timeout);
 
     // Interpolate variables with shell escaping
@@ -232,74 +232,35 @@ export async function wakeCommandGateway(
     // Detect whether the interpolated command contains shell metacharacters
     const hasMetachars = SHELL_METACHAR_RE.test(interpolated);
 
-    await new Promise<void>((resolve, reject) => {
-      const cleanup = (signal: NodeJS.Signals) => {
-        if (child) {
-          child.kill(signal);
-          // 1s grace period then SIGKILL
-          setTimeout(() => {
-            try {
-              child?.kill("SIGKILL");
-            } catch (err) {
-              process.stderr.write(`[openclaw-dispatcher] operation failed: ${err}\n`);
-            }
-          }, 1000);
-        }
-      };
+    const commandParts = hasMetachars
+      ? { command: "sh", args: ["-c", interpolated] }
+      : (() => {
+          const parts = interpolated.split(/\s+/).filter(Boolean);
+          return { command: parts[0] ?? "", args: parts.slice(1) };
+        })();
+    if (!commandParts.command) {
+      return { gateway: gatewayName, success: false, error: "Command is empty" };
+    }
 
-      sigtermHandler = () => cleanup("SIGTERM");
-      process.once("SIGTERM", sigtermHandler);
+    const result = await runProcessTreeWithTimeout(
+      commandParts.command,
+      commandParts.args,
+      {
+        timeoutMs: timeout,
+        env: { ...process.env },
+        cleanupOnParentExit: true,
+      },
+    );
 
-      const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-        if (sigtermHandler) {
-          process.removeListener("SIGTERM", sigtermHandler);
-          sigtermHandler = null;
-        }
-        if (signal) {
-          reject(new Error(`Command killed by signal ${signal}`));
-        } else if (code !== 0) {
-          reject(new Error(`Command exited with code ${code}`));
-        } else {
-          resolve();
-        }
-      };
-
-      const onError = (err: Error) => {
-        if (sigtermHandler) {
-          process.removeListener("SIGTERM", sigtermHandler);
-          sigtermHandler = null;
-        }
-        reject(err);
-      };
-
-      if (hasMetachars) {
-        // Fall back to sh -c for complex commands with metacharacters
-        child = exec(interpolated, {
-          timeout,
-          env: { ...process.env },
-        });
-      } else {
-        // Parse simple command: split on whitespace, use execFile
-        const parts = interpolated.split(/\s+/).filter(Boolean);
-        const cmd = parts[0];
-        const args = parts.slice(1);
-        child = execFile(cmd, args, {
-          timeout,
-          env: { ...process.env },
-        });
-      }
-
-      // Ensure detached is false (default, but explicit via options above)
-      child.on("exit", onExit);
-      child.on("error", onError);
-    });
+    if (result.error) throw result.error;
+    if (result.timedOut) throw new Error("Command timed out");
+    if (result.outputLimitExceeded) throw new Error("Command output limit exceeded");
+    if (result.processLimitExceeded) throw new Error("Command process limit exceeded");
+    if (result.signal) throw new Error(`Command killed by signal ${result.signal}`);
+    if (result.status !== 0) throw new Error(`Command exited with code ${result.status}`);
 
     return { gateway: gatewayName, success: true };
   } catch (error) {
-    // Ensure SIGTERM handler is cleaned up on error
-    if (sigtermHandler) {
-      process.removeListener("SIGTERM", sigtermHandler);
-    }
     return {
       gateway: gatewayName,
       success: false,
