@@ -5,6 +5,8 @@
  * into a PipelineStage. Produces a plan artifact at `.omx/plans/`.
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { PipelineStage, StageContext, StageResult } from '../types.js';
 import { isPlanningComplete, readPlanningArtifacts } from '../../planning/artifacts.js';
 import { isNonCleanReviewVerdict } from '../review-verdict.js';
@@ -37,7 +39,7 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
       if (hasReviewLoopContext(ctx.artifacts)) {
         return false;
       }
-      return isPlanningComplete(readPlanningArtifacts(ctx.cwd));
+      return isPlanningComplete(readPlanningArtifacts(ctx.cwd)) && hasRalplanConsensusEvidence(ctx);
     },
 
     async run(ctx: StageContext): Promise<StageResult> {
@@ -123,4 +125,62 @@ function hasReviewLoopContext(artifacts: Record<string, unknown>): boolean {
       && reviewArtifacts.return_to_ralplan_reason.trim() !== '')
     || isNonCleanReviewVerdict(reviewArtifacts.review_verdict)
   );
+}
+
+function hasRalplanConsensusEvidence(ctx: StageContext): boolean {
+  const artifacts = ctx.artifacts;
+  if (hasValue(artifacts.ralplan_architect_review) && hasValue(artifacts.ralplan_critic_review)) {
+    return true;
+  }
+
+  const ralplanArtifacts = artifacts.ralplan;
+  if (ralplanArtifacts && typeof ralplanArtifacts === 'object') {
+    const record = ralplanArtifacts as Record<string, unknown>;
+    if (hasValue(record.ralplan_architect_review) && hasValue(record.ralplan_critic_review)) {
+      return true;
+    }
+    if (hasNonEmptyArray(record.architectReviews) && hasNonEmptyArray(record.criticReviews)) {
+      return true;
+    }
+  }
+
+  const state = readAutopilotState(ctx.cwd, ctx.sessionId);
+  const handoffs = state?.state && typeof state.state === 'object'
+    ? (state.state as Record<string, unknown>).handoff_artifacts
+    : undefined;
+  if (handoffs && typeof handoffs === 'object') {
+    const record = handoffs as Record<string, unknown>;
+    return hasValue(record.ralplan_architect_review) && hasValue(record.ralplan_critic_review);
+  }
+
+  return false;
+}
+
+function hasValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0;
+  return true;
+}
+
+function hasNonEmptyArray(value: unknown): boolean {
+  return Array.isArray(value) && value.length > 0;
+}
+
+function readAutopilotState(cwd: string, sessionId?: string): Record<string, unknown> | null {
+  const candidates = [
+    ...(sessionId ? [join(cwd, '.omx', 'state', 'sessions', sessionId, 'autopilot-state.json')] : []),
+    join(cwd, '.omx', 'state', 'autopilot-state.json'),
+  ];
+
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    try {
+      return JSON.parse(readFileSync(candidate, 'utf-8')) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }

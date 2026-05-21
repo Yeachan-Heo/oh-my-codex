@@ -582,7 +582,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.deepEqual(modeState.state.ralplan_review_gate, {
         status: 'pending',
         sequence: ['planner', 'architect', 'critic'],
-        required_reviews: ['architect_review', 'critic_review'],
+        required_reviews: ['ralplan_architect_review', 'ralplan_critic_review'],
       });
       assert.equal(modeState.state.review_verdict, null);
       assert.equal(modeState.state.qa_verdict, null);

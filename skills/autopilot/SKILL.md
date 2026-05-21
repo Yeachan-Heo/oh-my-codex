@@ -115,7 +115,7 @@ Required fields:
   "ralplan_review_gate": {
     "status": "pending",
     "sequence": ["planner", "architect", "critic"],
-    "required_reviews": ["architect_review", "critic_review"]
+    "required_reviews": ["ralplan_architect_review", "ralplan_critic_review"]
   },
   "review_verdict": null,
   "qa_verdict": null,

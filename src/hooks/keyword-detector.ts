@@ -411,7 +411,7 @@ async function persistStatefulSkillSeedState(
         : {
             status: 'pending',
             sequence: ['planner', 'architect', 'critic'],
-            required_reviews: ['architect_review', 'critic_review'],
+            required_reviews: ['ralplan_architect_review', 'ralplan_critic_review'],
           },
       review_verdict: Object.prototype.hasOwnProperty.call(existingState, 'review_verdict')
         ? existingState.review_verdict

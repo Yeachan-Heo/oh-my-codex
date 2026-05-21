@@ -150,14 +150,53 @@ describe('RALPLAN Stage', () => {
     assert.equal(stage.canSkip!(makeCtx()), false);
   });
 
-  it('canSkip returns true when both prd and test spec plan files exist', async () => {
+  it('canSkip returns false when prd and test spec exist without Architect/Critic evidence', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
     await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
 
     const stage = createRalplanStage();
-    assert.equal(stage.canSkip!(makeCtx()), true);
+    assert.equal(stage.canSkip!(makeCtx()), false);
+  });
+
+  it('canSkip returns true when prd/test spec and ralplan review artifacts exist', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan_architect_review: { verdict: 'APPROVE' },
+        ralplan_critic_review: { verdict: 'APPROVE' },
+      },
+    })), true);
+  });
+
+  it('canSkip returns true when prd/test spec and durable autopilot handoff reviews exist', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const stateDir = join(tempDir, '.omx', 'state', 'sessions', 'sess-ralplan-skip');
+    await mkdir(plansDir, { recursive: true });
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+    await writeFile(join(stateDir, 'autopilot-state.json'), JSON.stringify({
+      active: true,
+      mode: 'autopilot',
+      current_phase: 'ralplan',
+      state: {
+        handoff_artifacts: {
+          ralplan: '.omx/plans/prd-my-feature.md',
+          ralplan_architect_review: { verdict: 'APPROVE' },
+          ralplan_critic_review: { verdict: 'APPROVE' },
+        },
+      },
+    }));
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({ sessionId: 'sess-ralplan-skip' })), true);
   });
 
   it('canSkip returns false after non-clean code-review loopback even when plans exist', async () => {
