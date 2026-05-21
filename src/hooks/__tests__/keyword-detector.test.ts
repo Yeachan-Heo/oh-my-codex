@@ -368,11 +368,8 @@ describe('explicit skill-name invocation requirement', () => {
   it('does not trigger ralplan from bare skill-name usage', () => {
     assert.equal(detectPrimaryKeyword('please do ralplan first'), null);
   });
-  it('detects explicit prometheus-strict invocation only', () => {
-    const match = detectPrimaryKeyword('please run $prometheus-strict before implementation');
-    assert.ok(match);
-    assert.equal(match.skill, 'prometheus-strict');
-    assert.equal(match.keyword.toLowerCase(), '$prometheus-strict');
+  it('does not expose prometheus-strict as an active keyword', () => {
+    assert.equal(detectPrimaryKeyword('please run $prometheus-strict before implementation'), null);
     assert.equal(detectPrimaryKeyword('please use prometheus-strict planning here'), null);
   });
 });
@@ -395,7 +392,7 @@ describe('keyword registry coverage', () => {
     assert.ok(registryKeywords.has('wiki lint'));
     assert.ok(registryKeywords.has('$autoresearch'));
     assert.ok(registryKeywords.has('$ultragoal'));
-    assert.ok(registryKeywords.has('$prometheus-strict'));
+    assert.ok(!registryKeywords.has('$prometheus-strict'));
     assert.ok(registryKeywords.has('ultragoal'));
   });
 });

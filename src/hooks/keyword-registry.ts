@@ -25,7 +25,6 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: 'investigate', skill: 'analyze', priority: 7, guidance: 'Activate deep analysis workflow' },
 
 
-  { keyword: '$prometheus-strict', skill: 'prometheus-strict', priority: 11, guidance: 'Activate Prometheus Strict clean-room interview-driven planner workflow' },
 
   { keyword: '$deep-interview', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
   { keyword: 'deep interview', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },

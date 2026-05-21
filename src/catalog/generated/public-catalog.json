@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-05-20T11:55:45.467Z",
+  "generatedAt": "2026-05-21T04:24:51.764Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 49,
-    "promptCount": 33,
-    "activeSkillCount": 27,
-    "activeAgentCount": 19
+    "skillCount": 48,
+    "promptCount": 30,
+    "activeSkillCount": 26,
+    "activeAgentCount": 16
   },
   "coreSkills": [
     "autopilot",
@@ -117,13 +117,6 @@
     },
     {
       "name": "deep-interview",
-      "category": "planning",
-      "status": "active",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "prometheus-strict",
       "category": "planning",
       "status": "active",
       "core": false,
@@ -519,21 +512,6 @@
       "category": "product",
       "status": "merged",
       "canonical": "analyst"
-    },
-    {
-      "name": "prometheus-strict-metis",
-      "category": "coordination",
-      "status": "active"
-    },
-    {
-      "name": "prometheus-strict-momus",
-      "category": "coordination",
-      "status": "active"
-    },
-    {
-      "name": "prometheus-strict-oracle",
-      "category": "coordination",
-      "status": "active"
     },
     {
       "name": "critic",
