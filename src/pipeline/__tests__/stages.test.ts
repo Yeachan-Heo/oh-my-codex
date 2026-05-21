@@ -312,6 +312,60 @@ describe('RALPLAN Stage', () => {
     })), false);
   });
 
+  it('canSkip returns false when review history entries do not record agent roles', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan: {
+          review_history: [{
+            architect_review: { verdict: 'approve', summary: 'role missing' },
+            critic_review: { verdict: 'approve', summary: 'role missing' },
+          }],
+        },
+      },
+    })), false);
+  });
+
+  it('canSkip returns false when review arrays do not record agent roles', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan: {
+          architectReviews: [{ verdict: 'approve', summary: 'role missing' }],
+          criticReviews: [{ verdict: 'approve', summary: 'role missing' }],
+        },
+      },
+    })), false);
+  });
+
+  it('canSkip returns false when local state only has latest verdict fields', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const stateDir = join(tempDir, '.omx', 'state');
+    await mkdir(plansDir, { recursive: true });
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+    await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
+      current_phase: 'complete',
+      planning_complete: true,
+      latest_architect_verdict: 'approve',
+      latest_critic_verdict: 'approve',
+    }));
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx()), false);
+  });
+
   it('canSkip returns false when Architect and Critic roles are swapped', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });

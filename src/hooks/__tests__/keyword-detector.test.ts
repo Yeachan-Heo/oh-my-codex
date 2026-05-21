@@ -2225,6 +2225,33 @@ describe('applyRalplanGate', () => {
     }
   });
 
+  it('gates short follow-up when local state only has latest verdict fields', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-latest-only-'));
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      const stateDir = join(cwd, '.omx', 'state');
+      await mkdir(plansDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        join(plansDir, 'prd-local.md'),
+        '# Plan\n\nLaunch hint: omx team 3:executor "Execute approved local plan"\n',
+      );
+      await writeFile(join(plansDir, 'test-spec-local.md'), '# Test spec\n');
+      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
+        current_phase: 'complete',
+        planning_complete: true,
+        latest_architect_verdict: 'approve',
+        latest_critic_verdict: 'approve',
+      }));
+
+      const result = applyRalplanGate(['team'], 'team', { cwd });
+      assert.equal(result.gateApplied, true);
+      assert.deepEqual(result.keywords, ['ralplan']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('redirects underspecified execution keywords to ralplan', () => {
     const result = applyRalplanGate(['ralph'], 'ralph fix this');
     assert.equal(result.gateApplied, true);

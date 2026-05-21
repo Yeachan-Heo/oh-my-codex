@@ -135,13 +135,11 @@ function extractSequentialConsensusEvidence(value: unknown): {
   const reviewHistory = Array.isArray(record.review_history) ? record.review_history : [];
   const latestReviewEntry = asRecord(reviewHistory.at(-1));
   if (latestReviewEntry) {
-    const architectReview = withRole(
-      asRecord(latestReviewEntry.ralplan_architect_review ?? latestReviewEntry.architect_review ?? latestReviewEntry.architectReview),
-      'architect',
+    const architectReview = asRecord(
+      latestReviewEntry.ralplan_architect_review ?? latestReviewEntry.architect_review ?? latestReviewEntry.architectReview,
     );
-    const criticReview = withRole(
-      asRecord(latestReviewEntry.ralplan_critic_review ?? latestReviewEntry.critic_review ?? latestReviewEntry.criticReview),
-      'critic',
+    const criticReview = asRecord(
+      latestReviewEntry.ralplan_critic_review ?? latestReviewEntry.critic_review ?? latestReviewEntry.criticReview,
     );
     if (
       isApproveReview(architectReview, 'architect')
@@ -155,8 +153,8 @@ function extractSequentialConsensusEvidence(value: unknown): {
   const architectReviews = Array.isArray(record.architectReviews) ? record.architectReviews : [];
   const criticReviews = Array.isArray(record.criticReviews) ? record.criticReviews : [];
   if (architectReviews.length > 0 && criticReviews.length > 0 && architectReviews.length === criticReviews.length) {
-    const architectReview = withRole(asRecord(architectReviews.at(-1)), 'architect');
-    const criticReview = withRole(asRecord(criticReviews.at(-1)), 'critic');
+    const architectReview = asRecord(architectReviews.at(-1));
+    const criticReview = asRecord(criticReviews.at(-1));
     if (
       isApproveReview(architectReview, 'architect')
       && isApproveReview(criticReview, 'critic')
@@ -166,38 +164,11 @@ function extractSequentialConsensusEvidence(value: unknown): {
     }
   }
 
-  const latestArchitectReview = asRecord({
-    agent_role: 'architect',
-    verdict: record.latest_architect_verdict,
-    summary: record.latest_architect_summary,
-  });
-  const latestCriticReview = asRecord({
-    agent_role: 'critic',
-    verdict: record.latest_critic_verdict,
-    summary: record.latest_critic_summary,
-  });
-  if (
-    record.current_phase === 'complete'
-    && record.planning_complete === true
-    && isApproveReview(latestArchitectReview, 'architect')
-    && isApproveReview(latestCriticReview, 'critic')
-  ) {
-    return {
-      ralplan_architect_review: latestArchitectReview,
-      ralplan_critic_review: latestCriticReview,
-    };
-  }
-
   return null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? value as Record<string, unknown> : null;
-}
-
-function withRole(value: Record<string, unknown> | null, role: 'architect' | 'critic'): Record<string, unknown> | null {
-  if (!value) return null;
-  return value.agent_role === undefined ? { ...value, agent_role: role } : value;
 }
 
 function isApproveReview(value: Record<string, unknown> | null, agentRole: 'architect' | 'critic'): value is Record<string, unknown> {
