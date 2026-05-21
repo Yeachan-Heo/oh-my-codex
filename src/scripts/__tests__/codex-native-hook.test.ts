@@ -11504,6 +11504,71 @@ describe("codex native hook triage integration", () => {
     }
   });
 
+
+  it("does not activate workflow state for native subagent prompts even when canonical id is the child session", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-subagent-keyword-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeJson(join(cwd, ".omx", "state", "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          "omx-parent-session": {
+            session_id: "omx-parent-session",
+            leader_thread_id: "parent-native-thread",
+            updated_at: "2026-05-21T19:04:40.000Z",
+            threads: {
+              "parent-native-thread": {
+                thread_id: "parent-native-thread",
+                kind: "leader",
+                first_seen_at: "2026-05-21T19:04:40.000Z",
+                last_seen_at: "2026-05-21T19:04:40.000Z",
+                turn_count: 1,
+              },
+              "child-native-session": {
+                thread_id: "child-native-session",
+                kind: "subagent",
+                first_seen_at: "2026-05-21T19:04:41.000Z",
+                last_seen_at: "2026-05-21T19:04:41.000Z",
+                turn_count: 1,
+                mode: "review",
+              },
+            },
+          },
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "child-native-session",
+          thread_id: "child-native-session",
+          turn_id: "turn-subagent-review",
+          prompt: [
+            "Read-only review only. Do not edit files. Do not inspect/mutate OMX state/hooks.",
+            "Context: The user asked for $autopilot, and this subagent must only review the patch.",
+          ].join("\n\n"),
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.equal(additionalContext, "");
+      assert.equal(
+        existsSync(join(cwd, ".omx", "state", "sessions", "child-native-session", "skill-active-state.json")),
+        false,
+      );
+      assert.equal(
+        existsSync(join(cwd, ".omx", "state", "sessions", "child-native-session", "autopilot-state.json")),
+        false,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not inject triage advisory for autopilot keyword prompts", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-triage-keyword-autopilot-"));
     try {

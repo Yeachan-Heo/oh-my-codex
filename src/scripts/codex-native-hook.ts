@@ -14,6 +14,7 @@ import {
 } from "../state/skill-active.js";
 import {
   readSubagentSessionSummary,
+  readSubagentTrackingState,
   recordSubagentTurnForSession,
 } from "../subagents/tracker.js";
 import { resolveCanonicalTeamStateRoot, resolveWorkerNotifyTeamStateRootPath } from "../team/state-root.js";
@@ -297,18 +298,32 @@ async function isNativeSubagentHook(
   nativeSessionId: string,
   threadId: string,
 ): Promise<boolean> {
-  const sessionId = canonicalSessionId.trim();
-  if (!sessionId) return false;
-
-  const summary = await readSubagentSessionSummary(cwd, sessionId).catch(() => null);
-  if (!summary) return false;
-
   const candidateIds = [nativeSessionId, threadId]
     .map((value) => value.trim())
     .filter(Boolean);
   if (candidateIds.length === 0) return false;
 
-  return candidateIds.some((id) => summary.allSubagentThreadIds.includes(id));
+  const sessionId = canonicalSessionId.trim();
+  if (sessionId) {
+    const summary = await readSubagentSessionSummary(cwd, sessionId).catch(() => null);
+    if (summary && candidateIds.some((id) => summary.allSubagentThreadIds.includes(id))) {
+      return true;
+    }
+  }
+
+  // Native Codex resume can report the child native session as the canonical
+  // session id before OMX reconciles it back to the owning session.  In that
+  // window the per-session summary lookup above misses the child and a
+  // subagent UserPromptSubmit can accidentally activate workflow keywords from
+  // quoted review context.  Fall back to the global tracking index so any known
+  // subagent thread is treated as subagent-scoped, regardless of the current
+  // hook payload's session-id mapping.
+  const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
+  if (!trackingState) return false;
+
+  return Object.values(trackingState.sessions).some((session) => (
+    candidateIds.some((id) => session.threads[id]?.kind === "subagent")
+  ));
 }
 
 function shouldSuppressSubagentLifecycleHookDispatch(): boolean {
