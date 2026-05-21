@@ -3798,9 +3798,15 @@ function runCodex(
   if (!omxBin) {
     throw new Error("Unable to resolve OMX launcher path for tmux HUD bootstrap");
   }
+  const omxRootOverride = resolveOmxRootForLaunch(cwd, process.env);
+  const hudEnvArgs = [
+    `OMX_SESSION_ID=${sessionId}`,
+    `${OMX_TMUX_HUD_OWNER_ENV}=1`,
+    ...(omxRootOverride ? [`OMX_ROOT=${omxRootOverride}`] : []),
+  ];
   const hudCmd = nativeWindows
     ? buildWindowsPromptCommand("node", [omxBin, "hud", "--watch"])
-    : buildTmuxPaneCommand("env", [`OMX_SESSION_ID=${sessionId}`, `${OMX_TMUX_HUD_OWNER_ENV}=1`, "node", omxBin, "hud", "--watch"]);
+    : buildTmuxPaneCommand("env", [...hudEnvArgs, "node", omxBin, "hud", "--watch"]);
   const inheritLeaderFlags = process.env[TEAM_INHERIT_LEADER_FLAGS_ENV] !== "0";
   const workerLaunchArgs = resolveTeamWorkerLaunchArgsEnv(
     process.env[TEAM_WORKER_LAUNCH_ARGS_ENV],
@@ -3808,7 +3814,6 @@ function runCodex(
     inheritLeaderFlags,
     workerDefaultModel,
   );
-  const omxRootOverride = resolveOmxRootForLaunch(cwd, process.env);
   const codexBaseEnv = {
     ...process.env,
     ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),

@@ -88,6 +88,36 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.doesNotMatch(created[0]?.cmd || '', /sess-stale/);
   });
 
+  it('forwards OMX_ROOT when recreating HUD with shell-safe quoting', async () => {
+    const created: Array<{ cmd: string }> = [];
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: {
+        TMUX: '1',
+        TMUX_PANE: '%1',
+        OMX_SESSION_ID: 'sess boxed',
+        OMX_ROOT: "/tmp/boxed root/it's/$(literal)",
+        [OMX_TMUX_HUD_OWNER_ENV]: '1',
+      },
+      listCurrentWindowPanes: () => [
+        { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
+      ],
+      createHudWatchPane: (_cwd, cmd) => {
+        created.push({ cmd });
+        return '%9';
+      },
+      resizeTmuxPane: () => true,
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(result.status, 'recreated');
+    assert.equal(created.length, 1);
+    assert.match(
+      created[0]?.cmd || '',
+      /^exec env OMX_SESSION_ID='sess boxed' OMX_ROOT='\/tmp\/boxed root\/it'\\''s\/\$\(literal\)' '.*' '.*omx\.js' hud --watch/,
+    );
+  });
+
   it('targets the emitting pane window when listing and creating HUD panes', async () => {
     const listArgs: Array<string | undefined> = [];
     const created: Array<{ options?: { heightLines?: number; fullWidth?: boolean; targetPaneId?: string } }> = [];

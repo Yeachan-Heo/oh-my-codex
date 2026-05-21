@@ -3837,6 +3837,49 @@ esac
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it('restores standalone HUD panes with OMX_ROOT forwarded and shell-escaped', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-standalone-root-hud-'));
+    const previousOmxRoot = process.env.OMX_ROOT;
+
+    try {
+      await withMockTmuxFixture(
+        'omx-tmux-root-standalone-hud-',
+        (logPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${logPath}"
+case "\${1:-}" in
+  split-window)
+    echo "%44"
+    exit 0
+    ;;
+  run-shell|select-pane|resize-pane|set-hook)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        async ({ logPath }) => {
+          process.env.OMX_ROOT = "/tmp/boxed root/it's/$(literal)";
+
+          const paneId = restoreStandaloneHudPane('%11', cwd);
+          assert.equal(paneId, '%44');
+
+          const tmuxLog = await readFile(logPath, 'utf-8');
+          assert.match(
+            tmuxLog,
+            /exec env OMX_TMUX_HUD_OWNER=1 OMX_ROOT='\/tmp\/boxed root\/it'\\''s\/\$\(literal\)' .*hud --watch/,
+          );
+        },
+      );
+    } finally {
+      if (typeof previousOmxRoot === 'string') process.env.OMX_ROOT = previousOmxRoot;
+      else delete process.env.OMX_ROOT;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('dismissTrustPromptIfPresent capture shape', () => {

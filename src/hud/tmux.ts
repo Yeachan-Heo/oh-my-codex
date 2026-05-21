@@ -143,12 +143,29 @@ function buildHudResizeHookCommand(
   return `${resizeOrUnregister}; sleep ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}; ${resizeOrUnregister}`;
 }
 
-export function buildHudWatchCommand(omxBin: string, preset?: string, sessionId?: string): string {
+function buildEnvPrefix(env: Record<string, string | undefined>): string {
+  const assignments = Object.entries(env)
+    .map(([key, value]) => [key, typeof value === 'string' ? value : ''] as const)
+    .filter(([, value]) => value.trim() !== '')
+    .map(([key, value]) => `${key}=${shellEscapeSingle(value)}`);
+  return assignments.length > 0 ? `env ${assignments.join(' ')} ` : '';
+}
+
+export function buildHudWatchCommand(
+  omxBin: string,
+  preset?: string,
+  sessionId?: string,
+  omxRoot?: string,
+): string {
   const safePreset = preset === 'minimal' || preset === 'focused' || preset === 'full'
     ? ` --preset=${preset}`
     : '';
   const safeSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-  const envPrefix = safeSessionId ? `env OMX_SESSION_ID=${shellEscapeSingle(safeSessionId)} ` : '';
+  const safeOmxRoot = typeof omxRoot === 'string' ? omxRoot : '';
+  const envPrefix = buildEnvPrefix({
+    OMX_SESSION_ID: safeSessionId,
+    OMX_ROOT: safeOmxRoot,
+  });
   return `exec ${envPrefix}${shellEscapeSingle(process.execPath)} ${shellEscapeSingle(omxBin)} hud --watch${safePreset}`;
 }
 

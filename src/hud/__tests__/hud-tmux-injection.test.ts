@@ -11,6 +11,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { shellEscape, buildTmuxSplitArgs } from '../index.js';
 import { HUD_TMUX_HEIGHT_LINES } from '../constants.js';
+import { buildHudWatchCommand } from '../tmux.js';
 
 const runtimePrefix = shellEscape(process.execPath);
 
@@ -208,5 +209,47 @@ describe('buildTmuxSplitArgs – shell injection hardening', () => {
     const args = buildTmuxSplitArgs('/home/user', '/usr/bin/omx.js', 'focused', 'sess-managed');
     const cmd = args[6];
     assert.equal(cmd, `exec env OMX_SESSION_ID='sess-managed' ${runtimePrefix} '/usr/bin/omx.js' hud --watch --preset=focused`);
+  });
+
+  it('forwards OMX_ROOT with OMX_SESSION_ID using shell-safe quoting', () => {
+    const args = buildTmuxSplitArgs(
+      '/home/user',
+      '/usr/bin/omx.js',
+      'focused',
+      'sess managed',
+      "/tmp/boxed root/it's/$(literal)",
+    );
+    const cmd = args[6];
+    assert.equal(
+      cmd,
+      `exec env OMX_SESSION_ID='sess managed' OMX_ROOT='/tmp/boxed root/it'\\''s/$(literal)' ${runtimePrefix} '/usr/bin/omx.js' hud --watch --preset=focused`,
+    );
+  });
+
+  it('omits OMX_ROOT when unset while preserving existing OMX_SESSION_ID behavior', () => {
+    const args = buildTmuxSplitArgs('/home/user', '/usr/bin/omx.js', undefined, 'sess-managed');
+    const cmd = args[6];
+    assert.equal(cmd, `exec env OMX_SESSION_ID='sess-managed' ${runtimePrefix} '/usr/bin/omx.js' hud --watch`);
+    assert.doesNotMatch(cmd, /OMX_ROOT=/);
+  });
+});
+
+describe('buildHudWatchCommand', () => {
+  it('forwards OMX_ROOT for reconciled HUD panes with shell-safe quoting', () => {
+    const cmd = buildHudWatchCommand(
+      '/usr/bin/omx.js',
+      'minimal',
+      'sess managed',
+      "/tmp/boxed root/it's/$(literal)",
+    );
+    assert.equal(
+      cmd,
+      `exec env OMX_SESSION_ID='sess managed' OMX_ROOT='/tmp/boxed root/it'\\''s/$(literal)' ${runtimePrefix} '/usr/bin/omx.js' hud --watch --preset=minimal`,
+    );
+  });
+
+  it('does not add an env wrapper when OMX_SESSION_ID and OMX_ROOT are unset', () => {
+    const cmd = buildHudWatchCommand('/usr/bin/omx.js');
+    assert.equal(cmd, `exec ${runtimePrefix} '/usr/bin/omx.js' hud --watch`);
   });
 });

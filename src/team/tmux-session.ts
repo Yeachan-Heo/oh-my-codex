@@ -404,6 +404,16 @@ function shellQuoteSingle(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function formatHudEnvAssignments(env: NodeJS.ProcessEnv = process.env): string {
+  const assignments = [
+    `${OMX_TMUX_HUD_OWNER_ENV}=1`,
+    ...(typeof env.OMX_ROOT === 'string' && env.OMX_ROOT.trim() !== ''
+      ? [`OMX_ROOT=${shellQuoteSingle(env.OMX_ROOT)}`]
+      : []),
+  ];
+  return assignments.join(' ');
+}
+
 function quotePowerShellArg(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
@@ -1267,7 +1277,7 @@ export function createTeamSession(
     let resizeHookName: string | null = null;
     let resizeHookTarget: string | null = null;
     if (canRecreateTeamHud && omxEntry) {
-      const hudCmd = `exec env ${OMX_TMUX_HUD_OWNER_ENV}=1 node ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
+      const hudCmd = `exec env ${formatHudEnvAssignments()} node ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
       const hudCwd = translatePathForMsys(cwd);
       const hudResult = runTmux([
         'split-window', '-v', '-f', '-l', String(HUD_TMUX_TEAM_HEIGHT_LINES), '-t', teamTarget, '-d', '-P', '-F', '#{pane_id}', '-c', hudCwd, hudCmd,
@@ -1394,7 +1404,7 @@ export function restoreStandaloneHudPane(
   const omxEntry = resolveOmxCliEntryPath();
   if (!omxEntry || omxEntry.trim() === '') return null;
 
-  const hudCmd = `exec env ${OMX_TMUX_HUD_OWNER_ENV}=1 ${shellQuoteSingle(translatePathForMsys(resolveLeaderNodePath()))} ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
+  const hudCmd = `exec env ${formatHudEnvAssignments()} ${shellQuoteSingle(translatePathForMsys(resolveLeaderNodePath()))} ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
   const hudCwd = translatePathForMsys(cwd);
   const hudResult = runTmux([
     'split-window',

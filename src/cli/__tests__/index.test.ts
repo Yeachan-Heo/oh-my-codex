@@ -2845,11 +2845,15 @@ describe("detached tmux new-session sequencing", () => {
     assert.doesNotMatch(argsText, /fake-provider-key/);
   });
 
-  it("runCodex builds inside-tmux HUD command with OMX_SESSION_ID", async () => {
+  it("runCodex builds inside-tmux HUD command with OMX_SESSION_ID and OMX_ROOT when set", async () => {
     const source = await readFile(join(repoRoot, 'src', 'cli', 'index.ts'), 'utf-8');
     assert.match(
       source,
-      /buildTmuxPaneCommand\("env",\s*\[\s*`OMX_SESSION_ID=\$\{sessionId\}`,\s*`\$\{OMX_TMUX_HUD_OWNER_ENV\}=1`,\s*"node",\s*omxBin,\s*"hud",\s*"--watch",?\s*\]\)/,
+      /const hudEnvArgs = \[\s*`OMX_SESSION_ID=\$\{sessionId\}`,\s*`\$\{OMX_TMUX_HUD_OWNER_ENV\}=1`,\s*\.\.\.\(omxRootOverride \? \[`OMX_ROOT=\$\{omxRootOverride\}`\] : \[\]\),\s*\]/,
+    );
+    assert.match(
+      source,
+      /buildTmuxPaneCommand\("env",\s*\[\.\.\.hudEnvArgs,\s*"node",\s*omxBin,\s*"hud",\s*"--watch"\]\)/,
     );
   });
 
