@@ -2257,7 +2257,7 @@ describe("codex native hook dispatch", () => {
       assert.match(message, /Autopilot protocol:/);
       assert.match(message, /deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa/);
       assert.match(message, /Planner output has been reviewed sequentially by Architect and then Critic/);
-      assert.match(message, /do not hand off to Ultragoal or implementation until .*architect_review.*critic_review/);
+      assert.match(message, /do not hand off to Ultragoal or implementation until .*ralplan_architect_review.*ralplan_critic_review/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
