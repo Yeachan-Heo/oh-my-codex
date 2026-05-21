@@ -265,6 +265,40 @@ describe('ralplan runtime', () => {
     }
   });
 
+  it('fails closed when consensus approves without required planning artifacts', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-no-artifacts-'));
+    const sessionId = 'sess-ralplan-no-artifacts';
+    try {
+      await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
+      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+
+      const result = await runRalplanConsensus({
+        async draft() {
+          return { summary: 'draft without prd/test spec' };
+        },
+        async architectReview() {
+          return { verdict: 'approve', summary: 'architect ok' };
+        },
+        async criticReview() {
+          return { verdict: 'approve', summary: 'critic ok' };
+        },
+      }, { task: 'approve without artifacts', cwd, maxIterations: 1 });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(result.phase, 'failed');
+      assert.equal(result.planningComplete, false);
+      assert.equal(result.error, 'ralplan_planning_artifacts_missing_after_consensus');
+      assert.equal(result.ralplanConsensusGate.complete, true);
+
+      const finalState = await readModeState('ralplan', cwd);
+      assert.equal(finalState?.current_phase, 'failed');
+      assert.equal(finalState?.planning_complete, false);
+      assert.equal(finalState?.error, 'ralplan_planning_artifacts_missing_after_consensus');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('marks failed cleanly when execution throws', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-fail-'));
     const sessionId = 'sess-ralplan-fail';

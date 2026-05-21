@@ -230,6 +230,28 @@ describe('RALPLAN Stage', () => {
     assert.equal(stage.canSkip!(makeCtx({ sessionId: 'sess-missing' })), false);
   });
 
+  it('canSkip fails closed for malformed explicit session ids instead of falling back to root consensus', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const stateDir = join(tempDir, '.omx', 'state');
+    await mkdir(plansDir, { recursive: true });
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+    await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
+      ralplanConsensusGate: {
+        complete: true,
+        sequence: ['architect-review', 'critic-review'],
+        ralplan_architect_review: { agent_role: 'architect', verdict: 'approve' },
+        ralplan_critic_review: { agent_role: 'critic', verdict: 'approve' },
+      },
+    }));
+
+    const stage = createRalplanStage();
+    for (const sessionId of ['../bad', 'a'.repeat(65), '']) {
+      assert.equal(stage.canSkip!(makeCtx({ sessionId })), false);
+    }
+  });
+
   it('canSkip rejects blocker aliases even with approval-shaped booleans', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
@@ -544,6 +566,30 @@ describe('RALPLAN Stage', () => {
     });
     assert.equal(artifacts.iteration, 1);
     assert.equal(artifacts.runtimeDrafted, true);
+  });
+
+  it('fails runtime handoff when consensus approves but required planning artifacts are missing', async () => {
+    const stage = createRalplanStage({
+      executor: {
+        async draft() {
+          return { summary: 'draft without files' };
+        },
+        async architectReview() {
+          return { verdict: 'approve', summary: 'architect ok' };
+        },
+        async criticReview() {
+          return { verdict: 'approve', summary: 'critic ok' };
+        },
+      },
+    });
+
+    const result = await stage.run(makeCtx({ task: 'live ralplan no artifacts' }));
+    const artifacts = result.artifacts as Record<string, unknown>;
+
+    assert.equal(result.status, 'failed');
+    assert.equal(result.error, 'ralplan_planning_artifacts_missing_after_consensus');
+    assert.equal(artifacts.planningComplete, false);
+    assert.equal((artifacts.ralplanConsensusGate as { complete?: boolean }).complete, true);
   });
 
   it('fails runtime handoff when Critic has not approved after Architect', async () => {

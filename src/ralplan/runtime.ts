@@ -319,24 +319,51 @@ export async function runRalplanConsensus(
       if (consensusGate.complete) {
         const planningArtifacts = readPlanningArtifacts(cwd);
         const planningComplete = planningArtifacts.prdPaths.length > 0 && planningArtifacts.testSpecPaths.length > 0;
+        if (!planningComplete) {
+          const error = 'ralplan_planning_artifacts_missing_after_consensus';
+          await updateRalplanState(cwd, {
+            active: false,
+            iteration,
+            current_phase: 'failed',
+            completed_at: new Date().toISOString(),
+            planning_complete: false,
+            latest_plan_path: latestPlanPath,
+            ralplan_consensus_gate: consensusGate,
+            status_message: 'Status: failed — ralplan consensus approved, but required PRD and test-spec planning artifacts are missing; do not hand off to execution.',
+            review_history: reviewHistory,
+            error,
+          });
+          return {
+            status: 'failed',
+            iteration,
+            phase: 'failed',
+            planningComplete: false,
+            drafts,
+            architectReviews,
+            criticReviews,
+            ralplanConsensusGate: consensusGate,
+            latestPlanPath,
+            artifacts: aggregatedArtifacts,
+            error,
+          };
+        }
+
         await updateRalplanState(cwd, {
           active: false,
           iteration,
           current_phase: 'complete',
           completed_at: new Date().toISOString(),
-          planning_complete: planningComplete,
+          planning_complete: true,
           latest_plan_path: latestPlanPath,
           ralplan_consensus_gate: consensusGate,
-          status_message: planningComplete
-            ? 'Status: complete — ralplan consensus approved and planning artifacts are ready for handoff.'
-            : 'Status: paused_for_review — ralplan consensus approved, but expected planning artifacts are missing; continue from the current artifact and emit the final handoff once artifacts are written.',
+          status_message: 'Status: complete — ralplan consensus approved and planning artifacts are ready for handoff.',
           review_history: reviewHistory,
         });
         return {
           status: 'completed',
           iteration,
           phase: 'complete',
-          planningComplete,
+          planningComplete: true,
           drafts,
           architectReviews,
           criticReviews,

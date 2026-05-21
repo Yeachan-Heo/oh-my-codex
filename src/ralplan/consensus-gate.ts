@@ -66,7 +66,9 @@ export function readLocalRalplanConsensusStateCandidates(
   cwd: string,
   sessionId?: string,
 ): RalplanConsensusSource[] {
-  const sessionIdList = sessionId === undefined ? readLocalCurrentSessionIds(cwd) : validateLocalSessionId(sessionId);
+  const explicitSession = sessionId !== undefined;
+  const sessionIdList = explicitSession ? validateLocalSessionId(sessionId) : readLocalCurrentSessionIds(cwd);
+  if (explicitSession && sessionIdList.length === 0) return [];
   const stateRoots = sessionIdList.length > 0
     ? sessionIdList.map((id) => join(cwd, '.omx', 'state', 'sessions', id))
     : [join(cwd, '.omx', 'state')];
