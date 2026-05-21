@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 import { classifyTaskSize, isHeavyMode, type TaskSizeResult, type TaskSizeThresholds } from './task-size-detector.js';
 import { isApprovedExecutionFollowupShortcut, type FollowupMode } from '../team/followup-planner.js';
 import { isPlanningComplete, readPlanningArtifacts } from '../planning/artifacts.js';
-import { hasRalplanConsensusEvidence } from '../pipeline/stages/ralplan.js';
+import { hasDurableRalplanConsensusEvidenceForCwd } from '../ralplan/consensus-gate.js';
 import { KEYWORD_TRIGGER_DEFINITIONS, compareKeywordMatches } from './keyword-registry.js';
 import {
   SKILL_ACTIVE_STATE_FILE,
@@ -400,20 +400,20 @@ async function persistStatefulSkillSeedState(
       handoff_artifacts: {
         deep_interview: null,
         ralplan: null,
-        ralplan_architect_review: null,
-        ralplan_critic_review: null,
+        ralplan_consensus_gate: {
+          required: true,
+          sequence: ['architect-review', 'critic-review'],
+          planning_artifacts_are_not_consensus: true,
+          required_review_roles: ['architect', 'critic'],
+          ralplan_architect_review: null,
+          ralplan_critic_review: null,
+          complete: false,
+        },
         ultragoal: null,
         code_review: null,
         ultraqa: null,
         ...existingHandoffs,
       },
-      ralplan_review_gate: Object.prototype.hasOwnProperty.call(existingState, 'ralplan_review_gate')
-        ? existingState.ralplan_review_gate
-        : {
-            status: 'pending',
-            sequence: ['planner', 'architect', 'critic'],
-            required_reviews: ['ralplan_architect_review', 'ralplan_critic_review'],
-          },
       review_verdict: Object.prototype.hasOwnProperty.call(existingState, 'review_verdict')
         ? existingState.review_verdict
         : null,
@@ -1157,16 +1157,15 @@ export function applyRalplanGate(
     return { keywords, gateApplied: false, gatedKeywords: [] };
   }
 
-  const cwd = options.cwd ?? process.cwd();
-  const planningComplete = isPlanningComplete(readPlanningArtifacts(cwd))
-    && hasRalplanConsensusEvidence({ artifacts: {}, cwd });
+  const planningComplete = isPlanningComplete(readPlanningArtifacts(options.cwd ?? process.cwd()));
+  const consensusComplete = hasDurableRalplanConsensusEvidenceForCwd(options.cwd ?? process.cwd());
   const shortFollowupBypasses = executionKeywords.filter((keyword) => {
     if (keyword !== 'team' && keyword !== 'ralph') return false;
     return isApprovedExecutionFollowupShortcut(
       keyword as FollowupMode,
       text,
       {
-        planningComplete,
+        planningComplete: planningComplete && consensusComplete,
         priorSkill: options.priorSkill,
       },
     );

@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const autopilotSkill = readFileSync(join(__dirname, '../../../skills/autopilot/SKILL.md'), 'utf-8');
+const pipelineSkill = readFileSync(join(__dirname, '../../../skills/pipeline/SKILL.md'), 'utf-8');
+const skillsDocs = readFileSync(join(__dirname, '../../../docs/skills.html'), 'utf-8');
+const gettingStartedDocs = readFileSync(join(__dirname, '../../../docs/getting-started.html'), 'utf-8');
 
 describe('autopilot skill default Ultragoal contract', () => {
   it('makes deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa the recommended/default contract', () => {
@@ -27,9 +30,6 @@ describe('autopilot skill default Ultragoal contract', () => {
       'review_cycle',
       'phase_cycle',
       'handoff_artifacts',
-      'ralplan_review_gate',
-      'ralplan_architect_review',
-      'ralplan_critic_review',
       'review_verdict',
       'qa_verdict',
       'return_to_ralplan_reason',
@@ -38,11 +38,20 @@ describe('autopilot skill default Ultragoal contract', () => {
     }
   });
 
-  it('does not allow the ralplan phase to finish without sequential Architect and Critic review evidence', () => {
-    assert.match(autopilotSkill, /Planner draft -> Architect review .* -> Critic review/s);
-    assert.match(autopilotSkill, /strictly sequential and never parallel/i);
-    assert.match(autopilotSkill, /A plan file alone is not an approved ralplan artifact/i);
-    assert.match(autopilotSkill, /Do not transition to `\$ultragoal`.*both `ralplan_architect_review` and `ralplan_critic_review`/s);
+  it('requires sequential ralplan Architect and Critic consensus before execution handoff', () => {
+    assert.match(autopilotSkill, /PRD\/test-spec files alone are not completion evidence/i);
+    assert.match(autopilotSkill, /Architect.*approval first.*Critic.*approval second/is);
+    assert.match(autopilotSkill, /ralplan_consensus_gate/);
+    assert.match(autopilotSkill, /missing ralplan consensus evidence/i);
+    assert.match(autopilotSkill, /do not progress to `\$ultragoal`, `\$team`, `\$ralph`, or implementation/i);
+  });
+
+  it('documents ralplan consensus completion in pipeline and public docs', () => {
+    assert.match(pipelineSkill, /Plan\/test-spec files alone are not consensus evidence/i);
+    assert.match(pipelineSkill, /Architect approval followed by Critic approval/i);
+    assert.match(skillsDocs, /not just PRD\/test-spec files/i);
+    assert.match(skillsDocs, /never leaving ralplan until Architect\/Critic consensus evidence is recorded/i);
+    assert.match(gettingStartedDocs, /Architect review evidence and then Critic review evidence are recorded/i);
   });
 
   it('does not preserve the old broad phase lifecycle as primary behavior', () => {

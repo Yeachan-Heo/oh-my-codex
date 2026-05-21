@@ -5,16 +5,19 @@
  * into a PipelineStage. Produces a plan artifact at `.omx/plans/`.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { join, resolve as resolvePath } from 'node:path';
 import type { PipelineStage, StageContext, StageResult } from '../types.js';
 import { isPlanningComplete, readPlanningArtifacts } from '../../planning/artifacts.js';
-import { getBaseStateDir, getStatePath, validateSessionId } from '../../state/paths.js';
 import { isNonCleanReviewVerdict } from '../review-verdict.js';
 import {
   runRalplanConsensus,
   type RalplanConsensusExecutor,
 } from '../../ralplan/runtime.js';
+import {
+  buildRalplanConsensusGateForCwd,
+  buildRalplanConsensusGateFromSources,
+  hasDurableRalplanConsensusEvidenceForCwd,
+  type RalplanConsensusGateEvidence,
+} from '../../ralplan/consensus-gate.js';
 
 export interface CreateRalplanStageOptions {
   executor?: RalplanConsensusExecutor;
@@ -40,7 +43,8 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
       if (hasReviewLoopContext(ctx.artifacts)) {
         return false;
       }
-      return isPlanningComplete(readPlanningArtifacts(ctx.cwd)) && hasRalplanConsensusEvidence(ctx);
+      const planningArtifacts = readPlanningArtifacts(ctx.cwd);
+      return isPlanningComplete(planningArtifacts) && hasDurableRalplanConsensusEvidence(ctx);
     },
 
     async run(ctx: StageContext): Promise<StageResult> {
@@ -54,8 +58,10 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
           });
 
           const planningArtifacts = readPlanningArtifacts(ctx.cwd);
+          const consensusGate = buildRalplanConsensusGate(runtimeResult);
+          const consensusComplete = consensusGate.complete === true;
           return {
-            status: runtimeResult.status === 'completed' ? 'completed' : 'failed',
+            status: runtimeResult.status === 'completed' && consensusComplete ? 'completed' : 'failed',
             artifacts: {
               plansDir: planningArtifacts.plansDir,
               specsDir: planningArtifacts.specsDir,
@@ -71,17 +77,24 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
               drafts: runtimeResult.drafts,
               architectReviews: runtimeResult.architectReviews,
               criticReviews: runtimeResult.criticReviews,
+              ralplanConsensusGate: consensusGate,
               ...runtimeResult.artifacts,
             },
             duration_ms: Date.now() - startTime,
-            error: runtimeResult.error,
+            error: runtimeResult.error ?? (consensusComplete ? undefined : 'ralplan_consensus_evidence_missing'),
           };
         }
 
         const planningArtifacts = readPlanningArtifacts(ctx.cwd);
+        const consensusGate = buildRalplanConsensusGateForCwd(ctx.cwd, {
+          artifacts: ctx.artifacts,
+          sessionId: ctx.sessionId,
+        });
+        const planningComplete = isPlanningComplete(planningArtifacts);
+        const consensusComplete = consensusGate.complete === true;
 
         return {
-          status: 'failed',
+          status: planningComplete && consensusComplete ? 'completed' : 'failed',
           artifacts: {
             plansDir: planningArtifacts.plansDir,
             specsDir: planningArtifacts.specsDir,
@@ -89,12 +102,15 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
             prdPaths: planningArtifacts.prdPaths,
             testSpecPaths: planningArtifacts.testSpecPaths,
             deepInterviewSpecPaths: planningArtifacts.deepInterviewSpecPaths,
-            planningComplete: isPlanningComplete(planningArtifacts),
+            planningComplete,
             stage: 'ralplan',
-            instruction: `Run RALPLAN consensus planning for: ${ctx.task}`,
+            ralplanConsensusGate: consensusGate,
+            instruction: consensusComplete
+              ? `Run RALPLAN consensus planning for: ${ctx.task}`
+              : `Remain in RALPLAN for: ${ctx.task}. Do not hand off to execution until durable Architect approval followed by Critic approval is recorded in ralplan state or handoff artifacts.`,
           },
           duration_ms: Date.now() - startTime,
-          error: 'RALPLAN consensus executor is required before this stage can complete.',
+          error: planningComplete && !consensusComplete ? 'ralplan_consensus_evidence_missing' : 'ralplan_planning_artifacts_missing',
         };
       } catch (err) {
         return {
@@ -106,6 +122,26 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
       }
     },
   };
+}
+
+function buildRalplanConsensusGate(runtimeResult: {
+  status: string;
+  planningComplete: boolean;
+  ralplanConsensusGate?: unknown;
+  architectReviews: unknown[];
+  criticReviews: unknown[];
+}): RalplanConsensusGateEvidence {
+  return buildRalplanConsensusGateFromSources([{
+    source: 'runtime-result',
+    value: runtimeResult,
+  }]);
+}
+
+function hasDurableRalplanConsensusEvidence(ctx: StageContext): boolean {
+  return hasDurableRalplanConsensusEvidenceForCwd(ctx.cwd, {
+    artifacts: ctx.artifacts,
+    sessionId: ctx.sessionId,
+  });
 }
 
 function hasReviewLoopContext(artifacts: Record<string, unknown>): boolean {
@@ -127,175 +163,4 @@ function hasReviewLoopContext(artifacts: Record<string, unknown>): boolean {
       && reviewArtifacts.return_to_ralplan_reason.trim() !== '')
     || isNonCleanReviewVerdict(reviewArtifacts.review_verdict)
   );
-}
-
-export function hasRalplanConsensusEvidence(ctx: Pick<StageContext, 'artifacts' | 'cwd' | 'sessionId'>): boolean {
-  const artifacts = ctx.artifacts;
-  if (isApprovedRalplanConsensus(artifacts.ralplan_architect_review, artifacts.ralplan_critic_review)) {
-    return true;
-  }
-
-  const ralplanArtifacts = artifacts.ralplan;
-  if (ralplanArtifacts && typeof ralplanArtifacts === 'object') {
-    const record = ralplanArtifacts as Record<string, unknown>;
-    if (isApprovedRalplanConsensus(record.ralplan_architect_review, record.ralplan_critic_review)) {
-      return true;
-    }
-    if (hasApprovedReviewArray(record.architectReviews) && hasApprovedReviewArray(record.criticReviews)) {
-      return true;
-    }
-  }
-
-  const state = readAutopilotState(ctx.cwd, ctx.sessionId);
-  const handoffs = state?.state && typeof state.state === 'object'
-    ? (state.state as Record<string, unknown>).handoff_artifacts
-    : undefined;
-  if (handoffs && typeof handoffs === 'object') {
-    const record = handoffs as Record<string, unknown>;
-    return isApprovedRalplanConsensus(record.ralplan_architect_review, record.ralplan_critic_review);
-  }
-
-  return false;
-}
-
-function hasApprovedReviewArray(value: unknown): boolean {
-  if (!Array.isArray(value) || value.length === 0) return false;
-  return isApprovedRalplanReview(value[value.length - 1]);
-}
-
-function isApprovedRalplanConsensus(architectReview: unknown, criticReview: unknown): boolean {
-  if (!isReviewRoleCompatible(architectReview, 'architect')) return false;
-  if (!isReviewRoleCompatible(criticReview, 'critic')) return false;
-  if (!isReviewOrderCompatible(architectReview, criticReview)) return false;
-  return isApprovedRalplanReview(architectReview) && isApprovedRalplanReview(criticReview);
-}
-
-function isReviewRoleCompatible(value: unknown, expectedRole: 'architect' | 'critic'): boolean {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return true;
-  const record = value as Record<string, unknown>;
-  const rawRole = [record.role, record.reviewer_role, record.reviewerRole, record.kind, record.type]
-    .find((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
-  if (!rawRole) return true;
-  const normalized = rawRole.trim().toLowerCase().replace(/[_-]+/g, ' ');
-  if (expectedRole === 'architect') return normalized.includes('architect');
-  return normalized.includes('critic');
-}
-
-function isReviewOrderCompatible(architectReview: unknown, criticReview: unknown): boolean {
-  const architectTimestamp = getReviewTimestampMs(architectReview);
-  const criticTimestamp = getReviewTimestampMs(criticReview);
-  if (architectTimestamp === undefined || criticTimestamp === undefined) return true;
-  return criticTimestamp >= architectTimestamp;
-}
-
-function getReviewTimestampMs(value: unknown): number | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  const raw = [record.created_at, record.createdAt, record.submitted_at, record.submittedAt, record.reviewed_at, record.reviewedAt, record.timestamp]
-    .find((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
-  if (!raw) return undefined;
-  const parsed = Date.parse(raw);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function isApprovedRalplanReview(value: unknown): boolean {
-  if (value === null || value === undefined) return false;
-  if (typeof value === 'string') return isApprovedReviewToken(value);
-  if (typeof value !== 'object' || Array.isArray(value)) return false;
-
-  const record = value as Record<string, unknown>;
-  const tokens = [
-    record.verdict,
-    record.recommendation,
-    record.status,
-    record.decision,
-    record.result,
-    record.outcome,
-  ].filter((entry): entry is string => typeof entry === 'string');
-
-  if (tokens.some(isRejectedReviewToken)) return false;
-  if (hasBooleanBlocker(record)) return false;
-  if (tokens.some(isApprovedReviewToken)) return true;
-  return record.clean === true || record.approved === true;
-}
-
-function hasBooleanBlocker(record: Record<string, unknown>): boolean {
-  return [
-    record.blocking,
-    record.blocked,
-    record.block,
-    record.rejected,
-    record.reject,
-    record.iterating,
-    record.iterate,
-    record.request_changes,
-    record.requestChanges,
-    record.needs_changes,
-    record.needsChanges,
-  ].some(value => value === true) || record.clean === false;
-}
-
-function isApprovedReviewToken(value: string): boolean {
-  return ['approve', 'approved', 'accepted', 'pass', 'passed'].includes(value.trim().toLowerCase());
-}
-
-function isRejectedReviewToken(value: string): boolean {
-  return [
-    'reject',
-    'rejected',
-    'iterate',
-    'iterating',
-    'comment',
-    'request changes',
-    'request_changes',
-    'changes requested',
-    'changes_requested',
-    'needs changes',
-    'needs_changes',
-    'block',
-    'blocked',
-    'blocking',
-    'watch',
-    'fail',
-    'failed',
-  ].includes(value.trim().toLowerCase());
-}
-
-function readAutopilotState(cwd: string, sessionId?: string): Record<string, unknown> | null {
-  const explicitSessionId = validateOptionalSessionId(sessionId);
-  if (sessionId !== undefined) {
-    return explicitSessionId ? readJsonState(getStatePath('autopilot', cwd, explicitSessionId)) : null;
-  }
-
-  const currentSessionId = readCurrentSessionIdFromState(cwd);
-  if (currentSessionId) {
-    const scoped = readJsonState(getStatePath('autopilot', cwd, currentSessionId));
-    if (scoped) return scoped;
-  }
-  return readJsonState(join(cwd, '.omx', 'state', 'autopilot-state.json'));
-}
-
-function validateOptionalSessionId(sessionId?: string): string | undefined {
-  if (sessionId === undefined) return undefined;
-  try {
-    return validateSessionId(sessionId);
-  } catch {
-    return undefined;
-  }
-}
-
-function readCurrentSessionIdFromState(cwd: string): string | undefined {
-  const state = readJsonState(join(getBaseStateDir(cwd), 'session.json'));
-  if (!state) return undefined;
-  if (typeof state.cwd === 'string' && resolvePath(state.cwd) !== resolvePath(cwd)) return undefined;
-  return validateOptionalSessionId(typeof state.session_id === 'string' ? state.session_id : undefined);
-}
-
-function readJsonState(path: string): Record<string, unknown> | null {
-  if (!existsSync(path)) return null;
-  try {
-    return JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
 }

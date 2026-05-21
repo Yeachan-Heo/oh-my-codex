@@ -24,6 +24,19 @@ export interface RalplanReviewResult {
   artifacts?: Record<string, unknown>;
 }
 
+export interface RalplanConsensusGate {
+  required: true;
+  complete: boolean;
+  sequence: ['architect-review', 'critic-review'];
+  planning_artifacts_are_not_consensus: true;
+  required_review_roles: ['architect', 'critic'];
+  ralplan_architect_review: (RalplanReviewResult & { agent_role: 'architect'; iteration: number }) | null;
+  ralplan_critic_review: (RalplanReviewResult & { agent_role: 'critic'; iteration: number }) | null;
+  architect_review: (RalplanReviewResult & { agent_role: 'architect'; iteration: number }) | null;
+  critic_review: (RalplanReviewResult & { agent_role: 'critic'; iteration: number }) | null;
+  blocked_reason: string | null;
+}
+
 export interface RalplanConsensusIterationContext {
   task: string;
   cwd: string;
@@ -60,6 +73,7 @@ export interface RalplanRuntimeResult {
   drafts: RalplanDraftResult[];
   architectReviews: RalplanReviewResult[];
   criticReviews: RalplanReviewResult[];
+  ralplanConsensusGate: RalplanConsensusGate;
   latestPlanPath?: string;
   artifacts: Record<string, unknown>;
   error?: string;
@@ -78,6 +92,7 @@ interface RalplanModeUpdates {
   latest_architect_summary?: string;
   latest_critic_verdict?: RalplanReviewVerdict;
   latest_critic_summary?: string;
+  ralplan_consensus_gate?: RalplanConsensusGate;
   status_message?: string;
   review_history?: Array<Record<string, unknown>>;
   [key: string]: unknown;
@@ -99,6 +114,67 @@ function buildReviewHistory(
     });
   }
   return entries;
+}
+
+function buildRalplanConsensusGate(
+  architectReviews: RalplanReviewResult[],
+  criticReviews: RalplanReviewResult[],
+): RalplanConsensusGate {
+  const latestArchitect = architectReviews.at(-1);
+  const latestCritic = criticReviews.at(-1);
+  if (
+    latestArchitect?.verdict === 'approve'
+    && latestCritic?.verdict === 'approve'
+    && architectReviews.length === criticReviews.length
+  ) {
+    const ralplanArchitectReview = {
+      ...latestArchitect,
+      agent_role: 'architect' as const,
+      iteration: architectReviews.length,
+    };
+    const ralplanCriticReview = {
+      ...latestCritic,
+      agent_role: 'critic' as const,
+      iteration: criticReviews.length,
+    };
+    return {
+      required: true,
+      complete: true,
+      sequence: ['architect-review', 'critic-review'],
+      planning_artifacts_are_not_consensus: true,
+      required_review_roles: ['architect', 'critic'],
+      ralplan_architect_review: ralplanArchitectReview,
+      ralplan_critic_review: ralplanCriticReview,
+      architect_review: ralplanArchitectReview,
+      critic_review: ralplanCriticReview,
+      blocked_reason: null,
+    };
+  }
+
+  const blockedReason = latestArchitect?.verdict !== 'approve'
+    ? 'architect_review_missing_or_not_approved'
+    : latestCritic?.verdict !== 'approve'
+      ? 'critic_review_missing_or_not_approved'
+      : 'missing_sequential_architect_then_critic_approval';
+  const ralplanArchitectReview = latestArchitect
+    ? { ...latestArchitect, agent_role: 'architect' as const, iteration: architectReviews.length }
+    : null;
+  const ralplanCriticReview = latestCritic
+    ? { ...latestCritic, agent_role: 'critic' as const, iteration: criticReviews.length }
+    : null;
+
+  return {
+    required: true,
+    complete: false,
+    sequence: ['architect-review', 'critic-review'],
+    planning_artifacts_are_not_consensus: true,
+    required_review_roles: ['architect', 'critic'],
+    ralplan_architect_review: ralplanArchitectReview,
+    ralplan_critic_review: ralplanCriticReview,
+    architect_review: ralplanArchitectReview,
+    critic_review: ralplanCriticReview,
+    blocked_reason: blockedReason,
+  };
 }
 
 async function updateRalplanState(
@@ -143,6 +219,7 @@ export async function runRalplanConsensus(
         iteration,
         current_phase: 'draft',
         planning_complete: false,
+        ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, criticReviews),
         review_history: buildReviewHistory(drafts, architectReviews, criticReviews),
       });
       const draft = await executor.draft(iterationContext);
@@ -155,6 +232,7 @@ export async function runRalplanConsensus(
         current_phase: 'architect-review',
         latest_plan_path: latestPlanPath,
         latest_draft_summary: draft.summary,
+        ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, criticReviews),
         review_history: buildReviewHistory(drafts, architectReviews, criticReviews),
       });
       const architectReview = await executor.architectReview({
@@ -164,11 +242,59 @@ export async function runRalplanConsensus(
       architectReviews.push(architectReview);
       if (architectReview.artifacts) Object.assign(aggregatedArtifacts, architectReview.artifacts);
 
+      if (architectReview.verdict !== 'approve') {
+        const reviewHistory = buildReviewHistory(drafts, architectReviews, criticReviews);
+        const consensusGate = buildRalplanConsensusGate(architectReviews, criticReviews);
+        await updateRalplanState(cwd, {
+          iteration,
+          current_phase: 'architect-review',
+          latest_architect_verdict: architectReview.verdict,
+          latest_architect_summary: architectReview.summary,
+          ralplan_consensus_gate: consensusGate,
+          review_history: reviewHistory,
+        });
+
+        if (iteration >= maxIterations) {
+          const error = `ralplan_consensus_not_reached_after_${maxIterations}_iterations`;
+          await updateRalplanState(cwd, {
+            active: false,
+            iteration,
+            current_phase: 'failed',
+            completed_at: new Date().toISOString(),
+            planning_complete: false,
+            latest_plan_path: latestPlanPath,
+            latest_architect_verdict: architectReview.verdict,
+            latest_architect_summary: architectReview.summary,
+            ralplan_consensus_gate: consensusGate,
+            review_history: reviewHistory,
+            status_message: `Status: paused_for_review — ralplan reached the ${maxIterations}-iteration review limit without Architect approval; continue from the best current artifact or ask the user how to proceed.`,
+            error,
+          });
+          return {
+            status: 'failed',
+            iteration,
+            phase: 'failed',
+            planningComplete: false,
+            drafts,
+            architectReviews,
+            criticReviews,
+            ralplanConsensusGate: consensusGate,
+            latestPlanPath,
+            artifacts: aggregatedArtifacts,
+            error,
+          };
+        }
+
+        iteration += 1;
+        continue;
+      }
+
       await updateRalplanState(cwd, {
         iteration,
         current_phase: 'critic-review',
         latest_architect_verdict: architectReview.verdict,
         latest_architect_summary: architectReview.summary,
+        ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, criticReviews),
         review_history: buildReviewHistory(drafts, architectReviews, criticReviews),
       });
       const criticReview = await executor.criticReview({
@@ -180,15 +306,17 @@ export async function runRalplanConsensus(
       if (criticReview.artifacts) Object.assign(aggregatedArtifacts, criticReview.artifacts);
 
       const reviewHistory = buildReviewHistory(drafts, architectReviews, criticReviews);
+      const consensusGate = buildRalplanConsensusGate(architectReviews, criticReviews);
       await updateRalplanState(cwd, {
         iteration,
         current_phase: 'critic-review',
         latest_critic_verdict: criticReview.verdict,
         latest_critic_summary: criticReview.summary,
+        ralplan_consensus_gate: consensusGate,
         review_history: reviewHistory,
       });
 
-      if (architectReview.verdict === 'approve' && criticReview.verdict === 'approve') {
+      if (consensusGate.complete) {
         const planningArtifacts = readPlanningArtifacts(cwd);
         const planningComplete = planningArtifacts.prdPaths.length > 0 && planningArtifacts.testSpecPaths.length > 0;
         await updateRalplanState(cwd, {
@@ -198,6 +326,7 @@ export async function runRalplanConsensus(
           completed_at: new Date().toISOString(),
           planning_complete: planningComplete,
           latest_plan_path: latestPlanPath,
+          ralplan_consensus_gate: consensusGate,
           status_message: planningComplete
             ? 'Status: complete — ralplan consensus approved and planning artifacts are ready for handoff.'
             : 'Status: paused_for_review — ralplan consensus approved, but expected planning artifacts are missing; continue from the current artifact and emit the final handoff once artifacts are written.',
@@ -211,6 +340,7 @@ export async function runRalplanConsensus(
           drafts,
           architectReviews,
           criticReviews,
+          ralplanConsensusGate: consensusGate,
           latestPlanPath,
           artifacts: aggregatedArtifacts,
         };
@@ -227,6 +357,7 @@ export async function runRalplanConsensus(
           latest_plan_path: latestPlanPath,
           latest_critic_verdict: criticReview.verdict,
           latest_critic_summary: criticReview.summary,
+          ralplan_consensus_gate: consensusGate,
           review_history: reviewHistory,
           status_message: `Status: paused_for_review — ralplan reached the ${maxIterations}-iteration review limit without approval; continue from the best current artifact or ask the user how to proceed.`,
           error,
@@ -239,6 +370,7 @@ export async function runRalplanConsensus(
           drafts,
           architectReviews,
           criticReviews,
+          ralplanConsensusGate: consensusGate,
           latestPlanPath,
           artifacts: aggregatedArtifacts,
           error,
@@ -256,6 +388,7 @@ export async function runRalplanConsensus(
       completed_at: new Date().toISOString(),
       planning_complete: false,
       latest_plan_path: latestPlanPath,
+      ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, criticReviews),
       review_history: buildReviewHistory(drafts, architectReviews, criticReviews),
       status_message: 'Status: failed — ralplan encountered an error and cannot continue without inspecting the failure.',
       error: message,
@@ -268,6 +401,7 @@ export async function runRalplanConsensus(
       drafts,
       architectReviews,
       criticReviews,
+      ralplanConsensusGate: buildRalplanConsensusGate(architectReviews, criticReviews),
       latestPlanPath,
       artifacts: aggregatedArtifacts,
       error: message,
@@ -281,6 +415,7 @@ export async function runRalplanConsensus(
     current_phase: 'failed',
     completed_at: new Date().toISOString(),
     planning_complete: false,
+    ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, criticReviews),
     status_message: 'Status: failed — ralplan reached an unexpected runtime state.',
     error: unreachableError,
   });
@@ -292,6 +427,7 @@ export async function runRalplanConsensus(
     drafts,
     architectReviews,
     criticReviews,
+    ralplanConsensusGate: buildRalplanConsensusGate(architectReviews, criticReviews),
     latestPlanPath,
     artifacts: aggregatedArtifacts,
     error: unreachableError,

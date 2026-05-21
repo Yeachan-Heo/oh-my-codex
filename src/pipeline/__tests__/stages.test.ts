@@ -15,7 +15,6 @@ import { createUltragoalStage, buildUltragoalInstruction } from '../stages/ultra
 import { createUltraqaStage, buildUltraqaInstruction } from '../stages/ultraqa.js';
 import { buildFollowupStaffingPlan } from '../../team/followup-planner.js';
 import { packageRoot } from '../../utils/paths.js';
-import { getStatePath } from '../../state/paths.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -120,14 +119,14 @@ describe('RALPLAN Stage', () => {
     assert.equal(stage.name, 'ralplan');
   });
 
-  it('returns a failed instruction artifact when no ralplan executor is configured', async () => {
+  it('fails closed without planning artifacts and consensus evidence', async () => {
     const stage = createRalplanStage();
     const result = await stage.run(makeCtx());
 
     assert.equal(result.status, 'failed');
     assert.equal((result.artifacts as Record<string, unknown>).stage, 'ralplan');
     assert.ok((result.artifacts as Record<string, unknown>).instruction);
-    assert.match(result.error ?? '', /executor is required/);
+    assert.equal(result.error, 'ralplan_planning_artifacts_missing');
   });
 
   it('canSkip returns false when no plans directory exists', () => {
@@ -152,7 +151,7 @@ describe('RALPLAN Stage', () => {
     assert.equal(stage.canSkip!(makeCtx()), false);
   });
 
-  it('canSkip returns false when prd and test spec exist without Architect/Critic evidence', async () => {
+  it('canSkip returns false when only prd and test spec plan files exist without consensus evidence', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
@@ -162,91 +161,7 @@ describe('RALPLAN Stage', () => {
     assert.equal(stage.canSkip!(makeCtx()), false);
   });
 
-  it('canSkip returns true when prd/test spec and ralplan review artifacts exist', async () => {
-    const plansDir = join(tempDir, '.omx', 'plans');
-    await mkdir(plansDir, { recursive: true });
-    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
-    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
-
-    const stage = createRalplanStage();
-    assert.equal(stage.canSkip!(makeCtx({
-      artifacts: {
-        ralplan_architect_review: { verdict: 'APPROVE' },
-        ralplan_critic_review: { verdict: 'APPROVE' },
-      },
-    })), true);
-  });
-
-  it('canSkip returns false when ralplan review artifacts are rejected or blocking', async () => {
-    const plansDir = join(tempDir, '.omx', 'plans');
-    await mkdir(plansDir, { recursive: true });
-    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
-    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
-
-    const stage = createRalplanStage();
-    assert.equal(stage.canSkip!(makeCtx({
-      artifacts: {
-        ralplan_architect_review: { verdict: 'REJECT' },
-        ralplan_critic_review: { verdict: 'REJECT' },
-      },
-    })), false);
-    assert.equal(stage.canSkip!(makeCtx({
-      artifacts: {
-        ralplan_architect_review: { verdict: 'APPROVE' },
-        ralplan_critic_review: { recommendation: 'REQUEST CHANGES' },
-      },
-    })), false);
-    assert.equal(stage.canSkip!(makeCtx({
-      artifacts: {
-        ralplan_architect_review: { verdict: 'APPROVE' },
-        ralplan_critic_review: { status: 'blocking', approved: true },
-      },
-    })), false);
-    assert.equal(stage.canSkip!(makeCtx({
-      artifacts: {
-        ralplan_architect_review: { verdict: 'APPROVE' },
-        ralplan_critic_review: { recommendation: 'blocking', clean: true },
-      },
-    })), false);
-    assert.equal(stage.canSkip!(makeCtx({
-      artifacts: {
-        ralplan_architect_review: { verdict: 'APPROVE' },
-        ralplan_critic_review: { decision: 'blocking', approved: true, clean: true },
-      },
-    })), false);
-    assert.equal(stage.canSkip!(makeCtx({
-      artifacts: {
-        ralplan_architect_review: { verdict: 'APPROVE' },
-        ralplan_critic_review: { status: 'iterating', approved: true },
-      },
-    })), false);
-    assert.equal(stage.canSkip!(makeCtx({
-      artifacts: {
-        ralplan_architect_review: { verdict: 'APPROVE' },
-        ralplan_critic_review: { approved: true, blocking: true },
-      },
-    })), false);
-    assert.equal(stage.canSkip!(makeCtx({
-      artifacts: {
-        ralplan_architect_review: { verdict: 'APPROVE' },
-        ralplan_critic_review: { approved: true, rejected: true },
-      },
-    })), false);
-    assert.equal(stage.canSkip!(makeCtx({
-      artifacts: {
-        ralplan_architect_review: { verdict: 'APPROVE' },
-        ralplan_critic_review: { approved: true, clean: false },
-      },
-    })), false);
-    assert.equal(stage.canSkip!(makeCtx({
-      artifacts: {
-        ralplan_architect_review: { verdict: 'APPROVE' },
-        ralplan_critic_review: { approved: true, request_changes: true },
-      },
-    })), false);
-  });
-
-  it('canSkip uses the latest approved ralplan review array entries', async () => {
+  it('canSkip returns true only when planning artifacts have sequential Architect and Critic approval evidence', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
@@ -256,146 +171,84 @@ describe('RALPLAN Stage', () => {
     assert.equal(stage.canSkip!(makeCtx({
       artifacts: {
         ralplan: {
-          architectReviews: [{ verdict: 'iterate' }, { verdict: 'approve' }],
-          criticReviews: [{ verdict: 'reject' }, { verdict: 'approve' }],
-        },
-      },
-    })), true);
-    assert.equal(stage.canSkip!(makeCtx({
-      artifacts: {
-        ralplan: {
-          architectReviews: [{ verdict: 'approve' }],
-          criticReviews: [{ verdict: 'reject' }],
-        },
-      },
-    })), false);
-  });
-
-  it('canSkip enforces review role identity and timestamp ordering when metadata exists', async () => {
-    const plansDir = join(tempDir, '.omx', 'plans');
-    await mkdir(plansDir, { recursive: true });
-    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
-    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
-
-    const stage = createRalplanStage();
-    assert.equal(stage.canSkip!(makeCtx({
-      artifacts: {
-        ralplan_architect_review: { verdict: 'APPROVE', role: 'critic' },
-        ralplan_critic_review: { verdict: 'APPROVE', role: 'architect' },
-      },
-    })), false);
-    assert.equal(stage.canSkip!(makeCtx({
-      artifacts: {
-        ralplan_architect_review: { verdict: 'APPROVE', role: 'architect', created_at: '2026-05-21T00:02:00.000Z' },
-        ralplan_critic_review: { verdict: 'APPROVE', role: 'critic', created_at: '2026-05-21T00:01:00.000Z' },
-      },
-    })), false);
-    assert.equal(stage.canSkip!(makeCtx({
-      artifacts: {
-        ralplan_architect_review: { verdict: 'APPROVE', role: 'architect', created_at: '2026-05-21T00:01:00.000Z' },
-        ralplan_critic_review: { verdict: 'APPROVE', role: 'critic', created_at: '2026-05-21T00:02:00.000Z' },
-      },
-    })), true);
-  });
-
-  it('canSkip returns true when prd/test spec and durable autopilot handoff reviews exist', async () => {
-    const plansDir = join(tempDir, '.omx', 'plans');
-    const statePath = getStatePath('autopilot', tempDir, 'sess-ralplan-skip');
-    await mkdir(plansDir, { recursive: true });
-    await mkdir(dirname(statePath), { recursive: true });
-    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
-    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
-    await writeFile(statePath, JSON.stringify({
-      active: true,
-      mode: 'autopilot',
-      current_phase: 'ralplan',
-      state: {
-        handoff_artifacts: {
-          ralplan: '.omx/plans/prd-my-feature.md',
-          ralplan_architect_review: { verdict: 'APPROVE' },
-          ralplan_critic_review: { verdict: 'APPROVE' },
-        },
-      },
-    }));
-
-    const stage = createRalplanStage();
-    assert.equal(stage.canSkip!(makeCtx({ sessionId: 'sess-ralplan-skip' })), true);
-  });
-
-  it('canSkip does not fall back to root autopilot state for an explicit session id', async () => {
-    const plansDir = join(tempDir, '.omx', 'plans');
-    const rootStatePath = join(tempDir, '.omx', 'state', 'autopilot-state.json');
-    await mkdir(plansDir, { recursive: true });
-    await mkdir(dirname(rootStatePath), { recursive: true });
-    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
-    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
-    await writeFile(rootStatePath, JSON.stringify({
-      active: true,
-      mode: 'autopilot',
-      state: {
-        handoff_artifacts: {
-          ralplan_architect_review: { verdict: 'APPROVE' },
-          ralplan_critic_review: { verdict: 'APPROVE' },
-        },
-      },
-    }));
-
-    const stage = createRalplanStage();
-    assert.equal(stage.canSkip!(makeCtx({ sessionId: 'fresh-session-without-state' })), false);
-    assert.equal(stage.canSkip!(makeCtx()), true);
-  });
-
-  it('canSkip reads current session-scoped autopilot state when sessionId is omitted', async () => {
-    const plansDir = join(tempDir, '.omx', 'plans');
-    const statePath = getStatePath('autopilot', tempDir, 'current-ralplan-session');
-    const rootStatePath = getStatePath('autopilot', tempDir);
-    await mkdir(plansDir, { recursive: true });
-    await mkdir(dirname(statePath), { recursive: true });
-    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
-    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
-    await writeFile(join(dirname(rootStatePath), 'session.json'), JSON.stringify({ session_id: 'current-ralplan-session', cwd: tempDir }));
-    await writeFile(statePath, JSON.stringify({
-      active: true,
-      mode: 'autopilot',
-      state: {
-        handoff_artifacts: {
-          ralplan_architect_review: { verdict: 'APPROVE' },
-          ralplan_critic_review: { verdict: 'APPROVE' },
-        },
-      },
-    }));
-
-    const stage = createRalplanStage();
-    assert.equal(stage.canSkip!(makeCtx()), true);
-  });
-
-  it('canSkip rejects invalid explicit session ids instead of resolving state paths', async () => {
-    const plansDir = join(tempDir, '.omx', 'plans');
-    await mkdir(plansDir, { recursive: true });
-    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
-    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
-
-    const stage = createRalplanStage();
-    assert.equal(stage.canSkip!(makeCtx({ sessionId: '../spoofed-session' })), false);
-  });
-
-  it('canSkip ignores unrelated ambient OMX_ROOT root autopilot state', async () => {
-    const plansDir = join(tempDir, '.omx', 'plans');
-    const ambientRoot = await mkdtemp(join(tmpdir(), 'omx-ambient-root-'));
-    const priorRoot = process.env.OMX_ROOT;
-    try {
-      await mkdir(plansDir, { recursive: true });
-      await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
-      await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
-      await mkdir(join(ambientRoot, '.omx', 'state'), { recursive: true });
-      await writeFile(join(ambientRoot, '.omx', 'state', 'autopilot-state.json'), JSON.stringify({
-        active: true,
-        mode: 'autopilot',
-        state: {
-          handoff_artifacts: {
-            ralplan_architect_review: { verdict: 'APPROVE' },
-            ralplan_critic_review: { verdict: 'APPROVE' },
+          ralplanConsensusGate: {
+            complete: true,
+            ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', summary: 'architect approved' },
+            ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', summary: 'critic approved after architect' },
           },
+        },
+      },
+    })), true);
+  });
+
+  it('canSkip returns false when Critic evidence is recorded before Architect evidence', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan: {
+          ralplanConsensusGate: {
+            complete: true,
+            sequence: ['critic-review', 'architect-review'],
+            ralplan_architect_review: { agent_role: 'architect', verdict: 'approve' },
+            ralplan_critic_review: { agent_role: 'critic', verdict: 'approve' },
+          },
+        },
+      },
+    })), false);
+  });
+
+  it('canSkip returns false when Critic timestamp predates Architect timestamp', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan: {
+          ralplanConsensusGate: {
+            complete: true,
+            sequence: ['architect-review', 'critic-review'],
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              verdict: 'approve',
+              completed_at: '2026-05-21T10:05:00.000Z',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              verdict: 'approve',
+              completed_at: '2026-05-21T10:00:00.000Z',
+            },
+          },
+        },
+      },
+    })), false);
+  });
+
+  it('canSkip ignores ambient OMX_ROOT consensus state for local PRD/test-spec-only artifacts', async () => {
+    const ambientRoot = await mkdtemp(join(tmpdir(), 'omx-ralplan-ambient-'));
+    const previousOmxRoot = process.env.OMX_ROOT;
+    try {
+      const plansDir = join(tempDir, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      await writeFile(join(plansDir, 'prd-local.md'), '# Plan\n');
+      await writeFile(join(plansDir, 'test-spec-local.md'), '# Test Spec\n');
+
+      const ambientStateDir = join(ambientRoot, '.omx', 'state');
+      await mkdir(ambientStateDir, { recursive: true });
+      await writeFile(join(ambientStateDir, 'ralplan-state.json'), JSON.stringify({
+        current_phase: 'complete',
+        planning_complete: true,
+        ralplan_consensus_gate: {
+          complete: true,
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1 },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1 },
         },
       }));
       process.env.OMX_ROOT = ambientRoot;
@@ -403,10 +256,80 @@ describe('RALPLAN Stage', () => {
       const stage = createRalplanStage();
       assert.equal(stage.canSkip!(makeCtx()), false);
     } finally {
-      if (priorRoot === undefined) delete process.env.OMX_ROOT;
-      else process.env.OMX_ROOT = priorRoot;
+      if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = previousOmxRoot;
       await rm(ambientRoot, { recursive: true, force: true });
     }
+  });
+
+  it('canSkip returns false for rejected consensus objects with approval-shaped booleans', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan: {
+          ralplanConsensusGate: {
+            complete: true,
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              verdict: 'reject',
+              approved: true,
+              clean: true,
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              verdict: 'approve',
+              approved: true,
+              clean: true,
+            },
+          },
+        },
+      },
+    })), false);
+  });
+
+  it('canSkip returns false when consensus-shaped reviews do not record agent roles', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan: {
+          ralplanConsensusGate: {
+            complete: true,
+            ralplan_architect_review: { verdict: 'approve', summary: 'role missing' },
+            ralplan_critic_review: { verdict: 'approve', summary: 'role missing' },
+          },
+        },
+      },
+    })), false);
+  });
+
+  it('canSkip returns false when Architect and Critic roles are swapped', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan: {
+          ralplanConsensusGate: {
+            complete: true,
+            ralplan_architect_review: { agent_role: 'critic', verdict: 'approve' },
+            ralplan_critic_review: { agent_role: 'architect', verdict: 'approve' },
+          },
+        },
+      },
+    })), false);
   });
 
   it('canSkip returns false after non-clean code-review loopback even when plans exist', async () => {
@@ -480,8 +403,52 @@ describe('RALPLAN Stage', () => {
     assert.equal(result.status, 'completed');
     assert.equal(artifacts.runtime, true);
     assert.equal(artifacts.planningComplete, true);
+    assert.deepEqual(artifacts.ralplanConsensusGate, {
+      complete: true,
+      sequence: ['architect-review', 'critic-review'],
+      ralplan_architect_review: { agent_role: 'architect', iteration: 1, verdict: 'approve', summary: 'architect ok' },
+      ralplan_critic_review: { agent_role: 'critic', iteration: 1, verdict: 'approve', summary: 'critic ok' },
+      source: 'runtime-result',
+      blockedReason: null,
+    });
     assert.equal(artifacts.iteration, 1);
     assert.equal(artifacts.runtimeDrafted, true);
+  });
+
+  it('fails runtime handoff when Critic has not approved after Architect', async () => {
+    const stage = createRalplanStage({
+      executor: {
+        async draft() {
+          const plansDir = join(tempDir, '.omx', 'plans');
+          await mkdir(plansDir, { recursive: true });
+          const prdPath = join(plansDir, 'prd-runtime.md');
+          await writeFile(prdPath, '# Runtime Plan\n');
+          await writeFile(join(plansDir, 'test-spec-runtime.md'), '# Runtime Tests\n');
+          return { summary: 'drafted', planPath: prdPath };
+        },
+        async architectReview() {
+          return { verdict: 'approve', summary: 'architect ok' };
+        },
+        async criticReview() {
+          return { verdict: 'iterate', summary: 'critic needs changes' };
+        },
+      },
+      maxIterations: 1,
+    });
+
+    const result = await stage.run(makeCtx({ task: 'live ralplan run' }));
+    const artifacts = result.artifacts as Record<string, unknown>;
+
+    assert.equal(result.status, 'failed');
+    assert.equal(result.error, 'ralplan_consensus_not_reached_after_1_iterations');
+    assert.deepEqual(artifacts.ralplanConsensusGate, {
+      complete: false,
+      sequence: ['architect-review', 'critic-review'],
+      ralplan_architect_review: null,
+      ralplan_critic_review: null,
+      source: null,
+      blockedReason: 'missing_sequential_architect_then_critic_approval',
+    });
   });
 
   it('canSkip returns false for non-prd plan files', async () => {

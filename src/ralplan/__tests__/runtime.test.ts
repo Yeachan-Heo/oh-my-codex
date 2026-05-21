@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -17,6 +17,29 @@ async function readScopedRalplanState(cwd: string, sessionId: string): Promise<R
 }
 
 describe('ralplan runtime', () => {
+  let savedOmxEnv: Pick<NodeJS.ProcessEnv, 'OMX_ROOT' | 'OMX_STATE_ROOT' | 'OMX_TEAM_STATE_ROOT' | 'OMX_SESSION_ID'>;
+
+  beforeEach(() => {
+    savedOmxEnv = {
+      OMX_ROOT: process.env.OMX_ROOT,
+      OMX_STATE_ROOT: process.env.OMX_STATE_ROOT,
+      OMX_TEAM_STATE_ROOT: process.env.OMX_TEAM_STATE_ROOT,
+      OMX_SESSION_ID: process.env.OMX_SESSION_ID,
+    };
+    delete process.env.OMX_ROOT;
+    delete process.env.OMX_STATE_ROOT;
+    delete process.env.OMX_TEAM_STATE_ROOT;
+    delete process.env.OMX_SESSION_ID;
+  });
+
+  afterEach(() => {
+    for (const key of ['OMX_ROOT', 'OMX_STATE_ROOT', 'OMX_TEAM_STATE_ROOT', 'OMX_SESSION_ID'] as const) {
+      const value = savedOmxEnv[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
   it('persists a successful session-scoped lifecycle through complete', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-'));
     const sessionId = 'sess-ralplan-success';
@@ -71,7 +94,86 @@ describe('ralplan runtime', () => {
       assert.match(String(finalState?.status_message || ''), /Status: complete/);
       assert.equal(finalState?.latest_architect_verdict, 'approve');
       assert.equal(finalState?.latest_critic_verdict, 'approve');
+      assert.deepEqual(finalState?.ralplan_consensus_gate, {
+        required: true,
+        complete: true,
+        sequence: ['architect-review', 'critic-review'],
+        planning_artifacts_are_not_consensus: true,
+        required_review_roles: ['architect', 'critic'],
+        ralplan_architect_review: {
+          agent_role: 'architect',
+          iteration: 1,
+          verdict: 'approve',
+          summary: 'architect-ok',
+          artifacts: { architected: true },
+        },
+        ralplan_critic_review: {
+          agent_role: 'critic',
+          iteration: 1,
+          verdict: 'approve',
+          summary: 'critic-ok',
+          artifacts: { critiqued: true },
+        },
+        architect_review: {
+          agent_role: 'architect',
+          iteration: 1,
+          verdict: 'approve',
+          summary: 'architect-ok',
+          artifacts: { architected: true },
+        },
+        critic_review: {
+          agent_role: 'critic',
+          iteration: 1,
+          verdict: 'approve',
+          summary: 'critic-ok',
+          artifacts: { critiqued: true },
+        },
+        blocked_reason: null,
+      });
       assert.equal(Array.isArray(finalState?.review_history), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not complete or call Critic when Architect has not approved', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-architect-reject-'));
+    const sessionId = 'sess-ralplan-architect-reject';
+    try {
+      await mkdir(join(cwd, '.omx', 'state'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'state', 'session.json'), JSON.stringify({ session_id: sessionId }));
+
+      let criticCalls = 0;
+      const result = await runRalplanConsensus({
+        async draft() {
+          const plansDir = join(cwd, '.omx', 'plans');
+          await mkdir(plansDir, { recursive: true });
+          const prdPath = join(plansDir, 'prd-reject.md');
+          await writeFile(prdPath, '# plan\n');
+          await writeFile(join(plansDir, 'test-spec-reject.md'), '# tests\n');
+          return { summary: 'draft', planPath: prdPath };
+        },
+        async architectReview() {
+          return { verdict: 'iterate', summary: 'architect needs changes' };
+        },
+        async criticReview() {
+          criticCalls += 1;
+          return { verdict: 'approve', summary: 'should not run' };
+        },
+      }, { task: 'reject before critic', cwd, maxIterations: 1 });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(criticCalls, 0);
+      assert.equal(result.ralplanConsensusGate.complete, false);
+      assert.equal(result.ralplanConsensusGate.blocked_reason, 'architect_review_missing_or_not_approved');
+
+      const finalState = await readModeState('ralplan', cwd);
+      assert.equal(finalState?.current_phase, 'failed');
+      assert.equal((finalState?.ralplan_consensus_gate as { complete?: boolean } | undefined)?.complete, false);
+      assert.equal(
+        (finalState?.ralplan_consensus_gate as { ralplan_architect_review?: { agent_role?: string } } | undefined)?.ralplan_architect_review?.agent_role,
+        'architect',
+      );
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

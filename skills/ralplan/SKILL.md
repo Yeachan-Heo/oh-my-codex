@@ -60,6 +60,19 @@ The consensus workflow:
 
 > **Important:** Steps 3 and 4 MUST run sequentially. Do NOT issue both agent calls in the same parallel batch. Always await the Architect result before invoking Critic.
 
+## Durable Consensus Handoff Contract
+
+Ralplan is not complete, skippable, or ready for execution merely because `.omx/plans/prd-*.md` and `.omx/plans/test-spec-*.md` exist. Those files are planning artifacts, not consensus evidence.
+
+Before any Autopilot, Pipeline, Ultragoal, Team, Ralph, or implementation handoff, persist a durable handoff record that distinguishes:
+
+- `planning_artifacts`: PRD/test-spec paths.
+- `ralplan_architect_review`: the completed Architect review with an approving verdict.
+- `ralplan_critic_review`: the completed Critic review with an approving verdict, recorded only after the Architect review.
+- `ralplan_consensus_gate.complete:true` only when both reviews are present, approving, and in the required Architect→Critic order.
+
+If Architect is missing/blocked, keep the workflow in Architect review or report that blocker. If Critic is missing/blocked/non-approving, keep the workflow in Critic/re-review or report the max-iteration outcome. Do not treat existing plan/test-spec files as permission to skip ralplan or start execution.
+
 Follow the Plan skill's full documentation for consensus mode details.
 
 ## Goal-Mode Follow-up Suggestions

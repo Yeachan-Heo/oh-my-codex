@@ -36,10 +36,10 @@ Autopilot must not run a separate broad expansion/planning/execution/QA/validati
 2. **Phase `ralplan`** — consensus planning gate
    - Ground the task with pre-context intake and the deep-interview artifact.
    - Run or resume `$ralplan` to produce/update PRD and test-spec artifacts.
-   - Treat `$ralplan` as complete only after the full consensus sequence finishes: Planner draft -> Architect review (`agent_role: "architect"`) -> Critic review (`agent_role: "critic"`), strictly sequential and never parallel.
-   - Do not transition to `$ultragoal`, `$team`, direct implementation, or any execution handoff until the ralplan handoff records both `ralplan_architect_review` and `ralplan_critic_review` (approved or an explicit blocker/max-iteration outcome). A plan file alone is not an approved ralplan artifact.
-   - When returning from a non-clean review or QA pass, include `return_to_ralplan_reason` and the findings as first-class planning input, then repeat Architect -> Critic on the revised plan.
-   - Required handoff artifact: an approved plan/test spec plus Architect and Critic review evidence suitable for `$ultragoal`.
+   - PRD/test-spec files alone are not completion evidence. Ralplan may hand off only after durable consensus evidence records an `Architect` approval first and a subsequent `Critic` approval second.
+   - When returning from a non-clean review or QA pass, include `return_to_ralplan_reason` and the findings as first-class planning input.
+   - If either review is missing, blocked, out of order, or non-approving, remain in `ralplan` or report an explicit blocker/max-iteration outcome; do not progress to `$ultragoal`, `$team`, `$ralph`, or implementation.
+   - Required handoff artifact: an approved plan/test spec plus `ralplan_consensus_gate` evidence suitable for `$ultragoal`.
 
 3. **Phase `ultragoal`** — durable implementation + verification loop
    - Run `$ultragoal` from the approved ralplan artifacts.
@@ -106,16 +106,18 @@ Required fields:
     "context_snapshot_path": ".omx/context/<slug>-<timestamp>.md",
     "deep_interview": null,
     "ralplan": null,
-    "ralplan_architect_review": null,
-    "ralplan_critic_review": null,
+    "ralplan_consensus_gate": {
+      "required": true,
+      "sequence": ["architect-review", "critic-review"],
+      "planning_artifacts_are_not_consensus": true,
+      "required_review_roles": ["architect", "critic"],
+      "ralplan_architect_review": null,
+      "ralplan_critic_review": null,
+      "complete": false
+    },
     "ultragoal": null,
     "code_review": null,
     "ultraqa": null
-  },
-  "ralplan_review_gate": {
-    "status": "pending",
-    "sequence": ["planner", "architect", "critic"],
-    "required_reviews": ["ralplan_architect_review", "ralplan_critic_review"]
   },
   "review_verdict": null,
   "qa_verdict": null,
@@ -123,9 +125,10 @@ Required fields:
 }
 ```
 
-- **On start**: `omx state write --input '{"mode":"autopilot","active":true,"current_phase":"deep-interview","iteration":1,"review_cycle":0,"state":{"phase_cycle":["deep-interview","ralplan","ultragoal","code-review","ultraqa"],"handoff_artifacts":{"context_snapshot_path":"<snapshot-path>","deep_interview":null,"ralplan":null,"ralplan_architect_review":null,"ralplan_critic_review":null,"ultragoal":null,"code_review":null,"ultraqa":null},"ralplan_review_gate":{"status":"pending","sequence":["planner","architect","critic"],"required_reviews":["ralplan_architect_review","ralplan_critic_review"]},"review_verdict":null,"qa_verdict":null,"return_to_ralplan_reason":null}}' --json`
+- **On start**: `omx state write --input '{"mode":"autopilot","active":true,"current_phase":"deep-interview","iteration":1,"review_cycle":0,"state":{"phase_cycle":["deep-interview","ralplan","ultragoal","code-review","ultraqa"],"handoff_artifacts":{"context_snapshot_path":"<snapshot-path>","deep_interview":null,"ralplan":null,"ralplan_consensus_gate":{"required":true,"sequence":["architect-review","critic-review"],"planning_artifacts_are_not_consensus":true,"required_review_roles":["architect","critic"],"ralplan_architect_review":null,"ralplan_critic_review":null,"complete":false},"ultragoal":null,"code_review":null,"ultraqa":null},"review_verdict":null,"qa_verdict":null,"return_to_ralplan_reason":null}}' --json`
 - **On deep-interview -> ralplan**: set `current_phase:"ralplan"`, persist the clarified spec/requirements under `handoff_artifacts.deep_interview`.
-- **On ralplan -> ultragoal**: only after sequential Architect then Critic review has completed; set `current_phase:"ultragoal"`, persist the plan/test-spec paths under `handoff_artifacts.ralplan`, persist Architect evidence under `handoff_artifacts.ralplan_architect_review`, persist Critic evidence under `handoff_artifacts.ralplan_critic_review`, and set `ralplan_review_gate.status:"approved"` or preserve an explicit blocker instead of executing.
+- **On ralplan -> ultragoal**: only after `ralplan_consensus_gate.complete:true`, with `ralplan_architect_review.agent_role:"architect"` and `ralplan_architect_review.verdict:"approve"` recorded before `ralplan_critic_review.agent_role:"critic"` and `ralplan_critic_review.verdict:"approve"`; set `current_phase:"ultragoal"` and persist the plan/test-spec paths under `handoff_artifacts.ralplan`.
+- **On missing ralplan consensus evidence**: keep `current_phase:"ralplan"`, persist `ralplan_consensus_gate.complete:false` with `blocked_reason`, and report an explicit blocker or max-iteration outcome instead of handing off to execution.
 - **On ultragoal -> code-review**: set `current_phase:"code-review"`, persist implementation/test/ledger evidence under `handoff_artifacts.ultragoal`.
 - **On code-review -> ultraqa**: set `current_phase:"ultraqa"`, persist the clean review under `handoff_artifacts.code_review`.
 - **On clean review + passed/skipped QA**: set `active:false`, `current_phase:"complete"`, persist `review_verdict:{recommendation:"APPROVE", architectural_status:"CLEAR", clean:true}`, `qa_verdict:{clean:true, skipped:<boolean>, reason:<string|null>}`, and `completed_at`.
@@ -137,7 +140,7 @@ Required fields:
 <Continuation_And_Resume>
 When the user says `continue`, `resume`, or `keep going` while Autopilot is active, read `autopilot-state.json` and continue from `current_phase`:
 - `deep-interview`: clarify requirements and record the handoff artifact.
-- `ralplan`: run/update consensus planning from current handoffs and any `return_to_ralplan_reason`; completion requires Planner output followed by Architect review and then Critic review, with both review artifacts recorded before any execution handoff.
+- `ralplan`: run/update consensus planning from current handoffs and any `return_to_ralplan_reason`.
 - `ultragoal`: execute the approved plan durably and record verification/ledger evidence.
 - `team`: continue explicit team work only when it is nested under the active Ultragoal story and report evidence back to the leader.
 - `code-review`: review the current diff and decide clean vs return-to-ralplan.
@@ -167,8 +170,7 @@ Pipeline state should use `current_phase` values that match the same phase names
 
 <Final_Checklist>
 - [ ] Phase `deep-interview` produced/updated clarified requirements or a concise spec
-- [ ] Phase `ralplan` produced/updated approved planning artifacts
-- [ ] Ralplan consensus evidence includes sequential Architect review and Critic review artifacts; no execution handoff occurred from a plan-only draft
+- [ ] Phase `ralplan` produced/updated approved planning artifacts and durable sequential Architect→Critic consensus evidence
 - [ ] Phase `ultragoal` implemented and verified the plan with fresh evidence and durable ledger/checkpoint references
 - [ ] `$team` was used only if the active Ultragoal story needed coordinated parallel work, or explicitly recorded as not needed
 - [ ] Phase `code-review` returned a clean verdict (`APPROVE` + `CLEAR`)
