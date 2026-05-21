@@ -1,6 +1,6 @@
 {
   "name": "oh-my-codex",
-  "version": "0.18.0",
+  "version": "0.18.1",
   "description": "Multi-agent orchestration layer for OpenAI Codex CLI",
   "type": "module",
   "main": "dist/index.js",
@@ -65,6 +65,7 @@
     "Cargo.lock",
     "dist/",
     "crates/",
+    "!crates/**/.omx/**",
     "skills/",
     "prompts/",
     "templates/",

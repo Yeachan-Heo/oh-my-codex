@@ -1025,7 +1025,8 @@ async function refreshOmxPluginDiscoveryCache(
 		const skillsPointerChanged = manifest.skills !== "./skills/";
 		const hooksPointerChanged = manifest.hooks !== "./hooks/hooks.json";
 		const hookFilesMissing = !existsSync(join(cacheDir, "hooks", "hooks.json"))
-			|| !existsSync(join(cacheDir, "hooks", "codex-native-hook.mjs"));
+			|| !existsSync(join(cacheDir, "hooks", "codex-native-hook.mjs"))
+			|| !existsSync(join(cacheDir, "hooks", "omx-command.json"));
 		const skillListChanged =
 			expectedSkillNames !== null &&
 			cachedSkillNames !== null &&

@@ -1,8 +1,39 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const command = process.env.OMX_NATIVE_HOOK_COMMAND || 'omx';
-const child = spawn(command, ['codex-native-hook'], {
+const hookDir = dirname(fileURLToPath(import.meta.url));
+
+function readPinnedLauncher() {
+  const launcherPath = join(hookDir, 'omx-command.json');
+  try {
+    const raw = JSON.parse(readFileSync(launcherPath, 'utf8'));
+    if (typeof raw.command !== 'string' || raw.command.trim() === '') {
+      throw new Error('missing non-empty command');
+    }
+    const argsPrefix = Array.isArray(raw.argsPrefix) ? raw.argsPrefix : [];
+    if (!argsPrefix.every((arg) => typeof arg === 'string')) {
+      throw new Error('argsPrefix must contain only strings');
+    }
+    return { command: raw.command, argsPrefix };
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    console.error(`[oh-my-codex] invalid plugin hook launcher ${launcherPath}: ${error.message}`);
+    process.exit(1);
+  }
+}
+
+function readConfiguredLauncher() {
+  if (process.env.OMX_NATIVE_HOOK_COMMAND) {
+    return { command: process.env.OMX_NATIVE_HOOK_COMMAND, argsPrefix: [] };
+  }
+  return readPinnedLauncher() ?? { command: 'omx', argsPrefix: [] };
+}
+
+const { command, argsPrefix } = readConfiguredLauncher();
+const child = spawn(command, [...argsPrefix, 'codex-native-hook'], {
   stdio: ['pipe', 'pipe', 'pipe'],
   env: process.env,
   shell: process.platform === 'win32',

@@ -34,6 +34,7 @@ describe('sparkshell packaging scaffold', () => {
     assert.equal(pkg.scripts?.['build:sparkshell'], 'node dist/scripts/build-sparkshell.js');
     assert.equal(pkg.scripts?.['test:sparkshell'], 'node dist/scripts/test-sparkshell.js');
     assert.equal(pkg.files?.includes('dist/'), true, 'expected package files allowlist to include dist/');
+    assert.equal(pkg.files?.includes('!crates/**/.omx/**'), true, 'expected package files allowlist to exclude crate runtime caches');
     assert.equal(pkg.files?.includes('bin/'), false, 'did not expect broad bin/ allowlist in package files');
     assert.equal(pkg.files?.includes('bin/native/'), false, 'did not expect package files to include bin/native/');
     assert.equal(pkg.files?.includes('dist/'), true);

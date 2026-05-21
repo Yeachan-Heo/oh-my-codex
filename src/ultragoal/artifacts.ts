@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import {
   formatCodexGoalReconciliation,
@@ -11,6 +11,7 @@ export const ULTRAGOAL_DIR = '.omx/ultragoal';
 export const ULTRAGOAL_BRIEF = 'brief.md';
 export const ULTRAGOAL_GOALS = 'goals.json';
 export const ULTRAGOAL_LEDGER = 'ledger.jsonl';
+const ULTRAGOAL_MUTATION_LOCK = '.mutation.lock';
 
 export type UltragoalStatus = 'pending' | 'in_progress' | 'complete' | 'failed' | 'review_blocked' | 'needs_user_decision';
 export type UltragoalCodexGoalMode = 'aggregate' | 'per_story';
@@ -516,6 +517,36 @@ function normalizeGoalId(title: string, index: number): string {
   return `G${String(index + 1).padStart(3, '0')}${slug ? `-${slug}` : ''}`;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withUltragoalMutationLock<T>(cwd: string, operation: () => Promise<T>): Promise<T> {
+  await mkdir(ultragoalDir(cwd), { recursive: true });
+  const lockPath = join(ultragoalDir(cwd), ULTRAGOAL_MUTATION_LOCK);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      handle = await open(lockPath, 'wx');
+      await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: iso() }));
+      break;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EEXIST') throw error;
+      await sleep(Math.min(25 + attempt * 5, 250));
+    }
+  }
+  if (!handle) {
+    throw new UltragoalError(`Timed out waiting for ultragoal mutation lock at ${repoRelative(cwd, lockPath)}.`);
+  }
+  try {
+    return await operation();
+  } finally {
+    await handle.close().catch(() => undefined);
+    await rm(lockPath, { force: true }).catch(() => undefined);
+  }
+}
+
 async function appendLedger(cwd: string, entry: UltragoalLedgerEntry): Promise<void> {
   await mkdir(ultragoalDir(cwd), { recursive: true });
   const path = ultragoalLedgerPath(cwd);
@@ -554,10 +585,14 @@ export async function readUltragoalPlan(cwd: string): Promise<UltragoalPlan> {
 
 async function writePlan(cwd: string, plan: UltragoalPlan): Promise<void> {
   await mkdir(ultragoalDir(cwd), { recursive: true });
-  await writeFile(ultragoalGoalsPath(cwd), `${JSON.stringify(plan, null, 2)}\n`);
+  const path = ultragoalGoalsPath(cwd);
+  const tmpPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmpPath, `${JSON.stringify(plan, null, 2)}\n`);
+  await rename(tmpPath, path);
 }
 
 export async function createUltragoalPlan(cwd: string, options: CreateUltragoalOptions): Promise<UltragoalPlan> {
+  return withUltragoalMutationLock(cwd, async () => {
   if (!options.force && existsSync(ultragoalGoalsPath(cwd))) {
     throw new UltragoalError(`Refusing to overwrite existing ${ULTRAGOAL_DIR}/${ULTRAGOAL_GOALS}; pass --force to recreate it.`);
   }
@@ -595,6 +630,7 @@ export async function createUltragoalPlan(cwd: string, options: CreateUltragoalO
   await writeFile(ultragoalLedgerPath(cwd), '');
   await appendLedger(cwd, { ts: now, event: 'plan_created', message: `${candidates.length} goal(s) created` });
   return plan;
+  });
 }
 
 export function summarizeUltragoalPlan(plan: UltragoalPlan): { total: number; pending: number; inProgress: number; complete: number; failed: number; reviewBlocked: number; needsUserDecision: number; superseded: number; steeringBlocked: number; aggregateComplete: boolean; activeGoalId?: string } {
@@ -658,6 +694,7 @@ function appendGoalToPlan(plan: UltragoalPlan, options: AddUltragoalGoalOptions,
 }
 
 export async function addUltragoalGoal(cwd: string, options: AddUltragoalGoalOptions): Promise<{ plan: UltragoalPlan; goal: UltragoalItem }> {
+  return withUltragoalMutationLock(cwd, async () => {
   const plan = await readUltragoalPlan(cwd);
   const now = iso(options.now);
   const goal = appendGoalToPlan(plan, options);
@@ -671,6 +708,7 @@ export async function addUltragoalGoal(cwd: string, options: AddUltragoalGoalOpt
     message: goal.title,
   });
   return { plan, goal };
+  });
 }
 
 
@@ -939,6 +977,7 @@ function applySteeringMutation(plan: UltragoalPlan, proposal: UltragoalSteeringP
 }
 
 export async function steerUltragoal(cwd: string, proposal: UltragoalSteeringProposal, options: { now?: Date; directiveText?: string } = {}): Promise<SteerUltragoalResult> {
+  return withUltragoalMutationLock(cwd, async () => {
   const plan = await readUltragoalPlan(cwd);
   const existing = proposal.idempotencyKey
     ? (await readSteeringLedgerEntries(cwd)).find((entry) => entry.event === 'steering_accepted' && (entry.idempotencyKey === proposal.idempotencyKey || entry.steering?.idempotencyKey === proposal.idempotencyKey) && entry.steering)
@@ -994,6 +1033,7 @@ export async function steerUltragoal(cwd: string, proposal: UltragoalSteeringPro
   });
 
   return { plan, accepted: invariant.accepted, audit, rejectedReasons: invariant.rejectedReasons, deduped: false };
+  });
 }
 
 function validateQualityGate(value: unknown): UltragoalQualityGate {
@@ -1027,6 +1067,7 @@ function validateQualityGate(value: unknown): UltragoalQualityGate {
 }
 
 export async function startNextUltragoal(cwd: string, options: StartNextOptions = {}): Promise<{ plan: UltragoalPlan; goal: UltragoalItem | null; resumed: boolean; done: boolean }> {
+  return withUltragoalMutationLock(cwd, async () => {
   const plan = await readUltragoalPlan(cwd);
   const now = iso(options.now);
   if (plan.aggregateCompletion?.status === 'complete') return { plan, goal: null, resumed: false, done: true };
@@ -1055,9 +1096,11 @@ export async function startNextUltragoal(cwd: string, options: StartNextOptions 
   await writePlan(cwd, plan);
   await appendLedger(cwd, { ts: now, event: 'goal_started', goalId: next.id, status: next.status, message: `Attempt ${next.attempt}` });
   return { plan, goal: next, resumed: false, done: false };
+  });
 }
 
 export async function checkpointUltragoal(cwd: string, options: CheckpointOptions): Promise<UltragoalPlan> {
+  return withUltragoalMutationLock(cwd, async () => {
   const plan = await readUltragoalPlan(cwd);
   const goal = plan.goals.find((candidate) => candidate.id === options.goalId);
   if (!goal) throw new UltragoalError(`Unknown ultragoal id: ${options.goalId}`);
@@ -1204,9 +1247,11 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
       : undefined,
   });
   return plan;
+  });
 }
 
 export async function recordFinalReviewBlockers(cwd: string, options: RecordFinalReviewBlockersOptions): Promise<{ plan: UltragoalPlan; blockedGoal: UltragoalItem; addedGoal: UltragoalItem }> {
+  return withUltragoalMutationLock(cwd, async () => {
   const plan = await readUltragoalPlan(cwd);
   const goal = plan.goals.find((candidate) => candidate.id === options.goalId);
   if (!goal) throw new UltragoalError(`Unknown ultragoal id: ${options.goalId}`);
@@ -1275,6 +1320,7 @@ export async function recordFinalReviewBlockers(cwd: string, options: RecordFina
     codexGoal: options.codexGoal,
   });
   return { plan, blockedGoal: goal, addedGoal };
+  });
 }
 
 export function buildCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalPlan): string {
