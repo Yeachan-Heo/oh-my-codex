@@ -557,6 +557,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
         state: {
           phase_cycle: string[];
           handoff_artifacts: Record<string, unknown>;
+          ralplan_review_gate: { status: string; sequence: string[]; required_reviews: string[] };
           review_verdict: unknown;
           qa_verdict: unknown;
           return_to_ralplan_reason: string | null;
@@ -569,7 +570,20 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(modeState.review_cycle, 0);
       assert.equal(modeState.max_iterations, 10);
       assert.deepEqual(modeState.state.phase_cycle, ['deep-interview', 'ralplan', 'ultragoal', 'code-review', 'ultraqa']);
-      assert.deepEqual(modeState.state.handoff_artifacts, { deep_interview: null, ralplan: null, ultragoal: null, code_review: null, ultraqa: null });
+      assert.deepEqual(modeState.state.handoff_artifacts, {
+        deep_interview: null,
+        ralplan: null,
+        ralplan_architect_review: null,
+        ralplan_critic_review: null,
+        ultragoal: null,
+        code_review: null,
+        ultraqa: null,
+      });
+      assert.deepEqual(modeState.state.ralplan_review_gate, {
+        status: 'pending',
+        sequence: ['planner', 'architect', 'critic'],
+        required_reviews: ['architect_review', 'critic_review'],
+      });
       assert.equal(modeState.state.review_verdict, null);
       assert.equal(modeState.state.qa_verdict, null);
       assert.equal(modeState.state.return_to_ralplan_reason, null);

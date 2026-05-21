@@ -27,12 +27,22 @@ describe('autopilot skill default Ultragoal contract', () => {
       'review_cycle',
       'phase_cycle',
       'handoff_artifacts',
+      'ralplan_review_gate',
+      'ralplan_architect_review',
+      'ralplan_critic_review',
       'review_verdict',
       'qa_verdict',
       'return_to_ralplan_reason',
     ]) {
       assert.match(autopilotSkill, new RegExp(field));
     }
+  });
+
+  it('does not allow the ralplan phase to finish without sequential Architect and Critic review evidence', () => {
+    assert.match(autopilotSkill, /Planner draft -> Architect review .* -> Critic review/s);
+    assert.match(autopilotSkill, /strictly sequential and never parallel/i);
+    assert.match(autopilotSkill, /A plan file alone is not an approved ralplan artifact/i);
+    assert.match(autopilotSkill, /Do not transition to `\$ultragoal`.*both `ralplan_architect_review` and `ralplan_critic_review`/s);
   });
 
   it('does not preserve the old broad phase lifecycle as primary behavior', () => {

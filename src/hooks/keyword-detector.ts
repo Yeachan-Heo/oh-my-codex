@@ -399,11 +399,20 @@ async function persistStatefulSkillSeedState(
       handoff_artifacts: {
         deep_interview: null,
         ralplan: null,
+        ralplan_architect_review: null,
+        ralplan_critic_review: null,
         ultragoal: null,
         code_review: null,
         ultraqa: null,
         ...existingHandoffs,
       },
+      ralplan_review_gate: Object.prototype.hasOwnProperty.call(existingState, 'ralplan_review_gate')
+        ? existingState.ralplan_review_gate
+        : {
+            status: 'pending',
+            sequence: ['planner', 'architect', 'critic'],
+            required_reviews: ['architect_review', 'critic_review'],
+          },
       review_verdict: Object.prototype.hasOwnProperty.call(existingState, 'review_verdict')
         ? existingState.review_verdict
         : null,

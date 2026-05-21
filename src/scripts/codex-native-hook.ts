@@ -1716,6 +1716,9 @@ function buildAdditionalContextMessage(
   const ultragoalPromptActivationNote = match.skill === "ultragoal"
     ? "Ultragoal protocol: use `omx ultragoal create-goals` / `complete-goals` / `checkpoint` for `.omx/ultragoal` artifacts, then use Codex goal model tools only from the active agent handoff (`get_goal`, `create_goal`, `update_goal`) and never overwrite a different active Codex goal. Ultragoal does not call `/goal clear`; for multiple sequential ultragoal runs in one Codex session/thread, manually clear the completed Codex goal in the UI before creating the next aggregate goal."
     : null;
+  const autopilotPromptActivationNote = skillState?.initialized_mode === "autopilot"
+    ? "Autopilot protocol: execute the durable chain `deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa`. The ralplan phase is not complete until Planner output has been reviewed sequentially by Architect and then Critic; do not hand off to Ultragoal or implementation until the ralplan state/artifact records both `architect_review` and `critic_review` with approval or an explicit blocker."
+    : null;
   const combinedTransitionMessage = (() => {
     if (!skillState?.transition_message) return null;
     if (matches.length <= 1 || activeSkills.length <= 1) return skillState.transition_message;
@@ -1743,6 +1746,7 @@ function buildAdditionalContextMessage(
         : null,
       promptPriorityMessage,
       ultragoalPromptActivationNote,
+      autopilotPromptActivationNote,
       skillState.initialized_mode && skillState.initialized_state_path
         ? buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path)
         : null,
@@ -1769,6 +1773,7 @@ function buildAdditionalContextMessage(
       deepInterviewPromptActivationNote,
       ultraworkPromptActivationNote,
       ultragoalPromptActivationNote,
+      autopilotPromptActivationNote,
       buildTeamRuntimeInstruction(cwd, payload),
       buildTeamHelpInstruction(cwd, payload),
       "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
@@ -1787,6 +1792,7 @@ function buildAdditionalContextMessage(
       deepInterviewPromptActivationNote,
       ultraworkPromptActivationNote,
       ultragoalPromptActivationNote,
+      autopilotPromptActivationNote,
       ralphPromptActivationNote,
       "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
     ].join(" ");
