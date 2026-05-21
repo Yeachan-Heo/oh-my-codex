@@ -181,6 +181,83 @@ describe('RALPLAN Stage', () => {
     })), true);
   });
 
+  it('canSkip honors explicit session-scoped consensus state before root state', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const stateDir = join(tempDir, '.omx', 'state');
+    const sessionDir = join(stateDir, 'sessions', 'sess-explicit');
+    await mkdir(plansDir, { recursive: true });
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+    await writeFile(join(stateDir, 'autopilot-state.json'), JSON.stringify({
+      state: {
+        handoff_artifacts: {
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'reject', approved: true },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve' },
+        },
+      },
+    }));
+    await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+      state: {
+        handoff_artifacts: {
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve' },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve' },
+        },
+      },
+    }));
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({ sessionId: 'sess-explicit' })), true);
+  });
+
+  it('canSkip fails closed when explicit session state is missing despite root consensus', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const stateDir = join(tempDir, '.omx', 'state');
+    await mkdir(plansDir, { recursive: true });
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+    await writeFile(join(stateDir, 'autopilot-state.json'), JSON.stringify({
+      state: {
+        handoff_artifacts: {
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve' },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve' },
+        },
+      },
+    }));
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({ sessionId: 'sess-missing' })), false);
+  });
+
+  it('canSkip rejects blocker aliases even with approval-shaped booleans', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    for (const blocker of [
+      { blocking: true },
+      { request_changes: true },
+      { requestChanges: true },
+      { status: 'request changes' },
+      { recommendation: 'changes-requested' },
+    ]) {
+      assert.equal(stage.canSkip!(makeCtx({
+        artifacts: {
+          ralplan: {
+            ralplanConsensusGate: {
+              complete: true,
+              ralplan_architect_review: { agent_role: 'architect', verdict: 'approve' },
+              ralplan_critic_review: { agent_role: 'critic', approved: true, clean: true, ...blocker },
+            },
+          },
+        },
+      })), false);
+    }
+  });
+
   it('canSkip returns false when Critic evidence is recorded before Architect evidence', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });

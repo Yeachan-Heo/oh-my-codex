@@ -66,12 +66,10 @@ export function readLocalRalplanConsensusStateCandidates(
   cwd: string,
   sessionId?: string,
 ): RalplanConsensusSource[] {
-  const sessionIds = sessionId === undefined ? readLocalCurrentSessionId(cwd) : validateLocalSessionId(sessionId);
-  const sessionIdList = typeof sessionIds === 'string' ? [sessionIds] : [];
-  const stateRoots = [
-    join(cwd, '.omx', 'state'),
-    ...sessionIdList.map((id) => join(cwd, '.omx', 'state', 'sessions', id)),
-  ];
+  const sessionIdList = sessionId === undefined ? readLocalCurrentSessionIds(cwd) : validateLocalSessionId(sessionId);
+  const stateRoots = sessionIdList.length > 0
+    ? sessionIdList.map((id) => join(cwd, '.omx', 'state', 'sessions', id))
+    : [join(cwd, '.omx', 'state')];
 
   const paths = stateRoots.flatMap((dir) => [
     join(dir, 'ralplan-state.json'),
@@ -180,7 +178,7 @@ function isApproveReview(value: Record<string, unknown> | null, agentRole: 'arch
   if (value.recommendation !== undefined && !['approve', 'approved'].includes(String(value.recommendation).toLowerCase())) {
     return false;
   }
-  if (value.blocked === true || value.clean === false || value.rejected === true) return false;
+  if (hasBlockingReviewSignal(value)) return false;
   return value.verdict === 'approve' || value.approved === true || value.clean === true;
 }
 
@@ -218,10 +216,39 @@ function validateLocalSessionId(sessionId: string): string[] {
   return /^[A-Za-z0-9_-]{1,64}$/.test(sessionId) ? [sessionId] : [];
 }
 
-function readLocalCurrentSessionId(cwd: string): string | undefined {
+function hasBlockingReviewSignal(value: Record<string, unknown>): boolean {
+  if (value.blocked === true || value.blocking === true || value.clean === false || value.rejected === true) return true;
+  if (value.request_changes === true || value.requestChanges === true || value.requires_changes === true || value.requiresChanges === true) return true;
+  for (const key of ['verdict', 'status', 'recommendation', 'result']) {
+    const raw = value[key];
+    if (raw === undefined) continue;
+    const normalized = String(raw).toLowerCase().replace(/[\s-]+/g, '_');
+    if ([
+      'reject',
+      'rejected',
+      'block',
+      'blocked',
+      'blocking',
+      'request_changes',
+      'requested_changes',
+      'changes_requested',
+      'needs_changes',
+      'iterate',
+      'iterating',
+      'revise',
+      'revision_required',
+    ].includes(normalized)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function readLocalCurrentSessionIds(cwd: string): string[] {
   const state = readJsonState(join(cwd, '.omx', 'state', 'session.json'));
+  if (typeof state?.cwd === 'string' && state.cwd !== cwd) return [];
   const sessionId = typeof state?.session_id === 'string' ? state.session_id : undefined;
-  return sessionId && /^[A-Za-z0-9_-]{1,64}$/.test(sessionId) ? sessionId : undefined;
+  return sessionId ? validateLocalSessionId(sessionId) : [];
 }
 
 function readJsonState(path: string): Record<string, unknown> | null {
