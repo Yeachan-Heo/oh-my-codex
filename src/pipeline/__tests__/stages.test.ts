@@ -175,6 +175,52 @@ describe('RALPLAN Stage', () => {
     })), true);
   });
 
+  it('canSkip returns false when ralplan review artifacts are rejected or blocking', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan_architect_review: { verdict: 'REJECT' },
+        ralplan_critic_review: { verdict: 'REJECT' },
+      },
+    })), false);
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan_architect_review: { verdict: 'APPROVE' },
+        ralplan_critic_review: { recommendation: 'REQUEST CHANGES' },
+      },
+    })), false);
+  });
+
+  it('canSkip uses the latest approved ralplan review array entries', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan: {
+          architectReviews: [{ verdict: 'iterate' }, { verdict: 'approve' }],
+          criticReviews: [{ verdict: 'reject' }, { verdict: 'approve' }],
+        },
+      },
+    })), true);
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan: {
+          architectReviews: [{ verdict: 'approve' }],
+          criticReviews: [{ verdict: 'reject' }],
+        },
+      },
+    })), false);
+  });
+
   it('canSkip returns true when prd/test spec and durable autopilot handoff reviews exist', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     const stateDir = join(tempDir, '.omx', 'state', 'sessions', 'sess-ralplan-skip');

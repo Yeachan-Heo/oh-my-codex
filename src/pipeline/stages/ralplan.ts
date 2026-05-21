@@ -129,17 +129,17 @@ function hasReviewLoopContext(artifacts: Record<string, unknown>): boolean {
 
 function hasRalplanConsensusEvidence(ctx: StageContext): boolean {
   const artifacts = ctx.artifacts;
-  if (hasValue(artifacts.ralplan_architect_review) && hasValue(artifacts.ralplan_critic_review)) {
+  if (isApprovedRalplanReview(artifacts.ralplan_architect_review) && isApprovedRalplanReview(artifacts.ralplan_critic_review)) {
     return true;
   }
 
   const ralplanArtifacts = artifacts.ralplan;
   if (ralplanArtifacts && typeof ralplanArtifacts === 'object') {
     const record = ralplanArtifacts as Record<string, unknown>;
-    if (hasValue(record.ralplan_architect_review) && hasValue(record.ralplan_critic_review)) {
+    if (isApprovedRalplanReview(record.ralplan_architect_review) && isApprovedRalplanReview(record.ralplan_critic_review)) {
       return true;
     }
-    if (hasNonEmptyArray(record.architectReviews) && hasNonEmptyArray(record.criticReviews)) {
+    if (hasApprovedReviewArray(record.architectReviews) && hasApprovedReviewArray(record.criticReviews)) {
       return true;
     }
   }
@@ -150,22 +150,43 @@ function hasRalplanConsensusEvidence(ctx: StageContext): boolean {
     : undefined;
   if (handoffs && typeof handoffs === 'object') {
     const record = handoffs as Record<string, unknown>;
-    return hasValue(record.ralplan_architect_review) && hasValue(record.ralplan_critic_review);
+    return isApprovedRalplanReview(record.ralplan_architect_review) && isApprovedRalplanReview(record.ralplan_critic_review);
   }
 
   return false;
 }
 
-function hasValue(value: unknown): boolean {
-  if (value === null || value === undefined) return false;
-  if (typeof value === 'string') return value.trim() !== '';
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0;
-  return true;
+function hasApprovedReviewArray(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  return isApprovedRalplanReview(value[value.length - 1]);
 }
 
-function hasNonEmptyArray(value: unknown): boolean {
-  return Array.isArray(value) && value.length > 0;
+function isApprovedRalplanReview(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return isApprovedReviewToken(value);
+  if (typeof value !== 'object' || Array.isArray(value)) return false;
+
+  const record = value as Record<string, unknown>;
+  const tokens = [
+    record.verdict,
+    record.recommendation,
+    record.status,
+    record.decision,
+    record.result,
+    record.outcome,
+  ].filter((entry): entry is string => typeof entry === 'string');
+
+  if (tokens.some(isRejectedReviewToken)) return false;
+  if (tokens.some(isApprovedReviewToken)) return true;
+  return record.clean === true || record.approved === true;
+}
+
+function isApprovedReviewToken(value: string): boolean {
+  return ['approve', 'approved', 'accepted', 'pass', 'passed'].includes(value.trim().toLowerCase());
+}
+
+function isRejectedReviewToken(value: string): boolean {
+  return ['reject', 'rejected', 'iterate', 'comment', 'request changes', 'request_changes', 'block', 'blocked', 'watch', 'fail', 'failed'].includes(value.trim().toLowerCase());
 }
 
 function readAutopilotState(cwd: string, sessionId?: string): Record<string, unknown> | null {
