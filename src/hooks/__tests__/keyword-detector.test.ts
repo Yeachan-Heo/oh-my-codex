@@ -17,6 +17,22 @@ import { SKILL_ACTIVE_STATE_FILE } from '../../state/skill-active.js';
 import { isUnderspecifiedForExecution, applyRalplanGate } from '../keyword-detector.js';
 import { KEYWORD_TRIGGER_DEFINITIONS } from '../keyword-registry.js';
 
+
+async function writeRalplanConsensusState(cwd: string): Promise<void> {
+  const stateDir = join(cwd, '.omx', 'state');
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(join(stateDir, 'autopilot-state.json'), JSON.stringify({
+    active: true,
+    mode: 'autopilot',
+    state: {
+      handoff_artifacts: {
+        ralplan_architect_review: { verdict: 'APPROVE', role: 'architect', created_at: '2026-05-21T00:00:00.000Z' },
+        ralplan_critic_review: { verdict: 'APPROVE', role: 'critic', created_at: '2026-05-21T00:01:00.000Z' },
+      },
+    },
+  }));
+}
+
 describe('keyword detector team compatibility', () => {
   it('keeps explicit $skill order in detectKeywords results (left-to-right)', () => {
     const matches = detectKeywords('$analyze $ultraqa $code-review now');
@@ -2119,10 +2135,27 @@ describe('applyRalplanGate', () => {
         '# Approved plan\n\nLaunch hint: omx team 3:executor "Execute approved issue 831 plan"\n',
       );
       await writeFile(join(plansDir, 'test-spec-issue-831.md'), '# Test spec\n');
+      await writeRalplanConsensusState(cwd);
 
       const result = applyRalplanGate(['team'], 'team', { cwd });
       assert.equal(result.gateApplied, false);
       assert.deepEqual(result.keywords, ['team']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not bypass ralplan for short execution follow-up with plan files but no consensus evidence', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-no-consensus-'));
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      await writeFile(join(plansDir, 'prd-issue-831.md'), '# Plan only\n\nLaunch hint: omx team 3:executor "Execute plan"\n');
+      await writeFile(join(plansDir, 'test-spec-issue-831.md'), '# Test spec\n');
+
+      const result = applyRalplanGate(['team'], 'team', { cwd });
+      assert.equal(result.gateApplied, true);
+      assert.deepEqual(result.keywords, ['ralplan']);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -2138,6 +2171,7 @@ describe('applyRalplanGate', () => {
         '# Approved plan\n\nLaunch hint: omx team 3:executor "Execute approved issue 831 plan"\n',
       );
       await writeFile(join(plansDir, 'test-spec-issue-831.md'), '# Test spec\n');
+      await writeRalplanConsensusState(cwd);
 
       const result = applyRalplanGate(['team'], 'team으로 해줘', { cwd });
       assert.equal(result.gateApplied, false);
@@ -2157,6 +2191,7 @@ describe('applyRalplanGate', () => {
         '# Approved plan\n\nLaunch hint: omx ralph "Execute approved issue 832 plan"\n',
       );
       await writeFile(join(plansDir, 'test-spec-issue-832.md'), '# Test spec\n');
+      await writeRalplanConsensusState(cwd);
 
       const result = applyRalplanGate(['ralph'], 'ralph please', { cwd, priorSkill: 'ralplan' });
       assert.equal(result.gateApplied, false);

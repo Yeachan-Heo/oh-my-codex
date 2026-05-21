@@ -271,6 +271,33 @@ describe('RALPLAN Stage', () => {
     })), false);
   });
 
+  it('canSkip enforces review role identity and timestamp ordering when metadata exists', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage();
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan_architect_review: { verdict: 'APPROVE', role: 'critic' },
+        ralplan_critic_review: { verdict: 'APPROVE', role: 'architect' },
+      },
+    })), false);
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan_architect_review: { verdict: 'APPROVE', role: 'architect', created_at: '2026-05-21T00:02:00.000Z' },
+        ralplan_critic_review: { verdict: 'APPROVE', role: 'critic', created_at: '2026-05-21T00:01:00.000Z' },
+      },
+    })), false);
+    assert.equal(stage.canSkip!(makeCtx({
+      artifacts: {
+        ralplan_architect_review: { verdict: 'APPROVE', role: 'architect', created_at: '2026-05-21T00:01:00.000Z' },
+        ralplan_critic_review: { verdict: 'APPROVE', role: 'critic', created_at: '2026-05-21T00:02:00.000Z' },
+      },
+    })), true);
+  });
+
   it('canSkip returns true when prd/test spec and durable autopilot handoff reviews exist', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     const statePath = getStatePath('autopilot', tempDir, 'sess-ralplan-skip');
@@ -297,7 +324,7 @@ describe('RALPLAN Stage', () => {
 
   it('canSkip does not fall back to root autopilot state for an explicit session id', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
-    const rootStatePath = getStatePath('autopilot', tempDir);
+    const rootStatePath = join(tempDir, '.omx', 'state', 'autopilot-state.json');
     await mkdir(plansDir, { recursive: true });
     await mkdir(dirname(rootStatePath), { recursive: true });
     await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
@@ -350,6 +377,36 @@ describe('RALPLAN Stage', () => {
 
     const stage = createRalplanStage();
     assert.equal(stage.canSkip!(makeCtx({ sessionId: '../spoofed-session' })), false);
+  });
+
+  it('canSkip ignores unrelated ambient OMX_ROOT root autopilot state', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const ambientRoot = await mkdtemp(join(tmpdir(), 'omx-ambient-root-'));
+    const priorRoot = process.env.OMX_ROOT;
+    try {
+      await mkdir(plansDir, { recursive: true });
+      await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+      await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+      await mkdir(join(ambientRoot, '.omx', 'state'), { recursive: true });
+      await writeFile(join(ambientRoot, '.omx', 'state', 'autopilot-state.json'), JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        state: {
+          handoff_artifacts: {
+            ralplan_architect_review: { verdict: 'APPROVE' },
+            ralplan_critic_review: { verdict: 'APPROVE' },
+          },
+        },
+      }));
+      process.env.OMX_ROOT = ambientRoot;
+
+      const stage = createRalplanStage();
+      assert.equal(stage.canSkip!(makeCtx()), false);
+    } finally {
+      if (priorRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = priorRoot;
+      await rm(ambientRoot, { recursive: true, force: true });
+    }
   });
 
   it('canSkip returns false after non-clean code-review loopback even when plans exist', async () => {

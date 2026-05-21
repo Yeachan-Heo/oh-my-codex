@@ -6,6 +6,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve as resolvePath } from 'node:path';
 import type { PipelineStage, StageContext, StageResult } from '../types.js';
 import { isPlanningComplete, readPlanningArtifacts } from '../../planning/artifacts.js';
 import { getBaseStateDir, getStatePath, validateSessionId } from '../../state/paths.js';
@@ -128,16 +129,16 @@ function hasReviewLoopContext(artifacts: Record<string, unknown>): boolean {
   );
 }
 
-function hasRalplanConsensusEvidence(ctx: StageContext): boolean {
+export function hasRalplanConsensusEvidence(ctx: Pick<StageContext, 'artifacts' | 'cwd' | 'sessionId'>): boolean {
   const artifacts = ctx.artifacts;
-  if (isApprovedRalplanReview(artifacts.ralplan_architect_review) && isApprovedRalplanReview(artifacts.ralplan_critic_review)) {
+  if (isApprovedRalplanConsensus(artifacts.ralplan_architect_review, artifacts.ralplan_critic_review)) {
     return true;
   }
 
   const ralplanArtifacts = artifacts.ralplan;
   if (ralplanArtifacts && typeof ralplanArtifacts === 'object') {
     const record = ralplanArtifacts as Record<string, unknown>;
-    if (isApprovedRalplanReview(record.ralplan_architect_review) && isApprovedRalplanReview(record.ralplan_critic_review)) {
+    if (isApprovedRalplanConsensus(record.ralplan_architect_review, record.ralplan_critic_review)) {
       return true;
     }
     if (hasApprovedReviewArray(record.architectReviews) && hasApprovedReviewArray(record.criticReviews)) {
@@ -151,7 +152,7 @@ function hasRalplanConsensusEvidence(ctx: StageContext): boolean {
     : undefined;
   if (handoffs && typeof handoffs === 'object') {
     const record = handoffs as Record<string, unknown>;
-    return isApprovedRalplanReview(record.ralplan_architect_review) && isApprovedRalplanReview(record.ralplan_critic_review);
+    return isApprovedRalplanConsensus(record.ralplan_architect_review, record.ralplan_critic_review);
   }
 
   return false;
@@ -160,6 +161,41 @@ function hasRalplanConsensusEvidence(ctx: StageContext): boolean {
 function hasApprovedReviewArray(value: unknown): boolean {
   if (!Array.isArray(value) || value.length === 0) return false;
   return isApprovedRalplanReview(value[value.length - 1]);
+}
+
+function isApprovedRalplanConsensus(architectReview: unknown, criticReview: unknown): boolean {
+  if (!isReviewRoleCompatible(architectReview, 'architect')) return false;
+  if (!isReviewRoleCompatible(criticReview, 'critic')) return false;
+  if (!isReviewOrderCompatible(architectReview, criticReview)) return false;
+  return isApprovedRalplanReview(architectReview) && isApprovedRalplanReview(criticReview);
+}
+
+function isReviewRoleCompatible(value: unknown, expectedRole: 'architect' | 'critic'): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return true;
+  const record = value as Record<string, unknown>;
+  const rawRole = [record.role, record.reviewer_role, record.reviewerRole, record.kind, record.type]
+    .find((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
+  if (!rawRole) return true;
+  const normalized = rawRole.trim().toLowerCase().replace(/[_-]+/g, ' ');
+  if (expectedRole === 'architect') return normalized.includes('architect');
+  return normalized.includes('critic');
+}
+
+function isReviewOrderCompatible(architectReview: unknown, criticReview: unknown): boolean {
+  const architectTimestamp = getReviewTimestampMs(architectReview);
+  const criticTimestamp = getReviewTimestampMs(criticReview);
+  if (architectTimestamp === undefined || criticTimestamp === undefined) return true;
+  return criticTimestamp >= architectTimestamp;
+}
+
+function getReviewTimestampMs(value: unknown): number | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const raw = [record.created_at, record.createdAt, record.submitted_at, record.submittedAt, record.reviewed_at, record.reviewedAt, record.timestamp]
+    .find((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
+  if (!raw) return undefined;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function isApprovedRalplanReview(value: unknown): boolean {
@@ -236,7 +272,7 @@ function readAutopilotState(cwd: string, sessionId?: string): Record<string, unk
     const scoped = readJsonState(getStatePath('autopilot', cwd, currentSessionId));
     if (scoped) return scoped;
   }
-  return readJsonState(getStatePath('autopilot', cwd));
+  return readJsonState(join(cwd, '.omx', 'state', 'autopilot-state.json'));
 }
 
 function validateOptionalSessionId(sessionId?: string): string | undefined {
@@ -249,8 +285,9 @@ function validateOptionalSessionId(sessionId?: string): string | undefined {
 }
 
 function readCurrentSessionIdFromState(cwd: string): string | undefined {
-  const state = readJsonState(`${getBaseStateDir(cwd)}/session.json`);
+  const state = readJsonState(join(getBaseStateDir(cwd), 'session.json'));
   if (!state) return undefined;
+  if (typeof state.cwd === 'string' && resolvePath(state.cwd) !== resolvePath(cwd)) return undefined;
   return validateOptionalSessionId(typeof state.session_id === 'string' ? state.session_id : undefined);
 }
 

@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path';
 import { classifyTaskSize, isHeavyMode, type TaskSizeResult, type TaskSizeThresholds } from './task-size-detector.js';
 import { isApprovedExecutionFollowupShortcut, type FollowupMode } from '../team/followup-planner.js';
 import { isPlanningComplete, readPlanningArtifacts } from '../planning/artifacts.js';
+import { hasRalplanConsensusEvidence } from '../pipeline/stages/ralplan.js';
 import { KEYWORD_TRIGGER_DEFINITIONS, compareKeywordMatches } from './keyword-registry.js';
 import {
   SKILL_ACTIVE_STATE_FILE,
@@ -1156,7 +1157,9 @@ export function applyRalplanGate(
     return { keywords, gateApplied: false, gatedKeywords: [] };
   }
 
-  const planningComplete = isPlanningComplete(readPlanningArtifacts(options.cwd ?? process.cwd()));
+  const cwd = options.cwd ?? process.cwd();
+  const planningComplete = isPlanningComplete(readPlanningArtifacts(cwd))
+    && hasRalplanConsensusEvidence({ artifacts: {}, cwd });
   const shortFollowupBypasses = executionKeywords.filter((keyword) => {
     if (keyword !== 'team' && keyword !== 'ralph') return false;
     return isApprovedExecutionFollowupShortcut(

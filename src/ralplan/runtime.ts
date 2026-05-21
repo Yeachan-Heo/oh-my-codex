@@ -188,7 +188,7 @@ export async function runRalplanConsensus(
         review_history: reviewHistory,
       });
 
-      if (criticReview.verdict === 'approve') {
+      if (architectReview.verdict === 'approve' && criticReview.verdict === 'approve') {
         const planningArtifacts = readPlanningArtifacts(cwd);
         const planningComplete = planningArtifacts.prdPaths.length > 0 && planningArtifacts.testSpecPaths.length > 0;
         await updateRalplanState(cwd, {
