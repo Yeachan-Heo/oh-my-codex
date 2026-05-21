@@ -143,12 +143,21 @@ function buildHudResizeHookCommand(
   return `${resizeOrUnregister}; sleep ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}; ${resizeOrUnregister}`;
 }
 
-export function buildHudWatchCommand(omxBin: string, preset?: string, sessionId?: string): string {
+export function buildHudWatchCommand(
+  omxBin: string,
+  preset?: string,
+  sessionId?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
   const safePreset = preset === 'minimal' || preset === 'focused' || preset === 'full'
     ? ` --preset=${preset}`
     : '';
   const safeSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-  const envPrefix = safeSessionId ? `env OMX_SESSION_ID=${shellEscapeSingle(safeSessionId)} ` : '';
+  const envPairs = [
+    ...(safeSessionId ? [`OMX_SESSION_ID=${shellEscapeSingle(safeSessionId)}`] : []),
+    ...(env.OMX_ROOT?.trim() ? [`OMX_ROOT=${shellEscapeSingle(env.OMX_ROOT.trim())}`] : []),
+  ];
+  const envPrefix = envPairs.length > 0 ? `env ${envPairs.join(' ')} ` : '';
   return `exec ${envPrefix}${shellEscapeSingle(process.execPath)} ${shellEscapeSingle(omxBin)} hud --watch${safePreset}`;
 }
 

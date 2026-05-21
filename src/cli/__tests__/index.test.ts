@@ -79,7 +79,7 @@ import { ensureReusableNodeModules } from "../../utils/repo-deps.js";
 import { readAllState } from "../../hud/state.js";
 import { generateOverlay } from "../../hooks/agents-overlay.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../../hud/constants.js";
-import { createHudWatchPane as createSharedHudWatchPane, listCurrentWindowHudPaneIds } from "../../hud/tmux.js";
+import { buildHudWatchCommand, createHudWatchPane as createSharedHudWatchPane, listCurrentWindowHudPaneIds } from "../../hud/tmux.js";
 import {
   DEFAULT_FRONTIER_MODEL,
   getTeamLowComplexityModel,
@@ -2596,6 +2596,15 @@ describe("tmux HUD pane helpers", () => {
       "node /repo/dist/cli/omx.js hud --watch",
     ]);
   });
+
+  it("buildHudWatchCommand forwards OMX_ROOT when set", () => {
+    const command = buildHudWatchCommand("/tmp/omx.js", undefined, "sess-1", {
+      OMX_ROOT: "/tmp/omx root",
+    });
+
+    assert.match(command, /OMX_SESSION_ID='sess-1'/);
+    assert.match(command, /OMX_ROOT='\/tmp\/omx root'/);
+  });
 });
 
 describe("detached tmux new-session sequencing", () => {
@@ -2845,11 +2854,11 @@ describe("detached tmux new-session sequencing", () => {
     assert.doesNotMatch(argsText, /fake-provider-key/);
   });
 
-  it("runCodex builds inside-tmux HUD command with OMX_SESSION_ID", async () => {
+  it("runCodex builds inside-tmux HUD command with session and OMX_ROOT env", async () => {
     const source = await readFile(join(repoRoot, 'src', 'cli', 'index.ts'), 'utf-8');
     assert.match(
       source,
-      /buildTmuxPaneCommand\("env",\s*\[\s*`OMX_SESSION_ID=\$\{sessionId\}`,\s*`\$\{OMX_TMUX_HUD_OWNER_ENV\}=1`,\s*"node",\s*omxBin,\s*"hud",\s*"--watch",?\s*\]\)/,
+      /buildTmuxPaneCommand\("env",\s*\[\s*`OMX_SESSION_ID=\$\{sessionId\}`,\s*`\$\{OMX_TMUX_HUD_OWNER_ENV\}=1`,\s*\.\.\.\(omxRootOverride \? \[`OMX_ROOT=\$\{omxRootOverride\}`\] : \[\]\),\s*"node",\s*omxBin,\s*"hud",\s*"--watch",?\s*\]\)/,
     );
   });
 
