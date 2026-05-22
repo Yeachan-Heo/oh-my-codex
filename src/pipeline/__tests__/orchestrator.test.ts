@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'fs/promises';
+import { mkdir, mkdtemp, rm, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { existsSync } from 'fs';
@@ -12,6 +12,7 @@ import {
   createAutopilotPipelineConfig,
   createStrictAutopilotStages,
 } from '../orchestrator.js';
+import { createRalplanStage } from '../stages/ralplan.js';
 import type { PipelineConfig, PipelineStage, StageContext, StageResult } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -62,6 +63,28 @@ function makeThrowingStage(name: string, message: string): PipelineStage {
 }
 
 let tempDir: string;
+let savedOmxEnv: Pick<NodeJS.ProcessEnv, 'OMX_ROOT' | 'OMX_STATE_ROOT' | 'OMX_TEAM_STATE_ROOT' | 'OMX_SESSION_ID'>;
+
+function clearAmbientOmxEnv(): void {
+  savedOmxEnv = {
+    OMX_ROOT: process.env.OMX_ROOT,
+    OMX_STATE_ROOT: process.env.OMX_STATE_ROOT,
+    OMX_TEAM_STATE_ROOT: process.env.OMX_TEAM_STATE_ROOT,
+    OMX_SESSION_ID: process.env.OMX_SESSION_ID,
+  };
+  delete process.env.OMX_ROOT;
+  delete process.env.OMX_STATE_ROOT;
+  delete process.env.OMX_TEAM_STATE_ROOT;
+  delete process.env.OMX_SESSION_ID;
+}
+
+function restoreAmbientOmxEnv(): void {
+  for (const key of ['OMX_ROOT', 'OMX_STATE_ROOT', 'OMX_TEAM_STATE_ROOT', 'OMX_SESSION_ID'] as const) {
+    const value = savedOmxEnv[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+}
 
 async function setup(): Promise<string> {
   tempDir = await mkdtemp(join(tmpdir(), 'omx-pipeline-test-'));
@@ -80,11 +103,13 @@ async function cleanup(): Promise<void> {
 
 describe('Pipeline Orchestrator', () => {
   beforeEach(async () => {
+    clearAmbientOmxEnv();
     await setup();
   });
 
   afterEach(async () => {
     await cleanup();
+    restoreAmbientOmxEnv();
   });
 
   describe('runPipeline', () => {
@@ -387,6 +412,47 @@ describe('Pipeline Orchestrator', () => {
       assert.equal(result.stageResults['skippable'].status, 'skipped');
       assert.ok(!ran.includes('skippable'));
       assert.ok(ran.includes('after-skip'));
+    });
+
+    it('materializes ralplan consensus handoff artifacts when ralplan is skipped', async () => {
+      const plansDir = join(tempDir, '.omx', 'plans');
+      const stateDir = join(tempDir, '.omx', 'state');
+      await mkdir(plansDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(plansDir, 'prd-skip.md'), '# Plan\n');
+      await writeFile(join(plansDir, 'test-spec-skip.md'), '# Test Spec\n');
+      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
+        mode: 'ralplan',
+        current_phase: 'complete',
+        planning_complete: true,
+        ralplan_consensus_gate: {
+          complete: true,
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', summary: 'architect ok' },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', summary: 'critic ok' },
+        },
+      }));
+
+      const result = await runPipeline({
+        name: 'ralplan-skip-handoff',
+        task: 'skip with durable evidence',
+        stages: [createRalplanStage(), makeStage('after')],
+        cwd: tempDir,
+      });
+
+      assert.equal(result.status, 'completed');
+      assert.equal(result.stageResults.ralplan.status, 'skipped');
+
+      const ext = await readPipelineState(tempDir);
+      const handoffs = ext?.handoff_artifacts as Record<string, unknown>;
+      assert.ok(handoffs.ralplan, 'skipped ralplan handoff should remain visible');
+      assert.deepEqual(handoffs.ralplan_consensus_gate, {
+        complete: true,
+        sequence: ['architect-review', 'critic-review'],
+        ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', summary: 'architect ok' },
+        ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', summary: 'critic ok' },
+        source: join(tempDir, '.omx', 'state', 'ralplan-state.json'),
+        blockedReason: null,
+      });
     });
 
     it('fires onStageTransition callback', async () => {

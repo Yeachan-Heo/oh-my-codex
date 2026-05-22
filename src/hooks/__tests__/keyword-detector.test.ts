@@ -569,7 +569,22 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(modeState.review_cycle, 0);
       assert.equal(modeState.max_iterations, 10);
       assert.deepEqual(modeState.state.phase_cycle, ['deep-interview', 'ralplan', 'ultragoal', 'code-review', 'ultraqa']);
-      assert.deepEqual(modeState.state.handoff_artifacts, { deep_interview: null, ralplan: null, ultragoal: null, code_review: null, ultraqa: null });
+      assert.deepEqual(modeState.state.handoff_artifacts, {
+        deep_interview: null,
+        ralplan: null,
+        ralplan_consensus_gate: {
+          required: true,
+          sequence: ['architect-review', 'critic-review'],
+          planning_artifacts_are_not_consensus: true,
+          required_review_roles: ['architect', 'critic'],
+          ralplan_architect_review: null,
+          ralplan_critic_review: null,
+          complete: false,
+        },
+        ultragoal: null,
+        code_review: null,
+        ultraqa: null,
+      });
       assert.equal(modeState.state.review_verdict, null);
       assert.equal(modeState.state.qa_verdict, null);
       assert.equal(modeState.state.return_to_ralplan_reason, null);
@@ -2095,7 +2110,7 @@ describe('isUnderspecifiedForExecution', () => {
 });
 
 describe('applyRalplanGate', () => {
-  it('does not re-enter ralplan for a short approved team follow-up', async () => {
+  it('gates short team follow-up when only PRD/test-spec artifacts exist', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-'));
     try {
       const plansDir = join(cwd, '.omx', 'plans');
@@ -2107,23 +2122,35 @@ describe('applyRalplanGate', () => {
       await writeFile(join(plansDir, 'test-spec-issue-831.md'), '# Test spec\n');
 
       const result = applyRalplanGate(['team'], 'team', { cwd });
-      assert.equal(result.gateApplied, false);
-      assert.deepEqual(result.keywords, ['team']);
+      assert.equal(result.gateApplied, true);
+      assert.deepEqual(result.keywords, ['ralplan']);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it('does not re-enter ralplan for a short approved Korean team follow-up', async () => {
+  it('does not re-enter ralplan for a short approved team follow-up with durable consensus', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-ko-'));
     try {
       const plansDir = join(cwd, '.omx', 'plans');
+      const stateDir = join(cwd, '.omx', 'state');
       await mkdir(plansDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
       await writeFile(
         join(plansDir, 'prd-issue-831.md'),
         '# Approved plan\n\nLaunch hint: omx team 3:executor "Execute approved issue 831 plan"\n',
       );
       await writeFile(join(plansDir, 'test-spec-issue-831.md'), '# Test spec\n');
+      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
+        current_phase: 'complete',
+        planning_complete: true,
+        ralplan_consensus_gate: {
+          complete: true,
+          sequence: ['architect-review', 'critic-review'],
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1 },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1 },
+        },
+      }));
 
       const result = applyRalplanGate(['team'], 'team으로 해줘', { cwd });
       assert.equal(result.gateApplied, false);
@@ -2133,20 +2160,93 @@ describe('applyRalplanGate', () => {
     }
   });
 
-  it('does not re-enter ralplan for a short approved ralph follow-up', async () => {
+  it('does not re-enter ralplan for a short approved ralph follow-up with durable consensus', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-ralph-'));
     try {
       const plansDir = join(cwd, '.omx', 'plans');
+      const stateDir = join(cwd, '.omx', 'state');
       await mkdir(plansDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
       await writeFile(
         join(plansDir, 'prd-issue-832.md'),
         '# Approved plan\n\nLaunch hint: omx ralph "Execute approved issue 832 plan"\n',
       );
       await writeFile(join(plansDir, 'test-spec-issue-832.md'), '# Test spec\n');
+      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
+        current_phase: 'complete',
+        planning_complete: true,
+        ralplan_consensus_gate: {
+          complete: true,
+          sequence: ['architect-review', 'critic-review'],
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1 },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1 },
+        },
+      }));
 
       const result = applyRalplanGate(['ralph'], 'ralph please', { cwd, priorSkill: 'ralplan' });
       assert.equal(result.gateApplied, false);
       assert.deepEqual(result.keywords, ['ralph']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores ambient OMX_ROOT consensus state for local PRD/test-spec-only follow-up gating', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-local-'));
+    const ambientRoot = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-ambient-'));
+    const previousOmxRoot = process.env.OMX_ROOT;
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      await writeFile(join(plansDir, 'prd-local.md'), '# Plan\n');
+      await writeFile(join(plansDir, 'test-spec-local.md'), '# Test spec\n');
+
+      const ambientStateDir = join(ambientRoot, '.omx', 'state');
+      await mkdir(ambientStateDir, { recursive: true });
+      await writeFile(join(ambientStateDir, 'ralplan-state.json'), JSON.stringify({
+        current_phase: 'complete',
+        planning_complete: true,
+        ralplan_consensus_gate: {
+          complete: true,
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1 },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1 },
+        },
+      }));
+      process.env.OMX_ROOT = ambientRoot;
+
+      const result = applyRalplanGate(['team'], 'team', { cwd });
+      assert.equal(result.gateApplied, true);
+      assert.deepEqual(result.keywords, ['ralplan']);
+    } finally {
+      if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = previousOmxRoot;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(ambientRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('gates short follow-up when local state only has latest verdict fields', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-latest-only-'));
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      const stateDir = join(cwd, '.omx', 'state');
+      await mkdir(plansDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        join(plansDir, 'prd-local.md'),
+        '# Plan\n\nLaunch hint: omx team 3:executor "Execute approved local plan"\n',
+      );
+      await writeFile(join(plansDir, 'test-spec-local.md'), '# Test spec\n');
+      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
+        current_phase: 'complete',
+        planning_complete: true,
+        latest_architect_verdict: 'approve',
+        latest_critic_verdict: 'approve',
+      }));
+
+      const result = applyRalplanGate(['team'], 'team', { cwd });
+      assert.equal(result.gateApplied, true);
+      assert.deepEqual(result.keywords, ['ralplan']);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

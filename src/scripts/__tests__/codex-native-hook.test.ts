@@ -2234,6 +2234,36 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("injects autopilot ralplan consensus gate guidance on prompt activation", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-ralplan-gate-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-autopilot-ralplan-gate",
+          thread_id: "thread-autopilot-ralplan-gate",
+          turn_id: "turn-autopilot-ralplan-gate",
+          prompt: "$autopilot implement issue #2430",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.skill, "autopilot");
+      const message = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(message, /Autopilot protocol:/);
+      assert.match(message, /deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa/);
+      assert.match(message, /Planner output has been reviewed sequentially by Architect and then Critic/);
+      assert.match(message, /do not hand off to Ultragoal or implementation until .*ralplan_architect_review.*ralplan_critic_review/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("records ultragoal prompt skill activation with goal-tool handoff guidance", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-"));
     try {
