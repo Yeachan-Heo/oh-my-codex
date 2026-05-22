@@ -3,7 +3,7 @@ import { closeSync, existsSync, openSync, readFileSync, readSync } from "fs";
 import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "fs/promises";
 import { extname, join, relative, resolve } from "path";
 import { pathToFileURL } from "url";
-import { readModeState, readModeStateForActiveDecision, readModeStateForSession, updateModeState } from "../modes/base.js";
+import { readModeStateForActiveDecision, readModeStateForSession, updateModeState } from "../modes/base.js";
 import {
   extractSessionIdFromInitializedStatePath,
   getSkillActiveStatePathsForStateDir,
@@ -2148,36 +2148,60 @@ async function buildGoalWorkflowReconciliationStopOutput(
   };
 }
 
+interface TeamModeStateForStop {
+  state: Record<string, unknown>;
+  scope: "session" | "root";
+}
+
+function teamStateMatchesThreadForStop(
+  state: Record<string, unknown>,
+  threadId?: string,
+  options: { requireOwnerThread?: boolean } = {},
+): boolean {
+  const normalizedThreadId = safeString(threadId).trim();
+  if (!normalizedThreadId) return true;
+
+  const ownerThreadId = safeString(state.owner_codex_thread_id ?? state.thread_id).trim();
+  if (!ownerThreadId) return options.requireOwnerThread !== true;
+  return ownerThreadId === normalizedThreadId;
+}
+
 async function readTeamModeStateForStop(
   cwd: string,
   stateDir: string,
   sessionId?: string,
-): Promise<Record<string, unknown> | null> {
+  threadId?: string,
+): Promise<TeamModeStateForStop | null> {
   const normalizedSessionId = safeString(sessionId).trim();
-  if (!normalizedSessionId) {
-    return await readModeState("team", cwd);
-  }
+  if (!normalizedSessionId) return null;
 
   const scopedState = await readStopSessionPinnedState("team-state.json", cwd, normalizedSessionId, stateDir);
-  if (scopedState) return scopedState;
+  if (scopedState) {
+    return teamStateMatchesThreadForStop(scopedState, threadId)
+      ? { state: scopedState, scope: "session" }
+      : null;
+  }
 
   const rootState = await readJsonIfExists(join(stateDir, "team-state.json"));
   if (rootState?.active !== true) return null;
 
-  const ownerSessionId = safeString(rootState.session_id).trim();
-  if (ownerSessionId && ownerSessionId !== normalizedSessionId) {
-    return null;
-  }
+  const teamName = safeString(rootState.team_name).trim();
+  if (!teamName) return null;
 
-  return rootState;
+  const ownerSessionId = safeString(rootState.session_id).trim();
+  if (!ownerSessionId || ownerSessionId !== normalizedSessionId) return null;
+  if (!teamStateMatchesThreadForStop(rootState, threadId, { requireOwnerThread: true })) return null;
+
+  return { state: rootState, scope: "root" };
 }
 
-async function buildTeamStopOutput(cwd: string, sessionId?: string): Promise<Record<string, unknown> | null> {
+async function buildTeamStopOutput(cwd: string, sessionId?: string, threadId?: string): Promise<Record<string, unknown> | null> {
   if (await readCanonicalTerminalRunStateForStop(cwd, sessionId, "team")) {
     return null;
   }
-  const teamState = await readTeamModeStateForStop(cwd, getBaseStateDir(cwd), sessionId);
-  if (teamState?.active !== true) return null;
+  const teamStateForStop = await readTeamModeStateForStop(cwd, getBaseStateDir(cwd), sessionId, threadId);
+  if (!teamStateForStop || teamStateForStop.state.active !== true) return null;
+  const teamState = teamStateForStop.state;
   const teamName = safeString(teamState.team_name).trim();
   if (teamName) {
     const canonicalTeamDir = join(resolveCanonicalTeamStateRoot(cwd), "team", teamName);
@@ -2186,7 +2210,9 @@ async function buildTeamStopOutput(cwd: string, sessionId?: string): Promise<Rec
     }
   }
   const coarsePhase = teamState.current_phase;
-  const canonicalPhase = teamName ? (await readTeamPhase(teamName, cwd))?.current_phase ?? coarsePhase : coarsePhase;
+  const canonicalPhaseState = teamName ? await readTeamPhase(teamName, cwd) : null;
+  if (teamStateForStop.scope === "root" && !canonicalPhaseState) return null;
+  const canonicalPhase = canonicalPhaseState?.current_phase ?? coarsePhase;
   if (!isNonTerminalPhase(canonicalPhase)) return null;
   return buildTeamStopOutputForPhase(teamName, formatPhase(canonicalPhase));
 }
@@ -2930,6 +2956,7 @@ async function returnPersistentStopBlock(
 async function findCanonicalActiveTeamForSession(
   cwd: string,
   sessionId: string,
+  threadId?: string,
 ): Promise<{ teamName: string; phase: string } | null> {
   if (!sessionId.trim()) return null;
   const teamsRoot = join(resolveCanonicalTeamStateRoot(cwd), "team");
@@ -2948,6 +2975,7 @@ async function findCanonicalActiveTeamForSession(
     if (!manifest || !phaseState) continue;
     const ownerSessionId = (manifest.leader?.session_id ?? "").trim();
     if (ownerSessionId && ownerSessionId !== sessionId.trim()) continue;
+    if (!teamStateMatchesThreadForStop(manifest.leader as unknown as Record<string, unknown>, threadId)) continue;
     if (!isNonTerminalPhase(phaseState.current_phase)) continue;
 
     return {
@@ -2963,12 +2991,13 @@ async function resolveActiveTeamNameForStop(
   cwd: string,
   stateDir: string,
   sessionId: string,
+  threadId?: string,
 ): Promise<string> {
-  const directState = await readTeamModeStateForStop(cwd, stateDir, sessionId);
-  const directTeamName = safeString(directState?.team_name).trim();
-  if (directState?.active === true && directTeamName) return directTeamName;
+  const directState = await readTeamModeStateForStop(cwd, stateDir, sessionId, threadId);
+  const directTeamName = safeString(directState?.state.team_name).trim();
+  if (directState?.state.active === true && directTeamName) return directTeamName;
 
-  const canonicalTeam = await findCanonicalActiveTeamForSession(cwd, sessionId);
+  const canonicalTeam = await findCanonicalActiveTeamForSession(cwd, sessionId, threadId);
   return canonicalTeam?.teamName ?? "";
 }
 
@@ -2980,7 +3009,7 @@ async function maybeBuildReleaseReadinessFinalizeStopOutput(
 ): Promise<{ matched: boolean; output: Record<string, unknown> | null }> {
   if (!sessionId) return { matched: false, output: null };
 
-  const teamName = await resolveActiveTeamNameForStop(cwd, stateDir, sessionId);
+  const teamName = await resolveActiveTeamNameForStop(cwd, stateDir, sessionId, readPayloadThreadId(payload));
   if (!teamName) return { matched: false, output: null };
 
   const explicitReleaseReadinessContext =
@@ -3309,7 +3338,7 @@ async function buildStopHookOutput(
     );
     if (releaseReadinessFinalizeResult.matched) return releaseReadinessFinalizeResult.output;
 
-    const teamOutput = await buildTeamStopOutput(cwd, canonicalSessionId);
+    const teamOutput = await buildTeamStopOutput(cwd, canonicalSessionId, threadId);
     if (teamOutput) {
       return await returnPersistentStopBlock(
         payload,
@@ -3341,7 +3370,7 @@ async function buildStopHookOutput(
 
       const canonicalTeam = await readCanonicalTerminalRunStateForStop(cwd, canonicalSessionId, "team")
         ? null
-        : await findCanonicalActiveTeamForSession(cwd, canonicalSessionId);
+        : await findCanonicalActiveTeamForSession(cwd, canonicalSessionId, threadId);
       if (canonicalTeam) {
         const canonicalTeamOutput = buildTeamStopOutputForPhase(
           canonicalTeam.teamName,
