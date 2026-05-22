@@ -25,7 +25,7 @@ type NpmPackDryRunResult = {
 };
 
 describe('package bin contract', () => {
-  it('declares omx with an explicit relative bin path and avoids packaging platform-specific native binaries', () => {
+  it('declares omx and omx-runtime with explicit relative bin paths and avoids packaging platform-specific native binaries', () => {
     const packageJsonPath = join(process.cwd(), 'package.json');
     const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as PackageJson;
     const binaryName = platform() === 'win32' ? 'omx-sparkshell.exe' : 'omx-sparkshell';
@@ -37,7 +37,10 @@ describe('package bin contract', () => {
       binaryName,
     );
 
-    assert.deepEqual(pkg.bin, { omx: 'dist/cli/omx.js' });
+    assert.deepEqual(pkg.bin, {
+      omx: 'dist/cli/omx.js',
+      'omx-runtime': 'dist/cli/omx-runtime.js',
+    });
     assert.equal(pkg.scripts?.['build:explore'], 'cargo build -p omx-explore-harness');
     assert.equal(pkg.scripts?.['build:explore:release'], 'node dist/scripts/build-explore-harness.js');
     assert.equal(pkg.scripts?.['build:full'], 'npm run build && npm run build:explore:release && npm run build:sparkshell && npm run build:api');
@@ -98,11 +101,15 @@ describe('package bin contract', () => {
     assert.ok(pkg.files?.includes('.agents/plugins/marketplace.json'));
 
     const binPath = join(process.cwd(), 'dist', 'cli', 'omx.js');
+    const runtimeBinPath = join(process.cwd(), 'dist', 'cli', 'omx-runtime.js');
     const compiledCliPath = join(process.cwd(), 'dist', 'cli', 'index.js');
 
     const binSource = readFileSync(binPath, 'utf-8');
+    const runtimeBinSource = readFileSync(runtimeBinPath, 'utf-8');
     const compiledCliSource = readFileSync(compiledCliPath, 'utf-8');
     assert.match(binSource, /^#!\/usr\/bin\/env node/);
+    assert.match(runtimeBinSource, /^#!\/usr\/bin\/env node/);
+    assert.match(runtimeBinSource, /hydrateNativeBinary\(PRODUCT/);
     const mcpInitialize = JSON.stringify({
       jsonrpc: '2.0',
       id: 1,
@@ -162,6 +169,8 @@ describe('package bin contract', () => {
 
     const binEntry = results[0]?.files?.find((file) => file.path === 'dist/cli/omx.js');
     assert.ok(binEntry, 'expected npm pack output to include dist/cli/omx.js');
+    const runtimeBinEntry = results[0]?.files?.find((file) => file.path === 'dist/cli/omx-runtime.js');
+    assert.ok(runtimeBinEntry, 'expected npm pack output to include dist/cli/omx-runtime.js');
 
     const packagedHarnessPath = process.platform === 'win32' ? 'bin/omx-explore-harness.exe' : 'bin/omx-explore-harness';
     const packagedHarnessEntry = results[0]?.files?.find((file) => file.path === packagedHarnessPath);

@@ -8,12 +8,14 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveCanonicalTeamStateRoot } from '../team/state-root.js';
 import { safeJsonParse } from '../utils/safe-json.js';
 
 const __bridge_dirname = dirname(fileURLToPath(import.meta.url));
+const RUNTIME_PRODUCT = 'omx-runtime';
 
 // ---------------------------------------------------------------------------
 // Types matching Rust JSON schema
@@ -135,20 +137,78 @@ let schemaValidated = false;
 export interface RuntimeBinaryDiscoveryOptions {
   debugPath?: string;
   releasePath?: string;
+  cachedPath?: string;
+  packagedNativePath?: string;
   fallbackBinary?: string;
+  env?: NodeJS.ProcessEnv;
   exists?: (path: string) => boolean;
+  packageVersion?: string;
+  platform?: NodeJS.Platform;
+  arch?: string;
+}
+
+function runtimeBinaryName(platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? `${RUNTIME_PRODUCT}.exe` : RUNTIME_PRODUCT;
+}
+
+function readPackageVersion(): string | undefined {
+  try {
+    const packageJsonPath = resolve(__bridge_dirname, '../../package.json');
+    const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { version?: string };
+    return typeof pkg.version === 'string' && pkg.version.trim() !== '' ? pkg.version.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveNativeCacheRoot(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.OMX_NATIVE_CACHE_DIR?.trim();
+  if (override) return resolve(override);
+  if (process.platform === 'win32') {
+    return resolve(env.LOCALAPPDATA?.trim() || join(homedir(), 'AppData', 'Local'), 'oh-my-codex', 'native');
+  }
+  return resolve(env.XDG_CACHE_HOME?.trim() || join(homedir(), '.cache'), 'oh-my-codex', 'native');
+}
+
+function resolveCachedRuntimeBinaryPath(options: RuntimeBinaryDiscoveryOptions): string | undefined {
+  const version = options.packageVersion ?? readPackageVersion();
+  if (!version) return undefined;
+  const platform = options.platform ?? process.platform;
+  const arch = options.arch ?? process.arch;
+  return join(
+    resolveNativeCacheRoot(options.env),
+    version,
+    `${platform}-${arch}`,
+    RUNTIME_PRODUCT,
+    runtimeBinaryName(platform),
+  );
 }
 
 export function resolveRuntimeBinaryPath(options: RuntimeBinaryDiscoveryOptions = {}): string {
   const exists = options.exists ?? existsSync;
-  const envOverride = process.env.OMX_RUNTIME_BINARY?.trim();
+  const env = options.env ?? process.env;
+  const platform = options.platform ?? process.platform;
+  const arch = options.arch ?? process.arch;
+  const name = runtimeBinaryName(platform);
+  const envOverride = env.OMX_RUNTIME_BINARY?.trim();
   if (envOverride) return envOverride;
 
-  const workspaceDebug = options.debugPath ?? resolve(__bridge_dirname, '../../target/debug/omx-runtime');
+  const workspaceDebug = options.debugPath ?? resolve(__bridge_dirname, '../../target/debug', name);
   if (exists(workspaceDebug)) return workspaceDebug;
 
-  const workspaceRelease = options.releasePath ?? resolve(__bridge_dirname, '../../target/release/omx-runtime');
+  const workspaceRelease = options.releasePath ?? resolve(__bridge_dirname, '../../target/release', name);
   if (exists(workspaceRelease)) return workspaceRelease;
+
+  const cachedRuntime = options.cachedPath ?? resolveCachedRuntimeBinaryPath({ ...options, env, platform, arch });
+  if (cachedRuntime && exists(cachedRuntime)) return cachedRuntime;
+
+  const packagedNative = options.packagedNativePath ?? resolve(
+    __bridge_dirname,
+    '../../bin/native',
+    `${platform}-${arch}`,
+    name,
+  );
+  if (exists(packagedNative)) return packagedNative;
 
   return options.fallbackBinary ?? 'omx-runtime';
 }
@@ -171,6 +231,11 @@ export class RuntimeBridge {
   /** Whether the bridge is enabled (OMX_RUNTIME_BRIDGE != '0'). */
   isEnabled(): boolean {
     return this.enabled;
+  }
+
+  /** Resolved native runtime binary path used by this bridge instance. */
+  getBinaryPath(): string {
+    return this.binaryPath;
   }
 
   /** Execute a RuntimeCommand and return the resulting RuntimeEvent. */

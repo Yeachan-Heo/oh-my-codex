@@ -42,6 +42,7 @@ export interface UpdateExecutionResult {
 
 type RunGlobalUpdateResult = { ok: boolean; stderr: string };
 type RunSetupRefreshResult = { ok: boolean; stderr: string };
+type RunPostUpdateRuntimeSmokeResult = { ok: boolean; stderr: string };
 type RunDeferredUpdateResult = { ok: boolean; stderr: string; logPath?: string };
 type SpawnSyncLike = typeof spawnSync;
 type SpawnLike = typeof spawn;
@@ -262,6 +263,7 @@ interface UpdateDependencies {
   runGlobalUpdate: typeof runGlobalUpdate;
   runDeferredGlobalUpdate: typeof runDeferredGlobalUpdate;
   runSetupRefresh: (cwd: string) => Promise<RunSetupRefreshResult>;
+  runPostUpdateRuntimeSmoke: (cwd: string) => Promise<RunPostUpdateRuntimeSmokeResult>;
   writeUpdateState: typeof writeUpdateState;
 }
 
@@ -273,6 +275,7 @@ const defaultUpdateDependencies: UpdateDependencies = {
   runGlobalUpdate,
   runDeferredGlobalUpdate,
   runSetupRefresh,
+  runPostUpdateRuntimeSmoke,
   writeUpdateState,
 };
 
@@ -424,6 +427,44 @@ async function runSetupRefresh(cwd: string): Promise<RunSetupRefreshResult> {
   return spawnInstalledSetupRefresh(cliEntry, cwd);
 }
 
+function summarizeRuntimeSmokeFailure(stderr: string): string {
+  const details = stderr.trim().split(/\r?\n/).filter(Boolean).slice(0, 4).join(' | ');
+  return [
+    '[omx] Update installed, but the runtime smoke check failed.',
+    details ? `[omx] runtime smoke: ${details}` : undefined,
+    '[omx] Expected checks: omx-runtime schema --json; omx doctor --team',
+    '[omx] Retry with: omx update',
+  ].filter((line): line is string => typeof line === 'string').join('\n');
+}
+
+function spawnSmokeCommand(command: string, args: string[], cwd: string): RunPostUpdateRuntimeSmokeResult {
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 30_000,
+    windowsHide: true,
+  });
+  if (result.error) return { ok: false, stderr: `${command} ${args.join(' ')}: ${result.error.message}` };
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      stderr: `${command} ${args.join(' ')} exited ${result.status}: ${(result.stderr || result.stdout || '').trim()}`,
+    };
+  }
+  return { ok: true, stderr: '' };
+}
+
+export async function runPostUpdateRuntimeSmoke(cwd: string): Promise<RunPostUpdateRuntimeSmokeResult> {
+  const schema = spawnSmokeCommand('omx-runtime', ['schema', '--json'], cwd);
+  if (!schema.ok) return schema;
+
+  const doctor = spawnSmokeCommand('omx', ['doctor', '--team'], cwd);
+  if (!doctor.ok) return doctor;
+
+  return { ok: true, stderr: '' };
+}
+
 async function executeUpdate(
   options: {
     cwd: string;
@@ -470,8 +511,13 @@ async function executeUpdate(
           );
           return { status: 'failed', currentVersion: current, latestVersion: latest };
         }
+        const runtimeSmokeResult = await dependencies.runPostUpdateRuntimeSmoke(cwd);
+        if (!runtimeSmokeResult.ok) {
+          console.log(summarizeRuntimeSmokeFailure(runtimeSmokeResult.stderr));
+          return { status: 'failed', currentVersion: current, latestVersion: latest };
+        }
         await writeSuccessfulInstallStamp(current);
-        console.log(`[omx] Setup refresh completed for v${current}. Restart to use current code.`);
+        console.log(`[omx] Setup refresh and runtime smoke completed for v${current}. Restart to use current code.`);
         return { status: 'up-to-date', currentVersion: current, latestVersion: latest };
       }
     }
@@ -522,8 +568,14 @@ async function executeUpdate(
     return { status: 'failed', currentVersion: current, latestVersion: latest };
   }
 
+  const runtimeSmokeResult = await dependencies.runPostUpdateRuntimeSmoke(cwd);
+  if (!runtimeSmokeResult.ok) {
+    console.log(summarizeRuntimeSmokeFailure(runtimeSmokeResult.stderr));
+    return { status: 'failed', currentVersion: current, latestVersion: latest };
+  }
+
   await writeSuccessfulInstallStamp(latest);
-  console.log(`[omx] Updated to v${latest}. Restart to use new code.`);
+  console.log(`[omx] Updated to v${latest}; runtime smoke passed. Restart to use new code.`);
   return { status: 'updated', currentVersion: current, latestVersion: latest };
 }
 

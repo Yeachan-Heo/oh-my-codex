@@ -43,10 +43,50 @@ describe('resolveRuntimeBinaryPath', () => {
     assert.equal(actual, '/release/runtime');
   });
 
+  it('prefers cached native runtime before PATH fallback', () => {
+    const actual = resolveRuntimeBinaryPath({
+      debugPath: '/debug/runtime',
+      releasePath: '/release/runtime',
+      cachedPath: '/cache/native/0.18.1/darwin-arm64/omx-runtime/omx-runtime',
+      packagedNativePath: '/package/bin/native/darwin-arm64/omx-runtime',
+      fallbackBinary: 'omx-runtime',
+      exists: (candidate) => candidate === '/cache/native/0.18.1/darwin-arm64/omx-runtime/omx-runtime',
+    });
+    assert.equal(actual, '/cache/native/0.18.1/darwin-arm64/omx-runtime/omx-runtime');
+  });
+
+  it('prefers packaged native runtime before PATH fallback', () => {
+    const actual = resolveRuntimeBinaryPath({
+      debugPath: '/debug/runtime',
+      releasePath: '/release/runtime',
+      cachedPath: '/cache/runtime',
+      packagedNativePath: '/package/bin/native/darwin-arm64/omx-runtime',
+      fallbackBinary: 'omx-runtime',
+      exists: (candidate) => candidate === '/package/bin/native/darwin-arm64/omx-runtime',
+    });
+    assert.equal(actual, '/package/bin/native/darwin-arm64/omx-runtime');
+  });
+
+  it('derives cached native runtime from OMX_NATIVE_CACHE_DIR and package version', () => {
+    const actual = resolveRuntimeBinaryPath({
+      debugPath: '/debug/runtime',
+      releasePath: '/release/runtime',
+      fallbackBinary: 'omx-runtime',
+      env: { OMX_NATIVE_CACHE_DIR: '/tmp/omx-native-cache' },
+      packageVersion: '0.18.1',
+      platform: 'darwin',
+      arch: 'arm64',
+      exists: (candidate) => candidate === '/tmp/omx-native-cache/0.18.1/darwin-arm64/omx-runtime/omx-runtime',
+    });
+    assert.equal(actual, '/tmp/omx-native-cache/0.18.1/darwin-arm64/omx-runtime/omx-runtime');
+  });
+
   it('falls back to PATH binary when local builds are unavailable', () => {
     const actual = resolveRuntimeBinaryPath({
       debugPath: '/debug/runtime',
       releasePath: '/release/runtime',
+      cachedPath: '/cache/runtime',
+      packagedNativePath: '/package/runtime',
       fallbackBinary: 'omx-runtime',
       exists: () => false,
     });
