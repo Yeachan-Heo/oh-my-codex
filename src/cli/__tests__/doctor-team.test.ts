@@ -17,7 +17,7 @@ function runOmx(
   const r = spawnSync(process.execPath, [omxBin, ...argv], {
     cwd,
     encoding: 'utf-8',
-    env: { ...process.env, ...envOverrides },
+    env: { ...process.env, OMX_RUNTIME_BRIDGE: '0', ...envOverrides },
   });
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '', error: r.error?.message };
 }
@@ -36,6 +36,23 @@ async function createFakeTmuxBin(wd: string, script: string): Promise<string> {
 }
 
 describe('omx doctor --team', () => {
+  it('fails when the runtime bridge is enabled but omx-runtime is missing', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-doctor-team-runtime-'));
+    try {
+      const res = runOmx(wd, ['doctor', '--team'], {
+        OMX_RUNTIME_BRIDGE: '1',
+        OMX_RUNTIME_BINARY: join(wd, 'missing-omx-runtime'),
+      });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 1, res.stderr || res.stdout);
+      assert.match(res.stdout, /runtime_binary_unavailable/);
+      assert.match(res.stdout, /omx-runtime schema probe failed/);
+      assert.match(res.stdout, /omx update/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('exits non-zero and prints resume_blocker when team state references missing tmux session', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-doctor-team-'));
     try {

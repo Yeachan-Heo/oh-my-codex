@@ -292,7 +292,8 @@ interface TeamDoctorIssue {
 		| "orphan_tmux_session"
 		| "resume_blocker"
 		| "prompt_resume_unavailable"
-		| "stale_leader";
+		| "stale_leader"
+		| "runtime_binary_unavailable";
 	message: string;
 	severity: "warn" | "fail";
 }
@@ -338,23 +339,60 @@ async function collectTeamDoctorIssues(
 	// and authority as the semantic truth source for runtime health.
 	if (isBridgeEnabled()) {
 		const bridge = getDefaultBridge(stateDir);
-		const readiness = bridge.readReadiness();
-		const authority = bridge.readAuthority();
-		if (readiness && !readiness.ready) {
-			for (const reason of readiness.reasons) {
+		const runtimeProbe = spawnSync(bridge.getBinaryPath(), ["schema", "--json"], {
+			encoding: "utf-8",
+			stdio: ["ignore", "pipe", "pipe"],
+			timeout: 10_000,
+			windowsHide: true,
+		});
+		if (runtimeProbe.error || runtimeProbe.status !== 0) {
+			const detail =
+				runtimeProbe.error?.message ??
+				(runtimeProbe.stderr || "").trim() ??
+				`exit ${runtimeProbe.status}`;
+			issues.push({
+				code: "runtime_binary_unavailable",
+				message: `omx-runtime schema probe failed (${detail || "unknown error"}). Run \`omx update\` or set OMX_RUNTIME_BINARY to a compatible runtime.`,
+				severity: "fail",
+			});
+		} else {
+			try {
+				const schema = JSON.parse(runtimeProbe.stdout || "{}") as { commands?: unknown };
+				if (!Array.isArray(schema.commands) || !schema.commands.includes("queue-dispatch")) {
+					issues.push({
+						code: "runtime_binary_unavailable",
+						message: "omx-runtime schema is missing queue-dispatch; update oh-my-codex or set OMX_RUNTIME_BINARY to a compatible runtime.",
+						severity: "fail",
+					});
+				}
+			} catch {
 				issues.push({
-					code: "resume_blocker",
-					message: `runtime not ready: ${reason}`,
+					code: "runtime_binary_unavailable",
+					message: "omx-runtime schema probe returned non-JSON output; update oh-my-codex or set OMX_RUNTIME_BINARY to a compatible runtime.",
 					severity: "fail",
 				});
 			}
 		}
-		if (authority?.stale) {
-			issues.push({
-				code: "stale_leader",
-				message: `authority stale (owner: ${authority.owner ?? "unknown"}): ${authority.stale_reason ?? "unknown reason"}`,
-				severity: "fail",
-			});
+
+		if (!issues.some((issue) => issue.code === "runtime_binary_unavailable")) {
+			const readiness = bridge.readReadiness();
+			const authority = bridge.readAuthority();
+			if (readiness && !readiness.ready) {
+				for (const reason of readiness.reasons) {
+					issues.push({
+						code: "resume_blocker",
+						message: `runtime not ready: ${reason}`,
+						severity: "fail",
+					});
+				}
+			}
+			if (authority?.stale) {
+				issues.push({
+					code: "stale_leader",
+					message: `authority stale (owner: ${authority.owner ?? "unknown"}): ${authority.stale_reason ?? "unknown reason"}`,
+					severity: "fail",
+				});
+			}
 		}
 	}
 

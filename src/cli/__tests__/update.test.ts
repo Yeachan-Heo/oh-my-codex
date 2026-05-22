@@ -454,6 +454,7 @@ describe('runImmediateUpdate', () => {
     const refreshCwds: string[] = [];
     let updateCalls = 0;
     let latestCalls = 0;
+    let runtimeSmokeCalls = 0;
 
     console.log = (...args: unknown[]) => {
       logs.push(args.map((arg) => String(arg)).join(' '));
@@ -483,15 +484,20 @@ describe('runImmediateUpdate', () => {
           refreshCwds.push(refreshCwd);
           return { ok: true, stderr: '' };
         },
+        runPostUpdateRuntimeSmoke: async () => {
+          runtimeSmokeCalls += 1;
+          return { ok: true, stderr: '' };
+        },
       });
 
       assert.equal(result.status, 'updated');
       assert.equal(latestCalls, 1);
       assert.equal(updateCalls, 1);
       assert.equal(setupCalls, 1);
+      assert.equal(runtimeSmokeCalls, 1);
       assert.deepEqual(refreshCwds, [cwd]);
       assert.match(logs.join('\n'), /Running: npm install -g oh-my-codex@latest/);
-      assert.match(logs.join('\n'), /Updated to v0\.14\.1/);
+      assert.match(logs.join('\n'), /Updated to v0\.14\.1; runtime smoke passed/);
 
       const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
         installed_version: string;
@@ -569,6 +575,7 @@ describe('runImmediateUpdate', () => {
     const originalLog = console.log;
     const logs: string[] = [];
     let refreshCalls = 0;
+    let runtimeSmokeCalls = 0;
 
     console.log = (...args: unknown[]) => {
       logs.push(args.map((arg) => String(arg)).join(' '));
@@ -595,12 +602,17 @@ describe('runImmediateUpdate', () => {
           refreshCalls += 1;
           return { ok: true, stderr: '' };
         },
+        runPostUpdateRuntimeSmoke: async () => {
+          runtimeSmokeCalls += 1;
+          return { ok: true, stderr: '' };
+        },
       });
 
       assert.equal(result.status, 'up-to-date');
       assert.equal(refreshCalls, 1);
+      assert.equal(runtimeSmokeCalls, 1);
       assert.match(logs.join('\n'), /Running setup refresh/);
-      assert.match(logs.join('\n'), /Setup refresh completed for v0\.14\.0/);
+      assert.match(logs.join('\n'), /Setup refresh and runtime smoke completed for v0\.14\.0/);
 
       const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
         installed_version: string;
@@ -625,6 +637,7 @@ describe('runImmediateUpdate', () => {
     const logs: string[] = [];
     let updateCalls = 0;
     let refreshCalls = 0;
+    let runtimeSmokeCalls = 0;
 
     console.log = (...args: unknown[]) => {
       logs.push(args.map((arg) => String(arg)).join(' '));
@@ -645,12 +658,17 @@ describe('runImmediateUpdate', () => {
           refreshCalls += 1;
           return { ok: true, stderr: '' };
         },
+        runPostUpdateRuntimeSmoke: async () => {
+          runtimeSmokeCalls += 1;
+          return { ok: true, stderr: '' };
+        },
       });
 
       assert.equal(result.status, 'updated');
       assert.equal(updateCalls, 1);
       assert.equal(refreshCalls, 1);
-      assert.match(logs.join('\n'), /Updated to v0\.14\.1/);
+      assert.equal(runtimeSmokeCalls, 1);
+      assert.match(logs.join('\n'), /Updated to v0\.14\.1; runtime smoke passed/);
     } finally {
       console.log = originalLog;
       await rm(cwd, { recursive: true, force: true });
@@ -685,6 +703,46 @@ describe('runImmediateUpdate', () => {
       assert.equal(result.status, 'failed');
       assert.equal(refreshCalls, 1);
       assert.match(logs.join('\n'), /Update installed, but the setup refresh failed/);
+      await assert.rejects(readFile(stampPath, 'utf-8'));
+    } finally {
+      console.log = originalLog;
+      if (typeof originalCodexHome === 'string') {
+        process.env.CODEX_HOME = originalCodexHome;
+      } else {
+        delete process.env.CODEX_HOME;
+      }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails without writing the success stamp when the post-update runtime smoke fails', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-update-now-'));
+    const stampPath = join(cwd, '.codex', '.omx', 'install-state.json');
+    const originalCodexHome = process.env.CODEX_HOME;
+    const originalLog = console.log;
+    const logs: string[] = [];
+
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '));
+    };
+
+    process.env.CODEX_HOME = join(cwd, '.codex');
+
+    try {
+      const result = await runImmediateUpdate(cwd, {
+        getCurrentVersion: async () => '0.14.0',
+        fetchLatestVersion: async () => '0.14.1',
+        runGlobalUpdate: () => ({ ok: true, stderr: '' }),
+        runSetupRefresh: async () => ({ ok: true, stderr: '' }),
+        runPostUpdateRuntimeSmoke: async () => ({
+          ok: false,
+          stderr: 'omx-runtime schema --json: spawn omx-runtime ENOENT',
+        }),
+      });
+
+      assert.equal(result.status, 'failed');
+      assert.match(logs.join('\n'), /runtime smoke check failed/);
+      assert.match(logs.join('\n'), /omx-runtime schema --json/);
       await assert.rejects(readFile(stampPath, 'utf-8'));
     } finally {
       console.log = originalLog;
