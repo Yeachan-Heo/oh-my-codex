@@ -27,9 +27,9 @@ Execution quality is usually bottlenecked by intent clarity, not just missing im
 </Why_This_Exists>
 
 <Depth_Profiles>
-- **Quick (`--quick`)**: fast pre-PRD pass; target threshold `<= 0.30`; max rounds 5
-- **Standard (`--standard`, default)**: full requirement interview; target threshold `<= 0.20`; max rounds 12
-- **Deep (`--deep`)**: high-rigor exploration; target threshold `<= 0.15`; max rounds 20
+- **Quick (`--quick`)**: fast pre-PRD pass; target threshold `<= 0.05`; max rounds 10
+- **Standard (`--standard`, default)**: full requirement interview; target threshold `<= 0.05`; max rounds 20
+- **Deep (`--deep`)**: high-rigor exploration; target threshold `<= 0.05`; max rounds 30
 - **Autoresearch (`--autoresearch`)**: same interview rigor as Standard, but specialized for `$autoresearch` mission readiness and `.omx/specs/` artifact handoff
 
 If no flag is provided, use **Standard**.
@@ -115,8 +115,8 @@ If no flag is provided, use **Standard**.
     "initial_idea": "<user input>",
     "rounds": [],
     "current_ambiguity": 1.0,
-    "threshold": 0.3,
-    "max_rounds": 5,
+    "threshold": 0.05,
+    "max_rounds": 20,
     "challenge_modes_used": [],
     "codebase_context": null,
     "current_stage": "intent-first",
@@ -278,6 +278,8 @@ Brownfield: `ambiguity = 1 - (intent × 0.25 + outcome × 0.20 + scope × 0.20 +
 Readiness gate:
 - `Non-goals` must be explicit
 - `Decision Boundaries` must be explicit
+- Every clarity dimension used by the active context must score at least `0.95`
+- Weighted ambiguity must be `<= 0.05`
 - A pressure pass must be complete: at least one earlier answer has been revisited with an evidence, assumption, or tradeoff follow-up
 - A practical closure audit must pass: another question would change execution materially, not merely polish wording or chase a narrow edge case
 - If either gate is unresolved, or the pressure pass is incomplete, continue interviewing even when weighted ambiguity is below threshold
@@ -311,7 +313,7 @@ Track used modes in state to prevent repetition.
 When threshold is met (or user exits with warning / hard cap):
 
 1. Write interview transcript summary to:
-   - `.omx/interviews/{slug}-{timestamp}.md`  
+   - `.omx/interviews/{slug}-{timestamp}.md`
      (kept for ralph PRD compatibility)
 2. Write execution-ready spec to:
    - `.omx/specs/deep-interview-{slug}.md`
@@ -440,7 +442,7 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 - User says stop/cancel/abort -> persist state and stop
 - Ambiguity stalls for 3 rounds (+/- 0.05) -> force Ontologist mode once
 - Max rounds reached -> proceed with explicit residual-risk warning
-- All dimensions >= 0.9 -> allow early crystallization even before max rounds
+- All active clarity dimensions >= 0.95 and weighted ambiguity <= 0.05 -> allow crystallization even before max rounds
 </Escalation_And_Stop_Conditions>
 
 <Final_Checklist>
@@ -465,12 +467,12 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 ```toml
 [omx.deepInterview]
 defaultProfile = "standard"
-quickThreshold = 0.30
-standardThreshold = 0.20
-deepThreshold = 0.15
-quickMaxRounds = 5
-standardMaxRounds = 12
-deepMaxRounds = 20
+quickThreshold = 0.05
+standardThreshold = 0.05
+deepThreshold = 0.05
+quickMaxRounds = 10
+standardMaxRounds = 20
+deepMaxRounds = 30
 enableChallengeModes = true
 ```
 
