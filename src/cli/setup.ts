@@ -12,6 +12,7 @@ import {
 	rename,
 	writeFile,
 	stat,
+	lstat,
 	rm,
 } from "fs/promises";
 import { join, dirname, relative, basename } from "path";
@@ -1559,7 +1560,7 @@ async function applyPluginModeHooksConfig(
 		? await readFile(configPath, "utf-8")
 		: "";
 	const nextConfigBase = upsertPluginModeRuntimeFeatureFlags(
-		stripManagedCodexHookTrustState(existingConfig),
+		stripManagedCodexHookTrustState(existingConfig, { hooksPath }),
 		options.codexHookFeatureFlag,
 		{ pluginScopedHooks: options.pluginScopedHooks },
 	);
@@ -1744,6 +1745,15 @@ async function cleanupPluginModeLegacyAgentsMd(
 	options: Pick<SetupOptions, "dryRun" | "verbose">,
 ): Promise<boolean> {
 	if (!existsSync(agentsMdPath)) return false;
+	const fileInfo = await lstat(agentsMdPath);
+	if (fileInfo.isSymbolicLink()) {
+		if (options.verbose) {
+			console.log(
+				`  preserved symlinked AGENTS.md at ${agentsMdPath}; plugin mode only removes direct legacy OMX-generated files`,
+			);
+		}
+		return false;
+	}
 
 	const content = await readFile(agentsMdPath, "utf-8");
 	if (!isOmxGeneratedAgentsMd(content)) return false;

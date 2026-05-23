@@ -835,6 +835,75 @@ OMX_LORE_COMMIT_GUARD = "truee"
 		}
 	});
 
+	it("accepts plugin-scoped native hooks when hooks.json contains user-owned hooks", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-scoped-hooks-user-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(join(wd, ".omx"), { recursive: true });
+			await mkdir(codexDir, { recursive: true });
+			const cacheDir = await installPluginCacheFixture(codexDir);
+			await writeFile(
+				join(wd, ".omx", "setup-scope.json"),
+				`${JSON.stringify({ scope: "user", installMode: "plugin", mcpMode: "none" }, null, 2)}\n`,
+			);
+			await writeFile(
+				join(codexDir, "config.toml"),
+				[
+					"plugin_hooks = true",
+					"goals = true",
+					"",
+					"[marketplaces.oh-my-codex-local]",
+					'source_type = "local"',
+					`source = ${JSON.stringify(repoRoot())}`,
+					"",
+					'[plugins."oh-my-codex@oh-my-codex-local"]',
+					"enabled = true",
+					"",
+				].join("\n"),
+			);
+			await writeFile(
+				join(codexDir, "hooks.json"),
+				JSON.stringify(
+					{
+						hooks: {
+							Stop: [
+								{
+									hooks: [
+										{
+											type: "command",
+											command: "/usr/bin/python3 /tmp/user-notify.py",
+											timeout: 5,
+										},
+									],
+								},
+							],
+						},
+					},
+					null,
+					2,
+				),
+			);
+
+			const res = runOmx(wd, ["doctor"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(
+				res.stdout,
+				new RegExp(
+					`\\[OK\\] Native hooks: plugin-scoped hooks are enabled; existing hooks\\.json at .*\\.codex[\\/]+hooks\\.json is treated as user-owned because plugin-scoped hooks are enabled, and plugin cache native hook coverage smoke passed via ${join(cacheDir, "hooks", "hooks.json").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+				),
+			);
+			assert.doesNotMatch(res.stdout, /hooks\.json is missing OMX-managed coverage/);
+			assert.doesNotMatch(res.stdout, /run "omx setup --force" to restore native hooks/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("warns when hooks.json is missing OMX-managed native hook coverage", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-hooks-coverage-"));
 		try {

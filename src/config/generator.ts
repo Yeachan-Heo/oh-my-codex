@@ -944,7 +944,54 @@ export function syncProjectScopeTrustStateFromRuntime(
   return `${stripped}\n\n${block}`;
 }
 
-export function stripManagedCodexHookTrustState(config: string): string {
+const MANAGED_CODEX_HOOK_EVENT_LABELS = [
+  "session_start",
+  "pre_tool_use",
+  "post_tool_use",
+  "user_prompt_submit",
+  "pre_compact",
+  "post_compact",
+  "stop",
+] as const;
+
+function stripOrphanedManagedCodexHookTrustState(
+  config: string,
+  hooksPath: string,
+): string {
+  const managedHeaders = new Set(
+    MANAGED_CODEX_HOOK_EVENT_LABELS.map(
+      (eventLabel) =>
+        `[hooks.state."${escapeTomlBasicString(`${hooksPath}:${eventLabel}:0:0`)}"]`,
+    ),
+  );
+  const lines = config.split(/\r?\n/);
+  const kept: string[] = [];
+
+  for (let i = 0; i < lines.length;) {
+    const trimmed = lines[i].trim();
+    if (trimmed === OMX_HOOK_TRUST_END_MARKER) {
+      i += 1;
+      continue;
+    }
+    if (!managedHeaders.has(trimmed)) {
+      kept.push(lines[i]);
+      i += 1;
+      continue;
+    }
+
+    i += 1;
+    while (i < lines.length && !/^\s*\[/.test(lines[i])) {
+      i += 1;
+    }
+  }
+
+  return kept.join("\n");
+}
+
+export function stripManagedCodexHookTrustState(
+  config: string,
+  options: { hooksPath?: string } = {},
+): string {
   const lines = config.split(/\r?\n/);
   const kept: string[] = [];
 
@@ -972,7 +1019,12 @@ export function stripManagedCodexHookTrustState(config: string): string {
     i = nextEndIdx + 1;
   }
 
-  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
+  const stripped = kept.join("\n");
+  const withoutOrphans = options.hooksPath
+    ? stripOrphanedManagedCodexHookTrustState(stripped, options.hooksPath)
+    : stripped;
+
+  return withoutOrphans.replace(/\n{3,}/g, "\n\n").trimEnd();
 }
 
 function managedCodexHookTrustStateHeaders(

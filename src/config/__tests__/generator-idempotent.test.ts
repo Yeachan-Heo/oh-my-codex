@@ -1119,6 +1119,43 @@ describe("config generator idempotency (#384)", () => {
     assert.doesNotThrow(() => TOML.parse(stripped));
   });
 
+  it("removes orphaned managed hook trust-state tables for the setup hooks path", () => {
+    const orphaned = [
+      'model = "gpt-5.5"',
+      "",
+      "[hooks.state]",
+      "",
+      '[plugins."oh-my-codex@oh-my-codex-local"]',
+      "enabled = true",
+      "",
+      '[hooks.state."/tmp/codex/hooks.json:post_compact:0:0"]',
+      'trusted_hash = "sha256:managed"',
+      "",
+      '[hooks.state."custom:/hooks.json:stop:0:0"]',
+      'trusted_hash = "sha256:user"',
+      "",
+      '[hooks.state."/tmp/codex/hooks.json:stop:0:0"]',
+      'trusted_hash = "sha256:managed-stop"',
+      "# End OMX-owned Codex hook trust state",
+      "",
+      "[desktop]",
+      "git-create-pull-request-as-draft = true",
+      "",
+    ].join("\n");
+
+    const stripped = stripManagedCodexHookTrustState(orphaned, {
+      hooksPath: "/tmp/codex/hooks.json",
+    });
+
+    assert.doesNotMatch(stripped, /\/tmp\/codex\/hooks\.json:post_compact:0:0/);
+    assert.doesNotMatch(stripped, /\/tmp\/codex\/hooks\.json:stop:0:0/);
+    assert.doesNotMatch(stripped, /End OMX-owned Codex hook trust state/);
+    assert.match(stripped, /^\[hooks\.state\."custom:\/hooks\.json:stop:0:0"\]$/m);
+    assert.match(stripped, /^trusted_hash = "sha256:user"$/m);
+    assert.match(stripped, /^\[desktop\]$/m);
+    assert.doesNotThrow(() => TOML.parse(stripped));
+  });
+
   it("dedupes prior fenced managed hook trust-state blocks before writing a replacement", () => {
     const first = upsertManagedCodexHookTrustState(
       [
