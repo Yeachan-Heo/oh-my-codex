@@ -25,6 +25,7 @@ export interface ReconcileHudForPromptSubmitResult {
     | 'skipped_not_tmux'
     | 'skipped_no_entry'
     | 'skipped_not_omx_owned_tmux'
+    | 'skipped_no_session_id'
     | 'resized'
     | 'recreated'
     | 'replaced_duplicates'
@@ -125,6 +126,15 @@ export async function reconcileHudForPromptSubmit(
     return {
       status: resized ? 'resized' : 'failed',
       paneId: hudPaneIds[0],
+      desiredHeight,
+      duplicateCount,
+    };
+  }
+
+  if (!resolvedSessionId) {
+    return {
+      status: 'skipped_no_session_id',
+      paneId: null,
       desiredHeight,
       duplicateCount,
     };

@@ -9,6 +9,7 @@ export interface TmuxPaneSnapshot {
 }
 
 export const OMX_TMUX_HUD_LEADER_PANE_ENV = 'OMX_TMUX_HUD_LEADER_PANE';
+const OMX_TMUX_HUD_OWNER_ENV = 'OMX_TMUX_HUD_OWNER';
 
 export interface HudPaneOwner {
   sessionId?: string;
@@ -211,6 +212,7 @@ export function buildHudWatchCommand(
   const safeLeaderPaneId = typeof leaderPaneId === 'string' ? leaderPaneId.trim() : '';
   const envPrefix = buildEnvPrefix({
     OMX_SESSION_ID: safeSessionId,
+    [OMX_TMUX_HUD_OWNER_ENV]: '1',
     [OMX_TMUX_HUD_LEADER_PANE_ENV]: safeLeaderPaneId,
     OMX_ROOT: safeOmxRoot,
   });

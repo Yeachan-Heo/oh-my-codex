@@ -199,6 +199,15 @@ describe('HUD pane ownership helpers', () => {
     const cmd = buildHudWatchCommand('/usr/bin/omx.js', undefined, 'sess-a', undefined, '%1');
 
     assert.match(cmd, /OMX_SESSION_ID='sess-a'/);
+    assert.match(cmd, /OMX_TMUX_HUD_OWNER='1'/);
+    assert.match(cmd, new RegExp(`${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1'`));
+  });
+
+  it('tags reconciled HUD watch commands as OMX-owned even without a session id', () => {
+    const cmd = buildHudWatchCommand('/usr/bin/omx.js', undefined, '', undefined, '%1');
+
+    assert.doesNotMatch(cmd, /OMX_SESSION_ID=/);
+    assert.match(cmd, /OMX_TMUX_HUD_OWNER='1'/);
     assert.match(cmd, new RegExp(`${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1'`));
   });
 });
