@@ -218,6 +218,21 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('preserves literal glob and home-path markers in derived titles', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: [
+          '### Stories',
+          '1. Clean dist/* artifacts',
+          '2. Edit ~/.codex/config.toml',
+        ].join('\n'),
+      });
+
+      assert.equal(plan.goals[0]?.title, 'Clean dist/* artifacts');
+      assert.equal(plan.goals[1]?.title, 'Edit ~/.codex/config.toml');
+    });
+  });
+
   it('keeps all valid ordered story sections when numbering restarts', async () => {
     await withTempRepo(async (cwd) => {
       const plan = await createUltragoalPlan(cwd, {
@@ -304,6 +319,23 @@ describe('ultragoal artifacts', () => {
       assert.match(plan.goals[0]?.objective ?? '', /Keep real acceptance criteria attached/);
       assert.doesNotMatch(plan.goals[0]?.objective ?? '', /Run unit tests/);
       assert.doesNotMatch(plan.goals[0]?.objective ?? '', /Run lint/);
+    });
+  });
+
+  it('does not append plain non-story section labels to the previous story objective', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: [
+          '### Stories',
+          '1. Ship the parser fix',
+          '',
+          'Verification checklist:',
+          '   1. Run unit tests',
+        ].join('\n'),
+      });
+
+      assert.equal(plan.goals.length, 1);
+      assert.doesNotMatch(plan.goals[0]?.objective ?? '', /Run unit tests/);
     });
   });
 

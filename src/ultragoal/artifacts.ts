@@ -276,7 +276,10 @@ function cleanLine(line: string): string {
 function stripInlineMarkdown(value: string): string {
   return value
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/[`*~]+/g, '')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/~~([^~]+)~~/g, '$1')
     .trim();
 }
 
@@ -345,9 +348,11 @@ function selectedItemObjective(parent: MarkdownListItem, lines: readonly string[
   const endLineIndex = nextParentLineIndex ?? lines.length;
   for (let lineIndex = parent.lineIndex + 1; lineIndex < endLineIndex; lineIndex += 1) {
     const line = lines[lineIndex] ?? '';
-    if (headingLooksNonStory(normalizeHeading(lines, lineIndex))) break;
-    if (!line.trim()) continue;
     const indent = lineIndentWidth(line);
+    const plainSectionLabel = line.trim().replace(/:$/, '').toLowerCase();
+    if (headingLooksNonStory(normalizeHeading(lines, lineIndex))
+      || (indent <= parent.indent && headingLooksNonStory(plainSectionLabel))) break;
+    if (!line.trim()) continue;
     if (/^\s*(?:[-*+]\s+|\d+[.)]\s+)/.test(line) && indent <= parent.indent) break;
     if (indent <= parent.indent) continue;
     const nested = cleanLine(line);
