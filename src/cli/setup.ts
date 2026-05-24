@@ -54,6 +54,7 @@ import {
 } from "../config/generator.js";
 import type { CodexHookFeatureFlag } from "../config/codex-feature-flags.js";
 import {
+	buildManagedCodexHookTrustState,
 	buildManagedCodexNativeHookWindowsShimContent,
 	buildManagedCodexNativeHookWindowsShimPath,
 	mergeManagedCodexHooksConfig,
@@ -1559,8 +1560,13 @@ async function applyPluginModeHooksConfig(
 	const existingConfig = existsSync(configPath)
 		? await readFile(configPath, "utf-8")
 		: "";
+	const managedTrustState = buildManagedCodexHookTrustState(
+		hooksPath,
+		pkgRoot,
+		{ platform: process.platform, codexHomeDir },
+	);
 	const nextConfigBase = upsertPluginModeRuntimeFeatureFlags(
-		stripManagedCodexHookTrustState(existingConfig, { hooksPath }),
+		stripManagedCodexHookTrustState(existingConfig, { managedTrustState }),
 		options.codexHookFeatureFlag,
 		{ pluginScopedHooks: options.pluginScopedHooks },
 	);
