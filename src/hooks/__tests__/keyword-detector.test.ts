@@ -17,6 +17,19 @@ import { SKILL_ACTIVE_STATE_FILE } from '../../state/skill-active.js';
 import { isUnderspecifiedForExecution, applyRalplanGate } from '../keyword-detector.js';
 import { KEYWORD_TRIGGER_DEFINITIONS } from '../keyword-registry.js';
 
+async function withIsolatedHome<T>(prefix: string, run: (homeDir: string) => Promise<T>): Promise<T> {
+  const homeDir = await mkdtemp(join(tmpdir(), `omx-keyword-home-${prefix}-`));
+  const previousHome = process.env.HOME;
+  try {
+    process.env.HOME = homeDir;
+    return await run(homeDir);
+  } finally {
+    if (typeof previousHome === 'string') process.env.HOME = previousHome;
+    else delete process.env.HOME;
+    await rm(homeDir, { recursive: true, force: true });
+  }
+}
+
 describe('keyword detector team compatibility', () => {
   it('keeps explicit $skill order in detectKeywords results (left-to-right)', () => {
     const matches = detectKeywords('$analyze $ultraqa $code-review now');
@@ -1392,72 +1405,131 @@ enableChallengeModes = false
     }
   });
 
-  it('shows before-after state change when deep-interview config is added at runtime', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-deep-interview-config-before-after-'));
+  it('persists deep-interview config when mixed workflow prompts defer execution modes', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-deep-interview-config-mixed-'));
     const stateDir = join(cwd, '.omx', 'state');
-    const sessionId = 'sess-deep-interview-config-before-after';
-    const statePath = join(stateDir, 'sessions', sessionId, DEEP_INTERVIEW_STATE_FILE);
+    const sessionId = 'sess-deep-interview-config-mixed';
     try {
       await mkdir(join(cwd, '.omx'), { recursive: true });
       await mkdir(stateDir, { recursive: true });
-
-      const before = await recordSkillActivation({
-        stateDir,
-        sourceCwd: cwd,
-        text: '$deep-interview prove config before state',
-        sessionId,
-        nowIso: '2026-02-25T00:00:00.000Z',
-      });
-      const beforeModeState = JSON.parse(await readFile(statePath, 'utf-8')) as {
-        deep_interview_config?: unknown;
-        profile?: string;
-        threshold?: number;
-        max_rounds?: number;
-        config_source?: string;
-      };
-      assert.ok(before);
-      assert.equal(before.deep_interview_config, undefined);
-      assert.equal(beforeModeState.deep_interview_config, undefined);
-      assert.equal(beforeModeState.profile, undefined);
-      assert.equal(beforeModeState.threshold, undefined);
-      assert.equal(beforeModeState.max_rounds, undefined);
-      assert.equal(beforeModeState.config_source, undefined);
-
       await writeFile(
         join(cwd, '.omx', 'config.toml'),
         `[omx.deepInterview]
+defaultProfile = "deep"
+deepThreshold = 0.13
+deepMaxRounds = 21
+enableChallengeModes = false
+`,
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$autopilot $deep-interview prove mixed workflow config',
+        sessionId,
+        nowIso: '2026-02-25T00:00:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'deep-interview');
+      assert.deepEqual(result.deferred_skills, ['autopilot']);
+      assert.equal(result.input_lock?.active, true);
+      assert.equal(result.deep_interview_config?.profile, 'deep');
+      assert.equal(result.deep_interview_config?.threshold, 0.13);
+      assert.equal(result.deep_interview_config?.maxRounds, 21);
+      assert.equal(result.deep_interview_config?.enableChallengeModes, false);
+
+      const modeState = JSON.parse(
+        await readFile(join(stateDir, 'sessions', sessionId, DEEP_INTERVIEW_STATE_FILE), 'utf-8'),
+      ) as {
+        profile?: string;
+        threshold?: number;
+        max_rounds?: number;
+        enable_challenge_modes?: boolean;
+        config_source?: string;
+        deep_interview_config?: { profile?: string; threshold?: number; maxRounds?: number };
+        input_lock?: { active?: boolean };
+      };
+      assert.equal(modeState.profile, 'deep');
+      assert.equal(modeState.threshold, 0.13);
+      assert.equal(modeState.max_rounds, 21);
+      assert.equal(modeState.enable_challenge_modes, false);
+      assert.equal(modeState.config_source, join(cwd, '.omx', 'config.toml'));
+      assert.equal(modeState.deep_interview_config?.profile, 'deep');
+      assert.equal(modeState.input_lock?.active, true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('shows before-after state change when deep-interview config is added at runtime', async () => {
+    await withIsolatedHome('deep-interview-config-before-after', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-deep-interview-config-before-after-'));
+      const stateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-deep-interview-config-before-after';
+      const statePath = join(stateDir, 'sessions', sessionId, DEEP_INTERVIEW_STATE_FILE);
+      try {
+        await mkdir(join(cwd, '.omx'), { recursive: true });
+        await mkdir(stateDir, { recursive: true });
+
+        const before = await recordSkillActivation({
+          stateDir,
+          sourceCwd: cwd,
+          text: '$deep-interview prove config before state',
+          sessionId,
+          nowIso: '2026-02-25T00:00:00.000Z',
+        });
+        const beforeModeState = JSON.parse(await readFile(statePath, 'utf-8')) as {
+          deep_interview_config?: unknown;
+          profile?: string;
+          threshold?: number;
+          max_rounds?: number;
+          config_source?: string;
+        };
+        assert.ok(before);
+        assert.equal(before.deep_interview_config, undefined);
+        assert.equal(beforeModeState.deep_interview_config, undefined);
+        assert.equal(beforeModeState.profile, undefined);
+        assert.equal(beforeModeState.threshold, undefined);
+        assert.equal(beforeModeState.max_rounds, undefined);
+        assert.equal(beforeModeState.config_source, undefined);
+
+        await writeFile(
+          join(cwd, '.omx', 'config.toml'),
+          `[omx.deepInterview]
 defaultProfile = "standard"
 standardThreshold = 0.05
 standardMaxRounds = 15
 `,
-      );
+        );
 
-      const after = await recordSkillActivation({
-        stateDir,
-        sourceCwd: cwd,
-        text: '$deep-interview prove config after state',
-        sessionId,
-        nowIso: '2026-02-25T00:00:01.000Z',
-      });
-      const afterModeState = JSON.parse(await readFile(statePath, 'utf-8')) as {
-        deep_interview_config?: { profile?: string; threshold?: number; maxRounds?: number; sourcePath?: string };
-        profile?: string;
-        threshold?: number;
-        max_rounds?: number;
-        config_source?: string;
-      };
-      assert.ok(after);
-      assert.equal(after.deep_interview_config?.profile, 'standard');
-      assert.equal(after.deep_interview_config?.threshold, 0.05);
-      assert.equal(after.deep_interview_config?.maxRounds, 15);
-      assert.equal(afterModeState.deep_interview_config?.profile, 'standard');
-      assert.equal(afterModeState.profile, 'standard');
-      assert.equal(afterModeState.threshold, 0.05);
-      assert.equal(afterModeState.max_rounds, 15);
-      assert.equal(afterModeState.config_source, join(cwd, '.omx', 'config.toml'));
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
+        const after = await recordSkillActivation({
+          stateDir,
+          sourceCwd: cwd,
+          text: '$deep-interview prove config after state',
+          sessionId,
+          nowIso: '2026-02-25T00:00:01.000Z',
+        });
+        const afterModeState = JSON.parse(await readFile(statePath, 'utf-8')) as {
+          deep_interview_config?: { profile?: string; threshold?: number; maxRounds?: number; sourcePath?: string };
+          profile?: string;
+          threshold?: number;
+          max_rounds?: number;
+          config_source?: string;
+        };
+        assert.ok(after);
+        assert.equal(after.deep_interview_config?.profile, 'standard');
+        assert.equal(after.deep_interview_config?.threshold, 0.05);
+        assert.equal(after.deep_interview_config?.maxRounds, 15);
+        assert.equal(afterModeState.deep_interview_config?.profile, 'standard');
+        assert.equal(afterModeState.profile, 'standard');
+        assert.equal(afterModeState.threshold, 0.05);
+        assert.equal(afterModeState.max_rounds, 15);
+        assert.equal(afterModeState.config_source, join(cwd, '.omx', 'config.toml'));
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
   });
 
   it('preserves deep-interview config values during continuation prompts', async () => {
@@ -1561,42 +1633,44 @@ standardMaxRounds = 15
   });
 
   it('keeps deep-interview activation alive when repo config TOML is malformed', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-deep-interview-malformed-config-'));
-    const stateDir = join(cwd, '.omx', 'state');
-    const originalWarn = console.warn;
-    try {
-      console.warn = () => {};
-      await mkdir(join(cwd, '.omx'), { recursive: true });
-      await mkdir(stateDir, { recursive: true });
-      await writeFile(join(cwd, '.omx', 'config.toml'), '[omx.deepInterview\nstandardThreshold = 0.05\n');
+    await withIsolatedHome('deep-interview-malformed-config', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-deep-interview-malformed-config-'));
+      const stateDir = join(cwd, '.omx', 'state');
+      const originalWarn = console.warn;
+      try {
+        console.warn = () => {};
+        await mkdir(join(cwd, '.omx'), { recursive: true });
+        await mkdir(stateDir, { recursive: true });
+        await writeFile(join(cwd, '.omx', 'config.toml'), '[omx.deepInterview\nstandardThreshold = 0.05\n');
 
-      const result = await recordSkillActivation({
-        stateDir,
-        sourceCwd: cwd,
-        text: '$deep-interview clarify despite malformed config',
-        sessionId: 'sess-deep-interview-malformed-config',
-        nowIso: '2026-02-25T00:00:00.000Z',
-      });
+        const result = await recordSkillActivation({
+          stateDir,
+          sourceCwd: cwd,
+          text: '$deep-interview clarify despite malformed config',
+          sessionId: 'sess-deep-interview-malformed-config',
+          nowIso: '2026-02-25T00:00:00.000Z',
+        });
 
-      assert.ok(result);
-      assert.equal(result.skill, 'deep-interview');
-      assert.equal(result.active, true);
-      assert.equal(result.deep_interview_config, undefined);
+        assert.ok(result);
+        assert.equal(result.skill, 'deep-interview');
+        assert.equal(result.active, true);
+        assert.equal(result.deep_interview_config, undefined);
 
-      const modeState = JSON.parse(
-        await readFile(join(stateDir, 'sessions', 'sess-deep-interview-malformed-config', DEEP_INTERVIEW_STATE_FILE), 'utf-8'),
-      ) as {
-        mode?: string;
-        active?: boolean;
-        deep_interview_config?: unknown;
-      };
-      assert.equal(modeState.mode, 'deep-interview');
-      assert.equal(modeState.active, true);
-      assert.equal(modeState.deep_interview_config, undefined);
-    } finally {
-      console.warn = originalWarn;
-      await rm(cwd, { recursive: true, force: true });
-    }
+        const modeState = JSON.parse(
+          await readFile(join(stateDir, 'sessions', 'sess-deep-interview-malformed-config', DEEP_INTERVIEW_STATE_FILE), 'utf-8'),
+        ) as {
+          mode?: string;
+          active?: boolean;
+          deep_interview_config?: unknown;
+        };
+        assert.equal(modeState.mode, 'deep-interview');
+        assert.equal(modeState.active, true);
+        assert.equal(modeState.deep_interview_config, undefined);
+      } finally {
+        console.warn = originalWarn;
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
   });
 
   it('creates the session-scoped deep-interview state directory before persisting mode state', async () => {

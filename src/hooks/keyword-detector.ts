@@ -851,22 +851,32 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
     )
   ));
 
-  const deepInterviewInputLock = match.skill === 'deep-interview'
+  const isTrackedWorkflowMatch = isTrackedWorkflowMode(match.skill);
+  const trackedMatchSkill = isTrackedWorkflowMatch ? match.skill : null;
+  const normalizedInputText = isTrackedWorkflowMatch
+    ? normalizeWorkflowKeyboardTypos(input.text)
+    : input.text;
+  const workflowMatches: TrackedWorkflowMode[] = isTrackedWorkflowMatch
+    ? parseExplicitSkillInvocations(normalizedInputText).matches
+      .map((entry) => entry.skill)
+      .filter(isTrackedWorkflowMode)
+    : [];
+  const resolvedWorkflowRequest = isTrackedWorkflowMatch
+    ? resolveRequestedWorkflowSkills(workflowMatches.length > 0 ? workflowMatches : [trackedMatchSkill as TrackedWorkflowMode])
+    : null;
+  const requestedWorkflowSkills = resolvedWorkflowRequest?.requestedSkills ?? [];
+  const deferredSkills = resolvedWorkflowRequest?.deferredSkills ?? [];
+  const willActivateDeepInterview = match.skill === 'deep-interview'
+    || requestedWorkflowSkills.includes('deep-interview');
+
+  const deepInterviewInputLock = willActivateDeepInterview
     ? createDeepInterviewInputLock(nowIso, previous?.input_lock)
     : releaseDeepInterviewInputLock(previous?.input_lock, nowIso);
-  const deepInterviewConfig = match.skill === 'deep-interview'
+  const deepInterviewConfig = willActivateDeepInterview
     ? resolveDeepInterviewRuntimeConfig({ cwd: sourceCwd, text: input.text })
     : null;
 
-  if (isTrackedWorkflowMode(match.skill)) {
-    const normalizedInputText = normalizeWorkflowKeyboardTypos(input.text);
-    const workflowMatches = parseExplicitSkillInvocations(normalizedInputText).matches
-      .map((entry) => entry.skill)
-      .filter(isTrackedWorkflowMode);
-    const { requestedSkills: requestedWorkflowSkills, deferredSkills } = resolveRequestedWorkflowSkills(
-      workflowMatches.length > 0 ? workflowMatches : [match.skill],
-    );
-
+  if (isTrackedWorkflowMatch) {
     let nextWorkflowEntries = previousWorkflowEntries.map((entry) => ({ ...entry }));
     const transitionMessages: string[] = [];
     for (const requestedMode of requestedWorkflowSkills) {
@@ -881,7 +891,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
           active: previous?.active ?? nextWorkflowEntries.length > 0,
           skill: previous?.skill || match.skill,
           keyword: previous?.keyword || match.keyword,
-          phase: previous?.phase || initialWorkflowPhaseForMode(match.skill),
+          phase: previous?.phase || initialWorkflowPhaseForMode(trackedMatchSkill as TrackedWorkflowMode),
           activated_at: previous?.activated_at || nowIso,
           updated_at: nowIso,
           source: 'keyword-detector',

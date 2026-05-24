@@ -1752,6 +1752,66 @@ standardMaxRounds = 15
     }
   });
 
+  it("injects deep-interview config for mixed workflow prompts that defer execution modes", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-config-mixed-"));
+    const sessionId = "sess-deep-interview-config-mixed";
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(
+        join(cwd, ".omx", "config.toml"),
+        `[omx.deepInterview]
+defaultProfile = "deep"
+deepThreshold = 0.13
+deepMaxRounds = 21
+enableChallengeModes = false
+`,
+      );
+
+      const result = await withIsolatedHome("deep-interview-config-mixed", async () => (
+        dispatchCodexNativeHook(
+          {
+            hook_event_name: "UserPromptSubmit",
+            cwd,
+            session_id: sessionId,
+            thread_id: "thread-mixed-config",
+            turn_id: "turn-mixed-config",
+            prompt: "$autopilot $deep-interview prove mixed config context",
+          },
+          { cwd },
+        )
+      ));
+      const serializedOutput = JSON.stringify(result.outputJson);
+      const modeState = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "sessions", sessionId, "deep-interview-state.json"), "utf-8"),
+      ) as {
+        deep_interview_config?: { profile?: string; threshold?: number; maxRounds?: number; enableChallengeModes?: boolean };
+        profile?: string;
+        threshold?: number;
+        max_rounds?: number;
+        enable_challenge_modes?: boolean;
+      };
+
+      assert.equal(result.skillState?.skill, "deep-interview");
+      assert.deepEqual(result.skillState?.deferred_skills, ["autopilot"]);
+      assert.equal(result.skillState?.deep_interview_config?.profile, "deep");
+      assert.equal(result.skillState?.deep_interview_config?.threshold, 0.13);
+      assert.equal(result.skillState?.deep_interview_config?.maxRounds, 21);
+      assert.equal(result.skillState?.deep_interview_config?.enableChallengeModes, false);
+      assert.match(serializedOutput, /Deep-interview config override active/);
+      assert.match(serializedOutput, /profile=deep/);
+      assert.match(serializedOutput, /threshold=0\.13/);
+      assert.match(serializedOutput, /max_rounds=21/);
+      assert.match(serializedOutput, /enableChallengeModes=false/);
+      assert.equal(modeState.deep_interview_config?.profile, "deep");
+      assert.equal(modeState.profile, "deep");
+      assert.equal(modeState.threshold, 0.13);
+      assert.equal(modeState.max_rounds, 21);
+      assert.equal(modeState.enable_challenge_modes, false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("keeps deep-interview config override context on continuation prompts", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-config-continuation-"));
     const sessionId = "sess-deep-interview-config-continuation";
