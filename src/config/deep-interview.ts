@@ -45,6 +45,12 @@ interface DeepInterviewProfileSpec {
   };
 }
 
+type DeepInterviewConfigReadResult =
+  | { status: 'missing' }
+  | { status: 'malformed' }
+  | { status: 'no-table' }
+  | { status: 'table'; table: DeepInterviewConfigTable };
+
 const DEFAULT_PROFILE: DeepInterviewProfile = 'standard';
 const DEFAULT_ENABLE_CHALLENGE_MODES = true;
 
@@ -104,14 +110,15 @@ function extractDeepInterviewTable(parsed: unknown): DeepInterviewConfigTable | 
   return parsed.omx.deepInterview as DeepInterviewConfigTable;
 }
 
-function readDeepInterviewConfigTable(configPath: string): DeepInterviewConfigTable | null {
-  if (!existsSync(configPath)) return null;
+function readDeepInterviewConfigTable(configPath: string): DeepInterviewConfigReadResult {
+  if (!existsSync(configPath)) return { status: 'missing' };
 
   try {
-    return extractDeepInterviewTable(parseToml(readFileSync(configPath, 'utf-8')) as unknown);
+    const table = extractDeepInterviewTable(parseToml(readFileSync(configPath, 'utf-8')) as unknown);
+    return table ? { status: 'table', table } : { status: 'no-table' };
   } catch (error) {
     warnMalformedConfig(configPath, error);
-    return null;
+    return { status: 'malformed' };
   }
 }
 
@@ -165,8 +172,9 @@ export function getDeepInterviewConfigCandidatePaths(options: Pick<DeepInterview
 
 export function resolveDeepInterviewRuntimeConfig(options: DeepInterviewConfigOptions): DeepInterviewRuntimeConfig | null {
   for (const candidate of getDeepInterviewConfigCandidatePaths(options)) {
-    const table = readDeepInterviewConfigTable(candidate.path);
-    if (table) return buildRuntimeConfig(candidate, table, options);
+    const result = readDeepInterviewConfigTable(candidate.path);
+    if (result.status === 'malformed') return null;
+    if (result.status === 'table') return buildRuntimeConfig(candidate, result.table, options);
   }
 
   return null;

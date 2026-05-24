@@ -1583,6 +1583,59 @@ standardMaxRounds = 15
     }
   });
 
+  it('preserves explicit deep-interview profile flags during continuation prompts', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-deep-interview-config-profile-continuation-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'sess-deep-interview-config-profile-continuation';
+    const statePath = join(stateDir, 'sessions', sessionId, DEEP_INTERVIEW_STATE_FILE);
+    try {
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        join(cwd, '.omx', 'config.toml'),
+        `[omx.deepInterview]
+defaultProfile = "standard"
+standardThreshold = 0.22
+standardMaxRounds = 13
+deepThreshold = 0.13
+deepMaxRounds = 21
+`,
+      );
+
+      const started = await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: '$deep-interview --deep prove explicit profile continuation',
+        sessionId,
+        nowIso: '2026-02-25T00:00:00.000Z',
+      });
+      const continued = await recordSkillActivation({
+        stateDir,
+        sourceCwd: cwd,
+        text: 'continue',
+        sessionId,
+        nowIso: '2026-02-25T00:00:01.000Z',
+      });
+      const modeState = JSON.parse(await readFile(statePath, 'utf-8')) as {
+        deep_interview_config?: { profile?: string; threshold?: number; maxRounds?: number };
+        profile?: string;
+        threshold?: number;
+        max_rounds?: number;
+      };
+
+      assert.equal(started?.deep_interview_config?.profile, 'deep');
+      assert.equal(continued?.deep_interview_config?.profile, 'deep');
+      assert.equal(continued?.deep_interview_config?.threshold, 0.13);
+      assert.equal(continued?.deep_interview_config?.maxRounds, 21);
+      assert.equal(modeState.deep_interview_config?.profile, 'deep');
+      assert.equal(modeState.profile, 'deep');
+      assert.equal(modeState.threshold, 0.13);
+      assert.equal(modeState.max_rounds, 21);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the documented deep-interview Suggested Config executable through activation state', async () => {
     const skillDoc = await readFile(join(process.cwd(), 'skills', 'deep-interview', 'SKILL.md'), 'utf-8');
     const markerIndex = skillDoc.indexOf('## Suggested Config (optional)');

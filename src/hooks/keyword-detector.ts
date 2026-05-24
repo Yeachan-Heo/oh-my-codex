@@ -723,6 +723,21 @@ function shouldReusePreviousSkillForContinuation(
     || isNamedActiveSkillContinuationPrompt(text, previousSkill);
 }
 
+function isDeepInterviewRuntimeConfig(value: unknown): value is DeepInterviewRuntimeConfig {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as Partial<DeepInterviewRuntimeConfig>;
+  return (
+    (candidate.profile === 'quick' || candidate.profile === 'standard' || candidate.profile === 'deep')
+    && typeof candidate.threshold === 'number'
+    && Number.isFinite(candidate.threshold)
+    && typeof candidate.maxRounds === 'number'
+    && Number.isInteger(candidate.maxRounds)
+    && typeof candidate.enableChallengeModes === 'boolean'
+    && typeof candidate.sourcePath === 'string'
+    && candidate.sourcePath.trim().length > 0
+  );
+}
+
 function resolveContinuationKeywordMatch(
   text: string,
   previous: SkillActiveState | null,
@@ -872,8 +887,11 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   const deepInterviewInputLock = willActivateDeepInterview
     ? createDeepInterviewInputLock(nowIso, previous?.input_lock)
     : releaseDeepInterviewInputLock(previous?.input_lock, nowIso);
+  const reusableDeepInterviewConfig = sameSkillContinuation && isDeepInterviewRuntimeConfig(previous?.deep_interview_config)
+    ? previous.deep_interview_config
+    : null;
   const deepInterviewConfig = willActivateDeepInterview
-    ? resolveDeepInterviewRuntimeConfig({ cwd: sourceCwd, text: input.text })
+    ? reusableDeepInterviewConfig ?? resolveDeepInterviewRuntimeConfig({ cwd: sourceCwd, text: input.text })
     : null;
 
   if (isTrackedWorkflowMatch) {
