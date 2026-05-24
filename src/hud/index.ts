@@ -7,6 +7,7 @@
  *   omx hud --json       Output raw state as JSON
  *   omx hud --preset=X   Use preset: minimal, focused, full
  *   omx hud --tmux       Open HUD in a tmux split pane (auto-detects orientation)
+ *   omx hud --reconcile-tmux
  */
 
 import { execFileSync } from 'child_process';
@@ -26,7 +27,7 @@ import {
   registerHudResizeHook,
   resizeTmuxPane,
 } from './tmux.js';
-import { OMX_TMUX_HUD_OWNER_ENV } from './reconcile.js';
+import { OMX_TMUX_HUD_OWNER_ENV, reconcileHudForPromptSubmit } from './reconcile.js';
 import { buildHudRuntimeEnv } from './tmux.js';
 
 export const HUD_USAGE = [
@@ -36,6 +37,7 @@ export const HUD_USAGE = [
   '  omx hud --json       Output raw state as JSON',
   '  omx hud --preset=X   Use preset: minimal, focused, full',
   '  omx hud --tmux       Open HUD in a tmux split pane (auto-detects orientation)',
+  '  omx hud --reconcile-tmux',
 ].join('\n');
 
 type SleepFn = (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -326,14 +328,28 @@ async function renderOnce(cwd: string, flags: HudFlags): Promise<void> {
   }));
 }
 
-export async function hudCommand(args: string[]): Promise<void> {
+export async function hudCommand(
+  args: string[],
+  deps: {
+    cwd?: string;
+    reconcileHudForPromptSubmit?: typeof reconcileHudForPromptSubmit;
+  } = {},
+): Promise<void> {
   if (args[0] === '--help' || args[0] === '-h') {
     console.log(HUD_USAGE);
     return;
   }
 
   const flags = parseFlags(args);
-  const cwd = process.cwd();
+  const cwd = deps.cwd ?? process.cwd();
+
+  if (args.includes('--reconcile-tmux')) {
+    const result = await (deps.reconcileHudForPromptSubmit ?? reconcileHudForPromptSubmit)(cwd);
+    if (result.status === 'failed') {
+      process.exitCode = 1;
+    }
+    return;
+  }
 
   if (flags.tmux) {
     await launchTmuxPane(cwd, flags);

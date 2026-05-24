@@ -78,6 +78,10 @@ import {
   releaseTmuxExtendedKeysLease,
   withTmuxExtendedKeys,
   serializeDetachedSessionParentEnv,
+  buildInsideTmuxHudHookEnv,
+  registerInsideTmuxHudResizeHook,
+  buildDetachedHudHookEnv,
+  registerDetachedHudLayoutReconcileHook,
   CODEX_SQLITE_HOME_ENV,
   DETACHED_TMUX_HISTORY_LIMIT,
 } from "../index.js";
@@ -2954,7 +2958,19 @@ describe("tmux HUD pane helpers", () => {
       "-t",
       "%leader",
       "-F",
-      "#{pane_id}\x1f#{pane_current_command}\x1f#{pane_start_command}\x1f#{pane_current_path}",
+      [
+        "#{pane_id}",
+        "#{pane_current_command}",
+        "#{pane_left}",
+        "#{pane_top}",
+        "#{pane_width}",
+        "#{pane_height}",
+        "#{pane_bottom}",
+        "#{window_width}",
+        "#{window_height}",
+        "#{pane_start_command}",
+        "#{pane_current_path}",
+      ].join("\x1f"),
     ]);
   });
 
@@ -3347,8 +3363,151 @@ describe("detached tmux new-session sequencing", () => {
     const source = await readFile(join(repoRoot, 'src', 'cli', 'index.ts'), 'utf-8');
     assert.match(
       source,
-      /registerHudResizeHook\(hudPaneId,\s*currentPaneId,\s*HUD_TMUX_HEIGHT_LINES\)/,
+      /registerInsideTmuxHudResizeHook\(\{\s*hudPaneId,\s*currentPaneId,\s*cwd,\s*sessionId,\s*omxRootOverride,\s*\}\)/,
     );
+    assert.match(
+      source,
+      /if \(currentPaneId\) \{\s*unregisterHudResizeHook\(currentPaneId\);\s*\}/,
+    );
+  });
+
+  it("buildInsideTmuxHudHookEnv tags hook commands with session, owner, leader, and local root", () => {
+    const env = buildInsideTmuxHudHookEnv(
+      { PATH: "/bin" },
+      "sess-a",
+      "%leader",
+      "/repo",
+    );
+
+    assert.equal(env.PATH, "/bin");
+    assert.equal(env.OMX_SESSION_ID, "sess-a");
+    assert.equal(env.OMX_TMUX_HUD_OWNER, "1");
+    assert.equal(env.OMX_TMUX_HUD_LEADER_PANE, "%leader");
+    assert.equal(env.OMX_ROOT, "/repo");
+  });
+
+  it("registerInsideTmuxHudResizeHook forwards cwd and env to hook registration", () => {
+    const calls: Array<{
+      hudPaneId: string;
+      leaderPaneId: string | undefined;
+      heightLines: number;
+      cwd?: string;
+      env?: NodeJS.ProcessEnv;
+    }> = [];
+
+    const result = registerInsideTmuxHudResizeHook({
+      hudPaneId: "%hud",
+      currentPaneId: "%leader",
+      cwd: "/repo",
+      sessionId: "sess-a",
+      omxRootOverride: "/repo",
+      baseEnv: { PATH: "/bin" },
+      register: (hudPaneId, leaderPaneId, heightLines, options) => {
+        calls.push({ hudPaneId, leaderPaneId, heightLines, cwd: options?.cwd, env: options?.env });
+        return true;
+      },
+    });
+
+    assert.equal(result, true);
+    assert.deepEqual(calls, [{
+      hudPaneId: "%hud",
+      leaderPaneId: "%leader",
+      heightLines: HUD_TMUX_HEIGHT_LINES,
+      cwd: "/repo",
+      env: {
+        PATH: "/bin",
+        OMX_SESSION_ID: "sess-a",
+        OMX_TMUX_HUD_OWNER: "1",
+        OMX_TMUX_HUD_LEADER_PANE: "%leader",
+        OMX_ROOT: "/repo",
+      },
+    }]);
+    assert.equal(registerInsideTmuxHudResizeHook({
+      hudPaneId: null,
+      currentPaneId: "%leader",
+      cwd: "/repo",
+      sessionId: "sess-a",
+      register: () => {
+        throw new Error("should not register without a HUD pane");
+      },
+    }), false);
+  });
+
+  it("buildDetachedHudHookEnv preserves tmux targeting and local launcher identity", () => {
+    const env = buildDetachedHudHookEnv(
+      { PATH: "/bin" },
+      "sess-a",
+      "%leader",
+      "/tmp/tmux.sock,123,7",
+      "/repo/dist/cli/omx.js",
+      "/repo",
+    );
+
+    assert.equal(env.PATH, "/bin");
+    assert.equal(env.TMUX, "/tmp/tmux.sock,123,7");
+    assert.equal(env.TMUX_PANE, "%leader");
+    assert.equal(env.OMX_SESSION_ID, "sess-a");
+    assert.equal(env.OMX_TMUX_HUD_OWNER, "1");
+    assert.equal(env.OMX_ROOT, "/repo");
+    assert.equal(env.OMX_ENTRY_PATH, "/repo/dist/cli/omx.js");
+  });
+
+  it("registerDetachedHudLayoutReconcileHook reads TMUX from the detached leader pane before registering", () => {
+    const calls: Array<{
+      hudPaneId: string;
+      leaderPaneId: string | undefined;
+      heightLines: number;
+      cwd?: string;
+      env?: NodeJS.ProcessEnv;
+    }> = [];
+    const readTargets: string[] = [];
+
+    const result = registerDetachedHudLayoutReconcileHook({
+      hudPaneId: "%hud",
+      detachedLeaderPaneId: "%leader",
+      cwd: "/repo",
+      sessionId: "sess-a",
+      omxBin: "/repo/dist/cli/omx.js",
+      omxRootOverride: "/repo",
+      baseEnv: { PATH: "/bin" },
+      readTmuxEnvValue: (targetPaneId) => {
+        readTargets.push(targetPaneId);
+        return "/tmp/tmux.sock,123,7";
+      },
+      register: (hudPaneId, leaderPaneId, heightLines, options) => {
+        calls.push({ hudPaneId, leaderPaneId, heightLines, cwd: options?.cwd, env: options?.env });
+        return true;
+      },
+    });
+
+    assert.equal(result, true);
+    assert.deepEqual(readTargets, ["%leader"]);
+    assert.deepEqual(calls, [{
+      hudPaneId: "%hud",
+      leaderPaneId: "%leader",
+      heightLines: HUD_TMUX_HEIGHT_LINES,
+      cwd: "/repo",
+      env: {
+        PATH: "/bin",
+        TMUX: "/tmp/tmux.sock,123,7",
+        TMUX_PANE: "%leader",
+        OMX_SESSION_ID: "sess-a",
+        OMX_TMUX_HUD_OWNER: "1",
+        OMX_ROOT: "/repo",
+        OMX_ENTRY_PATH: "/repo/dist/cli/omx.js",
+      },
+    }]);
+    assert.equal(registerDetachedHudLayoutReconcileHook({
+      hudPaneId: "%hud",
+      detachedLeaderPaneId: "%leader",
+      cwd: "/repo",
+      sessionId: "sess-a",
+      omxBin: "/repo/dist/cli/omx.js",
+      readTmuxEnvValue: () => undefined,
+      register: () => {
+        throw new Error("should not register without TMUX");
+      },
+    }), false);
   });
 
   it("buildDetachedSessionBootstrapSteps starts native Windows detached sessions with powershell", () => {

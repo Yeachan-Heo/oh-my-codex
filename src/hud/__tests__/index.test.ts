@@ -61,6 +61,34 @@ afterEach(() => {
   process.exitCode = undefined;
 });
 
+describe('hudCommand reconcile entrypoint', () => {
+  it('runs tmux reconciliation without changing the exit code when repair succeeds', async () => {
+    let reconciledCwd: string | null = null;
+
+    await hudCommand(['--reconcile-tmux'], {
+      cwd: '/repo',
+      reconcileHudForPromptSubmit: async (cwd) => {
+        reconciledCwd = cwd;
+        return { status: 'recreated', paneId: '%9', desiredHeight: 3, duplicateCount: 0 };
+      },
+    });
+
+    assert.equal(reconciledCwd, '/repo');
+    assert.equal(process.exitCode, undefined);
+  });
+
+  it('sets a non-zero exit code when tmux reconciliation fails', async () => {
+    await hudCommand(['--reconcile-tmux'], {
+      cwd: '/repo',
+      reconcileHudForPromptSubmit: async () => (
+        { status: 'failed', paneId: null, desiredHeight: 3, duplicateCount: 0 }
+      ),
+    });
+
+    assert.equal(process.exitCode, 1);
+  });
+});
+
 describe('runWatchMode', () => {
   it('resolves a live cwd when the HUD launch path was reused by another run', () => {
     const resolved = resolveHudWatchCwd('/home/tools/calc', {
@@ -636,7 +664,10 @@ exit 0
       await hudCommand(['--tmux']);
 
       const tmuxLog = await readFile(logPath, 'utf8');
-      assert.match(tmuxLog, /list-panes -t %1 -F #\{pane_id\}\x1f#\{pane_current_command\}\x1f#\{pane_start_command\}\x1f#\{pane_current_path\}/);
+      assert.match(
+        tmuxLog,
+        /list-panes -t %1 -F #\{pane_id\}\x1f#\{pane_current_command\}(?:\x1f#\{[^}]+\})*\x1f#\{pane_start_command\}\x1f#\{pane_current_path\}/,
+      );
       assert.match(tmuxLog, /kill-pane -t %3/);
       assert.match(tmuxLog, /resize-pane -t %2 -y \d+/);
       assert.doesNotMatch(tmuxLog, /split-window/);
@@ -701,7 +732,10 @@ exit 0
 
       const tmuxLog = await readFile(logPath, 'utf8');
       assert.match(tmuxLog, /display-message -p #\{pane_id\}/);
-      assert.match(tmuxLog, /list-panes -t %1 -F #\{pane_id\}\x1f#\{pane_current_command\}\x1f#\{pane_start_command\}\x1f#\{pane_current_path\}/);
+      assert.match(
+        tmuxLog,
+        /list-panes -t %1 -F #\{pane_id\}\x1f#\{pane_current_command\}(?:\x1f#\{[^}]+\})*\x1f#\{pane_start_command\}\x1f#\{pane_current_path\}/,
+      );
       assert.match(tmuxLog, /resize-pane -t %2 -y \d+/);
       assert.doesNotMatch(tmuxLog, /split-window/);
       assert.ok(logs.some((line) => line.includes('Reused existing HUD pane')));
