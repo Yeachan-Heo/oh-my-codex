@@ -240,6 +240,31 @@ deepMaxRounds = 30
     }
   });
 
+  it('does not cascade to lower-precedence configs when an existing higher-precedence file omits deepInterview', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-deep-interview-config-no-table-precedence-'));
+    const homeDir = await mkdtemp(join(tmpdir(), 'omx-deep-interview-home-no-table-precedence-'));
+    try {
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      await mkdir(join(homeDir, '.omx'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'config.toml'), '[omx.other]\nenabled = true\n');
+      await writeFile(
+        join(homeDir, '.omx', 'config.toml'),
+        `[omx.deepInterview]
+defaultProfile = "deep"
+deepThreshold = 0.01
+deepMaxRounds = 30
+`,
+      );
+
+      const config = resolveDeepInterviewRuntimeConfig({ cwd, homeDir, text: '$deep-interview' });
+
+      assert.equal(config, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it('parses supported profile flags only', () => {
     assert.equal(parseDeepInterviewProfileFromText('$deep-interview --quick'), 'quick');
     assert.equal(parseDeepInterviewProfileFromText('$deep-interview --standard'), 'standard');

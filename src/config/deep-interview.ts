@@ -173,7 +173,7 @@ export function getDeepInterviewConfigCandidatePaths(options: Pick<DeepInterview
 export function resolveDeepInterviewRuntimeConfig(options: DeepInterviewConfigOptions): DeepInterviewRuntimeConfig | null {
   for (const candidate of getDeepInterviewConfigCandidatePaths(options)) {
     const result = readDeepInterviewConfigTable(candidate.path);
-    if (result.status === 'malformed') return null;
+    if (result.status === 'malformed' || result.status === 'no-table') return null;
     if (result.status === 'table') return buildRuntimeConfig(candidate, result.table, options);
   }
 
