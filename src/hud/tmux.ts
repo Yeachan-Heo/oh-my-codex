@@ -80,14 +80,26 @@ export function readHudPaneOwner(pane: TmuxPaneSnapshot): HudPaneOwner {
 
 export function hudPaneMatchesOwner(pane: TmuxPaneSnapshot, owner: HudPaneOwner = {}): boolean {
   if (!isHudWatchPane(pane)) return false;
-  const wantsSession = typeof owner.sessionId === 'string' && owner.sessionId.trim() !== '';
-  const wantsLeaderPane = typeof owner.leaderPaneId === 'string' && owner.leaderPaneId.trim() !== '';
+  const wantedSessionId = typeof owner.sessionId === 'string' ? owner.sessionId.trim() : '';
+  const wantedLeaderPaneId = typeof owner.leaderPaneId === 'string' ? owner.leaderPaneId.trim() : '';
+  const wantsSession = wantedSessionId !== '';
+  const wantsLeaderPane = wantedLeaderPaneId !== '';
   if (!wantsSession && !wantsLeaderPane) return true;
+
   const paneOwner = readHudPaneOwner(pane);
-  if (wantsSession && paneOwner.sessionId !== owner.sessionId?.trim()) return false;
-  if (wantsSession && wantsLeaderPane && !paneOwner.leaderPaneId) return true;
-  if (wantsLeaderPane && paneOwner.leaderPaneId !== owner.leaderPaneId?.trim()) return false;
-  return true;
+  const sessionMatches = wantsSession && paneOwner.sessionId === wantedSessionId;
+  const leaderPaneMatches = wantsLeaderPane && paneOwner.leaderPaneId === wantedLeaderPaneId;
+
+  if (wantsSession && wantsLeaderPane) {
+    // Prompt-submit revive may know the canonical session id even when an
+    // existing launch-path HUD was only tagged with its leader pane. Treat
+    // either owner identity as the same HUD so reconciliation can resize/reuse
+    // it instead of creating a duplicate, while keeping other live leaders in
+    // the same tmux window isolated when their leader tag differs.
+    return leaderPaneMatches || (sessionMatches && !paneOwner.leaderPaneId);
+  }
+  if (wantsSession) return sessionMatches;
+  return leaderPaneMatches;
 }
 
 export function findHudWatchPaneIds(
