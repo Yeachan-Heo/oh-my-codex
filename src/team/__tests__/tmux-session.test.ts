@@ -3125,6 +3125,97 @@ esac
 });
 
 describe('createTeamSession tmux instance tagging', () => {
+  it('redraws the leader pane after team layout changes so wrapped diff hunks repaint with gutters', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-redraw-leader-'));
+    const prevTmux = process.env.TMUX;
+    const prevTmuxPane = process.env.TMUX_PANE;
+    const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    try {
+      await withMockTmuxFixture(
+        'omx-tmux-redraw-leader-',
+        (logPath) => `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${logPath}"
+case "\${1:-}" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  display-message)
+    case "$*" in
+      *"#{window_width}"*)
+        echo "120"
+        ;;
+      *)
+        echo "leader:0 %1"
+        ;;
+    esac
+    exit 0
+    ;;
+  list-panes)
+    case "$*" in
+      *"pane_current_command"*)
+        printf "%%1\\tnode\\t'codex'\\n"
+        ;;
+      *)
+        printf "%%1\\n"
+        ;;
+    esac
+    exit 0
+    ;;
+  split-window)
+    case "$*" in
+      *" -h "*)
+        echo "%2"
+        ;;
+      *)
+        echo "%3"
+        ;;
+    esac
+    exit 0
+    ;;
+  set-option|resize-pane|select-layout|set-window-option|select-pane|set-hook|run-shell|send-keys)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+        `,
+        async ({ logPath }) => {
+          const fakeBinDir = join(logPath, '..');
+          const geminiPath = join(fakeBinDir, 'gemini');
+          await writeFile(geminiPath, '#!/bin/sh\nexit 0\n');
+          await chmod(geminiPath, 0o755);
+
+          process.env.TMUX = 'leader-session,stub,0';
+          process.env.TMUX_PANE = '%1';
+          process.env.OMX_TEAM_WORKER_CLI = 'gemini';
+
+          createTeamSession('Diff Gutter Redraw', 1, cwd);
+
+          const tmuxLog = await readFile(logPath, 'utf-8');
+          assert.match(tmuxLog, /select-layout -t leader:0 main-vertical/);
+          assert.match(tmuxLog, /set-window-option -t leader:0 main-pane-width 60/);
+          assert.match(tmuxLog, /split-window -v -f -l 3 -t leader:0 -d -P -F #\{pane_id\}/);
+          assert.match(
+            tmuxLog,
+            /send-keys -t %1 C-l/,
+            'leader Codex pane must repaint after team splits/resizes so tmux does not auto-wrap diff continuation rows without the line-number gutter',
+          );
+        },
+      );
+    } finally {
+      if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
+      else delete process.env.TMUX;
+      if (typeof prevTmuxPane === 'string') process.env.TMUX_PANE = prevTmuxPane;
+      else delete process.env.TMUX_PANE;
+      if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('tags leader, worker, and HUD panes with pane-scoped instance ownership', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-pane-tags-'));
     const prevTmux = process.env.TMUX;
