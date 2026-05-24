@@ -462,6 +462,16 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 <Advanced>
 ## Suggested Config (optional)
 
+Deep-interview reads runtime defaults from the first existing config source in this order:
+
+1. Repository-local `.omx/config.toml`
+2. Repository-root `omx.toml`
+3. User-global `~/.omx/config.toml`
+
+This section is currently a deep-interview-specific runtime override surface, not a general replacement for Codex `config.toml` or `.omx-config.json` model/env routing.
+Malformed config files are ignored fail-soft so `$deep-interview` activation can continue with built-in defaults.
+Explicit `--quick`, `--standard`, or `--deep` invocation flags override `defaultProfile`.
+
 ```toml
 [omx.deepInterview]
 defaultProfile = "standard"

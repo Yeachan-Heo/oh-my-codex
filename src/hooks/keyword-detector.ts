@@ -36,6 +36,11 @@ import {
   clearDeepInterviewQuestionObligation,
   type DeepInterviewQuestionEnforcementState,
 } from '../question/deep-interview.js';
+import {
+  buildDeepInterviewConfigStateFields,
+  resolveDeepInterviewRuntimeConfig,
+  type DeepInterviewRuntimeConfig,
+} from '../config/deep-interview.js';
 
 export interface KeywordMatch {
   keyword: string;
@@ -78,6 +83,7 @@ export interface SkillActiveState {
   thread_id?: string;
   turn_id?: string;
   input_lock?: DeepInterviewInputLock;
+  deep_interview_config?: DeepInterviewRuntimeConfig;
   active_skills?: SkillActiveEntry[];
   initialized_mode?: string;
   initialized_state_path?: string;
@@ -253,6 +259,7 @@ export async function persistDeepInterviewModeState(
   const previousModeState = await readExistingDeepInterviewState(statePath);
 
   if (nextSkill?.skill === 'deep-interview' && nextSkill.active) {
+    const configStateFields = buildDeepInterviewConfigStateFields(nextSkill.deep_interview_config);
     const nextQuestionEnforcement = clearDeepInterviewQuestionObligation(
       previousModeState?.question_enforcement,
       'handoff',
@@ -271,6 +278,7 @@ export async function persistDeepInterviewModeState(
         session_id: input.sessionId ?? previousModeState?.session_id,
         thread_id: input.threadId ?? previousModeState?.thread_id,
         turn_id: input.turnId ?? previousModeState?.turn_id,
+        ...configStateFields,
         ...(nextSkill.input_lock ? { input_lock: nextSkill.input_lock } : {}),
         ...(nextQuestionEnforcement ? { question_enforcement: nextQuestionEnforcement } : {}),
         ...(previousModeState?.downstream_authority ? { downstream_authority: previousModeState.downstream_authority } : {}),
@@ -393,6 +401,10 @@ async function persistStatefulSkillSeedState(
     const defaultMaxIterations = config.mode === 'autopilot' ? 10 : 50;
     baseState.iteration = typeof existingModeState?.iteration === 'number' ? existingModeState.iteration : defaultIteration;
     baseState.max_iterations = typeof existingModeState?.max_iterations === 'number' ? existingModeState.max_iterations : defaultMaxIterations;
+  }
+
+  if (config.mode === 'deep-interview') {
+    Object.assign(baseState, buildDeepInterviewConfigStateFields(nextSkill.deep_interview_config));
   }
 
   if (config.mode === 'autopilot') {
@@ -842,6 +854,9 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
   const deepInterviewInputLock = match.skill === 'deep-interview'
     ? createDeepInterviewInputLock(nowIso, previous?.input_lock)
     : releaseDeepInterviewInputLock(previous?.input_lock, nowIso);
+  const deepInterviewConfig = match.skill === 'deep-interview'
+    ? resolveDeepInterviewRuntimeConfig({ cwd: sourceCwd, text: input.text })
+    : null;
 
   if (isTrackedWorkflowMode(match.skill)) {
     const normalizedInputText = normalizeWorkflowKeyboardTypos(input.text);
@@ -958,6 +973,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
       ...(requestedWorkflowSkills.length > 1 ? { requested_skills: requestedWorkflowSkills } : {}),
       ...(deferredSkills.length > 0 ? { deferred_skills: deferredSkills } : {}),
       ...(deepInterviewInputLock ? { input_lock: deepInterviewInputLock } : {}),
+      ...(primarySkill === 'deep-interview' && deepInterviewConfig ? { deep_interview_config: deepInterviewConfig } : {}),
     };
 
     try {
@@ -972,6 +988,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
             phase: requestedEntry.phase || workflowState.phase,
             activated_at: requestedEntry.activated_at || workflowState.activated_at,
             updated_at: requestedEntry.updated_at || workflowState.updated_at,
+            ...(requestedEntry.skill === 'deep-interview' && deepInterviewConfig ? { deep_interview_config: deepInterviewConfig } : {}),
           },
           nowIso,
           previous,
@@ -1023,6 +1040,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
       turn_id: input.turnId,
     }],
     ...(deepInterviewInputLock ? { input_lock: deepInterviewInputLock } : {}),
+    ...(match.skill === 'deep-interview' && deepInterviewConfig ? { deep_interview_config: deepInterviewConfig } : {}),
   };
 
   try {

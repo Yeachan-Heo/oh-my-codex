@@ -44,6 +44,7 @@ import {
   recordSkillActivation,
   type SkillActiveState,
 } from "../hooks/keyword-detector.js";
+import { buildDeepInterviewConfigInstruction } from "../hooks/deep-interview-config-instruction.js";
 import {
   detectNativeStopStallPattern,
   loadAutoNudgeConfig,
@@ -1720,7 +1721,24 @@ function buildAdditionalContextMessage(
   const promptPriorityMessage = buildPromptPriorityMessage(prompt);
   const matches = detectKeywords(prompt);
   const match = detectPrimaryKeyword(prompt);
-  if (!match) return promptPriorityMessage;
+  if (!match) {
+    const continuedSkill = safeString(skillState?.skill).trim();
+    if (!continuedSkill) return promptPriorityMessage;
+    const deepInterviewPromptActivationNote = skillState?.initialized_mode === "deep-interview"
+      ? buildDeepInterviewQuestionBridgeInstruction(cwd, payload)
+      : null;
+    const deepInterviewConfigPromptActivationNote = buildDeepInterviewConfigInstruction(cwd, skillState);
+    return [
+      `OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}".`,
+      promptPriorityMessage,
+      skillState?.initialized_mode && skillState.initialized_state_path
+        ? buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path)
+        : null,
+      deepInterviewPromptActivationNote,
+      deepInterviewConfigPromptActivationNote,
+      "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
+    ].filter(Boolean).join(" ");
+  }
   const detectedKeywordMessage = matches.length > 1
     ? `OMX native UserPromptSubmit detected workflow keywords ${matches.map((entry) => `"${entry.keyword}" -> ${entry.skill}`).join(", ")}.`
     : `OMX native UserPromptSubmit detected workflow keyword "${match.keyword}" -> ${match.skill}.`;
@@ -1737,6 +1755,7 @@ function buildAdditionalContextMessage(
   const deepInterviewPromptActivationNote = skillState?.initialized_mode === "deep-interview"
     ? buildDeepInterviewQuestionBridgeInstruction(cwd, payload)
     : null;
+  const deepInterviewConfigPromptActivationNote = buildDeepInterviewConfigInstruction(cwd, skillState);
   const ultraworkPromptActivationNote = skillState?.initialized_mode === "ultrawork"
     ? "Ultrawork protocol: ground the task before editing, define pass/fail acceptance criteria, keep shared-file work local, and use direct-tool plus background evidence lanes only for truly independent work. Direct ultrawork provides lightweight verification only; Ralph owns persistence and the full verified-completion promise."
     : null;
@@ -1772,6 +1791,7 @@ function buildAdditionalContextMessage(
       promptPriorityMessage,
       ultragoalPromptActivationNote,
       autopilotPromptActivationNote,
+      deepInterviewConfigPromptActivationNote,
       skillState.initialized_mode && skillState.initialized_state_path
         ? buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path)
         : null,
@@ -1796,6 +1816,7 @@ function buildAdditionalContextMessage(
       promptPriorityMessage,
       initializedStateMessage,
       deepInterviewPromptActivationNote,
+      deepInterviewConfigPromptActivationNote,
       ultraworkPromptActivationNote,
       ultragoalPromptActivationNote,
       autopilotPromptActivationNote,
@@ -1815,6 +1836,7 @@ function buildAdditionalContextMessage(
       promptPriorityMessage,
       buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path),
       deepInterviewPromptActivationNote,
+      deepInterviewConfigPromptActivationNote,
       ultraworkPromptActivationNote,
       ultragoalPromptActivationNote,
       autopilotPromptActivationNote,
