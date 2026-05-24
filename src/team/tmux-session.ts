@@ -604,6 +604,12 @@ export function buildReconcileHudResizeArgs(
   return ['run-shell', buildBestEffortShellCommand(buildNestedTmuxShellCommand(buildHudResizeCommand(hudPaneId, heightLines)))];
 }
 
+function redrawLeaderPaneAfterTeamLayout(leaderPaneId: string): void {
+  const target = leaderPaneId.trim();
+  if (!target.startsWith('%')) return;
+  runTmux(['send-keys', '-t', target, 'C-l']);
+}
+
 const ZSH_CANDIDATE_PATHS = ['/bin/zsh', '/usr/bin/zsh', '/usr/local/bin/zsh', '/opt/local/bin/zsh', '/opt/homebrew/bin/zsh'];
 const BASH_CANDIDATE_PATHS = ['/bin/bash', '/usr/bin/bash'];
 
@@ -1355,6 +1361,7 @@ export function createTeamSession(
     }
 
     runTmux(['select-pane', '-t', leaderPaneId]);
+    redrawLeaderPaneAfterTeamLayout(leaderPaneId);
     sleepSeconds(0.5);
 
     // Enable mouse scrolling so agent output panes can be scrolled with the
