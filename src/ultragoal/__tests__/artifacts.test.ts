@@ -286,6 +286,49 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('does not append later non-story sections to the previous story objective', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: [
+          '### Stories',
+          '1. Ship the parser fix',
+          '   - Keep real acceptance criteria attached.',
+          '',
+          '### Verification checklist',
+          '   1. Run unit tests',
+          '   2. Run lint',
+        ].join('\n'),
+      });
+
+      assert.equal(plan.goals.length, 1);
+      assert.match(plan.goals[0]?.objective ?? '', /Keep real acceptance criteria attached/);
+      assert.doesNotMatch(plan.goals[0]?.objective ?? '', /Run unit tests/);
+      assert.doesNotMatch(plan.goals[0]?.objective ?? '', /Run lint/);
+    });
+  });
+
+  it('recognizes Setext non-story headings before selecting story items', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: [
+          'Stories',
+          '-------',
+          '1. Implement parser fix',
+          '2. Add regression coverage',
+          '',
+          'Verification checklist',
+          '----------------------',
+          '1. Do not become a story.',
+        ].join('\n'),
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), [
+        'Implement parser fix',
+        'Add regression coverage',
+      ]);
+    });
+  });
+
   it('keeps explicit goals authoritative over derived markdown candidates', async () => {
     await withTempRepo(async (cwd) => {
       const plan = await createUltragoalPlan(cwd, {

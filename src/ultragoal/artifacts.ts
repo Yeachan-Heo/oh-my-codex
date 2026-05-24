@@ -294,9 +294,22 @@ function lineIndentWidth(line: string): number {
   return (match?.[1] ?? '').replace(/\t/g, '  ').length;
 }
 
-function normalizeHeading(line: string): string | undefined {
+function normalizeAtxHeading(line: string): string | undefined {
   const match = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/.exec(line);
   return match ? stripInlineMarkdown(match[1]).toLowerCase() : undefined;
+}
+
+function normalizeSetextHeading(lines: readonly string[], lineIndex: number): string | undefined {
+  const line = lines[lineIndex] ?? '';
+  if (!/^\s{0,3}(?:=+|-+)\s*$/.test(line)) return undefined;
+  const previous = lines[lineIndex - 1] ?? '';
+  const text = previous.trim();
+  if (!text || /^\s*(?:[-*+]\s+|\d+[.)]\s+)/.test(previous)) return undefined;
+  return stripInlineMarkdown(text).toLowerCase();
+}
+
+function normalizeHeading(lines: readonly string[], lineIndex: number): string | undefined {
+  return normalizeAtxHeading(lines[lineIndex] ?? '') ?? normalizeSetextHeading(lines, lineIndex);
 }
 
 function headingLooksNonStory(heading: string | undefined): boolean {
@@ -308,7 +321,7 @@ function parseMarkdownListItems(lines: readonly string[]): MarkdownListItem[] {
   const items: MarkdownListItem[] = [];
   let heading: string | undefined;
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-    heading = normalizeHeading(lines[lineIndex] ?? '') ?? heading;
+    heading = normalizeHeading(lines, lineIndex) ?? heading;
     const line = lines[lineIndex] ?? '';
     const match = /^(\s*)([-*+]|\d+[.)])\s+(.+)$/.exec(line);
     if (!match) continue;
@@ -332,6 +345,7 @@ function selectedItemObjective(parent: MarkdownListItem, lines: readonly string[
   const endLineIndex = nextParentLineIndex ?? lines.length;
   for (let lineIndex = parent.lineIndex + 1; lineIndex < endLineIndex; lineIndex += 1) {
     const line = lines[lineIndex] ?? '';
+    if (headingLooksNonStory(normalizeHeading(lines, lineIndex))) break;
     if (!line.trim()) continue;
     const indent = lineIndentWidth(line);
     if (/^\s*(?:[-*+]\s+|\d+[.)]\s+)/.test(line) && indent <= parent.indent) break;
