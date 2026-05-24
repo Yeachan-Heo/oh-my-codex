@@ -1,6 +1,6 @@
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ultragoalCommand, ULTRAGOAL_HELP } from '../ultragoal.js';
@@ -80,6 +80,32 @@ describe('cli/ultragoal', () => {
       assert.match(goals.codexObjective ?? '', /Complete the durable ultragoal plan/);
       assert.match(goals.codexObjective ?? '', /including later accepted\/appended stories/);
       assert.doesNotMatch(goals.codexObjective ?? '', /G001-first-milestone/);
+    });
+  });
+
+  it('creates story-level goals from a nested markdown brief file', async () => {
+    await withCwd(async (cwd) => {
+      const briefPath = join(cwd, 'nested-plan.md');
+      await writeFile(briefPath, [
+        '# Nested plan',
+        '',
+        '### P0',
+        '1. Fix extractor',
+        '   - Keep nested checklists under the story.',
+        '2. Add tests',
+        '   - Artifacts coverage.',
+        '3. Verify handoff',
+        '   - Prepare PR body.',
+      ].join('\n'));
+
+      const created = await capture(() => ultragoalCommand(['create-goals', '--brief-file', briefPath]));
+      assert.equal(created.exitCode, undefined);
+      assert.match(created.stdout.join('\n'), /ultragoal plan created: 3 goal/);
+
+      const goals = JSON.parse(await readFile(join(cwd, '.omx/ultragoal/goals.json'), 'utf-8')) as { goals: Array<{ title: string; objective: string }> };
+      assert.equal(goals.goals.length, 3);
+      assert.equal(goals.goals[0]?.title, 'Fix extractor');
+      assert.match(goals.goals[0]?.objective ?? '', /Keep nested checklists under the story/);
     });
   });
 

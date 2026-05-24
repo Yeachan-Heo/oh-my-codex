@@ -117,6 +117,111 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('derives story-level goals from nested markdown plans', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: [
+          '# Improvement plan',
+          '',
+          '### P0',
+          '1. **Fix extractor boundaries**',
+          '   - Parse parent list items only.',
+          '   - Acceptance criteria:',
+          '     - Nested checklist text stays in the parent objective.',
+          '2. Add regression tests',
+          '   - Cover nested bullets.',
+          '3. Verify and hand off',
+          '   1. Run focused tests.',
+          '',
+          '### Immediate next actions',
+          '1. Do not become a fourth story.',
+          '2. Nor a fifth.',
+        ].join('\n'),
+      });
+
+      assert.equal(plan.goals.length, 3);
+      assert.equal(plan.goals[0]?.id, 'G001-fix-extractor-boundaries');
+      assert.equal(plan.goals[0]?.title, 'Fix extractor boundaries');
+      assert.match(plan.goals[0]?.objective ?? '', /Parse parent list items only/);
+      assert.match(plan.goals[0]?.objective ?? '', /Acceptance criteria/);
+      assert.match(plan.goals[0]?.objective ?? '', /Nested checklist text stays/);
+      assert.doesNotMatch(plan.goals.map((goal) => goal.title).join('\n'), /Do not become a fourth story/);
+    });
+  });
+
+  it('prefers story sections over longer non-story ordered checklists', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: [
+          '# Improvement plan',
+          '',
+          '### Stories',
+          '1. Build the extractor repair',
+          '   - Keep nested criteria attached.',
+          '2. Add regression coverage',
+          '3. Prepare handoff',
+          '',
+          '### Verification checklist',
+          '1. Run unit tests',
+          '2. Run lint',
+          '3. Update PR body',
+          '4. Check status',
+          '',
+          '### Validation',
+          '1. Also do not become a story.',
+        ].join('\n'),
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), [
+        'Build the extractor repair',
+        'Add regression coverage',
+        'Prepare handoff',
+      ]);
+    });
+  });
+
+  it('keeps repeated markdown auto-numbered story items in one run', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: [
+          '### Stories',
+          '1. First story',
+          '1. Second story',
+          '1. Third story',
+          '',
+          '### Next actions',
+          '1. Do not become a story.',
+        ].join('\n'),
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), [
+        'First story',
+        'Second story',
+        'Third story',
+      ]);
+    });
+  });
+
+  it('keeps explicit goals authoritative over derived markdown candidates', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: [
+          '1. Derived story',
+          '   - Nested checklist item',
+          '2. Another derived story',
+          '3. Third derived story',
+        ].join('\n'),
+        goals: [
+          { title: 'Explicit story', objective: 'Run only the explicit story queue.' },
+        ],
+      });
+
+      assert.equal(plan.goals.length, 1);
+      assert.equal(plan.goals[0]?.id, 'G001-explicit-story');
+      assert.equal(plan.goals[0]?.objective, 'Run only the explicit story queue.');
+    });
+  });
+
   it('starts one story at a time and emits an aggregate Codex goal handoff by default', async () => {
     await withTempRepo(async (cwd) => {
       await createUltragoalPlan(cwd, {

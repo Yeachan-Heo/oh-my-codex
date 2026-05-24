@@ -273,6 +273,104 @@ function cleanLine(line: string): string {
   return line.replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/, '').trim();
 }
 
+function stripInlineMarkdown(value: string): string {
+  return value
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[`*_~]+/g, '')
+    .trim();
+}
+
+interface MarkdownListItem {
+  lineIndex: number;
+  indent: number;
+  ordered: boolean;
+  number?: number;
+  text: string;
+  heading?: string;
+}
+
+function lineIndentWidth(line: string): number {
+  const match = /^(\s*)/.exec(line);
+  return (match?.[1] ?? '').replace(/\t/g, '  ').length;
+}
+
+function normalizeHeading(line: string): string | undefined {
+  const match = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/.exec(line);
+  return match ? stripInlineMarkdown(match[1]).toLowerCase() : undefined;
+}
+
+function headingLooksNonStory(heading: string | undefined): boolean {
+  if (!heading) return false;
+  return /\b(?:acceptance|criteria|verification|validation|checklist|checks?|tests?|evidence|notes?|constraints?|risks?|immediate next actions?|next actions?|follow-?ups?|status)\b/.test(heading);
+}
+
+function parseMarkdownListItems(lines: readonly string[]): MarkdownListItem[] {
+  const items: MarkdownListItem[] = [];
+  let heading: string | undefined;
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    heading = normalizeHeading(lines[lineIndex] ?? '') ?? heading;
+    const line = lines[lineIndex] ?? '';
+    const match = /^(\s*)([-*+]|\d+[.)])\s+(.+)$/.exec(line);
+    if (!match) continue;
+    const marker = match[2];
+    const text = cleanLine(line);
+    if (!text || text.length > 1200) continue;
+    items.push({
+      lineIndex,
+      indent: match[1].replace(/\t/g, '  ').length,
+      ordered: /^\d+[.)]$/.test(marker),
+      number: /^\d+[.)]$/.test(marker) ? Number.parseInt(marker, 10) : undefined,
+      text,
+      heading,
+    });
+  }
+  return items;
+}
+
+function selectedItemObjective(parent: MarkdownListItem, lines: readonly string[], nextParentLineIndex?: number): string {
+  const parts = [parent.text];
+  const endLineIndex = nextParentLineIndex ?? lines.length;
+  for (let lineIndex = parent.lineIndex + 1; lineIndex < endLineIndex; lineIndex += 1) {
+    const line = lines[lineIndex] ?? '';
+    if (!line.trim()) continue;
+    const indent = lineIndentWidth(line);
+    if (/^\s*(?:[-*+]\s+|\d+[.)]\s+)/.test(line) && indent <= parent.indent) break;
+    if (indent <= parent.indent) continue;
+    const nested = cleanLine(line);
+    if (!nested || nested.length > 1200) continue;
+    parts.push(nested);
+  }
+  return parts.join('\n');
+}
+
+function longestTopLevelOrderedRun(items: readonly MarkdownListItem[]): MarkdownListItem[] {
+  const minIndent = Math.min(...items.map((item) => item.indent));
+  const orderedTopLevelItems = items.filter((item) => item.indent === minIndent && item.ordered && !headingLooksNonStory(item.heading));
+  const runs: MarkdownListItem[][] = [];
+  let current: MarkdownListItem[] = [];
+  for (const item of orderedTopLevelItems) {
+    const previous = current.at(-1);
+    const startsNewNumberedSection = previous?.number !== undefined
+      && item.number !== undefined
+      && item.number <= previous.number
+      && !(item.number === 1 && item.heading === previous.heading);
+    if (startsNewNumberedSection) {
+      runs.push(current);
+      current = [];
+    }
+    current.push(item);
+  }
+  if (current.length > 0) runs.push(current);
+  return runs
+    .filter((run) => run.length >= 3)
+    .sort((left, right) => right.length - left.length || left[0].lineIndex - right[0].lineIndex)[0] ?? [];
+}
+
+function topLevelListItems(items: readonly MarkdownListItem[]): MarkdownListItem[] {
+  const minIndent = Math.min(...items.map((item) => item.indent));
+  return items.filter((item) => item.indent === minIndent && !headingLooksNonStory(item.heading));
+}
+
 function normalizeObjective(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
@@ -492,14 +590,12 @@ function titleFromObjective(objective: string, fallback: string): string {
 
 export function deriveGoalCandidates(brief: string): Array<{ title: string; objective: string }> {
   const lines = brief.split(/\r?\n/);
-  const bulletGoals = lines
-    .map((line) => ({ original: line, cleaned: cleanLine(line) }))
-    .filter(({ cleaned }) => cleaned.length > 0 && cleaned.length <= 1200)
-    .filter(({ original, cleaned }, index, all) => (
-      /^\s*(?:[-*+]\s+|\d+[.)]\s+)/.test(original)
-      && all.findIndex((candidate) => candidate.cleaned === cleaned) === index
-    ))
-    .map(({ cleaned }) => cleaned);
+  const listItems = parseMarkdownListItems(lines);
+  const storyRun = listItems.length > 0 ? longestTopLevelOrderedRun(listItems) : [];
+  const parentItems = storyRun.length > 0 ? storyRun : topLevelListItems(listItems);
+  const bulletGoals = parentItems
+    .map((item, index) => selectedItemObjective(item, lines, parentItems[index + 1]?.lineIndex))
+    .filter((objective, index, all) => all.findIndex((candidate) => candidate === objective) === index);
 
   const objectives = bulletGoals.length > 0
     ? bulletGoals
@@ -510,7 +606,7 @@ export function deriveGoalCandidates(brief: string): Array<{ title: string; obje
 
   const selected = objectives.length > 0 ? objectives : [brief.trim() || 'Complete the requested project objective.'];
   return selected.map((objective, index) => ({
-    title: titleFromObjective(objective, `Goal ${index + 1}`),
+    title: titleFromObjective(stripInlineMarkdown(objective), `Goal ${index + 1}`),
     objective,
   }));
 }
