@@ -72,7 +72,8 @@ const PROFILE_SPECS: Record<DeepInterviewProfile, DeepInterviewProfileSpec> = {
   },
 };
 
-const PROFILE_FLAG_PATTERN = /(?:^|\s)--(quick|standard|deep)(?=\s|$)/i;
+const DEEP_INTERVIEW_INVOCATION_PATTERN = /(?:^|\s)(?:\$(?:[A-Za-z0-9_-]+:)?deep-interview|deep[-\s]interview)(?=\s|$)/i;
+const PROFILE_FLAG_TOKEN_PATTERN = /^--(quick|standard|deep)$/i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -157,7 +158,19 @@ function buildRuntimeConfig(
 }
 
 export function parseDeepInterviewProfileFromText(text: string | undefined): DeepInterviewProfile | undefined {
-  return normalizeProfile(PROFILE_FLAG_PATTERN.exec(text ?? '')?.[1]);
+  const input = text ?? '';
+  const invocationMatch = DEEP_INTERVIEW_INVOCATION_PATTERN.exec(input);
+  if (!invocationMatch) return undefined;
+
+  const afterInvocation = input.slice((invocationMatch.index ?? 0) + invocationMatch[0].length).trimStart();
+  for (const token of afterInvocation.split(/\s+/)) {
+    if (!token) continue;
+    if (!token.startsWith('--')) return undefined;
+    const profile = normalizeProfile(PROFILE_FLAG_TOKEN_PATTERN.exec(token)?.[1]);
+    if (profile) return profile;
+  }
+
+  return undefined;
 }
 
 export function getDeepInterviewConfigCandidatePaths(options: Pick<DeepInterviewConfigOptions, 'cwd' | 'homeDir'>): DeepInterviewConfigCandidate[] {

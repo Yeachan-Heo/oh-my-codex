@@ -269,6 +269,11 @@ deepMaxRounds = 30
     assert.equal(parseDeepInterviewProfileFromText('$deep-interview --quick'), 'quick');
     assert.equal(parseDeepInterviewProfileFromText('$deep-interview --standard'), 'standard');
     assert.equal(parseDeepInterviewProfileFromText('$deep-interview --deep'), 'deep');
+    assert.equal(parseDeepInterviewProfileFromText('$oh-my-codex:deep-interview --deep'), 'deep');
+    assert.equal(parseDeepInterviewProfileFromText('deep interview --quick'), 'quick');
     assert.equal(parseDeepInterviewProfileFromText('$deep-interview --deeper'), undefined);
+    assert.equal(parseDeepInterviewProfileFromText('$deep-interview clarify this and run other-tool --deep'), undefined);
+    assert.equal(parseDeepInterviewProfileFromText('$deep-interview clarify the plain-text --deep option'), undefined);
+    assert.equal(parseDeepInterviewProfileFromText('explain the --deep option'), undefined);
   });
 });
