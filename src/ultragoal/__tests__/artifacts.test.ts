@@ -202,6 +202,34 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('keeps all valid ordered story sections when numbering restarts', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: [
+          '### P0',
+          '1. Repair parser boundary',
+          '2. Add extractor regression tests',
+          '',
+          '### P1',
+          '1. Refresh operator docs',
+          '2. Prepare upstream handoff',
+          '',
+          '### Verification checklist',
+          '1. Run tests',
+          '2. Run lint',
+          '3. Check PR status',
+        ].join('\n'),
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), [
+        'Repair parser boundary',
+        'Add extractor regression tests',
+        'Refresh operator docs',
+        'Prepare upstream handoff',
+      ]);
+    });
+  });
+
   it('keeps explicit goals authoritative over derived markdown candidates', async () => {
     await withTempRepo(async (cwd) => {
       const plan = await createUltragoalPlan(cwd, {

@@ -343,27 +343,10 @@ function selectedItemObjective(parent: MarkdownListItem, lines: readonly string[
   return parts.join('\n');
 }
 
-function longestTopLevelOrderedRun(items: readonly MarkdownListItem[]): MarkdownListItem[] {
+function topLevelOrderedStoryItems(items: readonly MarkdownListItem[]): MarkdownListItem[] {
   const minIndent = Math.min(...items.map((item) => item.indent));
   const orderedTopLevelItems = items.filter((item) => item.indent === minIndent && item.ordered && !headingLooksNonStory(item.heading));
-  const runs: MarkdownListItem[][] = [];
-  let current: MarkdownListItem[] = [];
-  for (const item of orderedTopLevelItems) {
-    const previous = current.at(-1);
-    const startsNewNumberedSection = previous?.number !== undefined
-      && item.number !== undefined
-      && item.number <= previous.number
-      && !(item.number === 1 && item.heading === previous.heading);
-    if (startsNewNumberedSection) {
-      runs.push(current);
-      current = [];
-    }
-    current.push(item);
-  }
-  if (current.length > 0) runs.push(current);
-  return runs
-    .filter((run) => run.length >= 3)
-    .sort((left, right) => right.length - left.length || left[0].lineIndex - right[0].lineIndex)[0] ?? [];
+  return orderedTopLevelItems.length >= 3 ? orderedTopLevelItems : [];
 }
 
 function topLevelListItems(items: readonly MarkdownListItem[]): MarkdownListItem[] {
@@ -591,8 +574,8 @@ function titleFromObjective(objective: string, fallback: string): string {
 export function deriveGoalCandidates(brief: string): Array<{ title: string; objective: string }> {
   const lines = brief.split(/\r?\n/);
   const listItems = parseMarkdownListItems(lines);
-  const storyRun = listItems.length > 0 ? longestTopLevelOrderedRun(listItems) : [];
-  const parentItems = storyRun.length > 0 ? storyRun : topLevelListItems(listItems);
+  const storyItems = listItems.length > 0 ? topLevelOrderedStoryItems(listItems) : [];
+  const parentItems = storyItems.length > 0 ? storyItems : topLevelListItems(listItems);
   const bulletGoals = parentItems
     .map((item, index) => selectedItemObjective(item, lines, parentItems[index + 1]?.lineIndex))
     .filter((objective, index, all) => all.findIndex((candidate) => candidate === objective) === index);
