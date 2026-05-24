@@ -357,12 +357,6 @@ function selectedItemObjective(parent: MarkdownListItem, lines: readonly string[
   return parts.join('\n');
 }
 
-function topLevelOrderedStoryItems(items: readonly MarkdownListItem[]): MarkdownListItem[] {
-  const minIndent = Math.min(...items.map((item) => item.indent));
-  const orderedTopLevelItems = items.filter((item) => item.indent === minIndent && item.ordered && !headingLooksNonStory(item.heading));
-  return orderedTopLevelItems;
-}
-
 function topLevelListItems(items: readonly MarkdownListItem[]): MarkdownListItem[] {
   const minIndent = Math.min(...items.map((item) => item.indent));
   return items.filter((item) => item.indent === minIndent && !headingLooksNonStory(item.heading));
@@ -588,8 +582,7 @@ function titleFromObjective(objective: string, fallback: string): string {
 export function deriveGoalCandidates(brief: string): Array<{ title: string; objective: string }> {
   const lines = brief.split(/\r?\n/);
   const listItems = parseMarkdownListItems(lines);
-  const storyItems = listItems.length > 0 ? topLevelOrderedStoryItems(listItems) : [];
-  const parentItems = storyItems.length > 0 ? storyItems : topLevelListItems(listItems);
+  const parentItems = topLevelListItems(listItems);
   const bulletGoals = parentItems
     .map((item, index) => selectedItemObjective(item, lines, parentItems[index + 1]?.lineIndex))
     .filter((objective, index, all) => all.findIndex((candidate) => candidate === objective) === index);

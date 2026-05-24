@@ -329,6 +329,24 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('keeps mixed top-level bullet and ordered goals together', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: [
+          '- Milestone A',
+          '- Milestone B',
+          '1. Ordered follow-up that is still top-level work',
+        ].join('\n'),
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), [
+        'Milestone A',
+        'Milestone B',
+        'Ordered follow-up that is still top-level work',
+      ]);
+    });
+  });
+
   it('keeps explicit goals authoritative over derived markdown candidates', async () => {
     await withTempRepo(async (cwd) => {
       const plan = await createUltragoalPlan(cwd, {
