@@ -147,4 +147,71 @@ describe('run-test-files diagnostics', () => {
       rmSync(wd, { recursive: true, force: true });
     }
   });
+
+  it('sanitizes live OMX runtime state env from child test processes by default', () => {
+    const wd = mkdtempSync(join(tmpdir(), 'omx-run-test-files-'));
+    try {
+      const testsDir = join(wd, '__tests__');
+      mkdirSync(testsDir, { recursive: true });
+      writeFileSync(
+        join(testsDir, 'env-clean.test.js'),
+        [
+          "import { test } from 'node:test';",
+          "import assert from 'node:assert/strict';",
+          "test('runtime env is clean', () => {",
+          "  assert.equal(process.env.OMX_ROOT, undefined);",
+          "  assert.equal(process.env.OMX_STATE_ROOT, undefined);",
+          "  assert.equal(process.env.OMX_TEAM_STATE_ROOT, undefined);",
+          "  assert.equal(process.env.OMX_SESSION_ID, undefined);",
+          "  assert.equal(process.env.CODEX_SESSION_ID, undefined);",
+          "  assert.equal(process.env.SESSION_ID, undefined);",
+          "});",
+          '',
+        ].join('\n'),
+      );
+
+      const result = runCompiledRunner(wd, {
+        OMX_ROOT: '/tmp/live-omx-root',
+        OMX_STATE_ROOT: '/tmp/live-omx-state-root',
+        OMX_TEAM_STATE_ROOT: '/tmp/live-team-state-root',
+        OMX_SESSION_ID: 'live-omx-session',
+        CODEX_SESSION_ID: 'live-codex-session',
+        SESSION_ID: 'live-shell-session',
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+    } finally {
+      rmSync(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('can preserve live OMX runtime state env for explicit diagnostics', () => {
+    const wd = mkdtempSync(join(tmpdir(), 'omx-run-test-files-'));
+    try {
+      const testsDir = join(wd, '__tests__');
+      mkdirSync(testsDir, { recursive: true });
+      writeFileSync(
+        join(testsDir, 'env-preserve.test.js'),
+        [
+          "import { test } from 'node:test';",
+          "import assert from 'node:assert/strict';",
+          "test('runtime env is preserved', () => {",
+          "  assert.equal(process.env.OMX_ROOT, '/tmp/live-omx-root');",
+          "  assert.equal(process.env.OMX_SESSION_ID, 'live-omx-session');",
+          "});",
+          '',
+        ].join('\n'),
+      );
+
+      const result = runCompiledRunner(wd, {
+        OMX_NODE_TEST_PRESERVE_RUNTIME_ENV: '1',
+        OMX_ROOT: '/tmp/live-omx-root',
+        OMX_SESSION_ID: 'live-omx-session',
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+    } finally {
+      rmSync(wd, { recursive: true, force: true });
+    }
+  });
 });

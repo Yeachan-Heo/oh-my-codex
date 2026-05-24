@@ -51,6 +51,12 @@ interface QuestionOptionEntry {
 interface WizardState {
   currentQuestionIndex: number;
   selections: InteractiveSelectionState[];
+  /**
+   * Free-text answers collected inline when the user picks the "Other" option for
+   * a question. `undefined` until collected; once set, the wizard does not
+   * re-prompt unless the selection is changed.
+   */
+  otherTexts: Array<string | undefined>;
   mode: 'answering' | 'review';
   error?: string;
 }
@@ -58,6 +64,12 @@ interface WizardState {
 interface WizardUpdate {
   state: WizardState;
   submit: boolean;
+  /**
+   * When set, the wizard cannot advance from this question until the caller
+   * collects the free-text "Other" answer for the question at this index and
+   * stores it in `state.otherTexts`.
+   */
+  needsOtherText?: number;
 }
 
 function recordQuestions(record: QuestionRecord): NormalizedQuestionItem[] {
@@ -200,23 +212,29 @@ export function renderInteractiveQuestionFrame(record: QuestionRecord, state: In
   const lines: string[] = [];
 
   if (record.header || question.header) lines.push(record.header ?? question.header ?? '');
-  lines.push(question.question, '');
+  lines.push(question.question);
 
   optionEntries.forEach((entry, index) => {
     const isActive = state.cursorIndex === index;
     const isChecked = isMultiAnswerableQuestion(question) ? state.selectedIndices.includes(index) : isActive;
-    lines.push(`${isActive ? '›' : ' '} [${isChecked ? 'x' : ' '}] ${entry.label}`);
-    if (entry.description) lines.push(`      ${entry.description}`);
+    const cursor = isActive ? '›' : ' ';
+    const box = `[${isChecked ? 'x' : ' '}]`;
+    lines.push(entry.description ? `${cursor} ${box} ${entry.label} — ${entry.description}` : `${cursor} ${box} ${entry.label}`);
   });
 
-  lines.push('');
-  lines.push(isMultiAnswerableQuestion(question) ? 'Use ↑/↓ to move, Space to toggle, Enter to submit.' : 'Use ↑/↓ to move, Enter to select.');
+  lines.push(isMultiAnswerableQuestion(question) ? '↑↓ move · Space toggle · Enter submit' : '↑↓ move · Enter select');
   if (state.error) lines.push(state.error);
   return `${lines.join('\n')}\n`;
 }
 
 export function createInitialQuestionWizardState(record: QuestionRecord): WizardState {
-  return { currentQuestionIndex: 0, selections: recordQuestions(record).map(() => createInitialInteractiveSelectionState()), mode: 'answering' };
+  const questions = recordQuestions(record);
+  return {
+    currentQuestionIndex: 0,
+    selections: questions.map(() => createInitialInteractiveSelectionState()),
+    otherTexts: questions.map(() => undefined),
+    mode: 'answering',
+  };
 }
 
 function isQuestionSelectionValid(question: NormalizedQuestionItem, state: InteractiveSelectionState): boolean {
@@ -234,6 +252,26 @@ function advanceWizard(record: QuestionRecord, state: WizardState): WizardState 
   return { ...state, currentQuestionIndex: state.currentQuestionIndex + 1, error: undefined };
 }
 
+function questionNeedsOtherTextNow(question: NormalizedQuestionItem, selectionState: InteractiveSelectionState, otherText: string | undefined): boolean {
+  if (!question.allow_other) return false;
+  if (otherText !== undefined) return false;
+  const selectedNumbers = selectedNumbersForQuestion(question, selectionState);
+  const otherIndex = question.options.length + 1;
+  return selectedNumbers.includes(otherIndex);
+}
+
+function clearStaleOtherText(question: NormalizedQuestionItem, selectionState: InteractiveSelectionState, otherText: string | undefined): string | undefined {
+  if (otherText === undefined) return undefined;
+  if (!question.allow_other) return undefined;
+  const selectedNumbers = selectedNumbersForQuestion(question, selectionState);
+  const otherIndex = question.options.length + 1;
+  return selectedNumbers.includes(otherIndex) ? otherText : undefined;
+}
+
+function syncOtherTexts(record: QuestionRecord, state: WizardState): Array<string | undefined> {
+  return recordQuestions(record).map((question, index) => clearStaleOtherText(question, state.selections[index]!, state.otherTexts[index]));
+}
+
 export function applyQuestionWizardKey(record: QuestionRecord, state: WizardState, key: KeyLike): WizardUpdate {
   if (state.mode === 'review') {
     if (key.name === 'left' || key.name === 'backspace') return { submit: false, state: { ...state, mode: 'answering', currentQuestionIndex: recordQuestions(record).length - 1 } };
@@ -248,12 +286,21 @@ export function applyQuestionWizardKey(record: QuestionRecord, state: WizardStat
   const questions = recordQuestions(record);
   const current = questions[state.currentQuestionIndex]!;
   const currentSelection = state.selections[state.currentQuestionIndex]!;
-  if (key.name === 'right') return { submit: false, state: advanceWizard(record, state) };
+  if (key.name === 'right') {
+    if (questionNeedsOtherTextNow(current, currentSelection, state.otherTexts[state.currentQuestionIndex])) {
+      return { submit: false, state, needsOtherText: state.currentQuestionIndex };
+    }
+    return { submit: false, state: advanceWizard(record, state) };
+  }
 
   const update = applyInteractiveSelectionKey({ ...record, ...current, questions: [current] }, currentSelection, key);
   const nextSelections = state.selections.map((item, index) => index === state.currentQuestionIndex ? update.state : item);
-  const nextState = { ...state, selections: nextSelections };
+  const nextOtherTexts = state.otherTexts.map((value, index) => index === state.currentQuestionIndex ? clearStaleOtherText(current, update.state, value) : value);
+  const nextState: WizardState = { ...state, selections: nextSelections, otherTexts: nextOtherTexts };
   if (!update.submit) return { submit: false, state: nextState };
+  if (questionNeedsOtherTextNow(current, update.state, nextOtherTexts[state.currentQuestionIndex])) {
+    return { submit: false, state: nextState, needsOtherText: state.currentQuestionIndex };
+  }
   return { submit: false, state: advanceWizard(record, nextState) };
 }
 
@@ -270,10 +317,16 @@ function buildAnswerEntries(record: QuestionRecord, state: WizardState, otherTex
   }));
 }
 
-function formatSelectedLabels(question: NormalizedQuestionItem, state: InteractiveSelectionState): string {
+function formatSelectedLabels(question: NormalizedQuestionItem, state: InteractiveSelectionState, otherText?: string): string {
   const selections = selectedNumbersForQuestion(question, state);
+  const otherIndex = question.options.length + 1;
   return selections
-    .map((selection) => question.options[selection - 1]?.label ?? question.other_label)
+    .map((selection) => {
+      if (selection === otherIndex && question.allow_other) {
+        return otherText ? `${question.other_label}: ${otherText}` : question.other_label;
+      }
+      return question.options[selection - 1]?.label ?? question.other_label;
+    })
     .join(', ');
 }
 
@@ -283,7 +336,7 @@ export function renderQuestionWizardFrame(record: QuestionRecord, state: WizardS
     const lines = [record.header ?? 'Review answers', ''];
     questions.forEach((question, index) => {
       lines.push(`${index + 1}. ${questions[index]!.question}`);
-      lines.push(`   ${formatSelectedLabels(question, state.selections[index]!)}`);
+      lines.push(`   ${formatSelectedLabels(question, state.selections[index]!, state.otherTexts[index])}`);
     });
     lines.push('', 'Press Enter to submit, ←/Backspace to edit.');
     return `${lines.join('\n')}\n`;
@@ -295,15 +348,16 @@ export function renderQuestionWizardFrame(record: QuestionRecord, state: WizardS
   const lines: string[] = [];
   if (record.header) lines.push(record.header);
   if (question.header && question.header !== record.header) lines.push(question.header);
-  lines.push(`Question ${state.currentQuestionIndex + 1} of ${questions.length}`);
-  lines.push(question.question, '');
+  if (questions.length > 1) lines.push(`Question ${state.currentQuestionIndex + 1} of ${questions.length}`);
+  lines.push(question.question);
   optionEntries.forEach((entry, index) => {
     const isActive = selection.cursorIndex === index;
     const isChecked = isMultiAnswerableQuestion(question) ? selection.selectedIndices.includes(index) : isActive;
-    lines.push(`${isActive ? '›' : ' '} [${isChecked ? 'x' : ' '}] ${entry.label}`);
-    if (entry.description) lines.push(`      ${entry.description}`);
+    const cursor = isActive ? '›' : ' ';
+    const box = `[${isChecked ? 'x' : ' '}]`;
+    lines.push(entry.description ? `${cursor} ${box} ${entry.label} — ${entry.description}` : `${cursor} ${box} ${entry.label}`);
   });
-  lines.push('', isMultiAnswerableQuestion(question) ? 'Use ↑/↓ to move, Space to toggle, Enter/→ to continue, ← to go back.' : 'Use ↑/↓ to move, Enter/→ to continue, ← to go back.');
+  lines.push(isMultiAnswerableQuestion(question) ? '↑↓ move · Space toggle · Enter/→ next · ← back' : '↑↓ move · Enter/→ next · ← back');
   if (selection.error || state.error) lines.push(selection.error ?? state.error ?? '');
   return `${lines.join('\n')}\n`;
 }
@@ -341,24 +395,35 @@ async function promptForAnswersWithArrows(record: QuestionRecord, deps: Question
   const input = deps.input ?? defaultInput;
   const output = deps.output ?? defaultOutput;
   if (!supportsInteractiveArrowUi(input, output)) throw new Error('Interactive arrow UI requires TTY stdin/stdout with raw-mode support.');
-  return new Promise<QuestionAnswerEntry[]>((resolve, reject) => {
-    let state = createInitialQuestionWizardState(record);
+
+  let state = createInitialQuestionWizardState(record);
+  while (true) {
+    const segment = await runWizardSegment(record, state, { input, output });
+    state = segment.state;
+    if (segment.kind === 'submit') {
+      return buildAnswerEntries(record, state, syncOtherTexts(record, state));
+    }
+    const question = recordQuestions(record)[segment.needsOtherText]!;
+    const text = await promptForOtherText(question.other_label, { input, output });
+    const nextOtherTexts = state.otherTexts.map((value, index) => index === segment.needsOtherText ? text : value);
+    state = advanceWizard(record, { ...state, otherTexts: nextOtherTexts });
+  }
+}
+
+interface WizardSegmentResult {
+  kind: 'submit' | 'needs-other-text';
+  state: WizardState;
+  needsOtherText: number;
+}
+
+function runWizardSegment(record: QuestionRecord, initialState: WizardState, deps: QuestionUiDeps): Promise<WizardSegmentResult> {
+  const input = deps.input ?? defaultInput;
+  const output = deps.output ?? defaultOutput;
+  return new Promise<WizardSegmentResult>((resolve, reject) => {
+    let state = initialState;
     let finished = false;
     const cleanup = () => { input.off('keypress', onKeypress); input.setRawMode?.(false); input.pause?.(); output.write('\u001b[?25h'); };
-    const finish = () => {
-      if (finished) return;
-      finished = true;
-      cleanup();
-      output.write('\n');
-      void (async () => {
-        try {
-          const otherTexts = await promptForWizardOtherTexts(record, state, { input, output });
-          resolve(buildAnswerEntries(record, state, otherTexts));
-        } catch (error) {
-          reject(error);
-        }
-      })();
-    };
+    const settle = (result: WizardSegmentResult) => { if (finished) return; finished = true; cleanup(); output.write('\n'); resolve(result); };
     const fail = (error: Error) => { if (finished) return; finished = true; cleanup(); output.write('\n'); reject(error); };
     const render = () => { output.write('\u001b[H\u001b[J'); output.write('\u001b[?25l'); output.write(renderQuestionWizardFrame(record, state)); };
     const onKeypress = (_: string, key: KeyLike) => {
@@ -366,7 +431,11 @@ async function promptForAnswersWithArrows(record: QuestionRecord, deps: Question
       const update = applyQuestionWizardKey(record, state, key);
       state = update.state;
       render();
-      if (update.submit) finish();
+      if (update.needsOtherText !== undefined) {
+        settle({ kind: 'needs-other-text', state, needsOtherText: update.needsOtherText });
+        return;
+      }
+      if (update.submit) settle({ kind: 'submit', state, needsOtherText: -1 });
     };
     emitKeypressEvents(input as NodeJS.ReadableStream);
     input.setRawMode?.(true);
@@ -374,16 +443,6 @@ async function promptForAnswersWithArrows(record: QuestionRecord, deps: Question
     input.on('keypress', onKeypress);
     render();
   });
-}
-
-async function promptForWizardOtherTexts(record: QuestionRecord, state: WizardState, deps: QuestionUiDeps = {}): Promise<Array<string | undefined>> {
-  const otherTexts: Array<string | undefined> = [];
-  for (const [index, question] of recordQuestions(record).entries()) {
-    const selectedNumbers = selectedNumbersForQuestion(question, state.selections[index]!);
-    if (!question.allow_other || !selectedNumbers.includes(question.options.length + 1)) continue;
-    otherTexts[index] = await promptForOtherText(question.other_label, deps);
-  }
-  return otherTexts;
 }
 
 async function promptForQuestionWithNumbers(question: NormalizedQuestionItem, deps: QuestionUiDeps = {}): Promise<number[]> {

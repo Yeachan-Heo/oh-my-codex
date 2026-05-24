@@ -8,6 +8,13 @@ export interface TmuxPaneSnapshot {
   startCommand: string;
 }
 
+export const OMX_TMUX_HUD_LEADER_PANE_ENV = 'OMX_TMUX_HUD_LEADER_PANE';
+
+export interface HudPaneOwner {
+  sessionId?: string;
+  leaderPaneId?: string;
+}
+
 type TmuxExecSync = (args: string[]) => string;
 
 /** Upper bound for tmux hook indices (signed 32-bit max). */
@@ -45,13 +52,51 @@ export function isHudWatchPane(pane: TmuxPaneSnapshot): boolean {
   );
 }
 
+
+function parseShellEnvAssignment(command: string, key: string): string | undefined {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = command.match(
+    new RegExp(
+      `(?:^|\\s)(?:'${escapedKey}=([^']*)'|${escapedKey}=(?:'((?:'\\\\''|[^'])*)'|([^\\s]+)))`,
+    ),
+  );
+  const fallbackMatch = match
+    ? null
+    : command.match(new RegExp(`(?:^|[\\s'])${escapedKey}=([^'\\s]+)`));
+  const raw = match?.[1] ?? match?.[2] ?? match?.[3] ?? fallbackMatch?.[1];
+  if (typeof raw !== 'string') return undefined;
+  const value = raw.replace(/'\\''/g, "'").trim();
+  return value === '' ? undefined : value;
+}
+
+export function readHudPaneOwner(pane: TmuxPaneSnapshot): HudPaneOwner {
+  const command = `${pane.startCommand} ${pane.currentCommand}`;
+  return {
+    sessionId: parseShellEnvAssignment(command, 'OMX_SESSION_ID'),
+    leaderPaneId: parseShellEnvAssignment(command, OMX_TMUX_HUD_LEADER_PANE_ENV),
+  };
+}
+
+export function hudPaneMatchesOwner(pane: TmuxPaneSnapshot, owner: HudPaneOwner = {}): boolean {
+  if (!isHudWatchPane(pane)) return false;
+  const wantsSession = typeof owner.sessionId === 'string' && owner.sessionId.trim() !== '';
+  const wantsLeaderPane = typeof owner.leaderPaneId === 'string' && owner.leaderPaneId.trim() !== '';
+  if (!wantsSession && !wantsLeaderPane) return true;
+  const paneOwner = readHudPaneOwner(pane);
+  if (wantsSession && paneOwner.sessionId !== owner.sessionId?.trim()) return false;
+  if (wantsSession && wantsLeaderPane && !paneOwner.leaderPaneId) return true;
+  if (wantsLeaderPane && paneOwner.leaderPaneId !== owner.leaderPaneId?.trim()) return false;
+  return true;
+}
+
 export function findHudWatchPaneIds(
   panes: TmuxPaneSnapshot[],
   currentPaneId?: string,
+  owner: HudPaneOwner = {},
 ): string[] {
   return panes
     .filter((pane) => pane.paneId !== currentPaneId)
-    .filter((pane) => isHudWatchPane(pane))
+    .filter((pane) => hudPaneMatchesOwner(pane, owner))
     .map((pane) => pane.paneId);
 }
 
@@ -82,7 +127,7 @@ export function buildHudResizeHookSlot(hookName: string): string {
   for (let i = 0; i < hookName.length; i++) {
     hash = (hash * 31 + hookName.charCodeAt(i)) | 0;
   }
-  return `window-resized[${Math.abs(hash) % TMUX_HOOK_INDEX_MAX}]`;
+  return `client-resized[${Math.abs(hash) % TMUX_HOOK_INDEX_MAX}]`;
 }
 
 export interface HudResizeHookContext {
@@ -138,17 +183,37 @@ function buildHudResizeHookCommand(
   context: HudResizeHookContext,
 ): string {
   const resize = buildNestedTmuxCommand(tmuxBin, ['resize-pane', '-t', hudPaneId, '-y', height]);
-  const unregister = buildNestedTmuxCommand(tmuxBin, ['set-hook', '-u', '-w', '-t', context.windowId, context.hookSlot]);
+  const unregister = buildNestedTmuxCommand(tmuxBin, ['set-hook', '-u', '-t', context.sessionId, context.hookSlot]);
   const resizeOrUnregister = `${resize} >/dev/null 2>&1 || ${unregister} >/dev/null 2>&1 || true`;
   return `${resizeOrUnregister}; sleep ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}; ${resizeOrUnregister}`;
 }
 
-export function buildHudWatchCommand(omxBin: string, preset?: string, sessionId?: string): string {
+function buildEnvPrefix(env: Record<string, string | undefined>): string {
+  const assignments = Object.entries(env)
+    .map(([key, value]) => [key, typeof value === 'string' ? value : ''] as const)
+    .filter(([, value]) => value.trim() !== '')
+    .map(([key, value]) => `${key}=${shellEscapeSingle(value)}`);
+  return assignments.length > 0 ? `env ${assignments.join(' ')} ` : '';
+}
+
+export function buildHudWatchCommand(
+  omxBin: string,
+  preset?: string,
+  sessionId?: string,
+  omxRoot?: string,
+  leaderPaneId?: string,
+): string {
   const safePreset = preset === 'minimal' || preset === 'focused' || preset === 'full'
     ? ` --preset=${preset}`
     : '';
   const safeSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-  const envPrefix = safeSessionId ? `env OMX_SESSION_ID=${shellEscapeSingle(safeSessionId)} ` : '';
+  const safeOmxRoot = typeof omxRoot === 'string' ? omxRoot : '';
+  const safeLeaderPaneId = typeof leaderPaneId === 'string' ? leaderPaneId.trim() : '';
+  const envPrefix = buildEnvPrefix({
+    OMX_SESSION_ID: safeSessionId,
+    [OMX_TMUX_HUD_LEADER_PANE_ENV]: safeLeaderPaneId,
+    OMX_ROOT: safeOmxRoot,
+  });
   return `exec ${envPrefix}${shellEscapeSingle(process.execPath)} ${shellEscapeSingle(omxBin)} hud --watch${safePreset}`;
 }
 
@@ -173,8 +238,9 @@ export function listCurrentWindowPanes(
 export function listCurrentWindowHudPaneIds(
   currentPaneId?: string,
   execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
+  owner: HudPaneOwner = {},
 ): string[] {
-  return findHudWatchPaneIds(listCurrentWindowPanes(execTmuxSync, currentPaneId), currentPaneId);
+  return findHudWatchPaneIds(listCurrentWindowPanes(execTmuxSync, currentPaneId), currentPaneId, owner);
 }
 
 export function readCurrentWindowSize(
@@ -278,7 +344,7 @@ export function registerHudResizeHook(
   const height = String(Math.max(1, Math.floor(heightLines)));
   const resizeCmd = shellEscapeSingle(buildHudResizeHookCommand(tmuxBin, hudPaneId, height, context));
   try {
-    execTmuxSync(['set-hook', '-w', '-t', context.windowId, context.hookSlot, `run-shell -b ${resizeCmd}`]);
+    execTmuxSync(['set-hook', '-t', context.sessionId, context.hookSlot, `run-shell -b ${resizeCmd}`]);
     return true;
   } catch {
     return false;
@@ -292,7 +358,7 @@ export function unregisterHudResizeHook(
   const context = readHudResizeHookContext(currentPaneId, execTmuxSync);
   if (!context) return false;
   try {
-    execTmuxSync(['set-hook', '-u', '-w', '-t', context.windowId, context.hookSlot]);
+    execTmuxSync(['set-hook', '-u', '-t', context.sessionId, context.hookSlot]);
     return true;
   } catch {
     return false;

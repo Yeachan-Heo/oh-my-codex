@@ -32,6 +32,19 @@ describe('prompt guidance wave two contract', () => {
     assert.match(researcher, /official\/upstream recommendations/i);
   });
 
+  it('researcher exposes cross-repo OSS research capability with structured citation format', () => {
+    const researcher = loadSurface('prompts/researcher.md');
+    assert.match(researcher, /<repo_research>[\s\S]+<\/repo_research>/, 'researcher must declare an explicit <repo_research> block for OSS evidence');
+    assert.match(researcher, /gh search code/i, 'researcher must enumerate gh search code for cross-repo OSS discovery');
+    assert.match(researcher, /raw\.githubusercontent\.com|gh api repos\/<org>\/<repo>/i, 'researcher must allow pinned-SHA OSS file fetches via gh api or raw.githubusercontent.com');
+    assert.match(researcher, /Context7 MCP/i, 'researcher must reference Context7 MCP with a graceful web fallback');
+    assert.match(researcher, /org\/repo@sha:path/i, 'researcher must specify the org/repo@sha:path:line citation format');
+    assert.match(researcher, /OSS Reference Implementations/, 'researcher output_contract must include the OSS Reference Implementations section');
+    assert.match(researcher, /Never (?:use|cite)[\s\S]{0,30}HEAD|moving branch reference/i, 'researcher must forbid moving-branch citations in OSS evidence');
+    assert.match(researcher, /already chosen technology/i, 'researcher must keep the already-chosen-technology scope guard');
+    assert.match(researcher, /local repo usage[\s\S]{0,30}`explore`/i, 'researcher must explicitly route local-repo inspection to explore while keeping external OSS repos in scope');
+  });
+
   it('research specialists keep explicit output-contract fixtures for source preference and boundary discipline', () => {
     const researcher = loadSurface('prompts/researcher.md');
     const dependencyExpert = loadSurface('prompts/dependency-expert.md');

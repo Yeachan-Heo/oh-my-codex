@@ -60,6 +60,19 @@ The consensus workflow:
 
 > **Important:** Steps 3 and 4 MUST run sequentially. Do NOT issue both agent calls in the same parallel batch. Always await the Architect result before invoking Critic.
 
+## Durable Consensus Handoff Contract
+
+Ralplan is not complete, skippable, or ready for execution merely because `.omx/plans/prd-*.md` and `.omx/plans/test-spec-*.md` exist. Those files are planning artifacts, not consensus evidence.
+
+Before any Autopilot, Pipeline, Ultragoal, Team, Ralph, or implementation handoff, persist a durable handoff record that distinguishes:
+
+- `planning_artifacts`: PRD/test-spec paths.
+- `ralplan_architect_review`: the completed Architect review with an approving verdict.
+- `ralplan_critic_review`: the completed Critic review with an approving verdict, recorded only after the Architect review.
+- `ralplan_consensus_gate.complete:true` only when both reviews are present, approving, and in the required Architect→Critic order.
+
+If Architect is missing/blocked, keep the workflow in Architect review or report that blocker. If Critic is missing/blocked/non-approving, keep the workflow in Critic/re-review or report the max-iteration outcome. Do not treat existing plan/test-spec files as permission to skip ralplan or start execution.
+
 Follow the Plan skill's full documentation for consensus mode details.
 
 ## Goal-Mode Follow-up Suggestions
@@ -87,6 +100,7 @@ Before consensus planning or execution handoff, ensure a grounded context snapsh
    - likely codebase touchpoints
 4. If ambiguity remains high, gather brownfield facts first. When session guidance enables `USE_OMX_EXPLORE_CMD`, prefer `omx explore` for simple read-only repository lookups with narrow, concrete prompts; otherwise use the richer normal explore path. Then run `$deep-interview --quick <task>` before continuing.
 5. If the plan depends on official docs, version-aware framework guidance, best practices, or external dependency behavior, use `$best-practice-research` as the bounded evidence wrapper and auto-delegate `researcher` for the official/upstream lookup before finalizing the planning handoff so execution does not start from repo-local recall alone.
+6. If a prior `$autoresearch` or `$autoresearch-goal` run exists, treat its approved artifact as evidence for the plan. Do not include Autoresearch as a final architecture or runtime component unless the user explicitly requested ongoing research automation; otherwise synthesize the evidence into the `$ralplan` ADR, risks, and verification steps.
 
 Do not hand off to execution modes until this intake is complete; if urgency forces progress, explicitly document the risk tradeoffs.
 
@@ -150,9 +164,10 @@ The gate auto-passes when it detects **any** concrete signal. You do not need al
    - **Architect** reviews for soundness
    - **Critic** validates quality and testability
 5. On consensus approval, user chooses execution path:
-   - **ralph**: sequential execution with verification
-   - **team**: parallel coordinated agents
-6. Execution begins with a clear, bounded plan
+   - **ultragoal**: default durable follow-up for sequential goal execution with ledger checkpoints
+   - **team**: coordinated parallel execution for stories that need multiple lanes, with evidence ready for Ultragoal checkpoints
+   - **ralph**: explicit single-owner fallback only when the user intentionally wants a persistent verification/completion loop instead of the default durable goal ledger
+6. Execution begins with a clear, bounded plan through the selected handoff path
 
 ### Troubleshooting
 

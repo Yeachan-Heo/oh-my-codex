@@ -1169,6 +1169,65 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('guides unavailable get_goal DB/schema errors to auditable blocked recovery instead of completion', async () => {
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, {
+        brief: 'brief',
+        goals: [
+          { title: 'First', objective: 'Complete first milestone.' },
+        ],
+      });
+
+      const first = await startNextUltragoal(cwd);
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: first.goal!.id,
+          status: 'complete',
+          evidence: 'audit passed but Codex get_goal was unavailable',
+          codexGoal: { error: 'SqliteError: no such table: thread_goals' },
+          qualityGate: cleanQualityGate(),
+        }),
+        (error: unknown) => {
+          assert.match(String(error), /DB\/schema\/context error/);
+          assert.match(String(error), /--status blocked/);
+          assert.match(String(error), /unavailable get_goal error JSON or path/);
+          assert.match(String(error), /strict completion reconciliation/);
+          return true;
+        },
+      );
+
+      const plan = await readUltragoalPlan(cwd);
+      assert.equal(plan.goals[0]?.status, 'in_progress');
+      assert.equal(plan.goals[0]?.completedAt, undefined);
+    });
+  });
+
+  it('records unavailable get_goal DB/schema errors as non-terminal blocked audit checkpoints', async () => {
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, {
+        brief: 'brief',
+        goals: [
+          { title: 'First', objective: 'Complete first milestone.' },
+        ],
+      });
+
+      const first = await startNextUltragoal(cwd);
+      const plan = await checkpointUltragoal(cwd, {
+        goalId: first.goal!.id,
+        status: 'blocked',
+        evidence: 'get_goal unavailable due to Codex DB/schema/context error; safe recovery requires a working Codex goal context',
+        codexGoal: { error: 'SQLITE_ERROR: no such table: thread_goals' },
+      });
+
+      assert.equal(plan.goals[0]?.status, 'in_progress');
+      assert.match(plan.goals[0]?.failureReason ?? '', /get_goal unavailable/);
+      const ledger = await readFile(join(cwd, '.omx/ultragoal/ledger.jsonl'), 'utf-8');
+      assert.match(ledger, /"event":"goal_blocked"/);
+      assert.match(ledger, /no such table: thread_goals/);
+      assert.match(ledger, /strict completion reconciliation is deferred/);
+    });
+  });
+
   it('rejects blocked checkpoints for active or same-objective Codex goals', async () => {
     await withTempRepo(async (cwd) => {
       await createUltragoalPlan(cwd, {

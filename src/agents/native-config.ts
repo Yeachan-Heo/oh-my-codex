@@ -22,6 +22,7 @@ import { getRootModelName } from "../config/generator.js";
 import { codexAgentsDir } from "../utils/paths.js";
 
 export const EXACT_GPT_5_4_MINI_MODEL = "gpt-5.4-mini";
+export const EXACT_RESEARCHER_MODEL = EXACT_GPT_5_4_MINI_MODEL;
 
 const POSTURE_OVERLAYS: Record<AgentDefinition["posture"], string> = {
   "frontier-orchestrator": [
@@ -159,6 +160,10 @@ function resolveAgentModel(
   agent: AgentDefinition,
   options: AgentModelResolutionOptions = {},
 ): string {
+  if (agent.name === "researcher") {
+    return EXACT_RESEARCHER_MODEL;
+  }
+
   if (agent.name === "executor") {
     return resolveFrontierModel(options);
   }

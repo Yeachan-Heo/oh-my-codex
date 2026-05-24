@@ -404,6 +404,16 @@ function shellQuoteSingle(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function formatHudEnvAssignments(env: NodeJS.ProcessEnv = process.env): string {
+  const assignments = [
+    `${OMX_TMUX_HUD_OWNER_ENV}=1`,
+    ...(typeof env.OMX_ROOT === 'string' && env.OMX_ROOT.trim() !== ''
+      ? [`OMX_ROOT=${shellQuoteSingle(env.OMX_ROOT)}`]
+      : []),
+  ];
+  return assignments.join(' ');
+}
+
 function quotePowerShellArg(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
@@ -513,7 +523,7 @@ function buildResizeHookSlot(hookName: string): string {
   for (let i = 0; i < hookName.length; i++) {
     hash = (hash * 31 + hookName.charCodeAt(i)) | 0;
   }
-  return `window-resized[${Math.abs(hash) % TMUX_HOOK_INDEX_MAX}]`;
+  return `client-resized[${Math.abs(hash) % TMUX_HOOK_INDEX_MAX}]`;
 }
 
 function buildClientAttachedHookSlot(hookName: string): string {
@@ -534,11 +544,11 @@ export function buildRegisterResizeHookArgs(
   const hookCommand = shellQuoteSingle(
     `${resizeCommand}; sleep ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}; ${resizeCommand}`,
   );
-  return ['set-hook', '-w', '-t', hookTarget, buildResizeHookSlot(hookName), `run-shell -b ${hookCommand}`];
+  return ['set-hook', '-t', hookTarget, buildResizeHookSlot(hookName), `run-shell -b ${hookCommand}`];
 }
 
 export function buildUnregisterResizeHookArgs(hookTarget: string, hookName: string): string[] {
-  return ['set-hook', '-u', '-w', '-t', hookTarget, buildResizeHookSlot(hookName)];
+  return ['set-hook', '-u', '-t', hookTarget, buildResizeHookSlot(hookName)];
 }
 
 export function buildClientAttachedReconcileHookName(
@@ -1267,7 +1277,7 @@ export function createTeamSession(
     let resizeHookName: string | null = null;
     let resizeHookTarget: string | null = null;
     if (canRecreateTeamHud && omxEntry) {
-      const hudCmd = `exec env ${OMX_TMUX_HUD_OWNER_ENV}=1 node ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
+      const hudCmd = `exec env ${formatHudEnvAssignments()} node ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
       const hudCwd = translatePathForMsys(cwd);
       const hudResult = runTmux([
         'split-window', '-v', '-f', '-l', String(HUD_TMUX_TEAM_HEIGHT_LINES), '-t', teamTarget, '-d', '-P', '-F', '#{pane_id}', '-c', hudCwd, hudCmd,
@@ -1304,7 +1314,7 @@ export function createTeamSession(
               resizeHookName = hookName;
               registeredResizeHook = { name: resizeHookName, target: resizeHookTarget };
             } else {
-              // tmux versions/builds that reject indexed window-resized hooks should not
+              // tmux versions/builds that reject indexed client-resized hooks should not
               // abort madmax/team startup after panes were successfully created. Keep the
               // fallback narrow: skip only the long-lived resize hook metadata, then
               // still try the one-shot client-attached reconcile plus the explicit
@@ -1394,7 +1404,7 @@ export function restoreStandaloneHudPane(
   const omxEntry = resolveOmxCliEntryPath();
   if (!omxEntry || omxEntry.trim() === '') return null;
 
-  const hudCmd = `exec env ${OMX_TMUX_HUD_OWNER_ENV}=1 ${shellQuoteSingle(translatePathForMsys(resolveLeaderNodePath()))} ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
+  const hudCmd = `exec env ${formatHudEnvAssignments()} ${shellQuoteSingle(translatePathForMsys(resolveLeaderNodePath()))} ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
   const hudCwd = translatePathForMsys(cwd);
   const hudResult = runTmux([
     'split-window',

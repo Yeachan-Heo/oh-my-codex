@@ -33,6 +33,7 @@ import {
 	getModelContextRecommendation,
 } from "../config/generator.js";
 import {
+	MANAGED_HOOK_EVENTS,
 	buildManagedCodexNativeHookCommand,
 	discoverCodexHookConfigPaths,
 	getManagedCodexHookCommandsForEvent,
@@ -196,7 +197,12 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	if (contextRecommendationCheck) checks.push(contextRecommendationCheck);
 
 	// Check 4.25: Native hooks coverage
-	checks.push(await checkNativeHooks(paths.hooksPath, paths.configPath));
+	checks.push(
+		await checkNativeHooks(paths.hooksPath, paths.configPath, {
+			codexHomeDir: paths.codexHomeDir,
+			installMode: scopeResolution.installMode,
+		}),
+	);
 	checks.push(await checkNativeHookDistSmoke());
 	if (options.verbose) {
 		const postCompactRuntimeCheck = await checkNativePostCompactHookRuntime(
@@ -1054,23 +1060,227 @@ function isExplicitLoreCommitGuardOptOut(value: string): boolean {
 	);
 }
 
+interface NativeHookCheckContext {
+	codexHomeDir: string;
+	installMode?: SetupInstallMode;
+}
+
+function isEnabledTomlValue(value: unknown): boolean {
+	return value === true || (typeof value === "string" && ["1", "true", "yes", "on"].includes(value.trim().toLowerCase()));
+}
+
+function configHasOmxEntries(configContent: string): boolean {
+	return configContent.includes("omx_") || configContent.includes("oh-my-codex");
+}
+
+function configEnablesPluginScopedHooks(configContent: string): boolean {
+	try {
+		const parsed = parseToml(configContent) as {
+			plugin_hooks?: unknown;
+			features?: Record<string, unknown>;
+		};
+		return isEnabledTomlValue(parsed.plugin_hooks) || isEnabledTomlValue(parsed.features?.plugin_hooks);
+	} catch {
+		return /^\s*plugin_hooks\s*=\s*(?:true|1|"true"|"1"|"yes"|"on")\s*$/m.test(configContent);
+	}
+}
+
+function pluginHooksJsonHasNativeCoverage(content: string): boolean | null {
+	try {
+		const parsed = JSON.parse(content) as { hooks?: Record<string, unknown> };
+		if (!parsed || typeof parsed !== "object" || typeof parsed.hooks !== "object" || parsed.hooks === null) {
+			return false;
+		}
+		return MANAGED_HOOK_EVENTS.every((eventName) => {
+			const entries = parsed.hooks?.[eventName];
+			if (!Array.isArray(entries)) return false;
+			return entries.some((entry) => {
+				if (!entry || typeof entry !== "object") return false;
+				const hooks = (entry as { hooks?: unknown }).hooks;
+				if (!Array.isArray(hooks)) return false;
+				return hooks.some((hook) => {
+					if (!hook || typeof hook !== "object") return false;
+					const command = (hook as { command?: unknown }).command;
+					return typeof command === "string" && command.includes("codex-native-hook.mjs");
+				});
+			});
+		});
+	} catch {
+		return null;
+	}
+}
+
+async function checkPluginScopedNativeHooks(
+	codexHomeDir: string,
+	setupHooksPath: string,
+): Promise<Check> {
+	const setupHooksPathDescription = existsSync(setupHooksPath)
+		? `existing hooks.json at ${setupHooksPath} is treated as user-owned because plugin-scoped hooks are enabled`
+		: `setup-owned hooks.json is intentionally absent at ${setupHooksPath}`;
+	const packagedMarketplace = await resolvePackagedOmxMarketplace(getPackageRoot());
+	if (!packagedMarketplace) {
+		return {
+			name: "Native hooks",
+			status: "warn",
+			message:
+				`plugin-scoped hooks are enabled and ${setupHooksPathDescription}, but packaged ${OMX_LOCAL_MARKETPLACE_NAME} metadata was not found`,
+		};
+	}
+
+	const version = await packagedOmxPluginVersion(packagedMarketplace);
+	const expectedCacheDir = version
+		? join(codexHomeDir, "plugins", "cache", OMX_LOCAL_MARKETPLACE_NAME, "oh-my-codex", version)
+		: join(codexHomeDir, "plugins", "cache", OMX_LOCAL_MARKETPLACE_NAME, "oh-my-codex", "<version>");
+	const expectedHooksPath = join(expectedCacheDir, "hooks", "hooks.json");
+	const expectedHookLauncherPath = join(expectedCacheDir, "hooks", "codex-native-hook.mjs");
+	const expectedPinnedLauncherPath = join(expectedCacheDir, "hooks", "omx-command.json");
+	const state = await readOmxPluginCacheState(expectedCacheDir);
+
+	if (!state) {
+		return {
+			name: "Native hooks",
+			status: "warn",
+			message:
+				`plugin-scoped hooks are enabled, but the expected Codex plugin cache manifest is missing at ${join(expectedCacheDir, ".codex-plugin", "plugin.json")}; ${setupHooksPathDescription}; run "omx setup --plugin --force" to refresh the plugin cache`,
+		};
+	}
+
+	if (state.hooksPointer !== "./hooks/hooks.json") {
+		return {
+			name: "Native hooks",
+			status: "warn",
+			message:
+				`plugin-scoped hooks are enabled, but the Codex plugin cache manifest points hooks to ${String(state.hooksPointer)} instead of ./hooks/hooks.json at ${expectedHooksPath}; run "omx setup --plugin --force" to refresh the plugin cache`,
+		};
+	}
+
+	for (const expectedPath of [expectedHooksPath, expectedHookLauncherPath, expectedPinnedLauncherPath]) {
+		if (!existsSync(expectedPath)) {
+			return {
+				name: "Native hooks",
+				status: "warn",
+				message:
+					`plugin-scoped hooks are enabled, but expected plugin hook file is missing at ${expectedPath}; ${setupHooksPathDescription}; run "omx setup --plugin --force" to refresh the plugin cache`,
+			};
+		}
+	}
+
+	let hookContent: string;
+	try {
+		hookContent = await readFile(expectedHooksPath, "utf-8");
+	} catch {
+		return {
+			name: "Native hooks",
+			status: "fail",
+			message: `cannot read plugin-scoped hooks.json at ${expectedHooksPath}`,
+		};
+	}
+
+	const hasCoverage = pluginHooksJsonHasNativeCoverage(hookContent);
+	if (hasCoverage === null) {
+		return {
+			name: "Native hooks",
+			status: "fail",
+			message: `invalid plugin-scoped hooks.json at ${expectedHooksPath}`,
+		};
+	}
+	if (!hasCoverage) {
+		return {
+			name: "Native hooks",
+			status: "warn",
+			message:
+				`plugin-scoped hooks.json at ${expectedHooksPath} is missing OMX native coverage for one or more events; run "omx setup --plugin --force" to refresh the plugin cache`,
+		};
+	}
+
+	const smokeCwd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-hook-"));
+	try {
+		const payload = JSON.stringify({
+			hook_event_name: "UserPromptSubmit",
+			session_id: "omx-doctor-plugin-hook-smoke",
+			transcript_path: join(smokeCwd, "nonexistent-transcript.jsonl"),
+			cwd: smokeCwd,
+			prompt: "doctor plugin hook smoke test",
+		});
+		const result = spawnSync(process.execPath, [expectedHookLauncherPath], {
+			cwd: smokeCwd,
+			encoding: "utf-8",
+			env: {
+				...process.env,
+				OMX_NATIVE_HOOK_DOCTOR_SMOKE: "1",
+				OMX_ROOT: join(smokeCwd, ".omx-doctor-root"),
+				OMX_SESSION_ID: "omx-doctor-plugin-hook-smoke",
+				OMX_SOURCE_CWD: smokeCwd,
+				OMX_STARTUP_CWD: smokeCwd,
+			},
+			input: payload,
+			timeout: 5_000,
+		});
+		if (result.error) {
+			return {
+				name: "Native hooks",
+				status: "fail",
+				message: `plugin-scoped native hook smoke failed to run from ${expectedHookLauncherPath} (${result.error.message})`,
+			};
+		}
+		if (result.status !== 0) {
+			const detail = (result.stderr || result.stdout || `exit ${result.status}`).trim();
+			return {
+				name: "Native hooks",
+				status: "fail",
+				message: `plugin-scoped native hook smoke failed from ${expectedHookLauncherPath} (${detail})`,
+			};
+		}
+	} finally {
+		await rm(smokeCwd, { recursive: true, force: true });
+	}
+
+	return {
+		name: "Native hooks",
+		status: "pass",
+		message:
+			`plugin-scoped hooks are enabled; ${setupHooksPathDescription}, and plugin cache native hook coverage smoke passed via ${expectedHooksPath}`,
+	};
+}
+
 async function checkNativeHooks(
 	hooksPath: string,
 	configPath: string,
+	context: NativeHookCheckContext,
 ): Promise<Check> {
+	if (existsSync(configPath) && context.installMode === "plugin") {
+		try {
+			const configContent = await readFile(configPath, "utf-8");
+			if (configEnablesPluginScopedHooks(configContent)) {
+				return checkPluginScopedNativeHooks(context.codexHomeDir, hooksPath);
+			}
+		} catch {
+			// Fall through to the hooks.json checks; the dedicated config check will
+			// report read failures separately.
+		}
+	}
+
 	if (!existsSync(hooksPath)) {
 		if (existsSync(configPath)) {
 			try {
 				const configContent = await readFile(configPath, "utf-8");
-				const hasOmx =
-					configContent.includes("omx_") ||
-					configContent.includes("oh-my-codex");
-				if (hasOmx) {
+				if (context.installMode === "plugin") {
+					if (configHasOmxEntries(configContent)) {
+						return {
+							name: "Native hooks",
+							status: "warn",
+							message:
+								`plugin mode is using legacy native hook fallback, but expected setup-owned hooks.json is missing at ${hooksPath}; run "omx setup --plugin --force" to restore the fallback hook file, or upgrade Codex to plugin_hooks support so setup can use plugin-scoped hooks`,
+						};
+					}
+				}
+
+				if (configHasOmxEntries(configContent)) {
 					return {
 						name: "Native hooks",
 						status: "warn",
 						message:
-							'hooks.json not found even though config.toml has OMX entries; run "omx setup --force" to restore native hook coverage',
+							`expected setup-owned hooks.json is missing at ${hooksPath} even though config.toml has OMX entries; run "omx setup --force" to restore native hook coverage`,
 					};
 				}
 			} catch {

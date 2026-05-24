@@ -8,6 +8,10 @@ description: Stateful validator-gated research loop with native-hook persistence
 Autoresearch is the skill-first replacement for the deprecated `omx autoresearch` command.
 It keeps the useful measured-research loop, but it now runs as a native-hook stateful workflow instead of a direct CLI or tmux launch surface.
 
+## Boundary with planning research
+
+Use `$autoresearch` when the research output itself is a bounded deliverable that must pass an explicit validator. Do not recommend it for ordinary pre-planning docs lookup or general best-practice checks; use `$best-practice-research` for that. If `$autoresearch` is intentionally run before architecture planning, its approved artifact should feed evidence into `$ralplan`; it should not become a final architecture/component unless the user explicitly asks for ongoing research automation.
+
 ## Use when
 - You want a Ralph-ish persistent research loop
 - The task should keep nudging until explicit validation evidence exists

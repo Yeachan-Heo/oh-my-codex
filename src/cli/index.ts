@@ -122,7 +122,7 @@ import {
 } from "../team/tmux-session.js";
 import { getPackageRoot } from "../utils/package.js";
 import { codexConfigPath, omxRoot, rememberOmxLaunchContext, resolveOmxEntryPath } from "../utils/paths.js";
-import { cleanCodexModelAvailabilityNuxIfNeeded, extractSharedMcpRegistryServersFromConfig, repairConfigIfNeeded, upsertManagedCodexHookTrustState } from "../config/generator.js";
+import { cleanCodexModelAvailabilityNuxIfNeeded, extractSharedMcpRegistryServersFromConfig, repairConfigIfNeeded, syncProjectScopeTrustStateFromRuntime } from "../config/generator.js";
 import type { UnifiedMcpRegistryServer } from "../config/mcp-registry.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../hud/constants.js";
@@ -131,6 +131,7 @@ import {
   createHudWatchPane as createSharedHudWatchPane,
   killTmuxPane as killSharedTmuxPane,
   listCurrentWindowHudPaneIds,
+  OMX_TMUX_HUD_LEADER_PANE_ENV,
   parsePaneIdFromTmuxOutput,
   registerHudResizeHook,
 } from "../hud/tmux.js";
@@ -718,6 +719,12 @@ const PROJECT_LAUNCH_PERSISTED_RUNTIME_ENTRY_NAMES = new Set([
   "auth.json",
 ]);
 
+// Mirroring these files into the runtime CODEX_HOME would cause Codex to load
+// them as user-scope config alongside the canonical project-scope copies under
+// <cwd>/.codex, duplicating every native hook and asking the user to re-trust
+// hooks on every launch. See GH issue #2470.
+const PROJECT_LAUNCH_RUNTIME_SKIPPED_ENTRY_NAMES = new Set(["hooks.json"]);
+
 function shouldPersistProjectLaunchRuntimeEntry(entryName: string): boolean {
   return PROJECT_LAUNCH_PERSISTED_RUNTIME_ENTRY_NAMES.has(entryName);
 }
@@ -755,30 +762,14 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
 
   for (const entry of await readdir(projectCodexHome, { withFileTypes: true })) {
     if (isCodexSqliteArtifact(entry.name)) continue;
+    if (PROJECT_LAUNCH_RUNTIME_SKIPPED_ENTRY_NAMES.has(entry.name)) continue;
     const source = join(projectCodexHome, entry.name);
     const destination = join(runtimeCodexHome, entry.name);
-    if (entry.name === "config.toml" || entry.name === "hooks.json") {
+    if (entry.name === "config.toml") {
       await copyFile(source, destination);
       continue;
     }
     await linkOrCopyCodexHomeEntry(source, destination);
-  }
-
-  const runtimeConfigPath = join(runtimeCodexHome, "config.toml");
-  const runtimeHooksPath = join(runtimeCodexHome, "hooks.json");
-  if (existsSync(runtimeConfigPath) && existsSync(runtimeHooksPath)) {
-    const runtimeConfig = await readFile(runtimeConfigPath, "utf-8");
-    if (runtimeConfig.includes("# OMX-owned Codex hook trust state")) {
-      await writeFile(
-        runtimeConfigPath,
-        upsertManagedCodexHookTrustState(
-          runtimeConfig,
-          getPackageRoot(),
-          runtimeHooksPath,
-        ),
-        "utf-8",
-      );
-    }
   }
 
   return runtimeCodexHome;
@@ -819,12 +810,40 @@ export async function prepareCodexHomeForLaunch(
   };
 }
 
+export async function persistProjectLaunchRuntimeProjectTrustState(
+  runtimeCodexHome: string | undefined,
+  projectCodexHome: string | undefined,
+): Promise<void> {
+  if (!runtimeCodexHome || !projectCodexHome) return;
+  const runtimeConfigPath = join(runtimeCodexHome, "config.toml");
+  if (!existsSync(runtimeConfigPath)) return;
+  const projectConfigPath = join(projectCodexHome, "config.toml");
+  const runtimeConfig = await readFile(runtimeConfigPath, "utf-8");
+  const projectConfig = existsSync(projectConfigPath)
+    ? await readFile(projectConfigPath, "utf-8")
+    : "";
+  const projectHooksPath = join(projectCodexHome, "hooks.json");
+  const nextProjectConfig = syncProjectScopeTrustStateFromRuntime(
+    projectConfig,
+    runtimeConfig,
+    projectHooksPath,
+  );
+  if (nextProjectConfig !== projectConfig) {
+    await mkdir(projectCodexHome, { recursive: true });
+    await writeFile(projectConfigPath, nextProjectConfig, "utf-8");
+  }
+}
+
 async function cleanupRuntimeCodexHome(
   runtimeCodexHomeForCleanup?: string,
   projectCodexHomeForPersistence?: string,
 ): Promise<void> {
   if (!runtimeCodexHomeForCleanup) return;
   await persistProjectLaunchRuntimeAuthState(
+    runtimeCodexHomeForCleanup,
+    projectCodexHomeForPersistence,
+  );
+  await persistProjectLaunchRuntimeProjectTrustState(
     runtimeCodexHomeForCleanup,
     projectCodexHomeForPersistence,
   );
@@ -1228,6 +1247,23 @@ const MADMAX_DETACHED_LOCK_RETRY_MS = 50;
 const MADMAX_DETACHED_LOCK_MAX_ATTEMPTS = 100;
 const OMX_MADMAX_DETACHED_CONTEXT_ENV = "OMX_MADMAX_DETACHED_CONTEXT";
 
+interface MadmaxDetachedLockRetryOptions {
+  maxAttempts?: number;
+  retryMs?: number;
+}
+
+interface MadmaxDetachedLockOwner {
+  version: 1;
+  pid: number;
+  context_key: string;
+  acquired_at: string;
+}
+
+interface MadmaxDetachedLockInspection {
+  stale: boolean;
+  diagnostic: string;
+}
+
 interface MadmaxDetachedActiveRecord {
   version: 1;
   context_key: string;
@@ -1297,10 +1333,16 @@ function normalizeMadmaxDetachedLaunchArgv(argv: readonly string[]): string[] {
 export function buildMadmaxDetachedLaunchContextKey(
   sourceCwd: string,
   argv: readonly string[],
+  runIdentity = "",
 ): string {
+  // The boxed run root is part of the lock identity for auto-isolated madmax
+  // launches. That lets independent `omx --madmax --high` sessions share the
+  // same source cwd/argv without contending on one active-detached lock, while
+  // callers that intentionally reuse the same boxed context keep one key.
   const payload = JSON.stringify({
     source_cwd: canonicalizeLaunchCwd(sourceCwd),
     argv: normalizeMadmaxDetachedLaunchArgv(argv),
+    run_identity: runIdentity,
   });
   return createHash("sha256").update(payload).digest("hex").slice(0, 32);
 }
@@ -1352,17 +1394,98 @@ function detachedTmuxSessionExists(sessionName: string): boolean {
   }
 }
 
-function withMadmaxDetachedContextLock<T>(
+function readMadmaxDetachedLockOwner(lockPath: string): MadmaxDetachedLockOwner | null {
+  try {
+    const parsed = JSON.parse(readFileSync(join(lockPath, "owner.json"), "utf-8")) as Partial<MadmaxDetachedLockOwner>;
+    if (
+      parsed.version !== 1 ||
+      typeof parsed.pid !== "number" ||
+      !Number.isSafeInteger(parsed.pid) ||
+      parsed.pid <= 0 ||
+      typeof parsed.context_key !== "string" ||
+      typeof parsed.acquired_at !== "string"
+    ) {
+      return null;
+    }
+    return {
+      version: 1,
+      pid: parsed.pid,
+      context_key: parsed.context_key,
+      acquired_at: parsed.acquired_at,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readMadmaxDetachedLockPid(lockPath: string): number | null {
+  const owner = readMadmaxDetachedLockOwner(lockPath);
+  if (owner) return owner.pid;
+  try {
+    const holderPid = Number.parseInt(readFileSync(join(lockPath, "pid"), "utf-8").trim(), 10);
+    return Number.isSafeInteger(holderPid) && holderPid > 0 ? holderPid : null;
+  } catch {
+    return null;
+  }
+}
+
+function inspectMadmaxDetachedContextLock(lockPath: string): MadmaxDetachedLockInspection {
+  const lockStat = statSync(lockPath, { throwIfNoEntry: false });
+  if (!lockStat) {
+    return { stale: false, diagnostic: "lock disappeared while waiting" };
+  }
+  const ageMs = Math.max(0, Date.now() - lockStat.mtimeMs);
+  const owner = readMadmaxDetachedLockOwner(lockPath);
+  const holderPid = owner?.pid ?? readMadmaxDetachedLockPid(lockPath);
+  if (holderPid) {
+    if (!isProcessAlive(holderPid)) {
+      return {
+        stale: true,
+        diagnostic: `stale holder pid ${holderPid} is not running; lock age ${Math.round(ageMs)}ms`,
+      };
+    }
+    const ownerContext = owner ? `, owner context ${owner.context_key}` : ", legacy pid-only lock";
+    const sameDirectoryGuidance =
+      "Another madmax detached launch is active for this directory; close the existing madmax session or use --worktree for concurrent work. Multiple madmax sessions in one directory are unsafe";
+    return {
+      stale: false,
+      diagnostic: `holder pid ${holderPid} is still running${ownerContext}; lock age ${Math.round(ageMs)}ms. ${sameDirectoryGuidance}`,
+    };
+  }
+  if (ageMs > MADMAX_DETACHED_LOCK_STALE_MS) {
+    return {
+      stale: true,
+      diagnostic: `legacy lock has no readable owner pid and is older than ${MADMAX_DETACHED_LOCK_STALE_MS}ms; lock age ${Math.round(ageMs)}ms`,
+    };
+  }
+  return {
+    stale: false,
+    diagnostic: `lock has no readable owner pid yet; lock age ${Math.round(ageMs)}ms`,
+  };
+}
+
+export function withMadmaxDetachedContextLock<T>(
   runsRoot: string,
   contextKey: string,
   run: () => T,
+  options: MadmaxDetachedLockRetryOptions = {},
 ): T {
   const lockPath = join(runsRoot, MADMAX_DETACHED_ACTIVE_DIR, `${contextKey}.lock`);
+  const maxAttempts = options.maxAttempts ?? MADMAX_DETACHED_LOCK_MAX_ATTEMPTS;
+  const retryMs = options.retryMs ?? MADMAX_DETACHED_LOCK_RETRY_MS;
+  let lastDiagnostic = "lock was busy";
   mkdirSync(dirname(lockPath), { recursive: true });
-  for (let attempt = 0; attempt < MADMAX_DETACHED_LOCK_MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       mkdirSync(lockPath);
       try {
+        const owner: MadmaxDetachedLockOwner = {
+          version: 1,
+          pid: process.pid,
+          context_key: contextKey,
+          acquired_at: new Date().toISOString(),
+        };
+        writeFileSync(join(lockPath, "owner.json"), `${JSON.stringify(owner, null, 2)}\n`, { mode: 0o600 });
         writeFileSync(join(lockPath, "pid"), String(process.pid));
         return run();
       } finally {
@@ -1374,27 +1497,18 @@ function withMadmaxDetachedContextLock<T>(
           ? String((err as NodeJS.ErrnoException).code)
           : "";
       if (code !== "EEXIST") throw err;
-      const lockStat = statSync(lockPath, { throwIfNoEntry: false });
-      if (lockStat && Date.now() - lockStat.mtimeMs > MADMAX_DETACHED_LOCK_STALE_MS) {
-        let holderAlive = false;
-        try {
-          const holderPid = Number.parseInt(readFileSync(join(lockPath, "pid"), "utf-8").trim(), 10);
-          if (Number.isSafeInteger(holderPid) && holderPid > 0) {
-            process.kill(holderPid, 0);
-            holderAlive = true;
-          }
-        } catch {
-          holderAlive = false;
-        }
-        if (!holderAlive) {
-          rmSync(lockPath, { recursive: true, force: true });
-          continue;
-        }
+      const inspection = inspectMadmaxDetachedContextLock(lockPath);
+      lastDiagnostic = inspection.diagnostic;
+      if (inspection.stale) {
+        rmSync(lockPath, { recursive: true, force: true });
+        continue;
       }
-      blockMs(MADMAX_DETACHED_LOCK_RETRY_MS);
+      blockMs(retryMs);
     }
   }
-  throw new MadmaxDetachedGuardError(`timed out waiting for madmax detached launch context lock: ${lockPath}`);
+  throw new MadmaxDetachedGuardError(
+    `timed out waiting for madmax detached launch context lock: ${lockPath} (${lastDiagnostic})`,
+  );
 }
 
 function isMadmaxDetachedGuardEnabled(env: NodeJS.ProcessEnv): boolean {
@@ -1436,7 +1550,7 @@ export function createMadmaxIsolatedRoot(
   const suffix = Math.random().toString(16).slice(2, 6);
   const runDir = join(runsRoot, sanitizeRunIdSegment(`run-${stamp}-${suffix}`));
   mkdirSync(runDir, { recursive: false });
-  const detachedLaunchContext = buildMadmaxDetachedLaunchContextKey(sourceCwd, argv);
+  const detachedLaunchContext = buildMadmaxDetachedLaunchContextKey(sourceCwd, argv, runDir);
 
   const metadata = {
     launcher: "omx --madmax",
@@ -3792,9 +3906,17 @@ function runCodex(
   if (!omxBin) {
     throw new Error("Unable to resolve OMX launcher path for tmux HUD bootstrap");
   }
+  const omxRootOverride = resolveOmxRootForLaunch(cwd, process.env);
+  const currentPaneId = process.env.TMUX_PANE;
+  const hudEnvArgs = [
+    `OMX_SESSION_ID=${sessionId}`,
+    `${OMX_TMUX_HUD_OWNER_ENV}=1`,
+    ...(currentPaneId ? [`${OMX_TMUX_HUD_LEADER_PANE_ENV}=${currentPaneId}`] : []),
+    ...(omxRootOverride ? [`OMX_ROOT=${omxRootOverride}`] : []),
+  ];
   const hudCmd = nativeWindows
     ? buildWindowsPromptCommand("node", [omxBin, "hud", "--watch"])
-    : buildTmuxPaneCommand("env", [`OMX_SESSION_ID=${sessionId}`, `${OMX_TMUX_HUD_OWNER_ENV}=1`, "node", omxBin, "hud", "--watch"]);
+    : buildTmuxPaneCommand("env", [...hudEnvArgs, "node", omxBin, "hud", "--watch"]);
   const inheritLeaderFlags = process.env[TEAM_INHERIT_LEADER_FLAGS_ENV] !== "0";
   const workerLaunchArgs = resolveTeamWorkerLaunchArgsEnv(
     process.env[TEAM_WORKER_LAUNCH_ARGS_ENV],
@@ -3802,7 +3924,6 @@ function runCodex(
     inheritLeaderFlags,
     workerDefaultModel,
   );
-  const omxRootOverride = resolveOmxRootForLaunch(cwd, process.env);
   const codexBaseEnv = {
     ...process.env,
     ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
@@ -3833,15 +3954,17 @@ function runCodex(
 
   if (launchPolicy === "inside-tmux") {
     // Already in tmux: launch codex in current pane, HUD in bottom split
-    const currentPaneId = process.env.TMUX_PANE;
-    const staleHudPaneIds = listHudWatchPaneIdsInCurrentWindow(currentPaneId);
+    const staleHudPaneIds = listHudWatchPaneIdsInCurrentWindow(currentPaneId, { sessionId, leaderPaneId: currentPaneId });
     for (const paneId of staleHudPaneIds) {
       killTmuxPane(paneId);
     }
 
     let hudPaneId: string | null = null;
     try {
-      hudPaneId = createHudWatchPane(cwd, hudCmd);
+      hudPaneId = createHudWatchPane(cwd, hudCmd, {
+        heightLines: HUD_TMUX_HEIGHT_LINES,
+        targetPaneId: currentPaneId,
+      });
       if (hudPaneId && currentPaneId) {
         registerHudResizeHook(hudPaneId, currentPaneId, HUD_TMUX_HEIGHT_LINES);
       }
@@ -4130,17 +4253,27 @@ function runCodex(
   }
 }
 
-function listHudWatchPaneIdsInCurrentWindow(currentPaneId?: string): string[] {
+function listHudWatchPaneIdsInCurrentWindow(
+  currentPaneId?: string,
+  owner: { sessionId?: string; leaderPaneId?: string } = {},
+): string[] {
   try {
-    return listCurrentWindowHudPaneIds(currentPaneId);
+    return listCurrentWindowHudPaneIds(currentPaneId, undefined, owner);
   } catch (err) {
     logCliOperationFailure(err);
     return [];
   }
 }
 
-function createHudWatchPane(cwd: string, hudCmd: string): string | null {
-  return createSharedHudWatchPane(cwd, hudCmd, { heightLines: HUD_TMUX_HEIGHT_LINES });
+function createHudWatchPane(
+  cwd: string,
+  hudCmd: string,
+  options: { heightLines?: number; targetPaneId?: string } = {},
+): string | null {
+  return createSharedHudWatchPane(cwd, hudCmd, {
+    heightLines: options.heightLines ?? HUD_TMUX_HEIGHT_LINES,
+    targetPaneId: options.targetPaneId,
+  });
 }
 
 function killTmuxPane(paneId: string): void {

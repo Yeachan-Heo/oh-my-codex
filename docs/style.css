@@ -101,6 +101,7 @@ h2 {
   font-size: 1.5rem;
 }
 
+.grid,
 .card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));

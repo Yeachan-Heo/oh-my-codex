@@ -251,6 +251,12 @@ describe('keyword detector team compatibility', () => {
     assert.equal(detectPrimaryKeyword('remove the stale deep interview lock from .omx/state'), null);
   });
 
+  it('does not trigger deep-interview from casual discussion mentions', () => {
+    assert.equal(detectPrimaryKeyword('the deep interview report is useful context for the next plan'), null);
+    assert.equal(detectPrimaryKeyword('we already did a deep interview and should not reactivate it'), null);
+    assert.equal(detectPrimaryKeyword('this interview transcript says implementation is ready'), null);
+  });
+
   it('maps "gather requirements" to deep-interview skill', () => {
     const match = detectPrimaryKeyword('let us gather requirements first');
 
@@ -368,6 +374,13 @@ describe('explicit skill-name invocation requirement', () => {
   it('does not trigger ralplan from bare skill-name usage', () => {
     assert.equal(detectPrimaryKeyword('please do ralplan first'), null);
   });
+  it('detects explicit prometheus-strict invocation only', () => {
+    const match = detectPrimaryKeyword('please run $prometheus-strict before implementation');
+    assert.ok(match);
+    assert.equal(match.skill, 'prometheus-strict');
+    assert.equal(match.keyword.toLowerCase(), '$prometheus-strict');
+    assert.equal(detectPrimaryKeyword('please use prometheus-strict planning here'), null);
+  });
 });
 
 describe('keyword registry coverage', () => {
@@ -388,6 +401,7 @@ describe('keyword registry coverage', () => {
     assert.ok(registryKeywords.has('wiki lint'));
     assert.ok(registryKeywords.has('$autoresearch'));
     assert.ok(registryKeywords.has('$ultragoal'));
+    assert.ok(registryKeywords.has('$prometheus-strict'));
     assert.ok(registryKeywords.has('ultragoal'));
   });
 });
@@ -499,7 +513,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
-  it('writes skill-active-state.json with ralplan phase when autopilot keyword activates', async () => {
+  it('writes skill-active-state.json with deep-interview phase when autopilot keyword activates', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-'));
     const stateDir = join(cwd, '.omx', 'state');
     try {
@@ -515,11 +529,11 @@ describe('keyword detector skill-active-state lifecycle', () => {
 
       assert.ok(result);
       assert.equal(result.skill, 'autopilot');
-      assert.equal(result.phase, 'ralplan');
+      assert.equal(result.phase, 'deep-interview');
       assert.equal(result.active, true);
       assert.deepEqual(result.active_skills, [{
         skill: 'autopilot',
-        phase: 'ralplan',
+        phase: 'deep-interview',
         active: true,
         activated_at: '2026-02-25T00:00:00.000Z',
         updated_at: '2026-02-25T00:00:00.000Z',
@@ -551,6 +565,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
         max_iterations: number;
         state: {
           phase_cycle: string[];
+          deep_interview_gate: { status: string; skip_reason: string | null; rationale: string; };
           handoff_artifacts: Record<string, unknown>;
           review_verdict: unknown;
           qa_verdict: unknown;
@@ -564,7 +579,27 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(modeState.review_cycle, 0);
       assert.equal(modeState.max_iterations, 10);
       assert.deepEqual(modeState.state.phase_cycle, ['deep-interview', 'ralplan', 'ultragoal', 'code-review', 'ultraqa']);
-      assert.deepEqual(modeState.state.handoff_artifacts, { deep_interview: null, ralplan: null, ultragoal: null, code_review: null, ultraqa: null });
+      assert.deepEqual(modeState.state.deep_interview_gate, {
+        status: 'required',
+        skip_reason: null,
+        rationale: 'Autopilot starts at the deep-interview gate by default; clear bounded tasks may skip only with an explicit persisted skip reason.',
+      });
+      assert.deepEqual(modeState.state.handoff_artifacts, {
+        deep_interview: null,
+        ralplan: null,
+        ralplan_consensus_gate: {
+          required: true,
+          sequence: ['architect-review', 'critic-review'],
+          planning_artifacts_are_not_consensus: true,
+          required_review_roles: ['architect', 'critic'],
+          ralplan_architect_review: null,
+          ralplan_critic_review: null,
+          complete: false,
+        },
+        ultragoal: null,
+        code_review: null,
+        ultraqa: null,
+      });
       assert.equal(modeState.state.review_verdict, null);
       assert.equal(modeState.state.qa_verdict, null);
       assert.equal(modeState.state.return_to_ralplan_reason, null);
@@ -987,13 +1022,16 @@ describe('keyword detector skill-active-state lifecycle', () => {
 
       const result = await recordSkillActivation({
         stateDir,
-        text: '$ralplan implement the approved contract',
+        text: '$ultragoal turn the clarified spec into goals',
         sessionId: 'sess-handoff',
         nowIso: '2026-04-10T00:00:00.000Z',
       });
 
       assert.equal(result?.transition_error, undefined);
-      assert.equal(result?.transition_message, 'mode transiting: deep-interview -> ralplan');
+      assert.equal(result?.skill, 'ultragoal');
+      assert.equal(result?.initialized_mode, 'ultragoal');
+      assert.equal(result?.initialized_state_path, '.omx/state/sessions/sess-handoff/ultragoal-state.json');
+      assert.equal(result?.transition_message, 'mode transiting: deep-interview -> ultragoal');
 
       const completed = JSON.parse(
         await readFile(join(stateDir, 'sessions', 'sess-handoff', 'deep-interview-state.json'), 'utf-8'),
@@ -1007,6 +1045,53 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(completed.question_enforcement?.status, 'cleared');
       assert.equal(completed.question_enforcement?.clear_reason, 'handoff');
       assert.ok(completed.question_enforcement?.cleared_at);
+      const ultragoal = JSON.parse(
+        await readFile(join(stateDir, 'sessions', 'sess-handoff', 'ultragoal-state.json'), 'utf-8'),
+      ) as { active?: boolean; mode?: string; current_phase?: string };
+      assert.equal(ultragoal.active, true);
+      assert.equal(ultragoal.mode, 'ultragoal');
+      assert.equal(ultragoal.current_phase, 'planning');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps ralplan as an allowlisted deep-interview forward handoff', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-ralplan-handoff-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(join(stateDir, 'sessions', 'sess-ralplan-handoff'), { recursive: true });
+      await writeFile(
+        join(stateDir, 'sessions', 'sess-ralplan-handoff', SKILL_ACTIVE_STATE_FILE),
+        JSON.stringify({
+          version: 1,
+          active: true,
+          skill: 'deep-interview',
+          phase: 'planning',
+          session_id: 'sess-ralplan-handoff',
+          active_skills: [{ skill: 'deep-interview', phase: 'planning', active: true, session_id: 'sess-ralplan-handoff' }],
+        }, null, 2),
+      );
+      await writeFile(
+        join(stateDir, 'sessions', 'sess-ralplan-handoff', 'deep-interview-state.json'),
+        JSON.stringify({ active: true, mode: 'deep-interview', current_phase: 'intent-first' }, null, 2),
+      );
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: '$ralplan implement the approved contract',
+        sessionId: 'sess-ralplan-handoff',
+        nowIso: '2026-04-10T00:00:00.000Z',
+      });
+
+      assert.equal(result?.transition_error, undefined);
+      assert.equal(result?.skill, 'ralplan');
+      assert.equal(result?.transition_message, 'mode transiting: deep-interview -> ralplan');
+      const completed = JSON.parse(
+        await readFile(join(stateDir, 'sessions', 'sess-ralplan-handoff', 'deep-interview-state.json'), 'utf-8'),
+      ) as { active?: boolean; current_phase?: string };
+      assert.equal(completed.active, false);
+      assert.equal(completed.current_phase, 'completed');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1433,7 +1518,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
-  it('records ultragoal as a prompt skill without seeding unrelated mode state', async () => {
+  it('records ultragoal as a prompt skill with first-class mode state', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ultragoal-'));
     const stateDir = join(cwd, '.omx', 'state');
     try {
@@ -1446,9 +1531,16 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.ok(result);
       assert.equal(result.skill, 'ultragoal');
       assert.equal(result.keyword, '$ultragoal');
-      assert.equal(result.initialized_mode, undefined);
-      assert.equal(result.initialized_state_path, undefined);
-      assert.equal(existsSync(join(stateDir, 'ultragoal-state.json')), false);
+      assert.equal(result.initialized_mode, 'ultragoal');
+      assert.equal(result.initialized_state_path, '.omx/state/ultragoal-state.json');
+      const modeState = JSON.parse(await readFile(join(stateDir, 'ultragoal-state.json'), 'utf-8')) as {
+        active?: boolean;
+        mode?: string;
+        current_phase?: string;
+      };
+      assert.equal(modeState.active, true);
+      assert.equal(modeState.mode, 'ultragoal');
+      assert.equal(modeState.current_phase, 'planning');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -2090,7 +2182,7 @@ describe('isUnderspecifiedForExecution', () => {
 });
 
 describe('applyRalplanGate', () => {
-  it('does not re-enter ralplan for a short approved team follow-up', async () => {
+  it('gates short team follow-up when only PRD/test-spec artifacts exist', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-'));
     try {
       const plansDir = join(cwd, '.omx', 'plans');
@@ -2102,23 +2194,35 @@ describe('applyRalplanGate', () => {
       await writeFile(join(plansDir, 'test-spec-issue-831.md'), '# Test spec\n');
 
       const result = applyRalplanGate(['team'], 'team', { cwd });
-      assert.equal(result.gateApplied, false);
-      assert.deepEqual(result.keywords, ['team']);
+      assert.equal(result.gateApplied, true);
+      assert.deepEqual(result.keywords, ['ralplan']);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it('does not re-enter ralplan for a short approved Korean team follow-up', async () => {
+  it('does not re-enter ralplan for a short approved team follow-up with durable consensus', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-ko-'));
     try {
       const plansDir = join(cwd, '.omx', 'plans');
+      const stateDir = join(cwd, '.omx', 'state');
       await mkdir(plansDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
       await writeFile(
         join(plansDir, 'prd-issue-831.md'),
         '# Approved plan\n\nLaunch hint: omx team 3:executor "Execute approved issue 831 plan"\n',
       );
       await writeFile(join(plansDir, 'test-spec-issue-831.md'), '# Test spec\n');
+      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
+        current_phase: 'complete',
+        planning_complete: true,
+        ralplan_consensus_gate: {
+          complete: true,
+          sequence: ['architect-review', 'critic-review'],
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1 },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1 },
+        },
+      }));
 
       const result = applyRalplanGate(['team'], 'team으로 해줘', { cwd });
       assert.equal(result.gateApplied, false);
@@ -2128,20 +2232,93 @@ describe('applyRalplanGate', () => {
     }
   });
 
-  it('does not re-enter ralplan for a short approved ralph follow-up', async () => {
+  it('does not re-enter ralplan for a short approved ralph follow-up with durable consensus', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-ralph-'));
     try {
       const plansDir = join(cwd, '.omx', 'plans');
+      const stateDir = join(cwd, '.omx', 'state');
       await mkdir(plansDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
       await writeFile(
         join(plansDir, 'prd-issue-832.md'),
         '# Approved plan\n\nLaunch hint: omx ralph "Execute approved issue 832 plan"\n',
       );
       await writeFile(join(plansDir, 'test-spec-issue-832.md'), '# Test spec\n');
+      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
+        current_phase: 'complete',
+        planning_complete: true,
+        ralplan_consensus_gate: {
+          complete: true,
+          sequence: ['architect-review', 'critic-review'],
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1 },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1 },
+        },
+      }));
 
       const result = applyRalplanGate(['ralph'], 'ralph please', { cwd, priorSkill: 'ralplan' });
       assert.equal(result.gateApplied, false);
       assert.deepEqual(result.keywords, ['ralph']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores ambient OMX_ROOT consensus state for local PRD/test-spec-only follow-up gating', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-local-'));
+    const ambientRoot = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-ambient-'));
+    const previousOmxRoot = process.env.OMX_ROOT;
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      await mkdir(plansDir, { recursive: true });
+      await writeFile(join(plansDir, 'prd-local.md'), '# Plan\n');
+      await writeFile(join(plansDir, 'test-spec-local.md'), '# Test spec\n');
+
+      const ambientStateDir = join(ambientRoot, '.omx', 'state');
+      await mkdir(ambientStateDir, { recursive: true });
+      await writeFile(join(ambientStateDir, 'ralplan-state.json'), JSON.stringify({
+        current_phase: 'complete',
+        planning_complete: true,
+        ralplan_consensus_gate: {
+          complete: true,
+          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1 },
+          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1 },
+        },
+      }));
+      process.env.OMX_ROOT = ambientRoot;
+
+      const result = applyRalplanGate(['team'], 'team', { cwd });
+      assert.equal(result.gateApplied, true);
+      assert.deepEqual(result.keywords, ['ralplan']);
+    } finally {
+      if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = previousOmxRoot;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(ambientRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('gates short follow-up when local state only has latest verdict fields', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-latest-only-'));
+    try {
+      const plansDir = join(cwd, '.omx', 'plans');
+      const stateDir = join(cwd, '.omx', 'state');
+      await mkdir(plansDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(
+        join(plansDir, 'prd-local.md'),
+        '# Plan\n\nLaunch hint: omx team 3:executor "Execute approved local plan"\n',
+      );
+      await writeFile(join(plansDir, 'test-spec-local.md'), '# Test spec\n');
+      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
+        current_phase: 'complete',
+        planning_complete: true,
+        latest_architect_verdict: 'approve',
+        latest_critic_verdict: 'approve',
+      }));
+
+      const result = applyRalplanGate(['team'], 'team', { cwd });
+      assert.equal(result.gateApplied, true);
+      assert.deepEqual(result.keywords, ['ralplan']);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -43,10 +43,12 @@ import {
   shouldAutoIsolateMadmaxLaunch,
   createMadmaxIsolatedRoot,
   buildMadmaxDetachedLaunchContextKey,
+  withMadmaxDetachedContextLock,
   resolveOmxRootForLaunch,
   resolveDisposableWorktreeOmxRootForLaunch,
   prepareCodexHomeForLaunch,
   persistProjectLaunchRuntimeAuthState,
+  persistProjectLaunchRuntimeProjectTrustState,
   runtimeCodexHomePath,
   buildDetachedSessionBootstrapSteps,
   buildDetachedTmuxSessionName,
@@ -151,34 +153,34 @@ describe("madmax state isolation", () => {
       const env: NodeJS.ProcessEnv = { OMX_RUNS_DIR: runs };
       const runDir = createMadmaxIsolatedRoot(wd, ["--madmax", "--xhigh", "--tmux"], env);
       const metadata = JSON.parse(await readFile(join(runDir, ".omxbox-run.json"), "utf-8"));
-      const expectedContext = buildMadmaxDetachedLaunchContextKey(wd, ["--madmax", "--xhigh", "--tmux"]);
+      const expectedContext = buildMadmaxDetachedLaunchContextKey(wd, ["--madmax", "--xhigh", "--tmux"], runDir);
       assert.equal(metadata.detached_launch_context, expectedContext);
       assert.equal(env.OMX_MADMAX_DETACHED_CONTEXT, expectedContext);
       assert.equal(
-        expectedContext,
-        buildMadmaxDetachedLaunchContextKey(wd, ["--madmax", "--xhigh"]),
+        buildMadmaxDetachedLaunchContextKey(wd, ["--madmax", "--xhigh", "--tmux"], runDir),
+        buildMadmaxDetachedLaunchContextKey(wd, ["--madmax", "--xhigh"], runDir),
         "explicit --tmux is a transport choice and must not create a second context",
       );
       assert.equal(
-        expectedContext,
-        buildMadmaxDetachedLaunchContextKey(wd, ["--xhigh", "--madmax", "--direct"]),
+        buildMadmaxDetachedLaunchContextKey(wd, ["--madmax", "--xhigh", "--tmux"], runDir),
+        buildMadmaxDetachedLaunchContextKey(wd, ["--xhigh", "--madmax", "--direct"], runDir),
         "argument order and transport choices must not create duplicate detached contexts",
       );
       assert.notEqual(
         expectedContext,
-        buildMadmaxDetachedLaunchContextKey(wd, ["--madmax", "--low"]),
+        buildMadmaxDetachedLaunchContextKey(wd, ["--madmax", "--low"], runDir),
         "different launch semantics may run concurrently",
       );
       assert.notEqual(
-        buildMadmaxDetachedLaunchContextKey(wd, ["--madmax", "--high", "--xhigh"]),
-        buildMadmaxDetachedLaunchContextKey(wd, ["--madmax", "--xhigh", "--high"]),
+        buildMadmaxDetachedLaunchContextKey(wd, ["--madmax", "--high", "--xhigh"], runDir),
+        buildMadmaxDetachedLaunchContextKey(wd, ["--madmax", "--xhigh", "--high"], runDir),
         "last reasoning shorthand wins, so reversed reasoning order is a distinct context",
       );
       const otherWd = await mkdtemp(join(tmpdir(), "omx-madmax-other-source-"));
       try {
         assert.notEqual(
           expectedContext,
-          buildMadmaxDetachedLaunchContextKey(otherWd, ["--madmax", "--xhigh"]),
+          buildMadmaxDetachedLaunchContextKey(otherWd, ["--madmax", "--xhigh"], runDir),
           "different work contexts may run concurrently",
         );
       } finally {
@@ -186,6 +188,95 @@ describe("madmax state isolation", () => {
       }
     } finally {
       await rm(wd, { recursive: true, force: true });
+      await rm(runs, { recursive: true, force: true });
+    }
+  });
+
+  it("gives independent madmax run roots distinct detached launch context locks", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-madmax-source-"));
+    const runs = await mkdtemp(join(tmpdir(), "omx-madmax-runs-"));
+    try {
+      const firstEnv: NodeJS.ProcessEnv = { OMX_RUNS_DIR: runs };
+      const secondEnv: NodeJS.ProcessEnv = { OMX_RUNS_DIR: runs };
+      const firstRunDir = createMadmaxIsolatedRoot(wd, ["--madmax", "--high"], firstEnv);
+      const secondRunDir = createMadmaxIsolatedRoot(wd, ["--madmax", "--high"], secondEnv);
+
+      assert.notEqual(firstRunDir, secondRunDir);
+      assert.notEqual(
+        firstEnv.OMX_MADMAX_DETACHED_CONTEXT,
+        secondEnv.OMX_MADMAX_DETACHED_CONTEXT,
+        "same cwd and argv from independent boxed runs must not contend on one active-detached lock",
+      );
+      assert.equal(
+        firstEnv.OMX_MADMAX_DETACHED_CONTEXT,
+        buildMadmaxDetachedLaunchContextKey(wd, ["--high", "--madmax", "--tmux"], firstRunDir),
+        "transport and order normalization still deduplicates within the same isolated run",
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(runs, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers a madmax detached context lock whose holder pid has already exited", async () => {
+    const runs = await mkdtemp(join(tmpdir(), "omx-madmax-lock-stale-"));
+    try {
+      const contextKey = "stale-context";
+      const lockPath = join(runs, "active-detached", `${contextKey}.lock`);
+      mkdirSync(lockPath, { recursive: true });
+      await writeFile(join(lockPath, "pid"), "2147483647");
+
+      let ran = false;
+      const result = withMadmaxDetachedContextLock(
+        runs,
+        contextKey,
+        () => {
+          ran = true;
+          return "acquired";
+        },
+        { maxAttempts: 2, retryMs: 0 },
+      );
+
+      assert.equal(result, "acquired");
+      assert.equal(ran, true);
+      assert.equal(existsSync(lockPath), false);
+    } finally {
+      await rm(runs, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a live madmax detached context lock and reports holder diagnostics on timeout", async () => {
+    const runs = await mkdtemp(join(tmpdir(), "omx-madmax-lock-live-"));
+    try {
+      const contextKey = "live-context";
+      const lockPath = join(runs, "active-detached", `${contextKey}.lock`);
+      mkdirSync(lockPath, { recursive: true });
+      await writeFile(
+        join(lockPath, "owner.json"),
+        `${JSON.stringify({
+          version: 1,
+          pid: process.pid,
+          context_key: contextKey,
+          acquired_at: new Date().toISOString(),
+        })}\n`,
+      );
+      await writeFile(join(lockPath, "pid"), String(process.pid));
+
+      assert.throws(
+        () => withMadmaxDetachedContextLock(runs, contextKey, () => "should-not-run", { maxAttempts: 1, retryMs: 0 }),
+        (err: unknown) => {
+          assert.ok(err instanceof Error);
+          assert.match(err.message, /timed out waiting for madmax detached launch context lock/);
+          assert.match(err.message, new RegExp(`holder pid ${process.pid} is still running`));
+          assert.match(err.message, /owner context live-context/);
+          assert.match(err.message, /Another madmax detached launch is active for this directory/);
+          assert.match(err.message, /close the existing madmax session or use --worktree for concurrent work/);
+          assert.match(err.message, /Multiple madmax sessions in one directory are unsafe/);
+          return true;
+        },
+      );
+      assert.equal(existsSync(lockPath), true);
+    } finally {
       await rm(runs, { recursive: true, force: true });
     }
   });
@@ -2029,8 +2120,10 @@ describe("project launch scope helpers", () => {
         await readFile(join(runtimeCodexHome, "agents", "planner.toml"), "utf-8"),
         'name = "planner"\n',
       );
-      assert.equal(await readFile(join(runtimeCodexHome, "hooks.json"), "utf-8"), '{"hooks":{}}\n');
-      assert.equal((await lstat(join(runtimeCodexHome, "hooks.json"))).isSymbolicLink(), false);
+      // GH #2470: hooks.json must NOT be mirrored into the runtime CODEX_HOME.
+      // Codex still loads the canonical project .codex/hooks.json as Project
+      // config; a runtime mirror would add a duplicate User config hook source.
+      assert.equal(existsSync(join(runtimeCodexHome, "hooks.json")), false);
       assert.equal(existsSync(join(runtimeCodexHome, "state_5.sqlite")), false);
       assert.equal(existsSync(join(runtimeCodexHome, "state_5.sqlite-wal")), false);
       assert.equal(existsSync(join(runtimeCodexHome, "logs_2.sqlite-shm")), false);
@@ -2082,7 +2175,118 @@ describe("project launch scope helpers", () => {
     }
   });
 
-  it("rewrites setup-owned hook trust state for the runtime CODEX_HOME mirror", async () => {
+  it("project-scope launch registers native hooks exactly once and persists trust state (GH #2470)", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-issue-2470-"));
+    try {
+      const projectCodexHome = join(wd, ".codex");
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await mkdir(projectCodexHome, { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+      const originalProjectConfig = [
+        'model = "gpt-5.5"',
+        "",
+        "[features]",
+        "hooks = true",
+        "",
+        "# OMX-owned Codex hook trust state",
+        "# Trusts only setup-managed codex-native-hook.js wrappers.",
+        `[hooks.state."${join(projectCodexHome, "hooks.json")}:pre_tool_use:0:0"]`,
+        'trusted_hash = "sha256:project-hooks-trusted"',
+        "# End OMX-owned Codex hook trust state",
+        "",
+      ].join("\n");
+      await writeFile(join(projectCodexHome, "config.toml"), originalProjectConfig);
+      await writeFile(join(projectCodexHome, "hooks.json"), '{"hooks":{}}\n');
+
+      const prepared = await prepareCodexHomeForLaunch(wd, "session-2470", {});
+      const runtimeCodexHome = runtimeCodexHomePath(wd, "session-2470");
+
+      // 1. Hooks register exactly once: runtime CODEX_HOME holds no hooks.json
+      //    mirror, so Codex only sees the canonical project .codex/hooks.json.
+      assert.equal(prepared.codexHomeOverride, runtimeCodexHome);
+      assert.equal(existsSync(join(runtimeCodexHome, "hooks.json")), false);
+      assert.equal(existsSync(join(projectCodexHome, "hooks.json")), true);
+
+      // Simulate Codex writing workspace trust + a new hook trust ledger
+      // entry into the runtime config.toml during the session.
+      const runtimeConfigPath = join(runtimeCodexHome, "config.toml");
+      const runtimeConfigBefore = await readFile(runtimeConfigPath, "utf-8");
+      await writeFile(
+        runtimeConfigPath,
+        [
+          runtimeConfigBefore.replace(/\n+$/, ""),
+          "",
+          `[projects."${wd}"]`,
+          'trust_level = "trusted"',
+          "",
+          "[tui.model_availability_nux]",
+          '"gpt-5.5" = 1',
+          "",
+        ].join("\n"),
+      );
+
+      // 2. Workspace trust + ephemeral runtime state are persisted to the
+      //    project config.toml in a marker-fenced block; NUX counters and
+      //    other runtime-only writes are NOT leaked back to the project.
+      await persistProjectLaunchRuntimeProjectTrustState(
+        prepared.runtimeCodexHomeForCleanup,
+        prepared.projectLocalCodexHomeForCleanup,
+      );
+
+      const persistedProjectConfig = await readFile(
+        join(projectCodexHome, "config.toml"),
+        "utf-8",
+      );
+      assert.ok(
+        persistedProjectConfig.includes(
+          "# OMX-synced Codex project trust state",
+        ),
+        "expected synced-trust marker block in project config.toml",
+      );
+      assert.ok(
+        persistedProjectConfig.includes(`[projects."${wd}"]`),
+        "expected workspace trust entry to be persisted to project config.toml",
+      );
+      assert.ok(
+        persistedProjectConfig.includes('trust_level = "trusted"'),
+        "expected trust_level to be persisted to project config.toml",
+      );
+      assert.doesNotMatch(
+        persistedProjectConfig,
+        /model_availability_nux/,
+        "NUX counters must not leak into durable project config.toml",
+      );
+      assert.ok(
+        persistedProjectConfig.includes(
+          `[hooks.state."${join(projectCodexHome, "hooks.json")}:pre_tool_use:0:0"]`,
+        ),
+        "setup-owned project hook trust state must remain intact",
+      );
+
+      // 3. On a subsequent launch, the runtime mirror carries the persisted
+      //    project trust state forward — so Codex finds the workspace as
+      //    already-trusted and never re-prompts.
+      await rm(runtimeCodexHome, { recursive: true, force: true });
+      await prepareCodexHomeForLaunch(wd, "session-2470-repeat", {});
+      const nextRuntimeCodexHome = runtimeCodexHomePath(wd, "session-2470-repeat");
+      const nextRuntimeConfig = await readFile(
+        join(nextRuntimeCodexHome, "config.toml"),
+        "utf-8",
+      );
+      assert.ok(
+        nextRuntimeConfig.includes(`[projects."${wd}"]`),
+        "next launch must inherit the persisted workspace trust entry",
+      );
+      assert.equal(existsSync(join(nextRuntimeCodexHome, "hooks.json")), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps setup-owned hook trust state targeted at the project hooks path (GH #2470)", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-launch-runtime-hook-trust-"));
     try {
       const projectCodexHome = join(wd, ".codex");
@@ -2093,6 +2297,8 @@ describe("project launch scope helpers", () => {
         JSON.stringify({ scope: "project" }),
       );
       await writeFile(join(projectCodexHome, "hooks.json"), '{"hooks":{}}\n');
+      const projectHookTrustHeader =
+        `[hooks.state."${join(projectCodexHome, "hooks.json")}:pre_tool_use:0:0"]`;
       await writeFile(
         join(projectCodexHome, "config.toml"),
         [
@@ -2101,8 +2307,8 @@ describe("project launch scope helpers", () => {
           "",
           "# OMX-owned Codex hook trust state",
           "# Trusts only setup-managed codex-native-hook.js wrappers.",
-          `[hooks.state."${join(projectCodexHome, "hooks.json")}:pre_tool_use:0:0"]`,
-          'trusted_hash = "stale"',
+          projectHookTrustHeader,
+          'trusted_hash = "sha256:abc"',
           "# End OMX-owned Codex hook trust state",
           "",
         ].join("\n"),
@@ -2112,12 +2318,17 @@ describe("project launch scope helpers", () => {
       const runtimeCodexHome = runtimeCodexHomePath(wd, "session-trust");
       const runtimeConfig = await readFile(join(runtimeCodexHome, "config.toml"), "utf-8");
 
-      assert.match(
-        runtimeConfig,
-        new RegExp(`\\[hooks\\.state\\."${join(runtimeCodexHome, "hooks.json").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:pre_tool_use:0:0"\\]`),
+      // Runtime CODEX_HOME no longer holds a hooks.json mirror, so the trust
+      // block must continue pointing at the canonical project hooks.json path.
+      assert.equal(existsSync(join(runtimeCodexHome, "hooks.json")), false);
+      assert.ok(
+        runtimeConfig.includes(projectHookTrustHeader),
+        `expected runtime config.toml to keep ${projectHookTrustHeader}`,
       );
-      assert.doesNotMatch(runtimeConfig, /trusted_hash = "stale"/);
-      assert.doesNotMatch(runtimeConfig, new RegExp(join(projectCodexHome, "hooks.json").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.doesNotMatch(
+        runtimeConfig,
+        new RegExp(join(runtimeCodexHome, "hooks.json").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      );
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -2819,11 +3030,15 @@ describe("detached tmux new-session sequencing", () => {
     assert.doesNotMatch(argsText, /fake-provider-key/);
   });
 
-  it("runCodex builds inside-tmux HUD command with OMX_SESSION_ID", async () => {
+  it("runCodex builds inside-tmux HUD command with OMX_SESSION_ID and OMX_ROOT when set", async () => {
     const source = await readFile(join(repoRoot, 'src', 'cli', 'index.ts'), 'utf-8');
     assert.match(
       source,
-      /buildTmuxPaneCommand\("env",\s*\[\s*`OMX_SESSION_ID=\$\{sessionId\}`,\s*`\$\{OMX_TMUX_HUD_OWNER_ENV\}=1`,\s*"node",\s*omxBin,\s*"hud",\s*"--watch",?\s*\]\)/,
+      /const hudEnvArgs = \[\s*`OMX_SESSION_ID=\$\{sessionId\}`,\s*`\$\{OMX_TMUX_HUD_OWNER_ENV\}=1`,\s*\.\.\.\(currentPaneId \? \[`\$\{OMX_TMUX_HUD_LEADER_PANE_ENV\}=\$\{currentPaneId\}`\] : \[\]\),\s*\.\.\.\(omxRootOverride \? \[`OMX_ROOT=\$\{omxRootOverride\}`\] : \[\]\),\s*\]/,
+    );
+    assert.match(
+      source,
+      /buildTmuxPaneCommand\("env",\s*\[\.\.\.hudEnvArgs,\s*"node",\s*omxBin,\s*"hud",\s*"--watch"\]\)/,
     );
   });
 
@@ -3913,9 +4128,9 @@ exit 0
       (step) => step.name === "reconcile-hud-resize",
     );
 
-    assert.match(registerHook?.args[5] ?? "", />\/dev\/null 2>&1 \|\| true/);
+    assert.match(registerHook?.args[4] ?? "", />\/dev\/null 2>&1 \|\| true/);
     assert.match(
-      registerHook?.args[5] ?? "",
+      registerHook?.args[4] ?? "",
       new RegExp(`-y ${HUD_TMUX_HEIGHT_LINES}\\b`),
     );
     assert.match(schedule?.args[2] ?? "", />\/dev\/null 2>&1 \|\| true/);
@@ -4003,7 +4218,8 @@ exit 0
     assert.equal(steps[0]?.args[2], "-t");
     assert.equal(steps[0]?.args[3], "omx-demo:0");
     assert.match(steps[0]?.args[4] ?? "", /^client-attached\[\d+\]$/);
-    assert.match(steps[1]?.args[5] ?? "", /^window-resized\[\d+\]$/);
+    assert.match(steps[1]?.args[4] ?? "", /^client-resized\[\d+\]$/);
+    assert.doesNotMatch(steps[1]?.args.join(" ") ?? "", /window-resized/);
     assert.deepEqual(steps[2]?.args, ["kill-session", "-t", "omx-demo"]);
   });
 

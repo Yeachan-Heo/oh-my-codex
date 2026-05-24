@@ -1845,6 +1845,72 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
+	it("preserves same-key user hook trust state in plugin-scoped setup", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const hooksPath = join(codexHomeDir, "hooks.json");
+					const configPath = join(codexHomeDir, "config.toml");
+					await writeFile(
+						hooksPath,
+						JSON.stringify(
+							{
+								hooks: {
+									PostCompact: [
+										{
+											hooks: [
+												{
+													type: "command",
+													command: "/usr/bin/python3 /tmp/user-hook.py",
+													timeout: 5,
+												},
+											],
+										},
+									],
+								},
+							},
+							null,
+							2,
+						) + "\n",
+					);
+					await writeFile(
+						configPath,
+						[
+							'model = "gpt-5.5"',
+							"",
+							`[hooks.state."${hooksPath}:post_compact:0:0"]`,
+							'trusted_hash = "sha256:user"',
+							"enabled = false",
+							"",
+						].join("\n"),
+					);
+
+					await setup({ scope: "user", installMode: "plugin" });
+
+					const config = await readFile(configPath, "utf-8");
+					assert.match(config, /^plugin_hooks = true$/m);
+					assert.match(config, /^trusted_hash = "sha256:user"$/m);
+					assert.match(config, /^enabled = false$/m);
+					assert.equal(
+						config
+							.split(/\r?\n/)
+							.filter(
+								(line) =>
+									line.trim() ===
+									`[hooks.state."${hooksPath}:post_compact:0:0"]`,
+							).length,
+						1,
+						"plugin setup must not duplicate preserved user hook trust state",
+					);
+					assert.doesNotThrow(() => parseToml(config));
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("honors persisted project-scoped plugin mode on repeat setup", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {

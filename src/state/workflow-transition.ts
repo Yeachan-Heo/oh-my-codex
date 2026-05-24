@@ -114,6 +114,7 @@ export const TRACKED_WORKFLOW_MODES = [
   'autopilot',
   'autoresearch',
   'team',
+  'ultragoal',
   'ralph',
   'ultrawork',
   'ultraqa',
@@ -131,7 +132,12 @@ const ALLOWED_OVERLAP_PAIRS = new Set([
 
 const AUTO_COMPLETE_TRANSITIONS = new Set([
   'deep-interview->ralplan',
+  'deep-interview->autopilot',
   'deep-interview->autoresearch',
+  'deep-interview->ralph',
+  'deep-interview->team',
+  'deep-interview->ultragoal',
+  'deep-interview->ultrawork',
   'ralplan->team',
   'ralplan->ralph',
   'ralplan->autopilot',
@@ -148,6 +154,7 @@ const EXECUTION_LIKE_MODES = new Set<TrackedWorkflowMode>([
   'autopilot',
   'autoresearch',
   'team',
+  'ultragoal',
   'ralph',
   'ultrawork',
   'ultraqa',

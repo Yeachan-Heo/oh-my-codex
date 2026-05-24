@@ -174,13 +174,13 @@ describe("verify-native-agents", () => {
     );
   });
 
-  it("fails if the plugin manifest declares setup-owned native-agent fields", async () => {
+  it("allows plugin-scoped hooks but fails if the plugin manifest declares setup-owned native-agent fields", async () => {
     await rejectsWithCode("native_agent_plugin_boundary_violation", () =>
       verifyNativeAgents({
         manifest: manifest([{ name: "executor", category: "build", status: "active" }]),
         definitions: { executor: definition },
         promptNames: new Set(["executor"]),
-        pluginManifest: { agents: "./agents/" },
+        pluginManifest: { agents: "./agents/", hooks: "./hooks/hooks.json" },
       }),
     );
 

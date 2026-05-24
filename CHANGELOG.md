@@ -4,6 +4,44 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-05-23
+
+Patch release for the closed post-`0.18.1` issue train. This release promotes the `dev` fixes for every currently closed, completed GitHub issue opened after `v0.18.1`, plus the Prometheus Strict planner surface and Ultragoal HUD progress display that also merged during the compare range.
+
+### Added
+
+- **Prometheus Strict recipe workflow** — restores a recipe-only interview-driven planner surface with `omx question` routing, native agent definitions, catalog entries, mirrored plugin skill files, and dogfood documentation (#2415, #2437).
+- **Ultragoal HUD progress** — HUD output now summarizes active Ultragoal progress and tightens review follow-up handling so long-running durable goals stay visible during execution (#2472).
+
+### Changed
+
+- **Autopilot and planning handoffs are more auditable** — Autopilot now exposes the full durable phase chain, ralplan consensus requires explicit Architect/Critic evidence before handoff, and ralplan examples point to Ultragoal as the default durable execution path (#2432, #2447, #2455).
+- **Deep-interview remains a requirements boundary** — deep-interview handoffs now avoid implicit implementation and preserve explicit execution transition requirements (#2427).
+- **Research workflow guidance is clearer** — best-practice research, Autoresearch, Autoresearch Goal, and ralplan now have sharper boundaries, with in-repo docs CSS paths verified (#2469).
+
+### Fixed
+
+- **Plugin/native hook reliability** — doctor no longer warns about missing setup-owned `hooks.json` when plugin-mode hook coverage is valid, native review subagents no longer activate workflow state from quoted parent keywords, and project-scope runtime `CODEX_HOME` launches no longer duplicate native hooks or lose trust state (#2431, #2448, #2471).
+- **Tmux/HUD/madmax stability** — tmux 3.2a-compatible resize hooks, per-run madmax detached lock identity, stale-lock diagnostics/recovery, boxed `OMX_ROOT` forwarding, per-leader HUD ownership, and clearer same-directory madmax lock diagnostics are included (#2434, #2436, #2442, #2452, #2461, #2463).
+- **Team and notification safety** — team startup-direct evidence gates, team Stop state isolation, and bounded Codex Desktop `turn-ended` notification dispatch prevent false success paths and runaway notify storms (#2439, #2450, #2457).
+- **Ultragoal recovery** — unavailable Codex goal storage such as `no such table: thread_goals` is classified and checkpointed as non-terminal blocked recovery evidence instead of trapping completed work (#2467).
+
+### Closed issue audit
+
+Opened after `v0.18.1` and currently closed:
+
+- Completed and merged to `dev`: #2429→#2431, #2430→#2432, #2433→#2434, #2435→#2436, #2438→#2439, #2440→#2442, #2443→#2447, #2445→#2448, #2449→#2450, #2451→#2452, #2453→#2455, #2456→#2457, #2460→#2461, #2462→#2463, #2466→#2467, #2468→#2469, #2470→#2471.
+- Closed as not planned / not an execution-track merge: #2428 (too broad; requested narrower follow-ups) and #2465 (contribution-gate closure). These had no required release merge.
+
+### PRs
+
+- #2415, #2427, #2431, #2432, #2434, #2436, #2437, #2439, #2442, #2447, #2448, #2450, #2452, #2455, #2457, #2461, #2463, #2467, #2469, #2471, #2472
+
+### Verification
+
+- Release readiness evidence is tracked in `docs/qa/release-readiness-0.18.2.md`.
+
+
 ## [0.18.0] - 2026-05-19
 
 Minor release focused on local-generation infrastructure, SparkShell operator safety, and runtime reliability after `0.17.3`. The release adds the OMX API gateway, routes SparkShell summaries through the local API surface, improves real/local generation compatibility, and closes a cluster of hook, notify, tmux, Windows MCP, and workflow-state regressions found while preparing the release.

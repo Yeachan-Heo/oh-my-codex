@@ -661,8 +661,8 @@ esac
       const payload = JSON.parse(joined);
       assert.equal(payload.ok, true);
       assert.equal(payload.answer.value, 'a');
-      assert.doesNotMatch(joined, /Use ↑\/↓ to move, Enter to select\./);
-      assert.match(stderrJoined, /Use ↑\/↓ to move, Enter to select\./);
+      assert.doesNotMatch(joined, /↑↓ move · Enter select/);
+      assert.match(stderrJoined, /↑↓ move · Enter select/);
 
       const entries = await readdir(join(cwd, '.omx', 'state', 'sessions', 'sess-q', 'questions'));
       assert.equal(entries.length, 1);

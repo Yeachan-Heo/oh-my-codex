@@ -62,7 +62,17 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     review_verdict: null,
     qa_verdict: null,
     return_to_ralplan_reason: null,
-    handoff_artifacts: {},
+    handoff_artifacts: {
+      ralplan_consensus_gate: {
+        required: true,
+        sequence: ['architect-review', 'critic-review'],
+        planning_artifacts_are_not_consensus: true,
+        required_review_roles: ['architect', 'critic'],
+        ralplan_architect_review: null,
+        ralplan_critic_review: null,
+        complete: false,
+      },
+    },
   };
 
   await updateModeState(MODE_NAME, {
@@ -98,17 +108,27 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
 
     // Check if stage should be skipped
     if (stage.canSkip?.(ctx)) {
+      let skippedArtifacts: Record<string, unknown> = {};
+      if (stage.name === 'ralplan') {
+        const materialized = await stage.run(ctx);
+        skippedArtifacts = materialized.artifacts;
+      }
       const skippedResult: StageResult = {
         status: 'skipped',
-        artifacts: {},
+        artifacts: skippedArtifacts,
         duration_ms: 0,
       };
       stageResults[stage.name] = skippedResult;
+      if (Object.keys(skippedArtifacts).length > 0) {
+        Object.assign(artifacts, { [stage.name]: skippedArtifacts });
+        Object.assign(handoffArtifactsByStage, { [stage.name]: skippedArtifacts });
+      }
 
       await updateModeState(MODE_NAME, {
         current_phase: `${stage.name}:skipped`,
         pipeline_stage_index: i,
         pipeline_stage_results: { ...stageResults },
+        handoff_artifacts: normalizeHandoffArtifactKeys(handoffArtifactsByStage),
       } as Partial<PipelineModeStateExtension>, cwd);
 
       lastStageName = stage.name;
@@ -324,6 +344,13 @@ function normalizeHandoffArtifactKeys(artifacts: Record<string, unknown>): Recor
   const normalized: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(artifacts)) {
     normalized[toHandoffArtifactKey(key)] = value;
+    if (key === 'ralplan' && value && typeof value === 'object') {
+      const ralplanArtifacts = value as Record<string, unknown>;
+      const gate = ralplanArtifacts.ralplanConsensusGate ?? ralplanArtifacts.ralplan_consensus_gate;
+      if (gate) {
+        normalized.ralplan_consensus_gate = gate;
+      }
+    }
   }
   return normalized;
 }

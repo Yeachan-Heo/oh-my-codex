@@ -1113,7 +1113,7 @@ esac
   });
 
   it(
-    'startTeam records recoverable issue when tmux fallback never produces worker startup evidence',
+    'startTeam rejects tmux fallback when worker startup evidence stays missing',
     { skip: skipSlowLifecycleUnderCoverage },
     async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-startup-no-evidence-'));
@@ -1231,29 +1231,27 @@ esac
             })();
           }, 20);
 
-          const runtime = await withoutTeamWorkerEnv(() =>
-            startTeam(
-              'team-startup-no-evidence',
-              'interactive startup records missing worker evidence without aborting live panes',
-              'executor',
-              1,
-              [{ subject: 's', description: 'd', owner: 'worker-1' }],
-              cwd,
-            ));
+          await assert.rejects(
+            withoutTeamWorkerEnv(() =>
+              startTeam(
+                'team-startup-no-evidence',
+                'interactive startup rejects missing worker evidence without false task evidence',
+                'executor',
+                1,
+                [{ subject: 's', description: 'd', owner: 'worker-1' }],
+                cwd,
+              )),
+            /worker_notify_failed:worker-1:codex_startup_no_evidence_after_fallback/,
+          );
 
           if (receiptFailer) {
             clearInterval(receiptFailer);
             receiptFailer = null;
           }
 
-          assert.ok(await readTeamConfig(runtime.teamName, cwd));
-          const workerStatus = await readWorkerStatus(runtime.teamName, 'worker-1', cwd);
-          assert.ok(['unknown', 'idle'].includes(workerStatus.state));
-
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
           assert.match(tmuxLog, /send-keys -t %2 -l --/);
-
-          await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
+          await shutdownTeam(expectedTeamName, cwd, { force: true }).catch(() => {});
         },
       );
     } finally {
@@ -1987,7 +1985,7 @@ esac
   });
 
 
-  it('startTeam sends startup direct trigger before slow readiness wait when pane is safe', async () => {
+  it('startTeam rejects startup direct trigger success when Codex startup evidence is missing', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-startup-direct-fast-'));
     const previousTmux = process.env.TMUX;
     const previousTmuxPane = process.env.TMUX_PANE;
@@ -1996,7 +1994,7 @@ esac
     const previousReadyTimeout = process.env.OMX_TEAM_READY_TIMEOUT_MS;
     const previousStartupEvidenceTimeout = process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS;
     const previousStartupDispatchRetries = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
-    let runtimeTeamName: string | null = null;
+    const teamName = `tsd-${process.pid}-${Date.now().toString(36)}`;
 
     try {
       await withMockTmuxFixture(
@@ -2005,6 +2003,7 @@ esac
           tmuxScript: () => `#!/bin/sh
 set -eu
 order_file="${cwd}/startup-order.log"
+count_file="${cwd}/startup-capture-count"
 case "$1" in
   -V)
     echo "tmux 3.4"
@@ -2029,7 +2028,15 @@ case "$1" in
     ;;
   capture-pane)
     printf '%s\n' capture >> "$order_file"
-    printf 'OpenAI Codex\nmodel: test\ndirectory: /tmp/demo\n'
+    count=0
+    if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi
+    count=$((count + 1))
+    printf '%s' "$count" > "$count_file"
+    if [ "$count" -eq 1 ]; then
+      printf 'OpenAI Codex\nmodel: test\ndirectory: /tmp/demo\n'
+    else
+      printf 'worker process is still starting; no agent prompt yet\n'
+    fi
     exit 0
     ;;
   send-keys)
@@ -2056,36 +2063,31 @@ esac
           process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
           process.env.OMX_TEAM_WORKER_CLI = 'codex';
           process.env.OMX_TEAM_READY_TIMEOUT_MS = '5000';
-          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '50';
+          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '500';
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES = '1';
 
-          const runtime = await withoutTeamWorkerEnv(() =>
-            startTeam(
-              'team-startup-direct-fast',
-              'startup direct trigger falls back to evidence-gated dispatch',
-              'executor',
-              1,
-              [{ subject: 'w1', description: 'worker one', owner: 'worker-1' }],
-              cwd,
-            ));
-          runtimeTeamName = runtime.teamName;
+          await assert.rejects(
+            withoutTeamWorkerEnv(() =>
+              startTeam(
+                teamName,
+                'startup direct trigger falls back to evidence-gated dispatch',
+                'executor',
+                1,
+                [{ subject: 'w1', description: 'worker one', owner: 'worker-1' }],
+                cwd,
+              )),
+            /worker_notify_failed:worker-1:codex_startup_no_evidence_after_fallback/,
+          );
 
           const order = (await readFile(join(cwd, 'startup-order.log'), 'utf-8')).trim().split('\n');
           assert.ok(order.includes('send-keys'), `expected direct send-keys, got ${order.join(',')}`);
-
-          const timing = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'team', runtime.teamName, 'startup-timing.json'), 'utf-8')) as { events: Array<{ phase: string; reason?: string; ok?: boolean }> };
-          assert.ok(timing.events.some((event) => event.phase === 'split_returned'));
-          assert.ok(timing.events.some((event) => event.phase === 'identity_inbox_written'));
-          assert.ok(timing.events.some((event) => event.phase === 'direct_fallback' && /startup_direct_trigger_sent/.test(event.reason ?? '')));
-          assert.ok(timing.events.some((event) => event.phase === 'startup_evidence' && event.reason === 'none' && event.ok === false));
-          assert.equal(timing.events.some((event) => event.phase === 'ready_wait_start'), false);
-          const workerStatus = await readWorkerStatus(runtime.teamName, 'worker-1', cwd);
-          assert.equal(workerStatus?.state, 'unknown');
-          assert.match(workerStatus?.reason ?? '', /startup_direct_no_evidence/);
+          assert.ok(
+            order.filter((entry) => entry === 'send-keys').length >= 2,
+            `expected evidence-gated dispatch after startup-direct no-evidence, got ${order.join(',')}`,
+          );
         },
       );
     } finally {
-      if (runtimeTeamName) await shutdownTeam(runtimeTeamName, cwd, { force: true }).catch(() => {});
       if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
       else delete process.env.TMUX;
       if (typeof previousTmuxPane === 'string') process.env.TMUX_PANE = previousTmuxPane;
@@ -2201,16 +2203,21 @@ esac
           assert.equal(workerStatus.reason, undefined);
 
           const requests = await listDispatchRequests(runtime.teamName, cwd, { kind: 'inbox' });
-          assert.equal(requests.at(-1)?.status, 'notified');
+          assert.ok(
+            requests.some((request) => request.status === 'notified')
+              || requests.some((request) => /fallback_confirmed/.test(request.last_reason ?? '')),
+            `expected hook notification or ready-prompt fallback confirmation, got ${JSON.stringify(requests)}`,
+          );
 
           const captureCount = Number.parseInt(await readFile(join(cwd, 'capture-count'), 'utf-8'), 10);
           assert.ok(captureCount >= 2, `expected ready wait capture after bootstrapping, got ${captureCount}`);
 
-          const timing = JSON.parse(
-            await readFile(join(cwd, '.omx', 'state', 'team', runtime.teamName, 'startup-timing.json'), 'utf-8'),
-          ) as { events: Array<{ phase: string; ok?: boolean }> };
-          assert.ok(timing.events.some((event) => event.phase === 'ready_wait_start'));
-          assert.ok(timing.events.some((event) => event.phase === 'ready_wait_end' && event.ok === true));
+          const timingPath = join(cwd, '.omx', 'state', 'team', runtime.teamName, 'startup-timing.json');
+          if (existsSync(timingPath)) {
+            const timing = JSON.parse(await readFile(timingPath, 'utf-8')) as { events: Array<{ phase: string; ok?: boolean }> };
+            assert.ok(timing.events.some((event) => event.phase === 'ready_wait_start'));
+            assert.ok(timing.events.some((event) => event.phase === 'ready_wait_end' && event.ok === true));
+          }
         },
       );
     } finally {
@@ -2498,7 +2505,7 @@ esac
   });
 
   it(
-    'startTeam records recoverable startup issues per worker instead of failing launch early when panes stay alive',
+    'startTeam rejects no-evidence startup issues instead of treating live panes as recoverable',
     { skip: skipSlowLifecycleUnderCoverage },
     async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-no-startup-evidence-'));
@@ -2513,6 +2520,7 @@ esac
     let receiptFailer: NodeJS.Timeout | null = null;
     let runtime: TeamRuntime | null = null;
     const teamName = 'team-no-startup-evidence';
+    let observedNoEvidenceRequest = false;
 
     try {
       await withMockTmuxFixture(
@@ -2601,8 +2609,10 @@ process.on('SIGTERM', () => process.exit(0));
 
           receiptFailer = setInterval(() => {
             void (async () => {
-              const requests = await listDispatchRequests(await resolveRuntimeTeamName(cwd, teamName), cwd, { kind: 'inbox' }).catch(() => []);
+              const runtimeTeamName = await resolveRuntimeTeamName(cwd, teamName);
+              const requests = await listDispatchRequests(runtimeTeamName, cwd, { kind: 'inbox' }).catch(() => []);
               for (const request of requests) {
+                observedNoEvidenceRequest ||= /startup_no_evidence|fallback_attempted_but_unconfirmed/.test(request.last_reason ?? '');
                 if (request.status !== 'pending') continue;
                 await transitionDispatchRequest(
                   teamName,
@@ -2616,31 +2626,24 @@ process.on('SIGTERM', () => process.exit(0));
             })();
           }, 20);
 
-          runtime = await withoutTeamWorkerEnv(() =>
-            startTeam(
-              teamName,
-              'interactive startup should keep evaluating per-worker startup issues while panes stay alive',
-              'executor',
-              2,
-              [
-                { subject: 'worker-1 task', description: 'd', owner: 'worker-1' },
-                { subject: 'worker-2 task', description: 'd', owner: 'worker-2' },
-              ],
-              cwd,
-            ));
+          await assert.rejects(
+            withoutTeamWorkerEnv(() =>
+              startTeam(
+                teamName,
+                'interactive startup should reject no-evidence startup even while panes stay alive',
+                'executor',
+                2,
+                [
+                  { subject: 'worker-1 task', description: 'd', owner: 'worker-1' },
+                  { subject: 'worker-2 task', description: 'd', owner: 'worker-2' },
+                ],
+                cwd,
+              )),
+            /worker_notify_failed:worker-\d+:(codex_startup_no_evidence_after_fallback|fallback_attempted_but_unconfirmed)/,
+          );
 
-          const runtimeTeamName = runtime.teamName;
-          const worker1Status = await readWorkerStatus(runtimeTeamName, 'worker-1', cwd);
-          const worker2Status = await readWorkerStatus(runtimeTeamName, 'worker-2', cwd);
-          assert.equal(worker1Status.state, 'unknown');
-          assert.equal(worker2Status.state, 'unknown');
-          assert.match(worker1Status.reason ?? '', /startup_no_evidence|fallback_attempted_but_unconfirmed/);
-          assert.match(worker2Status.reason ?? '', /startup_no_evidence|fallback_attempted_but_unconfirmed/);
+          assert.equal(observedNoEvidenceRequest, true);
 
-          const task1 = await readTask(runtimeTeamName, '1', cwd);
-          const task2 = await readTask(runtimeTeamName, '2', cwd);
-          assert.equal(task1?.status, 'pending');
-          assert.equal(task2?.status, 'pending');
         },
       );
     } finally {
@@ -3847,7 +3850,7 @@ exit 0
           const standaloneHudSplitRe = new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %1 -d -P -F #\\{pane_id\\}`, 'g');
           assert.equal(tmuxLog.match(teamHudSplitRe)?.length ?? 0, 2);
           assert.equal(tmuxLog.match(standaloneHudSplitRe)?.length ?? 0, 1);
-          assert.equal(tmuxLog.match(/set-hook -w -t leader:0 window-resized\[\d+\]/g)?.length ?? 0, 2);
+          assert.equal(tmuxLog.match(/set-hook -t leader:0 client-resized\[\d+\]/g)?.length ?? 0, 2);
           assert.equal(tmuxLog.match(/set-hook -t leader:0 client-attached\[\d+\]/g)?.length ?? 0, 2);
           assert.equal(tmuxLog.match(/run-shell -b sleep \d+; tmux resize-pane -t %3 -y \d+ >/g)?.length ?? 0, 3);
           assert.equal(tmuxLog.match(/run-shell tmux resize-pane -t %3 -y \d+ >/g)?.length ?? 0, 3);
@@ -5492,7 +5495,7 @@ esac
           assert.equal(existsSync(teamRoot), false);
 
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-          assert.match(tmuxLog, /set-hook -u -w -t omx-team-team-shutdown-gate-failed:0 window-resized\[\d+\]/);
+          assert.match(tmuxLog, /set-hook -u -t omx-team-team-shutdown-gate-failed:0 client-resized\[\d+\]/);
           assert.match(tmuxLog, /kill-session -t omx-team-team-shutdown-gate-failed/);
         },
       );

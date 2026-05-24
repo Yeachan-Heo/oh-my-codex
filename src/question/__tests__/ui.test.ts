@@ -146,7 +146,7 @@ describe('question ui arrow navigation', () => {
     assert.deepEqual(update.state.selectedIndices, [0, 1]);
   });
 
-  it('renders option descriptions beneath each option when present', () => {
+  it('renders option descriptions inline next to each option to keep the frame compact', () => {
     const frame = renderInteractiveQuestionFrame(
       makeRecord({
         options: [
@@ -160,11 +160,12 @@ describe('question ui arrow navigation', () => {
       },
     );
 
-    assert.match(frame, /› \[x\] 1\. Alpha\n\s+First choice explanation/);
-    assert.match(frame, /\[ \] 2\. Beta\n\s+Second choice explanation/);
+    assert.match(frame, /› \[x\] 1\. Alpha — First choice explanation/);
+    assert.match(frame, /\[ \] 2\. Beta — Second choice explanation/);
+    assert.doesNotMatch(frame, /Alpha\n\s+First choice/, 'description must NOT be rendered on a separate line below the option');
   });
 
-  it('renders navigation instructions with checkbox markers', () => {
+  it('renders compact navigation instructions with checkbox markers', () => {
     const frame = renderInteractiveQuestionFrame(
       makeRecord({ multi_select: true, type: 'multi-answerable' }),
       {
@@ -173,7 +174,7 @@ describe('question ui arrow navigation', () => {
       },
     );
 
-    assert.match(frame, /Use ↑\/↓ to move, Space to toggle, Enter to submit\./);
+    assert.match(frame, /↑↓ move · Space toggle · Enter submit/);
     assert.match(frame, /\[x\] 1\. Alpha/);
     assert.match(frame, /› \[ \] 2\. Beta/);
   });
@@ -191,7 +192,7 @@ describe('question ui arrow navigation', () => {
     const selections = await promise;
     assert.deepEqual(selections, [2]);
     assert.equal(input.rawMode, false);
-    assert.match(output.toString(), /Use ↑\/↓ to move, Enter to select\./);
+    assert.match(output.toString(), /↑↓ move · Enter select/);
   });
 
   it('writes answered state from arrow-key interaction', async () => {
@@ -428,7 +429,7 @@ describe('question ui arrow navigation', () => {
 
 
 describe('question ui batch wizard', () => {
-  it('renders a review frame for Other selections before free-text collection', () => {
+  it('signals needsOtherText before advancing when Other is picked, then renders the inline text into review', () => {
     const record = makeRecord({
       questions: [
         {
@@ -444,10 +445,46 @@ describe('question ui batch wizard', () => {
     });
     let state = createInitialQuestionWizardState(record);
     state = applyQuestionWizardKey(record, state, { name: 'down' }).state;
-    state = applyQuestionWizardKey(record, state, { name: 'enter' }).state;
 
-    assert.equal(state.mode, 'review');
-    assert.match(renderQuestionWizardFrame(record, state), /Custom/);
+    const firstAdvance = applyQuestionWizardKey(record, state, { name: 'enter' });
+    assert.equal(firstAdvance.needsOtherText, 0, 'wizard must request inline Other text before advancing');
+    assert.equal(firstAdvance.submit, false);
+    assert.equal(firstAdvance.state.mode, 'answering', 'wizard must stay in answering mode until Other text is collected');
+
+    state = { ...firstAdvance.state, otherTexts: ['my custom answer'] };
+
+    const secondAdvance = applyQuestionWizardKey(record, state, { name: 'enter' });
+    assert.equal(secondAdvance.needsOtherText, undefined, 'wizard must not re-prompt once Other text is stored');
+    assert.equal(secondAdvance.state.mode, 'review', 'wizard advances to review after inline text is captured');
+    assert.match(renderQuestionWizardFrame(record, secondAdvance.state), /Custom: my custom answer/);
+  });
+
+  it('clears stored Other text when the user navigates back and changes the selection away from Other', () => {
+    const record = makeRecord({
+      questions: [
+        {
+          id: 'first',
+          question: 'First?',
+          options: [{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }],
+          allow_other: true,
+          other_label: 'Custom',
+          multi_select: false,
+          type: 'single-answerable',
+        },
+      ],
+    });
+    let state = createInitialQuestionWizardState(record);
+    state = applyQuestionWizardKey(record, state, { name: 'down' }).state;
+    state = applyQuestionWizardKey(record, state, { name: 'down' }).state;
+    const advance = applyQuestionWizardKey(record, state, { name: 'enter' });
+    assert.equal(advance.needsOtherText, 0);
+    state = { ...advance.state, otherTexts: ['stale custom text'] };
+
+    const moveToA = applyQuestionWizardKey(record, state, { name: 'up' });
+    state = moveToA.state;
+    const moveToA2 = applyQuestionWizardKey(record, state, { name: 'up' });
+    state = moveToA2.state;
+    assert.equal(state.otherTexts[0], undefined, 'wizard must drop stale Other text once the user cursors away from Other');
   });
 
   it('submits a batch after navigating back and editing an earlier answer', async () => {

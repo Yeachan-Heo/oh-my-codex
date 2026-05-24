@@ -198,15 +198,14 @@ describe('HUD resize hook command builders', () => {
     assert.equal(buildHudPaneTarget('41'), '%41');
   });
 
-  it('buildRegisterResizeHookArgs uses window target and numeric window-resized hook slot', () => {
+  it('buildRegisterResizeHookArgs uses target and numeric client-resized hook slot', () => {
     const args = buildRegisterResizeHookArgs('my-session:0', 'omx_resize_team_session_0_1', '%1');
     assert.equal(args[0], 'set-hook');
-    assert.equal(args[1], '-w');
-    assert.equal(args[2], '-t');
-    assert.equal(args[3], 'my-session:0');
-    assert.match(args[4] ?? '', /^window-resized\[\d+\]$/);
+    assert.equal(args[1], '-t');
+    assert.equal(args[2], 'my-session:0');
+    assert.match(args[3] ?? '', /^client-resized\[\d+\]$/);
     assert.equal(
-      args[5],
+      args[4],
       `run-shell -b 'tmux resize-pane -t %1 -y ${HUD_TMUX_TEAM_HEIGHT_LINES} >/dev/null 2>&1 || true; sleep ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}; tmux resize-pane -t %1 -y ${HUD_TMUX_TEAM_HEIGHT_LINES} >/dev/null 2>&1 || true'`,
     );
   });
@@ -214,7 +213,7 @@ describe('HUD resize hook command builders', () => {
   it('buildUnregisterResizeHookArgs removes the exact numeric hook slot', () => {
     const registered = buildRegisterResizeHookArgs('my-session:0', 'omx_resize_team_session_0_1', '%1');
     const unregistered = buildUnregisterResizeHookArgs('my-session:0', 'omx_resize_team_session_0_1');
-    assert.deepEqual(unregistered, ['set-hook', '-u', '-w', '-t', 'my-session:0', registered[4] as string]);
+    assert.deepEqual(unregistered, ['set-hook', '-u', '-t', 'my-session:0', registered[3] as string]);
   });
 
   it('buildClientAttachedReconcileHookName normalizes all segments into collision-safe tokens', () => {
@@ -247,7 +246,7 @@ describe('HUD resize hook command builders', () => {
     const resizeArgs = buildRegisterResizeHookArgs('sess:0', longName, '%1');
     const attachedArgs = buildRegisterClientAttachedReconcileArgs('sess:0', longName, '%1');
 
-    const resizeSlot = resizeArgs[4] ?? '';
+    const resizeSlot = resizeArgs[3] ?? '';
     const attachedSlot = attachedArgs[3] ?? '';
 
     const resizeIndex = Number((resizeSlot.match(/\[(\d+)\]/) ?? [])[1]);
@@ -263,7 +262,7 @@ describe('HUD resize hook command builders', () => {
     const name = 'omx_resize_team_session_0_1';
     const a = buildRegisterResizeHookArgs('s:0', name, '%1');
     const b = buildRegisterResizeHookArgs('s:0', name, '%1');
-    assert.equal(a[4], b[4]);
+    assert.equal(a[3], b[3]);
 
     const c = buildRegisterClientAttachedReconcileArgs('s:0', name, '%1');
     const d = buildRegisterClientAttachedReconcileArgs('s:0', name, '%1');
@@ -302,8 +301,8 @@ describe('HUD resize hook command builders', () => {
       const delayedArgs = buildScheduleDelayedHudResizeArgs('%1');
       const reconcileArgs = buildReconcileHudResizeArgs('%1');
 
-      assert.match(resizeArgs[5] ?? '', new RegExp(escapeRegExp(tmuxPath)));
-      assert.doesNotMatch(resizeArgs[5] ?? '', /^run-shell -b 'tmux resize-pane/);
+      assert.match(resizeArgs[4] ?? '', new RegExp(escapeRegExp(tmuxPath)));
+      assert.doesNotMatch(resizeArgs[4] ?? '', /^run-shell -b 'tmux resize-pane/);
       assert.match(delayedArgs[2] ?? '', new RegExp(escapeRegExp(tmuxPath)));
       assert.doesNotMatch(delayedArgs[2] ?? '', /sleep \d+; tmux resize-pane/);
       assert.match(reconcileArgs[1] ?? '', new RegExp(escapeRegExp(tmuxPath)));
@@ -3222,7 +3221,7 @@ esac
     }
   });
 
-  it('continues startup with best-effort resize fallback when indexed window-resized hook registration fails', async () => {
+  it('uses tmux 3.2a-compatible client-resized hook registration for team HUD resize', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-resize-hook-fallback-'));
     const prevTmux = process.env.TMUX;
     const prevTmuxPane = process.env.TMUX_PANE;
@@ -3280,6 +3279,10 @@ case "\${1:-}" in
         echo "invalid option: window-resized[]" >&2
         exit 1
         ;;
+      *" -w "*)
+        echo "invalid option: -w" >&2
+        exit 1
+        ;;
       *)
         exit 0
         ;;
@@ -3306,13 +3309,14 @@ esac
 
           const session = createTeamSession('Resize Hook Fallback', 1, cwd);
           assert.equal(session.hudPaneId, '%3');
-          assert.equal(session.resizeHookName, null);
-          assert.equal(session.resizeHookTarget, null);
-          assert.match(warnings.join('\n'), /tmux resize hook unavailable/);
-          assert.match(warnings.join('\n'), /invalid option: window-resized\[\]/);
+          assert.ok(session.resizeHookName);
+          assert.equal(session.resizeHookTarget, 'leader:0');
+          assert.equal(warnings.join('\n'), '');
 
           const tmuxLog = await readFile(logPath, 'utf-8');
-          assert.match(tmuxLog, /set-hook -w -t leader:0 window-resized\[\d+\]/);
+          assert.match(tmuxLog, /set-hook -t leader:0 client-resized\[\d+\]/);
+          assert.doesNotMatch(tmuxLog, /window-resized\[/);
+          assert.doesNotMatch(tmuxLog, /set-hook -w /);
           assert.match(tmuxLog, /set-hook -t leader:0 client-attached\[\d+\]/);
           assert.match(tmuxLog, new RegExp(`run-shell -b sleep ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}; .*resize-pane -t %3 -y ${HUD_TMUX_TEAM_HEIGHT_LINES}`));
           assert.match(tmuxLog, new RegExp(`run-shell .*resize-pane -t %3 -y ${HUD_TMUX_TEAM_HEIGHT_LINES}`));
@@ -3532,7 +3536,8 @@ esac
 
           const tmuxLog = await readFile(logPath, 'utf-8');
           assert.match(tmuxLog, new RegExp(`resize-pane -t %3 -y ${HUD_TMUX_TEAM_HEIGHT_LINES}`));
-          assert.doesNotMatch(tmuxLog, /set-hook -w -t leader:0 window-resized\[\d+\]/);
+          assert.doesNotMatch(tmuxLog, /set-hook -w /);
+          assert.doesNotMatch(tmuxLog, /window-resized\[/);
           assert.doesNotMatch(tmuxLog, /set-hook -t leader:0 client-attached\[\d+\]/);
           assert.doesNotMatch(tmuxLog, /run-shell -b sleep \d+; tmux resize-pane -t %3 -y \d+ >/);
           assert.doesNotMatch(tmuxLog, /run-shell tmux resize-pane -t %3 -y \d+ >/);
@@ -3829,6 +3834,49 @@ esac
       );
     } finally {
       process.argv = previousArgv;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('restores standalone HUD panes with OMX_ROOT forwarded and shell-escaped', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-standalone-root-hud-'));
+    const previousOmxRoot = process.env.OMX_ROOT;
+
+    try {
+      await withMockTmuxFixture(
+        'omx-tmux-root-standalone-hud-',
+        (logPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${logPath}"
+case "\${1:-}" in
+  split-window)
+    echo "%44"
+    exit 0
+    ;;
+  run-shell|select-pane|resize-pane|set-hook)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        async ({ logPath }) => {
+          process.env.OMX_ROOT = "/tmp/boxed root/it's/$(literal)";
+
+          const paneId = restoreStandaloneHudPane('%11', cwd);
+          assert.equal(paneId, '%44');
+
+          const tmuxLog = await readFile(logPath, 'utf-8');
+          assert.match(
+            tmuxLog,
+            /exec env OMX_TMUX_HUD_OWNER=1 OMX_ROOT='\/tmp\/boxed root\/it'\\''s\/\$\(literal\)' .*hud --watch/,
+          );
+        },
+      );
+    } finally {
+      if (typeof previousOmxRoot === 'string') process.env.OMX_ROOT = previousOmxRoot;
+      else delete process.env.OMX_ROOT;
       await rm(cwd, { recursive: true, force: true });
     }
   });

@@ -392,6 +392,14 @@ function buildCompletedLegacyGoalRemediation(goal: UltragoalItem): string {
   ].join(' ');
 }
 
+function buildUnavailableCodexGoalRemediation(goal: UltragoalItem): string {
+  return [
+    'If get_goal itself is unavailable due to a Codex DB/schema/context error, such as "no such table: thread_goals", do not repeat --status complete or mark the Codex goal complete from shell state.',
+    `Record an auditable non-terminal blocker with: omx ultragoal checkpoint --goal-id ${goal.id} --status blocked --evidence "<get_goal unavailable due to Codex DB/schema/context error; safe recovery requires a working Codex goal context>" --codex-goal-json "<unavailable get_goal error JSON or path>".`,
+    'Then continue from a Codex goal context where get_goal works and strict completion reconciliation can be proven.',
+  ].join(' ');
+}
+
 function codexGoalMode(plan: UltragoalPlan): UltragoalCodexGoalMode {
   return plan.codexGoalMode ?? 'per_story';
 }
@@ -1110,8 +1118,25 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
       throw new UltragoalError(`Cannot record a blocked checkpoint for ${goal.id} while it is ${goal.status}; start or resume the ultragoal before recording a non-terminal blocker.`);
     }
     const snapshot = options.codexGoal === undefined ? null : parseCodexGoalSnapshot(options.codexGoal);
+    if (snapshot?.unavailableReason === 'db_schema_context_error') {
+      goal.updatedAt = now;
+      goal.failureReason = assertNonEmpty(options.evidence, '--evidence');
+      plan.activeGoalId = goal.id;
+      plan.updatedAt = now;
+      await writePlan(cwd, plan);
+      await appendLedger(cwd, {
+        ts: now,
+        event: 'goal_blocked',
+        goalId: goal.id,
+        status: goal.status,
+        evidence: options.evidence,
+        codexGoal: options.codexGoal,
+        message: 'Codex get_goal was unavailable due to a DB/schema/context error; strict completion reconciliation is deferred until get_goal works.',
+      });
+      return plan;
+    }
     if (!snapshot?.available) {
-      throw new UltragoalError('Blocked ultragoal checkpoints require a get_goal snapshot for the completed legacy Codex goal that blocked create_goal; pass --codex-goal-json.');
+      throw new UltragoalError('Blocked ultragoal checkpoints require either a get_goal snapshot for the completed legacy Codex goal that blocked create_goal, or an unavailable get_goal error JSON for a Codex DB/schema/context failure; pass --codex-goal-json.');
     }
     if (snapshot.status !== 'complete') {
       throw new UltragoalError(`Cannot record a blocked ultragoal checkpoint while the existing Codex goal is ${snapshot.status ?? 'unknown'}; strict objective mismatch protection remains required for active or incomplete goals.`);
@@ -1176,6 +1201,8 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
           && Boolean(reconciliation.snapshot.objective)
           && normalizeObjective(reconciliation.snapshot.objective ?? '') !== normalizeObjective(expectedObjective)
           ? ` ${buildCompletedLegacyGoalRemediation(goal)}`
+          : reconciliation.snapshot.unavailableReason === 'db_schema_context_error'
+            ? ` ${buildUnavailableCodexGoalRemediation(goal)}`
           : '';
         throw new UltragoalError(`${formatCodexGoalReconciliation(reconciliation)}${taskScopedRequirement}${remediation}`);
       }

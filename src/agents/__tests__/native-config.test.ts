@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { AGENT_DEFINITIONS } from "../definitions.js";
 import type { AgentDefinition } from "../definitions.js";
 import type { CatalogManifest } from "../../catalog/schema.js";
 import {
@@ -128,6 +129,28 @@ describe("agents/native-config", () => {
       assert.match(toml, /model_reasoning_effort = "xhigh"/);
     } finally {
       await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
+
+  it("pins researcher to exact gpt-5.4-mini without downgrading planner/judgment roles", () => {
+    process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-5.5";
+    process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.5";
+
+    const researcherToml = generateAgentToml(AGENT_DEFINITIONS.researcher, "researcher prompt");
+    assert.match(researcherToml, /model = "gpt-5\.4-mini"/);
+    assert.match(researcherToml, /exact gpt-5\.4-mini model/);
+    assert.match(researcherToml, /resolved_model: gpt-5\.4-mini/);
+
+    for (const role of [
+      "debugger",
+      "prometheus-strict-metis",
+      "prometheus-strict-momus",
+      "prometheus-strict-oracle",
+    ] as const) {
+      const toml = generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`);
+      assert.match(toml, /model = "gpt-5\.5"/, `${role} should stay on configured/root gpt-5.5`);
+      assert.doesNotMatch(toml, /model = "gpt-5\.4-mini"/, `${role} must not inherit the researcher exact model`);
     }
   });
 

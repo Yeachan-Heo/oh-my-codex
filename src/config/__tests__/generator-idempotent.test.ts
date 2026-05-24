@@ -16,6 +16,7 @@ import {
   stripManagedCodexHookTrustState,
   upsertManagedCodexHookTrustState,
 } from "../generator.js";
+import { buildManagedCodexHookTrustState } from "../codex-hooks.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../omx-first-party-mcp.js";
 
 /** Count occurrences of a pattern in text */
@@ -1117,6 +1118,155 @@ describe("config generator idempotency (#384)", () => {
     assert.match(stripped, /^\[hooks\.state\.user_prompt_submit\]$/m);
     assert.match(stripped, /^trusted_hash = "sha256:prompt"$/m);
     assert.doesNotThrow(() => TOML.parse(stripped));
+  });
+
+  it("removes orphaned managed hook trust-state tables only when hashes prove ownership", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
+    const managedPostCompactHash =
+      managedTrustState[`${hooksPath}:post_compact:0:0`]?.trusted_hash;
+    const managedStopHash = managedTrustState[`${hooksPath}:stop:0:0`]?.trusted_hash;
+    assert.ok(managedPostCompactHash);
+    assert.ok(managedStopHash);
+    const orphaned = [
+      'model = "gpt-5.5"',
+      "",
+      "[hooks.state]",
+      "",
+      '[plugins."oh-my-codex@oh-my-codex-local"]',
+      "enabled = true",
+      "",
+      '[hooks.state."/tmp/codex/hooks.json:post_compact:0:0"]',
+      `trusted_hash = "${managedPostCompactHash}"`,
+      "",
+      '[hooks.state."/tmp/codex/hooks.json:stop:0:0"]',
+      `trusted_hash = "${managedStopHash}"`,
+      "",
+      '[hooks.state."custom:/hooks.json:stop:0:0"]',
+      'trusted_hash = "sha256:user"',
+      "",
+      "# End OMX-owned Codex hook trust state",
+      "",
+      "[desktop]",
+      "git-create-pull-request-as-draft = true",
+      "",
+    ].join("\n");
+
+    const stripped = stripManagedCodexHookTrustState(orphaned, {
+      managedTrustState,
+    });
+
+    assert.doesNotMatch(stripped, /\/tmp\/codex\/hooks\.json:post_compact:0:0/);
+    assert.doesNotMatch(stripped, /\/tmp\/codex\/hooks\.json:stop:0:0/);
+    assert.match(stripped, /^# End OMX-owned Codex hook trust state$/m);
+    assert.match(stripped, /^\[hooks\.state\."custom:\/hooks\.json:stop:0:0"\]$/m);
+    assert.match(stripped, /^trusted_hash = "sha256:user"$/m);
+    assert.match(stripped, /^\[desktop\]$/m);
+    assert.doesNotThrow(() => TOML.parse(stripped));
+  });
+
+  it("preserves same-key user hook trust state and suppresses generated duplicates", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const config = [
+      'model = "gpt-5.5"',
+      "",
+      '[hooks.state."/tmp/codex/hooks.json:post_compact:0:0"]',
+      'trusted_hash = "sha256:user"',
+      "enabled = false",
+      "",
+    ].join("\n");
+
+    const refreshed = upsertManagedCodexHookTrustState(
+      config,
+      "/tmp/omx",
+      hooksPath,
+    );
+
+    assert.match(refreshed, /^trusted_hash = "sha256:user"$/m);
+    assert.match(refreshed, /^enabled = false$/m);
+    assert.equal(
+      count(
+        refreshed,
+        /^\[hooks\.state\."\/tmp\/codex\/hooks\.json:post_compact:0:0"\]$/gm,
+      ),
+      1,
+      "preserved same-key user trust state must not be duplicated",
+    );
+    assert.doesNotThrow(() => TOML.parse(refreshed));
+  });
+
+  it("preserves unproven same-key hook trust-state tables", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
+    const fixtures = [
+      [
+        "missing hash",
+        [
+          '[hooks.state."/tmp/codex/hooks.json:post_compact:0:0"]',
+          "enabled = false",
+        ],
+      ],
+      [
+        "malformed hash",
+        [
+          '[hooks.state."/tmp/codex/hooks.json:post_compact:0:0"]',
+          "trusted_hash = true",
+        ],
+      ],
+      [
+        "extra assignment",
+        [
+          '[hooks.state."/tmp/codex/hooks.json:post_compact:0:0"]',
+          'trusted_hash = "sha256:user"',
+          "enabled = false",
+        ],
+      ],
+      [
+        "body comment",
+        [
+          '[hooks.state."/tmp/codex/hooks.json:post_compact:0:0"]',
+          "# user comment",
+          'trusted_hash = "sha256:user"',
+        ],
+      ],
+      [
+        "inline body comment",
+        [
+          '[hooks.state."/tmp/codex/hooks.json:post_compact:0:0"]',
+          'trusted_hash = "sha256:user" # user comment',
+        ],
+      ],
+      [
+        "inline header comment",
+        [
+          '[hooks.state."/tmp/codex/hooks.json:post_compact:0:0"] # user comment',
+          'trusted_hash = "sha256:user"',
+        ],
+      ],
+    ] as const;
+
+    for (const [name, table] of fixtures) {
+      const stripped = stripManagedCodexHookTrustState(table.join("\n"), {
+        managedTrustState,
+      });
+      assert.match(
+        stripped,
+        /^\[hooks\.state\."\/tmp\/codex\/hooks\.json:post_compact:0:0"\]/m,
+        `${name} should be preserved`,
+      );
+    }
+  });
+
+  it("does not remove unfenced hook trust-state tables without a proof map", () => {
+    const config = [
+      '[hooks.state."/tmp/codex/hooks.json:post_compact:0:0"]',
+      'trusted_hash = "sha256:managed-looking"',
+      "",
+    ].join("\n");
+
+    const stripped = stripManagedCodexHookTrustState(config);
+
+    assert.match(stripped, /managed-looking/);
   });
 
   it("dedupes prior fenced managed hook trust-state blocks before writing a replacement", () => {
