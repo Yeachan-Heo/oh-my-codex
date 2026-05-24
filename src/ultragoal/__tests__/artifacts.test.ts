@@ -202,6 +202,22 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('preserves underscores in derived goal titles and ids', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: [
+          '### Stories',
+          '1. Fix `foo_bar` extraction',
+          '2. Verify omx_ultragoal handoff',
+        ].join('\n'),
+      });
+
+      assert.equal(plan.goals[0]?.title, 'Fix foo_bar extraction');
+      assert.equal(plan.goals[0]?.id, 'G001-fix-foo-bar-extraction');
+      assert.equal(plan.goals[1]?.title, 'Verify omx_ultragoal handoff');
+    });
+  });
+
   it('keeps all valid ordered story sections when numbering restarts', async () => {
     await withTempRepo(async (cwd) => {
       const plan = await createUltragoalPlan(cwd, {

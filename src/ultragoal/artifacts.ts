@@ -276,7 +276,7 @@ function cleanLine(line: string): string {
 function stripInlineMarkdown(value: string): string {
   return value
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/[`*_~]+/g, '')
+    .replace(/[`*~]+/g, '')
     .trim();
 }
 
