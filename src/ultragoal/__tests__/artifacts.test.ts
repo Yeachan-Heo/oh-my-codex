@@ -379,6 +379,26 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('computes story indent after filtering non-story sections', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: [
+          '### Stories',
+          '  1. Indented story one',
+          '  2. Indented story two',
+          '',
+          '### Verification checklist',
+          '1. Do not reset the story indent.',
+        ].join('\n'),
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), [
+        'Indented story one',
+        'Indented story two',
+      ]);
+    });
+  });
+
   it('keeps explicit goals authoritative over derived markdown candidates', async () => {
     await withTempRepo(async (cwd) => {
       const plan = await createUltragoalPlan(cwd, {

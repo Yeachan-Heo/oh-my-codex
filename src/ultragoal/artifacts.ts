@@ -363,8 +363,10 @@ function selectedItemObjective(parent: MarkdownListItem, lines: readonly string[
 }
 
 function topLevelListItems(items: readonly MarkdownListItem[]): MarkdownListItem[] {
-  const minIndent = Math.min(...items.map((item) => item.indent));
-  return items.filter((item) => item.indent === minIndent && !headingLooksNonStory(item.heading));
+  const storyCandidates = items.filter((item) => !headingLooksNonStory(item.heading));
+  if (storyCandidates.length === 0) return [];
+  const minIndent = Math.min(...storyCandidates.map((item) => item.indent));
+  return storyCandidates.filter((item) => item.indent === minIndent);
 }
 
 function normalizeObjective(value: string): string {
