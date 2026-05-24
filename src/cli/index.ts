@@ -3954,7 +3954,7 @@ function runCodex(
 
   if (launchPolicy === "inside-tmux") {
     // Already in tmux: launch codex in current pane, HUD in bottom split
-    const staleHudPaneIds = listHudWatchPaneIdsInCurrentWindow(currentPaneId, { sessionId, leaderPaneId: currentPaneId });
+    const staleHudPaneIds = listHudWatchPaneIdsInCurrentWindow(currentPaneId, { leaderPaneId: currentPaneId });
     for (const paneId of staleHudPaneIds) {
       killTmuxPane(paneId);
     }
