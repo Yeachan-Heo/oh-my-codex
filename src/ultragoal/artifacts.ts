@@ -301,7 +301,7 @@ function normalizeHeading(line: string): string | undefined {
 
 function headingLooksNonStory(heading: string | undefined): boolean {
   if (!heading) return false;
-  return /\b(?:acceptance|criteria|verification|validation|checklist|checks?|tests?|evidence|notes?|constraints?|risks?|immediate next actions?|next actions?|follow-?ups?|status)\b/.test(heading);
+  return /\b(?:acceptance\s+criteria|verification(?:\s+checklist)?|validation(?:\s+checklist)?|checklist|evidence|notes?|constraints?|risks?|immediate\s+next\s+actions?|next\s+actions?|follow-?ups?|status)\b/.test(heading);
 }
 
 function parseMarkdownListItems(lines: readonly string[]): MarkdownListItem[] {
@@ -346,7 +346,7 @@ function selectedItemObjective(parent: MarkdownListItem, lines: readonly string[
 function topLevelOrderedStoryItems(items: readonly MarkdownListItem[]): MarkdownListItem[] {
   const minIndent = Math.min(...items.map((item) => item.indent));
   const orderedTopLevelItems = items.filter((item) => item.indent === minIndent && item.ordered && !headingLooksNonStory(item.heading));
-  return orderedTopLevelItems.length >= 3 ? orderedTopLevelItems : [];
+  return orderedTopLevelItems;
 }
 
 function topLevelListItems(items: readonly MarkdownListItem[]): MarkdownListItem[] {

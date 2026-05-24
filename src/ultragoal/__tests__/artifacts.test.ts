@@ -230,6 +230,46 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('keeps two-story ordered briefs in story extraction mode', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: [
+          '### Stories',
+          '1. Implement the focused fix',
+          '2. Add regression coverage',
+          '',
+          '### Next actions',
+          '- Do not become a queued goal.',
+        ].join('\n'),
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), [
+        'Implement the focused fix',
+        'Add regression coverage',
+      ]);
+    });
+  });
+
+  it('treats testing-focused plan headings as story sections', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: [
+          '### Test plan',
+          '1. Add parser regression coverage',
+          '2. Run the focused suite',
+          '',
+          '### Verification checklist',
+          '1. Do not become a story.',
+        ].join('\n'),
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), [
+        'Add parser regression coverage',
+        'Run the focused suite',
+      ]);
+    });
+  });
+
   it('keeps explicit goals authoritative over derived markdown candidates', async () => {
     await withTempRepo(async (cwd) => {
       const plan = await createUltragoalPlan(cwd, {
