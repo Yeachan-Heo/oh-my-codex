@@ -2,6 +2,114 @@ import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { getAuthoritativeActiveStatePaths } from '../mcp/state-paths.js';
 
+export type DownstreamAuthority = 'plan_then_execute' | 'execute_now';
+
+export interface PlanningGateState {
+  downstream_authority: DownstreamAuthority;
+  bypass_planning_gate_until?: string;
+  objective_id?: string;
+}
+
+export interface PreToolUseGateInput {
+  tool_name: string;
+  tool_input?: string;
+}
+
+export interface PreToolUseGateDecision {
+  allowed: boolean;
+  reason?: string;
+  gate_fired?: boolean;
+}
+
+const IMPLEMENTATION_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
+
+const DENIED_BASH_PATTERNS: RegExp[] = [
+  /\bgit\s+push\b/,
+  /\bgh\s+pr\s+create\b/,
+  /\bgh\s+pr\s+merge\b/,
+];
+
+export const PLANNING_GATE_BYPASS_TTL_MS = 10 * 60 * 1000;
+
+export const BYPASS_PLANNING_GATE_PHRASE = 'bypass planning gate';
+
+export function isImplementationToolCall(input: PreToolUseGateInput): boolean {
+  if (IMPLEMENTATION_TOOLS.has(input.tool_name)) return true;
+  if (input.tool_name === 'Bash' && typeof input.tool_input === 'string') {
+    return DENIED_BASH_PATTERNS.some((pattern) => pattern.test(input.tool_input!));
+  }
+  return false;
+}
+
+export function isPlanningGateBypassActive(
+  state: PlanningGateState,
+  now: Date = new Date(),
+): boolean {
+  const raw = typeof state.bypass_planning_gate_until === 'string'
+    ? state.bypass_planning_gate_until.trim()
+    : '';
+  if (!raw) return false;
+  const bypassMs = Date.parse(raw);
+  if (!Number.isFinite(bypassMs)) return false;
+  return now.getTime() < bypassMs;
+}
+
+export function evaluatePreToolUseGate(
+  toolInput: PreToolUseGateInput,
+  gateState: PlanningGateState | null | undefined,
+  planningComplete: boolean,
+  now: Date = new Date(),
+): PreToolUseGateDecision {
+  if (!gateState || gateState.downstream_authority !== 'plan_then_execute') {
+    return { allowed: true };
+  }
+
+  if (planningComplete) {
+    return { allowed: true };
+  }
+
+  if (!isImplementationToolCall(toolInput)) {
+    return { allowed: true };
+  }
+
+  if (isPlanningGateBypassActive(gateState, now)) {
+    return { allowed: true, reason: 'bypass_planning_gate active' };
+  }
+
+  return {
+    allowed: false,
+    gate_fired: true,
+    reason: `deep-interview downstream_authority is plan_then_execute but no ralplan consensus artifact exists; ${toolInput.tool_name} denied`,
+  };
+}
+
+export function computeBypassExpiry(
+  now: Date = new Date(),
+  ttlMs: number = PLANNING_GATE_BYPASS_TTL_MS,
+): string {
+  return new Date(now.getTime() + ttlMs).toISOString();
+}
+
+export function containsBypassPlanningGatePhrase(text: string): boolean {
+  return text.toLowerCase().includes(BYPASS_PLANNING_GATE_PHRASE);
+}
+
+export function buildPlanningGateLogEvent(
+  decision: PreToolUseGateDecision,
+  toolInput: PreToolUseGateInput,
+  gateState: PlanningGateState | null | undefined,
+): Record<string, unknown> {
+  return {
+    event: 'planning-gate-fired',
+    tool_name: toolInput.tool_name,
+    allowed: decision.allowed,
+    reason: decision.reason,
+    downstream_authority: gateState?.downstream_authority,
+    bypass_active: gateState ? isPlanningGateBypassActive(gateState) : false,
+    timestamp: new Date().toISOString(),
+  };
+}
+
 export const TRACKED_WORKFLOW_MODES = [
   'autopilot',
   'autoresearch',
