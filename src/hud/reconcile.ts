@@ -107,7 +107,6 @@ export async function reconcileHudForPromptSubmit(
   const panes = listPanes(currentPaneId);
   const resolvedSessionId = deps.sessionId?.trim() || env.OMX_SESSION_ID?.trim() || undefined;
   const hudPaneIds = findHudWatchPaneIds(panes, currentPaneId, {
-    sessionId: resolvedSessionId,
     leaderPaneId: currentPaneId,
   });
   const duplicateCount = Math.max(0, hudPaneIds.length - 1);
