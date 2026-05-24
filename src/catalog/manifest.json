@@ -466,6 +466,11 @@
       "status": "active"
     },
     {
+      "name": "scholastic",
+      "category": "coordination",
+      "status": "active"
+    },
+    {
       "name": "vision",
       "category": "coordination",
       "status": "active"

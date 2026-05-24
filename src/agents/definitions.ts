@@ -353,6 +353,16 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
     tools: 'read-only',
     category: 'coordination',
   },
+  'scholastic': {
+    name: 'scholastic',
+    description: 'Ontology-first reasoning reviewer: category mistakes, hidden assumptions, modality separation, scholastic critique, and minimal-repair proposals',
+    reasoningEffort: 'high',
+    posture: 'frontier-orchestrator',
+    modelClass: 'frontier',
+    routingRole: 'leader',
+    tools: 'read-only',
+    category: 'coordination',
+  },
   'vision': {
     name: 'vision',
     description: 'Image/screenshot/diagram analysis',

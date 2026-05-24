@@ -144,6 +144,7 @@ describe("agents/native-config", () => {
 
     for (const role of [
       "debugger",
+      "scholastic",
       "prometheus-strict-metis",
       "prometheus-strict-momus",
       "prometheus-strict-oracle",

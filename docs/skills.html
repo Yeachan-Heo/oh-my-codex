@@ -25,7 +25,7 @@
       <h2>Canonical Workflow</h2>
       <ol>
         <li><code>$deep-interview</code> - clarify intent, boundaries, and non-goals when the task is still fuzzy.</li>
-        <li><code>$ralplan</code> - approve the plan and tradeoffs before execution; completion/skipping requires recorded Architect review evidence followed by Critic review evidence, not just PRD/test-spec files.</li>
+        <li><code>$ralplan</code> - approve the plan and tradeoffs before execution; completion/skipping requires recorded Architect review evidence followed by Critic review evidence, not just PRD/test-spec files. Scholastic is available as a separate advisory ontology reviewer/persona for concept-heavy planning evidence.</li>
         <li><code>$prometheus-strict</code> - harden high-risk plans with Metis clarification, Momus critique, and Oracle synthesis.</li>
         <li><code>$ultragoal</code> - execute and verify through durable goal/ledger checkpoints; launch <code>$team</code> only when parallel lanes are warranted.</li>
         <li><code>$code-review</code> then <code>$ultraqa</code> - finish with merge-readiness and adversarial QA gates.</li>
@@ -47,7 +47,7 @@
       <h2>Planning & Clarification</h2>
       <ul>
         <li><code>$deep-interview</code> - requirements clarification before planning or execution</li>
-        <li><code>$ralplan</code> - planner/architect/critic consensus planning with durable Architect→Critic approval evidence before execution handoff</li>
+        <li><code>$ralplan</code> - planner/architect/critic consensus planning with durable Architect→Critic approval evidence before execution handoff; may cite separate Scholastic advisory evidence for concept-heavy plans</li>
         <li><code>$plan</code> - supporting strategic planning when you are not using the canonical path</li>
         <li><code>$prometheus-strict</code> - clean-room interview-driven planner that writes durable plans under <code>.omx/plans/prometheus-strict/</code> when warranted and hands off to <code>$ultragoal</code>/<code>$team</code>; credit: Inspired by OMO Prometheus (<code>code-yeongyu/oh-my-openagent</code>), reimplemented from concept under MIT.</li>
         <li><code>$best-practice-research</code> - bounded official/upstream best-practice evidence wrapper when current external guidance affects correctness</li>

@@ -65,6 +65,17 @@ describe('agents/definitions', () => {
     assert.ok(panel.every((agent) => agent.routingRole === 'leader'));
   });
 
+  it('defines the Scholastic ontology reviewer as a first-class coordination agent', () => {
+    const scholastic = AGENT_DEFINITIONS.scholastic;
+
+    assert.equal(scholastic.name, 'scholastic');
+    assert.equal(scholastic.category, 'coordination');
+    assert.equal(scholastic.routingRole, 'leader');
+    assert.equal(scholastic.modelClass, 'frontier');
+    assert.equal(scholastic.tools, 'read-only');
+    assert.match(scholastic.description, /Ontology-first reasoning reviewer/);
+  });
+
   it('keeps the installable agent model split aligned with the OMX subagent matrix', () => {
     assert.equal(AGENT_DEFINITIONS.architect.modelClass, 'frontier');
     assert.equal(AGENT_DEFINITIONS['security-reviewer'].modelClass, 'frontier');

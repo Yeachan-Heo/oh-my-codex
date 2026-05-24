@@ -5,7 +5,7 @@ description: Alias for $plan --consensus
 
 # Ralplan (Consensus Planning Alias)
 
-Ralplan is a shorthand alias for `$plan --consensus`. It triggers iterative planning with Planner, Architect, and Critic agents until consensus is reached, with **RALPLAN-DR structured deliberation** (short mode by default, deliberate mode for high-risk work).
+Ralplan is a shorthand alias for `$plan --consensus`. It triggers iterative planning with Planner, Architect, and Critic agents until consensus is reached, with **RALPLAN-DR structured deliberation** (short mode by default, deliberate mode for high-risk work). Scholastic is available as a separate advisory native agent/persona for ontology-heavy planning evidence, but it is not part of the durable consensus gate.
 
 ## Usage
 
@@ -17,6 +17,10 @@ $ralplan "task description"
 
 - `--interactive`: Enables user prompts at key decision points (draft review in step 2 and final approval in step 6). Without this flag the workflow runs fully automated — Planner → Architect → Critic loop — and outputs the final plan without asking for confirmation.
 - `--deliberate`: Forces deliberate mode for high-risk work. Adds pre-mortem (3 scenarios) and expanded test planning (unit/integration/e2e/observability). Without this flag, deliberate mode can still auto-enable when the request explicitly signals high risk (auth/security, migrations, destructive changes, production incidents, compliance/PII, public API breakage).
+
+## Ontology-heavy review
+
+For requirements semantics, taxonomy, prompt/spec design, policy distinctions, or category-risk architecture, Scholastic may be cited as an available advisory ontology reviewer/persona. Its findings can inform the plan or follow-up evidence when explicitly used, but `$ralplan` itself remains the Planner → Architect → Critic consensus workflow and the durable gate remains Architect→Critic only.
 
 ## Usage with interactive mode
 
@@ -48,7 +52,7 @@ The consensus workflow:
 3. **Architect** reviews for architectural soundness and must provide the strongest steelman antithesis, at least one real tradeoff tension, and (when possible) synthesis — **await completion before step 4**. In deliberate mode, Architect should explicitly flag principle violations.
 4. **Critic** evaluates against quality criteria — run only after step 3 completes. Critic must enforce principle-option consistency, fair alternatives, risk mitigation clarity, testable acceptance criteria, and concrete verification steps. In deliberate mode, Critic must reject missing/weak pre-mortem or expanded test plan.
 5. **Re-review loop** (max 5 iterations): Any non-`APPROVE` Critic verdict (`ITERATE` or `REJECT`) MUST run the same full closed loop:
-   a. Collect Architect + Critic feedback
+   a. Collect Architect and Critic feedback
    b. Revise the plan with Planner
    c. Return to Architect review
    d. Return to Critic evaluation

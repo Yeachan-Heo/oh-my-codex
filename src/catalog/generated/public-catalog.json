@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-05-23T11:27:07.940Z",
+  "generatedAt": "2026-05-24T12:14:18.921Z",
   "version": "2026.02.28.1",
   "counts": {
     "skillCount": 49,
-    "promptCount": 33,
+    "promptCount": 34,
     "activeSkillCount": 27,
-    "activeAgentCount": 19
+    "activeAgentCount": 20
   },
   "coreSkills": [
     "autopilot",
@@ -537,6 +537,11 @@
     },
     {
       "name": "critic",
+      "category": "coordination",
+      "status": "active"
+    },
+    {
+      "name": "scholastic",
       "category": "coordination",
       "status": "active"
     },
