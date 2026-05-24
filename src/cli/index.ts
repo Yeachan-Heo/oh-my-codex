@@ -384,6 +384,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "question",
   "cleanup",
   "adapt",
+  "explore",
   "autoresearch",
   "autoresearch-goal",
   "agents",

@@ -1598,6 +1598,7 @@ describe("commandOwnsLocalHelp", () => {
       "question",
       "autoresearch",
       "deepinit",
+      "explore",
       "hooks",
       "hud",
       "ralph",
