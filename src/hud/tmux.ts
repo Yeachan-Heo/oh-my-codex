@@ -101,6 +101,43 @@ export function findHudWatchPaneIds(
     .map((pane) => pane.paneId);
 }
 
+export function reapDeadHudPanes(
+  panes: TmuxPaneSnapshot[],
+  opts: {
+    isLivePane?: (paneId: string) => boolean;
+    killPane?: (paneId: string) => boolean;
+  } = {},
+): { reaped: string[]; preserved: string[] } {
+  const livePaneIds = new Set(panes.map((pane) => pane.paneId));
+  const isLivePane = opts.isLivePane ?? ((paneId: string) => livePaneIds.has(paneId));
+  const killPane = opts.killPane ?? ((paneId: string) => killTmuxPane(paneId));
+  const reaped: string[] = [];
+  const preserved: string[] = [];
+
+  for (const pane of panes) {
+    if (!isHudWatchPane(pane)) continue;
+
+    const leaderPaneId = readHudPaneOwner(pane).leaderPaneId;
+    if (!leaderPaneId) {
+      preserved.push(pane.paneId);
+      continue;
+    }
+
+    if (isLivePane(leaderPaneId)) {
+      preserved.push(pane.paneId);
+      continue;
+    }
+
+    if (killPane(pane.paneId)) {
+      reaped.push(pane.paneId);
+    } else {
+      preserved.push(pane.paneId);
+    }
+  }
+
+  return { reaped, preserved };
+}
+
 export function parsePaneIdFromTmuxOutput(rawOutput: string): string | null {
   const paneId = rawOutput.split('\n')[0]?.trim() || '';
   return paneId.startsWith('%') ? paneId : null;

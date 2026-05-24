@@ -131,8 +131,10 @@ import {
   createHudWatchPane as createSharedHudWatchPane,
   killTmuxPane as killSharedTmuxPane,
   listCurrentWindowHudPaneIds,
+  listCurrentWindowPanes,
   OMX_TMUX_HUD_LEADER_PANE_ENV,
   parsePaneIdFromTmuxOutput,
+  reapDeadHudPanes,
   registerHudResizeHook,
 } from "../hud/tmux.js";
 
@@ -3954,6 +3956,18 @@ function runCodex(
 
   if (launchPolicy === "inside-tmux") {
     // Already in tmux: launch codex in current pane, HUD in bottom split
+    const currentWindowPanes = currentPaneId ? listCurrentWindowPanes(undefined, currentPaneId) : [];
+    reapDeadHudPanes(currentWindowPanes, {
+      killPane: (paneId) => {
+        try {
+          return killSharedTmuxPane(paneId);
+        } catch (err) {
+          logCliOperationFailure(err);
+          return false;
+        }
+      },
+    });
+
     const staleHudPaneIds = currentPaneId
       ? listHudWatchPaneIdsInCurrentWindow(currentPaneId, { leaderPaneId: currentPaneId })
       : [];
