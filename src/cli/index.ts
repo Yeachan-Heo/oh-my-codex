@@ -49,6 +49,8 @@ import { mcpParityCommand } from "./mcp-parity.js";
 import { mcpServeCommand } from "./mcp-serve.js";
 import { adaptCommand } from "./adapt.js";
 import { listCommand } from "./list.js";
+import { authCommand } from "./auth.js";
+import { runAuthHotswap } from "../auth/hotswap.js";
 import {
   MADMAX_FLAG,
   CODEX_BYPASS_FLAG,
@@ -204,6 +206,7 @@ Usage:
   omx cleanup   Kill orphaned OMX MCP server processes and remove stale OMX /tmp directories
   omx doctor --team  Check team/swarm runtime health diagnostics
   omx ask       Ask local provider CLI (claude|gemini) and write artifact output
+  omx auth      Manage Codex OAuth auth slots (add|list|use)
   omx question  OMX-owned blocking question UI entrypoint for agent-invoked user questions
   omx adapt     Scaffold OMX-owned adapter foundations for persistent external targets
   omx resume    Resume a previous interactive Codex session
@@ -259,6 +262,7 @@ Options:
   --madmax-spark  spark model for workers + bypass approvals for leader and workers
                 (shorthand for: --spark --madmax)
   --notify-temp  Enable temporary notification routing for this run/session only
+  --hotswap     Run a direct Codex session that rotates auth slots on 429/quota and resumes
   --direct       Launch the interactive leader directly without OMX tmux/HUD management
   --tmux         Launch the interactive leader session in detached tmux
   --discord      Select Discord provider for temporary notification mode
@@ -355,6 +359,7 @@ type CliCommand =
   | "uninstall"
   | "doctor"
   | "cleanup"
+  | "auth"
   | "ask"
   | "question"
   | "adapt"
@@ -383,6 +388,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "ask",
   "question",
   "cleanup",
+  "auth",
   "adapt",
   "autoresearch",
   "autoresearch-goal",
@@ -836,7 +842,7 @@ export async function persistProjectLaunchRuntimeProjectTrustState(
   }
 }
 
-async function cleanupRuntimeCodexHome(
+export async function cleanupRuntimeCodexHome(
   runtimeCodexHomeForCleanup?: string,
   projectCodexHomeForPersistence?: string,
 ): Promise<void> {
@@ -1596,6 +1602,7 @@ export async function main(args: string[]): Promise<void> {
     "uninstall",
     "doctor",
     "cleanup",
+    "auth",
     "ask",
     "question",
     "autoresearch",
@@ -1643,7 +1650,11 @@ export async function main(args: string[]): Promise<void> {
   try {
     switch (command) {
       case "launch":
-        await launchWithHud(launchArgs);
+        if (launchArgs.includes("--hotswap")) {
+          await launchWithAuthHotswap(launchArgs);
+        } else {
+          await launchWithHud(launchArgs);
+        }
         break;
       case "resume":
         await launchWithHud(["resume", ...launchArgs]);
@@ -1699,6 +1710,9 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "cleanup":
         await cleanupCommand(args.slice(1));
+        break;
+      case "auth":
+        await authCommand(args.slice(1));
         break;
       case "autoresearch":
         await autoresearchCommand(args.slice(1));
@@ -1886,6 +1900,81 @@ async function reasoningCommand(args: string[]): Promise<void> {
   const updated = upsertTopLevelTomlString(existing, REASONING_KEY, mode);
   await writeFile(configPath, updated);
   console.log(`Set ${REASONING_KEY}="${mode}" in ${configPath}`);
+}
+
+export async function launchWithAuthHotswap(args: string[]): Promise<void> {
+  const launchCwd = process.cwd();
+  const parsedWorktree = parseWorktreeMode(args);
+  let cwd = launchCwd;
+  let worktreeDirty = false;
+  let ensuredLaunchWorktree: ReturnType<typeof ensureWorktree> | undefined;
+
+  if (parsedWorktree.mode.enabled) {
+    const planned = planWorktreeTarget({
+      cwd: launchCwd,
+      scope: "launch",
+      mode: parsedWorktree.mode,
+    });
+    const ensured = ensureWorktree(planned, { allowDirtyReuse: true });
+    ensuredLaunchWorktree = ensured;
+    if (ensured.enabled) {
+      cwd = ensured.worktreePath;
+      worktreeDirty = Boolean(ensured.dirty);
+      if (ensured.dirty) {
+        process.stderr.write(
+          `[omx] Caution: worktree at ${cwd} has uncommitted changes.\n` +
+          `  The hotswap session will launch as-is.\n`,
+        );
+      }
+      const depBootstrap = ensureReusableNodeModules(cwd);
+      if (depBootstrap.strategy === "symlink") {
+        console.log(`[omx] Reusing node_modules from ${depBootstrap.sourceNodeModulesPath}`);
+      } else if (depBootstrap.strategy === "missing" && depBootstrap.warning) {
+        console.warn(`[omx] ${depBootstrap.warning}`);
+      }
+    }
+  }
+  applyDisposableWorktreeOmxRootForLaunch(ensuredLaunchWorktree);
+
+  try {
+    await maybeCheckAndPromptUpdate(cwd);
+  } catch (err) {
+    logCliOperationFailure(err);
+  }
+  try {
+    await maybePromptGithubStar();
+  } catch (err) {
+    logCliOperationFailure(err);
+  }
+  try {
+    const configPath = resolveCodexConfigPathForLaunch(launchCwd, process.env);
+    const repaired = await repairConfigIfNeeded(
+      configPath,
+      getPackageRoot(),
+      await resolveLaunchConfigRepairOptions(launchCwd, configPath),
+    );
+    if (repaired) console.log("[omx] Repaired managed config.toml compatibility issue.");
+  } catch {
+    // Non-fatal: repair failure must not block launch
+  }
+
+  const status = await runAuthHotswap({
+    cwd,
+    argv: parsedWorktree.remainingArgs,
+    lifecycle: {
+      prepareCodexHomeForLaunch,
+      preLaunch: (launchPath, sessionId, notifyTempContract, codexHomeOverride, enableAuthority) =>
+        preLaunch(launchPath, sessionId, notifyTempContract as NotifyTempContract, codexHomeOverride, enableAuthority, worktreeDirty),
+      postLaunch,
+      cleanupRuntimeCodexHome,
+      normalizeCodexLaunchArgs,
+      injectModelInstructionsBypassArgs,
+      sessionModelInstructionsPath,
+      resolveOmxRootForLaunch,
+      resolveNotifyTempContract,
+    },
+  });
+  process.exitCode = status;
 }
 
 export async function launchWithHud(args: string[]): Promise<void> {
@@ -3768,7 +3857,7 @@ export async function reapPostLaunchOrphanedMcpProcesses(
  * OMX MCP processes without a live Codex ancestor are reaped so new launches
  * do not accumulate stale processes from prior crashed/closed sessions.
  */
-async function preLaunch(
+export async function preLaunch(
   cwd: string,
   sessionId: string,
   notifyTempContract?: NotifyTempContract,
@@ -4421,7 +4510,7 @@ function scheduleDetachedWindowsCodexLaunch(
  * postLaunch: Clean up after Codex exits.
  * Each step is independently fault-tolerant (try/catch per step).
  */
-async function postLaunch(
+export async function postLaunch(
   cwd: string,
   sessionId: string,
   codexHomeOverride?: string,
