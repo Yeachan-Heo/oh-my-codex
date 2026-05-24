@@ -161,4 +161,3 @@ export async function clearSlotExhaustion(slot: string, home?: string): Promise<
     await writeAuthMetadata(metadata, home);
   }
 }
-
