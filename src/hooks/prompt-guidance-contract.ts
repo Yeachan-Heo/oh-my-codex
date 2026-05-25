@@ -370,6 +370,17 @@ export const PROMPT_REFACTOR_INVARIANT_CONTRACTS: GuidanceSurfaceContract[] = [
       rx('review_verdict'),
       rx('qa_verdict'),
       rx('return_to_ralplan_reason'),
+      rx('ralplan_consensus_gate'),
+      rx('PRD/test-spec files alone are not completion evidence'),
+    ],
+  },
+  {
+    id: 'pipeline-ralplan-consensus-skip-gate',
+    path: 'skills/pipeline/SKILL.md',
+    requiredPatterns: [
+      rx('Skips only when both `prd-\\*\\.md` and `test-spec-\\*\\.md`'),
+      rx('Architect approval followed by Critic approval'),
+      rx('Plan/test-spec files alone are not consensus evidence'),
     ],
   },
   {

@@ -1,43 +1,38 @@
-# oh-my-codex 0.18.0
+# oh-my-codex 0.18.3
 
-`0.18.0` ships the OMX API gateway and a safer SparkShell/operator-runtime baseline after `0.17.3`. The release also closes the notify, Stop-hook, tmux, HUD, Windows MCP, and release-smoke blockers found while preparing the train.
+`0.18.3` is a patch release after `0.18.2` for the post-release reliability and operator-experience train on `dev`. It focuses on HUD/tmux lifecycle cleanup, Team diff readability, auth slot hot-swap support, visible explore prompt syntax guidance, deep-interview runtime configuration and handoff authority, plugin-owned hook preservation, and the new Scholastic ontology reviewer agent.
 
 ## Highlights
 
-- **Local generation has an OMX-owned API path** — `omx api` exposes the local gateway used by OMX generation flows, with explicit real-private backend guidance and safer default auth behavior.
-- **SparkShell is safer and more observable** — summaries can diagnose team panes and cache observations while preserving passthrough contracts and keeping raw secrets out of summary prompts.
-- **Runtime loops are less sticky** — stale Ralph, ralplan, autoresearch-goal, MCP transport, and tmux diagnostic states no longer trigger erroneous loops after Stop/completion.
-- **Process-storm regressions are blocked** — recursive notify wrappers, `previousNotify` self-reference, fallback watcher respawns, and worker tmux rc fan-out are fixed.
-- **Team/HUD/Windows reliability improved** — wrapped tmux drafts are not treated as sent input, HUD resize hooks survive reflow, provider env vars reach direct tmux launches, and Windows MCP siblings avoid duplicate watchdog collisions.
+- **HUD panes are less stale and less duplicated** — HUD launch/reconcile now coalesces same-leader panes, preserves session ownership, reaps dead-leader panes, and reuses the existing HUD during UserPromptSubmit revive.
+- **Team diff output is easier to review** — wrapped multi-line diff hunks preserve the diff gutter so long patches remain readable in tmux panes.
+- **Deep-interview is more configurable and safer to hand off** — runtime config overrides are supported, and `plan_then_execute` downstream authority is enforced as a binding gate.
+- **Auth slots can be hot-swapped more safely** — the release includes the auth slot hot-swap wrapper work from the final `dev` delta.
+- **Explore runtime guidance keeps prompt syntax visible** — prompt syntax remains visible in runtime guidance so operators do not lose invocation shape while using `omx explore`.
+- **Plugin-owned hooks are respected** — Codex setup paths preserve plugin-owned hooks instead of overwriting user/plugin surfaces.
+- **Scholastic ontology review is available** — a first-class Scholastic reviewer agent is added to the agent catalog and native config surface.
 
 ## Fixes / compatibility
 
-- `omx api --help` and `omx sparkshell --help` are now covered by release smoke tests.
-- Real-private API mode remains experimental and explicitly opt-in; unauthenticated accidental startup is prevented by default token generation.
-- Team readiness semantics are preserved; the release removes false draft trust and runaway launch/fan-out behavior rather than weakening failure detection.
-- Lifecycle notification grouping remains tracked separately in #2353.
+- HUD ownership and tmux reconciliation fixes reduce cross-worktree accumulation and stale session-id/env drift.
+- Team hunk rendering keeps gutters on wrapped multi-line diffs.
+- Setup and native hook paths preserve plugin ownership boundaries while still warning on invalid/missing coverage.
+- Deep-interview and ralplan guidance now encode stricter downstream execution authority and runtime override behavior.
+- Auth slot wrapper and explore prompt-guidance fixes from the rebased `dev` head are included in this cut.
 
 ## Merged PR inventory
 
-#2295, #2332, #2334, #2335, #2338, #2339, #2341, #2342, #2344, #2345, #2347, #2349, #2351, #2357, #2359, #2360, #2361, #2365, #2367, #2372, #2374, #2375, #2376.
+#2474, #2476, #2477, #2478, #2481, #2482, #2483, #2484, #2485, #2486, #2487, #2488, #2489, #2491, #2492, #2493, #2494, #2495.
 
 ## Validation
 
-- `npm run build`
 - `npm run lint`
 - `npm run check:no-unused`
-- Targeted compiled Node tests for version sync and the `omx api` CLI bridge
-- `npm run verify:native-agents`
-- `npm run verify:plugin-bundle`
-- `npm run build:full`
-- `npm run smoke:packed-install`
-- `cargo fmt --all --check`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test -p omx-api -p omx-sparkshell -p omx-explore-harness`
-- `git diff --check`
+- `npm run test`
+- Project-native targeted changed-area tests rerun twice through `dist/scripts/run-test-files.js`
+- Adversarial release harness for malformed state, prompt-injection, interruption/cancel wording, hung child process, misleading success output, and no-tag side-effect guard
+- `npm pack --dry-run`
 
-## Contributors
+Accepted residual risk: `cargo test` has one known failing `omx-explore` process-group timeout cleanup assertion, waived by release-owner direction for this cut and recorded in `docs/qa/release-readiness-0.18.3.md`.
 
-Thanks to everyone who reported and narrowed the post-`0.17.3` runtime issues, especially the notify dispatcher recursion/fork-bomb reports, tmux fan-out/OOM repro, provider-env launch report, and compaction/reconciliation drift reports.
-
-**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.17.3...v0.18.0
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.18.2...v0.18.3

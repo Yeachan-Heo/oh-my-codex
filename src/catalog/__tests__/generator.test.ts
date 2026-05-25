@@ -58,6 +58,10 @@ describe('catalog reader/contract', () => {
         (s) => s.name === 'web-clone' && s.status === 'deprecated' && !s.canonical,
       ),
     );
+    assert.ok(contract.skills.some((s) => s.name === 'prometheus-strict' && s.status === 'active'));
+    assert.ok(contract.agents.some((a) => a.name === 'prometheus-strict-metis' && a.status === 'active'));
+    assert.ok(contract.agents.some((a) => a.name === 'prometheus-strict-momus' && a.status === 'active'));
+    assert.ok(contract.agents.some((a) => a.name === 'prometheus-strict-oracle' && a.status === 'active'));
   });
 
   it('template manifest can be synced from source manifest', async () => {

@@ -36,8 +36,10 @@ Autopilot must not run a separate broad expansion/planning/execution/QA/validati
 2. **Phase `ralplan`** — consensus planning gate
    - Ground the task with pre-context intake and the deep-interview artifact.
    - Run or resume `$ralplan` to produce/update PRD and test-spec artifacts.
+   - PRD/test-spec files alone are not completion evidence. Ralplan may hand off only after durable consensus evidence records an `Architect` approval first and a subsequent `Critic` approval second.
    - When returning from a non-clean review or QA pass, include `return_to_ralplan_reason` and the findings as first-class planning input.
-   - Required handoff artifact: an approved plan/test spec suitable for `$ultragoal`.
+   - If either review is missing, blocked, out of order, or non-approving, remain in `ralplan` or report an explicit blocker/max-iteration outcome; do not progress to `$ultragoal`, `$team`, `$ralph`, or implementation.
+   - Required handoff artifact: an approved plan/test spec plus `ralplan_consensus_gate` evidence suitable for `$ultragoal`.
 
 3. **Phase `ultragoal`** — durable implementation + verification loop
    - Run `$ultragoal` from the approved ralplan artifacts.
@@ -104,6 +106,15 @@ Required fields:
     "context_snapshot_path": ".omx/context/<slug>-<timestamp>.md",
     "deep_interview": null,
     "ralplan": null,
+    "ralplan_consensus_gate": {
+      "required": true,
+      "sequence": ["architect-review", "critic-review"],
+      "planning_artifacts_are_not_consensus": true,
+      "required_review_roles": ["architect", "critic"],
+      "ralplan_architect_review": null,
+      "ralplan_critic_review": null,
+      "complete": false
+    },
     "ultragoal": null,
     "code_review": null,
     "ultraqa": null
@@ -114,9 +125,10 @@ Required fields:
 }
 ```
 
-- **On start**: `omx state write --input '{"mode":"autopilot","active":true,"current_phase":"deep-interview","iteration":1,"review_cycle":0,"state":{"phase_cycle":["deep-interview","ralplan","ultragoal","code-review","ultraqa"],"handoff_artifacts":{"context_snapshot_path":"<snapshot-path>","deep_interview":null,"ralplan":null,"ultragoal":null,"code_review":null,"ultraqa":null},"review_verdict":null,"qa_verdict":null,"return_to_ralplan_reason":null}}' --json`
+- **On start**: `omx state write --input '{"mode":"autopilot","active":true,"current_phase":"deep-interview","iteration":1,"review_cycle":0,"state":{"phase_cycle":["deep-interview","ralplan","ultragoal","code-review","ultraqa"],"handoff_artifacts":{"context_snapshot_path":"<snapshot-path>","deep_interview":null,"ralplan":null,"ralplan_consensus_gate":{"required":true,"sequence":["architect-review","critic-review"],"planning_artifacts_are_not_consensus":true,"required_review_roles":["architect","critic"],"ralplan_architect_review":null,"ralplan_critic_review":null,"complete":false},"ultragoal":null,"code_review":null,"ultraqa":null},"review_verdict":null,"qa_verdict":null,"return_to_ralplan_reason":null}}' --json`
 - **On deep-interview -> ralplan**: set `current_phase:"ralplan"`, persist the clarified spec/requirements under `handoff_artifacts.deep_interview`.
-- **On ralplan -> ultragoal**: set `current_phase:"ultragoal"`, persist the plan/test-spec paths under `handoff_artifacts.ralplan`.
+- **On ralplan -> ultragoal**: only after `ralplan_consensus_gate.complete:true`, with `ralplan_architect_review.agent_role:"architect"` and `ralplan_architect_review.verdict:"approve"` recorded before `ralplan_critic_review.agent_role:"critic"` and `ralplan_critic_review.verdict:"approve"`; set `current_phase:"ultragoal"` and persist the plan/test-spec paths under `handoff_artifacts.ralplan`.
+- **On missing ralplan consensus evidence**: keep `current_phase:"ralplan"`, persist `ralplan_consensus_gate.complete:false` with `blocked_reason`, and report an explicit blocker or max-iteration outcome instead of handing off to execution.
 - **On ultragoal -> code-review**: set `current_phase:"code-review"`, persist implementation/test/ledger evidence under `handoff_artifacts.ultragoal`.
 - **On code-review -> ultraqa**: set `current_phase:"ultraqa"`, persist the clean review under `handoff_artifacts.code_review`.
 - **On clean review + passed/skipped QA**: set `active:false`, `current_phase:"complete"`, persist `review_verdict:{recommendation:"APPROVE", architectural_status:"CLEAR", clean:true}`, `qa_verdict:{clean:true, skipped:<boolean>, reason:<string|null>}`, and `completed_at`.
@@ -158,7 +170,7 @@ Pipeline state should use `current_phase` values that match the same phase names
 
 <Final_Checklist>
 - [ ] Phase `deep-interview` produced/updated clarified requirements or a concise spec
-- [ ] Phase `ralplan` produced/updated approved planning artifacts
+- [ ] Phase `ralplan` produced/updated approved planning artifacts and durable sequential Architect→Critic consensus evidence
 - [ ] Phase `ultragoal` implemented and verified the plan with fresh evidence and durable ledger/checkpoint references
 - [ ] `$team` was used only if the active Ultragoal story needed coordinated parallel work, or explicitly recorded as not needed
 - [ ] Phase `code-review` returned a clean verdict (`APPROVE` + `CLEAR`)

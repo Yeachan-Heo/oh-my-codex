@@ -25,10 +25,13 @@ import { writeSessionStart } from "../../hooks/session.js";
 import { resetTriageConfigCache } from "../../hooks/triage-config.js";
 import { executeStateOperation } from "../../state/operations.js";
 import { OMX_TMUX_HUD_OWNER_ENV } from "../../hud/reconcile.js";
+import { OMX_TMUX_HUD_LEADER_PANE_ENV } from "../../hud/tmux.js";
 import { readAllState } from "../../hud/state.js";
+import { renderHud } from "../../hud/render.js";
 import { getLegacyWikiDir, serializePage, writePage } from "../../wiki/storage.js";
 import { WIKI_SCHEMA_VERSION } from "../../wiki/types.js";
 import { createUltragoalPlan, readUltragoalPlan } from "../../ultragoal/artifacts.js";
+import { getBaseStateDir } from "../../state/paths.js";
 
 function nativeHookScriptPath(): string {
   return join(process.cwd(), "dist", "scripts", "codex-native-hook.js");
@@ -61,6 +64,19 @@ function runNativeHookCli(
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true }).catch(() => {});
   await writeFile(path, JSON.stringify(value, null, 2));
+}
+
+async function withIsolatedHome<T>(prefix: string, run: (homeDir: string) => Promise<T>): Promise<T> {
+  const homeDir = await mkdtemp(join(tmpdir(), `omx-native-hook-home-${prefix}-`));
+  const previousHome = process.env.HOME;
+  try {
+    process.env.HOME = homeDir;
+    return await run(homeDir);
+  } finally {
+    if (typeof previousHome === "string") process.env.HOME = previousHome;
+    else delete process.env.HOME;
+    await rm(homeDir, { recursive: true, force: true });
+  }
 }
 
 async function withLoreGuardConfig<T>(
@@ -285,7 +301,7 @@ describe("codex native hook config", () => {
       matcher?: string;
       hooks?: Array<Record<string, unknown>>;
     };
-    assert.equal(preToolUse.matcher, "Bash");
+    assert.equal(preToolUse.matcher, undefined);
     assert.match(
       String(preToolUse.hooks?.[0]?.command || ""),
       /codex-native-hook\.js"?$/,
@@ -1618,6 +1634,405 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("injects deep-interview config overrides into UserPromptSubmit developer context", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-config-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(
+        join(cwd, ".omx", "config.toml"),
+        `[omx.deepInterview]
+defaultProfile = "standard"
+standardThreshold = 0.05
+standardMaxRounds = 15
+enableChallengeModes = false
+`,
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-deep-interview-config",
+          thread_id: "thread-1",
+          turn_id: "turn-1",
+          prompt: "$deep-interview prove config reflection",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.skill, "deep-interview");
+      const serializedOutput = JSON.stringify(result.outputJson);
+      assert.match(serializedOutput, /Deep-interview config override active/);
+      assert.match(serializedOutput, /threshold=0\.05/);
+      assert.match(serializedOutput, /max_rounds=15/);
+      assert.match(serializedOutput, /enableChallengeModes=false/);
+
+      const modeState = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "sessions", "sess-deep-interview-config", "deep-interview-state.json"), "utf-8"),
+      ) as { threshold?: number; max_rounds?: number; profile?: string };
+      assert.equal(modeState.profile, "standard");
+      assert.equal(modeState.threshold, 0.05);
+      assert.equal(modeState.max_rounds, 15);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("proves UserPromptSubmit context changes before and after adding deep-interview config", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-config-before-after-"));
+    const sessionId = "sess-deep-interview-config-before-after";
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+
+      const before = await withIsolatedHome("deep-interview-config-before-after", async () => (
+        dispatchCodexNativeHook(
+          {
+            hook_event_name: "UserPromptSubmit",
+            cwd,
+            session_id: sessionId,
+            thread_id: "thread-before-after",
+            turn_id: "turn-before",
+            prompt: "$deep-interview prove before config context",
+          },
+          { cwd },
+        )
+      ));
+      const beforeOutput = JSON.stringify(before.outputJson);
+      const beforeState = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "sessions", sessionId, "deep-interview-state.json"), "utf-8"),
+      ) as {
+        deep_interview_config?: unknown;
+        threshold?: number;
+        max_rounds?: number;
+      };
+      assert.equal(before.skillState?.skill, "deep-interview");
+      assert.doesNotMatch(beforeOutput, /Deep-interview config override active/);
+      assert.equal(before.skillState?.deep_interview_config, undefined);
+      assert.equal(beforeState.deep_interview_config, undefined);
+      assert.equal(beforeState.threshold, undefined);
+      assert.equal(beforeState.max_rounds, undefined);
+
+      await writeFile(
+        join(cwd, ".omx", "config.toml"),
+        `[omx.deepInterview]
+defaultProfile = "standard"
+standardThreshold = 0.05
+standardMaxRounds = 15
+`,
+      );
+
+      const after = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-before-after",
+          turn_id: "turn-after",
+          prompt: "$deep-interview prove after config context",
+        },
+        { cwd },
+      );
+      const afterOutput = JSON.stringify(after.outputJson);
+      const afterState = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "sessions", sessionId, "deep-interview-state.json"), "utf-8"),
+      ) as {
+        deep_interview_config?: { profile?: string; threshold?: number; maxRounds?: number };
+        threshold?: number;
+        max_rounds?: number;
+      };
+      assert.equal(after.skillState?.deep_interview_config?.profile, "standard");
+      assert.match(afterOutput, /Deep-interview config override active/);
+      assert.match(afterOutput, /threshold=0\.05/);
+      assert.match(afterOutput, /max_rounds=15/);
+      assert.equal(afterState.deep_interview_config?.profile, "standard");
+      assert.equal(afterState.threshold, 0.05);
+      assert.equal(afterState.max_rounds, 15);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("injects deep-interview config for mixed workflow prompts that defer execution modes", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-config-mixed-"));
+    const sessionId = "sess-deep-interview-config-mixed";
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(
+        join(cwd, ".omx", "config.toml"),
+        `[omx.deepInterview]
+defaultProfile = "deep"
+deepThreshold = 0.13
+deepMaxRounds = 21
+enableChallengeModes = false
+`,
+      );
+
+      const result = await withIsolatedHome("deep-interview-config-mixed", async () => (
+        dispatchCodexNativeHook(
+          {
+            hook_event_name: "UserPromptSubmit",
+            cwd,
+            session_id: sessionId,
+            thread_id: "thread-mixed-config",
+            turn_id: "turn-mixed-config",
+            prompt: "$autopilot $deep-interview prove mixed config context",
+          },
+          { cwd },
+        )
+      ));
+      const serializedOutput = JSON.stringify(result.outputJson);
+      const modeState = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "sessions", sessionId, "deep-interview-state.json"), "utf-8"),
+      ) as {
+        deep_interview_config?: { profile?: string; threshold?: number; maxRounds?: number; enableChallengeModes?: boolean };
+        profile?: string;
+        threshold?: number;
+        max_rounds?: number;
+        enable_challenge_modes?: boolean;
+      };
+
+      assert.equal(result.skillState?.skill, "deep-interview");
+      assert.deepEqual(result.skillState?.deferred_skills, ["autopilot"]);
+      assert.equal(result.skillState?.deep_interview_config?.profile, "deep");
+      assert.equal(result.skillState?.deep_interview_config?.threshold, 0.13);
+      assert.equal(result.skillState?.deep_interview_config?.maxRounds, 21);
+      assert.equal(result.skillState?.deep_interview_config?.enableChallengeModes, false);
+      assert.match(serializedOutput, /Deep-interview config override active/);
+      assert.match(serializedOutput, /profile=deep/);
+      assert.match(serializedOutput, /threshold=0\.13/);
+      assert.match(serializedOutput, /max_rounds=21/);
+      assert.match(serializedOutput, /enableChallengeModes=false/);
+      assert.equal(modeState.deep_interview_config?.profile, "deep");
+      assert.equal(modeState.profile, "deep");
+      assert.equal(modeState.threshold, 0.13);
+      assert.equal(modeState.max_rounds, 21);
+      assert.equal(modeState.enable_challenge_modes, false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps deep-interview config override context on continuation prompts", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-config-continuation-"));
+    const sessionId = "sess-deep-interview-config-continuation";
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(
+        join(cwd, ".omx", "config.toml"),
+        `[omx.deepInterview]
+defaultProfile = "standard"
+standardThreshold = 0.05
+standardMaxRounds = 15
+`,
+      );
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-continuation",
+          turn_id: "turn-start",
+          prompt: "$deep-interview prove config continuation",
+        },
+        { cwd },
+      );
+      const continued = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-continuation",
+          turn_id: "turn-continue",
+          prompt: "continue",
+        },
+        { cwd },
+      );
+      const serializedOutput = JSON.stringify(continued.outputJson);
+      const modeState = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "sessions", sessionId, "deep-interview-state.json"), "utf-8"),
+      ) as { threshold?: number; max_rounds?: number; profile?: string };
+
+      assert.equal(continued.skillState?.skill, "deep-interview");
+      assert.match(serializedOutput, /Deep-interview config override active/);
+      assert.match(serializedOutput, /threshold=0\.05/);
+      assert.match(serializedOutput, /max_rounds=15/);
+      assert.equal(modeState.profile, "standard");
+      assert.equal(modeState.threshold, 0.05);
+      assert.equal(modeState.max_rounds, 15);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps explicit deep-interview profile flags reflected on continuation prompts", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-config-profile-continuation-"));
+    const sessionId = "sess-deep-interview-config-profile-continuation";
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(
+        join(cwd, ".omx", "config.toml"),
+        `[omx.deepInterview]
+defaultProfile = "standard"
+standardThreshold = 0.22
+standardMaxRounds = 13
+deepThreshold = 0.13
+deepMaxRounds = 21
+`,
+      );
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-profile-continuation",
+          turn_id: "turn-start",
+          prompt: "$deep-interview --deep prove explicit profile continuation",
+        },
+        { cwd },
+      );
+      const continued = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-profile-continuation",
+          turn_id: "turn-continue",
+          prompt: "continue",
+        },
+        { cwd },
+      );
+      const serializedOutput = JSON.stringify(continued.outputJson);
+      const modeState = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "sessions", sessionId, "deep-interview-state.json"), "utf-8"),
+      ) as { threshold?: number; max_rounds?: number; profile?: string; deep_interview_config?: { profile?: string } };
+
+      assert.equal(continued.skillState?.skill, "deep-interview");
+      assert.equal(continued.skillState?.deep_interview_config?.profile, "deep");
+      assert.match(serializedOutput, /Deep-interview config override active/);
+      assert.match(serializedOutput, /profile=deep/);
+      assert.match(serializedOutput, /threshold=0\.13/);
+      assert.match(serializedOutput, /max_rounds=21/);
+      assert.equal(modeState.deep_interview_config?.profile, "deep");
+      assert.equal(modeState.profile, "deep");
+      assert.equal(modeState.threshold, 0.13);
+      assert.equal(modeState.max_rounds, 21);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the documented deep-interview Suggested Config reflected in UserPromptSubmit context", async () => {
+    const skillDoc = await readFile(join(process.cwd(), "skills", "deep-interview", "SKILL.md"), "utf-8");
+    const markerIndex = skillDoc.indexOf("## Suggested Config (optional)");
+    assert.notEqual(markerIndex, -1);
+    const configMatch = skillDoc.slice(markerIndex).match(/```toml\n([\s\S]*?)\n```/);
+    assert.ok(configMatch);
+    const documentedConfig = configMatch[1]?.trimEnd();
+    assert.ok(documentedConfig);
+    assert.match(documentedConfig, /standardThreshold = 0\.20/);
+    assert.match(documentedConfig, /standardMaxRounds = 12/);
+
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-doc-config-"));
+    const sessionId = "sess-deep-interview-doc-config";
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(join(cwd, ".omx", "config.toml"), `${documentedConfig}\n`);
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-doc-config",
+          turn_id: "turn-doc-config",
+          prompt: "$deep-interview prove documented config context",
+        },
+        { cwd },
+      );
+      const serializedOutput = JSON.stringify(result.outputJson);
+      const modeState = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "sessions", sessionId, "deep-interview-state.json"), "utf-8"),
+      ) as {
+        deep_interview_config?: { profile?: string; threshold?: number; maxRounds?: number };
+        profile?: string;
+        threshold?: number;
+        max_rounds?: number;
+      };
+
+      assert.equal(result.skillState?.deep_interview_config?.profile, "standard");
+      assert.equal(result.skillState?.deep_interview_config?.threshold, 0.2);
+      assert.equal(result.skillState?.deep_interview_config?.maxRounds, 12);
+      assert.match(serializedOutput, /Deep-interview config override active/);
+      assert.match(serializedOutput, /profile=standard/);
+      assert.match(serializedOutput, /threshold=0\.2/);
+      assert.match(serializedOutput, /max_rounds=12/);
+      assert.equal(modeState.deep_interview_config?.profile, "standard");
+      assert.equal(modeState.profile, "standard");
+      assert.equal(modeState.threshold, 0.2);
+      assert.equal(modeState.max_rounds, 12);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("injects deep-interview config overrides when state is boxed under OMX_ROOT", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-config-boxed-"));
+    const cwd = join(root, "source");
+    const omxRoot = join(root, "box");
+    const sessionId = "sess-boxed-deep-interview-config";
+    const previousOmxRoot = process.env.OMX_ROOT;
+    const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(
+        join(cwd, ".omx", "config.toml"),
+        `[omx.deepInterview]
+defaultProfile = "standard"
+standardThreshold = 0.05
+standardMaxRounds = 15
+`,
+      );
+      process.env.OMX_ROOT = omxRoot;
+      delete process.env.OMX_STATE_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-boxed",
+          turn_id: "turn-boxed",
+          prompt: "$deep-interview prove boxed config reflection",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.initialized_state_path, `.omx/state/sessions/${sessionId}/deep-interview-state.json`);
+      const boxedStatePath = join(omxRoot, ".omx", "state", "sessions", sessionId, "deep-interview-state.json");
+      assert.equal(existsSync(boxedStatePath), true);
+      assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", sessionId, "deep-interview-state.json")), false);
+
+      const serializedOutput = JSON.stringify(result.outputJson);
+      assert.match(serializedOutput, /Deep-interview config override active/);
+      assert.match(serializedOutput, /threshold=0\.05/);
+      assert.match(serializedOutput, /max_rounds=15/);
+    } finally {
+      if (typeof previousOmxRoot === "string") process.env.OMX_ROOT = previousOmxRoot;
+      else delete process.env.OMX_ROOT;
+      if (typeof previousOmxStateRoot === "string") process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+      else delete process.env.OMX_STATE_ROOT;
+      if (typeof previousTeamStateRoot === "string") process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("records boxed keyword activation mode detail and skill state under OMX_ROOT", async () => {
     const root = await mkdtemp(join(tmpdir(), "omx-native-hook-boxed-"));
     const cwd = join(root, "source");
@@ -1937,6 +2352,9 @@ describe("codex native hook dispatch", () => {
       assert.match(output, /omx ultragoal checkpoint --goal-id G001-demo --status complete/);
       assert.match(output, /--status blocked/);
       assert.match(output, /Codex goal context/);
+      assert.match(output, /no such table: thread_goals/);
+      assert.match(output, /unavailable get_goal error JSON or path/);
+      assert.match(output, /safe-recovery blocker/);
       assert.doesNotMatch(output, /fresh (?:Codex )?(?:thread|session)s?/i);
       assert.match(output, /Hooks must not mutate Codex goal state/);
     } finally {
@@ -2233,6 +2651,36 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("injects autopilot ralplan consensus gate guidance on prompt activation", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-ralplan-gate-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-autopilot-ralplan-gate",
+          thread_id: "thread-autopilot-ralplan-gate",
+          turn_id: "turn-autopilot-ralplan-gate",
+          prompt: "$autopilot implement issue #2430",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.skill, "autopilot");
+      const message = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(message, /Autopilot protocol:/);
+      assert.match(message, /deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa/);
+      assert.match(message, /Planner output has been reviewed sequentially by Architect and then Critic/);
+      assert.match(message, /do not hand off to Ultragoal or implementation until .*ralplan_architect_review.*ralplan_critic_review/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("records ultragoal prompt skill activation with goal-tool handoff guidance", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-"));
     try {
@@ -2251,7 +2699,11 @@ describe("codex native hook dispatch", () => {
 
       assert.equal(result.omxEventName, "keyword-detector");
       assert.equal(result.skillState?.skill, "ultragoal");
-      assert.equal(result.skillState?.initialized_mode, undefined);
+      assert.equal(result.skillState?.initialized_mode, "ultragoal");
+      assert.equal(
+        result.skillState?.initialized_state_path,
+        ".omx/state/sessions/sess-ultragoal-1/ultragoal-state.json",
+      );
       const message = String(
         (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
       );
@@ -2262,7 +2714,79 @@ describe("codex native hook dispatch", () => {
       assert.match(message, /update_goal/);
       assert.match(message, /does not call `\/goal clear`/);
       assert.match(message, /multiple sequential ultragoal runs/);
-      assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", "sess-ultragoal-1", "ultragoal-state.json")), false);
+      assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", "sess-ultragoal-1", "ultragoal-state.json")), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("deactivates active deep-interview state on explicit ultragoal handoff", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-deep-interview-handoff-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-ultragoal-handoff");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "deep-interview",
+        phase: "planning",
+        session_id: "sess-ultragoal-handoff",
+        active_skills: [{ skill: "deep-interview", phase: "planning", active: true, session_id: "sess-ultragoal-handoff" }],
+      });
+      await writeJson(join(sessionDir, "deep-interview-state.json"), {
+        active: true,
+        mode: "deep-interview",
+        current_phase: "intent-first",
+        session_id: "sess-ultragoal-handoff",
+        question_enforcement: {
+          obligation_id: "obligation-ultragoal-handoff",
+          source: "omx-question",
+          status: "pending",
+          requested_at: "2026-05-21T03:00:00.000Z",
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-ultragoal-handoff",
+          thread_id: "thread-ultragoal-handoff",
+          turn_id: "turn-ultragoal-handoff",
+          prompt: "$ultragoal turn the clarified spec into goals",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.skill, "ultragoal");
+      assert.match(JSON.stringify(result.outputJson), /mode transiting: deep-interview -> ultragoal/);
+
+      const completed = JSON.parse(await readFile(join(sessionDir, "deep-interview-state.json"), "utf-8")) as {
+        active?: boolean;
+        current_phase?: string;
+        question_enforcement?: { status?: string; clear_reason?: string };
+      };
+      assert.equal(completed.active, false);
+      assert.equal(completed.current_phase, "completed");
+      assert.equal(completed.question_enforcement?.status, "cleared");
+      assert.equal(completed.question_enforcement?.clear_reason, "handoff");
+      assert.equal(existsSync(join(sessionDir, "ultragoal-state.json")), true);
+
+      const edit = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-ultragoal-handoff",
+          thread_id: "thread-ultragoal-handoff",
+          tool_name: "Edit",
+          tool_use_id: "tool-ultragoal-post-handoff-edit",
+          tool_input: { file_path: "src/implementation.ts", old_string: "a", new_string: "b" },
+        },
+        { cwd },
+      );
+      assert.equal(edit.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -3410,6 +3934,78 @@ esac
     }
   });
 
+  it("reuses an existing owner-tagged HUD pane when UserPromptSubmit revives with the canonical session id", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-reuse-"));
+    const originalTmux = process.env.TMUX;
+    const originalTmuxPane = process.env.TMUX_PANE;
+    const originalPath = process.env.PATH;
+    const originalHudOwner = process.env[OMX_TMUX_HUD_OWNER_ENV];
+    try {
+      process.env.TMUX = "1";
+      process.env.TMUX_PANE = "%1";
+      process.env[OMX_TMUX_HUD_OWNER_ENV] = "1";
+      const canonicalSessionId = "omx-canonical-hud-reuse";
+      const nativeSessionId = "codex-native-hud-reuse";
+      await mkdir(join(cwd, ".omx", "state", "sessions", canonicalSessionId), { recursive: true });
+      await writeSessionStart(cwd, canonicalSessionId);
+
+      const binDir = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-reuse-bin-"));
+      const tmuxLog = join(cwd, "tmux.log");
+      await writeFile(
+        join(binDir, "tmux"),
+        `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> ${JSON.stringify(tmuxLog)}
+case "$1" in
+  list-panes)
+    printf '%%1\tcodex\tcodex\n'
+    printf '%%2\tnode\texec env OMX_TMUX_HUD_OWNER='"'"'1'"'"' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='"'"'%%1'"'"' /node /omx.js hud --watch\n'
+    ;;
+  display-message)
+    printf '80\t24\n'
+    ;;
+  resize-pane)
+    ;;
+  split-window)
+    printf '%%9\n'
+    ;;
+esac
+`,
+      );
+      await chmod(join(binDir, "tmux"), 0o755);
+      process.env.PATH = `${binDir}:${originalPath}`;
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: nativeSessionId,
+          thread_id: "thread-hud-reuse",
+          turn_id: "turn-hud-reuse",
+          prompt: "$ralplan prepare plan",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      const tmuxCalls = await readFile(tmuxLog, "utf-8");
+      assert.match(tmuxCalls, /list-panes -t %1 -F/);
+      assert.match(tmuxCalls, /resize-pane -t %2 -y 3/);
+      assert.doesNotMatch(tmuxCalls, /split-window/);
+      assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", canonicalSessionId, "ralplan-state.json")), true);
+      assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", nativeSessionId, "ralplan-state.json")), false);
+    } finally {
+      if (originalTmux === undefined) delete process.env.TMUX;
+      else process.env.TMUX = originalTmux;
+      if (originalTmuxPane === undefined) delete process.env.TMUX_PANE;
+      else process.env.TMUX_PANE = originalTmuxPane;
+      if (originalHudOwner === undefined) delete process.env[OMX_TMUX_HUD_OWNER_ENV];
+      else process.env[OMX_TMUX_HUD_OWNER_ENV] = originalHudOwner;
+      process.env.PATH = originalPath;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("skips prompt-submit HUD reconciliation inside unowned tmux panes", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-unowned-"));
     const originalTmux = process.env.TMUX;
@@ -3884,6 +4480,183 @@ exit 0
 
       assert.equal(result.omxEventName, "pre-tool-use");
       assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks implementation file edits while deep-interview remains active after a clarified answer", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-edit-block-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-di-edit-block");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-di-edit-block", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "deep-interview",
+        phase: "planning",
+        session_id: "sess-di-edit-block",
+        thread_id: "thread-di-edit-block",
+        active_skills: [{ skill: "deep-interview", phase: "planning", active: true, session_id: "sess-di-edit-block", thread_id: "thread-di-edit-block" }],
+      });
+      await writeJson(join(sessionDir, "deep-interview-state.json"), {
+        active: true,
+        mode: "deep-interview",
+        current_phase: "intent-first",
+        session_id: "sess-di-edit-block",
+        thread_id: "thread-di-edit-block",
+        rounds: [{ answer: "Implement by editing src/hooks/keyword-detector.ts and add tests." }],
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-edit-block",
+          thread_id: "thread-di-edit-block",
+          tool_name: "Edit",
+          tool_use_id: "tool-di-edit-block",
+          tool_input: { file_path: "src/hooks/keyword-detector.ts", old_string: "a", new_string: "b" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Deep-interview is active/);
+      assert.match(JSON.stringify(result.outputJson), /requirements\/spec mode/);
+      assert.match(JSON.stringify(result.outputJson), /\$ralplan/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows deep-interview artifact and state writes while blocking implementation Bash writes", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-artifact-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-di-artifact");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-di-artifact", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "deep-interview",
+        phase: "planning",
+        session_id: "sess-di-artifact",
+        active_skills: [{ skill: "deep-interview", phase: "planning", active: true, session_id: "sess-di-artifact" }],
+      });
+      await writeJson(join(sessionDir, "deep-interview-state.json"), {
+        active: true,
+        mode: "deep-interview",
+        current_phase: "intent-first",
+        session_id: "sess-di-artifact",
+      });
+
+      const allowedWrite = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Write",
+          tool_use_id: "tool-di-spec-write",
+          tool_input: { file_path: ".omx/specs/deep-interview-demo.md", content: "# Spec" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedWrite.outputJson, null);
+
+      const allowedBash = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-context-bash",
+          tool_input: { command: "cat > .omx/context/demo.md <<'EOF'\n# Context\nEOF" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedBash.outputJson, null);
+
+      const allowedAppendBash = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-context-append-bash",
+          tool_input: { command: "echo more context >> .omx/context/demo.md" },
+        },
+        { cwd },
+      );
+      assert.equal(allowedAppendBash.outputJson, null);
+
+      const blockedBash = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-artifact",
+          tool_name: "Bash",
+          tool_use_id: "tool-di-src-bash",
+          tool_input: { command: "cat > src/implementation.ts <<'EOF'\nexport const x = 1;\nEOF" },
+        },
+        { cwd },
+      );
+      assert.equal((blockedBash.outputJson as { decision?: string } | null)?.decision, "block");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows implementation tools after an explicit deep-interview handoff deactivates the mode", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-handoff-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-di-handoff");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "deep-interview",
+        phase: "planning",
+        session_id: "sess-di-handoff",
+        active_skills: [{ skill: "deep-interview", phase: "planning", active: true, session_id: "sess-di-handoff" }],
+      });
+      await writeJson(join(sessionDir, "deep-interview-state.json"), {
+        active: true,
+        mode: "deep-interview",
+        current_phase: "intent-first",
+        session_id: "sess-di-handoff",
+      });
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-di-handoff",
+          prompt: "$ralph implement the clarified spec in src/implementation.ts",
+        },
+        { cwd },
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-di-handoff",
+          tool_name: "Edit",
+          tool_use_id: "tool-di-post-handoff-edit",
+          tool_input: { file_path: "src/implementation.ts", old_string: "a", new_string: "b" },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson, null);
+      const completed = JSON.parse(await readFile(join(sessionDir, "deep-interview-state.json"), "utf-8")) as { active?: boolean };
+      assert.equal(completed.active, false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -6581,6 +7354,7 @@ exit 0
         active: true,
         current_phase: "team-exec",
         team_name: "review-team",
+        session_id: "sess-stop-team",
       });
       await writeJson(join(stateDir, "team", "review-team", "phase.json"), {
         current_phase: "team-verify",
@@ -7468,6 +8242,90 @@ exit 0
     }
   });
 
+  it("does not block Stop from canonical team state owned by another thread", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-canonical-other-thread-"));
+    try {
+      await initTeamState(
+        "canonical-other-thread-team",
+        "canonical other-thread stop fallback",
+        "executor",
+        1,
+        cwd,
+        undefined,
+        { ...process.env, OMX_SESSION_ID: "sess-stop-team-canonical-thread" },
+      );
+      const manifestPath = join(cwd, ".omx", "state", "team", "canonical-other-thread-team", "manifest.v2.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf-8")) as Record<string, unknown>;
+      await writeJson(manifestPath, {
+        ...manifest,
+        leader: {
+          ...(manifest.leader as Record<string, unknown> | undefined),
+          thread_id: "thread-other",
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-team-canonical-thread",
+          thread_id: "thread-current",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks Stop from canonical team state owned by the current thread", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-canonical-current-thread-"));
+    try {
+      await initTeamState(
+        "canonical-current-thread-team",
+        "canonical current-thread stop fallback",
+        "executor",
+        1,
+        cwd,
+        undefined,
+        { ...process.env, OMX_SESSION_ID: "sess-stop-team-canonical-current-thread" },
+      );
+      const manifestPath = join(cwd, ".omx", "state", "team", "canonical-current-thread-team", "manifest.v2.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf-8")) as Record<string, unknown>;
+      await writeJson(manifestPath, {
+        ...manifest,
+        leader: {
+          ...(manifest.leader as Record<string, unknown> | undefined),
+          thread_id: "thread-current",
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-team-canonical-current-thread",
+          thread_id: "thread-current",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.deepEqual(result.outputJson, {
+        decision: "block",
+        reason:
+          `OMX team pipeline is still active (canonical-current-thread-team) at phase team-exec; continue coordinating until the team reaches a terminal phase.${TEAM_STOP_COMMIT_GUIDANCE}`,
+        stopReason: "team_team-exec",
+        systemMessage: "OMX team pipeline is still active at phase team-exec.",
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("emits one concise final decision summary and auto-finalize guidance when release-readiness already has a stable final recommendation and no active worker tasks", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-release-readiness-finalize-"));
     try {
@@ -7742,7 +8600,7 @@ exit 0
     const sharedRoot = join(cwd, "shared-root");
     const priorTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
     try {
-      process.env.OMX_TEAM_STATE_ROOT = "shared-root";
+      process.env.OMX_TEAM_STATE_ROOT = sharedRoot;
       await initTeamState(
         "canonical-root-team",
         "canonical stop root fallback",
@@ -7750,7 +8608,7 @@ exit 0
         1,
         cwd,
         undefined,
-        { ...process.env, OMX_SESSION_ID: "sess-stop-team-root", OMX_TEAM_STATE_ROOT: "shared-root" },
+        { ...process.env, OMX_SESSION_ID: "sess-stop-team-root", OMX_TEAM_STATE_ROOT: sharedRoot },
       );
 
       const result = await dispatchCodexNativeHook(
@@ -7815,9 +8673,10 @@ exit 0
 
   it("returns Stop continuation output from canonical team state rooted via OMX_TEAM_STATE_ROOT", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-env-root-"));
+    const teamStateRoot = join(cwd, "shared-team-state");
     const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
     try {
-      process.env.OMX_TEAM_STATE_ROOT = "shared-team-state";
+      process.env.OMX_TEAM_STATE_ROOT = teamStateRoot;
       await initTeamState(
         "env-root-team",
         "env root stop fallback",
@@ -7828,7 +8687,7 @@ exit 0
         {
           ...process.env,
           OMX_SESSION_ID: "sess-stop-team-env-root",
-          OMX_TEAM_STATE_ROOT: "shared-team-state",
+          OMX_TEAM_STATE_ROOT: teamStateRoot,
         },
       );
 
@@ -11052,6 +11911,8 @@ exit 0
         active: true,
         current_phase: "team-exec",
         team_name: "review-team",
+        session_id: "sess-stop-team-refire",
+        thread_id: "thread-stop-team-refire",
       });
       await writeJson(join(stateDir, "team", "review-team", "phase.json"), {
         current_phase: "team-verify",
@@ -11291,6 +12152,250 @@ exit 0
     }
   });
 
+  it("does not block Stop from root team state without team_name when no session is known", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-root-team-no-session-no-name-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(stateDir, { recursive: true });
+      await writeJson(join(stateDir, "team-state.json"), {
+        active: true,
+        mode: "team",
+        current_phase: "starting",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block Stop from root team state without team_name for a foreign session", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-root-team-foreign-no-name-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(join(stateDir, "sessions", "sess-current"), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-current" });
+      await writeJson(join(stateDir, "team-state.json"), {
+        active: true,
+        mode: "team",
+        current_phase: "starting",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-current",
+          thread_id: "thread-current",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block Stop from another thread's stale root team state when no scoped team state exists", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-stale-root-team-thread-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(join(stateDir, "sessions", "sess-current"), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-current" });
+      await writeJson(join(stateDir, "team-state.json"), {
+        active: true,
+        current_phase: "starting",
+        team_name: "stale-root-thread-team",
+        session_id: "sess-current",
+        thread_id: "thread-other",
+      });
+      await writeJson(join(stateDir, "team", "stale-root-thread-team", "phase.json"), {
+        current_phase: "team-exec",
+        max_fix_attempts: 3,
+        current_fix_attempt: 0,
+        transitions: [],
+        updated_at: new Date().toISOString(),
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-current",
+          thread_id: "thread-current",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block Stop from root team state with matching session but missing thread ownership", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-root-team-missing-thread-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(join(stateDir, "sessions", "sess-current"), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-current" });
+      await writeJson(join(stateDir, "team-state.json"), {
+        active: true,
+        current_phase: "starting",
+        team_name: "root-missing-thread-team",
+        session_id: "sess-current",
+      });
+      await writeJson(join(stateDir, "team", "root-missing-thread-team", "phase.json"), {
+        current_phase: "team-exec",
+        max_fix_attempts: 3,
+        current_fix_attempt: 0,
+        transitions: [],
+        updated_at: new Date().toISOString(),
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-current",
+          thread_id: "thread-current",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block Stop from root team state when canonical phase is missing", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-root-team-missing-phase-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(join(stateDir, "sessions", "sess-current"), { recursive: true });
+      await mkdir(join(stateDir, "team", "root-missing-phase-team"), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-current" });
+      await writeJson(join(stateDir, "team-state.json"), {
+        active: true,
+        current_phase: "starting",
+        team_name: "root-missing-phase-team",
+        session_id: "sess-current",
+        thread_id: "thread-current",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-current",
+          thread_id: "thread-current",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block Stop from session-scoped team state owned by another thread", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-scoped-team-other-thread-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(join(stateDir, "sessions", "sess-current"), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-current" });
+      await writeJson(join(stateDir, "sessions", "sess-current", "team-state.json"), {
+        active: true,
+        current_phase: "starting",
+        team_name: "scoped-other-thread-team",
+        session_id: "sess-current",
+        thread_id: "thread-other",
+      });
+      await writeJson(join(stateDir, "team", "scoped-other-thread-team", "phase.json"), {
+        current_phase: "team-exec",
+        max_fix_attempts: 3,
+        current_fix_attempt: 0,
+        transitions: [],
+        updated_at: new Date().toISOString(),
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-current",
+          thread_id: "thread-current",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks Stop from session-scoped team state owned by the current session and thread", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-scoped-team-current-thread-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(join(stateDir, "sessions", "sess-current"), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-current" });
+      await writeJson(join(stateDir, "sessions", "sess-current", "team-state.json"), {
+        active: true,
+        current_phase: "starting",
+        team_name: "scoped-current-team",
+        session_id: "sess-current",
+        thread_id: "thread-current",
+      });
+      await writeJson(join(stateDir, "team", "scoped-current-team", "phase.json"), {
+        current_phase: "team-exec",
+        max_fix_attempts: 3,
+        current_fix_attempt: 0,
+        transitions: [],
+        updated_at: new Date().toISOString(),
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-current",
+          thread_id: "thread-current",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.deepEqual(result.outputJson, {
+        decision: "block",
+        reason:
+          `OMX team pipeline is still active (scoped-current-team) at phase team-exec; continue coordinating until the team reaches a terminal phase.${TEAM_STOP_COMMIT_GUIDANCE}`,
+        stopReason: "team_team-exec",
+        systemMessage: "OMX team pipeline is still active at phase team-exec.",
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not block Stop from another session's stale root team state when no scoped team state exists", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-stale-root-team-"));
     try {
@@ -11504,6 +12609,91 @@ describe("codex native hook triage integration", () => {
     }
   });
 
+
+  it("does not activate workflow state for native subagent prompts even when canonical id is the child session", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-subagent-keyword-"));
+    const boxedRoot = await mkdtemp(join(tmpdir(), "omx-native-subagent-keyword-boxed-"));
+    const originalOmxRoot = process.env.OMX_ROOT;
+    const originalOmxStateRoot = process.env.OMX_STATE_ROOT;
+    const originalTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    try {
+      process.env.OMX_ROOT = boxedRoot;
+      delete process.env.OMX_STATE_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+      const boxedStateDir = getBaseStateDir(cwd);
+      await mkdir(boxedStateDir, { recursive: true });
+      await writeJson(join(boxedStateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          "omx-parent-session": {
+            session_id: "omx-parent-session",
+            leader_thread_id: "parent-native-thread",
+            updated_at: "2026-05-21T19:04:40.000Z",
+            threads: {
+              "parent-native-thread": {
+                thread_id: "parent-native-thread",
+                kind: "leader",
+                first_seen_at: "2026-05-21T19:04:40.000Z",
+                last_seen_at: "2026-05-21T19:04:40.000Z",
+                turn_count: 1,
+              },
+              "child-native-session": {
+                thread_id: "child-native-session",
+                kind: "subagent",
+                first_seen_at: "2026-05-21T19:04:41.000Z",
+                last_seen_at: "2026-05-21T19:04:41.000Z",
+                turn_count: 1,
+                mode: "review",
+              },
+            },
+          },
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "child-native-session",
+          thread_id: "child-native-session",
+          turn_id: "turn-subagent-review",
+          prompt: [
+            "Read-only review only. Do not edit files. Do not inspect/mutate OMX state/hooks.",
+            "Context: The user asked for $autopilot, and this subagent must only review the patch.",
+          ].join("\n\n"),
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.equal(additionalContext, "");
+      assert.equal(
+        existsSync(join(boxedStateDir, "sessions", "child-native-session", "skill-active-state.json")),
+        false,
+      );
+      assert.equal(
+        existsSync(join(boxedStateDir, "sessions", "child-native-session", "autopilot-state.json")),
+        false,
+      );
+      assert.equal(
+        existsSync(join(cwd, ".omx", "state", "subagent-tracking.json")),
+        false,
+        "subagent tracking must not leak into the source worktree when OMX_ROOT is boxed",
+      );
+    } finally {
+      if (originalOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = originalOmxRoot;
+      if (originalOmxStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = originalOmxStateRoot;
+      if (originalTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = originalTeamStateRoot;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(boxedRoot, { recursive: true, force: true });
+    }
+  });
+
   it("does not inject triage advisory for autopilot keyword prompts", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-triage-keyword-autopilot-"));
     try {
@@ -11530,6 +12720,62 @@ describe("codex native hook triage integration", () => {
 
       const stateFile = join(cwd, ".omx", "state", "sessions", "triage-kw-autopilot-1", "prompt-routing-state.json");
       assert.equal(existsSync(stateFile), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("makes autopilot keyword activation observable in state, HUD context, and prompt guidance", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-autopilot-observable-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeSessionStart(cwd, "sess-autopilot-observable");
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-autopilot-observable",
+          thread_id: "thread-autopilot-observable",
+          turn_id: "turn-autopilot-observable",
+          prompt: "$autopilot implement issue #2430",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.skillState?.skill, "autopilot");
+      assert.equal(result.skillState?.phase, "deep-interview");
+      assert.equal(result.skillState?.initialized_state_path, ".omx/state/sessions/sess-autopilot-observable/autopilot-state.json");
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /detected workflow keyword "\$autopilot" -> autopilot/);
+      assert.match(additionalContext, /\$deep-interview -> \$ralplan -> \$ultragoal \(\+ \$team if needed\) -> \$code-review -> \$ultraqa/);
+      assert.match(additionalContext, /deep_interview_gate\.skip_reason/);
+      assert.match(additionalContext, /Do not silently fall back to ordinary \$plan\/ralplan-only handling/);
+      assert.match(additionalContext, /Codex goal-mode handoff guidance/);
+      assert.doesNotMatch(additionalContext, /multi-step goal with no workflow keyword/);
+
+      const statePath = join(cwd, ".omx", "state", "sessions", "sess-autopilot-observable", "autopilot-state.json");
+      const modeState = JSON.parse(await readFile(statePath, "utf-8")) as {
+        active: boolean;
+        current_phase: string;
+        state?: { phase_cycle?: string[]; deep_interview_gate?: { status?: string; skip_reason?: string | null } };
+      };
+      assert.equal(modeState.active, true);
+      assert.equal(modeState.current_phase, "deep-interview");
+      assert.deepEqual(modeState.state?.phase_cycle, ["deep-interview", "ralplan", "ultragoal", "code-review", "ultraqa"]);
+      assert.deepEqual(modeState.state?.deep_interview_gate, {
+        status: "required",
+        skip_reason: null,
+        rationale: "Autopilot starts at the deep-interview gate by default; clear bounded tasks may skip only with an explicit persisted skip reason.",
+      });
+
+      const hudState = await readAllState(cwd);
+      assert.equal(hudState.autopilot?.active, true);
+      assert.equal(hudState.autopilot?.current_phase, "deep-interview");
+      assert.match(renderHud(hudState, "focused"), /autopilot:deep-interview/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -46,7 +46,7 @@ return a `StageResult` with status, artifacts, and duration.
 ## Built-in Stages
 
 - **deep-interview**: Requirements clarification and ambiguity gate.
-- **ralplan**: Consensus planning (planner + architect + critic). Skips only when both `prd-*.md` and `test-spec-*.md` planning artifacts already exist, and carries any `deep-interview-*.md` spec paths forward for traceability.
+- **ralplan**: Consensus planning (planner + architect + critic). Skips only when both `prd-*.md` and `test-spec-*.md` planning artifacts already exist **and** durable consensus evidence records Architect approval followed by Critic approval. Plan/test-spec files alone are not consensus evidence. If either review is missing, blocked, out of order, or non-approving, the stage remains in ralplan or fails with an explicit blocker/max-iteration outcome instead of progressing to execution. Carries any `deep-interview-*.md` spec paths forward for traceability.
 - **ultragoal**: Durable goal-mode execution with `.omx/ultragoal` ledgers. Launch `$team` only from inside an Ultragoal story when parallel lanes are warranted.
 - **code-review**: Merge-readiness review gate.
 - **ultraqa**: Adversarial QA gate after a clean review; docs-only/trivially non-runtime changes may record an explicit skip reason.

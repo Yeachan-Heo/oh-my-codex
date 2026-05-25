@@ -13,6 +13,7 @@ import {
 } from './state.js';
 import type { TerminalLifecycleOutcome } from '../runtime/terminal-lifecycle.js';
 import type { QuestionInput, QuestionRecord } from './types.js';
+import type { DownstreamAuthority } from '../state/workflow-transition.js';
 
 const DEEP_INTERVIEW_STATE_FILE = 'deep-interview-state.json';
 
@@ -32,6 +33,7 @@ interface DeepInterviewStateRecord {
   updated_at?: string;
   lifecycle_outcome?: TerminalLifecycleOutcome;
   question_enforcement?: DeepInterviewQuestionEnforcementState;
+  downstream_authority?: DownstreamAuthority;
   [key: string]: unknown;
 }
 

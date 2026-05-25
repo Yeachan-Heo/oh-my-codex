@@ -25,6 +25,7 @@ export interface ReconcileHudForPromptSubmitResult {
     | 'skipped_not_tmux'
     | 'skipped_no_entry'
     | 'skipped_not_omx_owned_tmux'
+    | 'skipped_no_session_id'
     | 'resized'
     | 'recreated'
     | 'replaced_duplicates'
@@ -105,7 +106,11 @@ export async function reconcileHudForPromptSubmit(
 
   const currentPaneId = env.TMUX_PANE?.trim();
   const panes = listPanes(currentPaneId);
-  const hudPaneIds = findHudWatchPaneIds(panes, currentPaneId);
+  const resolvedSessionId = deps.sessionId?.trim() || env.OMX_SESSION_ID?.trim() || undefined;
+  const hudPaneIds = findHudWatchPaneIds(panes, currentPaneId, {
+    sessionId: resolvedSessionId,
+    leaderPaneId: currentPaneId,
+  });
   const duplicateCount = Math.max(0, hudPaneIds.length - 1);
   const nonHudPaneCount = panes.filter((pane) => !isHudWatchPane(pane)).length;
   const desiredHeight = HUD_TMUX_HEIGHT_LINES;
@@ -113,8 +118,7 @@ export async function reconcileHudForPromptSubmit(
   const readHudConfigFn = deps.readHudConfig ?? readHudConfig;
   const hudConfig = await readHudConfigFn(cwd).catch(() => null);
   const preset = hudConfig?.preset;
-  const resolvedSessionId = deps.sessionId?.trim() || env.OMX_SESSION_ID?.trim() || undefined;
-  const hudCmd = buildHudWatchCommand(omxBin, preset, resolvedSessionId);
+  const hudCmd = buildHudWatchCommand(omxBin, preset, resolvedSessionId, env.OMX_ROOT, currentPaneId);
 
   if (hudPaneIds.length === 1) {
     const resized = resizePane(hudPaneIds[0], desiredHeight);
@@ -122,6 +126,15 @@ export async function reconcileHudForPromptSubmit(
     return {
       status: resized ? 'resized' : 'failed',
       paneId: hudPaneIds[0],
+      desiredHeight,
+      duplicateCount,
+    };
+  }
+
+  if (!resolvedSessionId) {
+    return {
+      status: 'skipped_no_session_id',
+      paneId: null,
       desiredHeight,
       duplicateCount,
     };

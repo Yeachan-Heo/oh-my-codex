@@ -72,7 +72,7 @@ describe("codex hooks helpers", () => {
           hooks: {
             PreToolUse: [
               {
-                matcher: "Bash",
+                matcher: undefined,
                 hooks: [{ type: "command", command: "echo keep-me" }],
               },
             ],
@@ -250,7 +250,7 @@ describe("codex hooks helpers", () => {
           type: "command",
         },
       ],
-      matcher: "Bash",
+      matcher: undefined,
     };
     const canonical = JSON.stringify({
       event_name: expectedIdentity.event_name,
@@ -289,7 +289,7 @@ describe("codex hooks helpers", () => {
           type: "command",
         },
       ],
-      matcher: "Bash",
+      matcher: undefined,
     };
     const canonical = JSON.stringify({
       event_name: expectedIdentity.event_name,

@@ -5,7 +5,7 @@ description: Durable professor-critic research workflow over Codex goal mode wit
 
 # Autoresearch Goal
 
-Use this workflow when a research mission should be bound to Codex goal-mode focus while OMX remains the durable state owner.
+Use this workflow when a research mission should be bound to Codex goal-mode focus while OMX remains the durable state owner. This is for research projects that need Codex goal-mode management plus professor/critic-style validation; it is not the default answer for ordinary pre-planning best-practice lookup.
 
 ## Boundary
 - Do **not** use or revive the deprecated `omx autoresearch` direct launch surface.

@@ -5,7 +5,7 @@ description: Alias for $plan --consensus
 
 # Ralplan (Consensus Planning Alias)
 
-Ralplan is a shorthand alias for `$plan --consensus`. It triggers iterative planning with Planner, Architect, and Critic agents until consensus is reached, with **RALPLAN-DR structured deliberation** (short mode by default, deliberate mode for high-risk work).
+Ralplan is a shorthand alias for `$plan --consensus`. It triggers iterative planning with Planner, Architect, and Critic agents until consensus is reached, with **RALPLAN-DR structured deliberation** (short mode by default, deliberate mode for high-risk work). Scholastic is available as a separate advisory native agent/persona for ontology-heavy planning evidence, but it is not part of the durable consensus gate.
 
 ## Usage
 
@@ -17,6 +17,10 @@ $ralplan "task description"
 
 - `--interactive`: Enables user prompts at key decision points (draft review in step 2 and final approval in step 6). Without this flag the workflow runs fully automated — Planner → Architect → Critic loop — and outputs the final plan without asking for confirmation.
 - `--deliberate`: Forces deliberate mode for high-risk work. Adds pre-mortem (3 scenarios) and expanded test planning (unit/integration/e2e/observability). Without this flag, deliberate mode can still auto-enable when the request explicitly signals high risk (auth/security, migrations, destructive changes, production incidents, compliance/PII, public API breakage).
+
+## Ontology-heavy review
+
+For requirements semantics, taxonomy, prompt/spec design, policy distinctions, or category-risk architecture, Scholastic may be cited as an available advisory ontology reviewer/persona. Its findings can inform the plan or follow-up evidence when explicitly used, but `$ralplan` itself remains the Planner → Architect → Critic consensus workflow and the durable gate remains Architect→Critic only.
 
 ## Usage with interactive mode
 
@@ -48,7 +52,7 @@ The consensus workflow:
 3. **Architect** reviews for architectural soundness and must provide the strongest steelman antithesis, at least one real tradeoff tension, and (when possible) synthesis — **await completion before step 4**. In deliberate mode, Architect should explicitly flag principle violations.
 4. **Critic** evaluates against quality criteria — run only after step 3 completes. Critic must enforce principle-option consistency, fair alternatives, risk mitigation clarity, testable acceptance criteria, and concrete verification steps. In deliberate mode, Critic must reject missing/weak pre-mortem or expanded test plan.
 5. **Re-review loop** (max 5 iterations): Any non-`APPROVE` Critic verdict (`ITERATE` or `REJECT`) MUST run the same full closed loop:
-   a. Collect Architect + Critic feedback
+   a. Collect Architect and Critic feedback
    b. Revise the plan with Planner
    c. Return to Architect review
    d. Return to Critic evaluation
@@ -59,6 +63,19 @@ The consensus workflow:
 8. *(--interactive only)* On approval: invoke `$ultragoal` for default durable sequential execution, `$team` for parallel team execution, the selected specialized goal-mode follow-up (`$autoresearch-goal` or `$performance-goal`), or `$ralph` only when the user explicitly selects that fallback with the approved plan and matching success/evaluator context -- never implement directly. Preserve the explicit available-agent-types roster, reasoning-by-lane guidance, role/staffing allocation guidance, launch hints, and verification-path guidance from the approved plan for Ultragoal/team paths and any explicit Ralph fallback.
 
 > **Important:** Steps 3 and 4 MUST run sequentially. Do NOT issue both agent calls in the same parallel batch. Always await the Architect result before invoking Critic.
+
+## Durable Consensus Handoff Contract
+
+Ralplan is not complete, skippable, or ready for execution merely because `.omx/plans/prd-*.md` and `.omx/plans/test-spec-*.md` exist. Those files are planning artifacts, not consensus evidence.
+
+Before any Autopilot, Pipeline, Ultragoal, Team, Ralph, or implementation handoff, persist a durable handoff record that distinguishes:
+
+- `planning_artifacts`: PRD/test-spec paths.
+- `ralplan_architect_review`: the completed Architect review with an approving verdict.
+- `ralplan_critic_review`: the completed Critic review with an approving verdict, recorded only after the Architect review.
+- `ralplan_consensus_gate.complete:true` only when both reviews are present, approving, and in the required Architect→Critic order.
+
+If Architect is missing/blocked, keep the workflow in Architect review or report that blocker. If Critic is missing/blocked/non-approving, keep the workflow in Critic/re-review or report the max-iteration outcome. Do not treat existing plan/test-spec files as permission to skip ralplan or start execution.
 
 Follow the Plan skill's full documentation for consensus mode details.
 
@@ -87,6 +104,7 @@ Before consensus planning or execution handoff, ensure a grounded context snapsh
    - likely codebase touchpoints
 4. If ambiguity remains high, gather brownfield facts first. When session guidance enables `USE_OMX_EXPLORE_CMD`, prefer `omx explore` for simple read-only repository lookups with narrow, concrete prompts; otherwise use the richer normal explore path. Then run `$deep-interview --quick <task>` before continuing.
 5. If the plan depends on official docs, version-aware framework guidance, best practices, or external dependency behavior, use `$best-practice-research` as the bounded evidence wrapper and auto-delegate `researcher` for the official/upstream lookup before finalizing the planning handoff so execution does not start from repo-local recall alone.
+6. If a prior `$autoresearch` or `$autoresearch-goal` run exists, treat its approved artifact as evidence for the plan. Do not include Autoresearch as a final architecture or runtime component unless the user explicitly requested ongoing research automation; otherwise synthesize the evidence into the `$ralplan` ADR, risks, and verification steps.
 
 Do not hand off to execution modes until this intake is complete; if urgency forces progress, explicitly document the risk tradeoffs.
 
@@ -150,9 +168,10 @@ The gate auto-passes when it detects **any** concrete signal. You do not need al
    - **Architect** reviews for soundness
    - **Critic** validates quality and testability
 5. On consensus approval, user chooses execution path:
-   - **ralph**: sequential execution with verification
-   - **team**: parallel coordinated agents
-6. Execution begins with a clear, bounded plan
+   - **ultragoal**: default durable follow-up for sequential goal execution with ledger checkpoints
+   - **team**: coordinated parallel execution for stories that need multiple lanes, with evidence ready for Ultragoal checkpoints
+   - **ralph**: explicit single-owner fallback only when the user intentionally wants a persistent verification/completion loop instead of the default durable goal ledger
+6. Execution begins with a clear, bounded plan through the selected handoff path
 
 ### Troubleshooting
 

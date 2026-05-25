@@ -89,6 +89,8 @@ describe("generateOverlay", () => {
         defaultOverlay,
         /\*\*Explore Command Preference:\*\*/,
       );
+      assert.match(defaultOverlay, /Syntax: omx explore --prompt "<prompt>" or omx explore --prompt-file <file>/);
+      assert.match(defaultOverlay, /Never use omx explore "<prompt>"/);
       assert.match(defaultOverlay, /default-on; opt out/i);
       assert.match(defaultOverlay, /omx explore` FIRST before attempting full code analysis/i);
 

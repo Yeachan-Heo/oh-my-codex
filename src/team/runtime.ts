@@ -1723,11 +1723,11 @@ function shouldSkipWorkerReadyWait(env: NodeJS.ProcessEnv): boolean {
   return env.OMX_TEAM_SKIP_READY_WAIT === '1';
 }
 
-function isRecoverableInteractiveStartupReason(reason: string): boolean {
+function isStartupEvidenceMissingReason(reason: string): boolean {
   const normalized = reason.trim().toLowerCase();
-  return normalized.includes('startup_no_evidence')
-    || normalized.includes('fallback_attempted_but_unconfirmed')
-    || normalized.includes('ready_prompt_timeout');
+  return normalized.includes('ready_prompt_timeout')
+    || normalized.includes('no_evidence')
+    || normalized.includes('fallback_attempted_but_unconfirmed');
 }
 
 async function recordRecoverableStartupIssue(params: {
@@ -1739,7 +1739,7 @@ async function recordRecoverableStartupIssue(params: {
 }): Promise<void> {
   const { teamName, workerName, taskIds, reason, cwd } = params;
   const updatedAt = new Date().toISOString();
-  const currentTaskId = reason === 'ready_prompt_timeout' ? undefined : taskIds[0];
+  const currentTaskId = isStartupEvidenceMissingReason(reason) ? undefined : taskIds[0];
   await writeWorkerStatus(
     teamName,
     workerName,
@@ -2842,7 +2842,6 @@ export async function startTeam(
         : null;
 
       let startupReadyPromptObserved = false;
-      let startupReadyPromptTimedOut = false;
       if (workerLaunchMode === 'interactive' && !skipWorkerReadyWait && !initialPrompt && !startupDirectOutcome?.ok) {
         startupTiming.mark('ready_wait_start', { worker: workerName, pane_id: paneId });
         const ready = await waitForWorkerReadyAsync(sessionName, workerIndex, workerReadyTimeoutMs, paneId);
@@ -2857,7 +2856,6 @@ export async function startTeam(
               reason: 'ready_prompt_timeout',
               cwd: leaderCwd,
             });
-            startupReadyPromptTimedOut = true;
           } else {
             return {
               ok: false,
@@ -2924,21 +2922,6 @@ export async function startTeam(
         const workerAlive = workerLaunchMode === 'prompt'
           ? isPromptWorkerAlive(config!, config!.workers[workerIndex - 1]!)
           : isWorkerPaneOpen(sessionName, workerIndex, paneId);
-        if (
-          workerLaunchMode === 'interactive'
-          && workerAlive
-          && !startupReadyPromptTimedOut
-          && isRecoverableInteractiveStartupReason(dispatchOutcome.reason)
-        ) {
-          await recordRecoverableStartupIssue({
-            teamName: sanitized,
-            workerName,
-            taskIds: workerTasks.map((task) => task.id),
-            reason: dispatchOutcome.reason,
-            cwd: leaderCwd,
-          });
-          return { ok: true, workerIndex, workerName };
-        }
         if (workerLaunchMode === 'prompt' && !workerAlive) {
           await recordPromptStartupWorkerStopped({
             teamName: sanitized,
@@ -4333,6 +4316,11 @@ async function attemptStartupDirectTrigger(params: {
       reason,
       cwd,
     });
+    return {
+      ...queued,
+      ok: false,
+      reason,
+    };
   }
 
   return {

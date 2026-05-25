@@ -83,7 +83,7 @@ function quoteCommandPart(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
-function escapeTomlBasicString(value: string): string {
+export function escapeTomlBasicString(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
@@ -230,9 +230,7 @@ export function buildManagedCodexHooksConfig(
         }),
       ],
       PreToolUse: [
-        buildCommandHook(command, {
-          matcher: "Bash",
-        }),
+        buildCommandHook(command),
       ],
       PostToolUse: [
         buildCommandHook(command),

@@ -24,6 +24,24 @@ describe('codex goal snapshot reconciliation', () => {
     assert.equal(snapshot.remainingTokens, 25);
   });
 
+  it('classifies get_goal SQL schema/context errors as unavailable without weakening normal goal snapshots', () => {
+    const unavailable = parseCodexGoalSnapshot({
+      error: 'SQL error: no such table: thread_goals',
+    });
+
+    assert.equal(unavailable.available, false);
+    assert.equal(unavailable.unavailableReason, 'db_schema_context_error');
+    assert.match(unavailable.errorMessage ?? '', /thread_goals/);
+
+    const normal = parseCodexGoalSnapshot({
+      goal: { objective: 'Ship despite noisy wrapper metadata', status: 'active' },
+      error: 'stale wrapper warning that must not override an available goal',
+    });
+    assert.equal(normal.available, true);
+    assert.equal(normal.objective, 'Ship despite noisy wrapper metadata');
+    assert.equal(normal.unavailableReason, undefined);
+  });
+
   it('reports absent snapshots as warnings unless required', () => {
     const optional = reconcileCodexGoalSnapshot(null, { expectedObjective: 'Ship' });
     assert.equal(optional.ok, true);
@@ -32,6 +50,17 @@ describe('codex goal snapshot reconciliation', () => {
     const required = reconcileCodexGoalSnapshot(null, { expectedObjective: 'Ship', requireSnapshot: true });
     assert.equal(required.ok, false);
     assert.match(required.errors.join('\n'), /call get_goal/);
+  });
+
+  it('keeps required reconciliation strict when get_goal is unavailable', () => {
+    const result = reconcileCodexGoalSnapshot(
+      parseCodexGoalSnapshot({ error: 'SqliteError: no such table: thread_goals' }),
+      { expectedObjective: 'Ship', requireSnapshot: true, requireComplete: true },
+    );
+
+    assert.equal(result.ok, false);
+    assert.match(result.errors.join('\n'), /DB\/schema\/context error/);
+    assert.match(result.errors.join('\n'), /no such table: thread_goals/);
   });
 
   it('detects objective mismatches and incomplete completion proof', () => {

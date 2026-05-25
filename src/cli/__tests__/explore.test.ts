@@ -296,6 +296,17 @@ describe('parseExploreArgs', () => {
     assert.throws(() => parseExploreArgs(['--bogus']), /Unknown argument/);
   });
 
+  it('rejects positional prompt text with a corrective --prompt hint', () => {
+    assert.throws(
+      () => parseExploreArgs(['find package.json']),
+      /Positional prompt text is not supported\. Use: omx explore --prompt "find package\.json"/,
+    );
+    assert.throws(
+      () => parseExploreArgs(['find', 'package.json']),
+      /Positional prompt text is not supported\. Use: omx explore --prompt "find package\.json"/,
+    );
+  });
+
   it('rejects duplicate prompt sources', () => {
     assert.throws(() => parseExploreArgs(['--prompt', 'find auth', '--prompt-file', 'prompt.md']), /Choose exactly one/);
   });
@@ -306,6 +317,22 @@ describe('parseExploreArgs', () => {
 
   it('rejects missing prompt value', () => {
     assert.throws(() => parseExploreArgs(['--prompt']), /Missing text after --prompt/);
+  });
+});
+
+describe('exploreCommand help', () => {
+  it('prints explore-specific usage for --help', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-explore-help-'));
+    try {
+      const result = await runExploreCommandForTest(wd, ['--help']);
+      assert.equal(result.exitCode, 0);
+      assert.match(result.stdout, /Usage: omx explore --prompt "<prompt>"/);
+      assert.match(result.stdout, /omx explore --prompt-file <file>/);
+      assert.match(result.stdout, /Never use positional prompt text/i);
+      assert.equal(result.stderr, '');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
   });
 });
 

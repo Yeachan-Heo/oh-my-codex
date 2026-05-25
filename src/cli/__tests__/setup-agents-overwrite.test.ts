@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -296,6 +296,40 @@ describe('omx setup AGENTS refresh behavior', () => {
       assert.doesNotMatch(output, /Refreshed AGENTS\.md model capability table/);
       assert.equal(await readFile(join(wd, 'AGENTS.md'), 'utf-8'), existing);
       assert.equal(existsSync(join(wd, '.omx', 'backups', 'setup')), false);
+    } finally {
+      restoreHome();
+      restoreTty();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves symlinked user-scope AGENTS.md during plugin-mode cleanup', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-plugin-agents-symlink-'));
+    const restoreTty = setMockTty(false);
+    const home = join(wd, 'home');
+    const restoreHome = setMockHome(home);
+    const dotfilesAgentsPath = join(wd, 'dotfiles', '.codex', 'AGENTS.md');
+    const codexAgentsPath = join(home, '.codex', 'AGENTS.md');
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await mkdir(join(wd, 'dotfiles', '.codex'), { recursive: true });
+      await mkdir(join(home, '.codex'), { recursive: true });
+      await writeFile(
+        dotfilesAgentsPath,
+        addGeneratedAgentsMarker('# oh-my-codex - Intelligent Multi-Agent Orchestration\n\nDotfiles-owned guidance.\n'),
+      );
+      await symlink(dotfilesAgentsPath, codexAgentsPath);
+
+      const output = await runSetupWithCapturedLogs(wd, {
+        scope: 'user',
+        installMode: 'plugin',
+        force: true,
+      });
+
+      assert.match(output, /AGENTS\.md generation skipped; no legacy OMX-generated AGENTS\.md found and defaults not selected\./);
+      assert.equal(await readlink(codexAgentsPath), dotfilesAgentsPath);
+      assert.match(await readFile(codexAgentsPath, 'utf-8'), /Dotfiles-owned guidance\./);
+      assert.match(output, /agents_md: updated=0, unchanged=0, backed_up=0, skipped=1, removed=0/);
     } finally {
       restoreHome();
       restoreTty();

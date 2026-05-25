@@ -34,6 +34,7 @@ export function isSimpleExplorationPrompt(text: string): boolean {
 export function buildExploreRoutingGuidance(env: NodeJS.ProcessEnv = process.env): string {
   if (!isExploreCommandRoutingEnabled(env)) return '';
   return [
+    'Syntax: omx explore --prompt "<prompt>" or omx explore --prompt-file <file>. Never use omx explore "<prompt>".',
     `**Explore Command Preference:** enabled via \`${OMX_EXPLORE_CMD_ENV}\` (default-on; opt out with \`0\`, \`false\`, \`no\`, or \`off\`)`,
     '- Advisory steering only: agents SHOULD treat `omx explore` as the default first stop for direct inspection and SHOULD reserve `omx sparkshell` for qualifying read-only shell-native tasks.',
     '- For simple file/symbol lookups, use `omx explore` FIRST before attempting full code analysis.',

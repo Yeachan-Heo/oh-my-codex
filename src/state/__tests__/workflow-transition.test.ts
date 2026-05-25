@@ -92,6 +92,13 @@ describe('workflow transition rules', () => {
     assert.deepEqual(interviewToAutoresearch.resultingModes, ['autoresearch']);
     assert.equal(interviewToAutoresearch.transitionMessage, 'mode transiting: deep-interview -> autoresearch');
 
+    const interviewToUltragoal = evaluateWorkflowTransition(['deep-interview'], 'ultragoal');
+    assert.equal(interviewToUltragoal.allowed, true);
+    assert.equal(interviewToUltragoal.kind, 'auto-complete');
+    assert.deepEqual(interviewToUltragoal.autoCompleteModes, ['deep-interview']);
+    assert.deepEqual(interviewToUltragoal.resultingModes, ['ultragoal']);
+    assert.equal(interviewToUltragoal.transitionMessage, 'mode transiting: deep-interview -> ultragoal');
+
     const ralplanToRalph = evaluateWorkflowTransition(['ralplan', 'ultrawork'], 'ralph');
     assert.equal(ralplanToRalph.allowed, true);
     assert.equal(ralplanToRalph.kind, 'auto-complete');

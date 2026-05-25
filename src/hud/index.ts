@@ -262,12 +262,18 @@ export function buildTmuxSplitArgs(
   omxBin: string,
   preset?: string,
   sessionId?: string,
+  omxRoot?: string,
 ): string[] {
   // Defense-in-depth: keep preset constrained even if this helper is reused.
   const safePreset = parseHudPreset(preset);
   const presetArg = safePreset ? ` --preset=${safePreset}` : '';
   const safeSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-  const envPrefix = safeSessionId ? `env OMX_SESSION_ID=${shellEscape(safeSessionId)} ` : '';
+  const safeOmxRoot = typeof omxRoot === 'string' ? omxRoot : '';
+  const envAssignments = [
+    safeSessionId ? `OMX_SESSION_ID=${shellEscape(safeSessionId)}` : '',
+    safeOmxRoot.trim() ? `OMX_ROOT=${shellEscape(safeOmxRoot)}` : '',
+  ].filter(Boolean);
+  const envPrefix = envAssignments.length > 0 ? `env ${envAssignments.join(' ')} ` : '';
   const cmd = `exec ${envPrefix}${shellEscape(process.execPath)} ${shellEscape(omxBin)} hud --watch${presetArg}`;
   return ['split-window', '-v', '-l', String(HUD_TMUX_HEIGHT_LINES), '-c', cwd, cmd];
 }
@@ -284,7 +290,7 @@ async function launchTmuxPane(cwd: string, flags: HudFlags): Promise<void> {
     console.error('Failed to resolve OMX launcher path for tmux HUD startup.');
     process.exit(1);
   }
-  const args = buildTmuxSplitArgs(cwd, omxBin, flags.preset, process.env.OMX_SESSION_ID);
+  const args = buildTmuxSplitArgs(cwd, omxBin, flags.preset, process.env.OMX_SESSION_ID, process.env.OMX_ROOT);
 
   try {
     // Split bottom pane, 4 lines tall, running omx hud --watch.

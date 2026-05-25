@@ -299,7 +299,7 @@ printf 'fake-codex:%s\n' "$*"
 });
 
 describe('omx launcher when tmux is available', () => {
-  it('reuses an active madmax detached launch context instead of spawning duplicate tmux sessions', async () => {
+  it('reuses the same boxed madmax detached launch context instead of spawning duplicate tmux sessions', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-madmax-reuse-'));
     try {
       const runs = join(wd, 'runs');
@@ -351,6 +351,8 @@ exit 0
       const baseEnv = {
         ...env,
         OMX_RUNS_DIR: runs,
+        OMXBOX_ACTIVE: '1',
+        OMX_MADMAX_DETACHED_CONTEXT: 'boxed-context-under-test',
         OMX_LAUNCH_POLICY: 'direct',
         TMUX: '',
         TMUX_PANE: '',
@@ -371,14 +373,73 @@ exit 0
       assert.equal((tmuxLog.match(/tmux:new-session/g) || []).length, 1);
       assert.equal((tmuxLog.match(/tmux:has-session/g) || []).length, 1);
       assert.equal((tmuxLog.match(/tmux:attach-session/g) || []).length, 2);
-      const firstRegistryEntry = JSON.parse(
-        (await readFile(join(runs, 'registry.jsonl'), 'utf-8')).trim().split('\n')[0],
-      );
       const activeRecords = await readFile(
-        join(runs, 'active-detached', `${firstRegistryEntry.detached_launch_context}.json`),
+        join(runs, 'active-detached', 'boxed-context-under-test.json'),
         'utf-8',
       );
       assert.match(activeRecords, /"tmux_session_name"/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not reuse the same active-detached lock for independent --madmax --high launches', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-madmax-independent-high-'));
+    try {
+      const runs = join(wd, 'runs');
+      const { env, tmuxLogPath } = await createLaunchFixture(
+        wd,
+        (logPath) => `#!/bin/sh
+printf 'tmux:%s\n' "$*" >> "${logPath}"
+case "$1" in
+  -V) printf 'tmux 3.4\n'; exit 0 ;;
+  has-session) exit 1 ;;
+  new-session) printf 'leader-pane\n'; exit 0 ;;
+  split-window) printf 'hud-pane\n'; exit 0 ;;
+  display-message) if [ "$2" = '-p' ] && [ "$3" = '#{socket_path}' ]; then printf '/tmp/tmux-test.sock\n'; else printf '0\n'; fi; exit 0 ;;
+  show-options) printf 'off\n'; exit 0 ;;
+  set-option|set-hook|attach-session|kill-session|run-shell|resize-pane) exit 0 ;;
+esac
+exit 0
+`,
+      );
+      const baseEnv = {
+        ...env,
+        OMX_RUNS_DIR: runs,
+        OMX_LAUNCH_POLICY: 'direct',
+        TMUX: '',
+        TMUX_PANE: '',
+      };
+
+      const first = runOmx(wd, ['--madmax', '--high', '--tmux'], baseEnv);
+      const second = runOmx(wd, ['--madmax', '--high', '--tmux'], baseEnv);
+      if (shouldSkipForSpawnPermissions(first.error) || shouldSkipForSpawnPermissions(second.error)) return;
+      assert.equal(first.status, 0, first.error || first.stderr || first.stdout);
+      assert.equal(second.status, 0, second.error || second.stderr || second.stdout);
+      assert.doesNotMatch(first.stderr + second.stderr, /timed out waiting for madmax detached launch context lock/);
+      assert.doesNotMatch(second.stderr, /madmax detached launch already active for this context/);
+
+      const registryEntries = (await readFile(join(runs, 'registry.jsonl'), 'utf-8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { detached_launch_context: string });
+      assert.equal(registryEntries.length, 2);
+      assert.notEqual(
+        registryEntries[0]!.detached_launch_context,
+        registryEntries[1]!.detached_launch_context,
+        'independent launches must get distinct active-detached lock identities',
+      );
+      assert.equal(
+        existsSync(join(runs, 'active-detached', `${registryEntries[0]!.detached_launch_context}.json`)),
+        true,
+      );
+      assert.equal(
+        existsSync(join(runs, 'active-detached', `${registryEntries[1]!.detached_launch_context}.json`)),
+        true,
+      );
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.equal((tmuxLog.match(/tmux:new-session/g) || []).length, 2);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

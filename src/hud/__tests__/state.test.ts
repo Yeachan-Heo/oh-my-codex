@@ -12,6 +12,7 @@ import {
   readHudNotifyState,
   readRalphState,
   readRalplanState,
+  readUltragoalState,
   readDeepInterviewState,
   readAutoresearchState,
   readUltraqaState,
@@ -230,6 +231,63 @@ describe('buildGitBranchLabel', () => {
       await withWindowsPlatform(() => {
         assert.equal(buildGitBranchLabel(cwd), `${basename(cwd)}/worktree-branch`);
       });
+    });
+  });
+});
+
+
+describe('readUltragoalState', { concurrency: false }, () => {
+  it('summarizes active ultragoal progress from goals.json', async () => {
+    await withTempRepo('omx-hud-ultragoal-', async (cwd) => {
+      const ultragoalDir = join(cwd, '.omx', 'ultragoal');
+      await mkdir(ultragoalDir, { recursive: true });
+      await writeFile(join(ultragoalDir, 'goals.json'), JSON.stringify({
+        version: 1,
+        activeGoalId: 'G002-hud-progress',
+        goals: [
+          { id: 'G001-plan', title: 'Plan', objective: 'Create the plan', status: 'complete' },
+          { id: 'G002-hud-progress', title: 'HUD progress display', objective: 'show active ultragoal objective in OMX HUD', status: 'in_progress' },
+          { id: 'G003-tests', title: 'Tests', objective: 'Validate the HUD display', status: 'pending' },
+        ],
+      }));
+
+      const state = await readUltragoalState(cwd);
+
+      assert.deepEqual(state, {
+        active: true,
+        status: 'in_progress',
+        total: 3,
+        complete: 1,
+        pending: 1,
+        inProgress: 1,
+        failed: 0,
+        reviewBlocked: 0,
+        needsUserDecision: 0,
+        progressTotal: 3,
+        activeGoal: {
+          id: 'G002-hud-progress',
+          title: 'HUD progress display',
+          objective: 'show active ultragoal objective in OMX HUD',
+          status: 'in_progress',
+          index: 2,
+        },
+      });
+    });
+  });
+
+  it('returns null when no ultragoal plan exists', async () => {
+    await withTempRepo('omx-hud-ultragoal-missing-', async (cwd) => {
+      assert.equal(await readUltragoalState(cwd), null);
+    });
+  });
+
+  it('returns null for malformed ultragoal JSON', async () => {
+    await withTempRepo('omx-hud-ultragoal-malformed-', async (cwd) => {
+      const ultragoalDir = join(cwd, '.omx', 'ultragoal');
+      await mkdir(ultragoalDir, { recursive: true });
+      await writeFile(join(ultragoalDir, 'goals.json'), '{bad json');
+
+      assert.equal(await readUltragoalState(cwd), null);
     });
   });
 });

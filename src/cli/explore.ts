@@ -31,6 +31,8 @@ import { runProcessTreeWithTimeout } from '../runtime/process-tree.js';
 export const EXPLORE_USAGE = [
   'Usage: omx explore --prompt "<prompt>"',
   '   or: omx explore --prompt-file <file>',
+  '',
+  'Never use positional prompt text. Use: omx explore --prompt "find package.json"',
 ].join('\n');
 
 const PROMPT_FLAG = '--prompt';
@@ -483,6 +485,10 @@ function exploreUsageError(reason: string): Error {
   return new Error(`${reason}\n${EXPLORE_USAGE}`);
 }
 
+function isHelpArg(token: string): boolean {
+  return token === '--help' || token === '-h';
+}
+
 function appendPromptValue(current: string | undefined, value: string, reason: string): string {
   const trimmed = value.trim();
   if (!trimmed) throw exploreUsageError(reason);
@@ -546,6 +552,9 @@ export function parseExploreArgs(args: readonly string[]): ParsedExploreArgs {
     if (token.startsWith(`${PROMPT_FILE_FLAG}=`)) {
       promptFile = appendPromptFileValue(promptFile, token.slice(`${PROMPT_FILE_FLAG}=`.length), 'Missing path after --prompt-file=.');
       continue;
+    }
+    if (!token.startsWith('-')) {
+      throw exploreUsageError(`Positional prompt text is not supported. Use: omx explore --prompt "${args.slice(i).join(' ')}"`);
     }
     throw exploreUsageError(`Unknown argument: ${token}`);
   }
@@ -685,6 +694,10 @@ export async function loadExplorePrompt(parsed: ParsedExploreArgs): Promise<stri
 export async function exploreCommand(args: string[]): Promise<void> {
   if (process.env[EXPLORE_ACTIVE_ENV] === '1') {
     throw new Error('[explore] refusing to launch nested omx explore from an active explore run.');
+  }
+  if (args.some(isHelpArg)) {
+    process.stdout.write(`${EXPLORE_USAGE}\n`);
+    return;
   }
   const parsed = parseExploreArgs(args);
   const prompt = await loadExplorePrompt(parsed);

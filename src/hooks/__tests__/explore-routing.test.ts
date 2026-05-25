@@ -36,6 +36,9 @@ describe('explore-routing', () => {
 
   it('builds advisory guidance whenever routing is not explicitly disabled', () => {
     const guidance = buildExploreRoutingGuidance({});
+    assert.ok(
+      guidance.startsWith('Syntax: omx explore --prompt "<prompt>" or omx explore --prompt-file <file>. Never use omx explore "<prompt>".'),
+    );
     assert.match(guidance, /USE_OMX_EXPLORE_CMD/);
     assert.match(guidance, /default-on; opt out/i);
     assert.match(guidance, /agents SHOULD treat `omx explore` as the default first stop/i);

@@ -9,6 +9,29 @@ export interface RalphStateForHud {
   max_iterations?: number;
 }
 
+/** Ultragoal durable goal-plan state for HUD display */
+export interface UltragoalActiveGoalForHud {
+  id: string;
+  title: string;
+  objective: string;
+  status: string;
+  index: number;
+}
+
+export interface UltragoalStateForHud {
+  active: boolean;
+  status?: string;
+  total: number;
+  complete: number;
+  pending: number;
+  inProgress: number;
+  failed: number;
+  reviewBlocked: number;
+  needsUserDecision: number;
+  progressTotal: number;
+  activeGoal?: UltragoalActiveGoalForHud;
+}
+
 /** Ultrawork state for HUD display */
 export interface UltraworkStateForHud {
   active: boolean;
@@ -86,6 +109,7 @@ export interface HudRenderContext {
   version: string | null;
   gitBranch: string | null;
   ralph: RalphStateForHud | null;
+  ultragoal?: UltragoalStateForHud | null;
   ultrawork: UltraworkStateForHud | null;
   autopilot: AutopilotStateForHud | null;
   ralplan: RalplanStateForHud | null;

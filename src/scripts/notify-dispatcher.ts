@@ -7,6 +7,9 @@
 
 import { readFile } from "fs/promises";
 import { spawnSync } from "child_process";
+import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
+import { tmpdir } from "os";
 
 interface NotifyDispatcherMetadata {
 	managedBy?: string;
@@ -14,6 +17,195 @@ interface NotifyDispatcherMetadata {
 	previousNotify?: string[] | null;
 	omxNotify?: string[];
 	dispatcherNotify?: string[];
+}
+
+const DISPATCH_LOCK_STALE_MS = 45_000;
+// Codex Desktop can replay a backlog of turn-ended callbacks well after the UI
+// window has gone away. Keep the default same-turn coalescing window longer
+// than a heavily loaded notification hook invocation so sequential queued
+// callbacks from one thread do not slip through merely because the first
+// dispatch was slow. Payloads with different thread/session identity retain
+// independent notification cadence.
+const DEFAULT_TURN_DISPATCH_MIN_INTERVAL_MS = 10_000;
+const DEFAULT_STALE_EVENT_AGE_MS = 5 * 60_000;
+
+interface DispatchGuard {
+	ok: boolean;
+	release?: () => void;
+}
+
+interface DispatchGuardState {
+	lastDispatchAt?: unknown;
+	lastDispatchByIdentity?: Record<string, unknown>;
+}
+
+function parseNonNegativeEnvMs(name: string, fallback: number): number {
+	const raw = process.env[name];
+	if (typeof raw !== "string" || raw.trim() === "") return fallback;
+	const parsed = Number(raw);
+	return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function parsePayloadObject(payloadArg: string): Record<string, unknown> | null {
+	try {
+		const parsed = JSON.parse(payloadArg) as unknown;
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>)
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+function isTurnEndedPayload(payload: Record<string, unknown> | null): boolean {
+	if (!payload) return false;
+	const type = String(payload.type ?? payload.event ?? payload.hook_event_name ?? "")
+		.trim()
+		.toLowerCase();
+	return type === ""
+		|| type === "agent-turn-complete"
+		|| type === "turn-complete"
+		|| type === "turn-ended";
+}
+
+function readPayloadTimestampMs(payload: Record<string, unknown>): number | null {
+	for (const key of ["timestamp", "created_at", "createdAt", "event_time", "eventTime", "time"]) {
+		const value = payload[key];
+		if (typeof value === "number" && Number.isFinite(value)) {
+			return value > 1_000_000_000_000 ? value : value * 1000;
+		}
+		if (typeof value === "string" && value.trim()) {
+			const parsed = Date.parse(value);
+			if (Number.isFinite(parsed)) return parsed;
+		}
+	}
+	return null;
+}
+
+function readPayloadIdentity(payload: Record<string, unknown> | null): string {
+	if (!payload) return "global";
+	for (const key of [
+		"thread_id",
+		"threadId",
+		"conversation_id",
+		"conversationId",
+		"session_id",
+		"sessionId",
+	]) {
+		const value = payload[key];
+		if (typeof value === "string" && value.trim()) {
+			return `${key}:${value.trim()}`;
+		}
+	}
+	return "global";
+}
+
+function dispatchGuardDir(metadataPath: string): string {
+	if (metadataPath) return dirname(metadataPath);
+	return join(tmpdir(), "oh-my-codex-notify-dispatch");
+}
+
+function writeDispatchGuardState(
+	statePath: string,
+	state: DispatchGuardState,
+	identity: string,
+	minIntervalMs: number,
+	staleEventAgeMs: number,
+): void {
+	const previousByIdentity = state.lastDispatchByIdentity && typeof state.lastDispatchByIdentity === "object"
+		? state.lastDispatchByIdentity
+		: {};
+	const retainedByIdentity: Record<string, number> = {};
+	const now = Date.now();
+	const retentionMs = Math.max(minIntervalMs, staleEventAgeMs, DEFAULT_TURN_DISPATCH_MIN_INTERVAL_MS);
+	for (const [key, value] of Object.entries(previousByIdentity)) {
+		if (typeof value === "number" && now - value <= retentionMs) {
+			retainedByIdentity[key] = value;
+		}
+	}
+	retainedByIdentity[identity] = now;
+	writeFileSync(statePath, JSON.stringify({
+		lastDispatchAt: identity === "global" ? now : (typeof state.lastDispatchAt === "number" ? state.lastDispatchAt : undefined),
+		lastDispatchByIdentity: retainedByIdentity,
+		pid: process.pid,
+	}));
+}
+
+function acquireTurnDispatchGuard(metadataPath: string, payloadArg: string): DispatchGuard {
+	const payload = parsePayloadObject(payloadArg);
+	if (!isTurnEndedPayload(payload)) return { ok: true };
+
+	const now = Date.now();
+	const staleEventAgeMs = parseNonNegativeEnvMs("OMX_NOTIFY_DISPATCH_STALE_EVENT_AGE_MS", DEFAULT_STALE_EVENT_AGE_MS);
+	const eventTimestampMs = payload ? readPayloadTimestampMs(payload) : null;
+	if (eventTimestampMs !== null && staleEventAgeMs > 0 && now - eventTimestampMs > staleEventAgeMs) {
+		return { ok: false };
+	}
+
+	const dir = dispatchGuardDir(metadataPath);
+	mkdirSync(dir, { recursive: true });
+	const lockPath = join(dir, "notify-dispatch.lock");
+	const statePath = join(dir, "notify-dispatch.guard.json");
+	try {
+		const lockStat = statSync(lockPath);
+		if (now - lockStat.mtimeMs > DISPATCH_LOCK_STALE_MS) unlinkSync(lockPath);
+	} catch {
+		// Missing or unreadable lock: try to acquire below.
+	}
+
+	let fd: number;
+	try {
+		fd = openSync(lockPath, "wx");
+		writeFileSync(fd, String(process.pid));
+		closeSync(fd);
+	} catch {
+		return { ok: false };
+	}
+
+	const release = () => {
+		try {
+			unlinkSync(lockPath);
+		} catch {
+			// Best effort.
+		}
+	};
+
+	try {
+		const minIntervalMs = parseNonNegativeEnvMs("OMX_NOTIFY_DISPATCH_MIN_INTERVAL_MS", DEFAULT_TURN_DISPATCH_MIN_INTERVAL_MS);
+		const identity = readPayloadIdentity(payload);
+		let state: DispatchGuardState = {};
+		try {
+			state = JSON.parse(readFileSync(statePath, "utf-8")) as typeof state;
+		} catch {
+			// No prior guard state.
+		}
+		if (minIntervalMs > 0) {
+			const byIdentity = state.lastDispatchByIdentity && typeof state.lastDispatchByIdentity === "object"
+				? state.lastDispatchByIdentity
+				: {};
+			const identityLastDispatchAt = typeof byIdentity[identity] === "number" ? byIdentity[identity] : 0;
+			const legacyLastDispatchAt = identity === "global" && typeof state.lastDispatchAt === "number" ? state.lastDispatchAt : 0;
+			const lastDispatchAt = Math.max(identityLastDispatchAt, legacyLastDispatchAt);
+			if (lastDispatchAt > 0 && now - lastDispatchAt < minIntervalMs) {
+				release();
+				return { ok: false };
+			}
+		}
+		return {
+			ok: true,
+			release: () => {
+				try {
+					writeDispatchGuardState(statePath, state, identity, minIntervalMs, staleEventAgeMs);
+				} catch {
+					// Guard state is best effort; the lock still prevents concurrent duplicate dispatch.
+				}
+				release();
+			},
+		};
+	} catch {
+		release();
+		return { ok: false };
+	}
 }
 
 function parseArgs(): { metadataPath: string; payloadArg: string } {
@@ -200,11 +392,17 @@ function runNotify(
 async function main(): Promise<void> {
 	const { metadataPath, payloadArg } = parseArgs();
 	if (!payloadArg || payloadArg.startsWith("-")) return;
-	const metadata = await readMetadata(metadataPath);
-	if (!isManagedPreviousNotify(metadata?.previousNotify, metadata)) {
-		runNotify(metadata?.previousNotify, payloadArg);
+	const guard = acquireTurnDispatchGuard(metadataPath, payloadArg);
+	if (!guard.ok) return;
+	try {
+		const metadata = await readMetadata(metadataPath);
+		if (!isManagedPreviousNotify(metadata?.previousNotify, metadata)) {
+			runNotify(metadata?.previousNotify, payloadArg);
+		}
+		runNotify(metadata?.omxNotify, payloadArg);
+	} finally {
+		guard.release?.();
 	}
-	runNotify(metadata?.omxNotify, payloadArg);
 }
 
 main().catch(() => {});
