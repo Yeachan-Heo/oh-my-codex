@@ -169,4 +169,3 @@ file(s); the notify-fallback / task-complete record reader; regression test").
 - `src/team/worker-bootstrap.ts` (subagent delegation contract block at ~640–680)
 - Exhaustive grep of all `*.ts/*.rs/*.md/*.toml/*.json/*.sh` outside vendored/dist trees
 - `git log --all --grep="wait_agent|wait-agent|waitAgent|2473|close_agent"`
-
