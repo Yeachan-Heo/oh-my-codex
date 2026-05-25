@@ -275,7 +275,7 @@ function applyPluginModeWordingToAgentsTemplate(
 			: "`~/.codex/skills`";
 	return scopedContent.replace(
 		/Role prompts under `prompts\/\*\.md` are narrower execution surfaces\. They must follow this file, not override it\.\nWhen OMX is installed, load the installed prompt\/skill\/agent surfaces from [^\n]+active\)\./,
-		`Registered Codex plugin marketplace surfaces supply OMX workflows and plugin-scoped companion resources when the plugin is installed. Required native reviewer roles still need active Codex agent configs. They must follow this file, not override it.\nUser-installed skills may still live under ${userSkillPath}. Setup-owned prompt files and native-agent TOML defaults are intentionally omitted in plugin mode unless explicitly installed.`,
+		`Registered Codex plugin marketplace surfaces supply OMX workflows and plugin-scoped companion resources when the plugin is installed. Native agent roles are installed as setup-owned Codex agent TOML files in plugin mode so agent_type routing works. They must follow this file, not override it.\nUser-installed skills may still live under ${userSkillPath}.`,
 	);
 }
 
@@ -1941,6 +1941,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	const dirs = isPluginInstallMode
 		? [
 				scopeDirs.codexHomeDir,
+				scopeDirs.nativeAgentsDir,
 				omxStateDir(projectRoot),
 				omxPlansDir(projectRoot),
 				omxLogsDir(projectRoot),
@@ -2101,16 +2102,18 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	// Step 4: Install native agent configs
 	console.log("[4/8] Installing native agent configs...");
 	if (isPluginInstallMode) {
-		summary.nativeAgents = await cleanupPluginModeLegacyNativeAgents(
+		summary.nativeAgents = await refreshNativeAgentConfigs(
 			pkgRoot,
 			scopeDirs.nativeAgentsDir,
 			backupContext,
-			{ dryRun, verbose },
+			{
+				force,
+				dryRun,
+				verbose,
+			},
 		);
 		console.log(
-			summary.nativeAgents.removed > 0
-				? `  ${dryRun ? "Would archive and remove" : "Archived and removed"} ${summary.nativeAgents.removed} legacy OMX-managed native agent config(s).\n`
-				: "  Native agent refresh skipped; no legacy OMX-managed native agent configs found.\n",
+			`  Native agent role refresh complete (${scopeDirs.nativeAgentsDir}); plugin mode still installs role TOML so agent_type routing works.\n`,
 		);
 	} else {
 		summary.nativeAgents = await refreshNativeAgentConfigs(
@@ -2686,7 +2689,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			"  4. Optional AGENTS.md and developer_instructions defaults are only installed when selected during plugin-mode setup",
 		);
 		console.log(
-			"  5. Legacy native-agent TOML defaults remain uninstalled in plugin mode",
+			"  5. Native agent role TOML files written to .codex/agents/ for agent_type routing",
 		);
 	} else {
 		console.log(

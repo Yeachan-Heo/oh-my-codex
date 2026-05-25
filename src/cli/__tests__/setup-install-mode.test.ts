@@ -496,7 +496,7 @@ async function assertProjectPluginModeArtifacts(wd: string): Promise<void> {
 		existsSync(join(wd, ".codex", "skills", "ask", "SKILL.md")),
 		false,
 	);
-	assert.equal(existsSync(join(wd, ".codex", "agents", "planner.toml")), false);
+	assert.equal(existsSync(join(wd, ".codex", "agents", "planner.toml")), true);
 	assert.equal(existsSync(join(wd, ".codex", "prompts", "executor.md")), false);
 	assert.equal(existsSync(join(wd, "AGENTS.md")), false);
 
@@ -841,10 +841,10 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
-	it("prints plugin-mode next steps without claiming native agent TOML files were written", async () => {
+	it("installs native agent TOML files in plugin mode so agent_type roles are available", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {
-			await withIsolatedUserHome(wd, async () => {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				const output = await runSetupWithCapturedLogs(wd, {
 					scope: "user",
 					installMode: "plugin",
@@ -855,7 +855,14 @@ describe("omx setup install mode behavior", () => {
 					output,
 					/Registered Codex marketplace oh-my-codex-local supplies OMX skills and workflow surfaces/,
 				);
-				assert.doesNotMatch(output, /TOML files written to \.codex\/agents\//);
+				assert.match(output, /Native agent role TOML files written to \.codex\/agents\//);
+
+				for (const role of ["architect", "critic", "scholastic"]) {
+					const tomlPath = join(codexHomeDir, "agents", `${role}.toml`);
+					assert.equal(existsSync(tomlPath), true, `${role}.toml should exist`);
+					const toml = await readFile(tomlPath, "utf-8");
+					assert.match(toml, new RegExp(`^name = "${role}"$`, "m"));
+				}
 			});
 		} finally {
 			await rm(wd, { recursive: true, force: true });
@@ -1321,7 +1328,7 @@ describe("omx setup install mode behavior", () => {
 					);
 					assert.equal(
 						existsSync(join(codexHomeDir, "agents", "planner.toml")),
-						false,
+						true,
 					);
 					assert.equal(
 						existsSync(join(codexHomeDir, "prompts", "executor.md")),
@@ -1564,7 +1571,7 @@ describe("omx setup install mode behavior", () => {
 					);
 					assert.equal(
 						existsSync(join(codexHomeDir, "agents", "planner.toml")),
-						false,
+						true,
 					);
 					assert.equal(
 						existsSync(join(codexHomeDir, "prompts", "executor.md")),
@@ -1597,7 +1604,7 @@ describe("omx setup install mode behavior", () => {
 					);
 					assert.equal(
 						existsSync(join(codexHomeDir, "agents", "planner.toml")),
-						false,
+						true,
 					);
 					assert.equal(
 						existsSync(join(codexHomeDir, "prompts", "executor.md")),
@@ -1616,7 +1623,7 @@ describe("omx setup install mode behavior", () => {
 					assert.match(config, /User-installed skills may still live under ~\/.codex\/skills/);
 					assert.match(
 						config,
-						/Setup-owned prompt files and native-agent TOML defaults are intentionally omitted unless explicitly installed/,
+						/native agent roles are installed as setup-owned Codex agent TOML files in plugin mode so agent_type routing works/i,
 					);
 					assert.doesNotMatch(config, /Native subagents live in \.codex\/agents/);
 					assert.doesNotMatch(config, /Treat installed prompts as narrower execution surfaces/);
@@ -1649,7 +1656,7 @@ describe("omx setup install mode behavior", () => {
 					assert.match(agentsMd, /User-installed skills may still live under `~\/.codex\/skills`/);
 					assert.match(
 						agentsMd,
-						/Setup-owned prompt files and native-agent TOML defaults are intentionally omitted in plugin mode unless explicitly installed/,
+						/native agent roles are installed as setup-owned Codex agent TOML files in plugin mode so agent_type routing works/i,
 					);
 					assert.doesNotMatch(agentsMd, /Role prompts under `prompts\/\*\.md`/);
 					assert.doesNotMatch(agentsMd, /load the installed prompt\/skill\/agent surfaces from/);
@@ -1934,7 +1941,7 @@ describe("omx setup install mode behavior", () => {
 				);
 				assert.equal(
 					existsSync(join(wd, ".codex", "agents", "planner.toml")),
-					false,
+					true,
 				);
 				assert.equal(
 					existsSync(join(wd, ".codex", "prompts", "executor.md")),
@@ -2206,7 +2213,7 @@ describe("omx setup install mode behavior", () => {
 
 					assert.equal(existsSync(askSkillPath), false);
 					assert.equal(existsSync(promptPath), false);
-					assert.equal(existsSync(agentPath), false);
+					assert.equal(existsSync(agentPath), true);
 					assert.equal(existsSync(hooksPath), false);
 					assert.equal(existsSync(agentsMdPath), false);
 					const config = await readFile(configPath, "utf-8");
@@ -2222,7 +2229,7 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
-	it("archives stale legacy prompts and generated native agents when plugin mode refreshes", async () => {
+	it("archives stale legacy prompts and refreshes generated native agents when plugin mode refreshes", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
@@ -2251,14 +2258,18 @@ describe("omx setup install mode behavior", () => {
 					});
 
 					assert.equal(existsSync(promptPath), false);
-					assert.equal(existsSync(agentPath), false);
+					assert.equal(existsSync(agentPath), true);
+					assert.match(
+						await readFile(agentPath, "utf-8"),
+						/^name = "planner"$/m,
+					);
 					assert.match(
 						output,
 						/Archived and removed .* legacy OMX-managed prompt file/,
 					);
 					assert.match(
 						output,
-						/Archived and removed .* legacy OMX-managed native agent config/,
+						/Native agent role refresh complete/,
 					);
 
 					const backupRoot = join(wd, "home", ".omx", "backups", "setup");

@@ -251,7 +251,7 @@ command = "node"
 		}
 	});
 
-	it("surfaces missing native reviewer roles separately from healthy plugin skills and hooks", async () => {
+	it("recognizes setup-installed native reviewer roles separately from healthy plugin skills and hooks", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-mode-"));
 		try {
 			const home = join(wd, "home");
@@ -287,12 +287,9 @@ command = "node"
 			);
 			assert.match(
 				res.stdout,
-				/\[XX\] Native reviewer roles: plugin mode supplies skills\/hooks, but required RALPLAN\/Autopilot native reviewer role\(s\) are unavailable: architect, critic/,
+				/\[OK\] Native reviewer roles: required RALPLAN\/Autopilot native reviewer roles are available \(architect, critic\); advisory scholastic role is also available/,
 			);
-			assert.match(
-				res.stdout,
-				/role-specific subagent calls may degrade to prompt-only\/default subagents; advisory role missing: scholastic/,
-			);
+			assert.doesNotMatch(res.stdout, /role-specific subagent calls may degrade/);
 			assert.match(
 				res.stdout,
 				/MCP Servers: CLI-first plugin mode: first-party MCP compatibility explicitly disabled/,
