@@ -11,6 +11,7 @@
 - **Explore runtime guidance keeps prompt syntax visible** — prompt syntax remains visible in runtime guidance so operators do not lose invocation shape while using `omx explore`.
 - **Plugin-owned hooks are respected** — Codex setup paths preserve plugin-owned hooks instead of overwriting user/plugin surfaces.
 - **Scholastic ontology review is available** — a first-class Scholastic reviewer agent is added to the agent catalog and native config surface.
+- **Skill/agent bloat audit is documented** — the release carries an inventory and connectivity roadmap for future consolidation work.
 
 ## Fixes / compatibility
 
@@ -26,13 +27,23 @@
 
 ## Validation
 
+UltraQA release-prep evidence is recorded in `docs/qa/release-readiness-0.18.3.md`.
+
+Local gates completed before metadata finalization:
+
 - `npm run lint`
 - `npm run check:no-unused`
 - `npm run test`
-- Project-native targeted changed-area tests rerun twice through `dist/scripts/run-test-files.js`
-- Adversarial release harness for malformed state, prompt-injection, interruption/cancel wording, hung child process, misleading success output, and no-tag side-effect guard
+- Project-native targeted changed-area tests, rerun twice through `dist/scripts/run-test-files.js`
+- Adversarial release harness for malformed state, prompt-injection, repeated interruption/cancel wording, hung child process, misleading success output, and no-tag side-effect guard
 - `npm pack --dry-run`
 
-Accepted residual risk: `cargo test` has one known failing `omx-explore` process-group timeout cleanup assertion, waived by release-owner direction for this cut and recorded in `docs/qa/release-readiness-0.18.3.md`.
+Accepted residual risk:
+
+- `cargo test` exposed one failing `omx-explore` process-group timeout cleanup assertion (`run_command_with_timeout_kills_process_group_children`). The release owner explicitly directed this to be ignored for this cut; it is recorded in the readiness doc and should be fixed after `0.18.3`.
+
+## Contributors
+
+Thanks to everyone who narrowed the post-`0.18.2` HUD, Team, deep-interview, hook, and agent-catalog follow-ups.
 
 **Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.18.2...v0.18.3

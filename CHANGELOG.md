@@ -4,6 +4,37 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.18.3] - 2026-05-25
+
+Patch release for the post-`0.18.2` reliability and operator-experience train: HUD/tmux lifecycle cleanup, Team diff gutter preservation, auth slot hot-swap support, visible explore prompt syntax guidance, deep-interview runtime config overrides, stricter `plan_then_execute` handoff authority, plugin-owned hook preservation, and the Scholastic ontology reviewer agent.
+
+### Added
+
+- **Scholastic ontology reviewer** — adds a first-class Scholastic reviewer agent across definitions, native config, catalog, plugin metadata, and docs.
+- **Skills/agents bloat audit collateral** — records the inventory and connectivity roadmap for future consolidation work.
+
+### Changed
+
+- **Deep-interview runtime configuration** — supports `deepInterview` runtime config overrides and mirrors the guidance through canonical and plugin skill surfaces.
+- **Auth slot hot-swap support** — includes the auth slot hot-swap wrapper from the final `dev` delta.
+- **Explore prompt syntax visibility** — keeps prompt syntax visible in runtime guidance.
+- **Handoff authority is stricter** — `plan_then_execute` downstream authority is enforced as a binding gate for deep-interview/ralplan handoffs.
+
+### Fixed
+
+- **HUD lifecycle and ownership** — coalesces launch HUD panes by leader, preserves session id and owner env during reconcile, reaps dead-leader HUD panes, and reuses the existing HUD during UserPromptSubmit revive.
+- **Team diff readability** — preserves diff gutters on wrapped multi-line hunks.
+- **Plugin hook ownership** — respects plugin-owned hooks without overwriting user/plugin surfaces during setup/update paths.
+
+### PRs
+
+- #2474, #2476, #2477, #2478, #2481, #2482, #2483, #2484, #2485, #2486, #2487, #2488, #2489, #2491, #2492, #2493, #2494, #2495
+
+### Verification
+
+- Release readiness evidence is tracked in `docs/qa/release-readiness-0.18.3.md`.
+- Accepted residual risk: one `cargo test` assertion in `omx-explore` process-group timeout cleanup was waived by release-owner direction for this cut.
+
 ## [0.18.2] - 2026-05-23
 
 Patch release for the closed post-`0.18.1` issue train. This release promotes the `dev` fixes for every currently closed, completed GitHub issue opened after `v0.18.1`, plus the Prometheus Strict planner surface and Ultragoal HUD progress display that also merged during the compare range.
