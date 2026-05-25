@@ -2041,6 +2041,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				force,
 				dryRun,
 				verbose,
+				preserveUnmanagedObsoleteNativeAgents: true,
 			},
 		);
 		console.log(
@@ -3009,7 +3010,9 @@ async function refreshNativeAgentConfigs(
 	pkgRoot: string,
 	agentsDir: string,
 	backupContext: SetupBackupContext,
-	options: Pick<SetupOptions, "dryRun" | "verbose" | "force">,
+	options: Pick<SetupOptions, "dryRun" | "verbose" | "force"> & {
+		preserveUnmanagedObsoleteNativeAgents?: boolean;
+	},
 ): Promise<SetupCategorySummary> {
 	const summary = createEmptyCategorySummary();
 
@@ -3116,7 +3119,9 @@ async function refreshNativeAgentConfigs(
 async function cleanupObsoleteNativeAgents(
 	agentsDir: string,
 	backupContext: SetupBackupContext,
-	options: Pick<SetupOptions, "dryRun" | "verbose">,
+	options: Pick<SetupOptions, "dryRun" | "verbose"> & {
+		preserveUnmanagedObsoleteNativeAgents?: boolean;
+	},
 ): Promise<number> {
 	if (!existsSync(agentsDir)) return 0;
 
@@ -3137,7 +3142,10 @@ async function cleanupObsoleteNativeAgents(
 		if (!containsTomlKey(content, OBSOLETE_NATIVE_AGENT_FIELD)) continue;
 
 		const agentName = file.slice(0, -5);
-		if (!isGeneratedOmxNativeAgentToml(content, agentName)) {
+		if (
+			options.preserveUnmanagedObsoleteNativeAgents &&
+			!isGeneratedOmxNativeAgentToml(content, agentName)
+		) {
 			if (options.verbose) {
 				console.log(
 					`  skipped stale obsolete native agent ${file}: not an OMX-generated native agent`,
