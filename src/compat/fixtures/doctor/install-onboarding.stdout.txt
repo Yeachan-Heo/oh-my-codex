@@ -10,7 +10,7 @@ Resolved setup scope: user
   [!!] Config: config.toml exists but no OMX entries yet (expected before first setup; run "omx setup --force" once)
   [OK] Native hooks: hooks.json not found yet (expected before first setup)
   [OK] Native hook dist smoke: installed dist/scripts/codex-native-hook.js parsed and accepted a minimal UserPromptSubmit payload
-  [OK] Explore routing: enabled by default
+  [OK] Explore routing: deprecated by default
   [OK] Lore commit guard: disabled by default
   [!!] Prompts: prompts directory not found
   [!!] Skills: skills directory not found
