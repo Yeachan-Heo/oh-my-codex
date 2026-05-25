@@ -9264,6 +9264,70 @@ exit 0
     }
   });
 
+  it("does not report ralplan subagent waiting when notify-fallback already recorded completion", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-skill-subagent-complete-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const now = new Date().toISOString();
+      await mkdir(join(stateDir, "sessions", "sess-stop-skill-subagent-complete"), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill-subagent-complete" });
+      await writeJson(join(stateDir, "sessions", "sess-stop-skill-subagent-complete", "skill-active-state.json"), {
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+      });
+      await writeJson(join(stateDir, "sessions", "sess-stop-skill-subagent-complete", "ralplan-state.json"), {
+        active: true,
+        current_phase: "planning",
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          "sess-stop-skill-subagent-complete": {
+            session_id: "sess-stop-skill-subagent-complete",
+            leader_thread_id: "leader-1",
+            updated_at: now,
+            threads: {
+              "leader-1": {
+                thread_id: "leader-1",
+                kind: "leader",
+                first_seen_at: now,
+                last_seen_at: now,
+                turn_count: 1,
+              },
+              "sub-1": {
+                thread_id: "sub-1",
+                kind: "subagent",
+                first_seen_at: now,
+                last_seen_at: now,
+                completed_at: now,
+                last_completed_turn_id: "turn-complete-1",
+                completion_source: "notify-fallback-watcher",
+                turn_count: 2,
+              },
+            },
+          },
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-skill-subagent-complete",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson?.decision, "block");
+      assert.doesNotMatch(String(result.outputJson?.reason ?? ""), /waiting for 1 active native subagent thread/);
+      assert.equal(result.outputJson?.stopReason, "skill_ralplan_planning_continue_artifact");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not block on stale root ralplan skill when the explicit session-scoped canonical skill state is absent", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-stale-root-skill-"));
     try {

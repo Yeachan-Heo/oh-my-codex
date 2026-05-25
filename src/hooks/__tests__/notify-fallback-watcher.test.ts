@@ -449,8 +449,36 @@ describe('notify-fallback watcher', () => {
       const staleIso = new Date(Date.now() - 60_000).toISOString();
       const freshIso = new Date(Date.now() + 2_000).toISOString();
       const threadId = `thread-${sid}`;
+      const leaderThreadId = `leader-${sid}`;
       const staleTurn = `turn-stale-${sid}`;
       const freshTurn = `turn-fresh-${sid}`;
+      await writeFile(join(wd, '.omx', 'state', 'session.json'), JSON.stringify({ session_id: sid }));
+      await writeFile(join(wd, '.omx', 'state', 'subagent-tracking.json'), JSON.stringify({
+        schemaVersion: 1,
+        sessions: {
+          [sid]: {
+            session_id: sid,
+            leader_thread_id: leaderThreadId,
+            updated_at: staleIso,
+            threads: {
+              [leaderThreadId]: {
+                thread_id: leaderThreadId,
+                kind: 'leader',
+                first_seen_at: staleIso,
+                last_seen_at: staleIso,
+                turn_count: 1,
+              },
+              [threadId]: {
+                thread_id: threadId,
+                kind: 'subagent',
+                first_seen_at: staleIso,
+                last_seen_at: staleIso,
+                turn_count: 1,
+              },
+            },
+          },
+        },
+      }));
 
       const lines = [
         {
@@ -497,6 +525,12 @@ describe('notify-fallback watcher', () => {
       const fallbackLog = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
       const fallbackEntries = await readJsonLines(fallbackLog);
       assert.deepEqual(fallbackEntries.map((entry) => entry.type), ['fallback_notify']);
+
+      const tracking = JSON.parse(await readFile(join(wd, '.omx', 'state', 'subagent-tracking.json'), 'utf-8'));
+      const completedThread = tracking.sessions?.[sid]?.threads?.[threadId];
+      assert.equal(completedThread?.completed_at ? true : false, true);
+      assert.equal(completedThread?.last_completed_turn_id, freshTurn);
+      assert.equal(completedThread?.completion_source, 'notify-fallback-watcher');
     } finally {
       await rm(wd, { recursive: true, force: true });
       await rm(tempHome, { recursive: true, force: true });
