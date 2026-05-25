@@ -14,6 +14,10 @@ import {
 import type { TerminalLifecycleOutcome } from '../runtime/terminal-lifecycle.js';
 import type { QuestionInput, QuestionRecord } from './types.js';
 import type { DownstreamAuthority } from '../state/workflow-transition.js';
+import {
+  markAutopilotDeepInterviewQuestionWaiting,
+  resolveAutopilotDeepInterviewQuestionWaiting,
+} from './autopilot-wait.js';
 
 const DEEP_INTERVIEW_STATE_FILE = 'deep-interview-state.json';
 
@@ -275,6 +279,7 @@ export async function runDeepInterviewQuestion(
     sessionId,
     () => obligation,
   );
+  await markAutopilotDeepInterviewQuestionWaiting(cwd, sessionId, obligation);
 
   try {
     const result = await runOmxQuestion(
@@ -295,6 +300,12 @@ export async function runDeepInterviewQuestion(
           : current
       ),
     );
+    await resolveAutopilotDeepInterviewQuestionWaiting(
+      cwd,
+      sessionId,
+      obligation.obligation_id,
+      'satisfied',
+    );
 
     return result;
   } catch (error) {
@@ -306,6 +317,12 @@ export async function runDeepInterviewQuestion(
           ? clearDeepInterviewQuestionObligation(current, 'error')
           : current
       ),
+    );
+    await resolveAutopilotDeepInterviewQuestionWaiting(
+      cwd,
+      sessionId,
+      obligation.obligation_id,
+      'cleared',
     );
     throw error;
   }

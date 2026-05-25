@@ -14110,3 +14110,62 @@ describe("codex native hook triage integration", () => {
     }
   });
 });
+
+describe('native Stop autopilot deep-interview wait', () => {
+  it('does not force continued execution while autopilot is waiting on a deep-interview omx question', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-native-hook-autopilot-question-wait-'));
+    try {
+      const sessionId = 'sess-autopilot-wait';
+      const sessionDir = join(cwd, '.omx', 'state', 'sessions', sessionId);
+      await writeJson(join(cwd, '.omx', 'state', 'session.json'), { session_id: sessionId });
+      await writeJson(join(sessionDir, 'autopilot-state.json'), {
+        mode: 'autopilot',
+        active: true,
+        current_phase: 'waiting-for-user',
+        run_outcome: 'blocked_on_user',
+        lifecycle_outcome: 'askuserQuestion',
+        session_id: sessionId,
+        state: {
+          deep_interview_question: {
+            status: 'waiting_for_user',
+            source: 'omx-question',
+            obligation_id: 'obligation-stop-1',
+            previous_phase: 'deep-interview',
+          },
+        },
+      });
+      await writeJson(join(sessionDir, 'deep-interview-state.json'), {
+        mode: 'deep-interview',
+        active: false,
+        current_phase: 'intent-first',
+        lifecycle_outcome: 'askuserQuestion',
+        run_outcome: 'blocked_on_user',
+        session_id: sessionId,
+        question_enforcement: {
+          obligation_id: 'obligation-stop-1',
+          source: 'omx-question',
+          status: 'pending',
+          lifecycle_outcome: 'askuserQuestion',
+          requested_at: '2026-04-19T00:00:00.000Z',
+        },
+      });
+      await writeJson(join(sessionDir, 'skill-active-state.json'), {
+        active: true,
+        skill: 'autopilot',
+        phase: 'deep-interview',
+        session_id: sessionId,
+        active_skills: [{ skill: 'autopilot', phase: 'deep-interview', active: true, session_id: sessionId }],
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: 'Stop',
+        session_id: sessionId,
+        thread_id: 'thread-autopilot-wait',
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});

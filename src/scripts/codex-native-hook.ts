@@ -101,6 +101,7 @@ import {
   isPendingDeepInterviewQuestionEnforcement,
   reconcileDeepInterviewQuestionEnforcementFromAnsweredRecords,
 } from "../question/deep-interview.js";
+import { readAutopilotDeepInterviewQuestionWaitState } from "../question/autopilot-wait.js";
 import {
   buildDocumentRefreshAdvisoryOutput,
   evaluateFinalHandoffDocumentRefresh,
@@ -2055,6 +2056,9 @@ async function buildModeBasedStopOutput(
   if (await readCanonicalTerminalRunStateForStop(cwd, sessionId, mode)) {
     return null;
   }
+  if (mode === "autopilot" && await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId)) {
+    return null;
+  }
   const state = await readModeStateForActiveDecision(mode, sessionId?.trim() || undefined, cwd);
   if (!state || !shouldContinueRun(state)) return null;
   const phase = formatPhase(state.current_phase);
@@ -2869,6 +2873,9 @@ async function buildDeepInterviewQuestionStopOutput(
   threadId: string,
 ): Promise<{ output: Record<string, unknown>; obligationId: string } | null> {
   await reconcileDeepInterviewQuestionEnforcementFromAnsweredRecords(cwd, sessionId);
+  if (await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId)) {
+    return null;
+  }
   const modeState = await readStopSessionPinnedState("deep-interview-state.json", cwd, sessionId, stateDir);
   if (!modeState) return null;
 

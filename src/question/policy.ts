@@ -2,6 +2,7 @@ import { listNotifyCanonicalActiveTeams, type NotifyCanonicalActiveTeam } from '
 import { readCurrentSessionId } from '../mcp/state-paths.js';
 import { listActiveSkills, readVisibleSkillActiveState } from '../state/skill-active.js';
 import { readActiveWorkflowModes } from '../state/workflow-transition.js';
+import { readAutopilotDeepInterviewQuestionWaitState } from './autopilot-wait.js';
 
 const BLOCKED_EXECUTION_SKILLS = new Set([
   'autopilot',
@@ -27,6 +28,7 @@ export interface EvaluateQuestionPolicyOptions {
   cwd: string;
   explicitSessionId?: string;
   env?: NodeJS.ProcessEnv;
+  questionSource?: string;
 }
 
 function safeString(value: unknown): string {
@@ -35,6 +37,10 @@ function safeString(value: unknown): string {
 
 function hasWorkerContext(env: NodeJS.ProcessEnv): boolean {
   return safeString(env.OMX_TEAM_WORKER).trim() !== '';
+}
+
+function onlyControlledAutopilotQuestionBlock(blocked: string[]): boolean {
+  return blocked.length > 0 && blocked.every((entry) => entry === 'autopilot');
 }
 
 export async function evaluateQuestionPolicy(
@@ -83,6 +89,22 @@ export async function evaluateQuestionPolicy(
   const blocked = [...new Set([...blockedModes, ...blockedSkills])];
 
   if (blocked.length > 0) {
+    const source = safeString(options.questionSource).trim();
+    const autopilotWait = source === 'deep-interview'
+      && onlyControlledAutopilotQuestionBlock(blocked)
+      ? await readAutopilotDeepInterviewQuestionWaitState(options.cwd, sessionId)
+      : null;
+    if (autopilotWait) {
+      return {
+        allowed: true,
+        fallbackAllowed: true,
+        sessionId,
+        activeModes,
+        activeSkills,
+        activeTeams,
+      };
+    }
+
     return {
       allowed: false,
       sessionId,

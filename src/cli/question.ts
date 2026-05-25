@@ -235,7 +235,11 @@ export async function questionCommand(args: string[]): Promise<void> {
 
   const input = normalizeQuestionInput(rawInput);
   const cwd = process.cwd();
-  const policy = await evaluateQuestionPolicy({ cwd, explicitSessionId: input.session_id });
+  const policy = await evaluateQuestionPolicy({
+    cwd,
+    explicitSessionId: input.session_id,
+    questionSource: input.source,
+  });
   if (!policy.allowed) {
     printJson({
       ok: false,
