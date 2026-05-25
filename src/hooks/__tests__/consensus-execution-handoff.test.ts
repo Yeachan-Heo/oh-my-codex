@@ -213,6 +213,20 @@ describe('User feedback step between Planner and Architect/Critic (plan/SKILL.md
     assert.ok(criticIdx > architectIdx, 'Critic should come after Architect');
   });
 
+  it('should require role-specific subsequent Architect and Critic subagents with full handoff context', () => {
+    const consensusSection = extractSection(planSkill, 'Consensus Mode');
+    assert.ok(consensusSection, 'Consensus Mode section should exist');
+    assert.match(consensusSection, /dedicated subsequent `Architect` subagent/i);
+    assert.match(consensusSection, /dedicated subsequent `Critic` subagent/i);
+    assert.match(consensusSection, /full task, current plan text\/path, RALPLAN-DR summary/i);
+    assert.match(consensusSection, /completed `Architect` result/i);
+    assert.match(consensusSection, /Do NOT substitute a default\/improvised subagent prompt/i);
+    assert.match(consensusSection, /Do NOT let the `Architect` response self-approve the Critic gate/i);
+    assert.doesNotMatch(planSkill, /agent_role: "critic"` for plan review in consensus/i);
+    assert.match(planSkill, /standalone review mode/i);
+    assert.match(planSkill, /dedicated sequential role-specific `Architect` and `Critic` subagents/i);
+  });
+
   it('should require architect antithesis and critic rejection gates in consensus flow', () => {
     const consensusSection = extractSection(planSkill, 'Consensus Mode');
     assert.ok(consensusSection, 'Consensus Mode section should exist');
