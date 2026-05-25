@@ -28,10 +28,14 @@ import { hasReadableWiki, queryWiki } from '../wiki/index.js';
 import { resolveCodexHomeForLaunch } from './codex-home.js';
 import { runProcessTreeWithTimeout } from '../runtime/process-tree.js';
 
+export const EXPLORE_DEPRECATION_NOTICE = 'DEPRECATED: `omx explore` is deprecated. Use the normal Codex repository tools/subagents for repo inspection, or `omx sparkshell` for explicit shell-native read-only commands.';
+
 export const EXPLORE_USAGE = [
+  EXPLORE_DEPRECATION_NOTICE,
   'Usage: omx explore --prompt "<prompt>"',
   '   or: omx explore --prompt-file <file>',
   '',
+  'Compatibility only: existing callers may still use --prompt/--prompt-file temporarily.',
   'Never use positional prompt text. Use: omx explore --prompt "find package.json"',
 ].join('\n');
 
@@ -692,6 +696,9 @@ export async function loadExplorePrompt(parsed: ParsedExploreArgs): Promise<stri
 }
 
 export async function exploreCommand(args: string[]): Promise<void> {
+  if (!args.includes('--help') && !args.includes('-h')) {
+    process.stderr.write(`${EXPLORE_DEPRECATION_NOTICE}\n`);
+  }
   if (process.env[EXPLORE_ACTIVE_ENV] === '1') {
     throw new Error('[explore] refusing to launch nested omx explore from an active explore run.');
   }

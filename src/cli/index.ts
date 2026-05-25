@@ -210,7 +210,7 @@ Usage:
   omx question  OMX-owned blocking question UI entrypoint for agent-invoked user questions
   omx adapt     Scaffold OMX-owned adapter foundations for persistent external targets
   omx resume    Resume a previous interactive Codex session
-  omx explore   Default read-only exploration entrypoint (may adaptively use sparkshell backend)
+  omx explore   DEPRECATED compatibility command; use normal repo inspection or omx sparkshell
   omx api       Run native omx-api localhost gateway commands (serve|status|stop|generate)
   omx session   Search prior local session transcripts and history artifacts
   omx agents-init [path]

@@ -108,7 +108,7 @@ const SHARED_MCP_REGISTRY_END_MARKER =
   "# End oh-my-codex shared MCP registry sync";
 const OMX_AGENTS_MAX_THREADS = 6;
 const OMX_AGENTS_MAX_DEPTH = 2;
-const OMX_EXPLORE_ROUTING_DEFAULT = "1";
+const OMX_EXPLORE_ROUTING_DEFAULT = "0";
 const OMX_EXPLORE_CMD_ENV = "USE_OMX_EXPLORE_CMD";
 const DEFAULT_LAUNCHER_MCP_STARTUP_TIMEOUT_SEC = 15;
 const STATUS_LINE_FOCUSED_FIELDS: readonly string[] = [
@@ -2333,7 +2333,7 @@ function getOmxTablesBlock(
  * Layout:
  *   1. OMX top-level keys (notify, model_reasoning_effort, developer_instructions)
  *   2. [features] with multi_agent + child_agents_md + hooks + goals
- *   3. [shell_environment_policy.set] with defaulted explore-routing opt-in
+ *   3. [shell_environment_policy.set] with defaulted deprecated explore-routing opt-out
  *   4. … user sections …
  *   5. OMX [table] sections (mcp_servers, tui)
  */

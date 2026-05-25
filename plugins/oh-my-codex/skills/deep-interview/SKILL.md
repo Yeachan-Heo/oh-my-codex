@@ -47,7 +47,7 @@ If no flag is provided, use **Standard**.
 - Do not rotate to a new clarity dimension just for coverage when the current answer is still vague; stay on the same thread until one layer deeper, one assumption clearer, or one boundary tighter
 - Before crystallizing, complete at least one explicit pressure pass that revisits an earlier answer with a deeper, assumption-focused, or tradeoff-focused follow-up
 - Gather codebase facts via `explore` before asking user about internals
-- When session guidance enables `USE_OMX_EXPLORE_CMD`, prefer `omx explore` for simple read-only brownfield fact gathering; keep prompts narrow and concrete, and keep ambiguous or non-shell-only investigation on the richer normal path and fall back normally if `omx explore` is unavailable.
+- `omx explore` is deprecated. Use normal repository inspection tools/subagents for simple read-only brownfield fact gathering; use `omx sparkshell` only for explicit shell-native read-only evidence, and keep ambiguous or non-shell-only investigation on the richer normal path.
 - Always run a preflight context intake before the first interview question
 - If initial context is oversized or would exceed the prompt budget, do not paste or forward the raw payload into interview prompts; request and record a prompt-safe initial-context summary first
 - The oversized initial-context summary gate is blocking: wait for the concise summary before ambiguity scoring, crystallizing artifacts, or any downstream execution handoff

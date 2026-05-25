@@ -102,7 +102,7 @@ Before consensus planning or execution handoff, ensure a grounded context snapsh
    - constraints
    - unknowns/open questions
    - likely codebase touchpoints
-4. If ambiguity remains high, gather brownfield facts first. When session guidance enables `USE_OMX_EXPLORE_CMD`, prefer `omx explore` for simple read-only repository lookups with narrow, concrete prompts; otherwise use the richer normal explore path. Then run `$deep-interview --quick <task>` before continuing.
+4. If ambiguity remains high, gather brownfield facts first. `omx explore` is deprecated; use normal repository inspection tools/subagents for simple read-only repository lookups and `omx sparkshell` only for explicit shell-native read-only evidence. Then run `$deep-interview --quick <task>` before continuing.
 5. If the plan depends on official docs, version-aware framework guidance, best practices, or external dependency behavior, use `$best-practice-research` as the bounded evidence wrapper and auto-delegate `researcher` for the official/upstream lookup before finalizing the planning handoff so execution does not start from repo-local recall alone.
 6. If a prior `$autoresearch` or `$autoresearch-goal` run exists, treat its approved artifact as evidence for the plan. Do not include Autoresearch as a final architecture or runtime component unless the user explicitly requested ongoing research automation; otherwise synthesize the evidence into the `$ralplan` ADR, risks, and verification steps.
 

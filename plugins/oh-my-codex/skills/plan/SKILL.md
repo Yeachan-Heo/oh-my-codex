@@ -30,7 +30,7 @@ Jumping into code without understanding requirements leads to rework, scope cree
 - Auto-detect interview vs direct mode based on request specificity
 - Ask one question at a time during interviews -- never batch multiple interview rounds into one question form
 - Gather codebase facts via `explore` agent before asking the user about them
-- When session guidance enables `USE_OMX_EXPLORE_CMD`, prefer `omx explore` for simple read-only repository lookups during planning; keep prompts narrow and concrete, and keep prompt-heavy or ambiguous planning work on the richer normal path and fall back normally if `omx explore` is unavailable.
+- `omx explore` is deprecated. Use normal repository inspection tools/subagents for simple read-only repository lookups during planning; use `omx sparkshell` only for explicit shell-native read-only evidence, and keep prompt-heavy or ambiguous planning work on the richer normal path.
 - Plans must meet quality standards: 80%+ claims cite file/line, 90%+ criteria are testable
 - Implementation step count must be right-sized to task scope; avoid defaulting to exactly five steps when the work is clearly smaller or larger
 - Consensus mode outputs the final plan by default; add `--interactive` to enable execution handoff

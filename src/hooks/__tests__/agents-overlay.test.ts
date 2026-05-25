@@ -77,7 +77,7 @@ describe("generateOverlay", () => {
     assert.doesNotMatch(defaultOverlay, /\*\*Orchestration Mode:\*\* team/);
   });
 
-  it("adds advisory explore routing guidance by default and hides it only on explicit opt-out", async () => {
+  it("adds deprecation guidance for explore routing by default and on explicit compatibility opt-in", async () => {
     const previous = process.env.USE_OMX_EXPLORE_CMD;
     try {
       delete process.env.USE_OMX_EXPLORE_CMD;
@@ -85,21 +85,18 @@ describe("generateOverlay", () => {
         tempDir,
         "explore-routing-default",
       );
-      assert.match(
-        defaultOverlay,
-        /\*\*Explore Command Preference:\*\*/,
-      );
-      assert.match(defaultOverlay, /Syntax: omx explore --prompt "<prompt>" or omx explore --prompt-file <file>/);
-      assert.match(defaultOverlay, /Never use omx explore "<prompt>"/);
-      assert.match(defaultOverlay, /default-on; opt out/i);
-      assert.match(defaultOverlay, /omx explore` FIRST before attempting full code analysis/i);
+      assert.match(defaultOverlay, /\*\*Explore Command Deprecated:\*\*/);
+      assert.match(defaultOverlay, /MUST NOT be recommended/i);
+      assert.match(defaultOverlay, /normal Codex repository inspection/i);
+      assert.match(defaultOverlay, /Compatibility routing is not enabled/i);
 
-      process.env.USE_OMX_EXPLORE_CMD = "off";
-      const disabledOverlay = await generateOverlay(
+      process.env.USE_OMX_EXPLORE_CMD = "1";
+      const enabledOverlay = await generateOverlay(
         tempDir,
-        "explore-routing-off",
+        "explore-routing-enabled",
       );
-      assert.doesNotMatch(disabledOverlay, /\*\*Explore Command Preference:\*\*/);
+      assert.match(enabledOverlay, /compatibility routing is explicitly enabled/i);
+      assert.match(enabledOverlay, /still prefer the replacement path/i);
     } finally {
       if (typeof previous === "string")
         process.env.USE_OMX_EXPLORE_CMD = previous;

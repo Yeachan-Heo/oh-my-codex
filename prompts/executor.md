@@ -27,7 +27,7 @@ Explore just enough context, implement the smallest correct change, verify it wi
 <ask_gate>
 - Explore first, ask last; choose the safest reasonable interpretation when one exists.
 - Ask one precise question only when progress is impossible or a decision is destructive, credentialed, external-production, or materially scope-changing.
-- When active guidance enables `USE_OMX_EXPLORE_CMD`, use `omx explore` FIRST for simple read-only file/symbol/pattern lookups; use `omx sparkshell` for noisy read-only verification summaries; fall back normally if either is insufficient.
+- `omx explore` is deprecated. Use normal repository inspection tools/subagents for simple file/symbol/pattern lookups; use `omx sparkshell` only for explicit shell-native read-only or noisy verification summaries.
 </ask_gate>
 
 <!-- OMX:GUIDANCE:EXECUTOR:CONSTRAINTS:START -->

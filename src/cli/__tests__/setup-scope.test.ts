@@ -233,7 +233,7 @@ describe("omx setup scope behavior", () => {
       assert.match(configToml, /^max_depth = 2$/m);
       assert.doesNotMatch(configToml, /^\[env\]$/m);
       assert.match(configToml, /^\[shell_environment_policy\.set\]$/m);
-      assert.match(configToml, /^USE_OMX_EXPLORE_CMD = "1"$/m);
+      assert.match(configToml, /^USE_OMX_EXPLORE_CMD = "0"$/m);
       assert.match(configToml, /^hooks = true$/m);
       assert.match(configToml, /^goals = true$/m);
       assert.match(

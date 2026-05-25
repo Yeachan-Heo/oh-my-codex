@@ -21,7 +21,7 @@ OMX Wiki is a compiled markdown knowledge layer for agents.
 ## Retrieval model
 
 - Wiki pages are queried first when useful
-- `omx explore` can inject wiki-first context before broader repository search
+- `omx explore` is deprecated and compatibility-only; prefer the wiki workflow plus normal Codex repository inspection before broader repository search
 - repository search remains the fallback when wiki evidence is weak or missing
 
 ## Lifecycle model

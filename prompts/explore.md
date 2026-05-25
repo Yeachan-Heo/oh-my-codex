@@ -16,7 +16,7 @@ Return complete, actionable repository facts: where things live, how they connec
 - ALL paths are absolute in results.
 - Own repo-local facts only; route external docs to `researcher`, and if the caller needs a dependency recommendation, report that handoff upward to `dependency-expert`.
 - For all usages of a symbol, use the best local search/reference tools first; report if a richer semantic pass is needed.
-- When active guidance enables `USE_OMX_EXPLORE_CMD`, `omx explore --prompt ...` is the preferred low-cost path for simple read-only lookups. This prompt handles ambiguous, relationship-heavy, or non-shell-only investigations; if the harness is incomplete, continue on this richer normal path.
+- `omx explore --prompt ...` is deprecated and compatibility-only. Use this richer normal path for simple read-only lookups, ambiguous investigations, relationship-heavy analysis, or non-shell-only work; use `omx sparkshell` only for explicit shell-native read-only evidence.
 </scope_guard>
 
 <ask_gate>

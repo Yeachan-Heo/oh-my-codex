@@ -298,6 +298,7 @@ If `Shift+Enter` still submits instead of inserting a newline inside an OMX-mana
 Examples:
 
 ```bash
+# Deprecated compatibility only; prefer normal Codex repository inspection for new lookups
 omx explore --prompt "find where team state is written"
 omx sparkshell git status
 omx sparkshell --tmux-pane %12 --tail-lines 400

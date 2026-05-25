@@ -637,7 +637,7 @@ enabled = true
 		});
 	});
 
-	it("warns when explore routing is explicitly disabled in config.toml", async () => {
+	it("passes when deprecated explore routing is explicitly disabled by environment/config", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-explore-routing-"));
 		try {
 			const home = join(wd, "home");
@@ -654,12 +654,13 @@ USE_OMX_EXPLORE_CMD = "off"
 			const res = runOmx(wd, ["doctor"], {
 				HOME: home,
 				CODEX_HOME: join(home, ".codex"),
+				USE_OMX_EXPLORE_CMD: "off",
 			});
 			if (shouldSkipForSpawnPermissions(res.error)) return;
 			assert.equal(res.status, 0, res.stderr || res.stdout);
 			assert.match(
 				res.stdout,
-				/Explore routing: disabled in config\.toml; set USE_OMX_EXPLORE_CMD = "1" under \[shell_environment_policy\.set\] to restore default explore-first routing/,
+				/Explore routing: deprecated compatibility routing disabled by environment override \(recommended\)/,
 			);
 		} finally {
 			await rm(wd, { recursive: true, force: true });

@@ -274,10 +274,10 @@ Verification loop: define the claim and success criteria, run the smallest valid
 Mode selection: use `$deep-interview` for unclear intent/boundaries; `$ralplan` for consensus on architecture, tradeoffs, or tests; `$team` for approved multi-lane work; `$ralph` for persistent single-owner completion/verification loops; otherwise execute directly in solo mode. Switch modes only when evidence shows the current lane is mismatched or blocked.
 
 Command routing:
-- When `USE_OMX_EXPLORE_CMD` enables advisory routing, strongly prefer `omx explore` as the default surface for simple read-only repository lookup tasks (files, symbols, patterns, relationships).
-- For simple file/symbol lookups, use `omx explore` FIRST before attempting full code analysis.
+- `omx explore` is deprecated and MUST NOT be recommended as the default surface for simple read-only repository lookup tasks. Use normal Codex repository inspection tools/subagents for file, symbol, pattern, relationship, and implementation discovery.
+- `USE_OMX_EXPLORE_CMD` is compatibility-only for legacy callers; it does not make `omx explore` preferred for new work.
 
-Use `omx explore --prompt ...` for simple read-only lookups through the shell-only, allowlisted, read-only path. Use `omx sparkshell` for noisy read-only shell commands, bounded verification, repo-wide listing/search, or explicit `omx sparkshell --tmux-pane` summaries. Treat sparkshell as explicit opt-in. When to use what: keep ambiguous, implementation-heavy, edit-heavy, diagnostics, tests, MCP/web, and complex shell work on the normal path; if `omx explore` or `omx sparkshell` is incomplete, retry narrower or gracefully fall back to the normal path.
+Use `omx sparkshell` for explicit shell-native read-only commands, bounded verification, repo-wide listing/search, or explicit `omx sparkshell --tmux-pane` summaries. Treat sparkshell as explicit opt-in. When to use what: keep ambiguous, implementation-heavy, edit-heavy, diagnostics, tests, MCP/web, and complex shell work on the normal path; if `omx sparkshell` is incomplete, retry narrower or gracefully fall back to the normal path.
 
 Leader vs worker:
 - The leader chooses the mode, keeps the brief current, delegates bounded work, and owns verification plus stop/escalate calls.

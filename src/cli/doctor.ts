@@ -906,15 +906,20 @@ async function checkModelContextRecommendation(
 
 async function checkExploreRouting(configPath: string): Promise<Check> {
 	const envValue = process.env[OMX_EXPLORE_CMD_ENV];
-	if (
-		typeof envValue === "string" &&
-		!isExploreCommandRoutingEnabled(process.env)
-	) {
+	if (typeof envValue === "string") {
+		if (isExploreCommandRoutingEnabled(process.env)) {
+			return {
+				name: "Explore routing",
+				status: "warn",
+				message:
+					"deprecated compatibility routing enabled by environment override; remove USE_OMX_EXPLORE_CMD or set it to 0 and use normal Codex repo inspection or omx sparkshell instead",
+			};
+		}
 		return {
 			name: "Explore routing",
-			status: "warn",
+			status: "pass",
 			message:
-				"disabled by environment override; enable with USE_OMX_EXPLORE_CMD=1 (or remove the explicit opt-out)",
+				"deprecated compatibility routing disabled by environment override (recommended)",
 		};
 	}
 
@@ -922,7 +927,7 @@ async function checkExploreRouting(configPath: string): Promise<Check> {
 		return {
 			name: "Explore routing",
 			status: "pass",
-			message: "enabled by default (config.toml not found yet)",
+			message: "deprecated by default (config.toml not found yet)",
 		};
 	}
 
@@ -936,24 +941,28 @@ async function checkExploreRouting(configPath: string): Promise<Check> {
 			parsed?.shell_environment_policy?.set?.USE_OMX_EXPLORE_CMD ??
 			parsed?.env?.USE_OMX_EXPLORE_CMD;
 
-		if (
-			typeof configuredValue === "string" &&
-			!isExploreCommandRoutingEnabled({
+		if (typeof configuredValue === "string") {
+			if (isExploreCommandRoutingEnabled({
 				USE_OMX_EXPLORE_CMD: configuredValue,
-			})
-		) {
+			})) {
+				return {
+					name: "Explore routing",
+					status: "warn",
+					message:
+						'deprecated compatibility routing enabled in config.toml; set USE_OMX_EXPLORE_CMD = "0" under [shell_environment_policy.set] and use normal Codex repo inspection or omx sparkshell instead',
+				};
+			}
 			return {
 				name: "Explore routing",
-				status: "warn",
-				message:
-					'disabled in config.toml; set USE_OMX_EXPLORE_CMD = "1" under [shell_environment_policy.set] to restore default explore-first routing',
+				status: "pass",
+				message: "deprecated compatibility routing disabled in config.toml (recommended)",
 			};
 		}
 
 		return {
 			name: "Explore routing",
 			status: "pass",
-			message: "enabled by default",
+			message: "deprecated by default",
 		};
 	} catch {
 		return {
