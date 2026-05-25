@@ -36,7 +36,7 @@ Autopilot must not run a separate broad expansion/planning/execution/QA/validati
 2. **Phase `ralplan`** — consensus planning gate
    - Ground the task with pre-context intake and the deep-interview artifact.
    - Run or resume `$ralplan` to produce/update PRD and test-spec artifacts.
-   - PRD/test-spec files alone are not completion evidence. Ralplan may hand off only after durable consensus evidence records an `Architect` approval first and a subsequent `Critic` approval second.
+   - PRD/test-spec files alone are not completion evidence. Ralplan may hand off only after durable consensus evidence records a subsequent `Architect` approval first and a subsequent `Critic` approval second.
    - When returning from a non-clean review or QA pass, include `return_to_ralplan_reason` and the findings as first-class planning input.
    - If either review is missing, blocked, out of order, or non-approving, remain in `ralplan` or report an explicit blocker/max-iteration outcome; do not progress to `$ultragoal`, `$team`, `$ralph`, or implementation.
    - Required handoff artifact: an approved plan/test spec plus `ralplan_consensus_gate` evidence suitable for `$ultragoal`.
@@ -170,7 +170,7 @@ Pipeline state should use `current_phase` values that match the same phase names
 
 <Final_Checklist>
 - [ ] Phase `deep-interview` produced/updated clarified requirements or a concise spec
-- [ ] Phase `ralplan` produced/updated approved planning artifacts and durable sequential Architect→Critic consensus evidence
+- [ ] Phase `ralplan` produced/updated approved planning artifacts and durable sequential evidence from a subsequent `Architect` approval followed by a subsequent `Critic` approval
 - [ ] Phase `ultragoal` implemented and verified the plan with fresh evidence and durable ledger/checkpoint references
 - [ ] `$team` was used only if the active Ultragoal story needed coordinated parallel work, or explicitly recorded as not needed
 - [ ] Phase `code-review` returned a clean verdict (`APPROVE` + `CLEAR`)
