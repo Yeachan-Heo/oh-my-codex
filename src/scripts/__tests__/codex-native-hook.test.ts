@@ -4440,6 +4440,30 @@ exit 0
     }
   });
 
+  it("allows read-only inspection commands that mention omx team syntax from Codex App/native outside tmux", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-team-readonly-mention-"));
+    try {
+      const mentionedCommand = ["omx", "team"].join(" ");
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          source: "codex-app",
+          session_id: "sess-team-readonly-mention",
+          tool_name: "Bash",
+          tool_use_id: "tool-team-readonly-mention",
+          tool_input: { command: `rg -n "${mentionedCommand}|multi-agent" ~/.codex/AGENTS.md ~/.codex/skills` },
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "pre-tool-use");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("preserves direct CLI outside-tmux omx team Bash behavior", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-team-cli-outside-"));
     try {

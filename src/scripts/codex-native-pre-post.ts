@@ -1119,7 +1119,7 @@ function commandInvokesOmxTeam(command: string): boolean {
     if ((token === 'omx' || token === 'omx.js') && tokens[index + 1] === 'team') return true;
     if ((token === 'node' || token === 'node.exe') && /(?:^|\/)omx\.js$/.test(tokens[index + 1] || '') && tokens[index + 2] === 'team') return true;
   }
-  return /\bomx\s+team\b/i.test(command) || /\bomx\.js['"]?\s+team\b/i.test(command);
+  return false;
 }
 
 function commandInvokesOmxHud(command: string): boolean {
@@ -1130,7 +1130,7 @@ function commandInvokesOmxHud(command: string): boolean {
     if ((token === 'omx' || token === 'omx.js') && tokens[index + 1] === 'hud') return true;
     if ((token === 'node' || token === 'node.exe') && /(?:^|\/)omx\.js$/.test(tokens[index + 1] || '') && tokens[index + 2] === 'hud') return true;
   }
-  return /\bomx\s+hud\b/i.test(command) || /\bomx\.js['"]?\s+hud\b/i.test(command);
+  return false;
 }
 
 function buildNativeOmxHudPreToolUseEnforcementOutput(
