@@ -5,7 +5,7 @@
 import { existsSync, readFileSync } from "fs";
 import { mkdtemp, readdir, readFile, rm } from "fs/promises";
 import { spawnSync } from "child_process";
-import { join } from "path";
+import { basename, join } from "path";
 import { tmpdir } from "os";
 import {
 	codexHome,
@@ -15,6 +15,7 @@ import {
 	projectSkillsDir,
 	omxStateDir,
 	detectLegacySkillRootOverlap,
+	codexAgentsDir,
 } from "../utils/paths.js";
 import {
 	classifySpawnError,
@@ -102,6 +103,7 @@ interface DoctorPaths {
 	hooksPath: string;
 	promptsDir: string;
 	skillsDir: string;
+	agentsDir: string;
 	stateDir: string;
 }
 
@@ -128,6 +130,7 @@ function resolveDoctorPaths(cwd: string, scope: DoctorSetupScope): DoctorPaths {
 			hooksPath: join(codexHomeDir, "hooks.json"),
 			promptsDir: join(codexHomeDir, "prompts"),
 			skillsDir: projectSkillsDir(cwd),
+			agentsDir: codexAgentsDir(codexHomeDir),
 			stateDir: omxStateDir(cwd),
 		};
 	}
@@ -138,6 +141,7 @@ function resolveDoctorPaths(cwd: string, scope: DoctorSetupScope): DoctorPaths {
 		hooksPath: join(codexHome(), "hooks.json"),
 		promptsDir: codexPromptsDir(),
 		skillsDir: userSkillsDir(),
+		agentsDir: codexAgentsDir(),
 		stateDir: omxStateDir(cwd),
 	};
 }
@@ -228,6 +232,13 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
 	// Check 6: Skills installed
 	checks.push(await checkSkills(paths, scopeResolution.installMode));
+
+	// Check 6.25: Native reviewer roles required by RALPLAN/Autopilot
+	const nativeReviewerRolesCheck = checkNativeReviewerRoles(
+		paths,
+		scopeResolution.installMode,
+	);
+	if (nativeReviewerRolesCheck) checks.push(nativeReviewerRolesCheck);
 
 	// Check 6.5: Legacy/current skill-root overlap
 	if (scopeResolution.scope === "user") {
@@ -1763,6 +1774,113 @@ async function checkPluginMarketplaceRegistration(
 				"cannot read or parse config.toml for plugin marketplace registration",
 		};
 	}
+}
+
+const REQUIRED_NATIVE_REVIEWER_ROLES = ["architect", "critic"] as const;
+const ADVISORY_NATIVE_REVIEWER_ROLES = ["scholastic"] as const;
+
+type NativeReviewerRole =
+	| typeof REQUIRED_NATIVE_REVIEWER_ROLES[number]
+	| typeof ADVISORY_NATIVE_REVIEWER_ROLES[number];
+
+function getParsedAgentTables(
+	configPath: string,
+): Record<string, unknown> | null {
+	if (!existsSync(configPath)) return null;
+	try {
+		const parsed = parseToml(readFileSync(configPath, "utf-8")) as {
+			agents?: unknown;
+		};
+		return parsed.agents &&
+			typeof parsed.agents === "object" &&
+			!Array.isArray(parsed.agents)
+			? (parsed.agents as Record<string, unknown>)
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+function configHasNativeReviewerRole(
+	configPath: string,
+	role: NativeReviewerRole,
+): boolean {
+	const agents = getParsedAgentTables(configPath);
+	if (!agents) return false;
+	const value = agents[role];
+	return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function agentTomlDefinesRole(path: string, role: NativeReviewerRole): boolean {
+	if (!existsSync(path)) return false;
+	try {
+		const parsed = parseToml(readFileSync(path, "utf-8")) as { name?: unknown };
+		if (typeof parsed.name === "string" && parsed.name.trim() !== "") {
+			return parsed.name.trim() === role;
+		}
+		return basename(path, ".toml") === role;
+	} catch {
+		return false;
+	}
+}
+
+function nativeReviewerRoleAvailable(
+	paths: DoctorPaths,
+	role: NativeReviewerRole,
+): boolean {
+	return agentTomlDefinesRole(join(paths.agentsDir, `${role}.toml`), role)
+		|| configHasNativeReviewerRole(paths.configPath, role);
+}
+
+function formatNativeRoleFileList(roles: readonly NativeReviewerRole[]): string {
+	const files = roles.map((role) => `${role}.toml`);
+	if (files.length <= 1) return files[0] ?? "";
+	return `${files.slice(0, -1).join(", ")} and ${files.at(-1)}`;
+}
+
+function checkNativeReviewerRoles(
+	paths: DoctorPaths,
+	installMode?: SetupInstallMode,
+): Check | null {
+	if (installMode !== "plugin") return null;
+
+	const missingRequired = REQUIRED_NATIVE_REVIEWER_ROLES.filter(
+		(role) => !nativeReviewerRoleAvailable(paths, role),
+	);
+	const missingAdvisory = ADVISORY_NATIVE_REVIEWER_ROLES.filter(
+		(role) => !nativeReviewerRoleAvailable(paths, role),
+	);
+
+	if (missingRequired.length > 0) {
+		const advisorySuffix = missingAdvisory.length > 0
+			? `; advisory role missing: ${missingAdvisory.join(", ")}`
+			: "";
+		return {
+			name: "Native reviewer roles",
+			status: "fail",
+			message:
+				`plugin mode supplies skills/hooks, but required RALPLAN/Autopilot native reviewer role(s) are unavailable: ${missingRequired.join(", ")}. ` +
+				`Install ${formatNativeRoleFileList(missingRequired)} under ${paths.agentsDir} or define equivalent [agents.<role>] entries in ${paths.configPath}; ` +
+				`otherwise role-specific subagent calls may degrade to prompt-only/default subagents${advisorySuffix}`,
+		};
+	}
+
+	if (missingAdvisory.length > 0) {
+		return {
+			name: "Native reviewer roles",
+			status: "warn",
+			message:
+				`required RALPLAN/Autopilot native reviewer roles are available (${REQUIRED_NATIVE_REVIEWER_ROLES.join(", ")}); ` +
+				`advisory ontology reviewer role(s) missing: ${missingAdvisory.join(", ")} (optional unless explicitly used)`,
+		};
+	}
+
+	return {
+		name: "Native reviewer roles",
+		status: "pass",
+		message:
+			`required RALPLAN/Autopilot native reviewer roles are available (${REQUIRED_NATIVE_REVIEWER_ROLES.join(", ")}); advisory ${ADVISORY_NATIVE_REVIEWER_ROLES.join(", ")} role is also available`,
+	};
 }
 
 async function checkSkills(

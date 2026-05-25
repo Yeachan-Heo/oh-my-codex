@@ -1611,7 +1611,7 @@ describe("omx setup install mode behavior", () => {
 					assert.match(config, /developer_instructions\s*=/);
 					assert.match(
 						config,
-						/Registered Codex plugin marketplace surfaces supply OMX workflows, prompts, and native-agent roles/,
+						/Registered Codex plugin marketplace surfaces supply OMX workflows and plugin-scoped companion resources/,
 					);
 					assert.match(config, /User-installed skills may still live under ~\/.codex\/skills/);
 					assert.match(
@@ -1644,7 +1644,7 @@ describe("omx setup install mode behavior", () => {
 					);
 					assert.match(
 						agentsMd,
-						/Registered Codex plugin marketplace surfaces supply OMX workflows, prompts, and native-agent roles/,
+						/Registered Codex plugin marketplace surfaces supply OMX workflows and plugin-scoped companion resources/,
 					);
 					assert.match(agentsMd, /User-installed skills may still live under `~\/.codex\/skills`/);
 					assert.match(
@@ -1675,7 +1675,7 @@ describe("omx setup install mode behavior", () => {
 					const agentsMd = await readFile(join(wd, "AGENTS.md"), "utf-8");
 					assert.match(
 						agentsMd,
-						/Registered Codex plugin marketplace surfaces supply OMX workflows, prompts, and native-agent roles/,
+						/Registered Codex plugin marketplace surfaces supply OMX workflows and plugin-scoped companion resources/,
 					);
 					assert.match(
 						agentsMd,

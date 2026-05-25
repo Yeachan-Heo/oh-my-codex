@@ -251,7 +251,7 @@ command = "node"
 		}
 	});
 
-	it("treats plugin-mode setup omissions as expected and verifies marketplace registration", async () => {
+	it("surfaces missing native reviewer roles separately from healthy plugin skills and hooks", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-mode-"));
 		try {
 			const home = join(wd, "home");
@@ -287,12 +287,68 @@ command = "node"
 			);
 			assert.match(
 				res.stdout,
+				/\[XX\] Native reviewer roles: plugin mode supplies skills\/hooks, but required RALPLAN\/Autopilot native reviewer role\(s\) are unavailable: architect, critic/,
+			);
+			assert.match(
+				res.stdout,
+				/role-specific subagent calls may degrade to prompt-only\/default subagents; advisory role missing: scholastic/,
+			);
+			assert.match(
+				res.stdout,
 				/MCP Servers: CLI-first plugin mode: first-party MCP compatibility explicitly disabled/,
 			);
 			assert.doesNotMatch(res.stdout, /Prompts: prompts directory not found/);
 			assert.doesNotMatch(res.stdout, /Skills: skills directory not found/);
 			assert.doesNotMatch(res.stdout, /Skills: \d+ skills \(expected >=/);
 			assert.doesNotMatch(res.stdout, /MCP Servers: no MCP servers configured/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("accepts plugin mode when required native reviewer roles are available from agent files and config", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-native-roles-ok-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(codexDir, { recursive: true });
+
+			const setupRes = runOmx(
+				wd,
+				["setup", "--scope", "user", "--plugin", "--force"],
+				{
+					HOME: home,
+					CODEX_HOME: codexDir,
+				},
+			);
+			if (shouldSkipForSpawnPermissions(setupRes.error)) return;
+			assert.equal(setupRes.status, 0, setupRes.stderr || setupRes.stdout);
+
+			await mkdir(join(codexDir, "agents"), { recursive: true });
+			await writeFile(
+				join(codexDir, "agents", "architect.toml"),
+				'name = "architect"\ndescription = "Architect reviewer"\n',
+			);
+			await writeFile(
+				join(codexDir, "config.toml"),
+				`${await readFile(join(codexDir, "config.toml"), "utf-8")}\n[agents.critic]\ndescription = "Critic reviewer"\n\n[agents.scholastic]\ndescription = "Scholastic advisory reviewer"\n`,
+			);
+
+			const res = runOmx(wd, ["doctor"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(
+				res.stdout,
+				/\[OK\] Native reviewer roles: required RALPLAN\/Autopilot native reviewer roles are available \(architect, critic\); advisory scholastic role is also available/,
+			);
+			assert.match(
+				res.stdout,
+				/Skills: plugin marketplace oh-my-codex-local registered; OMX skills are supplied by/,
+			);
+			assert.doesNotMatch(res.stdout, /role-specific subagent calls may degrade/);
 		} finally {
 			await rm(wd, { recursive: true, force: true });
 		}

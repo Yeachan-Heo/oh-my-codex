@@ -275,7 +275,7 @@ function applyPluginModeWordingToAgentsTemplate(
 			: "`~/.codex/skills`";
 	return scopedContent.replace(
 		/Role prompts under `prompts\/\*\.md` are narrower execution surfaces\. They must follow this file, not override it\.\nWhen OMX is installed, load the installed prompt\/skill\/agent surfaces from [^\n]+active\)\./,
-		`Registered Codex plugin marketplace surfaces supply OMX workflows, prompts, and native-agent roles when the plugin is installed. They must follow this file, not override it.\nUser-installed skills may still live under ${userSkillPath}. Setup-owned prompt files and native-agent TOML defaults are intentionally omitted in plugin mode unless explicitly installed.`,
+		`Registered Codex plugin marketplace surfaces supply OMX workflows and plugin-scoped companion resources when the plugin is installed. Required native reviewer roles still need active Codex agent configs. They must follow this file, not override it.\nUser-installed skills may still live under ${userSkillPath}. Setup-owned prompt files and native-agent TOML defaults are intentionally omitted in plugin mode unless explicitly installed.`,
 	);
 }
 
