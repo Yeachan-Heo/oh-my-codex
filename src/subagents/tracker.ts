@@ -179,13 +179,7 @@ export function recordSubagentTurn(
           ...(input.turnId?.trim() ? { last_completed_turn_id: input.turnId.trim() } : {}),
           ...(input.completionSource?.trim() ? { completion_source: input.completionSource.trim() } : {}),
         }
-      : existingThread?.completed_at
-        ? {
-            completed_at: existingThread.completed_at,
-            ...(existingThread.last_completed_turn_id ? { last_completed_turn_id: existingThread.last_completed_turn_id } : {}),
-            ...(existingThread.completion_source ? { completion_source: existingThread.completion_source } : {}),
-          }
-        : {}),
+      : {}),
     ...(input.mode?.trim() ? { mode: input.mode.trim() } : existingThread?.mode ? { mode: existingThread.mode } : {}),
   };
 
