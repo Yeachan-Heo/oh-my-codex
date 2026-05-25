@@ -3136,6 +3136,16 @@ async function cleanupObsoleteNativeAgents(
 
 		if (!containsTomlKey(content, OBSOLETE_NATIVE_AGENT_FIELD)) continue;
 
+		const agentName = file.slice(0, -5);
+		if (!isGeneratedOmxNativeAgentToml(content, agentName)) {
+			if (options.verbose) {
+				console.log(
+					`  skipped stale obsolete native agent ${file}: not an OMX-generated native agent`,
+				);
+			}
+			continue;
+		}
+
 		if (await ensureBackup(fullPath, true, backupContext, options)) {
 			// backup created for pre-existing obsolete native agent config
 		}

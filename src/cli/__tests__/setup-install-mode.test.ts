@@ -2298,6 +2298,52 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
+	it("preserves unmanaged native agent TOMLs with obsolete skill_ref during plugin refresh", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user", installMode: "legacy" });
+
+					const customAgentPath = join(
+						codexHomeDir,
+						"agents",
+						"custom-reviewer.toml",
+					);
+					const generatedAgentPath = join(
+						codexHomeDir,
+						"agents",
+						"ghost.toml",
+					);
+					const customAgentToml = [
+						'name = "custom-reviewer"',
+						'description = "user-managed reviewer"',
+						'skill_ref = "custom-reviewer"',
+						"",
+					].join("\n");
+					await writeFile(customAgentPath, customAgentToml);
+					await writeFile(
+						generatedAgentPath,
+						[
+							"# oh-my-codex agent: ghost",
+							'name = "ghost"',
+							'description = "obsolete generated reviewer"',
+							'skill_ref = "ghost"',
+							"",
+						].join("\n"),
+					);
+
+					await setup({ scope: "user", installMode: "plugin" });
+
+					assert.equal(await readFile(customAgentPath, "utf-8"), customAgentToml);
+					assert.equal(existsSync(generatedAgentPath), false);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("counts plugin cleanup skill directory backups in the setup summary", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {
