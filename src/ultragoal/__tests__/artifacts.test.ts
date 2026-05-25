@@ -117,6 +117,125 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('derives story goals without queuing nested criteria or plain-label checklist items', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: [
+          '### Stories',
+          '  1. Ship parser fix',
+          '     - Preserve parent story objective detail',
+          '  2. Add coverage',
+          '',
+          'Acceptance criteria:',
+          '  - Parent stories only',
+          '',
+          'Verification checklist:',
+          '  1. Run tests',
+          '  2. Run lint',
+        ].join('\n'),
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), ['Ship parser fix', 'Add coverage']);
+      assert.match(plan.goals[0]?.objective ?? '', /Preserve parent story objective detail/);
+      assert.doesNotMatch(plan.goals[1]?.objective ?? '', /Run tests|Run lint|Parent stories only/);
+    });
+  });
+
+  it('does not fall back to checklist bullets when a brief has only non-story sections', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: '### Verification checklist:\n- Run tests\n- Run lint\n\nAcceptance criteria:\n- Parent stories only',
+      });
+
+      assert.equal(plan.goals.length, 1);
+      assert.equal(plan.goals[0]?.title, '### Verification checklist:');
+      assert.doesNotMatch(plan.goals[0]?.id ?? '', /run-tests|run-lint|parent-stories/);
+    });
+  });
+
+  it('keeps later sibling stories after an indented plain-label note', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: '1. Story A\n   Notes:\n   - Keep as detail\n2. Story B',
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), ['Story A', 'Story B']);
+      assert.match(plan.goals[0]?.objective ?? '', /Keep as detail/);
+    });
+  });
+
+  it('prefers story-section goals over preface bullets', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: '- Context\n\n### Stories\n  1. Ship parser fix\n  2. Add coverage',
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), ['Ship parser fix', 'Add coverage']);
+    });
+  });
+
+  it('prefers indented markdown story headings over preface bullets', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: '- Context\n\n  ### Stories\n    1. Ship parser fix\n    2. Add coverage',
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), ['Ship parser fix', 'Add coverage']);
+    });
+  });
+
+  it('keeps sibling stories after an indented ATX note heading', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: '1. Story A\n   ### Notes\n   - Keep as detail\n2. Story B',
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), ['Story A', 'Story B']);
+      assert.match(plan.goals[0]?.objective ?? '', /Keep as detail/);
+    });
+  });
+
+  it('keeps sibling stories after a blank before an indented ATX note heading', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: '1. Story A\n\n   ### Notes\n   - Keep as detail\n2. Story B',
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), ['Story A', 'Story B']);
+      assert.match(plan.goals[0]?.objective ?? '', /Keep as detail/);
+    });
+  });
+
+  it('resumes unlabeled top-level story bullets after a non-story section break', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: 'Acceptance criteria:\n- keep API stable\n\n- Ship parser fix\n- Add coverage',
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), ['Ship parser fix', 'Add coverage']);
+    });
+  });
+
+  it('deduplicates derived list goals', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: '- Ship parser fix\n- Ship parser fix\n- Add coverage',
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), ['Ship parser fix', 'Add coverage']);
+    });
+  });
+
+  it('recognizes singular story headings when choosing goals over preface bullets', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: '- Context\n\n### Story\n  1. Ship parser fix\n  2. Add coverage',
+      });
+
+      assert.deepEqual(plan.goals.map((goal) => goal.title), ['Ship parser fix', 'Add coverage']);
+    });
+  });
+
   it('starts one story at a time and emits an aggregate Codex goal handoff by default', async () => {
     await withTempRepo(async (cwd) => {
       await createUltragoalPlan(cwd, {

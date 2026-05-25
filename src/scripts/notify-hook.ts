@@ -272,6 +272,14 @@ function isTurnCompletePayload(payload: Record<string, unknown>): boolean {
   return type === '' || type === 'agent-turn-complete' || type === 'turn-complete';
 }
 
+function isNotifyFallbackTaskCompletePayload(payload: Record<string, unknown>): boolean {
+  const source = safeString(payload.source || '').trim();
+  if (source !== 'notify-fallback-watcher') return false;
+  return normalizeInputMessages(payload).some((message) => (
+    message.includes('[notify-fallback] synthesized from rollout task_complete')
+  ));
+}
+
 async function main() {
   const rawPayload = process.argv[process.argv.length - 1];
   if (!rawPayload || rawPayload.startsWith('-')) {
@@ -294,6 +302,7 @@ async function main() {
   const inputMessages = normalizeInputMessages(payload);
   const latestUserInput = safeString(inputMessages.length > 0 ? inputMessages[inputMessages.length - 1] : '');
   const isTurnComplete = isTurnCompletePayload(payload);
+  const isNotifyFallbackTaskComplete = isNotifyFallbackTaskCompletePayload(payload);
 
   // Team worker detection via environment variable
   const teamWorkerEnv = process.env.OMX_TEAM_INTERNAL_WORKER || process.env.OMX_TEAM_WORKER; // e.g., "fix-ts/worker-1"
@@ -358,6 +367,12 @@ async function main() {
           ...(turnId ? { turnId } : {}),
           timestamp: new Date().toISOString(),
           mode: safeString(payload.mode || ''),
+          ...(isNotifyFallbackTaskComplete
+            ? {
+                completed: true,
+                completionSource: 'notify-fallback-watcher',
+              }
+            : {}),
         });
       }
     } catch {

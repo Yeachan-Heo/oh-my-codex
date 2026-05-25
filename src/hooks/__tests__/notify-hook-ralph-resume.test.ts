@@ -126,6 +126,71 @@ async function withPatchedEnv<T>(
 }
 
 describe('notify-hook Ralph session resume', () => {
+  it('does not mark normal native turn-complete notifications as subagent completion', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-notify-subagent-normal-turn-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-normal-turn';
+      const leaderThreadId = 'leader-thread';
+      const subagentThreadId = 'subagent-thread';
+      const startedAt = '2026-03-17T00:00:00.000Z';
+      await writeJson(join(stateDir, 'session.json'), { session_id: sessionId });
+      await writeJson(join(stateDir, 'subagent-tracking.json'), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: leaderThreadId,
+            updated_at: startedAt,
+            threads: {
+              [leaderThreadId]: {
+                thread_id: leaderThreadId,
+                kind: 'leader',
+                first_seen_at: startedAt,
+                last_seen_at: startedAt,
+                turn_count: 1,
+              },
+              [subagentThreadId]: {
+                thread_id: subagentThreadId,
+                kind: 'subagent',
+                first_seen_at: startedAt,
+                last_seen_at: startedAt,
+                turn_count: 1,
+              },
+            },
+          },
+        },
+      });
+
+      const result = runNotifyHook(
+        buildPayload(wd, {
+          session_id: sessionId,
+          thread_id: subagentThreadId,
+          turn_id: 'turn-normal-complete',
+          source: 'native',
+          input_messages: ['ordinary native subagent turn'],
+        }),
+        {
+          OMX_ROOT: '',
+          OMX_STATE_ROOT: '',
+          OMX_TEAM_STATE_ROOT: '',
+          OMX_SESSION_ID: '',
+          OMX_NOTIFY_HOOK_TRUSTED_MANAGED_CWD: wd,
+        },
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+
+      const tracking = JSON.parse(await readFile(join(stateDir, 'subagent-tracking.json'), 'utf-8'));
+      const subagentThread = tracking.sessions?.[sessionId]?.threads?.[subagentThreadId];
+      assert.equal(subagentThread?.completed_at, undefined);
+      assert.equal(subagentThread?.last_completed_turn_id, undefined);
+      assert.equal(subagentThread?.completion_source, undefined);
+      assert.equal(subagentThread?.last_turn_id, 'turn-normal-complete');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('resumes a matching prior Ralph into the current OMX session and rebinds the pane', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-notify-ralph-resume-'));
     try {

@@ -273,6 +273,95 @@ function cleanLine(line: string): string {
   return line.replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/, '').trim();
 }
 
+interface MarkdownListItem {
+  lineIndex: number;
+  indent: number;
+  text: string;
+  section?: string;
+}
+
+function lineIndentWidth(line: string): number {
+  return (line.match(/^(\s*)/)?.[1] ?? '').replace(/\t/g, '  ').length;
+}
+
+function normalizeSectionLabel(value: string): string | undefined {
+  if (/^\s*(?:[-*+]\s+|\d+[.)]\s+)/.test(value)) return undefined;
+  const atx = /^#{1,6}\s+(.+?)\s*#*\s*$/.exec(value)?.[1];
+  const plain = /^([^\s].{1,100}):\s*$/.exec(value)?.[1];
+  return (atx ?? plain)?.replace(/[`*_~]/g, '').replace(/:$/, '').trim().toLowerCase();
+}
+
+function normalizeIndentedAtxStorySectionLabel(value: string): string | undefined {
+  const atx = /^\s{1,3}#{1,6}\s+(.+?)\s*#*\s*$/.exec(value)?.[1]
+    ?.replace(/[`*_~]/g, '')
+    .replace(/:$/, '')
+    .trim()
+    .toLowerCase();
+  return sectionLooksStory(atx) ? atx : undefined;
+}
+
+function sectionLooksNonStory(section: string | undefined): boolean {
+  return /^(?:acceptance\s+criteria|verification(?:\s+checklist)?|validation(?:\s+checklist)?|checklist|evidence|constraints?|risks?|immediate\s+next\s+actions?|next\s+actions?|follow-?ups?|notes?)$/.test(section ?? '');
+}
+
+function sectionLooksStory(section: string | undefined): boolean {
+  return /^(?:story|stories|goals?|milestones?|p\d+)$/.test(section ?? '');
+}
+
+function parseMarkdownListItems(lines: readonly string[]): MarkdownListItem[] {
+  const items: MarkdownListItem[] = [];
+  let section: string | undefined;
+  let resetNonStorySection = false;
+  let afterBlank = false;
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex] ?? '';
+    if (!line.trim()) {
+      resetNonStorySection ||= sectionLooksNonStory(section);
+      afterBlank = true;
+      continue;
+    }
+    const nextSection = normalizeSectionLabel(line)
+      ?? (afterBlank ? normalizeIndentedAtxStorySectionLabel(line) : undefined);
+    if (nextSection) {
+      section = nextSection;
+      resetNonStorySection = false;
+    }
+    afterBlank = false;
+    const match = /^(\s*)([-*+]|\d+[.)])\s+(.+)$/.exec(line);
+    if (!match) continue;
+    const indent = match[1].replace(/\t/g, '  ').length;
+    if (resetNonStorySection && indent === 0) section = undefined;
+    resetNonStorySection = false;
+    const text = cleanLine(line);
+    if (!text || text.length > 1200) continue;
+    items.push({ lineIndex, indent, text, section });
+  }
+  return items;
+}
+
+function selectedItemObjective(parent: MarkdownListItem, lines: readonly string[], nextParentLineIndex?: number): string {
+  const parts = [parent.text];
+  for (let lineIndex = parent.lineIndex + 1; lineIndex < (nextParentLineIndex ?? lines.length); lineIndex += 1) {
+    const line = lines[lineIndex] ?? '';
+    const indent = lineIndentWidth(line);
+    if (indent <= parent.indent && sectionLooksNonStory(normalizeSectionLabel(line))) break;
+    if (/^\s*(?:[-*+]\s+|\d+[.)]\s+)/.test(line) && indent <= parent.indent) break;
+    if (indent <= parent.indent || !line.trim()) continue;
+    const nested = cleanLine(line);
+    if (nested && nested.length <= 1200) parts.push(nested);
+  }
+  return parts.join('\n');
+}
+
+function topLevelStoryItems(items: readonly MarkdownListItem[]): MarkdownListItem[] {
+  const storyItems = items.filter((item) => !sectionLooksNonStory(item.section));
+  if (storyItems.length === 0) return [];
+  const storySectionItems = storyItems.filter((item) => sectionLooksStory(item.section));
+  const candidates = storySectionItems.length > 0 ? storySectionItems : storyItems;
+  const minIndent = Math.min(...candidates.map((item) => item.indent));
+  return candidates.filter((item) => item.indent === minIndent);
+}
+
 function normalizeObjective(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
@@ -492,21 +581,28 @@ function titleFromObjective(objective: string, fallback: string): string {
 
 export function deriveGoalCandidates(brief: string): Array<{ title: string; objective: string }> {
   const lines = brief.split(/\r?\n/);
-  const bulletGoals = lines
+  const parsedItems = parseMarkdownListItems(lines);
+  const parentItems = topLevelStoryItems(parsedItems);
+  const listGoals = parentItems
+    .map((item, index) => selectedItemObjective(item, lines, parentItems[index + 1]?.lineIndex))
+    .filter((objective, index, all) => all.findIndex((candidate) => candidate === objective) === index);
+  const bulletGoals = (listGoals.length > 0 || parsedItems.length > 0 ? listGoals : lines
     .map((line) => ({ original: line, cleaned: cleanLine(line) }))
     .filter(({ cleaned }) => cleaned.length > 0 && cleaned.length <= 1200)
     .filter(({ original, cleaned }, index, all) => (
       /^\s*(?:[-*+]\s+|\d+[.)]\s+)/.test(original)
       && all.findIndex((candidate) => candidate.cleaned === cleaned) === index
     ))
-    .map(({ cleaned }) => cleaned);
+    .map(({ cleaned }) => cleaned));
 
   const objectives = bulletGoals.length > 0
     ? bulletGoals
-    : brief
-      .split(/\n\s*\n/)
-      .map((paragraph) => paragraph.trim())
-      .filter((paragraph) => paragraph.length > 0 && !paragraph.startsWith('#'));
+    : parsedItems.length > 0
+      ? [brief.trim() || 'Complete the requested project objective.']
+      : brief
+        .split(/\n\s*\n/)
+        .map((paragraph) => paragraph.trim())
+        .filter((paragraph) => paragraph.length > 0 && !paragraph.startsWith('#'));
 
   const selected = objectives.length > 0 ? objectives : [brief.trim() || 'Complete the requested project objective.'];
   return selected.map((objective, index) => ({

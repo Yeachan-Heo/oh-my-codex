@@ -30,6 +30,7 @@ import {
 import {
   appendTeamEvent,
   readTeamLeaderAttention,
+  readTeamConfig,
   readTeamManifestV2,
   readTeamPhase,
   writeTeamLeaderAttention,
@@ -1871,6 +1872,27 @@ async function resolveTeamStateDirForWorkerContext(
     return candidate;
   }
   return null;
+}
+
+async function isConfirmedTeamWorkerPromptSubmitPane(cwd: string): Promise<boolean> {
+  const workerContext =
+    parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER))
+    || parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER));
+  if (!workerContext) return false;
+
+  const currentPaneId = safeString(process.env.TMUX_PANE).trim();
+  if (!currentPaneId) return false;
+
+  const config = await readTeamConfig(workerContext.teamName, cwd).catch(() => null);
+  if (!config) return false;
+
+  const leaderPaneId = safeString(config.leader_pane_id).trim();
+  if (leaderPaneId && leaderPaneId === currentPaneId) return false;
+
+  const workerPaneId = safeString(
+    config.workers.find((worker) => worker.name === workerContext.workerName)?.pane_id,
+  ).trim();
+  return workerPaneId !== "" && workerPaneId === currentPaneId;
 }
 
 
@@ -3878,8 +3900,12 @@ export async function dispatchCodexNativeHook(
         triageAdditionalContext = null;
       }
     }
-    const reconcileHudForPromptSubmitFn = options.reconcileHudForPromptSubmitFn ?? reconcileHudForPromptSubmit;
-    await reconcileHudForPromptSubmitFn(cwd, { sessionId: canonicalSessionId || sessionIdForState || undefined }).catch(() => {});
+    const skipHudReconcileForTeamWorkerPane = !isSubagentPromptSubmit
+      && await isConfirmedTeamWorkerPromptSubmitPane(cwd).catch(() => false);
+    if (!skipHudReconcileForTeamWorkerPane) {
+      const reconcileHudForPromptSubmitFn = options.reconcileHudForPromptSubmitFn ?? reconcileHudForPromptSubmit;
+      await reconcileHudForPromptSubmitFn(cwd, { sessionId: canonicalSessionId || sessionIdForState || undefined }).catch(() => {});
+    }
   }
 
   if (omxEventName && !skipCanonicalSessionStartContext && !suppressNoisySubagentLifecycleDispatch) {

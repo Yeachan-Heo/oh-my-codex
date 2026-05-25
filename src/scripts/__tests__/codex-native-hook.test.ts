@@ -66,6 +66,26 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, JSON.stringify(value, null, 2));
 }
 
+async function setTeamPaneIds(
+  cwd: string,
+  teamName: string,
+  paneIds: { leaderPaneId: string; workerPaneIds: Record<string, string> },
+): Promise<void> {
+  for (const fileName of ["config.json", "manifest.v2.json"]) {
+    const filePath = join(cwd, ".omx", "state", "team", teamName, fileName);
+    const parsed = JSON.parse(await readFile(filePath, "utf-8")) as {
+      leader_pane_id?: string | null;
+      workers?: Array<{ name?: string; pane_id?: string | null }>;
+    };
+    parsed.leader_pane_id = paneIds.leaderPaneId;
+    parsed.workers = (parsed.workers ?? []).map((worker) => ({
+      ...worker,
+      pane_id: worker.name ? paneIds.workerPaneIds[worker.name] ?? worker.pane_id ?? null : worker.pane_id ?? null,
+    }));
+    await writeJson(filePath, parsed);
+  }
+}
+
 async function withIsolatedHome<T>(prefix: string, run: (homeDir: string) => Promise<T>): Promise<T> {
   const homeDir = await mkdtemp(join(tmpdir(), `omx-native-hook-home-${prefix}-`));
   const previousHome = process.env.HOME;
@@ -243,6 +263,7 @@ const DEFAULT_AUTO_NUDGE_RESPONSE =
 
 const TEAM_ENV_KEYS = [
   "OMX_TEAM_WORKER",
+  "OMX_TEAM_INTERNAL_WORKER",
   "OMX_TEAM_STATE_ROOT",
   "OMX_TEAM_LEADER_CWD",
   "OMX_SESSION_ID",
@@ -3847,6 +3868,198 @@ export async function onHookEvent(event) {
       assert.doesNotMatch(message, /mode transiting:/);
       assert.match(message, /planning preserved over simultaneous execution follow-up; deferred skills: team, ralph\./);
       assert.match(message, /use CLI-first state updates via `omx state write\/read\/clear --input '<json>' --json`/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("skips prompt-submit HUD reconciliation for confirmed team worker panes", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-team-worker-skip-"));
+    try {
+      const teamName = "hud-worker-skip";
+      await initTeamState(teamName, "skip worker HUD reconcile", "executor", 1, cwd);
+      await setTeamPaneIds(cwd, teamName, {
+        leaderPaneId: "%42",
+        workerPaneIds: { "worker-1": "%10" },
+      });
+      process.env.TMUX = "1";
+      process.env.TMUX_PANE = "%10";
+      process.env.OMX_TEAM_INTERNAL_WORKER = `${teamName}/worker-1`;
+      process.env.OMX_TEAM_WORKER = `${teamName}/worker-1`;
+      process.env[OMX_TMUX_HUD_OWNER_ENV] = "1";
+
+      let reconcileCalls = 0;
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-hud-team-worker",
+          prompt: "$ralplan prepare plan",
+        },
+        {
+          cwd,
+          reconcileHudForPromptSubmitFn: async () => {
+            reconcileCalls += 1;
+            return { status: "recreated", paneId: "%9", desiredHeight: 3, duplicateCount: 0 };
+          },
+        },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(reconcileCalls, 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves prompt-submit HUD reconciliation for team leader panes", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-team-leader-preserve-"));
+    try {
+      const teamName = "hud-leader-keep";
+      await initTeamState(teamName, "preserve leader HUD reconcile", "executor", 1, cwd);
+      await setTeamPaneIds(cwd, teamName, {
+        leaderPaneId: "%42",
+        workerPaneIds: { "worker-1": "%10" },
+      });
+      process.env.TMUX = "1";
+      process.env.TMUX_PANE = "%42";
+      process.env[OMX_TMUX_HUD_OWNER_ENV] = "1";
+
+      let reconcileCall: { cwd: string; sessionId?: string } | null = null;
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-hud-team-leader",
+          prompt: "$ralplan prepare plan",
+        },
+        {
+          cwd,
+          reconcileHudForPromptSubmitFn: async (hookCwd, deps = {}) => {
+            reconcileCall = { cwd: hookCwd, sessionId: deps.sessionId };
+            return { status: "recreated", paneId: "%9", desiredHeight: 3, duplicateCount: 0 };
+          },
+        },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.deepEqual(reconcileCall, { cwd, sessionId: "sess-hud-team-leader" });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves prompt-submit HUD reconciliation when worker pane detection is ambiguous", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-team-worker-ambiguous-"));
+    try {
+      const teamName = "hud-worker-ambiguous";
+      await initTeamState(teamName, "fail closed for ambiguous worker HUD reconcile", "executor", 1, cwd);
+      await setTeamPaneIds(cwd, teamName, {
+        leaderPaneId: "%42",
+        workerPaneIds: { "worker-1": "%10" },
+      });
+      process.env.TMUX = "1";
+      process.env.TMUX_PANE = "%99";
+      process.env.OMX_TEAM_INTERNAL_WORKER = `${teamName}/worker-1`;
+      process.env.OMX_TEAM_WORKER = `${teamName}/worker-1`;
+      process.env[OMX_TMUX_HUD_OWNER_ENV] = "1";
+
+      let reconcileCalls = 0;
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-hud-team-worker-ambiguous",
+          prompt: "$ralplan prepare plan",
+        },
+        {
+          cwd,
+          reconcileHudForPromptSubmitFn: async () => {
+            reconcileCalls += 1;
+            return { status: "recreated", paneId: "%9", desiredHeight: 3, duplicateCount: 0 };
+          },
+        },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(reconcileCalls, 1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves prompt-submit HUD reconciliation for native subagents even with worker pane env", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-subagent-worker-preserve-"));
+    try {
+      const teamName = "hud-subagent-keep";
+      await initTeamState(teamName, "preserve subagent HUD reconcile", "executor", 1, cwd);
+      await setTeamPaneIds(cwd, teamName, {
+        leaderPaneId: "%42",
+        workerPaneIds: { "worker-1": "%10" },
+      });
+      const stateDir = join(cwd, ".omx", "state");
+      const canonicalSessionId = "sess-subagent-hud-parent";
+      const leaderNativeSessionId = "native-subagent-hud-parent";
+      const childNativeSessionId = "native-subagent-hud-child";
+      const nowIso = new Date().toISOString();
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: canonicalSessionId,
+        native_session_id: leaderNativeSessionId,
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [canonicalSessionId]: {
+            session_id: canonicalSessionId,
+            leader_thread_id: leaderNativeSessionId,
+            updated_at: nowIso,
+            threads: {
+              [leaderNativeSessionId]: {
+                thread_id: leaderNativeSessionId,
+                kind: "leader",
+                first_seen_at: nowIso,
+                last_seen_at: nowIso,
+                turn_count: 1,
+              },
+              [childNativeSessionId]: {
+                thread_id: childNativeSessionId,
+                kind: "subagent",
+                first_seen_at: nowIso,
+                last_seen_at: nowIso,
+                turn_count: 1,
+                mode: "verifier",
+              },
+            },
+          },
+        },
+      });
+      process.env.TMUX = "1";
+      process.env.TMUX_PANE = "%10";
+      process.env.OMX_TEAM_INTERNAL_WORKER = `${teamName}/worker-1`;
+      process.env.OMX_TEAM_WORKER = `${teamName}/worker-1`;
+      process.env[OMX_TMUX_HUD_OWNER_ENV] = "1";
+
+      let reconcileCall: { cwd: string; sessionId?: string } | null = null;
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: childNativeSessionId,
+          thread_id: childNativeSessionId,
+          turn_id: "turn-subagent-hud-child",
+          prompt: "Review the worker patch literally; do not activate $ralplan.",
+        },
+        {
+          cwd,
+          reconcileHudForPromptSubmitFn: async (hookCwd, deps = {}) => {
+            reconcileCall = { cwd: hookCwd, sessionId: deps.sessionId };
+            return { status: "recreated", paneId: "%9", desiredHeight: 3, duplicateCount: 0 };
+          },
+        },
+      );
+
+      assert.equal(result.outputJson, null);
+      assert.deepEqual(reconcileCall, { cwd, sessionId: canonicalSessionId });
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -9259,6 +9472,70 @@ exit 0
       assert.match(String(result.outputJson?.reason ?? ""), /waiting for 1 active native subagent thread/);
       assert.match(String(result.outputJson?.reason ?? ""), /then continue from the current ralplan artifact/i);
       assert.equal(result.outputJson?.stopReason, "skill_ralplan_planning_waiting_subagent");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not report ralplan subagent waiting when notify-fallback already recorded completion", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-skill-subagent-complete-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const now = new Date().toISOString();
+      await mkdir(join(stateDir, "sessions", "sess-stop-skill-subagent-complete"), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill-subagent-complete" });
+      await writeJson(join(stateDir, "sessions", "sess-stop-skill-subagent-complete", "skill-active-state.json"), {
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+      });
+      await writeJson(join(stateDir, "sessions", "sess-stop-skill-subagent-complete", "ralplan-state.json"), {
+        active: true,
+        current_phase: "planning",
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          "sess-stop-skill-subagent-complete": {
+            session_id: "sess-stop-skill-subagent-complete",
+            leader_thread_id: "leader-1",
+            updated_at: now,
+            threads: {
+              "leader-1": {
+                thread_id: "leader-1",
+                kind: "leader",
+                first_seen_at: now,
+                last_seen_at: now,
+                turn_count: 1,
+              },
+              "sub-1": {
+                thread_id: "sub-1",
+                kind: "subagent",
+                first_seen_at: now,
+                last_seen_at: now,
+                completed_at: now,
+                last_completed_turn_id: "turn-complete-1",
+                completion_source: "notify-fallback-watcher",
+                turn_count: 2,
+              },
+            },
+          },
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-stop-skill-subagent-complete",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson?.decision, "block");
+      assert.doesNotMatch(String(result.outputJson?.reason ?? ""), /waiting for 1 active native subagent thread/);
+      assert.equal(result.outputJson?.stopReason, "skill_ralplan_planning_continue_artifact");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
