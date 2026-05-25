@@ -2383,6 +2383,38 @@ standardMaxRounds = 15
     }
   });
 
+  it("does not repeat ultragoal Stop recovery after a safe completed-aggregate microgoal blocker is recorded", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-aggregate-blocked-stop-"));
+    try {
+      await writeJson(join(cwd, ".omx", "ultragoal", "goals.json"), {
+        version: 1,
+        codexGoalMode: "aggregate",
+        activeGoalId: "G001-demo",
+        goals: [{
+          id: "G001-demo",
+          status: "in_progress",
+          objective: "Demo goal",
+          failureReason: "aggregate Codex goal already complete and unreconcilable while repo-native .omx/ultragoal/goals.json still has an in-progress microgoal; stop the recovery loop",
+        }],
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-ultragoal-aggregate-blocked-stop",
+        thread_id: "thread-ultragoal-aggregate-blocked-stop",
+        stop_hook_active: true,
+        last_assistant_message: "Goal complete.",
+      }, { cwd });
+
+      assert.notEqual(result.outputJson?.decision, "block");
+      assert.notEqual(result.outputJson?.stopReason, "ultragoal_codex_goal_snapshot_required");
+      assert.doesNotMatch(JSON.stringify(result.outputJson), /omx ultragoal checkpoint --goal-id G001-demo --status complete/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
 
   it("does not block ultragoal Stop after task-scoped reconciliation finishes exploded bookkeeping", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-reconciled-stop-"));

@@ -489,6 +489,29 @@ function buildUnavailableCodexGoalRemediation(goal: UltragoalItem): string {
   ].join(' ');
 }
 
+function evidenceDescribesCompletedAggregateMicrogoalLoop(evidence: string | undefined): boolean {
+  const normalized = normalizeObjective(evidence ?? '').toLowerCase();
+  return normalized.includes('aggregate codex goal')
+    && /\bcomplete(?:d)?\b/.test(normalized)
+    && normalized.includes('microgoal')
+    && /\b(?:unreconcilable|mismatch|loop|already complete|already completed|blocks?)\b/.test(normalized);
+}
+
+function isSafeCompletedAggregateBlockerSnapshot(
+  plan: UltragoalPlan,
+  goal: UltragoalItem,
+  snapshot: ReturnType<typeof parseCodexGoalSnapshot>,
+  evidence: string | undefined,
+): boolean {
+  if (codexGoalMode(plan) !== 'aggregate') return false;
+  if (goal.status !== 'in_progress' || plan.activeGoalId !== goal.id) return false;
+  if (snapshot?.status !== 'complete' || !snapshot.objective) return false;
+  if (!evidenceDescribesCompletedAggregateMicrogoalLoop(evidence)) return false;
+  const actual = normalizeObjective(snapshot.objective);
+  return [expectedCodexObjective(plan, goal), ...compatibleCodexObjectives(plan)]
+    .some((objective) => normalizeObjective(objective) === actual);
+}
+
 function codexGoalMode(plan: UltragoalPlan): UltragoalCodexGoalMode {
   return plan.codexGoalMode ?? 'per_story';
 }
@@ -1240,10 +1263,14 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
     if (!snapshot.objective) {
       throw new UltragoalError('Blocked ultragoal checkpoint Codex snapshot is missing objective text.');
     }
-    if (normalizeObjective(snapshot.objective) === normalizeObjective(expectedCodexObjective(plan, goal))) {
-      throw new UltragoalError('Blocked ultragoal checkpoint is only for a different completed legacy Codex goal; complete this ultragoal with --status complete after its audit passes.');
+    const safeCompletedAggregateBlocker = isSafeCompletedAggregateBlockerSnapshot(plan, goal, snapshot, options.evidence);
+    const blockedSnapshotMatchesExpected = [expectedCodexObjective(plan, goal), ...compatibleCodexObjectives(plan)]
+      .some((objective) => normalizeObjective(objective) === normalizeObjective(snapshot.objective ?? ''));
+    if (!safeCompletedAggregateBlocker && blockedSnapshotMatchesExpected) {
+      throw new UltragoalError('Blocked ultragoal checkpoint is only for a different completed legacy Codex goal unless an aggregate Codex goal is already complete and unreconcilable while the active repo-native microgoal remains in progress.');
     }
     goal.updatedAt = now;
+    if (safeCompletedAggregateBlocker) goal.failureReason = assertNonEmpty(options.evidence, '--evidence');
     plan.activeGoalId = goal.id;
     plan.updatedAt = now;
     await writePlan(cwd, plan);
@@ -1254,6 +1281,9 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
       status: goal.status,
       evidence: options.evidence,
       codexGoal: options.codexGoal,
+      message: safeCompletedAggregateBlocker
+        ? 'Completed aggregate Codex goal is already terminal while the repo-native microgoal remains in progress; recorded a non-terminal safe-recovery blocker to avoid repeating an impossible checkpoint loop.'
+        : undefined,
     });
     return plan;
   }

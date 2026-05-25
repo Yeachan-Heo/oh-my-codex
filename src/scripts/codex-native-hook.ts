@@ -2099,6 +2099,18 @@ function reportsBlockedPerformanceGoalObjectiveMismatch(state: unknown): boolean
   return /objective mismatch/i.test(evidence);
 }
 
+function reportsBlockedUltragoalCompletedAggregateMicrogoalLoop(goal: Record<string, unknown>): boolean {
+  const evidence = [
+    safeString(goal.failureReason),
+    safeString(goal.blockedReason),
+    safeString(goal.evidence),
+  ].join(" ");
+  return /aggregate codex goal/i.test(evidence)
+    && /\bcomplete(?:d)?\b/i.test(evidence)
+    && /microgoal/i.test(evidence)
+    && /\b(?:unreconcilable|mismatch|loop|already complete|already completed|blocks?)\b/i.test(evidence);
+}
+
 async function findActiveGoalWorkflowReconciliationRequirement(cwd: string): Promise<{ workflow: string; command: string; remediation?: string } | null> {
   const ultragoal = await readJsonIfExists(join(cwd, ".omx", "ultragoal", "goals.json"));
   const aggregateCompletion = safeObject(ultragoal?.aggregateCompletion);
@@ -2107,6 +2119,9 @@ async function findActiveGoalWorkflowReconciliationRequirement(cwd: string): Pro
   const activeUltragoal = aggregateProductComplete
     ? undefined
     : ultragoals.find((goal) => safeString(goal.status) === "in_progress" || safeString(goal.id) === safeString(ultragoal?.activeGoalId));
+  if (activeUltragoal && reportsBlockedUltragoalCompletedAggregateMicrogoalLoop(activeUltragoal)) {
+    return null;
+  }
   if (activeUltragoal) {
     const goalId = safeString(activeUltragoal.id) || "<goal-id>";
     return {

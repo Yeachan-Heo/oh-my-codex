@@ -1347,6 +1347,36 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('records a safe blocker when the aggregate Codex goal is already complete while a microgoal remains in progress', async () => {
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, {
+        brief: 'brief',
+        codexGoalMode: 'aggregate',
+        goals: [
+          { title: 'First', objective: 'Complete first milestone.' },
+          { title: 'Second', objective: 'Complete second milestone.' },
+        ],
+      });
+
+      const first = await startNextUltragoal(cwd);
+      const evidence = 'aggregate Codex goal already complete and unreconcilable while repo-native .omx/ultragoal/goals.json still has an in-progress microgoal; stop the recovery loop';
+      const plan = await checkpointUltragoal(cwd, {
+        goalId: first.goal!.id,
+        status: 'blocked',
+        evidence,
+        codexGoal: { goal: { objective: ULTRAGOAL_AGGREGATE_CODEX_OBJECTIVE, status: 'complete' } },
+      });
+
+      assert.equal(plan.goals[0]?.status, 'in_progress');
+      assert.equal(plan.activeGoalId, first.goal!.id);
+      assert.match(plan.goals[0]?.failureReason ?? '', /aggregate Codex goal already complete/);
+      const ledger = await readFile(join(cwd, '.omx/ultragoal/ledger.jsonl'), 'utf-8');
+      assert.match(ledger, /"event":"goal_blocked"/);
+      assert.match(ledger, /safe-recovery blocker/);
+      assert.match(ledger, /impossible checkpoint loop/);
+    });
+  });
+
   it('rejects blocked checkpoints for active or same-objective Codex goals', async () => {
     await withTempRepo(async (cwd) => {
       await createUltragoalPlan(cwd, {
