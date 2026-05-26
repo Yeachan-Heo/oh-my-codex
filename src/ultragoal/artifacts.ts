@@ -315,7 +315,7 @@ function sectionLooksNonStory(section: string | undefined): boolean {
 }
 
 function sectionLooksStory(section: string | undefined): boolean {
-  return /^(?:story|stories|goals?|milestones?|p\d+)$/.test(section ?? '');
+  return /^(?:story|stories|goals?|milestones?|p\d+|approved\s+implementation\s+sequence|implementation\s+sequence)$/.test(section ?? '');
 }
 
 function parseMarkdownListItems(lines: readonly string[]): MarkdownListItem[] {

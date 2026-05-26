@@ -234,6 +234,56 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('prefers approved implementation sequence over consensus/supporting bullets', async () => {
+    await withTempRepo(async (cwd) => {
+      const plan = await createUltragoalPlan(cwd, {
+        brief: [
+          '# Ralplan Final',
+          '',
+          '## Consensus status',
+          '',
+          '- Planning artifacts:',
+          '  - PRD: `.omx/plans/prd.md`',
+          '  - Test spec: `.omx/plans/test-spec.md`',
+          '- Critic review: APPROVE; no required revisions.',
+          '',
+          '## Binding decision',
+          '',
+          'P0 blocks new live generation.',
+          '',
+          '## Approved implementation sequence',
+          '',
+          '1. `a7a.2` — tracked VariantL_one fixtures / clean-clone reproducibility.',
+          '2. `a7a.4` — robust Cinematic Telegram wrapper and normalized evidence.',
+          '3. `a7a.1` — fail-closed required Comfy Telegram delivery gate.',
+          '4. `a7a.3` — VariantL_one post-live completion gate.',
+          '5. P0 readiness docs/update: live generation remains blocked until P0 passes or is explicitly waived.',
+          '',
+          '## Principles',
+          '',
+          '1. Required live-output delivery evidence is a completion invariant.',
+          '2. Runtime proof evidence is not a source fixture.',
+          '',
+          '## Available agent types / staffing guidance',
+          '',
+          '- Executor, medium reasoning: fixture/reproducibility and gate implementation.',
+          '- Test-engineer, medium reasoning: regression fixtures.',
+        ].join('\n'),
+        force: true,
+      });
+
+      const titles = plan.goals.map((goal) => goal.title);
+      assert.equal(titles.length, 5);
+      assert.deepEqual(titles.slice(0, 4), [
+        '`a7a.2` — tracked VariantL_one fixtures / clean-clone reproducibility.',
+        '`a7a.4` — robust Cinematic Telegram wrapper and normalized evidence.',
+        '`a7a.1` — fail-closed required Comfy Telegram delivery gate.',
+        '`a7a.3` — VariantL_one post-live completion gate.',
+      ]);
+      assert.match(titles[4] ?? '', /^P0 readiness docs\/update: live generation remains blocked until P0 pa/);
+    });
+  });
+
   it('recognizes singular story headings when choosing goals over preface bullets', async () => {
     await withTempRepo(async (cwd) => {
       const plan = await createUltragoalPlan(cwd, {
