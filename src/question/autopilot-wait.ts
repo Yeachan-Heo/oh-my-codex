@@ -66,6 +66,15 @@ export async function readAutopilotDeepInterviewQuestionWaitState(
   };
 }
 
+export async function canStartAutopilotDeepInterviewQuestion(
+  cwd: string,
+  sessionId?: string,
+): Promise<boolean> {
+  const state = await readAutopilotState(cwd, sessionId);
+  if (!state || safeString(state.mode) !== 'autopilot' || state.active !== true) return false;
+  return normalizePhase(state.current_phase) === 'deep-interview';
+}
+
 export async function markAutopilotDeepInterviewQuestionWaiting(
   cwd: string,
   sessionId: string | undefined,

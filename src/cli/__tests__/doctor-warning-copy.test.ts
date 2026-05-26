@@ -804,6 +804,33 @@ OMX_LORE_COMMIT_GUARD = "truee"
 		}
 	});
 
+	it("passes when shared skill root exists without duplicate skill names", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-shared-skills-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			const canonicalPlan = join(codexDir, "skills", "plan");
+			const legacyShared = join(home, ".agents", "skills", "shared-context");
+			await mkdir(canonicalPlan, { recursive: true });
+			await mkdir(legacyShared, { recursive: true });
+			await writeFile(join(canonicalPlan, "SKILL.md"), "# canonical plan\n");
+			await writeFile(join(legacyShared, "SKILL.md"), "# shared context\n");
+
+			const res = runOmx(wd, ["doctor"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(
+				res.stdout,
+				/\[OK\] Legacy skill roots: shared ~\/\.agents\/skills exists \(1 skills\) alongside canonical .*\.codex[\\/]+skills; no duplicate skill names detected/,
+			);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("warns when canonical and legacy skill roots overlap", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-skill-overlap-"));
 		try {

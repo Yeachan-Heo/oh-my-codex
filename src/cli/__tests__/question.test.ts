@@ -144,6 +144,107 @@ describe('omx question CLI', () => {
     assert.equal(payload.prompt.type, 'multi-answerable');
   });
 
+  it('bridges active autopilot deep-interview questions into waiting-for-user state until answered', async () => {
+    const cwd = await makeRepo();
+    const sessionDir = join(cwd, '.omx', 'state', 'sessions', 'sess-q');
+    const autopilotPath = join(sessionDir, 'autopilot-state.json');
+    await writeFile(autopilotPath, JSON.stringify({
+      mode: 'autopilot',
+      active: true,
+      current_phase: 'deep-interview',
+      run_outcome: 'interviewing',
+      lifecycle_outcome: 'running',
+      session_id: 'sess-q',
+    }, null, 2));
+    await writeFile(join(sessionDir, 'deep-interview-state.json'), JSON.stringify({
+      mode: 'deep-interview',
+      active: true,
+      current_phase: 'intent-first',
+      session_id: 'sess-q',
+    }, null, 2));
+    await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+      active: true,
+      skill: 'autopilot',
+      phase: 'deep-interview',
+      session_id: 'sess-q',
+      active_skills: [{ skill: 'autopilot', phase: 'deep-interview', active: true, session_id: 'sess-q' }],
+    }, null, 2));
+
+    const input = JSON.stringify({
+      question: 'Which provenance rule?',
+      options: [{ label: 'Exact page mapping', value: 'exact-page' }],
+      allow_other: false,
+      source: 'deep-interview',
+      session_id: 'sess-q',
+    });
+
+    const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
+      cwd,
+      env: makeQuestionCliEnv(cwd, {
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+        OMX_QUESTION_TEST_RENDERER: 'noop',
+      }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    const closePromise = new Promise<number | null>((resolve) => child.on('close', resolve));
+
+    const questionsDir = join(sessionDir, 'questions');
+    const recordFile = await waitForQuestionRecordFile(questionsDir, () => `stderr=${stderr}; stdout=${stdout}`);
+    const recordPath = join(questionsDir, recordFile);
+
+    let record = null;
+    for (let attempt = 0; attempt < 250; attempt += 1) {
+      record = await readQuestionRecord(recordPath);
+      if (record?.status === 'prompting') break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(record?.status, 'prompting', `expected prompting question record, stderr=${stderr}`);
+
+    const waitingAutopilot = JSON.parse(await readFile(autopilotPath, 'utf-8')) as {
+      current_phase?: string;
+      run_outcome?: string;
+      lifecycle_outcome?: string;
+      state?: { deep_interview_question?: { status?: string; previous_phase?: string } };
+    };
+    assert.equal(waitingAutopilot.current_phase, 'waiting-for-user');
+    assert.equal(waitingAutopilot.run_outcome, 'blocked_on_user');
+    assert.equal(waitingAutopilot.lifecycle_outcome, 'askuserQuestion');
+    assert.equal(waitingAutopilot.state?.deep_interview_question?.status, 'waiting_for_user');
+    assert.equal(waitingAutopilot.state?.deep_interview_question?.previous_phase, 'deep-interview');
+
+    await markQuestionAnswered(recordPath, {
+      kind: 'option',
+      value: 'exact-page',
+      selected_labels: ['Exact page mapping'],
+      selected_values: ['exact-page'],
+    });
+
+    const exitCode = await closePromise;
+    assert.equal(exitCode, 0, stderr || stdout);
+
+    const payload = JSON.parse(stdout);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.answer.value, 'exact-page');
+
+    const finalAutopilot = JSON.parse(await readFile(autopilotPath, 'utf-8')) as {
+      current_phase?: string;
+      run_outcome?: string;
+      lifecycle_outcome?: string;
+      state?: { deep_interview_question?: { status?: string } };
+    };
+    assert.equal(finalAutopilot.current_phase, 'deep-interview');
+    assert.equal(finalAutopilot.run_outcome, 'interviewing');
+    assert.equal(finalAutopilot.lifecycle_outcome, 'running');
+    assert.equal(finalAutopilot.state?.deep_interview_question?.status, 'satisfied');
+  });
+
   it('omits legacy prompt and answer projections for batch payloads', async () => {
     const cwd = await makeRepo();
     const input = JSON.stringify({

@@ -35,7 +35,15 @@ function cleanQualityGate(): object {
   return {
     aiSlopCleaner: { status: 'passed', evidence: 'ai-slop-cleaner ran on changed files' },
     verification: { status: 'passed', commands: ['npm test'], evidence: 'tests passed after cleaner' },
-    codeReview: { recommendation: 'APPROVE', architectStatus: 'CLEAR', evidence: '$code-review approved with CLEAR architecture' },
+    codeReview: {
+      recommendation: 'APPROVE',
+      architectStatus: 'CLEAR',
+      evidence: '$code-review approved with CLEAR architecture',
+      independentReview: {
+        codeReviewer: { agentRole: 'code-reviewer', evidence: 'code-reviewer subagent returned APPROVE' },
+        architect: { agentRole: 'architect', evidence: 'architect subagent returned CLEAR' },
+      },
+    },
   };
 }
 
@@ -271,6 +279,34 @@ describe('ultragoal artifacts', () => {
       assert.doesNotMatch(instruction, /fresh (?:Codex )?(?:thread|session)s?/i);
       assert.doesNotMatch(instruction, /\.\.\/\.\.\/codex/);
       assert.doesNotMatch(instruction, /`codex\s+goal\b/i);
+    });
+  });
+
+  it('emits final-story handoffs that block missing independent review before update_goal', async () => {
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, {
+        brief: 'brief',
+        goals: [{ title: 'Final', objective: 'Complete final milestone.' }],
+      });
+      const started = await startNextUltragoal(cwd);
+      const aggregateInstruction = buildCodexGoalInstruction(started.goal!, started.plan);
+
+      assert.match(aggregateInstruction, /independentReview evidence from both code-reviewer and architect subagents/);
+      assert.match(aggregateInstruction, /independent delegation is unavailable\/skipped\/failed, do not call update_goal/);
+      assert.match(aggregateInstruction, /APPROVE \+ CLEAR \+ independent code-reviewer and architect subagent evidence/);
+
+      await createUltragoalPlan(cwd, {
+        brief: 'brief',
+        codexGoalMode: 'per_story',
+        goals: [{ title: 'Final', objective: 'Complete final milestone.' }],
+        force: true,
+      });
+      const perStory = await startNextUltragoal(cwd);
+      const perStoryInstruction = buildCodexGoalInstruction(perStory.goal!, perStory.plan);
+
+      assert.match(perStoryInstruction, /independentReview evidence from both code-reviewer and architect subagents/);
+      assert.match(perStoryInstruction, /independent delegation is unavailable\/skipped\/failed, do not call update_goal/);
+      assert.match(perStoryInstruction, /APPROVE \+ CLEAR \+ independent code-reviewer and architect subagent evidence/);
     });
   });
 
@@ -770,6 +806,67 @@ describe('ultragoal artifacts', () => {
           },
         }),
         /aiSlopCleaner\.status="passed"/,
+      );
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: started.goal!.id,
+          status: 'complete',
+          evidence: 'tests passed',
+          codexGoal: { goal: { objective, status: 'complete' } },
+          qualityGate: {
+            ...cleanQualityGate(),
+            codeReview: {
+              recommendation: 'APPROVE',
+              architectStatus: 'CLEAR',
+              evidence: 'same execution lane self-reviewed and approved without spawning review subagents',
+            },
+          },
+        }),
+        /independent review unavailable|self-approving/i,
+      );
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: started.goal!.id,
+          status: 'complete',
+          evidence: 'tests passed',
+          codexGoal: { goal: { objective, status: 'complete' } },
+          qualityGate: {
+            ...cleanQualityGate(),
+            codeReview: {
+              recommendation: 'APPROVE',
+              architectStatus: 'CLEAR',
+              evidence: 'authoring lane claimed it was merge-ready',
+              independentReview: {
+                codeReviewer: { agentRole: 'executor', evidence: 'authoring lane approved its own change' },
+                architect: { agentRole: 'architect', evidence: 'architect subagent returned CLEAR' },
+              },
+            },
+          },
+        }),
+        /independent code-reviewer subagent|self-review/i,
+      );
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: started.goal!.id,
+          status: 'complete',
+          evidence: 'tests passed',
+          codexGoal: { goal: { objective, status: 'complete' } },
+          qualityGate: {
+            ...cleanQualityGate(),
+            codeReview: {
+              recommendation: 'APPROVE',
+              architectStatus: 'CLEAR',
+              evidence: 'code-review path skipped architect delegation',
+              independentReview: {
+                codeReviewer: { agentRole: 'code-reviewer', evidence: 'code-reviewer subagent returned APPROVE' },
+              },
+            },
+          },
+        }),
+        /missing codeReview\.independentReview\.architect/i,
       );
 
       await checkpointUltragoal(cwd, {
