@@ -286,6 +286,16 @@ export function listCurrentWindowPanes(
   }
 }
 
+export function readActiveTmuxPaneId(
+  execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
+): string | null {
+  try {
+    return parsePaneIdFromTmuxOutput(execTmuxSync(['display-message', '-p', '#{pane_id}']));
+  } catch {
+    return null;
+  }
+}
+
 export function listCurrentWindowHudPaneIds(
   currentPaneId?: string,
   execTmuxSync: TmuxExecSync = defaultExecTmuxSync,

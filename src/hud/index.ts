@@ -21,6 +21,7 @@ import {
   killTmuxPane,
   listCurrentWindowHudPaneIds,
   OMX_TMUX_HUD_LEADER_PANE_ENV,
+  readActiveTmuxPaneId,
   registerHudResizeHook,
   resizeTmuxPane,
 } from './tmux.js';
@@ -302,10 +303,12 @@ async function launchTmuxPane(cwd: string, flags: HudFlags): Promise<void> {
     console.error('Failed to resolve OMX launcher path for tmux HUD startup.');
     process.exit(1);
   }
-  const currentPaneId = process.env.TMUX_PANE?.trim();
-  const existingHudPaneIds = currentPaneId
+  const envPaneId = process.env.TMUX_PANE?.trim();
+  const currentPaneId = envPaneId || readActiveTmuxPaneId() || undefined;
+  const sessionId = process.env.OMX_SESSION_ID?.trim() || undefined;
+  const existingHudPaneIds = currentPaneId || sessionId
     ? listCurrentWindowHudPaneIds(currentPaneId, undefined, {
-        sessionId: process.env.OMX_SESSION_ID,
+        sessionId,
         leaderPaneId: currentPaneId,
       })
     : [];
