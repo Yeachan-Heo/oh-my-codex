@@ -280,6 +280,40 @@ describe('renderHud – ultragoal', () => {
     assert.ok(!result.includes('ultragoal'));
   });
 
+  it('combines active ultragoal and team into one non-duplicated focused summary', () => {
+    const ctx = {
+      ...emptyCtx(),
+      team: { active: true, agent_count: 4, team_name: 'hud-fix' },
+      ultragoal: {
+        active: true,
+        status: 'in_progress',
+        total: 4,
+        complete: 1,
+        pending: 2,
+        inProgress: 1,
+        failed: 0,
+        reviewBlocked: 0,
+        needsUserDecision: 0,
+        progressTotal: 4,
+        activeGoal: {
+          id: 'G002-team-hud',
+          title: 'Fix combined HUD rendering',
+          objective: 'avoid duplicate ultragoal and team HUD summaries',
+          status: 'in_progress',
+          index: 2,
+        },
+      },
+    };
+
+    const result = stripSgr(renderHud(ctx, 'focused', { maxWidth: 220, maxLines: 3 }));
+
+    assert.equal((result.match(/team:4 workers/g) ?? []).length, 1);
+    assert.equal((result.match(/ultragoal 1\/4/g) ?? []).length, 1);
+    assert.ok(result.includes('ultragoal 1/4 + team:4 workers ▶ G002-team-hud: Fix combined HUD rendering'));
+    assert.ok(!result.includes(' | team:4 workers | ultragoal'));
+    assert.ok(result.split('\n').length <= 3);
+  });
+
   it('omits completed ultragoal plans instead of showing stale progress', () => {
     const ctx = {
       ...emptyCtx(),

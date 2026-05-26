@@ -664,6 +664,53 @@ describe('readAllState canonical skill precedence', () => {
     });
   });
 
+  it('collects active ultragoal plan with canonical team state for combined rendering', async () => {
+    await withTempRepo('omx-hud-ultragoal-team-combined-', async (cwd) => {
+      const rootStateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-ultragoal-team';
+      const sessionDir = join(rootStateDir, 'sessions', sessionId);
+      const ultragoalDir = join(cwd, '.omx', 'ultragoal');
+      await mkdir(sessionDir, { recursive: true });
+      await mkdir(ultragoalDir, { recursive: true });
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+        active: true,
+        skill: 'ultragoal',
+        phase: 'running',
+        session_id: sessionId,
+        active_skills: [
+          { skill: 'ultragoal', phase: 'running', active: true, session_id: sessionId },
+          { skill: 'team', phase: 'team-exec', active: true, session_id: sessionId },
+        ],
+      }));
+      await writeFile(join(sessionDir, 'team-state.json'), JSON.stringify({
+        active: true,
+        team_name: 'hud-fix',
+        agent_count: 3,
+      }));
+      await writeFile(join(ultragoalDir, 'goals.json'), JSON.stringify({
+        version: 1,
+        activeGoalId: 'G002-team-hud',
+        goals: [
+          { id: 'G001-inspect', title: 'Inspect HUD', objective: 'Inspect combined state', status: 'complete' },
+          { id: 'G002-team-hud', title: 'Patch team HUD', objective: 'Fix duplicate team and ultragoal summaries', status: 'in_progress' },
+        ],
+      }));
+
+      const state = await readAllState(cwd);
+
+      assert.deepEqual(state.team, {
+        active: true,
+        team_name: 'hud-fix',
+        agent_count: 3,
+        current_phase: 'team-exec',
+      });
+      assert.equal(state.ultragoal?.active, true);
+      assert.equal(state.ultragoal?.activeGoal?.id, 'G002-team-hud');
+      assert.equal(state.ultragoal?.complete, 1);
+    });
+  });
+
   it('does not resurrect terminal autopilot from stale canonical skill-active phase', async () => {
     await withTempRepo('omx-hud-canonical-autopilot-terminal-', async (cwd) => {
       const rootStateDir = join(cwd, '.omx', 'state');

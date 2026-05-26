@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { hudCommand, runWatchMode } from '../index.js';
+import { renderHud } from '../render.js';
 import type { HudFlags, HudRenderContext } from '../types.js';
 
 const WATCH_FLAGS: HudFlags = {
@@ -150,6 +151,55 @@ describe('runWatchMode', () => {
     assert.equal(callCount, 2, 'multiple overlapping ticks should collapse to one queued rerender');
   });
 
+
+  it('renders combined ultragoal and team state as one stable watch frame', async () => {
+    const writes: string[] = [];
+    let sigintHandler: (() => void) | undefined;
+
+    const promise = runWatchMode('/tmp', WATCH_FLAGS, {
+      isTTY: true,
+      env: {},
+      readAllStateFn: async () => ({
+        ...emptyCtx(),
+        team: { active: true, agent_count: 2, team_name: 'hud-fix' },
+        ultragoal: {
+          active: true,
+          status: 'in_progress',
+          total: 3,
+          complete: 1,
+          pending: 1,
+          inProgress: 1,
+          failed: 0,
+          reviewBlocked: 0,
+          needsUserDecision: 0,
+          progressTotal: 3,
+          activeGoal: {
+            id: 'G002-team',
+            title: 'Team HUD summary',
+            objective: 'avoid duplicated focused tmux HUD content',
+            status: 'in_progress',
+            index: 2,
+          },
+        },
+      }),
+      readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' }, statusLine: { preset: 'focused' } }),
+      renderHudFn: renderHud,
+      writeStdout: (text) => { writes.push(text); },
+      writeStderr: () => {},
+      registerSigint: (handler) => { sigintHandler = handler; },
+      setIntervalFn: () => ({}) as ReturnType<typeof setInterval>,
+      clearIntervalFn: () => {},
+    });
+
+    await flush();
+    sigintHandler?.();
+    await promise;
+
+    const plain = writes.join('').replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+    assert.equal((plain.match(/team:2 workers/g) ?? []).length, 1);
+    assert.equal((plain.match(/ultragoal 1\/3/g) ?? []).length, 1);
+    assert.ok(plain.includes('ultragoal 1/3 + team:2 workers'));
+  });
 
   it('runs authority tick after each rendered frame', async () => {
     const writes: string[] = [];

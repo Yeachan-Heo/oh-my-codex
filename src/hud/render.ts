@@ -111,19 +111,23 @@ function renderUltraqa(ctx: HudRenderContext): string | null {
   return green(`qa:${phase}`);
 }
 
-function renderTeam(ctx: HudRenderContext): string | null {
+function formatTeamSummary(ctx: HudRenderContext): string | null {
   if (!ctx.team) return null;
   const count = ctx.team.agent_count;
   const name = ctx.team.team_name ? sanitizeDynamicText(ctx.team.team_name) : '';
   if (count !== undefined && count > 0) {
-    return green(`team:${count} workers`);
+    return `team:${count} workers`;
   }
   if (name) {
-    return green(`team:${name}`);
+    return `team:${name}`;
   }
-  return green('team');
+  return 'team';
 }
 
+function renderTeam(ctx: HudRenderContext): string | null {
+  const summary = formatTeamSummary(ctx);
+  return summary ? green(summary) : null;
+}
 
 function normalizeTrailingEllipsis(value: string): string {
   return value.replace(/(?:\.\.\.|…)+$/u, '…');
@@ -141,7 +145,8 @@ function renderUltragoal(ctx: HudRenderContext): string | null {
   const complete = ctx.ultragoal.complete;
   if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(complete)) return null;
 
-  const progress = `ultragoal ${complete}/${total}`;
+  const teamSummary = formatTeamSummary(ctx);
+  const progress = `ultragoal ${complete}/${total}${teamSummary ? ` + ${teamSummary}` : ''}`;
   const ongoingGoals = (ctx.ultragoal.ongoingGoals?.length ? ctx.ultragoal.ongoingGoals : ctx.ultragoal.activeGoal ? [ctx.ultragoal.activeGoal] : [])
     .slice(0, 3)
     .map((goal) => {
@@ -158,6 +163,12 @@ function renderUltragoal(ctx: HudRenderContext): string | null {
   const items = ongoingGoals.length > 0 ? ` ▶ ${ongoingGoals.join(' · ')}` : '';
   const summary = `${progress}${items}`;
   return cyan(objective ? `${summary} ▶ objective: ${objective}` : summary);
+}
+
+
+function renderExecutionSummary(ctx: HudRenderContext): string | null {
+  if (ctx.ultragoal?.active) return renderUltragoal(ctx);
+  return renderTeam(ctx);
 }
 
 function renderTurns(ctx: HudRenderContext): string | null {
@@ -233,8 +244,7 @@ const MINIMAL_ELEMENTS: ElementRenderer[] = [
   renderDeepInterview,
   renderAutoresearch,
   renderUltraqa,
-  renderTeam,
-  renderUltragoal,
+  renderExecutionSummary,
   renderTurns,
 ];
 
@@ -247,8 +257,7 @@ const FOCUSED_ELEMENTS: ElementRenderer[] = [
   renderDeepInterview,
   renderAutoresearch,
   renderUltraqa,
-  renderTeam,
-  renderUltragoal,
+  renderExecutionSummary,
   renderTurns,
   renderTokens,
   renderQuota,
@@ -265,8 +274,7 @@ const FULL_ELEMENTS: ElementRenderer[] = [
   renderDeepInterview,
   renderAutoresearch,
   renderUltraqa,
-  renderTeam,
-  renderUltragoal,
+  renderExecutionSummary,
   renderTurns,
   renderTokens,
   renderQuota,
