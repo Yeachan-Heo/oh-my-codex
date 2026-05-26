@@ -129,6 +129,41 @@ describe('evaluateQuestionPolicy', { concurrency: false }, () => {
 });
 
 describe('evaluateQuestionPolicy autopilot deep-interview wait', { concurrency: false }, () => {
+  it('allows a deep-interview question to start while autopilot is in its deep-interview phase', { concurrency: false }, async () => {
+    const cwd = await makeRepo();
+    const sessionDir = join(cwd, '.omx', 'state', 'sessions', 'sess-auto-start');
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+      mode: 'autopilot',
+      active: true,
+      current_phase: 'deep-interview',
+    }, null, 2));
+    await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+      active: true,
+      skill: 'autopilot',
+      phase: 'deep-interview',
+      active_skills: [{ skill: 'autopilot', phase: 'deep-interview', active: true, session_id: 'sess-auto-start' }],
+      session_id: 'sess-auto-start',
+    }, null, 2));
+
+    const allowed = await evaluateQuestionPolicy({
+      cwd,
+      explicitSessionId: 'sess-auto-start',
+      questionSource: 'deep-interview',
+      env: { ...process.env, OMX_TEAM_WORKER: '' },
+    });
+    assert.equal(allowed.allowed, true);
+
+    const unrelatedSource = await evaluateQuestionPolicy({
+      cwd,
+      explicitSessionId: 'sess-auto-start',
+      questionSource: 'implementation',
+      env: { ...process.env, OMX_TEAM_WORKER: '' },
+    });
+    assert.equal(unrelatedSource.allowed, false);
+    assert.equal(unrelatedSource.code, 'active_execution_mode_blocked');
+  });
+
   it('allows only controlled autopilot deep-interview questions while preserving unrelated guards', { concurrency: false }, async () => {
     const cwd = await makeRepo();
     const sessionDir = join(cwd, '.omx', 'state', 'sessions', 'sess-auto');
