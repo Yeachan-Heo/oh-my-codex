@@ -21,7 +21,15 @@ function cleanQualityGate(): string {
   return JSON.stringify({
     aiSlopCleaner: { status: 'passed', evidence: 'ai-slop-cleaner passed' },
     verification: { status: 'passed', commands: ['npm test'], evidence: 'tests passed after cleaner' },
-    codeReview: { recommendation: 'APPROVE', architectStatus: 'CLEAR', evidence: '$code-review APPROVE + CLEAR' },
+    codeReview: {
+      recommendation: 'APPROVE',
+      architectStatus: 'CLEAR',
+      evidence: '$code-review APPROVE + CLEAR',
+      independentReview: {
+        codeReviewer: { agentRole: 'code-reviewer', evidence: 'code-reviewer subagent returned APPROVE' },
+        architect: { agentRole: 'architect', evidence: 'architect subagent returned CLEAR' },
+      },
+    },
   });
 }
 
