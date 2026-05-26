@@ -240,6 +240,16 @@ export interface UltragoalQualityGate {
     recommendation: 'APPROVE';
     architectStatus: 'CLEAR';
     evidence: string;
+    independentReview: {
+      codeReviewer: {
+        agentRole: 'code-reviewer';
+        evidence: string;
+      };
+      architect: {
+        agentRole: 'architect';
+        evidence: string;
+      };
+    };
   };
 }
 
@@ -1191,6 +1201,26 @@ function validateQualityGate(value: unknown): UltragoalQualityGate {
     throw new UltragoalError('Final code-review must be clean: codeReview.architectStatus must be CLEAR; use record-review-blockers for WATCH or BLOCK.');
   }
   assertNonEmpty(review.evidence, 'codeReview.evidence');
+  const independentReview = (review as Partial<UltragoalQualityGate['codeReview']>).independentReview;
+  if (!independentReview || typeof independentReview !== 'object') {
+    throw new UltragoalError('Final code-review independent review unavailable: codeReview.independentReview must include completed code-reviewer and architect subagent evidence; use record-review-blockers instead of self-approving.');
+  }
+  const codeReviewer = independentReview.codeReviewer;
+  if (!codeReviewer || typeof codeReviewer !== 'object') {
+    throw new UltragoalError('Final code-review independent review unavailable: missing codeReview.independentReview.codeReviewer evidence from the code-reviewer subagent.');
+  }
+  if (codeReviewer.agentRole !== 'code-reviewer') {
+    throw new UltragoalError('Final code-review must use an independent code-reviewer subagent; self-review or default/authoring-lane review cannot approve the ultragoal gate.');
+  }
+  assertNonEmpty(codeReviewer.evidence, 'codeReview.independentReview.codeReviewer.evidence');
+  const architect = independentReview.architect;
+  if (!architect || typeof architect !== 'object') {
+    throw new UltragoalError('Final code-review independent review unavailable: missing codeReview.independentReview.architect evidence from the architect subagent.');
+  }
+  if (architect.agentRole !== 'architect') {
+    throw new UltragoalError('Final code-review must use an independent architect subagent; self-review or default/authoring-lane review cannot approve the ultragoal gate.');
+  }
+  assertNonEmpty(architect.evidence, 'codeReview.independentReview.architect.evidence');
   return gate as UltragoalQualityGate;
 }
 
@@ -1505,7 +1535,10 @@ function buildPerStoryCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalP
       ? '- Final mandatory quality gate: run ai-slop-cleaner on changed files even when it is a no-op, rerun verification, then run $code-review.'
       : '- This is not the final ultragoal story; do not run the final ai-slop-cleaner/$code-review gate yet.',
     finalStory
-      ? '- If final $code-review is not APPROVE with architect status CLEAR, do not call update_goal. Record blockers with:'
+      ? '- Final $code-review is clean only when it is APPROVE with architect status CLEAR and includes independentReview evidence from both code-reviewer and architect subagents.'
+      : null,
+    finalStory
+      ? '- If final $code-review is non-clean, missing independentReview evidence, or independent delegation is unavailable/skipped/failed, do not call update_goal. Record blockers with:'
       : '- After the goal is actually complete, call update_goal({status: "complete"}), call get_goal again for a fresh completion snapshot, then checkpoint the ledger with:',
     finalStory
       ? `  omx ultragoal record-review-blockers --goal-id ${goal.id} --title "Resolve final code-review blockers" --objective "<blocker-resolution objective>" --evidence "<review findings>" --codex-goal-json "<active get_goal JSON or path>"`
@@ -1514,7 +1547,7 @@ function buildPerStoryCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalP
       ? '- In legacy per-story mode, the blocker story may require an available Codex goal context because this story remains an active incomplete Codex goal; do not claim it is complete.'
       : null,
     finalStory
-      ? '- If final $code-review is clean (APPROVE + CLEAR), call update_goal({status: "complete"}), call get_goal again, then checkpoint with --quality-gate-json:'
+      ? '- If final $code-review is clean (APPROVE + CLEAR + independent code-reviewer and architect subagent evidence), call update_goal({status: "complete"}), call get_goal again, then checkpoint with --quality-gate-json:'
       : null,
     finalStory
       ? `  omx ultragoal checkpoint --goal-id ${goal.id} --status complete --evidence "<tests/files/PR evidence>" --codex-goal-json "<fresh complete get_goal JSON or path>" --quality-gate-json "<quality gate JSON or path>"`
@@ -1550,13 +1583,16 @@ function buildAggregateCodexGoalInstruction(goal: UltragoalItem, plan: Ultragoal
       ? '- This is the final pending story: run the mandatory final ai-slop-cleaner pass, rerun verification, and run $code-review before any update_goal call.'
       : '- This is not the final story: do not call update_goal yet; the aggregate Codex goal must remain active while later OMX stories remain.',
     finalStory
-      ? '- If final $code-review is not APPROVE with architect status CLEAR, do not call update_goal. Record durable blocker work first:'
+      ? '- Final $code-review is clean only when it is APPROVE with architect status CLEAR and includes independentReview evidence from both code-reviewer and architect subagents.'
+      : null,
+    finalStory
+      ? '- If final $code-review is non-clean, missing independentReview evidence, or independent delegation is unavailable/skipped/failed, do not call update_goal. Record durable blocker work first:'
       : null,
     finalStory
       ? `  omx ultragoal record-review-blockers --goal-id ${goal.id} --title "Resolve final code-review blockers" --objective "<blocker-resolution objective>" --evidence "<review findings>" --codex-goal-json "<active get_goal JSON or path>"`
       : null,
     finalStory
-      ? '- If final $code-review is clean (APPROVE + CLEAR), call update_goal({status: "complete"}), call get_goal again for a fresh complete snapshot, then checkpoint with --quality-gate-json.'
+      ? '- If final $code-review is clean (APPROVE + CLEAR + independent code-reviewer and architect subagent evidence), call update_goal({status: "complete"}), call get_goal again for a fresh complete snapshot, then checkpoint with --quality-gate-json.'
       : null,
     `- Checkpoint this OMX story with a fresh get_goal snapshot whose objective matches the aggregate payload and whose status is ${checkpointStatus}:`,
     finalStory
