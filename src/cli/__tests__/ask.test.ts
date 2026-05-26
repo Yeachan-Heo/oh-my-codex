@@ -77,6 +77,13 @@ describe('parseAskArgs', () => {
     });
   });
 
+  it('parses antigravity provider prompt form', () => {
+    assert.deepEqual(parseAskArgs(['antigravity', 'review', 'frontend']), {
+      provider: 'antigravity',
+      prompt: 'review frontend',
+    });
+  });
+
   it('parses --agent-prompt with positional task text', () => {
     assert.deepEqual(parseAskArgs(['claude', '--agent-prompt', 'executor', 'review', 'this']), {
       provider: 'claude',
@@ -218,6 +225,102 @@ describe('omx ask', () => {
       const geminiArtifactPath = geminiRes.stdout.trim();
       const geminiArtifact = await readFile(geminiArtifactPath, 'utf-8');
       assert.match(geminiArtifact, /GEMINI_PROMPT_OK:gemini-long-flag/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('routes antigravity through persistent ACPX session with Gemini Flash model tier metadata', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-ask-antigravity-'));
+    try {
+      const fakeBin = join(wd, 'bin');
+      const fakeAdapter = join(wd, 'tools', 'agy-acp', 'target', 'release', 'agy-acp.exe');
+      await mkdir(fakeBin, { recursive: true });
+      await mkdir(dirname(fakeAdapter), { recursive: true });
+      await writeFile(fakeAdapter, '#!/bin/sh\necho fake-adapter\n');
+      await chmod(fakeAdapter, 0o755);
+
+      await writeFile(
+        join(fakeBin, 'acpx'),
+        [
+          '#!/bin/sh',
+          'if [ "$1" = "--version" ]; then echo "fake-acpx"; exit 0; fi',
+          'case "$*" in',
+          '  *" sessions ensure --name antigravity"*) echo "SESSION_ENSURED"; exit 0 ;;',
+          '  *" prompt -s antigravity -- "*)',
+          '    last=""',
+          '    for arg in "$@"; do last="$arg"; done',
+          '    printf "ACPX_PROMPT_OK:%s" "$last"',
+          '    exit 0',
+          '    ;;',
+          'esac',
+          'echo "unexpected args:$*" 1>&2',
+          'exit 5',
+          '',
+        ].join('\n'),
+      );
+      await chmod(join(fakeBin, 'acpx'), 0o755);
+
+      const res = runOmx(wd, ['ask', 'antigravity', 'quick', 'frontend', 'check'], {
+        PATH: `${fakeBin}:${process.env.PATH || ''}`,
+        OMX_ANTIGRAVITY_MODEL_TIER: 'low',
+      });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      const artifact = await readFile(res.stdout.trim(), 'utf-8');
+      assert.match(artifact, /Requested model setting: gemini-3\.5-flash \(low\)/);
+      assert.match(artifact, /ACPX_PROMPT_OK:[\s\S]*quick frontend check/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('infers antigravity model tier from raw user task instead of injected agent prompt text', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-ask-antigravity-tier-'));
+    try {
+      const fakeBin = join(wd, 'bin');
+      const fakeAdapter = join(wd, 'tools', 'agy-acp', 'target', 'release', 'agy-acp');
+      const codexHome = join(wd, '.codex-home');
+      const promptsDir = join(codexHome, 'prompts');
+      await mkdir(fakeBin, { recursive: true });
+      await mkdir(dirname(fakeAdapter), { recursive: true });
+      await mkdir(promptsDir, { recursive: true });
+      await writeFile(fakeAdapter, '#!/bin/sh\necho fake-adapter\n');
+      await chmod(fakeAdapter, 0o755);
+      await writeFile(join(promptsDir, 'architect.md'), 'High security architecture review boilerplate.');
+
+      await writeFile(
+        join(fakeBin, 'acpx'),
+        [
+          '#!/bin/sh',
+          'if [ "$1" = "--version" ]; then echo "fake-acpx"; exit 0; fi',
+          'case "$*" in',
+          '  *" sessions ensure --name antigravity"*) exit 0 ;;',
+          '  *" prompt -s antigravity -- "*)',
+          '    last=""',
+          '    for arg in "$@"; do last="$arg"; done',
+          '    printf "ACPX_PROMPT_OK:%s" "$last"',
+          '    exit 0',
+          '    ;;',
+          'esac',
+          'echo "unexpected args:$*" 1>&2',
+          'exit 5',
+          '',
+        ].join('\n'),
+      );
+      await chmod(join(fakeBin, 'acpx'), 0o755);
+
+      const res = runOmx(wd, ['ask', 'antigravity', '--agent-prompt', 'architect', 'quick', 'check'], {
+        PATH: `${fakeBin}:${process.env.PATH || ''}`,
+        CODEX_HOME: codexHome,
+      });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      const artifact = await readFile(res.stdout.trim(), 'utf-8');
+      assert.match(artifact, /Requested model setting: gemini-3\.5-flash \(low\)/);
+      assert.match(artifact, /High security architecture review boilerplate/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

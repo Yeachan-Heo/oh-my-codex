@@ -10,7 +10,7 @@ Usage:
   omx doctor    Check installation health
   omx cleanup   Kill orphaned OMX MCP server processes from prior sessions
   omx doctor --team  Check team/swarm runtime health diagnostics
-  omx ask       Ask local provider CLI (claude|gemini) and write artifact output
+  omx ask       Ask local provider CLI (claude|gemini|antigravity) and write artifact output
   omx autoresearch [DEPRECATED] Use $autoresearch; direct CLI launch removed
   omx explore   Default read-only exploration entrypoint (may adaptively use sparkshell backend)
   omx session   Search prior local session transcripts and history artifacts
