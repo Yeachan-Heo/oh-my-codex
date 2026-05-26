@@ -175,6 +175,28 @@ export async function readUltragoalState(cwd: string): Promise<UltragoalStateFor
   );
   const activeIndex = activeGoal ? goals.findIndex((goal) => goal.id === activeGoal.id) : -1;
   const complete = isAggregateComplete(plan.aggregateCompletion) || unresolved_goals === 0;
+  const orderedOngoingGoals = goals
+    .map((goal, index) => ({ goal, index }))
+    .filter(({ goal }) => ULTRAGOAL_UNRESOLVED_STATUSES.has(goal.status))
+    .sort((a, b) => {
+      const aActive = activeGoal && a.goal.id === activeGoal.id ? 0 : 1;
+      const bActive = activeGoal && b.goal.id === activeGoal.id ? 0 : 1;
+      if (aActive !== bActive) return aActive - bActive;
+
+      const aRunning = ULTRAGOAL_ACTIVE_STATUSES.has(a.goal.status) ? 0 : 1;
+      const bRunning = ULTRAGOAL_ACTIVE_STATUSES.has(b.goal.status) ? 0 : 1;
+      if (aRunning !== bRunning) return aRunning - bRunning;
+
+      return a.index - b.index;
+    })
+    .slice(0, 3)
+    .map(({ goal, index }) => ({
+      id: goal.id,
+      title: goal.title,
+      objective: goal.objective,
+      status: goal.status,
+      index: index + 1,
+    }));
 
   return {
     active: !complete,
@@ -194,6 +216,7 @@ export async function readUltragoalState(cwd: string): Promise<UltragoalStateFor
       status: activeGoal.status,
       index: activeIndex + 1,
     } : undefined,
+    ongoingGoals: orderedOngoingGoals,
   };
 }
 

@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { OMX_TMUX_HUD_OWNER_ENV, reconcileHudForPromptSubmit } from '../reconcile.js';
+import { HUD_TMUX_HEIGHT_LINES } from '../constants.js';
 import { OMX_TMUX_HUD_LEADER_PANE_ENV } from '../tmux.js';
 
 describe('reconcileHudForPromptSubmit', () => {
@@ -89,9 +90,9 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.match(created[0]?.cmd || '', /exec .*\/repo\/dist\/cli\/omx\.js' hud --watch/);
     assert.match(created[0]?.cmd || '', /OMX_SESSION_ID='sess-a'/);
     assert.match(created[0]?.cmd || '', /OMX_TMUX_HUD_OWNER='1'/);
-    assert.equal(created[0]?.options?.heightLines, 3);
+    assert.equal(created[0]?.options?.heightLines, HUD_TMUX_HEIGHT_LINES);
     assert.equal(resized.length, 1);
-    assert.equal(resized[0]?.heightLines, 3);
+    assert.equal(resized[0]?.heightLines, HUD_TMUX_HEIGHT_LINES);
   });
 
   it('prefers an explicit session override when recreating HUD', async () => {
@@ -202,7 +203,7 @@ describe('reconcileHudForPromptSubmit', () => {
       createHudWatchPane: (_cwd, cmd, options) => {
         created.push({ cmd });
         assert.equal(options?.fullWidth, true);
-        assert.equal(options?.heightLines, 3);
+        assert.equal(options?.heightLines, HUD_TMUX_HEIGHT_LINES);
         return '%9';
       },
       resizeTmuxPane: () => true,
@@ -313,7 +314,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(result.status, 'resized');
     assert.equal(resized.length, 1);
     assert.equal(resized[0]?.paneId, '%2');
-    assert.equal(resized[0]?.heightLines, 3);
+    assert.equal(resized[0]?.heightLines, HUD_TMUX_HEIGHT_LINES);
   });
 
   it('resizes an existing owner-tagged same-leader HUD pane instead of creating a duplicate during prompt revive', async () => {
@@ -344,7 +345,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(result.status, 'resized');
     assert.equal(result.paneId, '%2');
     assert.deepEqual(created, []);
-    assert.deepEqual(resized, [{ paneId: '%2', heightLines: 3 }]);
+    assert.deepEqual(resized, [{ paneId: '%2', heightLines: HUD_TMUX_HEIGHT_LINES }]);
   });
 
 
@@ -370,7 +371,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(result.paneId, '%2');
     assert.equal(result.duplicateCount, 1);
     assert.deepEqual(killed, ['%3']);
-    assert.deepEqual(resized, [{ paneId: '%2', heightLines: 3 }]);
+    assert.deepEqual(resized, [{ paneId: '%2', heightLines: HUD_TMUX_HEIGHT_LINES }]);
     assert.deepEqual(created, []);
   });
 
@@ -402,7 +403,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(result.status, 'resized');
     assert.equal(result.paneId, '%2');
     assert.deepEqual(created, []);
-    assert.deepEqual(resized, [{ paneId: '%2', heightLines: 3 }]);
+    assert.deepEqual(resized, [{ paneId: '%2', heightLines: HUD_TMUX_HEIGHT_LINES }]);
   });
 
   it('registers client-resized hook scoped from the emitting pane after resizing an existing HUD pane', async () => {
@@ -429,7 +430,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(registered.length, 1);
     assert.equal(registered[0]?.hudPaneId, '%2');
     assert.equal(registered[0]?.currentPaneId, '%1');
-    assert.equal(registered[0]?.heightLines, 3);
+    assert.equal(registered[0]?.heightLines, HUD_TMUX_HEIGHT_LINES);
   });
 
   it('registers client-resized hook scoped from the emitting pane after creating a new HUD pane', async () => {
@@ -452,7 +453,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(registered.length, 1);
     assert.equal(registered[0]?.hudPaneId, '%9');
     assert.equal(registered[0]?.currentPaneId, '%1');
-    assert.equal(registered[0]?.heightLines, 3);
+    assert.equal(registered[0]?.heightLines, HUD_TMUX_HEIGHT_LINES);
   });
 
   it('unregisters existing hook before killing duplicates and re-registers for the new pane', async () => {

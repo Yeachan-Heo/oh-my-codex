@@ -322,7 +322,7 @@ async function launchTmuxPane(cwd: string, flags: HudFlags): Promise<void> {
   const args = buildTmuxSplitArgs(cwd, omxBin, flags.preset, process.env.OMX_SESSION_ID, process.env.OMX_ROOT, currentPaneId);
 
   try {
-    // Split bottom pane, 4 lines tall, running omx hud --watch.
+    // Split bottom pane at the shared HUD height, running omx hud --watch.
     // execFileSync bypasses the shell – cwd and omxBin cannot inject commands.
     execFileSync('tmux', args, { stdio: 'inherit' });
     console.log('HUD launched in tmux pane below. Close with: Ctrl+C in that pane, or `tmux kill-pane -t bottom`');

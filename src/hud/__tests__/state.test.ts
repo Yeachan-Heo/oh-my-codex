@@ -271,7 +271,49 @@ describe('readUltragoalState', { concurrency: false }, () => {
           status: 'in_progress',
           index: 2,
         },
+        ongoingGoals: [
+          {
+            id: 'G002-hud-progress',
+            title: 'HUD progress display',
+            objective: 'show active ultragoal objective in OMX HUD',
+            status: 'in_progress',
+            index: 2,
+          },
+          {
+            id: 'G003-tests',
+            title: 'Tests',
+            objective: 'Validate the HUD display',
+            status: 'pending',
+            index: 3,
+          },
+        ],
       });
+    });
+  });
+
+  it('limits ultragoal ongoing HUD goals to three unresolved items with active goal first', async () => {
+    await withTempRepo('omx-hud-ultragoal-ongoing-', async (cwd) => {
+      const ultragoalDir = join(cwd, '.omx', 'ultragoal');
+      await mkdir(ultragoalDir, { recursive: true });
+      await writeFile(join(ultragoalDir, 'goals.json'), JSON.stringify({
+        version: 1,
+        activeGoalId: 'G004-active',
+        goals: [
+          { id: 'G001-done', title: 'Done', objective: 'Complete old work', status: 'complete' },
+          { id: 'G002-pending', title: 'Pending one', objective: 'Do pending one', status: 'pending' },
+          { id: 'G003-running', title: 'Running one', objective: 'Do running one', status: 'in_progress' },
+          { id: 'G004-active', title: 'Active selected', objective: 'Do active selected', status: 'in_progress' },
+          { id: 'G005-blocked', title: 'Blocked one', objective: 'Resolve blocker', status: 'review_blocked' },
+        ],
+      }));
+
+      const state = await readUltragoalState(cwd);
+
+      assert.deepEqual(state?.ongoingGoals?.map((goal) => goal.id), [
+        'G004-active',
+        'G003-running',
+        'G005-blocked',
+      ]);
     });
   });
 

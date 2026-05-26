@@ -30,6 +30,7 @@ export interface UltragoalStateForHud {
   needsUserDecision: number;
   progressTotal: number;
   activeGoal?: UltragoalActiveGoalForHud;
+  ongoingGoals?: UltragoalActiveGoalForHud[];
 }
 
 /** Ultrawork state for HUD display */

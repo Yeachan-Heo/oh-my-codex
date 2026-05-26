@@ -331,6 +331,74 @@ describe('renderHud – ultragoal', () => {
     assert.ok(result.includes('…'));
     assert.ok(!result.includes(longObjective));
   });
+
+  it('renders up to three ongoing ultragoal items alongside ralplan and ultraqa within the expanded HUD budget', () => {
+    const ctx = {
+      ...emptyCtx(),
+      ralplan: { active: true, current_phase: 'review' },
+      ultraqa: { active: true, current_phase: 'adversarial-e2e' },
+      ultragoal: {
+        active: true,
+        status: 'in_progress',
+        total: 5,
+        complete: 1,
+        pending: 3,
+        inProgress: 1,
+        failed: 0,
+        reviewBlocked: 0,
+        needsUserDecision: 0,
+        progressTotal: 5,
+        activeGoal: {
+          id: 'G002-active',
+          title: 'Active HUD status',
+          objective: 'show three active workflow statuses in the OMX HUD without clipping',
+          status: 'in_progress',
+          index: 2,
+        },
+        ongoingGoals: [
+          {
+            id: 'G002-active',
+            title: 'Active HUD status',
+            objective: 'show three active workflow statuses in the OMX HUD without clipping',
+            status: 'in_progress',
+            index: 2,
+          },
+          {
+            id: 'G003-next',
+            title: 'Next verification item',
+            objective: 'verify the HUD pane',
+            status: 'pending',
+            index: 3,
+          },
+          {
+            id: 'G004-qa',
+            title: 'Run UltraQA matrix',
+            objective: 'exercise adversarial scenarios',
+            status: 'pending',
+            index: 4,
+          },
+          {
+            id: 'G005-hidden',
+            title: 'Hidden fourth item',
+            objective: 'should not render',
+            status: 'pending',
+            index: 5,
+          },
+        ],
+      },
+    };
+
+    const result = stripSgr(renderHud(ctx, 'focused', { maxWidth: 260, maxLines: 6 }));
+
+    assert.ok(result.startsWith('[OMX]'));
+    assert.ok(result.includes('ralplan:review'));
+    assert.ok(result.includes('qa:adversarial-e2e'));
+    assert.ok(result.includes('G002-active: Active HUD status'));
+    assert.ok(result.includes('G003-next: Next verification item (pending)'));
+    assert.ok(result.includes('G004-qa: Run UltraQA matrix (pending)'));
+    assert.ok(!result.includes('G005-hidden'));
+    assert.ok(result.split('\n').length <= 6);
+  });
 });
 
 // ── Metrics – turns ───────────────────────────────────────────────────────────

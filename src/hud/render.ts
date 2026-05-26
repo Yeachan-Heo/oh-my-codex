@@ -138,12 +138,21 @@ function renderUltragoal(ctx: HudRenderContext): string | null {
   if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(complete)) return null;
 
   const progress = `ultragoal ${complete}/${total}`;
-  const id = ctx.ultragoal.activeGoal?.id ? sanitizeDynamicText(ctx.ultragoal.activeGoal.id) : '';
-  const title = ctx.ultragoal.activeGoal?.title ? sanitizeDynamicText(ctx.ultragoal.activeGoal.title) : '';
-  const rawObjective = ctx.ultragoal.activeGoal?.objective ? sanitizeDynamicText(ctx.ultragoal.activeGoal.objective) : '';
+  const ongoingGoals = (ctx.ultragoal.ongoingGoals?.length ? ctx.ultragoal.ongoingGoals : ctx.ultragoal.activeGoal ? [ctx.ultragoal.activeGoal] : [])
+    .slice(0, 3)
+    .map((goal) => {
+      const id = goal.id ? sanitizeDynamicText(goal.id) : '';
+      const title = goal.title ? truncateDynamicText(sanitizeDynamicText(goal.title), 36) : '';
+      const status = goal.status ? sanitizeDynamicText(goal.status) : '';
+      const heading = [id, title].filter(Boolean).join(': ');
+      return status && status !== 'in_progress' ? `${heading} (${status})` : heading;
+    })
+    .filter(Boolean);
+  const activeGoal = ctx.ultragoal.activeGoal ?? ctx.ultragoal.ongoingGoals?.[0];
+  const rawObjective = activeGoal?.objective ? sanitizeDynamicText(activeGoal.objective) : '';
   const objective = rawObjective ? truncateDynamicText(rawObjective, 96) : '';
-  const heading = [id, title].filter(Boolean).join(': ');
-  const summary = heading ? `${progress} ▶ ${heading}` : progress;
+  const items = ongoingGoals.length > 0 ? ` ▶ ${ongoingGoals.join(' · ')}` : '';
+  const summary = `${progress}${items}`;
   return cyan(objective ? `${summary} · objective: ${objective}` : summary);
 }
 

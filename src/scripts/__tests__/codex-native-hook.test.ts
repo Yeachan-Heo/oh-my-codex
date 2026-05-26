@@ -24,6 +24,7 @@ import {
 import { writeSessionStart } from "../../hooks/session.js";
 import { resetTriageConfigCache } from "../../hooks/triage-config.js";
 import { executeStateOperation } from "../../state/operations.js";
+import { HUD_TMUX_HEIGHT_LINES } from "../../hud/constants.js";
 import { OMX_TMUX_HUD_OWNER_ENV } from "../../hud/reconcile.js";
 import { OMX_TMUX_HUD_LEADER_PANE_ENV } from "../../hud/tmux.js";
 import { readAllState } from "../../hud/state.js";
@@ -4153,8 +4154,8 @@ esac
       assert.equal(result.omxEventName, "keyword-detector");
       const tmuxCalls = await readFile(tmuxLog, "utf-8");
       assert.match(tmuxCalls, /list-panes -t %1 -F/);
-      assert.match(tmuxCalls, /split-window -v -l 3 -d -t %1 -c/);
-      assert.match(tmuxCalls, /resize-pane -t %9 -y 3/);
+      assert.match(tmuxCalls, new RegExp(`split-window -v -l ${HUD_TMUX_HEIGHT_LINES} -d -t %1 -c`));
+      assert.match(tmuxCalls, new RegExp(`resize-pane -t %9 -y ${HUD_TMUX_HEIGHT_LINES}`));
       assert.match(tmuxCalls, /dist\/cli\/omx\.js' hud --watch --preset=focused/);
       assert.doesNotMatch(tmuxCalls, /\/tmp\/codex-host-binary' hud --watch/);
     } finally {
@@ -4235,7 +4236,7 @@ esac
       assert.equal(result.omxEventName, "keyword-detector");
       const tmuxCalls = await readFile(tmuxLog, "utf-8");
       assert.match(tmuxCalls, /list-panes -t %1 -F/);
-      assert.match(tmuxCalls, /resize-pane -t %2 -y 3/);
+      assert.match(tmuxCalls, new RegExp(`resize-pane -t %2 -y ${HUD_TMUX_HEIGHT_LINES}`));
       assert.doesNotMatch(tmuxCalls, /split-window/);
       assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", canonicalSessionId, "ralplan-state.json")), true);
       assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", nativeSessionId, "ralplan-state.json")), false);
