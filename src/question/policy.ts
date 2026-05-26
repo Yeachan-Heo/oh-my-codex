@@ -2,7 +2,10 @@ import { listNotifyCanonicalActiveTeams, type NotifyCanonicalActiveTeam } from '
 import { readCurrentSessionId } from '../mcp/state-paths.js';
 import { listActiveSkills, readVisibleSkillActiveState } from '../state/skill-active.js';
 import { readActiveWorkflowModes } from '../state/workflow-transition.js';
-import { readAutopilotDeepInterviewQuestionWaitState } from './autopilot-wait.js';
+import {
+  canStartAutopilotDeepInterviewQuestion,
+  readAutopilotDeepInterviewQuestionWaitState,
+} from './autopilot-wait.js';
 
 const BLOCKED_EXECUTION_SKILLS = new Set([
   'autopilot',
@@ -90,19 +93,24 @@ export async function evaluateQuestionPolicy(
 
   if (blocked.length > 0) {
     const source = safeString(options.questionSource).trim();
-    const autopilotWait = source === 'deep-interview'
-      && onlyControlledAutopilotQuestionBlock(blocked)
-      ? await readAutopilotDeepInterviewQuestionWaitState(options.cwd, sessionId)
-      : null;
-    if (autopilotWait) {
-      return {
-        allowed: true,
-        fallbackAllowed: true,
+    if (source === 'deep-interview' && onlyControlledAutopilotQuestionBlock(blocked)) {
+      const autopilotWait = await readAutopilotDeepInterviewQuestionWaitState(
+        options.cwd,
         sessionId,
-        activeModes,
-        activeSkills,
-        activeTeams,
-      };
+      );
+      const canStartAutopilotQuestion = autopilotWait
+        ? true
+        : await canStartAutopilotDeepInterviewQuestion(options.cwd, sessionId);
+      if (canStartAutopilotQuestion) {
+        return {
+          allowed: true,
+          fallbackAllowed: true,
+          sessionId,
+          activeModes,
+          activeSkills,
+          activeTeams,
+        };
+      }
     }
 
     return {
