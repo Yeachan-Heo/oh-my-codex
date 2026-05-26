@@ -129,6 +129,50 @@ describe('evaluateQuestionPolicy', { concurrency: false }, () => {
 });
 
 describe('evaluateQuestionPolicy autopilot deep-interview wait', { concurrency: false }, () => {
+  it('allows autopilot deep-interview phase to open the user question UI', { concurrency: false }, async () => {
+    const cwd = await makeRepo();
+    const sessionDir = join(cwd, '.omx', 'state', 'sessions', 'sess-auto-deep');
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+      mode: 'autopilot',
+      active: true,
+      current_phase: 'deep-interview',
+    }, null, 2));
+    await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+      active: true,
+      skill: 'autopilot',
+      phase: 'deep-interview',
+      active_skills: [{ skill: 'autopilot', phase: 'deep-interview', active: true, session_id: 'sess-auto-deep' }],
+      session_id: 'sess-auto-deep',
+    }, null, 2));
+
+    const allowedWithSource = await evaluateQuestionPolicy({
+      cwd,
+      explicitSessionId: 'sess-auto-deep',
+      questionSource: 'deep-interview',
+      env: { ...process.env, OMX_TEAM_WORKER: '' },
+    });
+    assert.equal(allowedWithSource.allowed, true);
+    assert.equal(allowedWithSource.fallbackAllowed, true);
+
+    const allowedWithoutSource = await evaluateQuestionPolicy({
+      cwd,
+      explicitSessionId: 'sess-auto-deep',
+      env: { ...process.env, OMX_TEAM_WORKER: '' },
+    });
+    assert.equal(allowedWithoutSource.allowed, true);
+    assert.equal(allowedWithoutSource.fallbackAllowed, true);
+
+    const unrelatedSource = await evaluateQuestionPolicy({
+      cwd,
+      explicitSessionId: 'sess-auto-deep',
+      questionSource: 'implementation',
+      env: { ...process.env, OMX_TEAM_WORKER: '' },
+    });
+    assert.equal(unrelatedSource.allowed, false);
+    assert.equal(unrelatedSource.code, 'active_execution_mode_blocked');
+  });
+
   it('allows only controlled autopilot deep-interview questions while preserving unrelated guards', { concurrency: false }, async () => {
     const cwd = await makeRepo();
     const sessionDir = join(cwd, '.omx', 'state', 'sessions', 'sess-auto');

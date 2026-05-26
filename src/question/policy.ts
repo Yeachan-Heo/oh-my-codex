@@ -2,7 +2,7 @@ import { listNotifyCanonicalActiveTeams, type NotifyCanonicalActiveTeam } from '
 import { readCurrentSessionId } from '../mcp/state-paths.js';
 import { listActiveSkills, readVisibleSkillActiveState } from '../state/skill-active.js';
 import { readActiveWorkflowModes } from '../state/workflow-transition.js';
-import { readAutopilotDeepInterviewQuestionWaitState } from './autopilot-wait.js';
+import { isAutopilotDeepInterviewPhase, readAutopilotDeepInterviewQuestionWaitState } from './autopilot-wait.js';
 
 const BLOCKED_EXECUTION_SKILLS = new Set([
   'autopilot',
@@ -94,7 +94,11 @@ export async function evaluateQuestionPolicy(
       && onlyControlledAutopilotQuestionBlock(blocked)
       ? await readAutopilotDeepInterviewQuestionWaitState(options.cwd, sessionId)
       : null;
-    if (autopilotWait) {
+    const autopilotDeepInterviewPhase = (source === 'deep-interview' || source === '')
+      && onlyControlledAutopilotQuestionBlock(blocked)
+      ? await isAutopilotDeepInterviewPhase(options.cwd, sessionId)
+      : false;
+    if (autopilotWait || autopilotDeepInterviewPhase) {
       return {
         allowed: true,
         fallbackAllowed: true,
