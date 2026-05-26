@@ -131,6 +131,21 @@ export async function reconcileHudForPromptSubmit(
     };
   }
 
+  if (hudPaneIds.length > 1 && !resolvedSessionId) {
+    const [keeperPaneId, ...extraPaneIds] = hudPaneIds;
+    for (const paneId of extraPaneIds) {
+      killPane(paneId);
+    }
+    const resized = resizePane(keeperPaneId, desiredHeight);
+    if (resized) ensureHudResizeHook(keeperPaneId, currentPaneId, desiredHeight, deps);
+    return {
+      status: resized ? 'replaced_duplicates' : 'failed',
+      paneId: resized ? keeperPaneId : null,
+      desiredHeight,
+      duplicateCount,
+    };
+  }
+
   if (!resolvedSessionId) {
     return {
       status: 'skipped_no_session_id',

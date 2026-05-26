@@ -17,6 +17,14 @@ import { HUD_TMUX_HEIGHT_LINES, HUD_TMUX_MAX_HEIGHT_LINES } from './constants.js
 import { sleep } from '../utils/sleep.js';
 import { runHudAuthorityTick } from './authority.js';
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
+import {
+  killTmuxPane,
+  listCurrentWindowHudPaneIds,
+  OMX_TMUX_HUD_LEADER_PANE_ENV,
+  registerHudResizeHook,
+  resizeTmuxPane,
+} from './tmux.js';
+import { OMX_TMUX_HUD_OWNER_ENV } from './reconcile.js';
 
 export const HUD_USAGE = [
   'Usage:',
@@ -263,14 +271,18 @@ export function buildTmuxSplitArgs(
   preset?: string,
   sessionId?: string,
   omxRoot?: string,
+  leaderPaneId?: string,
 ): string[] {
   // Defense-in-depth: keep preset constrained even if this helper is reused.
   const safePreset = parseHudPreset(preset);
   const presetArg = safePreset ? ` --preset=${safePreset}` : '';
   const safeSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
   const safeOmxRoot = typeof omxRoot === 'string' ? omxRoot : '';
+  const safeLeaderPaneId = typeof leaderPaneId === 'string' ? leaderPaneId.trim() : '';
   const envAssignments = [
     safeSessionId ? `OMX_SESSION_ID=${shellEscape(safeSessionId)}` : '',
+    `${OMX_TMUX_HUD_OWNER_ENV}=1`,
+    safeLeaderPaneId ? `${OMX_TMUX_HUD_LEADER_PANE_ENV}=${shellEscape(safeLeaderPaneId)}` : '',
     safeOmxRoot.trim() ? `OMX_ROOT=${shellEscape(safeOmxRoot)}` : '',
   ].filter(Boolean);
   const envPrefix = envAssignments.length > 0 ? `env ${envAssignments.join(' ')} ` : '';
@@ -290,7 +302,24 @@ async function launchTmuxPane(cwd: string, flags: HudFlags): Promise<void> {
     console.error('Failed to resolve OMX launcher path for tmux HUD startup.');
     process.exit(1);
   }
-  const args = buildTmuxSplitArgs(cwd, omxBin, flags.preset, process.env.OMX_SESSION_ID, process.env.OMX_ROOT);
+  const currentPaneId = process.env.TMUX_PANE?.trim();
+  const existingHudPaneIds = currentPaneId
+    ? listCurrentWindowHudPaneIds(currentPaneId, undefined, {
+        sessionId: process.env.OMX_SESSION_ID,
+        leaderPaneId: currentPaneId,
+      })
+    : [];
+  if (existingHudPaneIds.length === 1) {
+    resizeTmuxPane(existingHudPaneIds[0], HUD_TMUX_HEIGHT_LINES);
+    if (currentPaneId) registerHudResizeHook(existingHudPaneIds[0], currentPaneId, HUD_TMUX_HEIGHT_LINES);
+    console.log('HUD already running in tmux pane. Reused existing HUD pane.');
+    return;
+  }
+  for (const paneId of existingHudPaneIds) {
+    killTmuxPane(paneId);
+  }
+
+  const args = buildTmuxSplitArgs(cwd, omxBin, flags.preset, process.env.OMX_SESSION_ID, process.env.OMX_ROOT, currentPaneId);
 
   try {
     // Split bottom pane, 4 lines tall, running omx hud --watch.

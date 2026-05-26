@@ -3130,11 +3130,11 @@ describe("detached tmux new-session sequencing", () => {
     const source = await readFile(join(repoRoot, "src", "cli", "index.ts"), "utf8");
     assert.match(
       source,
-      /const staleHudPaneIds = currentPaneId\s*\? listHudWatchPaneIdsInCurrentWindow\(currentPaneId, \{ leaderPaneId: currentPaneId \}\)\s*: \[\];/,
+      /const staleHudPaneIds = currentPaneId\s*\? listHudWatchPaneIdsInCurrentWindow\(currentPaneId, \{ sessionId, leaderPaneId: currentPaneId \}\)\s*: \[\];/,
     );
     assert.doesNotMatch(
       source,
-      /const staleHudPaneIds = listHudWatchPaneIdsInCurrentWindow\(currentPaneId, \{ sessionId, leaderPaneId: currentPaneId \}\);/,
+      /const staleHudPaneIds = listHudWatchPaneIdsInCurrentWindow\(currentPaneId, \{ leaderPaneId: currentPaneId \}\);/,
     );
   });
 
@@ -3142,7 +3142,7 @@ describe("detached tmux new-session sequencing", () => {
     const source = await readFile(join(repoRoot, "src", "cli", "index.ts"), "utf8");
     assert.match(
       source,
-      /const staleHudPaneIds = currentPaneId\s*\? listHudWatchPaneIdsInCurrentWindow\(currentPaneId, \{ leaderPaneId: currentPaneId \}\)\s*: \[\];/,
+      /const staleHudPaneIds = currentPaneId\s*\? listHudWatchPaneIdsInCurrentWindow\(currentPaneId, \{ sessionId, leaderPaneId: currentPaneId \}\)\s*: \[\];/,
     );
   });
 

@@ -4068,7 +4068,7 @@ function runCodex(
     });
 
     const staleHudPaneIds = currentPaneId
-      ? listHudWatchPaneIdsInCurrentWindow(currentPaneId, { leaderPaneId: currentPaneId })
+      ? listHudWatchPaneIdsInCurrentWindow(currentPaneId, { sessionId, leaderPaneId: currentPaneId })
       : [];
     for (const paneId of staleHudPaneIds) {
       killTmuxPane(paneId);
@@ -4122,7 +4122,7 @@ function runCodex(
       });
     } finally {
       const cleanupPaneIds = buildHudPaneCleanupTargets(
-        listHudWatchPaneIdsInCurrentWindow(currentPaneId),
+        listHudWatchPaneIdsInCurrentWindow(currentPaneId, { sessionId, leaderPaneId: currentPaneId }),
         hudPaneId,
         currentPaneId,
       );
