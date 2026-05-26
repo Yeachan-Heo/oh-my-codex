@@ -243,7 +243,7 @@ describe('renderHud – team', () => {
 // ── Ultragoal ────────────────────────────────────────────────────────────────
 
 describe('renderHud – ultragoal', () => {
-  it('renders active ultragoal progress and objective in English', () => {
+  it('renders active ultragoal progress and title in English', () => {
     const ctx = {
       ...emptyCtx(),
       ultragoal: {
@@ -271,7 +271,7 @@ describe('renderHud – ultragoal', () => {
     const result = stripSgr(renderHud(ctx, 'focused'));
 
     assert.ok(result.includes('ultragoal 2/5 ▶ G003-tests: HUD progress display'));
-    assert.ok(result.includes('objective: show active ultragoal objective in OMX HUD'));
+    assert.ok(!result.includes('objective: show active ultragoal objective in OMX HUD'));
     assert.ok(!result.includes('목표'));
   });
 
@@ -317,8 +317,8 @@ describe('renderHud – ultragoal', () => {
         needsUserDecision: 0,
         progressTotal: 1,
         activeGoal: {
-          id: 'G001-long',
-          title: 'Long objective',
+          id: '',
+          title: '',
           objective: longObjective,
           status: 'in_progress',
           index: 1,
@@ -330,6 +330,40 @@ describe('renderHud – ultragoal', () => {
     assert.ok(result.includes('objective: show active ultragoal objective in OMX HUD'));
     assert.ok(result.includes('…'));
     assert.ok(!result.includes(longObjective));
+  });
+
+  it('keeps long ultragoal title/objective summaries compact without duplicate ellipses', () => {
+    const repeatedText = 'Build example component with helper, install example package and app package on the target';
+    const ctx = {
+      ...emptyCtx(),
+      ultragoal: {
+        active: true,
+        status: 'in_progress',
+        total: 6,
+        complete: 0,
+        pending: 5,
+        inProgress: 1,
+        failed: 0,
+        reviewBlocked: 0,
+        needsUserDecision: 0,
+        progressTotal: 6,
+        activeGoal: {
+          id: 'G004-example-long-goal-id',
+          title: `${repeatedText}...`,
+          objective: `${repeatedText}, run diagnostics, and collect logs`,
+          status: 'in_progress',
+          index: 4,
+        },
+      },
+    };
+
+    const result = stripSgr(renderHud(ctx, 'focused', { maxWidth: 120, maxLines: 3 }));
+
+    assert.ok(result.includes('ultragoal 0/6 ▶ G004-example-long-goal-id: Build example component with helper…'));
+    assert.ok(!result.includes('objective:'));
+    assert.ok(!result.includes('...'));
+    assert.ok(!result.includes('……'));
+    assert.ok(result.split('\n').length <= 3);
   });
 
   it('renders up to three ongoing ultragoal items alongside ralplan and ultraqa within the expanded HUD budget', () => {
