@@ -816,6 +816,30 @@ const OMX_PROJECT_TRUST_START_MARKER =
 const OMX_PROJECT_TRUST_END_MARKER =
   "# End OMX-synced Codex project trust state";
 
+function extractMarkerBlockContent(
+  config: string,
+  startMarker: string,
+  endMarker: string,
+): string | undefined {
+  const lines = config.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() !== startMarker) continue;
+
+    const nextEndIdx = lines.findIndex(
+      (line, index) => index > i && line.trim() === endMarker,
+    );
+    const nextStartIdx = lines.findIndex(
+      (line, index) => index > i && line.trim() === startMarker,
+    );
+    if (nextEndIdx === -1 || (nextStartIdx !== -1 && nextStartIdx < nextEndIdx)) {
+      return undefined;
+    }
+
+    return lines.slice(i + 1, nextEndIdx).join("\n").trim();
+  }
+  return undefined;
+}
+
 function stripMarkerBlock(
   config: string,
   startMarker: string,
@@ -866,6 +890,48 @@ function safeParseToml(content: string): Record<string, unknown> | undefined {
   }
 }
 
+function collectProjectHookTrustStateKeys(config: string): Set<string> {
+  const keys = new Set<string>();
+  const parsed = safeParseToml(config);
+  const hooksTable = isPlainTomlRecord(parsed) ? parsed.hooks : undefined;
+  const hooksState = isPlainTomlRecord(hooksTable) ? hooksTable.state : undefined;
+  if (!isPlainTomlRecord(hooksState)) return keys;
+  for (const [key, entry] of Object.entries(hooksState)) {
+    if (!isPlainTomlRecord(entry)) continue;
+    keys.add(key);
+  }
+  return keys;
+}
+
+/**
+ * Repairs project configs from the 0.18.3 relaunch regression where a
+ * project-synced trust block could duplicate setup-owned hook trust tables and
+ * make the next runtime CODEX_HOME config.toml invalid before Codex started.
+ */
+export function repairProjectScopeTrustStateForLaunch(
+  projectConfig: string,
+  projectHooksPath: string,
+): string {
+  const syncedTrustBlock = extractMarkerBlockContent(
+    projectConfig,
+    OMX_PROJECT_TRUST_START_MARKER,
+    OMX_PROJECT_TRUST_END_MARKER,
+  );
+  if (!syncedTrustBlock) return projectConfig;
+
+  const stripped = stripMarkerBlock(
+    projectConfig,
+    OMX_PROJECT_TRUST_START_MARKER,
+    OMX_PROJECT_TRUST_END_MARKER,
+  );
+  const repaired = syncProjectScopeTrustStateFromRuntime(
+    stripped,
+    syncedTrustBlock,
+    projectHooksPath,
+  );
+  return repaired === stripped ? projectConfig : repaired;
+}
+
 /**
  * Project-scope launches mirror the durable project config.toml into an
  * ephemeral runtime CODEX_HOME. Codex writes its workspace-trust ledger and
@@ -887,6 +953,12 @@ export function syncProjectScopeTrustStateFromRuntime(
   const parsed = safeParseToml(runtimeConfig);
   if (!parsed) return projectConfig;
 
+  const stripped = stripMarkerBlock(
+    projectConfig,
+    OMX_PROJECT_TRUST_START_MARKER,
+    OMX_PROJECT_TRUST_END_MARKER,
+  );
+  const existingHookTrustStateKeys = collectProjectHookTrustStateKeys(stripped);
   const trustBlockLines: string[] = [];
 
   const projectsTable = parsed.projects;
@@ -914,6 +986,7 @@ export function syncProjectScopeTrustStateFromRuntime(
     )) {
       if (!isPlainTomlRecord(entry)) continue;
       if (!stateKey.startsWith(`${projectHooksPath}:`)) continue;
+      if (existingHookTrustStateKeys.has(stateKey)) continue;
       const trusted = entry.trusted_hash;
       if (typeof trusted !== "string" || trusted.length === 0) continue;
       trustBlockLines.push(
@@ -923,12 +996,6 @@ export function syncProjectScopeTrustStateFromRuntime(
       );
     }
   }
-
-  const stripped = stripMarkerBlock(
-    projectConfig,
-    OMX_PROJECT_TRUST_START_MARKER,
-    OMX_PROJECT_TRUST_END_MARKER,
-  );
 
   if (trustBlockLines.length === 0) {
     return stripped.length === 0 ? "" : `${stripped}\n`;

@@ -1,11 +1,12 @@
 import { afterEach, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, utimesSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
+import TOML from "@iarna/toml";
 import {
   HELP,
   normalizeCodexLaunchArgs,
@@ -97,6 +98,10 @@ function normalizeDarwinTmpPath(value: string): string {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function countMatches(text: string, pattern: RegExp): number {
+  return text.match(pattern)?.length ?? 0;
 }
 
 function expectedLowComplexityModel(codexHomeOverride?: string): string {
@@ -2260,12 +2265,21 @@ describe("project launch scope helpers", () => {
         /model_availability_nux/,
         "NUX counters must not leak into durable project config.toml",
       );
+      const projectHookTrustHeader =
+        `[hooks.state."${join(projectCodexHome, "hooks.json")}:pre_tool_use:0:0"]`;
       assert.ok(
-        persistedProjectConfig.includes(
-          `[hooks.state."${join(projectCodexHome, "hooks.json")}:pre_tool_use:0:0"]`,
-        ),
+        persistedProjectConfig.includes(projectHookTrustHeader),
         "setup-owned project hook trust state must remain intact",
       );
+      assert.equal(
+        countMatches(
+          persistedProjectConfig,
+          new RegExp(`^${escapeRegExp(projectHookTrustHeader)}$`, "gm"),
+        ),
+        1,
+        "runtime trust sync must not duplicate setup-owned hook trust state",
+      );
+      assert.doesNotThrow(() => TOML.parse(persistedProjectConfig));
 
       // 3. On a subsequent launch, the runtime mirror carries the persisted
       //    project trust state forward — so Codex finds the workspace as
@@ -2281,7 +2295,88 @@ describe("project launch scope helpers", () => {
         nextRuntimeConfig.includes(`[projects."${wd}"]`),
         "next launch must inherit the persisted workspace trust entry",
       );
+      assert.equal(
+        countMatches(
+          nextRuntimeConfig,
+          new RegExp(`^${escapeRegExp(projectHookTrustHeader)}$`, "gm"),
+        ),
+        1,
+        "next runtime config must remain parseable without duplicate hook trust tables",
+      );
+      assert.doesNotThrow(() => TOML.parse(nextRuntimeConfig));
       assert.equal(existsSync(join(nextRuntimeCodexHome, "hooks.json")), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("repairs duplicate project hook trust state before relaunching project-scope Codex home (GH #2401)", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-issue-2401-relaunch-"));
+    try {
+      const projectCodexHome = join(wd, ".codex");
+      const projectConfigPath = join(projectCodexHome, "config.toml");
+      const projectHooksPath = join(projectCodexHome, "hooks.json");
+      const projectHookTrustHeader =
+        `[hooks.state."${projectHooksPath}:post_compact:0:0"]`;
+      const escapedProjectHookTrustHeader = escapeRegExp(projectHookTrustHeader);
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await mkdir(projectCodexHome, { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+      await writeFile(projectHooksPath, '{"hooks":{}}\n');
+      await writeFile(
+        projectConfigPath,
+        [
+          'model = "gpt-5.5"',
+          "",
+          "[features]",
+          "hooks = true",
+          "",
+          "# OMX-owned Codex hook trust state",
+          "# Trusts only setup-managed native hook wrappers.",
+          projectHookTrustHeader,
+          'trusted_hash = "sha256:setup-owned"',
+          "# End OMX-owned Codex hook trust state",
+          "",
+          "# OMX-synced Codex project trust state (from runtime CODEX_HOME)",
+          `[projects."${wd}"]`,
+          'trust_level = "trusted"',
+          "",
+          projectHookTrustHeader,
+          'trusted_hash = "sha256:setup-owned"',
+          "",
+          "# End OMX-synced Codex project trust state",
+          "",
+        ].join("\n"),
+      );
+
+      assert.throws(() => TOML.parse(readFileSync(projectConfigPath, "utf-8")));
+
+      await prepareCodexHomeForLaunch(wd, "session-relaunch", {});
+
+      const repairedProjectConfig = await readFile(projectConfigPath, "utf-8");
+      const runtimeConfig = await readFile(
+        join(runtimeCodexHomePath(wd, "session-relaunch"), "config.toml"),
+        "utf-8",
+      );
+
+      assert.doesNotThrow(() => TOML.parse(repairedProjectConfig));
+      assert.doesNotThrow(() => TOML.parse(runtimeConfig));
+      assert.equal(
+        countMatches(
+          repairedProjectConfig,
+          new RegExp(`^${escapedProjectHookTrustHeader}$`, "gm"),
+        ),
+        1,
+      );
+      assert.equal(
+        countMatches(runtimeConfig, new RegExp(`^${escapedProjectHookTrustHeader}$`, "gm")),
+        1,
+      );
+      assert.ok(runtimeConfig.includes(`[projects."${wd}"]`));
+      assert.ok(repairedProjectConfig.includes(`[projects."${wd}"]`));
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

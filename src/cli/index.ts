@@ -124,7 +124,7 @@ import {
 } from "../team/tmux-session.js";
 import { getPackageRoot } from "../utils/package.js";
 import { codexConfigPath, omxRoot, rememberOmxLaunchContext, resolveOmxEntryPath } from "../utils/paths.js";
-import { cleanCodexModelAvailabilityNuxIfNeeded, extractSharedMcpRegistryServersFromConfig, repairConfigIfNeeded, syncProjectScopeTrustStateFromRuntime } from "../config/generator.js";
+import { cleanCodexModelAvailabilityNuxIfNeeded, extractSharedMcpRegistryServersFromConfig, repairConfigIfNeeded, repairProjectScopeTrustStateForLaunch, syncProjectScopeTrustStateFromRuntime } from "../config/generator.js";
 import type { UnifiedMcpRegistryServer } from "../config/mcp-registry.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../hud/constants.js";
@@ -775,7 +775,16 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
     const source = join(projectCodexHome, entry.name);
     const destination = join(runtimeCodexHome, entry.name);
     if (entry.name === "config.toml") {
-      await copyFile(source, destination);
+      const projectHooksPath = join(projectCodexHome, "hooks.json");
+      const projectConfig = await readFile(source, "utf-8");
+      const launchConfig = repairProjectScopeTrustStateForLaunch(
+        projectConfig,
+        projectHooksPath,
+      );
+      if (launchConfig !== projectConfig) {
+        await writeFile(source, launchConfig, "utf-8");
+      }
+      await writeFile(destination, launchConfig, "utf-8");
       continue;
     }
     await linkOrCopyCodexHomeEntry(source, destination);
