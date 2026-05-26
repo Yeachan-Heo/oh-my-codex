@@ -125,10 +125,14 @@ function renderTeam(ctx: HudRenderContext): string | null {
 }
 
 
+function normalizeTrailingEllipsis(value: string): string {
+  return value.replace(/(?:\.\.\.|…)+$/u, '…');
+}
+
 function truncateDynamicText(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value;
+  if (value.length <= maxLength) return normalizeTrailingEllipsis(value);
   if (maxLength <= 1) return '…';
-  return `${value.slice(0, maxLength - 1).trimEnd()}…`;
+  return normalizeTrailingEllipsis(`${value.slice(0, maxLength - 1).trimEnd()}…`);
 }
 
 function renderUltragoal(ctx: HudRenderContext): string | null {
@@ -150,10 +154,10 @@ function renderUltragoal(ctx: HudRenderContext): string | null {
     .filter(Boolean);
   const activeGoal = ctx.ultragoal.activeGoal ?? ctx.ultragoal.ongoingGoals?.[0];
   const rawObjective = activeGoal?.objective ? sanitizeDynamicText(activeGoal.objective) : '';
-  const objective = rawObjective ? truncateDynamicText(rawObjective, 96) : '';
+  const objective = ongoingGoals.length === 0 && rawObjective ? truncateDynamicText(rawObjective, 96) : '';
   const items = ongoingGoals.length > 0 ? ` ▶ ${ongoingGoals.join(' · ')}` : '';
   const summary = `${progress}${items}`;
-  return cyan(objective ? `${summary} · objective: ${objective}` : summary);
+  return cyan(objective ? `${summary} ▶ objective: ${objective}` : summary);
 }
 
 function renderTurns(ctx: HudRenderContext): string | null {
