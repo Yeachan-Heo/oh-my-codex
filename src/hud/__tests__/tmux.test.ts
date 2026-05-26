@@ -6,8 +6,10 @@ import {
   buildHudWatchCommand,
   findHudWatchPaneIds,
   hudPaneMatchesOwner,
+  listCurrentWindowHudPaneIds,
   OMX_TMUX_HUD_LEADER_PANE_ENV,
   parseTmuxPaneSnapshot,
+  readActiveTmuxPaneId,
   readHudPaneOwner,
   reapDeadHudPanes,
   parseHudResizeHookContext,
@@ -217,6 +219,45 @@ describe('HUD pane ownership helpers', () => {
     );
 
     assert.deepEqual(findHudWatchPaneIds(panes, '%1', { sessionId: 'sess-a', leaderPaneId: '%1' }), ['%2']);
+  });
+
+  it('finds one same-session HUD pane when TMUX_PANE is unavailable', () => {
+    const calls: string[][] = [];
+    const execTmuxSync = (args: string[]) => {
+      calls.push(args);
+      return [
+        '%1\tcodex\tcodex',
+        `%2\tnode\texec env OMX_SESSION_ID='sess-a' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch`,
+      ].join('\n');
+    };
+
+    assert.deepEqual(listCurrentWindowHudPaneIds(undefined, execTmuxSync, { sessionId: 'sess-a' }), ['%2']);
+    assert.deepEqual(calls, [
+      ['list-panes', '-F', '#{pane_id}\t#{pane_current_command}\t#{pane_start_command}'],
+    ]);
+  });
+
+  it('keeps active-pane fallback isolated from a different same-session leader HUD', () => {
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex',
+        '%3\tcodex\tcodex',
+        `%4\tnode\texec env OMX_SESSION_ID='sess-a' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%3' /node /omx.js hud --watch`,
+      ].join('\n'),
+    );
+
+    assert.deepEqual(findHudWatchPaneIds(panes, '%1', { sessionId: 'sess-a', leaderPaneId: '%1' }), []);
+  });
+
+  it('resolves the active tmux pane as a TMUX_PANE fallback', () => {
+    const calls: string[][] = [];
+    const paneId = readActiveTmuxPaneId((args) => {
+      calls.push(args);
+      return '%7\n';
+    });
+
+    assert.equal(paneId, '%7');
+    assert.deepEqual(calls, [['display-message', '-p', '#{pane_id}']]);
   });
 
   it('tags reconciled HUD watch commands with the leader pane owner', () => {
