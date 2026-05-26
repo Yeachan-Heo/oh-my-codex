@@ -134,6 +134,10 @@ function printStatus(plan: Awaited<ReturnType<typeof readUltragoalPlan>>): void 
   if (summary.aggregateComplete) {
     console.log('ultragoal aggregate product: complete');
     console.log(`microgoal ledger bookkeeping (progress-only): ${summary.complete}/${summary.total} complete, ${summary.pending} pending, ${summary.inProgress} in progress, ${summary.failed} failed, ${summary.reviewBlocked} review-blocked, ${summary.needsUserDecision} needs-user-decision`);
+  } else if (summary.artifactComplete) {
+    console.log('ultragoal artifact goals: complete');
+    console.log(`codex goal reconciliation: not recorded in OMX aggregateCompletion; status is artifact-backed until a fresh Codex goal snapshot is available.`);
+    console.log(`microgoal ledger: ${summary.complete}/${summary.total} complete, ${summary.pending} pending, ${summary.inProgress} in progress, ${summary.failed} failed, ${summary.reviewBlocked} review-blocked, ${summary.needsUserDecision} needs-user-decision`);
   } else {
     console.log(`ultragoal: ${summary.complete}/${summary.total} complete, ${summary.pending} pending, ${summary.inProgress} in progress, ${summary.failed} failed, ${summary.reviewBlocked} review-blocked, ${summary.needsUserDecision} needs-user-decision`);
   }
@@ -327,17 +331,25 @@ export async function ultragoalCommand(args: string[]): Promise<void> {
       const expectedObjective = plan.codexGoalMode === 'aggregate'
         ? plan.codexObjective
         : activeGoal?.objective;
-      const reconciliation = activeGoal
+      const reconciliation = activeGoal || snapshot
         ? reconcileCodexGoalSnapshot(snapshot, {
-          expectedObjective: expectedObjective ?? activeGoal.objective,
+          expectedObjective: expectedObjective ?? plan.codexObjective ?? '',
           acceptedObjectives: plan.codexGoalMode === 'aggregate' ? plan.codexObjectiveAliases : undefined,
-          allowedStatuses: plan.codexGoalMode === 'aggregate' ? ['active'] : ['active', 'complete'],
+          allowedStatuses: activeGoal && plan.codexGoalMode === 'aggregate' ? ['active'] : ['active', 'complete'],
           requireSnapshot: false,
         })
         : null;
-      if (json) printJson({ plan, summary: summarizeUltragoalPlan(plan), reconciliation });
+      const codexGoalFallback = reconciliation?.snapshot.unavailableReason === 'db_schema_context_error'
+        ? {
+          status: 'codex_goal_reconciliation_unavailable',
+          reason: reconciliation.snapshot.unavailableReason,
+          message: 'Codex goal DB/schema/context is unavailable; artifact-backed Ultragoal status remains available, but strict Codex goal completion reconciliation is deferred.',
+        }
+        : undefined;
+      if (json) printJson({ plan, summary: summarizeUltragoalPlan(plan), reconciliation, codexGoalFallback });
       else {
         printStatus(plan);
+        if (codexGoalFallback) console.log(`codex goal fallback: ${codexGoalFallback.message}`);
         if (reconciliation && !reconciliation.ok) console.log(`codex goal warning: ${formatCodexGoalReconciliation(reconciliation)}`);
         else if (reconciliation?.warnings.length) console.log(`codex goal warning: ${formatCodexGoalReconciliation(reconciliation)}`);
       }

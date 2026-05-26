@@ -103,6 +103,55 @@ describe('cli/ultragoal', () => {
     });
   });
 
+  it('reports artifact-backed completion when Codex goal DB schema is unavailable', async () => {
+    await withCwd(async (cwd) => {
+      await capture(() => ultragoalCommand(['create-goals', '--brief', '- First milestone']));
+      await capture(() => ultragoalCommand(['complete-goals']));
+      const goals = JSON.parse(await readFile(join(cwd, '.omx/ultragoal/goals.json'), 'utf-8')) as { codexObjective: string };
+
+      const checkpoint = await capture(() => ultragoalCommand([
+        'checkpoint',
+        '--goal-id', 'G001-first-milestone',
+        '--status', 'complete',
+        '--evidence', 'tests passed',
+        '--codex-goal-json', JSON.stringify({ goal: { objective: goals.codexObjective, status: 'complete' } }),
+        '--quality-gate-json', cleanQualityGate(),
+      ]));
+      assert.equal(checkpoint.exitCode, undefined);
+
+      const status = await capture(() => ultragoalCommand([
+        'status',
+        '--codex-goal-json',
+        JSON.stringify({ error: 'SqliteError: no such table: thread_goals' }),
+        '--json',
+      ]));
+      assert.equal(status.exitCode, undefined);
+      const parsed = JSON.parse(status.stdout.join('\n')) as {
+        summary: { complete: number; aggregateComplete: boolean; artifactComplete: boolean };
+        codexGoalFallback?: { status: string; reason: string; message: string };
+        reconciliation?: { ok: boolean; warnings: string[]; snapshot: { unavailableReason?: string } };
+      };
+      assert.equal(parsed.summary.complete, 1);
+      assert.equal(parsed.summary.aggregateComplete, false);
+      assert.equal(parsed.summary.artifactComplete, true);
+      assert.equal(parsed.codexGoalFallback?.status, 'codex_goal_reconciliation_unavailable');
+      assert.equal(parsed.codexGoalFallback?.reason, 'db_schema_context_error');
+      assert.match(parsed.codexGoalFallback?.message ?? '', /artifact-backed Ultragoal status remains available/);
+      assert.equal(parsed.reconciliation?.ok, true);
+      assert.equal(parsed.reconciliation?.snapshot.unavailableReason, 'db_schema_context_error');
+
+      const human = await capture(() => ultragoalCommand([
+        'status',
+        '--codex-goal-json',
+        JSON.stringify({ error: 'SQL error: no such table: thread_goals' }),
+      ]));
+      const output = human.stdout.join('\n');
+      assert.match(output, /ultragoal artifact goals: complete/);
+      assert.match(output, /codex goal fallback: Codex goal DB\/schema\/context is unavailable/);
+      assert.match(output, /codex goal warning: .*no such table: thread_goals/);
+    });
+  });
+
   it('labels aggregate product completion separately from microgoal bookkeeping status', async () => {
     await withCwd(async () => {
       const taskObjective = 'Fix ultragoal task-scoped goal reconciliation.';
@@ -400,6 +449,17 @@ describe('cli/ultragoal', () => {
       assert.match(mismatch.stderr.join('\n'), /--status blocked/);
       assert.match(mismatch.stderr.join('\n'), /Codex goal context/);
       assert.doesNotMatch(mismatch.stderr.join('\n'), /fresh (?:Codex )?(?:thread|session)s?/i);
+
+      const unavailable = await capture(() => ultragoalCommand([
+        'checkpoint',
+        '--goal-id', 'G001-first-milestone',
+        '--status', 'complete',
+        '--evidence', 'tests passed',
+        '--codex-goal-json', '{"error":"SqliteError: no such table: thread_goals"}',
+      ]));
+      assert.equal(unavailable.exitCode, 1);
+      assert.match(unavailable.stderr.join('\n'), /DB\/schema\/context error/);
+      assert.match(unavailable.stderr.join('\n'), /strict completion reconciliation can be proven/);
     });
   });
 

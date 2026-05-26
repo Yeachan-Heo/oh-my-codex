@@ -760,7 +760,7 @@ export async function createUltragoalPlan(cwd: string, options: CreateUltragoalO
   });
 }
 
-export function summarizeUltragoalPlan(plan: UltragoalPlan): { total: number; pending: number; inProgress: number; complete: number; failed: number; reviewBlocked: number; needsUserDecision: number; superseded: number; steeringBlocked: number; aggregateComplete: boolean; activeGoalId?: string } {
+export function summarizeUltragoalPlan(plan: UltragoalPlan): { total: number; pending: number; inProgress: number; complete: number; failed: number; reviewBlocked: number; needsUserDecision: number; superseded: number; steeringBlocked: number; aggregateComplete: boolean; artifactComplete: boolean; activeGoalId?: string } {
   return {
     total: plan.goals.length,
     pending: plan.goals.filter((goal) => goal.status === 'pending').length,
@@ -772,6 +772,7 @@ export function summarizeUltragoalPlan(plan: UltragoalPlan): { total: number; pe
     superseded: plan.goals.filter((goal) => goal.steeringStatus === 'superseded').length,
     steeringBlocked: plan.goals.filter((goal) => goal.steeringStatus === 'blocked').length,
     aggregateComplete: plan.aggregateCompletion?.status === 'complete',
+    artifactComplete: isUltragoalDone(plan),
     activeGoalId: plan.activeGoalId,
   };
 }
