@@ -1,4 +1,4 @@
-# oh-my-codex v0.18.4
+# oh-my-codex 0.18.4
 
 `0.18.4` is a patch release after `0.18.3` for the runtime-safety and operator-experience fixes that landed on `dev`. It focuses on Ultragoal recovery, the `omx explore` deprecation contract, Team/HUD ownership, plugin native-agent setup, project-local Codex trust sync, Autopilot question waiting, and ralplan reviewer handoff quality.
 
@@ -24,6 +24,10 @@
 #2499, #2501, #2502, #2504, #2507, #2508, #2515, #2519, #2521, #2522, #2524, #2525.
 
 ## Validation
+
+Release readiness evidence is recorded in `docs/qa/release-readiness-0.18.4.md`.
+
+Local gates completed before tagging:
 
 - `npm run build`
 - `npm run lint`

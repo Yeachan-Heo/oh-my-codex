@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.18.4] - 2026-05-26
+
+Patch release for the post-`0.18.3` runtime-safety train: Ultragoal recovery, deprecated explore guidance, Team/HUD ownership fixes, plugin native-agent setup reliability, project-local trust sync, Autopilot question waiting, and ralplan reviewer-contract hardening.
+
+### Changed
+
+- **Explore is formally deprecated** — runtime guidance no longer recommends `omx explore` for new repository lookup work, while leaving compatibility behavior available for legacy callers.
+- **Ralplan reviewer contracts are tighter** — reviewer subagents now receive narrower instructions so consensus handoffs stay grounded and do not overstep execution authority.
+
+### Fixed
+
+- **Ultragoal recovery is safer** — plain-label checklist sections are ignored, and completed aggregate goals no longer trigger unrecoverable Stop recovery loops.
+- **Autopilot waits for operator answers** — deep-interview question flow can now block on `omx question` instead of racing ahead.
+- **Team and HUD ownership is cleaner** — worker UserPromptSubmit no longer owns leader HUD reconciliation, and duplicate HUD pane spawn convergence is fixed.
+- **Plugin/native-agent setup is more reliable** — doctor now surfaces missing reviewer roles, plugin native-agent role setup CI is fixed, and plugin-only obsolete native agents are preserved.
+- **Project-local trust sync relaunches safely** — Codex config trust sync no longer corrupts config during relaunch.
+
+### PRs
+
+- #2499, #2501, #2502, #2504, #2507, #2508, #2515, #2519, #2521, #2522, #2524, #2525
+
+### Verification
+
+- Release readiness evidence is tracked in `docs/qa/release-readiness-0.18.4.md`.
+
 ## [0.18.3] - 2026-05-25
 
 Patch release for the post-`0.18.2` reliability and operator-experience train: HUD/tmux lifecycle cleanup, Team diff gutter preservation, auth slot hot-swap support, visible explore prompt syntax guidance, deep-interview runtime config overrides, stricter `plan_then_execute` handoff authority, plugin-owned hook preservation, and the Scholastic ontology reviewer agent.
