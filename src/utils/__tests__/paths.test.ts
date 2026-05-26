@@ -64,6 +64,11 @@ describe("codexHome", () => {
     delete process.env.CODEX_HOME;
     assert.equal(codexHome(), join(homedir(), ".codex"));
   });
+
+  it("defaults to ~/.codex when CODEX_HOME is blank", () => {
+    process.env.CODEX_HOME = "  ";
+    assert.equal(codexHome(), join(homedir(), ".codex"));
+  });
 });
 
 describe("codexConfigPath", () => {
