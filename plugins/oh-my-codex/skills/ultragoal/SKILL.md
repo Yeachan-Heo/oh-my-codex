@@ -94,7 +94,7 @@ The final ultragoal story is not complete until the active agent has run the fin
 1. Run targeted verification for the story.
 2. Run `ai-slop-cleaner` on changed files only; if there are no relevant edits, the cleaner still runs and records a passed/no-op report.
 3. Rerun verification after the cleaner pass.
-4. Run `$code-review`. Clean means `codeReview.recommendation: "APPROVE"` and `codeReview.architectStatus: "CLEAR"`; `COMMENT`, `WATCH`, `REQUEST CHANGES`, and `BLOCK` are non-clean.
+4. Run `$code-review` through the independent review path. Clean means `codeReview.recommendation: "APPROVE"`, `codeReview.architectStatus: "CLEAR"`, and `codeReview.independentReview` contains distinct completed `code-reviewer` and `architect` subagent evidence. `COMMENT`, `WATCH`, `REQUEST CHANGES`, `BLOCK`, missing subagent evidence, unavailable delegation, and same-lane/self-review are non-clean.
 5. If review is non-clean, do **not** call `update_goal`. Record durable blocker work instead:
 
    ```sh
@@ -115,7 +115,15 @@ The final ultragoal story is not complete until the active agent has run the fin
 {
   "aiSlopCleaner": { "status": "passed", "evidence": "cleaner report" },
   "verification": { "status": "passed", "commands": ["npm test"], "evidence": "post-cleaner verification" },
-  "codeReview": { "recommendation": "APPROVE", "architectStatus": "CLEAR", "evidence": "final review synthesis" }
+  "codeReview": {
+    "recommendation": "APPROVE",
+    "architectStatus": "CLEAR",
+    "evidence": "final review synthesis",
+    "independentReview": {
+      "codeReviewer": { "agentRole": "code-reviewer", "evidence": "code-reviewer subagent APPROVE evidence" },
+      "architect": { "agentRole": "architect", "evidence": "architect subagent CLEAR evidence" }
+    }
+  }
 }
 ```
 
