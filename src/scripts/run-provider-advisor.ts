@@ -1,6 +1,7 @@
 #!/usr/bin/env node
+import { existsSync } from 'fs';
 import { mkdir, writeFile } from 'fs/promises';
-import { join } from 'path';
+import { dirname, isAbsolute, join, resolve } from 'path';
 import process from 'process';
 import { spawnSync } from 'child_process';
 import { CLAUDE_SKIP_PERMISSIONS_FLAG } from '../cli/constants.js';
@@ -8,6 +9,7 @@ import { CLAUDE_SKIP_PERMISSIONS_FLAG } from '../cli/constants.js';
 const PROVIDER_BINARIES: Record<string, string> = {
   claude: 'claude',
   gemini: 'gemini',
+  antigravity: 'acpx',
 };
 const ASK_ORIGINAL_TASK_ENV = 'OMX_ASK_ORIGINAL_TASK';
 const ISSUE_WORK_PROMPT_PATTERNS = [
@@ -17,7 +19,7 @@ const ISSUE_WORK_PROMPT_PATTERNS = [
 ];
 
 function usage(): void {
-  console.error('Usage: omx ask <claude|gemini> "<prompt>"');
+  console.error('Usage: omx ask <claude|gemini|antigravity> "<prompt>"');
   console.error('Legacy direct usage: node scripts/run-provider-advisor.js <claude|gemini> <prompt...>');
   console.error('                 or: node scripts/run-provider-advisor.js claude --print "<prompt>"');
   console.error('                 or: node scripts/run-provider-advisor.js gemini --prompt "<prompt>"');
@@ -61,6 +63,117 @@ function parseArgs(argv: string[]): { provider: string; prompt: string } {
   return { provider, prompt: rest.join(' ').trim() };
 }
 
+
+function findUp(start: string, relativePath: string): string | null {
+  let current = resolve(start);
+  while (true) {
+    const candidate = join(current, relativePath);
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+function resolveAntigravityAcpAgent(cwd = process.cwd()): string {
+  const override = process.env.OMX_ANTIGRAVITY_ACP_AGENT?.trim();
+  if (override) return isAbsolute(override) ? override : resolve(cwd, override);
+
+  const release = findUp(cwd, 'tools/agy-acp/target/release/agy-acp');
+  if (release) return release;
+
+  const debug = findUp(cwd, 'tools/agy-acp/target/debug/agy-acp');
+  if (debug) return debug;
+
+  return resolve(cwd, 'tools/agy-acp/target/release/agy-acp');
+}
+
+function resolveAntigravitySessionName() {
+  return process.env.OMX_ANTIGRAVITY_SESSION?.trim() || 'antigravity';
+}
+
+function normalizeAntigravityModelTier(value?: string): 'low' | 'medium' | 'high' | '' {
+  const normalized = (value || '').trim().toLowerCase();
+  if (normalized === 'med') return 'medium';
+  if (normalized === 'low' || normalized === 'medium' || normalized === 'high') return normalized;
+  return '';
+}
+
+function inferAntigravityModelTier(prompt: string, originalTask = prompt): 'low' | 'medium' | 'high' {
+  const modelAsTier = normalizeAntigravityModelTier(process.env.OMX_ANTIGRAVITY_MODEL);
+  const explicit = modelAsTier
+    || normalizeAntigravityModelTier(process.env.OMX_ANTIGRAVITY_MODEL_TIER)
+    || normalizeAntigravityModelTier(process.env.OMX_ANTIGRAVITY_MODEL_SETTING)
+    || normalizeAntigravityModelTier(process.env.OMX_ANTIGRAVITY_PROFILE)
+    || normalizeAntigravityModelTier(process.env.OMX_ANTIGRAVITY_EFFORT);
+  if (explicit) return explicit;
+
+  const text = `${originalTask}\n${prompt}`.toLowerCase();
+  if (/\b(high|deep|thorough|audit|architecture|critical|security|root cause|complex|hard|comprehensive)\b/.test(text)) {
+    return 'high';
+  }
+  if (/\b(low|quick|fast|simple|small|trivial|light|brief)\b/.test(text)) {
+    return 'low';
+  }
+  return 'medium';
+}
+
+function resolveAntigravityBaseModel(): string {
+  const requested = process.env.OMX_ANTIGRAVITY_MODEL?.trim();
+  if (requested && !normalizeAntigravityModelTier(requested)) return requested;
+  return 'gemini-3.5-flash';
+}
+
+function buildAntigravityModelSelection(prompt: string, originalTask = prompt): string {
+  const model = resolveAntigravityBaseModel();
+  const tier = inferAntigravityModelTier(prompt, originalTask);
+  if (/\b(low|medium|med|high)\b/i.test(model)) return model;
+  return `${model} (${tier})`;
+}
+
+function buildAntigravityPrompt(prompt: string, originalTask = prompt): string {
+  const modelSelection = buildAntigravityModelSelection(prompt, originalTask);
+  return [
+    '<omx_antigravity_routing>',
+    `Requested model setting: ${modelSelection}`,
+    'Low/medium/high is part of the model selection, not a separate reasoning-effort knob.',
+    'Use this exact model selection in Antigravity if the model selector or runtime exposes it.',
+    'If hard model selection is unavailable in the current agy CLI session, continue with the closest available Gemini 3.5 Flash model and say if the actual selected model is visible.',
+    '</omx_antigravity_routing>',
+    '',
+    prompt,
+  ].join('\n');
+}
+
+function resolveAntigravityAcpBaseArgs() {
+  const agent = resolveAntigravityAcpAgent();
+  if (!existsSync(agent)) {
+    console.error('[ask-antigravity] Missing agy-acp adapter binary. Build it with: cd tools/agy-acp && cargo build --release');
+    console.error(`[ask-antigravity] Expected adapter: ${agent}`);
+    process.exit(1);
+  }
+  if (!process.env.AGY_BIN?.trim()) {
+    const defaultAgy = join(process.env.HOME || '', '.local', 'bin', 'agy');
+    if (existsSync(defaultAgy)) process.env.AGY_BIN = defaultAgy;
+  }
+  if (!process.env.AGY_TIMEOUT_SECONDS?.trim()) {
+    process.env.AGY_TIMEOUT_SECONDS = '180';
+  }
+  if (!process.env.AGY_OUTPUT_MODE?.trim()) {
+    process.env.AGY_OUTPUT_MODE = 'cumulative-delta';
+  }
+  const timeout = process.env.OMX_ANTIGRAVITY_ACPX_TIMEOUT_SECONDS?.trim() || '210';
+  return ['--agent', agent, '--cwd', process.cwd(), '--timeout', timeout, '--format', 'text'];
+}
+
+function buildAntigravityEnsureSessionArgs() {
+  return [...resolveAntigravityAcpBaseArgs(), 'sessions', 'ensure', '--name', resolveAntigravitySessionName()];
+}
+
+function buildAntigravityLaunchArgs(prompt: string, originalTask = prompt) {
+  return [...resolveAntigravityAcpBaseArgs(), 'prompt', '-s', resolveAntigravitySessionName(), '--', buildAntigravityPrompt(prompt, originalTask)];
+}
+
 function ensureBinary(binary: string): void {
   const probe = spawnSync(binary, ['--version'], {
     stdio: 'ignore',
@@ -84,6 +197,10 @@ function shouldUseClaudeIssuePermissionsBypass(provider: string, prompt: string)
 }
 
 function buildProviderLaunchArgs(provider: string, prompt: string, originalTask: string): string[] {
+  if (provider === 'antigravity') {
+    return buildAntigravityLaunchArgs(prompt, originalTask);
+  }
+
   const promptArgs = provider === 'claude'
     ? ['-p', '--', prompt]
     : ['-p', prompt];
@@ -175,6 +292,23 @@ async function main(): Promise<void> {
 
   ensureBinary(binary);
 
+  if (provider === 'antigravity') {
+    const ensureRun = spawnSync(binary, buildAntigravityEnsureSessionArgs(), {
+      encoding: 'utf8',
+      maxBuffer: 10 * 1024 * 1024,
+      windowsHide: true,
+    });
+    if (ensureRun.error) {
+      console.error(`[ask-antigravity] ${ensureRun.error.message}`);
+      process.exit(1);
+    }
+    if (typeof ensureRun.status === 'number' && ensureRun.status !== 0) {
+      const ensureOutput = [ensureRun.stdout || '', ensureRun.stderr || ''].filter(Boolean).join('\n\n');
+      console.error(ensureOutput || `[ask-antigravity] failed to ensure session ${resolveAntigravitySessionName()}`);
+      process.exit(ensureRun.status);
+    }
+  }
+
   const launchArgs = buildProviderLaunchArgs(provider, prompt, originalTask);
 
   const run = spawnSync(binary, launchArgs, {
@@ -191,7 +325,7 @@ async function main(): Promise<void> {
   const artifactPath = await writeArtifact({
     provider,
     originalTask,
-    finalPrompt: prompt,
+    finalPrompt: provider === 'antigravity' ? buildAntigravityPrompt(prompt, originalTask) : prompt,
     rawOutput,
     exitCode,
   });

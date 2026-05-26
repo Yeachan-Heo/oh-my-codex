@@ -7,15 +7,15 @@ import { getPackageRoot } from '../utils/package.js';
 import { codexPromptsDir } from '../utils/paths.js';
 
 export const ASK_USAGE = [
-  'Usage: omx ask <claude|gemini> <question or task>',
-  '   or: omx ask <claude|gemini> -p "<prompt>"',
+  'Usage: omx ask <claude|gemini|antigravity> <question or task>',
+  '   or: omx ask <claude|gemini|antigravity> -p "<prompt>"',
   '   or: omx ask claude --print "<prompt>"',
   '   or: omx ask gemini --prompt "<prompt>"',
-  '   or: omx ask <claude|gemini> --agent-prompt <role> "<prompt>"',
-  '   or: omx ask <claude|gemini> --agent-prompt=<role> --prompt "<prompt>"',
+  '   or: omx ask <claude|gemini|antigravity> --agent-prompt <role> "<prompt>"',
+  '   or: omx ask <claude|gemini|antigravity> --agent-prompt=<role> --prompt "<prompt>"',
 ].join('\n');
 
-const ASK_PROVIDERS = ['claude', 'gemini'] as const;
+const ASK_PROVIDERS = ['claude', 'gemini', 'antigravity'] as const;
 type AskProvider = typeof ASK_PROVIDERS[number];
 const ASK_PROVIDER_SET = new Set<string>(ASK_PROVIDERS);
 const ASK_ADVISOR_SCRIPT_ENV = 'OMX_ASK_ADVISOR_SCRIPT';

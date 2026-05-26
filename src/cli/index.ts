@@ -205,7 +205,7 @@ Usage:
   omx list      List packaged OMX skills and native agent prompts (--json)
   omx cleanup   Kill orphaned OMX MCP server processes and remove stale OMX /tmp directories
   omx doctor --team  Check team/swarm runtime health diagnostics
-  omx ask       Ask local provider CLI (claude|gemini) and write artifact output
+  omx ask       Ask local provider CLI (claude|gemini|antigravity) and write artifact output
   omx auth      Manage Codex OAuth auth slots (add|list|use)
   omx question  OMX-owned blocking question UI entrypoint for agent-invoked user questions
   omx adapt     Scaffold OMX-owned adapter foundations for persistent external targets
