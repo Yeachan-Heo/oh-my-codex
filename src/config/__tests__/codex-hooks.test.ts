@@ -246,7 +246,7 @@ describe("codex hooks helpers", () => {
         {
           async: false,
           command,
-          timeout: 600,
+          timeout: 10,
           type: "command",
         },
       ],
@@ -285,7 +285,7 @@ describe("codex hooks helpers", () => {
         {
           async: false,
           command,
-          timeout: 600,
+          timeout: 10,
           type: "command",
         },
       ],

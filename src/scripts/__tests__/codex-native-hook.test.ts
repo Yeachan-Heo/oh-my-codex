@@ -306,6 +306,7 @@ describe("codex native hook config", () => {
       String(preToolUse.hooks?.[0]?.command || ""),
       /codex-native-hook\.js"?$/,
     );
+    assert.equal(preToolUse.hooks?.[0]?.timeout, 10);
     assert.equal(preToolUse.hooks?.[0]?.statusMessage, undefined);
 
     const postToolUse = config.hooks.PostToolUse[0] as {
@@ -317,6 +318,7 @@ describe("codex native hook config", () => {
       String(postToolUse.hooks?.[0]?.command || ""),
       /codex-native-hook\.js"?$/,
     );
+    assert.equal(postToolUse.hooks?.[0]?.timeout, 10);
     assert.equal(postToolUse.hooks?.[0]?.statusMessage, undefined);
 
     const userPromptSubmit = config.hooks.UserPromptSubmit[0] as {

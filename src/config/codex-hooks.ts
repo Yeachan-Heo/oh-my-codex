@@ -69,6 +69,8 @@ const CODEX_HOOK_EVENT_LABELS: Record<ManagedHookEventName, string> = {
   Stop: "stop",
 };
 
+const FAST_NATIVE_HOOK_TIMEOUT_SECONDS = 10;
+
 function isPlainObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -230,10 +232,14 @@ export function buildManagedCodexHooksConfig(
         }),
       ],
       PreToolUse: [
-        buildCommandHook(command),
+        buildCommandHook(command, {
+          timeout: FAST_NATIVE_HOOK_TIMEOUT_SECONDS,
+        }),
       ],
       PostToolUse: [
-        buildCommandHook(command),
+        buildCommandHook(command, {
+          timeout: FAST_NATIVE_HOOK_TIMEOUT_SECONDS,
+        }),
       ],
       UserPromptSubmit: [
         buildCommandHook(command),
