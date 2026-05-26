@@ -3143,6 +3143,15 @@ describe('teamCommand status', () => {
       };
       assert.equal(payload.tail_lines, 550);
       assert.equal(payload.panes?.sparkshell_commands?.['worker-1'], 'omx sparkshell --tmux-pane %51 --tail-lines 550');
+
+      await assert.rejects(
+        () => withoutTeamTestWorkerEnv(() => teamCommand(['status', 'pane-tail-team', '--tail-lines=550abc'])),
+        /Usage: omx team status/,
+      );
+      await assert.rejects(
+        () => withoutTeamTestWorkerEnv(() => teamCommand(['status', 'pane-tail-team', '--tail-lines', '600abc'])),
+        /Usage: omx team status/,
+      );
     } finally {
       console.log = originalLog;
       process.chdir(previousCwd);

@@ -476,18 +476,25 @@ function buildJsonBase(): { schema_version: string; timestamp: string } {
 }
 
 function parseStatusTailLines(args: string[]): number {
+  const parseTailLines = (raw: string | undefined): number => {
+    if (!raw || !/^\d+$/.test(raw)) {
+      return Number.NaN;
+    }
+    return Number.parseInt(raw, 10);
+  };
+
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
     if (token === '--tail-lines') {
       const next = args[index + 1];
-      const parsed = Number.parseInt(next || '', 10);
+      const parsed = parseTailLines(next);
       if (!Number.isFinite(parsed) || parsed < MIN_SPARKSHELL_TAIL_LINES || parsed > MAX_SPARKSHELL_TAIL_LINES) {
         throw new Error(`Usage: omx team status <team-name> [--json] [--tail-lines <${MIN_SPARKSHELL_TAIL_LINES}-${MAX_SPARKSHELL_TAIL_LINES}>]`);
       }
       return parsed;
     }
     if (token.startsWith('--tail-lines=')) {
-      const parsed = Number.parseInt(token.slice('--tail-lines='.length), 10);
+      const parsed = parseTailLines(token.slice('--tail-lines='.length));
       if (!Number.isFinite(parsed) || parsed < MIN_SPARKSHELL_TAIL_LINES || parsed > MAX_SPARKSHELL_TAIL_LINES) {
         throw new Error(`Usage: omx team status <team-name> [--json] [--tail-lines <${MIN_SPARKSHELL_TAIL_LINES}-${MAX_SPARKSHELL_TAIL_LINES}>]`);
       }
