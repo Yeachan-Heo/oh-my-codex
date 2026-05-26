@@ -180,6 +180,13 @@ describe('runWatchMode', () => {
             status: 'in_progress',
             index: 2,
           },
+          nextGoals: [{
+            id: 'G003-next',
+            title: 'Next team checkpoint',
+            objective: 'keep combined team ultragoal compact',
+            status: 'pending',
+            index: 3,
+          }],
         },
       }),
       readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' }, statusLine: { preset: 'focused' } }),
@@ -199,6 +206,8 @@ describe('runWatchMode', () => {
     assert.equal((plain.match(/team:2 workers/g) ?? []).length, 1);
     assert.equal((plain.match(/ultragoal 1\/3/g) ?? []).length, 1);
     assert.ok(plain.includes('ultragoal 1/3 + team:2 workers'));
+    assert.ok(plain.includes('G002-team: Team HUD summary'));
+    assert.ok(plain.includes('G003-next: Next team checkpoint (pending)'));
   });
 
   it('runs authority tick after each rendered frame', async () => {

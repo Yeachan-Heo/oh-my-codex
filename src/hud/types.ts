@@ -31,6 +31,7 @@ export interface UltragoalStateForHud {
   progressTotal: number;
   activeGoal?: UltragoalActiveGoalForHud;
   ongoingGoals?: UltragoalActiveGoalForHud[];
+  nextGoals?: UltragoalActiveGoalForHud[];
 }
 
 /** Ultrawork state for HUD display */

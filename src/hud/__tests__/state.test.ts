@@ -287,12 +287,21 @@ describe('readUltragoalState', { concurrency: false }, () => {
             index: 3,
           },
         ],
+        nextGoals: [
+          {
+            id: 'G003-tests',
+            title: 'Tests',
+            objective: 'Validate the HUD display',
+            status: 'pending',
+            index: 3,
+          },
+        ],
       });
     });
   });
 
-  it('limits ultragoal ongoing HUD goals to three unresolved items with active goal first', async () => {
-    await withTempRepo('omx-hud-ultragoal-ongoing-', async (cwd) => {
+  it('shows active ultragoal plus the next three pending goals', async () => {
+    await withTempRepo('omx-hud-ultragoal-next-pending-', async (cwd) => {
       const ultragoalDir = join(cwd, '.omx', 'ultragoal');
       await mkdir(ultragoalDir, { recursive: true });
       await writeFile(join(ultragoalDir, 'goals.json'), JSON.stringify({
@@ -300,10 +309,14 @@ describe('readUltragoalState', { concurrency: false }, () => {
         activeGoalId: 'G004-active',
         goals: [
           { id: 'G001-done', title: 'Done', objective: 'Complete old work', status: 'complete' },
-          { id: 'G002-pending', title: 'Pending one', objective: 'Do pending one', status: 'pending' },
+          { id: 'G002-previous-pending', title: 'Previous pending', objective: 'Do previous pending', status: 'pending' },
           { id: 'G003-running', title: 'Running one', objective: 'Do running one', status: 'in_progress' },
           { id: 'G004-active', title: 'Active selected', objective: 'Do active selected', status: 'in_progress' },
-          { id: 'G005-blocked', title: 'Blocked one', objective: 'Resolve blocker', status: 'review_blocked' },
+          { id: 'G005-pending', title: 'Pending two', objective: 'Do pending two', status: 'pending' },
+          { id: 'G006-blocked', title: 'Blocked one', objective: 'Resolve blocker', status: 'review_blocked' },
+          { id: 'G007-pending', title: 'Pending three', objective: 'Do pending three', status: 'pending' },
+          { id: 'G008-pending', title: 'Pending four', objective: 'Do pending four', status: 'pending' },
+          { id: 'G009-pending', title: 'Hidden pending five', objective: 'Do pending five', status: 'pending' },
         ],
       }));
 
@@ -311,9 +324,36 @@ describe('readUltragoalState', { concurrency: false }, () => {
 
       assert.deepEqual(state?.ongoingGoals?.map((goal) => goal.id), [
         'G004-active',
-        'G003-running',
-        'G005-blocked',
+        'G005-pending',
+        'G007-pending',
+        'G008-pending',
       ]);
+      assert.deepEqual(state?.nextGoals?.map((goal) => goal.id), [
+        'G005-pending',
+        'G007-pending',
+        'G008-pending',
+      ]);
+    });
+  });
+
+  it('handles fewer than three pending ultragoal goals gracefully', async () => {
+    await withTempRepo('omx-hud-ultragoal-fewer-pending-', async (cwd) => {
+      const ultragoalDir = join(cwd, '.omx', 'ultragoal');
+      await mkdir(ultragoalDir, { recursive: true });
+      await writeFile(join(ultragoalDir, 'goals.json'), JSON.stringify({
+        version: 1,
+        activeGoalId: 'G002-active',
+        goals: [
+          { id: 'G001-done', title: 'Done', objective: 'Complete old work', status: 'complete' },
+          { id: 'G002-active', title: 'Active selected', objective: 'Do active selected', status: 'in_progress' },
+          { id: 'G003-pending', title: 'Only pending', objective: 'Do only pending', status: 'pending' },
+        ],
+      }));
+
+      const state = await readUltragoalState(cwd);
+
+      assert.deepEqual(state?.ongoingGoals?.map((goal) => goal.id), ['G002-active', 'G003-pending']);
+      assert.deepEqual(state?.nextGoals?.map((goal) => goal.id), ['G003-pending']);
     });
   });
 

@@ -400,7 +400,7 @@ describe('renderHud – ultragoal', () => {
     assert.ok(result.split('\n').length <= 3);
   });
 
-  it('renders up to three ongoing ultragoal items alongside ralplan and ultraqa within the expanded HUD budget', () => {
+  it('renders active ultragoal plus up to three next pending items alongside ralplan and ultraqa when space allows', () => {
     const ctx = {
       ...emptyCtx(),
       ralplan: { active: true, current_phase: 'review' },
@@ -423,14 +423,7 @@ describe('renderHud – ultragoal', () => {
           status: 'in_progress',
           index: 2,
         },
-        ongoingGoals: [
-          {
-            id: 'G002-active',
-            title: 'Active HUD status',
-            objective: 'show three active workflow statuses in the OMX HUD without clipping',
-            status: 'in_progress',
-            index: 2,
-          },
+        nextGoals: [
           {
             id: 'G003-next',
             title: 'Next verification item',
@@ -446,9 +439,9 @@ describe('renderHud – ultragoal', () => {
             index: 4,
           },
           {
-            id: 'G005-hidden',
-            title: 'Hidden fourth item',
-            objective: 'should not render',
+            id: 'G005-docs',
+            title: 'Document compact summary',
+            objective: 'document behavior',
             status: 'pending',
             index: 5,
           },
@@ -464,8 +457,47 @@ describe('renderHud – ultragoal', () => {
     assert.ok(result.includes('G002-active: Active HUD status'));
     assert.ok(result.includes('G003-next: Next verification item (pending)'));
     assert.ok(result.includes('G004-qa: Run UltraQA matrix (pending)'));
-    assert.ok(!result.includes('G005-hidden'));
+    assert.ok(result.includes('G005-docs: Document compact summary (pending)'));
     assert.ok(result.split('\n').length <= 6);
+  });
+
+  it('renders fewer pending ultragoal items without empty separators', () => {
+    const ctx = {
+      ...emptyCtx(),
+      ultragoal: {
+        active: true,
+        status: 'in_progress',
+        total: 2,
+        complete: 0,
+        pending: 1,
+        inProgress: 1,
+        failed: 0,
+        reviewBlocked: 0,
+        needsUserDecision: 0,
+        progressTotal: 2,
+        activeGoal: {
+          id: 'G001-active',
+          title: 'Active HUD work',
+          objective: 'keep active summary compact',
+          status: 'in_progress',
+          index: 1,
+        },
+        nextGoals: [{
+          id: 'G002-next',
+          title: 'Only next item',
+          objective: 'handle fewer pending goals',
+          status: 'pending',
+          index: 2,
+        }],
+      },
+    };
+
+    const result = stripSgr(renderHud(ctx, 'focused', { maxWidth: 180, maxLines: 3 }));
+
+    assert.ok(result.includes('G001-active: Active HUD work'));
+    assert.ok(result.includes('G002-next: Only next item (pending)'));
+    assert.ok(!result.includes(' ·  · '));
+    assert.ok(!result.includes('objective:'));
   });
 });
 

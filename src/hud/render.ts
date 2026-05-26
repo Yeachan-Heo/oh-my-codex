@@ -147,8 +147,12 @@ function renderUltragoal(ctx: HudRenderContext): string | null {
 
   const teamSummary = formatTeamSummary(ctx);
   const progress = `ultragoal ${complete}/${total}${teamSummary ? ` + ${teamSummary}` : ''}`;
-  const ongoingGoals = (ctx.ultragoal.ongoingGoals?.length ? ctx.ultragoal.ongoingGoals : ctx.ultragoal.activeGoal ? [ctx.ultragoal.activeGoal] : [])
-    .slice(0, 3)
+  const activeGoal = ctx.ultragoal.activeGoal ?? ctx.ultragoal.ongoingGoals?.[0];
+  const nextGoals = ctx.ultragoal.nextGoals ?? ctx.ultragoal.ongoingGoals?.filter((goal) => goal.id !== activeGoal?.id).slice(0, 3) ?? [];
+  const ongoingGoals = [
+    ...(activeGoal ? [activeGoal] : []),
+    ...nextGoals.slice(0, 3),
+  ]
     .map((goal) => {
       const id = goal.id ? sanitizeDynamicText(goal.id) : '';
       const title = goal.title ? truncateDynamicText(sanitizeDynamicText(goal.title), 36) : '';
@@ -157,7 +161,6 @@ function renderUltragoal(ctx: HudRenderContext): string | null {
       return status && status !== 'in_progress' ? `${heading} (${status})` : heading;
     })
     .filter(Boolean);
-  const activeGoal = ctx.ultragoal.activeGoal ?? ctx.ultragoal.ongoingGoals?.[0];
   const rawObjective = activeGoal?.objective ? sanitizeDynamicText(activeGoal.objective) : '';
   const objective = ongoingGoals.length === 0 && rawObjective ? truncateDynamicText(rawObjective, 96) : '';
   const items = ongoingGoals.length > 0 ? ` ▶ ${ongoingGoals.join(' · ')}` : '';
