@@ -6119,6 +6119,7 @@ esac
           assert.match(tmuxLog, /run-shell -b sleep \d+; tmux resize-pane -t %44 -y \d+ >/);
           assert.match(tmuxLog, /run-shell tmux resize-pane -t %44 -y \d+ >/);
           assert.match(tmuxLog, /hud --watch/);
+          assert.match(tmuxLog, /OMX_TMUX_HUD_LEADER_PANE='%11'/);
           assert.match(tmuxLog, /select-pane -t %11/);
         },
       );

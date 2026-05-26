@@ -1621,8 +1621,8 @@ async function checkLegacySkillRootOverlap(): Promise<Check> {
 	if (overlap.overlappingSkillNames.length === 0) {
 		return {
 			name: "Legacy skill roots",
-			status: "warn",
-			message: `legacy ~/.agents/skills still exists (${overlap.legacySkillCount} skills) alongside canonical ${overlap.canonicalDir}; remove or archive it if Codex shows duplicate entries`,
+			status: "pass",
+			message: `shared ~/.agents/skills exists (${overlap.legacySkillCount} skills) alongside canonical ${overlap.canonicalDir}; no duplicate skill names detected`,
 		};
 	}
 
