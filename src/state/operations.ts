@@ -28,6 +28,15 @@ import {
 } from './skill-active.js';
 import { isTrackedWorkflowMode } from './workflow-transition.js';
 import { reconcileWorkflowTransition } from './workflow-transition-reconcile.js';
+import {
+  buildAutopilotDeepInterviewRalplanGateError,
+  canAdvanceAutopilotDeepInterviewToRalplan,
+} from '../autopilot/deep-interview-gate.js';
+import { deriveAutopilotChildPhase } from '../autopilot/fsm.js';
+import {
+  buildAutopilotRalplanUltragoalGateError,
+  canAdvanceAutopilotRalplanToUltragoal,
+} from '../autopilot/ralplan-gate.js';
 
 export const SUPPORTED_STATE_READ_MODES = [
   'autopilot',
@@ -308,6 +317,48 @@ export async function executeStateOperation(
               return;
             }
             Object.assign(mergedRaw, runOutcomeValidation.state);
+          }
+
+          const currentAutopilotChildPhase = mode === 'autopilot'
+            ? deriveAutopilotChildPhase({ mode: 'autopilot', ...existing })
+            : null;
+          const nextAutopilotChildPhase = mode === 'autopilot'
+            ? deriveAutopilotChildPhase({ mode: 'autopilot', ...mergedRaw })
+            : null;
+
+          if (
+            mode === 'autopilot'
+            && currentAutopilotChildPhase === 'deep-interview'
+            && nextAutopilotChildPhase === 'ralplan'
+          ) {
+            const gate = await canAdvanceAutopilotDeepInterviewToRalplan({
+              cwd,
+              sessionId: effectiveSessionId,
+              baseStateDir,
+              currentState: existing as Record<string, unknown>,
+              nextState: mergedRaw,
+            });
+            if (!gate.allowed) {
+              validationError = buildAutopilotDeepInterviewRalplanGateError(gate);
+              return;
+            }
+          }
+
+          if (
+            mode === 'autopilot'
+            && currentAutopilotChildPhase === 'ralplan'
+            && nextAutopilotChildPhase === 'ultragoal'
+          ) {
+            const gate = canAdvanceAutopilotRalplanToUltragoal({
+              cwd,
+              sessionId: effectiveSessionId,
+              currentState: existing as Record<string, unknown>,
+              nextState: mergedRaw,
+            });
+            if (!gate.allowed) {
+              validationError = buildAutopilotRalplanUltragoalGateError(gate);
+              return;
+            }
           }
 
           if (isTrackedWorkflowMode(mode) && mergedRaw.active === true) {

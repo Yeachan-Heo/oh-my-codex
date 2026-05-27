@@ -1,0 +1,268 @@
+import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { getStatePath } from '../mcp/state-paths.js';
+import { getQuestionRecordPath, readQuestionRecord } from '../question/state.js';
+import type { QuestionRecord } from '../question/types.js';
+import type { DeepInterviewQuestionEnforcementState } from '../question/deep-interview.js';
+
+type JsonObject = Record<string, unknown>;
+
+export interface AutopilotDeepInterviewRalplanGateInput {
+  cwd: string;
+  sessionId?: string;
+  baseStateDir?: string;
+  currentState?: JsonObject | null;
+  nextState?: JsonObject | null;
+  deepInterviewState?: JsonObject | null;
+}
+
+export interface AutopilotDeepInterviewRalplanGateDecision {
+  allowed: boolean;
+  reason: string;
+  evidence?: JsonObject;
+}
+
+function safeString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function safeObject(value: unknown): JsonObject | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as JsonObject
+    : null;
+}
+
+function statePathForMode(mode: string, cwd: string, sessionId?: string, baseStateDir?: string): string {
+  if (baseStateDir) {
+    return sessionId
+      ? join(baseStateDir, 'sessions', sessionId, `${mode}-state.json`)
+      : join(baseStateDir, `${mode}-state.json`);
+  }
+  return getStatePath(mode, cwd, sessionId);
+}
+
+async function readJsonIfExists(path: string): Promise<JsonObject | null> {
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(await readFile(path, 'utf-8')) as JsonObject;
+  } catch {
+    return null;
+  }
+}
+
+async function readDeepInterviewState(input: AutopilotDeepInterviewRalplanGateInput): Promise<JsonObject | null> {
+  if (input.deepInterviewState) return input.deepInterviewState;
+  return readJsonIfExists(statePathForMode('deep-interview', input.cwd, input.sessionId, input.baseStateDir));
+}
+
+function nestedState(state: JsonObject | null | undefined): JsonObject | null {
+  return safeObject(state?.state);
+}
+
+function handoffArtifacts(state: JsonObject | null | undefined): JsonObject | null {
+  return safeObject(state?.handoff_artifacts) ?? safeObject(nestedState(state)?.handoff_artifacts);
+}
+
+function deepInterviewHandoff(state: JsonObject | null | undefined): unknown {
+  return handoffArtifacts(state)?.deep_interview;
+}
+
+function deepInterviewGate(state: JsonObject | null | undefined): JsonObject | null {
+  return safeObject(state?.deep_interview_gate) ?? safeObject(nestedState(state)?.deep_interview_gate);
+}
+
+function questionEnforcement(state: JsonObject | null | undefined): DeepInterviewQuestionEnforcementState | undefined {
+  return safeObject(state?.question_enforcement) as unknown as DeepInterviewQuestionEnforcementState | undefined;
+}
+
+function allCandidateStates(
+  input: AutopilotDeepInterviewRalplanGateInput,
+  deepState: JsonObject | null,
+): Array<JsonObject | null | undefined> {
+  return [input.nextState, input.currentState, deepState];
+}
+
+function firstGate(
+  input: AutopilotDeepInterviewRalplanGateInput,
+  deepState: JsonObject | null,
+): JsonObject | null {
+  for (const state of allCandidateStates(input, deepState)) {
+    const gate = deepInterviewGate(state);
+    if (gate) return gate;
+  }
+  return null;
+}
+
+function hasNonEmptyObjectSummary(value: unknown): boolean {
+  const object = safeObject(value);
+  if (!object) return false;
+  return ['summary', 'rationale', 'handoff_summary', 'artifact_path', 'path']
+    .some((key) => safeString(object[key]).length > 0);
+}
+
+function completionRationaleExists(
+  gate: JsonObject,
+  input: AutopilotDeepInterviewRalplanGateInput,
+  deepState: JsonObject | null,
+): boolean {
+  if (['rationale', 'completion_rationale', 'handoff_summary', 'summary', 'reason']
+    .some((key) => safeString(gate[key]).length > 0)) {
+    return true;
+  }
+
+  for (const state of allCandidateStates(input, deepState)) {
+    const handoff = deepInterviewHandoff(state);
+    if (typeof handoff === 'string' && handoff.trim()) return true;
+    if (hasNonEmptyObjectSummary(handoff)) return true;
+  }
+
+  return false;
+}
+
+function normalizeStatus(value: unknown): string {
+  return safeString(value).toLowerCase().replace(/_/g, '-');
+}
+
+function isCompletionGate(
+  gate: JsonObject,
+  input: AutopilotDeepInterviewRalplanGateInput,
+  deepState: JsonObject | null,
+): boolean {
+  const status = normalizeStatus(gate.status);
+  return (status === 'complete' || gate.complete === true)
+    && completionRationaleExists(gate, input, deepState);
+}
+
+function isSkipGate(gate: JsonObject, sessionId?: string): boolean {
+  const status = normalizeStatus(gate.status);
+  const reason = safeString(gate.reason) || safeString(gate.skip_reason) || safeString(gate.rationale);
+  const timestamp = safeString(gate.skipped_at) || safeString(gate.timestamp) || safeString(gate.updated_at);
+  const source = safeString(gate.source);
+  const gateSession = safeString(gate.session_id);
+  const userAuthorized = gate.skip_authorized_by_user === true || gate.authorized_by_user === true;
+  const sessionMatches = !sessionId || gateSession === sessionId;
+  return status === 'skipped'
+    && userAuthorized
+    && reason.length > 0
+    && timestamp.length > 0
+    && source.length > 0
+    && gateSession.length > 0
+    && sessionMatches;
+}
+
+function collectQuestionEnforcements(
+  input: AutopilotDeepInterviewRalplanGateInput,
+  deepState: JsonObject | null,
+): DeepInterviewQuestionEnforcementState[] {
+  return allCandidateStates(input, deepState)
+    .map(questionEnforcement)
+    .filter((enforcement): enforcement is DeepInterviewQuestionEnforcementState => Boolean(enforcement));
+}
+
+function hasPendingQuestion(enforcements: readonly DeepInterviewQuestionEnforcementState[]): boolean {
+  return enforcements.some((enforcement) => normalizeStatus(enforcement.status) === 'pending');
+}
+
+function hasDeniedClearedQuestion(enforcements: readonly DeepInterviewQuestionEnforcementState[]): boolean {
+  return enforcements.some((enforcement) => (
+    normalizeStatus(enforcement.status) === 'cleared'
+    && ['handoff', 'error'].includes(normalizeStatus(enforcement.clear_reason))
+  ));
+}
+
+function isSameSessionAnsweredDeepInterviewRecord(
+  record: QuestionRecord | null,
+  sessionId: string | undefined,
+): record is QuestionRecord {
+  if (!record) return false;
+  const recordSession = safeString(record.session_id);
+  if (sessionId && recordSession && recordSession !== sessionId) return false;
+  return record.status === 'answered'
+    && record.source === 'deep-interview'
+    && Boolean(record.answer || record.answers?.length);
+}
+
+async function satisfiedQuestionHasAnsweredRecord(
+  input: AutopilotDeepInterviewRalplanGateInput,
+  enforcement: DeepInterviewQuestionEnforcementState,
+): Promise<boolean> {
+  const questionId = safeString(enforcement.question_id);
+  const satisfiedAt = safeString(enforcement.satisfied_at);
+  if (!questionId || !satisfiedAt) return false;
+  const record = await readQuestionRecord(getQuestionRecordPath(input.cwd, questionId, input.sessionId));
+  return isSameSessionAnsweredDeepInterviewRecord(record, input.sessionId);
+}
+
+async function allSatisfiedQuestionsHaveAnsweredRecords(
+  input: AutopilotDeepInterviewRalplanGateInput,
+  enforcements: readonly DeepInterviewQuestionEnforcementState[],
+): Promise<boolean> {
+  for (const enforcement of enforcements) {
+    if (normalizeStatus(enforcement.status) !== 'satisfied') continue;
+    if (!await satisfiedQuestionHasAnsweredRecord(input, enforcement)) return false;
+  }
+  return true;
+}
+
+export async function canAdvanceAutopilotDeepInterviewToRalplan(
+  input: AutopilotDeepInterviewRalplanGateInput,
+): Promise<AutopilotDeepInterviewRalplanGateDecision> {
+  const deepState = await readDeepInterviewState(input);
+  const enforcements = collectQuestionEnforcements(input, deepState);
+  if (hasPendingQuestion(enforcements)) {
+    return {
+      allowed: false,
+      reason: 'deep-interview question obligation is still pending; ralplan handoff requires completion or explicit user-authorized skip',
+    };
+  }
+  if (hasDeniedClearedQuestion(enforcements)) {
+    return {
+      allowed: false,
+      reason: 'cleared deep-interview question obligations with handoff/error are not completion evidence',
+    };
+  }
+
+  const gate = firstGate(input, deepState);
+  if (!gate) {
+    return {
+      allowed: false,
+      reason: 'missing deep-interview completion/skip gate for ralplan handoff',
+    };
+  }
+
+  if (isSkipGate(gate, input.sessionId)) {
+    return {
+      allowed: true,
+      reason: 'explicit user-authorized deep-interview skip gate',
+      evidence: { gate_status: 'skipped' },
+    };
+  }
+
+  if (!isCompletionGate(gate, input, deepState)) {
+    return {
+      allowed: false,
+      reason: 'deep-interview gate is not complete/skipped with required rationale',
+      evidence: { gate_status: gate.status },
+    };
+  }
+
+  if (!await allSatisfiedQuestionsHaveAnsweredRecords(input, enforcements)) {
+    return {
+      allowed: false,
+      reason: 'satisfied deep-interview question obligation lacks same-session answered omx question record',
+    };
+  }
+
+  return {
+    allowed: true,
+    reason: 'record-backed deep-interview completion gate',
+    evidence: { gate_status: 'complete' },
+  };
+}
+
+export function buildAutopilotDeepInterviewRalplanGateError(
+  decision: AutopilotDeepInterviewRalplanGateDecision,
+): string {
+  return `Cannot transition deep-interview -> ralplan: ${decision.reason}.`;
+}

@@ -142,7 +142,7 @@ The source mode is terminalized and the destination becomes active.
 
 Current allowlisted forward handoffs:
 
-- `deep-interview -> ralplan`
+- `deep-interview -> ralplan` (evidence-gated)
 - `ralplan -> team`
 - `ralplan -> ralph`
 - `ralplan -> autopilot`
@@ -155,7 +155,7 @@ The requested transition is not allowed and no state is changed.
 
 | From | To | Result |
 |---|---|---|
-| `deep-interview` | `ralplan` | auto-complete `deep-interview`, start `ralplan` |
+| `deep-interview` | `ralplan` | evidence-gated auto-complete: requires a durable deep-interview completion gate or explicit user-authorized skip; a satisfied/cleared question obligation alone is not enough |
 | `ralplan` | `team` | auto-complete `ralplan`, start `team` |
 | `ralplan` | `ralph` | auto-complete `ralplan`, start `ralph` |
 | `ralplan` | `autopilot` | auto-complete `ralplan`, start `autopilot` |
@@ -171,6 +171,11 @@ Autopilot is a supervisor over child stages, not a peer that is completed by
 entering its `ralplan` child stage. Review/QA loopbacks should keep
 `autopilot-state.json` active and set `current_phase: "ralplan"` rather than
 starting standalone `ralplan` over Autopilot.
+
+Inside Autopilot, `ralplan` consensus also requires tracker-backed native
+subagent lane evidence for the Architect and Critic approvals. `codex_exec`
+outputs and authored planning artifacts remain trace evidence, but they do not
+prove that visible native subagent lanes ran.
 
 ## Planning-like vs execution-like
 

@@ -3970,6 +3970,10 @@ export async function onHookEvent(event) {
         active: true,
         mode: "deep-interview",
         current_phase: "intent-first",
+        deep_interview_gate: {
+          status: "complete",
+          rationale: "Requirements are clarified and ready for ralplan consensus.",
+        },
       });
       await writeJson(join(sessionDir, "skill-active-state.json"), {
         active: true,

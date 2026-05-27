@@ -15,6 +15,7 @@ import { createUltragoalStage, buildUltragoalInstruction } from '../stages/ultra
 import { createUltraqaStage, buildUltraqaInstruction } from '../stages/ultraqa.js';
 import { buildFollowupStaffingPlan } from '../../team/followup-planner.js';
 import { packageRoot } from '../../utils/paths.js';
+import { subagentTrackingPath } from '../../subagents/tracker.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -100,6 +101,27 @@ function decodeRuntimeCliInstructionPayload(instruction: string): Record<string,
   const match = instruction.match(/--input-json-base64\s+([A-Za-z0-9_-]+)/);
   assert.ok(match?.[1], 'expected --input-json-base64 payload');
   return JSON.parse(Buffer.from(match[1], 'base64url').toString('utf-8')) as Record<string, unknown>;
+}
+
+async function writeNativeSubagentTracking(cwd: string, sessionId: string): Promise<void> {
+  const trackingPath = subagentTrackingPath(cwd);
+  const now = '2026-05-28T00:00:00.000Z';
+  await mkdir(dirname(trackingPath), { recursive: true });
+  await writeFile(trackingPath, JSON.stringify({
+    schemaVersion: 1,
+    sessions: {
+      [sessionId]: {
+        session_id: sessionId,
+        leader_thread_id: 'thread-leader',
+        updated_at: now,
+        threads: {
+          'thread-leader': { thread_id: 'thread-leader', kind: 'leader', first_seen_at: now, last_seen_at: now, turn_count: 1 },
+          'thread-architect': { thread_id: 'thread-architect', kind: 'subagent', first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
+          'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
+        },
+      },
+    },
+  }, null, 2));
 }
 
 function escapeRegExp(value: string): string {
@@ -195,6 +217,122 @@ describe('RALPLAN Stage', () => {
             complete: true,
             ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', summary: 'architect approved' },
             ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', summary: 'critic approved after architect' },
+          },
+        },
+      },
+    })), true);
+  });
+
+  it('strict Autopilot canSkip rejects artifact-only or codex_exec consensus evidence', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const stage = createRalplanStage({ requireNativeSubagents: true });
+    assert.equal(stage.canSkip!(makeCtx({
+      sessionId: 'sess-native-required',
+      artifacts: {
+        ralplan: {
+          ralplanConsensusGate: {
+            complete: true,
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              verdict: 'approve',
+              provenance_kind: 'codex_exec',
+              session_id: 'sess-native-required',
+              thread_id: 'exec-architect',
+              artifact_path: '.omx/artifacts/architect.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              verdict: 'approve',
+              provenance_kind: 'codex_exec',
+              session_id: 'sess-native-required',
+              thread_id: 'exec-critic',
+              artifact_path: '.omx/artifacts/critic.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+            },
+          },
+        },
+      },
+    })), false);
+  });
+
+
+  it('strict Autopilot canSkip rejects native reviews that reuse one subagent thread', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const sessionId = 'sess-native-same-thread';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+    await writeNativeSubagentTracking(tempDir, sessionId);
+
+    const stage = createRalplanStage({ requireNativeSubagents: true });
+    assert.equal(stage.canSkip!(makeCtx({
+      sessionId,
+      artifacts: {
+        ralplan: {
+          ralplanConsensusGate: {
+            complete: true,
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              verdict: 'approve',
+              provenance_kind: 'native_subagent',
+              session_id: sessionId,
+              thread_id: 'thread-architect',
+              artifact_path: '.omx/artifacts/architect.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              verdict: 'approve',
+              provenance_kind: 'native_subagent',
+              session_id: sessionId,
+              thread_id: 'thread-architect',
+              artifact_path: '.omx/artifacts/critic.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+            },
+          },
+        },
+      },
+    })), false);
+  });
+
+  it('strict Autopilot canSkip accepts tracker-backed native Architect and Critic lanes', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    const sessionId = 'sess-native-required';
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+    await writeNativeSubagentTracking(tempDir, sessionId);
+
+    const stage = createRalplanStage({ requireNativeSubagents: true });
+    assert.equal(stage.canSkip!(makeCtx({
+      sessionId,
+      artifacts: {
+        ralplan: {
+          ralplanConsensusGate: {
+            complete: true,
+            ralplan_architect_review: {
+              agent_role: 'architect',
+              verdict: 'approve',
+              provenance_kind: 'native_subagent',
+              session_id: sessionId,
+              thread_id: 'thread-architect',
+              artifact_path: '.omx/artifacts/architect.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+            },
+            ralplan_critic_review: {
+              agent_role: 'critic',
+              verdict: 'approve',
+              provenance_kind: 'native_subagent',
+              session_id: sessionId,
+              thread_id: 'thread-critic',
+              artifact_path: '.omx/artifacts/critic.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+            },
           },
         },
       },

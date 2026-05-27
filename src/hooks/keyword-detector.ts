@@ -945,17 +945,38 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
       }
 
       if (decision.autoCompleteModes.length > 0) {
-        const transition = await reconcileWorkflowTransition(
-          sourceCwd,
-          requestedMode,
-          {
-            action: 'activate',
-            sessionId: input.sessionId,
+        let transition: Awaited<ReturnType<typeof reconcileWorkflowTransition>>;
+        try {
+          transition = await reconcileWorkflowTransition(
+            sourceCwd,
+            requestedMode,
+            {
+              action: 'activate',
+              sessionId: input.sessionId,
+              source: 'keyword-detector',
+              baseStateDir: input.stateDir,
+              currentModes: nextWorkflowEntries.map((entry) => entry.skill),
+            },
+          );
+        } catch (error) {
+          return {
+            ...(previous ?? {}),
+            version: 1,
+            active: previous?.active ?? nextWorkflowEntries.length > 0,
+            skill: previous?.skill || match.skill,
+            keyword: previous?.keyword || match.keyword,
+            phase: previous?.phase || initialWorkflowPhaseForMode(trackedMatchSkill as TrackedWorkflowMode),
+            activated_at: previous?.activated_at || nowIso,
+            updated_at: nowIso,
             source: 'keyword-detector',
-            baseStateDir: input.stateDir,
-            currentModes: nextWorkflowEntries.map((entry) => entry.skill),
-          },
-        );
+            session_id: input.sessionId ?? previous?.session_id,
+            thread_id: input.threadId ?? previous?.thread_id,
+            turn_id: input.turnId ?? previous?.turn_id,
+            active_skills: previousEntries,
+            ...(previous?.input_lock ? { input_lock: previous.input_lock } : {}),
+            transition_error: error instanceof Error ? error.message : String(error),
+          };
+        }
         if (transition.transitionMessage) {
           transitionMessages.push(transition.transitionMessage);
         }
@@ -1205,6 +1226,7 @@ export function isUnderspecifiedForExecution(text: string): boolean {
 export interface ApplyRalplanGateOptions {
   cwd?: string;
   priorSkill?: string | null;
+  requireNativeSubagents?: boolean;
 }
 
 export function applyRalplanGate(
@@ -1238,7 +1260,9 @@ export function applyRalplanGate(
   }
 
   const planningComplete = isPlanningComplete(readPlanningArtifacts(options.cwd ?? process.cwd()));
-  const consensusComplete = hasDurableRalplanConsensusEvidenceForCwd(options.cwd ?? process.cwd());
+  const consensusComplete = hasDurableRalplanConsensusEvidenceForCwd(options.cwd ?? process.cwd(), {
+    requireNativeSubagents: options.requireNativeSubagents,
+  });
   const shortFollowupBypasses = executionKeywords.filter((keyword) => {
     if (keyword !== 'team' && keyword !== 'ralph') return false;
     return isApprovedExecutionFollowupShortcut(
