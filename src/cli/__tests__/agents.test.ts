@@ -93,6 +93,26 @@ describe('omx agents', () => {
     }
   });
 
+  it('rejects reserved native agent names regardless of casing', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-agents-cli-'));
+    const home = join(wd, 'home');
+    try {
+      await mkdir(home, { recursive: true });
+
+      const result = runOmx(wd, ['agents', 'add', 'Default', '--scope', 'project'], {
+        HOME: home,
+        CODEX_HOME: join(home, '.codex'),
+      });
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      assert.notEqual(result.status, 0, 'expected non-zero exit for reserved agent name');
+      assert.match(result.stderr, /"Default" is reserved by Codex built-in agents/i);
+      assert.equal(existsSync(join(wd, '.codex', 'agents', 'Default.toml')), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('edits an existing agent via $EDITOR and removes it with --force', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-agents-cli-'));
     const home = join(wd, 'home');

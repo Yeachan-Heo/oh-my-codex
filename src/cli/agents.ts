@@ -36,7 +36,7 @@ export interface NativeAgentInfo {
 }
 
 function isReservedNativeAgentName(name: string): boolean {
-  return RESERVED_NATIVE_AGENT_NAMES.has(name.trim());
+  return RESERVED_NATIVE_AGENT_NAMES.has(name.trim().toLowerCase());
 }
 
 function normalizeAgentName(name: string): string {
