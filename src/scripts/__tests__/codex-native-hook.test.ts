@@ -411,13 +411,34 @@ describe("codex native hook dispatch", () => {
     );
   });
 
-  it("emits deterministic JSON stdout when CLI stdin is malformed", () => {
+  it("emits schema-safe JSON stdout when CLI stdin is malformed", () => {
     const stdout = runNativeHookCli("{");
+
+    const output = parseSingleJsonStdout(stdout) as {
+      continue?: boolean;
+      stopReason?: string;
+      systemMessage?: string;
+      hookSpecificOutput?: unknown;
+    };
+
+    assert.equal(output.continue, false);
+    assert.equal(output.stopReason, "native_hook_stdin_parse_error");
+    assert.equal(output.hookSpecificOutput, undefined);
+    assert.match(
+      String(output.systemMessage ?? ""),
+      /stdin JSON parsing failed inside codex-native-hook:/,
+    );
+  });
+
+  it("emits Stop-schema-safe block JSON when malformed stdin still identifies Stop", () => {
+    const stdout = runNativeHookCli('{hook_event_name:"Stop",');
 
     const output = parseSingleJsonStdout(stdout) as {
       decision?: string;
       reason?: string;
-      hookSpecificOutput?: { hookEventName?: string; additionalContext?: string };
+      stopReason?: string;
+      systemMessage?: string;
+      hookSpecificOutput?: unknown;
     };
 
     assert.equal(output.decision, "block");
@@ -425,9 +446,10 @@ describe("codex native hook dispatch", () => {
       output.reason,
       "OMX native hook received malformed JSON input. Preserve runtime state, inspect the emitting hook payload yourself, and retry with valid JSON.",
     );
-    assert.equal(output.hookSpecificOutput?.hookEventName, "Unknown");
+    assert.equal(output.stopReason, "native_hook_stdin_parse_error");
+    assert.equal(output.hookSpecificOutput, undefined);
     assert.match(
-      String(output.hookSpecificOutput?.additionalContext ?? ""),
+      String(output.systemMessage ?? ""),
       /stdin JSON parsing failed inside codex-native-hook:/,
     );
   });
