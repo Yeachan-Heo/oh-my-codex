@@ -57,6 +57,22 @@ requiring a separate linked Ralph launch up front.
 - **Escalation:** start a separate `omx ralph ...` / `$ralph ...` only when a later manual follow-up still needs a persistent single-owner fix/verification loop.
 - **Deprecation:** `omx team ralph ...` has been removed. Use plain `omx team ...` for team execution or run `omx ralph ...` separately when you explicitly want a later Ralph loop.
 
+
+### Team Big Five / ATEM coordination gate
+
+`$team` keeps simple independent fan-out lightweight. For isolated tasks (for example per-file sweeps, typo/copy edits, or explicitly independent lanes with no shared files/dependencies), workers use the normal concise protocol: startup ACK, claim-safe task lifecycle, status, verification, and completion evidence.
+
+Activate the lightweight Team Big Five + ATEM-inspired coordination layer when the task or task graph has dependencies, shared files/surfaces/contracts, cross-boundary ownership, handoffs, integration/merge work, blocked lanes, or changed assumptions. The protocol is not a separate ceremony; it is a concise boundary checklist:
+
+- **Shared mental model / single source of truth:** task JSON, inbox, mailbox, approved handoff, and leader updates are canonical.
+- **Closed-loop communication / ACK-readback handoffs:** acknowledge handoffs with understood scope, affected artifact/path, owner, and next action.
+- **Mutual performance monitoring at boundaries:** check upstream/downstream contracts, shared files, and verification evidence before completion.
+- **Backup/reassignment behavior:** blocked workers report the smallest needed help/reassignment request and continue safe unblocked slices.
+- **Adaptability checkpoints:** changed assumptions, dependencies, or verification results trigger a brief leader-facing update before widening scope.
+- **Team orientation:** workers optimize for the integrated team outcome, not local-optimum-only task summaries; report integration risks, missing tests, and peer impacts.
+
+ATEM fit: treat this as agile teamwork support for transition/action/interpersonal moments around boundaries, not as a heavyweight process model. Do not copy provider-specific plugin implementations; keep the protocol in OMX/Codex prompts, inboxes, state, and tests.
+
 ### Team + Ultragoal bridge
 
 Use `$ultragoal` for durable leader-owned goal/ledger tracking and `$team` for parallel execution lanes. When Team is launched with an active `.omx/ultragoal/goals.json`, worker inboxes/status may include leader-owned Ultragoal context: `.omx/ultragoal/goals.json`, `.omx/ultragoal/ledger.jsonl`, the active goal id, Codex goal mode, and the `fresh_leader_get_goal_required` checkpoint policy.

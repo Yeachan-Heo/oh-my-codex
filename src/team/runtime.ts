@@ -111,6 +111,7 @@ import {
 } from './worker-bootstrap.js';
 import { buildTeamWorkerGoalInstruction } from './goal-workflow.js';
 import { synthesizeDelegationPlan } from './delegation-policy.js';
+import { coordinationPlansEqual, synthesizeCoordinationPlan, synthesizeCoordinationPlans } from './coordination-protocol.js';
 import { loadRolePrompt } from './role-router.js';
 import { composeRoleInstructionsForRole } from '../agents/native-config.js';
 import { codexPromptsDir } from '../utils/paths.js';
@@ -2307,7 +2308,7 @@ export async function startTeam(
   task: string,
   agentType: string,
   workerCount: number,
-  tasks: Array<{ subject: string; description: string; owner?: string; blocked_by?: string[]; depends_on?: string[]; symbolic_depends_on?: string[]; role?: string; delegation?: TeamTask['delegation']; requires_code_change?: boolean; filePaths?: string[]; domains?: string[]; lane?: string; allocation_reason?: string; symbolic_id?: string }>,
+  tasks: Array<{ subject: string; description: string; owner?: string; blocked_by?: string[]; depends_on?: string[]; symbolic_depends_on?: string[]; role?: string; delegation?: TeamTask['delegation']; coordination?: TeamTask['coordination']; requires_code_change?: boolean; filePaths?: string[]; domains?: string[]; lane?: string; allocation_reason?: string; symbolic_id?: string }>,
   cwd: string,
   options: TeamStartOptions = {},
 ): Promise<TeamRuntime> {
@@ -2504,8 +2505,12 @@ export async function startTeam(
     // 4. Create tasks. Repo-aware DAG dependencies are symbolic until the
     // state layer returns concrete task IDs, so create those tasks dependency
     // free and patch runtime dependency fields after ID assignment.
+    const coordinationPlans = synthesizeCoordinationPlans(tasks.map((task) => ({
+      ...task,
+      depends_on: task.depends_on ?? task.blocked_by ?? task.symbolic_depends_on,
+    })));
     const createdTasks: TeamTask[] = [];
-    for (const t of tasks) {
+    for (const [taskIndex, t] of tasks.entries()) {
       const hasSymbolicDagIdentity = Boolean(t.symbolic_id);
       const created = await createStateTask(sanitized, {
         subject: t.subject,
@@ -2516,6 +2521,9 @@ export async function startTeam(
         depends_on: hasSymbolicDagIdentity ? undefined : t.depends_on ?? t.blocked_by,
         role: t.role,
         delegation: t.delegation ?? synthesizeDelegationPlan(t),
+        coordination: t.coordination
+          ? { ...t.coordination, source: 'explicit' }
+          : coordinationPlans[taskIndex] ?? synthesizeCoordinationPlan(t),
         requires_code_change: t.requires_code_change,
         filePaths: t.filePaths,
         domains: t.domains,
@@ -3399,9 +3407,17 @@ export async function assignTask(
         : undefined,
       renderLeaderOwnedUltragoalContextSection(persistedUltragoalContext),
     );
-    const taskForInbox = task.delegation
+    const currentTasks = await listTasks(sanitized, cwd);
+    const currentCoordinationPlan = currentTasks.length > 0
+      ? synthesizeCoordinationPlans(currentTasks).find((_, index) => currentTasks[index]?.id === task.id) ?? synthesizeCoordinationPlan(task)
+      : synthesizeCoordinationPlan(task);
+    const hasCurrentCoordination = task.coordination?.source === 'explicit' || coordinationPlansEqual(task.coordination, currentCoordinationPlan);
+    const taskForInbox = task.delegation && hasCurrentCoordination
       ? task
-      : (await updateTask(sanitized, taskId, { delegation: synthesizeDelegationPlan(task) }, cwd)) ?? task;
+      : (await updateTask(sanitized, taskId, {
+          delegation: task.delegation ?? synthesizeDelegationPlan(task),
+          coordination: task.coordination?.source === 'explicit' ? task.coordination : currentCoordinationPlan,
+        }, cwd)) ?? task;
     const inbox = generateTaskAssignmentInbox(workerName, sanitized, taskForInbox, { approvedContextSection });
     const maxAssignRetries = 2;
     const assignRetryDelayS = 2;

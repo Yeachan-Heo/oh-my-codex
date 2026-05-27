@@ -66,6 +66,23 @@ describe("worker bootstrap", () => {
     );
   });
 
+  it("team and worker skills document coordination activation heuristics", async () => {
+    const teamSkill = await readFile(join(process.cwd(), "skills", "team", "SKILL.md"), "utf8");
+    const workerSkill = await readFile(join(process.cwd(), "skills", "worker", "SKILL.md"), "utf8");
+
+    for (const content of [teamSkill, workerSkill]) {
+      assert.match(content, /Team Big Five/i);
+      assert.match(content, /ATEM/i);
+      assert.match(content, /independent fan-out/i);
+      assert.match(content, /shared mental model|single source of truth/i);
+      assert.match(content, /closed-loop communication|ACK-readback/i);
+      assert.match(content, /mutual performance monitoring/i);
+      assert.match(content, /backup\/reassignment|backup behavior/i);
+      assert.match(content, /adaptability checkpoint/i);
+      assert.match(content, /team orientation/i);
+    }
+  });
+
   it("generateWorkerOverlay produces markdown with correct start/end markers", () => {
     const overlay = generateWorkerOverlay("alpha-team");
 
@@ -657,6 +674,84 @@ describe("worker bootstrap", () => {
   });
 
 
+
+  it("generateInitialInbox includes coordination gate but keeps independent fan-out lightweight", () => {
+    const tasks: TeamTask[] = [{
+      id: "9",
+      subject: "Independent docs sweep",
+      description: "Fan-out read-only sweep: each worker checks a separate doc with no shared files.",
+      status: "pending",
+      created_at: new Date(0).toISOString(),
+      coordination: { mode: "lightweight", activation_reasons: ["explicit_independent_fanout"] },
+    }];
+
+    const inbox = generateInitialInbox("worker-1", "team-lightweight", "executor", tasks);
+
+    assert.match(inbox, /Team Coordination Gate/);
+    assert.match(inbox, /Use the lightweight path for independent fan-out/i);
+    assert.doesNotMatch(inbox, /Team Coordination Protocol — Task 9/);
+    assert.doesNotMatch(inbox, /Coordination protocol: coordinated/);
+  });
+
+  it("generateInitialInbox includes Team Big Five and ATEM protocol for coordinated tasks", () => {
+    const tasks: TeamTask[] = [{
+      id: "10",
+      subject: "Integrate shared runtime and tests",
+      description: "Coordinate handoff across a shared runtime contract and e2e verification.",
+      status: "pending",
+      depends_on: ["3"],
+      created_at: new Date(0).toISOString(),
+      coordination: {
+        mode: "coordinated",
+        activation_reasons: ["task_dependencies", "cross_boundary_or_handoff_language"],
+        required_mechanisms: [
+          "shared_mental_model",
+          "closed_loop_communication",
+          "mutual_performance_monitoring",
+          "backup_behavior",
+          "adaptability_checkpoint",
+          "team_orientation",
+        ],
+      },
+    }];
+
+    const inbox = generateInitialInbox("worker-1", "team-coordinated", "executor", tasks);
+
+    assert.match(inbox, /Team Big Five \/ ATEM Coordination Protocol/);
+    assert.match(inbox, /Team Coordination Protocol — Task 10/);
+    assert.match(inbox, /shared mental model \/ single source of truth/i);
+    assert.match(inbox, /Closed-loop communication \/ ACK-readback handoffs/i);
+    assert.match(inbox, /Mutual performance monitoring at boundaries/i);
+    assert.match(inbox, /Backup behavior/i);
+    assert.match(inbox, /Adaptability checkpoint/i);
+    assert.match(inbox, /Team orientation/i);
+    assert.match(inbox, /Coordination protocol: coordinated/);
+  });
+
+  it("generateInitialInbox falls back to the full coordination checklist for invalid mechanism metadata", () => {
+    const tasks: TeamTask[] = [{
+      id: "11",
+      subject: "Integrate shared runtime and tests",
+      description: "Coordinate handoff across a shared runtime contract and e2e verification.",
+      status: "pending",
+      created_at: new Date(0).toISOString(),
+      coordination: {
+        mode: "coordinated",
+        activation_reasons: ["cross_boundary_or_handoff_language"],
+        required_mechanisms: ["bogus-mechanism"],
+      } as unknown as TeamTask["coordination"],
+    }];
+
+    const inbox = generateInitialInbox("worker-1", "team-coordinated", "executor", tasks);
+
+    assert.match(inbox, /Team Coordination Protocol — Task 11/);
+    assert.match(inbox, /shared mental model \/ single source of truth/i);
+    assert.match(inbox, /Closed-loop communication \/ ACK-readback handoffs/i);
+    assert.match(inbox, /Mutual performance monitoring at boundaries/i);
+    assert.match(inbox, /Backup behavior/i);
+    assert.match(inbox, /Adaptability checkpoint/i);
+    assert.match(inbox, /Team orientation/i);
+  });
 
   it("generateInitialInbox includes Native Subagent Delegation Contract for broad delegated tasks", () => {
     const tasks: TeamTask[] = [{

@@ -1,4 +1,4 @@
-import type { TeamTask } from "./state.js";
+import type { TeamTask, TeamTaskCoordinationMechanism } from "./state.js";
 import { existsSync } from "fs";
 import { mkdir, readFile, rm, stat, writeFile } from "fs/promises";
 import { dirname, join } from "path";
@@ -16,6 +16,7 @@ import {
   renderTeamWorkerGoalInstruction,
   type TeamWorkerGoalInstruction,
 } from "./goal-workflow.js";
+import { normalizeTeamTaskCoordinationPlanForRender } from "./coordination-protocol.js";
 
 const TEAM_OVERLAY_START = "<!-- OMX:TEAM:WORKER:START -->";
 const TEAM_OVERLAY_END = "<!-- OMX:TEAM:WORKER:END -->";
@@ -112,6 +113,10 @@ This file is generated for a live OMX team worker run and is disposable.
 ## Message Protocol
 - Always include \`from_worker: "${options.workerName}"\`
 - Send leader messages to \`to_worker: "leader-fixed"\`
+
+## Team Coordination Gate
+- Keep independent fan-out lightweight: normal ACK, claim-safe lifecycle, status, and verification are enough.
+- For dependencies, shared files/surfaces, handoffs, integration, blocked lanes, or changed assumptions, activate the Team Big Five / ATEM-inspired protocol: shared mental model/source of truth, ACK-readback handoffs, boundary monitoring, backup/reassignment requests, adaptability checkpoints, and team-outcome orientation.
 
 ## Scope Rules
 - Follow task-specific edit scope from inbox/task JSON only.
@@ -349,6 +354,10 @@ When your mailbox receives a message, process delivery explicitly:
 1. Read: \`omx team api mailbox-list --input "{\"team_name\":\"${teamName}\",\"worker\":\"<your-worker-name>\"}" --json\`
 2. Mark delivered: \`omx team api mailbox-mark-delivered --input "{\"team_name\":\"${teamName}\",\"worker\":\"<your-worker-name>\",\"message_id\":\"<MESSAGE_ID>\"}" --json\`
 3. If you reply, include concrete progress and keep executing your assigned work or the next feasible task after replying.
+
+## Team Coordination Gate
+- Keep independent fan-out lightweight: normal ACK, claim-safe lifecycle, status, and verification are enough.
+- For dependencies, shared files/surfaces, handoffs, integration, blocked lanes, or changed assumptions, activate the Team Big Five / ATEM-inspired protocol: shared mental model/source of truth, ACK-readback handoffs, boundary monitoring, backup/reassignment requests, adaptability checkpoints, and team-outcome orientation.
 
 ## Rules
 - Do NOT edit files outside the paths listed in your task description
@@ -639,6 +648,57 @@ async function withAgentsMdLock<T>(
 }
 
 
+
+function renderTeamCoordinationGate(): string {
+  return `
+## Team Coordination Gate
+
+Use the lightweight path for independent fan-out: work your assigned scope, keep normal ACK/status updates, and avoid extra ceremony. Activate the coordinated Team Big Five / ATEM-inspired protocol only when task state or wording shows dependencies, shared files/surfaces, handoffs, integration, cross-boundary work, blocked lanes, or changing assumptions.
+`;
+}
+
+function renderCoordinationProtocol(task: TeamTask): string {
+  const plan = normalizeTeamTaskCoordinationPlanForRender(task.coordination);
+  if (!plan || plan.mode !== "coordinated") return "";
+
+  const reasons = plan.activation_reasons.length > 0
+    ? plan.activation_reasons.map((reason) => `- ${reason}`).join("\n")
+    : "- cross_boundary_or_handoff_language";
+  const mechanismText: Record<TeamTaskCoordinationMechanism, string> = {
+    shared_mental_model: "- Shared mental model / single source of truth: treat task JSON, inbox, mailbox, approved handoff, and leader updates as canonical; restate changed assumptions before acting.",
+    closed_loop_communication: "- Closed-loop communication / ACK-readback handoffs: acknowledge handoffs with what you understood, the artifact/path affected, owner, and next action.",
+    mutual_performance_monitoring: "- Mutual performance monitoring at boundaries: check upstream/downstream contracts, shared files, and verification evidence before completion.",
+    backup_behavior: "- Backup behavior: if blocked, write blocked status with the smallest needed help/reassignment request and continue any safe unblocked slice.",
+    adaptability_checkpoint: "- Adaptability checkpoint: when assumptions, dependencies, or verification results change, pause for a brief leader-facing update before widening scope.",
+    team_orientation: "- Team orientation: optimize for the team outcome, not just your local task; call out integration risks, missing tests, and peer impacts.",
+  };
+  const mechanisms = (plan.required_mechanisms && plan.required_mechanisms.length > 0
+    ? plan.required_mechanisms
+    : Object.keys(mechanismText) as TeamTaskCoordinationMechanism[]
+  ).map((mechanism) => mechanismText[mechanism]).join("\n");
+
+  return `
+### Team Coordination Protocol — Task ${task.id}
+
+Activation reasons:
+${reasons}
+
+Use this concise coordination layer for interdependent or cross-boundary work:
+${mechanisms}
+
+Completion evidence must mention either \`Coordination protocol: coordinated - <handoffs/boundaries checked>\` or \`Coordination protocol: no boundary handoff - <why no boundary remained>\`.
+`;
+}
+
+function renderCoordinationProtocols(tasks: TeamTask[]): string {
+  const sections = tasks.map(renderCoordinationProtocol).filter((section) => section.trim().length > 0);
+  if (sections.length === 0) return "";
+  return `
+## Team Big Five / ATEM Coordination Protocol
+
+${sections.join("\n")}`;
+}
+
 function renderDelegationContract(task: TeamTask): string {
   const plan = task.delegation;
   if (!plan || plan.mode === "none") return "";
@@ -746,6 +806,8 @@ export function generateInitialInbox(
   const leaderCwd = options.leaderCwd || "<leader_cwd>";
   const displayRole = options.workerRole ?? agentType;
   const delegationSection = renderDelegationContracts(tasks);
+  const coordinationGateSection = renderTeamCoordinationGate();
+  const coordinationSection = renderCoordinationProtocols(tasks);
   const workerGoalSection = renderTeamWorkerGoalInstruction(options.workerGoalInstruction);
 
   const approvedContextSection = options.approvedContextSection
@@ -824,6 +886,8 @@ When using \`omx team api send-message\`, ALWAYS include from_worker with YOUR w
 
 Example: omx team api send-message --input "{\"team_name\":\"${teamName}\",\"from_worker\":\"${workerName}\",\"to_worker\":\"leader-fixed\",\"body\":\"ACK: initialized\"}" --json
 
+${coordinationGateSection}
+${coordinationSection}
 ${delegationSection}
 ${buildVerificationSection("each assigned task")}
 
@@ -891,6 +955,8 @@ export function generateTaskAssignmentInbox(
         }],
       });
   const delegationSection = renderDelegationContracts([task as TeamTask]);
+  const coordinationGateSection = renderTeamCoordinationGate();
+  const coordinationSection = renderCoordinationProtocols([task as TeamTask]);
   const approvedContextSection = options.approvedContextSection
     ? `\n## Approved Handoff Context\n\n${options.approvedContextSection}\n`
     : "";
@@ -919,6 +985,8 @@ ${workerGoalSection}
 7. Use \`omx team api release-task-claim --json\` only for rollback to \`pending\`
 8. Write \`{"state": "idle", "updated_at": "<current ISO timestamp>"}\` to your status file
 
+${coordinationGateSection}
+${coordinationSection}
 ${delegationSection}
 ${buildVerificationSection(taskDescription)}
 `;

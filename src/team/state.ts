@@ -67,6 +67,7 @@ import {
 import type { TeamReminderIntent } from './reminder-intents.js';
 import type { WorktreeMode } from './worktree.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
+import { normalizeTeamTaskCoordinationPlanForStorage } from './coordination-protocol.js';
 
 export type { TeamDispatchRequestStatus, TeamWorkerIntegrationStatus } from './contracts.js';
 
@@ -142,6 +143,30 @@ export interface TeamTaskDelegationComplianceEvidence {
   recorded_at: string;
 }
 
+export type TeamTaskCoordinationMode = 'lightweight' | 'coordinated';
+
+export type TeamTaskCoordinationMechanism =
+  | 'shared_mental_model'
+  | 'closed_loop_communication'
+  | 'mutual_performance_monitoring'
+  | 'backup_behavior'
+  | 'adaptability_checkpoint'
+  | 'team_orientation';
+
+export interface TeamTaskCoordinationPlan {
+  mode: TeamTaskCoordinationMode;
+  activation_reasons: string[];
+  required_mechanisms?: TeamTaskCoordinationMechanism[];
+  source?: 'explicit' | 'synthesized';
+}
+
+export interface TeamTaskCoordinationComplianceEvidence {
+  status: 'checked' | 'no_boundary_handoff';
+  source: 'terminal_result';
+  detail: string;
+  recorded_at: string;
+}
+
 export interface TeamTaskDelegationPlan {
   mode: TeamTaskDelegationMode;
   max_parallel_subtasks?: number;
@@ -176,6 +201,8 @@ export interface TeamTask {
   completed_at?: string;
   delegation?: TeamTaskDelegationPlan;
   delegation_compliance?: TeamTaskDelegationComplianceEvidence;
+  coordination?: TeamTaskCoordinationPlan;
+  coordination_compliance?: TeamTaskCoordinationComplianceEvidence;
 }
 
 export interface TeamTaskClaim {
@@ -362,7 +389,7 @@ export type ClaimTaskResult =
 
 export type TransitionTaskResult =
   | { ok: true; task: TeamTaskV2 }
-  | { ok: false; error: 'claim_conflict' | 'invalid_transition' | 'task_not_found' | 'already_terminal' | 'lease_expired' | 'missing_delegation_compliance_evidence' };
+  | { ok: false; error: 'claim_conflict' | 'invalid_transition' | 'task_not_found' | 'already_terminal' | 'lease_expired' | 'missing_delegation_compliance_evidence' | 'missing_coordination_compliance_evidence' };
 
 export type ReleaseTaskClaimResult =
   | { ok: true; task: TeamTaskV2 }
@@ -574,9 +601,12 @@ async function resolveLeaderSessionId(cwd: string, env: NodeJS.ProcessEnv): Prom
 }
 
 function normalizeTask(task: TeamTask): TeamTaskV2 {
+  const normalizedCoordination = normalizeTeamTaskCoordinationPlanForStorage(task.coordination);
+  const { coordination: _coordination, ...rest } = task;
   return {
-    ...task,
+    ...rest,
     depends_on: task.depends_on ?? task.blocked_by ?? [],
+    ...(normalizedCoordination ? { coordination: normalizedCoordination } : {}),
     version: Math.max(1, task.version ?? 1),
   };
 }
@@ -1254,12 +1284,15 @@ export async function createTask(
     const nextId = String(nextNumeric);
 
     const created: TeamTaskV2 = {
-      ...task,
+      ...normalizeTask({
+        ...task,
+        id: nextId,
+        created_at: new Date().toISOString(),
+      }),
       id: nextId,
       status: task.status ?? 'pending',
       depends_on: task.depends_on ?? task.blocked_by ?? [],
       version: 1,
-      created_at: new Date().toISOString(),
     };
 
     await writeAtomic(taskFilePath(teamName, nextId, cwd), JSON.stringify(created, null, 2));
@@ -1302,14 +1335,14 @@ export async function updateTask(
     const rawDeps = updates.depends_on ?? updates.blocked_by ?? existing.depends_on ?? existing.blocked_by ?? [];
     const normalizedDeps = Array.isArray(rawDeps) ? rawDeps : [];
 
-    const merged: TeamTaskV2 = {
+    const merged = normalizeTask({
       ...normalizeTask(existing),
       ...updates,
       id: existing.id,
       created_at: existing.created_at,
       depends_on: normalizedDeps,
       version: Math.max(1, existing.version ?? 1) + 1,
-    };
+    });
 
     await writeAtomic(taskFilePath(teamName, taskId, cwd), JSON.stringify(merged, null, 2));
     return merged;

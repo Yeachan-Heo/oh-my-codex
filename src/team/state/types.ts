@@ -67,6 +67,30 @@ export interface TeamTaskDelegationComplianceEvidence {
   recorded_at: string;
 }
 
+export type TeamTaskCoordinationMode = 'lightweight' | 'coordinated';
+
+export type TeamTaskCoordinationMechanism =
+  | 'shared_mental_model'
+  | 'closed_loop_communication'
+  | 'mutual_performance_monitoring'
+  | 'backup_behavior'
+  | 'adaptability_checkpoint'
+  | 'team_orientation';
+
+export interface TeamTaskCoordinationPlan {
+  mode: TeamTaskCoordinationMode;
+  activation_reasons: string[];
+  required_mechanisms?: TeamTaskCoordinationMechanism[];
+  source?: 'explicit' | 'synthesized';
+}
+
+export interface TeamTaskCoordinationComplianceEvidence {
+  status: 'checked' | 'no_boundary_handoff';
+  source: 'terminal_result';
+  detail: string;
+  recorded_at: string;
+}
+
 export interface TeamTaskDelegationPlan {
   mode: TeamTaskDelegationMode;
   max_parallel_subtasks?: number;
@@ -91,12 +115,18 @@ export interface TeamTask {
   error?: string;
   blocked_by?: string[];
   depends_on?: string[];
+  filePaths?: string[];
+  domains?: string[];
+  lane?: string;
+  allocation_reason?: string;
   version?: number;
   claim?: TeamTaskClaim;
   created_at: string;
   completed_at?: string;
   delegation?: TeamTaskDelegationPlan;
   delegation_compliance?: TeamTaskDelegationComplianceEvidence;
+  coordination?: TeamTaskCoordinationPlan;
+  coordination_compliance?: TeamTaskCoordinationComplianceEvidence;
 }
 
 export interface TeamTaskClaim {
@@ -267,7 +297,7 @@ export type ClaimTaskResult =
 
 export type TransitionTaskResult =
   | { ok: true; task: TeamTaskV2 }
-  | { ok: false; error: 'claim_conflict' | 'invalid_transition' | 'task_not_found' | 'already_terminal' | 'lease_expired' | 'missing_delegation_compliance_evidence' };
+  | { ok: false; error: 'claim_conflict' | 'invalid_transition' | 'task_not_found' | 'already_terminal' | 'lease_expired' | 'missing_delegation_compliance_evidence' | 'missing_coordination_compliance_evidence' };
 
 export type ReleaseTaskClaimResult =
   | { ok: true; task: TeamTaskV2 }
