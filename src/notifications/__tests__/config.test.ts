@@ -1,10 +1,14 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   validateMention,
   validateSlackMention,
   parseMentionAllowedMentions,
   buildConfigFromEnv,
+  getNotificationConfig,
   getReplyListenerPlatformConfig,
 } from '../config.js';
 
@@ -270,6 +274,44 @@ describe('buildConfigFromEnv', () => {
     assert.ok(config);
     assert.equal(config['discord-bot']!.mention, '<@12345678901234567>');
     assert.equal(config.discord!.mention, '<@12345678901234567>');
+  });
+
+  it('fills missing telegram file credentials from env vars', () => {
+    const originalCodexHome = process.env.CODEX_HOME;
+    const codexHomeDir = mkdtempSync(join(tmpdir(), 'omx-notify-config-'));
+    try {
+      process.env.CODEX_HOME = codexHomeDir;
+      process.env.OMX_TELEGRAM_BOT_TOKEN = 'env-token';
+      process.env.OMX_TELEGRAM_CHAT_ID = 'env-chat';
+      writeFileSync(join(codexHomeDir, '.omx-config.json'), JSON.stringify({
+        notifications: {
+          enabled: true,
+          telegram: {
+            enabled: true,
+            botToken: '',
+            chatId: '',
+            parseMode: 'HTML',
+          },
+        },
+      }, null, 2));
+
+      const config = getNotificationConfig();
+
+      assert.ok(config);
+      assert.deepEqual(config.telegram, {
+        enabled: true,
+        botToken: 'env-token',
+        chatId: 'env-chat',
+        parseMode: 'HTML',
+      });
+    } finally {
+      if (typeof originalCodexHome === 'string') {
+        process.env.CODEX_HOME = originalCodexHome;
+      } else {
+        delete process.env.CODEX_HOME;
+      }
+      rmSync(codexHomeDir, { recursive: true, force: true });
+    }
   });
 });
 
