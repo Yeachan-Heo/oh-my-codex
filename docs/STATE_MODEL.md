@@ -146,7 +146,6 @@ Current allowlisted forward handoffs:
 - `ralplan -> team`
 - `ralplan -> ralph`
 - `ralplan -> autopilot`
-- `autopilot -> ralplan` when Autopilot's code-review phase is not clean
 
 ### D. Deny
 
@@ -160,13 +159,18 @@ The requested transition is not allowed and no state is changed.
 | `ralplan` | `team` | auto-complete `ralplan`, start `team` |
 | `ralplan` | `ralph` | auto-complete `ralplan`, start `ralph` |
 | `ralplan` | `autopilot` | auto-complete `ralplan`, start `autopilot` |
-| `autopilot` | `ralplan` | auto-complete `autopilot`, start `ralplan` for review-driven loopback |
+| `autopilot` | `ralplan` | denied as a peer transition; represent supervised ralplan by updating `autopilot.current_phase` |
 | `team` | `ralph` | allowed overlap |
 | `ralph` | `team` | allowed overlap |
 | `<any tracked mode>` | `ultrawork` | allowed overlap |
 | `ultrawork` | `<any tracked mode>` | allowed overlap |
-| execution-like mode | planning-like mode | denied rollback auto-complete, except the explicit `autopilot -> ralplan` review loopback |
+| execution-like mode | planning-like mode | denied rollback auto-complete |
 | anything else non-allowlisted | new conflicting mode | denied |
+
+Autopilot is a supervisor over child stages, not a peer that is completed by
+entering its `ralplan` child stage. Review/QA loopbacks should keep
+`autopilot-state.json` active and set `current_phase: "ralplan"` rather than
+starting standalone `ralplan` over Autopilot.
 
 ## Planning-like vs execution-like
 

@@ -92,6 +92,8 @@ Before Phase `deep-interview` or `ralplan` starts or resumes:
 <State_Management>
 Use the CLI-first state surface (`omx state ... --json`) for Autopilot lifecycle state. State must be session-aware when a session id exists. If the explicit MCP compatibility surface is already available, equivalent `omx_state` tool calls remain acceptable but are not required.
 
+Inside active Autopilot, named child phases such as `$ralplan` are supervised phases, not peer workflow activations: keep `mode:"autopilot"` active and update `current_phase:"ralplan"` rather than starting standalone `mode:"ralplan"` over Autopilot.
+
 Required fields:
 
 ```json

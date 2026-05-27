@@ -219,4 +219,42 @@ describe('evaluateQuestionPolicy autopilot deep-interview wait', { concurrency: 
     assert.equal(unrelatedMode.allowed, false);
     assert.equal(unrelatedMode.code, 'active_execution_mode_blocked');
   });
+
+  it('rejects malformed autopilot waits that are not for the deep-interview child phase', { concurrency: false }, async () => {
+    const cwd = await makeRepo();
+    const sessionDir = join(cwd, '.omx', 'state', 'sessions', 'sess-auto-ralplan-wait');
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+      mode: 'autopilot',
+      active: true,
+      current_phase: 'waiting-for-user',
+      run_outcome: 'blocked_on_user',
+      lifecycle_outcome: 'askuserQuestion',
+      state: {
+        deep_interview_question: {
+          status: 'waiting_for_user',
+          source: 'omx-question',
+          obligation_id: 'obligation-ralplan',
+          previous_phase: 'ralplan',
+        },
+      },
+    }, null, 2));
+    await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
+      active: true,
+      skill: 'autopilot',
+      phase: 'ralplan',
+      active_skills: [{ skill: 'autopilot', phase: 'ralplan', active: true, session_id: 'sess-auto-ralplan-wait' }],
+      session_id: 'sess-auto-ralplan-wait',
+    }, null, 2));
+
+    const result = await evaluateQuestionPolicy({
+      cwd,
+      explicitSessionId: 'sess-auto-ralplan-wait',
+      questionSource: 'deep-interview',
+      env: { ...process.env, OMX_TEAM_WORKER: '' },
+    });
+
+    assert.equal(result.allowed, false);
+    assert.equal(result.code, 'active_execution_mode_blocked');
+  });
 });
