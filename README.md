@@ -70,7 +70,8 @@ Choose one install path. If Codex CLI is already installed (Homebrew, npm, or an
 codex --version
 npm install -g oh-my-codex
 omx setup
-omx --madmax --high
+# from the git project you want Codex to edit; choose a task-specific name
+omx --worktree=feat/task --madmax --high
 ```
 
 If you do not have Codex CLI yet and want npm to manage it:
@@ -136,15 +137,59 @@ omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"
 
 `omx doctor` catches missing OMX files, hooks, and runtime prerequisites. The real smoke test catches auth, profile, and provider/base-URL problems that only appear when Codex performs an actual request.
 
-Launch OMX the recommended way:
+Launch OMX the recommended way from a git project:
 
 ```bash
-omx --madmax --high
+omx --worktree=feat/task --madmax --high
 ```
 
 On macOS/Linux interactive terminals with `tmux` available, this starts the
 leader in OMX-managed detached tmux by default so the HUD/runtime panes can be
-created and recovered.
+created and recovered. `--worktree` also moves the launch into a separate git
+checkout, which is the safer default when using `--madmax`. Replace
+`feat/task` with a branch-like name for the task.
+
+### Madmax and worktree launch safety
+
+`--madmax` is OMX shorthand for Codex
+`--dangerously-bypass-approvals-and-sandbox`. It removes the normal approval and
+sandbox guardrails, so only use it in trusted repositories and environments.
+`--high` is shorthand for `-c model_reasoning_effort="high"`.
+
+When you use `--madmax` from a git repository, prefer a worktree launch instead
+of running directly in the current checkout. For repeatable or concurrent work,
+use a named worktree:
+
+```bash
+omx --worktree=feature/auth --madmax --high
+```
+
+If you are outside a git repository, omit `--worktree`; worktree launches
+require Git.
+
+For concurrent `--madmax` sessions, do **not** run them all in the same
+directory. Give each session its own named worktree:
+
+```bash
+omx --worktree=feature/auth --madmax --high
+omx --worktree=fix/flaky-tests --madmax --high
+```
+
+`--worktree` / `-w` with no name creates or reuses a detached launch worktree at
+`../<repo>.omx-worktrees/launch-detached`. `--worktree=<name>`,
+`--worktree <name>`, or `-w <name>` creates or reuses a named launch worktree
+under `../<repo>.omx-worktrees/` and checks out that branch name. OMX consumes
+the worktree flag before starting Codex; it is not forwarded to Codex itself.
+Treat the unnamed detached form as a one-off convenience: if the source checkout
+advances after that worktree is created, a later unnamed launch can fail with
+`worktree_target_mismatch` because `launch-detached` still points at the old
+HEAD. Use a named worktree for repeated work, or remove the old detached
+worktree before retrying.
+If the target launch worktree is already dirty, OMX warns and launches as-is, so
+clean, commit, or stash that worktree before relying on it for isolation.
+
+For `omx team`, workers already use dedicated worktrees automatically by
+default; `--worktree` on `omx team` is only a legacy-compatible override.
 
 If you want a one-off launch with no OMX tmux/HUD management, use `--direct`:
 
@@ -205,7 +250,7 @@ Most users should think of OMX as **better task routing + better workflow + bett
 2. After install or real OMX version bumps, run `omx setup` yourself when you're ready, or use `omx update` when you also want npm to check for and install the latest build before refreshing setup
 3. Run `omx doctor`
 4. Run a real execution smoke test: `codex login status` and `omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"`
-5. Launch with `omx --madmax --high`
+5. Launch with a named worktree from a git repo, for example `omx --worktree=feat/task --madmax --high`; if you run concurrent `--madmax` sessions, use distinct named worktrees such as `--worktree=feature/auth`
 6. Use `$deep-interview "..."` when the request or boundaries are still unclear
 7. Use `$ralplan "..."` to approve the plan and review tradeoffs
 8. Use `$ultragoal "..."` to turn the approved plan into durable goals and ledger checkpoints

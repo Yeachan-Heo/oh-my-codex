@@ -48,8 +48,11 @@ omx doctor</code></pre>
 omx exec --skip-git-repo-check -C . &quot;Reply with exactly OMX-EXEC-OK&quot;</code></pre>
 
       <h2>Recommended Launch</h2>
-      <pre><code>omx --xhigh --madmax   # trusted environments
-omx                    # standard launch</code></pre>
+      <pre><code>omx --worktree=feat/task --madmax --high # trusted git repo, named launch worktree
+omx --worktree=fix/flaky-tests --madmax --high   # concurrent trusted session, separate worktree
+omx                                              # standard launch</code></pre>
+      <p><code>--madmax</code> maps to Codex <code>--dangerously-bypass-approvals-and-sandbox</code>, so use it only in trusted repositories and environments. Prefer a named <code>--worktree=&lt;name&gt;</code> with <code>--madmax</code> when launching from a git repository; if you are outside git, omit <code>--worktree</code>. For multiple concurrent <code>--madmax</code> sessions, give each session a distinct named worktree instead of sharing one checkout.</p>
+      <p><code>--worktree</code> or <code>-w</code> with no name creates or reuses a detached launch worktree. Treat that unnamed form as a one-off convenience: after the source checkout advances, a later unnamed launch can fail with <code>worktree_target_mismatch</code> until the old detached worktree is removed. <code>--worktree=&lt;name&gt;</code>, <code>--worktree &lt;name&gt;</code>, or <code>-w &lt;name&gt;</code> creates or reuses a named launch worktree and branch. OMX consumes the worktree flag before starting Codex.</p>
 
       <h2>First Run Walkthrough</h2>
       <ol>
