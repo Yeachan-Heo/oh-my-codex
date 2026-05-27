@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { readModeState, startMode } from '../../modes/base.js';
 import { getStatePath } from '../../state/paths.js';
+import { subagentTrackingPath } from '../../subagents/tracker.js';
 import { cancelRalplanConsensus, runRalplanConsensus } from '../runtime.js';
 
 function sessionStatePath(cwd: string, sessionId: string): string {
@@ -14,6 +15,47 @@ function sessionStatePath(cwd: string, sessionId: string): string {
 
 async function readScopedRalplanState(cwd: string, sessionId: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(sessionStatePath(cwd, sessionId), 'utf-8'));
+}
+
+async function writeNativeSubagentTracking(cwd: string, sessionId: string): Promise<void> {
+  const now = '2026-05-28T00:00:00.000Z';
+  const trackingPath = subagentTrackingPath(cwd);
+  await mkdir(join(trackingPath, '..'), { recursive: true });
+  await writeFile(trackingPath, JSON.stringify({
+    schemaVersion: 1,
+    sessions: {
+      [sessionId]: {
+        session_id: sessionId,
+        leader_thread_id: 'thread-leader',
+        updated_at: now,
+        threads: {
+          'thread-leader': {
+            thread_id: 'thread-leader',
+            kind: 'leader',
+            first_seen_at: now,
+            last_seen_at: now,
+            turn_count: 1,
+          },
+          'thread-architect': {
+            thread_id: 'thread-architect',
+            kind: 'subagent',
+            first_seen_at: now,
+            last_seen_at: now,
+            completed_at: now,
+            turn_count: 1,
+          },
+          'thread-critic': {
+            thread_id: 'thread-critic',
+            kind: 'subagent',
+            first_seen_at: now,
+            last_seen_at: now,
+            completed_at: now,
+            turn_count: 1,
+          },
+        },
+      },
+    },
+  }, null, 2));
 }
 
 describe('ralplan runtime', () => {
@@ -131,6 +173,163 @@ describe('ralplan runtime', () => {
         blocked_reason: null,
       });
       assert.equal(Array.isArray(finalState?.review_history), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails Autopilot-required consensus when approvals lack native subagent provenance', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-native-required-missing-'));
+    const sessionId = 'sess-ralplan-native-required-missing';
+    try {
+      await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
+      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+
+      const result = await runRalplanConsensus({
+        async draft() {
+          const plansDir = join(cwd, '.omx', 'plans');
+          await mkdir(plansDir, { recursive: true });
+          const prdPath = join(plansDir, 'prd-native-missing.md');
+          await writeFile(prdPath, '# plan\n');
+          await writeFile(join(plansDir, 'test-spec-native-missing.md'), '# tests\n');
+          return { summary: 'draft', planPath: prdPath };
+        },
+        async architectReview() {
+          return { verdict: 'approve', summary: 'artifact-only architect ok' };
+        },
+        async criticReview() {
+          return { verdict: 'approve', summary: 'artifact-only critic ok' };
+        },
+      }, {
+        task: 'require native reviews',
+        cwd,
+        sessionId,
+        maxIterations: 1,
+        requireNativeSubagents: true,
+      });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(result.ralplanConsensusGate.complete, false);
+      assert.equal(result.ralplanConsensusGate.blocked_reason, 'native_subagent_consensus_evidence_missing');
+      assert.equal(result.error, 'ralplan_consensus_not_reached_after_1_iterations');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts Autopilot-required consensus with tracker-backed native architect and critic lanes', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-native-required-ok-'));
+    const sessionId = 'sess-ralplan-native-required-ok';
+    try {
+      await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
+      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeNativeSubagentTracking(cwd, sessionId);
+
+      const result = await runRalplanConsensus({
+        async draft() {
+          const plansDir = join(cwd, '.omx', 'plans');
+          await mkdir(plansDir, { recursive: true });
+          const prdPath = join(plansDir, 'prd-native-ok.md');
+          await writeFile(prdPath, '# plan\n');
+          await writeFile(join(plansDir, 'test-spec-native-ok.md'), '# tests\n');
+          return { summary: 'draft', planPath: prdPath };
+        },
+        async architectReview() {
+          return {
+            verdict: 'approve',
+            summary: 'native architect ok',
+            provenance_kind: 'native_subagent',
+            session_id: sessionId,
+            thread_id: 'thread-architect',
+            artifact_path: '.omx/artifacts/architect.md',
+            agent_role: 'architect',
+            tracker_path: '.omx/state/subagent-tracking.json',
+          };
+        },
+        async criticReview() {
+          return {
+            verdict: 'approve',
+            summary: 'native critic ok',
+            provenance_kind: 'native_subagent',
+            session_id: sessionId,
+            thread_id: 'thread-critic',
+            artifact_path: '.omx/artifacts/critic.md',
+            agent_role: 'critic',
+            tracker_path: '.omx/state/subagent-tracking.json',
+          };
+        },
+      }, {
+        task: 'require native reviews',
+        cwd,
+        sessionId,
+        maxIterations: 1,
+        requireNativeSubagents: true,
+      });
+
+      assert.equal(result.status, 'completed');
+      assert.equal(result.ralplanConsensusGate.complete, true);
+      assert.equal(result.ralplanConsensusGate.blocked_reason, null);
+      assert.equal(result.ralplanConsensusGate.ralplan_architect_review?.thread_id, 'thread-architect');
+      assert.equal(result.ralplanConsensusGate.ralplan_critic_review?.thread_id, 'thread-critic');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+
+  it('fails Autopilot-required consensus when native reviews reuse one subagent thread', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-native-same-thread-'));
+    const sessionId = 'sess-ralplan-native-same-thread';
+    try {
+      await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
+      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeNativeSubagentTracking(cwd, sessionId);
+
+      const result = await runRalplanConsensus({
+        async draft() {
+          const plansDir = join(cwd, '.omx', 'plans');
+          await mkdir(plansDir, { recursive: true });
+          const prdPath = join(plansDir, 'prd-native-same-thread.md');
+          await writeFile(prdPath, '# plan\n');
+          await writeFile(join(plansDir, 'test-spec-native-same-thread.md'), '# tests\n');
+          return { summary: 'draft', planPath: prdPath };
+        },
+        async architectReview() {
+          return {
+            verdict: 'approve',
+            summary: 'native architect ok',
+            provenance_kind: 'native_subagent',
+            session_id: sessionId,
+            thread_id: 'thread-architect',
+            artifact_path: '.omx/artifacts/architect.md',
+            agent_role: 'architect',
+            tracker_path: '.omx/state/subagent-tracking.json',
+          };
+        },
+        async criticReview() {
+          return {
+            verdict: 'approve',
+            summary: 'native critic reuses architect thread',
+            provenance_kind: 'native_subagent',
+            session_id: sessionId,
+            thread_id: 'thread-architect',
+            artifact_path: '.omx/artifacts/critic.md',
+            agent_role: 'critic',
+            tracker_path: '.omx/state/subagent-tracking.json',
+          };
+        },
+      }, {
+        task: 'require distinct native reviews',
+        cwd,
+        sessionId,
+        maxIterations: 1,
+        requireNativeSubagents: true,
+      });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(result.ralplanConsensusGate.complete, false);
+      assert.equal(result.ralplanConsensusGate.blocked_reason, 'native_subagent_consensus_evidence_missing');
+      assert.equal(result.error, 'ralplan_consensus_not_reached_after_1_iterations');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

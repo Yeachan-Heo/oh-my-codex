@@ -19,6 +19,10 @@ import {
 } from './skill-active.js';
 import { applyRunOutcomeContract } from '../runtime/run-outcome.js';
 import { clearDeepInterviewQuestionObligation } from '../question/deep-interview.js';
+import {
+  buildAutopilotDeepInterviewRalplanGateError,
+  canAdvanceAutopilotDeepInterviewToRalplan,
+} from '../autopilot/deep-interview-gate.js';
 
 interface TransitionStateLike {
   active?: unknown;
@@ -115,6 +119,17 @@ async function completeSourceModeState(
   for (const candidatePath of candidatePaths) {
     const existing = await readJsonIfExists(candidatePath);
     if (!existing || existing.active !== true) continue;
+    if (sourceMode === 'deep-interview' && destinationMode === 'ralplan') {
+      const gate = await canAdvanceAutopilotDeepInterviewToRalplan({
+        cwd,
+        sessionId,
+        baseStateDir,
+        deepInterviewState: existing,
+      });
+      if (!gate.allowed) {
+        throw new Error(buildAutopilotDeepInterviewRalplanGateError(gate));
+      }
+    }
 
     const nextCandidate: TransitionStateLike = {
       ...existing,

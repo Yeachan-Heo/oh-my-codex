@@ -446,7 +446,7 @@ export function createAutopilotPipelineConfig(
 export function createStrictAutopilotStages(): PipelineConfig['stages'] {
   return [
     createDeepInterviewStage(),
-    createRalplanStage(),
+    createRalplanStage({ requireNativeSubagents: true }),
     createUltragoalStage(),
     createCodeReviewStage(),
     createUltraqaStage(),
