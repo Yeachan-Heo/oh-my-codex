@@ -39,6 +39,15 @@ describe('autopilot skill default Ultragoal contract', () => {
     }
   });
 
+  it('forbids self-attesting clean review and QA gates without durable stage evidence', () => {
+    assert.match(autopilotSkill, /Do not author `review_verdict:\{clean:true\}` from the leader's own summary/i);
+    assert.match(autopilotSkill, /both gates have durable source evidence/i);
+    assert.match(autopilotSkill, /actual `\$code-review`\/`\$ultraqa` stage or native-subagent\/thread\/tool records/i);
+    assert.match(autopilotSkill, /leader-authored summaries alone are not gate evidence/i);
+    assert.match(autopilotSkill, /`qa_verdict` cites durable `\$ultraqa` evidence or an explicit persisted low-risk skip reason/i);
+    assert.match(autopilotSkill, /keep the active phase at `code-review` or `ultraqa` and record a blocker instead of self-attesting a clean gate/i);
+  });
+
   it('requires sequential ralplan Architect and Critic consensus before execution handoff', () => {
     assert.match(autopilotSkill, /PRD\/test-spec files alone are not completion evidence/i);
     assert.match(autopilotSkill, /subsequent `Architect` approval first.*subsequent `Critic` approval second/is);

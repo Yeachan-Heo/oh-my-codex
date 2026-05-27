@@ -5,7 +5,10 @@ import { getStateDir } from '../mcp/state-paths.js';
 import { writeAtomic } from '../team/state.js';
 import { sleep } from '../utils/sleep.js';
 import { appendQuestionAnsweredEventOnce, appendQuestionEvent, normalizeSubmittedAnswers, resolveQuestionRunId } from './events.js';
-import { injectQuestionAnswersToPane as defaultInjectQuestionAnswersToPane } from './renderer.js';
+import {
+  closeQuestionRenderer as defaultCloseQuestionRenderer,
+  injectQuestionAnswersToPane as defaultInjectQuestionAnswersToPane,
+} from './renderer.js';
 import { getNormalizedQuestionType, isMultiAnswerableQuestion, normalizeQuestionInput } from './types.js';
 import type {
   NormalizedQuestionItem,
@@ -26,6 +29,8 @@ export type InjectQuestionAnswersToPane = (
   paneId: string,
   answers: QuestionAnswerEntry[],
 ) => boolean;
+
+export type CloseQuestionRenderer = (renderer: QuestionRendererState | undefined) => boolean;
 
 export type QuestionSubmitFailureCode =
   | 'question_unknown'
@@ -121,19 +126,40 @@ export async function updateQuestionRecord(
 export async function markQuestionPrompting(
   recordPath: string,
   renderer: QuestionRendererState,
+  options: { closeQuestionRenderer?: CloseQuestionRenderer } = {},
 ): Promise<QuestionRecord> {
-  return updateQuestionRecord(recordPath, (record) => ({
-    ...record,
-    status: isTerminalQuestionStatus(record.status) ? record.status : 'prompting',
-    updated_at: new Date().toISOString(),
-    renderer,
-  }));
+  return await withQuestionSubmitLock(recordPath, async () => {
+    let rendererToClose: QuestionRendererState | undefined;
+    const updated = await updateQuestionRecord(recordPath, (record) => {
+      if (isTerminalQuestionStatus(record.status)) {
+        rendererToClose = renderer;
+        return record;
+      }
+      return {
+        ...record,
+        status: 'prompting',
+        updated_at: new Date().toISOString(),
+        renderer,
+      };
+    });
+    if (rendererToClose) maybeCloseQuestionRenderer(rendererToClose, options.closeQuestionRenderer);
+    return updated;
+  });
 }
 
 export async function markQuestionAnswered(
   recordPath: string,
   answerOrAnswers: QuestionAnswer | QuestionAnswerEntry[],
-  options: { injectAnswersToPane?: InjectQuestionAnswersToPane } = {},
+  options: { injectAnswersToPane?: InjectQuestionAnswersToPane; closeQuestionRenderer?: CloseQuestionRenderer } = {},
+): Promise<QuestionRecord> {
+  const updated = await withQuestionSubmitLock(recordPath, () => persistQuestionAnswered(recordPath, answerOrAnswers));
+  runAnsweredQuestionSideEffects(updated, options);
+  return updated;
+}
+
+async function persistQuestionAnswered(
+  recordPath: string,
+  answerOrAnswers: QuestionAnswer | QuestionAnswerEntry[],
 ): Promise<QuestionRecord> {
   const updated = await updateQuestionRecord(recordPath, (record) => {
     const answers = Array.isArray(answerOrAnswers)
@@ -149,8 +175,22 @@ export async function markQuestionAnswered(
       error: undefined,
     };
   });
-  maybeInjectQuestionAnswersToReturnPane(updated, options.injectAnswersToPane);
   return updated;
+}
+
+function runAnsweredQuestionSideEffects(
+  record: QuestionRecord,
+  options: { injectAnswersToPane?: InjectQuestionAnswersToPane; closeQuestionRenderer?: CloseQuestionRenderer } = {},
+): void {
+  let injectError: unknown;
+  try {
+    maybeInjectQuestionAnswersToReturnPane(record, options.injectAnswersToPane);
+  } catch (error) {
+    injectError = error;
+  } finally {
+    maybeCloseQuestionRenderer(record.renderer, options.closeQuestionRenderer);
+  }
+  if (injectError) throw injectError;
 }
 
 function maybeInjectQuestionAnswersToReturnPane(
@@ -162,6 +202,13 @@ function maybeInjectQuestionAnswersToReturnPane(
   if (typeof returnTarget !== 'string' || !/^%\d+$/.test(returnTarget.trim())) return false;
   if (!record.answers?.length) return false;
   return injectAnswersToPane(returnTarget.trim(), record.answers);
+}
+
+function maybeCloseQuestionRenderer(
+  renderer: QuestionRendererState | undefined,
+  closeQuestionRenderer: CloseQuestionRenderer = defaultCloseQuestionRenderer,
+): boolean {
+  return closeQuestionRenderer(renderer);
 }
 
 function isValidQuestionId(questionId: string): boolean {
@@ -396,7 +443,7 @@ export async function submitQuestionAnswerById(
   cwd: string,
   questionId: string,
   answerPayload: unknown,
-  options: { sessionId?: string; runId?: string; injectAnswersToPane?: InjectQuestionAnswersToPane } = {},
+  options: { sessionId?: string; runId?: string; injectAnswersToPane?: InjectQuestionAnswersToPane; closeQuestionRenderer?: CloseQuestionRenderer } = {},
 ): Promise<{ recordPath: string; record: QuestionRecord }> {
   const normalizedQuestionId = questionId.trim();
   if (!isValidQuestionId(normalizedQuestionId)) {
@@ -404,7 +451,7 @@ export async function submitQuestionAnswerById(
   }
 
   const recordPath = getQuestionRecordPath(cwd, normalizedQuestionId, options.sessionId);
-  return await withQuestionSubmitLock(recordPath, async () => {
+  const result = await withQuestionSubmitLock(recordPath, async () => {
     const current = await readQuestionRecord(recordPath);
     if (!current) throw new QuestionSubmitError('question_unknown', `Unknown question id: ${normalizedQuestionId}`);
     if (current.status !== 'pending' && current.status !== 'prompting') {
@@ -421,12 +468,12 @@ export async function submitQuestionAnswerById(
     } catch (error) {
       throw new QuestionSubmitError('question_invalid_answer', error instanceof Error ? error.message : String(error));
     }
-    const record = await markQuestionAnswered(recordPath, answers, {
-      injectAnswersToPane: options.injectAnswersToPane,
-    });
+    const record = await persistQuestionAnswered(recordPath, answers);
     await appendQuestionAnsweredEventOnce(cwd, record, { recordPath, runId: options.runId });
     return { recordPath, record };
   });
+  runAnsweredQuestionSideEffects(result.record, options);
+  return result;
 }
 
 export async function markQuestionTerminalError(

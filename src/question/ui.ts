@@ -24,6 +24,7 @@ interface QuestionUiDeps {
   output?: QuestionUiOutput;
   env?: NodeJS.ProcessEnv;
   injectAnswersToPane?: (paneId: string, answers: QuestionAnswerEntry[]) => boolean;
+  closeQuestionRenderer?: (renderer: QuestionRecord['renderer']) => boolean;
 }
 
 interface InteractiveSelectionState {
@@ -519,6 +520,7 @@ export async function runQuestionUi(recordPath: string, deps: QuestionUiDeps = {
     }
     await markQuestionAnswered(recordPath, answers, {
       injectAnswersToPane: deps.injectAnswersToPane,
+      closeQuestionRenderer: deps.closeQuestionRenderer,
     });
   } catch (error) {
     await markQuestionTerminalError(recordPath, 'error', 'question_ui_failed', error instanceof Error ? error.message : String(error));
