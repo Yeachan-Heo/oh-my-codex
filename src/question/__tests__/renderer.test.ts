@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
+  closeQuestionRenderer,
   computeAdaptiveQuestionPaneHeight,
   formatQuestionAnswerForInjection,
   formatQuestionAnswersForInjection,
@@ -110,6 +111,41 @@ describe('resolveQuestionRendererStrategy', () => {
       resolveQuestionRendererStrategy({} as NodeJS.ProcessEnv, undefined),
       'unsupported',
     );
+  });
+});
+
+
+describe('question renderer cleanup', () => {
+  it('kills tmux pane renderers by target pane id', () => {
+    const calls: string[][] = [];
+    const closed = closeQuestionRenderer({
+      renderer: 'tmux-pane',
+      target: '%42',
+      launched_at: '2026-05-11T00:00:00.000Z',
+    }, (args) => {
+      calls.push(args);
+      return '';
+    });
+
+    assert.equal(closed, true);
+    assert.deepEqual(calls, [['kill-pane', '-t', '%42']]);
+  });
+
+  it('ignores invalid, noop, and Windows process renderers during cleanup', () => {
+    const calls: string[][] = [];
+    assert.equal(closeQuestionRenderer(undefined, (args) => { calls.push(args); return ''; }), false);
+    assert.equal(closeQuestionRenderer({
+      renderer: 'tmux-session',
+      target: 'test-noop-renderer',
+      launched_at: '2026-05-11T00:00:00.000Z',
+    }, (args) => { calls.push(args); return ''; }), false);
+    assert.equal(closeQuestionRenderer({
+      renderer: 'windows-console',
+      target: 'pid:1234',
+      pid: 1234,
+      launched_at: '2026-05-11T00:00:00.000Z',
+    }, (args) => { calls.push(args); return ''; }), false);
+    assert.deepEqual(calls, []);
   });
 });
 

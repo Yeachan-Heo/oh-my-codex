@@ -70,6 +70,51 @@ describe('question state', () => {
     assert.equal(event?.state?.timeout_ms, 1234);
   });
 
+  it('closes the renderer pane after accepting an answer so stale question panes do not remain visible', async () => {
+    const cwd = await makeRepo();
+    const { record, recordPath } = await createQuestionRecord(cwd, {
+      question: 'Pick one',
+      options: [{ label: 'A', value: 'a' }],
+      allow_other: false,
+      other_label: 'Other',
+      multi_select: false,
+    }, 'sess-close-renderer');
+
+    await markQuestionPrompting(recordPath, {
+      renderer: 'tmux-pane',
+      target: '%42',
+      launched_at: '2026-05-11T00:00:00.000Z',
+      return_target: '%11',
+      return_transport: 'tmux-send-keys',
+    });
+
+    const injected: Array<{ paneId: string; value: string | string[] }> = [];
+    const closed: string[] = [];
+    const answered = await markQuestionAnswered(recordPath, {
+      kind: 'option',
+      value: 'a',
+      selected_labels: ['A'],
+      selected_values: ['a'],
+    }, {
+      injectAnswersToPane: (paneId, answers) => {
+        injected.push({ paneId, value: answers[0]!.answer.value });
+        return true;
+      },
+      closeQuestionRenderer: (renderer) => {
+        if (renderer?.target) closed.push(renderer.target);
+        return true;
+      },
+    });
+
+    assert.equal(answered.status, 'answered');
+    assert.deepEqual(injected, [{ paneId: '%11', value: 'a' }]);
+    assert.deepEqual(closed, ['%42']);
+    const loaded = await readQuestionRecord(recordPath);
+    assert.equal(loaded?.renderer?.target, '%42');
+    assert.equal(loaded?.status, 'answered');
+    assert.equal(record.status, 'pending');
+  });
+
   it('submits bounded answers by id and rejects duplicate stale or unknown submissions', async () => {
     const cwd = await makeRepo();
     const { record } = await createQuestionRecord(cwd, {
@@ -450,7 +495,7 @@ describe('question state', () => {
     assert.match(loaded?.error?.message || '', /pane %42 disappeared immediately after launch/);
   });
 
-  it('does not regress an already answered record back to prompting when renderer metadata arrives late', async () => {
+  it('closes late renderer metadata without regressing an already answered record back to prompting', async () => {
     const cwd = await makeRepo();
     const { recordPath } = await createQuestionRecord(cwd, {
       question: 'Pick one',
@@ -466,18 +511,65 @@ describe('question state', () => {
       selected_labels: ['A'],
       selected_values: ['a'],
     });
+    const closed: string[] = [];
     await markQuestionPrompting(recordPath, {
       renderer: 'tmux-pane',
       target: '%42',
       launched_at: '2026-04-19T00:00:00.000Z',
       return_target: '%11',
       return_transport: 'tmux-send-keys',
+    }, {
+      closeQuestionRenderer: (renderer) => {
+        if (renderer?.target) closed.push(renderer.target);
+        return true;
+      },
     });
 
     const loaded = await readQuestionRecord(recordPath);
     assert.equal(loaded?.status, 'answered');
     assert.equal(loaded?.answer?.value, 'a');
-    assert.equal(loaded?.renderer?.return_target, '%11');
+    assert.equal(loaded?.renderer, undefined);
+    assert.deepEqual(closed, ['%42']);
+  });
+
+  it('still closes the renderer when return-pane injection throws after persisting the answer', async () => {
+    const cwd = await makeRepo();
+    const { recordPath } = await createQuestionRecord(cwd, {
+      question: 'Pick one',
+      options: [{ label: 'A', value: 'a' }],
+      allow_other: false,
+      other_label: 'Other',
+      multi_select: false,
+    }, 'sess-close-after-inject-failure');
+    await markQuestionPrompting(recordPath, {
+      renderer: 'tmux-pane',
+      target: '%42',
+      launched_at: '2026-05-14T00:00:00.000Z',
+      return_target: '%11',
+      return_transport: 'tmux-send-keys',
+    });
+
+    const closed: string[] = [];
+    await assert.rejects(
+      () => markQuestionAnswered(recordPath, {
+        kind: 'option',
+        value: 'a',
+        selected_labels: ['A'],
+        selected_values: ['a'],
+      }, {
+        injectAnswersToPane: () => { throw new Error('inject failed'); },
+        closeQuestionRenderer: (renderer) => {
+          if (renderer?.target) closed.push(renderer.target);
+          return true;
+        },
+      }),
+      /inject failed/,
+    );
+
+    const loaded = await readQuestionRecord(recordPath);
+    assert.equal(loaded?.status, 'answered');
+    assert.equal(loaded?.answer?.value, 'a');
+    assert.deepEqual(closed, ['%42']);
   });
 
   it('injects answered text to the persisted renderer return pane', async () => {
@@ -511,6 +603,7 @@ describe('question state', () => {
           injected.push({ paneId, values: answers.map((entry) => entry.answer.value) });
           return true;
         },
+        closeQuestionRenderer: () => true,
       },
     );
 
@@ -549,6 +642,7 @@ describe('question state', () => {
           injected = true;
           return true;
         },
+        closeQuestionRenderer: () => true,
       },
     );
 

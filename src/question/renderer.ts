@@ -376,6 +376,29 @@ export function isQuestionRendererAlive(
   return true;
 }
 
+export function closeQuestionRenderer(
+  renderer: QuestionRendererState | undefined,
+  execTmux: ExecTmuxSync = defaultExecTmux,
+): boolean {
+  if (!renderer) return false;
+  try {
+    if (renderer.renderer === 'tmux-pane' && isPaneId(renderer.target)) {
+      execTmux(['kill-pane', '-t', renderer.target]);
+      return true;
+    }
+    if (renderer.renderer === 'tmux-session' && renderer.target !== 'test-noop-renderer' && safeString(renderer.target).trim()) {
+      execTmux(['kill-session', '-t', renderer.target]);
+      return true;
+    }
+    if (renderer.renderer === 'windows-console') {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 export function formatQuestionAnswerForInjection(answer: QuestionAnswer): string {
   const prefix = '[omx question answered]';
   if (answer.kind === 'other') {

@@ -305,6 +305,7 @@ describe('question ui arrow navigation', () => {
           injected.push({ paneId, value: answers[0]!.answer.value });
           return true;
         },
+        closeQuestionRenderer: () => true,
       });
 
       setTimeout(() => {
@@ -361,6 +362,7 @@ describe('question ui arrow navigation', () => {
           injected.push({ paneId, value: answers[0]!.answer.value });
           return true;
         },
+        closeQuestionRenderer: () => true,
       });
 
       setTimeout(() => {
@@ -407,6 +409,7 @@ describe('question ui arrow navigation', () => {
           injected.push({ paneId, value: answers[0]!.answer.value });
           return true;
         },
+        closeQuestionRenderer: () => true,
       });
 
       setTimeout(() => {
@@ -561,6 +564,7 @@ describe('question ui batch wizard', () => {
           injected.push({ paneId, values: answers.map((entry) => entry.answer.value) });
           return true;
         },
+        closeQuestionRenderer: () => true,
       });
 
       setTimeout(() => {
