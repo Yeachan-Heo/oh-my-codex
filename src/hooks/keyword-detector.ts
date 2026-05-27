@@ -710,6 +710,10 @@ function isNamedActiveSkillContinuationPrompt(text: string, skill: string): bool
   ).test(text.trim());
 }
 
+function isOmxQuestionAnsweredPrompt(text: string): boolean {
+  return /^\s*\[omx question answered\]/i.test(text.trim());
+}
+
 function shouldReusePreviousSkillForContinuation(
   text: string,
   previous: SkillActiveState | null,
@@ -720,7 +724,8 @@ function shouldReusePreviousSkillForContinuation(
   }
 
   return isActiveSkillContinuationPrompt(text)
-    || isNamedActiveSkillContinuationPrompt(text, previousSkill);
+    || isNamedActiveSkillContinuationPrompt(text, previousSkill)
+    || ((previousSkill === 'autopilot' || previousSkill === 'deep-interview') && isOmxQuestionAnsweredPrompt(text));
 }
 
 function isDeepInterviewRuntimeConfig(value: unknown): value is DeepInterviewRuntimeConfig {
@@ -748,11 +753,14 @@ function resolveContinuationKeywordMatch(
     return fallbackMatch;
   }
 
-  if (parseExplicitSkillInvocations(normalizeWorkflowKeyboardTypos(text)).sawExplicitLikeInvocation) {
+  const markedQuestionAnswerContinuation = (previousSkill === 'autopilot' || previousSkill === 'deep-interview')
+    && isOmxQuestionAnsweredPrompt(text);
+
+  if (!markedQuestionAnswerContinuation && parseExplicitSkillInvocations(normalizeWorkflowKeyboardTypos(text)).sawExplicitLikeInvocation) {
     return fallbackMatch;
   }
 
-  if (!shouldReusePreviousSkillForContinuation(text, previous) && !safeString(fallbackMatch?.keyword).trim().startsWith('$')) {
+  if (!markedQuestionAnswerContinuation && !shouldReusePreviousSkillForContinuation(text, previous) && !safeString(fallbackMatch?.keyword).trim().startsWith('$')) {
     return fallbackMatch;
   }
 
@@ -868,10 +876,13 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
 
   const isTrackedWorkflowMatch = isTrackedWorkflowMode(match.skill);
   const trackedMatchSkill = isTrackedWorkflowMatch ? match.skill : null;
+  const markedQuestionAnswerContinuation = sameSkill
+    && (match.skill === 'autopilot' || match.skill === 'deep-interview')
+    && isOmxQuestionAnsweredPrompt(input.text);
   const normalizedInputText = isTrackedWorkflowMatch
     ? normalizeWorkflowKeyboardTypos(input.text)
     : input.text;
-  const workflowMatches: TrackedWorkflowMode[] = isTrackedWorkflowMatch
+  const workflowMatches: TrackedWorkflowMode[] = isTrackedWorkflowMatch && !markedQuestionAnswerContinuation
     ? parseExplicitSkillInvocations(normalizedInputText).matches
       .map((entry) => entry.skill)
       .filter(isTrackedWorkflowMode)

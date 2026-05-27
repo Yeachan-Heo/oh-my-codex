@@ -1702,15 +1702,23 @@ function buildSkillStateCliInstruction(mode: string, statePath: string): string 
   return `skill: ${mode} activated and initial state initialized at ${statePath}; use CLI-first state updates via \`omx state write/read/clear --input '<json>' --json\`; use omx_state MCP only when explicit MCP compatibility is enabled.`;
 }
 
-function buildAutopilotPromptActivationNote(skillState?: SkillActiveState | null): string | null {
+function buildAutopilotPromptActivationNote(
+  skillState?: SkillActiveState | null,
+  options: { markedQuestionAnswer?: boolean } = {},
+): string | null {
   if (skillState?.initialized_mode !== "autopilot") return null;
   return [
     "Autopilot protocol: the durable default chain is $deep-interview -> $ralplan -> $ultragoal (+ $team if needed) -> $code-review -> $ultraqa (deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa).",
     "Start/resume at current_phase=deep-interview unless the task is clear and bounded; if deep-interview is intentionally skipped, persist and state an explicit deep_interview_gate.skip_reason before moving to ralplan.",
+    "Deep-interview is a structured question chain, not a one-question gate: after an omx question answer, ask the next useful deep-interview question unless the requirements are explicitly complete and handoff_artifacts.deep_interview records that completion rationale.",
+    options.markedQuestionAnswer
+      ? "This turn is a marked omx question answer. Treat ordinary selected option/freeform answer text as interview input only; do not close the interview, write ralplan artifacts, or set current_phase=ralplan in the same turn unless the answer explicitly says to finish/stop the interview or proceed to ralplan. Ask the next deep-interview follow-up instead."
+      : null,
+    "Do not advance from deep-interview to ralplan merely because the first question was answered; persist explicit interview_complete evidence before setting current_phase=ralplan.",
     "The ralplan phase is not complete until Planner output has been reviewed sequentially by Architect and then Critic; do not hand off to Ultragoal or implementation until the ralplan state/artifact records both ralplan_architect_review and ralplan_critic_review with approval or an explicit blocker.",
     "Do not silently fall back to ordinary $plan/ralplan-only handling; keep autopilot-state.json, skill-active-state.json, HUD/statusline, and Codex goal-mode handoff guidance visible while the workflow is active.",
     "When Codex goal tools are available, call get_goal/create_goal only from the active thread handoff and treat the active goal as the completion contract until code-review and ultraqa are clean.",
-  ].join(" ");
+  ].filter(Boolean).join(" ");
 }
 
 function buildAdditionalContextMessage(
@@ -1730,6 +1738,8 @@ function buildAdditionalContextMessage(
       ? buildDeepInterviewQuestionBridgeInstruction(cwd, payload)
       : null;
     const deepInterviewConfigPromptActivationNote = buildDeepInterviewConfigInstruction(cwd, skillState);
+    const markedQuestionAnswer = /^\s*\[omx question answered\]/i.test(prompt);
+    const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer });
     return [
       `OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}".`,
       promptPriorityMessage,
@@ -1738,12 +1748,36 @@ function buildAdditionalContextMessage(
         : null,
       deepInterviewPromptActivationNote,
       deepInterviewConfigPromptActivationNote,
+      autopilotPromptActivationNote,
       "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
     ].filter(Boolean).join(" ");
   }
   const detectedKeywordMessage = matches.length > 1
     ? `OMX native UserPromptSubmit detected workflow keywords ${matches.map((entry) => `"${entry.keyword}" -> ${entry.skill}`).join(", ")}.`
     : `OMX native UserPromptSubmit detected workflow keyword "${match.keyword}" -> ${match.skill}.`;
+  const continuedSkill = safeString(skillState?.skill).trim();
+  if (
+    continuedSkill
+    && continuedSkill !== match.skill
+    && /^\s*\[omx question answered\]/i.test(prompt)
+  ) {
+    const deepInterviewPromptActivationNote = skillState?.initialized_mode === "deep-interview"
+      ? buildDeepInterviewQuestionBridgeInstruction(cwd, payload)
+      : null;
+    const deepInterviewConfigPromptActivationNote = buildDeepInterviewConfigInstruction(cwd, skillState);
+    const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer: true });
+    return [
+      `OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}"; workflow-like tokens inside the marked omx question answer are treated as answer text, not a new workflow activation.`,
+      promptPriorityMessage,
+      skillState?.initialized_mode && skillState.initialized_state_path
+        ? buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path)
+        : null,
+      deepInterviewPromptActivationNote,
+      deepInterviewConfigPromptActivationNote,
+      autopilotPromptActivationNote,
+      "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
+    ].filter(Boolean).join(" ");
+  }
   const activeSkills = Array.isArray(skillState?.active_skills)
     ? skillState.active_skills.map((entry) => entry.skill)
     : [];
