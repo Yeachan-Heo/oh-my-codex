@@ -1698,8 +1698,59 @@ function buildNativeOutsideTmuxTeamPromptBlockState(
   };
 }
 
-function buildSkillStateCliInstruction(mode: string, statePath: string): string {
-  return `skill: ${mode} activated and initial state initialized at ${statePath}; use CLI-first state updates via \`omx state write/read/clear --input '<json>' --json\`; use omx_state MCP only when explicit MCP compatibility is enabled.`;
+function readInitializedModePhase(cwd: string, skillState?: SkillActiveState | null): string | null {
+  const mode = safeString(skillState?.initialized_mode).trim() || safeString(skillState?.skill).trim();
+  const statePath = safeString(skillState?.initialized_state_path).trim();
+  if (!mode || !statePath) return null;
+  const fullPath = resolve(cwd, statePath);
+  try {
+    const state = JSON.parse(readFileSync(fullPath, "utf-8")) as Record<string, unknown>;
+    const currentPhase = safeString(state.current_phase).trim();
+    if (!currentPhase) return null;
+    if (mode === "autopilot" && currentPhase === "waiting-for-user") {
+      const deepInterviewQuestion = state.deep_interview_question && typeof state.deep_interview_question === "object"
+        ? state.deep_interview_question as Record<string, unknown>
+        : null;
+      if (deepInterviewQuestion) {
+        const waitStatus = safeString(deepInterviewQuestion.status).trim();
+        const previousPhase = safeString(deepInterviewQuestion.previous_phase).trim();
+        if (/^(?:waiting_for_user|prompting|pending)$/.test(waitStatus) && previousPhase) return previousPhase;
+      }
+      const handoffArtifacts = state.state && typeof state.state === "object"
+        ? (state.state as Record<string, unknown>).handoff_artifacts
+        : null;
+      const deepInterview = handoffArtifacts && typeof handoffArtifacts === "object"
+        ? (handoffArtifacts as Record<string, unknown>).deep_interview
+        : null;
+      if (deepInterview && typeof deepInterview === "object") {
+        const deepStatus = safeString((deepInterview as Record<string, unknown>).status).trim();
+        if (/^(?:in_progress|waiting|waiting_for_|prompting)/.test(deepStatus)) return "deep-interview";
+      }
+    }
+    return currentPhase;
+  } catch {
+    return null;
+  }
+}
+
+function buildWorkflowSkillLabel(cwd: string, skillState?: SkillActiveState | null): string {
+  const skill = safeString(skillState?.skill).trim() || "unknown";
+  const initializedMode = safeString(skillState?.initialized_mode).trim();
+  if (initializedMode === "autopilot") {
+    const phase = readInitializedModePhase(cwd, skillState);
+    return phase ? `autopilot:${phase}` : "autopilot";
+  }
+  if (initializedMode && initializedMode !== skill) {
+    const phase = readInitializedModePhase(cwd, skillState);
+    return phase ? `${initializedMode}:${phase}` : initializedMode;
+  }
+  return skill;
+}
+
+function buildSkillStateCliInstruction(cwd: string, mode: string, statePath: string): string {
+  const phase = readInitializedModePhase(cwd, { initialized_mode: mode, initialized_state_path: statePath } as SkillActiveState);
+  const label = phase ? `${mode}:${phase}` : mode;
+  return `skill: ${label} activated and initial state initialized at ${statePath}; use CLI-first state updates via \`omx state write/read/clear --input '<json>' --json\`; use omx_state MCP only when explicit MCP compatibility is enabled.`;
 }
 
 function buildAutopilotPromptActivationNote(
@@ -1741,10 +1792,10 @@ function buildAdditionalContextMessage(
     const markedQuestionAnswer = /^\s*\[omx question answered\]/i.test(prompt);
     const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer });
     return [
-      `OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}".`,
+      `OMX native UserPromptSubmit continued active workflow skill "${buildWorkflowSkillLabel(cwd, skillState)}".`,
       promptPriorityMessage,
       skillState?.initialized_mode && skillState.initialized_state_path
-        ? buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path)
+        ? buildSkillStateCliInstruction(cwd, skillState.initialized_mode, skillState.initialized_state_path)
         : null,
       deepInterviewPromptActivationNote,
       deepInterviewConfigPromptActivationNote,
@@ -1767,10 +1818,10 @@ function buildAdditionalContextMessage(
     const deepInterviewConfigPromptActivationNote = buildDeepInterviewConfigInstruction(cwd, skillState);
     const autopilotPromptActivationNote = buildAutopilotPromptActivationNote(skillState, { markedQuestionAnswer: true });
     return [
-      `OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}"; workflow-like tokens inside the marked omx question answer are treated as answer text, not a new workflow activation.`,
+      `OMX native UserPromptSubmit continued active workflow skill "${buildWorkflowSkillLabel(cwd, skillState)}"; workflow-like tokens inside the marked omx question answer are treated as answer text, not a new workflow activation.`,
       promptPriorityMessage,
       skillState?.initialized_mode && skillState.initialized_state_path
-        ? buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path)
+        ? buildSkillStateCliInstruction(cwd, skillState.initialized_mode, skillState.initialized_state_path)
         : null,
       deepInterviewPromptActivationNote,
       deepInterviewConfigPromptActivationNote,
@@ -1829,7 +1880,7 @@ function buildAdditionalContextMessage(
       autopilotPromptActivationNote,
       deepInterviewConfigPromptActivationNote,
       skillState.initialized_mode && skillState.initialized_state_path
-        ? buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path)
+        ? buildSkillStateCliInstruction(cwd, skillState.initialized_mode, skillState.initialized_state_path)
         : null,
       teamDetected
         ? buildTeamRuntimeInstruction(cwd, payload)
@@ -1841,7 +1892,7 @@ function buildAdditionalContextMessage(
 
   if (teamDetected) {
     const initializedStateMessage = skillState?.initialized_mode && skillState.initialized_state_path
-      ? buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path)
+      ? buildSkillStateCliInstruction(cwd, skillState.initialized_mode, skillState.initialized_state_path)
       : null;
     return [
       detectedKeywordMessage,
@@ -1870,7 +1921,7 @@ function buildAdditionalContextMessage(
         ? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
         : null,
       promptPriorityMessage,
-      buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path),
+      buildSkillStateCliInstruction(cwd, skillState.initialized_mode, skillState.initialized_state_path),
       deepInterviewPromptActivationNote,
       deepInterviewConfigPromptActivationNote,
       ultraworkPromptActivationNote,
