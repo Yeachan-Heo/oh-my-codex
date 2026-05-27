@@ -162,6 +162,31 @@ describe('keyword detector team compatibility', () => {
     assert.notEqual(pathOnly?.skill, 'ultragoal');
   });
 
+  it('maps bare and command-style autopilot invocations to autopilot', () => {
+    for (const prompt of ['autopilot', 'run autopilot', 'autopilot this', 'autopilot mode']) {
+      const match = detectPrimaryKeyword(prompt);
+      assert.ok(match, `expected autopilot match for ${prompt}`);
+      assert.equal(match.skill, 'autopilot');
+      assert.equal(match.keyword.toLowerCase(), 'autopilot');
+    }
+  });
+
+  it('does not trigger autopilot from management/debug prose mentions', () => {
+    assert.equal(detectPrimaryKeyword('inspect autopilot state before continuing'), null);
+    assert.equal(detectPrimaryKeyword('fix the autopilot bug in the detector'), null);
+    assert.equal(detectPrimaryKeyword('why did autopilot fail?'), null);
+    assert.equal(detectPrimaryKeyword('run autopilot tests'), null);
+    assert.equal(detectPrimaryKeyword('run autopilot regression tests'), null);
+    assert.equal(detectPrimaryKeyword('continue autopilot debugging'), null);
+    assert.equal(detectPrimaryKeyword('start autopilot bug investigation'), null);
+  });
+
+  it('keeps higher-priority workflow keywords ahead of autopilot mentions', () => {
+    const match = detectPrimaryKeyword('autopilot this after consensus plan');
+    assert.ok(match);
+    assert.equal(match.skill, 'ralplan');
+  });
+
   it('maps code-review keyword variants to code-review skill', () => {
     const hyphen = detectPrimaryKeyword('run $code-review before merge');
     assert.ok(hyphen);
@@ -416,6 +441,7 @@ describe('keyword registry coverage', () => {
     assert.ok(registryKeywords.has('$ultragoal'));
     assert.ok(registryKeywords.has('$prometheus-strict'));
     assert.ok(registryKeywords.has('ultragoal'));
+    assert.ok(registryKeywords.has('autopilot'));
   });
 });
 
