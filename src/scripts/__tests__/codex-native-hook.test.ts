@@ -3318,12 +3318,12 @@ ${JSON.stringify({
         active: true,
         mode: "autopilot",
         current_phase: "waiting-for-user",
-        deep_interview_question: {
-          status: "waiting_for_user",
-          previous_phase: "deep-interview",
-          question_id: "question-real-wait-shape",
-        },
         state: {
+          deep_interview_question: {
+            status: "waiting_for_user",
+            previous_phase: "deep-interview",
+            question_id: "question-real-wait-shape",
+          },
           handoff_artifacts: {
             deep_interview: { status: "waiting_for_q2_answer" },
           },

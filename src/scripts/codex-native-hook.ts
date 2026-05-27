@@ -1708,9 +1708,15 @@ function readInitializedModePhase(cwd: string, skillState?: SkillActiveState | n
     const currentPhase = safeString(state.current_phase).trim();
     if (!currentPhase) return null;
     if (mode === "autopilot" && currentPhase === "waiting-for-user") {
+      const nestedState = state.state && typeof state.state === "object"
+        ? state.state as Record<string, unknown>
+        : null;
+      const nestedDeepInterviewQuestion = nestedState?.deep_interview_question;
       const deepInterviewQuestion = state.deep_interview_question && typeof state.deep_interview_question === "object"
         ? state.deep_interview_question as Record<string, unknown>
-        : null;
+        : nestedDeepInterviewQuestion && typeof nestedDeepInterviewQuestion === "object"
+          ? nestedDeepInterviewQuestion as Record<string, unknown>
+          : null;
       if (deepInterviewQuestion) {
         const waitStatus = safeString(deepInterviewQuestion.status).trim();
         const previousPhase = safeString(deepInterviewQuestion.previous_phase).trim();
