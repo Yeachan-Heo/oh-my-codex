@@ -10,6 +10,7 @@
  */
 
 import { execFileSync } from 'child_process';
+import { readlinkSync, realpathSync } from 'node:fs';
 import { readAllState, readHudConfig } from './state.js';
 import { getHudRenderMaxLines, renderHud } from './render.js';
 import type { HudFlags, HudPreset, HudRenderContext, ResolvedHudConfig } from './types.js';
@@ -68,6 +69,7 @@ export async function watchRenderLoop(
 interface RunWatchModeDependencies {
   isTTY: boolean;
   env: NodeJS.ProcessEnv;
+  resolveWatchCwdFn: (launchCwd: string) => string;
   readAllStateFn: (cwd: string, config?: ResolvedHudConfig) => Promise<HudRenderContext>;
   readHudConfigFn: (cwd: string) => Promise<ResolvedHudConfig>;
   renderHudFn: (ctx: HudRenderContext, preset: HudPreset, options?: { maxWidth?: number; maxLines?: number }) => string;
@@ -79,6 +81,56 @@ interface RunWatchModeDependencies {
   registerSigint: (handler: () => void) => void | (() => void);
   setIntervalFn: (handler: () => void, intervalMs: number) => ReturnType<typeof setInterval>;
   clearIntervalFn: (timer: ReturnType<typeof setInterval>) => void;
+}
+
+export interface ResolveHudWatchCwdDependencies {
+  getCwd?: () => string;
+  realpath?: (path: string) => string;
+  readProcCwd?: () => string | null | undefined;
+}
+
+function safeCallString(fn: () => string | null | undefined): string | null {
+  try {
+    const value = fn();
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function defaultProcCwd(): string | null {
+  if (process.platform === 'win32') return null;
+  return safeCallString(() => readlinkSync('/proc/self/cwd'));
+}
+
+/**
+ * Resolve the cwd a long-running HUD watch should read on this frame.
+ *
+ * tmux launches HUD with both a real cwd and a shell PWD string. If that
+ * directory is later renamed and the original pathname is reused by a fresh
+ * OMX run, the old HUD process can keep reading the reused launch path and
+ * display the new run's state. Compare the launch path to the process' live
+ * cwd inode/path each tick; when they diverge, follow the live cwd instead of
+ * the stale launch path.
+ */
+export function resolveHudWatchCwd(
+  launchCwd: string,
+  deps: ResolveHudWatchCwdDependencies = {},
+): string {
+  const getCwd = deps.getCwd ?? (() => process.cwd());
+  const realpath = deps.realpath ?? ((path: string) => realpathSync.native(path));
+  const readProcCwd = deps.readProcCwd ?? defaultProcCwd;
+
+  const launchPath = launchCwd.trim() || safeCallString(getCwd) || launchCwd;
+  const livePath = safeCallString(readProcCwd) || safeCallString(getCwd);
+  if (!livePath) return launchPath;
+
+  const launchReal = safeCallString(() => realpath(launchPath));
+  const liveReal = safeCallString(() => realpath(livePath));
+  if (launchReal && liveReal && launchReal !== liveReal) return livePath;
+  if (!launchReal && liveReal) return livePath;
+  if (launchReal && !liveReal && livePath !== launchPath) return livePath;
+  return launchPath;
 }
 
 function reconcileRunningHudPaneHeight(
@@ -107,6 +159,7 @@ export async function runWatchMode(
   const dependencies: RunWatchModeDependencies = {
     isTTY: deps.isTTY ?? Boolean(process.stdout.isTTY),
     env: deps.env ?? process.env,
+    resolveWatchCwdFn: deps.resolveWatchCwdFn ?? ((launchCwd) => resolveHudWatchCwd(launchCwd)),
     readAllStateFn: deps.readAllStateFn ?? readAllState,
     readHudConfigFn: deps.readHudConfigFn ?? readHudConfig,
     renderHudFn: deps.renderHudFn ?? renderHud,
@@ -169,8 +222,9 @@ export async function runWatchMode(
       } else {
         dependencies.writeStdout('\x1b[H');
       }
-      const config = await dependencies.readHudConfigFn(cwd);
-      const ctx = await dependencies.readAllStateFn(cwd, config);
+      const frameCwd = dependencies.resolveWatchCwdFn(cwd);
+      const config = await dependencies.readHudConfigFn(frameCwd);
+      const ctx = await dependencies.readAllStateFn(frameCwd, config);
       const preset = flags.preset ?? config.preset;
       const maxLines = getHudRenderMaxLines(ctx);
       if (maxLines !== lastDesiredHeight) {
@@ -182,7 +236,7 @@ export async function runWatchMode(
         maxLines,
       });
       dependencies.writeStdout(line + '\x1b[K\x1b[J');
-      await dependencies.runAuthorityTickFn({ cwd });
+      await dependencies.runAuthorityTickFn({ cwd: frameCwd });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       dependencies.writeStderr(`HUD watch render failed: ${message}\n`);

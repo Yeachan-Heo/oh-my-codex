@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { hudCommand, runWatchMode } from '../index.js';
+import { hudCommand, resolveHudWatchCwd, runWatchMode } from '../index.js';
 import { renderHud } from '../render.js';
 import { OMX_TMUX_HUD_OWNER_ENV } from '../reconcile.js';
 import { OMX_TMUX_HUD_LEADER_PANE_ENV } from '../tmux.js';
@@ -62,6 +62,68 @@ afterEach(() => {
 });
 
 describe('runWatchMode', () => {
+  it('resolves a live cwd when the HUD launch path was reused by another run', () => {
+    const resolved = resolveHudWatchCwd('/home/tools/calc', {
+      getCwd: () => '/home/tools/calc',
+      readProcCwd: () => '/home/tools/calc.noninteractive-aborted-20260527T233204Z',
+      realpath: (path) => {
+        if (path === '/home/tools/calc') return '/dev/inode/new-calc-run';
+        if (path === '/home/tools/calc.noninteractive-aborted-20260527T233204Z') {
+          return '/dev/inode/old-aborted-run';
+        }
+        return path;
+      },
+    });
+
+    assert.equal(resolved, '/home/tools/calc.noninteractive-aborted-20260527T233204Z');
+  });
+
+  it('keeps the launch cwd when live and launch paths resolve to the same directory', () => {
+    const resolved = resolveHudWatchCwd('/workspace/link', {
+      getCwd: () => '/workspace/link',
+      readProcCwd: () => '/workspace/real',
+      realpath: () => '/dev/inode/same-project',
+    });
+
+    assert.equal(resolved, '/workspace/link');
+  });
+
+  it('reads HUD state from the resolved live cwd on every watch frame', async () => {
+    const seenConfigCwds: string[] = [];
+    const seenStateCwds: string[] = [];
+    const seenAuthorityCwds: string[] = [];
+    let sigintHandler: (() => void) | undefined;
+
+    const promise = runWatchMode('/home/tools/calc', WATCH_FLAGS, {
+      isTTY: true,
+      env: {},
+      resolveWatchCwdFn: () => '/home/tools/calc.noninteractive-aborted-20260527T233204Z',
+      readHudConfigFn: async (cwd) => {
+        seenConfigCwds.push(cwd);
+        return { preset: 'focused', git: { display: 'repo-branch' }, statusLine: { preset: 'focused' } };
+      },
+      readAllStateFn: async (cwd) => {
+        seenStateCwds.push(cwd);
+        return emptyCtx();
+      },
+      renderHudFn: () => 'frame',
+      runAuthorityTickFn: async ({ cwd }) => { seenAuthorityCwds.push(cwd); },
+      writeStdout: () => {},
+      writeStderr: () => {},
+      registerSigint: (handler) => { sigintHandler = handler; },
+      setIntervalFn: () => ({}) as ReturnType<typeof setInterval>,
+      clearIntervalFn: () => {},
+    });
+
+    await flush();
+    sigintHandler?.();
+    await promise;
+
+    assert.deepEqual(seenConfigCwds, ['/home/tools/calc.noninteractive-aborted-20260527T233204Z']);
+    assert.deepEqual(seenStateCwds, ['/home/tools/calc.noninteractive-aborted-20260527T233204Z']);
+    assert.deepEqual(seenAuthorityCwds, ['/home/tools/calc.noninteractive-aborted-20260527T233204Z']);
+  });
+
   it('restores cursor and clears interval on SIGINT', async () => {
     const writes: string[] = [];
     let sigintHandler: (() => void) | undefined;
