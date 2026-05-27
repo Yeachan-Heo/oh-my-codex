@@ -6,11 +6,12 @@
  * It must not depend on idle/heartbeat freshness or inferred progress stalls.
  */
 
-import { appendFile, mkdir, rename, writeFile } from 'fs/promises';
+import { existsSync } from 'fs';
+import { appendFile, mkdir, rename, rm, stat, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import { DEFAULT_MARKER, paneHasActiveTask } from '../tmux-hook-engine.js';
 import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
-import { safeString, asNumber } from './utils.js';
+import { safeString, asNumber, isTerminalPhase } from './utils.js';
 import { readJsonIfExists } from './state-io.js';
 import { logTmuxHookEvent } from './log.js';
 import { evaluatePaneInjectionReadiness, queuePaneInput, sendPaneInput } from './team-tmux-guard.js';
@@ -21,6 +22,80 @@ const STOP_NUDGE_COOLDOWN_MS = 30_000;
 const SOURCE_TYPE = 'worker_stop';
 const LEADER_PANE_MISSING_NO_INJECTION_REASON = 'leader_pane_missing_no_injection';
 const LEADER_PANE_SHELL_NO_INJECTION_REASON = 'leader_pane_shell_no_injection';
+const TEAM_SHUTDOWN_NO_INJECTION_REASON = 'team_state_gone_or_shutdown';
+const TEAM_LOCK_HELD_REASON = 'suppressed_team_lock_held';
+
+function escapeRegExp(value) {
+  return safeString(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function teamStopNudgeAlreadyQueued(paneCapture, teamName) {
+  const capture = safeString(paneCapture);
+  const normalizedTeamName = safeString(teamName).trim();
+  if (!capture || !normalizedTeamName) return false;
+  const teamPattern = escapeRegExp(normalizedTeamName);
+  const stopNudgePattern = new RegExp(
+    `\\[OMX\\]\\s+worker-\\d+\\s+native Stop allowed\\.[\\s\\S]*?omx team status ${teamPattern}(?:\\s|\`|,|\\.)`,
+    'i',
+  );
+  return stopNudgePattern.test(capture);
+}
+
+async function teamStateAllowsWorkerStopNudge(stateDir, teamName) {
+  const teamDir = join(stateDir, 'team', teamName);
+  if (!existsSync(teamDir)) return false;
+  if (existsSync(join(teamDir, 'shutdown.json'))) return false;
+
+  const phase = await readJsonIfExists(join(teamDir, 'phase.json'), null);
+  const currentPhase = safeString(phase?.current_phase || phase?.phase || '').trim();
+  if (currentPhase && isTerminalPhase(currentPhase)) return false;
+
+  return true;
+}
+
+async function acquireTeamStopNudgeLock(teamDir, nowMs, cooldownMs) {
+  const lockDir = join(teamDir, 'worker-stop-nudge.lock');
+  const staleAfterMs = Math.max(cooldownMs, 30_000);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await mkdir(lockDir);
+      await writeFile(join(lockDir, 'owner.json'), JSON.stringify({
+        pid: process.pid,
+        acquired_at_ms: nowMs,
+        acquired_at: new Date(nowMs).toISOString(),
+      }, null, 2)).catch(() => {});
+      return { acquired: true, lockDir };
+    } catch (error) {
+      if (error?.code === 'ENOENT') return { acquired: false, reason: TEAM_SHUTDOWN_NO_INJECTION_REASON };
+      if (error?.code !== 'EEXIST') return { acquired: false, reason: TEAM_LOCK_HELD_REASON };
+
+      try {
+        const lockStat = await stat(lockDir);
+        if ((nowMs - lockStat.mtimeMs) >= staleAfterMs) {
+          await rm(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      return { acquired: false, reason: TEAM_LOCK_HELD_REASON };
+    }
+  }
+
+  return { acquired: false, reason: TEAM_LOCK_HELD_REASON };
+}
+
+async function releaseTeamStopNudgeLock(lockDir) {
+  if (!lockDir) return;
+  await rm(lockDir, { recursive: true, force: true }).catch(() => {});
+}
+
+async function writeStopNudgeStateIfTeamExists(teamDir, statePath, state) {
+  if (!existsSync(teamDir)) return false;
+  await writeStopNudgeState(statePath, state);
+  return true;
+}
 
 function resolveWorkerStopCooldownMs() {
   const raw = safeString(process.env.OMX_TEAM_WORKER_STOP_COOLDOWN_MS || '');
@@ -119,21 +194,13 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
   const { teamName, workerName } = workerContext || {};
   if (!teamName || !workerName || !stateDir) return { ok: false, result: 'unresolved' };
 
-  const workerDir = join(stateDir, 'team', teamName, 'workers', workerName);
+  const teamDir = join(stateDir, 'team', teamName);
+  const workerDir = join(teamDir, 'workers', workerName);
   const statePath = join(workerDir, 'worker-stop-nudge.json');
+  const teamStatePath = join(teamDir, 'worker-stop-nudge.json');
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
-  const existing = (await readJsonIfExists(statePath, null)) || {};
-  const lastNotifiedMs = asNumber(existing.last_notified_at_ms) ?? 0;
   const cooldownMs = resolveWorkerStopCooldownMs();
-  if ((nowMs - lastNotifiedMs) < cooldownMs) {
-    return { ok: true, result: 'suppressed_cooldown' };
-  }
-
-  const teamInfo = await readTeamWorkersForIdleCheck(stateDir, teamName);
-  if (!teamInfo) return { ok: false, result: 'unresolved' };
-  const { tmuxSession, leaderPaneId } = teamInfo;
-  const tmuxTarget = await resolveCanonicalLeaderPaneId(leaderPaneId);
   const nextState = {
     last_notified_at_ms: nowMs,
     last_notified_at: nowIso,
@@ -141,8 +208,44 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
     worker: workerName,
     source_type: SOURCE_TYPE,
   };
+  let tmuxSession = '';
+  let leaderPaneId = '';
+
+  if (!(await teamStateAllowsWorkerStopNudge(stateDir, teamName))) {
+    return { ok: true, result: TEAM_SHUTDOWN_NO_INJECTION_REASON };
+  }
+
+  const lock = await acquireTeamStopNudgeLock(teamDir, nowMs, cooldownMs);
+  if (!lock.acquired) {
+    return { ok: true, result: lock.reason || TEAM_LOCK_HELD_REASON };
+  }
+
+  try {
+    if (!(await teamStateAllowsWorkerStopNudge(stateDir, teamName))) {
+      return { ok: true, result: TEAM_SHUTDOWN_NO_INJECTION_REASON };
+    }
+
+  const teamExisting = (await readJsonIfExists(teamStatePath, null)) || {};
+  const teamLastNotifiedMs = asNumber(teamExisting.last_notified_at_ms) ?? 0;
+  if ((nowMs - teamLastNotifiedMs) < cooldownMs) {
+    return { ok: true, result: 'suppressed_team_cooldown' };
+  }
+
+  const existing = (await readJsonIfExists(statePath, null)) || {};
+  const lastNotifiedMs = asNumber(existing.last_notified_at_ms) ?? 0;
+  if ((nowMs - lastNotifiedMs) < cooldownMs) {
+    return { ok: true, result: 'suppressed_cooldown' };
+  }
+
+  const teamInfo = await readTeamWorkersForIdleCheck(stateDir, teamName);
+  if (!teamInfo) return { ok: false, result: 'unresolved' };
+  ({ tmuxSession, leaderPaneId } = teamInfo);
+  const tmuxTarget = await resolveCanonicalLeaderPaneId(leaderPaneId);
 
   if (!tmuxTarget) {
+    if (!(await teamStateAllowsWorkerStopNudge(stateDir, teamName))) {
+      return { ok: true, result: TEAM_SHUTDOWN_NO_INJECTION_REASON };
+    }
     await recordDeferred({
       stateDir,
       logsDir,
@@ -164,6 +267,9 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
     requireIdle: false,
   });
   if (!paneGuard.ok) {
+    if (!(await teamStateAllowsWorkerStopNudge(stateDir, teamName))) {
+      return { ok: true, result: TEAM_SHUTDOWN_NO_INJECTION_REASON };
+    }
     await recordDeferred({
       stateDir,
       logsDir,
@@ -179,12 +285,19 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
     return { ok: true, result: 'deferred' };
   }
 
+  if (!(await teamStateAllowsWorkerStopNudge(stateDir, teamName))) {
+    return { ok: true, result: TEAM_SHUTDOWN_NO_INJECTION_REASON };
+  }
+
+  if (teamStopNudgeAlreadyQueued(paneGuard.paneCapture, teamName)) {
+    return { ok: true, result: 'suppressed_duplicate_queue' };
+  }
+
   const prompt =
     `[OMX] ${workerName} native Stop allowed. `
     + `Run \`omx team status ${teamName}\`, read worker messages/results, then assign next task, reconcile completion, or shut down. `
     + DEFAULT_MARKER;
 
-  try {
     const leaderHasActiveTask = paneHasActiveTask(paneGuard.paneCapture);
     let deliveryMode = 'sent';
     if (leaderHasActiveTask) {
@@ -204,22 +317,28 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
       if (!sendResult.ok) throw new Error(sendResult.error || sendResult.reason || 'send_failed');
     }
 
-    await writeStopNudgeState(statePath, {
+    const deliveryState = {
       ...nextState,
       delivery: deliveryMode,
       leader_pane_id: leaderPaneId || null,
       tmux_target: tmuxTarget,
-    });
-    await appendWorkerStopEvent(stateDir, teamName, {
-      event_id: `worker-stop-nudge-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-      team: teamName,
-      type: 'worker_stop_leader_nudge',
-      worker: workerName,
-      to_worker: 'leader-fixed',
-      delivery: deliveryMode,
-      created_at: nowIso,
-      source_type: SOURCE_TYPE,
-    });
+    };
+    const wroteWorkerState = await writeStopNudgeStateIfTeamExists(teamDir, statePath, deliveryState).catch(() => false);
+    const wroteTeamState = wroteWorkerState
+      ? await writeStopNudgeStateIfTeamExists(teamDir, teamStatePath, deliveryState).catch(() => false)
+      : false;
+    if (wroteTeamState) {
+      await appendWorkerStopEvent(stateDir, teamName, {
+        event_id: `worker-stop-nudge-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        team: teamName,
+        type: 'worker_stop_leader_nudge',
+        worker: workerName,
+        to_worker: 'leader-fixed',
+        delivery: deliveryMode,
+        created_at: nowIso,
+        source_type: SOURCE_TYPE,
+      });
+    }
     await logTmuxHookEvent(logsDir, {
       timestamp: nowIso,
       type: 'worker_stop_leader_nudge',
@@ -241,6 +360,9 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
     }).catch(() => {});
     return { ok: true, result: deliveryMode };
   } catch (err) {
+    if (!(await teamStateAllowsWorkerStopNudge(stateDir, teamName))) {
+      return { ok: true, result: TEAM_SHUTDOWN_NO_INJECTION_REASON };
+    }
     await recordDeferred({
       stateDir,
       logsDir,
@@ -253,5 +375,7 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
       leaderPaneId,
     });
     return { ok: true, result: 'deferred' };
+  } finally {
+    await releaseTeamStopNudgeLock(lock.lockDir);
   }
 }
