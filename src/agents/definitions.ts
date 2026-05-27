@@ -8,6 +8,8 @@ export interface AgentDefinition {
   name: string;
   description: string;
   reasoningEffort: 'low' | 'medium' | 'high';
+  /** Optional exact model pin for roles that should bypass tier defaults. */
+  exactModel?: 'gpt-5.4-mini';
   posture: 'frontier-orchestrator' | 'deep-worker' | 'fast-lane';
   modelClass: 'frontier' | 'standard' | 'fast';
   routingRole: 'leader' | 'specialist' | 'executor';
@@ -64,7 +66,8 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   'planner': {
     name: 'planner',
     description: 'Task sequencing, execution plans, risk flags',
-    reasoningEffort: 'medium',
+    reasoningEffort: 'high',
+    exactModel: 'gpt-5.4-mini',
     posture: 'frontier-orchestrator',
     modelClass: 'frontier',
     routingRole: 'leader',
@@ -75,6 +78,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
     name: 'architect',
     description: 'System design, boundaries, interfaces, long-horizon tradeoffs',
     reasoningEffort: 'high',
+    exactModel: 'gpt-5.4-mini',
     posture: 'frontier-orchestrator',
     modelClass: 'frontier',
     routingRole: 'leader',
@@ -261,6 +265,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
     name: 'researcher',
     description: 'External documentation and reference research',
     reasoningEffort: 'high',
+    exactModel: 'gpt-5.4-mini',
     posture: 'fast-lane',
     modelClass: 'standard',
     routingRole: 'specialist',

@@ -100,4 +100,18 @@ describe('agents/definitions', () => {
       assert.equal(AGENT_DEFINITIONS[name].reasoningEffort, name === 'executor' ? 'medium' : 'high');
     }
   });
+
+  it('pins ralplan thesis and antithesis to exact mini while keeping the critic frontier-gated', () => {
+    assert.equal(AGENT_DEFINITIONS.planner.exactModel, 'gpt-5.4-mini');
+    assert.equal(AGENT_DEFINITIONS.planner.reasoningEffort, 'high');
+    assert.equal(AGENT_DEFINITIONS.planner.modelClass, 'frontier');
+
+    assert.equal(AGENT_DEFINITIONS.architect.exactModel, 'gpt-5.4-mini');
+    assert.equal(AGENT_DEFINITIONS.architect.reasoningEffort, 'high');
+    assert.equal(AGENT_DEFINITIONS.architect.modelClass, 'frontier');
+
+    assert.equal(AGENT_DEFINITIONS.critic.exactModel, undefined);
+    assert.equal(AGENT_DEFINITIONS.critic.reasoningEffort, 'high');
+    assert.equal(AGENT_DEFINITIONS.critic.modelClass, 'frontier');
+  });
 });

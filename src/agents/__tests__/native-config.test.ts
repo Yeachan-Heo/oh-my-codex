@@ -133,16 +133,28 @@ describe("agents/native-config", () => {
   });
 
 
-  it("pins researcher to exact gpt-5.4-mini without downgrading planner/judgment roles", () => {
+  it("pins ralplan thesis/antithesis and researcher to exact gpt-5.4-mini without downgrading judgment roles", () => {
     process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-5.5";
     process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.5";
 
+    for (const role of ["planner", "architect", "researcher"] as const) {
+      const toml = generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`);
+      assert.match(toml, /model = "gpt-5\.4-mini"/, `${role} should use exact mini`);
+      assert.match(toml, /exact gpt-5\.4-mini model/, `${role} should receive exact-mini guidance`);
+      assert.match(toml, /resolved_model: gpt-5\.4-mini/, `${role} should record exact mini metadata`);
+    }
+
+    const plannerToml = generateAgentToml(AGENT_DEFINITIONS.planner, "planner prompt");
+    assert.match(plannerToml, /model_reasoning_effort = "high"/);
+
+    const architectToml = generateAgentToml(AGENT_DEFINITIONS.architect, "architect prompt");
+    assert.match(architectToml, /model_reasoning_effort = "high"/);
+
     const researcherToml = generateAgentToml(AGENT_DEFINITIONS.researcher, "researcher prompt");
-    assert.match(researcherToml, /model = "gpt-5\.4-mini"/);
-    assert.match(researcherToml, /exact gpt-5\.4-mini model/);
-    assert.match(researcherToml, /resolved_model: gpt-5\.4-mini/);
+    assert.match(researcherToml, /model_reasoning_effort = "high"/);
 
     for (const role of [
+      "critic",
       "debugger",
       "scholastic",
       "prometheus-strict-metis",
@@ -151,7 +163,7 @@ describe("agents/native-config", () => {
     ] as const) {
       const toml = generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`);
       assert.match(toml, /model = "gpt-5\.5"/, `${role} should stay on configured/root gpt-5.5`);
-      assert.doesNotMatch(toml, /model = "gpt-5\.4-mini"/, `${role} must not inherit the researcher exact model`);
+      assert.doesNotMatch(toml, /model = "gpt-5\.4-mini"/, `${role} must not inherit exact-mini pins`);
     }
   });
 

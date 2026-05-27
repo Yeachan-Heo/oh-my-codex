@@ -34,6 +34,10 @@ function getAgentRecommendedModel(
   agent: AgentDefinition,
   context: AgentsModelTableContext,
 ): string {
+  if (agent.exactModel) {
+    return agent.exactModel;
+  }
+
   if (agent.name === 'executor') {
     return context.frontierModel;
   }

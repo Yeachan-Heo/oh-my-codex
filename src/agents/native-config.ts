@@ -160,8 +160,8 @@ function resolveAgentModel(
   agent: AgentDefinition,
   options: AgentModelResolutionOptions = {},
 ): string {
-  if (agent.name === "researcher") {
-    return EXACT_RESEARCHER_MODEL;
+  if (agent.exactModel) {
+    return agent.exactModel;
   }
 
   if (agent.name === "executor") {

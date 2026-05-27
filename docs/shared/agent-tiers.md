@@ -9,6 +9,8 @@ OMX now separates three concepts:
 - `role`: what the agent is responsible for (`executor`, `planner`, `architect`)
 - `tier`: how much reasoning/cost to spend (`LOW`, `STANDARD`, `THOROUGH`)
 - `posture`: how the role behaves (`frontier-orchestrator`, `deep-worker`, `fast-lane`)
+- `exactModel`: optional role pin that bypasses tier defaults when a role needs a
+  specific model contract.
 
 Use role to choose responsibility, tier to choose depth, and posture to choose operating style.
 
@@ -44,6 +46,9 @@ Use role to choose responsibility, tier to choose depth, and posture to choose o
   - Best for steerable frontier models and leader-style roles.
   - Prioritizes intent classification, delegation, verification, and architectural judgment.
   - Typical roles: `planner`, `analyst`, `architect`, `critic`, `code-reviewer`.
+  - Ralplan keeps `planner` and `architect` in this posture but pins them to
+    exact `gpt-5.4-mini` with high reasoning; the `critic` consensus gate stays
+    on the frontier lane.
 
 - `deep-worker`:
   - Best for implementation-heavy roles that should carry work to completion.

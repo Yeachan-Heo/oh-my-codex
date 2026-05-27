@@ -43,6 +43,9 @@ That seam is part of prompt delivery, but it is intentionally narrower than the 
 Contributor rules for that seam:
 
 - Key mini-specific instruction adaptation off the **final resolved model string**, not off role name, lane, or default tier membership.
+- Role-level `exactModel` pins may route selected agents to `gpt-5.4-mini`, but
+  the mini-specific instruction seam still keys off the final resolved model
+  string after that routing decision.
 - Use **exact string equality** for `gpt-5.4-mini`; do not widen behavior to `gpt-5.5`, `gpt-5.4-mini-tuned`, or other variants.
 - Keep one shared **inner role-instruction composition helper** as the source of truth for model-gated prompt adaptation.
 - Keep `src/team/worker-bootstrap.ts` limited to **outer AGENTS/runtime wrapping**. It should wrap already-composed instructions, not own model-specific adaptation logic.

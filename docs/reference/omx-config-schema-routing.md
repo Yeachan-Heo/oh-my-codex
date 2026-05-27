@@ -175,14 +175,15 @@ For team low-complexity helpers, the exact order depends on the call path: `getS
 
 ## Role/category routing examples
 
-Native agent TOML generation and team model-contract logic use agent definitions with `modelClass` and `reasoningEffort` metadata. Native-agent generation has one important frontier-lane precedence detail: for frontier roles and the `executor` special case, it reads the active Codex `config.toml` root `model` first, then falls back to `getMainDefaultModel()` if that root model is absent. Because `getMainDefaultModel()` is only the fallback in this path, `.omx-config.json` `env.OMX_DEFAULT_FRONTIER_MODEL` does not override an explicit `config.toml` root `model` for generated native-agent TOML.
+Native agent TOML generation and team model-contract logic use agent definitions with `modelClass`, optional `exactModel`, and `reasoningEffort` metadata. Exact-model pins win before class-based routing. Native-agent generation has one important frontier-lane precedence detail: for frontier roles and the `executor` special case, it reads the active Codex `config.toml` root `model` first, then falls back to `getMainDefaultModel()` if that root model is absent. Because `getMainDefaultModel()` is only the fallback in this path, `.omx-config.json` `env.OMX_DEFAULT_FRONTIER_MODEL` does not override an explicit `config.toml` root `model` for generated native-agent TOML.
 
 Examples:
 
 | Role/category | Examples | Model class behavior |
 | --- | --- | --- |
-| Frontier orchestration | `planner`, `architect`, `critic`, `code-reviewer`, `security-reviewer`, `team-executor`, `vision` | Native-agent generation uses active `config.toml` root `model` first, then the main/frontier default fallback. |
-| Standard worker/review | `debugger`, `quality-reviewer`, `api-reviewer`, `performance-reviewer`, `dependency-expert`, `writer`, `researcher` | Uses the standard-lane default, which inherits main/frontier unless `OMX_DEFAULT_STANDARD_MODEL` is set. |
+| Exact mini planning/research | `planner`, `architect`, `researcher` | Uses the exact `gpt-5.4-mini` pin before model-class routing; planner/architect keep `frontier-orchestrator` posture and high reasoning, while ralplan's `critic` remains frontier-routed for the consensus gate. |
+| Frontier orchestration | `critic`, `code-reviewer`, `security-reviewer`, `team-executor`, `vision` | Native-agent generation uses active `config.toml` root `model` first, then the main/frontier default fallback. |
+| Standard worker/review | `debugger`, `quality-reviewer`, `api-reviewer`, `performance-reviewer`, `dependency-expert`, `writer` | Uses the standard-lane default, which inherits main/frontier unless `OMX_DEFAULT_STANDARD_MODEL` is set. |
 | Fast/low-complexity | `explore`, `style-reviewer` | Uses the spark/low-complexity default. |
 | Executor special case | `executor` | Native-agent generation uses active `config.toml` root `model` first, then the main/frontier default fallback; team fallback routing keeps it on the frontier lane. |
 
