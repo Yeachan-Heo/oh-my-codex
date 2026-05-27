@@ -176,7 +176,7 @@ Pipeline state should use `current_phase` values that match the same phase names
 - [ ] `$team` was used only if the active Ultragoal story needed coordinated parallel work, or explicitly recorded as not needed
 - [ ] Phase `code-review` returned a clean verdict (`APPROVE` + `CLEAR`)
 - [ ] Phase `ultraqa` passed, or was explicitly skipped because the change was docs-only/trivially non-runtime with evidence
-- [ ] Clean `review_verdict` and `qa_verdict` each cite durable source evidence from a real stage/subagent/thread/tool record; leader-authored summaries alone are not gate evidence
+- [ ] Clean `review_verdict` cites durable source evidence from a real `$code-review` stage/subagent/thread/tool record; `qa_verdict` cites durable `$ultraqa` evidence or an explicit persisted low-risk skip reason; leader-authored summaries alone are not gate evidence
 - [ ] `review_verdict.clean` is true, `qa_verdict.clean` is true, and `return_to_ralplan_reason` is null
 - [ ] Tests/build/lint/typecheck evidence from Ultragoal is available in handoff artifacts
 - [ ] Autopilot state is marked `complete` or cancellation state is preserved coherently

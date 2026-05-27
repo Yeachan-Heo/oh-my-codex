@@ -44,6 +44,7 @@ describe('autopilot skill default Ultragoal contract', () => {
     assert.match(autopilotSkill, /both gates have durable source evidence/i);
     assert.match(autopilotSkill, /actual `\$code-review`\/`\$ultraqa` stage or native-subagent\/thread\/tool records/i);
     assert.match(autopilotSkill, /leader-authored summaries alone are not gate evidence/i);
+    assert.match(autopilotSkill, /`qa_verdict` cites durable `\$ultraqa` evidence or an explicit persisted low-risk skip reason/i);
     assert.match(autopilotSkill, /keep the active phase at `code-review` or `ultraqa` and record a blocker instead of self-attesting a clean gate/i);
   });
 
