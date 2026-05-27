@@ -3317,7 +3317,17 @@ ${JSON.stringify({
       await writeJson(join(sessionDir, "autopilot-state.json"), {
         active: true,
         mode: "autopilot",
-        current_phase: "deep-interview",
+        current_phase: "waiting-for-user",
+        deep_interview_question: {
+          status: "waiting_for_user",
+          previous_phase: "deep-interview",
+          question_id: "question-real-wait-shape",
+        },
+        state: {
+          handoff_artifacts: {
+            deep_interview: { status: "waiting_for_q2_answer" },
+          },
+        },
         started_at: "2026-04-19T00:00:00.000Z",
         updated_at: "2026-04-19T00:10:00.000Z",
         session_id: sessionId,
@@ -3340,7 +3350,8 @@ ${JSON.stringify({
       const message = String(
         (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
       );
-      assert.match(message, /continued active workflow skill "autopilot"/);
+      assert.match(message, /continued active workflow skill "autopilot:deep-interview"/);
+      assert.match(message, /skill: autopilot:deep-interview activated/);
       assert.match(message, /Autopilot protocol:/);
       assert.match(message, /structured question chain, not a one-question gate/);
       assert.match(message, /This turn is a marked omx question answer/);
