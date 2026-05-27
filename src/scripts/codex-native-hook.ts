@@ -1698,11 +1698,21 @@ function buildNativeOutsideTmuxTeamPromptBlockState(
   };
 }
 
+function resolveInitializedModeStatePath(cwd: string, statePath: string): string {
+  if (statePath.startsWith("/")) return statePath;
+  const normalized = statePath.replace(/\\/g, "/");
+  const statePrefix = ".omx/state/";
+  if (normalized.startsWith(statePrefix)) {
+    return join(getBaseStateDir(cwd), normalized.slice(statePrefix.length));
+  }
+  return resolve(cwd, statePath);
+}
+
 function readInitializedModePhase(cwd: string, skillState?: SkillActiveState | null): string | null {
   const mode = safeString(skillState?.initialized_mode).trim() || safeString(skillState?.skill).trim();
   const statePath = safeString(skillState?.initialized_state_path).trim();
   if (!mode || !statePath) return null;
-  const fullPath = resolve(cwd, statePath);
+  const fullPath = resolveInitializedModeStatePath(cwd, statePath);
   try {
     const state = JSON.parse(readFileSync(fullPath, "utf-8")) as Record<string, unknown>;
     const currentPhase = safeString(state.current_phase).trim();

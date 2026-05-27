@@ -3365,6 +3365,76 @@ ${JSON.stringify({
     }
   });
 
+  it("labels boxed autopilot question-wait state by the nested previous phase", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-boxed-question-answer-"));
+    const cwd = join(root, "source");
+    const omxRoot = join(root, "box");
+    const sessionId = "sess-autopilot-boxed-question-answer";
+    const previousOmxRoot = process.env.OMX_ROOT;
+    const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    try {
+      await mkdir(cwd, { recursive: true });
+      process.env.OMX_ROOT = omxRoot;
+      delete process.env.OMX_STATE_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+      const sessionDir = join(getBaseStateDir(cwd), "sessions", sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "autopilot",
+        keyword: "$autopilot",
+        phase: "deep-interview",
+        initialized_mode: "autopilot",
+        initialized_state_path: `.omx/state/sessions/${sessionId}/autopilot-state.json`,
+        session_id: sessionId,
+        active_skills: [
+          { skill: "autopilot", phase: "deep-interview", active: true, session_id: sessionId },
+        ],
+      });
+      await writeJson(join(sessionDir, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "waiting-for-user",
+        state: {
+          deep_interview_question: {
+            status: "waiting_for_user",
+            previous_phase: "deep-interview",
+          },
+        },
+        session_id: sessionId,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-autopilot-boxed-question-answer",
+          turn_id: "turn-autopilot-boxed-question-answer",
+          prompt: "[omx question answered] boxed_state_answer",
+        },
+        { cwd },
+      );
+
+      const message = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(message, /continued active workflow skill "autopilot:deep-interview"/);
+      assert.match(message, /skill: autopilot:deep-interview activated/);
+      assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", sessionId, "autopilot-state.json")), false);
+    } finally {
+      if (typeof previousOmxRoot === "string") process.env.OMX_ROOT = previousOmxRoot;
+      else delete process.env.OMX_ROOT;
+      if (typeof previousOmxStateRoot === "string") process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+      else delete process.env.OMX_STATE_ROOT;
+      if (typeof previousTeamStateRoot === "string") process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps deep-interview bridge guidance on marked question answers with workflow-like tokens", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-question-answer-continuation-"));
     try {
