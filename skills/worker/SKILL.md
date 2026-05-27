@@ -101,6 +101,20 @@ Worker sessions should treat team state + CLI interop as the source of truth.
 - Do **not** rely on ad-hoc tmux keystrokes as a primary delivery channel.
 - If a manual trigger arrives (for example `tmux send-keys` nudge), treat it only as a prompt to re-check state and continue through the normal claim-safe lifecycle.
 
+
+## Team Big Five / ATEM Coordination Gate
+
+Keep independent fan-out lightweight: if your task is isolated with no shared files, dependencies, or handoffs, normal startup ACK, claim-safe lifecycle, status, verification, and completion evidence are sufficient.
+
+When your inbox/task activates the Team Big Five / ATEM-inspired protocol (dependencies, shared files/surfaces/contracts, handoffs, integration, blocked lanes, or changed assumptions), use this concise boundary checklist:
+
+- Shared mental model / single source of truth: treat task JSON, inbox, mailbox, approved handoff, and leader updates as canonical.
+- Closed-loop communication / ACK-readback: acknowledge handoffs with what you understood, affected artifact/path, owner, and next action.
+- Mutual performance monitoring: check boundary contracts, shared files, and verification evidence before completion.
+- Backup/reassignment behavior: if blocked, write blocked status with the smallest needed help/reassignment request and continue any safe unblocked slice.
+- Adaptability checkpoint: changed assumptions, dependencies, or verification results require a brief leader-facing update before widening scope.
+- Team orientation: optimize for the integrated team result; report integration risks, missing tests, and peer impacts instead of local-only success.
+
 ## Shutdown
 
 If the lead sends a shutdown request, follow the shutdown inbox instructions exactly, write your shutdown ack file, then exit the Codex session.

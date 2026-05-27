@@ -6546,7 +6546,7 @@ esac
             'delegation persistence test',
             'executor',
             1,
-            [{ subject: 'Investigate runtime assignment', description: 'Search runtime and debug assignTask behavior' }],
+            [{ subject: 'Investigate runtime assignment', description: 'Search runtime, debug assignTask behavior, and coordinate shared handoff boundaries' }],
             cwd,
           ),
         ),
@@ -6556,6 +6556,8 @@ esac
       assert.equal(task?.delegation?.mode, 'auto');
       assert.equal(task?.delegation?.child_model, 'gpt-5.4-mini');
       assert.equal(task?.delegation?.required_parallel_probe, true);
+      assert.equal(task?.coordination?.mode, 'coordinated');
+      assert.ok(task?.coordination?.activation_reasons.includes('cross_boundary_or_handoff_language'));
     } finally {
       if (runtime) {
         await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
@@ -7093,7 +7095,23 @@ esac
       await saveTeamConfig(config, cwd);
       const task = await createTask(
         'team-assign-delegation',
-        { subject: 'Investigate follow-up assignment', description: 'Search repo and debug follow-up assignment behavior', status: 'pending' },
+        {
+          subject: 'Investigate follow-up assignment',
+          description: 'Search repo and debug follow-up assignment behavior.',
+          status: 'pending',
+          filePaths: ['src/team/runtime.ts'],
+          coordination: { mode: 'coordinated', activation_reasons: ['stale_snapshot_before_assignment'] },
+        },
+        cwd,
+      );
+      await createTask(
+        'team-assign-delegation',
+        {
+          subject: 'Sibling runtime verification',
+          description: 'Verify the same runtime path.',
+          status: 'pending',
+          filePaths: ['src/team/runtime.ts'],
+        },
         cwd,
       );
 
@@ -7106,10 +7124,58 @@ esac
       const reread = await readTask('team-assign-delegation', task.id, cwd);
       assert.equal(reread?.delegation?.mode, 'auto');
       assert.equal(reread?.delegation?.child_model, 'gpt-5.4-mini');
+      assert.equal(reread?.coordination?.mode, 'coordinated');
+      assert.ok(reread?.coordination?.activation_reasons.includes('shared_file_scope'));
+      assert.equal(reread?.coordination?.activation_reasons.includes('stale_snapshot_before_assignment'), false);
 
       const inbox = await readFile(join(cwd, '.omx', 'state', 'team', 'team-assign-delegation', 'workers', 'worker-1', 'inbox.md'), 'utf-8');
       assert.match(inbox, /Assignment Cancelled/);
       assert.match(inbox, /worker_notify_failed/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('assignTask preserves explicitly authored coordination metadata', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-'));
+    try {
+      await initTeamState('team-assign-explicit', 'assignment explicit coordination test', 'executor', 1, cwd);
+      const config = await readTeamConfig('team-assign-explicit', cwd);
+      assert.ok(config);
+      config.worker_launch_mode = 'prompt';
+      await saveTeamConfig(config, cwd);
+      const task = await createTask(
+        'team-assign-explicit',
+        {
+          subject: 'Explicit coordination lane',
+          description: 'Preserve the caller-authored coordination plan.',
+          status: 'pending',
+          filePaths: ['src/team/runtime.ts'],
+          coordination: { mode: 'coordinated', activation_reasons: ['caller_authored_boundary'], source: 'explicit' },
+        },
+        cwd,
+      );
+      await createTask(
+        'team-assign-explicit',
+        {
+          subject: 'Sibling runtime verification',
+          description: 'Verify the same runtime path.',
+          status: 'pending',
+          filePaths: ['./src/team/runtime.ts'],
+        },
+        cwd,
+      );
+
+      await writeWorkerInbox('team-assign-explicit', 'worker-1', 'existing inbox', cwd);
+      await assert.rejects(
+        () => assignTask('team-assign-explicit', 'worker-1', task.id, cwd),
+        /worker_notify_failed/,
+      );
+
+      const reread = await readTask('team-assign-explicit', task.id, cwd);
+      assert.equal(reread?.coordination?.source, 'explicit');
+      assert.deepEqual(reread?.coordination?.activation_reasons, ['caller_authored_boundary']);
+      assert.equal(reread?.coordination?.activation_reasons.includes('shared_file_scope'), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
