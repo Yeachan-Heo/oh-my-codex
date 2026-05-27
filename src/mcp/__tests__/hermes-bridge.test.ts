@@ -272,6 +272,222 @@ describe("Hermes MCP bridge core", () => {
     }
   });
 
+  it("routes selected prompts to a bound tmux session when no active exec queue accepts input", async () => {
+    const cwd = await tempWorkspace("omx-hermes-tmux-prompt-");
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(join(cwd, ".omx", "state", "session.json"), JSON.stringify({
+        session_id: "sess-tmux",
+        native_session_id: "native-tmux",
+        started_at: "2026-05-11T00:00:00.000Z",
+        cwd,
+        pid: 12345,
+        tmux_session_name: "omx-detached-demo",
+        tmux_pane_id: "%42",
+      }));
+      const tmuxCalls: string[][] = [];
+
+      const result = await hermesSendPrompt(
+        { workingDirectory: cwd, session_id: "native-tmux", prompt: "continue\nwith care", allow_mutation: true },
+        {
+          injectExecFollowup: async () => {
+            throw new Error("job_not_input_accepting:no_active_exec_session");
+          },
+          execTmuxFileSync: (args) => {
+            tmuxCalls.push(args);
+            if (args[0] === "show-options") return "sess-tmux\n";
+            if (args[0] === "display-message") return "omx-detached-demo\n";
+            return "";
+          },
+        },
+      );
+
+      assert.equal(result.ok, true);
+      assert.deepEqual(result.data, {
+        session_id: "sess-tmux",
+        tmux_session_name: "omx-detached-demo",
+        target: "%42",
+        transport: "tmux_send_keys",
+      });
+      assert.deepEqual(tmuxCalls, [
+        ["has-session", "-t", "omx-detached-demo"],
+        ["show-options", "-qv", "-t", "omx-detached-demo", "@omx_instance_id"],
+        ["display-message", "-p", "-t", "%42", "#{session_name}"],
+        ["send-keys", "-t", "%42", "-l", "--", "continue with care"],
+        ["send-keys", "-t", "%42", "C-m"],
+        ["send-keys", "-t", "%42", "C-m"],
+      ]);
+      assert.equal(tmuxCalls.some((args) => args.includes("attach-session")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("returns prompt_not_accepted when tmux pane delivery fails", async () => {
+    const cwd = await tempWorkspace("omx-hermes-tmux-prompt-fail-");
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(join(cwd, ".omx", "state", "session.json"), JSON.stringify({
+        session_id: "sess-tmux",
+        started_at: "2026-05-11T00:00:00.000Z",
+        cwd,
+        pid: 12345,
+        tmux_session_name: "omx-detached-demo",
+        tmux_pane_id: "%42",
+      }));
+
+      const result = await hermesSendPrompt(
+        { workingDirectory: cwd, session_id: "sess-tmux", prompt: "continue", allow_mutation: true },
+        {
+          injectExecFollowup: async () => {
+            throw new Error("job_not_input_accepting:no_active_exec_session");
+          },
+          execTmuxFileSync: (args) => {
+            if (args[0] === "show-options") return "sess-tmux\n";
+            if (args[0] === "display-message") return "omx-detached-demo\n";
+            if (args[0] === "send-keys") throw new Error("pane closed");
+            return "";
+          },
+        },
+      );
+
+      assert.equal(result.ok, false);
+      assert.equal(result.code, "prompt_not_accepted");
+      assert.match(result.error ?? "", /unsupported_session_kind:tmux_prompt_delivery_failed:omx-detached-demo:%42:tmux_send_failed/);
+      assert.doesNotMatch(result.error ?? "", /pane closed/);
+      assert.doesNotMatch(result.error ?? "", /continue/);
+      assert.doesNotMatch(result.error ?? "", /invalid_input/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects tmux prompt delivery when the stored target is not a pane id", async () => {
+    const cwd = await tempWorkspace("omx-hermes-tmux-invalid-pane-");
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(join(cwd, ".omx", "state", "session.json"), JSON.stringify({
+        session_id: "sess-tmux",
+        started_at: "2026-05-11T00:00:00.000Z",
+        cwd,
+        pid: 12345,
+        tmux_session_name: "omx-detached-demo",
+        tmux_pane_id: "omx-detached-demo",
+      }));
+      const tmuxCalls: string[][] = [];
+
+      const result = await hermesSendPrompt(
+        { workingDirectory: cwd, session_id: "sess-tmux", prompt: "continue", allow_mutation: true },
+        {
+          injectExecFollowup: async () => {
+            throw new Error("job_not_input_accepting:no_active_exec_session");
+          },
+          execTmuxFileSync: (args) => {
+            tmuxCalls.push(args);
+            return "";
+          },
+        },
+      );
+
+      assert.equal(result.ok, false);
+      assert.equal(result.code, "prompt_not_accepted");
+      assert.match(result.error ?? "", /unsupported_session_kind:invalid_tmux_pane_binding:omx-detached-demo/);
+      assert.deepEqual(tmuxCalls, []);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects tmux prompt delivery when the stored pane is not in the bound session", async () => {
+    const cwd = await tempWorkspace("omx-hermes-tmux-pane-mismatch-");
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(join(cwd, ".omx", "state", "session.json"), JSON.stringify({
+        session_id: "sess-tmux",
+        started_at: "2026-05-11T00:00:00.000Z",
+        cwd,
+        pid: 12345,
+        tmux_session_name: "omx-detached-demo",
+        tmux_pane_id: "%42",
+      }));
+
+      const result = await hermesSendPrompt(
+        { workingDirectory: cwd, session_id: "sess-tmux", prompt: "continue", allow_mutation: true },
+        {
+          injectExecFollowup: async () => {
+            throw new Error("job_not_input_accepting:no_active_exec_session");
+          },
+          execTmuxFileSync: (args) => {
+            if (args[0] === "show-options") return "sess-tmux\n";
+            if (args[0] === "display-message") return "other-session\n";
+            return "";
+          },
+        },
+      );
+
+      assert.equal(result.ok, false);
+      assert.equal(result.code, "prompt_not_accepted");
+      assert.match(result.error ?? "", /unsupported_session_kind:tmux_prompt_delivery_failed:omx-detached-demo:%42:pane_session_mismatch:%42:other-session/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects tmux prompt delivery when the tmux instance tag does not match session state", async () => {
+    const cwd = await tempWorkspace("omx-hermes-tmux-instance-mismatch-");
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(join(cwd, ".omx", "state", "session.json"), JSON.stringify({
+        session_id: "sess-tmux",
+        started_at: "2026-05-11T00:00:00.000Z",
+        cwd,
+        pid: 12345,
+        tmux_session_name: "omx-detached-demo",
+        tmux_pane_id: "%42",
+      }));
+
+      const result = await hermesSendPrompt(
+        { workingDirectory: cwd, session_id: "sess-tmux", prompt: "continue", allow_mutation: true },
+        {
+          injectExecFollowup: async () => {
+            throw new Error("job_not_input_accepting:no_active_exec_session");
+          },
+          execTmuxFileSync: (args) => {
+            if (args[0] === "show-options") return "other-session\n";
+            return "";
+          },
+        },
+      );
+
+      assert.equal(result.ok, false);
+      assert.equal(result.code, "prompt_not_accepted");
+      assert.match(result.error ?? "", /unsupported_session_kind:tmux_prompt_delivery_failed:omx-detached-demo:%42:tmux_instance_mismatch:omx-detached-demo:other-session/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a clear unsupported-session-kind diagnostic when no exec or tmux binding can accept prompts", async () => {
+    const cwd = await tempWorkspace("omx-hermes-no-prompt-binding-");
+    try {
+      const result = await hermesSendPrompt(
+        { workingDirectory: cwd, session_id: "sess-missing", prompt: "continue", allow_mutation: true },
+        {
+          injectExecFollowup: async () => {
+            throw new Error("job_not_input_accepting:no_active_exec_session");
+          },
+        },
+      );
+
+      assert.equal(result.ok, false);
+      assert.equal(result.code, "prompt_not_accepted");
+      assert.match(result.error ?? "", /unsupported_session_kind:no_active_exec_session_or_tmux_binding:sess-missing/);
+      assert.doesNotMatch(result.error ?? "", /job_not_input_accepting:no_active_exec_session/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("queues selected prompts through the audited exec follow-up contract", async () => {
     const result = await hermesSendPrompt(
       { session_id: "sess-a", prompt: "continue", actor: "hermes-test", allow_mutation: true },
@@ -300,24 +516,25 @@ describe("Hermes MCP bridge core", () => {
   it("starts sessions in tmux worktree mode and requires mutation opt-in", async () => {
     const cwd = await tempWorkspace("omx-hermes-start-");
     try {
-      let observed: { command: string; args: string[]; cwd?: string } | null = null;
+      const observed: Array<{ command: string; args: string[]; cwd?: string; env?: NodeJS.ProcessEnv }> = [];
       const result = await hermesStartSession(
         { workingDirectory: cwd, prompt: "$ralph fix it", worktreeName: "pkg/demo", allow_mutation: true },
         {
           resolveOmxCliEntryPath: () => "/opt/omx/dist/cli/omx.js",
-          spawnProcess: ((command: string, args: string[], options: { cwd?: string }) => {
-            observed = { command, args, cwd: options.cwd };
+          spawnProcess: ((command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
+            observed.push({ command, args, cwd: options.cwd, env: options.env });
             return { pid: 4242, unref() {} };
           }) as never,
         },
       );
 
       assert.equal(result.ok, true);
-      assert.deepEqual(observed, {
-        command: "/opt/omx/dist/cli/omx.js",
-        args: ["--tmux", "--worktree=pkg/demo", "$ralph fix it"],
-        cwd,
-      });
+      assert.equal(observed[0]?.command, "/opt/omx/dist/cli/omx.js");
+      assert.deepEqual(observed[0]?.args, ["--tmux", "--worktree=pkg/demo", "$ralph fix it"]);
+      assert.equal(observed[0]?.cwd, cwd);
+      assert.equal(observed[0]?.env?.OMX_HERMES_MCP_BRIDGE, "1");
+      assert.equal(observed[0]?.env?.TMUX, undefined);
+      assert.equal(observed[0]?.env?.TMUX_PANE, undefined);
       assert.equal(result.data?.pid, 4242);
     } finally {
       await rm(cwd, { recursive: true, force: true });

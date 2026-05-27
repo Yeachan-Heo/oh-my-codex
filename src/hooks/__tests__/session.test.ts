@@ -275,6 +275,35 @@ describe('session lifecycle manager', () => {
     }
   });
 
+  it('preserves existing native and tmux bindings on same-session start updates', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-preserve-'));
+    try {
+      await writeSessionStart(cwd, 'omx-launch-1', {
+        nativeSessionId: 'codex-native-1',
+        tmuxSessionName: 'omx-detached-demo',
+      });
+
+      const withPane = await writeSessionStart(cwd, 'omx-launch-1', {
+        tmuxSessionName: 'omx-detached-demo',
+        tmuxPaneId: '%42',
+      });
+
+      assert.equal(withPane.native_session_id, 'codex-native-1');
+      assert.equal(withPane.tmux_session_name, 'omx-detached-demo');
+      assert.equal(withPane.tmux_pane_id, '%42');
+
+      const withoutPane = await writeSessionStart(cwd, 'omx-launch-1', {
+        tmuxSessionName: 'omx-detached-demo',
+      });
+
+      assert.equal(withoutPane.native_session_id, 'codex-native-1');
+      assert.equal(withoutPane.tmux_session_name, 'omx-detached-demo');
+      assert.equal(withoutPane.tmux_pane_id, '%42');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('lets an owner OMX launch session end the fresh native session it spawned', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-owner-end-'));
     try {

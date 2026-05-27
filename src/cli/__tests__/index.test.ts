@@ -54,6 +54,7 @@ import {
   buildDetachedSessionBootstrapSteps,
   buildDetachedTmuxSessionName,
   buildDetachedSessionFinalizeSteps,
+  shouldAttachDetachedTmuxSession,
   buildDetachedSessionRollbackSteps,
   detectDetachedSessionWindowIndex,
   resolveNotifyTempContract,
@@ -3342,6 +3343,7 @@ exit 0
         `#!/bin/sh
 printf 'codex:%s\\n' "$*" >> "${logPath}"
 printf 'codex-pwd:%s\\n' "$(pwd)" >> "${logPath}"
+printf 'codex-bridge-env:%s\\n' "\${OMX_HERMES_MCP_BRIDGE-unset}" >> "${logPath}"
 exit 0
 `,
       );
@@ -3390,6 +3392,7 @@ exit 0
           ...process.env,
           PATH: `${fakeBin}:/usr/bin:/bin`,
           HOME: cwd,
+          OMX_HERMES_MCP_BRIDGE: "1",
         },
         stdio: "ignore",
       });
@@ -3400,6 +3403,7 @@ exit 0
         normalizeDarwinTmpPath(log),
         new RegExp(`codex-pwd:${escapeRegExp(normalizeDarwinTmpPath(cwd))}`),
       );
+      assert.match(log, /codex-bridge-env:unset/);
       assert.match(log, /tmux:display-message -p #\{socket_path\}/);
       assert.match(log, /tmux:show-options -sv extended-keys/);
       assert.match(log, /tmux:set-option -sq extended-keys always/);
@@ -4225,6 +4229,24 @@ exit 0
     assert.equal(attachIndex > scheduleIndex, true);
     assert.equal(names.includes("register-resize-hook"), true);
     assert.equal(names.includes("reconcile-hud-resize"), true);
+  });
+
+  it("buildDetachedSessionFinalizeSteps skips attach for Hermes MCP bridge launches", () => {
+    assert.equal(shouldAttachDetachedTmuxSession({ OMX_HERMES_MCP_BRIDGE: "1" }), false);
+    assert.equal(shouldAttachDetachedTmuxSession({}), true);
+
+    const steps = buildDetachedSessionFinalizeSteps(
+      "omx-demo",
+      "%12",
+      "3",
+      true,
+      false,
+      shouldAttachDetachedTmuxSession({ OMX_HERMES_MCP_BRIDGE: "1" }),
+    );
+
+    assert.equal(steps.some((step) => step.name === "attach-session"), false);
+    assert.equal(steps.some((step) => step.name === "register-resize-hook"), true);
+    assert.equal(steps.some((step) => step.name === "set-mouse"), true);
   });
 
   it("buildDetachedSessionFinalizeSteps uses quiet best-effort tmux resize commands", () => {

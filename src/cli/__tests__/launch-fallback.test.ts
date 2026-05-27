@@ -298,6 +298,75 @@ printf 'fake-codex:%s\n' "$*"
   });
 });
 
+describe('Hermes MCP tmux bridge launch', () => {
+  it('creates a detached tmux session without attach-session under OMX_HERMES_MCP_BRIDGE', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-hermes-bridge-'));
+    try {
+      const { env, tmuxLogPath } = await createLaunchFixture(
+        wd,
+        (logPath) => `#!/bin/sh
+printf 'tmux:%s\n' "$*" >> "${logPath}"
+case "$1" in
+  -V|list-sessions)
+    printf 'tmux 3.4\n'
+    exit 0
+    ;;
+  has-session)
+    exit 1
+    ;;
+  new-session)
+    printf 'leader-pane\n'
+    exit 0
+    ;;
+  split-window)
+    printf 'hud-pane\n'
+    exit 0
+    ;;
+  display-message)
+    if [ "$2" = '-p' ] && [ "$3" = '#{socket_path}' ]; then
+      printf '/tmp/tmux-test.sock\n'
+    else
+      printf '0\n'
+    fi
+    exit 0
+    ;;
+  show-options)
+    printf 'off\n'
+    exit 0
+    ;;
+  set-option|set-hook|kill-session|run-shell|resize-pane)
+    exit 0
+    ;;
+  attach-session)
+    printf 'attach must not be called for Hermes MCP bridge\n' >&2
+    exit 99
+    ;;
+esac
+exit 0
+`,
+      );
+
+      const result = runOmx(wd, ['--tmux', 'bridge prompt'], {
+        ...env,
+        OMX_HERMES_MCP_BRIDGE: '1',
+        TMUX: '',
+        TMUX_PANE: '',
+      });
+
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(tmuxLog, /tmux:new-session /);
+      assert.match(tmuxLog, /tmux:split-window /);
+      assert.doesNotMatch(tmuxLog, /tmux:attach-session/);
+      assert.doesNotMatch(result.stderr, /failed to attach detached tmux session/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('omx launcher when tmux is available', () => {
   it('reuses the same boxed madmax detached launch context instead of spawning duplicate tmux sessions', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-madmax-reuse-'));

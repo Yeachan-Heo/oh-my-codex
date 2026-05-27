@@ -1,9 +1,9 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, open, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { injectExecFollowup } from "../exec/followup.js";
-import { isSessionStateUsable, readUsableSessionState, type SessionState } from "../hooks/session.js";
+import { isSessionStateUsable, readSessionState, readUsableSessionState, type SessionState } from "../hooks/session.js";
 import { readQuestionEvents } from "../question/events.js";
 import {
   listQuestionRecords,
@@ -20,6 +20,8 @@ import {
   validateSessionId,
 } from "./state-paths.js";
 import { resolveOmxCliEntryPath } from "../utils/paths.js";
+import { buildSendPaneArgvs } from "../notifications/tmux-detector.js";
+import { resolveTmuxBinaryForPlatform } from "../utils/platform-command.js";
 import { safeJsonParse } from "../utils/safe-json.js";
 
 export type HermesBridgeFailureCode =
@@ -88,12 +90,20 @@ export interface HermesQuestionSummary {
   error?: QuestionRecord["error"];
 }
 
+export interface HermesTmuxPromptResult {
+  session_id: string;
+  tmux_session_name: string;
+  target: string;
+  transport: "tmux_send_keys";
+}
+
 export interface HermesBridgeDeps {
   now?: () => Date;
   spawnProcess?: typeof spawn;
   resolveOmxCliEntryPath?: typeof resolveOmxCliEntryPath;
   readUsableSessionState?: typeof readUsableSessionState;
   injectExecFollowup?: typeof injectExecFollowup;
+  execTmuxFileSync?: (args: string[]) => string | Buffer | void;
 }
 
 const SAFE_ARTIFACT_PREFIXES = [
@@ -107,6 +117,7 @@ const DEFAULT_ARTIFACT_MAX_BYTES = 128_000;
 const DEFAULT_TAIL_LINES = 80;
 const MAX_TAIL_LINES = 500;
 const MAX_TAIL_READ_BYTES = 256_000;
+const OMX_INSTANCE_OPTION = "@omx_instance_id";
 
 function jsonResult<T extends Record<string, unknown>>(data: T): HermesBridgeResult<T> {
   return { ok: true, data };
@@ -158,6 +169,70 @@ function optionalBoolean(value: unknown): boolean | undefined {
 function optionalString(value: unknown): string | undefined {
   const normalized = typeof value === "string" ? value.trim() : "";
   return normalized || undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function sessionMatchesRequested(state: SessionState, sessionId: string): boolean {
+  return state.session_id === sessionId || state.native_session_id === sessionId;
+}
+
+function isTmuxPaneId(value: string): boolean {
+  return /^%\d+$/.test(value);
+}
+
+function defaultExecTmuxFileSync(args: string[]): string | Buffer | void {
+  return execFileSync(resolveTmuxBinaryForPlatform() || "tmux", args, {
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: process.platform === "win32",
+  });
+}
+
+async function sendPromptToBoundTmuxSession(
+  cwd: string,
+  sessionId: string,
+  prompt: string,
+  deps: HermesBridgeDeps,
+): Promise<HermesTmuxPromptResult | null> {
+  const rawSession = await readSessionState(cwd);
+  if (!rawSession || !sessionMatchesRequested(rawSession, sessionId)) return null;
+  const tmuxSessionName = optionalString(rawSession.tmux_session_name);
+  const tmuxPaneId = optionalString(rawSession.tmux_pane_id);
+  if (!tmuxSessionName || !tmuxPaneId) return null;
+  if (!isTmuxPaneId(tmuxPaneId)) {
+    throw new Error(`unsupported_session_kind:invalid_tmux_pane_binding:${tmuxSessionName}`);
+  }
+
+  const execTmux = deps.execTmuxFileSync ?? defaultExecTmuxFileSync;
+  try {
+    execTmux(["has-session", "-t", tmuxSessionName]);
+    const instanceId = String(execTmux(["show-options", "-qv", "-t", tmuxSessionName, OMX_INSTANCE_OPTION]) ?? "").trim();
+    if (instanceId !== rawSession.session_id) {
+      throw new Error(`tmux_instance_mismatch:${tmuxSessionName}:${instanceId || "missing"}`);
+    }
+    const paneSession = String(execTmux(["display-message", "-p", "-t", tmuxPaneId, "#{session_name}"]) ?? "").trim();
+    if (paneSession !== tmuxSessionName) {
+      throw new Error(`pane_session_mismatch:${tmuxPaneId}:${paneSession || "missing"}`);
+    }
+    for (const argv of buildSendPaneArgvs(tmuxPaneId, prompt, true)) {
+      execTmux(argv);
+    }
+  } catch (error) {
+    const message = errorMessage(error);
+    const reason = message.startsWith("tmux_instance_mismatch") || message.startsWith("pane_session_mismatch")
+      ? message
+      : "tmux_send_failed";
+    throw new Error(`unsupported_session_kind:tmux_prompt_delivery_failed:${tmuxSessionName}:${tmuxPaneId}:${reason}`);
+  }
+  return {
+    session_id: rawSession.session_id,
+    tmux_session_name: tmuxSessionName,
+    target: tmuxPaneId,
+    transport: "tmux_send_keys",
+  };
 }
 
 function projectQuestion(record: QuestionRecord): HermesQuestionSummary {
@@ -352,7 +427,7 @@ export async function hermesSubmitQuestionAnswer(
 export async function hermesSendPrompt(
   args: Record<string, unknown>,
   deps: HermesBridgeDeps = {},
-): Promise<HermesBridgeResult<{ followup_id: string; session_id: string; queue_path: string }>> {
+): Promise<HermesBridgeResult<{ followup_id?: string; session_id: string; queue_path?: string; transport?: string; tmux_session_name?: string; target?: string }>> {
   try {
     requireMutation(args);
     const cwd = resolveWorkingDirectoryForState(normalizeString(args.workingDirectory, "workingDirectory"));
@@ -361,14 +436,29 @@ export async function hermesSendPrompt(
     const prompt = normalizeString(args.prompt, "prompt", { required: true })!;
     const actor = normalizeString(args.actor, "actor") ?? "hermes-mcp";
     const inject = deps.injectExecFollowup ?? injectExecFollowup;
-    const result = await inject({ cwd, sessionId, prompt, actor });
-    return jsonResult({
-      followup_id: result.queued.id,
-      session_id: result.queued.session_id,
-      queue_path: result.queuePath,
-    });
+    try {
+      const result = await inject({ cwd, sessionId, prompt, actor });
+      return jsonResult({
+        followup_id: result.queued.id,
+        session_id: result.queued.session_id,
+        queue_path: result.queuePath,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.startsWith("job_not_input_accepting")) throw error;
+
+      const tmuxResult = await sendPromptToBoundTmuxSession(cwd, sessionId, prompt, deps);
+      if (tmuxResult) return jsonResult({ ...tmuxResult });
+
+      return failure(
+        "prompt_not_accepted",
+        `unsupported_session_kind:no_active_exec_session_or_tmux_binding:${sessionId}. ` +
+          "hermes_send_prompt supports active exec follow-up queues and OMX-managed tmux sessions with live tmux_session_name and tmux_pane_id bindings.",
+      );
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith("unsupported_session_kind")) return failure("prompt_not_accepted", message);
     if (message.startsWith("job_not_input_accepting")) return failure("prompt_not_accepted", message);
     if (message.includes("allow_mutation")) return failure("mutation_not_allowed", message);
     return failure("invalid_input", message);
@@ -389,11 +479,12 @@ export async function hermesStartSession(
     }
     const command = (deps.resolveOmxCliEntryPath ?? resolveOmxCliEntryPath)({ cwd }) ?? "omx";
     const launchArgs = ["--tmux", worktreeName ? `--worktree=${worktreeName}` : "--worktree", prompt];
+    const { TMUX: _tmux, TMUX_PANE: _tmuxPane, ...bridgeEnv } = process.env;
     const child = (deps.spawnProcess ?? spawn)(command, launchArgs, {
       cwd,
       detached: true,
       stdio: "ignore",
-      env: { ...process.env, OMX_HERMES_MCP_BRIDGE: "1" },
+      env: { ...bridgeEnv, OMX_HERMES_MCP_BRIDGE: "1" },
     }) as ChildProcess;
     child.unref();
     if (!child.pid) return failure("command_failed", "OMX session launcher did not report a pid");
