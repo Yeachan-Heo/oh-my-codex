@@ -8,7 +8,7 @@
 
 import { existsSync } from 'fs';
 import { appendFile, mkdir, rename, rm, stat, writeFile } from 'fs/promises';
-import { dirname, join } from 'path';
+import { dirname, join, relative } from 'path';
 import { DEFAULT_MARKER, paneHasActiveTask } from '../tmux-hook-engine.js';
 import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
 import { safeString, asNumber, isTerminalPhase } from './utils.js';
@@ -24,22 +24,6 @@ const LEADER_PANE_MISSING_NO_INJECTION_REASON = 'leader_pane_missing_no_injectio
 const LEADER_PANE_SHELL_NO_INJECTION_REASON = 'leader_pane_shell_no_injection';
 const TEAM_SHUTDOWN_NO_INJECTION_REASON = 'team_state_gone_or_shutdown';
 const TEAM_LOCK_HELD_REASON = 'suppressed_team_lock_held';
-
-function escapeRegExp(value) {
-  return safeString(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function teamStopNudgeAlreadyQueued(paneCapture, teamName) {
-  const capture = safeString(paneCapture);
-  const normalizedTeamName = safeString(teamName).trim();
-  if (!capture || !normalizedTeamName) return false;
-  const teamPattern = escapeRegExp(normalizedTeamName);
-  const stopNudgePattern = new RegExp(
-    `\\[OMX\\]\\s+worker-\\d+\\s+native Stop allowed\\.[\\s\\S]*?omx team status ${teamPattern}(?:\\s|\`|,|\\.)`,
-    'i',
-  );
-  return stopNudgePattern.test(capture);
-}
 
 async function teamStateAllowsWorkerStopNudge(stateDir, teamName) {
   const teamDir = join(stateDir, 'team', teamName);
@@ -91,10 +75,56 @@ async function releaseTeamStopNudgeLock(lockDir) {
   await rm(lockDir, { recursive: true, force: true }).catch(() => {});
 }
 
-async function writeStopNudgeStateIfTeamExists(teamDir, statePath, state) {
+async function ensureDirectoryUnderExistingTeam(teamDir, targetDir) {
   if (!existsSync(teamDir)) return false;
-  await writeStopNudgeState(statePath, state);
-  return true;
+  const rel = relative(teamDir, targetDir);
+  if (!rel) return true;
+  if (rel.startsWith('..')) throw new Error('state_path_outside_team_dir');
+
+  let current = teamDir;
+  for (const segment of rel.split(/[\\/]+/).filter(Boolean)) {
+    if (!existsSync(teamDir)) return false;
+    current = join(current, segment);
+    try {
+      await mkdir(current);
+    } catch (error) {
+      if (error?.code === 'ENOENT' && !existsSync(teamDir)) return false;
+      if (error?.code !== 'EEXIST') throw error;
+      const currentStat = await stat(current);
+      if (!currentStat.isDirectory()) throw error;
+    }
+  }
+  return existsSync(teamDir);
+}
+
+async function writeStopNudgeStateIfTeamExists(teamDir, statePath, state) {
+  const stateDir = dirname(statePath);
+  const ready = await ensureDirectoryUnderExistingTeam(teamDir, stateDir);
+  if (!ready) return false;
+  try {
+    const tmpPath = `${statePath}.tmp.${process.pid}`;
+    await writeFile(tmpPath, JSON.stringify(state, null, 2));
+    await rename(tmpPath, statePath);
+  } catch (error) {
+    if (error?.code === 'ENOENT' && !existsSync(teamDir)) return false;
+    throw error;
+  }
+  return existsSync(teamDir);
+}
+
+async function appendWorkerStopEventIfTeamExists(stateDir, teamName, event) {
+  const teamDir = join(stateDir, 'team', teamName);
+  const eventsDir = join(teamDir, 'events');
+  const ready = await ensureDirectoryUnderExistingTeam(teamDir, eventsDir);
+  if (!ready) return false;
+  const eventsPath = join(eventsDir, 'events.ndjson');
+  try {
+    await appendFile(eventsPath, JSON.stringify(event) + '\n');
+  } catch (error) {
+    if (error?.code === 'ENOENT' && !existsSync(teamDir)) return false;
+    throw error;
+  }
+  return existsSync(teamDir);
 }
 
 function resolveWorkerStopCooldownMs() {
@@ -117,20 +147,6 @@ async function resolveCanonicalLeaderPaneId(leaderPaneId) {
   return normalizedLeaderPaneId;
 }
 
-async function appendWorkerStopEvent(stateDir, teamName, event) {
-  const eventsDir = join(stateDir, 'team', teamName, 'events');
-  const eventsPath = join(eventsDir, 'events.ndjson');
-  await mkdir(eventsDir, { recursive: true }).catch(() => {});
-  await appendFile(eventsPath, JSON.stringify(event) + '\n').catch(() => {});
-}
-
-async function writeStopNudgeState(statePath, state) {
-  await mkdir(dirname(statePath), { recursive: true }).catch(() => {});
-  const tmpPath = `${statePath}.tmp.${process.pid}`;
-  await writeFile(tmpPath, JSON.stringify(state, null, 2));
-  await rename(tmpPath, statePath);
-}
-
 async function recordDeferred({
   stateDir,
   logsDir,
@@ -144,23 +160,26 @@ async function recordDeferred({
   paneCurrentCommand = '',
 }) {
   const nowIso = nextState.last_notified_at;
-  await writeStopNudgeState(statePath, {
+  const teamDir = join(stateDir, 'team', teamName);
+  const wroteState = await writeStopNudgeStateIfTeamExists(teamDir, statePath, {
     ...nextState,
     delivery: 'deferred',
     reason,
     pane_current_command: paneCurrentCommand || null,
   }).catch(() => {});
-  await appendWorkerStopEvent(stateDir, teamName, {
-    event_id: `worker-stop-deferred-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-    team: teamName,
-    type: 'worker_stop_leader_nudge',
-    worker: workerName,
-    to_worker: 'leader-fixed',
-    delivery: 'deferred',
-    reason,
-    created_at: nowIso,
-    source_type: SOURCE_TYPE,
-  });
+  if (wroteState) {
+    await appendWorkerStopEventIfTeamExists(stateDir, teamName, {
+      event_id: `worker-stop-deferred-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      team: teamName,
+      type: 'worker_stop_leader_nudge',
+      worker: workerName,
+      to_worker: 'leader-fixed',
+      delivery: 'deferred',
+      reason,
+      created_at: nowIso,
+      source_type: SOURCE_TYPE,
+    }).catch(() => {});
+  }
   await logTmuxHookEvent(logsDir, {
     timestamp: nowIso,
     type: 'leader_notification_deferred',
@@ -289,10 +308,6 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
     return { ok: true, result: TEAM_SHUTDOWN_NO_INJECTION_REASON };
   }
 
-  if (teamStopNudgeAlreadyQueued(paneGuard.paneCapture, teamName)) {
-    return { ok: true, result: 'suppressed_duplicate_queue' };
-  }
-
   const prompt =
     `[OMX] ${workerName} native Stop allowed. `
     + `Run \`omx team status ${teamName}\`, read worker messages/results, then assign next task, reconcile completion, or shut down. `
@@ -323,12 +338,12 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
       leader_pane_id: leaderPaneId || null,
       tmux_target: tmuxTarget,
     };
-    const wroteWorkerState = await writeStopNudgeStateIfTeamExists(teamDir, statePath, deliveryState).catch(() => false);
+    const wroteWorkerState = await writeStopNudgeStateIfTeamExists(teamDir, statePath, deliveryState);
     const wroteTeamState = wroteWorkerState
-      ? await writeStopNudgeStateIfTeamExists(teamDir, teamStatePath, deliveryState).catch(() => false)
+      ? await writeStopNudgeStateIfTeamExists(teamDir, teamStatePath, deliveryState)
       : false;
     if (wroteTeamState) {
-      await appendWorkerStopEvent(stateDir, teamName, {
+      await appendWorkerStopEventIfTeamExists(stateDir, teamName, {
         event_id: `worker-stop-nudge-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
         team: teamName,
         type: 'worker_stop_leader_nudge',
@@ -337,7 +352,7 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
         delivery: deliveryMode,
         created_at: nowIso,
         source_type: SOURCE_TYPE,
-      });
+      }).catch(() => {});
     }
     await logTmuxHookEvent(logsDir, {
       timestamp: nowIso,
@@ -363,6 +378,8 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
     if (!(await teamStateAllowsWorkerStopNudge(stateDir, teamName))) {
       return { ok: true, result: TEAM_SHUTDOWN_NO_INJECTION_REASON };
     }
+    // Worker Stop is already allowed before this helper runs; nudge failures are
+    // surfaced as deferred operational evidence instead of re-blocking Stop.
     await recordDeferred({
       stateDir,
       logsDir,

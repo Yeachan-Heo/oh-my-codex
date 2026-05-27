@@ -137,12 +137,22 @@ async function withLoreGuardConfig<T>(
 
 function buildWorkerStopFakeTmux(
   tmuxLogPath: string,
-  options: { failSend?: boolean; busyLeader?: boolean; captureText?: string; sendDelayMs?: number; removePathOnSend?: string } = {},
+  options: {
+    failSend?: boolean;
+    busyLeader?: boolean;
+    captureText?: string;
+    currentCommand?: string;
+    sendDelayMs?: number;
+    removePathOnSend?: string;
+    removePathOnCapture?: string;
+  } = {},
 ): string {
   const rawCaptureText = options.captureText ?? (options.busyLeader ? "• Working… (esc to interrupt)" : "› ready");
   const captureText = `'${rawCaptureText.replace(/'/g, "'\"'\"'")}'`;
+  const currentCommand = `'${(options.currentCommand ?? "codex").replace(/'/g, "'\"'\"'")}'`;
   const sendDelaySeconds = Math.max(0, options.sendDelayMs ?? 0) / 1000;
   const removePathOnSend = options.removePathOnSend ? `'${options.removePathOnSend.replace(/'/g, "'\"'\"'")}'` : "";
+  const removePathOnCapture = options.removePathOnCapture ? `'${options.removePathOnCapture.replace(/'/g, "'\"'\"'")}'` : "";
   return `#!/usr/bin/env bash
 set -eu
 echo "$@" >> "${tmuxLogPath}"
@@ -163,13 +173,14 @@ if [[ "$cmd" == "display-message" ]]; then
     "#{pane_id}") echo "%42" ;;
     "#{pane_current_path}") pwd ;;
     "#{pane_start_command}") echo "codex" ;;
-    "#{pane_current_command}") echo "codex" ;;
+    "#{pane_current_command}") printf '%s\\n' ${currentCommand} ;;
     "#S") echo "omx-team-worker-stop" ;;
     *) ;;
   esac
   exit 0
 fi
 if [[ "$cmd" == "capture-pane" ]]; then
+  ${removePathOnCapture ? `rm -rf ${removePathOnCapture}` : ""}
   printf '%s\\n' ${captureText}
   exit 0
 fi
@@ -8316,7 +8327,7 @@ exit 0
     }
   });
 
-  it("does not duplicate a queued same-team worker Stop nudge already visible in the leader queue", async () => {
+  it("does not treat old visible worker Stop transcript as pending queue state", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-queue-dedupe-"));
     const prevPath = process.env.PATH;
     try {
@@ -8351,10 +8362,62 @@ exit 0
         workerContext: { teamName, workerName: "worker-2" },
       });
 
-      assert.equal(result.result, "suppressed_duplicate_queue");
+      assert.equal(result.result, "queued");
       const tmuxLog = await readFile(tmuxLogPath, "utf-8");
-      assert.doesNotMatch(tmuxLog, /send-keys -t %42 -l \[OMX\] worker-2 native Stop allowed/);
-      assert.doesNotMatch(tmuxLog, /send-keys -t %42 Tab/);
+      assert.match(tmuxLog, /send-keys -t %42 -l \[OMX\] worker-2 native Stop allowed/);
+      assert.match(tmuxLog, /send-keys -t %42 Tab/);
+      const teamNudgeState = JSON.parse(await readFile(join(teamDir, "worker-stop-nudge.json"), "utf-8"));
+      assert.equal(teamNudgeState.worker, "worker-2");
+      assert.equal(teamNudgeState.delivery, "queued");
+    } finally {
+      if (typeof prevPath === "string") process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("reports deferred when non-teardown persistence failure prevents worker Stop nudge cooldown state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-persist-fail-"));
+    const prevPath = process.env.PATH;
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const logsDir = join(cwd, ".omx", "logs");
+      const teamName = "worker-stop-persist-fail";
+      const teamDir = join(stateDir, "team", teamName);
+      const fakeBinDir = join(cwd, "fake-bin");
+      const tmuxLogPath = join(cwd, "tmux.log");
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeJson(join(teamDir, "manifest.v2.json"), {
+        name: teamName,
+        tmux_session: "omx-team-worker-stop",
+        leader_pane_id: "%42",
+        workers: [{ name: "worker-1", index: 1, pane_id: "%10" }],
+      });
+      await writeFile(join(teamDir, "workers"), "not a directory");
+      await writeFile(join(fakeBinDir, "tmux"), buildWorkerStopFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, "tmux"), 0o755);
+      process.env.PATH = `${fakeBinDir}:${prevPath || ""}`;
+
+      const result = await maybeNudgeLeaderForAllowedWorkerStop({
+        stateDir,
+        logsDir,
+        workerContext: { teamName, workerName: "worker-1" },
+      });
+
+      assert.equal(result.result, "deferred");
+      assert.equal(existsSync(join(teamDir, "worker-stop-nudge.json")), false);
+      assert.equal(existsSync(join(teamDir, "workers", "worker-1", "worker-stop-nudge.json")), false);
+      const tmuxLog = await readFile(tmuxLogPath, "utf-8");
+      assert.match(tmuxLog, /send-keys -t %42 -l \[OMX\] worker-1 native Stop allowed/);
+      const deliveryLogPath = join(logsDir, `team-delivery-${new Date().toISOString().split("T")[0]}.jsonl`);
+      const deliveryEvents = (await readFile(deliveryLogPath, "utf-8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const deferredEvent = deliveryEvents.find((event) => event.event === "nudge_triggered" && event.result === "deferred");
+      assert.equal(deferredEvent?.team, teamName);
+      assert.equal(deferredEvent?.from_worker, "worker-1");
+      assert.match(String(deferredEvent?.reason || ""), /EEXIST|ENOTDIR|not a directory|file already exists/);
     } finally {
       if (typeof prevPath === "string") process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -8393,6 +8456,51 @@ exit 0
       assert.equal(existsSync(teamDir), false, "worker Stop delivery must not recreate removed team state");
       const tmuxLog = await readFile(tmuxLogPath, "utf-8");
       assert.match(tmuxLog, /send-keys -t %42 -l \[OMX\] worker-1 native Stop allowed/);
+    } finally {
+      if (typeof prevPath === "string") process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not recreate team state when teardown removes it before deferred worker Stop recording", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-worker-deferred-teardown-"));
+    const prevPath = process.env.PATH;
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const logsDir = join(cwd, ".omx", "logs");
+      const teamName = "worker-stop-deferred-teardown";
+      const teamDir = join(stateDir, "team", teamName);
+      const fakeBinDir = join(cwd, "fake-bin");
+      const tmuxLogPath = join(cwd, "tmux.log");
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeJson(join(teamDir, "manifest.v2.json"), {
+        name: teamName,
+        tmux_session: "omx-team-worker-stop",
+        leader_pane_id: "%42",
+        workers: [{ name: "worker-1", index: 1, pane_id: "%10" }],
+      });
+      await writeFile(
+        join(fakeBinDir, "tmux"),
+        buildWorkerStopFakeTmux(tmuxLogPath, {
+          currentCommand: "bash",
+          captureText: "$ ",
+          removePathOnCapture: teamDir,
+        }),
+      );
+      await chmod(join(fakeBinDir, "tmux"), 0o755);
+      process.env.PATH = `${fakeBinDir}:${prevPath || ""}`;
+
+      const result = await maybeNudgeLeaderForAllowedWorkerStop({
+        stateDir,
+        logsDir,
+        workerContext: { teamName, workerName: "worker-1" },
+      });
+
+      assert.equal(result.result, "team_state_gone_or_shutdown");
+      assert.equal(existsSync(teamDir), false, "deferred worker Stop recording must not recreate removed team state");
+      const tmuxLog = await readFile(tmuxLogPath, "utf-8");
+      assert.doesNotMatch(tmuxLog, /send-keys -t %42 -l \[OMX\] worker-1 native Stop allowed/);
     } finally {
       if (typeof prevPath === "string") process.env.PATH = prevPath;
       else delete process.env.PATH;
