@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -9,9 +9,11 @@ import {
   formatQuestionAnswerForInjection,
   formatQuestionAnswersForInjection,
   injectQuestionAnswerToPane,
+  findLiveQuestionsForSession,
   injectQuestionAnswersToPane,
   launchQuestionRenderer,
   resolveQuestionRendererStrategy,
+  supersedeLiveQuestionsForSession,
 } from '../renderer.js';
 import { buildSendPaneArgvs } from '../../notifications/tmux-detector.js';
 
@@ -878,5 +880,161 @@ describe('question answer injection', () => {
     assert.equal(ok, true);
     assert.deepEqual(calls, buildSendPaneArgvs('%11', '[omx question answered] first: a; second: d', true));
     assert.deepEqual(sleeps, [120, 100]);
+  });
+});
+
+
+describe('question renderer in-flight dedupe', () => {
+  function writeQuestionRecord(path: string, overrides: Record<string, unknown>): void {
+    writeFileSync(path, JSON.stringify({
+      kind: 'omx.question/v1',
+      question_id: 'question-default',
+      session_id: 'sess-dedupe',
+      created_at: '2026-05-27T00:00:00.000Z',
+      updated_at: '2026-05-27T00:00:00.000Z',
+      status: 'prompting',
+      question: 'Pick one',
+      options: [{ label: 'A', value: 'a' }],
+      allow_other: false,
+      other_label: 'Other',
+      multi_select: false,
+      type: 'single-answerable',
+      questions: [{
+        id: 'q-1',
+        question: 'Pick one',
+        options: [{ label: 'A', value: 'a' }],
+        allow_other: false,
+        other_label: 'Other',
+        multi_select: false,
+        type: 'single-answerable',
+      }],
+      renderer: {
+        renderer: 'tmux-pane',
+        target: '%41',
+        launched_at: '2026-05-27T00:00:00.000Z',
+      },
+      ...overrides,
+    }, null, 2));
+  }
+
+  it('finds only live prompting question renderers for the same session', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-question-dedupe-find-'));
+    try {
+      const dir = join(cwd, '.omx', 'state', 'sessions', 'sess-dedupe', 'questions');
+      mkdirSync(dir, { recursive: true });
+      writeQuestionRecord(join(dir, 'question-live.json'), {
+        question_id: 'question-live',
+        created_at: '2026-05-27T00:00:01.000Z',
+        renderer: { renderer: 'tmux-pane', target: '%41', launched_at: '2026-05-27T00:00:01.000Z' },
+      });
+      writeQuestionRecord(join(dir, 'question-dead.json'), {
+        question_id: 'question-dead',
+        created_at: '2026-05-27T00:00:02.000Z',
+        renderer: { renderer: 'tmux-pane', target: '%42', launched_at: '2026-05-27T00:00:02.000Z' },
+      });
+      writeQuestionRecord(join(dir, 'question-answered.json'), {
+        question_id: 'question-answered',
+        status: 'answered',
+        created_at: '2026-05-27T00:00:03.000Z',
+        renderer: { renderer: 'tmux-pane', target: '%43', launched_at: '2026-05-27T00:00:03.000Z' },
+      });
+
+      const live = findLiveQuestionsForSession(cwd, 'sess-dedupe', (args) => {
+        if (args[0] === 'list-panes' && args[2] === '%41') return '0\t%41\n';
+        if (args[0] === 'list-panes' && args[2] === '%42') throw new Error('missing pane');
+        if (args[0] === 'list-panes' && args[2] === '%43') return '0\t%43\n';
+        return '';
+      });
+
+      assert.deepEqual(live.map((item) => item.record.question_id), ['question-live']);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('marks prior live prompting panes superseded and kills them before a new tmux split', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-question-dedupe-launch-'));
+    try {
+      const dir = join(cwd, '.omx', 'state', 'sessions', 'sess-dedupe', 'questions');
+      mkdirSync(dir, { recursive: true });
+      const priorPath = join(dir, 'question-prior.json');
+      const nextPath = join(dir, 'question-next.json');
+      writeQuestionRecord(priorPath, {
+        question_id: 'question-prior',
+        renderer: {
+          renderer: 'tmux-pane',
+          target: '%41',
+          launched_at: '2026-05-27T00:00:00.000Z',
+        },
+      });
+      writeQuestionRecord(nextPath, {
+        question_id: 'question-next',
+        status: 'pending',
+        renderer: undefined,
+      });
+
+      const calls: string[][] = [];
+      const result = launchQuestionRenderer({
+        cwd,
+        recordPath: nextPath,
+        sessionId: 'sess-dedupe',
+        nowIso: '2026-05-27T00:01:00.000Z',
+        env: { TMUX: '/tmp/tmux-demo', TMUX_PANE: '%11' } as NodeJS.ProcessEnv,
+      }, {
+        strategy: 'inside-tmux',
+        execTmux: (args) => {
+          calls.push(args);
+          if (args[0] === 'display-message' && args.includes('#{session_attached}')) return '1\n';
+          if (args[0] === 'display-message' && args.includes('#{pane_height}')) return '40\n';
+          if (args[0] === 'list-panes' && args[2] === '%41') return '0\t%41\n';
+          if (args[0] === 'kill-pane') return '';
+          if (args[0] === 'split-window') return '%44\n';
+          if (args[0] === 'list-panes' && args[2] === '%44') return '0\t%44\n';
+          return '';
+        },
+        sleepSync: () => {},
+      });
+
+      assert.equal(result.target, '%44');
+      const prior = JSON.parse(readFileSync(priorPath, 'utf-8')) as { status: string; error?: { code?: string }; updated_at?: string };
+      assert.equal(prior.status, 'superseded');
+      assert.equal(prior.error?.code, 'question_superseded');
+      assert.equal(prior.updated_at, '2026-05-27T00:01:00.000Z');
+      const killIndex = calls.findIndex((call) => call.join(' ') === 'kill-pane -t %41');
+      const splitIndex = calls.findIndex((call) => call[0] === 'split-window');
+      assert.ok(killIndex >= 0);
+      assert.ok(splitIndex > killIndex);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not supersede answered records when launching a replacement renderer', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-question-dedupe-answered-'));
+    try {
+      const dir = join(cwd, '.omx', 'state', 'sessions', 'sess-dedupe', 'questions');
+      mkdirSync(dir, { recursive: true });
+      const answeredPath = join(dir, 'question-answered.json');
+      writeQuestionRecord(answeredPath, {
+        question_id: 'question-answered',
+        status: 'answered',
+        renderer: {
+          renderer: 'tmux-pane',
+          target: '%41',
+          launched_at: '2026-05-27T00:00:00.000Z',
+        },
+      });
+
+      const superseded = supersedeLiveQuestionsForSession(cwd, 'sess-dedupe', (args) => {
+        if (args[0] === 'list-panes') return '0\t%41\n';
+        throw new Error(`unexpected tmux call: ${args.join(' ')}`);
+      });
+
+      assert.deepEqual(superseded, []);
+      const answered = JSON.parse(readFileSync(answeredPath, 'utf-8')) as { status: string };
+      assert.equal(answered.status, 'answered');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });

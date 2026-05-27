@@ -53,7 +53,7 @@ export interface QuestionAnswerEntry {
 
 export type QuestionRendererKind = 'tmux-pane' | 'tmux-session' | 'inline-tty' | 'windows-console';
 
-export type QuestionStatus = 'pending' | 'prompting' | 'answered' | 'aborted' | 'error';
+export type QuestionStatus = 'pending' | 'prompting' | 'answered' | 'aborted' | 'error' | 'superseded';
 
 export interface QuestionRendererState {
   renderer: QuestionRendererKind;

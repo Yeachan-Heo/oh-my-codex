@@ -495,7 +495,7 @@ export async function markQuestionTerminalError(
 }
 
 export function isTerminalQuestionStatus(status: QuestionStatus): boolean {
-  return status === 'answered' || status === 'aborted' || status === 'error';
+  return status === 'answered' || status === 'aborted' || status === 'error' || status === 'superseded';
 }
 
 export async function waitForQuestionTerminalState(
