@@ -120,13 +120,13 @@ describe('workflow transition rules', () => {
   });
 
 
-  it('allows autopilot to return to ralplan for non-clean code-review cycles', () => {
+  it('does not auto-complete Autopilot when starting ralplan as a child-stage name', () => {
     const decision = evaluateWorkflowTransition(['autopilot'], 'ralplan');
-    assert.equal(decision.allowed, true);
-    assert.equal(decision.kind, 'auto-complete');
-    assert.deepEqual(decision.autoCompleteModes, ['autopilot']);
-    assert.deepEqual(decision.resultingModes, ['ralplan']);
-    assert.equal(decision.transitionMessage, 'mode transiting: autopilot -> ralplan');
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.kind, 'deny');
+    assert.equal(decision.denialReason, 'rollback');
+    assert.deepEqual(decision.autoCompleteModes, []);
+    assert.deepEqual(decision.resultingModes, ['autopilot']);
   });
 
   it('formats transition audit messages', () => {

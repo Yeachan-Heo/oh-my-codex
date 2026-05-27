@@ -1959,21 +1959,29 @@ deepMaxRounds = 21
   });
 
   it('emits a warning when skill-active-state persistence fails', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-persist-fail-'));
     const warnings: unknown[][] = [];
     mock.method(console, 'warn', (...args: unknown[]) => {
       warnings.push(args);
     });
 
-    const result = await recordSkillActivation({
-      stateDir: join('/definitely-missing', 'nested', 'state-dir'),
-        text: 'please run $autopilot',
-      nowIso: '2026-02-25T00:00:00.000Z',
-    });
+    try {
+      const blockingFile = join(cwd, 'state-root-file');
+      await writeFile(blockingFile, 'not a directory');
 
-    assert.ok(result);
-    assert.equal(result.skill, 'autopilot');
-    assert.equal(warnings.length, 1);
-    assert.match(String(warnings[0][0]), /failed to persist keyword activation state/);
+      const result = await recordSkillActivation({
+        stateDir: join(blockingFile, 'nested', 'state-dir'),
+        text: 'please run $autopilot',
+        nowIso: '2026-02-25T00:00:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'autopilot');
+      assert.equal(warnings.length, 1);
+      assert.match(String(warnings[0][0]), /failed to persist keyword activation state/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it('preserves activated_at for same-skill continuation', async () => {

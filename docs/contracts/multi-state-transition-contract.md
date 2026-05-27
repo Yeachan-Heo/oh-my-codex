@@ -112,4 +112,4 @@ Implementation should be considered complete only when tests prove:
 4. unsupported overlaps deny without mutation
 5. denial messages mention both `omx state` and `omx_state.*`
 6. HUD / overlay / stop-hook consumers honor the combined set consistently
-7. `autopilot` and `autoresearch` still reject unsupported overlap attempts; `autopilot -> ralplan` is the only review-driven planning loopback exception
+7. `autopilot` and `autoresearch` still reject unsupported overlap attempts; Autopilot review-driven planning loopbacks keep `autopilot` active and update its `current_phase` to `ralplan` instead of starting standalone `ralplan`
