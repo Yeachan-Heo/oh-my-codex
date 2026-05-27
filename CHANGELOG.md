@@ -4,6 +4,33 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.18.6] - 2026-05-27
+
+Patch release for the post-`0.18.5` Ultragoal/HUD rendering follow-up: adaptive HUD line budgets, tmux pane sizing from the same render policy, clearer current-Ultragoal accenting, ANSI-safe truncation, and watch-mode row-budget protection.
+
+### Changed
+
+- **Ultragoal HUD line budget is adaptive** — ordinary sessions keep the compact default while active Ultragoal state can use up to three bounded lines.
+- **HUD pane sizing follows render policy** — tmux reconcile/resize behavior now shares the Ultragoal-aware line-budget helper used by rendering.
+- **Current Ultragoal context is clearer** — the active goal uses a distinct magenta accent and compact output omits lower-priority next-goal text.
+
+### Fixed
+
+- **ANSI truncation is safer** — constrained-width truncation preserves ANSI styling.
+- **Watch-mode output respects the row budget** — watch rendering avoids adding an extra terminal row.
+
+### PRs
+
+- #2555
+
+### Issues
+
+- No separately closed GitHub issues were found for the `v0.18.5..HEAD` release range; the release scope is represented by the merged PR inventory above.
+
+### Verification
+
+- Release readiness evidence is tracked in `docs/qa/release-readiness-0.18.6.md`.
+
 ## [0.18.5] - 2026-05-27
 
 Patch release for the post-`0.18.4` Ultragoal/HUD operator-experience train: clearer Ultragoal status when Codex goal storage is unavailable, more readable and compact HUD summaries, duplicate HUD pane prevention, safer `omx question`/Autopilot user-decision handling, narrower doctor warnings, and mandatory independent final review evidence for Ultragoal completion.
