@@ -2728,6 +2728,8 @@ standardMaxRounds = 15
       );
       assert.match(message, /Autopilot protocol:/);
       assert.match(message, /deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa/);
+      assert.match(message, /structured question chain, not a one-question gate/);
+      assert.match(message, /Do not advance from deep-interview to ralplan merely because the first question was answered/);
       assert.match(message, /Planner output has been reviewed sequentially by Architect and then Critic/);
       assert.match(message, /do not hand off to Ultragoal or implementation until .*ralplan_architect_review.*ralplan_critic_review/);
     } finally {
@@ -3280,10 +3282,128 @@ ${JSON.stringify({
         (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
       );
       assert.match(message, /"keep going" -> ralph/);
+      assert.match(message, /Autopilot protocol:/);
+      assert.match(message, /structured question chain, not a one-question gate/);
+      assert.match(message, /Do not advance from deep-interview to ralplan merely because the first question was answered/);
       assert.doesNotMatch(message, /denied workflow keyword/i);
       assert.doesNotMatch(message, /Unsupported workflow overlap: autopilot \+ ralph\./);
       assert.doesNotMatch(message, /Prompt-side `\$ralph` activation/);
       assert.equal(existsSync(join(sessionDir, "ralph-state.json")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+
+  it("keeps omx question answers on the active autopilot skill so the interview chain guidance is injected", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-question-answer-continuation-"));
+    try {
+      const sessionId = "sess-autopilot-question-answer";
+      const sessionDir = join(cwd, ".omx", "state", "sessions", sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "autopilot",
+        keyword: "$autopilot",
+        phase: "deep-interview",
+        initialized_mode: "autopilot",
+        initialized_state_path: `.omx/state/sessions/${sessionId}/autopilot-state.json`,
+        session_id: sessionId,
+        active_skills: [
+          { skill: "autopilot", phase: "deep-interview", active: true, session_id: sessionId },
+        ],
+      });
+      await writeJson(join(sessionDir, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "deep-interview",
+        started_at: "2026-04-19T00:00:00.000Z",
+        updated_at: "2026-04-19T00:10:00.000Z",
+        session_id: sessionId,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-autopilot-question-answer",
+          turn_id: "turn-autopilot-question-answer",
+          prompt: "[omx question answered] semantic_marker_expansion $ralplan",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.skill, "autopilot");
+      const message = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(message, /continued active workflow skill "autopilot"/);
+      assert.match(message, /Autopilot protocol:/);
+      assert.match(message, /structured question chain, not a one-question gate/);
+      assert.match(message, /This turn is a marked omx question answer/);
+      assert.match(message, /do not close the interview, write ralplan artifacts, or set current_phase=ralplan in the same turn/);
+      assert.match(message, /Ask the next deep-interview follow-up instead/);
+      assert.match(message, /Do not advance from deep-interview to ralplan merely because the first question was answered/);
+      assert.doesNotMatch(message, /denied workflow keyword/i);
+      assert.equal(existsSync(join(sessionDir, "ralplan-state.json")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps deep-interview bridge guidance on marked question answers with workflow-like tokens", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-question-answer-continuation-"));
+    try {
+      const sessionId = "sess-deep-interview-question-answer";
+      const sessionDir = join(cwd, ".omx", "state", "sessions", sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "deep-interview",
+        keyword: "$deep-interview",
+        phase: "planning",
+        initialized_mode: "deep-interview",
+        initialized_state_path: `.omx/state/sessions/${sessionId}/deep-interview-state.json`,
+        session_id: sessionId,
+        active_skills: [
+          { skill: "deep-interview", phase: "planning", active: true, session_id: sessionId },
+        ],
+      });
+      await writeJson(join(sessionDir, "deep-interview-state.json"), {
+        active: true,
+        mode: "deep-interview",
+        current_phase: "intent-first",
+        started_at: "2026-04-21T10:00:00.000Z",
+        updated_at: "2026-04-21T10:00:00.000Z",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-deep-interview-question-answer",
+          turn_id: "turn-deep-interview-question-answer",
+          prompt: "[omx question answered] answer text $ralplan",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.skill, "deep-interview");
+      const message = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(message, /continued active workflow skill "deep-interview"/);
+      assert.match(message, /workflow-like tokens inside the marked omx question answer are treated as answer text/);
+      assert.match(message, /Deep-interview is active, but this session is not attached to tmux/);
+      assert.match(message, /native structured question tool when available/);
+      assert.doesNotMatch(message, /detected workflow keyword "\$ralplan" -> ralplan/);
+      assert.equal(existsSync(join(sessionDir, "ralplan-state.json")), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

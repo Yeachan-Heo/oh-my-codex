@@ -31,7 +31,8 @@ Autopilot must not run a separate broad expansion/planning/execution/QA/validati
 
 1. **Phase `deep-interview`** — Socratic requirements clarification gate
    - Run or resume `$deep-interview` to clarify intent, scope, non-goals, constraints, and decision boundaries.
-   - Required handoff artifact: a clarified spec or concise requirements summary suitable for `$ralplan`.
+   - Deep-interview is a structured question chain, not a one-question gate; after a user answers an `omx question`, ask the next useful question unless requirements are explicitly complete.
+   - Required handoff artifact: a clarified spec or concise requirements summary suitable for `$ralplan`, including an explicit interview-complete rationale when leaving deep-interview.
 
 2. **Phase `ralplan`** — consensus planning gate
    - Ground the task with pre-context intake and the deep-interview artifact.
@@ -126,7 +127,7 @@ Required fields:
 ```
 
 - **On start**: `omx state write --input '{"mode":"autopilot","active":true,"current_phase":"deep-interview","iteration":1,"review_cycle":0,"state":{"phase_cycle":["deep-interview","ralplan","ultragoal","code-review","ultraqa"],"handoff_artifacts":{"context_snapshot_path":"<snapshot-path>","deep_interview":null,"ralplan":null,"ralplan_consensus_gate":{"required":true,"sequence":["architect-review","critic-review"],"planning_artifacts_are_not_consensus":true,"required_review_roles":["architect","critic"],"ralplan_architect_review":null,"ralplan_critic_review":null,"complete":false},"ultragoal":null,"code_review":null,"ultraqa":null},"review_verdict":null,"qa_verdict":null,"return_to_ralplan_reason":null}}' --json`
-- **On deep-interview -> ralplan**: set `current_phase:"ralplan"`, persist the clarified spec/requirements under `handoff_artifacts.deep_interview`.
+- **On deep-interview -> ralplan**: only after the interview chain is explicitly complete; set `current_phase:"ralplan"`, persist the clarified spec/requirements under `handoff_artifacts.deep_interview`, and include the interview-complete rationale. Do not leave deep-interview merely because the first `omx question` was answered.
 - **On ralplan -> ultragoal**: only after `ralplan_consensus_gate.complete:true`, with `ralplan_architect_review.agent_role:"architect"` and `ralplan_architect_review.verdict:"approve"` recorded before `ralplan_critic_review.agent_role:"critic"` and `ralplan_critic_review.verdict:"approve"`; set `current_phase:"ultragoal"` and persist the plan/test-spec paths under `handoff_artifacts.ralplan`.
 - **On missing ralplan consensus evidence**: keep `current_phase:"ralplan"`, persist `ralplan_consensus_gate.complete:false` with `blocked_reason`, and report an explicit blocker or max-iteration outcome instead of handing off to execution.
 - **On ultragoal -> code-review**: set `current_phase:"code-review"`, persist implementation/test/ledger evidence under `handoff_artifacts.ultragoal`.
