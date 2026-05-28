@@ -20,6 +20,7 @@ import { evaluateRalphCompletionAuditEvidence } from '../ralph/completion-audit.
 import { ensureCanonicalRalphArtifacts } from '../ralph/persistence.js';
 import { RALPH_PHASES, validateAndNormalizeRalphState } from '../ralph/contract.js';
 import { applyRunOutcomeContract } from '../runtime/run-outcome.js';
+import { readUltragoalState } from '../hud/state.js';
 import {
   SKILL_ACTIVE_STATE_MODE,
   readSkillActiveState,
@@ -170,6 +171,19 @@ export async function listStateStatuses(
       } catch {
         statuses[currentMode] = { error: 'malformed state file' };
       }
+    }
+  }
+
+  if (!mode || mode === 'ultragoal') {
+    const ultragoal = await readUltragoalState(cwd).catch(() => null);
+    if (ultragoal && (ultragoal.active || (mode === 'ultragoal' && !seenModes.has('ultragoal')))) {
+      statuses.ultragoal = {
+        active: ultragoal.active,
+        phase: ultragoal.status,
+        path: join(cwd, '.omx', 'ultragoal', 'goals.json'),
+        data: ultragoal,
+        source: 'ultragoal-artifacts',
+      };
     }
   }
 

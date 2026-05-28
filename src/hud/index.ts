@@ -398,17 +398,20 @@ async function launchTmuxPane(cwd: string, flags: HudFlags): Promise<void> {
         leaderPaneId: currentPaneId,
       })
     : [];
-  if (existingHudPaneIds.length === 1) {
+  if (existingHudPaneIds.length >= 1) {
+    const [keeperPaneId, ...duplicatePaneIds] = existingHudPaneIds;
+    for (const paneId of duplicatePaneIds) {
+      killTmuxPane(paneId);
+    }
     const config = await readHudConfig(cwd);
     const ctx = await readAllState(cwd, config);
     const desiredHeight = getHudRenderMaxLines(ctx);
-    resizeTmuxPane(existingHudPaneIds[0], desiredHeight);
-    if (currentPaneId) registerHudResizeHook(existingHudPaneIds[0], currentPaneId, desiredHeight);
-    console.log('HUD already running in tmux pane. Reused existing HUD pane.');
+    resizeTmuxPane(keeperPaneId, desiredHeight);
+    if (currentPaneId) registerHudResizeHook(keeperPaneId, currentPaneId, desiredHeight);
+    console.log(duplicatePaneIds.length > 0
+      ? 'HUD already running in tmux pane. Removed duplicate HUD panes and reused existing HUD pane.'
+      : 'HUD already running in tmux pane. Reused existing HUD pane.');
     return;
-  }
-  for (const paneId of existingHudPaneIds) {
-    killTmuxPane(paneId);
   }
 
   const config = await readHudConfig(cwd);

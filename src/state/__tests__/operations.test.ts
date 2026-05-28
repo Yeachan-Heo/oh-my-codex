@@ -123,6 +123,86 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('surfaces active ultragoal artifacts in list-active without mode state files', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ultragoal-artifact-'));
+    try {
+      await mkdir(join(wd, '.omx', 'ultragoal'), { recursive: true });
+      await writeFile(
+        join(wd, '.omx', 'ultragoal', 'goals.json'),
+        JSON.stringify({
+          activeGoalId: 'G001',
+          goals: [{
+            id: 'G001',
+            title: 'Fix duplicate HUD panes',
+            objective: 'Keep one HUD renderer per leader.',
+            status: 'in_progress',
+          }],
+        }, null, 2),
+      );
+
+      const activeResponse = await executeStateOperation('state_list_active', {
+        workingDirectory: wd,
+      });
+      assert.deepEqual(activeResponse.payload, { active_modes: ['ultragoal'] });
+
+      const statusResponse = await executeStateOperation('state_get_status', {
+        workingDirectory: wd,
+        mode: 'ultragoal',
+      });
+      const statuses = (statusResponse.payload as {
+        statuses?: Record<string, { active?: boolean; phase?: string; path?: string; source?: string }>;
+      }).statuses || {};
+      assert.equal(statuses.ultragoal?.active, true);
+      assert.equal(statuses.ultragoal?.phase, 'in_progress');
+      assert.equal(statuses.ultragoal?.path, join(wd, '.omx', 'ultragoal', 'goals.json'));
+      assert.equal(statuses.ultragoal?.source, 'ultragoal-artifacts');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers active ultragoal artifacts over stale inactive mode state', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ultragoal-stale-state-'));
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'ultragoal'), { recursive: true });
+      await writeFile(
+        join(wd, '.omx', 'state', 'ultragoal-state.json'),
+        JSON.stringify({ active: false, current_phase: 'cleared' }, null, 2),
+      );
+      await writeFile(
+        join(wd, '.omx', 'ultragoal', 'goals.json'),
+        JSON.stringify({
+          activeGoalId: 'G001',
+          goals: [{
+            id: 'G001',
+            title: 'Fix duplicate HUD panes',
+            objective: 'Keep one HUD renderer per leader.',
+            status: 'in_progress',
+          }],
+        }, null, 2),
+      );
+
+      const activeResponse = await executeStateOperation('state_list_active', {
+        workingDirectory: wd,
+      });
+      assert.deepEqual(activeResponse.payload, { active_modes: ['ultragoal'] });
+
+      const statusResponse = await executeStateOperation('state_get_status', {
+        workingDirectory: wd,
+        mode: 'ultragoal',
+      });
+      const statuses = (statusResponse.payload as {
+        statuses?: Record<string, { active?: boolean; phase?: string; source?: string }>;
+      }).statuses || {};
+      assert.equal(statuses.ultragoal?.active, true);
+      assert.equal(statuses.ultragoal?.phase, 'in_progress');
+      assert.equal(statuses.ultragoal?.source, 'ultragoal-artifacts');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('does not treat root fallback as active for explicit session list-active decisions', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-active-scope-'));
     try {

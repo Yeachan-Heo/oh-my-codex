@@ -547,6 +547,67 @@ describe('runWatchMode', () => {
 });
 
 describe('hudCommand --tmux', () => {
+  it('removes duplicate same-leader HUD panes and reuses one when launched with --tmux', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'omx-hud-tmux-duplicate-test-'));
+    const logPath = join(tmp, 'tmux.log');
+    const fakeBin = join(tmp, 'bin');
+    await mkdir(fakeBin);
+    const tmuxPath = join(fakeBin, 'tmux');
+    await writeFile(tmuxPath, `#!/usr/bin/env bash
+printf '%s\n' "$*" >> ${JSON.stringify(logPath)}
+if [[ "$1" == "display-message" && "$*" == *'#{session_id}'* ]]; then
+  printf '$7\t@3\n'
+  exit 0
+fi
+if [[ "$1" == "list-panes" ]]; then
+  printf '%s\n' '%1	zsh	zsh'
+  printf '%s\n' "%2	node	exec env OMX_SESSION_ID='sess-a' OMX_TMUX_HUD_LEADER_PANE='%1' /node /omx.js hud --watch"
+  printf '%s\n' "%3	node	exec env OMX_SESSION_ID='sess-a' OMX_TMUX_HUD_LEADER_PANE='%1' /node /omx.js hud --watch"
+  exit 0
+fi
+if [[ "$1" == "resize-pane" || "$1" == "set-hook" || "$1" == "kill-pane" ]]; then
+  exit 0
+fi
+if [[ "$1" == "split-window" ]]; then
+  echo '%9'
+  exit 0
+fi
+exit 0
+`);
+    await chmod(tmuxPath, 0o755);
+
+    const previousEnv = {
+      PATH: process.env.PATH,
+      TMUX: process.env.TMUX,
+      TMUX_PANE: process.env.TMUX_PANE,
+      OMX_SESSION_ID: process.env.OMX_SESSION_ID,
+    };
+    const previousLog = console.log;
+    const logs: string[] = [];
+    try {
+      process.env.PATH = `${fakeBin}${delimiter}${process.env.PATH ?? ''}`;
+      process.env.TMUX = '/tmp/tmux-1000/default,12345,0';
+      process.env.TMUX_PANE = '%1';
+      process.env.OMX_SESSION_ID = 'sess-a';
+      console.log = (message?: unknown) => { logs.push(String(message ?? '')); };
+
+      await hudCommand(['--tmux']);
+
+      const tmuxLog = await readFile(logPath, 'utf8');
+      assert.match(tmuxLog, /list-panes -t %1 -F #\{pane_id\}\t#\{pane_current_command\}\t#\{pane_start_command\}/);
+      assert.match(tmuxLog, /kill-pane -t %3/);
+      assert.match(tmuxLog, /resize-pane -t %2 -y \d+/);
+      assert.doesNotMatch(tmuxLog, /split-window/);
+      assert.ok(logs.some((line) => line.includes('Removed duplicate HUD panes and reused existing HUD pane')));
+    } finally {
+      console.log = previousLog;
+      for (const [key, value] of Object.entries(previousEnv)) {
+        if (typeof value === 'string') process.env[key] = value;
+        else delete process.env[key];
+      }
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
   it('reuses a same-session HUD pane when TMUX_PANE is empty instead of splitting a duplicate', async () => {
     const tmp = await mkdtemp(join(tmpdir(), 'omx-hud-tmux-test-'));
     const logPath = join(tmp, 'tmux.log');

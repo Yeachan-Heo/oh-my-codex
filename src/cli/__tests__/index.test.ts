@@ -3127,12 +3127,15 @@ describe("detached tmux new-session sequencing", () => {
     assert.doesNotMatch(argsText, /fake-provider-key/);
   });
 
-  it("runCodex coalesces stale same-leader HUD panes across session ids", async () => {
+  it("runCodex coalesces stale same-leader HUD panes across session ids and reuses a keeper", async () => {
     const source = await readFile(join(repoRoot, "src", "cli", "index.ts"), "utf8");
     assert.match(
       source,
       /const staleHudPaneIds = currentPaneId\s*\? listHudWatchPaneIdsInCurrentWindow\(currentPaneId, \{ sessionId, leaderPaneId: currentPaneId \}\)\s*: \[\];/,
     );
+    assert.match(source, /const \[keeperHudPaneId, \.\.\.duplicateHudPaneIds\] = staleHudPaneIds;/);
+    assert.match(source, /for \(const paneId of duplicateHudPaneIds\) \{\s*killTmuxPane\(paneId\);\s*\}/);
+    assert.match(source, /if \(keeperHudPaneId\) \{\s*hudPaneId = keeperHudPaneId;/);
     assert.doesNotMatch(
       source,
       /const staleHudPaneIds = listHudWatchPaneIdsInCurrentWindow\(currentPaneId, \{ leaderPaneId: currentPaneId \}\);/,

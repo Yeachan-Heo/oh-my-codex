@@ -128,6 +128,7 @@ import { cleanCodexModelAvailabilityNuxIfNeeded, extractSharedMcpRegistryServers
 import type { UnifiedMcpRegistryServer } from "../config/mcp-registry.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../hud/constants.js";
+import { readUltragoalState } from "../hud/state.js";
 import { OMX_TMUX_HUD_OWNER_ENV } from "../hud/reconcile.js";
 import {
   createHudWatchPane as createSharedHudWatchPane,
@@ -138,6 +139,7 @@ import {
   parsePaneIdFromTmuxOutput,
   reapDeadHudPanes,
   registerHudResizeHook,
+  resizeTmuxPane,
 } from "../hud/tmux.js";
 
 export { parseTmuxPaneSnapshot, isHudWatchPane, findHudWatchPaneIds } from "../hud/tmux.js";
@@ -1844,7 +1846,12 @@ async function showStatus(): Promise<void> {
   try {
     const refs = await listModeStateFilesWithScopePreference(cwd);
     const states = refs.map((ref) => ref.path);
+    const ultragoalState = await readUltragoalState(cwd).catch(() => null);
     if (states.length === 0) {
+      if (ultragoalState?.active) {
+        console.log(`ultragoal: ACTIVE (phase: ${ultragoalState.status})`);
+        return;
+      }
       console.log("No active modes.");
       return;
     }
@@ -1859,9 +1866,13 @@ async function showStatus(): Promise<void> {
       }
       const file = basename(path);
       const mode = file.replace("-state.json", "");
+      if (mode === "ultragoal" && ultragoalState?.active) continue;
       console.log(
         `${mode}: ${state.active === true ? "ACTIVE" : "inactive"} (phase: ${String(state.current_phase || "n/a")})`,
       );
+    }
+    if (ultragoalState?.active) {
+      console.log(`ultragoal: ACTIVE (phase: ${ultragoalState.status})`);
     }
   } catch (err) {
     logCliOperationFailure(err);
@@ -4085,22 +4096,36 @@ function runCodex(
     const staleHudPaneIds = currentPaneId
       ? listHudWatchPaneIdsInCurrentWindow(currentPaneId, { sessionId, leaderPaneId: currentPaneId })
       : [];
-    for (const paneId of staleHudPaneIds) {
+
+    let hudPaneId: string | null = null;
+    const [keeperHudPaneId, ...duplicateHudPaneIds] = staleHudPaneIds;
+    for (const paneId of duplicateHudPaneIds) {
       killTmuxPane(paneId);
     }
 
-    let hudPaneId: string | null = null;
-    try {
-      hudPaneId = createHudWatchPane(cwd, hudCmd, {
-        heightLines: HUD_TMUX_HEIGHT_LINES,
-        targetPaneId: currentPaneId,
-      });
-      if (hudPaneId && currentPaneId) {
-        registerHudResizeHook(hudPaneId, currentPaneId, HUD_TMUX_HEIGHT_LINES);
+    if (keeperHudPaneId) {
+      hudPaneId = keeperHudPaneId;
+      try {
+        resizeTmuxPane(hudPaneId, HUD_TMUX_HEIGHT_LINES);
+        if (currentPaneId) {
+          registerHudResizeHook(hudPaneId, currentPaneId, HUD_TMUX_HEIGHT_LINES);
+        }
+      } catch (err) {
+        logCliOperationFailure(err);
       }
-    } catch (err) {
-      logCliOperationFailure(err);
-      // HUD split failed, continue without it
+    } else {
+      try {
+        hudPaneId = createHudWatchPane(cwd, hudCmd, {
+          heightLines: HUD_TMUX_HEIGHT_LINES,
+          targetPaneId: currentPaneId,
+        });
+        if (hudPaneId && currentPaneId) {
+          registerHudResizeHook(hudPaneId, currentPaneId, HUD_TMUX_HEIGHT_LINES);
+        }
+      } catch (err) {
+        logCliOperationFailure(err);
+        // HUD split failed, continue without it
+      }
     }
 
     // Enable mouse scrolling at session start so scroll works before team

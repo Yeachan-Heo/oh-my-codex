@@ -134,7 +134,7 @@ export async function reconcileHudForPromptSubmit(
     };
   }
 
-  if (hudPaneIds.length > 1 && !resolvedSessionId) {
+  if (hudPaneIds.length > 1) {
     const [keeperPaneId, ...extraPaneIds] = hudPaneIds;
     for (const paneId of extraPaneIds) {
       killPane(paneId);
