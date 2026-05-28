@@ -756,6 +756,21 @@ exit 1
       const t = await createTask('team-owner-write-fail', { subject: 'a', description: 'd', status: 'pending' }, cwd);
 
       previousUmask = process.umask(0o222);
+      const probeDir = join(cwd, 'claim-lock-permission-probe');
+      await mkdir(probeDir);
+      try {
+        await writeFile(join(probeDir, 'owner'), 'probe');
+        // Root and some permissive filesystems can still write through the
+        // umask-created non-writable directory, so this failure mode cannot be
+        // exercised deterministically in that environment.
+        return;
+      } catch {
+        // Expected on normal non-root POSIX filesystems; continue with the
+        // claim-lock cleanup assertion below.
+      } finally {
+        await rm(probeDir, { recursive: true, force: true });
+      }
+
       await assert.rejects(
         () => claimTask('team-owner-write-fail', t.id, 'worker-1', t.version ?? 1, cwd),
         /(EACCES|EPERM|permission denied)/i,
