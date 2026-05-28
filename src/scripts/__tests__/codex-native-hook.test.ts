@@ -1201,6 +1201,66 @@ describe("codex native hook dispatch", () => {
     }
   });
 
+  it("keeps a self-parented native role thread as subagent evidence", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-self-parented-subagent-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const canonicalSessionId = "omx-autopilot-session";
+      const nativeRoleThreadId = "codex-architect-thread";
+      await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
+      await writeSessionStart(cwd, canonicalSessionId, {
+        nativeSessionId: nativeRoleThreadId,
+      });
+
+      const transcriptPath = join(cwd, "architect-subagent-rollout.jsonl");
+      await writeFile(
+        transcriptPath,
+        `${JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: nativeRoleThreadId,
+            source: {
+              subagent: {
+                thread_spawn: {
+                  parent_thread_id: nativeRoleThreadId,
+                  depth: 1,
+                  agent_nickname: "Architect",
+                  agent_role: "architect",
+                },
+              },
+            },
+            agent_nickname: "Architect",
+            agent_role: "architect",
+          },
+        })}\n`,
+      );
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: nativeRoleThreadId,
+          transcript_path: transcriptPath,
+        },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+
+      const tracking = JSON.parse(
+        await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"),
+      ) as {
+        sessions?: Record<string, {
+          leader_thread_id?: string;
+          threads?: Record<string, { kind?: string; mode?: string }>;
+        }>;
+      };
+      assert.equal(tracking.sessions?.[canonicalSessionId]?.leader_thread_id, undefined);
+      assert.equal(tracking.sessions?.[canonicalSessionId]?.threads?.[nativeRoleThreadId]?.kind, "subagent");
+      assert.equal(tracking.sessions?.[canonicalSessionId]?.threads?.[nativeRoleThreadId]?.mode, "architect");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not attach a subagent SessionStart to an unrelated canonical leader", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-session-start-mismatch-"));
     try {
@@ -2711,6 +2771,61 @@ standardMaxRounds = 15
       assert.equal(existsSync(join(stateDir, "sessions", canonicalSessionId, "skill-active-state.json")), false);
       assert.equal(existsSync(join(stateDir, "sessions", canonicalSessionId, "ralplan-state.json")), false);
       assert.equal(existsSync(join(stateDir, "sessions", childNativeSessionId, "ralplan-state.json")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not treat a corrupt leader kind=subagent tracker entry as native subagent prompt scope", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-corrupt-leader-subagent-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const canonicalSessionId = "sess-corrupt-leader";
+      const leaderNativeSessionId = "native-corrupt-leader";
+      const nowIso = new Date().toISOString();
+
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: canonicalSessionId,
+        native_session_id: leaderNativeSessionId,
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [canonicalSessionId]: {
+            session_id: canonicalSessionId,
+            leader_thread_id: leaderNativeSessionId,
+            updated_at: nowIso,
+            threads: {
+              [leaderNativeSessionId]: {
+                thread_id: leaderNativeSessionId,
+                kind: "subagent",
+                first_seen_at: nowIso,
+                last_seen_at: nowIso,
+                turn_count: 2,
+              },
+            },
+          },
+        },
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: leaderNativeSessionId,
+          thread_id: leaderNativeSessionId,
+          turn_id: "turn-corrupt-leader",
+          prompt: "$autopilot continue this review blocker fix",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.skill, "autopilot");
+      assert.equal(
+        existsSync(join(stateDir, "sessions", canonicalSessionId, "autopilot-state.json")),
+        true,
+      );
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

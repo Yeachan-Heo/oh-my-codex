@@ -37,6 +37,8 @@ export interface RecordSubagentTurnInput {
   turnId?: string;
   timestamp?: string;
   mode?: string;
+  kind?: 'leader' | 'subagent';
+  leaderThreadId?: string;
   completed?: boolean;
   completionSource?: string;
 }
@@ -59,6 +61,17 @@ export function createSubagentTrackingState(): SubagentTrackingState {
     schemaVersion: SUBAGENT_TRACKING_SCHEMA_VERSION,
     sessions: {},
   };
+}
+
+export function isTrustedSubagentThread(
+  session: TrackedSubagentSession | null | undefined,
+  threadId: string,
+): boolean {
+  const normalizedThreadId = threadId.trim();
+  if (!session || !normalizedThreadId) return false;
+  const leaderThreadId = session.leader_thread_id?.trim();
+  if (leaderThreadId && leaderThreadId === normalizedThreadId) return false;
+  return session.threads[normalizedThreadId]?.kind === 'subagent';
 }
 
 export function normalizeSubagentTrackingState(input: unknown): SubagentTrackingState {
@@ -164,11 +177,29 @@ export function recordSubagentTurn(
     threads: {},
   };
 
-  const leaderThreadId = existingSession.leader_thread_id || threadId;
+  const requestedKind = input.kind === 'leader' || input.kind === 'subagent' ? input.kind : undefined;
+  const requestedLeaderThreadId = input.leaderThreadId?.trim();
   const existingThread = existingSession.threads[threadId];
+  const existingKind = existingThread?.kind === 'leader' || existingThread?.kind === 'subagent'
+    ? existingThread.kind
+    : undefined;
+  const existingLeaderThreadId = existingSession.leader_thread_id?.trim();
+  const preserveExistingSubagent = existingKind === 'subagent' && requestedKind !== 'subagent';
+  const preserveKnownLeader = requestedKind === 'subagent'
+    && (existingKind === 'leader' || existingLeaderThreadId === threadId);
+  const leaderThreadId = preserveKnownLeader
+    ? existingLeaderThreadId || threadId
+    : existingLeaderThreadId
+      || requestedLeaderThreadId
+      || (requestedKind === 'subagent' || preserveExistingSubagent ? undefined : threadId);
+  const kind = preserveKnownLeader
+    ? 'leader'
+    : requestedKind === 'leader' && existingKind === 'subagent'
+      ? 'subagent'
+      : requestedKind ?? (threadId === leaderThreadId ? 'leader' : existingKind ?? 'subagent');
   const nextThread: TrackedSubagentThread = {
     thread_id: threadId,
-    kind: threadId === leaderThreadId ? 'leader' : 'subagent',
+    kind,
     first_seen_at: existingThread?.first_seen_at ?? timestamp,
     last_seen_at: timestamp,
     turn_count: (existingThread?.turn_count ?? 0) + 1,
@@ -196,7 +227,7 @@ export function recordSubagentTurn(
 
   normalized.sessions[sessionId] = {
     session_id: sessionId,
-    leader_thread_id: leaderThreadId,
+    ...(leaderThreadId ? { leader_thread_id: leaderThreadId } : {}),
     updated_at: timestamp,
     threads,
   };
@@ -227,7 +258,7 @@ export function summarizeSubagentSession(
       : Date.now();
 
   const allThreadIds = Object.keys(session.threads).sort();
-  const allSubagentThreadIds = allThreadIds.filter((threadId) => session.threads[threadId]?.kind === 'subagent');
+  const allSubagentThreadIds = allThreadIds.filter((threadId) => isTrustedSubagentThread(session, threadId));
   const activeSubagentThreadIds = allSubagentThreadIds.filter((threadId) => {
     const thread = session.threads[threadId];
     if (!thread) return false;

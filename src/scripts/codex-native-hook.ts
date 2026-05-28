@@ -14,6 +14,7 @@ import {
   type SkillActiveStateLike,
 } from "../state/skill-active.js";
 import {
+  isTrustedSubagentThread,
   readSubagentSessionSummary,
   readSubagentTrackingState,
   recordSubagentTurnForSession,
@@ -248,18 +249,25 @@ async function recordNativeSubagentSessionStart(
   metadata: NativeSubagentSessionStartMetadata,
   transcriptPath: string,
 ): Promise<void> {
+  const parentThreadId = metadata.parentThreadId.trim();
+  const childThreadId = childSessionId.trim();
   const trackingSessionIds = [...new Set([
     canonicalSessionId.trim(),
-    metadata.parentThreadId.trim(),
+    parentThreadId,
   ].filter(Boolean))];
   for (const sessionId of trackingSessionIds) {
+    if (parentThreadId && parentThreadId !== childThreadId) {
+      await recordSubagentTurnForSession(cwd, {
+        sessionId,
+        threadId: parentThreadId,
+        kind: 'leader',
+      }).catch(() => {});
+    }
     await recordSubagentTurnForSession(cwd, {
       sessionId,
-      threadId: metadata.parentThreadId,
-    }).catch(() => {});
-    await recordSubagentTurnForSession(cwd, {
-      sessionId,
-      threadId: childSessionId,
+      threadId: childThreadId,
+      kind: 'subagent',
+      ...(parentThreadId && parentThreadId !== childThreadId ? { leaderThreadId: parentThreadId } : {}),
       mode: metadata.agentRole,
     }).catch(() => {});
   }
@@ -326,7 +334,7 @@ async function isNativeSubagentHook(
   if (!trackingState) return false;
 
   return Object.values(trackingState.sessions).some((session) => (
-    candidateIds.some((id) => session.threads[id]?.kind === "subagent")
+    candidateIds.some((id) => isTrustedSubagentThread(session, id))
   ));
 }
 
