@@ -32,6 +32,8 @@ Execution quality is usually bottlenecked by intent clarity, not just missing im
 - **Deep (`--deep`)**: high-rigor exploration; target threshold `<= 0.15`; max rounds 20
 - **Autoresearch (`--autoresearch`)**: same interview rigor as Standard, but specialized for `$autoresearch` mission readiness and `.omx/specs/` artifact handoff
 
+Profile `max rounds` is a hard cap, not a target. Do not continue only to reach a numbered round count. Extra Socratic rigor does not override the active threshold unless the profile/config changes.
+
 If no flag is provided, use **Standard**.
 
 <Mode_Flags>
@@ -70,6 +72,8 @@ If no flag is provided, use **Standard**.
 - Treat `answers[]` as the primary `omx question` success contract. For a single interview round, read `answers[0].answer`; use legacy top-level `answer` only as a compatibility fallback when needed.
 - If the current runtime is outside tmux and cannot render `omx question`, use the native structured question tool when available; otherwise ask exactly one concise plain-text question and wait for the answer
 - Re-score ambiguity after each answer and show progress transparently
+- Once ambiguity is at or below the active profile threshold, stop ordinary questioning. Run the practical closure audit: crystallize/handoff when readiness gates pass; otherwise ask only the final closure question needed to satisfy a named gate.
+- Treat `max_rounds` as a stop cap, not evidence that more rounds are needed.
 - Do not hand off to execution while ambiguity remains above threshold unless user explicitly opts to proceed with warning
 - Do not crystallize or hand off while `Non-goals` or `Decision Boundaries` remain unresolved, even if the weighted ambiguity threshold is met
 - Treat early exit as a safety valve, not the default success path
@@ -130,7 +134,7 @@ If no flag is provided, use **Standard**.
 
 ## Phase 2: Socratic Interview Loop
 
-Repeat until ambiguity `<= threshold`, the pressure pass is complete, the readiness gates are explicit, the user exits with warning, or max rounds are reached.
+Repeat until ambiguity `<= threshold`, the pressure pass is complete, the readiness gates are explicit, the user exits with warning, or max rounds are reached. This is a stop condition: below threshold, do not open a new ordinary interview branch.
 
 ### 2a) Generate next question
 If the initial context is oversized and no prompt-safe summary has been recorded yet, the next question must be only a summary request. Do not score ambiguity, do not run readiness gates, and do not hand off to `$ralplan`, `$autopilot`, `$ralph`, or `$team` until that summary answer is captured.
@@ -280,8 +284,9 @@ Readiness gate:
 - `Decision Boundaries` must be explicit
 - A pressure pass must be complete: at least one earlier answer has been revisited with an evidence, assumption, or tradeoff follow-up
 - A practical closure audit must pass: another question would change execution materially, not merely polish wording or chase a narrow edge case
-- If either gate is unresolved, or the pressure pass is incomplete, continue interviewing even when weighted ambiguity is below threshold
-- Treat a low ambiguity score as permission to audit closure, not permission to keep drilling indefinitely. If remaining uncertainty would not change implementation, crystallize the spec or ask a final closure question instead of opening a new branch.
+- If either gate is unresolved, or the pressure pass is incomplete, continue below threshold only with a final closure question that names the unresolved gate and would materially change execution.
+- Treat a low ambiguity score as permission to audit closure, not permission to keep drilling indefinitely. If remaining uncertainty would not change implementation, crystallize the spec instead of opening a new branch.
+- If ambiguity is `<= 0.10`, another user-facing question is allowed only as that final closure question; otherwise crystallize immediately.
 
 ### 2d) Report progress
 Show weighted breakdown table, readiness-gate status (`Non-goals`, `Decision Boundaries`), and the next focus dimension.
@@ -294,7 +299,7 @@ Append round result and updated scores via `omx state write --input '<json>' --j
 - Apply a **Dialectic Rhythm Guard**: track consecutive non-user fact discoveries and confirmation-style answers (`[from-code][auto-confirmed]`, `[from-code]`, or `[from-research]`). After 3 consecutive non-user or confirmation answers, the next material user-facing round must solicit direct human judgment (`[from-user]`) unless the closure audit says the interview is ready to crystallize.
 - Round 4+: allow explicit early exit with risk warning
 - Soft warning at profile midpoint (e.g., round 3/6/10 depending on profile)
-- Hard cap at profile `max_rounds`
+- Hard cap at profile `max_rounds`; never treat this cap as a desired interview length or quota
 
 ## Phase 3: Challenge Modes (assumption stress tests)
 
