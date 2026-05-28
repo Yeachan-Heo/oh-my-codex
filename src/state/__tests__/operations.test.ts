@@ -908,6 +908,66 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('denies Autopilot handoff when the next state omits a still-pending deep-interview question', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-omitted-question-deny-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-omitted-question-deny';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, 'autopilot-state.json'),
+          JSON.stringify({
+            active: true,
+            mode: 'autopilot',
+            current_phase: 'waiting-for-user',
+            run_outcome: 'blocked_on_user',
+            lifecycle_outcome: 'askuserQuestion',
+            state: {
+              deep_interview_question: {
+                status: 'waiting_for_user',
+                source: 'omx-question',
+                obligation_id: 'obligation-omitted',
+                previous_phase: 'deep-interview',
+                requested_at: '2026-05-28T00:00:00.000Z',
+              },
+              deep_interview_gate: {
+                status: 'required',
+                rationale: 'Question still needs an answer.',
+              },
+            },
+          }, null, 2),
+        );
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ralplan',
+          state: {
+            deep_interview_gate: {
+              status: 'complete',
+              rationale: 'Replacement state must not erase an unanswered question obligation.',
+            },
+            handoff_artifacts: {
+              deep_interview: { summary: 'Ready for planning.' },
+            },
+          },
+        });
+
+        assert.equal(response.isError, true);
+        assert.match(String((response.payload as { error?: string }).error || ''), /question obligation is still pending/i);
+        const state = JSON.parse(
+          await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+        ) as Record<string, unknown>;
+        assert.equal(state.current_phase, 'waiting-for-user');
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('ignores stale standalone deep-interview question state for Autopilot supervisor handoff', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ignore-standalone-di-'));
     try {

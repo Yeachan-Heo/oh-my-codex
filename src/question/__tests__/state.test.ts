@@ -6,6 +6,7 @@ import { afterEach, describe, it } from 'node:test';
 import {
   createQuestionRecord,
   getQuestionRecordPath,
+  getQuestionRecordPathForStateDir,
   markQuestionAnswered,
   markQuestionPrompting,
   markQuestionTerminalError,
@@ -43,6 +44,15 @@ describe('question state', () => {
     const loaded = await readQuestionRecord(recordPath);
     assert.equal(loaded?.question, 'Pick one');
     assert.equal(loaded?.type, 'single-answerable');
+  });
+
+  it('resolves session-scoped question records under the questions namespace for state roots', async () => {
+    const stateDir = join('/tmp', 'omx-state-root');
+
+    assert.equal(
+      getQuestionRecordPathForStateDir(stateDir, 'question-1', 'sess-1'),
+      join(stateDir, 'sessions', 'sess-1', 'questions', 'question-1.json'),
+    );
   });
 
   it('emits a structured creation event with correlation metadata', async () => {

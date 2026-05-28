@@ -190,13 +190,35 @@ function collectQuestionEnforcementsFromStates(
   }
   return enforcements;
 }
+
+function questionEnforcementKey(enforcement: DeepInterviewQuestionEnforcementState): string | null {
+  const obligationId = safeString(enforcement.obligation_id);
+  if (obligationId) return `obligation:${obligationId}`;
+  const questionId = safeString(enforcement.question_id);
+  if (questionId) return `question:${questionId}`;
+  return null;
+}
+
 function collectResultingQuestionEnforcements(
   input: AutopilotDeepInterviewRalplanGateInput,
   deepState: JsonObject | null,
 ): DeepInterviewQuestionEnforcementState[] {
-  return collectQuestionEnforcementsFromStates(input.nextState
-    ? [input.nextState, deepState]
-    : [input.currentState, deepState]);
+  if (!input.nextState) return collectQuestionEnforcementsFromStates([input.currentState, deepState]);
+
+  const resulting = collectQuestionEnforcementsFromStates([input.nextState, deepState]);
+  const resultingKeys = new Set(
+    resulting
+      .map((enforcement) => questionEnforcementKey(enforcement))
+      .filter((key): key is string => Boolean(key)),
+  );
+
+  for (const current of collectQuestionEnforcementsFromStates([input.currentState])) {
+    const key = questionEnforcementKey(current);
+    if (key && resultingKeys.has(key)) continue;
+    resulting.push(current);
+  }
+
+  return resulting;
 }
 
 function hasPendingQuestion(enforcements: readonly DeepInterviewQuestionEnforcementState[]): boolean {
