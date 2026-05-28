@@ -818,6 +818,83 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('resolves Autopilot satisfied question evidence under OMX_TEAM_STATE_ROOT', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-team-question-'));
+    const previousOmxRoot = process.env.OMX_ROOT;
+    const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    try {
+      const wd = join(root, 'source');
+      const teamStateRoot = join(root, 'team-state');
+      const sessionId = 'sess-autopilot-team-question';
+      const sessionDir = join(teamStateRoot, 'sessions', sessionId);
+      const questionId = 'question-team-satisfied';
+      await mkdir(join(sessionDir, 'questions'), { recursive: true });
+      await writeFile(
+        join(sessionDir, 'questions', `${questionId}.json`),
+        JSON.stringify({
+          kind: 'omx.question/v1',
+          question_id: questionId,
+          session_id: sessionId,
+          source: 'deep-interview',
+          status: 'answered',
+          answer: 'clarified scope',
+          answers: [{ question_id: 'q-1', index: 0, answer: 'clarified scope' }],
+        }, null, 2),
+      );
+      await writeFile(
+        join(sessionDir, 'autopilot-state.json'),
+        JSON.stringify({
+          active: true,
+          mode: 'autopilot',
+          current_phase: 'deep-interview',
+          question_enforcement: {
+            obligation_id: 'obligation-team-question',
+            source: 'omx-question',
+            status: 'satisfied',
+            lifecycle_outcome: 'askuserQuestion',
+            requested_at: '2026-05-28T00:00:00.000Z',
+            question_id: questionId,
+            satisfied_at: '2026-05-28T00:01:00.000Z',
+          },
+          state: {
+            deep_interview_gate: {
+              status: 'complete',
+              rationale: 'The answered question resolves the execution boundary.',
+            },
+          },
+        }, null, 2),
+      );
+
+      delete process.env.OMX_ROOT;
+      delete process.env.OMX_STATE_ROOT;
+      process.env.OMX_TEAM_STATE_ROOT = teamStateRoot;
+
+      const response = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        session_id: sessionId,
+        mode: 'autopilot',
+        active: true,
+        current_phase: 'ralplan',
+      });
+
+      assert.equal(response.isError, undefined);
+      const state = JSON.parse(
+        await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+      ) as Record<string, unknown>;
+      assert.equal(state.current_phase, 'ralplan');
+      assert.equal(existsSync(join(wd, '.omx', 'state', 'sessions', sessionId, 'questions', `${questionId}.json`)), false);
+    } finally {
+      if (typeof previousOmxRoot === 'string') process.env.OMX_ROOT = previousOmxRoot;
+      else delete process.env.OMX_ROOT;
+      if (typeof previousOmxStateRoot === 'string') process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+      else delete process.env.OMX_STATE_ROOT;
+      if (typeof previousTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
 
   it('denies Autopilot ralplan to ultragoal self-write with codex_exec consensus evidence', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-native-deny-'));
