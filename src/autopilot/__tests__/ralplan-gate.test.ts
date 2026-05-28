@@ -38,6 +38,13 @@ describe('autopilot ralplan gate', () => {
                 last_seen_at: '2026-05-28T18:35:10.000Z',
                 turn_count: 1,
               },
+              'thread-scholastic': {
+                thread_id: 'thread-scholastic',
+                kind: 'subagent',
+                first_seen_at: '2026-05-28T18:35:00.000Z',
+                last_seen_at: '2026-05-28T18:35:00.000Z',
+                turn_count: 1,
+              },
             },
           },
         },
@@ -48,7 +55,7 @@ describe('autopilot ralplan gate', () => {
         handoff_artifacts: {
           ralplan_consensus_gate: {
             complete: true,
-            sequence: ['architect-review', 'critic-review'],
+            sequence: ['architect-review', 'scholastic-review', 'critic-review'],
             ralplan_architect_review: {
               agent_role: 'architect',
               provenance_kind: 'native_subagent',
@@ -58,6 +65,16 @@ describe('autopilot ralplan gate', () => {
               artifact_path: '.omx/artifacts/architect.md',
               tracker_path: '.omx/state/subagent-tracking.json',
               completed_at: '2026-05-28T18:34:51.000Z',
+            },
+            ralplan_scholastic_review: {
+              agent_role: 'scholastic',
+              provenance_kind: 'native_subagent',
+              verdict: 'approve',
+              session_id: sessionId,
+              thread_id: 'thread-scholastic',
+              artifact_path: '.omx/artifacts/scholastic.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+              completed_at: '2026-05-28T18:35:00.000Z',
             },
             ralplan_critic_review: {
               agent_role: 'critic',

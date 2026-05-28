@@ -48,9 +48,9 @@ describe('autopilot skill default Ultragoal contract', () => {
     assert.match(autopilotSkill, /keep the active phase at `code-review` or `ultraqa` and record a blocker instead of self-attesting a clean gate/i);
   });
 
-  it('requires sequential ralplan Architect and Critic consensus before execution handoff', () => {
+  it('requires sequential ralplan Architect, Scholastic, and Critic consensus before execution handoff', () => {
     assert.match(autopilotSkill, /PRD\/test-spec files alone are not completion evidence/i);
-    assert.match(autopilotSkill, /subsequent `Architect` approval first.*subsequent `Critic` approval second/is);
+    assert.match(autopilotSkill, /subsequent `Architect` approval first.*subsequent `Scholastic` ontology approval second.*subsequent `Critic` approval third/is);
     assert.doesNotMatch(autopilotSkill, /records an `Architect` approval first/i);
     assert.match(autopilotSkill, /ralplan_consensus_gate/);
     assert.match(autopilotSkill, /missing ralplan consensus evidence/i);
@@ -59,18 +59,19 @@ describe('autopilot skill default Ultragoal contract', () => {
 
   it('requires role-specific subsequent ralplan reviewer subagents with full context', () => {
     assert.match(ralplanSkill, /subsequent `Architect` subagent \(`agent_type: "architect"`\)/i);
+    assert.match(ralplanSkill, /subsequent `Scholastic` subagent \(`agent_type: "scholastic"`\)/i);
     assert.match(ralplanSkill, /subsequent `Critic` subagent \(`agent_type: "critic"`\)/i);
     assert.match(ralplanSkill, /full task statement, context snapshot, PRD\/test-spec paths/i);
     assert.match(ralplanSkill, /do not use a default subagent with only a short improvised reviewer prompt/i);
-    assert.match(ralplanSkill, /do not ask the Architect subagent to perform the Critic gate/i);
+    assert.match(ralplanSkill, /do not ask the Architect or Scholastic subagents to perform the Critic gate/i);
   });
 
   it('documents ralplan consensus completion in pipeline and public docs', () => {
     assert.match(pipelineSkill, /Plan\/test-spec files alone are not consensus evidence/i);
-    assert.match(pipelineSkill, /Architect approval followed by Critic approval/i);
+    assert.match(pipelineSkill, /Architect approval, then Scholastic approval, then Critic approval/i);
     assert.match(skillsDocs, /not just PRD\/test-spec files/i);
-    assert.match(skillsDocs, /never leaving ralplan until Architect\/Critic consensus evidence is recorded/i);
-    assert.match(gettingStartedDocs, /Architect review evidence and then Critic review evidence are recorded/i);
+    assert.match(skillsDocs, /never leaving ralplan until Architect\/Scholastic\/Critic consensus evidence is recorded/i);
+    assert.match(gettingStartedDocs, /Architect review evidence, then Scholastic review evidence, then Critic review evidence are recorded/i);
   });
 
   it('does not preserve the old broad phase lifecycle as primary behavior', () => {

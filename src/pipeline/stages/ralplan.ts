@@ -1,7 +1,7 @@
 /**
  * RALPLAN stage adapter for pipeline orchestrator.
  *
- * Wraps the consensus planning workflow (planner + architect + critic)
+ * Wraps the consensus planning workflow (planner + architect + scholastic + critic)
  * into a PipelineStage. Produces a plan artifact at `.omx/plans/`.
  */
 
@@ -29,7 +29,7 @@ export interface CreateRalplanStageOptions {
  * Create a RALPLAN pipeline stage.
  *
  * The RALPLAN stage performs consensus planning by coordinating planner,
- * architect, and critic agents. It outputs a plan file that downstream
+ * architect, scholastic, and critic agents. It outputs a plan file that downstream
  * stages consume.
  *
  * By default this remains a structural adapter — actual agent orchestration
@@ -84,6 +84,7 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
               latestPlanPath: runtimeResult.latestPlanPath,
               drafts: runtimeResult.drafts,
               architectReviews: runtimeResult.architectReviews,
+              scholasticReviews: runtimeResult.scholasticReviews,
               criticReviews: runtimeResult.criticReviews,
               ralplanConsensusGate: consensusGate,
               ...runtimeResult.artifacts,
@@ -125,7 +126,7 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
             ralplanConsensusGate: consensusGate,
             instruction: consensusComplete
               ? `Run RALPLAN consensus planning for: ${ctx.task}`
-              : `Remain in RALPLAN for: ${ctx.task}. Do not hand off to execution until durable Architect approval followed by Critic approval is recorded in ralplan state or handoff artifacts.`,
+              : `Remain in RALPLAN for: ${ctx.task}. Do not hand off to execution until durable Architect approval, Scholastic approval, and then Critic approval are recorded in ralplan state or handoff artifacts.`,
           },
           duration_ms: Date.now() - startTime,
           error,
@@ -147,6 +148,7 @@ function buildRalplanConsensusGate(runtimeResult: {
   planningComplete: boolean;
   ralplanConsensusGate?: unknown;
   architectReviews: unknown[];
+  scholasticReviews: unknown[];
   criticReviews: unknown[];
 }, ctx: StageContext, requireNativeSubagents?: boolean): RalplanConsensusGateEvidence {
   return buildRalplanConsensusGateFromSources([{

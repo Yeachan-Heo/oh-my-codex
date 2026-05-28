@@ -41,8 +41,8 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: 'plan the', skill: 'plan', priority: 8, guidance: 'Activate planning skill' },
   { keyword: "let's plan", skill: 'plan', priority: 8, guidance: 'Activate planning skill' },
 
-  { keyword: '$ralplan', skill: 'ralplan', priority: 11, guidance: 'Activate consensus planning (planner + architect + critic)' },
-  { keyword: 'consensus plan', skill: 'ralplan', priority: 11, guidance: 'Activate consensus planning (planner + architect + critic)' },
+  { keyword: '$ralplan', skill: 'ralplan', priority: 11, guidance: 'Activate consensus planning (planner + architect + scholastic + critic)' },
+  { keyword: 'consensus plan', skill: 'ralplan', priority: 11, guidance: 'Activate consensus planning (planner + architect + scholastic + critic)' },
 
   { keyword: '$autoresearch', skill: 'autoresearch', priority: 10, guidance: 'Activate autoresearch validator-gated research loop' },
   { keyword: '$best-practice-research', skill: 'best-practice-research', priority: 8, guidance: 'Activate bounded best-practice research wrapper' },

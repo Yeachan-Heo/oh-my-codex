@@ -132,7 +132,7 @@ The final ultragoal story is not complete until the active agent has run the fin
 1. Run targeted verification for the story.
 2. Run `ai-slop-cleaner` on changed files only; if there are no relevant edits, the cleaner still runs and records a passed/no-op report.
 3. Rerun verification after the cleaner pass.
-4. Run `$code-review` through the independent review path. Clean means `codeReview.recommendation: "APPROVE"`, `codeReview.architectStatus: "CLEAR"`, and `codeReview.independentReview` contains distinct completed `code-reviewer` and `architect` subagent evidence. `COMMENT`, `WATCH`, `REQUEST CHANGES`, `BLOCK`, missing subagent evidence, unavailable delegation, and same-lane/self-review are non-clean. If the approved plan already used Scholastic for ontology-heavy review, carry that advisory evidence into the quality gate; non-clean Scholastic findings should be treated as blocker evidence rather than a completion claim.
+4. Run `$code-review` through the independent review path. Clean means `codeReview.recommendation: "APPROVE"`, `codeReview.architectStatus: "CLEAR"`, and `codeReview.independentReview` contains distinct completed `code-reviewer` and `architect` subagent evidence. `COMMENT`, `WATCH`, `REQUEST CHANGES`, `BLOCK`, missing subagent evidence, unavailable delegation, and same-lane/self-review are non-clean. If the approved plan includes the ralplan Scholastic ontology gate, carry that evidence into the quality gate; non-clean Scholastic findings should be treated as blocker evidence rather than a completion claim.
 5. If review is non-clean, do **not** call `update_goal`. Record durable blocker work instead:
 
    ```sh
@@ -165,7 +165,7 @@ The final ultragoal story is not complete until the active agent has run the fin
 }
 ```
 
-When Scholastic advisory evidence exists for ontology-heavy goals, add it alongside the required fields:
+When upstream Scholastic gate evidence exists, add it alongside the required fields:
 
 ```json
 {

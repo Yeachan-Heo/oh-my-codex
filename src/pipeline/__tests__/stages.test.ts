@@ -117,6 +117,7 @@ async function writeNativeSubagentTracking(cwd: string, sessionId: string): Prom
         threads: {
           'thread-leader': { thread_id: 'thread-leader', kind: 'leader', first_seen_at: now, last_seen_at: now, turn_count: 1 },
           'thread-architect': { thread_id: 'thread-architect', kind: 'subagent', first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
+          'thread-scholastic': { thread_id: 'thread-scholastic', kind: 'subagent', first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
           'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
         },
       },
@@ -190,8 +191,9 @@ describe('RALPLAN Stage', () => {
         ralplan: {
           ralplanConsensusGate: {
             complete: true,
-            sequence: ['architect-review', 'critic-review'],
+            sequence: ['architect-review', 'scholastic-review', 'critic-review'],
             ralplan_architect_review: { agent_role: 'architect', verdict: 'approve' },
+            ralplan_scholastic_review: { agent_role: 'scholastic', verdict: 'approve' },
             ralplan_critic_review: { agent_role: 'critic', verdict: 'approve' },
           },
         },
@@ -203,7 +205,7 @@ describe('RALPLAN Stage', () => {
     assert.equal((result.artifacts as Record<string, unknown>).planningComplete, false);
   });
 
-  it('canSkip returns true only when planning artifacts have sequential Architect and Critic approval evidence', async () => {
+  it('canSkip returns true only when planning artifacts have sequential Architect, Scholastic, and Critic approval evidence', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
@@ -216,6 +218,7 @@ describe('RALPLAN Stage', () => {
           ralplanConsensusGate: {
             complete: true,
             ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', summary: 'architect approved' },
+            ralplan_scholastic_review: { agent_role: 'scholastic', verdict: 'approve', summary: 'scholastic approved after architect' },
             ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', summary: 'critic approved after architect' },
           },
         },
@@ -243,6 +246,15 @@ describe('RALPLAN Stage', () => {
               session_id: 'sess-native-required',
               thread_id: 'exec-architect',
               artifact_path: '.omx/artifacts/architect.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+            },
+            ralplan_scholastic_review: {
+              agent_role: 'scholastic',
+              verdict: 'approve',
+              provenance_kind: 'codex_exec',
+              session_id: 'sess-native-required',
+              thread_id: 'exec-scholastic',
+              artifact_path: '.omx/artifacts/scholastic.md',
               tracker_path: '.omx/state/subagent-tracking.json',
             },
             ralplan_critic_review: {
@@ -285,6 +297,15 @@ describe('RALPLAN Stage', () => {
               artifact_path: '.omx/artifacts/architect.md',
               tracker_path: '.omx/state/subagent-tracking.json',
             },
+            ralplan_scholastic_review: {
+              agent_role: 'scholastic',
+              verdict: 'approve',
+              provenance_kind: 'native_subagent',
+              session_id: sessionId,
+              thread_id: 'thread-scholastic',
+              artifact_path: '.omx/artifacts/scholastic.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+            },
             ralplan_critic_review: {
               agent_role: 'critic',
               verdict: 'approve',
@@ -300,7 +321,7 @@ describe('RALPLAN Stage', () => {
     })), false);
   });
 
-  it('strict Autopilot canSkip accepts tracker-backed native Architect and Critic lanes', async () => {
+  it('strict Autopilot canSkip accepts tracker-backed native Architect, Scholastic, and Critic lanes', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     const sessionId = 'sess-native-required';
     await mkdir(plansDir, { recursive: true });
@@ -322,6 +343,15 @@ describe('RALPLAN Stage', () => {
               session_id: sessionId,
               thread_id: 'thread-architect',
               artifact_path: '.omx/artifacts/architect.md',
+              tracker_path: '.omx/state/subagent-tracking.json',
+            },
+            ralplan_scholastic_review: {
+              agent_role: 'scholastic',
+              verdict: 'approve',
+              provenance_kind: 'native_subagent',
+              session_id: sessionId,
+              thread_id: 'thread-scholastic',
+              artifact_path: '.omx/artifacts/scholastic.md',
               tracker_path: '.omx/state/subagent-tracking.json',
             },
             ralplan_critic_review: {
@@ -351,6 +381,7 @@ describe('RALPLAN Stage', () => {
       state: {
         handoff_artifacts: {
           ralplan_architect_review: { agent_role: 'architect', verdict: 'reject', approved: true },
+          ralplan_scholastic_review: { agent_role: 'scholastic', verdict: 'approve' },
           ralplan_critic_review: { agent_role: 'critic', verdict: 'approve' },
         },
       },
@@ -359,6 +390,7 @@ describe('RALPLAN Stage', () => {
       state: {
         handoff_artifacts: {
           ralplan_architect_review: { agent_role: 'architect', verdict: 'approve' },
+          ralplan_scholastic_review: { agent_role: 'scholastic', verdict: 'approve' },
           ralplan_critic_review: { agent_role: 'critic', verdict: 'approve' },
         },
       },
@@ -398,8 +430,9 @@ describe('RALPLAN Stage', () => {
     await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
       ralplanConsensusGate: {
         complete: true,
-        sequence: ['architect-review', 'critic-review'],
+        sequence: ['architect-review', 'scholastic-review', 'critic-review'],
         ralplan_architect_review: { agent_role: 'architect', verdict: 'approve' },
+        ralplan_scholastic_review: { agent_role: 'scholastic', verdict: 'approve' },
         ralplan_critic_review: { agent_role: 'critic', verdict: 'approve' },
       },
     }));
@@ -438,7 +471,7 @@ describe('RALPLAN Stage', () => {
     }
   });
 
-  it('canSkip returns false when Critic evidence is recorded before Architect evidence', async () => {
+  it('canSkip returns false when Critic evidence is recorded before Architect/Scholastic evidence', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
@@ -450,8 +483,9 @@ describe('RALPLAN Stage', () => {
         ralplan: {
           ralplanConsensusGate: {
             complete: true,
-            sequence: ['critic-review', 'architect-review'],
+            sequence: ['critic-review', 'architect-review', 'scholastic-review'],
             ralplan_architect_review: { agent_role: 'architect', verdict: 'approve' },
+            ralplan_scholastic_review: { agent_role: 'scholastic', verdict: 'approve' },
             ralplan_critic_review: { agent_role: 'critic', verdict: 'approve' },
           },
         },
@@ -459,7 +493,7 @@ describe('RALPLAN Stage', () => {
     })), false);
   });
 
-  it('canSkip returns false when Critic timestamp predates Architect timestamp', async () => {
+  it('canSkip returns false when Critic timestamp predates Scholastic timestamp', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
@@ -471,16 +505,21 @@ describe('RALPLAN Stage', () => {
         ralplan: {
           ralplanConsensusGate: {
             complete: true,
-            sequence: ['architect-review', 'critic-review'],
+            sequence: ['architect-review', 'scholastic-review', 'critic-review'],
             ralplan_architect_review: {
               agent_role: 'architect',
+              verdict: 'approve',
+              completed_at: '2026-05-21T10:00:00.000Z',
+            },
+            ralplan_scholastic_review: {
+              agent_role: 'scholastic',
               verdict: 'approve',
               completed_at: '2026-05-21T10:05:00.000Z',
             },
             ralplan_critic_review: {
               agent_role: 'critic',
               verdict: 'approve',
-              completed_at: '2026-05-21T10:00:00.000Z',
+              completed_at: '2026-05-21T10:02:00.000Z',
             },
           },
         },
@@ -623,7 +662,7 @@ describe('RALPLAN Stage', () => {
     assert.equal(stage.canSkip!(makeCtx()), false);
   });
 
-  it('canSkip returns false when Architect and Critic roles are swapped', async () => {
+  it('canSkip returns false when Architect and Critic roles are swapped around Scholastic', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
@@ -702,6 +741,9 @@ describe('RALPLAN Stage', () => {
         async architectReview() {
           return { verdict: 'approve', summary: 'architect ok' };
         },
+        async scholasticReview() {
+          return { verdict: 'approve', summary: 'scholastic ok' };
+        },
         async criticReview() {
           return { verdict: 'approve', summary: 'critic ok' };
         },
@@ -717,8 +759,9 @@ describe('RALPLAN Stage', () => {
     assert.equal(artifacts.planningComplete, true);
     assert.deepEqual(artifacts.ralplanConsensusGate, {
       complete: true,
-      sequence: ['architect-review', 'critic-review'],
+      sequence: ['architect-review', 'scholastic-review', 'critic-review'],
       ralplan_architect_review: { agent_role: 'architect', iteration: 1, verdict: 'approve', summary: 'architect ok' },
+      ralplan_scholastic_review: { agent_role: 'scholastic', iteration: 1, verdict: 'approve', summary: 'scholastic ok' },
       ralplan_critic_review: { agent_role: 'critic', iteration: 1, verdict: 'approve', summary: 'critic ok' },
       source: 'runtime-result',
       blockedReason: null,
@@ -740,6 +783,9 @@ describe('RALPLAN Stage', () => {
         },
         async architectReview() {
           return { verdict: 'approve', summary: 'architect ok' };
+        },
+        async scholasticReview() {
+          return { verdict: 'approve', summary: 'scholastic ok' };
         },
         async criticReview() {
           return { verdict: 'approve', summary: 'critic ok' };
@@ -764,6 +810,9 @@ describe('RALPLAN Stage', () => {
         },
         async architectReview() {
           return { verdict: 'approve', summary: 'architect ok' };
+        },
+        async scholasticReview() {
+          return { verdict: 'approve', summary: 'scholastic ok' };
         },
         async criticReview() {
           return { verdict: 'approve', summary: 'critic ok' };
@@ -794,6 +843,9 @@ describe('RALPLAN Stage', () => {
         async architectReview() {
           return { verdict: 'approve', summary: 'architect ok' };
         },
+        async scholasticReview() {
+          return { verdict: 'approve', summary: 'scholastic ok' };
+        },
         async criticReview() {
           return { verdict: 'iterate', summary: 'critic needs changes' };
         },
@@ -808,11 +860,12 @@ describe('RALPLAN Stage', () => {
     assert.equal(result.error, 'ralplan_consensus_not_reached_after_1_iterations');
     assert.deepEqual(artifacts.ralplanConsensusGate, {
       complete: false,
-      sequence: ['architect-review', 'critic-review'],
+      sequence: ['architect-review', 'scholastic-review', 'critic-review'],
       ralplan_architect_review: null,
+      ralplan_scholastic_review: null,
       ralplan_critic_review: null,
       source: null,
-      blockedReason: 'missing_sequential_architect_then_critic_approval',
+      blockedReason: 'missing_sequential_architect_scholastic_critic_approval',
     });
   });
 

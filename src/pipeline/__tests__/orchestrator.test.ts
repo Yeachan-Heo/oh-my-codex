@@ -428,6 +428,7 @@ describe('Pipeline Orchestrator', () => {
         ralplan_consensus_gate: {
           complete: true,
           ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', summary: 'architect ok' },
+          ralplan_scholastic_review: { agent_role: 'scholastic', verdict: 'approve', summary: 'scholastic ok' },
           ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', summary: 'critic ok' },
         },
       }));
@@ -447,8 +448,9 @@ describe('Pipeline Orchestrator', () => {
       assert.ok(handoffs.ralplan, 'skipped ralplan handoff should remain visible');
       assert.deepEqual(handoffs.ralplan_consensus_gate, {
         complete: true,
-        sequence: ['architect-review', 'critic-review'],
+        sequence: ['architect-review', 'scholastic-review', 'critic-review'],
         ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', summary: 'architect ok' },
+        ralplan_scholastic_review: { agent_role: 'scholastic', verdict: 'approve', summary: 'scholastic ok' },
         ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', summary: 'critic ok' },
         source: join(tempDir, '.omx', 'state', 'ralplan-state.json'),
         blockedReason: null,

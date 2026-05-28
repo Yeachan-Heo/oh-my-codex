@@ -333,7 +333,7 @@ export const PROMPT_REFACTOR_INVARIANT_CONTRACTS: GuidanceSurfaceContract[] = [
   {
     id: 'ralplan-consensus-sequence',
     path: 'skills/ralplan/SKILL.md',
-    requiredPatterns: [rx('Planner'), rx('Architect'), rx('Critic'), rx('ADR')],
+    requiredPatterns: [rx('Planner'), rx('Architect'), rx('Scholastic'), rx('Critic'), rx('ADR')],
   },
   {
     id: 'deep-interview-question-gate',
@@ -379,7 +379,7 @@ export const PROMPT_REFACTOR_INVARIANT_CONTRACTS: GuidanceSurfaceContract[] = [
     path: 'skills/pipeline/SKILL.md',
     requiredPatterns: [
       rx('Skips only when both `prd-\\*\\.md` and `test-spec-\\*\\.md`'),
-      rx('Architect approval followed by Critic approval'),
+      rx('Architect approval, then Scholastic approval, then Critic approval'),
       rx('Plan/test-spec files alone are not consensus evidence'),
     ],
   },

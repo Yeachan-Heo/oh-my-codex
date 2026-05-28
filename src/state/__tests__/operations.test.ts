@@ -65,6 +65,7 @@ async function writeNativeSubagentTracking(cwd: string, sessionId: string): Prom
         threads: {
           'thread-leader': { thread_id: 'thread-leader', kind: 'leader', first_seen_at: now, last_seen_at: now, turn_count: 1 },
           'thread-architect': { thread_id: 'thread-architect', kind: 'subagent', first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
+          'thread-scholastic': { thread_id: 'thread-scholastic', kind: 'subagent', first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
           'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', first_seen_at: now, last_seen_at: now, completed_at: now, turn_count: 1 },
         },
       },
@@ -75,16 +76,17 @@ async function writeNativeSubagentTracking(cwd: string, sessionId: string): Prom
 function ralplanConsensusGate(
   sessionId: string,
   provenanceKind: 'native_subagent' | 'codex_exec',
-  threadOverrides: { architect?: string; critic?: string } = {},
+  threadOverrides: { architect?: string; scholastic?: string; critic?: string } = {},
 ): Record<string, unknown> {
   const architectThread = threadOverrides.architect ?? (provenanceKind === 'native_subagent' ? 'thread-architect' : 'exec-architect');
+  const scholasticThread = threadOverrides.scholastic ?? (provenanceKind === 'native_subagent' ? 'thread-scholastic' : 'exec-scholastic');
   const criticThread = threadOverrides.critic ?? (provenanceKind === 'native_subagent' ? 'thread-critic' : 'exec-critic');
   return {
     required: true,
     complete: true,
-    sequence: ['architect-review', 'critic-review'],
+    sequence: ['architect-review', 'scholastic-review', 'critic-review'],
     planning_artifacts_are_not_consensus: true,
-    required_review_roles: ['architect', 'critic'],
+    required_review_roles: ['architect', 'scholastic', 'critic'],
     ralplan_architect_review: {
       agent_role: 'architect',
       verdict: 'approve',
@@ -92,6 +94,15 @@ function ralplanConsensusGate(
       session_id: sessionId,
       thread_id: architectThread,
       artifact_path: '.omx/artifacts/architect.md',
+      tracker_path: '.omx/state/subagent-tracking.json',
+    },
+    ralplan_scholastic_review: {
+      agent_role: 'scholastic',
+      verdict: 'approve',
+      provenance_kind: provenanceKind,
+      session_id: sessionId,
+      thread_id: scholasticThread,
+      artifact_path: '.omx/artifacts/scholastic.md',
       tracker_path: '.omx/state/subagent-tracking.json',
     },
     ralplan_critic_review: {
@@ -1509,7 +1520,7 @@ describe('state operations directory initialization', () => {
         });
 
         assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /tracker-backed native architect and critic lanes/i);
+        assert.match(String((response.payload as { error?: string }).error || ''), /tracker-backed native architect, scholastic, and critic lanes/i);
         const state = JSON.parse(
           await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
         ) as Record<string, unknown>;
@@ -1558,7 +1569,7 @@ describe('state operations directory initialization', () => {
         });
 
         assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /tracker-backed native architect and critic lanes/i);
+        assert.match(String((response.payload as { error?: string }).error || ''), /tracker-backed native architect, scholastic, and critic lanes/i);
         const state = JSON.parse(
           await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
         ) as Record<string, unknown>;

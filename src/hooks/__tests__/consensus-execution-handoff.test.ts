@@ -5,11 +5,11 @@
  * 1. Structured question UI for approval (not plain text)
  * 2. Explicit $ultragoal invocation on durable-goal approval, with Ralph only as explicit fallback
  * 3. Prohibition of direct implementation from the planning agent
- * 4. User feedback step after Planner but before Architect/Critic
+ * 4. User feedback step after Planner but before Architect/Scholastic/Critic
  * 5. RALPLAN-DR short mode and deliberate mode requirements
  *
  * Also verifies non-consensus modes (interview, direct, review) are unaffected,
- * and that architect/critic prompts contain required RALPLAN-DR sections.
+ * and that architect/scholastic/critic prompts contain required RALPLAN-DR sections.
  *
  * Note: This file loads SKILL.md and prompt content directly via fs.readFileSync()
  * instead of getBuiltinSkill() (which does not exist in OMX).
@@ -167,7 +167,7 @@ describe('Consensus mode execution handoff (plan/SKILL.md)', () => {
   });
 });
 
-describe('User feedback step between Planner and Architect/Critic (plan/SKILL.md)', () => {
+describe('User feedback step between Planner and Architect/Scholastic/Critic (plan/SKILL.md)', () => {
   it('should have a user feedback step after Planner and before Architect', () => {
     const consensusSection = extractSection(planSkill, 'Consensus Mode');
     assert.ok(consensusSection, 'Consensus Mode section should exist');
@@ -201,30 +201,35 @@ describe('User feedback step between Planner and Architect/Critic (plan/SKILL.md
     assert.ok(consensusSection.includes('Skip review'));
   });
 
-  it('should place Critic after Architect in the consensus flow', () => {
+  it('should place Scholastic after Architect and Critic after Scholastic in the consensus flow', () => {
     const consensusSection = extractSection(planSkill, 'Consensus Mode');
     assert.ok(consensusSection, 'Consensus Mode section should exist');
 
     const architectIdx = consensusSection.indexOf('**Architect**');
+    const scholasticIdx = consensusSection.indexOf('**Scholastic**');
     const criticIdx = consensusSection.indexOf('**Critic**');
 
     assert.ok(architectIdx > -1, 'Should have Architect step');
+    assert.ok(scholasticIdx > -1, 'Should have Scholastic step');
     assert.ok(criticIdx > -1, 'Should have Critic step');
-    assert.ok(criticIdx > architectIdx, 'Critic should come after Architect');
+    assert.ok(scholasticIdx > architectIdx, 'Scholastic should come after Architect');
+    assert.ok(criticIdx > scholasticIdx, 'Critic should come after Scholastic');
   });
 
-  it('should require role-specific subsequent Architect and Critic subagents with full handoff context', () => {
+  it('should require role-specific subsequent Architect, Scholastic, and Critic subagents with full handoff context', () => {
     const consensusSection = extractSection(planSkill, 'Consensus Mode');
     assert.ok(consensusSection, 'Consensus Mode section should exist');
     assert.match(consensusSection, /dedicated subsequent `Architect` subagent/i);
+    assert.match(consensusSection, /dedicated subsequent `Scholastic` subagent/i);
     assert.match(consensusSection, /dedicated subsequent `Critic` subagent/i);
     assert.match(consensusSection, /full task, current plan text\/path, RALPLAN-DR summary/i);
     assert.match(consensusSection, /completed `Architect` result/i);
+    assert.match(consensusSection, /completed `Architect` and `Scholastic` results/i);
     assert.match(consensusSection, /Do NOT substitute a default\/improvised subagent prompt/i);
-    assert.match(consensusSection, /Do NOT let the `Architect` response self-approve the Critic gate/i);
+    assert.match(consensusSection, /Do NOT let the `Architect` or `Scholastic` response self-approve the Critic gate/i);
     assert.doesNotMatch(planSkill, /agent_role: "critic"` for plan review in consensus/i);
     assert.match(planSkill, /standalone review mode/i);
-    assert.match(planSkill, /dedicated sequential role-specific `Architect` and `Critic` subagents/i);
+    assert.match(planSkill, /dedicated sequential role-specific `Architect`, `Scholastic`, and `Critic` subagents/i);
   });
 
   it('should require architect antithesis and critic rejection gates in consensus flow', () => {
@@ -290,11 +295,11 @@ describe('RALPLAN-DR in ralplan/SKILL.md', () => {
     );
   });
 
-  it('should document sequential Architect then Critic execution', () => {
+  it('should document sequential Architect then Scholastic then Critic execution', () => {
     assert.ok(
-      /step[s]? 3 and 4 MUST run sequentially|Do NOT.*parallel/i.test(ralplanSkill) ||
+      /step[s]? 3, 4, and 5 MUST run sequentially|Do NOT.*parallel/i.test(ralplanSkill) ||
       ralplanSkill.includes('await completion before step 4'),
-      'ralplan/SKILL.md should require sequential Architect/Critic execution'
+      'ralplan/SKILL.md should require sequential Architect/Scholastic/Critic execution'
     );
   });
 

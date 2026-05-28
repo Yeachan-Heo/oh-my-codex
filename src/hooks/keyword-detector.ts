@@ -423,10 +423,11 @@ async function persistStatefulSkillSeedState(
         ralplan: null,
         ralplan_consensus_gate: {
           required: true,
-          sequence: ['architect-review', 'critic-review'],
+          sequence: ['architect-review', 'scholastic-review', 'critic-review'],
           planning_artifacts_are_not_consensus: true,
-          required_review_roles: ['architect', 'critic'],
+          required_review_roles: ['architect', 'scholastic', 'critic'],
           ralplan_architect_review: null,
+          ralplan_scholastic_review: null,
           ralplan_critic_review: null,
           complete: false,
         },

@@ -1776,8 +1776,8 @@ async function checkPluginMarketplaceRegistration(
 	}
 }
 
-const REQUIRED_NATIVE_REVIEWER_ROLES = ["architect", "critic"] as const;
-const ADVISORY_NATIVE_REVIEWER_ROLES = ["scholastic"] as const;
+const REQUIRED_NATIVE_REVIEWER_ROLES = ["architect", "scholastic", "critic"] as const;
+const ADVISORY_NATIVE_REVIEWER_ROLES = [] as const;
 
 type NativeReviewerRole =
 	| typeof REQUIRED_NATIVE_REVIEWER_ROLES[number]
@@ -1879,7 +1879,7 @@ function checkNativeReviewerRoles(
 		name: "Native reviewer roles",
 		status: "pass",
 		message:
-			`required RALPLAN/Autopilot native reviewer roles are available (${REQUIRED_NATIVE_REVIEWER_ROLES.join(", ")}); advisory ${ADVISORY_NATIVE_REVIEWER_ROLES.join(", ")} role is also available`,
+			`required RALPLAN/Autopilot native reviewer roles are available (${REQUIRED_NATIVE_REVIEWER_ROLES.join(", ")})`,
 	};
 }
 

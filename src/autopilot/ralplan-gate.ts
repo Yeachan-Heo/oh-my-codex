@@ -60,15 +60,15 @@ export function canAdvanceAutopilotRalplanToUltragoal(
   if (evidence.complete) {
     return {
       allowed: true,
-      reason: 'tracker-backed native ralplan architect and critic consensus evidence',
+      reason: 'tracker-backed native ralplan architect, scholastic, and critic consensus evidence',
       evidence,
     };
   }
   return {
     allowed: false,
     reason: evidence.blockedReason === 'native_subagent_consensus_evidence_missing'
-      ? 'ralplan consensus lacks tracker-backed native architect and critic lanes'
-      : 'missing ralplan consensus gate with tracker-backed native architect and critic lanes',
+      ? 'ralplan consensus lacks tracker-backed native architect, scholastic, and critic lanes'
+      : 'missing ralplan consensus gate with tracker-backed native architect, scholastic, and critic lanes',
     evidence,
   };
 }

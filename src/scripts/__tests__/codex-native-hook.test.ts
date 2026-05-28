@@ -3157,8 +3157,8 @@ standardMaxRounds = 15
       assert.match(message, /re-score ambiguity against the active threshold/);
       assert.match(message, /max_rounds as a cap/);
       assert.match(message, /Do not advance from deep-interview to ralplan merely because the first question was answered/);
-      assert.match(message, /Planner output has been reviewed sequentially by Architect and then Critic/);
-      assert.match(message, /do not hand off to Ultragoal or implementation until .*ralplan_architect_review.*ralplan_critic_review/);
+      assert.match(message, /Planner output has been reviewed sequentially by Architect, then Scholastic, then Critic/);
+      assert.match(message, /do not hand off to Ultragoal or implementation until .*ralplan_architect_review.*ralplan_scholastic_review.*ralplan_critic_review/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
