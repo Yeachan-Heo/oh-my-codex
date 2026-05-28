@@ -164,7 +164,7 @@ describe('evaluateQuestionPolicy autopilot deep-interview wait', { concurrency: 
     assert.equal(unrelatedSource.code, 'active_execution_mode_blocked');
   });
 
-  it('allows only controlled autopilot deep-interview questions while preserving unrelated guards', { concurrency: false }, async () => {
+  it('blocks duplicate deep-interview questions while autopilot is already waiting', { concurrency: false }, async () => {
     const cwd = await makeRepo();
     const sessionDir = join(cwd, '.omx', 'state', 'sessions', 'sess-auto');
     await mkdir(sessionDir, { recursive: true });
@@ -192,13 +192,14 @@ describe('evaluateQuestionPolicy autopilot deep-interview wait', { concurrency: 
     }, null, 2));
 
     await writeFile(join(cwd, '.omx', 'state', 'session.json'), JSON.stringify({ session_id: 'sess-auto' }));
-    const allowed = await evaluateQuestionPolicy({
+    const duplicateQuestion = await evaluateQuestionPolicy({
       cwd,
       explicitSessionId: 'sess-auto',
       questionSource: 'deep-interview',
       env: { ...process.env, OMX_TEAM_WORKER: '' },
     });
-    assert.equal(allowed.allowed, true);
+    assert.equal(duplicateQuestion.allowed, false);
+    assert.equal(duplicateQuestion.code, 'active_execution_mode_blocked');
 
     const unrelatedSource = await evaluateQuestionPolicy({
       cwd,

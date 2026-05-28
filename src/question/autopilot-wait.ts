@@ -24,6 +24,12 @@ function safeObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? value as Record<string, unknown> : {};
 }
 
+function isPendingAutopilotQuestionWait(wait: Record<string, unknown>): boolean {
+  return safeString(wait.status) === 'waiting_for_user'
+    && safeString(wait.source) === 'omx-question'
+    && safeString(wait.obligation_id).length > 0;
+}
+
 async function readAutopilotState(cwd: string, sessionId?: string): Promise<Record<string, unknown> | null> {
   const statePath = getStateFilePath(AUTOPILOT_STATE_FILE, cwd, sessionId);
   try {
@@ -50,8 +56,7 @@ export async function readAutopilotDeepInterviewQuestionWaitState(
   const wait = safeObject(nestedState.deep_interview_question);
   const obligationId = safeString(wait.obligation_id);
   if (!obligationId) return null;
-  if (safeString(wait.status) !== 'waiting_for_user') return null;
-  if (safeString(wait.source) !== 'omx-question') return null;
+  if (!isPendingAutopilotQuestionWait(wait)) return null;
 
   const phase = normalizeAutopilotPhase(state.current_phase);
   const runOutcome = safeString(state.run_outcome);
@@ -74,7 +79,9 @@ export async function canStartAutopilotDeepInterviewQuestion(
   sessionId?: string,
 ): Promise<boolean> {
   const state = await readAutopilotState(cwd, sessionId);
-  return isAutopilotSupervisingChild(state, 'deep-interview');
+  if (!isAutopilotSupervisingChild(state, 'deep-interview')) return false;
+  const nestedState = safeObject(state?.state);
+  return !isPendingAutopilotQuestionWait(safeObject(nestedState.deep_interview_question));
 }
 
 export async function markAutopilotDeepInterviewQuestionWaiting(
@@ -90,6 +97,8 @@ export async function markAutopilotDeepInterviewQuestionWaiting(
   const currentPhase = normalizeAutopilotPhase(state.current_phase) || 'deep-interview';
 
   const nestedState = safeObject(state.state);
+  if (isPendingAutopilotQuestionWait(safeObject(nestedState.deep_interview_question))) return false;
+
   const wait = {
     status: 'waiting_for_user',
     source: 'omx-question',
