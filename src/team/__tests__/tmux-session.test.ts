@@ -915,6 +915,48 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
+  it('scrubs HUD ownership env from interactive worker startup commands', () => {
+    const prevShell = process.env.SHELL;
+    const prevCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const prevHudOwner = process.env.OMX_TMUX_HUD_OWNER;
+    const prevHudLeaderPane = process.env.OMX_TMUX_HUD_LEADER_PANE;
+    process.env.SHELL = '/bin/bash';
+    process.env.OMX_TEAM_WORKER_CLI = 'codex';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    process.env.OMX_TMUX_HUD_OWNER = '1';
+    process.env.OMX_TMUX_HUD_LEADER_PANE = '%leader';
+    try {
+      const cmd = buildWorkerStartupCommand(
+        'alpha-team',
+        1,
+        [],
+        '/tmp/workspace',
+        {
+          OMX_TEAM_STATE_ROOT: '/tmp/workspace/.omx/state',
+          OMX_TMUX_HUD_OWNER: '1',
+          OMX_TMUX_HUD_LEADER_PANE: '%leader',
+        },
+        'codex',
+      );
+      assert.match(cmd, /OMX_TEAM_WORKER=alpha-team\/worker-1/);
+      assert.match(cmd, /OMX_TEAM_STATE_ROOT=\/tmp\/workspace\/\.omx\/state/);
+      assert.doesNotMatch(cmd, /OMX_TMUX_HUD_OWNER/);
+      assert.doesNotMatch(cmd, /OMX_TMUX_HUD_LEADER_PANE/);
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof prevHudOwner === 'string') process.env.OMX_TMUX_HUD_OWNER = prevHudOwner;
+      else delete process.env.OMX_TMUX_HUD_OWNER;
+      if (typeof prevHudLeaderPane === 'string') process.env.OMX_TMUX_HUD_LEADER_PANE = prevHudLeaderPane;
+      else delete process.env.OMX_TMUX_HUD_LEADER_PANE;
+    }
+  });
+
   it('auto-selects claude worker CLI from claude model', () => {
     const prevShell = process.env.SHELL;
     const prevCli = process.env.OMX_TEAM_WORKER_CLI;

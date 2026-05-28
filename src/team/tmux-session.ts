@@ -946,6 +946,13 @@ function readTmuxWorkerAmbientEnv(env: NodeJS.ProcessEnv = process.env): Record<
   return inherited;
 }
 
+function scrubTeamWorkerHudOwnershipEnv(env: Record<string, string>): Record<string, string> {
+  const scrubbed = { ...env };
+  delete scrubbed[OMX_TMUX_HUD_OWNER_ENV];
+  delete scrubbed[OMX_TMUX_HUD_LEADER_PANE_ENV];
+  return scrubbed;
+}
+
 function hasConfigOverride(args: readonly string[], key: string): boolean {
   const prefix = `${key}=`;
   for (let index = 0; index < args.length; index += 1) {
@@ -1030,10 +1037,10 @@ export function buildWorkerStartupCommand(
     initialPrompt,
     workerRole,
   );
-  const startupEnv = {
+  const startupEnv = scrubTeamWorkerHudOwnershipEnv({
     ...readTmuxWorkerAmbientEnv(process.env),
     ...processSpec.env,
-  };
+  });
   const startupArgs = [...processSpec.args];
   if (processSpec.workerCli === 'codex') {
     appendTeamWorkerMcpDisableOverrides(startupArgs, { ...process.env, ...extraEnv });
@@ -1232,14 +1239,12 @@ export function buildWorkerProcessLaunchSpec(
     if (typeof value !== 'string' || value.trim() === '') continue;
     workerEnv[key] = value;
   }
-  delete workerEnv[OMX_TMUX_HUD_OWNER_ENV];
-  delete workerEnv[OMX_TMUX_HUD_LEADER_PANE_ENV];
 
   return {
     workerCli,
     command: platformSpec.command,
     args: platformSpec.args,
-    env: workerEnv,
+    env: scrubTeamWorkerHudOwnershipEnv(workerEnv),
   };
 }
 
