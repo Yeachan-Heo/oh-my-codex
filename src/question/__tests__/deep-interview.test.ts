@@ -359,6 +359,66 @@ describe('runDeepInterviewQuestion autopilot wait bridge', { concurrency: false 
     assert.equal(autopilotState.state?.deep_interview_question?.requested_at, '2026-04-19T00:00:00.000Z');
   });
 
+  it('fails terminally instead of replacing another pending Autopilot question owner', { concurrency: false }, async () => {
+    const cwd = await makeRepo();
+    const sessionDir = join(cwd, '.omx', 'state', 'sessions', 'sess-di');
+    const autopilotPath = join(sessionDir, 'autopilot-state.json');
+    const deepInterviewPath = join(sessionDir, 'deep-interview-state.json');
+    await writeFile(autopilotPath, JSON.stringify({
+      active: true,
+      mode: 'autopilot',
+      current_phase: 'waiting-for-user',
+      run_outcome: 'blocked_on_user',
+      lifecycle_outcome: 'askuserQuestion',
+      session_id: 'sess-di',
+      state: {
+        deep_interview_question: {
+          status: 'waiting_for_user',
+          source: 'omx-question',
+          obligation_id: 'obligation-original',
+          previous_phase: 'deep-interview',
+          requested_at: '2026-04-19T00:00:00.000Z',
+        },
+      },
+    }, null, 2));
+    await writeFile(deepInterviewPath, JSON.stringify({
+      active: false,
+      mode: 'deep-interview',
+      session_id: 'sess-di',
+      question_enforcement: {
+        obligation_id: 'obligation-original',
+        source: 'omx-question',
+        status: 'pending',
+        lifecycle_outcome: 'askuserQuestion',
+        requested_at: '2026-04-19T00:00:00.000Z',
+      },
+    }, null, 2));
+
+    let runnerCalled = false;
+    await assert.rejects(
+      runDeepInterviewQuestion(
+        { session_id: 'sess-di', question: 'Clarify?', allow_other: true },
+        {
+          cwd,
+          argv1: '/repo/dist/cli/omx.js',
+          runner: async () => {
+            runnerCalled = true;
+            return { code: 1, stdout: '', stderr: '' };
+          },
+        },
+      ),
+      (error: unknown) => error instanceof OmxQuestionError
+        && error.code === 'active_execution_mode_blocked',
+    );
+
+    assert.equal(runnerCalled, false);
+    const deepInterviewState = JSON.parse(await readFile(deepInterviewPath, 'utf-8')) as {
+      question_enforcement?: { obligation_id?: string; status?: string };
+    };
+    assert.equal(deepInterviewState.question_enforcement?.obligation_id, 'obligation-original');
+    assert.equal(deepInterviewState.question_enforcement?.status, 'pending');
+  });
+
   it('persists readable autopilot waiting-for-user state while omx question is in flight and restores it after answer', { concurrency: false }, async () => {
     const cwd = await makeRepo();
     const sessionDir = join(cwd, '.omx', 'state', 'sessions', 'sess-di');

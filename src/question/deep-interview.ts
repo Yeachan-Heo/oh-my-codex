@@ -285,12 +285,19 @@ export async function runDeepInterviewQuestion(
     );
   }
 
+  const autopilotWaitStarted = await markAutopilotDeepInterviewQuestionWaiting(cwd, sessionId, obligation);
+  if (!autopilotWaitStarted && await readAutopilotDeepInterviewQuestionWaitState(cwd, sessionId)) {
+    throw new OmxQuestionError(
+      'active_execution_mode_blocked',
+      'Autopilot already has a pending deep-interview question.',
+    );
+  }
+
   await updateDeepInterviewQuestionEnforcement(
     cwd,
     sessionId,
     () => obligation,
   );
-  const autopilotWaitStarted = await markAutopilotDeepInterviewQuestionWaiting(cwd, sessionId, obligation);
 
   try {
     const result = await runOmxQuestion(

@@ -325,15 +325,29 @@ export async function questionCommand(args: string[]): Promise<void> {
     );
     if (!directDeepInterviewObligation) {
       directDeepInterviewObligation = createDeepInterviewQuestionObligation();
+      const autopilotWaitStarted = await markAutopilotDeepInterviewQuestionWaiting(
+        cwd,
+        policy.sessionId,
+        directDeepInterviewObligation,
+      );
+      if (!autopilotWaitStarted) {
+        const conflictingWait = await readAutopilotDeepInterviewQuestionWaitState(cwd, policy.sessionId);
+        if (conflictingWait) {
+          printJson({
+            ok: false,
+            error: {
+              code: 'active_execution_mode_blocked',
+              message: 'Autopilot already has a pending deep-interview question.',
+            },
+          }, parsed.json);
+          process.exitCode = 1;
+          return;
+        }
+      }
       await updateDeepInterviewQuestionEnforcement(
         cwd,
         policy.sessionId,
         () => directDeepInterviewObligation ?? undefined,
-      );
-      await markAutopilotDeepInterviewQuestionWaiting(
-        cwd,
-        policy.sessionId,
-        directDeepInterviewObligation,
       );
     }
   }
