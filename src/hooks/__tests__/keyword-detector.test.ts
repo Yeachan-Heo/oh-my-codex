@@ -1095,7 +1095,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
-  it('keeps standalone ralplan handoff on the allowlisted transition path', async () => {
+  it('denies ralplan handoff from deep-interview without completion or explicit skip evidence', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-ralplan-handoff-'));
     const stateDir = join(cwd, '.omx', 'state');
     try {
@@ -1123,15 +1123,14 @@ describe('keyword detector skill-active-state lifecycle', () => {
         nowIso: '2026-04-10T00:00:00.000Z',
       });
 
-      assert.equal(result?.transition_error, undefined);
-      assert.equal(result?.skill, 'ralplan');
-      assert.equal(result?.transition_message, 'mode transiting: deep-interview -> ralplan');
-      const completed = JSON.parse(
+      assert.equal(result?.skill, 'deep-interview');
+      assert.match(String(result?.transition_error), /missing deep-interview completion\/skip gate/i);
+      const preserved = JSON.parse(
         await readFile(join(stateDir, 'sessions', 'sess-ralplan-handoff', 'deep-interview-state.json'), 'utf-8'),
       ) as { active?: boolean; current_phase?: string };
-      assert.equal(completed.active, false);
-      assert.equal(completed.current_phase, 'completed');
-      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-ralplan-handoff', 'ralplan-state.json')), true);
+      assert.equal(preserved.active, true);
+      assert.equal(preserved.current_phase, 'intent-first');
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-ralplan-handoff', 'ralplan-state.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

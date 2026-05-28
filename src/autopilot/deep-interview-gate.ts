@@ -76,6 +76,24 @@ function questionEnforcement(state: JsonObject | null | undefined): DeepIntervie
   return safeObject(state?.question_enforcement) as unknown as DeepInterviewQuestionEnforcementState | undefined;
 }
 
+function autopilotWaitingQuestionEnforcement(
+  state: JsonObject | null | undefined,
+): DeepInterviewQuestionEnforcementState | undefined {
+  const wait = safeObject(nestedState(state)?.deep_interview_question);
+  if (!wait) return undefined;
+  if (normalizeStatus(wait.status) !== 'waiting-for-user') return undefined;
+  if (safeString(wait.source) !== 'omx-question') return undefined;
+  const obligationId = safeString(wait.obligation_id);
+  if (!obligationId) return undefined;
+  return {
+    obligation_id: obligationId,
+    source: 'omx-question',
+    status: 'pending',
+    lifecycle_outcome: 'askuserQuestion',
+    requested_at: safeString(wait.requested_at) || safeString(wait.updated_at),
+  };
+}
+
 function allCandidateStates(
   input: AutopilotDeepInterviewRalplanGateInput,
   deepState: JsonObject | null,
@@ -155,9 +173,14 @@ function collectQuestionEnforcements(
   input: AutopilotDeepInterviewRalplanGateInput,
   deepState: JsonObject | null,
 ): DeepInterviewQuestionEnforcementState[] {
-  return allCandidateStates(input, deepState)
-    .map(questionEnforcement)
-    .filter((enforcement): enforcement is DeepInterviewQuestionEnforcementState => Boolean(enforcement));
+  const enforcements: DeepInterviewQuestionEnforcementState[] = [];
+  for (const state of allCandidateStates(input, deepState)) {
+    const standalone = questionEnforcement(state);
+    if (standalone) enforcements.push(standalone);
+    const autopilotWait = autopilotWaitingQuestionEnforcement(state);
+    if (autopilotWait) enforcements.push(autopilotWait);
+  }
+  return enforcements;
 }
 
 function hasPendingQuestion(enforcements: readonly DeepInterviewQuestionEnforcementState[]): boolean {
